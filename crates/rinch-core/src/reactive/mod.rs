@@ -83,7 +83,7 @@ pub use bounds::{
 };
 pub use effect::Effect;
 pub use memo::Memo;
-pub use poll::{PollRate, drain_polls, poll_signal};
+pub use poll::{PollRate, drain_polls, next_poll_due, poll_signal};
 pub use scope::{OwnedCounts, Owner, OwnerGuard, Scope, current_owner, on_cleanup, unowned};
 /// Ambient-owner hooks for the rest of the crate: `crate::events` attributes
 /// handlers to the scope currently rendering, and `crate::context` ties a

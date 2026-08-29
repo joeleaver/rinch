@@ -26,6 +26,34 @@ use crate::shell::touch_gesture::{TouchAction, TouchGesture};
 
 static REDRAW_PENDING: AtomicBool = AtomicBool::new(false);
 
+/// One frame at 60Hz, used until the window exists and the display can be
+/// asked what it actually runs at, and as the answer when it refuses to say.
+///
+/// 60Hz is the conservative guess in the direction that matters: guessing too
+/// slow caps the app, guessing too fast only moves the wait from this loop's
+/// timeout into the present's own back-pressure. It is also, exactly, what the
+/// `Duration::from_millis(16)` this replaces was assuming without saying so.
+const DEFAULT_FRAME_INTERVAL: Duration = Duration::from_nanos(16_666_667);
+
+/// How often the loop re-asks the display what a frame costs, while it is
+/// drawing them.
+///
+/// **This is not paranoia; it was measured happening.** Android varies the
+/// panel's refresh rate to save power and does not tell an app about it. On the
+/// moto g stylus 5G the shell logged `frame=8.33ms` on a cold start and
+/// `frame=16.67ms` on the very next `InitWindow` after a press of Home and a
+/// return — same app, same window, same panel, idled down to 60Hz in the second
+/// or two the activity was away. Reading the rate once per window would have
+/// left the app paced for 60fps on a screen willing to show 120 for the rest of
+/// its life, which is the exact fault K37 exists to remove, arrived at by a
+/// different road.
+///
+/// A second is short enough that nobody feels a mode change and long enough
+/// that the JNI call is nothing — and it only happens while frames are being
+/// presented, so an idle app makes no calls at all and the sleeping loop above
+/// stays asleep.
+const RATE_RECHECK: Duration = Duration::from_secs(1);
+
 /// Queue a cross-thread closure and ask for a frame.
 ///
 /// The queue itself lives in `rinch-core` so every host shares one
@@ -34,6 +62,15 @@ static REDRAW_PENDING: AtomicBool = AtomicBool::new(false);
 fn dispatch_to_main_thread(f: Box<dyn FnOnce() + Send>) {
     rinch_core::queue_main_callback(f);
     REDRAW_PENDING.store(true, Ordering::Release);
+    // The flag alone was enough while the loop polled with a 16ms timeout,
+    // because a loop that wakes sixty-two times a second finds a flag within
+    // sixteen milliseconds whether or not anyone told it to look. Since card
+    // K37 the loop sleeps until something happens, and this is one of the
+    // things that happen: `set_timeout`'s shared timer thread, an image that
+    // finished decoding, and every `run_on_main_thread` in the process arrive
+    // through here. Without the wake they arrive and wait for the user to
+    // touch the screen.
+    rinch_android::wake::wake_main();
 }
 
 // ── Entry points ─────────────────────────────────────────────────────────────
@@ -148,9 +185,39 @@ fn run_loop(android_app: AndroidApp, mut app: RinchApp) {
     // this turn; the app starts focused, so nothing to send until Android says
     // otherwise (issue #147).
     let mut window_focus_change: Option<bool> = None;
+    // How long one frame lasts on this panel, and the deadline the loop paces
+    // itself against. Replaced with the display's own answer at `InitWindow`;
+    // 60Hz until then, which is both the commonest panel and the rate the
+    // hard-coded 16ms this replaces was silently assuming.
+    let mut frame_interval = DEFAULT_FRAME_INTERVAL;
+    // When the display was last asked what a frame costs. See `RATE_RECHECK`.
+    let mut frame_interval_read = Instant::now();
+    // When the current iteration's *work* began. Reset just after the poll
+    // returns, so the sleep is never counted against the frame it preceded.
+    let mut frame_start = Instant::now();
+    // Whether the previous iteration put pixels on the glass. This is the
+    // whole of the loop's pacing state — see `android_frame::poll_timeout` for
+    // why it is the right predicate and why it is deliberately the *narrow*
+    // one.
+    let mut presented = false;
 
     while running {
-        android_app.poll_events(Some(Duration::from_millis(16)), |event| match event {
+        // Read `REDRAW_PENDING` here, at the last possible instant before the
+        // block, rather than reusing the swap further down: anything that set
+        // it after that swap — a cross-thread callback, an effect that ran
+        // during the paint — would otherwise wait for an unrelated event.
+        let timeout = android_frame::poll_timeout(
+            presented,
+            REDRAW_PENDING.load(Ordering::Acquire),
+            frame_start.elapsed(),
+            frame_interval,
+            // The one queue with no producer to ring the waker: a
+            // `poll_signal` bridge is sampled by `drain_polls` below, and
+            // `drain_polls` only runs when this loop runs. See
+            // `android_frame::poll_timeout`.
+            rinch_core::reactive::next_poll_due(),
+        );
+        android_app.poll_events(timeout, |event| match event {
             PollEvent::Main(main_event) => match main_event {
                 MainEvent::InitWindow { .. } => {
                     if let Some(native_window) = android_app.native_window() {
@@ -164,10 +231,26 @@ fn run_loop(android_app: AndroidApp, mut app: RinchApp) {
                         }) as f64;
                         scale_factor = dpi / 160.0;
 
+                        // What this panel calls a frame. Read here rather
+                        // than at startup because there is no display to ask
+                        // about until there is a window on it. It is *also*
+                        // re-read once a second while frames are being drawn
+                        // (see `RATE_RECHECK`), and it has to be, because the
+                        // answer on this line is only true at this instant:
+                        // the same handset answers 120Hz on a cold start and
+                        // 60Hz on the `InitWindow` that follows a press of
+                        // Home. See `display::refresh_rate_hz`.
+                        frame_interval = rinch_android::display::refresh_rate_hz()
+                            .map(|hz| Duration::from_secs_f32(1.0 / hz))
+                            .unwrap_or(DEFAULT_FRAME_INTERVAL);
+                        frame_interval_read = Instant::now();
+
                         log::info!(
-                            "InitWindow: {}x{} physical, density={dpi}, scale={scale_factor:.2}",
+                            "InitWindow: {}x{} physical, density={dpi}, scale={scale_factor:.2}, \
+                             frame={:.2}ms",
                             w,
-                            h
+                            h,
+                            frame_interval.as_secs_f64() * 1000.0
                         );
 
                         // The old surface is dropped *first*, and on its own
@@ -295,6 +378,18 @@ fn run_loop(android_app: AndroidApp, mut app: RinchApp) {
             PollEvent::Wake => {}
             _ => {}
         });
+
+        // The frame's own clock starts once the loop is awake and has work to
+        // do, so `poll_timeout` is subtracting the time this iteration spent
+        // *working* from the display's deadline and not the time it spent
+        // asleep waiting to be given work.
+        frame_start = Instant::now();
+        // Nothing has reached the glass this iteration yet. Every path that
+        // leaves before the present block below therefore falls back to
+        // waiting for an event, which is the safe direction: a loop that waits
+        // too long is woken by the waker or by the user's next touch, while a
+        // loop that waits too little is a phone getting hot in a pocket.
+        presented = false;
 
         if !running {
             break;
@@ -456,11 +551,14 @@ fn run_loop(android_app: AndroidApp, mut app: RinchApp) {
 
         // The frame clock. Every time-driven thing `RinchApp` owns — CSS
         // transitions, CSS animations, the dirty state the input handlers
-        // leave for it to batch — advances here and nowhere else, and this
-        // loop polls with a 16ms timeout so the clock runs at ~60Hz. Before
-        // the surface is presented, not after: what it resolves has to be in
-        // the pixels this iteration hands to `present_pixels`, and the redraw
-        // it asks for has to be visible to the swap below.
+        // leave for it to batch — advances here and nowhere else, so the clock
+        // runs at whatever rate this loop iterates at. That used to be a flat
+        // ~60Hz because the poll above waited a flat 16ms; card K37 made it
+        // the display's rate while something is moving and nothing at all
+        // while nothing is. Before the surface is presented, not after: what
+        // it resolves has to be in the pixels this iteration hands to
+        // `present_pixels`, and the redraw it asks for has to be visible to
+        // the swap below.
         let frame = android_frame::pump_frame(&mut app, physical_size, scale_factor);
         process_actions(&frame.actions, &mut running);
         if !running {
@@ -481,6 +579,16 @@ fn run_loop(android_app: AndroidApp, mut app: RinchApp) {
         let needs_paint = redraw || pending || has_momentum || frame.needs_paint;
 
         if needs_paint && mounted {
+            // Only on frames that are actually being drawn, and at most once a
+            // second — see `RATE_RECHECK` for the mode change that made this
+            // necessary.
+            if frame_interval_read.elapsed() >= RATE_RECHECK {
+                frame_interval_read = Instant::now();
+                if let Some(hz) = rinch_android::display::refresh_rate_hz() {
+                    frame_interval = Duration::from_secs_f32(1.0 / hz);
+                }
+            }
+
             if pending {
                 app.resolve_and_repaint(logical_size.0 as f32, logical_size.1 as f32);
             }
@@ -488,13 +596,13 @@ fn run_loop(android_app: AndroidApp, mut app: RinchApp) {
             #[cfg(feature = "android-gpu")]
             if let (Some(ctx), Some(s)) = (&mut gpu, &mut surface) {
                 let scene = app.build_scene(scale_factor, logical_size);
-                s.present_scene(&mut ctx.renderer, scene);
+                presented = s.present_scene(&mut ctx.renderer, scene);
             }
 
             #[cfg(not(feature = "android-gpu"))]
             if let Some(ref mut s) = surface {
                 let (pixels, w, h) = app.build_pixels(scale_factor, logical_size, false);
-                s.present_pixels(pixels, w, h);
+                presented = s.present_pixels(pixels, w, h);
             }
         }
     }
@@ -873,7 +981,17 @@ impl SoftSurface {
         self.configure();
     }
 
-    fn present_pixels(&mut self, pixels: &[u8], width: u32, height: u32) {
+    /// Returns whether the frame actually reached the window.
+    ///
+    /// The loop paces itself on that answer (see
+    /// `android_frame::poll_timeout`), and the two early returns below are the
+    /// reason it is a `bool` rather than the loop assuming a paint attempt is
+    /// a paint: `lock` blocks for a free buffer, which is the display's own
+    /// back-pressure and the thing that makes a busy loop impossible — but
+    /// when it *fails* it returns at once, and a loop that treated that as a
+    /// presented frame would come straight back and fail again as fast as the
+    /// CPU allowed.
+    fn present_pixels(&mut self, pixels: &[u8], width: u32, height: u32) -> bool {
         use ndk::hardware_buffer_format::HardwareBufferFormat;
 
         if width != self.width || height != self.height {
@@ -882,7 +1000,7 @@ impl SoftSurface {
 
         let mut guard = match self.native.lock(None) {
             Ok(g) => g,
-            Err(_) => return,
+            Err(_) => return false,
         };
 
         // **Every byte of this buffer has to be written before we return.**
@@ -915,7 +1033,7 @@ impl SoftSurface {
         // goes out as it is.
         let Some(lines) = guard.lines() else {
             log::error!("present: window buffer format {format:?} has no byte size");
-            return;
+            return false;
         };
 
         let src_stride = width as usize * 4;
@@ -945,6 +1063,7 @@ impl SoftSurface {
             line[n..].fill(std::mem::MaybeUninit::new(0));
         }
         // Dropping the guard unlocks the buffer and posts it.
+        true
     }
 }
 
@@ -1234,6 +1353,20 @@ impl GpuContext {
 /// for its full 16ms whenever no input is arriving, and it is paid by the
 /// software path identically. Presenting the swapchain has moved the ceiling
 /// from "the readback" to "the loop's own clock", which is a different card.
+///
+/// Card **K37** is that card, and it changes how the numbers above should be
+/// read. The loop no longer sleeps between frames, so the wait it used to do in
+/// `poll_events` now happens here instead, inside the present. Re-measured with
+/// the acquire timed separately from the rest, on the library, the sheet and a
+/// PDF page: the acquire is 0.08 / 0.07 / 0.06ms — the swapchain always has an
+/// image ready — and everything after it (blit, submit, `frame.present()`) is
+/// 12.5 / 31.1 / 4.9ms, which on the first two is the queue refusing another
+/// frame rather than work appearing from nowhere. The PDF's 4.9 is the useful
+/// control: its whole paint is 22.2ms, so seventeen of those milliseconds are
+/// `build_scene` and `render_to_texture` and no amount of pacing will move
+/// them. Frame-to-frame — the number that is about the user and not about this
+/// file — went to 16.3 / 40.9 / 23.0. See `android_frame::poll_timeout` for
+/// both halves of that table.
 #[cfg(feature = "android-gpu")]
 struct GpuSurface {
     surface: wgpu::Surface<'static>,
@@ -1336,7 +1469,11 @@ impl GpuSurface {
             // display's back-pressure rather than work" describes Fifo by
             // another name. The loop's own 16ms `poll_events` timeout was
             // always an approximation of the same 60Hz; now something
-            // authoritative enforces it.
+            // authoritative enforces it. Card K37 then removed the
+            // approximation: the loop asks the display what a frame costs and
+            // waits out the remainder of it, so on the 120Hz panel this was
+            // measured on the two clocks finally agree instead of the slower
+            // guess winning.
             //
             // The cost is that a timing probe around the acquire measures
             // *waiting*, not work, and a reader of those numbers who forgets
@@ -1464,7 +1601,13 @@ impl GpuSurface {
     /// fails costs only the frame, not the scene: the intermediate texture
     /// still holds a valid, correctly sized frame, and the next iteration
     /// draws over it.
-    fn present_scene(&mut self, renderer: &mut vello::Renderer, scene: &vello::Scene) {
+    ///
+    /// Returns whether the frame actually reached the swapchain. See
+    /// [`SoftSurface::present_pixels`] for why the loop needs to be told:
+    /// both early returns below are fast failures, and a loop that paced
+    /// itself on "we tried to paint" rather than "we painted" would spin
+    /// through them.
+    fn present_scene(&mut self, renderer: &mut vello::Renderer, scene: &vello::Scene) -> bool {
         if let Err(e) = renderer.render_to_texture(
             &self.device,
             &self.queue,
@@ -1478,11 +1621,11 @@ impl GpuSurface {
             },
         ) {
             log::error!("GPU render failed: {e}");
-            return;
+            return false;
         }
 
         let Some(frame) = self.acquire() else {
-            return;
+            return false;
         };
 
         let view = frame
@@ -1497,6 +1640,7 @@ impl GpuSurface {
             .copy(&self.device, &mut encoder, &self.target_view, &view);
         self.queue.submit(std::iter::once(encoder.finish()));
         frame.present();
+        true
     }
 }
 

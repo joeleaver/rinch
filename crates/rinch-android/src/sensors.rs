@@ -215,6 +215,12 @@ fn record_reading(sensor_type: i32, data: SensorData) {
         .unwrap()
         .get_or_insert_with(HashMap::new)
         .insert(sensor_type, data);
+    // A sensor listener fires on the sensor thread and this map is not
+    // something the frame loop's looper can see. Since this loop only wakes
+    // when it is told to, a compass that turns while the screen is otherwise
+    // still is precisely a stream of news nobody has asked for by touching
+    // anything. See [`crate::wake`].
+    crate::wake::wake_main();
 }
 
 #[cfg(test)]

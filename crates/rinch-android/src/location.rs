@@ -213,6 +213,10 @@ pub extern "C" fn Java_com_rinch_RinchActivity_nativeOnLocationChanged(
 fn record_fix(data: LocationData) {
     *LOCATION.lock().unwrap() = Some(data);
     LOCATION_CHANGED.store(true, Ordering::Relaxed);
+    // Same reason as the sensor callback: a fix arrives on the location
+    // thread, and since K37 the frame loop is asleep until something says
+    // otherwise. See [`crate::wake`].
+    crate::wake::wake_main();
 }
 
 #[cfg(test)]

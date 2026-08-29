@@ -148,6 +148,11 @@ pub extern "C" fn Java_com_rinch_RinchActivity_nativeOnActivityResult(
         result_code,
         data_uri: uri,
     });
+    // The loop drains this queue once a frame and, since K37, only has frames
+    // when something is happening. Returning from the file picker is exactly
+    // the case where nothing is: the app has been sitting behind another
+    // activity, and this callback is the first news of it. See [`crate::wake`].
+    crate::wake::wake_main();
 }
 
 /// Queue an activity result for delivery by the next
@@ -169,6 +174,7 @@ pub extern "C" fn Java_com_rinch_RinchActivity_nativeOnPermissionsResult(
         request_code,
         all_granted: all_granted != 0,
     });
+    crate::wake::wake_main();
 }
 
 /// Queue a permission result for delivery by the next
