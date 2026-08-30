@@ -218,6 +218,59 @@ jobs:
           cargo test -p rinch-storage --target wasm32-unknown-unknown
           cargo test -p rinch-web --target wasm32-unknown-unknown
 
+  # Type-check the Android target. Nothing else in this pipeline compiles it.
+  #
+  # Every module in `crates/rinch-android` is `#[cfg(target_os = "android")]`, and
+  # `shell/android_runtime.rs` is `#[cfg(all(feature = "android", target_os =
+  # "android"))]` — so on the Linux runner they compile to nothing at all. `test`,
+  # `clippy` and `build` above have all been green while Android code did not
+  # compile, and the only thing that has ever caught it is someone running
+  # `examples/hello-android/build-apk.sh` on a machine with the NDK.
+  #
+  # `cargo check` needs no NDK: it type-checks without linking, so this job is a
+  # toolchain target and nothing more.
+  #
+  # `--no-default-features` is required. The `android` feature does not turn the
+  # desktop defaults off, so a bare `--features android` drags in `muda` (GTK
+  # menus) and fails to build for Android — a trap worth not re-discovering.
+  #
+  # Warnings are NOT denied here yet: the Android cfg leaves ~11 pieces of
+  # cfg-conditional dead code across `rinch`, which want greening in their own
+  # change. Tracked separately; upgrading this to `clippy -D warnings` is the
+  # point of that issue.
+  check-android:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android, x86_64-linux-android
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-android-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-android-
+
+      - name: Type-check the Android shell and platform crate
+        run: |
+          for target in aarch64-linux-android x86_64-linux-android; do
+            echo "::group::$target"
+            cargo check -p rinch-android --target "$target"
+            cargo check -p rinch --target "$target" \
+              --no-default-features --features android
+            cargo check -p rinch --target "$target" \
+              --no-default-features --features android-gpu
+            echo "::endgroup::"
+          done
+
   fmt:
     runs-on: ubuntu-latest
     steps:
