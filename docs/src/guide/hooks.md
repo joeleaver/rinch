@@ -259,6 +259,13 @@ This covers `sensors::start`, `location::start`, `lifecycle::on_pause` /
   callbacks — and everything captured — for the life of the process. Each
   release is logged at `debug`, because the symptom is otherwise silent: the
   callback simply stops firing.
+- **Releasing a sensor or location callback powers the hardware down**, because
+  nothing else can. Once the entry is gone, `sensors::stop` has no
+  `SensorType` to be called with and the component that knew it is disposed —
+  so the release calls `stopSensor` / `stopLocationUpdates` itself, rather than
+  freeing a `Box` and leaving a radio on. Only what it actually released: a
+  sensor another component is still using stays armed, including one
+  re-registered from inside the released callback's own `Drop`.
 - **Registration from `android_main` keeps app lifetime**, unchanged. That is
   what an app-wide `on_pause` autosave relies on.
 - **Stopping from inside the callback works.** "Stop the sensor once the reading
@@ -266,8 +273,9 @@ This covers `sensors::start`, `location::start`, `lifecycle::on_pause` /
   to panic with a `BorrowMutError`, because the registry was borrowed across the
   call. So did swapping a lifecycle handler from inside one.
 
-`sensors::stop` and `location::stop` are still worth calling explicitly: releasing
-the callback does **not** power the hardware down.
+`sensors::stop` and `location::stop` remain the way to stop early — the moment
+you have the fix you wanted, rather than at unmount. What they no longer have to
+be is a leak-preventing ritual.
 
 [`set_keyboard_interceptor`]: ./focus.md#where-this-does-not-apply
 [`set_paste_interceptor`]: ./platform.md#clipboard

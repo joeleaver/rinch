@@ -70,6 +70,16 @@
 //! - **Drop the displaced callback after the borrow ends.** It is user code whose
 //!   `Drop` may re-enter the registry; dropping it inside the `borrow_mut`
 //!   panics. Every write here binds it to a `let` that outlives the borrow.
+//! - **A release reports what it freed, and only what is now unclaimed.** Half
+//!   of these callbacks are driving hardware — a sensor at `DELAY_UI`, the GPS
+//!   radio — and once the entry is gone nothing else can turn it off:
+//!   `sensors::stop` takes the `SensorType` the entry held, and the component
+//!   that knew it is disposed. So a sweep hands its caller the keys it released,
+//!   to power them down. It must not hand over a key something live holds: the
+//!   released callback is user code whose `Drop` runs *inside* the sweep and may
+//!   re-register at that very key, and disarming then would stop a live
+//!   component's sensor. Both sweeps therefore re-read the registry after the
+//!   drops and report only what is still empty.
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -195,6 +205,11 @@ impl<F: ?Sized> ScopedSlot<F> {
     /// hold the callback — and everything it captured — for the life of the
     /// process. Cheap enough to run from a per-frame drain: a `Weak` upgrade and
     /// a flag read.
+    ///
+    /// Answers `true` only when the slot is **still empty** afterwards, because
+    /// the caller's response to `true` is to power hardware down: dropping the
+    /// callback runs user code, and a `Drop` that re-installs a live one has
+    /// claimed the slot before the caller can act on the answer.
     pub fn release_if_dead(&self) -> bool {
         let released = {
             let mut slot = self.slot.borrow_mut();
@@ -204,8 +219,11 @@ impl<F: ?Sized> ScopedSlot<F> {
                 None
             }
         };
-        // Dropped here, outside the borrow above.
-        released.is_some()
+        let was_released = released.is_some();
+        // Explicitly, and outside the borrow above: this is user code, and it
+        // must have finished re-entering the slot before the re-read below.
+        drop(released);
+        was_released && self.slot.borrow().is_none()
     }
 }
 
@@ -271,20 +289,37 @@ impl<K: Eq + Hash, F: ?Sized> ScopedMap<K, F> {
     }
 
     /// Drop every entry whose registering component is gone, whether or not an
-    /// event ever arrives for it. See [`ScopedSlot::release_if_dead`].
-    pub fn release_dead(&self) -> usize {
-        release_dead_entries(&self.entries)
+    /// event ever arrives for it, and return the keys that are now **unclaimed**
+    /// — so the caller can power down whatever they were driving.
+    ///
+    /// A released key is withheld when a live entry occupies it again by the
+    /// time the sweep finishes. That is not hypothetical: the released callbacks
+    /// are user code, their `Drop` runs during this call, and re-registering at
+    /// the same key is exactly what a restart looks like. See
+    /// [`ScopedSlot::release_if_dead`], which withholds for the same reason.
+    pub fn release_dead(&self) -> Vec<K> {
+        let released = release_dead_entries(&self.entries);
+        let (unclaimed, _reclaimed): (Vec<K>, Vec<K>) = {
+            let entries = self.entries.borrow();
+            released
+                .into_iter()
+                .partition(|key| !entries.contains_key(key))
+        };
+        // `partition` moves every key into one vector or the other, so none is
+        // dropped under the borrow above; `_reclaimed` drops after it ends.
+        unclaimed
     }
 }
 
-/// Drop every entry whose registering component is gone, returning how many
-/// went. Shared by both keyed registries — the repeat-firing one and the
+/// Drop every entry whose registering component is gone, returning the keys
+/// that went. Shared by both keyed registries — the repeat-firing one and the
 /// one-shot one differ only in what they hold as the callback.
 ///
 /// One pass, and the callbacks are dropped **after** the borrow ends: they are
 /// user code whose `Drop` may re-enter the registry, which inside the
-/// `borrow_mut` would panic.
-fn release_dead_entries<K: Eq + Hash, C>(entries: &RefCell<HashMap<K, Entry<C>>>) -> usize {
+/// `borrow_mut` would panic. They are also dropped before this returns, so a
+/// caller that re-reads the registry sees whatever those `Drop`s registered.
+fn release_dead_entries<K: Eq + Hash, C>(entries: &RefCell<HashMap<K, Entry<C>>>) -> Vec<K> {
     let released = {
         let mut entries = entries.borrow_mut();
         // `collect` exhausts the iterator, so `ExtractIf`'s own `Drop` has
@@ -293,8 +328,8 @@ fn release_dead_entries<K: Eq + Hash, C>(entries: &RefCell<HashMap<K, Entry<C>>>
             .extract_if(|_, e| e.registrant.is_dead())
             .collect::<Vec<_>>()
     };
-    // The callbacks drop at the end of this function, outside the borrow above.
-    released.len()
+    // Each callback drops as `map` moves past it — outside the borrow above.
+    released.into_iter().map(|(key, _cb)| key).collect()
 }
 
 /// What became of a one-shot callback when its result arrived.
@@ -365,10 +400,16 @@ impl<K: Eq + Hash, T> ScopedOnceMap<K, T> {
         Delivery::Ran
     }
 
-    /// Drop every callback whose registering component is gone. A result that
-    /// never arrives would otherwise pin what its callback captured forever.
+    /// Drop every callback whose registering component is gone, returning how
+    /// many went. A result that never arrives would otherwise pin what its
+    /// callback captured forever.
+    ///
+    /// A count, not the keys its repeat-firing twin reports: a one-shot arms no
+    /// hardware. The request it belongs to — a picker intent, a permission
+    /// dialog — is Android's to finish, and it delivers a result whatever the
+    /// app does, so there is nothing here to power down.
     pub fn release_dead(&self) -> usize {
-        release_dead_entries(&self.entries)
+        release_dead_entries(&self.entries).len()
     }
 
     /// Whether a callback is registered under `key`, live or not.
@@ -521,7 +562,7 @@ mod tests {
         dead.dispose();
         let released = MAP.with(|map| map.release_dead());
 
-        assert_eq!(released, 1, "exactly the one dead entry");
+        assert_eq!(released, vec![11], "exactly the one dead entry");
         assert!(MAP.with(|map| map.contains(&10)), "the live entry stays");
         assert!(!MAP.with(|map| map.contains(&11)), "the dead entry goes");
         assert!(
@@ -533,6 +574,49 @@ mod tests {
         for key in [10, 11, 12] {
             MAP.with(|map| map.remove(&key));
         }
+    }
+
+    /// The released callbacks are user code, and their `Drop` runs *inside* the
+    /// sweep — re-registering at the key being released is exactly what a
+    /// restart looks like. The caller's response to a reported key is to power
+    /// that hardware down, so a key a live registration reclaimed must be
+    /// withheld. The keyed half of
+    /// [`a_displaced_callback_may_reenter_the_slot_from_its_own_drop`].
+    #[test]
+    fn a_key_a_live_registration_reclaimed_during_the_sweep_is_not_reported() {
+        struct Reregister;
+
+        impl Drop for Reregister {
+            fn drop(&mut self) {
+                // Ownerless, so app lifetime: this one must survive the sweep.
+                MAP.with(|map| map.install(13, Rc::new(|| {})));
+            }
+        }
+
+        let scope = Scope::new();
+        scope.run(|| {
+            let guard = Reregister;
+            MAP.with(|map| {
+                map.install(
+                    13,
+                    Rc::new(move || {
+                        let _keep = &guard;
+                    }),
+                )
+            });
+        });
+        scope.dispose();
+
+        assert!(
+            MAP.with(|map| map.release_dead()).is_empty(),
+            "a key a live registration reclaimed during the sweep must not be \
+             reported as released"
+        );
+        assert!(
+            MAP.with(|map| map.contains(&13)),
+            "and that live registration must still be there"
+        );
+        MAP.with(|map| map.remove(&13));
     }
 
     /// A one-shot is removed *before* it is called, so it may register the next

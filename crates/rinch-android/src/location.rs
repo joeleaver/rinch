@@ -103,8 +103,33 @@ fn disarm_updates() {
     });
 }
 
+/// The host twin of the JNI call above. It **records** rather than ignores, so
+/// the release-driven disarm can be exercised with no device attached.
 #[cfg(not(target_os = "android"))]
-fn disarm_updates() {}
+fn disarm_updates() {
+    #[cfg(test)]
+    disarm_log::record();
+}
+
+/// How many times the host build has been asked to power the GPS down.
+/// `thread_local!`, like the slot it mirrors, so tests isolate for free.
+#[cfg(all(not(target_os = "android"), test))]
+mod disarm_log {
+    use std::cell::Cell;
+
+    thread_local! {
+        static DISARMS: Cell<u32> = const { Cell::new(0) };
+    }
+
+    pub(super) fn record() {
+        DISARMS.with(|n| n.set(n.get() + 1));
+    }
+
+    /// The count since the last call, resetting it.
+    pub(super) fn take() -> u32 {
+        DISARMS.with(|n| n.replace(0))
+    }
+}
 
 /// Whether a location callback is currently installed.
 #[cfg(test)]
@@ -126,6 +151,13 @@ pub fn drain_location() {
     // Logged, because a release is otherwise silent — the callback just stops.
     if LOCATION_CALLBACK.with(|slot| slot.release_if_dead()) {
         log::debug!("Released the location callback: the component that started it is gone");
+        // And power the GPS down. Releasing the callback frees a `Box`; the
+        // radio is the expensive half, on a battery-powered device, and after
+        // the release nothing else can turn it off — the component that would
+        // have called `stop()` is disposed. `release_if_dead` answers `true`
+        // only while the slot is still empty, so this cannot stop updates a
+        // live registration is relying on.
+        disarm_updates();
     }
 
     if !LOCATION_CHANGED.swap(false, Ordering::Relaxed) {
@@ -309,6 +341,78 @@ mod tests {
              scope that registered it"
         );
         scope.dispose();
+        // Leave no dead callback behind for a runner that shares a thread: the
+        // sweep now has a side effect (it powers the GPS down), so a stray dead
+        // callback would show up in a later test's disarm log.
+        stop();
+    }
+
+    /// Releasing the callback frees a `Box`; the GPS radio is the expensive
+    /// half, and after the release **nothing can ever stop it** — the component
+    /// that would have called `stop()` is disposed. So the release must power it
+    /// down itself, on a battery-powered device.
+    #[test]
+    fn releasing_a_dead_location_callback_powers_the_gps_down() {
+        let _serial = crate::test_serial();
+        let _ = disarm_log::take();
+
+        let scope = Scope::new();
+        scope.run(|| start(0, 0.0, |_| {}));
+        scope.dispose();
+
+        // No fix — only the drain running, as it does each frame.
+        drain_location();
+
+        assert_eq!(
+            disarm_log::take(),
+            1,
+            "releasing a dead location callback must also stop location updates"
+        );
+    }
+
+    /// The slot can change hands *during* the sweep: a released callback is user
+    /// code, its `Drop` runs inside the sweep, and `start`ing location again
+    /// refills the slot with a live registration before the disarm decision is
+    /// taken. Powering the radio down then would stop a live component's
+    /// updates, so the sweep must report a release only when the slot is still
+    /// empty. The keyed twin of
+    /// `sensors::releasing_a_dead_sensor_a_live_registration_reclaimed_does_not_disarm_it`.
+    #[test]
+    fn releasing_a_dead_location_callback_a_live_one_replaced_does_not_disarm_it() {
+        struct Restart;
+        impl Drop for Restart {
+            fn drop(&mut self) {
+                // Ownerless, so app lifetime: this one must survive the sweep.
+                start(0, 0.0, |_| {});
+            }
+        }
+
+        let _serial = crate::test_serial();
+        let _ = disarm_log::take();
+
+        let scope = Scope::new();
+        scope.run(|| {
+            let restart = Restart;
+            start(0, 0.0, move |_| {
+                let _keep = &restart;
+            });
+        });
+        scope.dispose();
+
+        drain_location();
+
+        assert_eq!(
+            disarm_log::take(),
+            0,
+            "a slot a live registration reclaimed during the sweep must not be \
+             powered down"
+        );
+        assert!(
+            callback_installed(),
+            "and that live registration must still be there"
+        );
+
+        stop();
     }
 
     /// "Stop once we have a good enough fix" is the obvious use of a location
