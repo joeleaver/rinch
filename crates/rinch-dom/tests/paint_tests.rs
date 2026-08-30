@@ -1955,3 +1955,129 @@ mod software_video_inline {
         );
     }
 }
+
+// ── The two painters disagree about `opacity` (K24, pinned by K35) ───────────
+//
+// Card K24 recorded, without exercising it, that "Vello clips content
+// overflowing an `opacity` element where the software path does not". K35 went
+// looking for a screen in the app that would show the difference and could not
+// find one — every `opacity` the app writes is on an element with nothing
+// painted outside its own border box (a full-bleed sheet scrim with no
+// children; a 40x40 icon button holding a centred glyph). So the claim could
+// not be settled by looking at a phone, and it is settled here instead.
+//
+// It is true, and the mechanism is in three lines of two files:
+//
+//   * `paint/mod.rs` passes the element's **border box** as the layer bounds:
+//     `painter.push_layer(BlendMode::Normal, opacity, node_transform, &rect.into())`,
+//     where `rect` is the same `Rect` the background and borders are painted
+//     into.
+//   * `paint/skia_painter.rs` names that parameter `_bounds` and never reads
+//     it. Its layer is a full-surface pixmap and `pop_layer` composites the
+//     whole thing back, so nothing is clipped, ever.
+//   * `paint/vello_painter.rs` hands it to `vello::Scene::push_layer`, whose
+//     documentation is unambiguous: "Every drawing command after this call
+//     will be clipped by the shape until the layer is popped."
+//
+// Children are painted between the push and the pop, so on the GPU path a
+// descendant that escapes its parent's border box is drawn and then thrown
+// away. The two tests below are the same document seen by each painter.
+#[cfg(feature = "software-renderer")]
+mod opacity_overflow {
+    use super::transform_paint::{paint_skia, pixel_at};
+    use super::*;
+    use rinch_dom::paint::skia_painter::TinySkiaPainter;
+
+    /// A 100x100 box with a red child sitting entirely outside it, at
+    /// x = 150..170. Nothing else is on the page. `opacity` is a parameter so
+    /// that the same document can be painted with and without it, which is the
+    /// only way to attribute a clip to it — the encoding already carries a few
+    /// from the root and the stacking context.
+    fn overflowing_doc(opacity: &str) -> RinchDocument {
+        let mut doc = RinchDocument::new();
+        let body = doc.body();
+        let parent = doc.create_element("div");
+        doc.set_attribute(
+            parent,
+            "style",
+            &format!(
+                "position: relative; width: 100px; height: 100px; opacity: {opacity}; \
+                 background-color: blue"
+            ),
+        );
+        doc.append_child(body, parent);
+        let child = doc.create_element("div");
+        doc.set_attribute(
+            child,
+            "style",
+            "position: absolute; left: 150px; top: 10px; width: 20px; height: 20px; \
+             background-color: red",
+        );
+        doc.append_child(parent, child);
+        doc.resolve_layout(800.0, 600.0);
+        doc
+    }
+
+    /// The software painter draws the escaping child. This is the behaviour the
+    /// shipping Android build and the desktop build have, and it is what the
+    /// app's layouts have always been able to assume.
+    #[test]
+    fn software_painter_does_not_clip_an_opacity_layer() {
+        let mut doc = overflowing_doc("0.5");
+        let mut painter = TinySkiaPainter::new(300, 300);
+        paint_skia(&mut doc, &mut painter);
+
+        // The child is at x 150..170, y 10..30 — outside the parent's
+        // 0..100 x 0..100 border box. Half-opacity red, so the channel test is
+        // "much more red than blue" rather than "pure red". Widened to `i16`
+        // because a bright-blue background would make `px[2] + 40` overflow a
+        // `u8` and report the regression as an arithmetic panic instead of as
+        // this message.
+        let px = pixel_at(&painter, 160, 20);
+        assert!(
+            px[0] as i16 > px[2] as i16 + 40,
+            "the child that overflows an opacity element must still be painted \
+             by the software painter, got RGBA {px:?}"
+        );
+    }
+
+    /// Vello is given a clip. One `push_layer`, one clip in the encoding —
+    /// and the shape it was given is the parent's border box, which the child
+    /// is nowhere near.
+    ///
+    /// This test asserts the *presence* of the clip rather than the absence of
+    /// the child, because a `vello::Scene` cannot be rasterised without a GPU
+    /// and there are no pixels here to look at. `n_clips` counts encoded
+    /// clips/layers; at the time of writing this document encodes 4 of them
+    /// with `opacity: 0.5` and 2 with `opacity: 1`, because `opacity < 1` also
+    /// makes the node a stacking context. The comparison is written as an
+    /// inequality rather than "+2" so that it pins the disagreement and not
+    /// the bookkeeping around it.
+    ///
+    /// **Note what this cannot see.** `n_clips` counts `push_layer` calls, not
+    /// clipping shapes, so neither candidate fix would make the two counts
+    /// equal: passing an unbounded rect still pushes a layer, and teaching the
+    /// software painter to honour its bounds does not touch the vello
+    /// encoding at all. This test therefore pins "opacity pushes a vello
+    /// layer", and the sibling above is the one that pins the *behaviour* —
+    /// it is the test that starts failing if the software painter is brought
+    /// into line with vello. When the disagreement is settled in
+    /// `paint/vello_painter.rs` (an unbounded rect) or `paint/mod.rs` (the
+    /// bounds it passes), delete both of these and K24's note with them.
+    #[test]
+    fn vello_painter_clips_an_opacity_layer() {
+        let clips = |opacity: &str| {
+            let mut doc = overflowing_doc(opacity);
+            let mut painter = VelloPainter::new();
+            paint(&mut doc, &mut painter);
+            painter.scene().encoding().n_clips
+        };
+        let (translucent, opaque) = (clips("0.5"), clips("1"));
+        assert!(
+            translucent > opaque,
+            "an element with opacity < 1 must push clipped vello layers that the \
+             same element at full opacity does not; got {translucent} against \
+             {opaque}"
+        );
+    }
+}
