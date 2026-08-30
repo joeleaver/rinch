@@ -181,6 +181,39 @@ consequences are worth knowing:
   unmounts. Installing a hook from a render (as above) is the intended shape;
   re-installing one on every click or on every run of a reactive closure is not.
 
+`rinch-ws` callbacks work the same way from the outside — an `on_message`
+registered inside a component stops firing once that component unmounts, even if
+the `WsHandle` was parked somewhere longer-lived:
+
+```rust
+#[component]
+fn feed() -> NodeHandle {
+    let lines = Signal::new(Vec::<String>::new());
+    // The socket outlives this component: the store holds the handle open.
+    let ws = use_store::<AppStore>().socket;
+    // Holds `lines`, which this component owns, so it must stop firing when
+    // this component goes away.
+    ws.on_message(move |m| {
+        if let Some(t) = m.as_text() {
+            let mut next = lines.get();
+            next.push(t.to_string());
+            lines.set(next);
+        }
+    });
+    rsx! { div { {|| lines.get().join("\n")} } }
+}
+```
+
+The mechanism underneath differs, and the difference is visible in one place.
+The interceptor slots above *release* the callback when the scope disposes; a
+WebSocket callback is checked at **dispatch** and dropped by the first event that
+arrives after the component is gone. That is deliberate: a socket's callbacks can
+be re-registered as often as the app likes, and queueing a release per
+registration would grow without bound. The practical consequence is that the
+"register once per component" advice above does **not** apply to `rinch-ws` — and
+that a callback belonging to an unmounted component is released on the next
+event rather than at unmount.
+
 [`set_keyboard_interceptor`]: ./focus.md#where-this-does-not-apply
 [`set_paste_interceptor`]: ./platform.md#clipboard
 
