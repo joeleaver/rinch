@@ -22,13 +22,23 @@
 //! `display::set_light_status_bars` and `display::set_light_navigation_bars`
 //! write system-UI visibility flags that API 21–25 frameworks simply ignore, so
 //! the bars keep the system's default light-on-dark contents. (Plain code
-//! spans, not intra-doc links: every module here is
+//! spans, not intra-doc links: those modules are
 //! `#[cfg(target_os = "android")]`, so the paths do not resolve when the docs
 //! are built on the host, which is where CI builds them.)
+//!
+//! # What compiles on the host
+//!
+//! Most modules here are `#[cfg(target_os = "android")]` in their entirety: they
+//! are JNI wrappers with nothing to say off-device. The four that hold a
+//! **callback registry** — [`callback`], [`lifecycle`], [`location`],
+//! [`sensors`] — are not. Their registries, drains and scope-lifetime rules (see
+//! `scoped`) compile and are unit-tested on every CI machine, and only the JNI
+//! half of each operation sits behind the `cfg`, as a small private function
+//! that is a no-op off-device. Nothing in this repository builds an APK in CI,
+//! so logic left behind the `cfg` is logic nothing checks (issue #183 PR5).
 
 #[cfg(target_os = "android")]
 mod bridge;
-#[cfg(target_os = "android")]
 pub mod callback;
 #[cfg(target_os = "android")]
 pub mod camera;
@@ -40,15 +50,13 @@ pub mod display;
 pub mod file_picker;
 #[cfg(target_os = "android")]
 pub mod ime;
-#[cfg(target_os = "android")]
 pub mod lifecycle;
-#[cfg(target_os = "android")]
 pub mod location;
 #[cfg(target_os = "android")]
 pub mod notification;
 #[cfg(target_os = "android")]
 pub mod permissions;
-#[cfg(target_os = "android")]
+pub(crate) mod scoped;
 pub mod sensors;
 #[cfg(target_os = "android")]
 pub mod share;
@@ -58,3 +66,20 @@ pub use bridge::init;
 
 #[cfg(not(target_os = "android"))]
 pub fn init(_: &()) {}
+
+/// Serialisation for tests that drive a drain function.
+///
+/// The callback registries are `thread_local!`, and `cargo test` gives each test
+/// its own thread, so those isolate for free. The *event queues* they drain do
+/// not: `SENSOR_DATA`, `LOCATION`, `PENDING_EVENT`, `ACTIVITY_RESULTS` and
+/// `PERMISSION_RESULTS` are process-global statics, and every drain empties its
+/// queue — so one test's drain will happily swallow another test's queued event
+/// and report "nothing happened" to both. Tests that queue-then-drain take this
+/// lock; tests that only touch the thread-local registries do not need it.
+#[cfg(test)]
+pub(crate) fn test_serial() -> std::sync::MutexGuard<'static, ()> {
+    static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    // Poison-tolerant: a failing test panics while holding the guard, and the
+    // remaining tests are still worth running.
+    LOCK.lock().unwrap_or_else(|e| e.into_inner())
+}

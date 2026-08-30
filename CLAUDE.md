@@ -980,6 +980,12 @@ register_focus_target(
   `set_selection_sync_callback`; the discipline is
   `rinch_core::reactive::install_scoped_slot` / `install_scoped_entry`, and any
   new global callback registry should go through it rather than paraphrase it.
+  A registry written *repeatedly* from a live component (or one that wants the
+  callback attributed to its component when it runs) takes the other template
+  instead — owner beside the callback, `is_alive()` at dispatch, invoked inside
+  `owner.run(...)` — as `main_thread::park_main_callback`, `rinch-ws`'s
+  `HANDLERS`, the menu registry and `rinch-android`'s sensor / location /
+  lifecycle / activity-result registries all do.
 - **Window blur notifies but retains**: `PlatformEvent::WindowFocus(false)`
   fires `on_focus_lost` and keeps the claim (releasing would fire
   `data-onchange` on every alt-tab, #226); refocus re-fires `on_focus_gained`.
