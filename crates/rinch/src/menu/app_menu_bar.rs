@@ -5,7 +5,11 @@
 //! `Menu`/`MenuItem` API. Hover-to-switch uses `data-onenter` handlers
 //! dispatched by the event loop when the hovered node changes.
 
-use super::{Menu, MenuEntryRef};
+// `MenuEntryInner`, not the public `MenuEntryRef`: this module is a descendant
+// of `menu`, so it can read the private fields — and it needs
+// `MenuItem::callback_owner`, which the public read-only view deliberately does
+// not carry, to gate invocation the way `dispatch_menu_event` does.
+use super::{Menu, MenuEntryInner};
 use rinch_core::dom::{NodeHandle, RenderScope};
 use rinch_core::reactive::{Effect, Signal};
 use std::rc::Rc;
@@ -420,14 +424,10 @@ fn build_menu_entries_with_flyouts(
 ) {
     let mut y_offset: f32 = 4.0; // dropdown padding-top
 
-    for entry in menu.iter_entries() {
+    for entry in &menu.entries {
         match entry {
-            MenuEntryRef::Item {
-                label,
-                shortcut,
-                enabled,
-                callback,
-            } => {
+            MenuEntryInner::Item(item) => {
+                let enabled = item.enabled;
                 let entry_node = scope.create_element("div");
                 let mut cls = "rinch-app-menu-entry".to_string();
                 if !enabled {
@@ -437,11 +437,11 @@ fn build_menu_entries_with_flyouts(
 
                 let label_span = scope.create_element("span");
                 label_span.set_attribute("class", "rinch-app-menu-entry__label");
-                let text = scope.create_text(label);
+                let text = scope.create_text(&item.label);
                 label_span.append_child(&text);
                 entry_node.append_child(&label_span);
 
-                if let Some(shortcut) = shortcut {
+                if let Some(shortcut) = item.shortcut.as_deref() {
                     let shortcut_span = scope.create_element("span");
                     shortcut_span.set_attribute("class", "rinch-app-menu-entry__shortcut");
                     let shortcut_text = scope.create_text(shortcut);
@@ -450,11 +450,17 @@ fn build_menu_entries_with_flyouts(
                 }
 
                 if enabled {
-                    if let Some(cb) = callback {
+                    if let Some(cb) = item.callback.as_ref() {
                         let cb = Rc::clone(cb);
+                        // The item is invoked straight from the `Menu` here — it
+                        // never goes through the callback registry — so this
+                        // path has to apply the #183 lifetime rule itself, or a
+                        // click would run a callback whose component has
+                        // unmounted and read its freed signals.
+                        let owner = item.callback_owner.clone();
                         let handler_id = scope.register_handler(move || {
                             active_menu.set(-1);
-                            cb();
+                            super::invoke_menu_callback(&cb, owner.as_ref());
                         });
                         entry_node.set_attribute("data-rid", &handler_id.0.to_string());
                     }
@@ -463,13 +469,13 @@ fn build_menu_entries_with_flyouts(
                 container.append_child(&entry_node);
                 y_offset += ENTRY_HEIGHT;
             }
-            MenuEntryRef::Separator => {
+            MenuEntryInner::Separator => {
                 let sep = scope.create_element("div");
                 sep.set_attribute("class", "rinch-app-menu-separator");
                 container.append_child(&sep);
                 y_offset += SEPARATOR_HEIGHT;
             }
-            MenuEntryRef::Submenu { label, menu } => {
+            MenuEntryInner::Submenu { label, menu } => {
                 // Record flyout data — the flyout itself is rendered by the caller
                 let flyout_idx = flyouts.len() as i32;
                 flyouts.push(FlyoutData {

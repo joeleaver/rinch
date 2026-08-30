@@ -659,6 +659,32 @@ let count = Signal::new(0);
 MenuItem::new("Reset Counter").on_click(move || count.set(0))
 ```
 
+**Callback lifetime (#183).** A callback belongs to the component that *created*
+it — the scope rendering when `on_click` was called, where the closure captured
+its signals — and stops firing once that component unmounts, rather than reading
+freed state. Ownership is per **item**, not per menu build, so one `Menu` may
+collect items from several components and each stops on its own. A live callback
+runs *inside* its owner, so a `Signal` it creates belongs to the menu's
+component; an ownerless one runs `unowned`. Built outside any render — from
+`main`, before the event loop, which is what every example does — there is no
+owner and the callback keeps **app lifetime**, unchanged. Every activation path
+goes through one `invoke_menu_callback`, so the rule holds for a muda click, a
+tray click, the Linux in-app menu bar (which fires the `Rc` straight out of the
+`Menu`, not through the registry) and the keyboard shortcut alike.
+
+A **shortcut consumes the keystroke only when a callback actually runs.** A chord
+whose item is disabled, has no `on_click`, or belongs to an unmounted component
+falls through to the app rather than being swallowed, and every chord matching
+the key is tried in registration order — so a dead duplicate cannot shadow a live
+one.
+
+The registry also shrinks now. It used to only ever grow: building a new native
+menu bar releases the previous bar's ids, and dropping a `TrayIcon` releases that
+tray's (the ksni path mints a fresh `ksni-{N}` id per item per build, so it could
+never even overwrite). Keep the `TrayIcon` alive for as long as you want its menu
+to work. A callback may also rebuild the menu it was dispatched from — that used
+to be a `BorrowMutError`.
+
 ## Rich-Text Editor
 
 Rinch's rich-text editor is a ProseMirror-style, **model-first** editor. The document lives in `rinch-editor-core` (a pure, wasm-clean crate: `Node`/`Mark`/`Fragment`/`Slice`, one char-based `Pos` space, a real `ContentMatch` schema, invertible `Step`s, `Transaction`/`EditorState`, plugins/commands/keymap/input-rules, a single Step-based history). The view lives in `rinch-editor-view` — **renderer-agnostic**: it projects that model onto any `rinch-core` `DomDocument` host and renders the caret/selection from `Selection` after layout, so desktop (rinch-dom) and web (`web_sys`) share one view. On desktop it arrives with the `desktop` feature and `crates/rinch/src/editor/` re-exports it; on web, `rinch-web` re-exports it. There is no `contenteditable` attribute engine anymore — mount the `Editor {}` component instead.

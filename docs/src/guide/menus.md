@@ -85,6 +85,32 @@ let item = MenuItem::new("Reset Counter")
 
 Callbacks fire both when the user clicks the menu item and when the keyboard shortcut is pressed.
 
+### Callback lifetime
+
+A callback belongs to the component that **created** it — the scope that was rendering when you called `on_click`, which is where the closure captured its `Signal`s. When that component unmounts its signals are freed, so the item stops firing rather than reading freed state (reading a freed signal panics). The callback also runs *inside* that component, so a `Signal` it creates belongs there too.
+
+Ownership is per item, not per menu: one `Menu` may collect items contributed by several components, and each item's callback stops on its own component's unmount. This holds however the item is activated — a native menu click, a tray click, the Linux in-app menu bar, or the keyboard shortcut.
+
+Build the menu outside any component — from `main`, before `run_with_menu`, which is what all the examples do — and there is no owner to record, so the callback lives for the life of the app:
+
+```rust
+fn main() {
+    // Created in main(), so menu callbacks can reference them for the whole run.
+    let count = Signal::new(0);
+
+    let file_menu = Menu::new()
+        .item(MenuItem::new("Reset").on_click(move || count.set(0)));
+
+    run_with_menu("My App", 800, 600, app, vec![("File", file_menu)]);
+}
+```
+
+A callback may rebuild the menu it was dispatched from — including registering new items and shortcuts — from inside its own handler.
+
+Menu ids are also released when the menu that registered them goes away: building a new native menu bar releases the previous bar's, and dropping a `TrayIcon` releases that tray's. Keep the `TrayIcon` for as long as you want its menu to work.
+
+A shortcut consumes the keystroke only when a callback actually runs. A chord belonging to a disabled item, to an item given a `shortcut` but no `on_click`, or to a component that has since unmounted falls through to the app instead of being swallowed — and never shadows a live duplicate of the same chord.
+
 ## Submenus
 
 Create nested menus using `Menu::submenu`:

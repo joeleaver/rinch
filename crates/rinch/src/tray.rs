@@ -62,7 +62,14 @@ pub type TrayResult<T> = Result<T, TrayError>;
 ///
 /// On Linux: a background thread runs the ksni D-Bus event loop.
 ///
-/// Dropping this struct removes the tray icon.
+/// Dropping this struct removes the tray icon, and releases the menu callbacks
+/// it registered — so replacing a tray reclaims the previous one's ids rather
+/// than leaving them in the registry forever (issue #183).
+///
+/// Keep the handle for as long as you want the tray. On Linux the icon itself
+/// currently outlives a dropped handle (the ksni thread is detached and parks
+/// forever), but its menu items no longer do anything once the callbacks are
+/// released — the icon lingering there is the pre-existing bug, not the release.
 pub struct TrayIcon {
     /// On Linux: background thread running ksni.
     /// On non-Linux: None (tray icon lives on main thread).
@@ -70,6 +77,13 @@ pub struct TrayIcon {
     /// On non-Linux: the tray-icon handle (must be kept alive).
     #[cfg(not(target_os = "linux"))]
     _tray: Option<tray_icon::TrayIcon>,
+    /// The menu callbacks this tray registered.
+    ///
+    /// Dropping the tray releases them (issue #183). Without this the registry
+    /// only grew: a tray rebuilt at runtime left its whole previous menu behind,
+    /// and on Linux it could not even overwrite, because each build mints fresh
+    /// `ksni-{N}` ids from a monotonic counter.
+    _menu: Option<crate::menu::MenuRegistration>,
 }
 
 /// Builder for creating a system tray icon.
@@ -156,8 +170,10 @@ impl TrayIconBuilder {
         }
 
         // Convert unified Menu → muda Menu (registers callbacks in thread-local registry)
+        let mut registration = None;
         if let Some(menu) = self.menu {
-            let muda_menu = crate::menu::build_muda_menu(menu);
+            let (muda_menu, reg) = crate::menu::build_muda_menu(menu);
+            registration = Some(reg);
             builder = builder.with_menu(Box::new(muda_menu));
         }
 
@@ -187,6 +203,7 @@ impl TrayIconBuilder {
         Ok(TrayIcon {
             _thread: None,
             _tray: Some(tray),
+            _menu: registration,
         })
     }
 
@@ -217,10 +234,11 @@ impl TrayIconBuilder {
         };
 
         // Register callbacks on the main thread and collect entries for ksni.
-        let menu_entries = if let Some(menu) = self.menu {
-            convert_menu_to_ksni_entries(menu)
+        let (menu_entries, registration) = if let Some(menu) = self.menu {
+            let (entries, reg) = convert_menu_to_ksni_entries(menu);
+            (entries, Some(reg))
         } else {
-            Vec::new()
+            (Vec::new(), None)
         };
 
         let tray = RinchKsniTray {
@@ -254,6 +272,7 @@ impl TrayIconBuilder {
 
         Ok(TrayIcon {
             _thread: Some(thread),
+            _menu: registration,
         })
     }
 }
@@ -285,17 +304,21 @@ enum KsniMenuEntry {
 static KSNI_MENU_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 /// Convert a unified Menu into ksni entries, registering callbacks on the main thread.
-fn convert_menu_to_ksni_entries(menu: Menu) -> Vec<KsniMenuEntry> {
-    // We need to consume the Menu's entries. Menu has `entries: Vec<MenuEntryInner>`.
-    // Since MenuEntryInner is private, we use build_muda_menu which handles this,
-    // but for ksni we need a different approach. Let's add a consume method.
-    //
-    // Actually, we'll build the muda menu (which registers callbacks) and then
-    // extract the structure. But that's wasteful. Instead, let's directly convert.
-    convert_menu_entries_inner(menu)
+///
+/// Returns the [`MenuRegistration`](crate::menu::MenuRegistration) holding this
+/// build's ids. Every build mints fresh ids from [`KSNI_MENU_COUNTER`], so a
+/// rebuilt tray can never overwrite its own previous entries — without the token
+/// the registry would grow by the item count on every rebuild, forever.
+fn convert_menu_to_ksni_entries(menu: Menu) -> (Vec<KsniMenuEntry>, crate::menu::MenuRegistration) {
+    let mut registration = crate::menu::MenuRegistration::default();
+    let entries = convert_menu_entries_inner(menu, &mut registration);
+    (entries, registration)
 }
 
-fn convert_menu_entries_inner(menu: Menu) -> Vec<KsniMenuEntry> {
+fn convert_menu_entries_inner(
+    menu: Menu,
+    registration: &mut crate::menu::MenuRegistration,
+) -> Vec<KsniMenuEntry> {
     menu.take_entries()
         .into_iter()
         .map(|entry| match entry {
@@ -303,14 +326,14 @@ fn convert_menu_entries_inner(menu: Menu) -> Vec<KsniMenuEntry> {
                 label,
                 enabled,
                 callback,
-                ..
+                callback_owner,
             } => {
                 let menu_id = callback.map(|cb| {
                     let id = format!(
                         "ksni-{}",
                         KSNI_MENU_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
                     );
-                    crate::menu::register_callback_public(&id, cb);
+                    registration.register_callback(&id, cb, callback_owner);
                     id
                 });
                 KsniMenuEntry::Item {
@@ -322,7 +345,7 @@ fn convert_menu_entries_inner(menu: Menu) -> Vec<KsniMenuEntry> {
             crate::menu::MenuEntryKind::Separator => KsniMenuEntry::Separator,
             crate::menu::MenuEntryKind::Submenu { label, menu } => KsniMenuEntry::Submenu {
                 label,
-                entries: convert_menu_entries_inner(menu),
+                entries: convert_menu_entries_inner(menu, registration),
             },
         })
         .collect()
