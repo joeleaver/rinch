@@ -26,21 +26,43 @@
 //! assembled from items contributed by several components — and the build
 //! itself commonly happens somewhere else entirely (`main`, a tray builder) — so
 //! a per-build owner would both silence live items and, worse, keep an unmounted
-//! component's item armed. Relaxing is the unsafe direction: over-pruning only
-//! drops a click, while under-pruning restores the panic.
+//! component's item armed.
+//!
+//! Neither direction of that error is the cheap one, so it is worth being exact.
+//! Under-attributing restores the #141 panic. Over-attributing is *not* merely
+//! "drops a click": both prune paths **remove** the entry from the map — and the
+//! chord path deletes its chords — so an item wrongly judged dead is disabled
+//! permanently, until something rebuilds the menu. The owner therefore has to be
+//! the item's own, not an approximation in either direction.
 //!
 //! Registering with **no ambient owner** — from `main`, from startup code,
 //! before the event loop — records no owner and keeps app lifetime, unchanged.
 //! That is how every in-tree menu is built.
 //!
-//! Removal has two mechanisms, because they answer different questions.
-//! [`on_cleanup`], through [`install_scoped_entry`], removes an id when the
-//! scope that *built* the menu is disposed. But a menu built from `main` has no
-//! scope, and the registry is otherwise append-only: nothing removed an entry,
+//! **Removal is a separate question from invocation, and it is deliberately not
+//! tied to any scope.** The owner check above already makes a dead callback
+//! inert the moment its component unmounts; what is left is reclaiming the
+//! memory, and that is `MenuRegistration`'s job — an RAII token holding the
+//! ids one build registered, released when whoever owns that build replaces or
+//! drops it. The registry was otherwise append-only: nothing removed an entry,
 //! ever, so a menu rebuilt at runtime accumulated — and the ksni tray path mints
 //! a fresh `ksni-{N}` id for every item on every build, so it could never even
-//! overwrite. Hence `MenuRegistration`, an RAII token holding the ids one build
-//! registered, released when whoever owns that build replaces or drops it.
+//! overwrite. A dead entry lingers until the next rebuild or until the token
+//! drops, and fires nothing in the meantime.
+//!
+//! Hanging removal on `on_cleanup` as well — reclaiming an id when the scope
+//! that *built* the menu is disposed — was tried, and is wrong twice over. It
+//! reclaims by the **building** scope while the menu is still on screen and its
+//! token still alive, so a component that assembles a menu out of items
+//! contributed by others silences all of them, permanently, when it unmounts
+//! (`a_builder_unmounting_does_not_kill_another_components_live_item`). And it
+//! is unbounded on exactly the shape this module advertises: a callback runs
+//! inside its owner, so a callback that rebuilds its own menu registers with
+//! that owner ambient, appending one boxed cleanup plus one pinning `Weak` per
+//! item per rebuild for the life of the component. `rinch_core::reactive`'s
+//! scoped-registry docs say so directly: a registry written repeatedly from a
+//! live component "must instead carry an `Owner` beside the callback and check
+//! `is_alive` at dispatch" — which is what this module does.
 //!
 //! # Example
 //!
@@ -63,7 +85,7 @@
 pub(crate) mod app_menu_bar;
 
 use muda::accelerator::Accelerator;
-use rinch_core::reactive::{Owner, current_owner, install_scoped_entry, on_cleanup, unowned};
+use rinch_core::reactive::{Owner, current_owner, unowned};
 use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
@@ -305,29 +327,32 @@ thread_local! {
 /// Register `cb` under `menu_id` as belonging to `owner`, returning the entry so
 /// a [`MenuRegistration`] can hold it for the `Rc::ptr_eq` check on release.
 ///
-/// Removal is tied to the scope that is currently rendering — the one *building*
-/// the menu — via [`install_scoped_entry`], which reclaims the id only if it
-/// still holds this callback. `owner` is a separate question: it is the scope
-/// that created the callback, and it gates *invocation* (see
-/// [`dispatch_menu_event`]). The two differ whenever a component contributes an
-/// item to a menu somebody else assembles.
+/// Nothing here is tied to the scope that is currently rendering. `owner` is the
+/// scope that *created* the callback and it gates **invocation** (see
+/// [`dispatch_menu_event`]); **removal** belongs to the returned entry's
+/// [`MenuRegistration`]. The two questions are answered separately because a
+/// component routinely contributes an item to a menu somebody else assembles —
+/// see the [module docs](self).
 fn register_callback_owned(
     menu_id: &str,
     cb: Rc<dyn Fn()>,
     owner: Option<Owner>,
 ) -> Rc<MenuCallback> {
     let entry = Rc::new(MenuCallback { owner, cb });
-    install_scoped_entry(&MENU_CALLBACKS, menu_id.to_string(), entry.clone());
+    // Bound outside the borrow: a displaced entry is user code whose `Drop` may
+    // re-enter the registry.
+    let _previous =
+        MENU_CALLBACKS.with(|map| map.borrow_mut().insert(menu_id.to_string(), entry.clone()));
     entry
 }
 
 /// Register `shortcut_str` as dispatching `menu_id`, returning the serial that
 /// identifies this registration (`None` if the string does not parse).
 ///
-/// Removal is tied to the scope that is currently rendering, so a component that
-/// builds a menu takes its chords with it — otherwise the chord would keep
-/// matching and returning `true`, swallowing the key into a callback that is no
-/// longer there.
+/// Removal belongs to the [`MenuRegistration`] that recorded the serial, not to
+/// any scope. A chord outliving its callback does not swallow the key in the
+/// meantime: [`match_shortcut`] answers `true` only when a callback actually
+/// ran, and [`dispatch_menu_event`] takes a dead item's chords out with it.
 fn register_shortcut(shortcut_str: &str, menu_id: &str) -> Option<u64> {
     let parsed = parse_shortcut_for_matching(shortcut_str)?;
     let serial = NEXT_SHORTCUT_SERIAL.with(|next| {
@@ -342,23 +367,7 @@ fn register_shortcut(shortcut_str: &str, menu_id: &str) -> Option<u64> {
             menu_id: menu_id.to_string(),
         });
     });
-    on_cleanup(move || remove_shortcut(serial));
     Some(serial)
-}
-
-/// Drop the shortcut registered under `serial`, if it is still there.
-///
-/// `try_with`/`try_borrow_mut`: this runs from `Scope::dispose`, reachable from
-/// a TLS destructor at thread exit (when the registry may already be gone) and
-/// from a drop while unwinding, so it degrades to "not removed" rather than
-/// panicking. A `ShortcutEntry` holds no user code, so dropping it under the
-/// borrow is safe — unlike a callback.
-fn remove_shortcut(serial: u64) {
-    let _ = MENU_SHORTCUTS.try_with(|shortcuts| {
-        if let Ok(mut shortcuts) = shortcuts.try_borrow_mut() {
-            shortcuts.retain(|entry| entry.serial != serial);
-        }
-    });
 }
 
 /// Invoke `cb` on behalf of the scope that created it, returning whether it ran.
@@ -398,10 +407,9 @@ pub(crate) fn invoke_menu_callback(cb: &Rc<dyn Fn()>, owner: Option<&Owner>) -> 
 /// mutably borrowing, the very map being read — without a double-borrow panic.
 ///
 /// A callback whose component has since unmounted is not called, and the entry
-/// is pruned. Normally [`install_scoped_entry`]'s cleanup has already removed it
-/// by then; this covers the case where it could not (its `try_borrow_mut`
-/// degraded) and the case where the *building* scope outlives the *creating*
-/// one.
+/// is pruned. This check is the *only* thing that makes a dead callback inert —
+/// no scope cleanup removes one — so it has to happen here, on every dispatch,
+/// and must not be traded for a removal hook.
 pub(crate) fn dispatch_menu_event(menu_id: &str) -> bool {
     let Some(entry) = MENU_CALLBACKS.with(|map| map.borrow().get(menu_id).cloned()) else {
         return false;
@@ -496,10 +504,12 @@ pub(crate) fn match_shortcut(ctrl: bool, meta: bool, alt: bool, shift: bool, key
 /// the ksni tray path — which mints a fresh `ksni-{N}` id for every item on
 /// every build — could not even overwrite its own previous entries.
 ///
-/// [`on_cleanup`] does not close this on its own. It reclaims an id when the
-/// *scope that built the menu* is disposed, and the in-tree menus are built from
-/// `main`, before the event loop, with no scope at all. Something has to own the
-/// build; this is that thing. Whoever holds a build's token — the
+/// A scope cleanup cannot close it, which is why there is none. It would reclaim
+/// an id when the *scope that built the menu* is disposed — and the in-tree
+/// menus are built from `main`, before the event loop, with no scope at all,
+/// while a menu built during a render would take the still-live items other
+/// components contributed down with it. Something has to own the **build**; this
+/// is that thing. Whoever holds a build's token — the
 /// [`MENU_BAR_REGISTRATION`] slot for the window menu bar, the `TrayIcon` for a
 /// tray — releases the build's ids by replacing or dropping it.
 ///
@@ -538,10 +548,12 @@ impl MenuRegistration {
 
 impl Drop for MenuRegistration {
     fn drop(&mut self) {
-        // `try_with`/`try_borrow_mut` for the same reason as `remove_shortcut`.
-        // The removed callbacks stay in `self.callbacks` and are dropped when
-        // that `Vec` is, after this function returns — they are user code whose
-        // `Drop` may re-enter the registry.
+        // `try_with`/`try_borrow_mut`: a token can be dropped from a TLS
+        // destructor at thread exit, when the registry may already be gone, or
+        // while unwinding, so release degrades to "not reclaimed" rather than
+        // panicking. The removed callbacks stay in `self.callbacks` and are
+        // dropped when that `Vec` is, after this function returns — they are
+        // user code whose `Drop` may re-enter the registry.
         let _ = MENU_CALLBACKS.try_with(|map| {
             let Ok(mut map) = map.try_borrow_mut() else {
                 return;
@@ -869,29 +881,52 @@ mod tests {
         register_callback_owned(menu_id, cb, current_owner());
     }
 
-    /// The lifetime half: a menu built during a render goes away with the
-    /// component that built it — and the entry is *removed*, not just inert.
+    /// The lifetime half.
+    ///
+    /// This test used to be
+    /// `a_menu_callback_registered_in_a_scope_is_removed_when_the_scope_disposes`
+    /// and asserted that disposal *removed* the entry, through
+    /// `install_scoped_entry`. That mechanism is gone: it reclaimed by the
+    /// **building** scope, so a component assembling a menu out of other
+    /// components' items disabled all of them when it unmounted (see
+    /// [`a_builder_unmounting_does_not_kill_another_components_live_item`]), and
+    /// it appended a cleanup per item per rebuild. The pair that replaced it is
+    /// what this asserts: the dispatch check makes a dead callback inert
+    /// immediately, and the token reclaims the memory when it drops.
     #[test]
-    fn a_menu_callback_registered_in_a_scope_is_removed_when_the_scope_disposes() {
+    fn a_dead_menu_callback_is_inert_at_dispatch_and_released_by_its_token() {
         let base = callback_count();
         let (fired, cb) = probe();
 
+        // Registered from inside the scope, as the original did: here the
+        // creating and building scopes coincide, which is the case the removed
+        // mechanism handled and the one it was easiest to mistake for general.
+        let mut registration = MenuRegistration::default();
         let scope = Scope::new();
-        scope.run(|| register_callback("scoped-1", cb));
-        assert_eq!(callback_count(), base + 1);
+        scope.run(|| {
+            registration.register_callback("scoped-dispatched", cb, current_owner());
+            registration.register_callback("scoped-untouched", Rc::new(|| {}), current_owner());
+        });
+        assert_eq!(callback_count(), base + 2);
 
         scope.dispose();
         assert_eq!(
             callback_count(),
-            base,
-            "the entry must be gone, not merely inert"
+            base + 2,
+            "disposal alone reclaims nothing now — that is the token's job"
         );
 
-        dispatch_menu_event("scoped-1");
-        assert_eq!(
-            fired.get(),
-            0,
+        assert!(
+            !dispatch_menu_event("scoped-dispatched"),
             "a disposed component's callback must not run"
+        );
+        assert_eq!(fired.get(), 0);
+
+        drop(registration);
+        assert_eq!(
+            callback_count(),
+            base,
+            "dropping the token releases the build, dispatched or not"
         );
     }
 
@@ -1006,25 +1041,47 @@ mod tests {
     /// returning `true` swallows the key into a callback that is no longer
     /// there; the list also has to shrink, or matching goes linear in menus ever
     /// built.
+    ///
+    /// This was
+    /// `a_shortcut_registered_in_a_scope_stops_matching_when_the_scope_disposes`
+    /// and asserted the list shrank on the registering scope's disposal, through
+    /// the same scope-tied removal as its callback twin, and is rewritten for
+    /// the same reason — see
+    /// [`a_dead_menu_callback_is_inert_at_dispatch_and_released_by_its_token`].
+    /// Two mechanisms carry the contract instead: a chord whose item is dead
+    /// falls through and the prune takes that item's chords with it, and the
+    /// token releases whatever chords its build still holds.
     #[test]
-    fn a_shortcut_registered_in_a_scope_stops_matching_when_the_scope_disposes() {
-        let base = shortcut_count();
+    fn a_dead_chord_falls_through_and_the_token_releases_the_builds_chords() {
+        let callbacks = callback_count();
+        let shortcuts = shortcut_count();
+
+        let mut registration = MenuRegistration::default();
         let scope = Scope::new();
-        scope.run(|| {
-            register_shortcut("Ctrl+Alt+Y", "sc-1");
-        });
-        assert_eq!(shortcut_count(), base + 1);
+        let owner = scope.run(current_owner);
+        registration.register_callback("sc-1", Rc::new(|| {}), owner);
+        registration.register_shortcut("Ctrl+Alt+Y", "sc-1");
+        registration.register_shortcut("Ctrl+Alt+P", "sc-no-callback");
+        assert_eq!(shortcut_count(), shortcuts + 2);
 
         scope.dispose();
-        assert_eq!(
-            shortcut_count(),
-            base,
-            "shortcut matching must not go O(menus ever built)"
-        );
         assert!(
             !match_shortcut(true, false, true, false, KeyCode::KeyY),
             "a disposed component's chord must fall through"
         );
+        assert_eq!(
+            shortcut_count(),
+            shortcuts + 1,
+            "and the prune takes the dead item's chords out with it"
+        );
+
+        drop(registration);
+        assert_eq!(
+            shortcut_count(),
+            shortcuts,
+            "the token releases the rest, so matching does not go O(menus ever built)"
+        );
+        assert_eq!(callback_count(), callbacks);
     }
 
     /// `match_shortcut`'s answer is what makes the runtime swallow the key, so
@@ -1123,6 +1180,52 @@ mod tests {
             "and the dead entry is pruned rather than re-checked forever"
         );
         builder.dispose();
+    }
+
+    /// The mirror image, and why *removal* must not be tied to the building
+    /// scope either.
+    ///
+    /// Component X assembles a menu — or a tray — out of items contributed by
+    /// live components Y and Z, and hands the build's token to something that
+    /// outlives it: `main`, the [`MENU_BAR_REGISTRATION`] slot, a `TrayIcon`.
+    /// When X unmounts, the menu is still on screen and the token is still
+    /// alive, so Y's and Z's items must still fire. Reclaiming on X's disposal
+    /// instead disables every id X installed — including the ones it did not
+    /// create — permanently, and silently.
+    #[test]
+    fn a_builder_unmounting_does_not_kill_another_components_live_item() {
+        let (y_fired, y_cb) = probe();
+        let (z_fired, z_cb) = probe();
+
+        let y = Scope::new();
+        let y_owner = y.run(current_owner);
+        let z = Scope::new();
+        let z_owner = z.run(current_owner);
+
+        // X builds; the token outlives X, as every real holder of one does.
+        let mut registration = MenuRegistration::default();
+        let builder = Scope::new();
+        builder.run(|| {
+            registration.register_callback("contrib-y", y_cb, y_owner);
+            registration.register_callback("contrib-z", z_cb, z_owner);
+        });
+
+        builder.dispose();
+
+        assert!(
+            dispatch_menu_event("contrib-y"),
+            "Y is still mounted and the build is still held"
+        );
+        assert!(dispatch_menu_event("contrib-z"));
+        assert_eq!(y_fired.get(), 1);
+        assert_eq!(
+            z_fired.get(),
+            1,
+            "the builder unmounting must not silence a contributor that is still live"
+        );
+
+        y.dispose();
+        z.dispose();
     }
 
     /// `MenuItem::on_click` is where the closure captures its signals, so that is
