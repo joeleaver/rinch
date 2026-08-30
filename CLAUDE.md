@@ -667,7 +667,16 @@ collect items from several components and each stops on its own. A live callback
 runs *inside* its owner, so a `Signal` it creates belongs to the menu's
 component; an ownerless one runs `unowned`. Built outside any render — from
 `main`, before the event loop, which is what every example does — there is no
-owner and the callback keeps **app lifetime**, unchanged.
+owner and the callback keeps **app lifetime**, unchanged. Every activation path
+goes through one `invoke_menu_callback`, so the rule holds for a muda click, a
+tray click, the Linux in-app menu bar (which fires the `Rc` straight out of the
+`Menu`, not through the registry) and the keyboard shortcut alike.
+
+A **shortcut consumes the keystroke only when a callback actually runs.** A chord
+whose item is disabled, has no `on_click`, or belongs to an unmounted component
+falls through to the app rather than being swallowed, and every chord matching
+the key is tried in registration order — so a dead duplicate cannot shadow a live
+one.
 
 The registry also shrinks now. It used to only ever grow: building a new native
 menu bar releases the previous bar's ids, and dropping a `TrayIcon` releases that

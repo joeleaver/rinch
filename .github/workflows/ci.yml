@@ -83,17 +83,19 @@ jobs:
       # pulls a transitive `ashpd` 0.11.1 that fails to compile. Hence explicit sets.
       # When adding a feature-gated test, add its combination here.
       #
-      # `-p rinch --features desktop` names the `desktop` gate explicitly rather
-      # than inheriting it: menu/mod.rs is cfg(feature = "desktop") and `desktop`
-      # is a DEFAULT feature of `rinch`, so its #183 pins do run under
-      # `--workspace` today — but they would die silently if that default ever
-      # flipped, and `embed,theme,clipboard` above does not turn `desktop` on.
+      # `desktop` is listed on the `-p rinch` line to name that gate explicitly
+      # rather than inherit it: menu/mod.rs is cfg(feature = "desktop") and
+      # `desktop` is a DEFAULT feature of `rinch`, so its #183 pins do run
+      # today — but they would die silently if that default ever flipped.
+      # Naming it in the existing set is free (the resolved features are
+      # unchanged); a separate `-p rinch --features desktop` line would be a
+      # whole extra build of `rinch` and its deps for identical coverage,
+      # because that line also picks up `desktop` from the defaults.
       - name: Run feature-gated tests
         run: |
           cargo test -p rinch-editor-core --features serde,markdown
           cargo test -p rinch-editor-view --features collaboration
-          cargo test -p rinch --features embed,theme,clipboard
-          cargo test -p rinch --features desktop
+          cargo test -p rinch --features desktop,embed,theme,clipboard
 
   clippy:
     runs-on: ubuntu-latest
