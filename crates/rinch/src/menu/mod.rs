@@ -6,6 +6,36 @@
 //! runtime wires push-based event delivery so callbacks always run on the
 //! main thread.
 //!
+//! # Lifetime
+//!
+//! A menu callback belongs to the component that *created* it — the scope that
+//! was rendering when [`MenuItem::on_click`] was called, which is where the
+//! closure captured its `Signal`s. Once that component unmounts its signals are
+//! freed, and a read of a freed signal panics (issue #183, #141 PR4), so the
+//! callback stops being dispatched. It also runs *inside* that owner, so a
+//! `Signal` it creates belongs to the menu's component rather than to whatever
+//! the event loop happened to be doing.
+//!
+//! Ownership is recorded per **item**, not per menu build. One `Menu` may be
+//! assembled from items contributed by several components — and the build
+//! itself commonly happens somewhere else entirely (`main`, a tray builder) — so
+//! a per-build owner would both silence live items and, worse, keep an unmounted
+//! component's item armed. Relaxing is the unsafe direction: over-pruning only
+//! drops a click, while under-pruning restores the panic.
+//!
+//! Registering with **no ambient owner** — from `main`, from startup code,
+//! before the event loop — records no owner and keeps app lifetime, unchanged.
+//! That is how every in-tree menu is built.
+//!
+//! Removal has two mechanisms, because they answer different questions.
+//! [`on_cleanup`], through [`install_scoped_entry`], removes an id when the
+//! scope that *built* the menu is disposed. But a menu built from `main` has no
+//! scope, and the registry is otherwise append-only: nothing removed an entry,
+//! ever, so a menu rebuilt at runtime accumulated — and the ksni tray path mints
+//! a fresh `ksni-{N}` id for every item on every build, so it could never even
+//! overwrite. Hence `MenuRegistration`, an RAII token holding the ids one build
+//! registered, released when whoever owns that build replaces or drops it.
+//!
 //! # Example
 //!
 //! ```ignore
@@ -27,7 +57,8 @@
 pub(crate) mod app_menu_bar;
 
 use muda::accelerator::Accelerator;
-use std::cell::RefCell;
+use rinch_core::reactive::{Owner, current_owner, install_scoped_entry, on_cleanup, unowned};
+use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::rc::Rc;
 use std::str::FromStr;
@@ -50,6 +81,14 @@ pub struct MenuItem {
     shortcut: Option<String>,
     enabled: bool,
     callback: Option<Rc<dyn Fn()>>,
+    /// The scope that was rendering when [`on_click`](MenuItem::on_click) was
+    /// called, if any.
+    ///
+    /// Captured *there* rather than where the menu is built, because that is
+    /// where the closure captured its `Signal`s — see the [module docs](self).
+    /// `None` means the item was created outside any render and has app
+    /// lifetime. `Owner` is a `Weak`, so this keeps nothing alive.
+    callback_owner: Option<Owner>,
 }
 
 #[derive(Clone)]
@@ -82,6 +121,7 @@ impl MenuItem {
             shortcut: None,
             enabled: true,
             callback: None,
+            callback_owner: None,
         }
     }
 
@@ -98,8 +138,14 @@ impl MenuItem {
     }
 
     /// Set the callback invoked when this item is activated.
+    ///
+    /// The callback belongs to the component that is rendering *here*, where the
+    /// closure captured whatever it captured; once that component unmounts the
+    /// item stops firing. Called outside any render — from `main`, as every
+    /// in-tree menu does — it keeps app lifetime. See the [module docs](self).
     pub fn on_click(mut self, cb: impl Fn() + 'static) -> Self {
         self.callback = Some(Rc::new(cb));
+        self.callback_owner = current_owner();
         self
     }
 }
@@ -163,6 +209,9 @@ pub(crate) enum MenuEntryKind {
         label: String,
         enabled: bool,
         callback: Option<Rc<dyn Fn()>>,
+        /// Carried through so the tray backend registers the item under the
+        /// scope that created its callback, not the one that built the tray.
+        callback_owner: Option<Owner>,
     },
     Separator,
     Submenu {
@@ -182,6 +231,7 @@ impl Menu {
                     label: item.label,
                     enabled: item.enabled,
                     callback: item.callback,
+                    callback_owner: item.callback_owner,
                 },
                 MenuEntryInner::Separator => MenuEntryKind::Separator,
                 MenuEntryInner::Submenu { label, menu } => MenuEntryKind::Submenu { label, menu },
@@ -190,67 +240,284 @@ impl Menu {
     }
 }
 
-/// Register a callback in the thread-local registry with a given ID.
-/// Used by the ksni tray backend on Linux.
-#[cfg(feature = "system-tray")]
-pub(crate) fn register_callback_public(id: &str, cb: Rc<dyn Fn()>) {
-    register_callback(id, cb);
-}
-
 // ── Thread-local callback registry ──────────────────────────────────────────
 
-thread_local! {
-    /// Map from muda MenuId string → callback. Thread-local because callbacks
-    /// capture `Signal` (which is `!Send`) and must run on the main thread.
-    static MENU_CALLBACKS: RefCell<HashMap<String, Rc<dyn Fn()>>> = RefCell::new(HashMap::new());
-
-    /// Registered keyboard shortcuts mapped to their menu ID strings.
-    static MENU_SHORTCUTS: RefCell<Vec<(ParsedShortcut, String)>> = const { RefCell::new(Vec::new()) };
-
+/// One registered menu callback plus the scope that created it.
+///
+/// Held as an `Rc` so the registry's "still mine" checks can be made by
+/// [`Rc::ptr_eq`]. That is the only reliable discriminator here: the ids come
+/// from two different sources with two different shapes — muda's
+/// `MenuItem::id().0` and the ksni backend's monotonic `ksni-{N}` counter — and
+/// they share one map, so nothing about the key itself can be assumed.
+struct MenuCallback {
+    /// See [`MenuItem::callback_owner`]. `None` means app lifetime.
+    owner: Option<Owner>,
+    cb: Rc<dyn Fn()>,
 }
 
-fn register_callback(menu_id: &str, cb: Rc<dyn Fn()>) {
-    MENU_CALLBACKS.with(|map| {
-        map.borrow_mut().insert(menu_id.to_string(), cb);
+impl MenuCallback {
+    /// Whether the component that created this callback is gone.
+    ///
+    /// `false` for an ownerless registration, which has app lifetime.
+    fn is_dead(&self) -> bool {
+        self.owner.as_ref().is_some_and(|owner| !owner.is_alive())
+    }
+}
+
+/// One registered shortcut.
+///
+/// The `serial` is what a cleanup or a [`MenuRegistration`] removes by. The
+/// entry carries no callback — only the id to dispatch — so there is no `Rc`
+/// identity to compare, and removing "the entry for this menu id" would take
+/// out a later build's entry too.
+struct ShortcutEntry {
+    serial: u64,
+    shortcut: ParsedShortcut,
+    menu_id: String,
+}
+
+thread_local! {
+    /// Map from menu id string → callback. Thread-local because callbacks
+    /// capture `Signal` (which is `!Send`) and must run on the main thread.
+    static MENU_CALLBACKS: RefCell<HashMap<String, Rc<MenuCallback>>> = RefCell::new(HashMap::new());
+
+    /// Registered keyboard shortcuts mapped to their menu ID strings.
+    static MENU_SHORTCUTS: RefCell<Vec<ShortcutEntry>> = const { RefCell::new(Vec::new()) };
+
+    /// Source of [`ShortcutEntry::serial`].
+    static NEXT_SHORTCUT_SERIAL: Cell<u64> = const { Cell::new(0) };
+
+    /// The registration held by the most recently built native menu bar.
+    ///
+    /// The bar is a process-wide singleton owned by the runtime rather than by
+    /// any caller, so its token lives here: building a new bar replaces this,
+    /// dropping the previous build's ids. This is what keeps
+    /// [`build_native_menu_bar`] from growing the registry on every rebuild.
+    static MENU_BAR_REGISTRATION: RefCell<Option<MenuRegistration>> = const { RefCell::new(None) };
+}
+
+/// Register `cb` under `menu_id` as belonging to `owner`, returning the entry so
+/// a [`MenuRegistration`] can hold it for the `Rc::ptr_eq` check on release.
+///
+/// Removal is tied to the scope that is currently rendering — the one *building*
+/// the menu — via [`install_scoped_entry`], which reclaims the id only if it
+/// still holds this callback. `owner` is a separate question: it is the scope
+/// that created the callback, and it gates *invocation* (see
+/// [`dispatch_menu_event`]). The two differ whenever a component contributes an
+/// item to a menu somebody else assembles.
+fn register_callback_owned(
+    menu_id: &str,
+    cb: Rc<dyn Fn()>,
+    owner: Option<Owner>,
+) -> Rc<MenuCallback> {
+    let entry = Rc::new(MenuCallback { owner, cb });
+    install_scoped_entry(&MENU_CALLBACKS, menu_id.to_string(), entry.clone());
+    entry
+}
+
+/// Register `shortcut_str` as dispatching `menu_id`, returning the serial that
+/// identifies this registration (`None` if the string does not parse).
+///
+/// Removal is tied to the scope that is currently rendering, so a component that
+/// builds a menu takes its chords with it — otherwise the chord would keep
+/// matching and returning `true`, swallowing the key into a callback that is no
+/// longer there.
+fn register_shortcut(shortcut_str: &str, menu_id: &str) -> Option<u64> {
+    let parsed = parse_shortcut_for_matching(shortcut_str)?;
+    let serial = NEXT_SHORTCUT_SERIAL.with(|next| {
+        let serial = next.get();
+        next.set(serial + 1);
+        serial
+    });
+    MENU_SHORTCUTS.with(|shortcuts| {
+        shortcuts.borrow_mut().push(ShortcutEntry {
+            serial,
+            shortcut: parsed,
+            menu_id: menu_id.to_string(),
+        });
+    });
+    on_cleanup(move || remove_shortcut(serial));
+    Some(serial)
+}
+
+/// Drop the shortcut registered under `serial`, if it is still there.
+///
+/// `try_with`/`try_borrow_mut`: this runs from `Scope::dispose`, reachable from
+/// a TLS destructor at thread exit (when the registry may already be gone) and
+/// from a drop while unwinding, so it degrades to "not removed" rather than
+/// panicking. A `ShortcutEntry` holds no user code, so dropping it under the
+/// borrow is safe — unlike a callback.
+fn remove_shortcut(serial: u64) {
+    let _ = MENU_SHORTCUTS.try_with(|shortcuts| {
+        if let Ok(mut shortcuts) = shortcuts.try_borrow_mut() {
+            shortcuts.retain(|entry| entry.serial != serial);
+        }
     });
 }
 
-fn register_shortcut(shortcut_str: &str, menu_id: &str) {
-    if let Some(parsed) = parse_shortcut_for_matching(shortcut_str) {
+/// Dispatch a menu event by looking up and invoking the callback.
+///
+/// The callback is cloned **out** of the registry before it is called, so a
+/// callback may rebuild the menu it was dispatched from — registering, and so
+/// mutably borrowing, the very map being read — without a double-borrow panic.
+///
+/// A callback whose component has since unmounted is not called, and the entry
+/// is pruned. Normally [`install_scoped_entry`]'s cleanup has already removed it
+/// by then; this covers the case where it could not (its `try_borrow_mut`
+/// degraded) and the case where the *building* scope outlives the *creating*
+/// one.
+///
+/// A live callback runs inside its owner, so a `Signal` it creates belongs to
+/// the menu's component. An ownerless one runs [`unowned`] for the mirror-image
+/// reason: it has app lifetime, and what it allocates must not be handed to
+/// whatever scope the dispatch happened to be nested inside.
+pub(crate) fn dispatch_menu_event(menu_id: &str) {
+    let Some(entry) = MENU_CALLBACKS.with(|map| map.borrow().get(menu_id).cloned()) else {
+        return;
+    };
+
+    if entry.is_dead() {
+        prune_callback(menu_id, &entry);
+        return;
+    }
+
+    match &entry.owner {
+        Some(owner) => owner.run(|| (entry.cb)()),
+        None => unowned(|| (entry.cb)()),
+    }
+}
+
+/// Remove `menu_id` if it still holds `entry`, along with any chords that would
+/// dispatch it.
+fn prune_callback(menu_id: &str, entry: &Rc<MenuCallback>) {
+    // Bound outside the borrow: the callback is user code whose `Drop` may
+    // re-enter the registry.
+    let dead = MENU_CALLBACKS.with(|map| {
+        let mut map = map.borrow_mut();
+        if map
+            .get(menu_id)
+            .is_some_and(|installed| Rc::ptr_eq(installed, entry))
+        {
+            map.remove(menu_id)
+        } else {
+            None
+        }
+    });
+    // Only if the entry really was ours: a later registration at this id owns
+    // both the callback and any chord that reaches it.
+    if dead.is_some() {
         MENU_SHORTCUTS.with(|shortcuts| {
-            shortcuts.borrow_mut().push((parsed, menu_id.to_string()));
+            shortcuts.borrow_mut().retain(|e| e.menu_id != menu_id);
         });
     }
 }
 
-/// Dispatch a menu event by looking up and invoking the callback.
-pub(crate) fn dispatch_menu_event(menu_id: &str) {
-    MENU_CALLBACKS.with(|map| {
-        if let Some(cb) = map.borrow().get(menu_id) {
-            cb();
-        }
-    });
-}
-
 /// Check if a keyboard event matches a registered menu shortcut.
 /// If so, dispatch the callback and return `true`.
+///
+/// The matched id is taken out of the registry before dispatching, so a
+/// shortcut's callback may register a shortcut of its own.
 pub(crate) fn match_shortcut(ctrl: bool, meta: bool, alt: bool, shift: bool, key: KeyCode) -> bool {
     let ctrl_or_cmd = ctrl || meta;
 
-    MENU_SHORTCUTS.with(|shortcuts| {
-        let shortcuts = shortcuts.borrow();
-        for (shortcut, menu_id) in shortcuts.iter() {
-            if shortcut.ctrl_or_cmd == ctrl_or_cmd
-                && shortcut.alt == alt
-                && shortcut.shift == shift
-                && shortcut.key == key
-            {
-                dispatch_menu_event(menu_id);
-                return true;
-            }
+    let matched = MENU_SHORTCUTS.with(|shortcuts| {
+        shortcuts
+            .borrow()
+            .iter()
+            .find(|entry| {
+                entry.shortcut.ctrl_or_cmd == ctrl_or_cmd
+                    && entry.shortcut.alt == alt
+                    && entry.shortcut.shift == shift
+                    && entry.shortcut.key == key
+            })
+            .map(|entry| entry.menu_id.clone())
+    });
+
+    match matched {
+        Some(menu_id) => {
+            dispatch_menu_event(&menu_id);
+            true
         }
-        false
-    })
+        None => false,
+    }
+}
+
+// ── Registration token ──────────────────────────────────────────────────────
+
+/// The ids one menu build registered, released when the build is replaced.
+///
+/// Nothing used to remove a menu id, ever: the registry only grew, so a menu
+/// rebuilt at runtime accumulated a full set of stale callbacks each time, and
+/// the ksni tray path — which mints a fresh `ksni-{N}` id for every item on
+/// every build — could not even overwrite its own previous entries.
+///
+/// [`on_cleanup`] does not close this on its own. It reclaims an id when the
+/// *scope that built the menu* is disposed, and the in-tree menus are built from
+/// `main`, before the event loop, with no scope at all. Something has to own the
+/// build; this is that thing. Whoever holds a build's token — the
+/// [`MENU_BAR_REGISTRATION`] slot for the window menu bar, the `TrayIcon` for a
+/// tray — releases the build's ids by replacing or dropping it.
+///
+/// Release touches thread-local state, so drop it on the thread that built the
+/// menu; dropping it elsewhere is a harmless no-op that reclaims nothing.
+#[derive(Default)]
+pub(crate) struct MenuRegistration {
+    /// The callbacks this build installed, held so removal can check
+    /// [`Rc::ptr_eq`] rather than trusting the key.
+    callbacks: Vec<(String, Rc<MenuCallback>)>,
+    shortcuts: Vec<u64>,
+}
+
+impl MenuRegistration {
+    fn new() -> Self {
+        Self::default()
+    }
+
+    /// Register `cb` under `menu_id` on behalf of `owner`, and record the id so
+    /// dropping this token takes it back out.
+    pub(crate) fn register_callback(
+        &mut self,
+        menu_id: &str,
+        cb: Rc<dyn Fn()>,
+        owner: Option<Owner>,
+    ) {
+        let entry = register_callback_owned(menu_id, cb, owner);
+        self.callbacks.push((menu_id.to_string(), entry));
+    }
+
+    /// Register a chord dispatching `menu_id`, recording it for release.
+    fn register_shortcut(&mut self, shortcut_str: &str, menu_id: &str) {
+        if let Some(serial) = register_shortcut(shortcut_str, menu_id) {
+            self.shortcuts.push(serial);
+        }
+    }
+}
+
+impl Drop for MenuRegistration {
+    fn drop(&mut self) {
+        // `try_with`/`try_borrow_mut` for the same reason as `remove_shortcut`.
+        // The removed callbacks stay in `self.callbacks` and are dropped when
+        // that `Vec` is, after this function returns — they are user code whose
+        // `Drop` may re-enter the registry.
+        let _ = MENU_CALLBACKS.try_with(|map| {
+            let Ok(mut map) = map.try_borrow_mut() else {
+                return;
+            };
+            for (menu_id, entry) in &self.callbacks {
+                // Only reclaim what is still ours: a later build may have
+                // registered its own callback at this id.
+                if map
+                    .get(menu_id)
+                    .is_some_and(|installed| Rc::ptr_eq(installed, entry))
+                {
+                    map.remove(menu_id);
+                }
+            }
+        });
+        for serial in &self.shortcuts {
+            remove_shortcut(*serial);
+        }
+    }
 }
 
 // ── Build functions (Menu → muda types) ─────────────────────────────────────
@@ -258,25 +525,35 @@ pub(crate) fn match_shortcut(ctrl: bool, meta: bool, alt: bool, shift: bool, key
 /// Build a native menu bar from a list of `(label, Menu)` pairs.
 ///
 /// Each pair becomes a top-level submenu in the menu bar. Callbacks are
-/// registered in the thread-local registry.
+/// registered in the thread-local registry, and the ids are recorded in
+/// [`MENU_BAR_REGISTRATION`] — so building a new bar releases the previous
+/// build's, instead of leaving it in the registry forever.
 pub(crate) fn build_native_menu_bar(menus: Vec<(&str, Menu)>) -> muda::Menu {
+    let mut registration = MenuRegistration::new();
     let menu_bar = muda::Menu::new();
     for (label, menu) in menus {
         let submenu = muda::Submenu::new(label, true);
-        build_muda_entries(&submenu, menu);
+        build_muda_entries(&submenu, menu, &mut registration);
         let _ = menu_bar.append(&submenu);
     }
+    // Bound outside the borrow: dropping the displaced token drops user
+    // callbacks, whose `Drop` may re-enter the registry.
+    let _previous = MENU_BAR_REGISTRATION.with(|slot| slot.borrow_mut().replace(registration));
     menu_bar
 }
 
 /// Build a muda `Menu` from a unified `Menu` (for tray context menus).
+///
+/// Returns the token holding this build's ids alongside the menu; the caller
+/// keeps it for as long as the menu is live (see [`MenuRegistration`]).
 #[cfg_attr(target_os = "linux", allow(dead_code))]
-pub(crate) fn build_muda_menu(menu: Menu) -> muda::Menu {
+pub(crate) fn build_muda_menu(menu: Menu) -> (muda::Menu, MenuRegistration) {
+    let mut registration = MenuRegistration::new();
     let muda_menu = muda::Menu::new();
     for entry in menu.entries {
         match entry {
             MenuEntryInner::Item(item) => {
-                let muda_item = build_muda_item(&item);
+                let muda_item = build_muda_item(&item, &mut registration);
                 let _ = muda_menu.append(&muda_item);
             }
             MenuEntryInner::Separator => {
@@ -284,20 +561,20 @@ pub(crate) fn build_muda_menu(menu: Menu) -> muda::Menu {
             }
             MenuEntryInner::Submenu { label, menu } => {
                 let submenu = muda::Submenu::new(&label, true);
-                build_muda_entries(&submenu, menu);
+                build_muda_entries(&submenu, menu, &mut registration);
                 let _ = muda_menu.append(&submenu);
             }
         }
     }
-    muda_menu
+    (muda_menu, registration)
 }
 
 /// Recursively populate a muda Submenu from a unified Menu.
-fn build_muda_entries(submenu: &muda::Submenu, menu: Menu) {
+fn build_muda_entries(submenu: &muda::Submenu, menu: Menu, registration: &mut MenuRegistration) {
     for entry in menu.entries {
         match entry {
             MenuEntryInner::Item(item) => {
-                let muda_item = build_muda_item(&item);
+                let muda_item = build_muda_item(&item, registration);
                 let _ = submenu.append(&muda_item);
             }
             MenuEntryInner::Separator => {
@@ -305,7 +582,7 @@ fn build_muda_entries(submenu: &muda::Submenu, menu: Menu) {
             }
             MenuEntryInner::Submenu { label, menu } => {
                 let nested = muda::Submenu::new(&label, true);
-                build_muda_entries(&nested, menu);
+                build_muda_entries(&nested, menu, registration);
                 let _ = submenu.append(&nested);
             }
         }
@@ -313,18 +590,19 @@ fn build_muda_entries(submenu: &muda::Submenu, menu: Menu) {
 }
 
 /// Build a single muda MenuItem, register its callback and shortcut.
-fn build_muda_item(item: &MenuItem) -> muda::MenuItem {
+fn build_muda_item(item: &MenuItem, registration: &mut MenuRegistration) -> muda::MenuItem {
     let accelerator = item.shortcut.as_ref().and_then(|s| parse_shortcut(s));
     let muda_item = muda::MenuItem::new(&item.label, item.enabled, accelerator);
 
-    // Register callback
+    // Register callback, owned by the scope that created it rather than by
+    // whoever is building this menu.
     if let Some(cb) = &item.callback {
-        register_callback(&muda_item.id().0, cb.clone());
+        registration.register_callback(&muda_item.id().0, cb.clone(), item.callback_owner.clone());
     }
 
     // Register shortcut for keyboard matching
     if let Some(shortcut_str) = &item.shortcut {
-        register_shortcut(shortcut_str, &muda_item.id().0);
+        registration.register_shortcut(shortcut_str, &muda_item.id().0);
     }
 
     muda_item
@@ -489,4 +767,374 @@ fn parse_shortcut_for_matching(shortcut: &str) -> Option<ParsedShortcut> {
         shift,
         key,
     })
+}
+
+// ── Test-support accessors ──────────────────────────────────────────────────
+
+/// How many callbacks the registry currently holds.
+///
+/// The leak this module fixes is invisible to a behavioural assertion — a stale
+/// callback is inert, just never removed — so the tests below assert on the size
+/// of the registry directly.
+#[cfg(test)]
+fn callback_count() -> usize {
+    MENU_CALLBACKS.with(|map| map.borrow().len())
+}
+
+/// How many shortcuts the registry currently holds. See [`callback_count`].
+#[cfg(test)]
+fn shortcut_count() -> usize {
+    MENU_SHORTCUTS.with(|shortcuts| shortcuts.borrow().len())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rinch_core::reactive::{Scope, Signal};
+    use std::cell::Cell;
+
+    /// Every registry here is `thread_local!` and `cargo test` gives each test
+    /// its own thread, so the tests are isolated without a mutex — but ids must
+    /// still be distinct per test, because a test that leaves state behind would
+    /// otherwise be indistinguishable from the leak being pinned.
+    ///
+    /// The callbacks never construct a `muda::MenuItem`: muda is GTK-backed on
+    /// Linux and a headless runner has no `gtk_init`. Synthetic id strings
+    /// exercise the registry directly, which is where the defect lives.
+    fn probe() -> (Rc<Cell<u32>>, Rc<dyn Fn()>) {
+        let fired = Rc::new(Cell::new(0u32));
+        let seen = fired.clone();
+        (fired, Rc::new(move || seen.set(seen.get() + 1)))
+    }
+
+    /// Register under the ambient owner, the way a caller that both creates and
+    /// registers a callback in one place would. The builders instead carry the
+    /// item's own owner, which is what
+    /// [`the_owner_is_the_scope_that_created_the_callback_not_the_one_that_built_the_menu`]
+    /// pins.
+    fn register_callback(menu_id: &str, cb: Rc<dyn Fn()>) {
+        register_callback_owned(menu_id, cb, current_owner());
+    }
+
+    /// The lifetime half: a menu built during a render goes away with the
+    /// component that built it — and the entry is *removed*, not just inert.
+    #[test]
+    fn a_menu_callback_registered_in_a_scope_is_removed_when_the_scope_disposes() {
+        let base = callback_count();
+        let (fired, cb) = probe();
+
+        let scope = Scope::new();
+        scope.run(|| register_callback("scoped-1", cb));
+        assert_eq!(callback_count(), base + 1);
+
+        scope.dispose();
+        assert_eq!(
+            callback_count(),
+            base,
+            "the entry must be gone, not merely inert"
+        );
+
+        dispatch_menu_event("scoped-1");
+        assert_eq!(
+            fired.get(),
+            0,
+            "a disposed component's callback must not run"
+        );
+    }
+
+    /// The contract every in-tree menu depends on: `run_with_menu` builds the
+    /// bar from `main`, before the event loop, with no ambient owner, and
+    /// `examples/ui-zoo-desktop` deliberately creates its signals there "so menu
+    /// callbacks can reference them". Requiring an owner would break it.
+    #[test]
+    fn a_menu_callback_registered_from_main_survives_and_still_dispatches() {
+        let (fired, cb) = probe();
+        register_callback("main-1", cb);
+
+        Scope::new().dispose();
+
+        dispatch_menu_event("main-1");
+        assert_eq!(
+            fired.get(),
+            1,
+            "an ownerless registration keeps app lifetime"
+        );
+    }
+
+    /// The issue's second recorded asymmetry: menu callbacks bypass
+    /// `register_handler`, so they pushed no creation-time owner, and a
+    /// `Signal::new` inside one landed at app lifetime instead of belonging to
+    /// the menu's component.
+    #[test]
+    fn a_menu_callback_runs_with_its_registering_component_as_ambient_owner() {
+        let scope = Scope::new();
+        let before = scope.owned_counts().signals;
+
+        scope.run(|| {
+            register_callback(
+                "owner-1",
+                Rc::new(|| {
+                    let _ = Signal::new(7u32);
+                }),
+            )
+        });
+        dispatch_menu_event("owner-1");
+
+        assert_eq!(
+            scope.owned_counts().signals,
+            before + 1,
+            "a Signal created inside a menu callback belongs to the menu's component"
+        );
+        scope.dispose();
+    }
+
+    /// The mirror image: an app-lifetime callback must not inherit whatever
+    /// scope the dispatch happens to be nested inside. The owner stack is not an
+    /// ancestor chain, so that scope is unrelated — and disposing it would free
+    /// a signal the app-lifetime callback still holds.
+    #[test]
+    fn an_ownerless_menu_callback_does_not_allocate_into_the_dispatching_scope() {
+        register_callback(
+            "ownerless-1",
+            Rc::new(|| {
+                let _ = Signal::new(1u32);
+            }),
+        );
+
+        let host = Scope::new();
+        let before = host.owned_counts().signals;
+        host.run(|| dispatch_menu_event("ownerless-1"));
+
+        assert_eq!(
+            host.owned_counts().signals,
+            before,
+            "an app-lifetime callback must not hand its state to whatever scope dispatched it"
+        );
+        host.dispose();
+    }
+
+    /// `dispatch_menu_event` used to hold the registry's `borrow()` across the
+    /// callback, so a callback that rebuilt a menu panicked with
+    /// `BorrowMutError`.
+    #[test]
+    fn a_menu_callback_may_rebuild_the_menu_from_inside_its_own_dispatch() {
+        register_callback(
+            "rebuild-1",
+            Rc::new(|| {
+                register_callback("rebuild-2", Rc::new(|| {}));
+            }),
+        );
+
+        dispatch_menu_event("rebuild-1");
+
+        assert!(
+            MENU_CALLBACKS.with(|map| map.borrow().contains_key("rebuild-2")),
+            "a callback must be able to rebuild the menu it was dispatched from"
+        );
+    }
+
+    /// The same defect one level up: `match_shortcut` held the shortcut list's
+    /// `borrow()` across `dispatch_menu_event`.
+    #[test]
+    fn a_shortcut_callback_may_register_a_shortcut_from_inside_its_own_dispatch() {
+        register_callback(
+            "chord-1",
+            Rc::new(|| {
+                register_shortcut("Ctrl+Shift+K", "chord-2");
+            }),
+        );
+        register_shortcut("Ctrl+Shift+J", "chord-1");
+
+        assert!(match_shortcut(true, false, false, true, KeyCode::KeyJ));
+    }
+
+    /// `MENU_SHORTCUTS` leaks identically to `MENU_CALLBACKS` — the issue names
+    /// only the latter. A chord left behind keeps matching, and `match_shortcut`
+    /// returning `true` swallows the key into a callback that is no longer
+    /// there; the list also has to shrink, or matching goes linear in menus ever
+    /// built.
+    #[test]
+    fn a_shortcut_registered_in_a_scope_stops_matching_when_the_scope_disposes() {
+        let base = shortcut_count();
+        let scope = Scope::new();
+        scope.run(|| {
+            register_shortcut("Ctrl+Alt+Y", "sc-1");
+        });
+        assert_eq!(shortcut_count(), base + 1);
+
+        scope.dispose();
+        assert_eq!(
+            shortcut_count(),
+            base,
+            "shortcut matching must not go O(menus ever built)"
+        );
+        assert!(
+            !match_shortcut(true, false, true, false, KeyCode::KeyY),
+            "a disposed component's chord must fall through"
+        );
+    }
+
+    /// Menu ids come from two sources and nothing guarantees they are distinct,
+    /// so removal is by `Rc` identity: an earlier unmount must not reclaim an id
+    /// a later component has since taken over.
+    #[test]
+    fn a_later_registration_at_the_same_id_survives_the_earlier_scopes_disposal() {
+        let (first_fired, first_cb) = probe();
+        let (second_fired, second_cb) = probe();
+
+        let first = Scope::new();
+        first.run(|| register_callback("dup-1", first_cb));
+        let second = Scope::new();
+        second.run(|| register_callback("dup-1", second_cb));
+
+        first.dispose();
+        dispatch_menu_event("dup-1");
+
+        assert_eq!(first_fired.get(), 0);
+        assert_eq!(
+            second_fired.get(),
+            1,
+            "an earlier unmount must not clobber a later registration at the same id"
+        );
+        second.dispose();
+    }
+
+    /// Ownership is per **item**, not per build. A component contributes an item
+    /// to a menu somebody else assembles; when that component unmounts its
+    /// signals are freed, and the item must stop firing even though the builder
+    /// is still very much alive. Recording the owner at build time would miss
+    /// exactly this, which is the shape that reintroduced the panic in PR2.
+    #[test]
+    fn the_owner_is_the_scope_that_created_the_callback_not_the_one_that_built_the_menu() {
+        let base = callback_count();
+        let (fired, cb) = probe();
+
+        let creator = Scope::new();
+        let owner = creator.run(current_owner);
+        let builder = Scope::new();
+        builder.run(|| {
+            register_callback_owned("granular-1", cb, owner);
+        });
+
+        creator.dispose();
+        dispatch_menu_event("granular-1");
+
+        assert_eq!(
+            fired.get(),
+            0,
+            "the component that created this callback is gone"
+        );
+        assert_eq!(
+            callback_count(),
+            base,
+            "and the dead entry is pruned rather than re-checked forever"
+        );
+        builder.dispose();
+    }
+
+    /// `MenuItem::on_click` is where the closure captures its signals, so that is
+    /// where the owner has to come from — not from wherever the `Menu` is later
+    /// assembled.
+    #[test]
+    fn on_click_records_the_scope_that_was_rendering_when_the_closure_was_made() {
+        let scope = Scope::new();
+        let item = scope.run(|| MenuItem::new("Save").on_click(|| {}));
+        assert!(
+            item.callback_owner
+                .as_ref()
+                .is_some_and(|owner| owner.is_alive())
+        );
+
+        scope.dispose();
+        assert!(
+            item.callback_owner.as_ref().is_some_and(|o| !o.is_alive()),
+            "the item's owner dies with the component that created it"
+        );
+
+        let from_main = MenuItem::new("Quit").on_click(|| {});
+        assert!(
+            from_main.callback_owner.is_none(),
+            "an item built from main has app lifetime"
+        );
+    }
+
+    /// The leak half. `on_cleanup` cannot close it on its own: the in-tree menus
+    /// are built from `main`, with no scope to hang a cleanup on, so nothing
+    /// shrinks. The RAII token is what actually reclaims a build.
+    #[test]
+    fn dropping_a_builds_registration_returns_the_registry_to_its_baseline() {
+        let callbacks = callback_count();
+        let shortcuts = shortcut_count();
+
+        {
+            let mut registration = MenuRegistration::new();
+            registration.register_callback("tok-1", Rc::new(|| {}), None);
+            registration.register_callback("tok-2", Rc::new(|| {}), None);
+            registration.register_shortcut("Ctrl+Alt+Q", "tok-1");
+            assert_eq!(callback_count(), callbacks + 2);
+            assert_eq!(shortcut_count(), shortcuts + 1);
+        }
+
+        assert_eq!(
+            callback_count(),
+            callbacks,
+            "dropping the token releases it"
+        );
+        assert_eq!(shortcut_count(), shortcuts);
+    }
+
+    /// The ksni shape, which is the worst case: `tray.rs` mints a fresh
+    /// `ksni-{N}` id from a monotonic counter for every item on every build, so
+    /// a rebuilt tray never reuses a key and cannot overwrite its own previous
+    /// entries. Only releasing the previous build's token bounds it.
+    #[test]
+    fn rebuilding_a_menu_with_fresh_ids_does_not_grow_the_registry() {
+        let base = callback_count();
+        let mut live = None;
+
+        for build in 0..5u32 {
+            let mut registration = MenuRegistration::new();
+            for item in 0..4u32 {
+                registration.register_callback(
+                    &format!("ksni-{}", build * 4 + item),
+                    Rc::new(|| {}),
+                    None,
+                );
+            }
+            // Assigning drops the previous build's token, exactly as replacing a
+            // `TrayIcon` does.
+            live = Some(registration);
+            assert_eq!(
+                callback_count(),
+                base + 4,
+                "rebuild {build} must not accumulate"
+            );
+        }
+
+        drop(live);
+        assert_eq!(callback_count(), base);
+    }
+
+    /// A token must reclaim only what is still its own, for the same reason the
+    /// scope cleanup must: a later build may have taken the id over.
+    #[test]
+    fn dropping_a_token_leaves_an_id_a_later_build_has_taken_over() {
+        let (first_fired, first_cb) = probe();
+        let (second_fired, second_cb) = probe();
+
+        let mut first = MenuRegistration::new();
+        first.register_callback("shared-1", first_cb, None);
+        let mut second = MenuRegistration::new();
+        second.register_callback("shared-1", second_cb, None);
+
+        drop(first);
+        dispatch_menu_event("shared-1");
+
+        assert_eq!(first_fired.get(), 0);
+        assert_eq!(
+            second_fired.get(),
+            1,
+            "the later build still owns the id it registered"
+        );
+    }
 }
