@@ -4802,6 +4802,7 @@ dependencies = [
  "jni",
  "log",
  "ndk-context",
+ "rinch-core",
 ]
 
 [[package]]

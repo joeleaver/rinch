@@ -221,6 +221,50 @@ component's unmount rather than on the other's. A slot that will never be
 dispatched again (`on_open` after the handshake) is released by the first event
 that finds *any* of the connection's callbacks dead.
 
+### Android platform callbacks
+
+The `rinch-android` services follow the `rinch-ws` rule, for the same reason —
+they are registered from live components, often more than once:
+
+```rust
+#[component]
+fn compass() -> NodeHandle {
+    let heading = Signal::new([0.0f32; 3]);
+    // Stops firing, and is released, when this component unmounts. Before, only
+    // an explicit `stop()` removed it, and the callback kept reading `heading`
+    // after it had been freed.
+    rinch_android::sensors::start(SensorType::MagneticField, DELAY_UI, move |d| {
+        heading.set([d.values[0], d.values[1], d.values[2]]);
+    });
+    rsx! { div { {|| format!("{:?}", heading.get())} } }
+}
+```
+
+This covers `sensors::start`, `location::start`, `lifecycle::on_pause` /
+`on_resume`, and the one-shot results behind `camera::pick_image`,
+`camera::take_photo`, `file_picker::pick_file` / `save_file` and
+`permissions::request_permission`. Four things follow:
+
+- **The one-shots are covered too.** They are removed on delivery, which bounds
+  the leak but not the lifetime: Android delivers a result whatever the user does
+  — a cancelled picker still reports `RESULT_CANCELED` — so a picker opened by a
+  component that has since unmounted used to be delivered exactly once, into that
+  component's freed state. It is now discarded instead.
+- **Release does not wait for an event.** Every one of these registries is
+  drained once a frame, and each drain first releases what unmounted components
+  left behind. A sensor that has fallen silent, an activity result that never
+  comes back and an app that never backgrounds would otherwise pin their
+  callbacks — and everything captured — for the life of the process.
+- **Registration from `android_main` keeps app lifetime**, unchanged. That is
+  what an app-wide `on_pause` autosave relies on.
+- **Stopping from inside the callback works.** "Stop the sensor once the reading
+  crosses a threshold", or "stop location once the fix is accurate enough", used
+  to panic with a `BorrowMutError`, because the registry was borrowed across the
+  call. So did swapping a lifecycle handler from inside one.
+
+`sensors::stop` and `location::stop` are still worth calling explicitly: releasing
+the callback does **not** power the hardware down.
+
 [`set_keyboard_interceptor`]: ./focus.md#where-this-does-not-apply
 [`set_paste_interceptor`]: ./platform.md#clipboard
 

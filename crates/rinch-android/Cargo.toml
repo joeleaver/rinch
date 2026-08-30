@@ -5,6 +5,11 @@ edition.workspace = true
 
 [dependencies]
 log = "0.4"
+# Unconditional, not under the `cfg(target_os = "android")` block below: the
+# scope-lifetime logic these registries share is host-compiled (see `scoped.rs`),
+# so the dependency edge is type-checked and its tests run on every CI machine
+# rather than only on a device. rinch-core's own deps are all portable.
+rinch-core = { workspace = true }
 
 [target.'cfg(target_os = "android")'.dependencies]
 jni = { version = "0.21", default-features = false }
