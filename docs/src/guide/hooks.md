@@ -227,6 +227,8 @@ The `rinch-android` services follow the `rinch-ws` rule, for the same reason —
 they are registered from live components, often more than once:
 
 ```rust
+use rinch_android::sensors::{DELAY_UI, SensorType};
+
 #[component]
 fn compass() -> NodeHandle {
     let heading = Signal::new([0.0f32; 3]);
@@ -251,10 +253,12 @@ This covers `sensors::start`, `location::start`, `lifecycle::on_pause` /
   component that has since unmounted used to be delivered exactly once, into that
   component's freed state. It is now discarded instead.
 - **Release does not wait for an event.** Every one of these registries is
-  drained once a frame, and each drain first releases what unmounted components
+  drained once a frame, and each drain also releases what unmounted components
   left behind. A sensor that has fallen silent, an activity result that never
   comes back and an app that never backgrounds would otherwise pin their
-  callbacks — and everything captured — for the life of the process.
+  callbacks — and everything captured — for the life of the process. Each
+  release is logged at `debug`, because the symptom is otherwise silent: the
+  callback simply stops firing.
 - **Registration from `android_main` keeps app lifetime**, unchanged. That is
   what an app-wide `on_pause` autosave relies on.
 - **Stopping from inside the callback works.** "Stop the sensor once the reading

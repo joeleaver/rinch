@@ -123,7 +123,10 @@ pub fn drain_location() {
     // Release what an unmounted component left behind, whether or not a fix
     // arrived: a device that loses its fix never dispatches again, so pruning
     // only on dispatch would hold a dead callback for the life of the process.
-    LOCATION_CALLBACK.with(|slot| slot.release_if_dead());
+    // Logged, because a release is otherwise silent — the callback just stops.
+    if LOCATION_CALLBACK.with(|slot| slot.release_if_dead()) {
+        log::debug!("Released the location callback: the component that started it is gone");
+    }
 
     if !LOCATION_CHANGED.swap(false, Ordering::Relaxed) {
         return;

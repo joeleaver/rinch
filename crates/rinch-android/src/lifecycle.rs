@@ -68,8 +68,13 @@ pub fn drain_lifecycle() {
     // is pending. An app that never backgrounds never dispatches these, so
     // pruning only on dispatch would hold a dead callback — and everything it
     // captured — for the life of the process. Two `Weak` upgrades a frame.
-    ON_PAUSE.with(|slot| slot.release_if_dead());
-    ON_RESUME.with(|slot| slot.release_if_dead());
+    // Logged, because a release is otherwise silent — the callback just stops.
+    if ON_PAUSE.with(|slot| slot.release_if_dead()) {
+        log::debug!("Released the on_pause callback: the component that set it is gone");
+    }
+    if ON_RESUME.with(|slot| slot.release_if_dead()) {
+        log::debug!("Released the on_resume callback: the component that set it is gone");
+    }
 
     let event = PENDING_EVENT.swap(EVENT_NONE, Ordering::Relaxed);
     match event {

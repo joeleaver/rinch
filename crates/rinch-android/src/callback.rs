@@ -65,11 +65,6 @@ pub fn register_permission_callback(code: i32, cb: impl FnOnce(PermissionResult)
 
 /// Drain pending activity results and invoke matched callbacks.
 pub fn drain_activity_results() {
-    // Release what unmounted components left behind. A result that never comes
-    // back — the activity was killed, the user never returned — would otherwise
-    // pin what its callback captured for the life of the process.
-    ACTIVITY_CALLBACKS.with(|map| map.release_dead());
-
     let results: Vec<ActivityResult> = std::mem::take(&mut *ACTIVITY_RESULTS.lock().unwrap());
     for result in results {
         let code = result.request_code;
@@ -84,14 +79,24 @@ pub fn drain_activity_results() {
             }
         }
     }
+
+    // Then release what unmounted components left behind. A result that never
+    // comes back — the activity was killed, the user never returned — would
+    // otherwise pin what its callback captured for the life of the process.
+    //
+    // *After* the loop, not before: sweeping first would delete the entry a
+    // result is about to be matched against, so the ordinary "the component
+    // unmounted while the picker was open" case would be reported as
+    // `Unregistered` — a warning that means "a result arrived for a code nobody
+    // ever asked for", which is a real bug signal and must stay rare.
+    let released = ACTIVITY_CALLBACKS.with(|map| map.release_dead());
+    if released > 0 {
+        log::debug!("Released {released} activity callback(s) whose component is gone");
+    }
 }
 
 /// Drain pending permission results and invoke matched callbacks.
 pub fn drain_permission_results() {
-    // As in `drain_activity_results`: a dialog the user never answers would
-    // otherwise pin its callback forever.
-    PERMISSION_CALLBACKS.with(|map| map.release_dead());
-
     let results: Vec<PermissionResult> = std::mem::take(&mut *PERMISSION_RESULTS.lock().unwrap());
     for result in results {
         let code = result.request_code;
@@ -105,6 +110,13 @@ pub fn drain_permission_results() {
                 log::warn!("No callback registered for permission result (request_code={code})")
             }
         }
+    }
+
+    // As in `drain_activity_results`, and after the loop for the same reason: a
+    // dialog the user never answers would otherwise pin its callback forever.
+    let released = PERMISSION_CALLBACKS.with(|map| map.release_dead());
+    if released > 0 {
+        log::debug!("Released {released} permission callback(s) whose component is gone");
     }
 }
 

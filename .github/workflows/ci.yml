@@ -229,12 +229,16 @@ jobs:
 
   # Type-check the Android target. Nothing else in this pipeline compiles it.
   #
-  # Every module in `crates/rinch-android` is `#[cfg(target_os = "android")]`, and
-  # `shell/android_runtime.rs` is `#[cfg(all(feature = "android", target_os =
-  # "android"))]` — so on the Linux runner they compile to nothing at all. `test`,
-  # `clippy` and `build` above have all been green while Android code did not
-  # compile, and the only thing that has ever caught it is someone running
-  # `examples/hello-android/build-apk.sh` on a machine with the NDK.
+  # Almost every module in `crates/rinch-android` is `#[cfg(target_os =
+  # "android")]` — the exceptions are the callback registries (`callback`,
+  # `lifecycle`, `location`, `sensors`, `scoped`), which are host-compiled and
+  # host-tested on purpose — and `shell/android_runtime.rs` is
+  # `#[cfg(all(feature = "android", target_os = "android"))]`. So on the Linux
+  # runner the JNI half of the crate, and the whole Android shell, compile to
+  # nothing at all. `test`, `clippy` and `build` above have all been green while
+  # Android code did not compile, and the only thing that has ever caught it is
+  # someone running `examples/hello-android/build-apk.sh` on a machine with the
+  # NDK.
   #
   # `cargo check` needs no NDK: it type-checks without linking, so this job is a
   # toolchain target and nothing more.

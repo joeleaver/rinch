@@ -112,7 +112,14 @@ pub fn drain_sensor_events() {
     // pruning only on dispatch would hold a dead callback — and everything it
     // captured — for the life of the process. A `Weak` upgrade per registered
     // sensor, of which there are at most a handful.
-    SENSOR_CALLBACKS.with(|map| map.release_dead());
+    //
+    // Logged, because a release is otherwise completely silent: the callback
+    // simply stops firing, which is exactly the symptom someone would come here
+    // to explain.
+    let released = SENSOR_CALLBACKS.with(|map| map.release_dead());
+    if released > 0 {
+        log::debug!("Released {released} sensor callback(s) whose component is gone");
+    }
 
     let snapshot: HashMap<i32, SensorData> = {
         let mut guard = SENSOR_DATA.lock().unwrap();
@@ -291,6 +298,8 @@ mod tests {
              scope that registered it"
         );
         scope.dispose();
+        // Leave no dead entry behind for a runner that shares a thread.
+        stop(SensorType::Gyroscope);
     }
 
     /// "Stop when the reading crosses a threshold" is the obvious use of a sensor

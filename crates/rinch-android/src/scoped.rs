@@ -217,13 +217,13 @@ pub struct ScopedMap<K, F: ?Sized> {
     entries: RefCell<HashMap<K, Entry<Rc<F>>>>,
 }
 
-impl<K: Eq + Hash + Clone, F: ?Sized> Default for ScopedMap<K, F> {
+impl<K: Eq + Hash, F: ?Sized> Default for ScopedMap<K, F> {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl<K: Eq + Hash + Clone, F: ?Sized> ScopedMap<K, F> {
+impl<K: Eq + Hash, F: ?Sized> ScopedMap<K, F> {
     /// An empty registry.
     pub fn new() -> Self {
         Self {
@@ -273,20 +273,28 @@ impl<K: Eq + Hash + Clone, F: ?Sized> ScopedMap<K, F> {
     /// Drop every entry whose registering component is gone, whether or not an
     /// event ever arrives for it. See [`ScopedSlot::release_if_dead`].
     pub fn release_dead(&self) -> usize {
-        let released = {
-            let mut entries = self.entries.borrow_mut();
-            let dead: Vec<K> = entries
-                .iter()
-                .filter(|(_, e)| e.registrant.is_dead())
-                .map(|(k, _)| k.clone())
-                .collect();
-            dead.into_iter()
-                .filter_map(|k| entries.remove(&k))
-                .collect::<Vec<_>>()
-        };
-        // The callbacks drop here, outside the borrow above.
-        released.len()
+        release_dead_entries(&self.entries)
     }
+}
+
+/// Drop every entry whose registering component is gone, returning how many
+/// went. Shared by both keyed registries — the repeat-firing one and the
+/// one-shot one differ only in what they hold as the callback.
+///
+/// One pass, and the callbacks are dropped **after** the borrow ends: they are
+/// user code whose `Drop` may re-enter the registry, which inside the
+/// `borrow_mut` would panic.
+fn release_dead_entries<K: Eq + Hash, C>(entries: &RefCell<HashMap<K, Entry<C>>>) -> usize {
+    let released = {
+        let mut entries = entries.borrow_mut();
+        // `collect` exhausts the iterator, so `ExtractIf`'s own `Drop` has
+        // nothing left to remove while the borrow is still held.
+        entries
+            .extract_if(|_, e| e.registrant.is_dead())
+            .collect::<Vec<_>>()
+    };
+    // The callbacks drop at the end of this function, outside the borrow above.
+    released.len()
 }
 
 /// What became of a one-shot callback when its result arrived.
@@ -314,13 +322,13 @@ pub struct ScopedOnceMap<K, T> {
 /// One registered `FnOnce` plus the scope that registered it.
 type OnceEntry<T> = Entry<Box<dyn FnOnce(T)>>;
 
-impl<K: Eq + Hash + Clone, T> Default for ScopedOnceMap<K, T> {
+impl<K: Eq + Hash, T> Default for ScopedOnceMap<K, T> {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl<K: Eq + Hash + Clone, T> ScopedOnceMap<K, T> {
+impl<K: Eq + Hash, T> ScopedOnceMap<K, T> {
     /// An empty registry.
     pub fn new() -> Self {
         Self {
@@ -360,18 +368,7 @@ impl<K: Eq + Hash + Clone, T> ScopedOnceMap<K, T> {
     /// Drop every callback whose registering component is gone. A result that
     /// never arrives would otherwise pin what its callback captured forever.
     pub fn release_dead(&self) -> usize {
-        let released = {
-            let mut entries = self.entries.borrow_mut();
-            let dead: Vec<K> = entries
-                .iter()
-                .filter(|(_, e)| e.registrant.is_dead())
-                .map(|(k, _)| k.clone())
-                .collect();
-            dead.into_iter()
-                .filter_map(|k| entries.remove(&k))
-                .collect::<Vec<_>>()
-        };
-        released.len()
+        release_dead_entries(&self.entries)
     }
 
     /// Whether a callback is registered under `key`, live or not.
@@ -449,6 +446,10 @@ mod tests {
         );
         registrar.dispose();
         dispatcher.dispose();
+        // Leave no dead entry behind: `releasing_dead_entries_leaves_live_siblings_alone`
+        // asserts an exact release count, and would see this one too on any
+        // runner that shares a thread between tests.
+        MAP.with(|map| map.remove(&1));
     }
 
     struct Reinstall;
