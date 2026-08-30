@@ -186,6 +186,8 @@ registered inside a component stops firing once that component unmounts, even if
 the `WsHandle` was parked somewhere longer-lived:
 
 ```rust
+// `WsHandle` is neither `Clone` nor `Copy`, so a store holds it behind an `Rc`:
+//     #[derive(Clone)] struct AppStore { socket: Rc<WsHandle> }
 #[component]
 fn feed() -> NodeHandle {
     let lines = Signal::new(Vec::<String>::new());
@@ -195,9 +197,7 @@ fn feed() -> NodeHandle {
     // this component goes away.
     ws.on_message(move |m| {
         if let Some(t) = m.as_text() {
-            let mut next = lines.get();
-            next.push(t.to_string());
-            lines.set(next);
+            lines.update(|v| v.push(t.to_string()));
         }
     });
     rsx! { div { {|| lines.get().join("\n")} } }
@@ -213,6 +213,13 @@ registration would grow without bound. The practical consequence is that the
 "register once per component" advice above does **not** apply to `rinch-ws` — and
 that a callback belonging to an unmounted component is released on the next
 event rather than at unmount.
+
+Each of a connection's four callbacks carries its own owner, so one handle may be
+shared by two components — a message list registering `on_message`, a
+connection-status badge registering `on_close` — and each stops on its own
+component's unmount rather than on the other's. A slot that will never be
+dispatched again (`on_open` after the handshake) is released by the first event
+that finds *any* of the connection's callbacks dead.
 
 [`set_keyboard_interceptor`]: ./focus.md#where-this-does-not-apply
 [`set_paste_interceptor`]: ./platform.md#clipboard
