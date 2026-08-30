@@ -5,7 +5,6 @@
 //! lifecycle, touch input, and surface management. Uses the same
 //! platform-agnostic [`RinchApp`] as the desktop shell.
 
-use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
@@ -868,7 +867,9 @@ impl SoftSurface {
             // this toolchain.
             let src_uninit = unsafe {
                 std::slice::from_raw_parts(
-                    pixels[src..src + n].as_ptr().cast::<std::mem::MaybeUninit<u8>>(),
+                    pixels[src..src + n]
+                        .as_ptr()
+                        .cast::<std::mem::MaybeUninit<u8>>(),
                     n,
                 )
             };
@@ -1217,10 +1218,7 @@ impl GpuSurface {
         // asking the compositor to blend a surface with no alpha to respect is
         // work nobody wants done. `Auto` is the fallback and lets wgpu pick
         // whatever the window does support.
-        let alpha_mode = if caps
-            .alpha_modes
-            .contains(&wgpu::CompositeAlphaMode::Opaque)
-        {
+        let alpha_mode = if caps.alpha_modes.contains(&wgpu::CompositeAlphaMode::Opaque) {
             wgpu::CompositeAlphaMode::Opaque
         } else {
             wgpu::CompositeAlphaMode::Auto
