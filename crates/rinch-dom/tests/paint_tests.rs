@@ -1984,6 +1984,7 @@ mod software_video_inline {
 // away. The two tests below are the same document seen by each painter.
 #[cfg(feature = "software-renderer")]
 mod opacity_overflow {
+    use super::transform_paint::{paint_skia, pixel_at};
     use super::*;
     use rinch_dom::paint::skia_painter::TinySkiaPainter;
 
@@ -2024,23 +2025,17 @@ mod opacity_overflow {
     fn software_painter_does_not_clip_an_opacity_layer() {
         let mut doc = overflowing_doc("0.5");
         let mut painter = TinySkiaPainter::new(300, 300);
-        let mut paint_layout_cx: parley::LayoutContext<Brush> = parley::LayoutContext::new();
-        rinch_dom::paint::paint_document(
-            &doc.tree,
-            &mut painter,
-            1.0,
-            (800.0, 600.0),
-            &mut doc.font_cx,
-            &mut paint_layout_cx,
-        );
+        paint_skia(&mut doc, &mut painter);
 
         // The child is at x 150..170, y 10..30 — outside the parent's
-        // 0..100 x 0..100 border box. Half-opacity red over white, so the
-        // channel test is "much more red than blue" rather than "pure red".
-        let idx = ((20 * painter.width() + 160) * 4) as usize;
-        let px = &painter.pixels()[idx..idx + 4];
+        // 0..100 x 0..100 border box. Half-opacity red, so the channel test is
+        // "much more red than blue" rather than "pure red". Widened to `i16`
+        // because a bright-blue background would make `px[2] + 40` overflow a
+        // `u8` and report the regression as an arithmetic panic instead of as
+        // this message.
+        let px = pixel_at(&painter, 160, 20);
         assert!(
-            px[0] > px[2] + 40,
+            px[0] as i16 > px[2] as i16 + 40,
             "the child that overflows an opacity element must still be painted \
              by the software painter, got RGBA {px:?}"
         );
@@ -2059,11 +2054,16 @@ mod opacity_overflow {
     /// inequality rather than "+2" so that it pins the disagreement and not
     /// the bookkeeping around it.
     ///
-    /// **If the two ever come out equal, the disagreement has been fixed** —
-    /// either by passing an unbounded rect the way the zero-height-container
-    /// path already does a few hundred lines up in `paint/mod.rs`, or by
-    /// teaching the software painter to honour the bounds it is given.
-    /// Whichever it is, delete this test and K24's note with it.
+    /// **Note what this cannot see.** `n_clips` counts `push_layer` calls, not
+    /// clipping shapes, so neither candidate fix would make the two counts
+    /// equal: passing an unbounded rect still pushes a layer, and teaching the
+    /// software painter to honour its bounds does not touch the vello
+    /// encoding at all. This test therefore pins "opacity pushes a vello
+    /// layer", and the sibling above is the one that pins the *behaviour* —
+    /// it is the test that starts failing if the software painter is brought
+    /// into line with vello. When the disagreement is settled in
+    /// `paint/vello_painter.rs` (an unbounded rect) or `paint/mod.rs` (the
+    /// bounds it passes), delete both of these and K24's note with them.
     #[test]
     fn vello_painter_clips_an_opacity_layer() {
         let clips = |opacity: &str| {

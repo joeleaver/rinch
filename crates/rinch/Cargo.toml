@@ -140,8 +140,12 @@ android = [
     "dep:tracing-subscriber",
     "dep:png", "dep:base64", "dep:keyboard-types",
     "dep:bytemuck",
-    "dep:softbuffer", "rinch-dom/software-renderer",
-    "dep:android-activity", "dep:ndk", "dep:raw-window-handle",
+    # No softbuffer: the Android shell presents straight into the
+    # `ANativeWindow` (`SoftSurface`), and `shell::softbuffer_renderer` is
+    # `desktop`-only. raw-window-handle likewise belongs to `android-gpu`,
+    # whose `AndroidWindow` is its only user in an Android build.
+    "rinch-dom/software-renderer",
+    "dep:android-activity", "dep:ndk",
     "dep:log", "dep:android_logger",
     "dep:rinch-android",
 ]
@@ -155,6 +159,9 @@ android-gpu = [
     "android",
     "dep:vello", "dep:wgpu",
     "dep:pollster",
+    # `AndroidWindow` wears `HasWindowHandle`/`HasDisplayHandle` so wgpu can
+    # make a surface from the `ANativeWindow`.
+    "dep:raw-window-handle",
 ]
 # wasm-safe GPU embed (issue #97): the platform-agnostic Embed API — `RinchApp`
 # (layout + Vello scene) + `RinchContext`/`build_scene` + wgpu/vello — WITHOUT the

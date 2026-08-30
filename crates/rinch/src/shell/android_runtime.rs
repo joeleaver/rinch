@@ -168,7 +168,7 @@ fn run_loop(android_app: AndroidApp, mut app: RinchApp) {
 
                         #[cfg(not(feature = "android-gpu"))]
                         {
-                            surface = SoftSurface::new(&native_window, w, h);
+                            surface = Some(SoftSurface::new(&native_window, w, h));
                         }
                         #[cfg(feature = "android-gpu")]
                         {
@@ -804,14 +804,18 @@ struct SoftSurface {
 
 #[cfg(not(feature = "android-gpu"))]
 impl SoftSurface {
-    fn new(window: &ndk::native_window::NativeWindow, width: u32, height: u32) -> Option<Self> {
+    /// Infallible: nothing here can fail in a way that leaves the shell better
+    /// off skipping the frame. A refused `set_buffers_geometry` is logged and
+    /// survived — `present_pixels` re-checks the format of the buffer it is
+    /// actually handed, which is the authoritative answer anyway.
+    fn new(window: &ndk::native_window::NativeWindow, width: u32, height: u32) -> Self {
         let surface = Self {
             native: window.clone(),
             width: width.max(1),
             height: height.max(1),
         };
         surface.configure();
-        Some(surface)
+        surface
     }
 
     /// Ask the window for buffers of the size and format this shell paints.
@@ -837,6 +841,8 @@ impl SoftSurface {
     }
 
     fn present_pixels(&mut self, pixels: &[u8], width: u32, height: u32) {
+        use ndk::hardware_buffer_format::HardwareBufferFormat;
+
         if width != self.width || height != self.height {
             self.resize(width, height);
         }
@@ -845,19 +851,46 @@ impl SoftSurface {
             Ok(g) => g,
             Err(_) => return,
         };
-        // `lines()` is `None` only for a format with no byte size — which
-        // `configure` has already ruled out, but a window whose geometry
-        // request was refused could still be something else, and a garbled
-        // screen is worse than a dropped frame.
+
+        // **Every byte of this buffer has to be written before we return.**
+        //
+        // `ANativeWindow_unlockAndPost` has no cancel — dropping the guard
+        // posts whatever the buffer holds — and `lock(None)` declares the whole
+        // buffer dirty, so Android copies nothing forward into it from the last
+        // frame. A bail that simply returns therefore does not drop a frame, it
+        // posts an uninitialised one. Where the pixels cannot be written, black
+        // is written instead.
+        //
+        // The format check is the one softbuffer used to do for us
+        // (`next_buffer` refused anything but 32-bit RGBA/RGBX). It cannot be
+        // folded into `lines()` returning `None`: the Android default is
+        // `R5G6B5` 16bpp, which has a perfectly good `bytes_per_pixel` of 2, so
+        // a window whose `set_buffers_geometry` was refused hands back lines
+        // half the expected width and RGBA8 bytes poured into them are a
+        // garbled screen, not a wrong one.
+        let format = guard.format();
+        let format_ok = matches!(
+            format,
+            HardwareBufferFormat::R8G8B8A8_UNORM | HardwareBufferFormat::R8G8B8X8_UNORM
+        );
+        if !format_ok {
+            log::error!("present: window buffer is {format:?}, not 32-bit RGBA/RGBX");
+        }
+
+        // `None` only for a format with no byte size at all, which leaves no
+        // safe way to reach the bytes — the one case where the unwritten buffer
+        // goes out as it is.
         let Some(lines) = guard.lines() else {
+            log::error!("present: window buffer format {format:?} has no byte size");
             return;
         };
 
         let src_stride = width as usize * 4;
         for (y, line) in lines.enumerate() {
             let src = y * src_stride;
-            if src + src_stride > pixels.len() {
-                break;
+            if !format_ok || src + src_stride > pixels.len() {
+                line.fill(std::mem::MaybeUninit::new(0));
+                continue;
             }
             let n = line.len().min(src_stride);
             // SAFETY: `MaybeUninit<u8>` has the same layout as `u8`, so an
@@ -874,6 +907,9 @@ impl SoftSurface {
                 )
             };
             line[..n].copy_from_slice(src_uninit);
+            // A window wider than the frame leaves a tail on every line; it is
+            // posted along with the rest, so it cannot be left uninitialised.
+            line[n..].fill(std::mem::MaybeUninit::new(0));
         }
         // Dropping the guard unlocks the buffer and posts it.
     }
@@ -916,6 +952,12 @@ impl SoftSurface {
 /// reused. One struct instead of two would have made every resume a
 /// 1.2-second black screen in exchange for throwing away a device Vulkan
 /// never invalidated.
+/// Set by the device-lost callback, cleared by [`GpuContext::attach`]. The
+/// callback is a plain `fn` with no access to the loop's bindings, so the flag
+/// is how it reaches them.
+#[cfg(feature = "android-gpu")]
+static DEVICE_LOST: AtomicBool = AtomicBool::new(false);
+
 #[cfg(feature = "android-gpu")]
 struct GpuContext {
     /// Kept because a surface must be created by the same instance that will
@@ -939,12 +981,25 @@ impl GpuContext {
     /// Called from `InitWindow` and nowhere else. The `slot` argument is the
     /// loop's `gpu` binding: on the first call it is filled in and on every
     /// later one it is reused, so a resume costs a swapchain and not a device.
+    ///
+    /// Reused, that is, unless Vulkan took it away. Caching the device across
+    /// windows is what makes a resume cheap, and it is also the one way this
+    /// shell could hold a *dead* device for ever: the version of this file that
+    /// built a device per window recovered from a device loss on the next
+    /// `InitWindow` without anyone noticing it was a recovery. `DEVICE_LOST`
+    /// keeps that property — the callback below can only log (it is handed no
+    /// state), so it records the loss and the next window throws the context
+    /// away and builds a fresh one.
     fn attach(
         slot: &mut Option<GpuContext>,
         window: &ndk::native_window::NativeWindow,
         width: u32,
         height: u32,
     ) -> Option<GpuSurface> {
+        if DEVICE_LOST.swap(false, Ordering::AcqRel) && slot.is_some() {
+            log::warn!("GPU: device was lost; rebuilding the context for this window");
+            *slot = None;
+        }
         if slot.is_none() {
             *slot = Some(GpuContext::new(window)?);
         }
@@ -984,11 +1039,16 @@ impl GpuContext {
     /// present is a device that can draw the frame and not show it. The
     /// surface built here is a probe — it is dropped at the end of this
     /// function and the real one is built by [`attach`](Self::attach) from the
-    /// instance this leaves behind. Creating and destroying a bare
-    /// `VkSurfaceKHR` is cheap and, importantly, does not connect the
-    /// `ANativeWindow` to a producer API; only creating a *swapchain* does
-    /// that, which is why this probe cannot collide with the swapchain that
-    /// follows it.
+    /// instance this leaves behind.
+    ///
+    /// **The probe must not outlive this function.**
+    /// `vkCreateAndroidSurfaceKHR` is where the `ANativeWindow` is connected to
+    /// `NATIVE_WINDOW_API_EGL` — libvulkan calls `native_window_api_connect`
+    /// there, not at swapchain creation, and returns
+    /// `VK_ERROR_NATIVE_WINDOW_IN_USE_KHR` for a second connect. So the probe
+    /// and the real surface can only ever exist one at a time, and this works
+    /// because `probe` is a local that drops before `attach` creates the other
+    /// one. Do not hoist it into the returned struct.
     fn new(window: &ndk::native_window::NativeWindow) -> Option<Self> {
         let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
             backends: wgpu::Backends::VULKAN,
@@ -1039,6 +1099,7 @@ impl GpuContext {
 
         device.set_device_lost_callback(|reason, msg| {
             log::error!("GPU DEVICE LOST: reason={reason:?} msg={msg}");
+            DEVICE_LOST.store(true, Ordering::Release);
         });
 
         // `use_cpu: false`, which is the whole point of having a device.
@@ -1327,24 +1388,23 @@ impl GpuSurface {
     ///
     /// The retry is bounded at one, and deliberately does not try to work out
     /// the window's new size for itself. If the window really did change
-    /// shape, this surface is still configured at the old one and will go on
-    /// reporting `suboptimal` until `WindowResized` reaches the loop above and
-    /// calls `resize` — a frame or two of the compositor scaling a
-    /// slightly-wrong image, which is invisible, against a spin here that
-    /// would not be. Dropping a frame is this function's failure mode; looping
-    /// is not.
+    /// shape, this surface is still configured at the old one until
+    /// `WindowResized` reaches the loop above and calls `resize` — a frame or
+    /// two of the compositor scaling a slightly-wrong image, which is
+    /// invisible, against a spin here that would not be. Dropping a frame is
+    /// this function's failure mode; looping is not.
+    ///
+    /// **`suboptimal` is deliberately not one of the conditions retried on.**
+    /// wgpu never reports it on Android: `wgpu-hal`'s Vulkan `acquire_texture`
+    /// maps `VK_SUBOPTIMAL_KHR` to success under `target_os = "android"`,
+    /// because wgpu creates every swapchain with `preTransform = IDENTITY` and
+    /// libvulkan then returns `VK_SUBOPTIMAL_KHR` *persistently* for any
+    /// display orientation that is not the identity one. Retrying on it would
+    /// be dead code as written, and live code that rebuilt the whole swapchain
+    /// and paid two vsync waits on **every** frame in landscape.
     fn acquire(&mut self) -> Option<wgpu::SurfaceTexture> {
         for attempt in 0..2 {
             match self.surface.get_current_texture() {
-                // `suboptimal` means the image can be presented but no longer
-                // matches the window — the first frame after a rotation, in
-                // practice. Rebuilding and asking again gives the *right*
-                // frame one vsync later, which is invisible; presenting the
-                // wrong one is not.
-                Ok(frame) if frame.suboptimal && attempt == 0 => {
-                    drop(frame);
-                    self.reconfigure();
-                }
                 Ok(frame) => return Some(frame),
                 Err(e @ (wgpu::SurfaceError::Outdated | wgpu::SurfaceError::Lost))
                     if attempt == 0 =>
