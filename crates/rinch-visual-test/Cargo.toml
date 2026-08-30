@@ -1,17 +1,26 @@
 [package]
 name = "rinch-visual-test"
-version = "0.1.0"
-edition = "2021"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
 description = "Visual regression testing for rinch"
 
 [dependencies]
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-image = "0.25"
+# PNG only, deliberately. `rinch-dom` pins `image` to
+# `default-features = false, features = ["png", "jpeg", "gif", "webp"]`, and
+# with resolver-2 feature unification a default-featured `image` here would
+# union AVIF/EXR/QOI encoding (rav1e, ravif, exr, qoi, ~25 crates) into every
+# `--workspace` build in the repo. This crate only reads and writes PNG.
+image = { version = "0.25", default-features = false, features = ["png"] }
 thiserror = { workspace = true }
 tracing = { workspace = true }
 base64 = "0.22"
-dirs = "5"
+# The wire protocol and discovery-file layout come from the real crate rather
+# than a hand-rolled mirror: the mirror is what produced the missing `params`
+# key and the wrong error shape this harness used to send.
+rinch-debug = { workspace = true }
 
 [[bin]]
 name = "visual-test"

@@ -21,12 +21,28 @@ pub fn serialize_tree_with_options(
     max_depth: Option<u32>,
     root_id: Option<RawNodeId>,
 ) -> Value {
+    serialize_tree_full(tree, max_depth, root_id, false)
+}
+
+/// Serialize the DOM tree with depth and root options, optionally including
+/// each node's computed styles.
+///
+/// `verbose` is what the visual-regression harness needs: rebuilding the screen
+/// as HTML/CSS for a browser to render is only meaningful if the resolved style
+/// of every node comes with it. [`serialize_tree_verbose`] is the unscoped
+/// shorthand for `verbose = true`.
+pub fn serialize_tree_full(
+    tree: &NodeTree,
+    max_depth: Option<u32>,
+    root_id: Option<RawNodeId>,
+    verbose: bool,
+) -> Value {
     let root = root_id.unwrap_or(tree.body_id);
     // Seed the accumulator with the root's own screen position (minus its own
     // layout, which serialize_node re-adds) so `absolute` is true on-screen
     // coordinates even when scoped to a subtree via `root_id`.
     let (ox, oy) = subtree_offset(tree, root);
-    serialize_node(tree, root, ox, oy, false, max_depth, 0)
+    serialize_node(tree, root, ox, oy, verbose, max_depth, 0)
 }
 
 /// The offset to seed `serialize_node` with so a subtree root's reported
@@ -41,8 +57,12 @@ fn subtree_offset(tree: &NodeTree, root: RawNodeId) -> (f32, f32) {
 }
 
 /// Serialize the DOM tree with full computed styles on every node.
+///
+/// Delegates to [`serialize_tree_full`] so it picks up the same `absolute`
+/// seeding: seeding the accumulator with `(0, 0)` instead (as this used to)
+/// reported `absolute` relative to `body` rather than to the screen.
 pub fn serialize_tree_verbose(tree: &NodeTree) -> Value {
-    serialize_node(tree, tree.body_id, 0.0, 0.0, true, None, 0)
+    serialize_tree_full(tree, None, None, true)
 }
 
 fn serialize_node(

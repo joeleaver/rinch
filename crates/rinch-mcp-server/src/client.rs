@@ -16,6 +16,12 @@ pub enum DebugCommandKind {
         max_depth: Option<u32>,
         #[serde(default)]
         root_id: Option<usize>,
+        /// Include each node's computed styles. Must stay in sync with
+        /// `rinch_debug::protocol::DebugCommandKind` — this enum is a mirror of
+        /// it, and a field missing here is a capability the MCP server silently
+        /// cannot ask for.
+        #[serde(default)]
+        verbose: bool,
     },
     #[serde(rename = "query_selector")]
     QuerySelector { selector: String },

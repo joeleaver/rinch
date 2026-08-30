@@ -42,6 +42,8 @@ pub struct DomTreeParams {
     pub max_depth: Option<u32>,
     /// Start from a specific node ID instead of the body element.
     pub root_id: Option<u64>,
+    /// Include each node's computed styles (default: false).
+    pub verbose: Option<bool>,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -281,7 +283,7 @@ impl RinchMcpServer {
     }
 
     #[tool(
-        description = "Get the DOM tree of the rinch application as JSON. Defaults to depth 3 — use max_depth to go deeper, or root_id to scope to a subtree. Each node has `layout` (parent-relative box, == the node's own layout) and `absolute` (on-screen box). Pass `absolute.x`/`absolute.y` to click()/mouse_* — `layout` x/y are NOT screen coordinates."
+        description = "Get the DOM tree of the rinch application as JSON. Defaults to depth 3 — use max_depth to go deeper, root_id to scope to a subtree, or verbose:true to include each node's computed styles. Each node has `layout` (parent-relative box, == the node's own layout) and `absolute` (on-screen box). Pass `absolute.x`/`absolute.y` to click()/mouse_* — `layout` x/y are NOT screen coordinates."
     )]
     async fn dom_tree(
         &self,
@@ -290,6 +292,7 @@ impl RinchMcpServer {
         self.forward_json_command(DebugCommandKind::DomTree {
             max_depth: params.0.max_depth,
             root_id: params.0.root_id.map(|id| id as usize),
+            verbose: params.0.verbose.unwrap_or(false),
         })
         .await
     }

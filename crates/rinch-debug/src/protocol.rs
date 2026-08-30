@@ -19,6 +19,11 @@ pub enum DebugCommandKind {
         max_depth: Option<u32>,
         #[serde(default)]
         root_id: Option<usize>,
+        /// Include each node's computed styles. Defaults to `false` so existing
+        /// clients keep the compact tree; the visual-regression harness needs
+        /// them to rebuild the screen as HTML/CSS.
+        #[serde(default)]
+        verbose: bool,
     },
     #[serde(rename = "query_selector")]
     QuerySelector { selector: String },

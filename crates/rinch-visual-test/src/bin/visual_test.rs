@@ -3,14 +3,15 @@
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-use rinch_visual_test::runner::TestRunner;
 use rinch_visual_test::report::{generate_html_report, print_summary};
+use rinch_visual_test::runner::TestRunner;
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().collect();
 
     let update_baselines = args.iter().any(|a| a == "--update" || a == "-u");
-    let config_path = args.iter()
+    let config_path = args
+        .iter()
         .position(|a| a == "--config" || a == "-c")
         .and_then(|i| args.get(i + 1))
         .map(PathBuf::from)
