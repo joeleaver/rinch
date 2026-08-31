@@ -336,6 +336,13 @@ fn test_justify_content_space_between() {
     assert_eq!(lb.x, 160.0);
 }
 
+/// An absolute box inside a `position: relative` container: the container is
+/// the containing block, so the insets are measured from *it*.
+///
+/// The container is deliberately offset from the page origin — with it at (0, 0)
+/// this test cannot tell a container-relative box from a viewport-relative one,
+/// and would pass either way (see `mod absolute_containing_block`, which pins
+/// the other case).
 #[test]
 fn test_absolute_position() {
     let mut doc = RinchDocument::new();
@@ -344,7 +351,7 @@ fn test_absolute_position() {
     doc.set_attribute(
         container,
         "style",
-        "display: flex; width: 200px; height: 200px",
+        "position: relative; display: flex; width: 200px; height: 200px; margin: 30px 40px",
     );
     doc.append_child(body, container);
 
@@ -359,8 +366,12 @@ fn test_absolute_position() {
     doc.resolve_layout(800.0, 600.0);
 
     let labs = doc.tree.get(abs.0).unwrap().layout;
-    assert_eq!(labs.x, 20.0);
-    assert_eq!(labs.y, 10.0);
+    assert_eq!((labs.x, labs.y), (20.0, 10.0), "parent-relative layout");
+    assert_eq!(
+        rinch_dom::paint::compute_absolute_position(&doc.tree, abs.0, 1.0),
+        (60.0, 40.0),
+        "on screen: the positioned container's origin plus the insets"
+    );
 }
 
 #[test]
@@ -1083,6 +1094,127 @@ fn test_empty_block_line_floor_survives_an_animation_tick() {
     doc.tick_animations();
 
     assert_floor_survived_relayout(&mut doc, div, "an animation tick");
+}
+
+/// The line floor is not the only override those two ticks used to drop: an
+/// out-of-flow box whose containing block is not its Taffy parent has its
+/// *size* baked from that containing block, and rebuilding the style from the
+/// computed values discards the bake just as thoroughly. `tick_transitions` and
+/// `tick_animations` never had the `position: fixed` bake at all, so a
+/// transition frame on a fixed box collapsed it onto its parent; the ICB
+/// absolute of #204 rides the same helper and would have inherited the drift.
+///
+/// One document holds both cases; the split is by tick, for the reason
+/// `empty_block_floored_at_one_line` records — whichever tick runs last decides.
+fn out_of_flow_boxes_sized_from_the_viewport() -> (RinchDocument, usize, usize) {
+    let mut doc = RinchDocument::new();
+    let body = doc.body();
+
+    // Each box gets a `height: 100%` child: a fixed box's own `LayoutResult` is
+    // rewritten from the viewport after layout either way, so only a child can
+    // see whether the *Taffy* size survived.
+    fn filling(
+        doc: &mut RinchDocument,
+        parent: rinch_core::dom::NodeId,
+        style: &str,
+    ) -> (rinch_core::dom::NodeId, rinch_core::dom::NodeId) {
+        let box_ = doc.create_element("div");
+        doc.set_attribute(box_, "style", style);
+        doc.append_child(parent, box_);
+        let child = doc.create_element("div");
+        doc.set_attribute(child, "style", "width: 100%; height: 100%");
+        doc.append_child(box_, child);
+        (box_, child)
+    }
+
+    // Both boxes hang off a small unpositioned host, so Taffy's own
+    // parent-based answer (100x50) is nothing like the viewport and a dropped
+    // bake is unmistakable.
+    let host = doc.create_element("div");
+    doc.set_attribute(host, "style", "width: 100px; height: 50px");
+    doc.append_child(body, host);
+    let (_icb_absolute, absolute_child) = filling(&mut doc, host, "position: absolute; inset: 0");
+    let (_fixed, fixed_child) = filling(&mut doc, host, "position: fixed; inset: 0");
+
+    doc.resolve_layout(800.0, 600.0);
+    for (what, node) in [
+        ("the fixed box", fixed_child),
+        ("the ICB absolute", absolute_child),
+    ] {
+        let l = doc.tree.get(node.0).unwrap().layout;
+        assert_eq!(
+            (l.width, l.height),
+            (800.0, 600.0),
+            "{what}'s child starts out filling the viewport"
+        );
+    }
+
+    (doc, fixed_child.0, absolute_child.0)
+}
+
+fn assert_viewport_size_survived_relayout(
+    doc: &mut RinchDocument,
+    fixed_child: usize,
+    absolute_child: usize,
+    what: &str,
+) {
+    doc.tree.layout_dirty = true;
+    doc.resolve_layout(800.0, 600.0);
+
+    for (which, node) in [
+        ("a fixed box", fixed_child),
+        ("an ICB absolute", absolute_child),
+    ] {
+        let l = doc.tree.get(node).unwrap().layout;
+        assert_eq!(
+            (l.width, l.height),
+            (800.0, 600.0),
+            "{what} must not drop {which}'s viewport-derived size — its child \
+             is laid out against it"
+        );
+    }
+}
+
+#[test]
+fn test_out_of_flow_viewport_size_survives_a_transition_tick() {
+    let (mut doc, fixed_child, absolute_child) = out_of_flow_boxes_sized_from_the_viewport();
+
+    let parents: Vec<usize> = [fixed_child, absolute_child]
+        .iter()
+        .map(|&n| doc.tree.get(n).unwrap().parent.unwrap())
+        .collect();
+    for node in parents {
+        doc.tree.dirty_nodes.insert(node);
+    }
+    doc.tick_transitions();
+
+    assert_viewport_size_survived_relayout(
+        &mut doc,
+        fixed_child,
+        absolute_child,
+        "a transition tick",
+    );
+}
+
+#[test]
+fn test_out_of_flow_viewport_size_survives_an_animation_tick() {
+    let (mut doc, fixed_child, absolute_child) = out_of_flow_boxes_sized_from_the_viewport();
+
+    let parents: Vec<usize> = [fixed_child, absolute_child]
+        .iter()
+        .map(|&n| doc.tree.get(n).unwrap().parent.unwrap())
+        .collect();
+    for node in parents {
+        doc.tree.dirty_nodes.insert(node);
+    }
+    doc.tick_animations();
+
+    assert_viewport_size_survived_relayout(
+        &mut doc,
+        fixed_child,
+        absolute_child,
+        "an animation tick",
+    );
 }
 
 #[test]
@@ -2219,6 +2351,43 @@ mod inset_fast_path {
         assert_eq!(layout_of(&doc, child), expected);
     }
 
+    /// An absolute with no positioned ancestor must decline for the same
+    /// reason `fixed` does (#204): its Taffy *size* is baked from its insets
+    /// against the initial containing block, so an inset change is not
+    /// inset-only for it. Taking the fast path would leave the stale width.
+    ///
+    /// The insets are written as longhands, not `inset: 0`: `merged_inline_style`
+    /// joins a `HashMap`, so a `set_style` longhand lands on a random side of a
+    /// shorthand already in the attribute and is silently lost about half the
+    /// time. That is its own bug (#387), not this one.
+    #[test]
+    fn set_style_left_on_an_icb_absolute_reaches_stylo() {
+        const UNPOSITIONED: &str = "width: 300px; height: 200px";
+        const FILLING: &str = "position: absolute; left: 0; top: 0; right: 0; bottom: 0";
+
+        let (mut doc, node) = positioned(UNPOSITIONED, FILLING);
+        assert_eq!(
+            (layout_of(&doc, node).width, layout_of(&doc, node).height),
+            (800.0, 600.0),
+            "baseline: the viewport is the containing block"
+        );
+
+        let overrides = [("left", "100px")];
+        set_and_resolve(&mut doc, node, &overrides, Path::Stylo);
+
+        let expected = twin(UNPOSITIONED, FILLING, &overrides);
+        assert_eq!(
+            (expected.width, expected.x),
+            (700.0, 100.0),
+            "oracle sanity: the box re-sizes to the viewport minus the new inset"
+        );
+        assert_eq!(
+            layout_of(&doc, node),
+            expected,
+            "the fast path would have kept the 800px width"
+        );
+    }
+
     /// A batch is all-or-nothing: one value that needs the cascade sends the
     /// whole batch to Stylo, so the two insets never come from different paths.
     #[test]
@@ -2359,4 +2528,255 @@ fn test_inline_block_inside_an_inline_element_is_positioned_by_the_ifc() {
         "the text before it advances the line, so the box is not at the line origin (got x = {})",
         l.x
     );
+}
+
+// Issue #204: the containing block of an absolutely positioned box is its
+// nearest *positioned* ancestor, and the initial containing block — the
+// viewport at the origin — when it has none. Taffy only ever uses the direct
+// parent, so `inset: 0` inside an unpositioned 300x200 div used to give a
+// 300x200 box where a browser (and `rinch-web`, which is the browser) gives the
+// whole 800x600 viewport.
+//
+// The correction keeps `LayoutResult` parent-relative and writes the delta, so
+// each test below pins **both** numbers: `layout` (what Taffy's tree says) and
+// `compute_absolute_position` (what paint and hit testing put on screen).
+
+mod absolute_containing_block {
+    use super::*;
+    use rinch_core::dom::NodeId;
+
+    /// body > container > abs, laid out once at 800x600.
+    fn nested(container_style: &str, abs_style: &str) -> (RinchDocument, NodeId, NodeId) {
+        let mut doc = RinchDocument::new();
+        let body = doc.body();
+        let container = doc.create_element("div");
+        doc.set_attribute(container, "style", container_style);
+        doc.append_child(body, container);
+        let abs = doc.create_element("div");
+        doc.set_attribute(abs, "style", abs_style);
+        doc.append_child(container, abs);
+        doc.resolve_layout(800.0, 600.0);
+        (doc, container, abs)
+    }
+
+    fn on_screen(doc: &RinchDocument, node: NodeId) -> (f64, f64) {
+        rinch_dom::paint::compute_absolute_position(&doc.tree, node.0, 1.0)
+    }
+
+    /// The issue as filed: `inset: 0` under an unpositioned parent fills the
+    /// viewport, not the parent.
+    #[test]
+    fn inset_zero_under_unpositioned_parent_fills_the_viewport() {
+        let (doc, _container, abs) = nested(
+            "width: 300px; height: 200px",
+            "position: absolute; inset: 0",
+        );
+
+        let l = doc.tree.get(abs.0).unwrap().layout;
+        assert_eq!(
+            (l.width, l.height),
+            (800.0, 600.0),
+            "the initial containing block is the viewport, not the 300x200 parent"
+        );
+        assert_eq!(on_screen(&doc, abs), (0.0, 0.0));
+    }
+
+    /// The same box under a parent that is *offset* from the page origin. This
+    /// is what tells an ICB-relative box from a parent-relative one: the two
+    /// coincide only when the parent sits at (0, 0).
+    #[test]
+    fn an_offset_parent_does_not_move_an_icb_absolute() {
+        let (doc, container, abs) = nested(
+            "width: 300px; height: 200px; margin: 50px 40px",
+            "position: absolute; inset: 0",
+        );
+
+        assert_eq!(
+            on_screen(&doc, container),
+            (40.0, 50.0),
+            "sanity: the parent really is off the origin"
+        );
+
+        let l = doc.tree.get(abs.0).unwrap().layout;
+        assert_eq!((l.width, l.height), (800.0, 600.0));
+        assert_eq!(
+            (l.x, l.y),
+            (-40.0, -50.0),
+            "`LayoutResult` stays parent-relative — the correction is a delta, \
+             so every coordinate walk in the codebase keeps working"
+        );
+        assert_eq!(
+            on_screen(&doc, abs),
+            (0.0, 0.0),
+            "on screen it is pinned to the viewport origin"
+        );
+    }
+
+    /// The regression guard: a `position: relative` direct parent *is* the
+    /// containing block, so Taffy's answer stands and nothing is corrected.
+    #[test]
+    fn a_positioned_parent_is_still_the_containing_block() {
+        let (doc, _container, abs) = nested(
+            "position: relative; width: 300px; height: 200px; margin: 50px 40px",
+            "position: absolute; inset: 0",
+        );
+
+        let l = doc.tree.get(abs.0).unwrap().layout;
+        assert_eq!((l.width, l.height), (300.0, 200.0));
+        assert_eq!((l.x, l.y), (0.0, 0.0));
+        assert_eq!(on_screen(&doc, abs), (40.0, 50.0));
+    }
+
+    /// A transformed ancestor is the containing block for its absolutely
+    /// positioned descendants even when its `position` is `static`.
+    #[test]
+    fn a_transformed_parent_is_the_containing_block() {
+        let (doc, _container, abs) = nested(
+            "transform: translateX(10px); width: 300px; height: 200px",
+            "position: absolute; inset: 0",
+        );
+
+        let l = doc.tree.get(abs.0).unwrap().layout;
+        assert_eq!(
+            (l.width, l.height),
+            (300.0, 200.0),
+            "the transform stops the walk, so the parent is the containing block"
+        );
+    }
+
+    /// With both insets on an axis `auto`, CSS keeps the box at its *static*
+    /// position — which does come from the flow position in the DOM parent. So
+    /// that axis is left exactly as Taffy laid it out.
+    #[test]
+    fn auto_insets_keep_the_static_position() {
+        let (doc, _container, abs) = nested(
+            "width: 300px; height: 200px; margin: 50px 40px",
+            "position: absolute; width: 50px; height: 50px",
+        );
+
+        let l = doc.tree.get(abs.0).unwrap().layout;
+        assert_eq!((l.width, l.height), (50.0, 50.0), "auto insets do not size");
+        assert_eq!((l.x, l.y), (0.0, 0.0), "static position, parent-relative");
+        assert_eq!(
+            on_screen(&doc, abs),
+            (40.0, 50.0),
+            "so it sits where it would have sat in flow, inside the parent"
+        );
+    }
+
+    /// One axis inset, the other `auto`: only the inset axis is corrected.
+    #[test]
+    fn one_axis_is_corrected_without_disturbing_the_other() {
+        let (doc, _container, abs) = nested(
+            "width: 300px; height: 200px; margin: 50px 40px",
+            "position: absolute; left: 12px; width: 50px; height: 50px",
+        );
+
+        assert_eq!(
+            on_screen(&doc, abs),
+            (12.0, 50.0),
+            "x measured from the viewport, y still the static position"
+        );
+    }
+
+    /// A percentage size on an ICB-absolute resolves against the viewport.
+    #[test]
+    fn a_percentage_size_resolves_against_the_viewport() {
+        let (doc, _container, abs) = nested(
+            "width: 300px; height: 200px",
+            "position: absolute; left: 0; top: 0; width: 50%; height: 50%",
+        );
+
+        let l = doc.tree.get(abs.0).unwrap().layout;
+        assert_eq!(
+            (l.width, l.height),
+            (400.0, 300.0),
+            "half the viewport, not half the 300x200 parent"
+        );
+    }
+
+    /// The size is baked into the *Taffy* style before layout, not patched
+    /// afterwards — so the box's own children lay out inside the right box.
+    /// A post-layout-only correction would give this child 200px.
+    #[test]
+    fn a_percentage_height_child_sees_the_corrected_box() {
+        let (mut doc, _container, abs) = nested(
+            "width: 300px; height: 200px",
+            "position: absolute; inset: 0",
+        );
+        let kid = doc.create_element("div");
+        doc.set_attribute(kid, "style", "width: 100%; height: 100%");
+        doc.append_child(abs, kid);
+        doc.resolve_layout(800.0, 600.0);
+
+        let l = doc.tree.get(kid.0).unwrap().layout;
+        assert_eq!((l.width, l.height), (800.0, 600.0));
+    }
+
+    /// `right`/`bottom` anchoring measures from the viewport's far edges.
+    #[test]
+    fn right_and_bottom_anchor_to_the_viewport_edges() {
+        let (doc, _container, abs) = nested(
+            "width: 300px; height: 200px; margin: 50px 40px",
+            "position: absolute; right: 10px; bottom: 20px; width: 50px; height: 30px",
+        );
+
+        assert_eq!(on_screen(&doc, abs), (740.0, 550.0));
+    }
+
+    /// A margin on the box offsets it from the inset, as it does in flow.
+    #[test]
+    fn a_margin_offsets_the_box_from_its_inset() {
+        let (doc, _container, abs) = nested(
+            "width: 300px; height: 200px; margin: 50px 40px",
+            "position: absolute; left: 10px; top: 20px; margin-left: 5px; \
+             margin-top: 7px; width: 50px; height: 30px",
+        );
+
+        assert_eq!(on_screen(&doc, abs), (15.0, 27.0));
+    }
+
+    /// An intervening *positioned* ancestor that is not the direct parent is
+    /// still resolved against the direct parent — the half of #204 this change
+    /// deliberately leaves alone (#386), pinned so the follow-up has a starting
+    /// point.
+    #[test]
+    fn a_positioned_grandparent_is_not_yet_honoured() {
+        let mut doc = RinchDocument::new();
+        let body = doc.body();
+        let outer = doc.create_element("div");
+        doc.set_attribute(
+            outer,
+            "style",
+            "position: relative; width: 400px; height: 300px",
+        );
+        doc.append_child(body, outer);
+        let middle = doc.create_element("div");
+        doc.set_attribute(middle, "style", "width: 300px; height: 200px");
+        doc.append_child(outer, middle);
+        let abs = doc.create_element("div");
+        doc.set_attribute(abs, "style", "position: absolute; inset: 0");
+        doc.append_child(middle, abs);
+        doc.resolve_layout(800.0, 600.0);
+
+        let l = doc.tree.get(abs.0).unwrap().layout;
+        assert_eq!(
+            (l.width, l.height),
+            (300.0, 200.0),
+            "known gap: this should be 400x300 (the positioned grandparent)"
+        );
+    }
+
+    /// An ICB-absolute in a `display: none` subtree is left alone — its Taffy
+    /// box is 0x0 and correcting it would drag a hidden node onto the viewport.
+    #[test]
+    fn a_hidden_subtree_is_left_alone() {
+        let (doc, _container, abs) = nested(
+            "display: none; width: 300px; height: 200px",
+            "position: absolute; inset: 0",
+        );
+
+        let l = doc.tree.get(abs.0).unwrap().layout;
+        assert_eq!((l.width, l.height), (0.0, 0.0));
+    }
 }

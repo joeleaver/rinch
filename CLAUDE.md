@@ -1068,6 +1068,31 @@ mpv hands a real frame to the compositor (`VideoPlayer::has_frame`, reset by
 A node that carries the attribute must say exactly `"true"` to punch, so a mis-stamped
 value fails safe.
 
+**Absolute positioning.** Taffy resolves an out-of-flow box against its **direct
+parent**, always. CSS resolves an absolute box against its nearest *positioned*
+ancestor — or, when it has none, against the initial containing block. rinch
+corrects the second case (#204): an absolutely positioned box with **no**
+positioned ancestor (nothing non-`static`, no transform, up to `<html>`) resolves
+against the viewport, so `inset: 0` inside an unpositioned 300x200 div gives an
+800x600 box, matching the browser and therefore `rinch-web`. The correction is
+`crates/rinch-dom/src/out_of_flow.rs` — a pre-layout **size** bake into the Taffy
+style (so the box's own children lay out inside the right box) plus a post-layout
+**position** patch in `read_layout_results`. That patch writes a
+*parent-relative delta*, so `LayoutResult` keeps its meaning and no coordinate
+consumer — paint, stacking, hit testing, `ClickContext`, the MCP `absolute`
+contract — needs an exception. An axis with both insets `auto` keeps Taffy's
+static position, which is what CSS asks for.
+
+**Not covered (#386):** an absolute whose nearest positioned ancestor is not its
+direct parent is still parent-resolved (its used size isn't known until a first
+compute pass); percentage `padding`/`margin` and percentage `min-`/`max-` sizes on the
+box; the shrink-to-fit available width of an auto-sized absolute. `position:
+fixed` is unchanged and now shares the same helper — which is what stops
+`tick_transitions`/`tick_animations` from dropping its viewport size on a
+transition frame. **A component whose overlay must cover its parent (e.g.
+`LoadingOverlay`) needs that parent to declare `position: relative`** — without
+it the overlay now covers the window, as it always has on the web.
+
 **Key files:**
 - `crates/rinch-dom/src/paint/painter.rs` — Abstract `Painter` trait
 - `crates/rinch-dom/src/paint/vello_painter.rs` — GPU backend

@@ -10,13 +10,23 @@ use rinch_core::dom::{NodeHandle, RenderScope};
 /// Unlike Modal/Drawer, this doesn't use a portal - it overlays
 /// its immediate parent container.
 ///
+/// # The parent must be positioned
+///
+/// The overlay is `position: absolute; inset: 0`, so it covers **its containing
+/// block** — which per CSS is the nearest *positioned* ancestor. Give the
+/// container `position: relative` (as the example does). Without it the
+/// containing block is the viewport and the overlay covers the whole window,
+/// on desktop as in the browser (issue #204 — before it, desktop covered the
+/// unpositioned parent instead, and a missing `position: relative` went
+/// unnoticed there while already misbehaving on `rinch-web`).
+///
 /// # Example
 ///
 /// ```ignore
 /// let loading = Signal::new(true);
 ///
 /// rsx! {
-///     div { style: "position: relative;",
+///     div { style: "position: relative;",   // required
 ///         LoadingOverlay {
 ///             visible: loading.get(),
 ///             // Content is still rendered but obscured

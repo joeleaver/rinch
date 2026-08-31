@@ -992,7 +992,9 @@ impl RinchDocument {
     /// - a node that is not `position: absolute`. `fixed` is excluded on
     ///   purpose: `apply_stylo_styles_to_taffy` bakes its Taffy *size* from
     ///   its insets, so an inset change is not inset-only for it — children
-    ///   would be laid out against the stale size until the next restyle;
+    ///   would be laid out against the stale size until the next restyle. An
+    ///   absolute with no positioned ancestor is excluded for the same reason
+    ///   — its size is baked from the initial containing block (#204);
     /// - a requested inset that is not a plain value in the block (see
     ///   [`plain_inset`]).
     ///
@@ -1008,6 +1010,12 @@ impl RinchDocument {
     ) -> Option<InsetBatch> {
         if properties.is_empty()
             || self.tree.nodes[node_id].computed_style.position != PositionValue::Absolute
+            // An absolute with no positioned ancestor is excluded for exactly
+            // the reason `fixed` is: its Taffy *size* is baked from its insets
+            // against the initial containing block (#204), so an inset change
+            // is not inset-only for it either.
+            || crate::out_of_flow::out_of_flow_kind(&self.tree, node_id)
+                == Some(crate::out_of_flow::OutOfFlowKind::IcbAbsolute)
         {
             return None;
         }

@@ -15,6 +15,7 @@ pub mod image_cache;
 pub mod layout;
 mod layout_engine;
 pub mod node;
+mod out_of_flow;
 pub mod paint;
 pub mod select;
 pub mod stacking;

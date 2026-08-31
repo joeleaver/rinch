@@ -498,20 +498,24 @@ if let Some(rect) = ctx.viewport_rect("main") {
 [#354]: https://github.com/joeleaver/rinch/issues/354
 [#358]: https://github.com/joeleaver/rinch/issues/358
 
-> **Overlays need a parent with real height.** On the embed path layout runs
-> through Taffy, which treats an absolutely positioned child's **direct parent**
-> as its containing block — it does not walk up to the nearest *positioned*
-> ancestor the way browser CSS does ([#204]). So a `position: absolute; inset: 0`
-> overlay sizes against whatever element directly encloses it, and if that element
-> has **auto** height the overlay gets essentially no height. Nothing errors and
-> the styles are correct, so this reads as a broken overlay. Give the enclosing
-> element an explicit height (`height: 100%` on the chain up from the root, or a
-> flex parent that stretches it) rather than assuming the overlay will fill the
-> window. This is also a porting difference worth knowing: the same markup can
-> lay out differently under `rinch-web`, where the real browser applies the
-> nearest-positioned-ancestor rule.
+> **Overlays: which ancestor sizes them.** On the embed path layout runs through
+> Taffy, which treats an absolutely positioned child's **direct parent** as its
+> containing block. rinch corrects the common half of that ([#204]): an absolute
+> box with **no** positioned ancestor at all now resolves against the initial
+> containing block — the viewport — so a `position: absolute; inset: 0` overlay
+> dropped into an unpositioned, auto-height container fills the window, as it
+> does in a browser and under `rinch-web`.
+>
+> What is *not* corrected yet ([#386]): an absolute whose nearest positioned
+> ancestor is not its direct parent still sizes against the direct parent. If the overlay
+> sits inside `position: relative` chrome and the element directly enclosing it
+> has **auto** height, the overlay still gets essentially no height. Nothing
+> errors and the styles are correct, so this reads as a broken overlay — give
+> the enclosing element an explicit height (`height: 100%` up the chain, or a
+> flex parent that stretches it).
 
 [#204]: https://github.com/joeleaver/rinch/issues/204
+[#386]: https://github.com/joeleaver/rinch/issues/386
 
 ### Resize and Scale Factor
 
