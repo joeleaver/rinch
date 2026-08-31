@@ -2,6 +2,8 @@
 
 This page lists every prop for every component in `rinch-components`. All components use `#[derive(Default)]` unless noted, meaning `Option<T>` defaults to `None` and `bool` defaults to `false`.
 
+**Keeping this page honest:** this file is hand-maintained (prose, worked examples, and "Custom Default" callouts don't survive mechanical regeneration), so it *will* drift from the component structs again. Before trusting or editing a prop table, run `python3 scripts/audit_component_props_doc.py` from the repo root — it cross-references every row here against the real `pub struct` fields in `crates/rinch-components/src/*.rs` and prints every type mismatch, missing row, and stray row it finds (see the script's own docstring for the handful of known non-issues it also reports, e.g. `Callback` vs a fully-qualified `rinch_core::Callback` spelling that source uses in a few files — same type, not a bug).
+
 **String props:** All text/string component props are now `String` type (not `Option<String>`). Empty string `""` means "not set/use default". The RSX macro auto-converts string literals: `variant: "filled"` becomes `String::from("filled")`.
 
 **Float literals:** Float literals are auto-wrapped: `value: 30.0` becomes `Some(30.0)` for `Option<f32>` fields.
@@ -48,9 +50,9 @@ Vertical flex container.
 
 | Prop | Type | Default | Description |
 |------|------|---------|-------------|
-| `gap` | `Option<String>` | `None` | Spacing between children (xs, sm, md, lg, xl or CSS value) |
-| `align` | `Option<String>` | `None` | CSS `align-items` (e.g., "center", "flex-start") |
-| `justify` | `Option<String>` | `None` | CSS `justify-content` |
+| `gap` | `String` | `""` | Spacing between children (xs, sm, md, lg, xl or CSS value) |
+| `align` | `String` | `""` | CSS `align-items` (e.g., "center", "flex-start") |
+| `justify` | `String` | `""` | CSS `justify-content` |
 
 ### Group
 
@@ -58,9 +60,9 @@ Horizontal flex container.
 
 | Prop | Type | Default | Description |
 |------|------|---------|-------------|
-| `gap` | `Option<String>` | `None` | Spacing between children (xs, sm, md, lg, xl or CSS value) |
-| `align` | `Option<String>` | `None` | CSS `align-items` |
-| `justify` | `Option<String>` | `None` | CSS `justify-content` |
+| `gap` | `String` | `""` | Spacing between children (xs, sm, md, lg, xl or CSS value) |
+| `align` | `String` | `""` | CSS `align-items` |
+| `justify` | `String` | `""` | CSS `justify-content` |
 | `wrap` | `bool` | `false` | Enable flex-wrap |
 | `grow` | `bool` | `false` | Children flex-grow: 1 |
 
@@ -71,9 +73,9 @@ Auto-layout grid.
 | Prop | Type | Default | Description |
 |------|------|---------|-------------|
 | `cols` | `Option<u32>` | `None` | Number of columns (default 1) |
-| `min_child_width` | `Option<String>` | `None` | Min column width for auto-fill; overrides `cols` |
-| `spacing` | `Option<String>` | `None` | Gap between items (xs, sm, md, lg, xl or CSS value) |
-| `vertical_spacing` | `Option<String>` | `None` | Vertical gap (xs, sm, md, lg, xl or CSS value); falls back to `spacing` |
+| `min_child_width` | `String` | `""` | Min column width for auto-fill; overrides `cols` |
+| `spacing` | `String` | `""` | Gap between items (xs, sm, md, lg, xl or CSS value) |
+| `vertical_spacing` | `String` | `""` | Vertical gap (xs, sm, md, lg, xl or CSS value); falls back to `spacing` |
 
 ### Container
 
@@ -81,7 +83,7 @@ Centered max-width wrapper.
 
 | Prop | Type | Default | Description |
 |------|------|---------|-------------|
-| `size` | `Option<String>` | `None` | Max-width (xs, sm, md, lg, xl) |
+| `size` | `String` | `""` | Max-width (xs, sm, md, lg, xl) |
 | `fluid` | `bool` | `false` | Full width (no max-width) |
 
 ### Center
@@ -98,8 +100,8 @@ Empty spacing element.
 
 | Prop | Type | Default | Description |
 |------|------|---------|-------------|
-| `w` | `Option<String>` | `None` | Width (spacing scale or CSS value) |
-| `h` | `Option<String>` | `None` | Height (spacing scale or CSS value) |
+| `w` | `String` | `""` | Width (spacing scale or CSS value) |
+| `h` | `String` | `""` | Height (spacing scale or CSS value) |
 
 ---
 
@@ -109,13 +111,13 @@ Empty spacing element.
 
 | Prop | Type | Default | Description |
 |------|------|---------|-------------|
-| `variant` | `Option<String>` | `None` | "filled", "outline", "light", "subtle", "transparent", "white", "default", "gradient" |
-| `size` | `Option<String>` | `None` | xs, sm, md, lg, xl |
-| `color` | `Option<String>` | `None` | Theme color name |
+| `variant` | `String` | `""` | "filled", "outline", "light", "subtle", "transparent", "white", "default", "gradient" |
+| `size` | `String` | `""` | xs, sm, md, lg, xl |
+| `color` | `String` | `""` | Theme color name |
 | `disabled` | `bool` | `false` | |
 | `loading` | `bool` | `false` | |
 | `full_width` | `bool` | `false` | |
-| `radius` | `Option<String>` | `None` | Border radius override |
+| `radius` | `String` | `""` | Border radius override |
 | `onclick` | `Option<Callback>` | `None` | Click handler |
 
 ### ActionIcon
@@ -125,10 +127,10 @@ Icon-only button. For text-based action buttons, use `Button` with compact styli
 | Prop | Type | Default | Description |
 |------|------|---------|-------------|
 | `icon` | `Option<TablerIcon>` | `None` | Tabler icon to display |
-| `variant` | `Option<String>` | `None` | Same variants as Button |
-| `size` | `Option<String>` | `None` | xs, sm, md, lg, xl |
-| `color` | `Option<String>` | `None` | Theme color name |
-| `radius` | `Option<String>` | `None` | |
+| `variant` | `String` | `""` | Same variants as Button |
+| `size` | `String` | `""` | xs, sm, md, lg, xl |
+| `color` | `String` | `""` | Theme color name |
+| `radius` | `String` | `""` | |
 | `disabled` | `bool` | `false` | |
 | `loading` | `bool` | `false` | |
 | `onclick` | `Option<Callback>` | `None` | Click handler |
@@ -137,8 +139,8 @@ Icon-only button. For text-based action buttons, use `Button` with compact styli
 
 | Prop | Type | Default | Description |
 |------|------|---------|-------------|
-| `size` | `Option<String>` | `None` | xs, sm, md, lg, xl |
-| `radius` | `Option<String>` | `None` | |
+| `size` | `String` | `""` | xs, sm, md, lg, xl |
+| `radius` | `String` | `""` | |
 | `disabled` | `bool` | `false` | |
 | `icon_size` | `Option<u32>` | `None` | Custom icon size in pixels |
 | `onclick` | `Option<Callback>` | `None` | Click handler |
@@ -151,16 +153,16 @@ Icon-only button. For text-based action buttons, use `Button` with compact styli
 
 | Prop | Type | Default | Description |
 |------|------|---------|-------------|
-| `label` | `Option<String>` | `None` | |
-| `placeholder` | `Option<String>` | `None` | |
-| `description` | `Option<String>` | `None` | Help text below input |
-| `error` | `Option<String>` | `None` | Error message; shows error styling |
-| `size` | `Option<String>` | `None` | xs, sm, md, lg, xl |
+| `label` | `String` | `""` | |
+| `placeholder` | `String` | `""` | |
+| `description` | `String` | `""` | Help text below input |
+| `error` | `String` | `""` | Error message; shows error styling |
+| `size` | `String` | `""` | xs, sm, md, lg, xl |
 | `disabled` | `bool` | `false` | |
 | `required` | `bool` | `false` | |
-| `radius` | `Option<String>` | `None` | |
-| `input_type` | `Option<String>` | `None` | HTML input type ("text", "email", etc.) |
-| `value` | `Option<String>` | `None` | Static value |
+| `radius` | `String` | `""` | |
+| `input_type` | `String` | `""` | HTML input type ("text", "email", etc.) |
+| `value` | `String` | `""` | Static value |
 | `value_fn` | `Option<ReactiveString>` | `None` | Reactive value binding (auto-wrapped) |
 | `oninput` | `Option<InputCallback>` | `None` | Receives `String` |
 | `onchange` | `Option<InputCallback>` | `None` | Commit boundary (#226): fires once with the final value when the gesture ends (blur after a modification, or Enter); only if the value changed since focus |
@@ -170,17 +172,17 @@ Icon-only button. For text-based action buttons, use `Button` with compact styli
 
 | Prop | Type | Default | Description |
 |------|------|---------|-------------|
-| `label` | `Option<String>` | `None` | |
-| `description` | `Option<String>` | `None` | |
-| `error` | `Option<String>` | `None` | |
-| `placeholder` | `Option<String>` | `None` | |
-| `size` | `Option<String>` | `None` | |
+| `label` | `String` | `""` | |
+| `description` | `String` | `""` | |
+| `error` | `String` | `""` | |
+| `placeholder` | `String` | `""` | |
+| `size` | `String` | `""` | |
 | `disabled` | `bool` | `false` | |
 | `required` | `bool` | `false` | |
 | `autosize` | `bool` | `false` | Auto-resize textarea |
 | `min_rows` | `Option<u32>` | `None` | Visible rows; sizes the control to that many lines. Defaults to 2 (HTML default) when unset. A larger CSS `min-height` wins |
 | `max_rows` | `Option<u32>` | `None` | Upper bound on rows when `autosize` is set |
-| `value` | `Option<String>` | `None` | |
+| `value` | `String` | `""` | |
 | `value_fn` | `Option<ReactiveString>` | `None` | Reactive value binding (auto-wrapped) |
 | `oninput` | `Option<InputCallback>` | `None` | Receives `String` |
 | `onchange` | `Option<InputCallback>` | `None` | Commit boundary (#226): fires once with the final value when the gesture ends (blur after a modification); only if the value changed since focus |
@@ -191,19 +193,19 @@ Custom Default: `toggle_visibility` defaults to `true`.
 
 | Prop | Type | Default | Description |
 |------|------|---------|-------------|
-| `label` | `Option<String>` | `None` | |
-| `description` | `Option<String>` | `None` | |
-| `error` | `Option<String>` | `None` | |
-| `placeholder` | `Option<String>` | `None` | |
-| `value` | `Option<String>` | `None` | |
+| `label` | `String` | `""` | |
+| `description` | `String` | `""` | |
+| `error` | `String` | `""` | |
+| `placeholder` | `String` | `""` | |
+| `value` | `String` | `""` | |
 | `value_fn` | `Option<ReactiveString>` | `None` | Reactive value binding (auto-wrapped) |
 | `visible` | `bool` | `false` | Password visibility state |
 | `visible_fn` | `Option<ReactiveBool>` | `None` | Reactive visibility (auto-wrapped) |
 | `disabled` | `bool` | `false` | |
 | `required` | `bool` | `false` | |
 | `autofocus` | `bool` | `false` | |
-| `size` | `Option<String>` | `None` | |
-| `radius` | `Option<String>` | `None` | |
+| `size` | `String` | `""` | |
+| `radius` | `String` | `""` | |
 | `toggle_visibility` | `bool` | **`true`** | Show/hide the eye toggle button |
 | `ontoggle` | `Option<Callback>` | `None` | Fires when visibility toggled |
 | `oninput` | `Option<InputCallback>` | `None` | Receives `String` |
@@ -213,23 +215,23 @@ Custom Default: `toggle_visibility` defaults to `true`.
 
 | Prop | Type | Default | Description |
 |------|------|---------|-------------|
-| `label` | `Option<String>` | `None` | |
-| `description` | `Option<String>` | `None` | |
-| `error` | `Option<String>` | `None` | |
-| `placeholder` | `Option<String>` | `None` | |
+| `label` | `String` | `""` | |
+| `description` | `String` | `""` | |
+| `error` | `String` | `""` | |
+| `placeholder` | `String` | `""` | |
 | `value` | `Option<f64>` | `None` | |
 | `default_value` | `Option<f64>` | `None` | |
 | `min` | `Option<f64>` | `None` | |
 | `max` | `Option<f64>` | `None` | |
 | `step` | `Option<f64>` | `None` | |
 | `decimal_scale` | `Option<u32>` | `None` | Number of decimal places |
-| `prefix` | `Option<String>` | `None` | e.g., "$" |
-| `suffix` | `Option<String>` | `None` | e.g., "kg" |
+| `prefix` | `String` | `""` | e.g., "$" |
+| `suffix` | `String` | `""` | e.g., "kg" |
 | `disabled` | `bool` | `false` | |
 | `hide_controls` | `bool` | `false` | Hide +/- buttons |
 | `required` | `bool` | `false` | |
-| `size` | `Option<String>` | `None` | |
-| `radius` | `Option<String>` | `None` | |
+| `size` | `String` | `""` | |
+| `radius` | `String` | `""` | |
 | `onincrement` | `Option<Callback>` | `None` | |
 | `ondecrement` | `Option<Callback>` | `None` | |
 | `oninput` | `Option<InputCallback>` | `None` | Receives `String` from direct text entry |
@@ -239,9 +241,9 @@ Custom Default: `toggle_visibility` defaults to `true`.
 
 | Prop | Type | Default | Description |
 |------|------|---------|-------------|
-| `label` | `Option<String>` | `None` | |
-| `description` | `Option<String>` | `None` | |
-| `size` | `Option<String>` | `None` | |
+| `label` | `String` | `""` | |
+| `description` | `String` | `""` | |
+| `size` | `String` | `""` | |
 | `disabled` | `bool` | `false` | |
 | `checked` | `bool` | `false` | Static checked state |
 | `checked_fn` | `Option<ReactiveBool>` | `None` | Reactive checked binding (auto-wrapped) |
@@ -252,27 +254,27 @@ Custom Default: `toggle_visibility` defaults to `true`.
 
 | Prop | Type | Default | Description |
 |------|------|---------|-------------|
-| `label` | `Option<String>` | `None` | |
-| `description` | `Option<String>` | `None` | |
-| `size` | `Option<String>` | `None` | |
+| `label` | `String` | `""` | |
+| `description` | `String` | `""` | |
+| `size` | `String` | `""` | |
 | `disabled` | `bool` | `false` | |
 | `checked` | `bool` | `false` | |
 | `checked_fn` | `Option<ReactiveBool>` | `None` | Reactive checked binding (auto-wrapped) |
-| `label_position` | `Option<String>` | `None` | "left" or "right" |
+| `label_position` | `String` | `""` | "left" or "right" |
 | `onchange` | `Option<Callback>` | `None` | |
 
 ### Select
 
 | Prop | Type | Default | Description |
 |------|------|---------|-------------|
-| `label` | `Option<String>` | `None` | |
-| `description` | `Option<String>` | `None` | |
-| `error` | `Option<String>` | `None` | |
-| `placeholder` | `Option<String>` | `None` | |
-| `size` | `Option<String>` | `None` | |
+| `label` | `String` | `""` | |
+| `description` | `String` | `""` | |
+| `error` | `String` | `""` | |
+| `placeholder` | `String` | `""` | |
+| `size` | `String` | `""` | |
 | `disabled` | `bool` | `false` | |
 | `required` | `bool` | `false` | |
-| `value` | `Option<String>` | `None` | |
+| `value` | `String` | `""` | |
 | `value_fn` | `Option<ReactiveString>` | `None` | Reactive value binding (auto-wrapped) |
 | `onchange` | `Option<InputCallback>` | `None` | Receives selected value as `String` |
 
@@ -284,15 +286,15 @@ Options are passed as children: `option { value: "us", "United States" }`
 
 | Prop | Type | Default | Description |
 |------|------|---------|-------------|
-| `name` | `Option<String>` | `None` | Radio group name |
-| `value` | `Option<String>` | `None` | Radio value |
-| `label` | `Option<String>` | `None` | |
-| `description` | `Option<String>` | `None` | |
+| `name` | `String` | `""` | Radio group name |
+| `value` | `String` | `""` | Radio value |
+| `label` | `String` | `""` | |
+| `description` | `String` | `""` | |
 | `checked` | `bool` | `false` | |
 | `checked_fn` | `Option<ReactiveBool>` | `None` | Reactive checked binding (auto-wrapped) |
 | `disabled` | `bool` | `false` | |
-| `size` | `Option<String>` | `None` | |
-| `color` | `Option<String>` | `None` | |
+| `size` | `String` | `""` | |
+| `color` | `String` | `""` | |
 | `error` | `bool` | `false` | |
 | `onchange` | `Option<Callback>` | `None` | |
 
@@ -300,11 +302,11 @@ Options are passed as children: `option { value: "us", "United States" }`
 
 | Prop | Type | Default | Description |
 |------|------|---------|-------------|
-| `label` | `Option<String>` | `None` | |
-| `description` | `Option<String>` | `None` | |
-| `error` | `Option<String>` | `None` | |
-| `size` | `Option<String>` | `None` | |
-| `orientation` | `Option<String>` | `None` | "horizontal" or "vertical" |
+| `label` | `String` | `""` | |
+| `description` | `String` | `""` | |
+| `error` | `String` | `""` | |
+| `size` | `String` | `""` | |
+| `orientation` | `String` | `""` | "horizontal" or "vertical" |
 
 ### Slider
 
@@ -315,11 +317,11 @@ Options are passed as children: `option { value: "us", "United States" }`
 | `value` | `Option<f64>` | `None` | Static value |
 | `value_signal` | `Option<Signal<f64>>` | `None` | Direct signal binding |
 | `step` | `Option<f64>` | `None` | |
-| `size` | `Option<String>` | `None` | |
-| `color` | `Option<String>` | `None` | |
-| `radius` | `Option<String>` | `None` | |
+| `size` | `String` | `""` | |
+| `color` | `String` | `""` | |
+| `radius` | `String` | `""` | |
 | `disabled` | `bool` | `false` | |
-| `label` | `Option<String>` | `None` | Tooltip label format |
+| `label` | `String` | `""` | Tooltip label format |
 | `show_label_on_hover` | `bool` | `false` | |
 | `label_always_on` | `bool` | `false` | |
 | `onchange` | `Option<ValueCallback<f64>>` | `None` | Receives `f64` |
@@ -485,10 +487,10 @@ when alpha must be externally drivable.
 
 | Prop | Type | Default | Description |
 |------|------|---------|-------------|
-| `size` | `Option<String>` | `None` | xs, sm, md, lg, xl |
-| `weight` | `Option<String>` | `None` | CSS font-weight |
-| `color` | `Option<String>` | `None` | Theme color or "dimmed" |
-| `align` | `Option<String>` | `None` | CSS text-align |
+| `size` | `String` | `""` | xs, sm, md, lg, xl |
+| `weight` | `String` | `""` | CSS font-weight |
+| `color` | `String` | `""` | Theme color or "dimmed" |
+| `align` | `String` | `""` | CSS text-align |
 | `inline` | `bool` | `false` | Use `<span>` instead of `<p>` |
 
 ### Title
@@ -496,45 +498,45 @@ when alpha must be externally drivable.
 | Prop | Type | Default | Description |
 |------|------|---------|-------------|
 | `order` | `Option<u8>` | `None` | Heading level 1-6 |
-| `align` | `Option<String>` | `None` | CSS text-align |
-| `size` | `Option<String>` | `None` | Override size independent of order |
+| `align` | `String` | `""` | CSS text-align |
+| `size` | `String` | `""` | Override size independent of order |
 
 ### Code
 
 | Prop | Type | Default | Description |
 |------|------|---------|-------------|
 | `block` | `bool` | `false` | Block display (`<pre>`) vs inline (`<code>`) |
-| `color` | `Option<String>` | `None` | |
+| `color` | `String` | `""` | |
 
 ### Kbd
 
 | Prop | Type | Default | Description |
 |------|------|---------|-------------|
-| `size` | `Option<String>` | `None` | xs, sm, md, lg, xl |
+| `size` | `String` | `""` | xs, sm, md, lg, xl |
 
 ### Anchor
 
 | Prop | Type | Default | Description |
 |------|------|---------|-------------|
-| `href` | `Option<String>` | `None` | |
-| `target` | `Option<String>` | `None` | e.g., "_blank" |
-| `size` | `Option<String>` | `None` | |
+| `href` | `String` | `""` | |
+| `target` | `String` | `""` | e.g., "_blank" |
+| `size` | `String` | `""` | |
 | `underline` | `bool` | `false` | |
 
 ### Blockquote
 
 | Prop | Type | Default | Description |
 |------|------|---------|-------------|
-| `cite` | `Option<String>` | `None` | Citation source |
+| `cite` | `String` | `""` | Citation source |
 | `icon` | `Option<TablerIcon>` | `None` | |
-| `color` | `Option<String>` | `None` | |
-| `radius` | `Option<String>` | `None` | |
+| `color` | `String` | `""` | |
+| `radius` | `String` | `""` | |
 
 ### Mark
 
 | Prop | Type | Default | Description |
 |------|------|---------|-------------|
-| `color` | `Option<String>` | `None` | Highlight background color |
+| `color` | `String` | `""` | Highlight background color |
 
 ### Highlight
 
@@ -542,9 +544,9 @@ Custom Default: `ignore_case` defaults to `true`.
 
 | Prop | Type | Default | Description |
 |------|------|---------|-------------|
-| `text` | `Option<String>` | `None` | Full text to display |
-| `highlight` | `Option<String>` | `None` | Substring(s) to highlight |
-| `color` | `Option<String>` | `None` | Highlight color |
+| `text` | `String` | `""` | Full text to display |
+| `highlight` | `String` | `""` | Substring(s) to highlight |
+| `color` | `String` | `""` | Highlight color |
 | `ignore_case` | `bool` | **`true`** | Case-insensitive matching |
 
 ---
@@ -555,33 +557,33 @@ Custom Default: `ignore_case` defaults to `true`.
 
 | Prop | Type | Default | Description |
 |------|------|---------|-------------|
-| `src` | `Option<String>` | `None` | Image URL |
-| `alt` | `Option<String>` | `None` | |
-| `name` | `Option<String>` | `None` | For initials fallback |
-| `size` | `Option<String>` | `None` | |
-| `radius` | `Option<String>` | `None` | |
-| `color` | `Option<String>` | `None` | |
-| `variant` | `Option<String>` | `None` | "filled", "light", "outline" |
+| `src` | `String` | `""` | Image URL |
+| `alt` | `String` | `""` | |
+| `name` | `String` | `""` | For initials fallback |
+| `size` | `String` | `""` | |
+| `radius` | `String` | `""` | |
+| `color` | `String` | `""` | |
+| `variant` | `String` | `""` | "filled", "light", "outline" |
 
-**AvatarGroup:** `spacing: Option<String>` — overlap spacing.
+**AvatarGroup:** `spacing: String` — overlap spacing.
 
 ### Badge
 
 | Prop | Type | Default | Description |
 |------|------|---------|-------------|
-| `variant` | `Option<String>` | `None` | "filled", "light", "outline", "dot", "transparent", "white", "default", "gradient" |
-| `size` | `Option<String>` | `None` | |
-| `color` | `Option<String>` | `None` | |
-| `radius` | `Option<String>` | `None` | |
+| `variant` | `String` | `""` | "filled", "light", "outline", "dot", "transparent", "white", "default", "gradient" |
+| `size` | `String` | `""` | |
+| `color` | `String` | `""` | |
+| `radius` | `String` | `""` | |
 | `full_width` | `bool` | `false` | |
 
 ### Card
 
 | Prop | Type | Default | Description |
 |------|------|---------|-------------|
-| `shadow` | `Option<String>` | `None` | xs, sm, md, lg, xl |
-| `padding` | `Option<String>` | `None` | |
-| `radius` | `Option<String>` | `None` | |
+| `shadow` | `String` | `""` | xs, sm, md, lg, xl |
+| `padding` | `String` | `""` | |
+| `radius` | `String` | `""` | |
 | `with_border` | `bool` | `false` | |
 
 **CardSection:** `inherit_padding: bool`, `with_border: bool`.
@@ -590,41 +592,41 @@ Custom Default: `ignore_case` defaults to `true`.
 
 | Prop | Type | Default | Description |
 |------|------|---------|-------------|
-| `shadow` | `Option<String>` | `None` | xs, sm, md, lg, xl |
-| `p` | `Option<String>` | `None` | Padding (spacing scale) |
-| `radius` | `Option<String>` | `None` | |
+| `shadow` | `String` | `""` | xs, sm, md, lg, xl |
+| `p` | `String` | `""` | Padding (spacing scale) |
+| `radius` | `String` | `""` | |
 | `with_border` | `bool` | `false` | |
 
 ### Divider
 
 | Prop | Type | Default | Description |
 |------|------|---------|-------------|
-| `orientation` | `Option<String>` | `None` | "horizontal" or "vertical" |
-| `size` | `Option<String>` | `None` | |
-| `label` | `Option<String>` | `None` | Text label in the divider |
-| `label_position` | `Option<String>` | `None` | "left", "center", "right" |
+| `orientation` | `String` | `""` | "horizontal" or "vertical" |
+| `size` | `String` | `""` | |
+| `label` | `String` | `""` | Text label in the divider |
+| `label_position` | `String` | `""` | "left", "center", "right" |
 
 ### Fieldset
 
 | Prop | Type | Default | Description |
 |------|------|---------|-------------|
-| `legend` | `Option<String>` | `None` | |
-| `variant` | `Option<String>` | `None` | "default", "filled", "unstyled" |
-| `size` | `Option<String>` | `None` | |
+| `legend` | `String` | `""` | |
+| `variant` | `String` | `""` | "default", "filled", "unstyled" |
+| `size` | `String` | `""` | |
 | `disabled` | `bool` | `false` | |
 
 ### Image
 
 | Prop | Type | Default | Description |
 |------|------|---------|-------------|
-| `src` | `Option<String>` | `None` | Image URL |
-| `alt` | `Option<String>` | `None` | |
-| `width` | `Option<String>` | `None` | CSS width |
-| `height` | `Option<String>` | `None` | CSS height |
-| `fit` | `Option<String>` | `None` | CSS object-fit |
-| `radius` | `Option<String>` | `None` | |
-| `fallback_src` | `Option<String>` | `None` | Fallback image URL |
-| `caption` | `Option<String>` | `None` | Caption text below image |
+| `src` | `String` | `""` | Image URL |
+| `alt` | `String` | `""` | |
+| `width` | `String` | `""` | CSS width |
+| `height` | `String` | `""` | CSS height |
+| `fit` | `String` | `""` | CSS object-fit |
+| `radius` | `String` | `""` | |
+| `fallback_src` | `String` | `""` | Fallback image URL |
+| `caption` | `String` | `""` | Caption text below image |
 
 ### List / ListItem
 
@@ -632,9 +634,9 @@ Custom Default: `ignore_case` defaults to `true`.
 
 | Prop | Type | Default | Description |
 |------|------|---------|-------------|
-| `type` | `Option<String>` | `None` | "ordered" or "unordered" |
-| `size` | `Option<String>` | `None` | |
-| `spacing` | `Option<String>` | `None` | |
+| `type` | `String` | `""` | "ordered" or "unordered" |
+| `size` | `String` | `""` | |
+| `spacing` | `String` | `""` | |
 | `center` | `bool` | `false` | Center items with icons |
 | `icon` | `Option<TablerIcon>` | `None` | Default icon for all items |
 | `with_padding` | `bool` | `false` | |
@@ -649,10 +651,10 @@ Custom Default: `ignore_case` defaults to `true`.
 
 | Prop | Type | Default | Description |
 |------|------|---------|-------------|
-| `color` | `Option<String>` | `None` | |
-| `variant` | `Option<String>` | `None` | "filled", "light", "outline", "transparent", "white", "default" |
-| `title` | `Option<String>` | `None` | |
-| `radius` | `Option<String>` | `None` | |
+| `color` | `String` | `""` | |
+| `variant` | `String` | `""` | "filled", "light", "outline", "transparent", "white", "default" |
+| `title` | `String` | `""` | |
+| `radius` | `String` | `""` | |
 | `with_close_button` | `bool` | `false` | |
 | `icon` | `Option<TablerIcon>` | `None` | |
 | `onclose` | `Option<Callback>` | `None` | |
@@ -661,9 +663,9 @@ Custom Default: `ignore_case` defaults to `true`.
 
 | Prop | Type | Default | Description |
 |------|------|---------|-------------|
-| `type` | `Option<String>` | `None` | "oval", "bars", "dots" |
-| `size` | `Option<String>` | `None` | |
-| `color` | `Option<String>` | `None` | |
+| `type` | `String` | `""` | "oval", "bars", "dots" |
+| `size` | `String` | `""` | |
+| `color` | `String` | `""` | |
 
 ### Progress
 
@@ -671,9 +673,9 @@ Custom Default: `ignore_case` defaults to `true`.
 |------|------|---------|-------------|
 | `value` | `Option<f32>` | `None` | Percentage 0-100 |
 | `value_fn` | `Option<ReactiveF32>` | `None` | Reactive value binding (auto-wrapped) |
-| `color` | `Option<String>` | `None` | |
-| `size` | `Option<String>` | `None` | |
-| `radius` | `Option<String>` | `None` | |
+| `color` | `String` | `""` | |
+| `size` | `String` | `""` | |
+| `radius` | `String` | `""` | |
 | `striped` | `bool` | `false` | |
 | `animated` | `bool` | `false` | |
 
@@ -683,9 +685,9 @@ Custom Default: `animate` and `visible` default to `true`.
 
 | Prop | Type | Default | Description |
 |------|------|---------|-------------|
-| `width` | `Option<String>` | `None` | |
-| `height` | `Option<String>` | `None` | |
-| `radius` | `Option<String>` | `None` | |
+| `width` | `String` | `""` | |
+| `height` | `String` | `""` | |
+| `radius` | `String` | `""` | |
 | `circle` | `bool` | `false` | |
 | `animate` | `bool` | **`true`** | |
 | `visible` | `bool` | **`true`** | |
@@ -698,14 +700,14 @@ Custom Default: `animate` and `visible` default to `true`.
 
 | Prop | Type | Default | Description |
 |------|------|---------|-------------|
-| `label` | `Option<String>` | `None` | Tooltip text |
-| `position` | `Option<String>` | `None` | "top", "bottom", "left", "right" |
-| `color` | `Option<String>` | `None` | |
+| `label` | `String` | `""` | Tooltip text |
+| `position` | `String` | `""` | "top", "bottom", "left", "right" |
+| `color` | `String` | `""` | |
 | `opened` | `bool` | `false` | |
 | `disabled` | `bool` | `false` | |
 | `with_arrow` | `bool` | `false` | |
 | `multiline` | `bool` | `false` | |
-| `width` | `Option<String>` | `None` | |
+| `width` | `String` | `""` | |
 
 ### Modal
 
@@ -717,17 +719,17 @@ Positioned with `top: var(--rinch-window-top-inset, 0px)`, so it clears any wind
 |------|------|---------|-------------|
 | `opened` | `bool` | `false` | |
 | `opened_fn` | `Option<ReactiveBool>` | `None` | Reactive open state (auto-wrapped) |
-| `title` | `Option<String>` | `None` | |
-| `size` | `Option<String>` | `None` | |
-| `radius` | `Option<String>` | `None` | |
+| `title` | `String` | `""` | |
+| `size` | `String` | `""` | |
+| `radius` | `String` | `""` | |
 | `with_overlay` | `bool` | **`true`** | |
 | `overlay_opacity` | `Option<f32>` | `None` | |
-| `overlay_blur` | `Option<String>` | `None` | |
+| `overlay_blur` | `String` | `""` | |
 | `centered` | `bool` | `false` | |
 | `close_on_click_outside` | `bool` | **`true`** | |
 | `close_on_escape` | `bool` | **`true`** | |
 | `with_close_button` | `bool` | **`true`** | |
-| `padding` | `Option<String>` | `None` | |
+| `padding` | `String` | `""` | |
 | `z_index` | `Option<i32>` | `None` | |
 | `lock_scroll` | `bool` | **`true`** | |
 | `trap_focus` | `bool` | **`true`** | |
@@ -743,15 +745,15 @@ Positioned with `top: var(--rinch-window-top-inset, 0px)`, so it clears any wind
 |------|------|---------|-------------|
 | `opened` | `bool` | `false` | |
 | `opened_fn` | `Option<ReactiveBool>` | `None` | Reactive open state (auto-wrapped) |
-| `title` | `Option<String>` | `None` | |
-| `position` | `Option<String>` | `None` | "left", "right", "top", "bottom" |
-| `size` | `Option<String>` | `None` | |
+| `title` | `String` | `""` | |
+| `position` | `String` | `""` | "left", "right", "top", "bottom" |
+| `size` | `String` | `""` | |
 | `with_overlay` | `bool` | **`true`** | |
 | `overlay_opacity` | `Option<f32>` | `None` | |
 | `close_on_click_outside` | `bool` | **`true`** | |
 | `close_on_escape` | `bool` | **`true`** | |
 | `with_close_button` | `bool` | **`true`** | |
-| `padding` | `Option<String>` | `None` | |
+| `padding` | `String` | `""` | |
 | `z_index` | `Option<i32>` | `None` | |
 | `lock_scroll` | `bool` | **`true`** | |
 | `trap_focus` | `bool` | **`true`** | |
@@ -765,10 +767,10 @@ Custom Default: `with_close_button` defaults to `true`.
 |------|------|---------|-------------|
 | `opened` | `bool` | `false` | |
 | `opened_fn` | `Option<ReactiveBool>` | `None` | Reactive open state (auto-wrapped) |
-| `title` | `Option<String>` | `None` | |
-| `color` | `Option<String>` | `None` | |
-| `position` | `Option<String>` | `None` | Toast position. The `top-*` variants offset by `--rinch-window-top-inset` so they clear window chrome |
-| `radius` | `Option<String>` | `None` | |
+| `title` | `String` | `""` | |
+| `color` | `String` | `""` | |
+| `position` | `String` | `""` | Toast position. The `top-*` variants offset by `--rinch-window-top-inset` so they clear window chrome |
+| `radius` | `String` | `""` | |
 | `with_close_button` | `bool` | **`true`** | |
 | `with_border` | `bool` | `false` | |
 | `icon` | `Option<TablerIcon>` | `None` | |
@@ -784,16 +786,16 @@ Custom Default: `close_on_click_outside` and `close_on_escape` default to `true`
 | Prop | Type | Default | Description |
 |------|------|---------|-------------|
 | `opened` | `bool` | `false` | |
-| `position` | `Option<String>` | `None` | |
+| `position` | `String` | `""` | |
 | `offset` | `Option<i32>` | `None` | |
-| `radius` | `Option<String>` | `None` | |
-| `shadow` | `Option<String>` | `None` | |
+| `radius` | `String` | `""` | |
+| `shadow` | `String` | `""` | |
 | `with_arrow` | `bool` | `false` | |
 | `arrow_size` | `Option<f32>` | `None` | |
 | `arrow_offset` | `Option<f32>` | `None` | |
 | `close_on_click_outside` | `bool` | **`true`** | |
 | `close_on_escape` | `bool` | **`true`** | |
-| `width` | `Option<String>` | `None` | |
+| `width` | `String` | `""` | |
 | `z_index` | `Option<i32>` | `None` | |
 | `trap_focus` | `bool` | `false` | |
 
@@ -814,13 +816,13 @@ Custom Default: `close_on_click_outside` and `close_on_item_click` default to `t
 | Prop | Type | Default | Description |
 |------|------|---------|-------------|
 | `opened` | `bool` | `false` | |
-| `position` | `Option<String>` | `None` | |
+| `position` | `String` | `""` | |
 | `offset` | `Option<i32>` | `None` | |
-| `radius` | `Option<String>` | `None` | |
-| `shadow` | `Option<String>` | `None` | |
+| `radius` | `String` | `""` | |
+| `shadow` | `String` | `""` | |
 | `close_on_click_outside` | `bool` | **`true`** | |
 | `close_on_item_click` | `bool` | **`true`** | |
-| `width` | `Option<String>` | `None` | |
+| `width` | `String` | `""` | |
 | `z_index` | `Option<i32>` | `None` | |
 
 **DropdownMenuTarget**, **DropdownMenuDropdown**, **DropdownMenuLabel**, **DropdownMenuDivider**: No props.
@@ -831,7 +833,7 @@ Custom Default: `close_on_click_outside` and `close_on_item_click` default to `t
 |------|------|---------|-------------|
 | `left_section` | `Option<TablerIcon>` | `None` | |
 | `right_section` | `Option<TablerIcon>` | `None` | |
-| `color` | `Option<String>` | `None` | |
+| `color` | `String` | `""` | |
 | `disabled` | `bool` | `false` | |
 | `onclick` | `Option<Callback>` | `None` | |
 
@@ -839,11 +841,11 @@ Custom Default: `close_on_click_outside` and `close_on_item_click` default to `t
 
 | Prop | Type | Default | Description |
 |------|------|---------|-------------|
-| `position` | `Option<String>` | `None` | |
+| `position` | `String` | `""` | |
 | `offset` | `Option<i32>` | `None` | |
-| `radius` | `Option<String>` | `None` | |
-| `shadow` | `Option<String>` | `None` | |
-| `width` | `Option<String>` | `None` | |
+| `radius` | `String` | `""` | |
+| `shadow` | `String` | `""` | |
+| `width` | `String` | `""` | |
 | `open_delay` | `Option<u32>` | `None` | |
 | `close_delay` | `Option<u32>` | `None` | |
 | `with_arrow` | `bool` | `false` | |
@@ -856,11 +858,11 @@ Sub-components: **HoverCardTarget** (no props), **HoverCardDropdown** (no props)
 |------|------|---------|-------------|
 | `visible` | `bool` | `false` | |
 | `overlay_opacity` | `Option<f32>` | `None` | |
-| `overlay_blur` | `Option<String>` | `None` | |
-| `loader_type` | `Option<String>` | `None` | |
-| `loader_size` | `Option<String>` | `None` | |
-| `loader_color` | `Option<String>` | `None` | |
-| `radius` | `Option<String>` | `None` | |
+| `overlay_blur` | `String` | `""` | |
+| `loader_type` | `String` | `""` | |
+| `loader_size` | `String` | `""` | |
+| `loader_color` | `String` | `""` | |
+| `radius` | `String` | `""` | |
 | `z_index` | `Option<i32>` | `None` | |
 | `transition_duration` | `Option<u32>` | `None` | |
 
@@ -872,42 +874,42 @@ Sub-components: **HoverCardTarget** (no props), **HoverCardDropdown** (no props)
 
 | Prop | Type | Default | Description |
 |------|------|---------|-------------|
-| `value` | `Option<String>` | `None` | Active tab value |
-| `default_value` | `Option<String>` | `None` | |
-| `variant` | `Option<String>` | `None` | "default", "outline", "pills" |
-| `orientation` | `Option<String>` | `None` | "horizontal", "vertical" |
-| `position` | `Option<String>` | `None` | |
+| `value` | `String` | `""` | Active tab value |
+| `default_value` | `String` | `""` | |
+| `variant` | `String` | `""` | "default", "outline", "pills" |
+| `orientation` | `String` | `""` | "horizontal", "vertical" |
+| `position` | `String` | `""` | |
 | `grow` | `bool` | `false` | |
-| `color` | `Option<String>` | `None` | |
-| `radius` | `Option<String>` | `None` | |
+| `color` | `String` | `""` | |
+| `radius` | `String` | `""` | |
 
-**TabsList:** `grow: bool`, `justify: Option<String>`.
+**TabsList:** `grow: bool`, `justify: String`.
 
 **Tab:**
 
 | Prop | Type | Default | Description |
 |------|------|---------|-------------|
-| `value` | `Option<String>` | `None` | Tab identifier |
+| `value` | `String` | `""` | Tab identifier |
 | `disabled` | `bool` | `false` | |
 | `left_section` | `Option<TablerIcon>` | `None` | |
 | `right_section` | `Option<TablerIcon>` | `None` | |
 | `onclick` | `Option<Callback>` | `None` | |
 
-**TabsPanel:** `value: Option<String>` — matches the Tab value.
+**TabsPanel:** `value: String` — matches the Tab value.
 
 ### Accordion
 
 | Prop | Type | Default | Description |
 |------|------|---------|-------------|
-| `value` | `Option<String>` | `None` | Active item value |
-| `default_value` | `Option<String>` | `None` | |
-| `variant` | `Option<String>` | `None` | "default", "contained", "filled", "separated" |
-| `radius` | `Option<String>` | `None` | |
+| `value` | `String` | `""` | Active item value |
+| `default_value` | `String` | `""` | |
+| `variant` | `String` | `""` | "default", "contained", "filled", "separated" |
+| `radius` | `String` | `""` | |
 | `multiple` | `bool` | `false` | Allow multiple open items |
-| `chevron_position` | `Option<String>` | `None` | "left", "right" |
+| `chevron_position` | `String` | `""` | "left", "right" |
 | `disable_chevron_rotation` | `bool` | `false` | |
 
-**AccordionItem:** `value: Option<String>`.
+**AccordionItem:** `value: String`.
 
 **AccordionControl:** `disabled: bool`, `icon: Option<TablerIcon>`, `onclick: Option<Callback>`.
 
@@ -917,10 +919,10 @@ Sub-components: **HoverCardTarget** (no props), **HoverCardDropdown** (no props)
 
 | Prop | Type | Default | Description |
 |------|------|---------|-------------|
-| `separator` | `Option<String>` | `None` | Custom separator character |
-| `separator_margin` | `Option<String>` | `None` | Spacing around separator |
+| `separator` | `String` | `""` | Custom separator character |
+| `separator_margin` | `String` | `""` | Spacing around separator |
 
-**BreadcrumbsItem:** `href: Option<String>`.
+**BreadcrumbsItem:** `href: String`.
 
 ### Pagination
 
@@ -932,30 +934,30 @@ Custom Default: `total`, `value`, `siblings`, `boundaries` default to `1`; `with
 | `value` | `u32` | **`1`** | Current page |
 | `siblings` | `u32` | **`1`** | Pages visible on each side |
 | `boundaries` | `u32` | **`1`** | Pages at start/end |
-| `size` | `Option<String>` | `None` | |
-| `radius` | `Option<String>` | `None` | |
+| `size` | `String` | `""` | |
+| `radius` | `String` | `""` | |
 | `with_edges` | `bool` | `false` | Show first/last page buttons |
 | `with_controls` | `bool` | **`true`** | Show prev/next buttons |
-| `color` | `Option<String>` | `None` | |
+| `color` | `String` | `""` | |
 | `disabled` | `bool` | `false` | |
-| `gap` | `Option<String>` | `None` | |
+| `gap` | `String` | `""` | |
 | `onchange` | `Option<ValueCallback<u32>>` | `None` | Receives page number |
 
 ### NavLink
 
 | Prop | Type | Default | Description |
 |------|------|---------|-------------|
-| `label` | `Option<String>` | `None` | |
-| `description` | `Option<String>` | `None` | |
-| `href` | `Option<String>` | `None` | |
+| `label` | `String` | `""` | |
+| `description` | `String` | `""` | |
+| `href` | `String` | `""` | |
 | `active` | `bool` | `false` | |
 | `active_fn` | `Option<ReactiveBool>` | `None` | Reactive active binding (auto-wrapped) |
-| `variant` | `Option<String>` | `None` | "light", "filled", "subtle" |
-| `color` | `Option<String>` | `None` | |
+| `variant` | `String` | `""` | "light", "filled", "subtle" |
+| `color` | `String` | `""` | |
 | `left_section` | `Option<TablerIcon>` | `None` | |
 | `right_section` | `Option<TablerIcon>` | `None` | |
 | `disabled` | `bool` | `false` | |
-| `children_offset` | `Option<String>` | `None` | Indentation for nested NavLinks |
+| `children_offset` | `String` | `""` | Indentation for nested NavLinks |
 | `opened` | `bool` | `false` | Nested section expanded |
 | `default_opened` | `bool` | `false` | |
 | `no_wrap` | `bool` | `false` | |
@@ -966,11 +968,11 @@ Custom Default: `total`, `value`, `siblings`, `boundaries` default to `1`; `with
 | Prop | Type | Default | Description |
 |------|------|---------|-------------|
 | `active` | `u32` | `0` | Active step index |
-| `size` | `Option<String>` | `None` | |
-| `orientation` | `Option<String>` | `None` | "horizontal", "vertical" |
-| `color` | `Option<String>` | `None` | |
-| `radius` | `Option<String>` | `None` | |
-| `icon_size` | `Option<String>` | `None` | |
+| `size` | `String` | `""` | |
+| `orientation` | `String` | `""` | "horizontal", "vertical" |
+| `color` | `String` | `""` | |
+| `radius` | `String` | `""` | |
+| `icon_size` | `String` | `""` | |
 | `allow_next_steps_select` | `bool` | `false` | |
 | `completed_icon` | `Option<TablerIcon>` | `None` | Default completed icon for all steps |
 | `progress_icon` | `Option<TablerIcon>` | `None` | Default in-progress icon |
@@ -979,28 +981,28 @@ Custom Default: `total`, `value`, `siblings`, `boundaries` default to `1`; `with
 
 | Prop | Type | Default | Description |
 |------|------|---------|-------------|
-| `label` | `Option<String>` | `None` | |
-| `description` | `Option<String>` | `None` | |
+| `label` | `String` | `""` | |
+| `description` | `String` | `""` | |
 | `icon` | `Option<TablerIcon>` | `None` | Default icon |
 | `completed_icon` | `Option<TablerIcon>` | `None` | Per-step override |
 | `progress_icon` | `Option<TablerIcon>` | `None` | Per-step override |
 | `allow_step_click` | `bool` | `false` | |
 | `allow_step_select` | `bool` | `false` | |
 | `loading` | `bool` | `false` | |
-| `state` | `Option<String>` | `None` | "step-progress", "step-completed", "step-inactive" |
+| `state` | `String` | `""` | "step-progress", "step-completed", "step-inactive" |
 | `step` | `Option<u32>` | `None` | Step index |
 
 **StepperCompleted:** No props.
 
 ### Tree
 
-Custom Default: `level_offset` defaults to `Some("md")`, `expand_on_click` defaults to `true`.
+Custom Default: `level_offset` defaults to `"md"`, `expand_on_click` defaults to `true`.
 
 | Prop | Type | Default | Description |
 |------|------|---------|-------------|
 | `data` | `Vec<TreeNodeData>` | `[]` | Tree data |
 | `tree` | `Option<UseTreeReturn>` | `None` | State from `UseTreeReturn::new()` |
-| `level_offset` | `Option<String>` | **`Some("md")`** | Indentation per level |
+| `level_offset` | `String` | **`"md"`** | Indentation per level |
 | `expand_on_click` | `bool` | **`true`** | Click expands/collapses |
 | `select_on_click` | `bool` | `false` | Click selects |
 | `render_node` | `Option<RenderTreeNode>` | `None` | Custom node renderer |
@@ -1020,8 +1022,8 @@ Custom Default: `show_minimize`, `show_maximize`, `show_close` all default to `t
 
 | Prop | Type | Default | Description |
 |------|------|---------|-------------|
-| `title` | `Option<String>` | `None` | Window title in titlebar |
-| `radius` | `Option<String>` | `None` | Corner radius (none, xs, sm, md, lg, xl) |
+| `title` | `String` | `""` | Window title in titlebar |
+| `radius` | `String` | `""` | Corner radius (none, xs, sm, md, lg, xl) |
 | `show_minimize` | `bool` | **`true`** | |
 | `show_maximize` | `bool` | **`true`** | |
 | `show_close` | `bool` | **`true`** | |
