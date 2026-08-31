@@ -29,9 +29,7 @@ impl Parse for RsxNode {
         if input.peek(LitStr) {
             Ok(RsxNode::Text(input.parse()?))
         } else if input.peek(token::Brace) {
-            let content;
-            syn::braced!(content in input);
-            Ok(RsxNode::Expr(content.parse()?))
+            parse_braced_node(input)
         } else if input.peek(Token![|]) || input.peek(Token![move]) {
             // Parse bare closure as expression (for For component view functions)
             Ok(RsxNode::Expr(input.parse()?))
@@ -45,6 +43,115 @@ impl Parse for RsxNode {
             Ok(RsxNode::Element(input.parse()?))
         }
     }
+}
+
+/// The kind of control flow found inside a braced node, if any.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ControlFlowKind {
+    If,
+    For,
+    Match,
+}
+
+impl ControlFlowKind {
+    fn keyword(self) -> &'static str {
+        match self {
+            ControlFlowKind::If => "if",
+            ControlFlowKind::For => "for",
+            ControlFlowKind::Match => "match",
+        }
+    }
+}
+
+/// Parse `{ … }` in node position.
+///
+/// **A brace around control flow is transparent** (issue #221): `{ match x { … } }`
+/// renders the same reactive `match_dom` that `match x { … }` does. It has to be,
+/// because the alternative was silence — the brace used to be peeked before the
+/// `if`/`for`/`match` keywords, so the construct became a plain `syn::Expr`,
+/// codegen'd through `IntoNode::into_node` and evaluated **once**. The branch
+/// that rendered on mount was the branch you kept, with nothing at the call site
+/// to mark the difference from its unbraced twin.
+///
+/// The content is tried as one rsx construct on a fork, and only a clean parse
+/// that consumes the whole brace commits. Everything else is the expression it
+/// has always been: `{ count.to_string() }`, `{|| count.get()}`,
+/// `{ section(__scope) }` never reach the trial at all, since they do not start
+/// with a control-flow keyword.
+///
+/// Control flow whose bodies are *not* rsx — `{ if c { helper() } else { other() } }`,
+/// or arms written as nested `rsx! { … }` — cannot be made reactive this way. It
+/// is rejected with [`braced_control_flow_error`] rather than left silently
+/// static, so no shape of braced control flow renders once in silence.
+fn parse_braced_node(input: ParseStream) -> Result<RsxNode> {
+    // Look inside the braces without consuming them.
+    let ahead = input.fork();
+    let inner;
+    syn::braced!(inner in ahead);
+
+    let kind = if inner.peek(Token![if]) {
+        Some(ControlFlowKind::If)
+    } else if inner.peek(Token![for]) {
+        Some(ControlFlowKind::For)
+    } else if inner.peek(Token![match]) {
+        Some(ControlFlowKind::Match)
+    } else {
+        None
+    };
+
+    let Some(kind) = kind else {
+        let content;
+        syn::braced!(content in input);
+        return Ok(RsxNode::Expr(content.parse()?));
+    };
+
+    // Speculative parse on the fork.
+    let trial_parsed = match kind {
+        ControlFlowKind::If => inner.parse::<RsxIfBlock>().is_ok(),
+        ControlFlowKind::For => inner.parse::<RsxForLoop>().is_ok(),
+        ControlFlowKind::Match => inner.parse::<RsxMatchBlock>().is_ok(),
+    };
+    // Leftover tokens mean the braces hold more than the one construct, which is
+    // not something we can render — treat it as a failure.
+    let parses_as_rsx = trial_parsed && inner.is_empty();
+
+    let content;
+    syn::braced!(content in input);
+    if parses_as_rsx {
+        return match kind {
+            ControlFlowKind::If => Ok(RsxNode::IfBlock(content.parse()?)),
+            ControlFlowKind::For => Ok(RsxNode::ForLoop(content.parse()?)),
+            ControlFlowKind::Match => Ok(RsxNode::MatchBlock(content.parse()?)),
+        };
+    }
+
+    let expr: Expr = content.parse()?;
+    if matches!(expr, Expr::If(_) | Expr::Match(_) | Expr::ForLoop(_)) {
+        return Err(braced_control_flow_error(&expr, kind));
+    }
+    Ok(RsxNode::Expr(expr))
+}
+
+/// The diagnostic for braced control flow that cannot be parsed as rsx.
+///
+/// This is the case the transparent brace cannot rescue: the construct is
+/// control flow, but its bodies are Rust expressions rather than rsx nodes, so
+/// there is nothing to render reactively. Before issue #221 it compiled and went
+/// stale on the first frame; now it says so, and names both ways out — the one
+/// for rendering, and the one for a value.
+fn braced_control_flow_error(expr: &Expr, kind: ControlFlowKind) -> syn::Error {
+    let keyword = kind.keyword();
+    syn::Error::new_spanned(
+        expr,
+        format!(
+            "`{keyword}` wrapped in braces renders once and never updates.\n\
+             help: for reactive markup, drop the braces — `{keyword} … {{ … }}` directly in \
+             node position — and write each body as rsx (an element, a text literal, or \
+             nested control flow) rather than a nested `rsx! {{ … }}` invocation\n\
+             help: for a reactive *value* rather than reactive markup, wrap it in a closure \
+             instead — `{{|| {keyword} … }}`"
+        ),
+    )
 }
 
 // ============================================================================
@@ -647,6 +754,89 @@ mod tests {
             }
             _ => panic!("Expected MatchBlock"),
         }
+    }
+
+    // ── Braced control flow (issue #221) ─────────────────────────
+
+    /// A brace around control flow is transparent: the same reactive node the
+    /// unbraced form produces. It used to parse as a plain `Expr`, which
+    /// codegens through `IntoNode::into_node` and renders exactly once.
+    #[test]
+    fn braced_control_flow_parses_as_control_flow() {
+        assert_eq!(
+            parse_variant(r#"{ match x.get() { 0 => div { "a" }, _ => div { "b" } } }"#),
+            "MatchBlock"
+        );
+        assert_eq!(
+            parse_variant(r#"{ if flag.get() { div { "a" } } else { div { "b" } } }"#),
+            "IfBlock"
+        );
+        // No `else` — still control flow.
+        assert_eq!(parse_variant(r#"{ if flag.get() { "a" } }"#), "IfBlock");
+        assert_eq!(
+            parse_variant(r#"{ for item in items.get() { div { "row" } } }"#),
+            "ForLoop"
+        );
+        // `if let`, which parses through the same RsxIfBlock path.
+        assert_eq!(
+            parse_variant(r#"{ if let Some(n) = slot.get() { div { {n} } } }"#),
+            "IfBlock"
+        );
+    }
+
+    /// Braced control flow nested in a `match` arm — the shape issue #221
+    /// reports, and the reason it was found in the arm position: `_ => { … }`
+    /// is where a brace is most idiomatic.
+    #[test]
+    fn a_braced_arm_body_of_control_flow_parses_as_control_flow() {
+        let input = r#"match outer.get() { 0 => div { "none" }, _ => { match inner.get() { 0 => "zero", _ => "many" } } }"#;
+        let node = parse_str::<RsxNode>(input).unwrap();
+        match node {
+            RsxNode::MatchBlock(mb) => {
+                assert_eq!(mb.arms[1].children.len(), 1);
+                assert!(matches!(&mb.arms[1].children[0], RsxNode::MatchBlock(_)));
+            }
+            _ => panic!("Expected MatchBlock"),
+        }
+    }
+
+    /// Everything else in braces is the expression it has always been — these
+    /// never start with a control-flow keyword, so they never reach the trial
+    /// parse. The middle one is this repo's own idiom
+    /// (`examples/ui-zoo/src/lib.rs`).
+    #[test]
+    fn a_braced_expression_is_still_an_expression() {
+        assert_eq!(parse_variant("{ count.to_string() }"), "Expr");
+        assert_eq!(parse_variant("{ overview_section(__scope) }"), "Expr");
+        assert_eq!(parse_variant("{|| count.get()}"), "Expr");
+        assert_eq!(
+            parse_variant("{ items.iter().map(render).collect() }"),
+            "Expr"
+        );
+    }
+
+    /// Control flow whose bodies are Rust expressions rather than rsx cannot be
+    /// made reactive by dropping the brace, so it is rejected instead of
+    /// rendering once in silence. The message has to carry both ways out,
+    /// because the right one depends on what the author meant.
+    #[test]
+    fn braced_control_flow_that_is_not_rsx_is_rejected() {
+        let msg = match parse_str::<RsxNode>("{ if c.get() { helper() } else { other() } }") {
+            Err(err) => err.to_string(),
+            Ok(_) => panic!("braced control flow with non-rsx bodies must not compile"),
+        };
+        assert!(msg.contains("renders once and never updates"), "{msg}");
+        assert!(msg.contains("drop the braces"), "{msg}");
+        assert!(msg.contains("closure"), "{msg}");
+
+        // The exact shape issue #221 reports: arms written as nested `rsx!`.
+        let msg = match parse_str::<RsxNode>(
+            r#"{ match sel.get() { Some(p) => rsx! { div { "a" } }, None => rsx! { div { "b" } } } }"#,
+        ) {
+            Err(err) => err.to_string(),
+            Ok(_) => panic!("nested rsx! arms cannot be parsed as rsx nodes"),
+        };
+        assert!(msg.contains("renders once and never updates"), "{msg}");
     }
 
     // ── Error cases ──────────────────────────────────────────────

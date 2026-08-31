@@ -518,6 +518,55 @@ The `if` block desugars to `show_dom()` — the same runtime function used by th
 2. Old DOM nodes are removed
 3. New branch content is rendered with a fresh scope
 
+#### Braces around control flow
+
+A brace in child position is transparent to control flow: `{ match x { … } }`
+renders the same reactive `match_dom` as `match x { … }`, and the same goes for
+`if` and `for`, at any depth — including a braced `match` arm body,
+`_ => { if … }`.
+
+That is worth stating because the two used to differ, silently. A braced
+construct was parsed as a plain Rust expression and evaluated **once**, so it
+kept whichever branch was true when it mounted and never changed again — one
+brace apart from a fully reactive twin, with no diagnostic (issue #221).
+
+Braced control flow whose bodies are *not* rsx cannot be made reactive — there is
+no markup for the runtime to swap — so it is a compile error now instead of a
+silent freeze:
+
+```rust
+// error: `match` wrapped in braces renders once and never updates
+{ match selected.get() {
+    Some(p) => rsx! { div { {p.name.clone()} } },
+    None => rsx! { div { "—" } },
+} }
+```
+
+The message names both ways out, because which one is right depends on what you
+meant. For reactive **markup**, drop the braces and write each arm as rsx rather
+than as a nested `rsx!` invocation:
+
+```rust
+match selected.get() {
+    Some(p) => div { {p.name.clone()} },
+    None => div { "—" },
+}
+```
+
+For a reactive **value**, wrap the whole thing in a closure — the reactive
+expression form from earlier in this guide:
+
+```rust
+{|| match selected.get() {
+    Some(p) => p.name.clone(),
+    None => "—".to_string(),
+}}
+```
+
+Everything else in braces is untouched: an expression (`{ count.to_string() }`),
+a reactive closure (`{|| count.get()}`) and a call (`{ section(__scope) }`) never
+begin with a control-flow keyword, so they are the expressions they always were.
+
 #### Capturing the same value in more than one branch
 
 Every closure RSX builds is a `move` closure — a branch, a `match` arm, a

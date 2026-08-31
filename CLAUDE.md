@@ -1780,6 +1780,22 @@ Pattern bindings and guards are supported — each arm re-evaluates the scrutine
 
 **Runtime desugaring:** `if` → `show_dom()`, `for` → `for_each_dom_typed()`, `match` → `match_dom()`.
 
+**A brace around control flow is transparent** (issue #221). `div { { match x { … } } }`
+renders the same reactive `match_dom` as `div { match x { … } }`, and likewise for
+`if` and `for`, at any depth — a braced arm body (`_ => { match y { … } }`) included.
+It used to parse as a plain Rust expression and go through `IntoNode::into_node`,
+which evaluates **once**: the branch that rendered on mount was the branch you kept,
+with nothing at the call site to distinguish it from its unbraced twin.
+
+Braced control flow whose bodies are **not** rsx cannot be made reactive — arms
+written as nested `rsx! { … }`, or bodies that are plain calls — so it is now a
+compile error naming both rewrites rather than a silent freeze: drop the braces
+and write each body as rsx for reactive *markup*, or wrap the whole construct in
+`{|| … }` for a reactive *value*. Everything else in braces is unchanged: an
+expression (`{ count.to_string() }`), a reactive closure (`{|| count.get()}`) and
+a call (`{ section(__scope) }`) never start with a control-flow keyword and are
+never touched.
+
 ### For Loop Details
 
 The `for` loop variable is **owned** (`T`, not `&T`), so you can capture it directly in `move` closures:

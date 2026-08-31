@@ -635,7 +635,7 @@ pub fn generate_match_block(
                 __scope,
                 &#parent_var,
                 #discriminant,
-                vec![#(#branch_closures),*]
+                ::std::vec::Vec::from([#(#branch_closures),*])
             );
         }
     }
@@ -924,6 +924,33 @@ mod shadow_tests {
             code.matches(&shadow("names")).count(),
             2,
             "collection closure + view closure: {code}"
+        );
+    }
+
+    /// A `match` nested inside a `match` arm: the outer arms must see the value
+    /// the inner arms capture, or the outer arm that mentions it moves it and
+    /// the inner one is left with nothing (a plain E0382 from inside `rsx!`).
+    ///
+    /// They only see it because the branch list is built without `vec![…]`: a
+    /// macro body is an opaque token stream to `syn`, so every closure inside
+    /// one is invisible to the enclosing capture scan.
+    #[test]
+    fn a_match_nested_in_a_match_arm_is_visible_to_the_outer_capture_scan() {
+        let code = match_code(quote! {
+            match outer.get() {
+                0 => span { {label.clone()} },
+                _ => div {
+                    match inner.get() {
+                        0 => span { {label.clone()} },
+                        _ => span { {label.clone()} "!" },
+                    }
+                },
+            }
+        });
+        assert_eq!(
+            code.matches(&shadow("label")).count(),
+            4,
+            "two outer arms and two inner arms each need their own: {code}"
         );
     }
 
