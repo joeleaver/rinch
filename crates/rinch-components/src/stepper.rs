@@ -77,7 +77,7 @@ impl std::str::FromStr for StepperOrientation {
 ///
 /// ```ignore
 /// rsx! {
-///     Stepper { active: 1, completed_icon: Icon::CheckCircle,
+///     Stepper { active: 1, completed_icon: TablerIcon::CircleCheck,
 ///         StepperStep { label: "Step 1", description: "Create account" }
 ///         StepperStep { label: "Step 2", description: "Verify email" }
 ///         StepperStep { label: "Step 3", description: "Complete profile" }

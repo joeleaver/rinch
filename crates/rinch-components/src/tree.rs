@@ -356,10 +356,10 @@ struct TreeConfig {
 /// ```ignore
 /// let data = vec![
 ///     TreeNodeData::new("docs", "Documents")
-///         .with_icon(Icon::Folder)
+///         .with_icon(TablerIcon::Folder)
 ///         .with_children(vec![
-///             TreeNodeData::new("readme", "README.md").with_icon(Icon::File),
-///             TreeNodeData::new("license", "LICENSE").with_icon(Icon::File),
+///             TreeNodeData::new("readme", "README.md").with_icon(TablerIcon::File),
+///             TreeNodeData::new("license", "LICENSE").with_icon(TablerIcon::File),
 ///         ]),
 /// ];
 ///

@@ -112,8 +112,8 @@ impl std::str::FromStr for ActionIconSize {
 ///
 /// ```ignore
 /// rsx! {
-///     ActionIcon { icon: Icon::Menu, variant: "subtle", onclick: || toggle_menu() }
-///     ActionIcon { icon: Icon::Close, size: "lg", variant: "outline" }
+///     ActionIcon { icon: TablerIcon::Menu2, variant: "subtle", onclick: || toggle_menu() }
+///     ActionIcon { icon: TablerIcon::X, size: "lg", variant: "outline" }
 /// }
 /// ```
 #[derive(Debug, Default)]

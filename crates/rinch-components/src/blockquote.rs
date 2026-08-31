@@ -12,7 +12,7 @@ use rinch_tabler_icons::{TablerIcon, TablerIconStyle, render_tabler_icon};
 ///
 /// ```ignore
 /// rsx! {
-///     Blockquote { cite: "Albert Einstein", icon: Icon::Quote,
+///     Blockquote { cite: "Albert Einstein", icon: TablerIcon::Quote,
 ///         "Imagination is more important than knowledge."
 ///     }
 /// }

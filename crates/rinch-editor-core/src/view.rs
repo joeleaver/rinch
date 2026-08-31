@@ -2,10 +2,11 @@
 //! and a platform's host tree (design §6).
 //!
 //! "The view is a pure function of state" (non-negotiable principle #3): an
-//! [`EditorView`] projects `EditorState` onto a host (desktop rinch-dom now, web
-//! `contentEditable` later) and is **never read back** for content. The caret is
-//! rendered from `state.selection`; the host is derived from `state.doc`. There is
-//! no DOM-direct mutation path.
+//! [`EditorView`] projects `EditorState` onto a host — any `rinch-core`
+//! `DomDocument` implementation — and is **never read back** for content. The
+//! caret is rendered from `state.selection`; the host is derived from
+//! `state.doc`. There is no DOM-direct mutation path, and no `contentEditable`
+//! engine — desktop and web both mount the `Editor {}` component instead.
 //!
 //! ## Two-phase update (design A3)
 //!
@@ -46,9 +47,13 @@ pub enum ViewRequest {
     ScrollSelectionIntoView,
 }
 
-/// Projects [`EditorState`] onto a platform host tree (design §6). Implemented by
-/// the desktop view in the `rinch` crate and the web view in `rinch-web`; nothing
-/// else knows the renderer.
+/// Projects [`EditorState`] onto a platform host tree (design §6). Implemented
+/// once, by `RinchDomEditorView` in `rinch-editor-view` — that single
+/// implementation is renderer-agnostic over any `DomDocument`, so desktop
+/// (`rinch`, over rinch-dom) and web (`rinch-web`, over `web_sys`) share it
+/// rather than each carrying their own; nothing else knows the renderer. Only
+/// input translation (key/pointer/IME → commands) stays platform-specific glue
+/// outside this trait, per the note below.
 ///
 /// See the [module docs](self) for the two-phase contract. The initial render is
 /// the implementor's responsibility (its constructor builds the host from the

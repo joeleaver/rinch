@@ -137,10 +137,10 @@ impl std::str::FromStr for AlertRadius {
 ///
 /// ```ignore
 /// rsx! {
-///     Alert { color: "green", title: "Success", icon: Icon::CheckCircle,
+///     Alert { color: "green", title: "Success", icon: TablerIcon::CircleCheck,
 ///         "Your changes have been saved."
 ///     }
-///     Alert { color: "red", variant: "filled", title: "Error", icon: Icon::XCircle,
+///     Alert { color: "red", variant: "filled", title: "Error", icon: TablerIcon::CircleX,
 ///         "Something went wrong. Please try again."
 ///     }
 /// }

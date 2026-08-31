@@ -70,7 +70,7 @@ impl std::str::FromStr for NavLinkVariant {
 ///         label: "Dashboard",
 ///         href: "/dashboard",
 ///         active: true,
-///         left_section: Icon::Settings,
+///         left_section: TablerIcon::Settings,
 ///     }
 ///     NavLink {
 ///         label: "Settings",

@@ -35,7 +35,7 @@ crates/
 │   │   ├── shell/            # Window management, event loop
 │   │   │   └── rinch_runtime.rs         # Event loop, window creation, rendering
 │   │   └── menu/             # Native menu support via muda
-│   │       └── mod.rs        # MenuManager, MenuEntry builder API
+│   │       └── mod.rs        # Menu, MenuItem builder API
 │   └── ...
 ├── rinch-core/               # Core types
 │   ├── src/element.rs        # Element enum (Html, Fragment, Component only), prop types
@@ -61,7 +61,7 @@ crates/
 │       ├── group.rs          # Horizontal flex layout
 │       ├── badge.rs          # Status indicator
 │       ├── icons.rs          # Hand-built chrome glyphs (chevron_up_dom, checkmark_dom, ...)
-│       └── styles.rs         # Component CSS generation
+│       └── styles/           # Per-component CSS generation (one file per component + mod.rs)
 ├── rinch-tabler-icons/       # ~4,980 Tabler Icons (generated from vendored JSON)
 │   ├── build.rs              # Generates the TablerIcon enum from data/ (downloads only as fallback)
 │   ├── data/                 # Vendored Tabler JSON, committed — lets the crate build offline
@@ -87,7 +87,6 @@ examples/
 ├── ui-zoo-desktop/            # Desktop entry point - primary development target
 ├── ui-zoo-web/                # WASM browser-native DOM entry point
 ├── hello_rinch_dom/           # Minimal hello world
-├── fine_grained_window/       # Fine-grained rendering demo
 └── todo-app/                  # Todo app example
 ```
 
@@ -189,7 +188,7 @@ Every one of these props is `Option<TablerIcon>`. The `rsx!` macro adds the `Som
 | `Stepper` | `completed_icon`, `progress_icon` | `stepper.rs:104`, `:106` |
 | `StepperStep` | `icon`, `completed_icon`, `progress_icon` | `stepper.rs:185`, `:187`, `:189` |
 | `NavLink` | `left_section`, `right_section` | `navlink.rs:100`, `:102` |
-| `DropdownMenuItem` | `left_section`, `right_section` | `dropdown_menu.rs:472`, `:474` |
+| `DropdownMenuItem` | `left_section`, `right_section` | `dropdown_menu.rs:484`, `:486` |
 | `Tab` | `left_section`, `right_section` | `tabs.rs:392`, `:394` |
 
 The `Tree` component takes its icons through data rather than a prop: `TreeNodeData::icon` (`tree.rs:56`), set with the `with_icon(TablerIcon)` builder.
@@ -927,11 +926,7 @@ File drops from the OS use `data-onfiledragenter`, `data-onfiledragleave` attrib
 
 ## Keyboard Shortcuts (built-in)
 
-- `Ctrl/Cmd + +/-/0` - Zoom in/out/reset
-- `Alt + D` - Toggle layout debug overlay
 - `Alt + I` - Toggle inspect mode (hover highlight for element info)
-- `Alt + P` - Toggle performance stats console logging
-- `Alt + T` - Print Taffy layout tree (to console)
 - `F12` - Toggle DevTools window
 
 ## Keyboard Focus
