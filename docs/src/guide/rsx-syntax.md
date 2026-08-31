@@ -156,6 +156,18 @@ Mouse and click handlers read per-event data from `get_click_context()`:
 (`shift`/`ctrl`/`alt`/`meta`). These behave identically on the desktop and web
 (WASM) backends.
 
+The element bounds are the box the element is **painted** in, which is what
+`getBoundingClientRect()` reports on the web — so a CSS transform on the
+element or any ancestor moves and resizes them, and a `position: fixed`
+element reports its viewport box rather than one displaced by its ancestors
+(#203). That is what makes `Drag::percent()` and `percent_x()` read correctly
+inside the `left: 50%; top: 50%; transform: translate(-50%, -50%)` centring
+idiom, and inside a `transform: scale()` zoom container. `mouse_x`/`mouse_y`
+are unchanged — still plain viewport coordinates, which is what popup
+placement in `DropdownMenu`, `Select` and `ContextMenu` reads them as. For a
+*rotated* element the bounds are the axis-aligned bounding box, the same
+approximation the browser makes.
+
 ### Keyboard activation
 
 **Enter** and **Space** on a keyboard-focused element run its `onclick` — the

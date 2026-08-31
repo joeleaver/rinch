@@ -632,10 +632,17 @@ impl NodeHandle {
     /// Reactive bounds signal for this element, refreshed by the runtime after
     /// each layout pass — including pure window resizes (#145).
     ///
-    /// The signal carries absolute viewport-relative pixel bounds — the same
-    /// frame [`crate::events::ClickContext::element_x`] uses, not the
+    /// The signal carries absolute viewport-relative pixel bounds, not the
     /// parent-relative values from [`Self::get_layout_bounds`]. Subscribers
     /// only re-run when the rect changes (uses `set_if_changed` internally).
+    ///
+    /// It reports the box **layout** produced. That is the same rect
+    /// [`crate::events::ClickContext::element_x`] carries for the overwhelming
+    /// majority of nodes, but the two now differ where a CSS transform or a
+    /// `position: fixed` ancestor moves a box away from its layout origin:
+    /// `element_x` was converted to the box the node is *painted* in (#203),
+    /// and this signal has not been yet. Under a transform, prefer the click
+    /// context.
     ///
     /// There is no separate resize event: the root element's `bounds_signal()`
     /// is the supported way to observe viewport size changes — a full-size

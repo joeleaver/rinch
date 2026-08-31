@@ -343,33 +343,150 @@ pub fn compose_node_transform(
     parent_transform * Affine::translate((cx, cy)) * Affine::new(m) * Affine::translate((-cx, -cy))
 }
 
-/// Compute a node's absolute position in physical pixels together with the
-/// composed CSS transform affecting it (its own and its ancestors'),
-/// mirroring paint-side composition (`compose_node_transform`) so that
-/// dirty-region tracking agrees with where paint actually renders (#143).
+/// [`compose_node_transform`], plus the one case paint never asks it about.
 ///
-/// The common untransformed case takes an allocation-free fast path and
-/// returns `Affine::IDENTITY`.
-fn compute_absolute_position_and_transform(
+/// A `display: contents` node generates no box, so `paint_node`'s zero-size
+/// branch hands `parent_transform` straight down to the children rather than
+/// composing anything for it — a transform declared on such a node has no box
+/// to apply about and is simply not drawn. Hit testing makes the same exception
+/// (`local_point`, `crates/rinch/src/app/hit_testing.rs`); a forward walk that
+/// composed it anyway would place the node's descendants somewhere paint never
+/// puts them.
+fn compose_transform_step(
+    node: &Node,
+    x: f64,
+    y: f64,
+    scale: f64,
+    parent_transform: Affine,
+) -> Affine {
+    if node.computed_style.display == DisplayValue::Contents
+        && (node.layout.width == 0.0 || node.layout.height == 0.0)
+    {
+        return parent_transform;
+    }
+    compose_node_transform(node, x, y, scale, parent_transform)
+}
+
+/// The transform every hoisted `position: fixed` box paints under.
+///
+/// `paint_document` enters at the body with zero offsets and the identity
+/// transform, and `paint_children_with_stacking` hands the body's own composed
+/// transform to each entry of its stacking sequence — the hoisted fixed boxes
+/// included. So viewport space, for a fixed box, is the body's *post*-transform
+/// space, which is what `hit_test_node` re-seeds `vx`/`vy` from.
+fn body_paint_transform(tree: &NodeTree, scale: f64) -> Affine {
+    let Some(body) = tree.get(tree.body_id) else {
+        return Affine::IDENTITY;
+    };
+    // Through the same origin step the chain below uses, so the body's
+    // transform is composed about the same point either way in.
+    let (bx, by) = painted_origin_step(tree, body, 0.0, 0.0, scale);
+    compose_transform_step(body, bx, by, scale, Affine::IDENTITY)
+}
+
+/// One step of the descent: the node's own painted origin, given the origin its
+/// parent resolves children against.
+///
+/// Kept as one function so the transformed and untransformed paths below cannot
+/// drift: both add the layout offset and the IFC content-box offset, and both
+/// hand children a scroll-adjusted origin.
+///
+/// `hit_test_node` additionally exempts a `position: fixed` box from the IFC
+/// offset. That exemption is not repeated here because it cannot fire: Stylo
+/// blockifies an out-of-flow box, so a fixed one never keeps
+/// `display_mode == InlineBlock` and [`ifc_content_box_offset`] already answers
+/// `(0, 0)` for it. `a_fixed_inline_block_keeps_its_viewport_origin` pins the
+/// outcome, so if that ever stops being true the exemption gets added here
+/// rather than discovered in the wild.
+fn painted_origin_step(
+    tree: &NodeTree,
+    node: &Node,
+    off_x: f64,
+    off_y: f64,
+    scale: f64,
+) -> (f64, f64) {
+    let (dx, dy) = ifc_content_box_offset(tree, node);
+    (
+        off_x + (node.layout.x + dx) as f64 * scale,
+        off_y + (node.layout.y + dy) as f64 * scale,
+    )
+}
+
+/// Compute a node's absolute position in physical pixels together with the
+/// composed CSS transform affecting it (its own and its ancestors'), mirroring
+/// paint's own descent so that anything asking "where does this node end up"
+/// gets the answer paint acts on (#143, #203).
+///
+/// The mirror is the whole contract, so each of paint's four adjustments is
+/// made here too:
+///
+/// - the chain stops at a `position: fixed` node, whose box is viewport-relative
+///   because `collect_stacking_contexts_root` hoists it to the body level with
+///   zeroed offsets — **and resumes from the body's own transform**, which is
+///   what paint hands those hoisted entries;
+/// - a `display: contents` node contributes no transform (see
+///   [`compose_transform_step`]);
+/// - an inline-block an IFC positions gets [`ifc_content_box_offset`] added,
+///   because its `layout.x`/`layout.y` are relative to the IFC root's content
+///   box while the chain sums border-box origins;
+/// - children resolve against a scroll-adjusted origin.
+///
+/// The chain also stops at the body, which is where `paint_document` enters:
+/// nothing above it is painted, so nothing above it may displace or transform
+/// what is.
+///
+/// `scale` is the DPI scale factor the result is expressed in.
+/// [`compose_node_transform`] is covariant in it (#202), so a caller working in
+/// layout pixels — hit testing, click bounds — passes `1.0` and gets paint's
+/// transform expressed in layout pixels.
+///
+/// The common untransformed case takes an allocation-free fast path and returns
+/// `Affine::IDENTITY`.
+pub fn compute_absolute_position_and_transform(
     tree: &NodeTree,
     node_id: RawNodeId,
     scale: f64,
 ) -> (f64, f64, Affine) {
-    // First pass: check for transforms on the chain (cheap pointer walk),
-    // stopping at position:fixed like compute_absolute_position — fixed
-    // elements are viewport-relative and hoisted to body level at paint time.
+    // First pass: does anything on the chain transform (cheap pointer walk)?
     let mut any_transform = false;
+    let mut hoisted_fixed = false;
     let mut current = Some(node_id);
     while let Some(id) = current {
         let Some(node) = tree.get(id) else { break };
         any_transform |= !node.computed_style.transform.is_identity;
         if node.computed_style.position == PositionValue::Fixed {
+            hoisted_fixed = true;
+            break;
+        }
+        if id == tree.body_id {
             break;
         }
         current = node.parent;
     }
+    // A hoisted fixed box drops its ancestors' transforms but not the body's.
+    if hoisted_fixed && let Some(body) = tree.get(tree.body_id) {
+        any_transform |= !body.computed_style.transform.is_identity;
+    }
+
     if !any_transform {
-        let (x, y) = compute_absolute_position(tree, node_id, scale);
+        // Same sum, bottom-up: the offsets do not depend on the direction of
+        // travel, only the transform composition does.
+        let (mut x, mut y) = (0.0_f64, 0.0_f64);
+        let mut current = Some(node_id);
+        while let Some(id) = current {
+            let Some(node) = tree.get(id) else { break };
+            let (nx, ny) = painted_origin_step(tree, node, x, y, scale);
+            x = nx;
+            y = ny;
+            if node.computed_style.position == PositionValue::Fixed || id == tree.body_id {
+                break;
+            }
+            if let Some(parent) = node.parent.and_then(|pid| tree.get(pid)) {
+                x -= parent.scroll_offset.0 * scale;
+                y -= parent.scroll_offset.1 * scale;
+            }
+            current = node.parent;
+        }
         return (x, y, Affine::IDENTITY);
     }
 
@@ -381,7 +498,7 @@ fn compute_absolute_position_and_transform(
     while let Some(id) = current {
         let Some(node) = tree.get(id) else { break };
         chain.push(id);
-        if node.computed_style.position == PositionValue::Fixed {
+        if node.computed_style.position == PositionValue::Fixed || id == tree.body_id {
             break;
         }
         current = node.parent;
@@ -389,18 +506,48 @@ fn compute_absolute_position_and_transform(
 
     let mut off_x = 0.0_f64;
     let mut off_y = 0.0_f64;
-    let mut transform = Affine::IDENTITY;
+    // Seed with the body's transform for a hoisted fixed box — unless the body
+    // *is* that box, in which case the loop below composes it and seeding here
+    // would apply it twice.
+    let mut transform = if hoisted_fixed && chain.last() != Some(&tree.body_id) {
+        body_paint_transform(tree, scale)
+    } else {
+        Affine::IDENTITY
+    };
     let (mut x, mut y) = (0.0_f64, 0.0_f64);
     for &id in chain.iter().rev() {
         let Some(node) = tree.get(id) else { break };
-        x = off_x + node.layout.x as f64 * scale;
-        y = off_y + node.layout.y as f64 * scale;
-        transform = compose_node_transform(node, x, y, scale, transform);
+        let (nx, ny) = painted_origin_step(tree, node, off_x, off_y, scale);
+        x = nx;
+        y = ny;
+        transform = compose_transform_step(node, x, y, scale, transform);
         // Children resolve against this node's scroll-adjusted origin.
         off_x = x - node.scroll_offset.0 * scale;
         off_y = y - node.scroll_offset.1 * scale;
     }
     (x, y, transform)
+}
+
+/// The axis-aligned box a node is *painted* in — the desktop answer to
+/// `getBoundingClientRect()`.
+///
+/// This is [`compute_absolute_position_and_transform`] with the node's own size
+/// pushed through the composed transform. A rotated box has no axis-aligned
+/// answer, so this is its bounding box; for the translate and scale that every
+/// real transformed layout uses it is exact, and it is the same approximation
+/// the browser makes.
+///
+/// `scale` is the DPI scale factor the result is expressed in — pass `1.0` to
+/// work in layout pixels.
+pub fn painted_border_box(tree: &NodeTree, node_id: RawNodeId, scale: f64) -> Rect {
+    let (x, y, transform) = compute_absolute_position_and_transform(tree, node_id, scale);
+    let (w, h) = tree.get(node_id).map_or((0.0, 0.0), |node| {
+        (
+            node.layout.width as f64 * scale,
+            node.layout.height as f64 * scale,
+        )
+    });
+    transform.transform_rect_bbox(Rect::new(x, y, x + w, y + h))
 }
 
 /// Find viewport descendant rects (absolute pixel positions) for hole-punching.
@@ -1793,5 +1940,371 @@ fn paint_node(
         }
 
         _ => {} // Document, Comment -- invisible
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::RinchDocument;
+    use peniko::kurbo::Affine;
+    use rinch_core::dom::DomDocument;
+
+    // The correctness criterion for every test here: `painted_border_box`
+    // returns the box the node is *painted* in. So the expected rects are
+    // hand-computed from the CSS — from the padding, the transform, the
+    // hoisting rule — never from another geometry helper, or the test would
+    // just re-derive whatever bug is in one.
+    //
+    // Each test also asserts the *wrong* answer explicitly: the box the
+    // unhardened walk produced. A positive assertion alone survives most of
+    // these regressions, because the two boxes overlap.
+
+    fn child_of(doc: &mut RinchDocument, parent: rinch_core::dom::NodeId, style: &str) -> usize {
+        let el = doc.create_element("div");
+        doc.set_attribute(el, "style", style);
+        doc.append_child(parent, el);
+        el.0
+    }
+
+    /// The plain parent-chain sum: layout offsets minus ancestor scroll, with
+    /// no transform and no IFC content-box offset. This is what every walk in
+    /// the codebase used to do, and it is the box the assertions below must
+    /// *not* return.
+    fn untransformed_origin(doc: &RinchDocument, node_id: usize) -> (f32, f32) {
+        let (mut x, mut y) = (0.0_f32, 0.0_f32);
+        let mut cur = Some(node_id);
+        while let Some(id) = cur {
+            let Some(n) = doc.tree.get(id) else { break };
+            x += n.layout.x;
+            y += n.layout.y;
+            if let Some(p) = n.parent.and_then(|pid| doc.tree.get(pid)) {
+                x -= p.scroll_offset.0 as f32;
+                y -= p.scroll_offset.1 as f32;
+            }
+            cur = n.parent;
+        }
+        (x, y)
+    }
+
+    /// A plain translated ancestor: the painted box is the layout box shifted
+    /// by the ancestor's translate. This is the case `Drag::percent()` gets
+    /// wrong on a slider inside a centred modal (#203).
+    #[test]
+    fn an_ancestor_translate_moves_the_painted_box() {
+        let mut doc = RinchDocument::new();
+        let body = doc.body();
+        let panel = child_of(
+            &mut doc,
+            body,
+            "position: relative; width: 400px; height: 300px; \
+             transform: translate(-50px, -30px)",
+        );
+        let track = child_of(
+            &mut doc,
+            rinch_core::dom::NodeId(panel),
+            "position: absolute; left: 100px; top: 60px; width: 200px; height: 20px",
+        );
+        doc.resolve_layout(800.0, 600.0);
+
+        // Layout box (100,60)-(300,80); translate(-50,-30) paints it at
+        // (50,30)-(250,50).
+        let r = super::painted_border_box(&doc.tree, track, 1.0);
+        assert_eq!((r.x0, r.y0, r.x1, r.y1), (50.0, 30.0, 250.0, 50.0));
+        assert_eq!(
+            untransformed_origin(&doc, track),
+            (100.0, 60.0),
+            "the untransformed sum is the box this must NOT report"
+        );
+    }
+
+    /// A `scale()` ancestor changes the painted *size*, not just the origin —
+    /// which is why an AABB helper cannot just offset the layout box.
+    #[test]
+    fn an_ancestor_scale_resizes_the_painted_box() {
+        let mut doc = RinchDocument::new();
+        let body = doc.body();
+        // transform-origin at the top-left keeps the arithmetic hand-checkable.
+        let zoom = child_of(
+            &mut doc,
+            body,
+            "position: relative; width: 400px; height: 300px; \
+             transform: scale(2); transform-origin: 0 0",
+        );
+        let track = child_of(
+            &mut doc,
+            rinch_core::dom::NodeId(zoom),
+            "position: absolute; left: 40px; top: 25px; width: 100px; height: 10px",
+        );
+        doc.resolve_layout(800.0, 600.0);
+
+        // Layout box (40,25)-(140,35), doubled about (0,0): (80,50)-(280,70).
+        let r = super::painted_border_box(&doc.tree, track, 1.0);
+        assert_eq!((r.x0, r.y0, r.x1, r.y1), (80.0, 50.0, 280.0, 70.0));
+        assert_eq!(
+            (r.width(), r.height()),
+            (200.0, 20.0),
+            "a scaled box is painted at twice its layout size"
+        );
+    }
+
+    /// Gap 1. A `display: contents` node generates no box, so `paint_node`'s
+    /// zero-size branch passes the parent transform straight to the children —
+    /// a transform declared on it is never applied. The forward walk used to
+    /// compose it anyway and moved the child somewhere paint does not draw it.
+    #[test]
+    fn a_display_contents_ancestor_contributes_no_transform() {
+        let mut doc = RinchDocument::new();
+        let body = doc.body();
+        let container = child_of(
+            &mut doc,
+            body,
+            "position: relative; width: 400px; height: 300px; padding: 30px 20px",
+        );
+        let ghost = child_of(
+            &mut doc,
+            rinch_core::dom::NodeId(container),
+            "display: contents; transform: translate(50px, 20px)",
+        );
+        let child = child_of(
+            &mut doc,
+            rinch_core::dom::NodeId(ghost),
+            "width: 80px; height: 40px",
+        );
+        doc.resolve_layout(800.0, 600.0);
+
+        // The transform is really declared — otherwise this test proves nothing.
+        assert!(
+            !doc.tree
+                .get(ghost)
+                .unwrap()
+                .computed_style
+                .transform
+                .is_identity,
+            "the display:contents node must actually carry a transform"
+        );
+
+        // The child is flattened into the container's content box: (20,30),
+        // and nothing translates it.
+        let (_, _, t) = super::compute_absolute_position_and_transform(&doc.tree, child, 1.0);
+        assert_eq!(t, Affine::IDENTITY, "no transform reaches the child");
+        let r = super::painted_border_box(&doc.tree, child, 1.0);
+        assert_eq!((r.x0, r.y0, r.x1, r.y1), (20.0, 30.0, 100.0, 70.0));
+        assert_ne!(
+            (r.x0, r.y0),
+            (70.0, 50.0),
+            "the display:contents translate must not displace the child"
+        );
+    }
+
+    /// Gap 2. A hoisted `position: fixed` box drops every ancestor transform
+    /// but keeps the body's: `paint_children_with_stacking` paints the body's
+    /// stacking sequence — the hoisted fixed entries included — under the
+    /// body's own composed transform. Hit testing already agrees
+    /// (`body_transform_applies_to_a_hoisted_fixed_descendant`); this walk
+    /// started from the identity, so the two disagreed.
+    #[test]
+    fn a_hoisted_fixed_box_paints_under_the_body_transform() {
+        let mut doc = RinchDocument::new();
+        let body = doc.body();
+        doc.set_attribute(body, "style", "transform: translate(40px, 30px)");
+        let outer = child_of(
+            &mut doc,
+            body,
+            "position: relative; width: 400px; height: 300px; \
+             transform: translate(200px, 100px)",
+        );
+        let fixed = child_of(
+            &mut doc,
+            rinch_core::dom::NodeId(outer),
+            "position: fixed; left: 50px; top: 60px; width: 100px; height: 40px; z-index: 5",
+        );
+        doc.resolve_layout(800.0, 600.0);
+
+        // Viewport box (50,60)-(150,100), shifted by body's translate only:
+        // (90,90)-(190,130). `outer`'s translate must not reach it.
+        let r = super::painted_border_box(&doc.tree, fixed, 1.0);
+        assert_eq!((r.x0, r.y0, r.x1, r.y1), (90.0, 90.0, 190.0, 130.0));
+        assert_ne!(
+            (r.x0, r.y0),
+            (50.0, 60.0),
+            "the body's transform does reach a hoisted fixed box"
+        );
+        assert_ne!(
+            (r.x0, r.y0),
+            (290.0, 190.0),
+            "the transformed ancestor's translate must not reach it"
+        );
+    }
+
+    /// Gap 3. An inline-block an IFC positions stores `layout.x`/`layout.y`
+    /// relative to the IFC root's *content* box, while the parent chain sums
+    /// border-box origins. Paint bridges the two by handing
+    /// `paint_inline_layout` the content-box origin, so a walk that omits
+    /// `ifc_content_box_offset` reports the box one padding+border up-left of
+    /// where it is drawn.
+    #[test]
+    fn an_inline_block_is_placed_against_its_ifc_content_box() {
+        let mut doc = RinchDocument::new();
+        let body = doc.body();
+        let container = doc.create_element("div");
+        doc.set_attribute(
+            container,
+            "style",
+            "width: 400px; padding: 20px; border: 4px solid black; font-size: 16px",
+        );
+        doc.append_child(body, container);
+        let before = doc.create_text("Click the ");
+        doc.append_child(container, before);
+        let button = doc.create_element("button"); // inline-block by default
+        doc.set_attribute(button, "style", "width: 60px; height: 24px");
+        doc.append_child(container, button);
+        let label = doc.create_text("OK");
+        doc.append_child(button, label);
+        doc.resolve_layout(800.0, 600.0);
+
+        assert!(
+            doc.tree.get(container.0).unwrap().text_layout.is_some(),
+            "the container must be the IFC root"
+        );
+        // The button's own layout.x/y are Parley's, relative to the content
+        // box; the chain sum lands on the border-box origin. The painted origin
+        // is that sum plus padding (20) + border (4) on each axis.
+        let (sum_x, sum_y) = untransformed_origin(&doc, button.0);
+        let r = super::painted_border_box(&doc.tree, button.0, 1.0);
+        assert_eq!(
+            (r.x0 as f32, r.y0 as f32),
+            (sum_x + 24.0, sum_y + 24.0),
+            "the inline-block paints inside the IFC root's padding and border"
+        );
+        assert_ne!(
+            (r.x0 as f32, r.y0 as f32),
+            (sum_x, sum_y),
+            "the plain border-box sum is one padding+border off"
+        );
+    }
+
+    /// Gaps 2 and 3 meeting. A hoisted `position: fixed` box is painted by
+    /// `paint_node` from the body's sequence at a zero offset, never by
+    /// `paint_inline_layout`, so no IFC content-box offset may reach it even
+    /// when it is written inline in a padded text flow. `hit_test_node` spends
+    /// an explicit branch on this; the walk here does not need one, because
+    /// Stylo blockifies an out-of-flow box and `ifc_content_box_offset` then
+    /// answers `(0, 0)` on its own — which the assertion below states, so that
+    /// a Stylo change removing that blockification fails here instead of
+    /// silently displacing every fixed overlay written inside a paragraph.
+    #[test]
+    fn a_fixed_inline_block_keeps_its_viewport_origin() {
+        let mut doc = RinchDocument::new();
+        let body = doc.body();
+        let container = doc.create_element("div");
+        doc.set_attribute(
+            container,
+            "style",
+            "width: 400px; padding: 20px; border: 4px solid black; font-size: 16px",
+        );
+        doc.append_child(body, container);
+        let before = doc.create_text("Overlay: ");
+        doc.append_child(container, before);
+        // Two `<button>`s, inline-block by tag, in the same IFC. The in-flow one
+        // is the control: it must take the 24px offset, or the fixed one taking
+        // none proves nothing about the exemption.
+        let inflow = doc.create_element("button");
+        doc.set_attribute(inflow, "style", "width: 60px; height: 24px");
+        doc.append_child(container, inflow);
+        let overlay = doc.create_element("button");
+        doc.set_attribute(
+            overlay,
+            "style",
+            "position: fixed; left: 30px; top: 40px; width: 60px; height: 24px",
+        );
+        doc.append_child(container, overlay);
+        doc.resolve_layout(800.0, 600.0);
+
+        let control = doc.tree.get(inflow.0).unwrap();
+        assert_eq!(
+            super::ifc_content_box_offset(&doc.tree, control),
+            (24.0, 24.0),
+            "the control really is an inline-block this IFC displaces"
+        );
+        let (cx, _) = untransformed_origin(&doc, inflow.0);
+        assert_eq!(
+            super::painted_border_box(&doc.tree, inflow.0, 1.0).x0 as f32,
+            cx + 24.0,
+            "the in-flow inline-block paints inside the padding and border"
+        );
+
+        // Why the fixed one takes none: `<button>` is inline-block by tag, but
+        // out-of-flow blockifies it, so `ifc_content_box_offset` already
+        // answers zero and the walk needs no branch of its own.
+        let n = doc.tree.get(overlay.0).unwrap();
+        assert_eq!(
+            super::ifc_content_box_offset(&doc.tree, n),
+            (0.0, 0.0),
+            "an out-of-flow box takes no IFC content-box offset"
+        );
+
+        let r = super::painted_border_box(&doc.tree, overlay.0, 1.0);
+        assert_eq!((r.x0, r.y0, r.x1, r.y1), (30.0, 40.0, 90.0, 64.0));
+        assert_ne!(
+            (r.x0, r.y0),
+            (54.0, 64.0),
+            "the IFC root's padding+border must not displace a hoisted fixed box"
+        );
+    }
+
+    /// The consumer this walk already had. `compute_dirty_region` narrows a
+    /// software repaint to the changed nodes' rects, so a rect computed
+    /// somewhere other than where the node paints leaves part of the real draw
+    /// outside the region and unpainted — a defect that shows on a cold full
+    /// repaint and not on a partial one, which is the shape #369 describes.
+    ///
+    /// The oracle is `painted_border_box` because that is now the same walk
+    /// `paint_node` follows; the assertion is containment, which is the
+    /// property the region has to have.
+    #[test]
+    fn the_dirty_region_covers_where_an_inline_block_paints() {
+        let mut doc = RinchDocument::new();
+        let body = doc.body();
+        let container = doc.create_element("div");
+        doc.set_attribute(
+            container,
+            "style",
+            "width: 400px; padding: 40px; border: 6px solid black; font-size: 16px",
+        );
+        doc.append_child(body, container);
+        let before = doc.create_text("Press ");
+        doc.append_child(container, before);
+        let button = doc.create_element("button");
+        doc.set_attribute(button, "style", "width: 60px; height: 24px");
+        doc.append_child(container, button);
+        doc.resolve_layout(800.0, 600.0);
+
+        doc.tree.paint_dirty_nodes.clear();
+        doc.tree.paint_dirty_nodes.push(button.0);
+        let region =
+            super::compute_dirty_region(&doc.tree, 1.0, 800.0, 600.0).expect("a dirty node");
+        let painted = super::painted_border_box(&doc.tree, button.0, 1.0);
+
+        // The 46px content-box offset is real, so the two candidate rects are
+        // disjoint enough for containment to be a meaningful test.
+        let (sum_x, sum_y) = untransformed_origin(&doc, button.0);
+        assert_eq!(
+            (painted.x0 as f32, painted.y0 as f32),
+            (sum_x + 46.0, sum_y + 46.0)
+        );
+
+        assert!(
+            region.x0 <= painted.x0
+                && region.y0 <= painted.y0
+                && region.x1 >= painted.x1
+                && region.y1 >= painted.y1,
+            "the dirty region {region:?} must cover the painted box {painted:?}"
+        );
+        // And the box it would have covered instead does not reach the draw:
+        // 46px of offset against a 4px anti-aliasing margin.
+        assert!(
+            (sum_x as f64) + 60.0 + 4.0 < painted.x1,
+            "the un-offset rect stops short of the painted box's right edge"
+        );
     }
 }

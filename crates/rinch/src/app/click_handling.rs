@@ -400,23 +400,22 @@ impl RinchApp {
                 }
                 let text_hit = Self::compute_text_hit_info(&d.tree, hit_id, x, y);
 
+                // The element bounds a handler reads are the bounds it is
+                // *painted* at, which is what rinch-web already reports here
+                // (`getBoundingClientRect`) and what `Drag::percent()` divides
+                // by. The hand-rolled parent-chain sum this replaces composed no
+                // transform and had no `position: fixed` exception, so a slider
+                // inside the `translate(-50%, -50%)` centring idiom measured
+                // itself against a box nobody can see (#203). Hit testing works
+                // in layout pixels, so the painted box is asked for at scale 1.
                 let (elem_x, elem_y, elem_w, elem_h) = {
-                    let node = d.tree.get(node_id).expect("verified above");
-                    let mut ax = node.layout.x;
-                    let mut ay = node.layout.y;
-                    let mut pid = node.parent;
-                    while let Some(p) = pid {
-                        if let Some(pn) = d.tree.get(p) {
-                            ax += pn.layout.x;
-                            ay += pn.layout.y;
-                            ax -= pn.scroll_offset.0 as f32;
-                            ay -= pn.scroll_offset.1 as f32;
-                            pid = pn.parent;
-                        } else {
-                            break;
-                        }
-                    }
-                    (ax, ay, node.layout.width, node.layout.height)
+                    let r = rinch_dom::paint::painted_border_box(&d.tree, node_id, 1.0);
+                    (
+                        r.x0 as f32,
+                        r.y0 as f32,
+                        r.width() as f32,
+                        r.height() as f32,
+                    )
                 };
 
                 events::set_click_context(events::ClickContext {

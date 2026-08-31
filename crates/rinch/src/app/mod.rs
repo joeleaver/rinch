@@ -5733,3 +5733,191 @@ mod pending_image_tests {
         );
     }
 }
+
+#[cfg(test)]
+mod click_context_bounds_tests {
+    use super::*;
+    use std::cell::Cell;
+
+    // #203. The element bounds a click handler reads must be the bounds the
+    // element is *painted* at — that is what `getBoundingClientRect` gives the
+    // same field on rinch-web, and what `Drag::percent()` divides the pointer
+    // position by. The walk these tests replaced summed `layout.x`/`layout.y`
+    // up the parent chain with no transform composition and no `position:
+    // fixed` exception.
+    //
+    // Every expected box below is hand-computed from the CSS transform, not
+    // from a geometry helper. Each test also states the box the old walk
+    // reported, and asserts it is not the answer — the two overlap, so a
+    // positive assertion alone would survive the regression.
+
+    type Seen = Rc<Cell<Option<events::ClickContext>>>;
+
+    /// Mount `800x600` of `position: relative` root holding one `outer_style`
+    /// box with one `data-rid` `target_style` box inside it. The handler
+    /// records the `ClickContext` it was given.
+    fn app_with_target(
+        outer_style: &'static str,
+        target_style: &'static str,
+        seen: Seen,
+    ) -> RinchApp {
+        let mut app = RinchApp::new(move |scope: &mut RenderScope| {
+            let root = scope.create_element("div");
+            root.set_attribute("style", "position: relative; width: 800px; height: 600px");
+            let outer = scope.create_element("div");
+            outer.set_attribute("style", outer_style);
+            let target = scope.create_element("div");
+            target.set_attribute("style", target_style);
+            let seen = seen.clone();
+            let handler_id = events::register_handler(Rc::new(move || {
+                seen.set(Some(events::get_click_context()));
+            }));
+            target.set_attribute("data-rid", &handler_id.0.to_string());
+            outer.append_child(&target);
+            root.append_child(&outer);
+            root
+        });
+        app.mount_component(800.0, 600.0);
+        app
+    }
+
+    fn click(app: &mut RinchApp, x: f32, y: f32) {
+        app.handle_event(
+            PlatformEvent::MouseDown {
+                x,
+                y,
+                button: MouseButton::Left,
+            },
+            (800, 600),
+            1.0,
+        );
+    }
+
+    fn element_box(ctx: events::ClickContext) -> (f32, f32, f32, f32) {
+        (
+            ctx.element_x,
+            ctx.element_y,
+            ctx.element_width,
+            ctx.element_height,
+        )
+    }
+
+    /// The headline case: a slider inside the `left/top: 50%` +
+    /// `translate(-50%, -50%)` centring idiom. `Drag::percent()` snapshots
+    /// `element_x`/`element_width` and thereafter divides raw pointer
+    /// coordinates by them, so an untransformed box made every drag inside a
+    /// centred modal read the wrong value — while the same markup works in the
+    /// browser, where the field comes from `getBoundingClientRect`.
+    #[test]
+    fn slider_in_a_translated_modal_reports_the_painted_percentage() {
+        let seen: Seen = Rc::new(Cell::new(None));
+        // Modal layout box (400,300)-(800,500); translate(-50%,-50%) of its own
+        // 400x200 paints it at (200,200)-(600,400).
+        // Track layout box (400,380)-(800,400); painted (200,280)-(600,300).
+        let mut app = app_with_target(
+            "position: absolute; left: 50%; top: 50%; \
+             transform: translate(-50%, -50%); width: 400px; height: 200px",
+            "position: absolute; left: 0; top: 80px; width: 400px; height: 20px",
+            seen.clone(),
+        );
+
+        // 25% along the *painted* track: 200 + 0.25 * 400 = 300.
+        click(&mut app, 300.0, 290.0);
+        let ctx = seen.get().expect("the painted track must take the click");
+        assert_eq!(
+            element_box(ctx),
+            (200.0, 280.0, 400.0, 20.0),
+            "the track's element box is where it is painted"
+        );
+        assert!(
+            (ctx.percent_x() - 0.25).abs() < 1e-4,
+            "percent_x was {}, not 0.25",
+            ctx.percent_x()
+        );
+
+        // The old walk reported the untransformed box (400,380,400,20), which
+        // would have made this same click read 0.0 (clamped from -0.25).
+        assert_ne!(
+            ctx.element_x, 400.0,
+            "the untransformed layout origin must not be reported"
+        );
+        // And 25% along that box is not even on the track any more.
+        seen.set(None);
+        click(&mut app, 500.0, 390.0);
+        assert!(
+            seen.get().is_none(),
+            "the untransformed 25% point is outside the painted track"
+        );
+    }
+
+    /// A `scale()` ancestor fails differently from a translate: it changes the
+    /// painted *width*, so a walk that merely offset the layout box would still
+    /// divide by the wrong denominator.
+    #[test]
+    fn slider_in_a_scaled_container_reports_the_scaled_box() {
+        let seen: Seen = Rc::new(Cell::new(None));
+        // Zoom box at (100,50), scaled x2 about its own top-left corner.
+        // Track layout box (120,80)-(220,90) → painted (140,110)-(340,130).
+        let mut app = app_with_target(
+            "position: absolute; left: 100px; top: 50px; width: 300px; height: 200px; \
+             transform: scale(2); transform-origin: 0 0",
+            "position: absolute; left: 20px; top: 30px; width: 100px; height: 10px",
+            seen.clone(),
+        );
+
+        // 25% along the painted track: 140 + 0.25 * 200 = 190.
+        click(&mut app, 190.0, 120.0);
+        let ctx = seen.get().expect("the painted track must take the click");
+        assert_eq!(
+            element_box(ctx),
+            (140.0, 110.0, 200.0, 20.0),
+            "a scaled element is painted at twice its layout size"
+        );
+        assert!(
+            (ctx.percent_x() - 0.25).abs() < 1e-4,
+            "percent_x was {}, not 0.25",
+            ctx.percent_x()
+        );
+        // The old walk reported (120,80,100,10) — same click, 0.70.
+        assert_ne!(
+            ctx.element_width, 100.0,
+            "the painted width is 200, not 100"
+        );
+    }
+
+    /// The `Fixed` exception this site never had. A `position: fixed` box is
+    /// viewport-relative — paint hoists it to the body level with its
+    /// ancestors' offsets zeroed — but the walk summed those offsets anyway, so
+    /// a fixed overlay inside any offset container reported a box displaced by
+    /// the container's position (and, in a scroller, one that drifted as the
+    /// container scrolled).
+    #[test]
+    fn a_fixed_overlay_reports_its_viewport_box() {
+        let seen: Seen = Rc::new(Cell::new(None));
+        // The fixed box's viewport rect is (40,60)-(160,110) whatever the
+        // container does; the old walk added (250,150) and reported (290,210).
+        let mut app = app_with_target(
+            "position: absolute; left: 250px; top: 150px; width: 300px; height: 200px",
+            "position: fixed; left: 40px; top: 60px; width: 120px; height: 50px; z-index: 5",
+            seen.clone(),
+        );
+
+        click(&mut app, 100.0, 85.0);
+        let ctx = seen.get().expect("the fixed overlay must take the click");
+        assert_eq!(
+            element_box(ctx),
+            (40.0, 60.0, 120.0, 50.0),
+            "a fixed box's element rect is its viewport rect"
+        );
+        assert!(
+            (ctx.percent_x() - 0.5).abs() < 1e-4,
+            "percent_x was {}, not 0.5",
+            ctx.percent_x()
+        );
+        assert_ne!(
+            (ctx.element_x, ctx.element_y),
+            (290.0, 210.0),
+            "the container's offset must not be summed into a fixed box"
+        );
+    }
+}
