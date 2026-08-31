@@ -254,7 +254,18 @@ impl RinchApp {
                 }
 
                 // Handle component drag (sliders, floating panels, etc.)
-                let (drag_active, drag_forward_surface) = rinch_core::update_drag(x, y);
+                //
+                // `PrimaryButton::Unknown`, and honestly so: `PlatformEvent::
+                // MouseMove` carries no button mask, and neither does what
+                // produces it — winit 0.31's `WindowEvent::PointerMoved` gives a
+                // position and a `PointerSource`, nothing about which buttons
+                // are held. So desktop cannot detect the swallowed release that
+                // issue #189's heal keys off, and a flag `RinchApp` maintained
+                // itself would be no help: the missed `MouseUp` that strands the
+                // drag is the same event that would have cleared the flag. See
+                // #294 for what desktop would actually need.
+                let (drag_active, drag_forward_surface) =
+                    rinch_core::update_drag_with_button(x, y, rinch_core::PrimaryButton::Unknown);
                 if drag_active && !drag_forward_surface {
                     self.resolve_and_repaint(vp_w, vp_h);
                     actions.push(AppAction::RequestRedraw);

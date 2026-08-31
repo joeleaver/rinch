@@ -1651,8 +1651,29 @@ pub fn setup_event_delegation(doc: &WebDocument) {
 
     // Pointermove delegation: feed active drag operations.
     let pointermove_closure = Closure::wrap(Box::new(move |event: web_sys::PointerEvent| {
-        let (drag_active, _) =
-            rinch_core::update_drag(event.client_x() as f32, event.client_y() as f32);
+        // Tell the pointer-capture `Drag` whether the primary contact is still
+        // down. `buttons & 1 == 0` on a move means the release that should have
+        // ended the drag was swallowed (a native context menu, a print dialog,
+        // the pointer leaving a non-capturing surface), and the drag heals
+        // itself through `on_cancel` rather than following the cursor for the
+        // rest of the session (issue #189). Same condition WEB_DRAG has always
+        // self-healed on, now shared by both drag machines.
+        let released = drag_machine::primary_released(event.buttons());
+        if released {
+            // Whatever the heal finds, no pointer capture taken for a `Drag`
+            // outlives the contact that justified it. Idempotent, so the
+            // ordinary hover moves that also land here cost a `None` take.
+            release_drag_pointer_capture();
+        }
+        let (drag_active, _) = rinch_core::update_drag_with_button(
+            event.client_x() as f32,
+            event.client_y() as f32,
+            if released {
+                rinch_core::PrimaryButton::Up
+            } else {
+                rinch_core::PrimaryButton::Down
+            },
+        );
         if drag_active {
             event.prevent_default();
         }

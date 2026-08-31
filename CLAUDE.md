@@ -921,6 +921,28 @@ the pointer is grabbed to the pressing window while a button is held — so this
 matters for an embed host pumping several contexts from one event stream, and
 for a drag left live past a missed `MouseUp`.)
 
+**A drag whose release was swallowed heals itself (issue #189).** A native
+context menu, a modal dialog, a window-manager grab, or the pointer leaving a
+non-capturing surface can eat the `pointerup` that should have ended a drag,
+leaving it armed for the rest of the session and following the cursor with no
+button held. On a move that reports the primary button/contact released, the
+drag ends through **`on_cancel`** — not `on_end`: a release nobody saw has no
+trustworthy commit position, so the honest ending is the teardown one, with the
+last coordinates actually delivered to `on_move`.
+
+The backend says which by calling `update_drag_with_button(x, y,
+PrimaryButton::{Down,Up,Unknown})`; `update_drag(x, y)` is exactly the `Unknown`
+form. Three states rather than a bool because a backend that cannot see the
+button state is a real case: **rinch-web reports `Down`/`Up` from `buttons & 1`
+and heals; desktop reports `Unknown` and does not.** `PlatformEvent::MouseMove`
+carries no button mask, and neither does winit's `PointerMoved` behind it, so
+desktop has no independent source of truth — and a flag the runtime kept itself
+would be no help, since the missed `MouseUp` that strands the drag is the same
+event that would have cleared the flag. Tracked in **issue #294**. Nothing is
+ever ended on a guess: `Unknown` behaves exactly like `Down`. The heal is
+document-scoped like the rest of the drag — another document's idle pointer
+cannot tear down this one's live drag.
+
 ### File Drop (OS → App)
 
 File drops from the OS use `data-onfiledragenter`, `data-onfiledragleave` attributes, and `register_file_drop_handler` for the actual drop. See the File Drop section of UI Zoo for an example.
