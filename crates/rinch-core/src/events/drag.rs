@@ -153,6 +153,55 @@ fn discard_if_abandoned() -> bool {
     false
 }
 
+/// What a platform's pointer-move event says about the button (or touch
+/// contact) that armed a pointer-capture drag.
+///
+/// A drag ends when its release arrives, and if the release is *swallowed* —
+/// a native context menu opening over the surface, a modal dialog, a
+/// window-manager grab, the pointer leaving a non-capturing surface — nothing
+/// ever clears `ACTIVE_DRAG` and the app keeps dragging under a pointer the
+/// user is no longer pressing (issue #189). A backend that can see the button
+/// state on a move can say so, and the drag heals itself.
+///
+/// Three states, not a bool, because a backend that *cannot* see the button
+/// state is a real case and must not be made to spell it as a lie. Desktop's
+/// `PlatformEvent::MouseMove` carries no button mask (winit 0.31's
+/// `PointerMoved` gives position and `PointerSource::Mouse`, nothing else), so
+/// it answers [`Unknown`](Self::Unknown) — which reads as the gap it is, rather
+/// than as a claim that the button is still held.
+///
+/// [`Unknown`](Self::Unknown) and [`Down`](Self::Down) behave identically: the
+/// drag is only healed on a *positive* report of release. Nothing is ever ended
+/// on a guess.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PrimaryButton {
+    /// The move event says the primary button/contact is still held.
+    Down,
+    /// The move event says the primary button/contact is no longer held, so the
+    /// release that should have ended this drag was missed.
+    Up,
+    /// The move event carries no button state at all. Not a claim either way.
+    Unknown,
+}
+
+/// End an in-flight drag whose release was never delivered (issue #189).
+///
+/// Returns `true` if a drag was healed. Goes through [`Drag::cancel`], not
+/// [`finish_drag`]: `on_end` is the *commit* callback and a release nobody saw
+/// has no trustworthy commit position, so the honest ending is the teardown one
+/// — `on_cancel`, with the last coordinates actually delivered to `on_move`.
+///
+/// `Drag::cancel` takes the state out and drops the borrow before invoking the
+/// callback, so an `on_cancel` that queries or re-arms a drag is safe here too.
+fn heal_released_drag() -> bool {
+    if !ACTIVE_DRAG.with(|drag| drag.borrow().is_some()) {
+        return false;
+    }
+    tracing::debug!("healing an in-flight drag whose release was never delivered");
+    Drag::cancel();
+    true
+}
+
 thread_local! {
     static ACTIVE_DRAG: RefCell<Option<ActiveDrag>> = const { RefCell::new(None) };
 }
@@ -299,11 +348,17 @@ impl Drag {
     /// pointer never moved. A no-op when no drag is active.
     ///
     /// Unlike [`update_drag`]/[`finish_drag`]/[`Drag::is_active`], this is
-    /// **not** scoped to the dispatching document (issue #139): its only
-    /// in-tree caller is the web backend's `pointercancel`, on a backend that
-    /// marks no dispatching document at all, and "abandon the gesture" is the
-    /// one operation another surface might legitimately want to perform on a
-    /// drag it does not own. Revisit if a desktop path ever calls it.
+    /// **not** scoped to the dispatching document (issue #139): its callers are
+    /// the two backends' pointer-cancel paths — the web `pointercancel`
+    /// listener, on a backend that marks no dispatching document at all, and
+    /// desktop's `PlatformEvent::PointerCancel` — and "abandon the gesture" is
+    /// the one operation another surface might legitimately want to perform on
+    /// a drag it does not own.
+    ///
+    /// The #189 self-heal in [`update_drag_with_button`] also ends here, but it
+    /// is scoped: it makes the document check *before* calling this, so another
+    /// document's idle pointer cannot tear this drag down. Any new caller owes
+    /// the same judgement — this function will not make it for you.
     pub fn cancel() {
         // Take the state and release the borrow before invoking the callback
         // (mirrors `finish_drag`) so an `on_cancel` that queries or starts a
@@ -370,20 +425,52 @@ impl Drag {
     }
 }
 
-/// Update the drag position. Called by the runtime on mouse move.
+/// Update the drag position from a backend that cannot see the button state.
+///
+/// Equivalent to [`update_drag_with_button`] with [`PrimaryButton::Unknown`].
+/// A backend whose move events *do* carry the button state must call
+/// `update_drag_with_button` instead, or a swallowed release leaves the drag
+/// armed forever (issue #189).
+///
 /// Returns `(handled, forward_surface_events)`:
 /// - `handled`: true if a drag callback was invoked
 /// - `forward_surface_events`: true if surface events should still be dispatched
 pub fn update_drag(mouse_x: f32, mouse_y: f32) -> (bool, bool) {
+    update_drag_with_button(mouse_x, mouse_y, PrimaryButton::Unknown)
+}
+
+/// Update the drag position. Called by the runtime on mouse move.
+///
+/// `primary` is what this move event says about the button that armed the drag.
+/// On [`PrimaryButton::Up`] the release that should have ended the drag was
+/// swallowed, and the drag is healed here — through `on_cancel`, not `on_end`
+/// (issue #189). Reported as unhandled, because after the heal there is no drag
+/// left for this move to drive: the caller goes on to do its ordinary hover work.
+///
+/// Returns `(handled, forward_surface_events)`:
+/// - `handled`: true if a drag callback was invoked
+/// - `forward_surface_events`: true if surface events should still be dispatched
+pub fn update_drag_with_button(mouse_x: f32, mouse_y: f32, primary: PrimaryButton) -> (bool, bool) {
     // A drag whose component was unmounted mid-gesture is dropped rather than
     // driven: its callbacks close over signals the dispose fixpoint has freed
     // (issue #141), so `on_move` would panic on the first read.
+    //
+    // Ordered before the #189 heal on purpose: an abandoned drag is discarded
+    // *silently*, and its `on_cancel` belongs to the same dead component that
+    // would be the next thing to read a freed signal.
     discard_if_abandoned();
 
     // Another document's pointer stream must not drive this drag: its
     // coordinates are in a different window's space (issue #139). Reported as
     // unhandled so the dispatching document goes on to do its own hover work.
     if active_drag_is_foreign() {
+        return (false, false);
+    }
+
+    // The release was swallowed (issue #189). Deliberately *after* the
+    // document check: a foreign stream reporting "no button held" is reporting
+    // about its own pointer, and must no more cancel this drag than drive it.
+    if primary == PrimaryButton::Up && heal_released_drag() {
         return (false, false);
     }
 
@@ -662,6 +749,196 @@ mod tests {
         assert_eq!(*moves.borrow(), vec![(10.0, 20.0)]);
         assert_eq!(end.get(), Some((30.0, 40.0)));
         assert!(!Drag::is_active());
+    }
+
+    // ── a swallowed release heals the drag (issue #189) ─────────────────────
+
+    /// A move that reports the primary button released ends the drag through
+    /// `on_cancel`, not `on_end`.
+    ///
+    /// The release was never delivered — a native context menu, a modal dialog,
+    /// a window-manager grab, the pointer leaving a non-capturing surface — so
+    /// there is no trustworthy commit position. `on_end` is the commit callback;
+    /// firing it here would write a value taken from a pointer the user stopped
+    /// pressing at some unknown earlier point.
+    #[test]
+    fn a_move_with_the_button_released_cancels_the_drag_instead_of_committing() {
+        let moves = Rc::new(Cell::new(0));
+        let end_fired = Rc::new(Cell::new(false));
+        let cancel_pos: Rc<Cell<Option<(f32, f32)>>> = Rc::new(Cell::new(None));
+
+        let m = moves.clone();
+        let e = end_fired.clone();
+        let c = cancel_pos.clone();
+        Drag::absolute()
+            .on_move(move |_, _| m.set(m.get() + 1))
+            .on_end(move |_, _| e.set(true))
+            .on_cancel(move |x, y| c.set(Some((x, y))))
+            .start();
+
+        // One honest move with the button held.
+        assert_eq!(
+            update_drag_with_button(42.0, 17.0, PrimaryButton::Down),
+            (true, false)
+        );
+        assert_eq!(moves.get(), 1);
+
+        // The release was swallowed; the next move reports no button held.
+        assert_eq!(
+            update_drag_with_button(900.0, 900.0, PrimaryButton::Up),
+            (false, false),
+            "the healed move drives nothing, so the caller falls through to its \
+             ordinary hover work"
+        );
+
+        assert_eq!(
+            cancel_pos.get(),
+            Some((42.0, 17.0)),
+            "on_cancel receives the last coordinates actually delivered to \
+             on_move — not the position of the phantom move that healed it"
+        );
+        assert!(!end_fired.get(), "a missed release must not commit");
+        assert_eq!(moves.get(), 1, "and the phantom move never reached on_move");
+        assert!(!Drag::is_active());
+    }
+
+    /// The heal is keyed on a *positive* report of release. A move that says the
+    /// button is still down, and a move from a backend that cannot see the
+    /// button state at all, both drive the drag exactly as before.
+    #[test]
+    fn a_drag_is_not_healed_while_the_button_is_still_down() {
+        let moves: Rc<RefCell<Vec<(f32, f32)>>> = Rc::new(RefCell::new(Vec::new()));
+        let cancel_fired = Rc::new(Cell::new(false));
+
+        let m = moves.clone();
+        let c = cancel_fired.clone();
+        Drag::absolute()
+            .on_move(move |x, y| m.borrow_mut().push((x, y)))
+            .on_cancel(move |_, _| c.set(true))
+            .start();
+
+        assert_eq!(
+            update_drag_with_button(1.0, 2.0, PrimaryButton::Down),
+            (true, false)
+        );
+        // `update_drag` is exactly `PrimaryButton::Unknown` — the shape a
+        // backend with no button state (desktop) calls, and never a heal.
+        assert_eq!(
+            update_drag_with_button(3.0, 4.0, PrimaryButton::Unknown),
+            (true, false)
+        );
+        assert_eq!(update_drag(5.0, 6.0), (true, false));
+
+        assert_eq!(*moves.borrow(), vec![(1.0, 2.0), (3.0, 4.0), (5.0, 6.0)]);
+        assert!(!cancel_fired.get(), "nothing is ended on a guess");
+        assert!(Drag::is_active(), "and the drag is still armed");
+
+        finish_drag(5.0, 6.0);
+    }
+
+    /// Healing is idempotent: the moves that follow it — the rest of a session
+    /// of ordinary mouse motion with no button held — find nothing to end and
+    /// fire nothing a second time.
+    #[test]
+    fn healing_a_released_drag_happens_once_and_only_once() {
+        let cancels = Rc::new(Cell::new(0));
+        let ends = Rc::new(Cell::new(0));
+
+        let c = cancels.clone();
+        let e = ends.clone();
+        Drag::absolute()
+            .on_cancel(move |_, _| c.set(c.get() + 1))
+            .on_end(move |_, _| e.set(e.get() + 1))
+            .start();
+
+        update_drag_with_button(10.0, 10.0, PrimaryButton::Up);
+        assert_eq!(cancels.get(), 1);
+
+        for _ in 0..5 {
+            assert_eq!(
+                update_drag_with_button(20.0, 20.0, PrimaryButton::Up),
+                (false, false)
+            );
+        }
+        // Nor does a release that finally does arrive resurrect a commit.
+        finish_drag(20.0, 20.0);
+
+        assert_eq!(cancels.get(), 1, "on_cancel fires once");
+        assert_eq!(ends.get(), 0, "and on_end never");
+        assert!(!Drag::is_active());
+    }
+
+    /// An `on_cancel` fired by the heal may re-enter the drag API freely: the
+    /// heal goes through `Drag::cancel`, which takes the state out and drops the
+    /// borrow before invoking user code.
+    #[test]
+    fn a_heal_may_re_enter_the_drag_api_from_on_cancel() {
+        let saw_inactive = Rc::new(Cell::new(false));
+
+        let saw = saw_inactive.clone();
+        Drag::absolute()
+            .on_cancel(move |_, _| {
+                saw.set(!Drag::is_active());
+                // Re-entrant queries and a re-cancel must not panic.
+                let _ = Drag::start_context();
+                Drag::cancel();
+            })
+            .start();
+
+        update_drag_with_button(1.0, 1.0, PrimaryButton::Up);
+
+        assert!(saw_inactive.get());
+    }
+
+    /// A second document reporting "no button held" is reporting about *its*
+    /// pointer, and must no more cancel this drag than drive it (issue #139).
+    ///
+    /// The failure this guards is the mirror of the one #139 fixed for `on_end`:
+    /// two `RinchApp`s or two embedded `RinchContext`s on one thread share the
+    /// single `ACTIVE_DRAG` slot, and a bare hover in the *other* window — no
+    /// button anywhere near it, `buttons == 0` on every move — would otherwise
+    /// tear down a drag the user is actively holding in this one.
+    #[test]
+    fn another_documents_released_pointer_does_not_heal_this_documents_drag() {
+        use crate::context::push_dispatching_doc;
+
+        let cancel_fired = Rc::new(Cell::new(false));
+        let end: Rc<Cell<Option<(f32, f32)>>> = Rc::new(Cell::new(None));
+
+        {
+            let _a = push_dispatching_doc(1);
+            let c = cancel_fired.clone();
+            let e = end.clone();
+            Drag::absolute()
+                .on_cancel(move |_, _| c.set(true))
+                .on_end(move |x, y| e.set(Some((x, y))))
+                .start();
+            update_drag_with_button(10.0, 20.0, PrimaryButton::Down);
+        }
+
+        {
+            let _b = push_dispatching_doc(2);
+            // B's pointer is merely hovering: buttons == 0 on every move.
+            for _ in 0..3 {
+                assert_eq!(
+                    update_drag_with_button(999.0, 999.0, PrimaryButton::Up),
+                    (false, false)
+                );
+            }
+        }
+
+        assert!(
+            !cancel_fired.get(),
+            "B's idle pointer must not tear down A's live drag"
+        );
+
+        // The counterfactual: A still owns it, and still commits it normally.
+        {
+            let _a = push_dispatching_doc(1);
+            assert!(Drag::is_active());
+            finish_drag(30.0, 40.0);
+        }
+        assert_eq!(end.get(), Some((30.0, 40.0)));
     }
 
     /// A drag armed outside any dispatch — a timer, a menu callback, or a
