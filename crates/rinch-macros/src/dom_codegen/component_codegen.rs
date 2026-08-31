@@ -3,6 +3,8 @@
 //! Handles code generation for PascalCase components, including
 //! static components and reactive components that re-render when signals change.
 
+use std::collections::HashSet;
+
 use proc_macro2::TokenStream as TokenStream2;
 use quote::quote;
 
@@ -10,11 +12,14 @@ use crate::element::RsxElement;
 use crate::helpers::{expand_style_shorthand, get_closure_expr, is_literal_expr};
 use crate::prop::RsxProp;
 
-use super::DomCodegenContext;
+use super::captures::{
+    collect_body_captures, collect_capture_idents, is_move_closure, shadow_clones, wrap_site,
+};
 use super::html::{
     generate_class_code, generate_shorthand_code, generate_shorthand_code_reactive,
     generate_style_code,
 };
+use super::{DomCodegenContext, no_siblings};
 
 /// Check if an element is a component with reactive (closure) props that needs
 /// statement-based insertion (like control flow) rather than expression-based.
@@ -78,11 +83,15 @@ pub fn generate_reactive_component_stmt(
     let comp_var = ctx.next_var("comp");
     let result_var = ctx.next_var("result");
 
+    // The render closure runs again on every prop change, so what it names is
+    // captured from the body it was built in and moved out of it (issue #223).
+    ctx.push_closure_frame(HashSet::new());
     let children_code: Vec<TokenStream2> = element
         .children
         .iter()
         .map(|child| super::generate_child_code(child, &temp_var, ctx))
         .collect();
+    ctx.pop_closure_frame();
 
     // Style/class inside the reactive closure use simple set (no separate effects needed)
     let style_code = if let Some(prop) = style_prop {
@@ -123,26 +132,29 @@ pub fn generate_reactive_component_stmt(
 
     // Pass the actual parent directly to reactive_component_dom — no wrapper div needed.
     // This is the statement path: no return value, the function handles insertion.
+    let body = quote! {
+        let __scope = __child_scope;
+
+        #[allow(clippy::needless_update)]
+        let #comp_var = #comp_name {
+            #(#field_assignments,)*
+            ..Default::default()
+        };
+
+        let #temp_var = __scope.create_element("template");
+        #(#children_code)*
+        let #children_var: Vec<rinch::core::NodeHandle> = #temp_var.children();
+
+        let #result_var = rinch::core::Component::render(&#comp_var, __scope, &#children_var);
+        #style_code
+        #class_code
+        #shorthand_code
+        #result_var
+    };
+    let shadows = ctx.site_shadows(&collect_body_captures(&body), &no_siblings());
+    let render = wrap_site(&shadows, quote! { move |__child_scope| { #body } });
     quote! {
-        rinch::core::reactive_component_dom(__scope, &#parent_var, move |__child_scope| {
-            let __scope = __child_scope;
-
-            #[allow(clippy::needless_update)]
-            let #comp_var = #comp_name {
-                #(#field_assignments,)*
-                ..Default::default()
-            };
-
-            let #temp_var = __scope.create_element("template");
-            #(#children_code)*
-            let #children_var: Vec<rinch::core::NodeHandle> = #temp_var.children();
-
-            let #result_var = rinch::core::Component::render(&#comp_var, __scope, &#children_var);
-            #style_code
-            #class_code
-            #shorthand_code
-            #result_var
-        });
+        rinch::core::reactive_component_dom(__scope, &#parent_var, #render);
     }
 }
 
@@ -273,11 +285,15 @@ pub fn element_to_dom_component_reactive(
     let comp_var = ctx.next_var("comp");
     let result_var = ctx.next_var("result");
 
+    // The render closure runs again on every prop change, so what it names is
+    // captured from the body it was built in and moved out of it (issue #223).
+    ctx.push_closure_frame(HashSet::new());
     let children_code: Vec<TokenStream2> = element
         .children
         .iter()
         .map(|child| super::generate_child_code(child, &temp_var, ctx))
         .collect();
+    ctx.pop_closure_frame();
 
     // Style/class inside the reactive closure use simple set (no separate effects needed)
     let style_code = if let Some(prop) = style_prop {
@@ -320,29 +336,32 @@ pub fn element_to_dom_component_reactive(
     // Use a display:contents wrapper div as the parent for reactive_component_dom.
     // This ensures the component content is placed inside the wrapper, which the caller
     // then appends to the actual parent — avoiding __scope.parent() misrouting.
+    let body = quote! {
+        let __scope = __child_scope;
+
+        #[allow(clippy::needless_update)]
+        let #comp_var = #comp_name {
+            #(#field_assignments,)*
+            ..Default::default()
+        };
+
+        let #temp_var = __scope.create_element("template");
+        #(#children_code)*
+        let #children_var: Vec<rinch::core::NodeHandle> = #temp_var.children();
+
+        let #result_var = rinch::core::Component::render(&#comp_var, __scope, &#children_var);
+        #style_code
+        #class_code
+        #shorthand_code
+        #result_var
+    };
+    let shadows = ctx.site_shadows(&collect_body_captures(&body), &no_siblings());
+    let render = wrap_site(&shadows, quote! { move |__child_scope| { #body } });
     quote! {
         {
             let #wrapper_var = __scope.create_element("div");
             #wrapper_var.set_attribute("style", "display:contents");
-            rinch::core::reactive_component_dom(__scope, &#wrapper_var, move |__child_scope| {
-                let __scope = __child_scope;
-
-                #[allow(clippy::needless_update)]
-                let #comp_var = #comp_name {
-                    #(#field_assignments,)*
-                    ..Default::default()
-                };
-
-                let #temp_var = __scope.create_element("template");
-                #(#children_code)*
-                let #children_var: Vec<rinch::core::NodeHandle> = #temp_var.children();
-
-                let #result_var = rinch::core::Component::render(&#comp_var, __scope, &#children_var);
-                #style_code
-                #class_code
-                #shorthand_code
-                #result_var
-            });
+            rinch::core::reactive_component_dom(__scope, &#wrapper_var, #render);
             #wrapper_var
         }
     }
@@ -392,7 +411,15 @@ pub fn generate_component_field_assignments(
                 if let Some(closure) = get_closure_expr(value) {
                     // Invoke the closure to get current value, using .into() so
                     // &str → String, bool → bool, etc. all work correctly.
-                    quote! { #name: ((#closure)()).into() }
+                    // A `move` closure rebuilt here on every render would move
+                    // what it names out of the render closure's captures, so it
+                    // gets a fresh shadow per render (issue #223).
+                    if is_move_closure(closure) {
+                        let fire = shadow_clones(collect_capture_idents(closure).iter());
+                        quote! { #name: ({ #fire ((#closure)()).into() }) }
+                    } else {
+                        quote! { #name: ((#closure)()).into() }
+                    }
                 } else {
                     // Use .into() so T auto-wraps into Option<T> via From<T>,
                     // while same-type assignments stay identity conversions.

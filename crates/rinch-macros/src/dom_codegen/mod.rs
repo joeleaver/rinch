@@ -35,11 +35,14 @@
 //! This module is enabled when the `fine-grained` feature is active.
 //! Components must accept a `&mut RenderScope` parameter and return a `NodeHandle`.
 
+pub(crate) mod captures;
 mod component;
 pub mod component_codegen;
 mod control_flow;
 pub mod helpers;
 pub mod html;
+
+use std::collections::HashSet;
 
 use proc_macro2::TokenStream as TokenStream2;
 use quote::quote;
@@ -48,6 +51,8 @@ use crate::element::RsxElement;
 use crate::helpers::{get_closure_expr, is_literal_expr};
 use crate::node::RsxNode;
 
+use captures::{collect_capture_idents, is_move_closure, shadow_clones};
+
 /// Context for DOM code generation.
 pub struct DomCodegenContext {
     /// Counter for generating unique variable names.
@@ -55,6 +60,16 @@ pub struct DomCodegenContext {
     /// Whether we're inside an effect (for nested reactive expressions).
     #[allow(dead_code)]
     in_effect: bool,
+    /// One frame per enclosing generated closure body, innermost last, each
+    /// holding the names that body binds for itself (`let` statements, the
+    /// `for` pattern, the `if let` pattern, a `match` arm's pattern).
+    ///
+    /// `closure_frames[0]` is the `rsx!` root: code there runs once, so nothing
+    /// it constructs can move out of a repeated capture. Every deeper frame is
+    /// a body that runs more than once — a branch, an arm, a per-item view, an
+    /// effect — which is what makes a name from *outside* it contested
+    /// (issue #223). See [`captures`].
+    closure_frames: Vec<HashSet<String>>,
 }
 
 impl DomCodegenContext {
@@ -62,7 +77,59 @@ impl DomCodegenContext {
         Self {
             var_counter: 0,
             in_effect: false,
+            closure_frames: vec![HashSet::new()],
         }
+    }
+
+    /// Enter a generated closure body that may run more than once. `bound` is
+    /// what the body binds for itself before any of its RSX is generated.
+    pub(crate) fn push_closure_frame(&mut self, bound: HashSet<String>) {
+        self.closure_frames.push(bound);
+    }
+
+    pub(crate) fn pop_closure_frame(&mut self) {
+        self.closure_frames.pop();
+    }
+
+    /// Record the names a `let` statement of the current body binds, so a
+    /// closure built later in that body may still move them: they are a fresh
+    /// local on every run, not a capture from outside.
+    pub(crate) fn bind_statement(&mut self, stmt: &syn::Stmt) {
+        let syn::Stmt::Local(local) = stmt else {
+            return;
+        };
+        if let Some(frame) = self.closure_frames.last_mut() {
+            captures::collect_pat_idents(&local.pat, frame);
+        }
+    }
+
+    /// Whether `name` reaches this site from outside the repeatable body that
+    /// encloses it — i.e. building a `'static move` closure from it here would
+    /// move out of an `Fn`/`FnMut` capture, which only compiles today when the
+    /// value is `Copy`.
+    fn is_outer_capture(&self, name: &str) -> bool {
+        self.closure_frames.len() > 1
+            && !self
+                .closure_frames
+                .last()
+                .is_some_and(|frame| frame.contains(name))
+    }
+
+    /// The shadow-clone prologue for one closure-construction site.
+    ///
+    /// `caps` is what the site's closure captures; `shared` is what sibling
+    /// sites of the same construct also capture. A name is cloned when it is
+    /// contested either way, and left alone otherwise — see [`captures`] for
+    /// why both cases are provably `Copy` today.
+    pub(crate) fn site_shadows(
+        &self,
+        caps: &[syn::Ident],
+        shared: &HashSet<String>,
+    ) -> TokenStream2 {
+        shadow_clones(caps.iter().filter(|id| {
+            let name = id.to_string();
+            shared.contains(&name) || self.is_outer_capture(&name)
+        }))
     }
 
     /// Generate a unique variable name.
@@ -71,6 +138,12 @@ impl DomCodegenContext {
         self.var_counter += 1;
         syn::Ident::new(&name, proc_macro2::Span::call_site())
     }
+}
+
+/// Nothing is contested with a sibling site — used where a construct has only
+/// one closure to build.
+pub(crate) fn no_siblings() -> HashSet<String> {
+    HashSet::new()
 }
 
 impl Default for DomCodegenContext {
@@ -102,7 +175,10 @@ pub(crate) fn generate_child_code(
             control_flow::generate_match_block(match_block, parent_var, ctx)
         }
         RsxNode::Statement(stmt) => {
-            // Emit statement directly (e.g., `let x = ...;`)
+            // Emit statement directly (e.g., `let x = ...;`). Its bindings are
+            // locals of the body being generated, so a closure built later in
+            // that body may move them (issue #223).
+            ctx.bind_statement(stmt);
             quote! { #stmt }
         }
         RsxNode::Element(element) if component_codegen::has_reactive_component_props(element) => {
@@ -173,11 +249,27 @@ pub fn node_to_dom(node: &RsxNode, ctx: &mut DomCodegenContext) -> TokenStream2 
                 // effects) and keeps reactive text consistent with reactive
                 // attributes (issue #102).
                 let text_var = ctx.next_var("text");
+                // The effect is a `move` closure that rebuilds `#closure` on
+                // every fire, so it competes twice for what that closure names:
+                // once with the body it is built in (the site shadow), and once
+                // with itself on the next fire (the per-fire shadow) — issue
+                // #223. A borrowing closure is not rebuilt destructively — it
+                // reads through the effect's own capture — so it takes the site
+                // shadow but no per-fire one.
+                let caps = collect_capture_idents(closure);
+                let site_shadows = ctx.site_shadows(&caps, &no_siblings());
+                let fire_shadows = if is_move_closure(closure) {
+                    shadow_clones(caps.iter())
+                } else {
+                    quote! {}
+                };
                 quote! {
                     {
                         let #text_var = __scope.create_text("");
                         let __text_clone = #text_var.clone();
+                        #site_shadows
                         __scope.create_effect(move || {
+                            #fire_shadows
                             __text_clone.set_text(
                                 &::std::string::ToString::to_string(&(#closure)())
                             );
