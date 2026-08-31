@@ -978,6 +978,55 @@ mod inset_fast_path_paint {
     }
 }
 
+// ── #204: an ICB-absolute paints over the viewport, not over its parent ──────
+
+/// A local pixel oracle for the containing-block fix. The absolute box is the
+/// only thing in the document with a background, and its parent is a small box
+/// pushed well away from the origin — so the top-left corner of the canvas is a
+/// region where the correct output is provably red and the buggy output is
+/// provably blank. (A whole-screen comparison would not separate the two; see
+/// the note in `reference_visual_regression_gap`.)
+#[cfg(feature = "software-renderer")]
+mod icb_absolute_paint {
+    use super::transform_paint::{is_opaque_red, paint_skia, pixel_at};
+    use super::*;
+    use rinch_dom::paint::skia_painter::TinySkiaPainter;
+
+    #[test]
+    fn inset_zero_under_an_unpositioned_parent_paints_over_the_viewport() {
+        let mut doc = RinchDocument::new();
+        let body = doc.body();
+        let parent = doc.create_element("div");
+        doc.set_attribute(
+            parent,
+            "style",
+            "width: 100px; height: 50px; margin-left: 200px; margin-top: 100px",
+        );
+        doc.append_child(body, parent);
+        let overlay = doc.create_element("div");
+        doc.set_attribute(
+            overlay,
+            "style",
+            "position: absolute; inset: 0; background-color: red",
+        );
+        doc.append_child(parent, overlay);
+        doc.resolve_layout(800.0, 600.0);
+
+        let mut painter = TinySkiaPainter::new(400, 300);
+        paint_skia(&mut doc, &mut painter);
+
+        let layout = doc.tree.get(overlay.0).unwrap().layout;
+        assert!(
+            is_opaque_red(pixel_at(&painter, 10, 10)),
+            "the overlay fills the viewport, so the canvas corner is red;              before #204 the red started at the parent's origin (200, 100) and              this pixel was blank. layout = {layout:?}"
+        );
+        assert!(
+            is_opaque_red(pixel_at(&painter, 390, 290)),
+            "and it still covers the far side of the canvas"
+        );
+    }
+}
+
 // ── #202: DPI-scale covariance of transform composition ──────────────────────
 
 /// The mechanical correctness criterion for `compose_node_transform`: it must be

@@ -131,6 +131,12 @@ pub struct TextMeasure {
 /// Every consumer — paint, hit testing,
 /// `compute_absolute_position` — accumulates this field up the parent chain,
 /// so only Taffy (or that fixed override) may write it (#236).
+///
+/// An absolutely positioned box with no positioned ancestor is corrected too
+/// (#204), but *without* leaving this space: `read_layout_results` writes the
+/// parent-relative **delta** that lands it on the initial containing block, so
+/// the field stays parent-relative and every consumer above keeps working
+/// unchanged. See `crate::out_of_flow`.
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct LayoutResult {
     pub x: f32,
@@ -567,6 +573,25 @@ impl Node {
             return true;
         }
         false
+    }
+
+    /// Whether this node establishes a containing block for absolutely
+    /// positioned descendants.
+    ///
+    /// Per CSS that is any *positioned* element — `position` other than
+    /// `static` — plus, since a transform makes an element the containing block
+    /// for all its descendants, any element with a non-identity `transform`.
+    /// Overflow deliberately does not count: it forms a stacking context (see
+    /// [`Node::creates_stacking_context`]) but not a containing block.
+    ///
+    /// This is what stops the walk in `out_of_flow::out_of_flow_kind`, which is
+    /// how issue #204's ICB case is told apart from a layout Taffy already gets
+    /// right.
+    pub fn establishes_abs_containing_block(&self) -> bool {
+        !matches!(
+            self.computed_style.position,
+            crate::computed_style::PositionValue::Static
+        ) || !self.computed_style.transform.is_identity
     }
 
     /// Get the text content if this is a text node.

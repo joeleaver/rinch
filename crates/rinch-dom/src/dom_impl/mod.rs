@@ -452,6 +452,21 @@ impl RinchDocument {
                     }
                 }
 
+                // Same as apply_stylo_styles_to_taffy: an out-of-flow box
+                // whose containing block is not its Taffy parent is sized from
+                // that containing block. Rebuilding the style from the computed
+                // values drops the override, so a transition/animation frame on
+                // a `position: fixed` (or ICB-absolute, #204) node used to
+                // collapse it back onto its parent's box.
+                if let Some(kind) = crate::out_of_flow::out_of_flow_kind(&self.tree, node_id) {
+                    crate::out_of_flow::apply_out_of_flow_size_overrides(
+                        node,
+                        kind,
+                        self.tree.viewport,
+                        &mut taffy_style,
+                    );
+                }
+
                 // Collapsed block (virtualized contenteditable): keep the
                 // estimated height apply_stylo_styles_to_taffy would have set.
                 if let Some(est_h) = node.estimated_height {
@@ -526,6 +541,21 @@ impl RinchDocument {
                     if taffy_style.size.width == taffy::Dimension::auto() {
                         taffy_style.size.width = taffy::Dimension::percent(1.0);
                     }
+                }
+
+                // Same as apply_stylo_styles_to_taffy: an out-of-flow box
+                // whose containing block is not its Taffy parent is sized from
+                // that containing block. Rebuilding the style from the computed
+                // values drops the override, so a transition/animation frame on
+                // a `position: fixed` (or ICB-absolute, #204) node used to
+                // collapse it back onto its parent's box.
+                if let Some(kind) = crate::out_of_flow::out_of_flow_kind(&self.tree, node_id) {
+                    crate::out_of_flow::apply_out_of_flow_size_overrides(
+                        node,
+                        kind,
+                        self.tree.viewport,
+                        &mut taffy_style,
+                    );
                 }
 
                 // Collapsed block (virtualized contenteditable): keep the

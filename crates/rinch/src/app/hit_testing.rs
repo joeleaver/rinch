@@ -1391,4 +1391,34 @@ mod tests {
             "outside the badge, the later z == 0 box wins on tree order"
         );
     }
+
+    /// #204: an absolute box with no positioned ancestor resolves against the
+    /// initial containing block. Layout keeps `LayoutResult` parent-relative and
+    /// writes the delta, so hit testing needs no rule of its own — this pins
+    /// that it agrees with paint anyway, which is the whole point of the delta.
+    #[test]
+    fn icb_absolute_is_hit_over_the_whole_viewport() {
+        let mut doc = RinchDocument::new();
+        let body = doc.body();
+        // Unpositioned, small, and pushed away from the origin: before the fix
+        // the overlay's hit area was this box.
+        let host = child_of(
+            &mut doc,
+            body,
+            "width: 100px; height: 50px; margin-left: 200px; margin-top: 100px",
+        );
+        let overlay = child_of(&mut doc, host, "position: absolute; inset: 0");
+        doc.resolve_layout(800.0, 600.0);
+
+        assert_eq!(
+            hit_test(&doc.tree, 10.0, 10.0),
+            Some(overlay.0),
+            "the overlay covers the viewport, so a click near the origin lands on it"
+        );
+        assert_eq!(
+            hit_test(&doc.tree, 780.0, 580.0),
+            Some(overlay.0),
+            "and so does one near the far corner"
+        );
+    }
 }

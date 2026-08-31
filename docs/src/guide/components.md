@@ -573,7 +573,9 @@ HoverCard { position: "bottom",
     }
 }
 
-// LoadingOverlay
+// LoadingOverlay — the `position: relative` on the container is REQUIRED.
+// Without it the overlay's containing block is the viewport and it covers the
+// whole window (the CSS rule, and what rinch-web has always done).
 div { style: "position: relative; height: 200px;",
     // Your content
     LoadingOverlay { visible: is_loading.get() }

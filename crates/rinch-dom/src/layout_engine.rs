@@ -924,6 +924,75 @@ impl RinchDocument {
                 }
             }
 
+            // An absolutely positioned box with no positioned ancestor resolves
+            // against the initial containing block — the viewport at the origin
+            // — not against its direct parent, which is the only containing
+            // block Taffy knows (issue #204). Its *size* was already baked from
+            // the viewport before layout (`out_of_flow`); this places it.
+            //
+            // The correction is written as a **parent-relative delta**, not as
+            // a viewport-absolute coordinate the way `fixed` above is: with
+            //     abs(node) = layout.x + abs(parent) - parent.scroll_offset.x
+            // writing `target - abs(parent) + parent.scroll_offset.x` leaves
+            // `LayoutResult` parent-relative, so every coordinate walk in the
+            // codebase — paint, stacking, hit testing, ClickContext, the MCP
+            // `absolute` contract — keeps working untouched, and layout agrees
+            // with paint by construction because it reuses paint's own sum.
+            {
+                let node = &self.tree.nodes[node_id];
+                if node.computed_style.position == crate::computed_style::PositionValue::Absolute
+                    && (new_layout.width > 0.0 || new_layout.height > 0.0)
+                    && crate::out_of_flow::out_of_flow_kind(&self.tree, node_id)
+                        == Some(crate::out_of_flow::OutOfFlowKind::IcbAbsolute)
+                {
+                    let vw = self.tree.viewport.width;
+                    let vh = self.tree.viewport.height;
+                    let (parent_abs, parent_scroll) = match node.parent {
+                        Some(parent_id) => {
+                            let (px, py) =
+                                crate::paint::compute_absolute_position(&self.tree, parent_id, 1.0);
+                            let scroll = self.tree.nodes[parent_id].scroll_offset;
+                            ((px as f32, py as f32), (scroll.0 as f32, scroll.1 as f32))
+                        }
+                        None => ((0.0, 0.0), (0.0, 0.0)),
+                    };
+
+                    let style = &node.computed_style;
+                    let left = style.left.resolve(vw);
+                    let right = style.right.resolve(vw);
+                    let top = style.top.resolve(vh);
+                    let bottom = style.bottom.resolve(vh);
+                    // Percentage margins resolve against the containing block's
+                    // *width* on both axes, per CSS.
+                    let margin_left = style.margin_left.resolve(vw).unwrap_or(0.0);
+                    let margin_right = style.margin_right.resolve(vw).unwrap_or(0.0);
+                    let margin_top = style.margin_top.resolve(vw).unwrap_or(0.0);
+                    let margin_bottom = style.margin_bottom.resolve(vw).unwrap_or(0.0);
+
+                    // Only correct an axis that has a real inset. With both
+                    // insets `auto` the target is `None` and the box keeps
+                    // Taffy's static position — which CSS *does* take from the
+                    // flow position in the DOM parent, so Taffy's answer is the
+                    // right one there.
+                    let target_x = match (left, right) {
+                        (Some(l), _) => Some(l + margin_left),
+                        (None, Some(r)) => Some(vw - r - margin_right - new_layout.width),
+                        (None, None) => None,
+                    };
+                    if let Some(x) = target_x {
+                        new_layout.x = x - parent_abs.0 + parent_scroll.0;
+                    }
+                    let target_y = match (top, bottom) {
+                        (Some(t), _) => Some(t + margin_top),
+                        (None, Some(b)) => Some(vh - b - margin_bottom - new_layout.height),
+                        (None, None) => None,
+                    };
+                    if let Some(y) = target_y {
+                        new_layout.y = y - parent_abs.1 + parent_scroll.1;
+                    }
+                }
+            }
+
             // An inline-block child of an IFC has its *position* assigned by the IFC
             // (`write_inline_positions`), not Taffy: it is detached from its parent's
             // Taffy tree and measured standalone (Taffy location 0,0). Keep the IFC's
