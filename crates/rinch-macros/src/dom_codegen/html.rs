@@ -22,8 +22,9 @@ use super::{DomCodegenContext, no_siblings};
 /// the user's closure on every fire — so it competes for that closure's values
 /// twice: once with the body it is built in (`site`, emitted before
 /// `create_effect`), and once with its own next fire (`fire`, emitted inside the
-/// effect). Only a `move` closure is rebuilt destructively; a borrowing one
-/// reads through the effect's own capture and gets nothing.
+/// effect). Only a `move` closure is rebuilt destructively, so a borrowing one
+/// takes the `site` prologue — the effect still captures by value — but no
+/// `fire` prologue: it reads through the effect's own capture.
 fn reactive_shadows(
     value: &syn::Expr,
     closure: Option<&syn::Expr>,

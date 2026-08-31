@@ -8,9 +8,10 @@
 //! E0507 — correct Rust, but a rule the author of an `if` has no reason to
 //! expect, since only one branch ever renders.
 //!
-//! Each function below fails to compile without the auto-clone shadows in
-//! `dom_codegen::captures`. The last group is the opposite guard: values that
-//! must **not** be cloned, so the fix cannot turn working code into an error.
+//! Every function here fails to compile without the auto-clone shadows in
+//! `dom_codegen::captures`, except the four under "Over-cloning guards" — those
+//! are the opposite assertion: values that must **not** be cloned, so the fix
+//! cannot turn working code into an error. They pass before and after.
 //!
 //! If this file compiles, the tests pass.
 
@@ -20,8 +21,8 @@
 
 use rinch::prelude::*;
 
-/// Non-`Copy` and non-`Clone`-free: moving it into one closure would leave the
-/// next one with nothing.
+/// `Clone` but not `Copy`: moving it into one closure leaves the next one with
+/// nothing.
 #[derive(Clone)]
 struct Row {
     label: String,

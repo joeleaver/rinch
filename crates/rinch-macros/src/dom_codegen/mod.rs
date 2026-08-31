@@ -253,8 +253,9 @@ pub fn node_to_dom(node: &RsxNode, ctx: &mut DomCodegenContext) -> TokenStream2 
                 // every fire, so it competes twice for what that closure names:
                 // once with the body it is built in (the site shadow), and once
                 // with itself on the next fire (the per-fire shadow) — issue
-                // #223. A borrowing closure only reads through the effect's own
-                // capture and needs neither.
+                // #223. A borrowing closure is not rebuilt destructively — it
+                // reads through the effect's own capture — so it takes the site
+                // shadow but no per-fire one.
                 let caps = collect_capture_idents(closure);
                 let site_shadows = ctx.site_shadows(&caps, &no_siblings());
                 let fire_shadows = if is_move_closure(closure) {
