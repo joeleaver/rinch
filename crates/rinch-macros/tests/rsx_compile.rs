@@ -9,7 +9,7 @@
 //! the parser unit tests in `node.rs` and `element.rs` are the primary test
 //! suite and do not require any external dependencies.
 
-#![allow(dead_code, unused_imports, unexpected_cfgs)]
+#![allow(dead_code, unused_imports)]
 
 use rinch::prelude::*;
 use std::rc::Rc;
@@ -191,10 +191,14 @@ fn test_for_with_closures() -> NodeHandle {
 }
 
 // ============================================================
-// Component tests (requires rinch-components feature)
+// Component tests
+//
+// `rinch-macros` declares no features of its own, so the
+// `#[cfg(feature = "components")]` this module used to carry was always false
+// and none of it was ever compiled. The `rinch` dev-dependency enables
+// `components` unconditionally, so the gate was never needed.
 // ============================================================
 
-#[cfg(feature = "components")]
 mod component_tests {
     use super::*;
 

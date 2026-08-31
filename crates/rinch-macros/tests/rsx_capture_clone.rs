@@ -14,7 +14,9 @@
 //!
 //! If this file compiles, the tests pass.
 
-#![allow(dead_code, unused_imports, unexpected_cfgs, unused_variables)]
+// `unused_variables`: an `rsx!` `if let` binding is reported unused because the
+// generated condition's `matches!` doesn't use it — issue #391, unrelated.
+#![allow(dead_code, unused_imports, unused_variables)]
 
 use rinch::prelude::*;
 
