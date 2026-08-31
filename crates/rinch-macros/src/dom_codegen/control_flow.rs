@@ -6,257 +6,15 @@ use std::collections::HashSet;
 
 use proc_macro2::TokenStream as TokenStream2;
 use quote::quote;
-use syn::visit::Visit;
 
 use crate::element::RsxElement;
 use crate::node::{RsxElseBranch, RsxForLoop, RsxIfBlock, RsxMatchBlock, RsxNode};
 
 use super::DomCodegenContext;
-
-/// Collect simple identifier references in `expr` that look like captures of
-/// the surrounding scope (local variables / function parameters), as a fix for
-/// the nested `if { for { ... } }` capture conflict (issue #26 part 3+4).
-///
-/// **Heuristics** — we don't have type info in the macro, so this filters
-/// based on naming conventions:
-///
-/// - Single-segment path expressions only (`foo`, not `foo::bar` or `Module::FOO`)
-/// - Identifier's first character must be lowercase (filters out PascalCase types
-///   like `String`, `Vec`, user-defined `MyStruct`)
-/// - Excludes Rust keywords/literals (`self`, `true`, `false`)
-/// - Excludes macro-internal names (anything starting with `__`)
-/// - Excludes identifiers introduced by closure parameters or `let` bindings
-///   inside the expression itself (issue #32 — `.filter(|b| b % 4 == 0)` must
-///   not shadow a non-existent outer `b`). Scope-tracked via a stack pushed on
-///   `Closure` / `Block` entry and popped on exit.
-/// - Excludes identifiers bound by `if let` / `while let` (incl. `&&`
-///   let-chains) patterns and `match` arm patterns, each scoped to the branch
-///   that can actually see them — the `if let` analogue of the #32 fix.
-///
-/// The collected list is used to emit `let #id = #id.clone();` shadow bindings
-/// before the inner `move ||` closure is constructed. Cloning Copy types via
-/// `.clone()` is a no-op; the shadow only matters for non-Copy values like
-/// `String`. Types that don't impl `Clone` will still fail with a clear error
-/// pointing at the field — same behaviour as user code calling `.clone()` directly.
-fn collect_capture_idents(expr: &syn::Expr) -> Vec<syn::Ident> {
-    struct Collector {
-        idents: Vec<syn::Ident>,
-        seen: HashSet<String>,
-        /// Stack of locally-bound identifier frames. Each frame holds names
-        /// introduced by a closure's params or by `let` bindings inside a block.
-        /// `is_locally_bound` checks every frame; frames pop in LIFO order on
-        /// scope exit.
-        locals: Vec<HashSet<String>>,
-    }
-
-    impl Collector {
-        fn is_locally_bound(&self, name: &str) -> bool {
-            self.locals.iter().any(|frame| frame.contains(name))
-        }
-
-        /// Scan an `if`/`while` condition that may introduce `let` bindings
-        /// (`if let`, `while let`, and `&&` let-chains). Each scrutinee
-        /// expression is visited so its identifiers resolve against the
-        /// *current* scope — which already includes bindings from earlier links
-        /// of a let-chain (`if let Some(x) = a && x > 0`) — while the names
-        /// bound by each pattern are added to the top `locals` frame so the
-        /// branch body (pushed by the caller) skips them. A plain boolean
-        /// condition just falls through to a normal visit.
-        fn scan_cond(&mut self, cond: &syn::Expr) {
-            match cond {
-                syn::Expr::Let(let_expr) => {
-                    self.visit_expr(&let_expr.expr);
-                    if let Some(frame) = self.locals.last_mut() {
-                        collect_pat_idents(&let_expr.pat, frame);
-                    }
-                }
-                syn::Expr::Binary(bin) if matches!(bin.op, syn::BinOp::And(_)) => {
-                    self.scan_cond(&bin.left);
-                    self.scan_cond(&bin.right);
-                }
-                other => self.visit_expr(other),
-            }
-        }
-    }
-
-    impl<'ast> Visit<'ast> for Collector {
-        fn visit_expr_path(&mut self, expr: &'ast syn::ExprPath) {
-            // Only single-segment paths with no generics / no leading `::`.
-            if expr.qself.is_some()
-                || expr.path.leading_colon.is_some()
-                || expr.path.segments.len() != 1
-            {
-                syn::visit::visit_expr_path(self, expr);
-                return;
-            }
-            let seg = &expr.path.segments[0];
-            if !seg.arguments.is_none() {
-                syn::visit::visit_expr_path(self, expr);
-                return;
-            }
-            let name = seg.ident.to_string();
-            let first = name.chars().next().unwrap_or('_');
-            let is_likely_local = first.is_ascii_lowercase()
-                && !name.starts_with("__")
-                && !matches!(name.as_str(), "self" | "true" | "false");
-            if is_likely_local && !self.is_locally_bound(&name) && self.seen.insert(name) {
-                self.idents.push(seg.ident.clone());
-            }
-            syn::visit::visit_expr_path(self, expr);
-        }
-
-        fn visit_expr_method_call(&mut self, call: &'ast syn::ExprMethodCall) {
-            // Only visit the receiver — method names are not captures.
-            self.visit_expr(&call.receiver);
-            for arg in &call.args {
-                self.visit_expr(arg);
-            }
-        }
-
-        fn visit_expr_call(&mut self, call: &'ast syn::ExprCall) {
-            // Skip the function expression if it's a plain path (the function
-            // name), only descend into arguments. Function names aren't moved.
-            if !matches!(*call.func, syn::Expr::Path(_)) {
-                self.visit_expr(&call.func);
-            }
-            for arg in &call.args {
-                self.visit_expr(arg);
-            }
-        }
-
-        fn visit_expr_closure(&mut self, closure: &'ast syn::ExprClosure) {
-            // Closure params bind names visible only inside the body — e.g. the
-            // `b` in `.filter(|b| b % 4 == 0)`. Push a frame for the duration of
-            // the closure so `visit_expr_path` skips them.
-            let mut frame = HashSet::new();
-            for input in &closure.inputs {
-                collect_pat_idents(input, &mut frame);
-            }
-            self.locals.push(frame);
-            syn::visit::visit_expr_closure(self, closure);
-            self.locals.pop();
-        }
-
-        fn visit_block(&mut self, block: &'ast syn::Block) {
-            // Each block introduces a scope for any `let` bindings within it.
-            self.locals.push(HashSet::new());
-            for stmt in &block.stmts {
-                self.visit_stmt(stmt);
-            }
-            self.locals.pop();
-        }
-
-        fn visit_local(&mut self, local: &'ast syn::Local) {
-            // Visit the init expression **first** — names in the RHS resolve
-            // against the *outer* scope (`let x = x + 1` reads outer `x`), so
-            // the new binding only enters scope after the init runs.
-            if let Some(init) = &local.init {
-                self.visit_expr(&init.expr);
-                if let Some((_, diverge)) = &init.diverge {
-                    self.visit_expr(diverge);
-                }
-            }
-            if let Some(frame) = self.locals.last_mut() {
-                collect_pat_idents(&local.pat, frame);
-            }
-        }
-
-        fn visit_expr_if(&mut self, node: &'ast syn::ExprIf) {
-            // `if let PAT = scrutinee { then } else { else }` binds the names in
-            // `PAT` only within `then` — NOT the scrutinee and NOT the else
-            // branch. The default visitor doesn't know this, so it would treat
-            // those names as outer captures and emit `let name = name.clone();`
-            // for a binding that doesn't exist (the `if let` analogue of #32).
-            // A plain `if cond` leaves the pushed frame empty and is unaffected.
-            self.locals.push(HashSet::new());
-            self.scan_cond(&node.cond);
-            self.visit_block(&node.then_branch);
-            self.locals.pop();
-            if let Some((_, else_branch)) = &node.else_branch {
-                self.visit_expr(else_branch);
-            }
-        }
-
-        fn visit_expr_while(&mut self, node: &'ast syn::ExprWhile) {
-            // `while let PAT = scrutinee { body }` — same scoping as `if let`,
-            // with the pattern visible in the body.
-            self.locals.push(HashSet::new());
-            self.scan_cond(&node.cond);
-            self.visit_block(&node.body);
-            self.locals.pop();
-        }
-
-        fn visit_arm(&mut self, arm: &'ast syn::Arm) {
-            // A `match` arm pattern binds names visible in the arm's guard and
-            // body only. The scrutinee is visited by `visit_expr_match` in the
-            // outer scope, so we only scope the arm here.
-            let mut frame = HashSet::new();
-            collect_pat_idents(&arm.pat, &mut frame);
-            self.locals.push(frame);
-            if let Some((_, guard)) = &arm.guard {
-                self.visit_expr(guard);
-            }
-            self.visit_expr(&arm.body);
-            self.locals.pop();
-        }
-    }
-
-    let mut collector = Collector {
-        idents: Vec::new(),
-        seen: HashSet::new(),
-        locals: Vec::new(),
-    };
-    collector.visit_expr(expr);
-    collector.idents
-}
-
-/// Add every identifier *bound by* `pat` to `out`. Walks tuple/struct/tuple-struct
-/// and or-patterns; ignores paths/literals/wildcards/ranges (those don't bind).
-///
-/// Used to determine which names a closure's params or a `let` introduces, so the
-/// capture scanner can skip them.
-fn collect_pat_idents(pat: &syn::Pat, out: &mut HashSet<String>) {
-    use syn::Pat;
-    match pat {
-        Pat::Ident(pat_ident) => {
-            out.insert(pat_ident.ident.to_string());
-            if let Some((_, sub)) = &pat_ident.subpat {
-                collect_pat_idents(sub, out);
-            }
-        }
-        Pat::Tuple(t) => {
-            for p in &t.elems {
-                collect_pat_idents(p, out);
-            }
-        }
-        Pat::TupleStruct(t) => {
-            for p in &t.elems {
-                collect_pat_idents(p, out);
-            }
-        }
-        Pat::Struct(s) => {
-            for field in &s.fields {
-                collect_pat_idents(&field.pat, out);
-            }
-        }
-        Pat::Or(o) => {
-            for p in &o.cases {
-                collect_pat_idents(p, out);
-            }
-        }
-        Pat::Reference(r) => collect_pat_idents(&r.pat, out),
-        Pat::Paren(p) => collect_pat_idents(&p.pat, out),
-        Pat::Slice(s) => {
-            for p in &s.elems {
-                collect_pat_idents(p, out);
-            }
-        }
-        Pat::Type(t) => collect_pat_idents(&t.pat, out),
-        // No-binding patterns:
-        // - Wild, Lit, Range, Rest, Path, Const, Macro, Verbatim
-        _ => {}
-    }
-}
+use super::captures::{
+    collect_body_captures, collect_capture_idents, collect_pat_idents, contested_names,
+    shadow_clones, wrap_site,
+};
 
 /// Generate DOM code for a Fragment (just renders children in an invisible wrapper).
 pub fn element_to_dom_fragment(element: &RsxElement, ctx: &mut DomCodegenContext) -> TokenStream2 {
@@ -288,6 +46,11 @@ pub fn element_to_dom_fragment(element: &RsxElement, ctx: &mut DomCodegenContext
 ///
 /// Desugars to `show_dom()` calls. The condition is auto-wrapped in a `move ||` closure
 /// to make it reactive. `else if` chains become nested `show_dom` calls.
+///
+/// All three closures — condition, then, else — are constructed as arguments to
+/// one `show_dom` call, whichever way the condition goes, so a value two of them
+/// name is moved twice. Each site therefore gets its own shadow clone of what it
+/// shares (issue #223); see [`super::captures`].
 pub fn generate_if_block(
     if_block: &RsxIfBlock,
     parent_var: &syn::Ident,
@@ -305,30 +68,49 @@ pub fn generate_if_block(
         // Plain if: move || condition
         quote! { move || { #condition } }
     };
+    let cond_caps = collect_capture_idents(condition);
 
     // Build then closure from children
-    let then_closure = generate_branch_closure(&if_block.then_children, if_block, ctx);
+    let (then_closure, then_caps) = generate_branch_closure(&if_block.then_children, if_block, ctx);
 
     // Build else closure
-    let else_option = match &if_block.else_branch {
+    let (else_closure, else_caps) = match &if_block.else_branch {
         Some(RsxElseBranch::Else(children)) => {
-            let else_closure = generate_children_closure(children, ctx);
-            quote! { Some(#else_closure) }
+            let (closure, caps) = generate_children_closure(children, ctx);
+            (Some(closure), caps)
         }
         Some(RsxElseBranch::ElseIf(inner_if)) => {
             // Nested else-if: the else branch renders a display:contents wrapper
             // containing a nested show_dom
             let wrapper_var = ctx.next_var("elif_wrap");
+            ctx.push_closure_frame(HashSet::new());
             let nested = generate_if_block(inner_if, &wrapper_var, ctx);
-            quote! {
-                Some(move |__child_scope: &mut rinch::core::dom::RenderScope| -> rinch::core::dom::NodeHandle {
+            ctx.pop_closure_frame();
+            let body = quote! {
+                let #wrapper_var = __scope.create_element("div");
+                #wrapper_var.set_attribute("style", "display:contents");
+                #nested
+                #wrapper_var
+            };
+            let caps = collect_body_captures(&body);
+            let closure = quote! {
+                move |__child_scope: &mut rinch::core::dom::RenderScope| -> rinch::core::dom::NodeHandle {
                     let __scope = __child_scope;
-                    let #wrapper_var = __scope.create_element("div");
-                    #wrapper_var.set_attribute("style", "display:contents");
-                    #nested
-                    #wrapper_var
-                })
-            }
+                    #body
+                }
+            };
+            (Some(closure), caps)
+        }
+        None => (None, Vec::new()),
+    };
+
+    let shared = contested_names(&[&cond_caps, &then_caps, &else_caps]);
+    let when_closure = wrap_site(&ctx.site_shadows(&cond_caps, &shared), when_closure);
+    let then_closure = wrap_site(&ctx.site_shadows(&then_caps, &shared), then_closure);
+    let else_option = match else_closure {
+        Some(closure) => {
+            let closure = wrap_site(&ctx.site_shadows(&else_caps, &shared), closure);
+            quote! { Some(#closure) }
         }
         None => {
             quote! { None::<fn(&mut rinch::core::dom::RenderScope) -> rinch::core::dom::NodeHandle> }
@@ -348,47 +130,69 @@ pub fn generate_if_block(
     }
 }
 
-/// Generate a render closure for `if` then-branch children.
+/// Generate a render closure for `if` then-branch children, and the values it
+/// captures from the enclosing scope.
 ///
-/// For `if let`, the closure re-destructures the expression to bind variables.
+/// For `if let`, the closure re-destructures the expression to bind variables —
+/// which is why an `if let` scrutinee is captured by the then closure as well as
+/// by the condition closure.
 fn generate_branch_closure(
     children: &[RsxNode],
     if_block: &RsxIfBlock,
     ctx: &mut DomCodegenContext,
-) -> TokenStream2 {
-    let body = generate_children_body(children, ctx);
+) -> (TokenStream2, Vec<syn::Ident>) {
+    // An `if let` pattern binds its names inside the branch, so a closure built
+    // there may move them: they are fresh on every run of the branch.
+    let mut bound = HashSet::new();
+    if let Some(pattern) = if_block.pattern.as_ref() {
+        collect_pat_idents(pattern, &mut bound);
+    }
 
-    if if_block.is_if_let {
+    ctx.push_closure_frame(bound);
+    let children_body = generate_children_body(children, ctx);
+    ctx.pop_closure_frame();
+
+    let body = if if_block.is_if_let {
         // Re-destructure to bind variables in the then branch
         let pattern = if_block.pattern.as_ref().unwrap();
         let condition = &if_block.condition;
         quote! {
-            move |__child_scope: &mut rinch::core::dom::RenderScope| -> rinch::core::dom::NodeHandle {
-                let __scope = __child_scope;
-                #[allow(unreachable_patterns)]
-                let #pattern = #condition else { unreachable!() };
-                #body
-            }
+            #[allow(unreachable_patterns)]
+            let #pattern = #condition else { unreachable!() };
+            #children_body
         }
     } else {
-        quote! {
-            move |__child_scope: &mut rinch::core::dom::RenderScope| -> rinch::core::dom::NodeHandle {
-                let __scope = __child_scope;
-                #body
-            }
-        }
-    }
-}
+        children_body
+    };
 
-/// Generate a render closure from a list of RSX children.
-fn generate_children_closure(children: &[RsxNode], ctx: &mut DomCodegenContext) -> TokenStream2 {
-    let body = generate_children_body(children, ctx);
-    quote! {
+    let caps = collect_body_captures(&body);
+    let closure = quote! {
         move |__child_scope: &mut rinch::core::dom::RenderScope| -> rinch::core::dom::NodeHandle {
             let __scope = __child_scope;
             #body
         }
-    }
+    };
+    (closure, caps)
+}
+
+/// Generate a render closure from a list of RSX children, and the values it
+/// captures from the enclosing scope.
+fn generate_children_closure(
+    children: &[RsxNode],
+    ctx: &mut DomCodegenContext,
+) -> (TokenStream2, Vec<syn::Ident>) {
+    ctx.push_closure_frame(HashSet::new());
+    let body = generate_children_body(children, ctx);
+    ctx.pop_closure_frame();
+
+    let caps = collect_body_captures(&body);
+    let closure = quote! {
+        move |__child_scope: &mut rinch::core::dom::RenderScope| -> rinch::core::dom::NodeHandle {
+            let __scope = __child_scope;
+            #body
+        }
+    };
+    (closure, caps)
 }
 
 /// Generate the body code for a list of RSX children, returning a single NodeHandle.
@@ -405,6 +209,9 @@ fn generate_children_body(children: &[RsxNode], ctx: &mut DomCodegenContext) -> 
     for child in children {
         if !past_statements {
             if let RsxNode::Statement(stmt) = child {
+                // A leading `let` binds a local of *this* body, fresh on every
+                // run, so a closure built below may still move it (issue #223).
+                ctx.bind_statement(stmt);
                 statements.push(stmt);
                 continue;
             }
@@ -605,6 +412,11 @@ fn collect_inline_format_args(literal: &str, out: &mut HashSet<String>) {
 /// Desugars to `for_each_dom_typed()`. The iterator expression is auto-wrapped
 /// in a `move ||` closure. If a `key:` prop is found on the first child element,
 /// it's extracted as the key function.
+///
+/// The collection, key and view closures are all constructed together and all
+/// capture by value, so each gets its own shadow clone of what it shares with
+/// the others (issue #223) on top of the iterator expression's unconditional one
+/// (issue #26 part 3+4).
 pub fn generate_for_loop(
     for_loop: &RsxForLoop,
     parent_var: &syn::Ident,
@@ -620,8 +432,15 @@ pub fn generate_for_loop(
     // let-bound value. Deliberately filtered — see `key_relevant_leading_stmts`.
     let leading_stmts = key_relevant_leading_stmts(for_loop, &key_fn);
 
+    // The loop pattern binds the item for the key and view closures, so neither
+    // captures it and neither may shadow-clone it.
+    let mut item_bound = HashSet::new();
+    collect_pat_idents(pattern, &mut item_bound);
+
     // Build the view closure body from children
+    ctx.push_closure_frame(item_bound.clone());
     let body = generate_children_body(&for_loop.children, ctx);
+    ctx.pop_closure_frame();
 
     // Collection closure: move || iter_expr.into_iter().collect::<Vec<_>>()
     let collection = quote! {
@@ -629,10 +448,18 @@ pub fn generate_for_loop(
     };
 
     // Key closure: include leading let statements so key: can reference let-bound values
-    let key_closure = if leading_stmts.is_empty() {
-        quote! { move |#pattern| ::std::string::ToString::to_string(&#key_fn) }
+    let key_body = if leading_stmts.is_empty() {
+        quote! { ::std::string::ToString::to_string(&#key_fn) }
     } else {
-        quote! { move |#pattern| { #(#leading_stmts)* ::std::string::ToString::to_string(&#key_fn) } }
+        quote! { { #(#leading_stmts)* ::std::string::ToString::to_string(&#key_fn) } }
+    };
+    let key_closure = quote! { move |#pattern| #key_body };
+
+    let view_closure = quote! {
+        move |#pattern, __child_scope: &mut rinch::core::dom::RenderScope| -> rinch::core::dom::NodeHandle {
+            let __scope = __child_scope;
+            #body
+        }
     };
 
     // Issue #26 part 3: pre-clone identifiers referenced by `iter_expr` so the
@@ -640,28 +467,35 @@ pub fn generate_for_loop(
     // scope is itself a non-FnOnce closure (e.g. an `if`/`match` branch). The
     // outer closure stays untouched; each call constructs a fresh shadow that
     // the inner closure consumes. Copy types' `.clone()` is a no-op.
-    let captures = collect_capture_idents(iter_expr);
-    let capture_clones: Vec<TokenStream2> = captures
-        .iter()
-        .map(|id| quote! { #[allow(unused_mut)] let mut #id = ::std::clone::Clone::clone(&#id); })
-        .collect();
+    let iter_caps = collect_capture_idents(iter_expr);
+    let key_caps = without(collect_body_captures(&key_body), &item_bound);
+    let view_caps = without(collect_body_captures(&body), &item_bound);
+    let shared = contested_names(&[&iter_caps, &key_caps, &view_caps]);
+
+    let collection = wrap_site(&shadow_clones(iter_caps.iter()), collection);
+    let key_closure = wrap_site(&ctx.site_shadows(&key_caps, &shared), key_closure);
+    let view_closure = wrap_site(&ctx.site_shadows(&view_caps, &shared), view_closure);
 
     quote! {
         {
-            #(#capture_clones)*
             rinch::core::for_each_dom_typed_with_key_source(
                 __scope,
                 &#parent_var,
                 #collection,
                 #key_closure,
-                move |#pattern, __child_scope: &mut rinch::core::dom::RenderScope| -> rinch::core::dom::NodeHandle {
-                    let __scope = __child_scope;
-                    #body
-                },
+                #view_closure,
                 #key_source
             );
         }
     }
+}
+
+/// Drop the names `bound` introduces from a capture list — they are the
+/// closure's own parameters, not values reaching it from the enclosing scope.
+fn without(caps: Vec<syn::Ident>, bound: &HashSet<String>) -> Vec<syn::Ident> {
+    caps.into_iter()
+        .filter(|id| !bound.contains(&id.to_string()))
+        .collect()
 }
 
 /// Extract a `key:` expression from the first child element of a for loop.
@@ -706,6 +540,10 @@ fn extract_key_expr(for_loop: &RsxForLoop) -> (TokenStream2, TokenStream2) {
 ///
 /// Desugars to `match_dom()`. The scrutinee is evaluated in a discriminant closure
 /// that returns a branch index. Each arm becomes a boxed render closure.
+///
+/// The scrutinee is emitted once per arm on top of the discriminant, and every
+/// arm closure is constructed — so a `match` shares the `if`/`else` defect twice
+/// over, and takes the same per-site shadow clones (issue #223).
 pub fn generate_match_block(
     match_block: &RsxMatchBlock,
     parent_var: &syn::Ident,
@@ -739,27 +577,54 @@ pub fn generate_match_block(
             }
         }
     };
+    let discriminant_caps = collect_capture_idents(scrutinee);
 
-    // Build branch closures
-    let branch_closures: Vec<TokenStream2> = match_block
+    // Build branch bodies. Each one re-evaluates the scrutinee to bind pattern
+    // variables, using `match` with the specific pattern + a catch-all
+    // unreachable.
+    let arm_bodies: Vec<(TokenStream2, Vec<syn::Ident>)> = match_block
         .arms
         .iter()
         .map(|arm| {
             let pat = &arm.pattern;
             let guard_check = arm.guard.as_ref().map(|g| quote! { if #g });
-            let body = generate_children_body(&arm.children, ctx);
 
-            // Each branch re-evaluates the scrutinee to bind pattern variables.
-            // We use `match` with the specific pattern + a catch-all unreachable.
-            quote! {
-                Box::new(move |__child_scope: &mut rinch::core::dom::RenderScope| -> rinch::core::dom::NodeHandle {
+            // The arm pattern binds its names inside the arm body.
+            let mut bound = HashSet::new();
+            collect_pat_idents(pat, &mut bound);
+            ctx.push_closure_frame(bound);
+            let body = generate_children_body(&arm.children, ctx);
+            ctx.pop_closure_frame();
+
+            let arm_body = quote! {
+                #[allow(unreachable_patterns, unused_variables, irrefutable_let_patterns)]
+                match #scrutinee {
+                    #pat #guard_check => { #body }
+                    _ => unreachable!()
+                }
+            };
+            let caps = collect_body_captures(&arm_body);
+            (arm_body, caps)
+        })
+        .collect();
+
+    let mut sites: Vec<&[syn::Ident]> = vec![&discriminant_caps];
+    sites.extend(arm_bodies.iter().map(|(_, caps)| caps.as_slice()));
+    let shared = contested_names(&sites);
+
+    let discriminant = wrap_site(&ctx.site_shadows(&discriminant_caps, &shared), discriminant);
+    let branch_closures: Vec<TokenStream2> = arm_bodies
+        .iter()
+        .map(|(arm_body, caps)| {
+            let closure = quote! {
+                move |__child_scope: &mut rinch::core::dom::RenderScope| -> rinch::core::dom::NodeHandle {
                     let __scope = __child_scope;
-                    #[allow(unreachable_patterns, unused_variables, irrefutable_let_patterns)]
-                    match #scrutinee {
-                        #pat #guard_check => { #body }
-                        _ => unreachable!()
-                    }
-                }) as Box<dyn Fn(&mut rinch::core::dom::RenderScope) -> rinch::core::dom::NodeHandle>
+                    #arm_body
+                }
+            };
+            let closure = wrap_site(&ctx.site_shadows(caps, &shared), closure);
+            quote! {
+                Box::new(#closure) as Box<dyn Fn(&mut rinch::core::dom::RenderScope) -> rinch::core::dom::NodeHandle>
             }
         })
         .collect();
@@ -897,151 +762,180 @@ mod key_prologue_tests {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::collect_capture_idents;
+mod shadow_tests {
+    use super::{generate_for_loop, generate_if_block, generate_match_block};
+    use crate::dom_codegen::DomCodegenContext;
+    use crate::node::{RsxForLoop, RsxIfBlock, RsxMatchBlock};
+    use quote::quote;
 
-    fn caps(src: &str) -> Vec<String> {
-        let expr: syn::Expr = syn::parse_str(src).expect("parse");
-        collect_capture_idents(&expr)
-            .iter()
-            .map(|i| i.to_string())
-            .collect()
+    fn parent() -> syn::Ident {
+        syn::Ident::new("__parent", proc_macro2::Span::call_site())
     }
 
-    #[test]
-    fn closure_params_are_not_captures() {
-        // The #32 regression repro.
-        let captures = caps("(0..total_bars).filter(|b| b % 4 == 0).collect::<Vec<u32>>()");
-        assert!(captures.contains(&"total_bars".to_string()));
-        assert!(!captures.contains(&"b".to_string()));
+    /// The generated code for one `rsx!` construct, whitespace-free so the
+    /// shadow bindings can be matched as substrings.
+    fn if_code(src: proc_macro2::TokenStream) -> String {
+        let block: RsxIfBlock = syn::parse2(src).expect("parse if");
+        generate_if_block(&block, &parent(), &mut DomCodegenContext::new())
+            .to_string()
+            .replace(' ', "")
     }
 
-    #[test]
-    fn tuple_destructure_closure_params() {
-        let captures = caps("data.iter().filter(|(a, b)| a > b).collect::<Vec<_>>()");
-        assert!(captures.contains(&"data".to_string()));
-        assert!(!captures.contains(&"a".to_string()));
-        assert!(!captures.contains(&"b".to_string()));
+    fn for_code(src: proc_macro2::TokenStream) -> String {
+        let block: RsxForLoop = syn::parse2(src).expect("parse for");
+        generate_for_loop(&block, &parent(), &mut DomCodegenContext::new())
+            .to_string()
+            .replace(' ', "")
     }
 
+    fn match_code(src: proc_macro2::TokenStream) -> String {
+        let block: RsxMatchBlock = syn::parse2(src).expect("parse match");
+        generate_match_block(&block, &parent(), &mut DomCodegenContext::new())
+            .to_string()
+            .replace(' ', "")
+    }
+
+    /// `let mut #name = Clone::clone(&#name);` as it appears in the output.
+    fn shadow(name: &str) -> String {
+        format!("letmut{name}=::std::clone::Clone::clone(&{name});")
+    }
+
+    /// The headline case: a value both branches name is cloned once per branch,
+    /// so each closure owns a copy and the enclosing scope keeps the original.
     #[test]
-    fn nested_closure_params() {
-        // Outer closure's `x` shouldn't leak into the outer scan, nor should inner's `y`.
-        let captures = caps(
-            "outer.iter().map(|x| inner.iter().map(|y| x + y).sum::<i32>()).collect::<Vec<_>>()",
+    fn a_value_two_branches_share_is_cloned_at_each_site() {
+        let code = if_code(quote! {
+            if shown.get() {
+                p { {label.clone()} }
+            } else {
+                span { {label.clone()} }
+            }
+        });
+        assert_eq!(
+            code.matches(&shadow("label")).count(),
+            2,
+            "one shadow per branch: {code}"
         );
-        assert!(captures.contains(&"outer".to_string()));
-        assert!(captures.contains(&"inner".to_string()));
-        assert!(!captures.contains(&"x".to_string()));
-        assert!(!captures.contains(&"y".to_string()));
     }
 
+    /// The condition is a third closure, constructed with the branches.
     #[test]
-    fn let_binding_inside_block_is_not_a_capture() {
-        let captures = caps(
-            "{ let extra = base.len(); items.iter().filter(|i| i.size > extra).collect::<Vec<_>>() }",
+    fn a_value_the_condition_shares_with_a_branch_is_cloned() {
+        let code = if_code(quote! {
+            if label.is_empty() {
+                p { {label.clone()} }
+            }
+        });
+        assert_eq!(
+            code.matches(&shadow("label")).count(),
+            2,
+            "condition and branch each get one: {code}"
         );
-        assert!(captures.contains(&"base".to_string()));
-        assert!(captures.contains(&"items".to_string()));
-        assert!(!captures.contains(&"extra".to_string()));
-        assert!(!captures.contains(&"i".to_string()));
     }
 
+    /// The over-cloning guard, stated in the codegen rather than in rustc: a
+    /// value only one site names is moved, not cloned — including a `Signal`,
+    /// which is `Copy` precisely so users never have to clone it.
     #[test]
-    fn rhs_of_let_sees_outer_scope() {
-        // `x` in the RHS of `let x = x + 1` should refer to the outer binding,
-        // which IS a capture.
-        let captures = caps("{ let total = total + 1; vec![total] }");
-        assert!(captures.contains(&"total".to_string()));
+    fn a_value_only_one_site_names_is_not_cloned() {
+        let code = if_code(quote! {
+            if shown.get() {
+                p { {only_then.clone()} }
+            } else {
+                span { {only_else.clone()} }
+            }
+        });
+        assert!(!code.contains(&shadow("only_then")), "{code}");
+        assert!(!code.contains(&shadow("only_else")), "{code}");
+        assert!(!code.contains(&shadow("shown")), "{code}");
     }
 
+    /// Two signals in two branches are two distinct names, so nothing is
+    /// contested and nothing is cloned — `Signal` and `Memo` are `Copy`
+    /// precisely so users never write `.clone()` on them.
     #[test]
-    fn pre_regression_simple_capture_still_works() {
-        // The original #26 case — a non-Copy fn param used in the iter source.
-        let captures = caps("variant_options(default_variant.clone())");
-        assert!(captures.contains(&"default_variant".to_string()));
+    fn distinct_signals_in_sibling_branches_are_not_cloned() {
+        let code = if_code(quote! {
+            if toggled.get() {
+                p { {left.get().to_string()} }
+            } else {
+                p { {right.get().to_string()} }
+            }
+        });
+        assert!(!code.contains(&shadow("left")), "{code}");
+        assert!(!code.contains(&shadow("right")), "{code}");
+        assert!(!code.contains(&shadow("toggled")), "{code}");
     }
 
+    /// A reactive binding *inside* a branch is a different matter: the effect
+    /// is a `'static move` closure rebuilt on every render of that branch, so
+    /// it does take a shadow — one, from the branch's own copy. On a `Copy`
+    /// `Signal` that clone is a copy; on a `String` it is the difference
+    /// between compiling and not.
     #[test]
-    fn if_let_binding_is_not_a_capture() {
-        // The repro: `cid` is bound by `if let` inside a filter closure and used
-        // in the then-branch. It must not be treated as an outer capture, while
-        // the scrutinee `active_pane` still is.
-        let captures = caps(
-            "items.into_iter().filter(|f| if let Pane::Editor(ref cid) = active_pane.get() { f.id == *cid } else { false })",
+    fn an_effect_inside_a_branch_shadows_what_it_captures() {
+        let code = if_code(quote! {
+            if toggled.get() {
+                p { {|| left.get().to_string()} }
+            }
+        });
+        assert_eq!(code.matches(&shadow("left")).count(), 1, "{code}");
+        assert!(!code.contains(&shadow("toggled")), "{code}");
+    }
+
+    /// A `match` scrutinee is re-emitted by the discriminant and by every arm.
+    #[test]
+    fn a_match_scrutinee_is_cloned_for_the_discriminant_and_each_arm() {
+        let code = match_code(quote! {
+            match label.as_str() {
+                "a" => p { "first" },
+                _ => span { "rest" },
+            }
+        });
+        assert_eq!(
+            code.matches(&shadow("label")).count(),
+            3,
+            "discriminant + two arms: {code}"
         );
-        assert!(captures.contains(&"items".to_string()));
-        assert!(captures.contains(&"active_pane".to_string()));
-        assert!(!captures.contains(&"cid".to_string()));
     }
 
+    /// An arm's own pattern binding is not a capture and is never cloned.
     #[test]
-    fn if_let_else_branch_does_not_see_binding() {
-        // A name used only in the else branch IS an outer capture; the `if let`
-        // pattern binding does not leak there.
-        //
-        // NB: use array literals (`[..]`), not `vec![..]`. `syn`'s visitor treats
-        // macro token streams as opaque, so an ident only ever referenced inside a
-        // `vec![..]` is invisible to the scanner and would never be collected —
-        // which would make the `fallback` assertion below spuriously fail.
-        let captures = caps("{ if let Some(x) = maybe { [x] } else { [fallback] } }");
-        assert!(captures.contains(&"maybe".to_string()));
-        assert!(captures.contains(&"fallback".to_string()));
-        assert!(!captures.contains(&"x".to_string()));
+    fn a_match_arm_binding_is_not_cloned() {
+        let code = match_code(quote! {
+            match slot.clone() {
+                Some(name) => p { {name} },
+                None => span { "none" },
+            }
+        });
+        assert!(!code.contains(&shadow("name")), "{code}");
     }
 
+    /// The iterator expression keeps its unconditional shadow (issue #26), and
+    /// a value the per-item view shares with it gets one of its own.
     #[test]
-    fn match_arm_binding_is_not_a_capture() {
-        let captures = caps(
-            "items.iter().filter(|i| match active.get() { Pane::Editor(ref c) => i.id == *c, _ => false })",
+    fn a_for_clones_its_iterator_source_and_anything_the_view_shares() {
+        let code = for_code(quote! {
+            for name in names.clone() {
+                p { key: name.clone(), {names.len().to_string()} }
+            }
+        });
+        assert_eq!(
+            code.matches(&shadow("names")).count(),
+            2,
+            "collection closure + view closure: {code}"
         );
-        assert!(captures.contains(&"items".to_string()));
-        assert!(captures.contains(&"active".to_string()));
-        assert!(!captures.contains(&"c".to_string()));
     }
 
+    /// The loop pattern binds the item; shadow-cloning it would name a binding
+    /// the enclosing scope does not have.
     #[test]
-    fn while_let_binding_is_not_a_capture() {
-        let captures = caps("{ while let Some(n) = cursor.next() { total += n; } [total] }");
-        assert!(captures.contains(&"cursor".to_string()));
-        assert!(captures.contains(&"total".to_string()));
-        assert!(!captures.contains(&"n".to_string()));
-    }
-
-    #[test]
-    fn let_chain_later_link_sees_earlier_binding() {
-        // In `if let Some(x) = a && x > 0`, `x` in the second link resolves to
-        // the binding from the first — not an outer capture. `a` is a capture.
-        let captures = caps("{ if let Some(x) = a && x > threshold { [x] } else { [] } }");
-        assert!(captures.contains(&"a".to_string()));
-        assert!(captures.contains(&"threshold".to_string()));
-        assert!(!captures.contains(&"x".to_string()));
-    }
-
-    #[test]
-    fn match_guard_sees_arm_binding() {
-        // A `match` arm guard can reference the names bound by its pattern, so
-        // those names are not outer captures — but a name used *only* in the guard
-        // (`limit`) still is.
-        let captures = caps(
-            "items.iter().filter(|i| match active.get() { Editor(c) if c > limit => true, _ => false })",
-        );
-        assert!(captures.contains(&"items".to_string()));
-        assert!(captures.contains(&"active".to_string()));
-        assert!(captures.contains(&"limit".to_string()));
-        assert!(!captures.contains(&"c".to_string()));
-    }
-
-    #[test]
-    fn nested_else_if_let_scopes_each_branch() {
-        // `else if let Some(y) = b` recurses through the same `visit_expr_if`
-        // path, so `y` is scoped to its own branch (not a capture) while both
-        // scrutinees `a` and `b` are captured.
-        let captures =
-            caps("{ if let Some(x) = a { [x] } else if let Some(y) = b { [y] } else { [] } }");
-        assert!(captures.contains(&"a".to_string()));
-        assert!(captures.contains(&"b".to_string()));
-        assert!(!captures.contains(&"x".to_string()));
-        assert!(!captures.contains(&"y".to_string()));
+    fn a_for_never_clones_its_own_item() {
+        let code = for_code(quote! {
+            for item in items.get() {
+                p { key: item.id, {item.name.clone()} }
+            }
+        });
+        assert!(!code.contains(&shadow("item")), "{code}");
     }
 }

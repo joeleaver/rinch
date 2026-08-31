@@ -13,7 +13,30 @@ use crate::helpers::{
 };
 use crate::prop::RsxProp;
 
-use super::DomCodegenContext;
+use super::captures::{collect_capture_idents, is_move_closure, shadow_clones};
+use super::{DomCodegenContext, no_siblings};
+
+/// The two shadow-clone prologues a reactive binding needs (issue #223).
+///
+/// An effect is a `move` closure built where the binding sits, and it rebuilds
+/// the user's closure on every fire — so it competes for that closure's values
+/// twice: once with the body it is built in (`site`, emitted before
+/// `create_effect`), and once with its own next fire (`fire`, emitted inside the
+/// effect). Only a `move` closure is rebuilt destructively; a borrowing one
+/// reads through the effect's own capture and gets nothing.
+fn reactive_shadows(
+    value: &syn::Expr,
+    closure: Option<&syn::Expr>,
+    ctx: &DomCodegenContext,
+) -> (TokenStream2, TokenStream2) {
+    let caps = collect_capture_idents(closure.unwrap_or(value));
+    let site = ctx.site_shadows(&caps, &no_siblings());
+    let fire = match closure {
+        Some(closure) if is_move_closure(closure) => shadow_clones(caps.iter()),
+        _ => quote! {},
+    };
+    (site, fire)
+}
 
 /// Generate DOM code for an HTML element.
 pub fn element_to_dom_html(element: &RsxElement, ctx: &mut DomCodegenContext) -> TokenStream2 {
@@ -55,10 +78,13 @@ pub fn element_to_dom_html(element: &RsxElement, ctx: &mut DomCodegenContext) ->
             } else if let Some(closure) = get_closure_expr(value) {
                 // Closure expression - call it and use result
                 let handle_var = ctx.next_var("attr_handle");
+                let (site, fire) = reactive_shadows(value, Some(closure), ctx);
                 quote! {
                     {
                         let #handle_var = #elem_var.clone();
+                        #site
                         __scope.create_effect(move || {
+                            #fire
                             #handle_var.set_attribute(#name, &::std::string::ToString::to_string(&(#closure)()));
                         });
                     }
@@ -66,9 +92,11 @@ pub fn element_to_dom_html(element: &RsxElement, ctx: &mut DomCodegenContext) ->
             } else {
                 // Dynamic expression (not a closure) - wrap in effect
                 let handle_var = ctx.next_var("attr_handle");
+                let (site, _) = reactive_shadows(value, None, ctx);
                 quote! {
                     {
                         let #handle_var = #elem_var.clone();
+                        #site
                         __scope.create_effect(move || {
                             #handle_var.set_attribute(#name, &::std::string::ToString::to_string(&#value));
                         });
@@ -85,10 +113,21 @@ pub fn element_to_dom_html(element: &RsxElement, ctx: &mut DomCodegenContext) ->
         .map(|prop| {
             let handler = &prop.value;
             let event_name = prop.name.to_string();
+            // A handler is built fresh on every run of the body it sits in, and
+            // it is `'static`, so it moves what it names out of that body's
+            // captures — one iteration's handler competing with the next
+            // iteration's for an ancestor-scope value (issue #223). Only a
+            // `move` closure captures by value; anything else is left alone.
+            let handler_shadows = if is_move_closure(handler) {
+                ctx.site_shadows(&collect_capture_idents(handler), &no_siblings())
+            } else {
+                quote! {}
+            };
             if event_name == "oninput" {
                 // Input events use register_input_handler with Fn(String)
                 quote! {
                     {
+                        #handler_shadows
                         let __handler_id = __scope.register_input_handler(#handler);
                         #elem_var.set_attribute("data-oninput", &__handler_id.0.to_string());
                     }
@@ -118,6 +157,7 @@ pub fn element_to_dom_html(element: &RsxElement, ctx: &mut DomCodegenContext) ->
                 };
                 quote! {
                     {
+                        #handler_shadows
                         let __handler_id = __scope.register_input_handler(#handler);
                         #elem_var.set_attribute("data-onchange", &__handler_id.0.to_string());
                         #ensure_oninput
@@ -127,6 +167,7 @@ pub fn element_to_dom_html(element: &RsxElement, ctx: &mut DomCodegenContext) ->
                 // Scroll events use register_scroll_handler with Fn(ScrollEvent)
                 quote! {
                     {
+                        #handler_shadows
                         let __handler_id = __scope.register_scroll_handler(#handler);
                         #elem_var.set_attribute("data-onscroll", &__handler_id.0.to_string());
                     }
@@ -135,6 +176,7 @@ pub fn element_to_dom_html(element: &RsxElement, ctx: &mut DomCodegenContext) ->
                 // OS file-drop events use register_file_drop_handler with Fn(Vec<PathBuf>)
                 quote! {
                     {
+                        #handler_shadows
                         let __handler_id = __scope.register_file_drop_handler(#handler);
                         #elem_var.set_attribute("data-onfiledrop", &__handler_id.0.to_string());
                     }
@@ -163,6 +205,7 @@ pub fn element_to_dom_html(element: &RsxElement, ctx: &mut DomCodegenContext) ->
                 };
                 quote! {
                     {
+                        #handler_shadows
                         let __handler_id = rinch::core::register_handler(std::rc::Rc::new(#handler));
                         #elem_var.set_attribute(#data_attr, &__handler_id.0.to_string());
                     }
@@ -251,10 +294,13 @@ pub fn generate_shorthand_code(
                     } else if let Some(closure) = get_closure_expr(value) {
                         // Reactive closure - use runtime resolve_spacing
                         let handle_var = ctx.next_var("sh_handle");
+                        let (site, fire) = reactive_shadows(value, Some(closure), ctx);
                         quote! {
                             {
                                 let #handle_var = #result_var.clone();
+                                #site
                                 __scope.create_effect(move || {
+                                    #fire
                                     let __val = ::std::string::ToString::to_string(&(#closure)());
                                     let __resolved = rinch::core::resolve_spacing(&__val);
                                     #handle_var.set_style(#css_prop, &__resolved);
@@ -303,8 +349,14 @@ pub fn generate_shorthand_code_reactive(
                         }
                     } else if let Some(closure) = get_closure_expr(value) {
                         // Inside reactive component, invoke closure directly (tracks signals)
+                        let fire = if is_move_closure(closure) {
+                            shadow_clones(collect_capture_idents(closure).iter())
+                        } else {
+                            quote! {}
+                        };
                         quote! {
                             {
+                                #fire
                                 let __val = ::std::string::ToString::to_string(&(#closure)());
                                 let __resolved = rinch::core::resolve_spacing(&__val);
                                 #result_var.set_style(#css_prop, &__resolved);
@@ -342,19 +394,24 @@ pub fn generate_style_code(
         }
     } else if let Some(closure) = get_closure_expr(value) {
         let handle_var = ctx.next_var("style_handle");
+        let (site, fire) = reactive_shadows(value, Some(closure), ctx);
         quote! {
             {
                 let #handle_var = #result_var.clone();
+                #site
                 __scope.create_effect(move || {
+                    #fire
                     #handle_var.set_attribute("style", &::std::string::ToString::to_string(&(#closure)()));
                 });
             }
         }
     } else {
         let handle_var = ctx.next_var("style_handle");
+        let (site, _) = reactive_shadows(value, None, ctx);
         quote! {
             {
                 let #handle_var = #result_var.clone();
+                #site
                 __scope.create_effect(move || {
                     #handle_var.set_attribute("style", &::std::string::ToString::to_string(&#value));
                 });
@@ -381,11 +438,14 @@ pub fn generate_class_code(
     } else if let Some(closure) = get_closure_expr(value) {
         let handle_var = ctx.next_var("class_handle");
         let prev_var = ctx.next_var("prev_class");
+        let (site, fire) = reactive_shadows(value, Some(closure), ctx);
         quote! {
             {
                 let #handle_var = #result_var.clone();
                 let #prev_var = ::std::cell::RefCell::new(String::new());
+                #site
                 __scope.create_effect(move || {
+                    #fire
                     let __old = #prev_var.borrow().clone();
                     if !__old.is_empty() {
                         for __c in __old.split_whitespace() {
@@ -405,10 +465,12 @@ pub fn generate_class_code(
     } else {
         let handle_var = ctx.next_var("class_handle");
         let prev_var = ctx.next_var("prev_class");
+        let (site, _) = reactive_shadows(value, None, ctx);
         quote! {
             {
                 let #handle_var = #result_var.clone();
                 let #prev_var = ::std::cell::RefCell::new(String::new());
+                #site
                 __scope.create_effect(move || {
                     let __old = #prev_var.borrow().clone();
                     if !__old.is_empty() {

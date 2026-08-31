@@ -518,6 +518,46 @@ The `if` block desugars to `show_dom()` — the same runtime function used by th
 2. Old DOM nodes are removed
 3. New branch content is rendered with a fresh scope
 
+#### Capturing the same value in more than one branch
+
+Every closure RSX builds is a `move` closure — a branch, a `match` arm, a
+per-item view, a reactive binding's effect, an event handler — and `show_dom`
+takes the then branch **and** the else branch, so both are *constructed*
+whichever way the condition comes out. A non-`Copy` value named by two of them
+would be moved twice.
+
+The macro handles that for you. At each construction site it emits a shadow
+clone of what that site shares with a sibling site, or reaches for from outside
+a body that re-runs. So this compiles, and `label` is still yours afterwards:
+
+```rust
+let label = String::from("hello");
+
+rsx! {
+    div {
+        if label.is_empty() {
+            p { "empty" }
+        } else {
+            p { {label.clone()} }
+        }
+        Text { {label.clone()} }
+    }
+}
+```
+
+**What is not cloned.** A value only one site names is moved, exactly as before,
+so a type that isn't `Clone` keeps working where it always did. A value bound
+*inside* a repeating body — a `let` at the top of a branch, the `for` item
+itself — is a fresh local on every run and is never cloned. `Signal` and `Memo`
+are `Copy`, so where a shadow does fall on one it is a copy, not an allocation.
+
+**What still needs a manual `.clone()`.** The analysis is lexical: it cannot see
+a value hidden inside a macro (`format!("{}", label)` hides `label` from it), and
+it compares sites within one construct — two separate `if` blocks that both name
+one `String` still need one of them to clone. When rustc does report an E0382 or
+E0507 from inside `rsx!`, the fix is the ordinary one: give the site that
+complains its own clone.
+
 ### `for` loops
 
 Write standard `for..in` loops directly in RSX:
