@@ -408,15 +408,7 @@ impl RinchApp {
                 // inside the `translate(-50%, -50%)` centring idiom measured
                 // itself against a box nobody can see (#203). Hit testing works
                 // in layout pixels, so the painted box is asked for at scale 1.
-                let (elem_x, elem_y, elem_w, elem_h) = {
-                    let r = rinch_dom::paint::painted_border_box(&d.tree, node_id, 1.0);
-                    (
-                        r.x0 as f32,
-                        r.y0 as f32,
-                        r.width() as f32,
-                        r.height() as f32,
-                    )
-                };
+                let (elem_x, elem_y, elem_w, elem_h) = painted_element_box(&d.tree, node_id);
 
                 events::set_click_context(events::ClickContext {
                     mouse_x: x,
@@ -487,23 +479,13 @@ impl RinchApp {
             return events::TextHitInfo::default();
         };
 
-        let mut abs_x = block_node.layout.x;
-        let mut abs_y = block_node.layout.y;
-        let mut parent_id = block_node.parent;
-        while let Some(pid) = parent_id {
-            if let Some(pn) = tree.get(pid) {
-                abs_x += pn.layout.x;
-                abs_y += pn.layout.y;
-                abs_x -= pn.scroll_offset.0 as f32;
-                abs_y -= pn.scroll_offset.1 as f32;
-                parent_id = pn.parent;
-            } else {
-                break;
-            }
-        }
-
-        let rel_x = (click_x - abs_x).max(0.0);
-        let rel_y = (click_y - abs_y).max(0.0);
+        // The click in the block's own space — Parley's layout lives there, so a
+        // transformed block still resolves to the character under the pointer
+        // (#203). The parent-chain sum this replaces composed no transform and
+        // made no `position: fixed` exception.
+        let (local_x, local_y) = pointer_in_node(tree, block_id, click_x, click_y);
+        let rel_x = local_x.max(0.0);
+        let rel_y = local_y.max(0.0);
 
         let byte_offset = if let Some(ref layout) = block_node.text_layout {
             byte_offset_from_position(&layout.layout, rel_x, rel_y)
@@ -559,32 +541,21 @@ impl RinchApp {
             return 0;
         }
 
-        // Where the field's border box is *painted*. The parent-chain sum is the
-        // one every other caller uses; the IFC offset on top of it is what makes
-        // the answer agree with paint for a field a text flow positions. A
-        // `<textarea>` between two blocks is one: the anonymous block box the IFC
-        // wraps it in clones the *containing block's* computed style (ifc.rs:672),
-        // padding included, and paint reads that padding when it hands
+        // The click in the field's own space, relative to its border-box origin
+        // — the same descent paint makes, so the IFC content-box offset a field
+        // a text flow positions needs is already inside it. A `<textarea>`
+        // between two blocks is one: the anonymous block box the IFC wraps it in
+        // clones the *containing block's* computed style (ifc.rs:672), padding
+        // included, and paint reads that padding when it hands
         // `paint_inline_layout` a content-box origin.
-        let (abs_x, abs_y) = Self::compute_absolute_position(tree, node_id);
-        // `hit_test_node` skips the IFC correction for a `position: fixed` box —
-        // paint hoists it to body level, out of any IFC's content origin — so
-        // skip it here too, or the caret and the hit rect disagree by one padding.
-        let (ifc_dx, ifc_dy) =
-            if node.computed_style.position == rinch_dom::computed_style::PositionValue::Fixed {
-                (0.0, 0.0)
-            } else {
-                rinch_dom::paint::ifc_content_box_offset(tree, node)
-            };
-        let abs_x = abs_x + ifc_dx;
-        let abs_y = abs_y + ifc_dy;
+        let (box_x, box_y) = pointer_in_node(tree, node_id, click_x, click_y);
 
         let padding_left = node.computed_style.padding_left.to_px();
         let padding_top = node.computed_style.padding_top.to_px();
 
         // Local coordinates within the text area
-        let local_x = (click_x - abs_x - padding_left).max(0.0);
-        let local_y = (click_y - abs_y - padding_top).max(0.0);
+        let local_x = (box_x - padding_left).max(0.0);
+        let local_y = (box_y - padding_top).max(0.0);
 
         // Build a Parley layout matching paint_input_value's parameters
         let font_size = node.computed_style.font_size;
@@ -695,30 +666,20 @@ impl RinchApp {
     }
 
     /// Compute screen-to-local coordinates for a surface DOM node.
+    ///
+    /// The surface's own space, not the painted box's origin subtracted: the
+    /// app renders into a buffer sized from the surface's layout box, so a
+    /// pointer inside a `transform: scale()` container has to come back divided
+    /// rather than merely shifted (#203).
     pub(crate) fn surface_local_coords(
         tree: &rinch_dom::NodeTree,
         surface_dom_node: usize,
         screen_x: f32,
         screen_y: f32,
     ) -> (f32, f32) {
-        let node = match tree.get(surface_dom_node) {
-            Some(n) => n,
-            None => return (screen_x, screen_y),
-        };
-        let mut abs_x = node.layout.x;
-        let mut abs_y = node.layout.y;
-        let mut pid = node.parent;
-        while let Some(p) = pid {
-            if let Some(pn) = tree.get(p) {
-                abs_x += pn.layout.x;
-                abs_y += pn.layout.y;
-                abs_x -= pn.scroll_offset.0 as f32;
-                abs_y -= pn.scroll_offset.1 as f32;
-                pid = pn.parent;
-            } else {
-                break;
-            }
+        if tree.get(surface_dom_node).is_none() {
+            return (screen_x, screen_y);
         }
-        (screen_x - abs_x, screen_y - abs_y)
+        pointer_in_node(tree, surface_dom_node, screen_x, screen_y)
     }
 }

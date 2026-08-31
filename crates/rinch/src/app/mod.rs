@@ -151,8 +151,12 @@ pub(crate) struct ScrollbarDrag {
     pub node_id: usize,
     /// Which bar is being dragged.
     pub axis: ScrollAxis,
-    /// The pointer coordinate along `axis` where the drag started (screen
-    /// pixels — see the coordinate-space note on [`ScrollbarHit`]).
+    /// The pointer coordinate along `axis` where the drag started, in the
+    /// container's **own** space (`hit_testing::pointer_in_node`) — the space
+    /// [`ScrollbarDrag::container_size`] and the painted thumb live in, so a
+    /// drag inside a transformed container tracks the thumb (#203). See also
+    /// the coordinate-space note on [`ScrollbarHit`] for the DPI question
+    /// (#299), which is unrelated and still open.
     pub start_pos: f32,
     /// The scroll offset along `axis` when the drag started.
     pub start_scroll: f64,
@@ -849,24 +853,12 @@ impl RinchApp {
                 rinch_core::reactive::registered_bounds_nodes(doc_key)
                     .into_iter()
                     .filter_map(|node_id| {
-                        let n = d.tree.nodes.get(node_id as usize)?;
-                        // Walk to root accumulating parent-relative offsets — same
-                        // convention as `dispatch_oncontextmenu` / `click_handling`.
-                        let mut ax = n.layout.x;
-                        let mut ay = n.layout.y;
-                        let mut pid = n.parent;
-                        while let Some(p) = pid {
-                            if let Some(pn) = d.tree.nodes.get(p) {
-                                ax += pn.layout.x;
-                                ay += pn.layout.y;
-                                ax -= pn.scroll_offset.0 as f32;
-                                ay -= pn.scroll_offset.1 as f32;
-                                pid = pn.parent;
-                            } else {
-                                break;
-                            }
-                        }
-                        Some((node_id, (ax, ay, n.layout.width, n.layout.height)))
+                        d.tree.nodes.get(node_id as usize)?;
+                        // The box the node is *painted* in — the same rect
+                        // `ClickContext::element_x` carries, which is the
+                        // promise `NodeHandle::bounds_signal`'s own docs make
+                        // (#203).
+                        Some((node_id, painted_element_box(&d.tree, node_id as usize)))
                     })
                     .collect();
             (doc_key, measured)
@@ -2072,12 +2064,10 @@ impl RinchApp {
                 && let Ok(handler_id) = rid_str.parse::<usize>()
                 && events::has_click_handler(events::EventHandlerId(handler_id))
             {
-                // The same absolute-rect walk as the pointer path, via the
-                // shared helper (it stops at `position: fixed`, which is
-                // viewport-relative — the hand-rolled copy this replaces did
-                // not).
-                let (elem_x, elem_y) = Self::compute_absolute_position(&d.tree, nid);
-                let (elem_w, elem_h) = (node.layout.width, node.layout.height);
+                // The same painted box the pointer path reports, through the
+                // same helper — so Enter on a transformed element hands the
+                // handler the rect a click on it would (#203).
+                let (elem_x, elem_y, elem_w, elem_h) = painted_element_box(&d.tree, nid);
 
                 events::set_click_context(events::ClickContext {
                     mouse_x: elem_x + elem_w / 2.0,
@@ -2392,22 +2382,17 @@ impl RinchApp {
                 // Also detect orphaned subtrees: if the walk reaches a node with
                 // parent=None that isn't the root, this node was removed from the
                 // live tree (its ancestor was removed via remove_node).
-                let mut abs_x = 0.0_f32;
-                let mut abs_y = 0.0_f32;
+                // The rect the hole is *punched* at, which is the rect paint
+                // cuts out of the clipping ancestors — the game renders into
+                // it, so a transformed or `position: fixed` viewport must not
+                // report an untransformed layout box (#203). The chain walk
+                // below still runs, for the orphan check and the clip radii.
+                let (abs_x, abs_y, _, _) = painted_element_box(&d.tree, node_id);
                 let mut clip_radii = [0.0_f32; 4];
                 let mut connected = false;
                 let mut current = Some(node_id);
                 while let Some(id) = current {
                     if let Some(n) = d.tree.get(id) {
-                        abs_x += n.layout.x;
-                        abs_y += n.layout.y;
-                        if let Some(parent_id) = n.parent
-                            && let Some(parent) = d.tree.get(parent_id)
-                        {
-                            abs_x -= parent.scroll_offset.0 as f32;
-                            abs_y -= parent.scroll_offset.1 as f32;
-                        }
-
                         // Check for overflow clipping ancestor with border-radius
                         if clip_radii == [0.0; 4] {
                             let cs = &n.computed_style;
@@ -2552,27 +2537,11 @@ impl RinchApp {
                 continue;
             }
 
-            // Helper: compute absolute position of a node
+            // Helper: where a clipping ancestor is painted. Paint clips against
+            // that box, so the intersection has to be taken there (#203).
             let abs_pos = |id: usize| -> (f32, f32) {
-                let mut ax = 0.0_f32;
-                let mut ay = 0.0_f32;
-                let mut walk = Some(id);
-                while let Some(wid) = walk {
-                    if let Some(wn) = d.tree.get(wid) {
-                        ax += wn.layout.x;
-                        ay += wn.layout.y;
-                        if let Some(pid) = wn.parent
-                            && let Some(pn) = d.tree.get(pid)
-                        {
-                            ax -= pn.scroll_offset.0 as f32;
-                            ay -= pn.scroll_offset.1 as f32;
-                        }
-                        walk = wn.parent;
-                    } else {
-                        break;
-                    }
-                }
-                (ax, ay)
+                let (x, y, _, _) = painted_element_box(&d.tree, id);
+                (x, y)
             };
 
             // Walk ALL ancestors and intersect their clip rects
@@ -2648,28 +2617,11 @@ impl RinchApp {
                     Ok(id) => id,
                     Err(_) => continue,
                 };
-                let mut abs_x = 0.0_f32;
-                let mut abs_y = 0.0_f32;
-                let mut current = Some(node_id);
-                while let Some(id) = current {
-                    if let Some(n) = d.tree.get(id) {
-                        abs_x += n.layout.x;
-                        abs_y += n.layout.y;
-                        if let Some(parent_id) = n.parent
-                            && let Some(parent) = d.tree.get(parent_id)
-                        {
-                            abs_x -= parent.scroll_offset.0 as f32;
-                            abs_y -= parent.scroll_offset.1 as f32;
-                        }
-                        current = n.parent;
-                    } else {
-                        break;
-                    }
-                }
-                results.push((
-                    surface_id,
-                    (abs_x, abs_y, node.layout.width, node.layout.height),
-                ));
+                // The painted box: the app sizes its buffer from this rect and
+                // `surface_local_coords` maps the pointer into it, so the two
+                // have to be the same box (#203).
+                let (abs_x, abs_y, w, h) = painted_element_box(&d.tree, node_id);
+                results.push((surface_id, (abs_x, abs_y, w, h)));
             }
         }
         results
@@ -2690,25 +2642,7 @@ impl RinchApp {
                 .map(|v| v.as_str())
                 == Some(&id_str)
             {
-                let mut abs_x = 0.0_f32;
-                let mut abs_y = 0.0_f32;
-                let mut current = Some(node_id);
-                while let Some(id) = current {
-                    if let Some(n) = d.tree.get(id) {
-                        abs_x += n.layout.x;
-                        abs_y += n.layout.y;
-                        if let Some(parent_id) = n.parent
-                            && let Some(parent) = d.tree.get(parent_id)
-                        {
-                            abs_x -= parent.scroll_offset.0 as f32;
-                            abs_y -= parent.scroll_offset.1 as f32;
-                        }
-                        current = n.parent;
-                    } else {
-                        break;
-                    }
-                }
-                return Some((abs_x, abs_y, node.layout.width, node.layout.height));
+                return Some(painted_element_box(&d.tree, node_id));
             }
         }
         None
@@ -3397,11 +3331,10 @@ mod tab_focus_tests {
 
     fn abs_center(app: &RinchApp, id: usize) -> (f32, f32) {
         let d = app.doc.as_ref().unwrap().borrow();
-        let n = d.tree.get(id).unwrap();
         // The same walk the click/hit paths use (scroll offsets included), so
         // these clicks stay on target if a fixture ever gains a scroller.
-        let (ax, ay) = RinchApp::compute_absolute_position(&d.tree, id);
-        (ax + n.layout.width / 2.0, ay + n.layout.height / 2.0)
+        let (ax, ay, ax_w, ay_h) = painted_element_box(&d.tree, id);
+        (ax + ax_w / 2.0, ay + ay_h / 2.0)
     }
 
     /// #228, the trap itself: Tab must advance past a `tabindex="0"` node in
@@ -3947,13 +3880,13 @@ mod popup_backdrop_hit_tests {
         let doc = app.doc.as_ref().unwrap();
         let d = doc.borrow();
         let n = d.tree.get(node_id).expect("node still in the tree");
-        let (x, y) = RinchApp::compute_absolute_position(&d.tree, node_id);
+        let (x, y, x_w, y_h) = painted_element_box(&d.tree, node_id);
         assert!(
             n.layout.width > 0.0 && n.layout.height > 0.0,
             "node {node_id} has no box to aim at: {:?}",
             n.layout
         );
-        (x + n.layout.width / 2.0, y + n.layout.height / 2.0)
+        (x + x_w / 2.0, y + y_h / 2.0)
     }
 
     /// One tap, spelled the way Android spells it: `TouchGesture` resolves a
@@ -4083,9 +4016,8 @@ mod pointer_cancel_tests {
         let row_id = id.get().expect("node id captured at mount");
         let centre = {
             let d = app.doc.as_ref().unwrap().borrow();
-            let n = d.tree.get(row_id).unwrap();
-            let (ax, ay) = RinchApp::compute_absolute_position(&d.tree, row_id);
-            (ax + n.layout.width / 2.0, ay + n.layout.height / 2.0)
+            let (ax, ay, ax_w, ay_h) = painted_element_box(&d.tree, row_id);
+            (ax + ax_w / 2.0, ay + ay_h / 2.0)
         };
         (app, centre, clicks)
     }
@@ -4237,9 +4169,8 @@ mod wheel_scroll_dispatch_tests {
         let container_id = id.borrow().expect("node id captured at mount");
         let centre = {
             let d = app.doc.as_ref().unwrap().borrow();
-            let n = d.tree.get(container_id).unwrap();
-            let (ax, ay) = RinchApp::compute_absolute_position(&d.tree, container_id);
-            (ax + n.layout.width / 2.0, ay + n.layout.height / 2.0)
+            let (ax, ay, ax_w, ay_h) = painted_element_box(&d.tree, container_id);
+            (ax + ax_w / 2.0, ay + ay_h / 2.0)
         };
         Scroller {
             app,
@@ -4418,7 +4349,7 @@ mod wheel_scroll_dispatch_tests {
         // wheel would land on the page instead.
         let point = {
             let d = app.doc.as_ref().unwrap().borrow();
-            let (ax, ay) = RinchApp::compute_absolute_position(&d.tree, strip_id);
+            let (ax, ay, _, _) = painted_element_box(&d.tree, strip_id);
             (ax + 50.0, ay + 25.0)
         };
 
@@ -4493,9 +4424,8 @@ mod wheel_scroll_dispatch_tests {
 
         let centre = {
             let d = app.doc.as_ref().unwrap().borrow();
-            let n = d.tree.get(list).unwrap();
-            let (ax, ay) = RinchApp::compute_absolute_position(&d.tree, list);
-            (ax + n.layout.width / 2.0, ay + n.layout.height / 2.0)
+            let (ax, ay, ax_w, ay_h) = painted_element_box(&d.tree, list);
+            (ax + ax_w / 2.0, ay + ay_h / 2.0)
         };
         wheel(&mut app, centre, 0.0, -400.0);
 
@@ -4553,9 +4483,8 @@ mod horizontal_scrollbar_tests {
         let container_id = id.borrow().expect("node id captured at mount");
         let rect = {
             let d = app.doc.as_ref().unwrap().borrow();
-            let n = d.tree.get(container_id).unwrap();
-            let (ax, ay) = RinchApp::compute_absolute_position(&d.tree, container_id);
-            (ax, ay, n.layout.width, n.layout.height)
+            let (ax, ay, ax_w, ay_h) = painted_element_box(&d.tree, container_id);
+            (ax, ay, ax_w, ay_h)
         };
         Bars {
             app,
@@ -4860,11 +4789,9 @@ mod input_caret_hit_tests {
             let node = d.tree.get(id).expect("the field");
             (node.computed_style.clone(), node.layout.width)
         };
-        let (sum_x, sum_y) = RinchApp::compute_absolute_position(&d.tree, id);
-        let (ifc_dx, ifc_dy) = {
-            let node = d.tree.get(id).expect("the field");
-            rinch_dom::paint::ifc_content_box_offset(&d.tree, node)
-        };
+        // The painted box already carries the IFC content-box offset, which
+        // this used to add on top of a plain parent-chain sum (#203).
+        let (box_x, box_y, _, _) = painted_element_box(&d.tree, id);
         let pad_l = style.padding_left.to_px();
         let pad_t = style.padding_top.to_px();
 
@@ -4884,7 +4811,7 @@ mod input_caret_hit_tests {
                 (m.baseline - m.ascent, m.line_height, line.text_range())
             })
             .collect();
-        ((sum_x + ifc_dx + pad_l, sum_y + ifc_dy + pad_t), lines)
+        ((box_x + pad_l, box_y + pad_t), lines)
     }
 
     /// The fault: a click on the middle of a painted line must put the caret on
@@ -5117,13 +5044,13 @@ mod android_frame_clock_tests {
         let doc = app.doc.as_ref().expect("document");
         let d = doc.borrow();
         let n = d.tree.get(node_id).expect("node still in the tree");
-        let (x, y) = RinchApp::compute_absolute_position(&d.tree, node_id);
+        let (x, y, x_w, y_h) = painted_element_box(&d.tree, node_id);
         assert!(
             n.layout.width > 0.0 && n.layout.height > 0.0,
             "node {node_id} has no box to aim at: {:?}",
             n.layout
         );
-        (x + n.layout.width / 2.0, y + n.layout.height / 2.0)
+        (x + x_w / 2.0, y + y_h / 2.0)
     }
 
     /// One tap, spelled the way `TouchGesture` spells a still finger's lift:
@@ -5918,6 +5845,591 @@ mod click_context_bounds_tests {
             (ctx.element_x, ctx.element_y),
             (290.0, 210.0),
             "the container's offset must not be summed into a fixed box"
+        );
+    }
+}
+
+#[cfg(test)]
+mod transform_aware_walk_tests {
+    use super::*;
+    use rinch_core::events::{InputCallback, register_input_handler};
+    use std::cell::Cell;
+
+    // #203 PR2. The eleven auxiliary walks that still summed `layout.x`/
+    // `layout.y` up the parent chain after PR1 converted the click path. Every
+    // expected rect below is hand-computed from the CSS — the transform, the
+    // `position: fixed` hoist — never read back out of a geometry helper, and
+    // every test also names the box the old walk produced and asserts it is not
+    // the answer. The two boxes overlap in most of these fixtures, so a
+    // positive assertion on its own would survive the regression.
+
+    type Seen = Rc<Cell<Option<events::ClickContext>>>;
+
+    fn key(app: &mut RinchApp, key: KeyCode) {
+        app.handle_event(
+            PlatformEvent::KeyDown {
+                key,
+                logical_key: None,
+                text: None,
+                modifiers: Modifiers::default(),
+            },
+            (800, 600),
+            1.0,
+        );
+        app.handle_event(
+            PlatformEvent::KeyUp {
+                key,
+                modifiers: Modifiers::default(),
+            },
+            (800, 600),
+            1.0,
+        );
+    }
+
+    fn mouse(app: &mut RinchApp, event: PlatformEvent) {
+        app.handle_event(event, (800, 600), 1.0);
+    }
+
+    fn down(x: f32, y: f32, button: MouseButton) -> PlatformEvent {
+        PlatformEvent::MouseDown { x, y, button }
+    }
+
+    fn element_box(ctx: events::ClickContext) -> (f32, f32, f32, f32) {
+        (
+            ctx.element_x,
+            ctx.element_y,
+            ctx.element_width,
+            ctx.element_height,
+        )
+    }
+
+    /// The inconsistency PR1 knowingly left: a mouse press reported the painted
+    /// box while `activate_focused_node` synthesised its `ClickContext` from an
+    /// untransformed sum, so Enter on a transformed element handed the *same*
+    /// handler a different rect than a click on it — and `Drag::percent()`
+    /// started from the keyboard measured against a box nobody can see.
+    #[test]
+    fn keyboard_activation_reports_the_same_box_a_click_does() {
+        let seen: Seen = Rc::new(Cell::new(None));
+        let seen_in = seen.clone();
+        let mut app = RinchApp::new(move |scope: &mut RenderScope| {
+            let root = scope.create_element("div");
+            root.set_attribute("style", "position: relative; width: 800px; height: 600px");
+            // Zoom box at (100,50) doubled about its own top-left; the target's
+            // layout box is (140,90)-(240,130), painted (180,130)-(380,210).
+            let zoom = scope.create_element("div");
+            zoom.set_attribute(
+                "style",
+                "position: absolute; left: 100px; top: 50px; width: 300px; height: 200px; \
+                 transform: scale(2); transform-origin: 0 0",
+            );
+            let target = scope.create_element("div");
+            target.set_attribute(
+                "style",
+                "position: absolute; left: 40px; top: 40px; width: 100px; height: 40px",
+            );
+            target.set_attribute("tabindex", "0");
+            let seen = seen_in.clone();
+            let rid = events::register_handler(Rc::new(move || {
+                seen.set(Some(events::get_click_context()));
+            }));
+            target.set_attribute("data-rid", &rid.0.to_string());
+            zoom.append_child(&target);
+            root.append_child(&zoom);
+            root
+        });
+        app.mount_component(800.0, 600.0);
+        app.resolve_and_repaint(800.0, 600.0);
+
+        // A press at the painted centre.
+        mouse(&mut app, down(280.0, 170.0, MouseButton::Left));
+        let by_mouse = seen.take().expect("the press hit the painted box");
+        assert_eq!(
+            element_box(by_mouse),
+            (180.0, 130.0, 200.0, 80.0),
+            "the pointer path reports the painted box (PR1)"
+        );
+
+        // Tab onto it, then Enter.
+        key(&mut app, KeyCode::Tab);
+        assert!(
+            matches!(app.focus_target, FocusTarget::Node(_)),
+            "the tabindex element took focus, got {:?}",
+            app.focus_target
+        );
+        key(&mut app, KeyCode::Enter);
+        let by_key = seen.take().expect("Enter dispatched the same handler");
+
+        assert_eq!(
+            element_box(by_key),
+            element_box(by_mouse),
+            "keyboard activation and a click must describe the same element"
+        );
+        // The box the old walk synthesised: the untransformed layout rect.
+        assert_ne!(
+            element_box(by_key),
+            (140.0, 90.0, 100.0, 40.0),
+            "the untransformed layout box must not be reported"
+        );
+        // And the synthesised cursor is the painted centre, so placement logic
+        // reading `mouse_x` lands on screen.
+        assert_eq!((by_key.mouse_x, by_key.mouse_y), (280.0, 170.0));
+    }
+
+    /// A right-click is one of the three literal copies of the walk PR1 fixed.
+    #[test]
+    fn a_context_menu_reports_the_painted_box() {
+        let seen: Seen = Rc::new(Cell::new(None));
+        let seen_in = seen.clone();
+        let mut app = RinchApp::new(move |scope: &mut RenderScope| {
+            let root = scope.create_element("div");
+            root.set_attribute("style", "position: relative; width: 800px; height: 600px");
+            let panel = scope.create_element("div");
+            panel.set_attribute(
+                "style",
+                "position: absolute; left: 100px; top: 60px; width: 300px; height: 200px; \
+                 transform: translate(50px, 30px)",
+            );
+            let target = scope.create_element("div");
+            target.set_attribute(
+                "style",
+                "position: absolute; left: 20px; top: 10px; width: 120px; height: 40px",
+            );
+            let seen = seen_in.clone();
+            let rid = events::register_handler(Rc::new(move || {
+                seen.set(Some(events::get_click_context()));
+            }));
+            target.set_attribute("data-oncontextmenu", &rid.0.to_string());
+            panel.append_child(&target);
+            root.append_child(&panel);
+            root
+        });
+        app.mount_component(800.0, 600.0);
+        app.resolve_and_repaint(800.0, 600.0);
+
+        // Layout box (120,70)-(240,110); the panel's translate paints it at
+        // (170,100)-(290,140).
+        mouse(&mut app, down(200.0, 120.0, MouseButton::Right));
+        let ctx = seen.take().expect("the right-click hit the painted box");
+        assert_eq!(element_box(ctx), (170.0, 100.0, 120.0, 40.0));
+        assert_ne!(
+            (ctx.element_x, ctx.element_y),
+            (120.0, 70.0),
+            "the untransformed layout origin must not be reported"
+        );
+    }
+
+    /// `data-onmousedown` is the third copy of the walk PR1 fixed.
+    #[test]
+    fn a_mouse_attr_reports_the_painted_box() {
+        let seen: Seen = Rc::new(Cell::new(None));
+        let seen_in = seen.clone();
+        let mut app = RinchApp::new(move |scope: &mut RenderScope| {
+            let root = scope.create_element("div");
+            root.set_attribute("style", "position: relative; width: 800px; height: 600px");
+            let panel = scope.create_element("div");
+            panel.set_attribute(
+                "style",
+                "position: absolute; left: 100px; top: 60px; width: 300px; height: 200px; \
+                 transform: translate(50px, 30px)",
+            );
+            let target = scope.create_element("div");
+            target.set_attribute(
+                "style",
+                "position: absolute; left: 20px; top: 10px; width: 120px; height: 40px",
+            );
+            let seen = seen_in.clone();
+            let rid = events::register_handler(Rc::new(move || {
+                seen.set(Some(events::get_click_context()));
+            }));
+            target.set_attribute("data-onmousedown", &rid.0.to_string());
+            panel.append_child(&target);
+            root.append_child(&panel);
+            root
+        });
+        app.mount_component(800.0, 600.0);
+        app.resolve_and_repaint(800.0, 600.0);
+
+        mouse(&mut app, down(200.0, 120.0, MouseButton::Left));
+        let ctx = seen.take().expect("the press hit the painted box");
+        assert_eq!(element_box(ctx), (170.0, 100.0, 120.0, 40.0));
+        assert_ne!(
+            (ctx.element_x, ctx.element_y),
+            (120.0, 70.0),
+            "the untransformed layout origin must not be reported"
+        );
+    }
+
+    /// `data-ondragover` — the second copy. It fires on every motion event over
+    /// a drop target, and a drop indicator drawn from `relative_x()` was drawn
+    /// against the untransformed box.
+    #[test]
+    fn a_drag_over_target_reports_its_painted_box() {
+        let seen: Seen = Rc::new(Cell::new(None));
+        let seen_in = seen.clone();
+        let ids: Rc<Cell<Option<usize>>> = Rc::new(Cell::new(None));
+        let ids_in = ids.clone();
+        let mut app = RinchApp::new(move |scope: &mut RenderScope| {
+            let root = scope.create_element("div");
+            root.set_attribute("style", "position: relative; width: 800px; height: 600px");
+            let panel = scope.create_element("div");
+            panel.set_attribute(
+                "style",
+                "position: absolute; left: 100px; top: 60px; width: 300px; height: 200px; \
+                 transform: translate(50px, 30px)",
+            );
+            let target = scope.create_element("div");
+            target.set_attribute(
+                "style",
+                "position: absolute; left: 20px; top: 10px; width: 120px; height: 40px",
+            );
+            let seen = seen_in.clone();
+            let rid = events::register_handler(Rc::new(move || {
+                seen.set(Some(events::get_click_context()));
+            }));
+            target.set_attribute("data-ondragover", &rid.0.to_string());
+            panel.append_child(&target);
+            root.append_child(&panel);
+            ids_in.set(Some(target.node_id().0));
+            root
+        });
+        app.mount_component(800.0, 600.0);
+        app.resolve_and_repaint(800.0, 600.0);
+        let target_id = ids.get().expect("the target id");
+
+        RinchApp::dispatch_drag_attr_with_context(
+            app.doc.as_ref().unwrap(),
+            target_id,
+            "data-ondragover",
+            200.0,
+            120.0,
+        );
+        let ctx = seen.take().expect("the drag-over handler ran");
+        assert_eq!(element_box(ctx), (170.0, 100.0, 120.0, 40.0));
+        assert_ne!(
+            (ctx.element_x, ctx.element_y),
+            (120.0, 70.0),
+            "the untransformed layout origin must not be reported"
+        );
+    }
+
+    /// The ancestor chain a handler converts coordinates through
+    /// (`find_click_ancestor`). It has to describe the same boxes
+    /// `ClickContext::element_x` does, or subtracting an ancestor's origin from
+    /// `mouse_x` is arithmetic across two different spaces.
+    #[test]
+    fn the_click_ancestor_chain_reports_painted_boxes() {
+        let panel_origin: Rc<Cell<Option<(f32, f32)>>> = Rc::new(Cell::new(None));
+        let origin_in = panel_origin.clone();
+        let mut app = RinchApp::new(move |scope: &mut RenderScope| {
+            let root = scope.create_element("div");
+            root.set_attribute("style", "position: relative; width: 800px; height: 600px");
+            let panel = scope.create_element("div");
+            panel.set_attribute(
+                "style",
+                "position: absolute; left: 100px; top: 60px; width: 300px; height: 200px; \
+                 transform: translate(50px, 30px)",
+            );
+            panel.set_attribute("id", "panel");
+            let target = scope.create_element("div");
+            target.set_attribute(
+                "style",
+                "position: absolute; left: 20px; top: 10px; width: 120px; height: 40px",
+            );
+            let origin = origin_in.clone();
+            let rid = events::register_handler(Rc::new(move || {
+                origin.set(events::find_click_ancestor(|a| a.id == "panel").map(|a| (a.x, a.y)));
+            }));
+            target.set_attribute("data-rid", &rid.0.to_string());
+            panel.append_child(&target);
+            root.append_child(&panel);
+            root
+        });
+        app.mount_component(800.0, 600.0);
+        app.resolve_and_repaint(800.0, 600.0);
+
+        mouse(&mut app, down(200.0, 120.0, MouseButton::Left));
+        let origin = panel_origin.take().expect("the panel is in the chain");
+        // The panel's layout origin is (100,60); its translate paints it at
+        // (150,90), which is the origin the click's own `element_x` is measured
+        // against.
+        assert_eq!(origin, (150.0, 90.0));
+        assert_ne!(
+            origin,
+            (100.0, 60.0),
+            "the accumulating chain's untransformed origin must not be reported"
+        );
+    }
+
+    /// `NodeHandle::bounds_signal`'s own documentation promises "the same frame
+    /// `ClickContext::element_x` uses". PR1 moved `element_x` to the painted box
+    /// and had to weaken that sentence; this is the test that lets it stand.
+    #[test]
+    fn bounds_signal_reports_the_painted_rect() {
+        use rinch_core::reactive::{ElementBounds, Signal};
+
+        let captured: Rc<Cell<Option<Signal<ElementBounds>>>> = Rc::new(Cell::new(None));
+        let captured_in = captured.clone();
+        let mut app = RinchApp::new(move |scope: &mut RenderScope| {
+            let root = scope.create_element("div");
+            root.set_attribute("style", "position: relative; width: 800px; height: 600px");
+            let zoom = scope.create_element("div");
+            zoom.set_attribute(
+                "style",
+                "position: absolute; left: 100px; top: 50px; width: 300px; height: 200px; \
+                 transform: scale(2); transform-origin: 0 0",
+            );
+            let strip = scope.create_element("div");
+            strip.set_attribute(
+                "style",
+                "position: absolute; left: 20px; top: 30px; width: 100px; height: 10px",
+            );
+            zoom.append_child(&strip);
+            root.append_child(&zoom);
+            captured_in.set(Some(strip.bounds_signal()));
+            root
+        });
+        app.mount_component(800.0, 600.0);
+        let bounds = captured.get().expect("bounds signal captured at mount");
+        app.resize_layout(800, 600);
+
+        // Layout box (120,80)-(220,90); doubled about (100,50) →
+        // (140,110)-(340,130).
+        let b = bounds.get();
+        assert_eq!(
+            (b.x, b.y, b.width, b.height),
+            (140.0, 110.0, 200.0, 20.0),
+            "got {b:?}"
+        );
+        assert_ne!(
+            (b.x, b.y),
+            (120.0, 80.0),
+            "the untransformed layout origin is not the painted rect"
+        );
+        assert_ne!(
+            b.width, 100.0,
+            "a scaled element is painted at twice its layout width"
+        );
+    }
+
+    /// The latent non-transform bug in the same walk: `refresh_bounds_signals`
+    /// had no `position: fixed` exception, so a fixed overlay's reported rect
+    /// drifted upward as the page behind it scrolled — wrong today with no
+    /// transform anywhere.
+    #[test]
+    fn a_fixed_node_reports_viewport_bounds_after_its_container_scrolls() {
+        use rinch_core::reactive::{ElementBounds, Signal};
+
+        let captured: Rc<Cell<Option<Signal<ElementBounds>>>> = Rc::new(Cell::new(None));
+        let captured_in = captured.clone();
+        let ids: Rc<Cell<Option<usize>>> = Rc::new(Cell::new(None));
+        let ids_in = ids.clone();
+        let mut app = RinchApp::new(move |scope: &mut RenderScope| {
+            let root = scope.create_element("div");
+            root.set_attribute("style", "position: relative; width: 800px; height: 600px");
+            let page = scope.create_element("div");
+            page.set_attribute(
+                "style",
+                "position: absolute; left: 0; top: 0; width: 400px; height: 300px; \
+                 overflow: auto",
+            );
+            let tall = scope.create_element("div");
+            tall.set_attribute("style", "width: 100%; height: 2000px");
+            let overlay = scope.create_element("div");
+            overlay.set_attribute(
+                "style",
+                "position: fixed; left: 40px; top: 60px; width: 120px; height: 50px; z-index: 5",
+            );
+            page.append_child(&tall);
+            page.append_child(&overlay);
+            root.append_child(&page);
+            ids_in.set(Some(page.node_id().0));
+            captured_in.set(Some(overlay.bounds_signal()));
+            root
+        });
+        app.mount_component(800.0, 600.0);
+        let bounds = captured.get().expect("bounds signal captured at mount");
+        let page_id = ids.get().expect("the page id");
+        app.resize_layout(800, 600);
+
+        let before = bounds.get();
+        assert_eq!((before.x, before.y), (40.0, 60.0), "got {before:?}");
+
+        // Scroll the page 150px. A fixed box does not move.
+        app.handle_event(
+            PlatformEvent::MouseWheel {
+                x: 200.0,
+                y: 200.0,
+                delta_x: 0.0,
+                delta_y: -150.0,
+            },
+            (800, 600),
+            1.0,
+        );
+        app.resize_layout(800, 600);
+        assert_eq!(
+            app.doc.as_ref().unwrap().borrow().tree.nodes[page_id]
+                .scroll_offset
+                .1,
+            150.0,
+            "the fixture must actually scroll for this to prove anything"
+        );
+
+        let after = bounds.get();
+        assert_eq!(
+            (after.x, after.y),
+            (40.0, 60.0),
+            "a fixed box's bounds are its viewport box, whatever the page does"
+        );
+        assert_ne!(
+            after.y, -90.0,
+            "the un-excepted walk subtracted the page's scroll"
+        );
+    }
+
+    /// The inverse direction, where subtracting a painted origin is provably not
+    /// enough: inside `scale(2)` a pointer 120 painted pixels into a field is 60
+    /// field pixels in, so an AABB-offset answer picks a different character.
+    /// Asserted through the caret, which is what the user sees, and against an
+    /// untransformed copy of the same field rather than against a helper — the
+    /// reference is "the field behaves the same either way in".
+    #[test]
+    fn a_click_in_a_scaled_field_places_the_caret_by_the_scaled_distance() {
+        /// Mount one field, optionally inside a `scale(2)` wrapper, click at
+        /// `click_x`, and report where the caret landed.
+        fn caret_after_click(zoomed: bool, click_x: f32) -> usize {
+            let oninput_id = register_input_handler(InputCallback::new(|_| {}));
+            let mut app = RinchApp::new(move |scope: &mut RenderScope| {
+                let root = scope.create_element("div");
+                root.set_attribute("style", "position: relative; width: 800px; height: 600px");
+                let wrapper = scope.create_element("div");
+                wrapper.set_attribute(
+                    "style",
+                    if zoomed {
+                        "position: absolute; left: 0; top: 0; width: 400px; height: 200px; \
+                         transform: scale(2); transform-origin: 0 0"
+                    } else {
+                        "position: absolute; left: 0; top: 0; width: 400px; height: 200px"
+                    },
+                );
+                let field = scope.create_element("input");
+                field.set_attribute(
+                    "style",
+                    "position: absolute; left: 0; top: 0; width: 300px; height: 30px; \
+                     padding: 0; border: 0; font-size: 16px",
+                );
+                field.set_attribute("value", "wwwwwwwwwwwwwwwwwwww");
+                field.set_attribute("data-oninput", &oninput_id.0.to_string());
+                wrapper.append_child(&field);
+                root.append_child(&wrapper);
+                root
+            });
+            app.mount_component(800.0, 600.0);
+            app.resolve_and_repaint(800.0, 600.0);
+            let y = if zoomed { 30.0 } else { 15.0 };
+            app.handle_event(down(click_x, y, MouseButton::Left), (800, 600), 1.0);
+            app.handle_event(
+                PlatformEvent::MouseUp {
+                    x: click_x,
+                    y,
+                    button: MouseButton::Left,
+                },
+                (800, 600),
+                1.0,
+            );
+            app.focused_input_state
+                .as_ref()
+                .expect("the click focused the field")
+                .selection
+                .head
+                .0
+        }
+
+        let reference = caret_after_click(false, 60.0);
+        // The fixture has to put the caret well inside the run, or the two
+        // candidate answers could coincide by accident.
+        assert!(
+            reference > 1,
+            "the reference click must land mid-text, got {reference}"
+        );
+
+        assert_eq!(
+            caret_after_click(true, 120.0),
+            reference,
+            "a click 120 painted px into a scale(2) field is 60 field px in"
+        );
+        // Subtracting the painted origin alone would have treated the pointer's
+        // 120px as 120 field pixels — a different character.
+        assert_ne!(
+            caret_after_click(false, 120.0),
+            reference,
+            "the AABB-offset answer is a different character, so this test bites"
+        );
+    }
+
+    /// The scrollbar drag delta lives in the container's own space, where the
+    /// track length is: 40 painted pixels of pointer travel inside `scale(2)` is
+    /// 20 pixels of track, so the thumb stays under the finger.
+    #[test]
+    fn a_scrollbar_drag_inside_a_scaled_container_tracks_the_thumb() {
+        let scroll_of = |app: &RinchApp, id: usize| -> f64 {
+            app.doc.as_ref().unwrap().borrow().tree.nodes[id]
+                .scroll_offset
+                .1
+        };
+        let ids: Rc<Cell<Option<usize>>> = Rc::new(Cell::new(None));
+        let ids_in = ids.clone();
+        let build = move |scope: &mut RenderScope| {
+            let root = scope.create_element("div");
+            root.set_attribute("style", "position: relative; width: 800px; height: 600px");
+            let zoom = scope.create_element("div");
+            zoom.set_attribute(
+                "style",
+                "position: absolute; left: 0; top: 0; width: 400px; height: 300px; \
+                 transform: scale(2); transform-origin: 0 0",
+            );
+            let sc = scope.create_element("div");
+            sc.set_attribute(
+                "style",
+                "position: absolute; left: 0; top: 0; width: 200px; height: 100px; \
+                 overflow: auto",
+            );
+            let tall = scope.create_element("div");
+            tall.set_attribute("style", "width: 100%; height: 1100px");
+            sc.append_child(&tall);
+            zoom.append_child(&sc);
+            root.append_child(&zoom);
+            ids_in.set(Some(sc.node_id().0));
+            root
+        };
+        let mut app = RinchApp::new(build);
+        app.mount_component(800.0, 600.0);
+        app.resolve_and_repaint(800.0, 600.0);
+        let sc_id = ids.get().expect("the scroller id");
+
+        // Painted box (0,0)-(400,200); the vertical strip is x∈[368,400].
+        // Grab at the very top of the track so the jump-to-click ratio is 0.
+        mouse(&mut app, down(384.0, 4.0, MouseButton::Left));
+        assert!(
+            app.scrollbar_drag.is_some(),
+            "the press must land on the painted strip"
+        );
+        assert_eq!(scroll_of(&app, sc_id), 0.0, "grabbed at the track's start");
+
+        // Drag 40 painted pixels down: 20 container pixels of a 96px track,
+        // over 1000px of scrollable content → 1100 * 20/96 ≈ 229.17.
+        mouse(&mut app, PlatformEvent::MouseMove { x: 384.0, y: 44.0 });
+        let moved = scroll_of(&app, sc_id);
+        let expected = 1100.0 * 20.0 / 96.0;
+        assert!(
+            (moved - expected).abs() < 0.5,
+            "expected ~{expected}, got {moved}"
+        );
+        // Treating the pointer move as 40 track pixels would have scrolled twice
+        // as far — and past the 1000px clamp, which is what made it obvious.
+        assert!(
+            moved < 1100.0 * 40.0 / 96.0 - 1.0,
+            "the delta must be measured in the container's own space"
         );
     }
 }

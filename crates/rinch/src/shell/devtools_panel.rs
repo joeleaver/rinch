@@ -97,7 +97,7 @@ fn build_tree_nodes_from_doc(doc: &rinch_dom::RinchDocument) -> Vec<DomTreeNode>
     let tree = &doc.tree;
     let mut result = Vec::new();
     for &child_id in &tree.nodes[tree.body_id].children {
-        build_tree_node_recursive(tree, child_id, 0, 0.0, 0.0, &mut result);
+        build_tree_node_recursive(tree, child_id, 0, &mut result);
     }
     result
 }
@@ -106,16 +106,13 @@ fn build_tree_node_recursive(
     tree: &rinch_dom::node::NodeTree,
     id: RawNodeId,
     depth: usize,
-    offset_x: f32,
-    offset_y: f32,
     out: &mut Vec<DomTreeNode>,
 ) {
     let Some(node) = tree.get(id) else { return };
 
-    let abs_x = offset_x + node.layout.x;
-    let abs_y = offset_y + node.layout.y;
-    let sx = node.scroll_offset.0 as f32;
-    let sy = node.scroll_offset.1 as f32;
+    // The box the node is painted in, so the panel's numbers agree with the
+    // inspect overlay and with what a click on the screen would hit (#203).
+    let painted = rinch_dom::paint::painted_border_box(tree, id, 1.0);
 
     let (tag, id_attr, classes, text_preview, is_text) = match &node.kind {
         NodeKind::Document => return,
@@ -141,14 +138,7 @@ fn build_tree_node_recursive(
     let mut children = Vec::new();
     if !is_text {
         for &child_id in &node.children {
-            build_tree_node_recursive(
-                tree,
-                child_id,
-                depth + 1,
-                abs_x - sx,
-                abs_y - sy,
-                &mut children,
-            );
+            build_tree_node_recursive(tree, child_id, depth + 1, &mut children);
         }
     }
 
@@ -158,7 +148,12 @@ fn build_tree_node_recursive(
         id_attr,
         classes,
         text_preview,
-        layout: (abs_x, abs_y, node.layout.width, node.layout.height),
+        layout: (
+            painted.x0 as f32,
+            painted.y0 as f32,
+            painted.width() as f32,
+            painted.height() as f32,
+        ),
         children,
         depth,
         is_text,

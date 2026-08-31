@@ -103,9 +103,8 @@ fn click(app: &mut RinchApp, x: f32, y: f32) {
 
 fn abs_center(app: &RinchApp, id: usize) -> (f32, f32) {
     let d = app.doc.as_ref().unwrap().borrow();
-    let n = d.tree.get(id).unwrap();
-    let (ax, ay) = RinchApp::compute_absolute_position(&d.tree, id);
-    (ax + n.layout.width / 2.0, ay + n.layout.height / 2.0)
+    let (ax, ay, ax_w, ay_h) = painted_element_box(&d.tree, id);
+    (ax + ax_w / 2.0, ay + ay_h / 2.0)
 }
 
 fn click_center(app: &mut RinchApp, id: usize) {
@@ -290,9 +289,8 @@ fn a_reclick_inside_the_input_does_not_reset_the_baseline() {
     // Re-click near the input's right edge: caret to the end, focus unchanged.
     let (cx, cy) = {
         let d = app.doc.as_ref().unwrap().borrow();
-        let n = d.tree.get(a_id).unwrap();
-        let (ax, ay) = RinchApp::compute_absolute_position(&d.tree, a_id);
-        (ax + n.layout.width - 3.0, ay + n.layout.height / 2.0)
+        let (ax, ay, ax_w, ay_h) = painted_element_box(&d.tree, a_id);
+        (ax + ax_w - 3.0, ay + ay_h / 2.0)
     };
     click(&mut app, cx, cy);
     assert_eq!(app.focus_target, FocusTarget::Input(a_id));

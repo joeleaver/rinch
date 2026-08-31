@@ -447,12 +447,16 @@ impl RinchRuntime {
         let new_rect = hovered_id.and_then(|node_id| {
             let doc = self.app.doc.as_ref()?;
             let d = doc.borrow();
-            let node = d.tree.nodes.get(node_id)?;
-            let layout = node
-                .taffy_id
-                .and_then(|tid| d.tree.taffy.layout(tid).ok())?;
-            let (abs_x, abs_y) = compute_absolute_pos(&d.tree, node_id);
-            Some((abs_x, abs_y, layout.size.width, layout.size.height))
+            d.tree.nodes.get(node_id)?;
+            // The box the node is *painted* in, so the inspect overlay outlines
+            // what is on screen rather than the untransformed layout box (#203).
+            let r = rinch_dom::paint::painted_border_box(&d.tree, node_id, 1.0);
+            Some((
+                r.x0 as f32,
+                r.y0 as f32,
+                r.width() as f32,
+                r.height() as f32,
+            ))
         });
 
         if self.app.inspect_highlight != new_rect {
@@ -2335,34 +2339,6 @@ impl RinchRuntime {
 }
 
 // ── DevTools data extraction helpers ─────────────────────────────────────────
-
-use rinch_dom::node::RawNodeId;
-
-/// Compute absolute position of a node by walking up the parent chain.
-fn compute_absolute_pos(tree: &rinch_dom::node::NodeTree, id: RawNodeId) -> (f32, f32) {
-    let mut x = 0.0f32;
-    let mut y = 0.0f32;
-    let mut current = Some(id);
-    while let Some(nid) = current {
-        if let Some(node) = tree.get(nid) {
-            x += node.layout.x;
-            y += node.layout.y;
-            if node.computed_style.position == rinch_dom::computed_style::PositionValue::Fixed {
-                break;
-            }
-            if let Some(parent_id) = node.parent {
-                if let Some(parent) = tree.get(parent_id) {
-                    x -= parent.scroll_offset.0 as f32;
-                    y -= parent.scroll_offset.1 as f32;
-                }
-            }
-            current = node.parent;
-        } else {
-            break;
-        }
-    }
-    (x, y)
-}
 
 // ── Compositor letterbox backdrop ────────────────────────────────
 

@@ -278,8 +278,16 @@ impl RinchApp {
                     let axis = drag.axis;
                     // Identical arithmetic on either axis — the `- 4.0` is the
                     // vertical bar's existing 2px-margin-each-end track, kept as
-                    // it was rather than re-derived.
-                    let moved = axis.along(x, y) - drag.start_pos;
+                    // it was rather than re-derived. The pointer is measured in
+                    // the container's own space, where the track length is: a
+                    // 10px pointer move inside a `scale(2)` container is 5px of
+                    // track (#203).
+                    let local = self
+                        .doc
+                        .as_ref()
+                        .map(|doc| pointer_in_node(&doc.borrow().tree, node_id, x, y))
+                        .unwrap_or((x, y));
+                    let moved = axis.along(local.0, local.1) - drag.start_pos;
                     let track_len = drag.container_size - 4.0;
                     let max_scroll = drag.content_size - drag.container_size;
                     let scroll_delta = (moved as f64 / track_len) * drag.content_size;
@@ -640,15 +648,19 @@ impl RinchApp {
                     if let Some(doc) = &self.doc {
                         let mut d = doc.borrow_mut();
                         // Jump-to-click: the same ratio arithmetic on either
-                        // axis, read along the one that was hit.
-                        let (node_abs_x, node_abs_y) =
-                            Self::compute_absolute_position(&d.tree, node_id);
+                        // axis, read along the one that was hit. The track is
+                        // measured in the container's own space — the space
+                        // `container_size` and the painted thumb live in — so
+                        // the pointer is mapped into it rather than compared
+                        // against a window-space origin, which under a
+                        // `scale()` ancestor is a different unit (#203).
+                        let local = pointer_in_node(&d.tree, node_id, x, y);
                         let margin = 2.0_f64;
-                        let track_start = axis.along(node_abs_x, node_abs_y) as f64 + margin;
                         let track_len = container_size - margin * 2.0;
                         let max_scroll = content_size - container_size;
-                        let click_ratio =
-                            ((axis.along(x, y) as f64 - track_start) / track_len).clamp(0.0, 1.0);
+                        let click_ratio = ((axis.along(local.0, local.1) as f64 - margin)
+                            / track_len)
+                            .clamp(0.0, 1.0);
                         let new_scroll = click_ratio * max_scroll;
 
                         let handler_id = d
@@ -678,7 +690,9 @@ impl RinchApp {
                         self.scrollbar_drag = Some(ScrollbarDrag {
                             node_id,
                             axis,
-                            start_pos: axis.along(x, y),
+                            // In the container's own space, like the ratio
+                            // above and like every later move.
+                            start_pos: axis.along(local.0, local.1),
                             start_scroll: new_scroll,
                             content_size,
                             container_size,
@@ -1690,22 +1704,12 @@ impl RinchApp {
                             .ok()
                             .filter(|&id| events::has_click_handler(events::EventHandlerId(id)))
                         {
-                            // Compute element absolute position
-                            let mut ax = node.layout.x;
-                            let mut ay = node.layout.y;
-                            let mut pid = node.parent;
-                            while let Some(p) = pid {
-                                if let Some(pn) = d.tree.get(p) {
-                                    ax += pn.layout.x;
-                                    ay += pn.layout.y;
-                                    ax -= pn.scroll_offset.0 as f32;
-                                    ay -= pn.scroll_offset.1 as f32;
-                                    pid = pn.parent;
-                                } else {
-                                    break;
-                                }
-                            }
-                            found = Some((id, ax, ay, node.layout.width, node.layout.height));
+                            // The box the element is *painted* in, exactly as
+                            // the click path reports it — a hand-rolled
+                            // parent-chain sum composed no transform and made
+                            // no `position: fixed` exception (#203).
+                            let (ax, ay, aw, ah) = painted_element_box(&d.tree, nid);
+                            found = Some((id, ax, ay, aw, ah));
                         }
                         break;
                     }
@@ -1742,8 +1746,15 @@ impl RinchApp {
     ///
     /// Used by [`events::set_click_ancestors`] before dispatching click handlers
     /// so handlers can convert click coords into an arbitrary ancestor's frame
-    /// (see [`events::find_click_ancestor`]). One pass from root to hit so the
-    /// total cost is O(depth), not O(depth²) like a per-ancestor walk-up.
+    /// (see [`events::find_click_ancestor`]).
+    ///
+    /// Each ancestor reports the box it is *painted* in, the same rect
+    /// `ClickContext::element_x` carries — a handler subtracting an ancestor's
+    /// origin from `mouse_x` is doing the arithmetic that only works if the two
+    /// agree. The accumulating root→hit sum this replaces was O(depth) rather
+    /// than O(depth²), but it composed no transform and had no `position:
+    /// fixed` exception (#203); a chain is short, so the exact walk is cheap
+    /// enough to be worth the agreement.
     pub(crate) fn collect_click_ancestors(
         tree: &rinch_dom::NodeTree,
         hit_id: usize,
@@ -1759,35 +1770,25 @@ impl RinchApp {
             return Vec::new();
         }
 
-        // Walk root → hit, accumulating absolute (x, y). Each iteration records
-        // the *current* node's top-left, then offsets by its scroll so the next
-        // iteration (this node's child) sees the post-scroll content origin.
-        let mut abs: Vec<events::AncestorBounds> = Vec::with_capacity(chain.len());
-        let mut ax = 0.0_f32;
-        let mut ay = 0.0_f32;
-        for &nid in chain.iter().rev() {
-            if let Some(n) = tree.get(nid) {
-                ax += n.layout.x;
-                ay += n.layout.y;
-                abs.push(events::AncestorBounds {
+        // Index 0 is the immediate parent of the hit element, so skip the hit
+        // itself; the chain is already ordered outward from it.
+        chain
+            .iter()
+            .skip(1)
+            .filter_map(|&nid| {
+                let n = tree.get(nid)?;
+                let (x, y, width, height) = painted_element_box(tree, nid);
+                Some(events::AncestorBounds {
                     tag: n.tag().unwrap_or("").to_string(),
                     id: n.attributes.get("id").cloned().unwrap_or_default(),
                     class: n.attributes.get("class").cloned().unwrap_or_default(),
-                    x: ax,
-                    y: ay,
-                    width: n.layout.width,
-                    height: n.layout.height,
-                });
-                ax -= n.scroll_offset.0 as f32;
-                ay -= n.scroll_offset.1 as f32;
-            }
-        }
-
-        // `abs` is currently [root, ..., hit]. Drop the hit itself and reverse
-        // so index 0 is the immediate parent of the hit element.
-        abs.pop();
-        abs.reverse();
-        abs
+                    x,
+                    y,
+                    width,
+                    height,
+                })
+            })
+            .collect()
     }
 
     // ── Drag-and-drop helpers ─────────────────────────────────────────────
@@ -1850,22 +1851,12 @@ impl RinchApp {
                             .ok()
                             .filter(|&id| events::has_click_handler(events::EventHandlerId(id)))
                         {
-                            // Compute element absolute position
-                            let mut ax = node.layout.x;
-                            let mut ay = node.layout.y;
-                            let mut pid = node.parent;
-                            while let Some(p) = pid {
-                                if let Some(pn) = d.tree.get(p) {
-                                    ax += pn.layout.x;
-                                    ay += pn.layout.y;
-                                    ax -= pn.scroll_offset.0 as f32;
-                                    ay -= pn.scroll_offset.1 as f32;
-                                    pid = pn.parent;
-                                } else {
-                                    break;
-                                }
-                            }
-                            found = Some((id, ax, ay, node.layout.width, node.layout.height));
+                            // The box the element is *painted* in, exactly as
+                            // the click path reports it — a hand-rolled
+                            // parent-chain sum composed no transform and made
+                            // no `position: fixed` exception (#203).
+                            let (ax, ay, aw, ah) = painted_element_box(&d.tree, nid);
+                            found = Some((id, ax, ay, aw, ah));
                         }
                         break;
                     }
@@ -1981,22 +1972,12 @@ impl RinchApp {
                             .ok()
                             .filter(|&id| events::has_click_handler(events::EventHandlerId(id)))
                         {
-                            // Compute element absolute position
-                            let mut ax = node.layout.x;
-                            let mut ay = node.layout.y;
-                            let mut pid = node.parent;
-                            while let Some(p) = pid {
-                                if let Some(pn) = d.tree.get(p) {
-                                    ax += pn.layout.x;
-                                    ay += pn.layout.y;
-                                    ax -= pn.scroll_offset.0 as f32;
-                                    ay -= pn.scroll_offset.1 as f32;
-                                    pid = pn.parent;
-                                } else {
-                                    break;
-                                }
-                            }
-                            found = Some((id, ax, ay, node.layout.width, node.layout.height));
+                            // The box the element is *painted* in, exactly as
+                            // the click path reports it — a hand-rolled
+                            // parent-chain sum composed no transform and made
+                            // no `position: fixed` exception (#203).
+                            let (ax, ay, aw, ah) = painted_element_box(&d.tree, nid);
+                            found = Some((id, ax, ay, aw, ah));
                         }
                         break;
                     }
@@ -2098,12 +2079,19 @@ impl RinchApp {
         // in the same build (desktop software + embed carries both painters).
         let anchor = {
             let d = doc.borrow();
-            let (abs_x, abs_y) =
-                rinch_dom::paint::compute_absolute_position(&d.tree, node_id, scale_factor);
-            (
-                mousedown_pos.0 - abs_x as f32,
-                mousedown_pos.1 - abs_y as f32,
+            // Where in the dragged node the press landed, in the node's own
+            // space — the space the snapshot below is painted in. A painted
+            // origin subtracted from the pointer would be the wrong unit inside
+            // a `scale()` ancestor (#203).
+            rinch_dom::paint::point_in_painted_box(
+                &d.tree,
+                node_id,
+                scale_factor,
+                mousedown_pos.0 as f64,
+                mousedown_pos.1 as f64,
             )
+            .map(|(lx, ly)| (lx as f32, ly as f32))
+            .unwrap_or((0.0, 0.0))
         };
 
         #[cfg(any(feature = "gpu", feature = "android-gpu", feature = "embed"))]
@@ -2635,8 +2623,14 @@ impl RinchApp {
         let node = d.tree.get(node_id)?;
         let pad_l = node.computed_style.padding_left.to_px();
         let (_, _, _, h) = d.query_node_layout(node_id as u64)?;
-        let (ax, ay) = Self::compute_absolute_position(&d.tree, node_id);
-        Some((ax + pad_l, ay, 1.0, h))
+        // The candidate box goes where the field is *painted*, so the text
+        // origin is pushed forward through the composed transform rather than
+        // added to an untransformed parent-chain sum (#203).
+        let (ax, ay) =
+            rinch_dom::paint::point_from_painted_box(&d.tree, node_id, 1.0, pad_l as f64, 0.0);
+        let (_, by) =
+            rinch_dom::paint::point_from_painted_box(&d.tree, node_id, 1.0, pad_l as f64, h as f64);
+        Some((ax as f32, ay as f32, 1.0, (by - ay).abs() as f32))
     }
 }
 
@@ -2846,11 +2840,14 @@ impl RinchApp {
         let Some(layout) = node.text_layout.as_ref() else {
             return Some((cont, tb, 0));
         };
-        let (abs_x, abs_y) = Self::compute_absolute_position(&d.tree, tb);
+        // The click, mapped into the textblock's own space: Parley's layout is
+        // in that space, so a transformed editor still resolves to the
+        // character under the pointer (#203).
+        let (local_x, local_y) = pointer_in_node(&d.tree, tb, x, y);
         let pad_l = node.computed_style.padding_left.to_px();
         let pad_t = node.computed_style.padding_top.to_px();
-        let rel_x = x - abs_x - pad_l + node.scroll_offset.0 as f32;
-        let rel_y = y - abs_y - pad_t + node.scroll_offset.1 as f32;
+        let rel_x = local_x - pad_l + node.scroll_offset.0 as f32;
+        let rel_y = local_y - pad_t + node.scroll_offset.1 as f32;
         let ifc_byte =
             rinch_dom::text_query::byte_offset_from_position(&layout.layout, rel_x, rel_y);
         Some((cont, tb, ifc_byte))
@@ -2910,13 +2907,13 @@ impl RinchApp {
         let Some(content) = content else {
             return false;
         };
-        let (content_x, _) = Self::compute_absolute_position(&d.tree, content);
+        let (local_x, _) = pointer_in_node(&d.tree, content, x, y);
         let pad_l = d
             .tree
             .get(content)
             .map(|n| n.computed_style.padding_left.to_px())
             .unwrap_or(0.0);
-        x < content_x + pad_l
+        local_x < pad_l
     }
 
     /// Whether `id` is an editor textblock element — one that holds inline content
@@ -2962,8 +2959,9 @@ impl RinchApp {
         while let Some(id) = stack.pop() {
             let Some(node) = tree.get(id) else { continue };
             if Self::is_editor_textblock(tree, id) {
-                let (ax, ay) = Self::compute_absolute_position(tree, id);
-                let (w, h) = (node.layout.width, node.layout.height);
+                // Distances against the box on screen, since `x`/`y` are window
+                // coordinates (#203).
+                let (ax, ay, w, h) = painted_element_box(tree, id);
                 let dy = (ay - y).max(0.0).max(y - (ay + h));
                 let dx = (ax - x).max(0.0).max(x - (ax + w));
                 // Vertical distance dominates so same-line beats nearer-but-other-line.
@@ -2993,10 +2991,19 @@ impl RinchApp {
             .map(|g| g.height)
             .unwrap_or(18.0);
         let node = d.tree.get(tb)?;
-        let (abs_x, abs_y) = Self::compute_absolute_position(&d.tree, tb);
         let pad_l = node.computed_style.padding_left.to_px();
         let pad_t = node.computed_style.padding_top.to_px();
-        Some((abs_x + pad_l + local_x, abs_y + pad_t + local_y, height))
+        // Parley's `local_x`/`local_y` and the glyph height are in the
+        // textblock's own space; push all three forward through the composed
+        // transform so the answer is in window coordinates (#203). The height
+        // is measured as the image of a vertical step, which is what a
+        // `scale()` ancestor stretches.
+        let fwd = |lx: f32, ly: f32| {
+            rinch_dom::paint::point_from_painted_box(&d.tree, tb, 1.0, lx as f64, ly as f64)
+        };
+        let (cx, cy) = fwd(pad_l + local_x, pad_t + local_y);
+        let (_, cy2) = fwd(pad_l + local_x, pad_t + local_y + height);
+        Some((cx as f32, cy as f32, (cy2 - cy).abs() as f32))
     }
 
     /// One vertical cursor step (Up / Down), as a text cursor. First tries the
@@ -3086,10 +3093,15 @@ impl RinchApp {
             let doc = self.doc.clone()?;
             let d = doc.borrow();
             let node = d.tree.get(tb)?;
-            let (abs_x, _abs_y) = Self::compute_absolute_position(&d.tree, tb);
             let pad_l = node.computed_style.padding_left.to_px();
             let pad_r = node.computed_style.padding_right.to_px();
-            (abs_x + pad_l, abs_x + node.layout.width - pad_r)
+            let w = node.layout.width;
+            // Both edges pushed forward through the composed transform, so the
+            // probe lands on the painted line rather than beside it (#203).
+            let fwd = |lx: f32| {
+                rinch_dom::paint::point_from_painted_box(&d.tree, tb, 1.0, lx as f64, 0.0).0 as f32
+            };
+            (fwd(pad_l), fwd(w - pad_r))
         };
         // Probe the middle of the caret's line box, just inside the far edge.
         let ty = cy + ch * 0.5;
