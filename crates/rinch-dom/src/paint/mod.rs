@@ -121,7 +121,7 @@ pub fn compute_dirty_region(
     })
 }
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
 
 /// Pixel data for a render surface, keyed by surface ID.
@@ -157,6 +157,12 @@ thread_local! {
     /// the two registries cannot share a key space. Set before
     /// `paint_document()` and cleared after, like `SURFACE_PIXELS`.
     static VIEWPORT_PIXELS: RefCell<Option<HashMap<String, SurfacePixelData>>> = const { RefCell::new(None) };
+
+    /// The render target, in physical pixels, as `paint_document` was told
+    /// it. Nothing outside it can be seen, so nothing outside it is drawn —
+    /// see [`intersects_dirty_region`] for the cull and card K43 for what it
+    /// is worth.
+    static VIEWPORT: Cell<Option<Rect>> = const { Cell::new(None) };
 }
 
 /// Set the active viewport names for hole-punching during this paint cycle.
@@ -233,7 +239,7 @@ pub fn set_dirty_region(region: Option<Rect>) {
 /// Returns true if there is no dirty region (full repaint) or if the
 /// node's absolute rect overlaps the dirty region.
 fn intersects_dirty_region(x: f64, y: f64, w: f64, h: f64) -> bool {
-    DIRTY_REGION.with(|v| {
+    let inside_dirty = DIRTY_REGION.with(|v| {
         let guard = v.borrow();
         match guard.as_ref() {
             None => true, // No dirty region → full repaint, paint everything
@@ -241,6 +247,43 @@ fn intersects_dirty_region(x: f64, y: f64, w: f64, h: f64) -> bool {
                 // AABB intersection test
                 x < dr.x1 && x + w > dr.x0 && y < dr.y1 && y + h > dr.y0
             }
+        }
+    });
+    if !inside_dirty {
+        return false;
+    }
+
+    // …and the same test against the render target, which is a dirty region
+    // that is always there. A node that falls entirely off the window cannot
+    // be seen however clean the frame is, and on the GPU path it is not free
+    // to emit: vello culls invisible paths in its coarse stage, but it has
+    // already flattened every one of them on the way there.
+    //
+    // The library screen is the case that motivated this. Its scroller holds
+    // all 25 songs whether or not they are on screen, and it carries three
+    // bottom sheets parked below the fold, so a frame mid-fling was handing
+    // vello 793 glyphs to draw about 240 of, 82 text runs for 28, and 41 clip
+    // layers for 21. On the moto g stylus 5G (Adreno 619, 1080x2460) that
+    // costs 1.4ms of a 17.8ms frame — measured by waiting on vello's own
+    // submission before any swapchain image is involved, which is card K42's
+    // technique and the only one that has not lied about this pipeline yet.
+    // See card K43.
+    //
+    // The margin is generous on purpose. A node just off the edge can still
+    // reach the screen through a blurred `box-shadow`, an outline, or text
+    // that overflows its own box, and none of those are in the rect being
+    // tested. 96 physical pixels is a little under 40 CSS pixels at this
+    // device's 2.5x, which covers every shadow and outline this framework's
+    // own components draw; the alternative — computing each node's true ink
+    // extent on every frame — costs more than the cull saves.
+    const MARGIN: f64 = 96.0;
+    VIEWPORT.with(|v| match v.get() {
+        None => true,
+        Some(vp) => {
+            x < vp.x1 + MARGIN
+                && x + w > vp.x0 - MARGIN
+                && y < vp.y1 + MARGIN
+                && y + h > vp.y0 - MARGIN
         }
     })
 }
@@ -809,15 +852,40 @@ pub fn paint_subtree(
 /// Paint the entire document using a Painter.
 ///
 /// `scale` is the DPI scale factor (1.0 = 96dpi).
-/// `viewport` is the viewport size in physical pixels.
+/// `viewport` is the viewport size in *logical* (CSS) pixels — the layout
+/// viewport, which is what every caller has to hand. It used to be documented
+/// as physical pixels and ignored, which is a distinction that only started
+/// mattering when card K43 gave it a job: it is now the rect outside which
+/// nothing is drawn.
 pub fn paint_document(
     tree: &NodeTree,
     painter: &mut dyn Painter,
     scale: f64,
-    _viewport: (f32, f32),
+    viewport: (f32, f32),
     font_cx: &mut parley::FontContext,
     layout_cx: &mut parley::LayoutContext<Brush>,
 ) {
+    // The window, in the physical pixels paint works in. Nothing outside the
+    // result is emitted; see [`intersects_dirty_region`].
+    //
+    // The one caller that does not pass a logical size is `embed`, whose
+    // `size` is physical — and it fails safe: multiplying an already-physical
+    // size by a scale of 1 or more gives a rect at least as large as the real
+    // target, so the cull and the clip test below simply never fire for an
+    // embedded view. Wrong in the direction of doing the work, not of
+    // skipping it.
+    VIEWPORT.with(|v| {
+        v.set(if viewport.0 > 0.0 && viewport.1 > 0.0 {
+            Some(Rect::new(
+                0.0,
+                0.0,
+                viewport.0 as f64 * scale,
+                viewport.1 as f64 * scale,
+            ))
+        } else {
+            None
+        })
+    });
     paint_node(
         tree,
         tree.body_id,
@@ -942,6 +1010,97 @@ fn paint_children_with_stacking(
             );
         }
     }
+}
+
+/// Does anything inside this element actually reach past its own box?
+///
+/// A `clip` that clips nothing is not free on the GPU. Vello implements every
+/// clip as a blend-stack layer: for each 16x16 tile the clip's bounding box
+/// touches, the fine stage saves the tile's pixels on the way in and blends
+/// them back on the way out, whatever is drawn between. That is two extra
+/// passes over the clipped area per clip, and it is paid whether or not the
+/// clip removes a single pixel.
+///
+/// The walk is deliberately conservative: it answers "no" only when it is
+/// certain — every box it can see fits, nothing is transformed, nothing casts
+/// a shadow or wears an outline past its edge — and "yes" the moment anything
+/// is not obvious. A false "yes" costs a clip that was already being pushed;
+/// a false "no" is a rendering bug.
+///
+/// Coordinates are the clipping element's own, in CSS px, with its border-box
+/// origin at (0, 0) — which is the space `Node::layout` puts children in — and
+/// the visible window already moved by the element's scroll offset.
+#[allow(clippy::too_many_arguments)]
+fn subtree_fits(
+    tree: &NodeTree,
+    node_id: RawNodeId,
+    off_x: f32,
+    off_y: f32,
+    win_w: f32,
+    win_h: f32,
+    depth: u32,
+) -> bool {
+    // A deep subtree is not worth walking on every frame; past a few levels
+    // the answer is almost always "something overflows" anyway.
+    if depth > 6 {
+        return false;
+    }
+    let Some(node) = tree.get(node_id) else {
+        return true;
+    };
+    for &child_id in &node.children {
+        let Some(child) = tree.get(child_id) else {
+            continue;
+        };
+        if child.computed_style.display == DisplayValue::None {
+            continue;
+        }
+        let cs = &child.computed_style;
+        // Anything whose painted extent is not its layout box, or whose box is
+        // not where its layout says it is, ends the walk conservatively.
+        if !cs.transform.is_identity
+            || !cs.box_shadow.is_empty()
+            || cs.outline_width > 0.0
+            || cs.position == PositionValue::Fixed
+            || cs.position == PositionValue::Sticky
+        {
+            return false;
+        }
+        let x = off_x + child.layout.x;
+        let y = off_y + child.layout.y;
+        if x < -0.5
+            || y < -0.5
+            || x + child.layout.width > win_w + 0.5
+            || y + child.layout.height > win_h + 0.5
+        {
+            return false;
+        }
+        // A child that clips its own overflow bounds everything below it, so
+        // the walk can stop there. `clips_overflow` is #324 stage A's one
+        // predicate, and asking it rather than spelling the match out is not
+        // only tidiness here: the hand-rolled version this replaced read
+        // `overflow_y` alone, and `overflow-x: clip; overflow-y: visible` is
+        // the one asymmetric pair Stylo lets through. rinch clips both axes
+        // with a single rect (the deviation tracked as #535), so such a child
+        // really does bound what is under it, and the shared predicate is the
+        // answer that matches what paint will actually do.
+        if !child.clips_overflow()
+            && !subtree_fits(tree, child_id, x, y, win_w, win_h, depth + 1)
+        {
+            return false;
+        }
+    }
+    // Text laid out directly in this element. `text-overflow: ellipsis`
+    // truncates the string rather than drawing past the edge, so a line that
+    // has been ellipsised measures as fitting — which is the whole point.
+    if let Some(ref inline) = node.text_layout {
+        let tw = inline.layout.width();
+        let th = inline.layout.height();
+        if off_x + tw > win_w + 0.5 || off_y + th > win_h + 0.5 {
+            return false;
+        }
+    }
+    true
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1494,6 +1653,93 @@ fn paint_node(
                     _ => true,
                 };
 
+            // **Two ways a clip layer can be certain to clip nothing, and
+            // neither of them is free to push.**
+            //
+            // Vello implements every clip as a blend-stack layer: for each
+            // 16x16 tile the clip's bounding box touches, the fine stage saves
+            // the tile's pixels on the way in and blends them back on the way
+            // out, whatever is drawn between. That is two extra passes over
+            // the clipped area, paid whether or not the clip removes a single
+            // pixel. The software painter pays a comparable price for the same
+            // reason. So a clip that provably removes nothing is worth not
+            // pushing, and on this app's library screen 39 of the 41 clips in
+            // a frame were exactly that.
+            //
+            // The first case is a clip that contains the whole render target.
+            // It can only remove pixels that are outside the window and are
+            // discarded anyway. On the library screen that is the app shell's
+            // own root, `overflow: hidden` over the full 1080x2460 — 1.2ms of
+            // a 17.8ms frame on the moto g stylus 5G, for a layer whose entire
+            // effect was to copy the screen out and copy it back.
+            //
+            // The second case is a box nothing inside reaches past; see
+            // [`subtree_fits`]. Every row title on that screen is one:
+            // `overflow: hidden` with `text-overflow: ellipsis`, where the
+            // ellipsis has already shortened the string so that it fits, so
+            // the clip has nothing left to cut. Eighteen of those, plus the
+            // chips and the search field, were 2.8ms.
+            //
+            // Together with the off-window cull in
+            // [`intersects_dirty_region`] this takes the frame from 17.8ms of
+            // GPU to 12.0ms. See card K43 for the full per-class table.
+            //
+            // **The suppression applies to the clip layer and deliberately not
+            // to `clips`.** The two are one variable in the commit this came
+            // from, and that was wrong even there: `clips` is also the cheap
+            // gate on the viewport hole-punch walk below, and a box whose clip
+            // is elided still has to cut holes for any compositor viewport
+            // underneath it — eliding a layer that removes no pixels must not
+            // also stop the background being cut. So the shape goes to `None`,
+            // the fact stays true, and the pop at the bottom follows the push
+            // rather than the fact.
+            //
+            // **Both cases require a square clip, and that is not a detail.**
+            // A rounded clip removes the corners *of its own box*, so "nothing
+            // inside reaches past the box" does not mean "nothing is cut" — the
+            // clip shape is smaller than the box it was derived from. The
+            // commit this came from tested `radius` in the first case only,
+            // where it reads as being about the bounding box, and left the
+            // second uncovered: a `border-radius: 40px; overflow: hidden` box
+            // with a child exactly its own size had its corners stop being cut.
+            // Caught by stage A's `a_rounded_clip_cuts_its_corners`, which did
+            // not exist when this was written, so the guard is now on the whole
+            // suppression rather than on one arm of it.
+            let mut useless = false;
+            if clips && radius <= 0.0 {
+                // A rotated or skewed clip is not its own bounding box, so
+                // only an axis-aligned one may be tested this way.
+                let m = node_transform.as_coeffs();
+                let axis_aligned = m[1].abs() < 1e-9 && m[2].abs() < 1e-9;
+                let bbox = node_transform.transform_rect_bbox(rect);
+                let covers_target = axis_aligned
+                    && VIEWPORT.with(|v| match v.get() {
+                        None => false,
+                        Some(vp) => {
+                            bbox.x0 <= vp.x0 + 0.5
+                                && bbox.y0 <= vp.y0 + 0.5
+                                && bbox.x1 >= vp.x1 - 0.5
+                                && bbox.y1 >= vp.y1 - 0.5
+                        }
+                    });
+                let (scroll_x_off, scroll_y_off) = node.scroll_offset;
+                if covers_target
+                    || subtree_fits(
+                        tree,
+                        node_id,
+                        -scroll_x_off as f32,
+                        -scroll_y_off as f32,
+                        node.layout.width,
+                        node.layout.height,
+                        0,
+                    )
+                {
+                    useless = true;
+                }
+            }
+            let clip = if useless { None } else { clip };
+            let pushes_clip = clip.is_some();
+
             // Find viewport descendants — their rects will be cut out of
             // the background fill so the compositor layer shows through.
             //
@@ -1776,7 +2022,10 @@ fn paint_node(
                 );
             }
 
-            if clips {
+            // Follows the *push*, not `clips` — a clip elided above as
+            // provably removing nothing was never pushed, and popping it would
+            // take a layer off the stack that belongs to somebody else.
+            if pushes_clip {
                 painter.pop_layer();
             }
 
