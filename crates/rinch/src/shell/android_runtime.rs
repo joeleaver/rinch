@@ -1395,6 +1395,97 @@ impl GpuContext {
 /// them. Frame-to-frame — the number that is about the user and not about this
 /// file — went to 16.3 / 40.9 / 23.0. See `android_frame::poll_timeout` for
 /// both halves of that table.
+///
+/// **Card K42 then asked why the library frame lands on every second vsync,
+/// and the answer is not in this file at all.** It is worth reading before
+/// changing anything below, because all four of the things a reader would
+/// reach for first have now been measured on the handset: three of them move
+/// nothing, and the fourth cannot be changed from this repository.
+///
+/// The frame that started K42 was `build_scene 3.43 / render_to_texture 2.04 /
+/// acquire 0.07 / blit encode 0.04 / submit 0.66 / present 9.57`, and the
+/// obvious reading of it — 6.17ms of work, 9.57ms blocked in the present, so
+/// something about the swapchain is holding the caller — is wrong. Every one
+/// of those numbers is CPU-side, and *all six of them together* are the cost
+/// of writing a command buffer, not the cost of executing it. The rasterisation
+/// itself is not in the table.
+///
+/// Timed with a `device.poll(PollType::Wait)` immediately after
+/// `render_to_texture` submits and before the acquire — so the wait is on
+/// vello's own submission with no swapchain image involved, and cannot be
+/// confused for back-pressure — the moto g stylus 5G (Adreno 619, 1080x2460)
+/// takes **17.8ms of GPU time to rasterise one frame of the library list**
+/// (17.4 in the second run, the one broken down further below; the two runs
+/// bracket it). Everything after that — the blit, the wait for the swapchain
+/// image, `vkQueuePresentKHR` — is 1.6ms together. Against a 120Hz panel's
+/// 8.33ms that is 2.1x over budget, and against the 17.2ms frame-to-frame the
+/// compositor actually reports it means the pipeline is already running at
+/// essentially 100% of its real bottleneck. There is no idle time in this
+/// frame to reclaim. The 9.57ms attributed to `frame.present()` was the queue
+/// declining to take another frame from a GPU that had not finished the last
+/// one — accurate as a measurement, misleading as a diagnosis.
+///
+/// Measured the way K40 did rather than the way K39 did, because an
+/// in-process probe is exactly what got this wrong the first time:
+/// `dumpsys SurfaceFlinger --latency` on the app's own layer, polled through
+/// the run and stitched (it is a 128-entry ring), over a scripted fling on the
+/// library list. The stock Settings list flicked by the same script on the
+/// same panel is the control — it is what "done" looks like on this handset.
+///
+/// ```text
+///                                          p50     p95     p99    fps  missed
+/// Settings, the control                   8.33    8.66   16.71  115.9    3.4%
+/// this file as it stands                 16.67   24.99   25.29   58.1   51.6%
+/// desired_maximum_frame_latency: 1       16.67   24.99   25.35   57.7   51.9%
+/// desired_maximum_frame_latency: 3       16.67   24.99   25.31   57.6   52.0%
+/// present_mode: Mailbox                  16.67   25.00   25.38   57.8   51.9%
+/// AaConfig::Msaa8                        49.98   50.31   50.39   20.5   82.9%
+/// AaConfig::Msaa16                       58.20   58.71   58.79   18.0   85.0%
+/// vello at half scale, blit upscales      8.34   24.82   25.39  101.0   15.9%
+/// ```
+///
+/// The first four rows are the same run to within noise, which is what a
+/// saturated GPU looks like from every angle you can configure a swapchain
+/// from. `desired_maximum_frame_latency` is the swapchain's image count in
+/// disguise — wgpu passes `latency + 1` as `min_image_count` — so 1 and 3 are
+/// two and four images, and neither a shallower queue nor a deeper one changes
+/// a frame the GPU cannot finish in time. Mailbox is the same answer with a
+/// worse battery: it would only help if the loop were being *paced* by the
+/// display, and it is being paced by itself.
+///
+/// The last three rows are the ones that move, and they all move the same
+/// quantity: pixels. Both MSAA modes are far worse than the analytic
+/// `AaConfig::Area` this file already uses, which is now a measurement rather
+/// than an assumption. And halving vello's render scale — a quarter of the
+/// pixels, with the blit already present to resample them back up — takes the
+/// median to the panel's own 8.33ms. Broken down at full resolution: an
+/// **empty** scene still costs 4.19ms of GPU, which is half the 120Hz budget
+/// spent before anything is drawn, and the real scene costs 17.4; at half
+/// scale the same scene costs 8.06. So roughly 5ms of the frame is fixed and
+/// 12ms is per-pixel work in vello's fine stage, and the road to 120fps on
+/// this handset runs through one of those two numbers, not through anything
+/// on this page.
+///
+/// **The blit is the one suspect that did cost something, and it cannot be
+/// removed at this pin.** Its device-side cost — as opposed to the 0.04ms to
+/// encode it — is most of the 1.6ms above: a full-screen read and write of
+/// 2.66 million pixels. This window would allow it to go: `get_capabilities` answers
+/// `usages=COPY_SRC | COPY_DST | TEXTURE_BINDING | STORAGE_BINDING |
+/// RENDER_ATTACHMENT | STORAGE_ATOMIC` and offers `Rgba8Unorm`, which is
+/// exactly what vello's fine stage wants to write. Configuring the surface
+/// that way and handing vello the swapchain view compiles, runs, logs `vello
+/// writes the swapchain image` — and then panics on the first frame with
+/// `Device::create_bind_group: The adapter does not support write access for
+/// storage textures of format Rgba8Unorm`, which is not true of this adapter.
+/// It is true of wgpu: `wgpu-core`'s `present.rs` builds every surface
+/// texture with `format_features.allowed_usages =
+/// TextureUsages::RENDER_ATTACHMENT` and a `flags` set containing only the
+/// two multisample bits, hard-coded, whatever the surface advertised. So no
+/// swapchain image is bindable as a storage texture in wgpu 27 and vello can
+/// never write one, on any driver. That is a wgpu change, not a rinch one,
+/// and it is worth something like a millisecond and a half of a 17.4ms frame
+/// if it ever lands — which is not the difference between 58fps and 120, but
+/// is most of the difference between a p95 of 25ms and a p95 of 16.7.
 #[cfg(feature = "android-gpu")]
 struct GpuSurface {
     surface: wgpu::Surface<'static>,
@@ -1508,6 +1599,15 @@ impl GpuSurface {
             // it will conclude the present is expensive. Mailbox would hide
             // the wait by rendering frames nobody sees, which is a worse thing
             // to do to a phone battery than to a benchmark.
+            //
+            // Card K42 measured Mailbox here rather than leaving that as an
+            // argument, because a number beats a principle: on the moto g
+            // stylus 5G it is 57.8fps against Fifo's 58.1, with the same
+            // percentiles to two decimal places. It buys nothing, because
+            // this frame is not waiting for the display — it is waiting for
+            // itself. Same for the frame latency below, which wgpu turns into
+            // `min_image_count = latency + 1`: two images and four images both
+            // measure 57.7 and 57.6. See the table on `GpuSurface`.
             present_mode: wgpu::PresentMode::Fifo,
             desired_maximum_frame_latency: 2,
             alpha_mode,
@@ -1623,12 +1723,19 @@ impl GpuSurface {
     /// system memory.
     ///
     /// The order — rasterise, *then* acquire — is deliberate. Under Fifo the
-    /// acquire blocks until the display releases an image, so submitting
-    /// vello's compute work first gives the GPU something to do during that
-    /// wait instead of starting it afterwards. It also means an acquire that
-    /// fails costs only the frame, not the scene: the intermediate texture
-    /// still holds a valid, correctly sized frame, and the next iteration
-    /// draws over it.
+    /// acquire is where the display's back-pressure was expected to land, so
+    /// submitting vello's compute work first gives the GPU something to do
+    /// during that wait instead of starting it afterwards. It also means an
+    /// acquire that fails costs only the frame, not the scene: the
+    /// intermediate texture still holds a valid, correctly sized frame, and
+    /// the next iteration draws over it.
+    ///
+    /// The first of those reasons has never actually been observed to pay:
+    /// K37 measured the acquire at 0.06-0.08ms and K42 at 0.07 with a 0.12
+    /// maximum, on a frame that misses half the panel's refreshes. The
+    /// swapchain always has an image ready, because the thing this loop is
+    /// short of is not images — it is GPU. The ordering stays for the second
+    /// reason, which is about correctness rather than speed.
     ///
     /// Returns whether the frame actually reached the swapchain. See
     /// [`SoftSurface::present_pixels`] for why the loop needs to be told:

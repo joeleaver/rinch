@@ -198,6 +198,22 @@ pub(crate) fn pump_frame(app: &mut RinchApp, window_size: (u32, u32), scale_fact
 /// frame-to-frame is two of the panel's 8.33ms vsyncs rather than the loop's
 /// own deadline.
 ///
+/// **Card K42 went and found out why the queue will not take one back, and it
+/// is not the display.** Waiting on vello's own submission — before the
+/// acquire, so no swapchain image is in the picture at all — the library
+/// frame takes 17.8ms of GPU time on this handset, against the 8.33ms the
+/// panel gives it. Nothing in this function or in the swapchain configuration
+/// can make a frame land on every vsync when rasterising it costs two of
+/// them, and K42 measured the three obvious swapchain knobs to prove it: two
+/// swapchain images, four, and `Mailbox` all come out at 57.6-58.1fps, the
+/// same as today. The two vsyncs are the GPU's, and the loop is already
+/// pacing itself correctly against them — `poll_timeout` subtracts a 17ms
+/// spent frame from an 8.33ms interval, gets `Duration::ZERO`, and comes
+/// straight back round. See the table on `android_runtime::GpuSurface` for
+/// the whole of it, including what does move the number (pixels) and what
+/// cannot be moved from this repository (the blit, which wgpu 27 will not let
+/// vello skip).
+///
 /// The PDF screen is the exception that keeps the reading honest: 4.9ms after
 /// the acquire against a 22.2ms paint means seventeen of those milliseconds are
 /// `build_scene` and vello's `render_to_texture`, which is work and not
@@ -292,8 +308,14 @@ pub(crate) fn pump_frame(app: &mut RinchApp, window_size: (u32, u32), scale_fact
 /// Which is the substantive point: the surface *is* a vsync signal here. Under
 /// `Fifo` the swapchain blocks, and on the software path `ANativeWindow_lock`
 /// blocks for a free buffer — K27 measured that and called it "the display's
-/// back-pressure rather than work". The deadline below is the belt to that
-/// braces, and the reason for having both is that neither is sufficient alone:
+/// back-pressure rather than work". (K42 adds the caveat that on a screen
+/// whose frame costs more than a refresh, what the swapchain is actually
+/// signalling is the *renderer's* back-pressure wearing the display's
+/// clothes. It still blocks, so it still paces; it just stops being a vsync
+/// signal and becomes a "the GPU is behind" signal, which for this loop's
+/// purposes calls for the same behaviour.) The deadline below is the belt to
+/// that braces, and the reason for having both is that neither is sufficient
+/// alone:
 /// the back-pressure only appears once the queue is full, which is one or two
 /// frames of running flat out, and the deadline alone would not notice a panel
 /// that changed mode after `InitWindow` read its rate.
