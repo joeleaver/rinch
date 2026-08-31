@@ -179,7 +179,9 @@ is a Tab stop today, so a bare `<button>` needs `tabindex="0"` there (issue
 element's centre (`mouse_x`/`mouse_y` = the middle of `element_x`/`element_y`
 + size), with `button: Left` and no text hit, so placement logic that reads
 `get_click_context()` (a `Select` flipping to fit the viewport, say) keeps
-working for a keyboard user. Ctrl/Meta chords are left alone; Shift and Alt
+working for a keyboard user. Those bounds are the *painted* box, the same one a
+pointer press reports, so a transformed element activates to the same numbers
+either way in. Ctrl/Meta chords are left alone; Shift and Alt
 ride along in `modifiers`.
 
 On desktop, activation latches once per physical press (a held key does not

@@ -114,23 +114,14 @@ impl RinchApp {
         None
     }
 
-    /// Absolute on-screen rect `(x, y, w, h)` of a node, summing ancestor offsets
-    /// and scroll (the same walk click dispatch uses).
+    /// Absolute on-screen rect `(x, y, w, h)` of a node — the box it is
+    /// *painted* in, so the popup is anchored under the control the user can
+    /// see rather than under an untransformed layout box (#203).
     fn absolute_rect(tree: &rinch_dom::NodeTree, node_id: usize) -> (f32, f32, f32, f32) {
-        let Some(node) = tree.get(node_id) else {
+        if tree.get(node_id).is_none() {
             return (0.0, 0.0, 0.0, 0.0);
-        };
-        let (w, h) = (node.layout.width, node.layout.height);
-        let mut x = node.layout.x;
-        let mut y = node.layout.y;
-        let mut pid = node.parent;
-        while let Some(p) = pid {
-            let Some(pn) = tree.get(p) else { break };
-            x += pn.layout.x - pn.scroll_offset.0 as f32;
-            y += pn.layout.y - pn.scroll_offset.1 as f32;
-            pid = pn.parent;
         }
-        (x, y, w, h)
+        painted_element_box(tree, node_id)
     }
 
     /// Open the popup for `select_id`, anchored to the control.

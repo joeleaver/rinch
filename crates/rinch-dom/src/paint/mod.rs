@@ -21,7 +21,7 @@ use svg::*;
 use text::*;
 
 use peniko::color::{AlphaColor, Srgb};
-use peniko::kurbo::{Affine, BezPath, Rect, RoundedRect, RoundedRectRadii, Shape};
+use peniko::kurbo::{Affine, BezPath, Point, Rect, RoundedRect, RoundedRectRadii, Shape};
 use peniko::{Brush, Fill};
 
 use painter::{BlendMode, Painter};
@@ -239,33 +239,21 @@ fn intersects_dirty_region(x: f64, y: f64, w: f64, h: f64) -> bool {
     })
 }
 
-/// Compute the absolute position of a node in physical pixels by walking
-/// up the parent chain, summing layout offsets and subtracting scroll offsets.
+/// A node's origin in the space its *own* box is laid out in — the accumulated
+/// parent-chain offset, before any composed CSS transform is applied.
+///
+/// This is [`compute_absolute_position_and_transform`] with the affine dropped,
+/// and it exists for the two callers that want exactly that: layout's
+/// out-of-flow correction (#204), which writes a **parent-relative** delta back
+/// into `LayoutResult` and so must stay in untransformed layout space, and
+/// anything else reasoning about where Taffy put a box rather than where paint
+/// draws it.
+///
+/// **It is not a screen rect.** For "where is this box on screen" — the answer
+/// a click, a drag or a dirty region needs — use [`painted_border_box`], which
+/// applies the transform this function discards.
 pub fn compute_absolute_position(tree: &NodeTree, node_id: RawNodeId, scale: f64) -> (f64, f64) {
-    let mut x = 0.0_f64;
-    let mut y = 0.0_f64;
-    let mut current = Some(node_id);
-    while let Some(id) = current {
-        if let Some(node) = tree.get(id) {
-            x += node.layout.x as f64 * scale;
-            y += node.layout.y as f64 * scale;
-            // position: fixed elements are viewport-relative — stop accumulating
-            // parent offsets so the element stays at its top/left position
-            // regardless of where it sits in the DOM tree or scroll state.
-            if node.computed_style.position == crate::computed_style::PositionValue::Fixed {
-                break;
-            }
-            if let Some(parent_id) = node.parent {
-                if let Some(parent) = tree.get(parent_id) {
-                    x -= parent.scroll_offset.0 * scale;
-                    y -= parent.scroll_offset.1 * scale;
-                }
-            }
-            current = node.parent;
-        } else {
-            break;
-        }
-    }
+    let (x, y, _) = compute_absolute_position_and_transform(tree, node_id, scale);
     (x, y)
 }
 
@@ -548,6 +536,67 @@ pub fn painted_border_box(tree: &NodeTree, node_id: RawNodeId, scale: f64) -> Re
         )
     });
     transform.transform_rect_bbox(Rect::new(x, y, x + w, y + h))
+}
+
+/// Map a viewport point **into** a node's own painted space, expressed relative
+/// to the node's border-box origin.
+///
+/// The inverse direction of [`painted_border_box`], and the one every
+/// screen-point-to-content question needs: which character was clicked, where
+/// inside a render surface the pointer is, how far along a scrollbar track a
+/// press landed. Subtracting a painted AABB's origin is **not** a substitute —
+/// under `transform: scale(2)` a point 40px right of the box's painted left
+/// edge is 20px into the box's own space, not 40.
+///
+/// Returns `None` when the composed transform is not invertible (`scale(0)`, a
+/// degenerate matrix): such a subtree paints to zero area, so no screen point
+/// corresponds to anything inside it. `hit_test`'s `local_point` takes the same
+/// exit for the same reason.
+///
+/// `scale` is the DPI scale factor `px`/`py` are expressed in — pass `1.0` to
+/// work in layout pixels.
+pub fn point_in_painted_box(
+    tree: &NodeTree,
+    node_id: RawNodeId,
+    scale: f64,
+    px: f64,
+    py: f64,
+) -> Option<(f64, f64)> {
+    let (x, y, transform) = compute_absolute_position_and_transform(tree, node_id, scale);
+    if transform == Affine::IDENTITY {
+        return Some((px - x, py - y));
+    }
+    let det = transform.determinant();
+    if !det.is_finite() || det.abs() < 1e-12 {
+        return None;
+    }
+    let p = transform.inverse() * Point::new(px, py);
+    if !p.x.is_finite() || !p.y.is_finite() {
+        return None;
+    }
+    Some((p.x - x, p.y - y))
+}
+
+/// Map a point given relative to a node's border-box origin, in the node's own
+/// painted space, **out** to viewport coordinates.
+///
+/// The forward direction of [`point_in_painted_box`], for the callers that
+/// produce a position inside a box and need to place something at it in window
+/// space — the caret, the IME candidate rectangle, a probe point for a
+/// subsequent hit test.
+///
+/// `scale` is the DPI scale factor `lx`/`ly` are expressed in and the result is
+/// returned in — pass `1.0` to work in layout pixels.
+pub fn point_from_painted_box(
+    tree: &NodeTree,
+    node_id: RawNodeId,
+    scale: f64,
+    lx: f64,
+    ly: f64,
+) -> (f64, f64) {
+    let (x, y, transform) = compute_absolute_position_and_transform(tree, node_id, scale);
+    let p = transform * Point::new(x + lx, y + ly);
+    (p.x, p.y)
 }
 
 /// Find viewport descendant rects (absolute pixel positions) for hole-punching.
@@ -2305,6 +2354,110 @@ mod tests {
         assert!(
             (sum_x as f64) + 60.0 + 4.0 < painted.x1,
             "the un-offset rect stops short of the painted box's right edge"
+        );
+    }
+
+    /// The inverse direction, and why it is a separate helper. Under `scale(2)`
+    /// a point 120 painted pixels right of the box's painted left edge is 60
+    /// pixels into the box; subtracting the painted AABB's origin would answer
+    /// 120 and pick the wrong character, the wrong scrollbar position, the wrong
+    /// pixel of a render surface.
+    #[test]
+    fn a_point_maps_into_a_scaled_box_divided_not_merely_offset() {
+        let mut doc = RinchDocument::new();
+        let body = doc.body();
+        let zoom = child_of(
+            &mut doc,
+            body,
+            "position: relative; width: 400px; height: 300px; \
+             transform: scale(2); transform-origin: 0 0",
+        );
+        let field = child_of(
+            &mut doc,
+            rinch_core::dom::NodeId(zoom),
+            "position: absolute; left: 30px; top: 20px; width: 200px; height: 40px",
+        );
+        doc.resolve_layout(800.0, 600.0);
+
+        // Layout origin (30,20) → painted (60,40).
+        let r = super::painted_border_box(&doc.tree, field, 1.0);
+        assert_eq!((r.x0, r.y0), (60.0, 40.0));
+
+        let local = super::point_in_painted_box(&doc.tree, field, 1.0, 180.0, 100.0)
+            .expect("an invertible transform");
+        assert_eq!(local, (60.0, 30.0), "(180-60)/2 and (100-40)/2");
+        assert_ne!(
+            local,
+            (120.0, 60.0),
+            "subtracting the painted origin without dividing is the wrong answer"
+        );
+
+        // And back out again.
+        assert_eq!(
+            super::point_from_painted_box(&doc.tree, field, 1.0, 60.0, 30.0),
+            (180.0, 100.0),
+            "the forward map is the inverse of the backward one"
+        );
+    }
+
+    /// A `scale(0)` subtree paints to zero area, so no screen point corresponds
+    /// to anything inside it — the same exit `hit_test`'s `local_point` takes.
+    #[test]
+    fn a_degenerate_transform_has_no_local_point() {
+        let mut doc = RinchDocument::new();
+        let body = doc.body();
+        let collapsed = child_of(
+            &mut doc,
+            body,
+            "position: relative; width: 200px; height: 100px; transform: scale(0)",
+        );
+        let inner = child_of(
+            &mut doc,
+            rinch_core::dom::NodeId(collapsed),
+            "width: 50px; height: 20px",
+        );
+        doc.resolve_layout(800.0, 600.0);
+
+        assert_eq!(
+            super::point_in_painted_box(&doc.tree, inner, 1.0, 10.0, 10.0),
+            None
+        );
+    }
+
+    /// A `position: fixed` box maps points against its viewport box, not against
+    /// one displaced by a scrolled ancestor — the exception seven of the walks
+    /// this PR converted never had.
+    #[test]
+    fn a_fixed_box_maps_points_against_its_viewport_origin() {
+        let mut doc = RinchDocument::new();
+        let body = doc.body();
+        let page = child_of(
+            &mut doc,
+            body,
+            "position: absolute; left: 0; top: 0; width: 400px; height: 300px; overflow: auto",
+        );
+        child_of(
+            &mut doc,
+            rinch_core::dom::NodeId(page),
+            "width: 100%; height: 2000px",
+        );
+        let overlay = child_of(
+            &mut doc,
+            rinch_core::dom::NodeId(page),
+            "position: fixed; left: 40px; top: 60px; width: 120px; height: 50px",
+        );
+        doc.resolve_layout(800.0, 600.0);
+        doc.tree.nodes[page].scroll_offset.1 = 150.0;
+
+        assert_eq!(
+            super::point_in_painted_box(&doc.tree, overlay, 1.0, 100.0, 80.0),
+            Some((60.0, 20.0)),
+            "measured from the viewport box (40,60)"
+        );
+        assert_ne!(
+            super::point_in_painted_box(&doc.tree, overlay, 1.0, 100.0, 80.0),
+            Some((60.0, 170.0)),
+            "the page's scroll must not be added back in"
         );
     }
 }

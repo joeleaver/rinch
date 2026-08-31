@@ -3,36 +3,6 @@
 use super::*;
 
 impl RinchApp {
-    /// Compute the absolute position of a node by walking up through parents.
-    /// Stops at `position: fixed` elements since they are viewport-relative.
-    pub(in crate::app) fn compute_absolute_position(
-        tree: &rinch_dom::NodeTree,
-        node_id: usize,
-    ) -> (f32, f32) {
-        let mut x = 0.0f32;
-        let mut y = 0.0f32;
-        let mut current = Some(node_id);
-        while let Some(nid) = current {
-            if let Some(node) = tree.get(nid) {
-                x += node.layout.x;
-                y += node.layout.y;
-                if node.computed_style.position == rinch_dom::computed_style::PositionValue::Fixed {
-                    break;
-                }
-                if let Some(parent_id) = node.parent
-                    && let Some(parent) = tree.get(parent_id)
-                {
-                    x -= parent.scroll_offset.0 as f32;
-                    y -= parent.scroll_offset.1 as f32;
-                }
-                current = node.parent;
-            } else {
-                break;
-            }
-        }
-        (x, y)
-    }
-
     /// Find the IFC root node (block element with an inline layout) at or
     /// above `hit_id` that has `user_select.is_selectable()`.
     pub(super) fn find_selectable_ifc(tree: &rinch_dom::NodeTree, hit_id: usize) -> Option<usize> {
@@ -63,13 +33,16 @@ impl RinchApp {
         let Some(ref inline_layout) = node.text_layout else {
             return 0;
         };
-        let (abs_x, abs_y) = Self::compute_absolute_position(tree, ifc_node_id);
+        // The click in the IFC root's own space — where Parley laid the text out
+        // — rather than a window point minus a transform-blind parent-chain sum
+        // (#203).
+        let (local_x, local_y) = pointer_in_node(tree, ifc_node_id, click_x, click_y);
         let padding_left = node.computed_style.padding_left.to_px();
         let padding_top = node.computed_style.padding_top.to_px();
         let border_left = node.computed_style.border_left_width.to_px();
         let border_top = node.computed_style.border_top_width.to_px();
-        let rel_x = click_x - abs_x - padding_left - border_left + node.scroll_offset.0 as f32;
-        let rel_y = click_y - abs_y - padding_top - border_top + node.scroll_offset.1 as f32;
+        let rel_x = local_x - padding_left - border_left + node.scroll_offset.0 as f32;
+        let rel_y = local_y - padding_top - border_top + node.scroll_offset.1 as f32;
         byte_offset_from_position(&inline_layout.layout, rel_x, rel_y)
     }
 

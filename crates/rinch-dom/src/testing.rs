@@ -38,29 +38,15 @@ pub fn serialize_tree_full(
     verbose: bool,
 ) -> Value {
     let root = root_id.unwrap_or(tree.body_id);
-    // Seed the accumulator with the root's own screen position (minus its own
-    // layout, which serialize_node re-adds) so `absolute` is true on-screen
-    // coordinates even when scoped to a subtree via `root_id`.
-    let (ox, oy) = subtree_offset(tree, root);
-    serialize_node(tree, root, ox, oy, verbose, max_depth, 0)
-}
-
-/// The offset to seed `serialize_node` with so a subtree root's reported
-/// `absolute` equals its real on-screen position: `abs(root) - root.layout`.
-fn subtree_offset(tree: &NodeTree, root: RawNodeId) -> (f32, f32) {
-    let (ax, ay) = compute_absolute_position(tree, root);
-    let (lx, ly) = tree
-        .get(root)
-        .map(|n| (n.layout.x, n.layout.y))
-        .unwrap_or((0.0, 0.0));
-    (ax - lx, ay - ly)
+    serialize_node(tree, root, verbose, max_depth, 0)
 }
 
 /// Serialize the DOM tree with full computed styles on every node.
 ///
-/// Delegates to [`serialize_tree_full`] so it picks up the same `absolute`
-/// seeding: seeding the accumulator with `(0, 0)` instead (as this used to)
-/// reported `absolute` relative to `body` rather than to the screen.
+/// Delegates to [`serialize_tree_full`], which asks
+/// [`crate::paint::painted_border_box`] for each node's on-screen rect — so a
+/// `root_id`-scoped tree reports true screen coordinates rather than ones
+/// relative to whatever it was scoped to.
 pub fn serialize_tree_verbose(tree: &NodeTree) -> Value {
     serialize_tree_full(tree, None, None, true)
 }
@@ -68,8 +54,6 @@ pub fn serialize_tree_verbose(tree: &NodeTree) -> Value {
 fn serialize_node(
     tree: &NodeTree,
     id: RawNodeId,
-    offset_x: f32,
-    offset_y: f32,
     verbose: bool,
     max_depth: Option<u32>,
     depth: u32,
@@ -78,9 +62,6 @@ fn serialize_node(
         return Value::Null;
     };
 
-    let abs_x = offset_x + node.layout.x;
-    let abs_y = offset_y + node.layout.y;
-
     let (node_type, tag, text) = match &node.kind {
         NodeKind::Document => ("document", None, None),
         NodeKind::Element(el) => ("element", Some(el.tag.as_str()), None),
@@ -88,10 +69,7 @@ fn serialize_node(
         NodeKind::Comment(c) => ("comment", None, Some(c.as_str())),
     };
 
-    let sx = node.scroll_offset.0 as f32;
-    let sy = node.scroll_offset.1 as f32;
-
-    let (layout, absolute) = geometry_json(node, abs_x, abs_y);
+    let (layout, absolute) = geometry_json(tree, node, id);
     let mut obj = json!({
         "id": node.id,
         "type": node_type,
@@ -131,17 +109,7 @@ fn serialize_node(
     let children: Vec<Value> = node
         .children
         .iter()
-        .map(|&child_id| {
-            serialize_node(
-                tree,
-                child_id,
-                abs_x - sx,
-                abs_y - sy,
-                verbose,
-                max_depth,
-                depth + 1,
-            )
-        })
+        .map(|&child_id| serialize_node(tree, child_id, verbose, max_depth, depth + 1))
         .collect();
 
     if !children.is_empty() {
@@ -245,8 +213,6 @@ fn collect_text(tree: &NodeTree, id: RawNodeId, buf: &mut String) {
 pub fn get_node_summary(tree: &NodeTree, id: RawNodeId) -> Option<Value> {
     let node = tree.get(id)?;
 
-    let abs = compute_absolute_position(tree, id);
-
     let (node_type, tag, text) = match &node.kind {
         NodeKind::Document => ("document", None, None),
         NodeKind::Element(el) => ("element", Some(el.tag.as_str()), None),
@@ -254,7 +220,7 @@ pub fn get_node_summary(tree: &NodeTree, id: RawNodeId) -> Option<Value> {
         NodeKind::Comment(c) => ("comment", None, Some(c.as_str())),
     };
 
-    let (layout, absolute) = geometry_json(node, abs.0, abs.1);
+    let (layout, absolute) = geometry_json(tree, node, id);
     let mut obj = json!({
         "id": node.id,
         "type": node_type,
@@ -282,8 +248,6 @@ pub fn get_node_summary(tree: &NodeTree, id: RawNodeId) -> Option<Value> {
 pub fn get_node_detail(tree: &NodeTree, id: RawNodeId) -> Option<Value> {
     let node = tree.get(id)?;
 
-    let abs = compute_absolute_position(tree, id);
-
     let (node_type, tag, text) = match &node.kind {
         NodeKind::Document => ("document", None, None),
         NodeKind::Element(el) => ("element", Some(el.tag.as_str()), None),
@@ -291,7 +255,7 @@ pub fn get_node_detail(tree: &NodeTree, id: RawNodeId) -> Option<Value> {
         NodeKind::Comment(c) => ("comment", None, Some(c.as_str())),
     };
 
-    let (layout, absolute) = geometry_json(node, abs.0, abs.1);
+    let (layout, absolute) = geometry_json(tree, node, id);
     let mut obj = json!({
         "id": node.id,
         "type": node_type,
@@ -330,46 +294,31 @@ pub fn get_node_detail(tree: &NodeTree, id: RawNodeId) -> Option<Value> {
 /// - `layout` mirrors the node's own `layout` box: x/y are **parent-relative**
 ///   (exactly `node.layout`, the internal truth — useful for verifying a child's
 ///   offset within its container).
-/// - `absolute` is the on-screen box: x/y are accumulated down the ancestor
-///   chain (minus scroll). **Pass `absolute.x`/`absolute.y` to `click()`** — the
-///   `layout` x/y are NOT screen coordinates.
+/// - `absolute` is the on-screen box — the rect the node is *painted* in, from
+///   [`crate::paint::painted_border_box`], which is the same walk paint itself
+///   follows. **Pass `absolute.x`/`absolute.y` to `click()`** — the `layout` x/y
+///   are NOT screen coordinates.
 ///
-/// width/height are the same in both (a box has one size).
-fn geometry_json(node: &crate::node::Node, abs_x: f32, abs_y: f32) -> (Value, Value) {
-    let w = node.layout.width;
-    let h = node.layout.height;
+/// width/height are usually the same in both, and differ exactly where a CSS
+/// transform scales the box: `layout` is the size Taffy gave it, `absolute` is
+/// the size it covers on screen. Reporting the layout size there would make
+/// "click the centre of `absolute`" miss inside any `scale()` container (#203).
+fn geometry_json(tree: &NodeTree, node: &crate::node::Node, id: RawNodeId) -> (Value, Value) {
+    let r = crate::paint::painted_border_box(tree, id, 1.0);
     (
-        json!({ "x": node.layout.x, "y": node.layout.y, "width": w, "height": h }),
-        json!({ "x": abs_x, "y": abs_y, "width": w, "height": h }),
+        json!({
+            "x": node.layout.x,
+            "y": node.layout.y,
+            "width": node.layout.width,
+            "height": node.layout.height,
+        }),
+        json!({
+            "x": r.x0 as f32,
+            "y": r.y0 as f32,
+            "width": r.width() as f32,
+            "height": r.height() as f32,
+        }),
     )
-}
-
-/// Compute absolute position by walking up the tree.
-fn compute_absolute_position(tree: &NodeTree, id: RawNodeId) -> (f32, f32) {
-    let mut x = 0.0f32;
-    let mut y = 0.0f32;
-    let mut current = Some(id);
-    while let Some(nid) = current {
-        if let Some(node) = tree.get(nid) {
-            x += node.layout.x;
-            y += node.layout.y;
-            // position: fixed — viewport-relative, stop accumulating parent offsets
-            if node.computed_style.position == crate::computed_style::PositionValue::Fixed {
-                break;
-            }
-            // Subtract parent's scroll offset (same as hit_test)
-            if let Some(parent_id) = node.parent {
-                if let Some(parent) = tree.get(parent_id) {
-                    x -= parent.scroll_offset.0 as f32;
-                    y -= parent.scroll_offset.1 as f32;
-                }
-            }
-            current = node.parent;
-        } else {
-            break;
-        }
-    }
-    (x, y)
 }
 
 #[cfg(test)]
@@ -421,5 +370,115 @@ mod tests {
             scoped["absolute"]["x"], 80.0,
             "scoped absolute is still on-screen"
         );
+    }
+
+    /// CLAUDE.md tells the reader to click `absolute.x`/`absolute.y`, so the box
+    /// has to be the one paint draws — a transform that moved and resized the
+    /// node has to move and resize it too, or every documented MCP interaction
+    /// inside a `scale()` container misses (#203).
+    #[test]
+    fn absolute_is_the_painted_box_under_a_transform() {
+        let mut doc = RinchDocument::new();
+        let body = doc.body();
+        let zoom = doc.create_element("div");
+        doc.set_attribute(
+            zoom,
+            "style",
+            "position: absolute; left: 100px; top: 50px; width: 300px; height: 200px; \
+             transform: scale(2); transform-origin: 0 0",
+        );
+        doc.append_child(body, zoom);
+        let button = doc.create_element("div");
+        doc.set_attribute(
+            button,
+            "style",
+            "position: absolute; left: 20px; top: 30px; width: 100px; height: 10px",
+        );
+        doc.append_child(zoom, button);
+
+        doc.resolve_layout(800.0, 600.0);
+
+        let summary = super::get_node_summary(&doc.tree, button.0).unwrap();
+        // Parent-relative is untouched: still what Taffy stored.
+        assert_eq!(summary["layout"]["x"], 20.0);
+        assert_eq!(summary["layout"]["width"], 100.0);
+        // Layout box (120,80)-(220,90); doubled about (100,50) → (140,110)-(340,130).
+        assert_eq!(summary["absolute"]["x"], 140.0);
+        assert_eq!(summary["absolute"]["y"], 110.0);
+        assert_eq!(
+            summary["absolute"]["width"], 200.0,
+            "a scaled box covers twice its layout width on screen"
+        );
+        assert_ne!(
+            summary["absolute"]["x"], 120.0,
+            "the untransformed parent-chain sum is the box this must NOT report"
+        );
+
+        // The centre of `absolute` — what the MCP workflow clicks — is inside
+        // the painted box.
+        let cx = summary["absolute"]["x"].as_f64().unwrap()
+            + summary["absolute"]["width"].as_f64().unwrap() / 2.0;
+        assert_eq!(cx, 240.0);
+
+        // The tree serializer agrees with the per-node summary.
+        let scoped = super::serialize_tree_with_options(&doc.tree, Some(0), Some(button.0));
+        assert_eq!(scoped["absolute"]["x"], 140.0);
+        assert_eq!(scoped["absolute"]["width"], 200.0);
+    }
+
+    /// A `position: fixed` node reports its viewport box however far the
+    /// container behind it has scrolled.
+    #[test]
+    fn absolute_is_the_viewport_box_for_a_fixed_node() {
+        let mut doc = RinchDocument::new();
+        let body = doc.body();
+        let page = doc.create_element("div");
+        doc.set_attribute(
+            page,
+            "style",
+            "position: absolute; left: 0; top: 0; width: 400px; height: 300px; overflow: auto",
+        );
+        doc.append_child(body, page);
+        let tall = doc.create_element("div");
+        doc.set_attribute(tall, "style", "width: 100%; height: 2000px");
+        doc.append_child(page, tall);
+        let overlay = doc.create_element("div");
+        doc.set_attribute(
+            overlay,
+            "style",
+            "position: fixed; left: 40px; top: 60px; width: 120px; height: 50px",
+        );
+        doc.append_child(page, overlay);
+        doc.resolve_layout(800.0, 600.0);
+        doc.tree.nodes[page.0].scroll_offset.1 = 150.0;
+
+        let summary = super::get_node_summary(&doc.tree, overlay.0).unwrap();
+        assert_eq!(summary["absolute"]["y"], 60.0);
+        assert_ne!(
+            summary["absolute"]["y"], -90.0,
+            "the page's scroll must not be subtracted from a fixed box"
+        );
+
+        // And the whole-tree serializer — the `dom_tree` MCP tool — agrees. It
+        // used to accumulate offsets top-down with no `position: fixed`
+        // exception at all, so it and `get_node` disagreed about the same node.
+        let tree = super::serialize_tree(&doc.tree);
+        let found = find_by_id(&tree, overlay.0).expect("the overlay is in the tree");
+        assert_eq!(found["absolute"]["y"], 60.0);
+        assert_ne!(
+            found["absolute"]["y"], -90.0,
+            "the serialized tree must make the same exception"
+        );
+    }
+
+    /// Depth-first search for a node's object in a serialized tree.
+    fn find_by_id(node: &serde_json::Value, id: usize) -> Option<&serde_json::Value> {
+        if node["id"] == id {
+            return Some(node);
+        }
+        node["children"]
+            .as_array()?
+            .iter()
+            .find_map(|c| find_by_id(c, id))
     }
 }

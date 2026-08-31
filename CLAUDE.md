@@ -2026,7 +2026,10 @@ get_text_content(id: 42)                  → get text in subtree
 node's box twice: `layout` is **parent-relative** (exactly the node's own `layout`, for checking a
 child's offset within its container) and `absolute` is the **on-screen** box. **Pass `absolute.x`/
 `absolute.y` (e.g. its center) to `click()`/`mouse_*`** — the `layout` x/y are NOT screen
-coordinates. (width/height are identical in both.)
+coordinates. `absolute` is the box **paint** draws, so a CSS transform on the node or any
+ancestor moves *and resizes* it, and a `position: fixed` node reports its viewport box. That is
+also why width/height can differ between the two: `layout` is the size Taffy gave the box,
+`absolute` is the size it covers on screen (they are equal wherever nothing scales it).
 
 **Step 3: Close the app**
 

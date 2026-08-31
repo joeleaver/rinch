@@ -507,20 +507,19 @@ impl RinchApp {
                     };
                 };
 
-                let mut abs_x = node.layout.x as f64;
-                let mut abs_y = node.layout.y as f64;
-                let mut parent_id = node.parent;
-                while let Some(pid) = parent_id {
-                    if let Some(parent_node) = d.tree.get(pid) {
-                        abs_x += parent_node.layout.x as f64;
-                        abs_y += parent_node.layout.y as f64;
-                        abs_x -= parent_node.scroll_offset.0;
-                        abs_y -= parent_node.scroll_offset.1;
-                        parent_id = parent_node.parent;
-                    } else {
-                        break;
-                    }
-                }
+                // The node's painted frame. Every coordinate reported below is a
+                // position *inside* the box, so it is pushed forward through the
+                // composed transform rather than added to an origin — under a
+                // `scale()` container the two differ (#203). Copied out before
+                // the document borrow is released for the Parley rebuild.
+                let (box_x, box_y, node_transform) =
+                    rinch_dom::paint::compute_absolute_position_and_transform(
+                        &d.tree, node_id, 1.0,
+                    );
+                let fwd = move |lx: f64, ly: f64| -> (f64, f64) {
+                    let p = node_transform * peniko::kurbo::Point::new(box_x + lx, box_y + ly);
+                    (p.x, p.y)
+                };
 
                 let tag = node.tag();
                 if matches!(tag, Some("input" | "textarea")) {
@@ -530,11 +529,9 @@ impl RinchApp {
                             node.computed_style.padding_left.to_px() as f64 * scale as f64;
                         let padding_top =
                             node.computed_style.padding_top.to_px() as f64 * scale as f64;
+                        let (cx, cy) = fwd(padding_left, padding_top);
                         return DebugResult::Json {
-                            data: json!({
-                                "x": abs_x + padding_left,
-                                "y": abs_y + padding_top,
-                            }),
+                            data: json!({ "x": cx, "y": cy }),
                         };
                     }
 
@@ -554,22 +551,18 @@ impl RinchApp {
                     let padding_left = computed_style.padding_left.to_px() as f64 * scale as f64;
                     let padding_top = computed_style.padding_top.to_px() as f64 * scale as f64;
 
+                    let (cx, cy) = fwd(padding_left + x as f64, padding_top + y as f64);
                     return DebugResult::Json {
-                        data: json!({
-                            "x": abs_x + padding_left + x as f64,
-                            "y": abs_y + padding_top + y as f64,
-                        }),
+                        data: json!({ "x": cx, "y": cy }),
                     };
                 }
 
                 if let Some(ref inline_layout) = node.text_layout {
                     let (x, y) =
                         caret_position_for_offset_layout(&inline_layout.layout, byte_offset);
+                    let (cx, cy) = fwd(x as f64, y as f64);
                     return DebugResult::Json {
-                        data: json!({
-                            "x": abs_x + x as f64,
-                            "y": abs_y + y as f64,
-                        }),
+                        data: json!({ "x": cx, "y": cy }),
                     };
                 }
 
@@ -596,20 +589,19 @@ impl RinchApp {
                     };
                 };
 
-                let mut abs_x = node.layout.x as f64;
-                let mut abs_y = node.layout.y as f64;
-                let mut parent_id = node.parent;
-                while let Some(pid) = parent_id {
-                    if let Some(parent_node) = d.tree.get(pid) {
-                        abs_x += parent_node.layout.x as f64;
-                        abs_y += parent_node.layout.y as f64;
-                        abs_x -= parent_node.scroll_offset.0;
-                        abs_y -= parent_node.scroll_offset.1;
-                        parent_id = parent_node.parent;
-                    } else {
-                        break;
-                    }
-                }
+                // The node's painted frame. Every coordinate reported below is a
+                // position *inside* the box, so it is pushed forward through the
+                // composed transform rather than added to an origin — under a
+                // `scale()` container the two differ (#203). Copied out before
+                // the document borrow is released for the Parley rebuild.
+                let (box_x, box_y, node_transform) =
+                    rinch_dom::paint::compute_absolute_position_and_transform(
+                        &d.tree, node_id, 1.0,
+                    );
+                let fwd = move |lx: f64, ly: f64| -> (f64, f64) {
+                    let p = node_transform * peniko::kurbo::Point::new(box_x + lx, box_y + ly);
+                    (p.x, p.y)
+                };
 
                 let tag = node.tag();
                 if matches!(tag, Some("input" | "textarea")) {
@@ -638,10 +630,14 @@ impl RinchApp {
                                 computed_style.padding_left.to_px() as f64 * scale as f64;
                             let padding_top =
                                 computed_style.padding_top.to_px() as f64 * scale as f64;
+                            let (gx, gy) = fwd(
+                                padding_left + bounds.x as f64,
+                                padding_top + bounds.y as f64,
+                            );
                             return DebugResult::Json {
                                 data: json!({
-                                    "x": abs_x + padding_left + bounds.x as f64,
-                                    "y": abs_y + padding_top + bounds.y as f64,
+                                    "x": gx,
+                                    "y": gy,
                                     "width": bounds.width,
                                     "height": bounds.height,
                                 }),
@@ -658,10 +654,11 @@ impl RinchApp {
                 if let Some(ref inline_layout) = node.text_layout {
                     match glyph_bounds_for_offset_layout(&inline_layout.layout, byte_offset) {
                         Some(bounds) => {
+                            let (gx, gy) = fwd(bounds.x as f64, bounds.y as f64);
                             return DebugResult::Json {
                                 data: json!({
-                                    "x": abs_x + bounds.x as f64,
-                                    "y": abs_y + bounds.y as f64,
+                                    "x": gx,
+                                    "y": gy,
                                     "width": bounds.width,
                                     "height": bounds.height,
                                 }),

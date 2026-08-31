@@ -40,9 +40,8 @@ fn mount_fixture() -> (RinchApp, usize, Rc<RefCell<Vec<String>>>) {
 fn focus(app: &mut RinchApp, id: usize) {
     let (cx, cy) = {
         let d = app.doc.as_ref().unwrap().borrow();
-        let n = d.tree.get(id).unwrap();
-        let (ax, ay) = RinchApp::compute_absolute_position(&d.tree, id);
-        (ax + n.layout.width / 2.0, ay + n.layout.height / 2.0)
+        let (ax, ay, ax_w, ay_h) = painted_element_box(&d.tree, id);
+        (ax + ax_w / 2.0, ay + ay_h / 2.0)
     };
     for button in [true, false] {
         let event = if button {

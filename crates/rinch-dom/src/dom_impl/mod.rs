@@ -326,8 +326,14 @@ impl RinchDocument {
             let w = node.layout.width as f64;
             let h = node.layout.height as f64;
             if w > 0.0 && h > 0.0 {
-                let (ax, ay) = crate::paint::compute_absolute_position(&self.tree, node_id, 1.0);
-                self.tree.paint_dirty_removed_rects.push((ax, ay, w, h));
+                // The rect to clear is the one the node was *painted* in, so a
+                // transformed subtree leaves no trail behind when it is removed
+                // (#203) — `compute_absolute_position` would hand back the
+                // untransformed layout box the software renderer never drew.
+                let r = crate::paint::painted_border_box(&self.tree, node_id, 1.0);
+                self.tree
+                    .paint_dirty_removed_rects
+                    .push((r.x0, r.y0, r.width(), r.height()));
             }
             let children = self.tree.nodes[node_id].children.clone();
             for child_id in children {
