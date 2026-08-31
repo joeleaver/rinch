@@ -84,7 +84,7 @@ impl std::str::FromStr for NotificationPosition {
 ///         onclose: move || show_notification.set(false),
 ///         title: "Success!",
 ///         color: "green",
-///         icon: Icon::CheckCircle,
+///         icon: TablerIcon::CircleCheck,
 ///
 ///         "Your changes have been saved."
 ///     }
