@@ -20,7 +20,7 @@ use rinch_platform::{AppAction, ImeEvent, KeyCode, Modifiers, PlatformEvent};
 use crate::app::RinchApp;
 use crate::shell::android_frame;
 use crate::shell::android_ime::{ImeAction, ImeComposition};
-use crate::shell::touch_gesture::{TouchAction, TouchGesture};
+use crate::shell::touch_gesture::{EventClock, TouchAction, TouchGesture};
 
 // ── Cross-thread dispatch ────────────────────────────────────────────────────
 
@@ -132,6 +132,11 @@ fn run_loop(android_app: AndroidApp, mut app: RinchApp) {
     let mut scale_factor = 1.0f64;
     let mut running = true;
     let mut gesture = TouchGesture::new();
+    // The finger's own clock, which is what makes a fling's launch speed a
+    // speed rather than a per-sample distance. Lives beside the recogniser and
+    // for the same reason: both are per-gesture state that has to survive
+    // between turns of the loop. See `touch_gesture::EventClock`.
+    let mut event_clock = EventClock::new();
     let mut combining_accent: Option<char> = None;
     let mut keyboard_visible = false;
     // The kind of Enter key the keyboard is currently showing. Mirrors what
@@ -338,6 +343,7 @@ fn run_loop(android_app: AndroidApp, mut app: RinchApp) {
         let input_events = collect_input_events(
             &android_app,
             &mut gesture,
+            &mut event_clock,
             scale_factor,
             Instant::now(),
             &mut combining_accent,
@@ -611,6 +617,7 @@ fn touch_action(action: MotionAction) -> TouchAction {
 fn collect_input_events(
     android_app: &AndroidApp,
     gesture: &mut TouchGesture,
+    event_clock: &mut EventClock,
     scale_factor: f64,
     now: Instant,
     combining_accent: &mut Option<char>,
@@ -626,7 +633,25 @@ fn collect_input_events(
                         let ptr = motion.pointer_at_index(0);
                         let x = (ptr.x() as f64 / scale_factor) as f32;
                         let y = (ptr.y() as f64 / scale_factor) as f32;
-                        gesture.process(touch_action(motion.action()), x, y, now, &mut events);
+                        // **The event's own timestamp, not `now`.** Every event
+                        // in one drain used to be stamped with the instant the
+                        // loop woke, which quantised the finger's motion to the
+                        // frame grid: correct positions, wrong times. A fling's
+                        // launch speed is a distance divided by a duration, and
+                        // a duration rounded to the nearest frame is wrong by up
+                        // to 8.3ms of the roughly 58ms the speed is measured
+                        // over. Card K40 measured the difference as 26% of
+                        // variation against 2%. `EventClock` is what makes
+                        // reading the device's own clock safe without asserting
+                        // that it counts in the same base we do.
+                        let sampled_at = event_clock.instant_for(now, motion.event_time());
+                        gesture.process(
+                            touch_action(motion.action()),
+                            x,
+                            y,
+                            sampled_at,
+                            &mut events,
+                        );
                     }
                     InputEvent::KeyEvent(key) => {
                         let meta = key.meta_state();

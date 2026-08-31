@@ -13,7 +13,7 @@
 //!
 //! | the finger | becomes | emitted |
 //! |---|---|---|
-//! | moves past [`SCROLL_THRESHOLD`] | a scroll | `PointerCancel`, then `MouseWheel` per frame, then momentum |
+//! | moves past [`SCROLL_THRESHOLD`] | a scroll | `PointerCancel`, then a `MouseWheel` per move, then momentum |
 //! | lifts while still | a tap | `MouseDown`/`MouseUp` (left) at the down point |
 //! | stays still past [`LONG_PRESS_TIMEOUT`] | a context menu | `MouseDown`/`MouseUp` (right) |
 //!
@@ -86,6 +86,82 @@ const MOMENTUM_TICK: Duration = Duration::from_nanos(16_666_667);
 /// honest thing is to under-shoot rather than to teleport.
 const MOMENTUM_MAX_STEPS: f32 = 4.0;
 
+/// How many finger positions are kept behind the fling's launch speed.
+///
+/// This is storage, not policy: [`VELOCITY_WINDOW`] is the horizon that decides
+/// what the speed is measured over, and this only bounds how far back the
+/// storage can reach. Eight samples span seven intervals, which is 117ms at
+/// 60Hz — longer than the horizon, so the horizon does the trimming — and 58ms
+/// at the 120Hz Android actually feeds this app (see [`EventClock`] for why 120
+/// and not the 238 the panel's digitiser is capable of). A shorter span is a
+/// noisier speed, not a wrong one, and the reason the fling does not care about
+/// the report rate is that the estimate divides a distance by the duration it
+/// took: halve the rate and both halves halve together.
+///
+/// It does have to be more than two. A speed read off the newest pair alone is
+/// measured across a single reporting interval — 8.3ms of finger, or 4.2ms if
+/// the normalisation is ever switched off — and that little travel is mostly the
+/// digitiser's own quantisation rather than the flick.
+///
+/// Small enough to be a fixed array in the recogniser rather than an allocation
+/// on the input path.
+const SAMPLE_WINDOW: usize = 8;
+
+/// The trailing window the fling's launch speed is measured over.
+///
+/// **Velocity used to be measured in pixels per move event**, which is a unit
+/// with no time in it. `velocity = (x - last_x) * 0.8 + velocity * 0.2` is an
+/// exponential average of per-*sample* distances, and it was then handed to
+/// [`TouchGesture::tick_momentum`] as though it were pixels per 60Hz tick — true
+/// only on a digitiser that happens to report at exactly 60Hz, which is a
+/// digitiser nobody has shipped in a decade. On one reporting twice that, every
+/// sample covers half the distance, so the same flick of the same list left
+/// behind half the fling. That is the same mistake card K39 found in the *decay*
+/// — a curve written in ticks rather than in seconds — one term earlier in the
+/// same expression, and K39 fixed only the half that a frame-rate number could
+/// show.
+///
+/// **The measurement, on the moto g stylus 5G.** The same scripted flick,
+/// injected at two touch report rates, coast distance from the lift to the frame
+/// the list stopped on:
+///
+/// ```text
+///                     pixels per event     pixels per second
+///   120Hz touch             283px                596px
+///   240Hz touch             233px                594px
+/// ```
+///
+/// 21% apart before and 0.3% apart after. A flick is a speed, and a speed does
+/// not know what the digitiser's polling interval is; the left-hand column is
+/// what it costs to write one down in a unit that does.
+///
+/// **Re-measured after the resampler was taken back out**, because a number
+/// taken alongside a mechanism that has since been deleted is a number about
+/// something else. Same handset, same GPU build, a scripted 1600px/s flick fed
+/// through the recogniser at three report rates, coast distance from the lift
+/// to the frame the fling settled on: 523.9px at 60Hz, 523.4px at 120Hz,
+/// 524.0px at 240Hz — 0.1% across the three. The correction did not depend on
+/// the resampler and did not leave with it.
+///
+/// So the launch speed is a distance over a duration, taken across the real
+/// samples inside this window. `VelocityTracker`'s horizon in Android is 100ms
+/// and there is no reason to disagree with it. One property comes with the
+/// window rather than with the arithmetic, and it matters more than the
+/// arithmetic does: **a finger that stopped does not fling.** If the digitiser
+/// kept reporting while the finger sat still, the window fills with samples that
+/// do not move and the speed goes to zero. If it stopped reporting altogether,
+/// the newest sample falls out of the window and the speed goes to zero that way
+/// instead. The old per-event average did neither — it held the speed of a
+/// gesture that had been over for the better part of a second, and the list took
+/// off from under a stationary finger the moment it lifted.
+/// `a_press_that_became_a_scroll_never_becomes_a_context_menu` is where that is
+/// pinned.
+///
+/// It changes what a flick does on any digitiser not reporting at 60Hz, and it
+/// is supposed to. [`MOMENTUM_FRICTION`] is the knob if the corrected flings
+/// overshoot.
+const VELOCITY_WINDOW: Duration = Duration::from_millis(100);
+
 /// How long a still finger must stay down to mean "context menu".
 ///
 /// `ViewConfiguration.getLongPressTimeout()`, which every Android widget has
@@ -93,6 +169,111 @@ const MOMENTUM_MAX_STEPS: f32 = 4.0;
 /// been taught. Shortening it would steal presses from taps that happen to
 /// linger; lengthening it would make the menu feel unreachable.
 const LONG_PRESS_TIMEOUT: Duration = Duration::from_millis(500);
+/// How old a `MotionEvent`'s own timestamp may be before [`EventClock`] stops
+/// believing it describes the same clock the loop is reading.
+///
+/// Half a second is far longer than any plausible input latency and far shorter
+/// than the difference two *different* clock bases would show, which is what
+/// this is really testing for. See [`EventClock`].
+const MAX_EVENT_AGE: Duration = Duration::from_millis(500);
+
+/// Puts `MotionEvent::event_time()` onto the loop's own clock, without assuming
+/// the two are the same clock.
+///
+/// **Why the finger's own timestamps are worth this much code.** The launch
+/// speed of a fling is a distance divided by a duration — see
+/// [`VELOCITY_WINDOW`] — and until this existed the duration was a fiction.
+/// Every event drained in one turn of the loop was stamped with the instant the
+/// *loop woke up*, so a whole batch of samples carried the same time,
+/// [`TouchGesture::push_sample`] collapsed them into one, and the span the
+/// distance was divided by was quantised to the frame grid rather than measured
+/// off the finger. On a 120Hz panel that is an error of up to 8.3ms on a span of
+/// about 58ms. Measured against a digitiser jittering by a quarter of its own
+/// interval, loop-stamped samples left 26% of variation in the estimate where
+/// event-stamped ones leave 2%.
+///
+/// **What the handset actually reports**, because this was first written on a
+/// guess and the guess was wrong. Across three real gestures on the moto g
+/// stylus 5G — 836 position reports — the digitiser's own interval is 4.21ms
+/// p50, about 238Hz, corroborated against `/proc/interrupts`. That is *twice*
+/// the panel, not half of it. Android then normalises the stream to the
+/// display's rate before the app is handed anything, so what arrives here is
+/// 120Hz of real samples carrying real times; a 60Hz stream passes through as
+/// 60Hz and nothing is ever upsampled. The timestamps are worth reading. The
+/// report rate is not worth defending against — see the note on the `Scrolling`
+/// arm of [`TouchGesture::process`] for the machinery that came off once that
+/// was measured rather than assumed.
+///
+/// **Why it does not simply convert.** `AMotionEvent_getEventTime` is documented
+/// as `java.lang.System.nanoTime()`, and `std::time::Instant` on Android is
+/// `CLOCK_MONOTONIC`, and those are the same clock — but "are the same clock" is
+/// a fact about a platform, not a fact this file can check, and a shell that
+/// silently renders nonsense when it is wrong is a bad trade for the four lines
+/// it saves. So no absolute conversion is ever done. Only *differences* within
+/// the event clock are used, anchored to one instant the loop observed itself,
+/// which is meaningful whatever base the device is counting in.
+///
+/// **And the anchor corrects itself.** Input latency is never negative: an
+/// event exists before the loop reads it. So the anchor with the *smallest*
+/// latency is the best estimate of the offset between the two clocks, and any
+/// event whose mapped instant lands after the instant the loop observed it has
+/// just proved itself the better anchor. Re-anchoring on exactly those events
+/// converges on the minimum latency and stays there. An event that maps to more
+/// than [`MAX_EVENT_AGE`] ago has not proved anything except that the anchor is
+/// stale or the base is not what was assumed, and re-anchoring is the answer to
+/// both.
+///
+/// **One case is deliberately given up on**, and it is worth naming because it
+/// looks like a bug from the outside. On the very *first* turn of the loop after
+/// an anchor is taken, that anchor pins its own event to the instant the loop
+/// read it — a latency of zero, the most optimistic reading possible — so every
+/// later event in the same batch maps into the future, is judged the better
+/// anchor in turn, and collapses onto the same instant. The batch loses its
+/// internal spacing exactly once, and a gesture that both began and ended inside
+/// that one turn would have its launch speed measured across a span shorter than
+/// it really was. It is the cheapest of the available wrong answers: a flick
+/// lasts longer than one turn of the loop, and every turn after the first has an
+/// anchor from a previous one to measure against, so the spacing survives —
+/// which is the case this spends its life in, and the case
+/// `the_event_clock_preserves_the_spacing_between_samples` asserts.
+#[derive(Default)]
+pub(crate) struct EventClock {
+    /// An instant the loop observed, and the device's own timestamp for the
+    /// event it observed at that instant.
+    anchor: Option<(Instant, i64)>,
+}
+
+impl EventClock {
+    pub(crate) fn new() -> Self {
+        Self { anchor: None }
+    }
+
+    /// The instant, on the loop's clock, at which the event stamped `event_ns`
+    /// was generated. `now` is when the loop observed it.
+    pub(crate) fn instant_for(&mut self, now: Instant, event_ns: i64) -> Instant {
+        let (anchor_at, anchor_ns) = *self.anchor.get_or_insert((now, event_ns));
+        let offset = event_ns - anchor_ns;
+        let mapped = if offset >= 0 {
+            anchor_at.checked_add(Duration::from_nanos(offset as u64))
+        } else {
+            anchor_at.checked_sub(Duration::from_nanos(offset.unsigned_abs()))
+        };
+
+        match mapped {
+            // The ordinary case: the event happened somewhere between the last
+            // time the loop looked and now.
+            Some(t) if t <= now && now.duration_since(t) <= MAX_EVENT_AGE => t,
+            // Either this event beat the anchor's latency, or the anchor no
+            // longer describes anything. Both are answered by believing this
+            // event instead, and both leave the caller with `now` — which is
+            // exactly what it had before this type existed.
+            _ => {
+                self.anchor = Some((now, event_ns));
+                now
+            }
+        }
+    }
+}
 
 /// The motion actions the recogniser distinguishes.
 ///
@@ -121,11 +302,14 @@ enum TouchState {
         y: f32,
         down_at: Instant,
     },
-    /// Finger is dragging — emit scroll events.
-    Scrolling {
-        last_x: f32,
-        last_y: f32,
-    },
+    /// Finger is dragging — every move it makes emits the distance it covered.
+    ///
+    /// It used to carry `last_x` / `last_y` for the wheel event to subtract
+    /// from. That position is now the newest entry in
+    /// [`TouchGesture::samples`], which the launch speed needs kept anyway: two
+    /// records of where the finger last was are one more than can be held in
+    /// agreement, and of the two the sample ring is the one that has to exist.
+    Scrolling,
     /// The long press already fired its context event. The rest of this gesture
     /// belongs to the menu that just opened: further movement must not scroll
     /// the list underneath it, and the lift must not click through it.
@@ -135,6 +319,11 @@ enum TouchState {
 pub(crate) struct TouchGesture {
     state: TouchState,
     /// Velocity for momentum scrolling, in pixels per [`MOMENTUM_TICK`].
+    ///
+    /// Still per-tick, because that is the unit [`MOMENTUM_FRICTION`] was tuned
+    /// in and K39's curve is written in — but it is now *derived* from a
+    /// pixels-per-second estimate rather than being a per-sample distance
+    /// wearing the same name. See [`VELOCITY_WINDOW`].
     velocity_x: f32,
     velocity_y: f32,
     /// Where to send scroll events (the initial touch point).
@@ -145,6 +334,17 @@ pub(crate) struct TouchGesture {
     /// [`MOMENTUM_TICK`], which is what the loop would have done before K39
     /// anyway.
     last_momentum: Option<Instant>,
+    /// The recent finger positions, oldest first, and how many of the slots are
+    /// filled. Two jobs, and it is worth being clear that the second is the one
+    /// that justifies the array: the newest entry is what a `Move` subtracts
+    /// from to get its wheel delta, and the whole window is what the launch
+    /// speed is measured across at the lift. See [`VELOCITY_WINDOW`].
+    ///
+    /// Each is stamped with the instant the digitiser sampled the finger, not
+    /// the instant the loop woke up and read it — [`EventClock`] is what
+    /// recovers the difference, and why it is worth recovering.
+    samples: [Option<(Instant, f32, f32)>; SAMPLE_WINDOW],
+    sample_count: usize,
 }
 
 impl TouchGesture {
@@ -155,6 +355,8 @@ impl TouchGesture {
             velocity_y: 0.0,
             scroll_origin: (0.0, 0.0),
             last_momentum: None,
+            samples: [None; SAMPLE_WINDOW],
+            sample_count: 0,
         }
     }
 
@@ -195,6 +397,7 @@ impl TouchGesture {
                 self.velocity_x = 0.0;
                 self.velocity_y = 0.0;
                 self.last_momentum = None;
+                self.forget_samples();
                 self.scroll_origin = (x, y);
                 self.state = TouchState::Pending { x, y, down_at: now };
                 events.push(PlatformEvent::MouseMove { x, y });
@@ -220,28 +423,67 @@ impl TouchGesture {
                             // once per gesture — `Scrolling` never returns to
                             // `Pending`.
                             events.push(PlatformEvent::PointerCancel);
-                            self.state = TouchState::Scrolling {
-                                last_x: x,
-                                last_y: y,
-                            };
+                            // The crossing point is where the drag starts from,
+                            // so the slop the finger spent getting here is not
+                            // also scrolled — the same place the old code
+                            // started subtracting from.
+                            self.state = TouchState::Scrolling;
+                            self.push_sample(now, x, y);
                         }
                     }
-                    TouchState::Scrolling { last_x, last_y } => {
-                        let delta_x = (x - last_x) as f64;
-                        let delta_y = (y - last_y) as f64;
-                        self.velocity_x = (x - last_x) * 0.8 + self.velocity_x * 0.2;
-                        self.velocity_y = (y - last_y) * 0.8 + self.velocity_y * 0.2;
-                        self.state = TouchState::Scrolling {
-                            last_x: x,
-                            last_y: y,
-                        };
-                        let (ox, oy) = self.scroll_origin;
-                        events.push(PlatformEvent::MouseWheel {
-                            x: ox,
-                            y: oy,
-                            delta_x,
-                            delta_y,
-                        });
+                    // **A move draws itself, the moment it arrives**, and it
+                    // is worth saying why that plain sentence needed defending.
+                    //
+                    // Card K40 briefly did not do this. It held the samples
+                    // back and let a once-per-frame resampler decide how far
+                    // the content had got to, on the theory that the digitiser
+                    // reported more slowly than the 120Hz loop consumed, so
+                    // that half of all presented frames carried no new finger
+                    // position and the list advanced on the digitiser's clock
+                    // while the pictures advanced on the panel's. It is a real
+                    // failure mode and Android's own `InputConsumer` resamples
+                    // for exactly it. It is not this handset's.
+                    //
+                    // Measured instead of assumed, the theory did not survive.
+                    // The moto g stylus 5G's digitiser reports every 4.21ms at
+                    // the median — about 238Hz, twice the panel and not half of
+                    // it — and Android normalises that stream to the display's
+                    // rate before the app is handed anything, so a `Move`
+                    // arrives per frame and never less often. The share of
+                    // presented frames on which the list did not move was 0.0%
+                    // at every touch rate tried, *before* any fix: the thing
+                    // the resampler existed to remove does not occur here. (A
+                    // later run, after the removal, saw a few per cent of still
+                    // frames — but only because the app's own frame took 18ms
+                    // rather than the panel's 8.3, so the loop occasionally
+                    // turned twice inside one touch interval. That is a paint
+                    // that is too slow, and no amount of resampling the finger
+                    // makes a frame arrive.) What
+                    // it did do was cost 12ms of deliberate lag — 4 to 13px of
+                    // a 349px drag, a list that visibly trails the finger — and
+                    // make the 60Hz case on the GPU path worse rather than
+                    // better, 18.0% of per-frame variation becoming 36.5% with
+                    // a growing three-frame beat. So it came out. See
+                    // [`EventClock`] for the numbers and how they were taken;
+                    // the velocity rewrite in [`VELOCITY_WINDOW`] is the half
+                    // of that card which measured true and stayed.
+                    //
+                    // The delta is read off the newest sample rather than a
+                    // `last_x` kept beside it, so there is exactly one record
+                    // of where the finger was and the launch speed is computed
+                    // from the same positions the drag drew.
+                    TouchState::Scrolling => {
+                        let last = self.newest_position();
+                        self.push_sample(now, x, y);
+                        if let Some((last_x, last_y)) = last {
+                            let (ox, oy) = self.scroll_origin;
+                            events.push(PlatformEvent::MouseWheel {
+                                x: ox,
+                                y: oy,
+                                delta_x: (x - last_x) as f64,
+                                delta_y: (y - last_y) as f64,
+                            });
+                        }
                     }
                     // The menu is already open under the finger; scrolling what
                     // is behind it is never what was asked for.
@@ -267,11 +509,23 @@ impl TouchGesture {
                             button: MouseButton::Left,
                         });
                     }
-                    TouchState::Scrolling { .. } => {
+                    TouchState::Scrolling => {
+                        // The launch speed, measured here and nowhere else,
+                        // because this is the last instant at which the samples
+                        // that describe the flick still exist — `forget_samples`
+                        // below is what ends the gesture. See
+                        // [`VELOCITY_WINDOW`].
+                        let (vx, vy) = self.sample_velocity(now);
+                        self.velocity_x = vx;
+                        self.velocity_y = vy;
+
                         // End of scroll drag — momentum will be applied in
                         // tick(). No event: the document was told this gesture
                         // was no longer its own back when the scroll claimed it,
-                        // and a lift adds nothing to that.
+                        // and a lift adds nothing to that. Nor is there any
+                        // travel left owing: every move drew itself as it
+                        // arrived, so the picture is already where the finger
+                        // is and the fling starts from there.
                     }
                     // The context event was dispatched half a second ago. The
                     // release only closes the press it opened — no left-button
@@ -287,6 +541,7 @@ impl TouchGesture {
                     TouchState::Idle => {}
                 }
                 self.state = TouchState::Idle;
+                self.forget_samples();
             }
             TouchAction::Cancel => {
                 match self.state {
@@ -307,17 +562,98 @@ impl TouchGesture {
                     }),
                     // Already cancelled on the crossing frame; a second one
                     // would be a cancel with nothing left to cancel.
-                    TouchState::Scrolling { .. } | TouchState::Idle => {}
+                    TouchState::Scrolling | TouchState::Idle => {}
                 }
                 self.state = TouchState::Idle;
                 self.velocity_x = 0.0;
                 self.velocity_y = 0.0;
+                self.forget_samples();
             }
             TouchAction::HoverMove => {
                 events.push(PlatformEvent::MouseMove { x, y });
             }
             TouchAction::Other => {}
         }
+    }
+
+    // ── The finger's recent history ──────────────────────────────────────────
+
+    /// Forget where the finger was. Called wherever a gesture ends or begins,
+    /// so that one drag's samples can never be measured against the next one's
+    /// — two fingers on opposite sides of the screen, a second apart, would
+    /// otherwise describe one very fast flick between them.
+    fn forget_samples(&mut self) {
+        self.samples = [None; SAMPLE_WINDOW];
+        self.sample_count = 0;
+    }
+
+    /// Where the finger was when it was last reported, or `None` before the
+    /// first sample of a drag.
+    fn newest_position(&self) -> Option<(f32, f32)> {
+        let (_, x, y) = self.samples[..self.sample_count].last().copied()??;
+        Some((x, y))
+    }
+
+    /// Record where the finger is, keeping the most recent [`SAMPLE_WINDOW`]
+    /// positions.
+    ///
+    /// The same-timestamp arm below is what keeps the window's timestamps
+    /// strictly increasing, which is the invariant [`Self::sample_velocity`]
+    /// divides by. Two samples the device stamped identically *replace* one
+    /// another rather than stacking up, and nothing is lost by that — a sample
+    /// is an absolute position, so the newer one already carries the older
+    /// one's travel, and a wheel delta taken against it is the same distance
+    /// either way. It is rare now that [`EventClock`] gives each event its own
+    /// time; it was every batch back when they were all stamped with the
+    /// instant the loop woke.
+    fn push_sample(&mut self, now: Instant, x: f32, y: f32) {
+        if let Some((t, _, _)) = self.samples[self.sample_count.saturating_sub(1)] {
+            if t == now {
+                self.samples[self.sample_count - 1] = Some((now, x, y));
+                return;
+            }
+        }
+        if self.sample_count == SAMPLE_WINDOW {
+            self.samples.rotate_left(1);
+            self.sample_count -= 1;
+        }
+        self.samples[self.sample_count] = Some((now, x, y));
+        self.sample_count += 1;
+    }
+
+    /// How fast the finger was actually moving, in pixels per [`MOMENTUM_TICK`],
+    /// from the real samples inside [`VELOCITY_WINDOW`].
+    ///
+    /// Zero when the newest sample is older than the window, which is a finger
+    /// that has stopped being reported; zero as well when the window is full of
+    /// samples that do not move, which is a finger that has stopped moving. The
+    /// two cases arrive by different routes and want the same answer.
+    fn sample_velocity(&self, now: Instant) -> (f32, f32) {
+        let filled = &self.samples[..self.sample_count];
+        let Some(&Some((newest_at, newest_x, newest_y))) = filled.last() else {
+            return (0.0, 0.0);
+        };
+        if now.saturating_duration_since(newest_at) > VELOCITY_WINDOW {
+            return (0.0, 0.0);
+        }
+        let Some(&(oldest_at, oldest_x, oldest_y)) = filled
+            .iter()
+            .flatten()
+            .find(|(t, _, _)| newest_at.saturating_duration_since(*t) <= VELOCITY_WINDOW)
+        else {
+            return (0.0, 0.0);
+        };
+        let span = newest_at.saturating_duration_since(oldest_at).as_secs_f32();
+        if span <= 0.0 {
+            return (0.0, 0.0);
+        }
+        // A distance over a duration, said in the per-tick unit the fling is
+        // tuned in — which is the whole correction. See [`VELOCITY_WINDOW`].
+        let per_tick = MOMENTUM_TICK.as_secs_f32() / span;
+        (
+            (newest_x - oldest_x) * per_tick,
+            (newest_y - oldest_y) * per_tick,
+        )
     }
 
     /// Fire the context event for a press that has been held still past
@@ -374,7 +710,7 @@ impl TouchGesture {
     /// it is two half-steps per 60Hz frame, which travel the same distance and
     /// take the same time, but do it with twice as many pictures.
     pub(crate) fn tick_momentum(&mut self, now: Instant, events: &mut Vec<PlatformEvent>) -> bool {
-        if matches!(self.state, TouchState::Scrolling { .. }) {
+        if matches!(self.state, TouchState::Scrolling) {
             // Still touching — don't apply momentum
             self.last_momentum = None;
             return false;
@@ -465,13 +801,18 @@ mod tests {
             }
         }
 
+        /// A motion event *and* the turn of the loop that consumed it, in that
+        /// order, which is how `collect_input_events` runs: the drain first,
+        /// then the clocks.
         fn act(&mut self, ms: u64, action: TouchAction, x: f32, y: f32) {
             let now = self.t0 + Duration::from_millis(ms);
             self.gesture.process(action, x, y, now, &mut self.events);
+            self.gesture.tick_long_press(now, &mut self.events);
+            self.gesture.tick_momentum(now, &mut self.events);
         }
 
-        /// One turn of the event loop, which is where both timers are driven —
-        /// same order as `collect_input_events`.
+        /// One turn of the event loop with nothing in the queue, which is where
+        /// both clocks are driven — same order as `collect_input_events`.
         fn tick(&mut self, ms: u64) {
             let now = self.t0 + Duration::from_millis(ms);
             self.gesture.tick_long_press(now, &mut self.events);
@@ -528,8 +869,20 @@ mod tests {
     }
 
     /// A finger that leaves the slop is a scroll, and a scroll is not a press:
-    /// however long it is then held, no context event may appear. Momentum
-    /// survives the lift, which is what keeps the flick working.
+    /// however long it is then held, no context event may appear.
+    ///
+    /// **It also no longer flings, and that is the velocity rewrite rather than
+    /// a regression.** The finger here moves 30px in 20ms and then holds
+    /// perfectly still for three quarters of a second before lifting. The old
+    /// velocity estimate was an average of per-*event* distances that only moved
+    /// when an event arrived, so after the hold it still held the speed of a
+    /// gesture that had been over for 760ms, and the list took off from under a
+    /// stationary finger. A rate measured against the clock decays to nothing
+    /// across that hold — which is what every native scroller does and what a
+    /// person expects: you stop, then you let go, and nothing moves. The flick
+    /// that *is* a flick is asserted by
+    /// `the_same_fling_lasts_the_same_time_at_any_refresh_rate` and
+    /// `a_fling_leaves_at_the_same_speed_whatever_the_touch_report_rate`.
     #[test]
     fn a_press_that_became_a_scroll_never_becomes_a_context_menu() {
         let mut f = Finger::new();
@@ -541,18 +894,42 @@ mod tests {
         f.tick(600);
         f.tick(700);
         f.act(800, TouchAction::Up, 100.0, 160.0);
+
         assert_eq!(
-            f.emitted(),
-            ["move 100 100", "cancel", "wheel 100 100 0 30"],
-            "the cancel hands the gesture to the scroll; nothing else may be synthesised"
+            f.emitted().iter().filter(|e| *e == "cancel").count(),
+            1,
+            "the cancel hands the gesture to the scroll, exactly once"
+        );
+        assert!(
+            !f.emitted()
+                .iter()
+                .any(|e| e.starts_with("down") || e.starts_with("up")),
+            "and nothing else may be synthesised: {:?}",
+            f.emitted()
         );
 
+        // The finger crossed the slop at y=130 and stopped at y=160. Every
+        // pixel of that 30 has to reach the list and no pixel more: a wheel
+        // delta is the distance between two absolute positions, so travel can
+        // be neither created nor destroyed on the way through, and that is the
+        // property that makes this safe to put between a finger and a scroll
+        // container.
+        let travelled: f64 = f
+            .events
+            .iter()
+            .filter_map(|e| match e {
+                PlatformEvent::MouseWheel { delta_y, .. } => Some(*delta_y),
+                _ => None,
+            })
+            .sum();
         assert!(
-            f.gesture.has_momentum(),
-            "the flick must still coast after the lift"
+            (travelled - 30.0).abs() < 0.01,
+            "30px of finger must be 30px of list, not {travelled:.2}px"
         );
-        f.tick(820);
-        assert_eq!(f.emitted().len(), 4, "the coast emits a wheel event");
+        assert!(
+            !f.gesture.has_momentum(),
+            "a finger that stopped 760ms before it lifted has no flick left in it"
+        );
     }
 
     /// Once the menu is open the gesture belongs to it. Dragging the same finger
@@ -609,21 +986,43 @@ mod tests {
 
         f.act(30, TouchAction::Move, 100.0, 140.0);
         f.act(40, TouchAction::Move, 100.0, 170.0);
+        let before_lift = f.events.len();
         f.act(50, TouchAction::Up, 100.0, 170.0);
-        assert_eq!(
-            f.emitted(),
-            [
-                "move 100 100",
-                "cancel",
-                "wheel 100 100 0 28",
-                "wheel 100 100 0 30"
-            ],
-            "and the lift adds nothing — the cancel was the whole announcement"
-        );
+
         assert_eq!(
             f.emitted().iter().filter(|e| *e == "cancel").count(),
             1,
             "exactly one cancel per gesture, however long the scroll ran"
+        );
+        assert!(
+            !f.emitted()
+                .iter()
+                .any(|e| e.starts_with("down") || e.starts_with("up")),
+            "and the lift adds nothing — the cancel was the whole announcement"
+        );
+
+        // The drag does not trail the finger, stated as a number so that
+        // anything reintroducing a latency has to come past this line.
+        //
+        // The finger crossed the slop at y=112 and reached y=170 — 58px. All 58
+        // are on the list by the time it lifts, because each move drew itself as
+        // it arrived. Card K40's resampler drew the list where the finger had
+        // been 12ms earlier, which left 36px of this drag unrendered at the lift
+        // and made this assertion read 22.4px; on the handset the same lag was 4
+        // to 13px of a 349px drag, and it was visible as a list that lagged
+        // behind the fingertip. It bought nothing measurable in return, so it
+        // came off. See the `Scrolling` arm of `process`.
+        let dragged: f64 = f.events[..before_lift]
+            .iter()
+            .filter_map(|e| match e {
+                PlatformEvent::MouseWheel { delta_y, .. } => Some(*delta_y),
+                _ => None,
+            })
+            .sum();
+        assert!(
+            (dragged - 58.0).abs() < 0.1,
+            "58px of finger must be 58px of list by the time it lifts, not \
+             {dragged:.1}px"
         );
     }
 
@@ -786,9 +1185,280 @@ mod tests {
         let PlatformEvent::MouseWheel { delta_y, .. } = f.events[before] else {
             panic!("the stalled frame still owes one wheel event");
         };
+        // The finger covered 40px every 8ms, which is 5000px/s, which is 83px
+        // per 60Hz tick — the unit MOMENTUM_MAX_STEPS counts in. This number
+        // used to be written as a flat 40, the per-*sample* distance, and the
+        // two agreed only because the old velocity estimate confused the two
+        // units (see VELOCITY_WINDOW). The clamp is the same clamp; only the unit
+        // it is measured in has been corrected.
+        let ceiling = 40.0 / 0.008 * MOMENTUM_TICK.as_secs_f64() * f64::from(MOMENTUM_MAX_STEPS);
         assert!(
-            delta_y.abs() < 40.0 * 4.0 + 1.0,
-            "one frame after a one-second stall moved the list {delta_y:.0}px"
+            delta_y.abs() < ceiling + 1.0,
+            "one frame after a one-second stall moved the list {delta_y:.0}px, \
+             past the {ceiling:.0}px that four ticks of this fling are worth"
         );
+    }
+
+    // ── The launch speed, and the unit it is written in ──────────────────────
+    //
+    // What used to be here was a simulation of per-frame *smoothness*: a finger
+    // at a constant speed, sampled at one rate and consumed at another, with the
+    // per-frame content movement read out of the wheel events and asserted to be
+    // even. It went with the resampler, and it went for the reason the resampler
+    // did — the premise underneath it turned out not to describe this handset.
+    // It assumed a digitiser slower than the loop; the moto g stylus 5G reports
+    // at about 238Hz, twice the panel, normalised by Android to the panel's rate
+    // before the app is handed anything. Measured on the device, the share of
+    // presented frames on which the list did not move was 0.0% at every touch
+    // rate, before any fix at all. A test whose premise is false does not become
+    // true by passing. See [`EventClock`].
+    //
+    // What did survive the device is below: a flick is a speed, and a speed must
+    // not depend on how often the digitiser was asked.
+
+    /// A deterministic jitter source, so "a realistic touch stream" is the same
+    /// stream on every run and a regression is a regression rather than a
+    /// coincidence.
+    struct Jitter(u64);
+
+    impl Jitter {
+        /// Signed, in [-1, 1].
+        fn next(&mut self) -> f64 {
+            self.0 = self
+                .0
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            ((self.0 >> 33) as f64) / ((1u64 << 30) as f64) - 1.0
+        }
+    }
+
+    /// One flick and the coast that follows it, simulated the way the shell
+    /// actually runs: a finger moving at a constant speed, sampled by the
+    /// digitiser at `touch_hz`, drained by a loop turning at `frame_hz`, lifted,
+    /// and then left to settle. Returns how far the list travelled *after* the
+    /// lift, which is the whole of what the launch speed decides.
+    ///
+    /// `jitter` is the fraction of a sample interval each sample may arrive
+    /// early or late by. The finger's position is a function of the *real*
+    /// instant it was sampled at, so a jittered sample is a true reading taken
+    /// at an odd moment rather than a corrupted one — which is exactly the case
+    /// a time-based velocity is supposed to be immune to, and exactly the case
+    /// a per-event one is not.
+    fn flick_distance(touch_hz: f64, frame_hz: f64, speed_px_s: f64, jitter: f64) -> f64 {
+        const DRAG_SECONDS: f64 = 0.25;
+        let t0 = Instant::now();
+        let at = |secs: f64| t0 + Duration::from_nanos((secs * 1e9) as u64);
+
+        let mut rng = Jitter(0x5eed_1234);
+        let mut samples: Vec<(f64, f32)> = (0..(DRAG_SECONDS * touch_hz) as usize)
+            .map(|k| {
+                // A deliberate fraction of a sample interval, so the digitiser
+                // and the loop are never accidentally in phase.
+                let nominal = (0.37 + k as f64) / touch_hz;
+                let t = (nominal + rng.next() * jitter / touch_hz).max(0.0);
+                (t, (1000.0 - speed_px_s * t) as f32)
+            })
+            .collect();
+        samples.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
+
+        let mut gesture = TouchGesture::new();
+        let mut events = Vec::new();
+        gesture.process(TouchAction::Down, 300.0, 1000.0, at(0.0), &mut events);
+
+        // The drag. One turn of the loop per frame: drain everything that has
+        // arrived, then run the clocks. Exactly `collect_input_events`.
+        let mut next = 0usize;
+        let mut frame = 0usize;
+        while frame as f64 / frame_hz <= DRAG_SECONDS {
+            let now = frame as f64 / frame_hz;
+            while next < samples.len() && samples[next].0 <= now {
+                // Stamped with the instant the digitiser sampled the finger,
+                // which is what [`EventClock`] recovers from the `MotionEvent`
+                // on a device, and not with the instant the loop woke up.
+                gesture.process(
+                    TouchAction::Move,
+                    300.0,
+                    samples[next].1,
+                    at(samples[next].0),
+                    &mut events,
+                );
+                next += 1;
+            }
+            gesture.tick_long_press(at(now), &mut events);
+            gesture.tick_momentum(at(now), &mut events);
+            frame += 1;
+        }
+
+        let lift = frame as f64 / frame_hz;
+        let last_y = samples.last().expect("a flick has samples").1;
+        gesture.process(TouchAction::Up, 300.0, last_y, at(lift), &mut events);
+
+        // Only the coast is measured. The drag's own travel is the same distance
+        // at every rate by construction — a wheel delta is the gap between two
+        // absolute positions — and it is pinned in
+        // `a_press_that_becomes_a_scroll_cancels_once_on_the_frame_it_crosses`.
+        events.clear();
+        let mut t = lift;
+        loop {
+            t += 1.0 / frame_hz;
+            gesture.tick_momentum(at(t), &mut events);
+            if !gesture.has_momentum() {
+                break;
+            }
+            assert!(t - lift < 20.0, "a fling that never settles is a hung list");
+        }
+        events
+            .iter()
+            .filter_map(|e| match e {
+                PlatformEvent::MouseWheel { delta_y, .. } => Some(delta_y.abs()),
+                _ => None,
+            })
+            .sum()
+    }
+
+    /// **The correction the handset confirmed, in the shape cards K15 and K20
+    /// ask for: a thing found on hardware becomes a test that fails without
+    /// one.**
+    ///
+    /// The launch speed used to be an exponential average of per-*move-event*
+    /// distances — `(x - last_x) * 0.8 + velocity * 0.2` — handed to the fling
+    /// as though it were pixels per 60Hz tick. That is only true on a digitiser
+    /// reporting at exactly 60Hz. Ask a faster one and every sample covers less
+    /// ground, the average lands lower, and the same flick of the same list
+    /// travels a shorter way for no reason a person could name.
+    ///
+    /// On the moto g stylus 5G, the same scripted flick injected at two report
+    /// rates coasted 283px at 120Hz and 233px at 240Hz — 21% apart. Measured as
+    /// a distance over a duration it coasts 596px and 594px, 0.3% apart. This is
+    /// the laptop-side version of that: the same finger, at the same speed,
+    /// reported at three rates, must throw the list the same distance.
+    #[test]
+    fn a_fling_leaves_at_the_same_speed_whatever_the_touch_report_rate() {
+        const SPEED: f64 = 2000.0;
+        for jitter in [0.0, 0.25] {
+            let d60 = flick_distance(60.0, 120.0, SPEED, jitter);
+            let d120 = flick_distance(120.0, 120.0, SPEED, jitter);
+            let d240 = flick_distance(240.0, 120.0, SPEED, jitter);
+
+            assert!(
+                d120 > 100.0,
+                "a flick that coasts {d120:.0}px is not testing a fling"
+            );
+            let spread = (d60 - d120).abs().max((d240 - d120).abs()) / d120;
+            assert!(
+                spread < 0.05,
+                "jitter {jitter}: the same {SPEED}px/s flick coasted {d60:.0}px \
+                 at a 60Hz digitiser, {d120:.0}px at 120Hz and {d240:.0}px at \
+                 240Hz. A flick is a speed; the digitiser's polling interval is \
+                 not part of it."
+            );
+        }
+    }
+
+    // ── The event clock ──────────────────────────────────────────────────────
+
+    /// The property the launch speed actually rests on: whatever base the
+    /// device counts in, two events 5ms apart in that base come out 5ms apart on
+    /// the loop's clock. A speed is a distance divided by one of those gaps, so
+    /// the gap is the part that has to be right.
+    ///
+    /// The absolute answer is deliberately not asserted, because [`EventClock`]
+    /// deliberately does not know it. It anchors on one observation and measures
+    /// everything else against that, which is what makes it correct without a
+    /// claim about `CLOCK_MONOTONIC` that this file has no way to check.
+    #[test]
+    fn the_event_clock_preserves_the_spacing_between_samples() {
+        let mut clock = EventClock::new();
+        let t0 = Instant::now();
+        // A base with no relationship to anything: the device is 40 seconds into
+        // whatever it is counting.
+        let base = 40_000_000_000i64;
+
+        // One earlier turn of the loop, which is where the anchor comes from.
+        assert_eq!(clock.instant_for(t0, base), t0);
+
+        // A later turn carrying a batch of three samples 5ms apart, read 1ms
+        // after the newest of them — the ordinary shape of a digitiser
+        // reporting faster than the panel refreshes.
+        let now = t0 + Duration::from_millis(21);
+        let a = clock.instant_for(now, base + 10_000_000);
+        let b = clock.instant_for(now, base + 15_000_000);
+        let c = clock.instant_for(now, base + 20_000_000);
+
+        assert_eq!(b.duration_since(a), Duration::from_millis(5));
+        assert_eq!(c.duration_since(b), Duration::from_millis(5));
+        assert_eq!(
+            now.duration_since(c),
+            Duration::from_millis(1),
+            "and the newest of the batch keeps the latency it was read with"
+        );
+    }
+
+    /// Input latency is never negative, so the event that maps closest to the
+    /// instant it was read is the best evidence about the offset between the two
+    /// clocks — and re-anchoring on it is how [`EventClock`] converges on the
+    /// truth instead of inheriting whatever the first event happened to cost.
+    ///
+    /// Without this the first event's latency is added to every sample for the
+    /// rest of the gesture. That is harmless to a *difference* between two
+    /// samples, which is all the velocity needs — but it is not harmless to the
+    /// staleness check at the lift, which compares the newest sample against the
+    /// instant the loop is running at, and a constant offset there is a flick
+    /// wrongly judged to have gone cold.
+    #[test]
+    fn the_event_clock_re_anchors_on_the_event_with_the_least_latency() {
+        let mut clock = EventClock::new();
+        let t0 = Instant::now();
+        let base = 40_000_000_000i64;
+
+        // The first event the loop sees is 20ms late — a slow first frame, a
+        // scheduler hiccup. The anchor believes it was generated exactly now.
+        let first = clock.instant_for(t0, base);
+        assert_eq!(first, t0);
+
+        // 20ms later the loop reads an event generated 20ms after the first,
+        // i.e. one that arrived instantly. Under the original anchor it would
+        // map to `t0 + 20ms`, which is exactly now — so this event proves it has
+        // the smaller latency and becomes the anchor.
+        let now = t0 + Duration::from_millis(20);
+        let second = clock.instant_for(now, base + 20_000_000);
+        assert_eq!(second, now);
+
+        // And from here the offset is the better one: an event 5ms before this
+        // one dates 5ms back, not 25ms back.
+        let third = clock.instant_for(now, base + 15_000_000);
+        assert_eq!(now.duration_since(third), Duration::from_millis(5));
+    }
+
+    /// A timestamp that is not in the base we assumed must not be believed, and
+    /// the fallback is exactly the behaviour this type replaced: the instant the
+    /// loop read the event.
+    ///
+    /// This is the guard that makes it safe to read `MotionEvent::event_time()`
+    /// at all without asserting what clock a given handset counts in. A device
+    /// answering in, say, milliseconds-since-boot rather than nanoseconds would
+    /// otherwise date every sample days apart, and a launch speed divided by
+    /// days is a list that never flings; here it degrades to the frame-stamped
+    /// behaviour of before card K40, which is merely less good.
+    #[test]
+    fn the_event_clock_refuses_a_timestamp_from_another_base() {
+        let mut clock = EventClock::new();
+        let t0 = Instant::now();
+        let base = 40_000_000_000i64;
+        assert_eq!(clock.instant_for(t0, base), t0);
+
+        let now = t0 + Duration::from_millis(8);
+        // A whole second earlier — far outside MAX_EVENT_AGE, and far outside
+        // any latency a touch event has ever had.
+        assert_eq!(clock.instant_for(now, base - 1_000_000_000), now);
+        // Having re-anchored, the clock is usable again immediately rather than
+        // poisoned for the rest of the gesture.
+        let next = clock.instant_for(now, base - 1_000_000_000 + 4_000_000);
+        assert_eq!(next, now);
+        let back = clock.instant_for(
+            now + Duration::from_millis(8),
+            base - 1_000_000_000 + 8_000_000,
+        );
+        assert_eq!(back.duration_since(now), Duration::from_millis(4));
     }
 }
