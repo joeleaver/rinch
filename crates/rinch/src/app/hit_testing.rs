@@ -886,8 +886,16 @@ mod tests {
     use rinch_core::dom::{DomDocument, NodeId};
     use rinch_dom::RinchDocument;
 
-    /// Absolute (border-box) origin of a node, accumulated the same way
-    /// `hit_test` does — from `body` down (body is the hit-test root).
+    /// Absolute (border-box) origin of a node as a **plain parent-chain sum**:
+    /// layout offsets only, no transform composed, no `position: fixed`
+    /// exception, no IFC content-box offset.
+    ///
+    /// This is a deliberate independent oracle, not a helper — it is the walk
+    /// the production code used to run, kept so the tests below can state the
+    /// box a transform-blind walk would have produced and assert it is *not*
+    /// the answer. Do not "fix" it to call `painted_element_box`: it exists
+    /// precisely to disagree with it. (`paint::tests::untransformed_origin`
+    /// serves the same purpose in rinch-dom.)
     fn abs_origin(doc: &RinchDocument, node_id: usize) -> (f32, f32) {
         let (mut x, mut y) = (0.0f32, 0.0f32);
         let body = doc.body().0;

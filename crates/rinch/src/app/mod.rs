@@ -975,31 +975,44 @@ impl RinchApp {
                 continue;
             };
 
-            // Compute element's Y position relative to the scroll container
-            let mut rel_y = 0.0_f32;
-            let mut current = target_id;
-            while current != container_id {
-                if let Some(node) = d.tree.nodes.get(current) {
-                    rel_y += node.layout.y;
-                    if let Some(parent_id) = node.parent {
-                        if parent_id != container_id {
-                            if let Some(parent) = d.tree.nodes.get(parent_id) {
-                                rel_y -= parent.scroll_offset.1 as f32;
-                            }
-                        }
-                    }
-                    current = node.parent.unwrap_or(container_id);
-                } else {
-                    break;
-                }
-            }
-
-            let target_height = d
-                .tree
-                .nodes
-                .get(target_id)
-                .map(|n| n.layout.height)
-                .unwrap_or(0.0);
+            // Where the target is *painted*, in the scroll container's own
+            // coordinate space — the space `scroll_offset` moves content in.
+            // Measured against the container's border-box origin at the
+            // *current* scroll, so the two branches below read the adjustment
+            // straight off it.
+            //
+            // Two things about this are worth stating, because neither is
+            // obvious and the parent-chain sum it replaces got the first wrong
+            // while implicitly relying on the second (#203):
+            //
+            // - What "visible" means is where the box is **drawn**, not where
+            //   Taffy laid it out. The old walk summed `layout.y`, so any
+            //   transform between the container and the target scrolled to a
+            //   position the element is not at — including the common case of
+            //   a `translate`d panel inside a scroller, where Tab could land on
+            //   a control and scroll it off screen.
+            //
+            // - The adjustment is nevertheless **1:1** with the scroll, even
+            //   under a `scale()` between the two. `paint_node` composes a
+            //   descendant's transform about that descendant's *own* origin,
+            //   and the scroll moves that origin along with the box, so the
+            //   linear part cancels: a scroll of N moves the painted box by N
+            //   in the container's space, at any scale. Dividing by a composed
+            //   scale here would be wrong, which is what
+            //   `a_scaled_subtree_scrolls_by_the_painted_distance` pins.
+            //
+            // For a *rotated* ancestor this is the bounding box, the same
+            // approximation `painted_border_box` makes everywhere else.
+            let painted = rinch_dom::paint::painted_border_box(&d.tree, target_id, 1.0);
+            let local = |y: f64| {
+                rinch_dom::paint::point_in_painted_box(&d.tree, container_id, 1.0, painted.x0, y)
+                    .map(|(_, ly)| ly)
+            };
+            let (Some(elem_top), Some(elem_bottom)) = (local(painted.y0), local(painted.y1)) else {
+                // A non-invertible transform on the chain: the subtree paints
+                // to zero area, so no scroll position makes it visible.
+                continue;
+            };
 
             let container_nid = rinch_core::dom::NodeId(container_id);
             let visible_height = d.client_height(container_nid);
@@ -1007,16 +1020,12 @@ impl RinchApp {
             let content_height = d.scroll_height(container_nid);
             let max_scroll = (content_height - visible_height).max(0.0);
 
-            // Determine if element is outside the visible area
-            let elem_top = rel_y as f64;
-            let elem_bottom = elem_top + target_height as f64;
-
-            let new_scroll = if elem_top < current_scroll {
-                // Element is above visible area — scroll up
-                elem_top
-            } else if elem_bottom > current_scroll + visible_height {
-                // Element is below visible area — scroll down
-                elem_bottom - visible_height
+            let new_scroll = if elem_top < 0.0 {
+                // Element is above the visible area — scroll up
+                current_scroll + elem_top
+            } else if elem_bottom > visible_height {
+                // Element is below the visible area — scroll down
+                current_scroll + (elem_bottom - visible_height)
             } else {
                 continue; // already visible
             };
@@ -6431,5 +6440,203 @@ mod transform_aware_walk_tests {
             moved < 1100.0 * 40.0 / 96.0 - 1.0,
             "the delta must be measured in the container's own space"
         );
+    }
+}
+
+#[cfg(test)]
+mod scroll_into_view_tests {
+    use super::*;
+    use std::cell::Cell;
+
+    // #203 PR2 follow-up. `apply_scroll_into_view` decides whether an element
+    // is visible and how far to scroll to make it so. "Visible" is a statement
+    // about where the element is *painted*, but the walk this replaced summed
+    // `layout.y` up the parent chain — so any transform between the scroll
+    // container and the target sent the scroll somewhere the element is not.
+    // It is the path Tab focus navigation uses, so the symptom is Tab landing
+    // on a control and scrolling it off screen.
+    //
+    // Expected scroll offsets below are hand-computed from the CSS, and each
+    // test states the value the layout-space walk produced so a regression to
+    // it fails rather than passing on an overlap.
+
+    /// Mount `container_children` inside a 400x200 `overflow-y: auto` container
+    /// (itself inside `outer_style`), request scroll-into-view on the node the
+    /// builder marks, and report the container's resulting scroll offset.
+    ///
+    /// `children` is a list of `(style, nested_style_or_empty)`: a non-empty
+    /// second entry wraps the child around one `50px` target, and the target is
+    /// what gets scrolled into view. Exactly one entry may be a wrapper.
+    fn scroll_after_request(
+        outer_style: &'static str,
+        children: &[(&'static str, &'static str)],
+    ) -> f64 {
+        let ids: Rc<Cell<Option<(usize, usize)>>> = Rc::new(Cell::new(None));
+        let ids_in = ids.clone();
+        let children: Vec<(&'static str, &'static str)> = children.to_vec();
+        let mut app = RinchApp::new(move |scope: &mut RenderScope| {
+            let root = scope.create_element("div");
+            root.set_attribute("style", "position: relative; width: 800px; height: 600px");
+            let outer = scope.create_element("div");
+            outer.set_attribute("style", outer_style);
+            let container = scope.create_element("div");
+            container.set_attribute(
+                "style",
+                "position: absolute; left: 0; top: 0; width: 400px; height: 200px; \
+                 overflow-y: auto",
+            );
+            let mut target_id = None;
+            for (style, nested) in &children {
+                let child = scope.create_element("div");
+                child.set_attribute("style", style);
+                if !nested.is_empty() {
+                    let target = scope.create_element("div");
+                    target.set_attribute("style", nested);
+                    child.append_child(&target);
+                    target_id = Some(target.node_id().0);
+                }
+                container.append_child(&child);
+            }
+            outer.append_child(&container);
+            root.append_child(&outer);
+            ids_in.set(Some((
+                container.node_id().0,
+                target_id.expect("one child must carry the target"),
+            )));
+            root
+        });
+        app.mount_component(800.0, 600.0);
+        app.resolve_and_repaint(800.0, 600.0);
+        let (container_id, target_id) = ids.get().expect("ids captured at mount");
+
+        {
+            let doc = app.doc.as_ref().expect("mounted");
+            let mut d = doc.borrow_mut();
+            d.request_scroll_into_view(rinch_core::dom::NodeId(target_id));
+            // The real caller (`set_focus_target`) dirties the DOM on the same
+            // pass; `resolve_and_repaint` short-circuits on a clean tree and
+            // would never reach `apply_scroll_into_view`.
+            d.tree.dirty_nodes.insert(target_id);
+        }
+        app.resolve_and_repaint(800.0, 600.0);
+
+        app.doc.as_ref().unwrap().borrow().tree.nodes[container_id]
+            .scroll_offset
+            .1
+    }
+
+    /// A target its wrapper translates *up* into the visible band. Layout puts
+    /// it below the fold; paint does not. Nothing should move.
+    #[test]
+    fn a_translated_subtree_already_in_view_is_not_scrolled() {
+        // spacer 0..500, wrapper 500..600 (translated -400 → paints 100..200),
+        // target 500..550 by layout, painted 100..150 — inside [0, 200].
+        let scroll = scroll_after_request(
+            "position: relative",
+            &[
+                ("height: 500px", ""),
+                (
+                    "transform: translateY(-400px); height: 100px",
+                    "height: 50px",
+                ),
+            ],
+        );
+        assert_eq!(scroll, 0.0, "the painted target is already visible");
+        // The layout-space walk read `rel_y = 500`, called it below the fold
+        // and scrolled to 550 - 200 = 350 — pushing a visible element away.
+        assert_ne!(scroll, 350.0, "the layout box is not what visibility means");
+    }
+
+    /// The same fault in the other direction: layout says visible, paint says
+    /// far below. This is the one that strands a Tab target off screen.
+    #[test]
+    fn a_translated_subtree_below_the_fold_is_scrolled_to() {
+        // wrapper 0..100 translated +400 → target painted 400..450; the
+        // container shows [0, 200], so it must scroll 450 - 200 = 250.
+        let scroll = scroll_after_request(
+            "position: relative",
+            &[
+                (
+                    "transform: translateY(400px); height: 100px",
+                    "height: 50px",
+                ),
+                ("height: 800px", ""),
+            ],
+        );
+        assert_eq!(scroll, 250.0);
+        assert_ne!(
+            scroll, 0.0,
+            "the layout-space walk thought a target painted 400px down was visible"
+        );
+    }
+
+    /// The scale case, and the reason there is no division anywhere in the fix.
+    /// `paint_node` composes the zoom's transform about the zoom's *own*
+    /// origin, which the scroll moves too — so the painted box tracks the
+    /// scroll 1:1 however deep the scale. Halving the distance "to undo the
+    /// scale" would leave the element still cut off.
+    #[test]
+    fn a_scaled_subtree_scrolls_by_the_painted_distance() {
+        // The zoom box sits at the container's origin under scale(2) about its
+        // own top-left. Its 150px of top padding puts the target's layout box
+        // at 150..200, so the target paints at 300..400. The container shows
+        // [0, 200] → scroll 400 - 200 = 200, not 100.
+        // (Padding, not a margin on the target: a margin collapses through the
+        // wrapper and moves the wrapper instead, which is a different fixture.)
+        let scroll = scroll_after_request(
+            "position: relative",
+            &[
+                (
+                    "transform: scale(2); transform-origin: 0 0; \
+                     height: 400px; padding-top: 150px",
+                    "height: 50px",
+                ),
+                ("height: 800px", ""),
+            ],
+        );
+        assert_eq!(scroll, 200.0, "the painted distance, not half of it");
+        assert_ne!(
+            scroll, 100.0,
+            "dividing by the composed scale leaves the target below the fold"
+        );
+        assert_ne!(
+            scroll, 0.0,
+            "the layout-space walk saw a 150..200 box and called it visible"
+        );
+    }
+
+    /// The container's *own* transform must be **inverted out**, not merely
+    /// subtracted: `scroll_offset` moves content in the container's own space,
+    /// so the measurement has to be taken there.
+    ///
+    /// A scale on the container is what separates the two. Under `scale(2)` a
+    /// target 350 container-pixels down paints 700 viewport-pixels below the
+    /// container's painted origin, so subtracting that origin — which is exact
+    /// for a translate, and is why this test scales rather than translates —
+    /// would scroll roughly twice as far as the content can justify.
+    #[test]
+    fn the_containers_own_scale_does_not_change_the_scroll() {
+        // Content: 300 + 50 + 1650 = 2000, so max_scroll is 1800 and neither
+        // candidate answer is clamped. Target at container-local 300..350;
+        // the container shows [0, 200] → scroll 350 - 200 = 150.
+        let children: &[(&'static str, &'static str)] = &[
+            ("height: 300px", ""),
+            ("height: 50px", "height: 50px"),
+            ("height: 1650px", ""),
+        ];
+        let plain = scroll_after_request("position: relative", children);
+        let scaled = scroll_after_request(
+            "position: relative; transform: scale(2); transform-origin: 0 0",
+            children,
+        );
+
+        assert_eq!(plain, 150.0);
+        assert_eq!(
+            scaled, plain,
+            "a transform on the container itself moves the container, not its content"
+        );
+        // Measuring in viewport space would have read the target's painted
+        // bottom as 700 below the container's painted origin and scrolled 500.
+        assert_ne!(scaled, 500.0, "the container's own scale must divide out");
     }
 }
