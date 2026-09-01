@@ -20,11 +20,14 @@
 //! `WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON` is a property of the
 //! *window*. It needs no permission, and the system honours it only while that
 //! window is the one being shown — background the app and the display timeout
-//! comes straight back on its own. The worst leak it can produce is a screen
-//! that stays lit while the user is looking at it, which is a bug with a very
-//! short half-life. That asymmetry is the whole argument: a keep-awake API is
-//! going to be misused eventually, and this is the one whose misuse the system
-//! cleans up.
+//! comes straight back. Note what that does and does not undo: the *effect* is
+//! suspended, the *flag* is not. It stays in the window's `LayoutParams`, so
+//! returning to the app holds the screen awake again, and nothing clears it
+//! before the activity dies. The worst leak it can produce is therefore a
+//! screen that does not sleep for the rest of the session — bounded by the
+//! activity, and costing nothing while the user is elsewhere. That asymmetry is
+//! the whole argument: a keep-awake API is going to be misused eventually, and
+//! this is the one whose misuse cannot follow the user out of the app.
 //!
 //! An app that genuinely needs the CPU to keep running with the screen off
 //! wants neither of these — it wants a foreground service, which is a manifest

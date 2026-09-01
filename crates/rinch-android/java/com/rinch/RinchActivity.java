@@ -194,8 +194,9 @@ public class RinchActivity extends NativeActivity {
      * {@code FLAG_KEEP_SCREEN_ON} is the right tool here and a wake lock is
      * not, even though both would keep the panel lit. The flag belongs to the
      * <em>window</em>: it holds the screen only while this window is the one
-     * being shown, the system drops it the moment the activity stops, and it
-     * needs no permission. A {@code PowerManager.WakeLock} belongs to the
+     * being shown — the system stops honouring it the moment the activity
+     * stops, though the flag itself stays set until something clears it — and
+     * it needs no permission. A {@code PowerManager.WakeLock} belongs to the
      * process, needs {@code WAKE_LOCK} in the manifest, and survives the app
      * being backgrounded — which is to say it survives every way an app has
      * of forgetting to release it, and the failure it produces is a phone that
