@@ -2426,6 +2426,17 @@ mod opacity_layer_bounds {
         );
         let child = doc.tree.get(subject).unwrap().children[0];
         let bounds = bounds_of(&doc, subject);
+        // `assert_ne!` first, and it is not decoration: `UNBOUNDED` contains
+        // every rect, so a containment assertion alone passes just as happily
+        // when the walk gives up on this branch entirely as when it measures
+        // it. This is the one branch where giving up is a *regression* — it is
+        // what the branch did before — so the test has to say that the answer
+        // is a measured rect and not the fallback.
+        assert_ne!(
+            bounds, UNBOUNDED,
+            "a collapsed container with a measurable child must be measured, \
+             not answered with the fallback"
+        );
         assert!(
             contains(bounds, box_of(&doc, child)),
             "bounds {bounds:?} must contain the child of a collapsed container \
