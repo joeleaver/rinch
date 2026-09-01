@@ -1058,6 +1058,99 @@ mod tests {
         );
     }
 
+    /// A percentage translate that is *not* the first function in the list
+    /// composes in the frame the functions before it establish (#212) — and
+    /// paint and hit testing have to say so together.
+    ///
+    /// `scale(2) translateX(50%)` on a 100px-wide box moves it 100px, not 50:
+    /// the offset is scaled by the `scale` that precedes it, exactly as a
+    /// `translateX(50px)` in the same position would be. The whole point of
+    /// #203 is that the box a click reports is the box paint drew, so this
+    /// asserts both ends against one hand-computed rect.
+    #[test]
+    fn a_scaled_percentage_translate_paints_and_hits_in_the_same_place() {
+        let (mut doc, container) = container_doc();
+        // Layout box (100,60)-(200,100), origin at its centre (150,80).
+        // m = [2,0,0,2, 100, 0]  (the 50% of 100px doubled by the scale), so
+        // the composed map is p -> (2x - 50, 2y - 80) and the painted box is
+        // (150,40)-(350,120). Before the fix m[4] was 50, putting it at
+        // (100,40)-(300,120).
+        let boxed = child_of(
+            &mut doc,
+            container,
+            "position: absolute; left: 100px; top: 60px; width: 100px; height: 40px; \
+             transform: scale(2) translateX(50%)",
+        );
+        doc.resolve_layout(800.0, 600.0);
+
+        let (px, py, pw, ph) = super::painted_element_box(&doc.tree, boxed.0);
+        for (got, want, what) in [
+            (px, 150.0, "x"),
+            (py, 40.0, "y"),
+            (pw, 200.0, "width"),
+            (ph, 80.0, "height"),
+        ] {
+            assert!(
+                (got - want).abs() < 0.01,
+                "painted {what}: got {got}, expected {want}"
+            );
+        }
+
+        assert_eq!(
+            hit_test(&doc.tree, 340.0, 80.0),
+            Some(boxed.0),
+            "a point inside the painted box's right end must hit it"
+        );
+        assert_eq!(
+            hit_test(&doc.tree, 110.0, 80.0),
+            Some(container.0),
+            "a point where the un-scaled offset used to put the box must miss it"
+        );
+    }
+
+    /// The same reconvergence with a rotation, where the offset changes
+    /// direction rather than magnitude.
+    ///
+    /// `rotate(45deg) translateX(50%)` sends the box's centre 50px along the
+    /// rotated x-axis, i.e. to `(150, 80) + (35.36, 35.36)`. Before the fix the
+    /// offset was applied in the outer frame, landing the centre at `(200, 80)`
+    /// — far enough away that each position misses the other's quad.
+    #[test]
+    fn a_rotated_percentage_translate_paints_and_hits_in_the_same_place() {
+        let (mut doc, container) = container_doc();
+        let boxed = child_of(
+            &mut doc,
+            container,
+            "position: absolute; left: 100px; top: 60px; width: 100px; height: 40px; \
+             transform: rotate(45deg) translateX(50%)",
+        );
+        doc.resolve_layout(800.0, 600.0);
+
+        // The bounding box of an affine image of a rectangle is centred on the
+        // image of the rectangle's centre, so this reads paint's answer for
+        // where the box went without hand-computing the rotated corners.
+        let (px, py, pw, ph) = super::painted_element_box(&doc.tree, boxed.0);
+        let (cx, cy) = (px + pw / 2.0, py + ph / 2.0);
+        let offset = 50.0 * std::f32::consts::FRAC_1_SQRT_2;
+        assert!(
+            (cx - (150.0 + offset)).abs() < 0.01 && (cy - (80.0 + offset)).abs() < 0.01,
+            "painted centre: got ({cx}, {cy}), expected ({}, {})",
+            150.0 + offset,
+            80.0 + offset
+        );
+
+        assert_eq!(
+            hit_test(&doc.tree, cx, cy),
+            Some(boxed.0),
+            "the painted centre must hit the box"
+        );
+        assert_eq!(
+            hit_test(&doc.tree, 200.0, 80.0),
+            Some(container.0),
+            "where the un-rotated offset used to put the box must now miss it"
+        );
+    }
+
     /// Nested transforms compose: the child is hit where the parent's translate
     /// and its own scale put it, not at either one alone.
     #[test]

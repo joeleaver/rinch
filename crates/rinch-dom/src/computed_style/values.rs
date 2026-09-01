@@ -906,18 +906,33 @@ pub struct BoxShadowValue {
 }
 
 /// Pre-computed 2D affine transform.
+///
+/// `matrix` carries the whole transform list *except* the percentage part of
+/// any `translate`, which cannot be resolved until the element's border box is
+/// known. That part is not a pair of scalars bolted onto `matrix[4]`/`[5]` at
+/// the end: CSS composes transform functions in list order, so a percentage
+/// translate takes effect in the frame the functions *before* it establish —
+/// in `rotate(45deg) translateX(50%)` the offset is rotated, and in
+/// `scale(2) translateX(50%)` it is doubled (#212).
+///
+/// Its total contribution to the final translation is nevertheless *linear* in
+/// the box's width and height, because each percentage translate contributes
+/// `L·(pₓ·W, p_y·H)` for the accumulated linear part `L` in effect at its
+/// position in the list. So four coefficients suffice however many translate
+/// functions appear, and `compose_node_transform` resolves them with two
+/// multiply-adds once the box is known.
 #[derive(Debug, Clone, Serialize)]
 pub struct TransformValue {
-    /// Pre-computed 2D affine matrix [a, b, c, d, e, f].
+    /// Pre-computed 2D affine matrix [a, b, c, d, e, f], with the percentage
+    /// part of every `translate` excluded (see the type doc).
     pub matrix: [f64; 6],
     /// Whether this is the identity transform (no-op).
     pub is_identity: bool,
-    /// Unresolved percentage-based translateX (fraction, e.g. 0.5 = 50%).
-    /// Resolved at paint time against element width.
-    pub translate_x_pct: f64,
-    /// Unresolved percentage-based translateY (fraction, e.g. 0.5 = 50%).
-    /// Resolved at paint time against element height.
-    pub translate_y_pct: f64,
+    /// The `(e, f)` contribution per unit of the element's **width**, summed
+    /// over every percentage `translateX` in the list, each in its own frame.
+    pub pct_translate_w: [f64; 2],
+    /// The same per unit of the element's **height**, for `translateY`.
+    pub pct_translate_h: [f64; 2],
 }
 
 impl Default for TransformValue {
@@ -925,8 +940,8 @@ impl Default for TransformValue {
         Self {
             matrix: [1.0, 0.0, 0.0, 1.0, 0.0, 0.0],
             is_identity: true,
-            translate_x_pct: 0.0,
-            translate_y_pct: 0.0,
+            pct_translate_w: [0.0, 0.0],
+            pct_translate_h: [0.0, 0.0],
         }
     }
 }

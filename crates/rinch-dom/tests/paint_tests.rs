@@ -1045,7 +1045,7 @@ mod transform_dpi_covariance {
     use peniko::kurbo::Affine;
 
     /// One `<div>` carrying `style`, laid out, plus its node id.
-    fn styled_div(style: &str) -> (RinchDocument, usize) {
+    pub(super) fn styled_div(style: &str) -> (RinchDocument, usize) {
         let mut doc = RinchDocument::new();
         let body = doc.body();
         let div = doc.create_element("div");
@@ -1055,7 +1055,7 @@ mod transform_dpi_covariance {
         (doc, div.0)
     }
 
-    fn affine_mismatch(actual: Affine, expected: Affine) -> Option<String> {
+    pub(super) fn affine_mismatch(actual: Affine, expected: Affine) -> Option<String> {
         let (a, e) = (actual.as_coeffs(), expected.as_coeffs());
         let bad = (0..6).find(|&i| (a[i] - e[i]).abs() >= 1e-6)?;
         Some(format!(
@@ -1066,7 +1066,7 @@ mod transform_dpi_covariance {
     #[test]
     fn compose_node_transform_is_covariant_in_scale() {
         // (name, transform declaration)
-        let transforms: [(&str, &str); 6] = [
+        let transforms: [(&str, &str); 8] = [
             ("translate(px)", "transform: translate(30px, 15px)"),
             ("translate(%)", "transform: translate(50%, -25%)"),
             ("rotate", "transform: rotate(30deg)"),
@@ -1079,6 +1079,14 @@ mod transform_dpi_covariance {
                 "matrix() with m4/m5",
                 "transform: matrix(1.2, 0.3, -0.4, 0.9, 25, -18)",
             ),
+            // The #212 shape: the percentage offset is resolved inside a
+            // non-identity frame, so it reaches `m[4]`/`m[5]` already rotated
+            // or scaled. It is still a pure length and must still scale.
+            (
+                "rotate+translate(%)",
+                "transform: rotate(45deg) translateX(50%)",
+            ),
+            ("scale+translate(%)", "transform: scale(2) translateX(50%)"),
         ];
         let origins: [(&str, &str); 2] = [
             ("default origin", ""),
@@ -1125,6 +1133,160 @@ mod transform_dpi_covariance {
             "compose_node_transform is not covariant in scale for {} case(s) (#202):\n{}",
             failures.len(),
             failures.join("\n")
+        );
+    }
+}
+
+// ── A percentage translate composes in list order (#212) ────────────────────
+//
+// `TransformValue` keeps the percentage part of a `translate` out of `matrix`,
+// because it cannot be resolved until Taffy has produced the border box. What
+// went wrong is *where* it was put back: it was added to the composed matrix's
+// final `e`/`f`, i.e. in the outer frame, after every linear function. CSS
+// composes transform functions in list order, so a percentage translate must
+// take effect in the frame the functions before it establish.
+//
+// Every expectation below is hand-computed from that rule and matches what a
+// browser reports for the same declaration.
+
+mod transform_percentage_translate {
+    use super::transform_dpi_covariance::{affine_mismatch, styled_div};
+    use peniko::kurbo::Affine;
+
+    /// cos 45° = sin 45°.
+    const C45: f64 = std::f64::consts::FRAC_1_SQRT_2;
+
+    /// Compose `style`'s transform at the viewport origin, at scale 1, under no
+    /// parent transform — so the assertion is on the raw matrix and does not
+    /// depend on body margins or where the box happened to be laid out.
+    fn composed(style: &str) -> Affine {
+        let (doc, id) = styled_div(style);
+        let node = doc.tree.get(id).expect("div should be in the tree");
+        assert!(
+            !node.computed_style.transform.is_identity,
+            "transform did not parse: {style}"
+        );
+        rinch_dom::paint::compose_node_transform(node, 0.0, 0.0, 1.0, Affine::IDENTITY)
+    }
+
+    /// A `100x40` box whose transform-origin is pinned to its top-left corner,
+    /// so the origin conjugation is the identity and the assertion is purely
+    /// about what went *into* the matrix.
+    fn box_100x40(transform: &str) -> Affine {
+        composed(&format!(
+            "width: 100px; height: 40px; transform-origin: 0 0; transform: {transform}"
+        ))
+    }
+
+    #[track_caller]
+    fn assert_matrix(actual: Affine, expected: [f64; 6], what: &str) {
+        if let Some(why) = affine_mismatch(actual, Affine::new(expected)) {
+            panic!("{what}: {why}");
+        }
+    }
+
+    /// **A.** `rotate(45deg) translateX(50%)` on a 100px-wide box: the 50px
+    /// offset is applied in the rotated frame, so it lands on the diagonal.
+    /// Chrome: `matrix(0.707107, 0.707107, -0.707107, 0.707107, 35.3553,
+    /// 35.3553)`. Before the fix rinch produced `(…, 50, 0)`.
+    #[test]
+    fn rotation_before_a_percentage_translate_rotates_the_offset() {
+        assert_matrix(
+            box_100x40("rotate(45deg) translateX(50%)"),
+            [C45, C45, -C45, C45, 50.0 * C45, 50.0 * C45],
+            "rotate(45deg) translateX(50%)",
+        );
+    }
+
+    /// **B.** `scale(2) translateX(50%)`: the offset is scaled too — this is
+    /// why the bug is not confined to rotation and skew. Chrome reports
+    /// `matrix(2, 0, 0, 2, 100, 0)`; before the fix rinch said `100 → 50`.
+    #[test]
+    fn scale_before_a_percentage_translate_scales_the_offset() {
+        assert_matrix(
+            box_100x40("scale(2) translateX(50%)"),
+            [2.0, 0.0, 0.0, 2.0, 100.0, 0.0],
+            "scale(2) translateX(50%)",
+        );
+    }
+
+    /// **C (positive control).** The reverse order was always right and must
+    /// stay right: the translate is first, so the linear part in effect at that
+    /// point is the identity and the following `scale` touches only the linear
+    /// part.
+    #[test]
+    fn a_leading_percentage_translate_is_not_scaled_by_what_follows() {
+        assert_matrix(
+            box_100x40("translateX(50%) scale(2)"),
+            [2.0, 0.0, 0.0, 2.0, 50.0, 0.0],
+            "translateX(50%) scale(2)",
+        );
+    }
+
+    /// **D (positive control).** The centring idiom — the overwhelmingly common
+    /// real-world case, and the one every shipped component uses. Unchanged.
+    #[test]
+    fn the_centring_idiom_is_unchanged() {
+        assert_matrix(
+            composed(
+                "width: 200px; height: 100px; transform-origin: 0 0; \
+                 transform: translate(-50%, -50%)",
+            ),
+            [1.0, 0.0, 0.0, 1.0, -100.0, -50.0],
+            "translate(-50%, -50%)",
+        );
+    }
+
+    /// **E (positive control, and the cleanest statement of the bug).** CSS
+    /// guarantees that on a 100px-wide box `translateX(50%)` *is*
+    /// `translateX(50px)` — the percentage resolves against the border box and
+    /// nothing else distinguishes them. So the two declarations must compose to
+    /// the same matrix under any prefix. They did not.
+    #[test]
+    fn fifty_percent_of_a_hundred_px_box_is_fifty_px_in_any_frame() {
+        let pct = box_100x40("rotate(45deg) translateX(50%)");
+        let px = box_100x40("rotate(45deg) translateX(50px)");
+        if let Some(why) = affine_mismatch(pct, px) {
+            panic!(
+                "rotate(45deg) translateX(50%) must equal rotate(45deg) translateX(50px) \
+                 on a 100px-wide box: {why}"
+            );
+        }
+    }
+
+    /// **F.** Both axes, with a non-identity frame between the two translates —
+    /// this is the case a fix that only repaired `translateX` would fail.
+    ///
+    /// `translateX(50%)` runs in the identity frame → `(50, 0)`. After
+    /// `rotate(90deg)` the local x-axis points at `(0, 1)` and the local y-axis
+    /// at `(-1, 0)`, so `translateY(50%)` of the 40px height moves `(-20, 0)`.
+    /// Total `(30, 0)`. Before the fix: `(50, 20)` — the second offset applied
+    /// unrotated, on the wrong axis.
+    #[test]
+    fn two_percentage_translates_each_use_their_own_frame() {
+        assert_matrix(
+            box_100x40("translateX(50%) rotate(90deg) translateY(50%)"),
+            [0.0, 1.0, -1.0, 0.0, 30.0, 0.0],
+            "translateX(50%) rotate(90deg) translateY(50%)",
+        );
+    }
+
+    /// **G.** `transform-origin` and the percentage translate are not
+    /// conflated, even though both resolve against the same border box. The
+    /// origin is a conjugation applied *outside* the composed matrix and is
+    /// untouched by this fix; only what goes into the matrix changed.
+    ///
+    /// `rotate(90deg) translateX(50%)` gives `m = [0, 1, -1, 0, 0, 50]`.
+    /// Conjugating by the origin `(100, 20)` maps `(x, y) → (120 − y, x − 30)`.
+    #[test]
+    fn transform_origin_is_not_conflated_with_the_percentage_translate() {
+        assert_matrix(
+            composed(
+                "width: 100px; height: 40px; transform-origin: 100% 50%; \
+                 transform: rotate(90deg) translateX(50%)",
+            ),
+            [0.0, 1.0, -1.0, 0.0, 120.0, -30.0],
+            "rotate(90deg) translateX(50%) about 100% 50%",
         );
     }
 }

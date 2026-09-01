@@ -510,6 +510,94 @@ fn test_transform_scale() {
     );
 }
 
+/// The four coefficients `TransformValue` carries for percentage translates
+/// are accumulated in the frame each translate actually runs in (#212), so a
+/// regression names the accumulation rather than the composition downstream.
+#[test]
+fn test_transform_percentage_translate_coefficients() {
+    // (declaration, expected pct_translate_w, expected pct_translate_h)
+    let cases: [(&str, [f64; 2], [f64; 2]); 4] = [
+        // Leading translate: the frame is the identity, so the coefficients
+        // are just the fractions. This is what every shipped component does.
+        ("translate(-50%, -50%)", [-0.5, 0.0], [0.0, -0.5]),
+        // Behind a scale, the x fraction picks up the scale.
+        ("scale(2) translateX(50%)", [1.0, 0.0], [0.0, 0.0]),
+        // Behind a 90° rotation, `translateX` moves along the *y* axis, so its
+        // contribution lands in the second coefficient.
+        ("rotate(90deg) translateX(50%)", [0.0, 0.5], [0.0, 0.0]),
+        // Two translates in different frames: the second is rotated, the
+        // first is not.
+        (
+            "translateX(50%) rotate(90deg) translateY(50%)",
+            [0.5, 0.0],
+            [-0.5, 0.0],
+        ),
+    ];
+
+    for (decl, want_w, want_h) in cases {
+        let mut doc = RinchDocument::new();
+        let body = doc.body();
+        let div = doc.create_element("div");
+        doc.set_attribute(
+            div,
+            "style",
+            &format!("width: 100px; height: 40px; transform: {decl}"),
+        );
+        doc.append_child(body, div);
+        doc.resolve_layout(800.0, 600.0);
+
+        let tf = &doc.tree.get(div.0).unwrap().computed_style.transform;
+        assert!(
+            !tf.is_identity,
+            "{decl}: a percentage translate is not a no-op"
+        );
+        for i in 0..2 {
+            assert!(
+                (tf.pct_translate_w[i] - want_w[i]).abs() < 1e-9,
+                "{decl}: pct_translate_w = {:?}, expected {want_w:?}",
+                tf.pct_translate_w
+            );
+            assert!(
+                (tf.pct_translate_h[i] - want_h[i]).abs() < 1e-9,
+                "{decl}: pct_translate_h = {:?}, expected {want_h:?}",
+                tf.pct_translate_h
+            );
+        }
+    }
+}
+
+/// `translate3d()` is the 2D translate with a z that flattening drops — not the
+/// identity it used to fall through to, and its percentage part accumulates
+/// like any other translate's (#212, #405).
+#[test]
+fn test_transform_translate3d_is_not_identity() {
+    let mut doc = RinchDocument::new();
+    let body = doc.body();
+    let div = doc.create_element("div");
+    doc.set_attribute(
+        div,
+        "style",
+        "width: 100px; height: 40px; transform: scale(2) translate3d(50%, 10px, 5px)",
+    );
+    doc.append_child(body, div);
+    doc.resolve_layout(800.0, 600.0);
+
+    let tf = &doc.tree.get(div.0).unwrap().computed_style.transform;
+    assert!(!tf.is_identity, "translate3d must not flatten to identity");
+    assert!(
+        (tf.pct_translate_w[0] - 1.0).abs() < 1e-9,
+        "the 50% must be doubled by the preceding scale, got {:?}",
+        tf.pct_translate_w
+    );
+    // The px part rides the matrix and is doubled by the scale like any other
+    // length: e = 2 * 0, f = 2 * 10.
+    assert!(
+        tf.matrix[4].abs() < 1e-9 && (tf.matrix[5] - 20.0).abs() < 1e-9,
+        "translate3d's px part should compose normally, got {:?}",
+        tf.matrix
+    );
+}
+
 // ===== Background Gradient Tests =====
 
 #[test]

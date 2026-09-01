@@ -310,11 +310,15 @@ pub fn compose_node_transform(
         return parent_transform;
     }
     let mut m = tf.matrix;
-    // Resolve percentage-based translate against element dimensions
-    if tf.translate_x_pct.abs() > 1e-9 || tf.translate_y_pct.abs() > 1e-9 {
-        m[4] += tf.translate_x_pct * node.layout.width as f64;
-        m[5] += tf.translate_y_pct * node.layout.height as f64;
-    }
+    // A percentage translate resolves against the element's own border box —
+    // but *in the frame its position in the function list establishes*, so its
+    // contribution is a linear form in the box's width and height, not a pair
+    // of pixel offsets added to the end of the composed matrix (#212).
+    // `TransformValue` carries the four coefficients; this is where the box
+    // they multiply finally arrives.
+    let (w, h) = (node.layout.width as f64, node.layout.height as f64);
+    m[4] += tf.pct_translate_w[0] * w + tf.pct_translate_h[0] * h;
+    m[5] += tf.pct_translate_w[1] * w + tf.pct_translate_h[1] * h;
     // The translate components are *lengths*: `m[4]`/`m[5]` come from the
     // stylesheet in CSS px and the percentage part resolves against the CSS-px
     // layout box, so both need converting to the physical-pixel space this
