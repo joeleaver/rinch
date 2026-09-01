@@ -24,6 +24,7 @@ import android.location.LocationListener;
 import android.location.LocationManager;
 import android.provider.MediaStore;
 import android.view.ViewGroup;
+import android.view.WindowManager;
 import android.view.inputmethod.InputMethodManager;
 
 import java.io.ByteArrayOutputStream;
@@ -182,6 +183,45 @@ public class RinchActivity extends NativeActivity {
                 : android.view.View.SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR;
         int flags = decorView.getSystemUiVisibility();
         decorView.setSystemUiVisibility(light ? (flags | flag) : (flags & ~flag));
+    }
+
+    // ── Keep Screen On ──────────────────────────────────────
+
+    /**
+     * Stop the display timeout while this window is in front, or let it run
+     * again.
+     *
+     * {@code FLAG_KEEP_SCREEN_ON} is the right tool here and a wake lock is
+     * not, even though both would keep the panel lit. The flag belongs to the
+     * <em>window</em>: it holds the screen only while this window is the one
+     * being shown, the system drops it the moment the activity stops, and it
+     * needs no permission. A {@code PowerManager.WakeLock} belongs to the
+     * process, needs {@code WAKE_LOCK} in the manifest, and survives the app
+     * being backgrounded — which is to say it survives every way an app has
+     * of forgetting to release it, and the failure it produces is a phone that
+     * quietly does not sleep for the rest of the day.
+     *
+     * Setting it costs nothing when it is already set: {@code addFlags} is an
+     * or, {@code clearFlags} an and-not, so this is safe to call on every
+     * change of whatever state the caller is mirroring rather than only on the
+     * edges.
+     *
+     * @param keepOn whether the screen should stay on while this window shows
+     */
+    public void setKeepScreenOn(boolean keepOn) {
+        // On the UI thread, and only there. Window flags are read by the view
+        // hierarchy without a lock, and a flag written from the native frame
+        // thread is a flag whose effect is decided by a race: on a good day the
+        // next relayout picks it up, on a bad one the write lands in the middle
+        // of one and does nothing at all. The same rule the IME and the bar
+        // appearance above already follow, for the same reason.
+        runOnUiThread(() -> {
+            if (keepOn) {
+                getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+            } else {
+                getWindow().clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+            }
+        });
     }
 
     // Activity lifecycle (pause/resume) is delivered to the native run loop via

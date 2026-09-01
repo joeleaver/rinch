@@ -57,6 +57,8 @@ pub mod notification;
 #[cfg(target_os = "android")]
 pub mod permissions;
 pub(crate) mod scoped;
+#[cfg(target_os = "android")]
+pub mod screen;
 pub mod sensors;
 #[cfg(target_os = "android")]
 pub mod share;
