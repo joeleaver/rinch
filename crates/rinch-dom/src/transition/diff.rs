@@ -301,11 +301,13 @@ fn transforms_equal(a: &TransformValue, b: &TransformValue) -> bool {
             return false;
         }
     }
-    if (a.translate_x_pct - b.translate_x_pct).abs() > 0.001 {
-        return false;
-    }
-    if (a.translate_y_pct - b.translate_y_pct).abs() > 0.001 {
-        return false;
+    for i in 0..2 {
+        if (a.pct_translate_w[i] - b.pct_translate_w[i]).abs() > 0.001 {
+            return false;
+        }
+        if (a.pct_translate_h[i] - b.pct_translate_h[i]).abs() > 0.001 {
+            return false;
+        }
     }
     true
 }

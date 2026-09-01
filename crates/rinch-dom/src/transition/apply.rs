@@ -93,8 +93,8 @@ pub fn apply_value_to_style(
             style.transform = TransformValue {
                 matrix: *m,
                 is_identity: false,
-                translate_x_pct: 0.0,
-                translate_y_pct: 0.0,
+                pct_translate_w: [0.0, 0.0],
+                pct_translate_h: [0.0, 0.0],
             };
         }
         (TransitionProperty::Transform, AnimatableValue::TransformComponents(ops)) => {
@@ -102,8 +102,8 @@ pub fn apply_value_to_style(
             style.transform = TransformValue {
                 matrix,
                 is_identity: false,
-                translate_x_pct: 0.0,
-                translate_y_pct: 0.0,
+                pct_translate_w: [0.0, 0.0],
+                pct_translate_h: [0.0, 0.0],
             };
         }
         _ => {}
