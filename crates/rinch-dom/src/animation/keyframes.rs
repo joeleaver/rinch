@@ -217,7 +217,16 @@ fn convert_declaration(
             parse_css_transform_components(&css_text).map(|ops| {
                 (
                     TransitionProperty::Transform,
-                    AnimatableValue::TransformComponents(ops),
+                    // An authored `@keyframes` stop is parsed by this file's own
+                    // mini-parser, which drops a percentage translate on the
+                    // floor before it ever reaches a `TransformOp` — a separate
+                    // gap from #403, tracked as its own issue. The channel is
+                    // zero here until that is fixed.
+                    AnimatableValue::TransformComponents {
+                        ops,
+                        pct_translate_w: [0.0, 0.0],
+                        pct_translate_h: [0.0, 0.0],
+                    },
                 )
             })
         }
@@ -250,14 +259,22 @@ fn extract_base_style_values(style: &ComputedStyle) -> Vec<(TransitionProperty, 
     if !style.transform.is_identity {
         values.push((
             TransitionProperty::Transform,
-            AnimatableValue::TransformComponents(vec![TransformOp::Matrix(style.transform.matrix)]),
+            AnimatableValue::TransformComponents {
+                ops: vec![TransformOp::Matrix(style.transform.matrix)],
+                // The percentage part of a translate lives outside the matrix
+                // and would otherwise be lost for the whole animation (#403).
+                pct_translate_w: style.transform.pct_translate_w,
+                pct_translate_h: style.transform.pct_translate_h,
+            },
         ));
     } else {
         values.push((
             TransitionProperty::Transform,
-            AnimatableValue::TransformComponents(vec![TransformOp::Matrix([
-                1.0, 0.0, 0.0, 1.0, 0.0, 0.0,
-            ])]),
+            AnimatableValue::TransformComponents {
+                ops: vec![TransformOp::Matrix([1.0, 0.0, 0.0, 1.0, 0.0, 0.0])],
+                pct_translate_w: [0.0, 0.0],
+                pct_translate_h: [0.0, 0.0],
+            },
         ));
     }
 
