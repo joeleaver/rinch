@@ -23,9 +23,13 @@
 //! zero-area path in `paint/mod.rs` already does — makes the two agree by
 //! giving Vello no information at all. What this module does instead is keep
 //! the bounds *meaningful*: [`opacity_layer_bounds`] walks the subtree and
-//! returns the union of what it will actually paint, so Vello's clip becomes a
-//! real optimisation hint that never cuts anything off, and the software
-//! painter — which ignores it — is unaffected either way.
+//! returns the union of what it will actually paint, so Vello's clip becomes an
+//! optimisation hint rather than a lie, and the software painter — which
+//! ignores it — is unaffected either way. "Rather than a lie" is the honest
+//! strength of that claim: it holds absolutely for every layer root with a box,
+//! and with one stated exception for a root collapsed to zero area. Both are
+//! spelled out under "The one rule" below, and the exception is the first thing
+//! to read if something in this module ever appears to cut content off.
 //!
 //! # The one rule
 //!
@@ -36,11 +40,37 @@
 //! — the same ±1e7 rect the zero-area path has always used. It is never a
 //! guess: it is either mirrored from what `paint_node` does, or it is unknown.
 //!
-//! A useful safety property falls out of that: the walk starts from the
-//! element's own border box and only ever unions onto it (the intersection in
+//! A useful safety property falls out of that, and it is worth stating with its
+//! exception rather than without, because the exception is where the next bug
+//! will be. For a layer root with a **non-degenerate box**, the walk starts
+//! from that box and only ever unions onto it — the intersection in
 //! [`Walk::node`] applies to *descendants* of a clipping box, never to the
-//! subtree root), so the result always contains the border box that used to be
-//! passed. This change cannot make any layer smaller than it was.
+//! subtree root — so the result contains the border-box rect `paint_node` used
+//! to pass, and for those roots this change cannot make a layer smaller than it
+//! was.
+//!
+//! The **zero-area root is not covered by that**, and it is the one place this
+//! change can clip something that was not clipped before. `paint_node`'s
+//! `(width == 0) != (height == 0)` branch paints only children, so the walk's
+//! matching branch returns the children's extent with no root box unioned onto
+//! it — and that branch used to pass [`UNBOUNDED`] unconditionally, precisely
+//! because a bounds that is wrong there blanks the subtree. A computed answer
+//! is therefore a real trade, not a free tightening: everything paint draws
+//! outside a descendant's layout box that this walk does not model is now
+//! clipped under such a root. The known items are an on-demand text layout
+//! wider than the box Taffy sized (the fallback arm in `paint_node`'s text arm,
+//! #127), `paint_input_value`, which pushes no clip of its own at all, an
+//! inline span's `background` padding reaching above its line box, and the
+//! glyph ink noted below.
+//!
+//! It is kept rather than reverted because the alternative — answer
+//! [`UNBOUNDED`] for every zero-area root and keep the absolute invariant —
+//! throws away the branch's whole benefit to protect a case no one has been
+//! able to construct an actual lost pixel for, and because the branch is a
+//! container collapsed on one axis, which is rare and rarely holds an
+//! unmodelled overhang. **If you are here because something inside a collapsed
+//! container is being cut off on the GPU path, this paragraph is the reason and
+//! returning [`UNBOUNDED`] at that branch is the fix.**
 //!
 //! # Mirroring, not re-deriving
 //!
@@ -323,6 +353,14 @@ impl Walk<'_> {
             // walk descends *through* it to hoist positioned descendants out,
             // and those are painted. Recursing into it costs a level and can
             // only enlarge the result, which is the right way to be wrong.
+            //
+            // Read that "only enlarge" narrowly: it is measured against *not*
+            // recursing, not against what this branch used to return. When the
+            // collapsed box is the layer root, `paint_node` passed `UNBOUNDED`
+            // here, so any extent computed below — however carefully — is a
+            // smaller shape than the one this branch shipped before, and it is
+            // the only branch of which that is true. The module doc's safety
+            // property is stated with this exception; see "The one rule".
             let transform = self.own_transform(node, x, y, parent_transform, is_root);
             return self.children(node, x - scroll.x, y - scroll.y, transform, depth);
         }
