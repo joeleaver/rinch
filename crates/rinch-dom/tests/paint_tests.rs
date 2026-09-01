@@ -755,6 +755,65 @@ mod transform_paint {
         );
     }
 
+    /// #212 × #402: an opacity layer's bounds are computed by a walk that
+    /// mirrors paint's arithmetic, [`compose_node_transform`] included — so a
+    /// percentage translate that composes in a *rotated* frame has to carry the
+    /// layer with it. Where the two disagree, Vello clips every command in the
+    /// layer to bounds sized for somewhere the content no longer is, and the
+    /// subtree vanishes on the GPU path while the software path draws it (the
+    /// software painter ignores the shape, which is why this asserts on the
+    /// rect rather than on pixels).
+    ///
+    /// Nothing pinned the pairing: `layer_bounds.rs` landed on `main` after
+    /// this branch was cut, so its walk has never met a #212-shaped transform.
+    #[test]
+    fn an_opacity_layers_bounds_follow_a_percentage_translate_into_its_rotated_frame() {
+        let mut doc = RinchDocument::new();
+        let body = doc.body();
+        doc.set_attribute(body, "style", "margin: 0");
+
+        let layer = doc.create_element("div");
+        doc.set_attribute(
+            layer,
+            "style",
+            "position: relative; margin-left: 100px; margin-top: 100px; \
+             width: 50px; height: 20px; opacity: 0.5",
+        );
+        doc.append_child(body, layer);
+
+        let child = doc.create_element("div");
+        doc.set_attribute(
+            child,
+            "style",
+            "position: absolute; left: 0; top: 0; width: 50px; height: 20px; \
+             background-color: red; transform-origin: 0 0; \
+             transform: rotate(90deg) translateX(100%)",
+        );
+        doc.append_child(layer, child);
+        doc.resolve_layout(800.0, 600.0);
+
+        let layer_node = doc.tree.get(layer.0).expect("the layer is in the tree");
+        let (lx, ly) = (layer_node.layout.x as f64, layer_node.layout.y as f64);
+        let bounds = rinch_dom::paint::opacity_layer_bounds(&doc.tree, layer.0, 1.0, lx, ly);
+        assert!(
+            bounds != rinch_dom::paint::UNBOUNDED,
+            "this subtree is small enough for the walk to bound it; \
+             an UNBOUNDED answer would make the assertion below vacuous"
+        );
+
+        // Where paint says the child went. Read rather than hand-computed, so
+        // this asserts layer/paint *agreement* — `transform_percentage_translate`
+        // owns #212's arithmetic itself.
+        let painted = rinch_dom::paint::painted_border_box(&doc.tree, child.0, 1.0);
+        assert!(
+            bounds.x0 <= painted.x0 + 0.01
+                && bounds.y0 <= painted.y0 + 0.01
+                && bounds.x1 >= painted.x1 - 0.01
+                && bounds.y1 >= painted.y1 - 0.01,
+            "the opacity layer's bounds {bounds:?} must cover the box paint draws, {painted:?}"
+        );
+    }
+
     /// #142 (offset half): children of a collapsed box must paint relative to
     /// the box's own origin, not its parent's.
     #[test]
