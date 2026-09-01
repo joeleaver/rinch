@@ -384,12 +384,12 @@ impl Walk<'_> {
         // approximation left where it was rather than a new one introduced here.
         let mut extent = Extent::Within(transform.transform_rect_bbox(own));
         if let Some(inline) = &node.text_layout {
-            let content_x =
-                x + (cs.padding_left.to_px() + cs.border_left_width.to_px()) as f64 * self.scale
-                    - scroll.x;
-            let content_y =
-                y + (cs.padding_top.to_px() + cs.border_top_width.to_px()) as f64 * self.scale
-                    - scroll.y;
+            let content_x = x
+                + (cs.padding_left.to_px() + cs.border_left_width.to_px()) as f64 * self.scale
+                - scroll.x;
+            let content_y = y
+                + (cs.padding_top.to_px() + cs.border_top_width.to_px()) as f64 * self.scale
+                - scroll.y;
             let text = Rect::new(
                 content_x,
                 content_y,
@@ -466,10 +466,7 @@ impl Walk<'_> {
             let Some(child) = self.tree.get(child_id) else {
                 continue;
             };
-            if ifc_root
-                && child.ifc_root == Some(node.id)
-                && !child.creates_stacking_context()
-            {
+            if ifc_root && child.ifc_root == Some(node.id) && !child.creates_stacking_context() {
                 continue;
             }
             acc = acc.union(self.node(child_id, offset_x, offset_y, transform, false, depth + 1));

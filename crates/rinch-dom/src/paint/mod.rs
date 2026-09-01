@@ -18,8 +18,8 @@ pub mod skia_painter;
 
 use borders::*;
 use contenteditable::*;
-pub use layer_bounds::{UNBOUNDED, opacity_layer_bounds};
 use layer_bounds::opacity_layer_shape;
+pub use layer_bounds::{UNBOUNDED, opacity_layer_bounds};
 use svg::*;
 use text::*;
 
@@ -1166,9 +1166,8 @@ fn paint_node(
                                     let rect = Rect::new(x, y, x + w, y + h);
                                     let opacity = node.computed_style.opacity;
                                     if opacity < 1.0 {
-                                        let bounds = opacity_layer_shape(
-                                            tree, node_id, scale, x, y,
-                                        );
+                                        let bounds =
+                                            opacity_layer_shape(tree, node_id, scale, x, y);
                                         painter.push_layer(
                                             BlendMode::Normal,
                                             opacity,

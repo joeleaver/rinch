@@ -2287,12 +2287,7 @@ mod opacity_layer_bounds {
         // rotate(45deg) about the default centre origin: the 40x40 box's
         // bounding box grows to 40*sqrt(2), i.e. ~8.28 past each edge.
         let out = (40.0 * std::f64::consts::SQRT_2 - 40.0) / 2.0;
-        let swung = Rect::new(
-            rect.x0 - out,
-            rect.y0 - out,
-            rect.x1 + out,
-            rect.y1 + out,
-        );
+        let swung = Rect::new(rect.x0 - out, rect.y0 - out, rect.x1 + out, rect.y1 + out);
         let bounds = bounds_of(&doc, subject);
         assert!(
             contains(bounds, swung),
@@ -2310,7 +2305,11 @@ mod opacity_layer_bounds {
             let mut doc = RinchDocument::new();
             let body = doc.body();
             let subject = doc.create_element("div");
-            doc.set_attribute(subject, "style", "width: 100px; height: 100px; opacity: 0.5");
+            doc.set_attribute(
+                subject,
+                "style",
+                "width: 100px; height: 100px; opacity: 0.5",
+            );
             doc.append_child(body, subject);
             let scroller = doc.create_element("div");
             doc.set_attribute(
@@ -2397,7 +2396,11 @@ mod opacity_layer_bounds {
         let mut doc = RinchDocument::new();
         let body = doc.body();
         let subject = doc.create_element("div");
-        doc.set_attribute(subject, "style", "width: 100px; height: 100px; opacity: 0.5");
+        doc.set_attribute(
+            subject,
+            "style",
+            "width: 100px; height: 100px; opacity: 0.5",
+        );
         doc.append_child(body, subject);
         let mut parent = subject;
         for _ in 0..40 {
@@ -2436,6 +2439,83 @@ mod opacity_layer_bounds {
             UNBOUNDED,
             "with no box and nothing inside it there is nothing to measure, and \
              a degenerate clip would blank whatever paint draws anyway"
+        );
+    }
+    /// An inline-block is reached *only* through the inline formatting context
+    /// that positions it: `children` skips it in the ordinary child walk
+    /// (`ifc_root == Some(subject)` and it forms no stacking context), exactly
+    /// as `paint_children_with_stacking`'s `already_drawn_inline` does, so the
+    /// only thing that can put it in the union is the walk over the Parley
+    /// layout's inline boxes.
+    ///
+    /// The assertion is on the inline-block's outset `box-shadow` rather than
+    /// on its box, because the box alone is already covered by the IFC's own
+    /// measured extent — a test written on the box passes with the inline-box
+    /// walk deleted and proves nothing. The shadow reaches past the line box,
+    /// so only the per-node measurement of the inline-block itself can see it.
+    #[test]
+    fn an_inline_block_is_reached_through_its_ifc() {
+        let mut doc = RinchDocument::new();
+        let body = doc.body();
+        let subject = doc.create_element("div");
+        doc.set_attribute(subject, "style", "width: 200px; height: 60px; opacity: 0.5");
+        doc.append_child(body, subject);
+        let text = doc.create_text("hi ");
+        doc.append_child(subject, text);
+        let inline_block = doc.create_element("span");
+        doc.set_attribute(
+            inline_block,
+            "style",
+            "display: inline-block; width: 20px; height: 20px; \
+             box-shadow: 0 0 0 40px rgba(0, 0, 0, 0.5)",
+        );
+        doc.append_child(subject, inline_block);
+        doc.resolve_layout(800.0, 600.0);
+
+        // Precondition: the ordinary child walk really does skip it, so the
+        // assertion below is about the IFC path and nothing else.
+        let ib = doc.tree.get(inline_block.0).unwrap();
+        assert_eq!(
+            ib.ifc_root,
+            Some(subject.0),
+            "precondition: the inline-block is positioned by the subject's IFC"
+        );
+        assert!(
+            !ib.creates_stacking_context(),
+            "precondition: it forms no stacking context, so the ordinary child \
+             walk skips it as already drawn inline"
+        );
+
+        let ib_box = box_of(&doc, inline_block.0);
+        let spread = Rect::new(
+            ib_box.x0 - 40.0,
+            ib_box.y0 - 40.0,
+            ib_box.x1 + 40.0,
+            ib_box.y1 + 40.0,
+        );
+        let bounds = bounds_of(&doc, subject.0);
+        assert!(
+            contains(bounds, spread),
+            "bounds {bounds:?} must contain the inline-block's shadow {spread:?} \
+             — it is reachable only through the IFC's inline boxes"
+        );
+    }
+
+    /// The layer's *own* transform is applied by the painter to the shape these
+    /// bounds become, so the walk must return them in the element's
+    /// untransformed space. Composing the root's transform here as well would
+    /// rotate the rect twice and hand Vello a clip at the wrong angle.
+    #[test]
+    fn the_layers_own_transform_is_not_composed_into_its_bounds() {
+        let (doc, subject) = doc_with(
+            "width: 40px; height: 40px; opacity: 0.5; transform: rotate(45deg)",
+            &[],
+        );
+        assert_eq!(
+            bounds_of(&doc, subject),
+            box_of(&doc, subject),
+            "push_layer applies the node's transform to the bounds shape, so the \
+             bounds are the untransformed border box"
         );
     }
 }
