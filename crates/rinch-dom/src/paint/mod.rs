@@ -6,6 +6,7 @@
 mod borders;
 mod contenteditable;
 pub mod image;
+mod layer_bounds;
 pub mod painter;
 mod select;
 mod svg;
@@ -17,6 +18,8 @@ pub mod skia_painter;
 
 use borders::*;
 use contenteditable::*;
+use layer_bounds::opacity_layer_shape;
+pub use layer_bounds::{UNBOUNDED, opacity_layer_bounds};
 use svg::*;
 use text::*;
 
@@ -935,12 +938,14 @@ fn paint_node(
             let opacity = node.computed_style.opacity;
             let has_opacity = opacity < 1.0;
             if has_opacity {
-                // The element's own rect is zero-area and push_layer clips to
-                // its bounds shape, which would blank the subtree — use a
-                // conservative large rect instead (tiny-skia ignores layer
-                // bounds; Vello merely clips to them).
-                let bounds = Rect::new(-1e7, -1e7, 1e7, 1e7);
-                painter.push_layer(BlendMode::Normal, opacity, node_transform, &bounds.into());
+                // The element's own rect is zero-area and Vello clips a layer
+                // to its bounds shape, which would blank the subtree. The
+                // subtree's own extent is the right answer here as it is
+                // everywhere else, and [`opacity_layer_bounds`] falls back to
+                // the conservative `UNBOUNDED` rect this branch used to pass
+                // whenever it cannot work one out (card K36).
+                let bounds = opacity_layer_shape(tree, node_id, scale, x, y);
+                painter.push_layer(BlendMode::Normal, opacity, node_transform, &bounds);
             }
 
             let scroll_x = node.scroll_offset.0 * scale;
@@ -1056,10 +1061,12 @@ fn paint_node(
 
             let fit = node.computed_style.object_fit;
 
-            // Opacity
+            // Opacity. Bounds as in the general element arm below: the
+            // subtree's painted extent, not this element's border box.
             let opacity = node.computed_style.opacity;
             if opacity < 1.0 {
-                painter.push_layer(BlendMode::Normal, opacity, node_transform, &rect.into());
+                let bounds = opacity_layer_shape(tree, node_id, scale, x, y);
+                painter.push_layer(BlendMode::Normal, opacity, node_transform, &bounds);
             }
 
             // Paint background (if any) before image
@@ -1110,7 +1117,8 @@ fn paint_node(
             let rect = Rect::new(x, y, x + w, y + h);
             let opacity = node.computed_style.opacity;
             if opacity < 1.0 {
-                painter.push_layer(BlendMode::Normal, opacity, node_transform, &rect.into());
+                let bounds = opacity_layer_shape(tree, node_id, scale, x, y);
+                painter.push_layer(BlendMode::Normal, opacity, node_transform, &bounds);
             }
 
             let visible = !matches!(
@@ -1211,11 +1219,13 @@ fn paint_node(
                                     let rect = Rect::new(x, y, x + w, y + h);
                                     let opacity = node.computed_style.opacity;
                                     if opacity < 1.0 {
+                                        let bounds =
+                                            opacity_layer_shape(tree, node_id, scale, x, y);
                                         painter.push_layer(
                                             BlendMode::Normal,
                                             opacity,
                                             node_transform,
-                                            &rect.into(),
+                                            &bounds,
                                         );
                                     }
 
@@ -1274,7 +1284,8 @@ fn paint_node(
             );
             let opacity = node.computed_style.opacity;
             if opacity < 1.0 {
-                painter.push_layer(BlendMode::Normal, opacity, node_transform, &rect.into());
+                let bounds = opacity_layer_shape(tree, node_id, scale, x, y);
+                painter.push_layer(BlendMode::Normal, opacity, node_transform, &bounds);
             }
             if visible {
                 if let BackgroundValue::Color(bg_color) = &node.computed_style.background {
@@ -1315,10 +1326,18 @@ fn paint_node(
             };
 
             // Get opacity from computed style and push layer if needed
+            // The layer's bounds are the union of what the subtree
+            // actually paints, not this element's border box —
+            // [`opacity_layer_bounds`]. tiny-skia ignores the shape; Vello
+            // clips every command in the layer to it, and a stacking context
+            // does not clip its descendants, so a box shadow or an overflowing
+            // child used to be drawn by one painter and thrown away by the
+            // other (card K36).
             let opacity = node.computed_style.opacity;
             let has_opacity = opacity < 1.0;
             if has_opacity {
-                painter.push_layer(BlendMode::Normal, opacity, node_transform, &rect.into());
+                let bounds = opacity_layer_shape(tree, node_id, scale, x, y);
+                painter.push_layer(BlendMode::Normal, opacity, node_transform, &bounds);
             }
 
             // Handle overflow clipping — detect early so we can cut holes

@@ -2167,7 +2167,7 @@ mod software_video_inline {
     }
 }
 
-// ── The two painters disagree about `opacity` (K24, pinned by K35) ───────────
+// ── The two painters and the bounds of an `opacity` layer (K24, K35, K36) ───
 //
 // Card K24 recorded, without exercising it, that "Vello clips content
 // overflowing an `opacity` element where the software path does not". K35 went
@@ -2175,11 +2175,11 @@ mod software_video_inline {
 // find one — every `opacity` the app writes is on an element with nothing
 // painted outside its own border box (a full-bleed sheet scrim with no
 // children; a 40x40 icon button holding a centred glyph). So the claim could
-// not be settled by looking at a phone, and it is settled here instead.
+// not be settled by looking at a phone, and it was settled here instead.
 //
-// It is true, and the mechanism is in three lines of two files:
+// It was true, and the mechanism was in three lines of two files:
 //
-//   * `paint/mod.rs` passes the element's **border box** as the layer bounds:
+//   * `paint/mod.rs` passed the element's **border box** as the layer bounds:
 //     `painter.push_layer(BlendMode::Normal, opacity, node_transform, &rect.into())`,
 //     where `rect` is the same `Rect` the background and borders are painted
 //     into.
@@ -2191,8 +2191,20 @@ mod software_video_inline {
 //     will be clipped by the shape until the layer is popped."
 //
 // Children are painted between the push and the pop, so on the GPU path a
-// descendant that escapes its parent's border box is drawn and then thrown
-// away. The two tests below are the same document seen by each painter.
+// descendant that escaped its parent's border box was drawn and then thrown
+// away. CSS is clear that a stacking context does not clip its descendants, so
+// the Vello behaviour was the wrong one, and it is what kept the GPU path from
+// becoming the default.
+//
+// K36 fixed it, and the shape of the fix decides what these tests can assert.
+// The bounds were not thrown away — Vello still gets a shape and still clips to
+// it — they were made *true*: `paint::opacity_layer_bounds` walks the subtree
+// and returns the union of what it will actually paint. So the two painters
+// still do different things with the shape, and the encoding still carries a
+// clip the opaque document does not have. What has to hold now is not that the
+// clip is gone but that it cannot cut anything off, which is what the tests
+// below check: the software painter still draws the escaping child, and the
+// bounds the Vello layer is given still contain it.
 #[cfg(feature = "software-renderer")]
 mod opacity_overflow {
     use super::transform_paint::{paint_skia, pixel_at};
@@ -2252,31 +2264,24 @@ mod opacity_overflow {
         );
     }
 
-    /// Vello is given a clip. One `push_layer`, one clip in the encoding —
-    /// and the shape it was given is the parent's border box, which the child
-    /// is nowhere near.
+    /// Vello is still given a clip, and the invariant that matters is what the
+    /// clip is *shaped* like: it has to contain everything painted inside the
+    /// layer, or it is the K24 bug again under a new number.
     ///
-    /// This test asserts the *presence* of the clip rather than the absence of
-    /// the child, because a `vello::Scene` cannot be rasterised without a GPU
-    /// and there are no pixels here to look at. `n_clips` counts encoded
-    /// clips/layers; at the time of writing this document encodes 4 of them
-    /// with `opacity: 0.5` and 2 with `opacity: 1`, because `opacity < 1` also
-    /// makes the node a stacking context. The comparison is written as an
-    /// inequality rather than "+2" so that it pins the disagreement and not
-    /// the bookkeeping around it.
+    /// This test asserts the shape rather than the absence of the child,
+    /// because a `vello::Scene` cannot be rasterised without a GPU and there
+    /// are no pixels here to look at. It checks both halves of the fix: the
+    /// layer is still pushed (`n_clips` counts encoded clips/layers, and the
+    /// translucent document still encodes more of them than the opaque one —
+    /// so the bounds are still a real hint the GPU can use), and the rect those
+    /// bounds are, computed the way paint computes it, contains the child that
+    /// escapes the parent's border box.
     ///
-    /// **Note what this cannot see.** `n_clips` counts `push_layer` calls, not
-    /// clipping shapes, so neither candidate fix would make the two counts
-    /// equal: passing an unbounded rect still pushes a layer, and teaching the
-    /// software painter to honour its bounds does not touch the vello
-    /// encoding at all. This test therefore pins "opacity pushes a vello
-    /// layer", and the sibling above is the one that pins the *behaviour* —
-    /// it is the test that starts failing if the software painter is brought
-    /// into line with vello. When the disagreement is settled in
-    /// `paint/vello_painter.rs` (an unbounded rect) or `paint/mod.rs` (the
-    /// bounds it passes), delete both of these and K24's note with them.
+    /// **If the bounds ever stop containing the child, do not widen this test.**
+    /// A too-small bounds rect is the whole bug; `opacity_layer_bounds` is
+    /// supposed to answer `UNBOUNDED` for anything it cannot work out.
     #[test]
-    fn vello_painter_clips_an_opacity_layer() {
+    fn vello_painter_clips_an_opacity_layer_to_bounds_that_contain_the_child() {
         let clips = |opacity: &str| {
             let mut doc = overflowing_doc(opacity);
             let mut painter = VelloPainter::new();
@@ -2286,9 +2291,404 @@ mod opacity_overflow {
         let (translucent, opaque) = (clips("0.5"), clips("1"));
         assert!(
             translucent > opaque,
-            "an element with opacity < 1 must push clipped vello layers that the \
-             same element at full opacity does not; got {translucent} against \
-             {opaque}"
+            "an element with opacity < 1 must still push a bounded vello layer \
+             that the same element at full opacity does not; got {translucent} \
+             against {opaque}"
+        );
+
+        // The parent is the body's only child; the escaping child is its only
+        // child in turn.
+        let doc = overflowing_doc("0.5");
+        let parent = doc.tree.get(doc.tree.body_id).unwrap().children[0];
+        let child = doc.tree.get(parent).unwrap().children[0];
+        let (px, py) = rinch_dom::paint::compute_absolute_position(&doc.tree, parent, 1.0);
+        let bounds = rinch_dom::paint::opacity_layer_bounds(&doc.tree, parent, 1.0, px, py);
+        let (cx, cy) = rinch_dom::paint::compute_absolute_position(&doc.tree, child, 1.0);
+        let cl = doc.tree.get(child).unwrap().layout;
+
+        assert!(
+            bounds.x0 <= cx
+                && bounds.y0 <= cy
+                && bounds.x1 >= cx + cl.width as f64
+                && bounds.y1 >= cy + cl.height as f64,
+            "the bounds the opacity layer is clipped to must contain the child \
+             that escapes the parent's border box: bounds {bounds:?}, child at \
+             ({cx}, {cy}) {}x{}",
+            cl.width,
+            cl.height
+        );
+    }
+}
+
+/// Direct tests for `paint::opacity_layer_bounds` — the union of what a
+/// subtree paints, which is the shape every `opacity` layer is now given.
+///
+/// The rule the whole function is written to is that a rect which is too large
+/// costs a little GPU fill while a rect which is too small silently deletes
+/// content, so each of these comes in one of two flavours: *this must be
+/// inside the bounds*, or *this case must give up and return `UNBOUNDED`*.
+/// There is deliberately no test asserting a tight rect for anything the walk
+/// is not certain about.
+mod opacity_layer_bounds {
+    use super::*;
+    use peniko::kurbo::Rect;
+    use rinch_dom::paint::{UNBOUNDED, compute_absolute_position, opacity_layer_bounds};
+
+    /// `<body><div id=subject style=...>{children}</div></body>`, laid out.
+    /// Returns the document and the subject's id.
+    fn doc_with(subject_style: &str, children: &[&str]) -> (RinchDocument, usize) {
+        let mut doc = RinchDocument::new();
+        let body = doc.body();
+        let subject = doc.create_element("div");
+        doc.set_attribute(subject, "style", subject_style);
+        doc.append_child(body, subject);
+        for style in children {
+            let child = doc.create_element("div");
+            doc.set_attribute(child, "style", style);
+            doc.append_child(subject, child);
+        }
+        doc.resolve_layout(800.0, 600.0);
+        (doc, subject.0)
+    }
+
+    /// The bounds paint would hand the layer it opens around `id`.
+    fn bounds_of(doc: &RinchDocument, id: usize) -> Rect {
+        let (x, y) = compute_absolute_position(&doc.tree, id, 1.0);
+        opacity_layer_bounds(&doc.tree, id, 1.0, x, y)
+    }
+
+    /// Where a node's border box actually is, in the same space as the bounds.
+    fn box_of(doc: &RinchDocument, id: usize) -> Rect {
+        let (x, y) = compute_absolute_position(&doc.tree, id, 1.0);
+        let l = doc.tree.get(id).unwrap().layout;
+        Rect::new(x, y, x + l.width as f64, y + l.height as f64)
+    }
+
+    /// Containment with a hair of slack, so a rounding difference in the last
+    /// bit is not read as a clipped pixel.
+    fn contains(outer: Rect, inner: Rect) -> bool {
+        outer.x0 <= inner.x0 + 0.01
+            && outer.y0 <= inner.y0 + 0.01
+            && outer.x1 + 0.01 >= inner.x1
+            && outer.y1 + 0.01 >= inner.y1
+    }
+
+    /// The floor: with nothing to widen it, the bounds are the element's own
+    /// border box — the rect that used to be passed unconditionally. Every
+    /// other case in this module only ever adds to this, which is why the fix
+    /// cannot make any layer smaller than it was.
+    #[test]
+    fn a_childless_element_gets_its_own_border_box() {
+        let (doc, subject) = doc_with("width: 100px; height: 60px; opacity: 0.5", &[]);
+        let bounds = bounds_of(&doc, subject);
+        assert_eq!(bounds, box_of(&doc, subject));
+    }
+
+    /// The case K35 could not find on a phone and K36 fixed: an absolutely
+    /// positioned child that lands entirely outside its parent's border box.
+    #[test]
+    fn an_overflowing_absolute_child_is_inside_the_bounds() {
+        let (doc, subject) = doc_with(
+            "position: relative; width: 100px; height: 100px; opacity: 0.5",
+            &["position: absolute; left: 150px; top: 10px; width: 20px; height: 20px"],
+        );
+        let child = doc.tree.get(subject).unwrap().children[0];
+        let bounds = bounds_of(&doc, subject);
+        assert!(
+            contains(bounds, box_of(&doc, child)),
+            "bounds {bounds:?} must contain the escaping child {:?}",
+            box_of(&doc, child)
+        );
+        // …and must not have given up: this case is analysable, so it should
+        // come out as a real rect rather than as the unbounded fallback.
+        assert_ne!(bounds, UNBOUNDED);
+    }
+
+    /// An outset `box-shadow` is painted outside the border box. The walk
+    /// allows `offset ± (blur + spread)`, which is deliberately wider than the
+    /// `blur * 0.5 + spread` `paint_box_shadow` actually reaches.
+    #[test]
+    fn an_outset_box_shadow_is_inside_the_bounds() {
+        let (doc, subject) = doc_with(
+            "width: 100px; height: 100px; opacity: 0.5; \
+             box-shadow: 20px 30px 10px 5px rgba(0, 0, 0, 0.5)",
+            &[],
+        );
+        let own = box_of(&doc, subject);
+        let bounds = bounds_of(&doc, subject);
+        // What the painter draws: the outermost of its eight concentric layers
+        // sits at `offset ± (blur * 0.5 + spread)` = 10 from the offset box.
+        let painted = Rect::new(
+            own.x0 + 20.0 - 10.0,
+            own.y0 + 30.0 - 10.0,
+            own.x1 + 20.0 + 10.0,
+            own.y1 + 30.0 + 10.0,
+        );
+        assert!(
+            contains(bounds, painted),
+            "bounds {bounds:?} must contain the shadow's painted extent {painted:?}"
+        );
+        assert!(
+            contains(bounds, own),
+            "bounds {bounds:?} must still contain the border box {own:?}"
+        );
+    }
+
+    /// A rotated child is not its own layout rect. The walk composes the same
+    /// affine paint composes and takes the transformed bounding box, so the
+    /// corners that swing outside the rect are inside the bounds.
+    #[test]
+    fn a_rotated_child_is_inside_the_bounds() {
+        let (doc, subject) = doc_with(
+            "position: relative; width: 200px; height: 200px; opacity: 0.5",
+            &["position: absolute; left: 160px; top: 80px; width: 40px; \
+               height: 40px; transform: rotate(45deg)"],
+        );
+        let child = doc.tree.get(subject).unwrap().children[0];
+        let rect = box_of(&doc, child);
+        // rotate(45deg) about the default centre origin: the 40x40 box's
+        // bounding box grows to 40*sqrt(2), i.e. ~8.28 past each edge.
+        let out = (40.0 * std::f64::consts::SQRT_2 - 40.0) / 2.0;
+        let swung = Rect::new(rect.x0 - out, rect.y0 - out, rect.x1 + out, rect.y1 + out);
+        let bounds = bounds_of(&doc, subject);
+        assert!(
+            contains(bounds, swung),
+            "bounds {bounds:?} must contain the rotated child's bounding box {swung:?}"
+        );
+    }
+
+    /// The other direction: the bounds have to *shrink* where the subtree is
+    /// genuinely clipped. A 500x500 box inside a 50x50 `overflow: hidden` child
+    /// contributes 50x50, not 500x500 — otherwise the "optimisation hint" is
+    /// no hint at all on any screen with a scroller on it.
+    #[test]
+    fn overflow_hidden_shrinks_what_a_descendant_contributes() {
+        let clipped = |overflow: &str| {
+            let mut doc = RinchDocument::new();
+            let body = doc.body();
+            let subject = doc.create_element("div");
+            doc.set_attribute(
+                subject,
+                "style",
+                "width: 100px; height: 100px; opacity: 0.5",
+            );
+            doc.append_child(body, subject);
+            let scroller = doc.create_element("div");
+            doc.set_attribute(
+                scroller,
+                "style",
+                &format!("width: 50px; height: 50px; overflow: {overflow}"),
+            );
+            doc.append_child(subject, scroller);
+            let big = doc.create_element("div");
+            doc.set_attribute(big, "style", "width: 500px; height: 500px; flex-shrink: 0");
+            doc.append_child(scroller, big);
+            doc.resolve_layout(800.0, 600.0);
+            let bounds = bounds_of(&doc, subject.0);
+            (bounds, box_of(&doc, subject.0), box_of(&doc, big.0))
+        };
+
+        let (visible_bounds, _, big) = clipped("visible");
+        assert!(
+            contains(visible_bounds, big),
+            "with overflow: visible the 500x500 box is painted in full, so the \
+             bounds {visible_bounds:?} must contain it ({big:?})"
+        );
+
+        let (hidden_bounds, own, _) = clipped("hidden");
+        assert_eq!(
+            hidden_bounds, own,
+            "with overflow: hidden nothing reaches past the subject's own box, \
+             so the bounds must not grow to the clipped child's size"
+        );
+    }
+
+    /// `position: fixed` is viewport content that happens to live in this
+    /// markup: `stacking::collect_hoisted` paints it at the body, outside this
+    /// layer, so it must not widen these bounds. This is the one case where a
+    /// descendant is deliberately left out of the union rather than included.
+    #[test]
+    fn a_fixed_descendant_is_painted_elsewhere_and_does_not_widen_the_bounds() {
+        let (doc, subject) = doc_with(
+            "position: relative; width: 100px; height: 100px; opacity: 0.5",
+            &["position: fixed; left: 600px; top: 400px; width: 40px; height: 40px"],
+        );
+        let bounds = bounds_of(&doc, subject);
+        assert_eq!(
+            bounds,
+            box_of(&doc, subject),
+            "a fixed descendant is hoisted to the body and painted outside this \
+             layer, so it must not appear in the layer's bounds"
+        );
+    }
+
+    /// `position: sticky` is painted at a position `paint_node` derives by
+    /// walking up to the nearest scroll ancestor, which can be above the
+    /// element the layer belongs to. The subtree does not contain the answer,
+    /// so the walk gives up rather than guessing.
+    #[test]
+    fn a_sticky_descendant_falls_back_to_unbounded() {
+        let (doc, subject) = doc_with(
+            "width: 100px; height: 100px; opacity: 0.5",
+            &["position: sticky; top: 0px; width: 40px; height: 40px"],
+        );
+        assert_eq!(bounds_of(&doc, subject), UNBOUNDED);
+    }
+
+    /// The walk is per frame, per translucent element, so it is capped. A
+    /// subtree wider than the visit budget is not measured at all — it answers
+    /// `UNBOUNDED`, which is the behaviour every one of these layers had before
+    /// the walk existed.
+    #[test]
+    fn a_subtree_past_the_visit_budget_falls_back_to_unbounded() {
+        let wide: Vec<&str> = vec!["width: 1px; height: 1px"; 600];
+        let (doc, subject) = doc_with("width: 100px; height: 100px; opacity: 0.5", &wide);
+        assert_eq!(bounds_of(&doc, subject), UNBOUNDED);
+
+        // …and a subtree just inside it is measured normally, so the budget is
+        // a backstop and not the common path.
+        let narrow: Vec<&str> = vec!["width: 1px; height: 1px"; 20];
+        let (doc, subject) = doc_with("width: 100px; height: 100px; opacity: 0.5", &narrow);
+        assert_ne!(bounds_of(&doc, subject), UNBOUNDED);
+    }
+
+    /// The same backstop in the other dimension.
+    #[test]
+    fn a_subtree_past_the_depth_cap_falls_back_to_unbounded() {
+        let mut doc = RinchDocument::new();
+        let body = doc.body();
+        let subject = doc.create_element("div");
+        doc.set_attribute(
+            subject,
+            "style",
+            "width: 100px; height: 100px; opacity: 0.5",
+        );
+        doc.append_child(body, subject);
+        let mut parent = subject;
+        for _ in 0..40 {
+            let child = doc.create_element("div");
+            doc.set_attribute(child, "style", "width: 10px; height: 10px");
+            doc.append_child(parent, child);
+            parent = child;
+        }
+        doc.resolve_layout(800.0, 600.0);
+        assert_eq!(bounds_of(&doc, subject.0), UNBOUNDED);
+    }
+
+    /// An element with no box of its own — the zero-area path in `paint_node`,
+    /// which pushes a layer for a container collapsed on one axis that still
+    /// has overflowing children. It used to pass `UNBOUNDED` unconditionally;
+    /// now it gets the children's extent, and falls back to `UNBOUNDED` only
+    /// when there is nothing to measure.
+    #[test]
+    fn a_collapsed_container_is_measured_by_its_children() {
+        let (doc, subject) = doc_with(
+            "position: relative; width: 100px; height: 0px; opacity: 0.5",
+            &["position: absolute; left: 10px; top: 20px; width: 30px; height: 40px"],
+        );
+        let child = doc.tree.get(subject).unwrap().children[0];
+        let bounds = bounds_of(&doc, subject);
+        // `assert_ne!` first, and it is not decoration: `UNBOUNDED` contains
+        // every rect, so a containment assertion alone passes just as happily
+        // when the walk gives up on this branch entirely as when it measures
+        // it. This is the one branch where giving up is a *regression* — it is
+        // what the branch did before — so the test has to say that the answer
+        // is a measured rect and not the fallback.
+        assert_ne!(
+            bounds, UNBOUNDED,
+            "a collapsed container with a measurable child must be measured, \
+             not answered with the fallback"
+        );
+        assert!(
+            contains(bounds, box_of(&doc, child)),
+            "bounds {bounds:?} must contain the child of a collapsed container \
+             {:?}",
+            box_of(&doc, child)
+        );
+
+        let (doc, subject) = doc_with("width: 100px; height: 0px; opacity: 0.5", &[]);
+        assert_eq!(
+            bounds_of(&doc, subject),
+            UNBOUNDED,
+            "with no box and nothing inside it there is nothing to measure, and \
+             a degenerate clip would blank whatever paint draws anyway"
+        );
+    }
+    /// An inline-block is reached *only* through the inline formatting context
+    /// that positions it: `children` skips it in the ordinary child walk
+    /// (`ifc_root == Some(subject)` and it forms no stacking context), exactly
+    /// as `paint_children_with_stacking`'s `already_drawn_inline` does, so the
+    /// only thing that can put it in the union is the walk over the Parley
+    /// layout's inline boxes.
+    ///
+    /// The assertion is on the inline-block's outset `box-shadow` rather than
+    /// on its box, because the box alone is already covered by the IFC's own
+    /// measured extent — a test written on the box passes with the inline-box
+    /// walk deleted and proves nothing. The shadow reaches past the line box,
+    /// so only the per-node measurement of the inline-block itself can see it.
+    #[test]
+    fn an_inline_block_is_reached_through_its_ifc() {
+        let mut doc = RinchDocument::new();
+        let body = doc.body();
+        let subject = doc.create_element("div");
+        doc.set_attribute(subject, "style", "width: 200px; height: 60px; opacity: 0.5");
+        doc.append_child(body, subject);
+        let text = doc.create_text("hi ");
+        doc.append_child(subject, text);
+        let inline_block = doc.create_element("span");
+        doc.set_attribute(
+            inline_block,
+            "style",
+            "display: inline-block; width: 20px; height: 20px; \
+             box-shadow: 0 0 0 40px rgba(0, 0, 0, 0.5)",
+        );
+        doc.append_child(subject, inline_block);
+        doc.resolve_layout(800.0, 600.0);
+
+        // Precondition: the ordinary child walk really does skip it, so the
+        // assertion below is about the IFC path and nothing else.
+        let ib = doc.tree.get(inline_block.0).unwrap();
+        assert_eq!(
+            ib.ifc_root,
+            Some(subject.0),
+            "precondition: the inline-block is positioned by the subject's IFC"
+        );
+        assert!(
+            !ib.creates_stacking_context(),
+            "precondition: it forms no stacking context, so the ordinary child \
+             walk skips it as already drawn inline"
+        );
+
+        let ib_box = box_of(&doc, inline_block.0);
+        let spread = Rect::new(
+            ib_box.x0 - 40.0,
+            ib_box.y0 - 40.0,
+            ib_box.x1 + 40.0,
+            ib_box.y1 + 40.0,
+        );
+        let bounds = bounds_of(&doc, subject.0);
+        assert!(
+            contains(bounds, spread),
+            "bounds {bounds:?} must contain the inline-block's shadow {spread:?} \
+             — it is reachable only through the IFC's inline boxes"
+        );
+    }
+
+    /// The layer's *own* transform is applied by the painter to the shape these
+    /// bounds become, so the walk must return them in the element's
+    /// untransformed space. Composing the root's transform here as well would
+    /// rotate the rect twice and hand Vello a clip at the wrong angle.
+    #[test]
+    fn the_layers_own_transform_is_not_composed_into_its_bounds() {
+        let (doc, subject) = doc_with(
+            "width: 40px; height: 40px; opacity: 0.5; transform: rotate(45deg)",
+            &[],
+        );
+        assert_eq!(
+            bounds_of(&doc, subject),
+            box_of(&doc, subject),
+            "push_layer applies the node's transform to the bounds shape, so the \
+             bounds are the untransformed border box"
         );
     }
 }
