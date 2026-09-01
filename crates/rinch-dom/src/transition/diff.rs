@@ -7,7 +7,7 @@ use crate::computed_style::{
     LengthPercentageValue, TransformValue,
 };
 
-use super::types::{AnimatableValue, PropertyChange, TransitionProperty};
+use super::types::{AnimatableTransform, AnimatableValue, PropertyChange, TransitionProperty};
 
 /// Compare two ComputedStyles and return changes in animatable properties.
 pub fn diff_animatable(old: &ComputedStyle, new: &ComputedStyle) -> Vec<PropertyChange> {
@@ -202,8 +202,8 @@ pub fn diff_animatable(old: &ComputedStyle, new: &ComputedStyle) -> Vec<Property
     if !transforms_equal(&old.transform, &new.transform) {
         changes.push(PropertyChange {
             property: TransitionProperty::Transform,
-            old_value: AnimatableValue::Transform(old.transform.matrix),
-            new_value: AnimatableValue::Transform(new.transform.matrix),
+            old_value: AnimatableValue::Transform(AnimatableTransform::from_style(&old.transform)),
+            new_value: AnimatableValue::Transform(AnimatableTransform::from_style(&new.transform)),
         });
     }
 

@@ -489,3 +489,225 @@ fn keyframes_color_currentcolor_stop_uses_parent_colour() {
         .to_rgba8();
     assert_eq!((mid.r, mid.g, mid.b), (7, 8, 9));
 }
+
+// ── A transform transition keeps the percentage part (#403) ─────────────────
+//
+// `TransformValue` keeps the percentage part of a `translate` outside `matrix`
+// — it cannot be resolved until the element's border box is known. The
+// transition machinery carried only the matrix, so for the whole duration of
+// any `transition: transform` the element rendered as if every percentage
+// translate in it were `0`.
+//
+// The two tests below are the two shipped components that broke, driven
+// end-to-end: a real stylesheet, a real class change, a real tick, and the
+// painted box read back.
+
+/// The left edge of a node's painted box, in layout pixels.
+fn painted_x(doc: &rinch_dom::RinchDocument, id: rinch_core::dom::NodeId) -> f64 {
+    rinch_dom::paint::painted_border_box(&doc.tree, id.0, 1.0).x0
+}
+
+/// A `<div class="slider">` under `css`, laid out once with transitions armed.
+fn transitioning_div(css: &str) -> (rinch_dom::RinchDocument, rinch_core::dom::NodeId) {
+    use rinch_core::dom::DomDocument;
+
+    let mut doc = rinch_dom::RinchDocument::new();
+    let body = doc.body();
+    let style_el = doc.create_element("style");
+    let text = doc.create_text(css);
+    doc.append_child(style_el, text);
+    doc.append_child(body, style_el);
+
+    let div = doc.create_element("div");
+    doc.set_attribute(div, "class", "slider");
+    doc.append_child(body, div);
+
+    doc.tree.transitions_enabled = true;
+    doc.resolve_layout(800.0, 600.0);
+    (doc, div)
+}
+
+/// Change `div`'s class, re-resolve, and return the resulting transform
+/// transition's start time — panicking if none started.
+fn start_transform_transition(
+    doc: &mut rinch_dom::RinchDocument,
+    div: rinch_core::dom::NodeId,
+    class: &str,
+) -> f64 {
+    use rinch_core::dom::DomDocument;
+
+    doc.set_attribute(div, "class", class);
+    doc.resolve_layout(800.0, 600.0);
+    doc.tree
+        .active_transitions
+        .get(&div.0)
+        .and_then(|t| t.get(&TransitionProperty::Transform))
+        .expect("the class change should have started a transform transition")
+        .start_time_ms
+}
+
+/// **The Drawer.** `styles/drawer.rs` transitions `transform` between
+/// `translateX(-100%)` (closed) and `translateX(0)` (open). Both endpoints have
+/// the *identity* matrix — the entire difference is the percentage coefficient
+/// — so a transition carrying only the matrix interpolated identity to
+/// identity: for 300ms the drawer sat at `translate(0)`, i.e. fully open, in
+/// both directions. Opening, it appeared instantly with no slide; closing, it
+/// stayed put and then vanished.
+#[test]
+fn a_percentage_only_transform_transition_actually_slides() {
+    let (mut doc, div) = transitioning_div(
+        ".slider { position: absolute; left: 0; top: 0; width: 200px; height: 100px; \
+                   transition: transform 300ms linear; transform: translateX(-100%); } \
+         .slider.open { transform: translateX(0); }",
+    );
+
+    // Closed: the 200px-wide box sits one full width to the left.
+    let closed = painted_x(&doc, div);
+
+    let start = start_transform_transition(&mut doc, div, "slider open");
+
+    // Linear timing, so at 150ms of 300ms it is exactly half a width along.
+    rinch_dom::transition::tick_transitions(&mut doc.tree, start + 150.0);
+    let mid = painted_x(&doc, div);
+    assert!(
+        (mid - closed - 100.0).abs() < 0.5,
+        "half-way through a 200px slide the box should have moved 100px, \
+         went from {closed} to {mid}"
+    );
+
+    rinch_dom::transition::tick_transitions(&mut doc.tree, start + 300.0);
+    let open = painted_x(&doc, div);
+    assert!(
+        (open - closed - 200.0).abs() < 0.5,
+        "at the end of the slide the box should have moved a full 200px, \
+         went from {closed} to {open}"
+    );
+}
+
+/// **The Popover.** `styles/popover.rs` transitions `transform` between
+/// `translateX(-50%) translateY(-4px)` and `translateX(-50%) translateY(0)`.
+/// The `-50%` is the same at both ends and is pure centring; dropping it drew
+/// the popover half its own width to the right for the whole 150ms and then
+/// snapped it into place.
+#[test]
+fn a_centring_offset_survives_a_transform_transition() {
+    let (mut doc, div) = transitioning_div(
+        ".slider { position: absolute; left: 300px; top: 0; width: 200px; height: 100px; \
+                   transition: transform 150ms linear; \
+                   transform: translateX(-50%) translateY(-4px); } \
+         .slider.open { transform: translateX(-50%) translateY(0); }",
+    );
+
+    // Centred on `left: 300px`: 300 − 100.
+    let closed = painted_x(&doc, div);
+    assert!(
+        (closed - 200.0).abs() < 0.5,
+        "the centring offset should place the box at 200, got {closed}"
+    );
+
+    let start = start_transform_transition(&mut doc, div, "slider open");
+
+    // Only the vertical offset is animating, so x must not budge. Before the
+    // fix it jumped to 300 for the duration.
+    for at in [0.0, 75.0, 150.0] {
+        rinch_dom::transition::tick_transitions(&mut doc.tree, start + at);
+        let x = painted_x(&doc, div);
+        assert!(
+            (x - closed).abs() < 0.5,
+            "at {at}ms the centring offset should still hold x at {closed}, got {x}"
+        );
+    }
+}
+
+/// The interpolation itself, and the write-back that used to zero it.
+#[test]
+fn transform_interpolation_carries_the_percentage_coefficients() {
+    let identity = [1.0, 0.0, 0.0, 1.0, 0.0, 0.0];
+    let from = AnimatableValue::Transform(AnimatableTransform {
+        matrix: identity,
+        pct_translate_w: [-1.0, 0.0],
+        pct_translate_h: [0.0, -0.5],
+    });
+    let to = AnimatableValue::Transform(AnimatableTransform {
+        matrix: identity,
+        pct_translate_w: [0.0, 0.0],
+        pct_translate_h: [0.0, -0.5],
+    });
+
+    let mid = from
+        .interpolate(&to, 0.25)
+        .expect("two transforms are compatible");
+    let AnimatableValue::Transform(tf) = &mid else {
+        panic!("interpolating two transforms should give a transform");
+    };
+    assert!(
+        (tf.pct_translate_w[0] + 0.75).abs() < 1e-9,
+        "a quarter of the way from -100% to 0 is -75%, got {:?}",
+        tf.pct_translate_w
+    );
+    assert!(
+        (tf.pct_translate_h[1] + 0.5).abs() < 1e-9,
+        "an unchanging coefficient must survive, got {:?}",
+        tf.pct_translate_h
+    );
+
+    // And it reaches the computed style rather than being zeroed on write-back.
+    let mut style = ComputedStyle::default();
+    apply_value_to_style(&mut style, TransitionProperty::Transform, &mid);
+    assert!(
+        (style.transform.pct_translate_w[0] + 0.75).abs() < 1e-9,
+        "the write-back dropped the percentage: {:?}",
+        style.transform.pct_translate_w
+    );
+}
+
+/// The third drop site: an element's *base* transform, projected into the
+/// implicit keyframe stop stylo synthesises for an animation that does not
+/// declare `transform` itself.
+///
+/// `extract_base_style_values` builds that stop from the computed style, and a
+/// stop that carries only `matrix` zeroes the percentage translate for the
+/// whole animation. So a centred popup with `animation: fade …` on it jumped
+/// half its own width the moment the animation started — with nothing in the
+/// animation touching `transform` at all. `values_at_progress` keeps a property
+/// present in only one stop, so the base transform really is written back on
+/// every frame (#403).
+#[test]
+fn an_animation_that_ignores_transform_keeps_the_base_percentage_translate() {
+    use rinch_core::dom::DomDocument;
+
+    let mut doc = rinch_dom::RinchDocument::new();
+    let body = doc.body();
+    let style_el = doc.create_element("style");
+    let css = doc.create_text(
+        "@keyframes fade { to { opacity: 0.5; } } \
+         .centred { position: absolute; left: 300px; top: 0; width: 200px; height: 100px; \
+                    transform: translateX(-50%); animation: fade 1000ms linear; }",
+    );
+    doc.append_child(style_el, css);
+    doc.append_child(body, style_el);
+
+    let div = doc.create_element("div");
+    doc.set_attribute(div, "class", "centred");
+    doc.append_child(body, div);
+
+    doc.tree.transitions_enabled = true;
+    doc.resolve_layout(800.0, 600.0);
+
+    // Centred on `left: 300px`: 300 − 100.
+    let centred = painted_x(&doc, div);
+    assert!(
+        (centred - 200.0).abs() < 0.5,
+        "the centring offset should place the box at 200 before the animation ticks, \
+         got {centred}"
+    );
+
+    for at in [0.0, 250.0, 500.0, 1000.0] {
+        rinch_dom::animation::tick_animations(&mut doc.tree, at);
+        let x = painted_x(&doc, div);
+        assert!(
+            (x - 200.0).abs() < 0.5,
+            "at {at}ms an opacity-only animation must not move the box, got {x}"
+        );
+    }
+}
