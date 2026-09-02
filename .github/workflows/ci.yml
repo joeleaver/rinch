@@ -83,6 +83,12 @@ jobs:
       # pulls a transitive `ashpd` 0.11.1 that fails to compile. Hence explicit sets.
       # When adding a feature-gated test, add its combination here.
       #
+      # `debug` is listed for the same reason: app/debug_commands.rs is
+      # cfg(feature = "debug") and its #401 pins (MCP `scroll()` drives the real
+      # wheel path) run under `--workspace` only because examples/ui-zoo-desktop
+      # enables `rinch/debug`. It does not pull `gpu`, so the software_shell
+      # pins below stay alive.
+      #
       # `desktop` is listed on the `-p rinch` line to name that gate explicitly
       # rather than inherit it: menu/mod.rs is cfg(feature = "desktop") and
       # `desktop` is a DEFAULT feature of `rinch`, so its #183 pins do run
@@ -95,7 +101,7 @@ jobs:
         run: |
           cargo test -p rinch-editor-core --features serde,markdown
           cargo test -p rinch-editor-view --features collaboration
-          cargo test -p rinch --features desktop,embed,theme,clipboard
+          cargo test -p rinch --features desktop,embed,theme,clipboard,debug
 
   clippy:
     runs-on: ubuntu-latest
