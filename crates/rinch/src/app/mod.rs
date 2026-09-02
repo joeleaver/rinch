@@ -4878,6 +4878,30 @@ mod horizontal_scrollbar_tests {
         );
     }
 
+    /// Jump-to-click in the *middle* of the track pins the mapping's slope,
+    /// not just its endpoints. The far-end pin above and the press-at-start
+    /// assertions in the drag tests both saturate the clamp, so a
+    /// `scroll_for_click` whose denominator is wrong — `thumb_travel` instead
+    /// of `track_len`, say — still lands them on 0 and `max_scroll` and
+    /// survives; review mutation-testing found exactly that mutant alive.
+    /// Halfway down a 96px track is halfway through 700px of scroll, and only
+    /// the correct denominator says so ((50-2)/76 * 700 ≈ 442 for the mutant).
+    #[test]
+    fn pressing_the_middle_of_the_track_scrolls_proportionally() {
+        let Bars {
+            mut app, id, rect, ..
+        } = mount(TALL, "width: 40px; height: 800px");
+        let (x, y, w, _h) = rect;
+
+        // pos = 50 on a track running [2, 98): ratio (50-2)/96 = 0.5 exactly.
+        press(&mut app, (x + w - 2.0, y + 50.0));
+        assert_eq!(
+            offsets(&app, id),
+            (0.0, (50.0 - 2.0) / 96.0 * 700.0),
+            "halfway along the track is halfway through the scroll range"
+        );
+    }
+
     /// A thumb that moves must dirty where it *was* as well as where it now is,
     /// or the software renderer's dirty-region caching leaves the old thumb
     /// painted — #173's failure mode. It does, because the thumb lives inside
