@@ -90,8 +90,18 @@ pub fn start_animations(
                     .and_then(|n| n.parent)
                     .and_then(|parent| tree.get(parent))
                     .and_then(|parent| parent.computed_style.color);
-                let stops =
-                    keyframes::extract_keyframe_stops(kf_anim, base_style, parent_color, guard);
+                // `rem` in a keyframe stop resolves against the root's font
+                // size, the same base the cascade uses.
+                let root_font_size = tree
+                    .get(tree.root_id)
+                    .map_or(16.0, |root| root.computed_style.font_size);
+                let stops = keyframes::extract_keyframe_stops(
+                    kf_anim,
+                    base_style,
+                    parent_color,
+                    root_font_size,
+                    guard,
+                );
 
                 if !stops.is_empty() {
                     new_active.push(ActiveAnimation {

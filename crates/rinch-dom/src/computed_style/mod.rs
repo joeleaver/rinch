@@ -11,6 +11,7 @@ mod text_layout;
 pub mod values;
 
 pub(crate) use from_stylo::color::{color_from_specified, color_from_stylo};
+pub(crate) use from_stylo::visual::accumulate_pct;
 pub use values::*;
 
 use serde::Serialize;
