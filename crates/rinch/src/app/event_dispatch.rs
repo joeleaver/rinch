@@ -536,23 +536,19 @@ impl RinchApp {
                     // re-borrowing between them buys nothing. The policy is
                     // `resolve_click_focus`, which `handle_click`'s release
                     // check also asks — one press, one answer (issue #316).
-                    let (hit, click_focus_node) = {
+                    let (hit, press_focus) = {
                         let d = doc.borrow();
                         let hit = hit_test(&d.tree, x, y);
                         (hit, Self::resolve_click_focus(&d.tree, hit))
                     };
-                    // An arbiter-held generic node (issue #228), and whether
-                    // this press lands back on it — i.e. resolves to the same
-                    // focusable, so a press on a plain child of the focused node
-                    // is still "inside" it. A press that resolves anywhere else
-                    // moves or releases the claim right here, so paths that
-                    // return before `handle_click` (pending drag, scrollbar, no
-                    // hit) can't strand an invisible, still-Enter-activatable
-                    // claim.
-                    let node_claim = if let FocusTarget::Node(fid) = self.focus_target {
-                        Some((fid, click_focus_node == Some(fid)))
-                    } else {
-                        None
+                    // The arbiter-held generic node (issue #228). A press that
+                    // resolves anywhere other than it moves or releases the
+                    // claim right here, so paths that return before
+                    // `handle_click` (pending drag, scrollbar, no hit) can't
+                    // strand an invisible, still-Enter-activatable claim.
+                    let node_claim = match self.focus_target {
+                        FocusTarget::Node(fid) => Some(fid),
+                        _ => None,
                     };
                     // Any mousedown drops the keyboard focus ring wherever it
                     // is (it only ever lives on the focused node): pointer
@@ -568,25 +564,41 @@ impl RinchApp {
                         d.update_active(hit);
                         // :focus applies to the clicked element (persists after
                         // release); anchored on the focusable ancestor for a
-                        // press inside one.
-                        d.update_focus(click_focus_node.or(hit));
+                        // press inside one. A `data-nofocus` press moves no
+                        // focus, so it must not move the DOM `:focus` either.
+                        match press_focus {
+                            PressFocus::Preserve => {}
+                            PressFocus::Node(nid) => {
+                                d.update_focus(Some(nid));
+                            }
+                            PressFocus::Release => {
+                                d.update_focus(hit);
+                            }
+                        }
                     }
                     // No outstanding doc borrow from here on: the arbiter's
                     // teardown re-borrows, and the callbacks it defers are user
                     // code that may mutate the DOM.
-                    match (click_focus_node, node_claim) {
+                    match press_focus {
+                        // The press declined to move focus (issue #312): the
+                        // current owner keeps the keyboard — editor, input,
+                        // surface or node alike — and the click still fires from
+                        // `handle_click` below. This is the
+                        // `preventDefault()`-on-mousedown escape hatch, which
+                        // desktop had no equivalent of.
+                        PressFocus::Preserve => {}
                         // Re-press inside the already-focused node: nothing to
                         // do, the claim and its state stay put.
-                        (_, Some((_, true))) => {}
-                        (Some(nid), _) => {
+                        PressFocus::Node(nid) if node_claim == Some(nid) => {}
+                        PressFocus::Node(nid) => {
                             let (_, work) = self.set_focus_target_deferred(FocusTarget::Node(nid));
                             Self::fire_focus_work(work);
                             self.notify_node_focus_gained(nid);
                         }
-                        (None, Some((_, false))) => {
+                        PressFocus::Release if node_claim.is_some() => {
                             self.set_focus_target(FocusTarget::None);
                         }
-                        (None, None) => {}
+                        PressFocus::Release => {}
                     }
                 }
 

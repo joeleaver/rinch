@@ -26,6 +26,8 @@ mod input_ime_tests;
 mod key_event_data_tests;
 #[cfg(test)]
 mod node_ime_tests;
+#[cfg(all(test, feature = "desktop"))]
+mod nofocus_tests;
 mod select_widget;
 mod text_selection;
 #[cfg(test)]
@@ -230,6 +232,28 @@ pub(crate) enum FocusTarget {
     /// node id — a custom control reached via Tab or `request_focus`
     /// (issue #228). Enter/Space dispatch its click handler; it drives no IME.
     Node(usize),
+}
+
+/// What a pointer press does to the keyboard claim — the answer
+/// [`RinchApp::resolve_click_focus`] gives, and the one both the mousedown
+/// claim and `handle_click`'s release check act on.
+///
+/// Distinct from [`FocusTarget`] because "focus nothing" and "leave focus
+/// alone" are different instructions, and telling them apart is the whole of
+/// issue #312: without a `Preserve`, a toolbar button over an editor had no
+/// way to take the click without taking the keyboard.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum PressFocus {
+    /// The press focuses this node.
+    Node(usize),
+    /// The press focuses nothing of its own, so a generic node's claim is
+    /// released. (An `<input>` under the press is claimed separately, on the
+    /// click path, by the text engine.)
+    Release,
+    /// The press declines to move focus at all (`data-nofocus`): whatever holds
+    /// the keyboard keeps it — editor, input, surface or node — and the click
+    /// still fires.
+    Preserve,
 }
 
 // ── RinchApp ─────────────────────────────────────────────────────────────────
@@ -1977,41 +2001,80 @@ impl RinchApp {
             .and_then(|v| v.parse::<i32>().ok())
     }
 
-    /// What a pointer press on `hit` focuses: the **nearest focusable
-    /// ancestor-or-self**, exactly as a browser resolves a mousedown's focus
-    /// target (issue #147, decision 2).
+    /// What a pointer press on `hit` does to the keyboard claim.
     ///
-    /// Any parseable `tabindex` claims — `-1` included, since it is
-    /// click-focusable though not tabbable — so a click-focused custom control
-    /// has live Enter/Space and `on_key` immediately rather than only after
-    /// being reached by Tab. The walk stops at the first node that is focusable
-    /// **or** carries `data-oninput`: an `<input>` inside a focusable wrapper
-    /// belongs to the text engine, and announcing a gain-then-loss on the
-    /// wrapper for a click that was never the wrapper's would be wrong.
-    ///
-    /// **The one answer to "what does this press focus?"** — the mousedown
+    /// The **one** answer to "what does this press focus?" — the mousedown
     /// claim asks it, and so does `handle_click`'s decision about whether to
-    /// release a generic node's claim. Those two used to disagree (issue #316,
-    /// item 3): the release check accepted *any* ancestor, so a press on a
-    /// nested focusable — or on an `<input>` — inside the focused node counted
-    /// as "still inside it" and the outer node kept the keyboard while the user
-    /// interacted with something else.
+    /// release the claim. Those two used to disagree (issue #316, item 3): the
+    /// release check accepted *any* ancestor, so a press on a nested focusable
+    /// — or on an `<input>` — inside the focused node counted as "still inside
+    /// it" and the outer node kept the keyboard while the user interacted with
+    /// something else.
+    ///
+    /// The walk runs from the hit node upwards and answers with the first rule
+    /// that matches:
+    ///
+    /// 1. **`data-nofocus`** anywhere on the chain ⇒ [`PressFocus::Preserve`].
+    ///    Whatever holds the keyboard keeps it, and the click still fires — the
+    ///    `preventDefault()`-on-mousedown mechanism browsers converged on, which
+    ///    desktop had no equivalent of (issue #312). It is checked *before* the
+    ///    focusable test on the same node, so a `tabindex` toolbar button can
+    ///    carry it, and it is checked all the way to the root, so a whole
+    ///    toolbar can carry it once instead of every button in it.
+    /// 2. **`data-oninput`** ⇒ [`PressFocus::Release`]. An `<input>` inside a
+    ///    focusable wrapper belongs to the text engine, which claims it on the
+    ///    click path; announcing a gain-then-loss on the wrapper for a press
+    ///    that was never the wrapper's would be wrong. Because this is reached
+    ///    before rule 1 can see an ancestor, a text field *inside* a
+    ///    `data-nofocus` region still focuses normally — a link-URL field in an
+    ///    editor toolbar is usable.
+    /// 3. **A parseable `tabindex` on an enabled node** ⇒
+    ///    [`PressFocus::Node`], the nearest focusable ancestor-or-self, exactly
+    ///    as a browser resolves a mousedown's focus target (issue #147,
+    ///    decision 2). `-1` counts: it is click-focusable though not tabbable,
+    ///    so a click-focused custom control has live Enter/Space and `on_key`
+    ///    immediately rather than only after being reached by Tab. The walk
+    ///    keeps going after this, to give rule 1 its chance at an ancestor.
+    ///
+    /// Nothing matched ⇒ [`PressFocus::Release`].
     pub(crate) fn resolve_click_focus(
         tree: &rinch_dom::NodeTree,
         hit: Option<usize>,
-    ) -> Option<usize> {
+    ) -> PressFocus {
         let mut cur = hit;
+        let mut focusable = None;
         while let Some(nid) = cur {
-            let node = tree.get(nid)?;
-            if node.attributes.contains_key("data-oninput") {
-                return None;
+            let Some(node) = tree.get(nid) else { break };
+            if Self::node_is_nofocus(node) {
+                return PressFocus::Preserve;
             }
-            if !Self::node_is_disabled(node) && Self::node_tabindex(node).is_some() {
-                return Some(nid);
+            if node.attributes.contains_key("data-oninput") {
+                return PressFocus::Release;
+            }
+            if focusable.is_none()
+                && !Self::node_is_disabled(node)
+                && Self::node_tabindex(node).is_some()
+            {
+                focusable = Some(nid);
             }
             cur = node.parent;
         }
-        None
+        match focusable {
+            Some(nid) => PressFocus::Node(nid),
+            None => PressFocus::Release,
+        }
+    }
+
+    /// Whether a node declines to take focus from a pointer press
+    /// (`data-nofocus`, issue #312).
+    ///
+    /// A boolean attribute, read by the same rule as
+    /// [`Self::node_is_disabled`]: present means on whatever the value, and
+    /// only the explicit `"false"` opts out.
+    pub(crate) fn node_is_nofocus(node: &rinch_dom::Node) -> bool {
+        node.attributes
+            .get("data-nofocus")
+            .is_some_and(|v| !v.eq_ignore_ascii_case("false"))
     }
 
     /// Collect all focusable node IDs in DOM pre-order (natural tab order).
