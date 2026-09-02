@@ -1054,6 +1054,19 @@ The software renderer includes **dirty region caching**: when only a few nodes c
 
 **Scrollbars.** A scroll container paints an overlay thumb on each axis that is scrollable (`overflow-{x,y}: scroll | auto`) *and* overflowing — 6px thick, 2px margin, 20px minimum thumb, 40% black, fully rounded. Both bars are hit-tested over a wider 16px strip along their edge and can be dragged (issue #178). Where both are present each track gives up the other bar's footprint at its far end, so the bottom-right **corner belongs to neither**: nothing paints there and clicking it falls through to the container. Desktop only — on the web the browser draws its own.
 
+That geometry lives in **one place**, `crates/rinch-dom/src/paint/scrollbar.rs`
+(`scrollbars(tree, node_id, scale)` → a `ScrollbarTrack` per axis): paint draws
+the thumb from it, and `find_scrollbar_hit` plus the `MouseDown`/`MouseMove`
+arms in `crates/rinch/src/app/` press and drag it by it. They used to derive it
+separately and had drifted (#400) — paint measured the track across the
+container's **border** box and input across its **content** box, and input never
+knew about the 20px minimum thumb — so a drag did not move the thumb the
+distance the pointer moved. A drag now converts pointer distance to scroll
+distance through `ScrollbarTrack::scroll_for_drag`, whose denominator is the
+thumb's **travel** (`track_len - thumb_len`), not the track length. Anything new
+that needs to know where a bar is should ask that module rather than re-derive
+it.
+
 **Viewport holes.** A `data-viewport` node is a compositing hole: `find_viewport_rects`
 (`crates/rinch-dom/src/paint/mod.rs`) cuts its rect out of every clipping ancestor's
 background fill, `<body>` included (the UA sheet makes it `overflow-y: auto`), so the
