@@ -569,12 +569,13 @@ pub(super) fn paint_box_shadow(
         let offset_y = shadow.offset_y as f64 * scale;
         let blur = shadow.blur_radius as f64 * scale;
         let spread = shadow.spread_radius as f64 * scale;
+        // `peniko::Color` *is* `AlphaColor<Srgb>`, so the `to_rgba8` round trip
+        // this used to do was a pure 8-bit re-snap of a value that is already
+        // in the painter's colour space — it only threw precision away for a
+        // shadow colour that isn't byte-aligned (a `color-mix`, a percentage
+        // `rgb()`). The painters quantise once, at the end, by rounding.
         let color: AlphaColor<Srgb> = shadow
             .color
-            .map(|c| {
-                let rgba = c.to_rgba8();
-                AlphaColor::<Srgb>::from_rgba8(rgba.r, rgba.g, rgba.b, rgba.a)
-            })
             .unwrap_or_else(|| AlphaColor::<Srgb>::from_rgba8(0, 0, 0, 40));
 
         if blur > 0.0 {
@@ -585,10 +586,6 @@ pub(super) fn paint_box_shadow(
             let max_expand = blur * 0.5 + spread;
             let layers: usize = 8;
 
-            // Extract actual shadow RGB
-            let sr = (color.components[0] * 255.0) as u8;
-            let sg = (color.components[1] * 255.0) as u8;
-            let sb = (color.components[2] * 255.0) as u8;
             let base_alpha = color.components[3] as f64;
 
             for i in 0..layers {
@@ -601,11 +598,14 @@ pub(super) fn paint_box_shadow(
                     y + h + offset_y + layer_expand,
                 );
                 let alpha_scale = (1.0 - t * 0.7) / layers as f64;
-                let alpha_u8 = (base_alpha * alpha_scale * 255.0).min(255.0) as u8;
-                if alpha_u8 == 0 {
+                // The painters quantise to 8 bits by rounding, so a layer that
+                // rounds to alpha 0 tints nothing; skip it rather than pay for
+                // the fill. (`alpha_scale` peaks at 0.114, so the product can
+                // never exceed 1 — the old `.min(255.0)` clamp was dead.)
+                if base_alpha * alpha_scale * 255.0 < 0.5 {
                     continue;
                 }
-                let layer_color = AlphaColor::<Srgb>::from_rgba8(sr, sg, sb, alpha_u8);
+                let layer_color = color.multiply_alpha(alpha_scale as f32);
                 let (outer_radii, outer) = if has_radius {
                     let expanded_radii = RoundedRectRadii::new(
                         radii.top_left + layer_expand,
