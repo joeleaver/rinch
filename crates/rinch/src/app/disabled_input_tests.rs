@@ -40,6 +40,13 @@ fn mount_fixture() -> (RinchApp, Ids, Rc<RefCell<Vec<String>>>) {
             log.borrow_mut().push(format!("{tag}:{v}"));
         }))
     };
+    let change = |tag: &'static str, log: &Rc<RefCell<Vec<String>>>| {
+        let log = log.clone();
+        register_input_handler(InputCallback::new(move |v: String| {
+            log.borrow_mut().push(format!("{tag}:{v}"));
+        }))
+    };
+    let plain_change = change("plain-change", &log);
     let handlers = [
         record("plain"),
         record("disabled"),
@@ -61,6 +68,9 @@ fn mount_fixture() -> (RinchApp, Ids, Rc<RefCell<Vec<String>>>) {
             n
         };
         let plain = field(scope, handlers[0].0);
+        // A commit handler, so a suppressed `data-onchange` is observable as an
+        // absence rather than assumed.
+        plain.set_attribute("data-onchange", &plain_change.0.to_string());
         let disabled = field(scope, handlers[1].0);
         disabled.set_attribute("disabled", "");
         let readonly = field(scope, handlers[2].0);
@@ -172,6 +182,19 @@ fn set_attr(app: &mut RinchApp, id: usize, name: &str, value: Option<&str>) {
             node.attributes.remove(name);
         }
     }
+}
+
+/// The `value` attribute a field actually displays — what survives the claim
+/// being released, unlike `focused_input_state`.
+fn dom_value(app: &RinchApp, id: usize) -> String {
+    app.doc
+        .as_ref()
+        .unwrap()
+        .borrow()
+        .tree
+        .get(id)
+        .and_then(|n| n.attributes.get("value").cloned())
+        .unwrap_or_default()
 }
 
 fn focused_text(app: &RinchApp) -> String {
@@ -295,7 +318,7 @@ fn a_field_that_goes_disabled_while_focused_stops_accepting_keys() {
     type_str(&mut app, "cd");
 
     assert_eq!(
-        focused_text(&app),
+        dom_value(&app, ids.plain),
         "ab",
         "keys after the field went disabled must change nothing"
     );
@@ -303,6 +326,73 @@ fn a_field_that_goes_disabled_while_focused_stops_accepting_keys() {
         *log.borrow(),
         vec!["plain:a".to_string(), "plain:ab".to_string()],
         "and must fire no oninput"
+    );
+}
+
+/// …and the claim is **released**, the way a browser moves focus to the body.
+/// Keeping an inert claim would leave a `:focus` ring on a control that owns
+/// no keyboard, keep the OS IME enabled for it (`ime_state` reports
+/// `enabled: true` for any `FocusTarget::Input`), and keep
+/// `has_focused_input()` answering `true` — which is what an embed host routes
+/// its keyboard on.
+#[test]
+fn a_field_that_goes_disabled_while_focused_releases_the_keyboard() {
+    let (mut app, ids, _log) = mount_fixture();
+
+    click_center(&mut app, ids.plain);
+    type_str(&mut app, "ab");
+    set_attr(&mut app, ids.plain, "disabled", Some(""));
+    type_str(&mut app, "c");
+
+    assert_eq!(app.focus_target, FocusTarget::None);
+    assert_eq!(app.focused_input_node_id, None);
+    assert!(app.focused_input_state.is_none());
+    assert!(!app.has_focused_input());
+    assert!(
+        !app.ime_state().enabled,
+        "and the OS input method is switched back off"
+    );
+    assert_eq!(
+        app.doc.as_ref().unwrap().borrow().tree.focused_node,
+        None,
+        "and no :focus ring is left behind"
+    );
+}
+
+/// The release must **not** run the field's `data-onchange` commit. Everywhere
+/// else that commit is load-bearing — a window blur retains the claim
+/// precisely so alt-tabbing cannot fire it (#226) — but a control going
+/// disabled is not the user committing an edit, and browsers dispatch no
+/// `change` for it either.
+#[test]
+fn the_release_suppresses_the_change_commit() {
+    let (mut app, ids, log) = mount_fixture();
+
+    click_center(&mut app, ids.plain);
+    type_str(&mut app, "ab");
+    log.borrow_mut().clear();
+
+    set_attr(&mut app, ids.plain, "disabled", Some(""));
+    type_str(&mut app, "c");
+    assert_eq!(app.focus_target, FocusTarget::None, "it did release");
+
+    assert!(
+        log.borrow().is_empty(),
+        "no data-onchange from a control going disabled: {:?}",
+        log.borrow()
+    );
+
+    // The same field, blurred the ordinary way, *does* commit — so the
+    // assertion above is a suppression and not a handler that never fires.
+    let (mut app, ids, log) = mount_fixture();
+    click_center(&mut app, ids.plain);
+    type_str(&mut app, "ab");
+    log.borrow_mut().clear();
+    click_center(&mut app, ids.readonly);
+    assert_eq!(
+        *log.borrow(),
+        vec!["plain-change:ab".to_string()],
+        "an ordinary blur commits"
     );
 }
 
@@ -320,7 +410,7 @@ fn a_disabled_field_refuses_deletion_too() {
     key(&mut app, KeyCode::Backspace, None);
     key(&mut app, KeyCode::Delete, None);
 
-    assert_eq!(focused_text(&app), "abc");
+    assert_eq!(dom_value(&app, ids.plain), "abc");
 }
 
 /// Enter is a commit boundary rather than an edit command, and it takes the

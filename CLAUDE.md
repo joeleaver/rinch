@@ -963,8 +963,11 @@ Focusability on desktop comes from an explicit `tabindex` (or `data-oninput`).
 `tabindex="-1"` is focusable by click and programmatically but not tabbable;
 `disabled` and `data-disabled` are both honoured (issue #315) as **boolean
 attributes** (present = disabled unless the value is `"false"`), take no focus
-by any route, and are re-checked at edit time so a field that goes disabled
-*while focused* stops accepting keys. `readonly` focuses and selects but
+by any route, and are re-checked at edit time: a field that goes disabled
+*while focused* stops accepting keys **and releases the keyboard** — with its
+`data-onchange` commit suppressed, since going disabled is not the user
+committing an edit (`release_focus_for_disabled`, the only transition that
+suppresses it). `readonly` focuses and selects but
 refuses every text-changing command. A disabled `<fieldset>` disables its
 subtree (except its first `<legend>`); every other tag's `disabled` removes
 only the node from the Tab order, not its subtree. A

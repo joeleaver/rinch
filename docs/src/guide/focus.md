@@ -38,9 +38,12 @@ never appears on something that owns no keyboard.
 
 Disabled is re-checked at **edit** time, not only at focus time, so a field
 that goes disabled *while focused* — a reactive `disabled` prop re-rendering
-under a live caret — stops accepting keys immediately. It keeps the claim
-rather than being blurred: releasing it would fire the field's `data-onchange`
-commit, and a control going disabled is not the user committing an edit.
+under a live caret — stops accepting keys immediately, and **releases the
+keyboard**, the way a browser moves focus to the body. The one thing that
+release does *not* do is fire the field's `data-onchange` commit: everywhere
+else that commit is load-bearing (a window blur deliberately keeps the claim so
+alt-tabbing cannot fire it), but a control going disabled is not the user
+committing an edit, and browsers dispatch no `change` for it either.
 
 Focus arrives three ways, and all three go through the same arbiter:
 

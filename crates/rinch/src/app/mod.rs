@@ -1563,11 +1563,16 @@ impl RinchApp {
     /// [`Self::handle_input_edit_command`] or lands here directly
     /// ([`Self::handle_enter`]'s commit), so one guard covers them all.
     ///
-    /// The claim is deliberately **not** released: dropping it runs
-    /// `set_focus_target`, which fires the field's `data-onchange` commit, and
-    /// a control going disabled is not the user committing an edit (browsers
-    /// blur without firing `change` for exactly this reason). The keys simply
-    /// do nothing until focus moves on its own.
+    /// The claim is **released**, through
+    /// [`Self::release_focus_for_disabled`] — which is what a browser does
+    /// (focus moves to the body) — but without the `data-onchange` commit a
+    /// normal blur would fire, because a control going disabled is not the
+    /// user committing an edit. Keeping an inert claim instead would leave a
+    /// `:focus` ring on a control that owns no keyboard, keep the OS IME
+    /// enabled and its candidate box parked on it (`ime_state` reports
+    /// `enabled: true` for any `FocusTarget::Input`), and keep
+    /// `has_focused_input()` answering `true`, which is what an embed host
+    /// routes its keyboard on.
     ///
     /// Must be called with no outstanding borrow of `self.doc` — `set_focus_target`
     /// writes DOM attributes.
@@ -1581,6 +1586,7 @@ impl RinchApp {
             return None;
         }
         if self.focused_input_is_disabled() {
+            self.release_focus_for_disabled();
             return None;
         }
         Some(handler_id)
