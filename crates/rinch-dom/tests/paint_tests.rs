@@ -2868,6 +2868,30 @@ mod channel_rounding {
         );
     }
 
+    /// A shadow colour is already 8-bit-quantised before paint ever sees it,
+    /// which is why removing the `to_rgba8` re-snap in `paint_shadows` is
+    /// redundancy removal rather than a precision gain.
+    ///
+    /// `rgb(0.5% 99.5% 33.3%)` is as far from byte-aligned as CSS lets you
+    /// write; it paints identically to the `rgb(1, 254, 85)` it rounds to,
+    /// because `color_from_absolute` rounded it on the way into
+    /// `ComputedStyle`. So no input exists that the re-snap could have
+    /// changed — including the `color-mix()` and percentage cases you would
+    /// expect to be the counterexamples.
+    #[test]
+    fn a_shadow_colour_is_already_quantised_before_paint() {
+        let percent = painted("box-shadow: 0 0 40px 0 rgb(0.5% 99.5% 33.3%)");
+        let bytes = painted("box-shadow: 0 0 40px 0 rgb(1, 254, 85)");
+        assert_eq!(
+            pixel_at(&percent, 100 - 19, 150),
+            pixel_at(&bytes, 100 - 19, 150)
+        );
+        assert_eq!(
+            pixel_at(&percent, 100 - 10, 150),
+            pixel_at(&bytes, 100 - 10, 150)
+        );
+    }
+
     /// `brightness()` has no upper bound in CSS, but an overlay alpha does.
     /// Anything at or past `brightness(2)` is a fully opaque white wash.
     #[test]
@@ -2878,6 +2902,40 @@ mod channel_rounding {
             [255, 255, 255, 255],
             "alpha 2.0 must clamp to 1.0, not wrap"
         );
+    }
+
+    /// A faint shadow used to paint **nothing at all** — not a dim shadow, an
+    /// absent one.
+    ///
+    /// The per-layer skip threshold was `(alpha * 255.0) as u8 == 0`, which
+    /// truncates, so it discarded every layer whose alpha was under a *whole*
+    /// level rather than under half of one. `alpha_scale` peaks at 0.114, so
+    /// for a faint shadow that is every layer there is: at `rgba(0,0,0,0.03)`
+    /// and below, the entire 800x600 framebuffer came back zero.
+    ///
+    /// Nothing in the suite noticed — every other shadow test here is opaque
+    /// or half-opaque, well clear of the threshold — so this is the third
+    /// blind spot of the same kind as `a_translucent_shadow_...`: an input
+    /// class no test reached, rather than a line no test covered.
+    #[test]
+    fn a_faint_shadow_is_painted_rather_than_skipped() {
+        for alpha in ["0.02", "0.025", "0.03"] {
+            let painter = painted(&format!("box-shadow: 0 0 40px 0 rgba(0,0,0,{alpha})"));
+            let lit = painter.pixels().iter().filter(|b| **b != 0).count();
+            assert!(
+                lit > 0,
+                "`rgba(0,0,0,{alpha})` must paint something; the whole buffer was blank"
+            );
+            assert_eq!(
+                pixel_at(&painter, 100 - 2, 150)[3],
+                match alpha {
+                    "0.02" => 2,
+                    "0.025" => 3,
+                    _ => 5,
+                },
+                "just outside the box, 2px out (alpha = {alpha})"
+            );
+        }
     }
 
     /// The guard the truncation used to provide by accident: a layer whose

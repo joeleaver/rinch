@@ -570,10 +570,14 @@ pub(super) fn paint_box_shadow(
         let blur = shadow.blur_radius as f64 * scale;
         let spread = shadow.spread_radius as f64 * scale;
         // `peniko::Color` *is* `AlphaColor<Srgb>`, so the `to_rgba8` round trip
-        // this used to do was a pure 8-bit re-snap of a value that is already
-        // in the painter's colour space — it only threw precision away for a
-        // shadow colour that isn't byte-aligned (a `color-mix`, a percentage
-        // `rgb()`). The painters quantise once, at the end, by rounding.
+        // this used to do was a re-snap of a value already in the painter's
+        // colour space. It was **redundant, not lossy**: a shadow colour
+        // reaches `ComputedStyle` through `color_from_absolute`, which has
+        // already rounded every channel to 8 bits, so no input exists that the
+        // round trip could change — including the `color-mix()` and percentage
+        // `rgb()` cases you would expect to be the counterexamples. Removed so
+        // there is one fewer quantiser to keep in step, not to recover
+        // precision.
         let color: AlphaColor<Srgb> = shadow
             .color
             .unwrap_or_else(|| AlphaColor::<Srgb>::from_rgba8(0, 0, 0, 40));
@@ -598,10 +602,19 @@ pub(super) fn paint_box_shadow(
                     y + h + offset_y + layer_expand,
                 );
                 let alpha_scale = (1.0 - t * 0.7) / layers as f64;
-                // The painters quantise to 8 bits by rounding, so a layer that
-                // rounds to alpha 0 tints nothing; skip it rather than pay for
-                // the fill. (`alpha_scale` peaks at 0.114, so the product can
-                // never exceed 1 — the old `.min(255.0)` clamp was dead.)
+                // Skip a layer only when its alpha *rounds* to zero, i.e. when
+                // it would genuinely tint nothing.
+                //
+                // This is the most visible line in the change, not a cost
+                // saving. The threshold used to be `(… * 255.0) as u8 == 0`,
+                // which truncates, so it discarded every layer under a *whole*
+                // level rather than under half of one — and `alpha_scale` peaks
+                // at 0.114, so for a faint shadow that is every layer there is.
+                // `box-shadow: 0 0 40px rgba(0,0,0,0.03)` and anything fainter
+                // painted **nothing at all**: not a dim shadow, an absent one.
+                //
+                // (`alpha_scale` peaking at 0.114 also means the product can
+                // never exceed 1, so the old `.min(255.0)` clamp was dead.)
                 if base_alpha * alpha_scale * 255.0 < 0.5 {
                     continue;
                 }
