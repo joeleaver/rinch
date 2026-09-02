@@ -2817,3 +2817,80 @@ mod absolute_containing_block {
         assert_eq!((l.width, l.height), (0.0, 0.0));
     }
 }
+
+/// Removing a `display: contents` wrapper must free the Taffy space its
+/// *children* were spliced into, not the wrapper's own (already-detached)
+/// Taffy id (card K48).
+///
+/// `sync_display_contents` polyfills `display: contents` by hiding the
+/// wrapper itself (`display: none` in Taffy) and splicing its children's
+/// Taffy ids directly into the parent's Taffy child list
+/// (`collect_effective_taffy_children`). So the wrapper's own `taffy_id` is
+/// never actually present among the parent's Taffy children — `remove_node`
+/// looking for *that* id to remove is therefore a silent no-op
+/// (`taffy_remove_child_safe` exists precisely to swallow exactly this
+/// "not actually a child" case without panicking), and the child that really
+/// did occupy the slot is orphaned in the Taffy tree forever: a permanent,
+/// invisible sibling that keeps claiming its share of `flex-grow`.
+///
+/// On the moto g this surfaced as: `Route::Library` is the one screen whose
+/// content is a reactive `if` (first-run vs. the real library) rather than a
+/// single element, so RSX wraps it in a `display: contents` marker div to
+/// give that `if` somewhere to insert into. The instant the app navigated
+/// away from Library for the first time, that wrapper's removal orphaned
+/// Library's real root as a phantom `flex: 1` sibling of the app's own root
+/// column — forever after, every screen's flex column split the remaining
+/// height with a ghost nobody could see, taking only half its rightful
+/// space. Two `flex: 1` divs under a `flex: 1` column, one of them behind a
+/// `display: contents` wrapper, is the whole reproduction: no Android, no
+/// scroller, no route table required.
+#[test]
+fn test_removing_display_contents_wrapper_frees_its_childs_taffy_slot() {
+    let mut doc = RinchDocument::new();
+    let body = doc.body();
+
+    let column = doc.create_element("div");
+    doc.set_attribute(
+        column,
+        "style",
+        "display: flex; flex-direction: column; height: 200px;",
+    );
+    doc.append_child(body, column);
+
+    // The wrapper stands in for a route's `if`/`match` arm: a single
+    // `display: contents` div whose one child is the arm's real content.
+    let wrapper = doc.create_element("div");
+    doc.set_attribute(wrapper, "style", "display: contents");
+    doc.append_child(column, wrapper);
+
+    let a = doc.create_element("div");
+    doc.set_attribute(a, "style", "flex: 1;");
+    doc.append_child(wrapper, a);
+
+    // The survivor: a second `flex: 1` child of the column, mounted directly
+    // (no wrapper) — every other route in the app looks like this.
+    let b = doc.create_element("div");
+    doc.set_attribute(b, "style", "flex: 1;");
+    doc.append_child(column, b);
+
+    // First layout: two flex:1 children split the column's 200px evenly,
+    // exactly like Library's own root sharing the app root with nothing else.
+    doc.resolve_layout(800.0, 600.0);
+    let la = doc.tree.get(a.0).unwrap().layout;
+    let lb = doc.tree.get(b.0).unwrap().layout;
+    assert_eq!(la.height, 100.0, "sanity: even split before removal");
+    assert_eq!(lb.height, 100.0, "sanity: even split before removal");
+
+    // Navigate away: remove the wrapper, exactly as `match_dom`/`show_dom`
+    // remove an outgoing route's content via `NodeHandle::remove()`.
+    doc.remove_node(wrapper);
+    doc.resolve_layout(800.0, 600.0);
+
+    let lb_after = doc.tree.get(b.0).unwrap().layout;
+    assert_eq!(
+        lb_after.height, 200.0,
+        "the survivor must claim the whole column once its sibling is gone — \
+         a height of 100.0 here means `a` is still a phantom Taffy child \
+         nobody could remove"
+    );
+}
