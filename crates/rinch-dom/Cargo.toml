@@ -51,3 +51,6 @@ default = ["software-renderer"]
 software-renderer = ["tiny-skia", "swash"]
 
 [dev-dependencies]
+# Integration tests name taffy types (the IFC leaf invariant tests, #466,
+# inspect `NodeTree::taffy` directly). Resolves to the same pinned 0.12.
+taffy = "0.12"
