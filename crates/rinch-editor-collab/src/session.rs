@@ -43,6 +43,13 @@
 //! really is out of scope the error names it (`Unsupported: blockquote`) instead of a
 //! block-count symptom.
 //!
+//! Once stalled, the hint is skipped entirely rather than tried first. The fast diff
+//! verifies only the block *count* and then skips every block the transaction did not
+//! touch, so an out-of-scope block that keeps its index — a `blockquote` wrapped around
+//! a paragraph in place — lets a later edit elsewhere pass, answer `Ok`, and clear the
+//! stall while the model and the CRDT still differ. `before` is known to be false from
+//! the moment of the first refusal; there is nothing left to trust in it.
+//!
 //! [`CollabSession::outbound_stall`] reports the state in between, so an app can say
 //! "not syncing — remove the table" rather than leaving the user to wonder. It is
 //! **not** poison: local-outbound-only, the shared CRDT is healthy throughout, inbound
@@ -241,12 +248,23 @@ impl CollabSession {
     /// [`Self::outbound_stall`].
     pub fn record_local(&mut self, schema: &Schema, before: &Node, after: &Node) -> Result<()> {
         self.guard()?;
-        let first = match self.cdoc.project_change(before, after) {
-            Ok(()) => {
-                self.stalled = None;
-                return Ok(());
-            }
-            Err(e) => e,
+        let fallback = match self.stalled.clone() {
+            // Already stalled: `before` is a *known*-false description of the CRDT, so
+            // the fast diff must not be tried at all. It verifies only the block count
+            // (`project_change` gate 1) and then skips every block the transaction did
+            // not touch — an `Rc`-identity prefix/suffix that is never compared against
+            // the CRDT. A stalled session whose out-of-scope block keeps its index and
+            // is left alone by the next edit therefore passes the fast path, answers
+            // `Ok`, and clears this very flag while the model and the CRDT still differ:
+            // `<paragraph>Zone<blockquote>two` against `<paragraph>Zone<paragraph>two`,
+            // silent, with `outbound_stall()` reporting healthy. Go straight to the
+            // authoritative base instead — which is also what makes the "a stalled
+            // session pays the read-back per edit" note below true.
+            Some(prev) => prev,
+            None => match self.cdoc.project_change(before, after) {
+                Ok(()) => return Ok(()),
+                Err(e) => e,
+            },
         };
         // The caller's `before` did not describe the CRDT. Re-base on what does.
         // `to_doc` failing means the shared document is unprojectable — report it, but
@@ -255,8 +273,8 @@ impl CollabSession {
         let base = match self.cdoc.to_doc(schema) {
             Ok(base) => base,
             Err(_) => {
-                self.stalled = Some(first.clone());
-                return Err(first);
+                self.stalled = Some(fallback.clone());
+                return Err(fallback);
             }
         };
         match self.cdoc.project_change(&base, after) {

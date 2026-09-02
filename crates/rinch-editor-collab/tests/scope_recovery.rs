@@ -227,6 +227,87 @@ fn an_edit_made_during_the_stall_is_not_silently_lost() {
     );
 }
 
+/// The same hole, in the shape the other tests miss: an out-of-scope edit that
+/// **preserves the block count**. `wrapInBlockquote` on a paragraph is one — and so is
+/// any replace-in-place — so this is a command away, not a corner.
+///
+/// The count-changing shape is caught because the block-count gate fails and forces the
+/// re-base. This one is not: counts still match, and the block-list diff puts the
+/// offending block in its `Rc`-identity suffix, where it is never compared against the
+/// CRDT. Trying the fast diff first therefore let it *succeed* on a document that had
+/// already diverged:
+///
+/// ```text
+/// model     = <paragraph>Zone<blockquote>two
+/// projected = <paragraph>Zone<paragraph>two
+/// model == projected ? false
+/// stall     = None            <-- reporting healthy
+/// ```
+///
+/// Silent divergence with the new indicator actively saying "syncing", which is worse
+/// than the block-count error it replaced. A session that is already stalled therefore
+/// skips the fast path entirely: `before` is *known* not to describe the CRDT.
+#[test]
+fn a_count_preserving_out_of_scope_edit_stalls_too_and_still_ships_the_backlog() {
+    let schema = Rc::new(Schema::starter_kit());
+    let mut p = Peer::new(&schema, vec![para(&schema, "one"), para(&schema, "two")]);
+
+    // Replace block 1 with a blockquote — two blocks before, two after.
+    let start: usize = p.state.doc.child(0).node_size();
+    let end = start + p.state.doc.child(1).node_size();
+    let bq = blockquote(&schema, "two");
+    let err = p
+        .edit(|tr| {
+            tr.replace(start, end, Slice::from_fragment(Fragment::from_node(bq)))
+                .unwrap();
+        })
+        .expect("a blockquote is out of A22 scope however it got there");
+    assert!(matches!(&err, CollabError::Unsupported(m) if m.contains("blockquote")));
+    assert_eq!(
+        p.state.doc.child_count(),
+        2,
+        "the block count did not change"
+    );
+
+    // An edit that touches only block 0 leaves the blockquote in the diff's suffix.
+    let err = p
+        .type_at(1, "Z")
+        .expect("still out of scope — the model holds content the CRDT cannot");
+    assert!(
+        matches!(&err, CollabError::Unsupported(m) if m.contains("blockquote")),
+        "and it must still name the blockquote, not answer Ok, got {err:?}"
+    );
+    assert!(
+        p.session.outbound_stall().is_some(),
+        "outbound is still stalled; reporting healthy here is the silent-divergence bug"
+    );
+
+    // Unwrap the quote — also count-preserving. The "Z" typed while stalled ships too.
+    let start: usize = p.state.doc.child(0).node_size();
+    let end = start + p.state.doc.child(1).node_size();
+    let plain = para(&schema, "two");
+    assert!(
+        p.edit(|tr| {
+            tr.replace(start, end, Slice::from_fragment(Fragment::from_node(plain)))
+                .unwrap();
+        })
+        .is_none(),
+        "removing the offending block must project"
+    );
+    assert!(p.session.outbound_stall().is_none(), "and clear the stall");
+    p.assert_model_is_projection("after a count-preserving cure");
+    assert_eq!(
+        p.session
+            .projected_doc(&schema)
+            .unwrap()
+            .child(0)
+            .child(0)
+            .text(),
+        Some("Zone"),
+        "the edit made during the stall reached the CRDT"
+    );
+}
+
 #[test]
 fn a_peer_receives_everything_that_accumulated_during_the_stall() {
     // End-to-end: the catch-up must reach the wire, not just the local CRDT.
