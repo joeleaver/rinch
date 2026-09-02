@@ -533,40 +533,13 @@ impl RinchApp {
                 if let Some(doc) = self.doc.clone() {
                     // The hit and the focus target it resolves to, in one
                     // borrow: the walk starts where the hit test lands, so
-                    // re-borrowing between them buys nothing.
-                    //
-                    // The nearest focusable ancestor-or-self of the hit, as a
-                    // browser resolves a mousedown's focus target (issue #147,
-                    // decision 2): any parseable `tabindex` — including `-1`,
-                    // which is click-focusable but not tabbable — claims
-                    // `FocusTarget::Node`, so a click-focused custom control has
-                    // live Enter/Space and `on_key` immediately instead of only
-                    // after being reached by Tab.
-                    //
-                    // The walk stops at the first node that is focusable *or*
-                    // carries `data-oninput`: an `<input>` inside a focusable
-                    // wrapper belongs to the text engine, and `handle_click`
-                    // claims it below — taking Node focus first would announce a
-                    // gain-then-loss on the wrapper for a click that was never
-                    // the wrapper's.
+                    // re-borrowing between them buys nothing. The policy is
+                    // `resolve_click_focus`, which `handle_click`'s release
+                    // check also asks — one press, one answer (issue #316).
                     let (hit, click_focus_node) = {
                         let d = doc.borrow();
                         let hit = hit_test(&d.tree, x, y);
-                        let mut cur = hit;
-                        let mut found = None;
-                        while let Some(nid) = cur {
-                            let Some(node) = d.tree.get(nid) else { break };
-                            if node.attributes.contains_key("data-oninput") {
-                                break;
-                            }
-                            if !Self::node_is_disabled(node) && Self::node_tabindex(node).is_some()
-                            {
-                                found = Some(nid);
-                                break;
-                            }
-                            cur = node.parent;
-                        }
-                        (hit, found)
+                        (hit, Self::resolve_click_focus(&d.tree, hit))
                     };
                     // An arbiter-held generic node (issue #228), and whether
                     // this press lands back on it — i.e. resolves to the same

@@ -30,9 +30,12 @@ Focus arrives three ways, and all three go through the same arbiter:
 
 - **Tab / Shift+Tab** — walks the focusable elements in DOM order, and paints
   the `:focus-visible` keyboard ring.
-- **A mouse press** — claims the *nearest focusable ancestor* of whatever was
-  hit, exactly as a browser does. Pointer focus does **not** paint the
-  `:focus-visible` ring.
+- **A mouse press** — claims the *nearest focusable ancestor-or-self* of
+  whatever was hit, exactly as a browser does. Pointer focus does **not** paint
+  the `:focus-visible` ring. A press that resolves to something *other* than
+  the current claim holder takes the keyboard away from it, and a press that
+  resolves to nothing releases it — a nested focusable inside a focused node
+  counts as "somewhere else", for every mouse button alike.
 
   This applies to `tabindex="-1"` too, so a control that must **not** steal
   focus from the field it sits beside — a toolbar button over a rich-text
@@ -155,6 +158,13 @@ So the pair to expect is `on_focus_lost` on window blur, `on_focus_gained` on
 window refocus, with no key routing in between. Use it to hide a caret and idle
 a blink timer. While the window is blurred, rinch reports the OS IME disabled,
 so a candidate box follows the window that actually has the keyboard.
+
+The runtime does the same for its own caret: the rich-text editor's caret stops
+blinking while the window is blurred and shows **solid**, resuming from the
+solid phase on refocus. The blink is the event loop's only timed wake, so a
+backgrounded rinch app now idles completely instead of waking twice a second to
+animate a caret nobody can type into. The selection highlight is unaffected —
+the claim is still held, so a blurred window still shows what is selected.
 
 ### IME
 
