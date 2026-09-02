@@ -288,14 +288,61 @@ pub fn styles() -> String {
 .rinch-color-input__input {
     flex: 1;
     min-width: 0;
-    height: 34px;
-    padding: 0 8px;
     border: none;
     background: transparent;
     color: var(--rinch-color-text, #000);
-    font-size: var(--rinch-font-size-sm, 14px);
     outline: none;
 }
+
+/* ColorInput sizes (issue #263 — `size` used to reach nothing).
+
+   Every ColorInput carries exactly one of these, `--md` when `size` is unset or
+   unrecognised, so `md` reproduces the height, padding and font-size the field
+   was hard-coded to before and the default rendering is unchanged. The preview
+   swatch scales alongside, through the `size` the component hands `ColorSwatch`.
+
+   The steps are ColorInput's own rather than TextInput's: anchoring `md` at
+   TextInput's 2.625rem would have resized every existing ColorInput. */
+.rinch-color-input--xs .rinch-color-input__input {
+    height: 26px;
+    padding: 0 6px;
+    font-size: var(--rinch-font-size-xs, 12px);
+}
+
+.rinch-color-input--sm .rinch-color-input__input {
+    height: 30px;
+    padding: 0 7px;
+    font-size: var(--rinch-font-size-xs, 12px);
+}
+
+.rinch-color-input--md .rinch-color-input__input {
+    height: 34px;
+    padding: 0 8px;
+    font-size: var(--rinch-font-size-sm, 14px);
+}
+
+.rinch-color-input--lg .rinch-color-input__input {
+    height: 40px;
+    padding: 0 10px;
+    font-size: var(--rinch-font-size-md, 16px);
+}
+
+.rinch-color-input--xl .rinch-color-input__input {
+    height: 48px;
+    padding: 0 12px;
+    font-size: var(--rinch-font-size-lg, 18px);
+}
+
+/* ColorInput radius (issue #263 — `radius` used to reach nothing).
+
+   Unlike size there is no `--radius-md` default class: an unset or unrecognised
+   `radius` emits none of these and the base rule's `--rinch-radius-sm` stands.
+   That is the idiom DropdownMenu, Modal and Card already use. */
+.rinch-color-input--radius-xs .rinch-color-input__input-group { border-radius: var(--rinch-radius-xs); }
+.rinch-color-input--radius-sm .rinch-color-input__input-group { border-radius: var(--rinch-radius-sm); }
+.rinch-color-input--radius-md .rinch-color-input__input-group { border-radius: var(--rinch-radius-md); }
+.rinch-color-input--radius-lg .rinch-color-input__input-group { border-radius: var(--rinch-radius-lg); }
+.rinch-color-input--radius-xl .rinch-color-input__input-group { border-radius: var(--rinch-radius-xl); }
 
 .rinch-color-input__dropdown {
     position: absolute;
