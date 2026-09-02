@@ -1,12 +1,24 @@
 pub fn styles() -> String {
     r#"
-/* Switch wrapper */
+/* Switch wrapper.
+
+   `position: relative` is load-bearing, not decoration: it makes the label the
+   containing block for `.rinch-switch__input`, the `position: absolute` hidden
+   native <input> below. Without it the input's containing block is whatever
+   unpositioned ancestor happens to sit above the switch — and with no positioned
+   ancestor at all, that is the *viewport* (issue #204), not the parent. The
+   input is safe today only because all four of its insets are `auto` and it
+   carries an explicit size, so it keeps its static position and its containing
+   block never enters into its geometry. Give it a single inset — an enlarged hit
+   target, an `inset: 0` fill — and without this line it would jump to the corner
+   of the window. Checkbox and Radio both declare it for the same reason. */
 .rinch-switch {
     display: inline-flex;
     align-items: center;
     gap: var(--rinch-spacing-sm);
     cursor: pointer;
     user-select: none;
+    position: relative;
 }
 
 .rinch-switch--disabled {
