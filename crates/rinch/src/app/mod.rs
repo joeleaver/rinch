@@ -3259,6 +3259,77 @@ mod resize_vs_scrollbar_tests {
             Some(rinch_platform::ResizeDirection::West)
         );
     }
+
+    /// Every pin above presses at scroll 0, where `thumb_start(scroll)` and
+    /// `thumb_start(0)` coincide — so a `pointer_on_scrollbar_thumb` that
+    /// ignores the scroll offset (the thumb always tested at its scroll-0
+    /// position) passes all of them; review mutation-testing found exactly
+    /// that mutant alive. In any *scrolled* window it is the original bug
+    /// back again: the mid-track thumb you can see resizes the window, and
+    /// the empty track where the thumb sat at scroll 0 steals the resize
+    /// press for the bar. This presses a scrolled window on both spots.
+    #[test]
+    fn a_scrolled_thumb_wins_where_it_is_painted_not_where_scroll_zero_put_it() {
+        let mut app = app();
+        // Scroll halfway down: 2000px of content in a 600px window leaves
+        // max_scroll = 1400, so the painted thumb moves well clear of the
+        // span it held at scroll 0.
+        app.handle_event(
+            PlatformEvent::MouseWheel {
+                x: 400.0,
+                y: 300.0,
+                delta_x: 0.0,
+                delta_y: -700.0,
+            },
+            SIZE,
+            1.0,
+        );
+        let (thumb_top, thumb_bottom) = thumb_span(&mut app, 800.0);
+        // The probe for the vacated track, and the premises that make it
+        // probative: inside the span the thumb held at scroll 0 (which ran
+        // [margin, margin + thumb_len)), above the thumb as painted now, and
+        // clear of the 8px corner square.
+        let old_y = 100.0_f32;
+        let thumb_len = thumb_bottom - thumb_top;
+        assert!(
+            f64::from(old_y) < 2.0 + thumb_len && f64::from(old_y) < thumb_top,
+            "the probe must be where the thumb was and no longer is \
+             (scroll-0 span [2, {:.1}), painted top {thumb_top})",
+            2.0 + thumb_len,
+        );
+
+        // The vacated track is empty edge: it resizes, and arms no drag. This
+        // press returns before any scroll state changes, so the span read
+        // above stays valid for the second half.
+        let actions = press(&mut app, 795.0, old_y);
+        assert_eq!(
+            resize_direction(&actions),
+            Some(rinch_platform::ResizeDirection::East),
+            "the track the thumb has scrolled away from is a resize handle"
+        );
+        assert!(
+            app.scrollbar_drag.is_none(),
+            "and no scrollbar drag is armed there"
+        );
+
+        // The thumb where it is *painted* — mid-track — goes to the scrollbar.
+        let y = ((thumb_top + thumb_bottom) / 2.0) as f32;
+        assert_eq!(
+            super::hit_testing::detect_resize_edge(795.0, y, 800.0, 600.0, 8.0),
+            Some(rinch_platform::ResizeDirection::East),
+            "the press must be inside the resize zone, or this test proves nothing"
+        );
+        let actions = press(&mut app, 795.0, y);
+        assert_eq!(
+            resize_direction(&actions),
+            None,
+            "a press on the visible mid-track thumb must not resize the window"
+        );
+        assert!(
+            app.scrollbar_drag.is_some(),
+            "and it must arm the scrollbar drag instead"
+        );
+    }
 }
 
 #[cfg(all(test, software_shell))]

@@ -11,9 +11,10 @@ impl RinchApp {
     /// margin) is the scroll container filling it — so the painted thumb sat
     /// entirely inside the East zone and a press dead-centre of it resized the
     /// window (#399, #420). "What you can see, you can grab": the thumb takes
-    /// an *edge* press that lands on it, and everything else on that edge — the
-    /// empty track, the margin outside the thumb, any edge with no bar — still
-    /// resizes.
+    /// an *edge* press at its height — across the bar the grab is
+    /// edge-forgiving, the whole hit strip margin included, see
+    /// [`pointer_on_scrollbar_thumb`] — and the rest of the edge, the empty
+    /// track past the thumb and any edge with no bar, still resizes.
     ///
     /// A **corner** never yields, so a diagonal resize stays reachable however
     /// tall the thumb grows. That is also the direction that resizes both axes

@@ -398,7 +398,8 @@ pub(crate) fn is_corner_resize(dir: rinch_platform::ResizeDirection) -> bool {
     matches!(dir, NorthEast | NorthWest | SouthEast | SouthWest)
 }
 
-/// Whether the pointer is on a scroll container's **painted** thumb.
+/// Whether the pointer is on a scroll container's thumb: its **painted**
+/// extent along the track, over [`find_scrollbar_hit`]'s full strip across it.
 ///
 /// A borderless window's resize inset overlaps whatever content is flush with
 /// the window edge, and for a `BorderlessWindow` — whose root is `100vw` x
@@ -407,14 +408,17 @@ pub(crate) fn is_corner_resize(dir: rinch_platform::ResizeDirection) -> bool {
 /// in `[width - 8, width - 2)`, so *every pixel of the thumb you can see* was a
 /// resize handle and a press dead-centre of it resized the window (#399, #420).
 ///
-/// The rule that resolves it is "what you can see, you can grab": a press on
-/// the painted thumb goes to the scrollbar, and the rest of the edge — the
-/// empty track, the 2px margin outside the thumb, every edge with no bar on it
-/// — still resizes. A browser has no equivalent conflict, because its resize
-/// border lives in the window frame *outside* the client area and its
-/// scrollbars are grabbable right up to the client edge; a borderless window
-/// has no frame to put it in, so something has to give, and the visible target
-/// is the one the user is aiming at.
+/// The rule that resolves it is "what you can see, you can grab", applied per
+/// axis. **Along** the track, a press at the thumb's extent goes to the
+/// scrollbar, and the empty track past it — like every edge with no bar on it
+/// — still resizes. **Across** the bar the test is [`find_scrollbar_hit`]'s
+/// whole hit strip, so the 2px margin between the thumb and the window edge
+/// grabs the thumb too: edge-forgiving, the way a browser's bar in a maximised
+/// window is grabbable at the very last pixel. A browser has no equivalent
+/// *resize* conflict, because its resize border lives in the window frame
+/// *outside* the client area; a borderless window has no frame to put it in,
+/// so something has to give, and the visible target is the one the user is
+/// aiming at.
 ///
 /// Corners are excluded by the caller ([`is_corner_resize`]), so a diagonal
 /// resize is always reachable however tall the thumb grows.

@@ -1519,13 +1519,17 @@ overlaps content, the overlay scrollbar of a container flush with the window
 edge is painted *entirely inside* it: at the default 8px inset the East zone is
 `x > width - 8` and the thumb is drawn in `[width - 8, width - 2)`, so every
 pixel of the thumb you could see used to be a resize handle. The rule now is
-**what you can see, you can grab**: a press (and the hover cursor) on the
-*painted* thumb goes to the scrollbar, while the empty track, the 2px margin
-outside the thumb, and every edge with no bar on it still resize. A **corner**
-never yields, so a diagonal resize stays reachable however tall the thumb grows.
-The predicate is `hit_testing::pointer_on_scrollbar_thumb`, which reads the
-thumb's extent from the shared `rinch_dom::paint::scrollbar` geometry — the same
-numbers paint draws with.
+**what you can see, you can grab**, applied per axis. **Along** the track, a
+press (and the hover cursor) at the thumb's extent goes to the scrollbar, while
+the empty track past the thumb — and every edge with no bar on it — still
+resizes. **Across** the bar the grab is edge-forgiving: the whole 16px hit
+strip at thumb height goes to the scrollbar, *including* the 2px margin between
+the thumb and the window edge — the way a browser's bar in a maximised window
+is grabbable at the very last pixel. A **corner** never yields, so a diagonal
+resize stays reachable however tall the thumb grows. The predicate is
+`hit_testing::pointer_on_scrollbar_thumb`, which reads the thumb's along-axis
+extent from the shared `rinch_dom::paint::scrollbar` geometry — the same
+numbers paint draws with — over `find_scrollbar_hit`'s across-axis strip.
 
 A browser has no equivalent conflict: its resize border lives in the window
 frame *outside* the client area, so its scrollbars are grabbable right up to the
