@@ -113,8 +113,8 @@ fn text_either_side_of_an_absolute_child_stays_on_one_line() {
         anon_box_count(&doc),
         1,
         "one run, so one anonymous box — not two. (That there is a box at all \
-         is #406's remaining half, blocked on the leaf invariant; what this \
-         pins is that the run is not *split*.)"
+         is #406's remaining half, tracked as #466 and blocked on the leaf \
+         invariant; what this pins is that the run is not *split*.)"
     );
     let h = height_of(&doc, row);
     assert!(
@@ -124,6 +124,10 @@ fn text_either_side_of_an_absolute_child_stays_on_one_line() {
 }
 
 // ── the trap: fixing `has_block` alone strands the text ─────────────────────
+//
+// These two are a **canary for #466**, not evidence the trap is gone. They are
+// green today *because* the anonymous-box split keeps each run in its own IFC;
+// #466 removes those boxes, and the moment it does, these are what fail first.
 //
 // `walk_inline_children`'s catch-all arm is `break`. An out-of-flow child is
 // blockified, so it lands there. Today the anonymous-box split hides that,
