@@ -3,9 +3,7 @@
 //! Provides a pre-parsed ComputedStyle struct to avoid re-parsing CSS properties
 //! on every layout and paint operation.
 
-mod from_props;
 mod from_stylo;
-pub(crate) mod helpers;
 mod taffy_conversion;
 mod text_layout;
 pub mod values;

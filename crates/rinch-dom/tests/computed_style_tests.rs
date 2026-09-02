@@ -1071,3 +1071,162 @@ fn inline_style_named_and_hsl_colours_resolve_via_stylo() {
         );
     }
 }
+
+// ===== Ported from the deleted `ComputedStyle::from_props` tests (#254) =====
+//
+// `from_props` was a second, hand-rolled style resolver that nothing but its
+// own three tests called. Those tests therefore asserted what `from_props`
+// did, not what the renderer does — and since every real style resolution goes
+// through stylo (`style_resolution/` -> `ComputedStyle::from_stylo`), the two
+// could drift apart without a single test noticing.
+//
+// The assertions worth keeping are the ones about *values CSS should produce*.
+// They are re-stated here against a real `RinchDocument`, so they now run
+// through the cascade the renderer actually uses. Two of the three gained
+// coverage in the move: the `flex: 1` shorthand is now checked as stylo
+// expands it, and `flex-direction` is checked by the layout it produces rather
+// than by reading a struct field back.
+
+/// Was `test_computed_style_from_props`: `display`, `width`, `flex-grow` and a
+/// longhand `padding` resolve to the expected computed values.
+#[test]
+fn declared_longhands_resolve_through_the_cascade() {
+    let mut doc = RinchDocument::new();
+    let body = doc.body();
+    let div = doc.create_element("div");
+    doc.set_attribute(
+        div,
+        "style",
+        "display: flex; width: 100px; flex-grow: 1; padding-top: 10px",
+    );
+    doc.append_child(body, div);
+    doc.resolve_layout(800.0, 600.0);
+
+    let style = &doc.tree.get(div.0).unwrap().computed_style;
+    assert!(
+        matches!(style.display, DisplayValue::Flex),
+        "display should be Flex, got {:?}",
+        style.display
+    );
+    assert!(
+        matches!(style.width, rinch_dom::computed_style::DimensionValue::Length(v)
+            if approx_eq(v, 100.0, 0.01)),
+        "width should be 100px, got {:?}",
+        style.width
+    );
+    assert!(
+        approx_eq(style.flex_grow, 1.0, 0.01),
+        "flex-grow should be 1, got {}",
+        style.flex_grow
+    );
+    assert!(
+        matches!(style.padding_top, rinch_dom::computed_style::LengthPercentageValue::Length(v)
+            if approx_eq(v, 10.0, 0.01)),
+        "padding-top should be 10px, got {:?}",
+        style.padding_top
+    );
+}
+
+/// Was `test_flex_shorthand`: `flex: 1` expands to `1 1 0%`.
+///
+/// **This is the one place the port changed an expected value, and it is the
+/// issue's thesis showing up as a concrete number.** The deleted test asserted
+/// a flex-basis of `Length(0.0)`, because that is what `from_props` built.
+/// Stylo produces `Percent(0.0)`, and stylo is right: CSS Flexbox expands
+/// `flex: <number>` to `<number> 1 0%`, a percentage. So the dead resolver's
+/// test had been green for as long as it existed while encoding a value the
+/// real cascade never produces — exactly the drift that makes a second
+/// unmaintained style path worth deleting rather than maintaining.
+///
+/// The two coincide for a container with a definite main size, which is why
+/// nothing downstream ever noticed.
+#[test]
+fn the_flex_shorthand_expands_to_one_one_zero() {
+    let mut doc = RinchDocument::new();
+    let body = doc.body();
+    let container = doc.create_element("div");
+    doc.set_attribute(container, "style", "display: flex; width: 300px");
+    doc.append_child(body, container);
+    let item = doc.create_element("div");
+    doc.set_attribute(item, "style", "flex: 1");
+    doc.append_child(container, item);
+    doc.resolve_layout(800.0, 600.0);
+
+    let style = &doc.tree.get(item.0).unwrap().computed_style;
+    assert!(
+        approx_eq(style.flex_grow, 1.0, 0.01),
+        "flex: 1 sets flex-grow: 1, got {}",
+        style.flex_grow
+    );
+    assert!(
+        approx_eq(style.flex_shrink, 1.0, 0.01),
+        "flex: 1 sets flex-shrink: 1, got {}",
+        style.flex_shrink
+    );
+    assert!(
+        matches!(style.flex_basis, rinch_dom::computed_style::DimensionValue::Percent(v)
+            if approx_eq(v, 0.0, 0.01)),
+        "flex: 1 sets flex-basis: 0%, got {:?}",
+        style.flex_basis
+    );
+
+    // And the expansion is load-bearing, not decorative: a lone `flex: 1` item
+    // fills its container because the basis is 0 and the grow factor is 1.
+    let laid_out = doc.tree.get(item.0).unwrap().layout;
+    assert!(
+        approx_eq(laid_out.width, 300.0, 0.5),
+        "the item should grow to the container's 300px, got {}",
+        laid_out.width
+    );
+}
+
+/// Was `test_to_taffy_style`: `display: flex` + `flex-direction: column` reach
+/// Taffy.
+///
+/// The original read the two fields back off a `taffy::Style` it had just
+/// built, which cannot fail for any reason a user would care about. This
+/// asserts the same wiring by its consequence — children stack on the cross
+/// axis — so it fails if the direction stops reaching the layout engine.
+#[test]
+fn flex_direction_column_reaches_the_layout_engine() {
+    let mut doc = RinchDocument::new();
+    let body = doc.body();
+    let container = doc.create_element("div");
+    doc.set_attribute(
+        container,
+        "style",
+        "display: flex; flex-direction: column; width: 200px",
+    );
+    doc.append_child(body, container);
+    for _ in 0..2 {
+        let child = doc.create_element("div");
+        doc.set_attribute(child, "style", "width: 50px; height: 30px");
+        doc.append_child(container, child);
+    }
+    doc.resolve_layout(800.0, 600.0);
+
+    let style = &doc.tree.get(container.0).unwrap().computed_style;
+    assert!(
+        matches!(style.display, DisplayValue::Flex),
+        "display should be Flex, got {:?}",
+        style.display
+    );
+
+    let kids = doc.tree.get(container.0).unwrap().children.clone();
+    assert_eq!(kids.len(), 2, "both children are in the tree");
+    let first = doc.tree.get(kids[0]).unwrap().layout;
+    let second = doc.tree.get(kids[1]).unwrap().layout;
+    assert!(
+        approx_eq(second.y - first.y, 30.0, 0.5),
+        "a column flex container stacks its children vertically: expected the \
+         second child 30px below the first, got {} -> {}",
+        first.y,
+        second.y
+    );
+    assert!(
+        approx_eq(first.x, second.x, 0.5),
+        "and does not advance them along the inline axis: {} vs {}",
+        first.x,
+        second.x
+    );
+}
