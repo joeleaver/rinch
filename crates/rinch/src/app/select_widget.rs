@@ -296,6 +296,54 @@ impl RinchApp {
         }
     }
 
+    /// Close the popup and return focus to the `<select>` itself — what a
+    /// browser does when a combobox commits or is dismissed with Escape.
+    ///
+    /// Separate from [`Self::close_select_popup`] because only two of the four
+    /// close paths want it: committing an option and Escape return to the
+    /// control, while opening *another* popup and clicking **outside**
+    /// deliberately do not — an outside click belongs to whatever it landed on.
+    ///
+    /// Without this the keyboard route stranded Tab (issue #437, and a
+    /// regression that route introduced). `focus_element` sets both
+    /// `focus_target` and the DOM `focused_node` to the select; opening the
+    /// popup runs the `Node` teardown, which clears `focused_node`; and the
+    /// plain close leaves `FocusTarget::None` behind while the `Select`
+    /// teardown restores nothing. `handle_tab`'s fallback then found neither
+    /// anchor and restarted at the top of the document. The **mouse** route
+    /// never showed it: its mousedown claim leaves `focused_node` on the
+    /// select, so the ancestor-walk fallback still had something to find.
+    fn close_select_popup_returning_focus(&mut self) {
+        let select_id = self.open_select.as_ref().map(|o| o.select_id);
+        self.close_select_popup();
+        let Some(select_id) = select_id else { return };
+        self.focus_select_control(select_id);
+    }
+
+    /// Put the arbiter and the DOM `:focus` back on a closed `<select>`.
+    ///
+    /// Refuses a control that vanished or was disabled while the popup was
+    /// open — a change handler that disables the select it just committed must
+    /// not be handed the keyboard back (issue #315).
+    fn focus_select_control(&mut self, select_id: usize) {
+        let ok = self.doc.as_ref().is_some_and(|doc| {
+            let d = doc.borrow();
+            d.tree.get(select_id).is_some() && !Self::node_is_disabled_in_tree(&d.tree, select_id)
+        });
+        if !ok {
+            return;
+        }
+        let (changed, work) = self.set_focus_target_deferred(FocusTarget::Node(select_id));
+        if let Some(doc) = &self.doc {
+            doc.borrow_mut().update_focus(Some(select_id));
+        }
+        Self::fire_focus_work(work);
+        if changed {
+            self.notify_node_focus_gained(select_id);
+        }
+        self.scene_dirty = true;
+    }
+
     /// Handle a click while a popup is open. Returns `true` (the click is always
     /// consumed while open — the backdrop is modal).
     pub(super) fn handle_open_select_click(
@@ -414,6 +462,10 @@ impl RinchApp {
         if value_changed && let Some(hid) = change_handler_id {
             events::dispatch_input_event(events::EventHandlerId(hid), value);
         }
+        // Focus returns to the closed control (issue #437) — *after* the
+        // handlers, so a change handler that disables the select it just
+        // committed is respected rather than raced.
+        self.focus_select_control(select_id);
         self.scene_dirty = true;
         self.resolve_and_repaint(vp_w, vp_h);
     }
@@ -433,7 +485,9 @@ impl RinchApp {
         }
         match key {
             KeyCode::Escape => {
-                self.close_select_popup();
+                // Escape returns to the closed control, browser-style — and
+                // gives Tab its anchor back (issue #437).
+                self.close_select_popup_returning_focus();
                 self.resolve_and_repaint(vp_w, vp_h);
             }
             KeyCode::Enter | KeyCode::Space => {

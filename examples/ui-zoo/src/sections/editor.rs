@@ -100,6 +100,17 @@ fn editor_body(__scope: &mut RenderScope) -> NodeHandle {
 
     rsx! {
         Fragment {
+        // `data-nofocus` on the toolbar, not on eighteen buttons (issue #312).
+        // A `<button>` is a Tab stop now (#252), so without it pressing Bold
+        // would take the keyboard away from the editor and the command would
+        // act on a selection that is no longer focused. The click still fires.
+        //
+        // The wrapping `div` is a **#433 workaround, not a layout choice**:
+        // `rsx!` accepts hyphenated attribute names on HTML elements but not on
+        // component props, so the attribute cannot go on the `Paper` below.
+        // Delete this `div` and move `data-nofocus:` onto the `Paper` when #433
+        // lands.
+        div { data-nofocus: "",
         Paper { p: "xs", radius: "md", with_border: true,
             style: "border-bottom: none; border-bottom-left-radius: 0; border-bottom-right-radius: 0;",
             Group { gap: "2",
@@ -184,6 +195,7 @@ fn editor_body(__scope: &mut RenderScope) -> NodeHandle {
                     span { style: "font-size: 16px;", "\u{21AA}" }
                 }
             }
+        }
         }
 
         Paper { p: "0", radius: "md", with_border: true,
