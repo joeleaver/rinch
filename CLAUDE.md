@@ -1036,15 +1036,15 @@ register_focus_target(
   the same `PendingFocusWork` mechanism as a blurred input's `data-onchange`),
   so they may re-enter the runtime freely.
 - `on_key` is offered before the runtime's own handling; `true` consumes. It
-  sees **releases too** (#337): `k.kind`/`k.is_up()` tell the phases apart, and
-  auto-repeat is a `Down` with `k.repeat`. A press and its release are spelled
+  sees **releases too** (#337): `k.kind`/`k.is_up()` tell the phases apart
+  (auto-repeat is a `Down`, currently indistinguishable from a fresh press —
+  desktop carries no repeat flag). A press and its release are spelled
   by the same rule from the same fields, so pairing them by `k.key` works by
   construction — a release carries no text and resolves through `logical_key`,
   which `PlatformEvent::KeyUp` now carries for exactly that reason. A release's
   return value is ignored (nothing downstream to suppress, and the activation
   latch must clear regardless). `KeyEventData` is `#[non_exhaustive]` — build
-  one with `KeyEventData::new(key, code)` plus `with_modifiers`/`with_kind`/
-  `with_repeat`.
+  one with `KeyEventData::new(key, code)` plus `with_modifiers`/`with_kind`.
   `set_keyboard_interceptor` is unrelated — a document-level capture-phase hook
   dispatched *before* the arbiter. It shares the *lifetime* rule though (#183):
   registering it during a render releases it on unmount, ownerless registration

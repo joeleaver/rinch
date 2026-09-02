@@ -11,8 +11,15 @@ use std::rc::Rc;
 /// in the desktop runtime.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub enum KeyEventKind {
-    /// The key went down. **Auto-repeat also arrives as `Down`** — read
-    /// [`KeyEventData::repeat`] to tell a repeat from a fresh press.
+    /// The key went down.
+    ///
+    /// **OS auto-repeat also arrives as `Down`**, and there is currently no
+    /// flag distinguishing it from a fresh press: the browser supplies one
+    /// (`KeyboardEvent.repeat`) but `PlatformEvent::KeyDown` does not carry
+    /// winit's, so a `repeat` field here would be truthful on web and silently
+    /// `false` on desktop — the exact divergence a document-level hook exists
+    /// to avoid. It arrives with the plumbing, in the issue that retires the
+    /// runtime's own hand-rolled activation latch.
     #[default]
     Down,
     /// The key came up.
@@ -45,20 +52,17 @@ pub struct KeyEventData {
     /// delivered, so a consumer had no way to see a key let go — and no way to
     /// ask, either, since every event was implicitly a press.
     pub kind: KeyEventKind,
-    /// Whether this is an OS auto-repeat rather than a fresh physical press.
-    /// Always `false` for [`KeyEventKind::Up`] — a release does not repeat.
-    pub repeat: bool,
 }
 
 impl KeyEventData {
     /// A press of `key` (spelled as `KeyboardEvent.key`) at physical `code`,
-    /// with no modifiers held and no repeat.
+    /// with no modifiers held.
     ///
-    /// Chain [`Self::with_modifiers`], [`Self::with_kind`] and
-    /// [`Self::with_repeat`] for the rest. The constructor takes only the two
-    /// fields that have no sensible default: every event has a key and a code,
-    /// while "no modifiers, a fresh press" is the common case and reads better
-    /// as an absence than as four `false`s at every call site.
+    /// Chain [`Self::with_modifiers`] and [`Self::with_kind`] for the rest.
+    /// The constructor takes only the two fields that have no sensible
+    /// default: every event has a key and a code, while "no modifiers, a
+    /// press" is the common case and reads better as an absence than as four
+    /// `false`s at every call site.
     pub fn new(key: impl Into<String>, code: impl Into<String>) -> Self {
         Self {
             key: key.into(),
@@ -68,7 +72,6 @@ impl KeyEventData {
             alt: false,
             meta: false,
             kind: KeyEventKind::Down,
-            repeat: false,
         }
     }
 
@@ -93,13 +96,7 @@ impl KeyEventData {
         self
     }
 
-    /// Mark this press as an OS auto-repeat.
-    pub fn with_repeat(mut self, repeat: bool) -> Self {
-        self.repeat = repeat;
-        self
-    }
-
-    /// Whether this is a press — including an auto-repeat.
+    /// Whether this is a press — auto-repeat included.
     pub fn is_down(&self) -> bool {
         self.kind == KeyEventKind::Down
     }

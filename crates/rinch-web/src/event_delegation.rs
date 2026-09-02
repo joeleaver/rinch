@@ -1980,14 +1980,12 @@ pub fn setup_event_delegation(doc: &WebDocument) {
             return;
         }
 
-        let key_data = events::KeyEventData::new(event.key(), event.code())
-            .with_modifiers(
-                event.ctrl_key() || event.meta_key(),
-                event.shift_key(),
-                event.alt_key(),
-                event.meta_key(),
-            )
-            .with_repeat(event.repeat());
+        let key_data = events::KeyEventData::new(event.key(), event.code()).with_modifiers(
+            event.ctrl_key() || event.meta_key(),
+            event.shift_key(),
+            event.alt_key(),
+            event.meta_key(),
+        );
         if events::dispatch_keyboard_event(&key_data) {
             event.prevent_default();
             event.stop_propagation();

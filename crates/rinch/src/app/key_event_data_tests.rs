@@ -326,7 +326,6 @@ fn a_release_reaches_the_interceptor() {
     assert_eq!(seen.len(), 2, "one press, one release: {seen:?}");
     assert!(seen[0].is_down());
     assert!(seen[1].is_up(), "the release is reported as one");
-    assert!(!seen[1].repeat, "a release never repeats");
 }
 
 /// The reason the release carries `logical_key`. A consumer pairs a press with

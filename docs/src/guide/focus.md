@@ -197,8 +197,10 @@ registers the node without asking for anything back.
 ### Presses and releases
 
 `k.kind` is `KeyEventKind::Down` or `Up`; `k.is_down()` / `k.is_up()` are the
-shorthands. **Auto-repeat arrives as `Down`** with `k.repeat == true`, so a
-handler that wants one activation per physical press tests `!k.repeat`.
+shorthands. **OS auto-repeat arrives as `Down`**, and nothing yet distinguishes
+it from a fresh press — the browser supplies a flag but the desktop platform
+event does not carry winit's, so exposing one would be truthful on web and
+silently wrong on desktop. It arrives with that plumbing.
 
 A press and its release are spelled by the same rule, from the same fields, so
 **pairing them by `k.key` works by construction** — which is what "is W still
