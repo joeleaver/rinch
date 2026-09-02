@@ -34,16 +34,21 @@
 //! what paint's `x`/`y` and Taffy's layout rect both use.
 
 use crate::NodeTree;
-use crate::computed_style::OverflowValue;
+use crate::computed_style::{OverflowValue, ScrollbarWidthValue};
+use peniko::color::{AlphaColor, Srgb};
 
 /// How thick a thumb is drawn, in logical pixels.
 pub const THICKNESS: f64 = 6.0;
+/// How thick a `--rinch-scrollbar-width: thin` thumb is, in logical pixels.
+pub const THIN_THICKNESS: f64 = 4.0;
 /// The gap between a thumb and the container's edge, in logical pixels. Also
 /// the gap at each end of the track.
 pub const MARGIN: f64 = 2.0;
 /// A thumb is never drawn shorter than this, however little of the content is
 /// visible — otherwise a long document's thumb shrinks to a point.
 pub const MIN_THUMB: f64 = 20.0;
+/// How opaque the built-in thumb is over whatever it covers.
+pub const AUTO_THUMB_ALPHA: f32 = 0.4;
 
 /// Which of a container's two bars.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -122,14 +127,20 @@ impl ScrollbarTrack {
 }
 
 /// Both of a container's bars, or `None` per axis where no bar is drawn.
-#[derive(Debug, Clone, Copy, Default, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Scrollbars {
     pub vertical: Option<ScrollbarTrack>,
     pub horizontal: Option<ScrollbarTrack>,
-    /// [`THICKNESS`] at the requested scale.
+    /// The thumb thickness at the requested scale — [`THICKNESS`], or
+    /// [`THIN_THICKNESS`] under `--rinch-scrollbar-width: thin`.
     pub thickness: f64,
     /// [`MARGIN`] at the requested scale.
     pub margin: f64,
+    /// What to fill the thumb with.
+    pub thumb_color: AlphaColor<Srgb>,
+    /// What to fill the track with, or `None` for no track — the default, since
+    /// rinch's bar is an overlay.
+    pub track_color: Option<AlphaColor<Srgb>>,
 }
 
 impl Scrollbars {
@@ -174,28 +185,81 @@ pub fn content_extents(tree: &NodeTree, node_id: usize) -> (f64, f64) {
     (width, height)
 }
 
+/// What the built-in `auto` thumb looks like on this container.
+///
+/// 40% black is a good default over light chrome and *no scrollbar at all* over
+/// dark chrome: composited over a `#0b0e13` panel it resolves to about
+/// `#070810`, a delta of 3-8 per channel, which does not read on a monitor. A
+/// dark app therefore scrolled with no visible sign that there was anything
+/// below the fold (#416).
+///
+/// So the default follows the palette instead of ignoring it: 40% of **black or
+/// white**, chosen by the luminance of the container's own computed `color`.
+/// Only the polarity follows — the thumb stays neutral grey — so a container
+/// that happens to set `color: red` does not get a red thumb, and every
+/// light-themed app is pixel-identical to before (the initial `color` is black,
+/// and so is every light theme's text). A dark app's text is light, so its
+/// thumb flips to white and becomes visible with no opt-in at all.
+///
+/// `color` rather than `background-color` because it is always resolved:
+/// backgrounds are transparent by default, so the container that most needs
+/// this — a scroll region inheriting the page's dark background — would have
+/// nothing to read.
+fn auto_thumb_color(color: Option<peniko::Color>) -> AlphaColor<Srgb> {
+    let light_text = color.is_some_and(|c| {
+        let rgba = c.to_rgba8();
+        // Relative-luminance weights on the sRGB values. Exact enough for a
+        // binary polarity choice, and it does not need to be more.
+        let l = (0.2126 * rgba.r as f32 + 0.7152 * rgba.g as f32 + 0.0722 * rgba.b as f32) / 255.0;
+        l > 0.5
+    });
+    let c = if light_text { 1.0 } else { 0.0 };
+    AlphaColor::<Srgb>::new([c, c, c, AUTO_THUMB_ALPHA])
+}
+
 /// The overlay scrollbars of `node_id`, at `scale`.
 ///
 /// A bar exists on an axis when that axis is scrollable **and** overflowing.
 /// `scroll` and `auto` behave identically: rinch paints a thumb and no track,
 /// so there is nothing for `scroll` to show when the content fits.
 ///
+/// `--rinch-scrollbar-width: none` answers "no bars" here, which is what makes
+/// it turn off the 16px hit strip as well as the paint — an app that draws its
+/// own bar could otherwise only cover rinch's up, not switch it off.
+///
 /// Cheap for the overwhelming majority of nodes: a node scrollable on neither
 /// axis pays two enum checks and returns without walking its children.
 pub fn scrollbars(tree: &NodeTree, node_id: usize, scale: f64) -> Scrollbars {
+    let Some(node) = tree.get(node_id) else {
+        return Scrollbars {
+            vertical: None,
+            horizontal: None,
+            thickness: THICKNESS * scale,
+            margin: MARGIN * scale,
+            thumb_color: auto_thumb_color(None),
+            track_color: None,
+        };
+    };
+    let cs = &node.computed_style;
+    let thickness = match cs.scrollbar_width {
+        ScrollbarWidthValue::Thin => THIN_THICKNESS,
+        _ => THICKNESS,
+    };
     let empty = Scrollbars {
         vertical: None,
         horizontal: None,
-        thickness: THICKNESS * scale,
+        thickness: thickness * scale,
         margin: MARGIN * scale,
+        thumb_color: cs
+            .scrollbar_color
+            .thumb
+            .unwrap_or_else(|| auto_thumb_color(cs.color)),
+        track_color: cs.scrollbar_color.track,
     };
-    let Some(node) = tree.get(node_id) else {
-        return empty;
-    };
-    let cs = &node.computed_style;
+
     let scrollable_y = matches!(cs.overflow_y, OverflowValue::Scroll | OverflowValue::Auto);
     let scrollable_x = matches!(cs.overflow_x, OverflowValue::Scroll | OverflowValue::Auto);
-    if !scrollable_y && !scrollable_x {
+    if (!scrollable_y && !scrollable_x) || cs.scrollbar_width == ScrollbarWidthValue::None {
         return empty;
     }
 
@@ -215,7 +279,7 @@ pub fn scrollbars(tree: &NodeTree, node_id: usize, scale: f64) -> Scrollbars {
     // Where both bars are up, each track gives up the other bar's footprint at
     // its far end so the two thumbs cannot pile into the same square. Nothing
     // is painted there, and hit-testing gives the corner to neither bar.
-    let corner = THICKNESS + MARGIN;
+    let corner = thickness + MARGIN;
     let track_of = |box_extent: f64, visible: f64, content: f64, other_bar: bool| {
         let reserved = if other_bar { corner } else { 0.0 };
         let track_len = (box_extent - MARGIN * 2.0 - reserved).max(0.0);
@@ -234,7 +298,6 @@ pub fn scrollbars(tree: &NodeTree, node_id: usize, scale: f64) -> Scrollbars {
     Scrollbars {
         vertical: show_vertical.then(|| track_of(box_h, visible_h, content_h, show_horizontal)),
         horizontal: show_horizontal.then(|| track_of(box_w, visible_w, content_w, show_vertical)),
-        thickness: THICKNESS * scale,
-        margin: MARGIN * scale,
+        ..empty
     }
 }

@@ -1694,47 +1694,71 @@ fn paint_node(
                 let bars = scrollbar::scrollbars(tree, node_id, scale);
                 let thickness = bars.thickness;
                 let margin = bars.margin;
-                let thumb_color = AlphaColor::<Srgb>::new([0.0, 0.0, 0.0, 0.4_f32]);
+
+                // The thumb's colour follows `--rinch-scrollbar-color`, or the
+                // container's own palette when that says `auto` (#416).
+                // `--rinch-scrollbar-width: none` reaches here as "no bars",
+                // so nothing below runs for it.
+                let mut fill_rounded = |rect: Rect, colour: AlphaColor<Srgb>| {
+                    let shape = RoundedRect::from_rect(rect, thickness * 0.5);
+                    painter.fill(
+                        Fill::NonZero,
+                        node_transform,
+                        &Brush::Solid(colour),
+                        &shape.into(),
+                    );
+                };
 
                 if let Some(track) = bars.vertical {
                     let scrollbar_x = x + w - thickness - margin;
+                    // A track is only painted when asked for: rinch's bar is an
+                    // overlay, and a track under it would change the look of
+                    // every existing app.
+                    if let Some(track_color) = bars.track_color {
+                        fill_rounded(
+                            Rect::new(
+                                scrollbar_x,
+                                y + track.track_start,
+                                scrollbar_x + thickness,
+                                y + track.track_start + track.track_len,
+                            ),
+                            track_color,
+                        );
+                    }
                     let thumb_y = y + track.thumb_start(node.scroll_offset.1 * scale);
-
-                    let thumb_rect = RoundedRect::from_rect(
+                    fill_rounded(
                         Rect::new(
                             scrollbar_x,
                             thumb_y,
                             scrollbar_x + thickness,
                             thumb_y + track.thumb_len,
                         ),
-                        thickness * 0.5,
-                    );
-                    painter.fill(
-                        Fill::NonZero,
-                        node_transform,
-                        &Brush::Solid(thumb_color),
-                        &thumb_rect.into(),
+                        bars.thumb_color,
                     );
                 }
 
                 if let Some(track) = bars.horizontal {
                     let scrollbar_y = y + h - thickness - margin;
+                    if let Some(track_color) = bars.track_color {
+                        fill_rounded(
+                            Rect::new(
+                                x + track.track_start,
+                                scrollbar_y,
+                                x + track.track_start + track.track_len,
+                                scrollbar_y + thickness,
+                            ),
+                            track_color,
+                        );
+                    }
                     let thumb_x = x + track.thumb_start(node.scroll_offset.0 * scale);
-
-                    let thumb_rect = RoundedRect::from_rect(
+                    fill_rounded(
                         Rect::new(
                             thumb_x,
                             scrollbar_y,
                             thumb_x + track.thumb_len,
                             scrollbar_y + thickness,
                         ),
-                        thickness * 0.5,
-                    );
-                    painter.fill(
-                        Fill::NonZero,
-                        node_transform,
-                        &Brush::Solid(thumb_color),
-                        &thumb_rect.into(),
+                        bars.thumb_color,
                     );
                 }
             }

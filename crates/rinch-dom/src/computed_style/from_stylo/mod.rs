@@ -18,6 +18,43 @@ use layout::*;
 use typography::*;
 use visual::*;
 
+thread_local! {
+    /// The two custom-property names, interned once per thread rather than on
+    /// every node: `from_stylo` runs for each dirty node on each style pass,
+    /// and `Atom::from(&str)` is an atom-table lookup, not free.
+    ///
+    /// No leading `--`: Stylo's `custom_properties::Name` is the atom *without*
+    /// the prefix.
+    static SCROLLBAR_COLOR: style::Atom = style::Atom::from("rinch-scrollbar-color");
+    static SCROLLBAR_WIDTH: style::Atom = style::Atom::from("rinch-scrollbar-width");
+}
+
+/// Read one custom property's post-`var()` token string off a cascaded style.
+///
+/// Unregistered custom properties are declared to inherit
+/// (`PropertyRegistrationData::unregistered()`), and each element's map is
+/// seeded from its parent's, so a declaration on `:root` is readable here from
+/// any descendant — which is what makes a single app-wide
+/// `--rinch-scrollbar-color` work.
+///
+/// The value is always the universal (untyped) form for an unregistered
+/// property, but `to_variable_value` covers the registered case too rather than
+/// relying on that.
+fn custom_property<R>(
+    cv: &ComputedValues,
+    key: &'static std::thread::LocalKey<style::Atom>,
+    f: impl FnOnce(&str) -> R,
+) -> Option<R> {
+    key.with(|name| {
+        cv.custom_properties()
+            .get(
+                style::properties_and_values::registry::PropertyRegistrationData::unregistered(),
+                name,
+            )
+            .map(|v| f(v.to_variable_value().css.trim()))
+    })
+}
+
 impl ComputedStyle {
     // =========================================================================
     // Stylo Conversion Methods
@@ -47,6 +84,10 @@ impl ComputedStyle {
             position: position_from_stylo(&box_style.position),
             overflow_x: overflow_from_stylo(&box_style.overflow_x),
             overflow_y: overflow_from_stylo(&box_style.overflow_y),
+            scrollbar_color: custom_property(cv, &SCROLLBAR_COLOR, ScrollbarColorValue::parse)
+                .unwrap_or_default(),
+            scrollbar_width: custom_property(cv, &SCROLLBAR_WIDTH, ScrollbarWidthValue::parse)
+                .unwrap_or_default(),
 
             // Dimensions
             width: size_from_stylo(&position_style.width),

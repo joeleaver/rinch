@@ -24,6 +24,12 @@ pub struct ComputedStyle {
     pub position: PositionValue,
     pub overflow_x: OverflowValue,
     pub overflow_y: OverflowValue,
+    /// How the overlay scrollbar of a scroll container is drawn. Both come
+    /// from `--rinch-*` custom properties rather than the real CSS
+    /// `scrollbar-color` / `scrollbar-width`, which the servo build of Stylo
+    /// compiles out — see [`ScrollbarColorValue`].
+    pub scrollbar_color: ScrollbarColorValue,
+    pub scrollbar_width: ScrollbarWidthValue,
 
     // Dimensions
     pub width: DimensionValue,
@@ -184,6 +190,8 @@ impl Default for ComputedStyle {
             position: PositionValue::default(),
             overflow_x: OverflowValue::default(),
             overflow_y: OverflowValue::default(),
+            scrollbar_color: ScrollbarColorValue::default(),
+            scrollbar_width: ScrollbarWidthValue::default(),
 
             width: DimensionValue::Auto,
             height: DimensionValue::Auto,

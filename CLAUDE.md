@@ -1113,7 +1113,7 @@ Both use the same `Painter` trait (`crates/rinch-dom/src/paint/painter.rs`):
 
 The software renderer includes **dirty region caching**: when only a few nodes change, only the affected rectangular area is cleared and repainted. Subtrees outside the dirty region are skipped during paint traversal.
 
-**Scrollbars.** A scroll container paints an overlay thumb on each axis that is scrollable (`overflow-{x,y}: scroll | auto`) *and* overflowing — 6px thick, 2px margin, 20px minimum thumb, 40% black, fully rounded. Both bars are hit-tested over a wider 16px strip along their edge and can be dragged (issue #178). Where both are present each track gives up the other bar's footprint at its far end, so the bottom-right **corner belongs to neither**: nothing paints there and clicking it falls through to the container. Desktop only — on the web the browser draws its own.
+**Scrollbars.** A scroll container paints an overlay thumb on each axis that is scrollable (`overflow-{x,y}: scroll | auto`) *and* overflowing — 6px thick, 2px margin, 20px minimum thumb, fully rounded, and a neutral 40% that follows the container's palette (see **Styling the bar** below). Both bars are hit-tested over a wider 16px strip along their edge and can be dragged (issue #178). Where both are present each track gives up the other bar's footprint at its far end, so the bottom-right **corner belongs to neither**: nothing paints there and clicking it falls through to the container. Desktop only — on the web the browser draws its own.
 
 That geometry lives in **one place**, `crates/rinch-dom/src/paint/scrollbar.rs`
 (`scrollbars(tree, node_id, scale)` → a `ScrollbarTrack` per axis): paint draws
@@ -1127,6 +1127,28 @@ distance through `ScrollbarTrack::scroll_for_drag`, whose denominator is the
 thumb's **travel** (`track_len - thumb_len`), not the track length. Anything new
 that needs to know where a bar is should ask that module rather than re-derive
 it.
+
+**Styling the bar (#416).** Two inherited custom properties:
+`--rinch-scrollbar-color: <thumb> [<track>]` and `--rinch-scrollbar-width: auto
+| thin | none`. One declaration on `:root` restyles every scroll region.
+`thin` is a 4px thumb; **`none` removes the bar from paint *and* from hit
+testing**, so an app drawing its own can switch rinch's off rather than cover
+it up. A track is painted only when a second colour is given.
+
+They are `--rinch-` custom properties rather than the real `scrollbar-color` /
+`scrollbar-width` because both real properties are **gecko-only in Stylo** — a
+codegen-time filter, not a `#[cfg]`, so the servo build rinch uses emits no
+parser entry and drops the declaration (grep this repo's generated
+`properties.rs` for `scrollbar_color`: nothing). Custom properties cascade and
+inherit normally in that build, which is what makes the root declaration work.
+
+The `auto` default is **not a fixed colour**: the thumb is 40% black or 40%
+white, chosen by the luminance of the container's computed `color`. A light
+theme's text is dark, so the thumb is the 40% black it has always been; a dark
+theme's text is light, so it flips to white and becomes visible — which is the
+whole of #416, with no opt-in. Only the polarity follows the palette, so a
+`color: red` container does not get a red thumb; `color` is read rather than
+`background-color` because backgrounds are transparent by default.
 
 **Viewport holes.** A `data-viewport` node is a compositing hole: `find_viewport_rects`
 (`crates/rinch-dom/src/paint/mod.rs`) cuts its rect out of every clipping ancestor's
