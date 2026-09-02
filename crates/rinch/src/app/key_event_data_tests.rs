@@ -376,6 +376,30 @@ fn a_chord_and_its_release_agree_too() {
     );
 }
 
+/// The interceptor's release payload keeps the four modifier positions
+/// distinct — shift held, alt not. Under symmetric modifiers a transposed
+/// `with_modifiers` call site is invisible, so the asymmetry is the assert.
+#[test]
+fn a_release_reports_each_modifier_position_distinctly() {
+    let mut app = bare_app();
+    let seen = recording_interceptor();
+
+    let shift = Modifiers {
+        shift: true,
+        ..Default::default()
+    };
+    press_on_layout(&mut app, KeyCode::KeyK, Some("K"), Some("K"), shift);
+    release(&mut app, KeyCode::KeyK, Some("K"), shift);
+
+    let seen = seen.borrow();
+    for (phase, ev) in [("press", &seen[0]), ("release", &seen[1])] {
+        assert!(
+            ev.shift && !ev.alt && !ev.ctrl && !ev.meta,
+            "{phase}: each position arrives distinct: {ev:?}"
+        );
+    }
+}
+
 /// Without a layout letter — the debug channel, an injected or embedded event
 /// — both phases fall to the physical table, so they still agree. The point is
 /// that they agree *whatever* the source, not that one source is favoured.
@@ -395,18 +419,152 @@ fn without_a_logical_key_both_phases_use_the_physical_table() {
 /// A release's return value is ignored: there is nothing downstream to
 /// suppress, and the activation latch **must** clear whatever a handler thinks
 /// — a consumed release that stranded the latch would swallow the next press.
+///
+/// The latch has to be **armed** first for this to pin anything: it only arms
+/// on Enter/Space activation of a focused `FocusTarget::Node`, and a
+/// consuming interceptor swallows the press before that arm — so the
+/// interceptor is installed *between* the press and the release (this test's
+/// first shape armed nothing and asserted `None == None`). The guard assert
+/// in the middle keeps it honest.
 #[test]
 fn a_consuming_interceptor_does_not_strand_the_activation_latch() {
-    let mut app = bare_app();
-    set_keyboard_interceptor(|_| true);
+    let id: Rc<std::cell::Cell<usize>> = Rc::new(std::cell::Cell::new(0));
+    let id_in = id.clone();
+    let mut app = RinchApp::new(move |scope: &mut RenderScope| {
+        let root = scope.create_element("div");
+        let div = scope.create_element("div");
+        div.set_attribute("style", "width: 200px; height: 40px");
+        div.set_attribute("tabindex", "0");
+        id_in.set(div.node_id().0);
+        root.append_child(&div);
+        root
+    });
+    app.mount_component(800.0, 600.0);
+    app.resolve_and_repaint(800.0, 600.0);
+    app.set_focus_target(FocusTarget::Node(id.get()));
 
     press(&mut app, KeyCode::Space, None, Modifiers::default());
+    assert_eq!(
+        app.node_activation_held,
+        Some(KeyCode::Space),
+        "precondition: the press armed the latch — without this the assert \
+         below passes vacuously whatever the release path does"
+    );
+
+    set_keyboard_interceptor(|_| true);
     release(&mut app, KeyCode::Space, None, Modifiers::default());
 
     assert_eq!(
         app.node_activation_held, None,
         "the latch cleared even though the release was consumed"
     );
+}
+
+// ── 4. a release reaches the arbiter's target (issue #337) ──────────────────
+
+/// The interceptor is one of the two delivery legs; the focus arbiter's
+/// holder is the other. A registered node's `on_key` sees the release, marked
+/// as one, spelled like its press — and the four modifier positions arrive
+/// distinct (shift held, alt not: a transposed `with_modifiers` call site
+/// reads identically to a correct one under symmetric modifiers, so the
+/// asymmetry here is the point).
+#[test]
+fn a_release_reaches_the_focused_node() {
+    let seen: Rc<RefCell<Vec<KeyEventData>>> = Rc::new(RefCell::new(Vec::new()));
+    let sink = seen.clone();
+    let id: Rc<std::cell::Cell<usize>> = Rc::new(std::cell::Cell::new(0));
+    let id_in = id.clone();
+
+    let mut app = RinchApp::new(move |scope: &mut RenderScope| {
+        let root = scope.create_element("div");
+        let div = scope.create_element("div");
+        div.set_attribute("style", "width: 200px; height: 40px");
+        div.set_attribute("tabindex", "0");
+        let sink = sink.clone();
+        register_focus_target(
+            &div,
+            FocusEntry::new().on_key(move |k| {
+                sink.borrow_mut().push(k.clone());
+                true
+            }),
+        );
+        id_in.set(div.node_id().0);
+        root.append_child(&div);
+        root
+    });
+    app.mount_component(800.0, 600.0);
+    app.resolve_and_repaint(800.0, 600.0);
+    app.set_focus_target(FocusTarget::Node(id.get()));
+
+    let shift = Modifiers {
+        shift: true,
+        ..Default::default()
+    };
+    press_on_layout(&mut app, KeyCode::KeyK, Some("K"), Some("K"), shift);
+    release(&mut app, KeyCode::KeyK, Some("K"), shift);
+
+    let seen = seen.borrow();
+    assert_eq!(seen.len(), 2, "one press, one release: {seen:?}");
+    assert!(seen[0].is_down());
+    assert!(
+        seen[1].is_up(),
+        "the release is marked as one: {:?}",
+        seen[1]
+    );
+    assert_eq!(
+        seen[1].key, seen[0].key,
+        "the release spells like its press"
+    );
+    assert!(
+        seen[1].shift && !seen[1].alt && !seen[1].ctrl && !seen[1].meta,
+        "each modifier position arrives distinct: {:?}",
+        seen[1]
+    );
+}
+
+/// The same for a focused render surface — the release used to be the one
+/// thing `KeyUp` forwarded, so deleting the arm is a *regression*, not just a
+/// missing feature. The key string matches the press's (both are
+/// `hook_key_str`'s), which is what a game pairing WASD presses with releases
+/// relies on.
+#[test]
+fn a_release_reaches_the_focused_surface() {
+    let surface = create_render_surface();
+    let surface_id = surface.id();
+    let seen: Rc<RefCell<Vec<(bool, SurfaceKeyData)>>> = Rc::new(RefCell::new(Vec::new()));
+    let sink = seen.clone();
+    surface.set_event_handler(move |event| match event {
+        SurfaceEvent::KeyDown(data) => sink.borrow_mut().push((false, data)),
+        SurfaceEvent::KeyUp(data) => sink.borrow_mut().push((true, data)),
+        _ => {}
+    });
+
+    let mounted = surface.clone();
+    let mut app = RinchApp::new(move |scope: &mut RenderScope| {
+        let root = scope.create_element("div");
+        let child = crate::render_surface::RenderSurface {
+            surface: Some(mounted.clone()),
+        }
+        .render(scope, &[]);
+        root.append_child(&child);
+        root
+    });
+    app.mount_component(800.0, 600.0);
+    app.resolve_and_repaint(800.0, 600.0);
+    app.focus_target = FocusTarget::Surface(surface_id);
+
+    press(&mut app, KeyCode::KeyW, Some("w"), Modifiers::default());
+    release(&mut app, KeyCode::KeyW, Some("w"), Modifiers::default());
+
+    let seen = seen.borrow();
+    assert_eq!(seen.len(), 2, "one press, one release: {seen:?}");
+    assert!(!seen[0].0, "first the press");
+    assert!(seen[1].0, "then the release, as a KeyUp");
+    assert_eq!(
+        seen[1].1.key, seen[0].1.key,
+        "spelled like its press — 'is W still held' must pair"
+    );
+    assert_eq!(seen[1].1.code, seen[0].1.code);
 }
 
 // ── the invariant the feature exists for ────────────────────────────────────

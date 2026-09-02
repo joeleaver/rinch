@@ -178,6 +178,17 @@ mod tests {
         KeyEventData::new(name.to_string(), name.to_string())
     }
 
+    /// `with_modifiers` takes four positional bools — the shape whose failure
+    /// mode is a silent transposition, which no symmetric-modifier test can
+    /// see. Two asymmetric patterns pin every position to its field.
+    #[test]
+    fn with_modifiers_assigns_each_position_to_its_field() {
+        let a = KeyEventData::new("a", "KeyA").with_modifiers(true, false, true, false);
+        assert!(a.ctrl && !a.shift && a.alt && !a.meta, "{a:?}");
+        let b = KeyEventData::new("a", "KeyA").with_modifiers(false, true, false, true);
+        assert!(!b.ctrl && b.shift && !b.alt && b.meta, "{b:?}");
+    }
+
     /// #183: a registry that outlives the component that filled it hands a
     /// disposed scope's state to the next event. Registering inside a render
     /// ties the interceptor to that scope.

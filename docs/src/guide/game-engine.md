@@ -552,7 +552,17 @@ PlatformEvent::MouseUp { x: 100.0, y: 200.0, button: MouseButton::Left }
 PlatformEvent::MouseWheel { x: 100.0, y: 200.0, delta_x: 0.0, delta_y: -30.0 }
 PlatformEvent::KeyDown {
     key: KeyCode::KeyA,
+    // The layout-produced `KeyboardEvent.key` value, case-accurate ("A" under
+    // Shift). `None` = unknown; the app then falls back to the physical `key`.
+    logical_key: Some("a".into()),
     text: Some("a".into()),
+    modifiers: Modifiers::default(),
+}
+PlatformEvent::KeyUp {
+    key: KeyCode::KeyA,
+    // Spell it like the press, or a consumer pairing press with release by
+    // key string ("is A still held") never matches.
+    logical_key: Some("a".into()),
     modifiers: Modifiers::default(),
 }
 PlatformEvent::Resized { width: 1920, height: 1080 }

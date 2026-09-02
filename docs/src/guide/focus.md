@@ -259,8 +259,9 @@ unchanged, reports `" "` there). It is resolved in four steps:
 > `Ctrl+S` is `"s"`, `Ctrl+Shift+S` is `"S"` — and a press and its release
 > spell alike (both read the modifier state of their own moment), which is
 > what pairing them by `k.key` relies on. And a key bound to a **native menu
-> accelerator** is consumed by the menu before the document sees it, so
-> `on_key` never runs for it.
+> accelerator** is consumed by the menu before the document sees it — but only
+> the *press*: the release still arrives (the menu consumes nothing on the way
+> up), so it is one more source of a release with no visible press.
 
 The one key that still reports nothing is one rinch has no `KeyCode` for
 (`k.code == "Other"`) arriving with **no layout value and no inserted text**.
