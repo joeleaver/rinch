@@ -204,10 +204,15 @@ silently wrong on desktop. It arrives with that plumbing.
 
 A press and its release are spelled by the same rule, from the same fields, so
 **pairing them by `k.key` works by construction** — which is what "is W still
-held" needs. Concretely: a release carries no inserted text, so it resolves
-through the layout letter and then the physical table, exactly as a press does
-once a modifier has suppressed its text. On AZERTY, the key labelled A is
-`"a"` on the way down *and* on the way up, not `"a"` down and `"q"` up.
+held" needs. Concretely: the platform event's `logical_key` carries the full
+layout-produced `KeyboardEvent.key` value on the press and the release alike,
+case included. On AZERTY, the key labelled A is `"a"` on the way down *and* on
+the way up, not `"a"` down and `"q"` up; `Shift+A` is `"A"` both ways, and
+`Shift+1` is `"!"` both ways — the same strings a browser reports, so the same
+consumer code works against `rinch-web`. Case is identity, so a Shift pressed
+*mid-hold* changes what the eventual release spells (`"w"` down, `"W"` up) —
+exactly as in a browser; track held keys by the physical `k.code`, or fold
+case at the comparison, if that matters to you.
 
 Two things to know:
 
@@ -236,28 +241,34 @@ unchanged, reports `" "` there). It is resolved in four steps:
 2. **Otherwise the inserted text wins**, so a non-QWERTY layout reports the
    letter actually typed rather than the physical QWERTY position: the AZERTY
    key at the QWERTY-Q position is `k.key == "a"`, and Shift+A is `"A"`.
-3. **Otherwise the keycap letter.** A modifier suppresses the inserted text,
-   but the layout-mapped letter survives it — so a chord keeps step 2's
-   promise: on AZERTY, `Ctrl` plus the key labelled A is `k.key == "a"`, the
-   same letter the editor's own keymap acts on.
+3. **Otherwise the layout's key value.** A modifier suppresses the inserted
+   text, but the layout-produced `KeyboardEvent.key` value survives it — so a
+   chord keeps step 2's promise: on AZERTY, `Ctrl` plus the key labelled A is
+   `k.key == "a"` (and `Ctrl+Shift` makes it `"A"` — the value is
+   case-accurate), the same letter the editor's own keymap acts on. It also
+   names shifted punctuation (`Ctrl+Shift+1` is `"!"` where the layout puts
+   one), a dead key (`"Dead"`), and keys rinch has no `KeyCode` of its own for
+   but the platform names — CapsLock, media keys.
 4. **Otherwise the physical key's US-layout character**, for events that carry
-   no layout letter at all (the debug channel, injected and embedded events):
+   no layout value at all (the debug channel, injected and embedded events):
    `Ctrl+S` is `"s"`, `Cmd+1` is `"1"`, `Ctrl+-` is `"-"`.
 
 `k.code` is always the physical key (`"KeyS"`, `"Digit1"`).
 
-> Two things to know. Steps 3–4 report the **lowercase** letter, because a
-> modifier has already suppressed the real text — `Ctrl+Shift+S` is `k.key ==
-> "s"`, so read `k.shift` (or match `k.code`) when the case matters. And a key
-> bound to a **native menu accelerator** is consumed by the menu before the
-> document sees it, so `on_key` never runs for it.
+> Two things to know. `k.key` is **case-accurate**, browser-style —
+> `Ctrl+S` is `"s"`, `Ctrl+Shift+S` is `"S"` — and a press and its release
+> spell alike (both read the modifier state of their own moment), which is
+> what pairing them by `k.key` relies on. And a key bound to a **native menu
+> accelerator** is consumed by the menu before the document sees it, so
+> `on_key` never runs for it.
 
 The one key that still reports nothing is one rinch has no `KeyCode` for
-(`k.code == "Other"`) pressed with a modifier: rinch's code set covers the
-letters, the digits, `-`, `=`, the named keys and `F1`–`F12`, so under a
-modifier **the rest of the punctuation** — `Ctrl+/`, `Ctrl+,`, `Ctrl+[` — has
-no spelling to fall back to and never reaches the hook. Unmodified those keys
-are fine: their character arrives as the inserted text.
+(`k.code == "Other"`) arriving with **no layout value and no inserted text**.
+A real keystroke carries the layout value (unless the platform itself cannot
+identify the key), so this is mostly the injected regime: the debug channel names only single characters and the named keys, so
+an injected `Ctrl+/` has no spelling to fall back to and never reaches the
+hook. From the keyboard those keys are fine: `Ctrl+/` reports `"/"` through
+step 3, and unmodified the character arrives as the inserted text.
 
 Both focus callbacks run **after** the transition is complete: the arbiter and
 the DOM `:focus` state are already installed, so a callback may re-enter the

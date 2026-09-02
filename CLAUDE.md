@@ -1041,7 +1041,12 @@ register_focus_target(
   desktop carries no repeat flag). A press and its release are spelled
   by the same rule from the same fields, so pairing them by `k.key` works by
   construction — a release carries no text and resolves through `logical_key`,
-  which `PlatformEvent::KeyUp` now carries for exactly that reason. A release's
+  which `PlatformEvent::KeyUp` now carries for exactly that reason.
+  `logical_key` is `Option<String>` holding the full **case-accurate**
+  `KeyboardEvent.key` value (`"A"` under Shift, `"!"`, `"Enter"`, `"Dead"`;
+  it was a lowercased `Option<char>` letter, which made a shifted release
+  disagree with its own press) — lowercase at the comparison site, as
+  `editor_key_binding` does, never at the source. A release's
   return value is ignored (nothing downstream to suppress, and the activation
   latch must clear regardless). `KeyEventData` is `#[non_exhaustive]` — build
   one with `KeyEventData::new(key, code)` plus `with_modifiers`/`with_kind`.
