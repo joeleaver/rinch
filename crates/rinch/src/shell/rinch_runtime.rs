@@ -1856,6 +1856,7 @@ impl ApplicationHandler for RinchRuntime {
                     winit::event::KeyEvent {
                         physical_key: winit::keyboard::PhysicalKey::Code(key_code),
                         state: ElementState::Released,
+                        logical_key: ref win_logical,
                         ..
                     },
                 ..
@@ -1864,6 +1865,11 @@ impl ApplicationHandler for RinchRuntime {
                 let platform_key = Self::translate_key(key_code);
                 PlatformEvent::KeyUp {
                     key: platform_key,
+                    // winit's `KeyEvent` is one struct for both states and fills
+                    // this on each; only `text` is press-gated. Forwarding it
+                    // is what lets a release be spelled by the same rule as its
+                    // press (issue #337) — the shell was simply dropping it.
+                    logical_key: Self::winit_logical_letter(win_logical),
                     modifiers: mods,
                 }
             }

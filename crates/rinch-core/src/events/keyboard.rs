@@ -3,7 +3,30 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
+/// Which phase of a keystroke an event reports (issue #337).
+///
+/// A releases-aware consumer pairs a `Down` with its `Up` by comparing
+/// [`KeyEventData::key`]. That pairing only works because press and release
+/// are spelled by the same function from the same fields — see `hook_key_str`
+/// in the desktop runtime.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub enum KeyEventKind {
+    /// The key went down. **Auto-repeat also arrives as `Down`** — read
+    /// [`KeyEventData::repeat`] to tell a repeat from a fresh press.
+    #[default]
+    Down,
+    /// The key came up.
+    Up,
+}
+
 /// Keyboard event data for the global keyboard interceptor.
+///
+/// `#[non_exhaustive]`: build one with [`KeyEventData::new`] and the `with_*`
+/// setters rather than a struct literal, so a field added in a minor release
+/// is not a breaking change. Reading fields is unaffected — and reading is
+/// what an interceptor does, since these are delivered, not constructed, by
+/// app code.
+#[non_exhaustive]
 #[derive(Debug, Clone)]
 pub struct KeyEventData {
     /// The logical key value (e.g., "a", "Enter", "Backspace")
@@ -18,6 +41,73 @@ pub struct KeyEventData {
     pub alt: bool,
     /// Whether Meta/Super is pressed
     pub meta: bool,
+    /// Press or release (issue #337). Before it, only presses were ever
+    /// delivered, so a consumer had no way to see a key let go — and no way to
+    /// ask, either, since every event was implicitly a press.
+    pub kind: KeyEventKind,
+    /// Whether this is an OS auto-repeat rather than a fresh physical press.
+    /// Always `false` for [`KeyEventKind::Up`] — a release does not repeat.
+    pub repeat: bool,
+}
+
+impl KeyEventData {
+    /// A press of `key` (spelled as `KeyboardEvent.key`) at physical `code`,
+    /// with no modifiers held and no repeat.
+    ///
+    /// Chain [`Self::with_modifiers`], [`Self::with_kind`] and
+    /// [`Self::with_repeat`] for the rest. The constructor takes only the two
+    /// fields that have no sensible default: every event has a key and a code,
+    /// while "no modifiers, a fresh press" is the common case and reads better
+    /// as an absence than as four `false`s at every call site.
+    pub fn new(key: impl Into<String>, code: impl Into<String>) -> Self {
+        Self {
+            key: key.into(),
+            code: code.into(),
+            ctrl: false,
+            shift: false,
+            alt: false,
+            meta: false,
+            kind: KeyEventKind::Down,
+            repeat: false,
+        }
+    }
+
+    /// Set all four modifiers at once, in the order they are declared:
+    /// **ctrl, shift, alt, meta**.
+    ///
+    /// One call rather than four setters because they are always known
+    /// together — they come off a single `Modifiers` — and splitting them
+    /// invites a site that sets three and forgets the fourth, which is exactly
+    /// how `meta` came to be hardcoded `false` on two of three paths (#336).
+    pub fn with_modifiers(mut self, ctrl: bool, shift: bool, alt: bool, meta: bool) -> Self {
+        self.ctrl = ctrl;
+        self.shift = shift;
+        self.alt = alt;
+        self.meta = meta;
+        self
+    }
+
+    /// Mark this as a press or a release.
+    pub fn with_kind(mut self, kind: KeyEventKind) -> Self {
+        self.kind = kind;
+        self
+    }
+
+    /// Mark this press as an OS auto-repeat.
+    pub fn with_repeat(mut self, repeat: bool) -> Self {
+        self.repeat = repeat;
+        self
+    }
+
+    /// Whether this is a press — including an auto-repeat.
+    pub fn is_down(&self) -> bool {
+        self.kind == KeyEventKind::Down
+    }
+
+    /// Whether this is a release.
+    pub fn is_up(&self) -> bool {
+        self.kind == KeyEventKind::Up
+    }
 }
 
 /// Type alias for the keyboard interceptor callback.
@@ -88,14 +178,7 @@ mod tests {
     use crate::reactive::{Scope, Signal};
 
     fn key(name: &str) -> KeyEventData {
-        KeyEventData {
-            key: name.to_string(),
-            code: name.to_string(),
-            ctrl: false,
-            shift: false,
-            alt: false,
-            meta: false,
-        }
+        KeyEventData::new(name.to_string(), name.to_string())
     }
 
     /// #183: a registry that outlives the component that filled it hands a

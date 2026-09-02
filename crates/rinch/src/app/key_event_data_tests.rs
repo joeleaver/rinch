@@ -43,6 +43,38 @@ fn bare_app() -> RinchApp {
     app
 }
 
+/// A press that carries the layout letter, as winit supplies it — the shape a
+/// chord has, where a modifier has suppressed `text`.
+fn press_logical(
+    app: &mut RinchApp,
+    key: KeyCode,
+    logical_key: Option<char>,
+    modifiers: Modifiers,
+) {
+    app.handle_event(
+        PlatformEvent::KeyDown {
+            key,
+            logical_key,
+            text: None,
+            modifiers,
+        },
+        (800, 600),
+        1.0,
+    );
+}
+
+fn release(app: &mut RinchApp, key: KeyCode, logical_key: Option<char>, modifiers: Modifiers) {
+    app.handle_event(
+        PlatformEvent::KeyUp {
+            key,
+            logical_key,
+            modifiers,
+        },
+        (800, 600),
+        1.0,
+    );
+}
+
 fn press(app: &mut RinchApp, key: KeyCode, text: Option<&str>, modifiers: Modifiers) {
     press_on_layout(app, key, text, None, modifiers);
 }
@@ -274,4 +306,106 @@ fn a_registered_focus_target_sees_the_meta_modifier() {
         .expect("the registered target was offered the key");
     assert!(ev.meta, "Meta/Cmd was held: {ev:?}");
     assert_eq!(ev.key, "k");
+}
+
+// ── 3. a release reaches the app at all (issue #337) ────────────────────────
+
+/// The whole of #337. `KeyUp` cleared the activation latch and forwarded to a
+/// focused render surface, and did nothing else — the document-level
+/// interceptor and a focused node's `on_key` never saw a release. A consumer
+/// could see a key go down and never see it come up.
+#[test]
+fn a_release_reaches_the_interceptor() {
+    let mut app = bare_app();
+    let seen = recording_interceptor();
+
+    press(&mut app, KeyCode::KeyK, Some("k"), Modifiers::default());
+    release(&mut app, KeyCode::KeyK, None, Modifiers::default());
+
+    let seen = seen.borrow();
+    assert_eq!(seen.len(), 2, "one press, one release: {seen:?}");
+    assert!(seen[0].is_down());
+    assert!(seen[1].is_up(), "the release is reported as one");
+    assert!(!seen[1].repeat, "a release never repeats");
+}
+
+/// The reason the release carries `logical_key`. A consumer pairs a press with
+/// its release by comparing `key` — "is W still held" is the use case `KeyUp`
+/// primarily exists for. A release carries no `text`, so without the layout
+/// letter it would resolve through the *physical* table while its press
+/// resolved through the *layout* one: on AZERTY a press of `"a"` would come up
+/// as `"q"`, the pairing would silently never match, and the key would look
+/// held for ever.
+#[test]
+fn a_press_and_its_release_agree_on_a_non_qwerty_layout() {
+    let mut app = bare_app();
+    let seen = recording_interceptor();
+
+    // AZERTY: the key at the physical QWERTY-Q position types 'a'.
+    press(&mut app, KeyCode::KeyQ, Some("a"), Modifiers::default());
+    release(&mut app, KeyCode::KeyQ, Some('a'), Modifiers::default());
+
+    let seen = seen.borrow();
+    assert_eq!(seen[0].key, "a", "the press reports the keycap letter");
+    assert_eq!(
+        seen[1].key, seen[0].key,
+        "and so does the release — by construction, not coincidence: {seen:?}"
+    );
+    assert_eq!(seen[1].code, seen[0].code, "the physical code matches too");
+}
+
+/// The same, under a modifier — where the press has no `text` either, so both
+/// phases resolve through `logical_key`.
+#[test]
+fn a_chord_and_its_release_agree_too() {
+    let mut app = bare_app();
+    let seen = recording_interceptor();
+
+    let ctrl = Modifiers {
+        ctrl: true,
+        ..Default::default()
+    };
+    press_logical(&mut app, KeyCode::KeyQ, Some('a'), ctrl);
+    release(&mut app, KeyCode::KeyQ, Some('a'), ctrl);
+
+    let seen = seen.borrow();
+    assert_eq!(seen[0].key, "a");
+    assert_eq!(seen[1].key, "a");
+    assert!(
+        seen[0].ctrl && seen[1].ctrl,
+        "and the modifier survives both"
+    );
+}
+
+/// Without a layout letter — the debug channel, an injected or embedded event
+/// — both phases fall to the physical table, so they still agree. The point is
+/// that they agree *whatever* the source, not that one source is favoured.
+#[test]
+fn without_a_logical_key_both_phases_use_the_physical_table() {
+    let mut app = bare_app();
+    let seen = recording_interceptor();
+
+    press(&mut app, KeyCode::KeyS, None, Modifiers::default());
+    release(&mut app, KeyCode::KeyS, None, Modifiers::default());
+
+    let seen = seen.borrow();
+    assert_eq!(seen[0].key, "s");
+    assert_eq!(seen[1].key, "s");
+}
+
+/// A release's return value is ignored: there is nothing downstream to
+/// suppress, and the activation latch **must** clear whatever a handler thinks
+/// — a consumed release that stranded the latch would swallow the next press.
+#[test]
+fn a_consuming_interceptor_does_not_strand_the_activation_latch() {
+    let mut app = bare_app();
+    set_keyboard_interceptor(|_| true);
+
+    press(&mut app, KeyCode::Space, None, Modifiers::default());
+    release(&mut app, KeyCode::Space, None, Modifiers::default());
+
+    assert_eq!(
+        app.node_activation_held, None,
+        "the latch cleared even though the release was consumed"
+    );
 }

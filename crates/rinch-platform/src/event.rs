@@ -91,7 +91,23 @@ pub enum PlatformEvent {
         modifiers: Modifiers,
     },
     /// Key released.
-    KeyUp { key: KeyCode, modifiers: Modifiers },
+    ///
+    /// Carries `logical_key` for the same reason [`KeyDown`](Self::KeyDown)
+    /// does, and it is load-bearing rather than cosmetic (issue #337): a
+    /// consumer pairs a press with its release by comparing the key string, so
+    /// if a release resolved the *physical* letter while its press resolved the
+    /// *layout* letter, the pairing would silently never match — on AZERTY a
+    /// press of `"a"` would release as `"q"`, and the key would look held for
+    /// ever. winit's `KeyEvent` is one struct for both states and populates
+    /// `logical_key` on each; only `text` is press-gated.
+    KeyUp {
+        /// The **physical** key (layout-independent position).
+        key: KeyCode,
+        /// The **logical** letter this key produces in the active layout,
+        /// lowercased — see [`KeyDown::logical_key`](Self::KeyDown).
+        logical_key: Option<char>,
+        modifiers: Modifiers,
+    },
     /// Modifier keys changed.
     ModifiersChanged(Modifiers),
     /// The window gained (`true`) or lost (`false`) **OS** focus.

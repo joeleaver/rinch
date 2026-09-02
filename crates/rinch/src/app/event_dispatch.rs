@@ -1086,14 +1086,8 @@ impl RinchApp {
                 //    capturing DOM listener. Render surfaces no longer hijack this
                 //    slot — they are routed by `FocusTarget::Surface` below.
                 if let Some(ref ks) = key_str {
-                    let key_data = events::KeyEventData {
-                        key: ks.clone(),
-                        code: format!("{:?}", key),
-                        ctrl,
-                        shift,
-                        alt,
-                        meta: modifiers.meta,
-                    };
+                    let key_data = events::KeyEventData::new(ks.clone(), format!("{:?}", key))
+                        .with_modifiers(ctrl, shift, alt, modifiers.meta);
                     if events::dispatch_keyboard_event(&key_data) {
                         actions.push(AppAction::RequestRedraw);
                         return actions;
@@ -1201,14 +1195,16 @@ impl RinchApp {
                         // `KeyCode::Other` carrying no printable text — so a
                         // widget always sees a non-empty key.
                         if let FocusTarget::Node(id) = self.focus_target {
-                            let key_data = events::KeyEventData {
-                                key: key_str.clone().unwrap_or_else(|| format!("{:?}", key)),
-                                code: format!("{:?}", key),
+                            let key_data = events::KeyEventData::new(
+                                key_str.clone().unwrap_or_else(|| format!("{:?}", key)),
+                                format!("{:?}", key),
+                            )
+                            .with_modifiers(
                                 ctrl,
                                 shift,
                                 alt,
-                                meta: modifiers.meta,
-                            };
+                                modifiers.meta,
+                            );
                             if crate::focus_registry::offer_key(self.doc_key(), id, &key_data) {
                                 actions.push(AppAction::RequestRedraw);
                                 return actions;
@@ -1286,28 +1282,90 @@ impl RinchApp {
                     }
                 }
             }
-            PlatformEvent::KeyUp { key, modifiers } => {
+            PlatformEvent::KeyUp {
+                key,
+                logical_key,
+                modifiers,
+            } => {
                 // Release the Enter/Space activation latch (issue #228): the
                 // next KeyDown of this key is a fresh physical press.
                 if self.node_activation_held == Some(key) {
                     self.node_activation_held = None;
                 }
-                // Forward key release to focused render surface.
-                if let Some(surface_id) = crate::render_surface::focused_surface_id() {
-                    let key_str = format!("{:?}", key);
-                    crate::render_surface::dispatch_surface_event(
-                        surface_id,
-                        crate::render_surface::SurfaceEvent::KeyUp(
-                            crate::render_surface::SurfaceKeyData {
-                                key: key_str.clone(),
-                                code: key_str,
-                                ctrl: modifiers.primary(),
-                                shift: modifiers.shift,
-                                alt: modifiers.alt,
-                                meta: modifiers.meta,
-                            },
-                        ),
-                    );
+
+                let shift = modifiers.shift;
+                let ctrl = modifiers.primary();
+                let alt = modifiers.alt;
+
+                // Spelled by the same function as the press, from the same
+                // fields (issue #337). A release carries no `text` — a key
+                // inserts nothing on the way up — so `hook_key_str` resolves it
+                // through `logical_key` and then the physical table, which is
+                // exactly what the press falls back to once a modifier has
+                // suppressed its text. That is what makes a press and its
+                // release agree **by construction** rather than by
+                // coincidence: a consumer pairing them by `key` (the whole
+                // point of hearing releases — "is W still held") cannot be
+                // handed `"a"` down and `"q"` up on a non-QWERTY layout.
+                let key_str: Option<String> = hook_key_str(key, None, logical_key);
+
+                tracing::trace!(?key, ?key_str, shift, ctrl, alt, "KeyUp event");
+
+                // 1. The document-level interceptor, mirroring the KeyDown arm.
+                //    Its **return value is ignored**: there is nothing
+                //    downstream to suppress. The only runtime work a release
+                //    does is clear the activation latch — which must happen
+                //    whatever a handler thinks, or a consumed release strands
+                //    the latch and the next press is swallowed — and the
+                //    surface forward below, which is the surface's own claim.
+                if let Some(ref ks) = key_str {
+                    let key_data = events::KeyEventData::new(ks.clone(), format!("{:?}", key))
+                        .with_modifiers(ctrl, shift, alt, modifiers.meta)
+                        .with_kind(events::KeyEventKind::Up);
+                    events::dispatch_keyboard_event(&key_data);
+                }
+
+                // 2. Then the focus arbiter's holder, again mirroring KeyDown.
+                //    Delivered to whoever holds the claim **at release time**,
+                //    browser-style — so a focus change mid-chord can hand a
+                //    target a release it never saw pressed. That is the
+                //    tradeoff a stateless router makes, and it is why a widget
+                //    tracking held keys should treat `on_focus_lost` as
+                //    "everything is up".
+                match self.focus_target {
+                    FocusTarget::Surface(surface_id) => {
+                        crate::render_surface::dispatch_surface_event(
+                            surface_id,
+                            crate::render_surface::SurfaceEvent::KeyUp(
+                                crate::render_surface::SurfaceKeyData {
+                                    key: key_str.clone().unwrap_or_default(),
+                                    code: format!("{:?}", key),
+                                    ctrl,
+                                    shift,
+                                    alt,
+                                    meta: modifiers.meta,
+                                },
+                            ),
+                        );
+                    }
+                    FocusTarget::Node(id) => {
+                        // The same stale-claim self-heal the KeyDown arm runs:
+                        // node ids are recycled slab indices, so a claim whose
+                        // node was unmounted must not be handed a release that
+                        // now names an unrelated element.
+                        if !self.node_target_is_live(id) {
+                            self.set_focus_target(FocusTarget::None);
+                        } else {
+                            let key_data = events::KeyEventData::new(
+                                key_str.clone().unwrap_or_else(|| format!("{:?}", key)),
+                                format!("{:?}", key),
+                            )
+                            .with_modifiers(ctrl, shift, alt, modifiers.meta)
+                            .with_kind(events::KeyEventKind::Up);
+                            crate::focus_registry::offer_key(self.doc_key(), id, &key_data);
+                        }
+                    }
+                    _ => {}
                 }
             }
             PlatformEvent::Ime(ime) => {

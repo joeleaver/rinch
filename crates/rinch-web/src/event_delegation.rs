@@ -1980,14 +1980,14 @@ pub fn setup_event_delegation(doc: &WebDocument) {
             return;
         }
 
-        let key_data = events::KeyEventData {
-            key: event.key(),
-            code: event.code(),
-            ctrl: event.ctrl_key() || event.meta_key(),
-            shift: event.shift_key(),
-            alt: event.alt_key(),
-            meta: event.meta_key(),
-        };
+        let key_data = events::KeyEventData::new(event.key(), event.code())
+            .with_modifiers(
+                event.ctrl_key() || event.meta_key(),
+                event.shift_key(),
+                event.alt_key(),
+                event.meta_key(),
+            )
+            .with_repeat(event.repeat());
         if events::dispatch_keyboard_event(&key_data) {
             event.prevent_default();
             event.stop_propagation();
@@ -2045,9 +2045,29 @@ pub fn setup_event_delegation(doc: &WebDocument) {
         .unwrap();
     keydown_closure.forget();
 
-    // keyup: route to a focused render surface (games need key-release). No app
-    // keyup delegation path exists, so this only acts when a surface is focused.
+    // keyup: the document-level interceptor first, then a focused render surface
+    // (games need key-release).
+    //
+    // The interceptor half is issue #337's web leg. Releases reached no app
+    // code on *either* backend — fixing only desktop would have turned a shared
+    // gap into a divergence, which is the thing an app most notices, since the
+    // whole point of an interceptor is that it is the one hook that behaves the
+    // same everywhere.
+    //
+    // Its return value is ignored, matching desktop: there is nothing
+    // downstream of a release to suppress, and `prevent_default` on a keyup
+    // suppresses nothing a browser would have done anyway.
     let keyup_closure = Closure::wrap(Box::new(move |event: web_sys::KeyboardEvent| {
+        let key_data = events::KeyEventData::new(event.key(), event.code())
+            .with_modifiers(
+                event.ctrl_key() || event.meta_key(),
+                event.shift_key(),
+                event.alt_key(),
+                event.meta_key(),
+            )
+            .with_kind(events::KeyEventKind::Up);
+        events::dispatch_keyboard_event(&key_data);
+
         if let Some(surface_id) = rinch::render_surface::focused_surface_id() {
             let key_data = rinch::render_surface::SurfaceKeyData {
                 key: event.key(),

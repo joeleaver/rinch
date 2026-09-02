@@ -191,8 +191,31 @@ registers the node without asking for anything back.
 |---|---|
 | `on_focus_gained` | Tab onto the node, a press on it (or on any of its children), `focus()` / `request_focus`, and when the **window** regains OS focus while this target still holds the claim |
 | `on_focus_lost` | Anything else takes the keyboard — another registered widget, an `<input>`, a `<select>`, the rich-text editor, a render surface — a press landing outside, and when the **window** loses OS focus |
-| `on_key` | Every `KeyDown` while this target holds focus, **before** the runtime's own handling |
+| `on_key` | Every `KeyDown` **and `KeyUp`** while this target holds focus, **before** the runtime's own handling — read `k.kind` (or `k.is_up()`) to tell them apart |
 | `on_ime` | Every IME composition event while this target holds focus (see [IME](#ime) below) |
+
+### Presses and releases
+
+`k.kind` is `KeyEventKind::Down` or `Up`; `k.is_down()` / `k.is_up()` are the
+shorthands. **Auto-repeat arrives as `Down`** with `k.repeat == true`, so a
+handler that wants one activation per physical press tests `!k.repeat`.
+
+A press and its release are spelled by the same rule, from the same fields, so
+**pairing them by `k.key` works by construction** — which is what "is W still
+held" needs. Concretely: a release carries no inserted text, so it resolves
+through the layout letter and then the physical table, exactly as a press does
+once a modifier has suppressed its text. On AZERTY, the key labelled A is
+`"a"` on the way down *and* on the way up, not `"a"` down and `"q"` up.
+
+Two things to know:
+
+- A release is delivered to whoever holds the claim **at release time**. A
+  focus change mid-chord can therefore hand a target a release it never saw
+  pressed — treat `on_focus_lost` as "everything is up" if you track held keys.
+- **A release's return value is ignored.** There is nothing downstream of it to
+  suppress, and the runtime's own release work (clearing the Enter/Space
+  activation latch) must happen whatever a handler thinks — otherwise a
+  consumed release would strand the latch and swallow the next press.
 
 `on_key` returns `true` to **consume** the key. A consumed key stops there: no
 Tab navigation, no Enter/Space activation, no DevTools shortcut. Returning
