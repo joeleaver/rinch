@@ -157,9 +157,25 @@ impl Component for Select {
         let trigger = __scope.create_element("div");
         if self.disabled {
             trigger.set_attribute("class", "rinch-select__input rinch-select__input--disabled");
+            trigger.set_attribute("disabled", "");
         } else {
             trigger.set_attribute("class", "rinch-select__input");
+            // Keyboard-reachable (issue #251). The trigger is a `<div>`, so it
+            // has no implicit focusability to inherit — without this the whole
+            // control was unreachable by Tab on both backends. Enter/Space then
+            // dispatch its `data-rid` below, which is the same toggle the
+            // pointer path runs.
+            trigger.set_attribute("tabindex", "0");
         }
+        trigger.set_attribute("role", "combobox");
+        trigger.set_attribute("aria-haspopup", "listbox");
+        trigger.set_attribute("aria-expanded", "false");
+
+        let trigger_aria = trigger.clone();
+        __scope.create_effect(move || {
+            trigger_aria
+                .set_attribute("aria-expanded", if opened.get() { "true" } else { "false" });
+        });
 
         // Display text
         let display_span = __scope.create_element("span");

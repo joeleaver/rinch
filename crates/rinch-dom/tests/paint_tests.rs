@@ -2917,3 +2917,205 @@ mod opacity_layer_bounds {
         );
     }
 }
+
+/// #260: every colour channel the paint pipeline hands a painter is *rounded*
+/// to 8 bits, never truncated.
+///
+/// Truncation is not a rounding-mode preference, it is a systematic one-sided
+/// bias: it can only ever move a value down, and box shadows stack eight
+/// layers, so eight truncations compound. Every assertion below is an exact
+/// byte, and every one of them was one level lighter before.
+mod channel_rounding {
+    use super::transform_paint::{paint_skia, pixel_at};
+    use super::*;
+    use rinch_core::dom::NodeId;
+    use rinch_dom::paint::skia_painter::TinySkiaPainter;
+
+    /// One absolutely-positioned 100x100 div at (100, 100), painted.
+    fn painted(style: &str) -> TinySkiaPainter {
+        let mut doc = RinchDocument::new();
+        let body = doc.body();
+        let div = doc.create_element("div");
+        doc.set_attribute(
+            div,
+            "style",
+            &format!(
+                "position: absolute; left: 100px; top: 100px; width: 100px; height: 100px; {style}"
+            ),
+        );
+        doc.append_child(body, div);
+        let _: NodeId = div;
+        doc.resolve_layout(800.0, 600.0);
+        let mut painter = TinySkiaPainter::new(800, 600);
+        paint_skia(&mut doc, &mut painter);
+        painter
+    }
+
+    /// `filter: brightness(b)` overlays black at alpha `1 - b`, which is exact
+    /// for a darken: white through `brightness(0.35)` is `255 x 0.35 = 89.25`.
+    ///
+    /// The overlay alpha is `0.65 x 255 = 165.75`. Truncated to 165 the pixel
+    /// came out 90; rounded to 166 it is 89, the byte a browser shows.
+    #[test]
+    fn brightness_darken_rounds_the_overlay_alpha() {
+        let painter = painted("background-color: rgb(255,255,255); filter: brightness(0.35)");
+        assert_eq!(
+            pixel_at(&painter, 150, 150),
+            [89, 89, 89, 255],
+            "255 x 0.35 = 89.25; truncating the 165.75 overlay alpha gave 90"
+        );
+    }
+
+    /// The brighten half of the same overlay: white at alpha `b - 1` over
+    /// black, so the pixel *is* the alpha. `0.65 x 255 = 165.75` again.
+    #[test]
+    fn brightness_brighten_rounds_the_overlay_alpha() {
+        let painter = painted("background-color: rgb(0,0,0); filter: brightness(1.65)");
+        assert_eq!(
+            pixel_at(&painter, 150, 150),
+            [166, 166, 166, 255],
+            "the overlay alpha is 165.75; truncating gave 165"
+        );
+    }
+
+    /// A blurred box shadow is eight concentric layers. The outermost band is
+    /// covered by exactly *one* of them — the `t = 1.0` layer, whose alpha is
+    /// `255 x (1 - 0.7) / 8 = 9.5625` for an opaque shadow — so it reads the
+    /// per-layer quantiser directly, with nothing composited on top.
+    #[test]
+    fn shadow_outer_layer_rounds_its_alpha() {
+        let painter = painted("box-shadow: 0 0 40px 0 rgb(0,0,0)");
+        assert_eq!(
+            pixel_at(&painter, 100 - 19, 150),
+            [0, 0, 0, 10],
+            "the outermost layer's alpha is 9.5625; truncating gave 9"
+        );
+    }
+
+    /// And the bias compounds where the layers overlap: nearer the box, ten
+    /// layers' worth of truncation used to add up to three whole levels of
+    /// missing shadow.
+    #[test]
+    fn shadow_stacked_layers_do_not_compound_a_truncation_bias() {
+        let painter = painted("box-shadow: 0 0 40px 0 rgb(0,0,0)");
+        assert_eq!(
+            pixel_at(&painter, 100 - 10, 150),
+            [0, 0, 0, 69],
+            "eight truncated layers summed to 66"
+        );
+    }
+
+    /// The shadow's own RGB reaches the layers unchanged. This never broke,
+    /// which is exactly why it needs pinning: the per-layer colour used to be
+    /// rebuilt from three hand-extracted bytes, and now it is the shadow colour
+    /// with its alpha scaled — a rebuild that dropped the hue would be
+    /// invisible to every other test here, all of which use a black shadow.
+    #[test]
+    fn a_coloured_shadow_keeps_its_hue_in_every_layer() {
+        let painter = painted("box-shadow: 0 0 40px 0 rgb(255,0,0)");
+        assert_eq!(
+            pixel_at(&painter, 100 - 19, 150),
+            [10, 0, 0, 10],
+            "premultiplied red at the outermost layer's alpha"
+        );
+    }
+
+    /// A translucent shadow's own alpha *scales* each layer's alpha; it does
+    /// not merely set the colour. Every other shadow case here is opaque, where
+    /// scaling and setting give the same byte — so this is the only assertion
+    /// that can tell them apart.
+    #[test]
+    fn a_translucent_shadow_scales_every_layer_by_its_own_alpha() {
+        let painter = painted("box-shadow: 0 0 40px 0 rgba(0,0,0,0.5)");
+        assert_eq!(
+            pixel_at(&painter, 100 - 19, 150),
+            [0, 0, 0, 5],
+            "(128/255) x 9.5625 = 4.80; ignoring the shadow's alpha would give 10"
+        );
+    }
+
+    /// A shadow colour is already 8-bit-quantised before paint ever sees it,
+    /// which is why removing the `to_rgba8` re-snap in `paint_shadows` is
+    /// redundancy removal rather than a precision gain.
+    ///
+    /// `rgb(0.5% 99.5% 33.3%)` is as far from byte-aligned as CSS lets you
+    /// write; it paints identically to the `rgb(1, 254, 85)` it rounds to,
+    /// because `color_from_absolute` rounded it on the way into
+    /// `ComputedStyle`. So no input exists that the re-snap could have
+    /// changed — including the `color-mix()` and percentage cases you would
+    /// expect to be the counterexamples.
+    #[test]
+    fn a_shadow_colour_is_already_quantised_before_paint() {
+        let percent = painted("box-shadow: 0 0 40px 0 rgb(0.5% 99.5% 33.3%)");
+        let bytes = painted("box-shadow: 0 0 40px 0 rgb(1, 254, 85)");
+        assert_eq!(
+            pixel_at(&percent, 100 - 19, 150),
+            pixel_at(&bytes, 100 - 19, 150)
+        );
+        assert_eq!(
+            pixel_at(&percent, 100 - 10, 150),
+            pixel_at(&bytes, 100 - 10, 150)
+        );
+    }
+
+    /// `brightness()` has no upper bound in CSS, but an overlay alpha does.
+    /// Anything at or past `brightness(2)` is a fully opaque white wash.
+    #[test]
+    fn an_out_of_range_brightness_clamps_the_overlay_alpha() {
+        let painter = painted("background-color: rgb(0,0,0); filter: brightness(3)");
+        assert_eq!(
+            pixel_at(&painter, 150, 150),
+            [255, 255, 255, 255],
+            "alpha 2.0 must clamp to 1.0, not wrap"
+        );
+    }
+
+    /// A faint shadow used to paint **nothing at all** — not a dim shadow, an
+    /// absent one.
+    ///
+    /// The per-layer skip threshold was `(alpha * 255.0) as u8 == 0`, which
+    /// truncates, so it discarded every layer whose alpha was under a *whole*
+    /// level rather than under half of one. `alpha_scale` peaks at 0.114, so
+    /// for a faint shadow that is every layer there is: at `rgba(0,0,0,0.03)`
+    /// and below, the entire 800x600 framebuffer came back zero.
+    ///
+    /// Nothing in the suite noticed — every other shadow test here is opaque
+    /// or half-opaque, well clear of the threshold — so this is the third
+    /// blind spot of the same kind as `a_translucent_shadow_...`: an input
+    /// class no test reached, rather than a line no test covered.
+    #[test]
+    fn a_faint_shadow_is_painted_rather_than_skipped() {
+        for alpha in ["0.02", "0.025", "0.03"] {
+            let painter = painted(&format!("box-shadow: 0 0 40px 0 rgba(0,0,0,{alpha})"));
+            let lit = painter.pixels().iter().filter(|b| **b != 0).count();
+            assert!(
+                lit > 0,
+                "`rgba(0,0,0,{alpha})` must paint something; the whole buffer was blank"
+            );
+            assert_eq!(
+                pixel_at(&painter, 100 - 2, 150)[3],
+                match alpha {
+                    "0.02" => 2,
+                    "0.025" => 3,
+                    _ => 5,
+                },
+                "just outside the box, 2px out (alpha = {alpha})"
+            );
+        }
+    }
+
+    /// The guard the truncation used to provide by accident: a layer whose
+    /// alpha rounds to zero is skipped rather than filled. A fully transparent
+    /// shadow must paint nothing at all.
+    #[test]
+    fn a_transparent_shadow_still_paints_nothing() {
+        let painter = painted("box-shadow: 0 0 40px 0 rgba(0,0,0,0)");
+        for dx in [1u32, 10, 19] {
+            assert_eq!(
+                pixel_at(&painter, 100 - dx, 150),
+                [0, 0, 0, 0],
+                "a zero-alpha shadow must not tint anything (dx = {dx})"
+            );
+        }
+    }
+}

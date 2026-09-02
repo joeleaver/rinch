@@ -5,7 +5,7 @@ pub(crate) mod color;
 mod grid;
 mod layout;
 mod typography;
-mod visual;
+pub(crate) mod visual;
 
 use super::ComputedStyle;
 use super::values::*;

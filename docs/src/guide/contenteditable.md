@@ -278,6 +278,20 @@ shows the same pattern inside the component showcase. The shape is always:
 `create_editor()` once, clone the handle into each button's `onclick`, and place a
 single `Editor {}` for the surface.
 
+> **Put `data-nofocus` on the toolbar.** A focusable toolbar button takes the
+> keyboard away from the editor when it is pressed, so Bold would apply to a
+> selection that no longer has focus. `data-nofocus` on the toolbar container
+> makes every control inside it take its click without taking the keyboard —
+> the `preventDefault()`-on-mousedown answer browsers converged on, and it works
+> on both backends. See
+> [Taking the click without the keyboard](focus.md#taking-the-click-without-the-keyboard).
+>
+> ```rust
+> div { data-nofocus: "", class: "toolbar",
+>     button { tabindex: "0", onclick: move || ed.command("toggleBold"), "B" }
+> }
+> ```
+
 ## On the web (rinch-web)
 
 The editor runs in the browser too — the **same** `Editor {}` / `EditorHandle` /

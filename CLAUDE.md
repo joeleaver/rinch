@@ -974,13 +974,45 @@ open `<select>`, the rich-text editor, a render surface, or a generic focusable
 DOM node (`FocusTarget::Node`). Every transition goes through
 `RinchApp::set_focus_target`, which tears the previous owner down first.
 
-Focusability on desktop comes from an explicit `tabindex` (or `data-oninput`).
-`tabindex="-1"` is focusable by click and programmatically but not tabbable;
-`data-disabled` is a **boolean attribute** (present = disabled unless the value
-is `"false"`) and removes only the node from the Tab order, not its subtree. A
-`<button>`/`<a>` is not a desktop Tab stop — issue #252. A **mouse press claims
+Focusability on desktop comes from the **tag** or an explicit `tabindex` (or a
+`data-oninput` on a custom control), and an explicit `tabindex` always wins —
+the browser rule (issue #252). Focusable by tag: `<button>`, `<select>`,
+`<textarea>`, `<input>`, and `<a>` with a non-empty `href`. **Not** `<summary>`
+(rinch has no `<details>` behaviour) and **not** `data-rid` (the DropdownMenu
+backdrop carries one). `tabindex="-1"` is focusable by click and
+programmatically but not tabbable;
+`disabled` and `data-disabled` are both honoured (issue #315) as **boolean
+attributes** (present = disabled unless the value is `"false"`), take no focus
+by any route, and are re-checked at edit time: a field that goes disabled
+*while focused* stops accepting keys **and releases the keyboard** — with its
+`data-onchange` commit suppressed, since going disabled is not the user
+committing an edit (`release_focus_for_disabled`, the only transition that
+suppresses it). `readonly` focuses and selects but
+refuses every text-changing command. A disabled `<fieldset>` disables its
+subtree (except its first `<legend>`); every other tag's `disabled` removes
+only the node from the Tab order, not its subtree. A **mouse press claims
 the nearest focusable ancestor** of the hit node, browser-style, so a clicked
 `tabindex` div owns Enter/Space immediately.
+
+A focused **`<select>` is closed**, like a browser's — Enter/Space/Alt+Down
+opens its popup, which then owns the keyboard (issue #314). It is never handed
+to the text engine, whatever handlers it carries: branching on `data-oninput`
+without a tag guard used to install an `EditableState` over a select's `value`
+and make it a typable text field (issue #424). `Select`'s trigger `<div>`
+carries `tabindex="0"` + combobox ARIA (issue #251); arrow/Enter/Escape
+navigation of its **open** option list is issue #434.
+
+Still unmatched to the web: a positive `tabindex` does not order ahead of DOM
+order (issue #435), and a Modal/Drawer backdrop does not contain Tab.
+
+**`data-nofocus` takes the click without the keyboard** (issue #312) — the
+`preventDefault()`-on-mousedown mechanism browsers converged on, which an editor
+toolbar needs so Bold does not blur the editor it acts on. Same boolean rule as
+`data-disabled`, read **anywhere on the pressed node's ancestor chain** so a
+toolbar carries it once; it protects whatever holds the keyboard (editor, input,
+surface, node), the `data-rid` click still fires, and a text field *inside* the
+region still focuses normally. Both backends — on web it becomes
+`preventDefault()` on the `pointerdown`.
 
 A custom component that takes keyboard input registers for the lifecycle
 (issue #147, `crates/rinch/src/focus_registry.rs`, in the prelude):

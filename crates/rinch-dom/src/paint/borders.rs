@@ -569,12 +569,17 @@ pub(super) fn paint_box_shadow(
         let offset_y = shadow.offset_y as f64 * scale;
         let blur = shadow.blur_radius as f64 * scale;
         let spread = shadow.spread_radius as f64 * scale;
+        // `peniko::Color` *is* `AlphaColor<Srgb>`, so the `to_rgba8` round trip
+        // this used to do was a re-snap of a value already in the painter's
+        // colour space. It was **redundant, not lossy**: a shadow colour
+        // reaches `ComputedStyle` through `color_from_absolute`, which has
+        // already rounded every channel to 8 bits, so no input exists that the
+        // round trip could change — including the `color-mix()` and percentage
+        // `rgb()` cases you would expect to be the counterexamples. Removed so
+        // there is one fewer quantiser to keep in step, not to recover
+        // precision.
         let color: AlphaColor<Srgb> = shadow
             .color
-            .map(|c| {
-                let rgba = c.to_rgba8();
-                AlphaColor::<Srgb>::from_rgba8(rgba.r, rgba.g, rgba.b, rgba.a)
-            })
             .unwrap_or_else(|| AlphaColor::<Srgb>::from_rgba8(0, 0, 0, 40));
 
         if blur > 0.0 {
@@ -585,10 +590,6 @@ pub(super) fn paint_box_shadow(
             let max_expand = blur * 0.5 + spread;
             let layers: usize = 8;
 
-            // Extract actual shadow RGB
-            let sr = (color.components[0] * 255.0) as u8;
-            let sg = (color.components[1] * 255.0) as u8;
-            let sb = (color.components[2] * 255.0) as u8;
             let base_alpha = color.components[3] as f64;
 
             for i in 0..layers {
@@ -601,11 +602,23 @@ pub(super) fn paint_box_shadow(
                     y + h + offset_y + layer_expand,
                 );
                 let alpha_scale = (1.0 - t * 0.7) / layers as f64;
-                let alpha_u8 = (base_alpha * alpha_scale * 255.0).min(255.0) as u8;
-                if alpha_u8 == 0 {
+                // Skip a layer only when its alpha *rounds* to zero, i.e. when
+                // it would genuinely tint nothing.
+                //
+                // This is the most visible line in the change, not a cost
+                // saving. The threshold used to be `(… * 255.0) as u8 == 0`,
+                // which truncates, so it discarded every layer under a *whole*
+                // level rather than under half of one — and `alpha_scale` peaks
+                // at 0.114, so for a faint shadow that is every layer there is.
+                // `box-shadow: 0 0 40px rgba(0,0,0,0.03)` and anything fainter
+                // painted **nothing at all**: not a dim shadow, an absent one.
+                //
+                // (`alpha_scale` peaking at 0.114 also means the product can
+                // never exceed 1, so the old `.min(255.0)` clamp was dead.)
+                if base_alpha * alpha_scale * 255.0 < 0.5 {
                     continue;
                 }
-                let layer_color = AlphaColor::<Srgb>::from_rgba8(sr, sg, sb, alpha_u8);
+                let layer_color = color.multiply_alpha(alpha_scale as f32);
                 let (outer_radii, outer) = if has_radius {
                     let expanded_radii = RoundedRectRadii::new(
                         radii.top_left + layer_expand,

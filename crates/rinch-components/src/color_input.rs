@@ -29,9 +29,18 @@ pub struct ColorInput {
     pub error: String,
     /// Placeholder text.
     pub placeholder: String,
-    /// Input size (xs, sm, md, lg, xl).
+    /// Field size: `xs`, `sm`, `md`, `lg`, `xl`.
+    ///
+    /// Empty or unrecognised means `md`, as in `TextInput`. Scales the field's
+    /// height, padding and font size, and the preview swatch with them; `md`
+    /// is the geometry the field carried before `size` was wired (#263), so
+    /// leaving it unset changes nothing.
     pub size: String,
-    /// Border radius.
+    /// Field border radius: `xs`, `sm`, `md`, `lg`, `xl`.
+    ///
+    /// Empty or unrecognised leaves the stylesheet's default `sm` standing —
+    /// there is no `md` fallback here, unlike `size`, matching `DropdownMenu`,
+    /// `Modal` and `Card`.
     pub radius: String,
     /// Whether the input is disabled.
     pub disabled: bool,
@@ -63,10 +72,72 @@ pub struct ColorInput {
     pub swatches: Vec<String>,
     /// Swatches per row in the picker.
     pub swatches_per_row: Option<usize>,
-    /// Close dropdown when clicking outside.
-    pub close_on_click_outside: bool,
     /// Disallow typing into the input (only use picker).
     pub disallow_input: bool,
+}
+
+impl ColorInput {
+    /// The size step this input renders at: one of `xs`/`sm`/`md`/`lg`/`xl`.
+    ///
+    /// Empty and unrecognised spellings both fall back to `md`, matching
+    /// `TextInput`, whose `size` parses with `unwrap_or_default()` onto a
+    /// `#[default] Md`. Trimmed and lowercased for the same reason it is there.
+    fn size_step(&self) -> &'static str {
+        match self.size.trim().to_lowercase().as_str() {
+            "xs" => "xs",
+            "sm" => "sm",
+            "lg" => "lg",
+            "xl" => "xl",
+            _ => "md",
+        }
+    }
+
+    /// The preview swatch's edge length for this size step.
+    ///
+    /// `md` is `22px`, the value the swatch was hard-coded to before `size` was
+    /// wired, so the default rendering is unchanged.
+    fn swatch_size(&self) -> &'static str {
+        match self.size_step() {
+            "xs" => "16px",
+            "sm" => "18px",
+            "lg" => "26px",
+            "xl" => "30px",
+            _ => "22px",
+        }
+    }
+
+    /// The CSS class string for the root element.
+    pub fn class_string(&self) -> String {
+        let mut classes = vec!["rinch-color-input".to_string()];
+
+        // Always emitted, `md` included: the size rules key off it, so the
+        // default step has to name itself the way `TextInput`'s does.
+        classes.push(format!("rinch-color-input--{}", self.size_step()));
+
+        // Radius, unlike size, has no default class. An empty or unrecognised
+        // value leaves the base rule's `--rinch-radius-sm` standing, which is
+        // the idiom every other radius-taking component uses (`DropdownMenu`,
+        // `Modal`, `Card`).
+        if !self.radius.is_empty() {
+            match self.radius.trim().to_lowercase().as_str() {
+                "xs" => classes.push("rinch-color-input--radius-xs".to_string()),
+                "sm" => classes.push("rinch-color-input--radius-sm".to_string()),
+                "md" => classes.push("rinch-color-input--radius-md".to_string()),
+                "lg" => classes.push("rinch-color-input--radius-lg".to_string()),
+                "xl" => classes.push("rinch-color-input--radius-xl".to_string()),
+                _ => {}
+            }
+        }
+
+        if !self.error.is_empty() {
+            classes.push("rinch-color-input--error".to_string());
+        }
+        if self.disabled {
+            classes.push("rinch-color-input--disabled".to_string());
+        }
+
+        classes.join(" ")
+    }
 }
 
 impl std::fmt::Debug for ColorInput {
@@ -99,14 +170,9 @@ impl Component for ColorInput {
         };
         let current_value = Signal::new(initial_color.clone());
 
-        // Root container
-        let mut root_class = String::from("rinch-color-input");
-        if !self.error.is_empty() {
-            root_class.push_str(" rinch-color-input--error");
-        }
-        if self.disabled {
-            root_class.push_str(" rinch-color-input--disabled");
-        }
+        // Root container. `size` and `radius` reach the field through this
+        // class string (they used to reach nothing at all — issue #263).
+        let root_class = self.class_string();
 
         let root = rinch_macros::rsx! { div {} };
         root.set_attribute("class", &root_class);
@@ -139,7 +205,7 @@ impl Component for ColorInput {
         let swatch_spelling = move |value: &str| display_spelling(value, color_format.with_alpha());
         let preview = ColorSwatch {
             color: swatch_spelling(&initial_color),
-            size: "22px".into(),
+            size: self.swatch_size().into(),
             radius: "sm".into(),
             ..Default::default()
         };
@@ -320,6 +386,7 @@ impl Component for ColorInput {
         dropdown.append_child(&picker_node);
 
         wrapper.append_child(&dropdown);
+
         root.append_child(&wrapper);
 
         // Reactive: toggle the opened class. Deliberately its own effect: the

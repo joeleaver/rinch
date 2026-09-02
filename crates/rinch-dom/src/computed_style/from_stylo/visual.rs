@@ -207,7 +207,17 @@ pub(super) fn transform_from_stylo(
 /// `px`/`py` are fractions (0.5 = 50%). The contribution to the final `(e, f)`
 /// is `L·(px·W, py·H)`, which is linear in `W` and `H` — hence four
 /// coefficients rather than a function list (#212).
-fn accumulate_pct(m: &[f64; 6], px: f64, py: f64, pct_w: &mut [f64; 2], pct_h: &mut [f64; 2]) {
+///
+/// Shared with the keyframe extractor so an authored `translate(50%, 0)` stop
+/// accumulates by exactly the same rule the cascade uses — the two must agree
+/// or a transform would jump the moment an animation starts.
+pub(crate) fn accumulate_pct(
+    m: &[f64; 6],
+    px: f64,
+    py: f64,
+    pct_w: &mut [f64; 2],
+    pct_h: &mut [f64; 2],
+) {
     pct_w[0] += px * m[0];
     pct_w[1] += px * m[1];
     pct_h[0] += py * m[2];

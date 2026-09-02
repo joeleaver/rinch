@@ -3,9 +3,7 @@
 //! Provides a pre-parsed ComputedStyle struct to avoid re-parsing CSS properties
 //! on every layout and paint operation.
 
-mod from_props;
 mod from_stylo;
-pub(crate) mod helpers;
 mod taffy_conversion;
 mod text_layout;
 pub mod values;
@@ -13,6 +11,7 @@ pub mod values;
 pub(crate) use from_stylo::color::{
     absolute_from_peniko, color_from_computed, color_from_specified, color_from_stylo,
 };
+pub(crate) use from_stylo::visual::accumulate_pct;
 pub use values::*;
 
 use serde::Serialize;
