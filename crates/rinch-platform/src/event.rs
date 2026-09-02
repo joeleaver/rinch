@@ -79,13 +79,34 @@ pub enum PlatformEvent {
     KeyDown {
         /// The **physical** key (layout-independent position).
         key: KeyCode,
-        /// The **logical** letter this key produces in the active layout, lowercased
-        /// (`Some('b')` for the Dvorak/AZERTY key labelled B), when it is a single
-        /// ASCII letter — used so `Mod`+letter shortcuts follow the layout label rather
-        /// than the physical position. `None` for non-letters or when unknown; the
-        /// consumer then falls back to `key`. Distinct from `text` (which is the text to
-        /// insert, and is suppressed by modifiers).
-        logical_key: Option<char>,
+        /// The **logical** key value this key produces in the active layout,
+        /// spelled exactly as a browser spells [`KeyboardEvent.key`] — so the
+        /// desktop shell reports the same strings `rinch-web` forwards from the
+        /// browser, and a press and its release spell alike (issue #337):
+        ///
+        /// - a printable key is the string it produces, **case-accurate**
+        ///   (`"a"`, `"A"` under Shift, `"!"` where the layout puts one, `"é"`)
+        ///   and layout-mapped (`"b"` for the Dvorak/AZERTY key labelled B) —
+        ///   unlike [`text`](Self::KeyDown::text), it survives a `Ctrl`/`Cmd`
+        ///   chord, which is why `Mod`+letter shortcuts read it;
+        /// - a named key is its W3C [key-values] name (`"Enter"`, `"ArrowLeft"`,
+        ///   `"Shift"`, `"Meta"` for the OS key) — bar the spacebar, which the
+        ///   spec deliberately spells as its character, `" "`;
+        /// - a dead key is `"Dead"`, as in a browser;
+        /// - `None` when the backend cannot tell (the debug channel's named
+        ///   keys, Android's hardware-key path outside what its character map
+        ///   resolves, a key winit itself reports as unidentified). The
+        ///   consumer then falls back to `key`.
+        ///
+        /// **Case is identity here**: consumers wanting a case-insensitive
+        /// match (`Mod+B` on `"B"` or `"b"`) must fold at the comparison site,
+        /// as `editor_key_binding` does — a lowercased source made a `Shift`
+        /// chord's release disagree with its own press, which defeats pairing
+        /// them, the thing `KeyUp` exists for.
+        ///
+        /// [`KeyboardEvent.key`]: https://developer.mozilla.org/docs/Web/API/KeyboardEvent/key
+        /// [key-values]: https://w3c.github.io/uievents-key/
+        logical_key: Option<String>,
         /// The text this keypress would insert (suppressed under Ctrl/Cmd), or `None`.
         text: Option<String>,
         modifiers: Modifiers,
@@ -103,9 +124,10 @@ pub enum PlatformEvent {
     KeyUp {
         /// The **physical** key (layout-independent position).
         key: KeyCode,
-        /// The **logical** letter this key produces in the active layout,
-        /// lowercased — see [`KeyDown::logical_key`](Self::KeyDown).
-        logical_key: Option<char>,
+        /// The **logical** key value this key produces in the active layout,
+        /// spelled like the browser's `KeyboardEvent.key` — see
+        /// [`KeyDown::logical_key`](Self::KeyDown).
+        logical_key: Option<String>,
         modifiers: Modifiers,
     },
     /// Modifier keys changed.

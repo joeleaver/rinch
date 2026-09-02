@@ -1362,21 +1362,42 @@ impl RinchRuntime {
         }
     }
 
-    /// The single ASCII letter a winit **logical** key produces in the active layout,
-    /// lowercased — the layout-mapped identity of a letter key (e.g. the Dvorak key at
-    /// the QWERTY-N position reports `Character("b")` → `Some('b')`). `None` for
-    /// non-letters (so the editor falls back to the physical `KeyCode`). Feeds
-    /// `PlatformEvent::KeyDown::logical_key` so `Mod`+letter shortcuts follow the keycap.
-    fn winit_logical_letter(key: &winit::keyboard::Key) -> Option<char> {
-        if let winit::keyboard::Key::Character(s) = key {
-            let mut it = s.chars();
-            if let (Some(c), None) = (it.next(), it.next())
-                && c.is_ascii_alphabetic()
-            {
-                return Some(c.to_ascii_lowercase());
-            }
+    /// The DOM-style key value a winit **logical** key spells — what feeds
+    /// `PlatformEvent::KeyDown::logical_key` (and `KeyUp`'s), see the contract
+    /// there. winit already speaks the browser's language, so this is nearly a
+    /// transcription:
+    ///
+    /// - `Key::Character` is the layout-produced string, **verbatim**. Case is
+    ///   preserved deliberately: `KeyboardEvent.key` in a browser is
+    ///   case-*accurate* — measured, Chromium reports `"A"` for Shift+A and
+    ///   `"S"` for Ctrl+Shift+S, on the press **and** the release. The old
+    ///   lowercased-single-letter form made a release disagree with its own
+    ///   press for every capital (a press spelled itself from `text`, which
+    ///   kept the capital; a release has no text), which breaks the one thing
+    ///   releases exist for — pairing (issue #337). Consumers that want a
+    ///   case-insensitive identity fold at the comparison site, as
+    ///   `editor_key_binding` does. The spacebar arrives here too, as `" "`,
+    ///   the spec's own spelling.
+    /// - `Key::Named` is `keyboard_types::NamedKey`, the W3C key-values enum;
+    ///   its `Display` **is** the spec string (`"Enter"`, `"ArrowLeft"`,
+    ///   `"Shift"`). winit's backends already fold the platform quirks the
+    ///   browser folds — X11/Wayland's Super keysym is reported as
+    ///   `NamedKey::Meta` "because browsers do" (winit-common's xkb keymap) —
+    ///   so no respelling happens here.
+    /// - A dead key is `"Dead"`, the value every browser reports for one.
+    /// - `Key::Unidentified` is `None`, not the spec's `"Unidentified"`: it
+    ///   carries only a native keysym rinch cannot spell, and `None` is what
+    ///   lets the consumer fall back to the physical `key` — two different
+    ///   unknown keys must not pair with each other by a shared placeholder
+    ///   string.
+    fn winit_logical_key_str(key: &winit::keyboard::Key) -> Option<String> {
+        use winit::keyboard::Key;
+        match key {
+            Key::Character(s) => Some(s.to_string()),
+            Key::Named(n) => Some(n.to_string()),
+            Key::Dead(_) => Some("Dead".to_string()),
+            Key::Unidentified(_) => None,
         }
-        None
     }
 
     /// Translate a winit KeyCode to a platform KeyCode.
@@ -1843,10 +1864,10 @@ impl ApplicationHandler for RinchRuntime {
                 let platform_key = Self::translate_key(key_code);
                 PlatformEvent::KeyDown {
                     key: platform_key,
-                    // The layout-mapped letter (so Mod+letter follows the keycap, not the
-                    // physical position) — winit's logical key carries it even when a
+                    // The layout-mapped key value (so Mod+letter follows the keycap, not
+                    // the physical position) — winit's logical key carries it even when a
                     // modifier suppresses `text`.
-                    logical_key: Self::winit_logical_letter(win_logical),
+                    logical_key: Self::winit_logical_key_str(win_logical),
                     text: text.as_ref().map(|t| t.to_string()),
                     modifiers: mods,
                 }
@@ -1869,7 +1890,7 @@ impl ApplicationHandler for RinchRuntime {
                     // this on each; only `text` is press-gated. Forwarding it
                     // is what lets a release be spelled by the same rule as its
                     // press (issue #337) — the shell was simply dropping it.
-                    logical_key: Self::winit_logical_letter(win_logical),
+                    logical_key: Self::winit_logical_key_str(win_logical),
                     modifiers: mods,
                 }
             }
@@ -3131,6 +3152,79 @@ mod letterbox_backdrop {
         assert_eq!(
             radii_at_shared_corners((1.0, 0.0, 199.0, 300.0), card, [8.0; 4]),
             [8.0; 4]
+        );
+    }
+}
+
+#[cfg(test)]
+mod logical_key_spelling {
+    use super::*;
+    use winit::keyboard::{Key, NamedKey, SmolStr};
+
+    fn spell(key: Key) -> Option<String> {
+        RinchRuntime::winit_logical_key_str(&key)
+    }
+
+    /// A character key is passed through verbatim — case included, because a
+    /// browser's `KeyboardEvent.key` is case-accurate and a lowercased source
+    /// made `Shift+A` release as `"a"` after pressing as `"A"` (issue #337's
+    /// review finding). Non-letters ride the same arm now: `Shift+1` on a US
+    /// layout is `"!"` down *and* up, where the old single-ASCII-letter filter
+    /// dropped it and the release fell back to the physical `"1"`.
+    #[test]
+    fn a_character_key_is_verbatim_case_included() {
+        assert_eq!(
+            spell(Key::Character(SmolStr::new("a"))).as_deref(),
+            Some("a")
+        );
+        assert_eq!(
+            spell(Key::Character(SmolStr::new("A"))).as_deref(),
+            Some("A"),
+            "Shift+A is \"A\" in a browser — no lowercasing at the source"
+        );
+        assert_eq!(
+            spell(Key::Character(SmolStr::new("!"))).as_deref(),
+            Some("!")
+        );
+        assert_eq!(
+            spell(Key::Character(SmolStr::new("é"))).as_deref(),
+            Some("é")
+        );
+        assert_eq!(
+            spell(Key::Character(SmolStr::new(" "))).as_deref(),
+            Some(" "),
+            "the spacebar's key value is the space character, per spec"
+        );
+    }
+
+    /// A named key spells its W3C key-values name — `NamedKey` *is*
+    /// `keyboard_types::NamedKey` and its `Display` is the spec string, so
+    /// this pins the transcription, not a hand-kept table.
+    #[test]
+    fn a_named_key_spells_its_w3c_name() {
+        assert_eq!(spell(Key::Named(NamedKey::Enter)).as_deref(), Some("Enter"));
+        assert_eq!(
+            spell(Key::Named(NamedKey::ArrowLeft)).as_deref(),
+            Some("ArrowLeft")
+        );
+        assert_eq!(spell(Key::Named(NamedKey::Shift)).as_deref(), Some("Shift"));
+        assert_eq!(
+            spell(Key::Named(NamedKey::Meta)).as_deref(),
+            Some("Meta"),
+            "the OS key: winit folds X11's Super into Meta the way browsers do"
+        );
+    }
+
+    /// A dead key is `"Dead"` (every browser's value for one); an unidentified
+    /// key is `None`, so the consumer falls back to the physical `key` instead
+    /// of pairing two different unknown keys by a shared placeholder.
+    #[test]
+    fn dead_spells_dead_and_unidentified_spells_nothing() {
+        assert_eq!(spell(Key::Dead(Some('^'))).as_deref(), Some("Dead"));
+        assert_eq!(spell(Key::Dead(None)).as_deref(), Some("Dead"));
+        assert_eq!(
+            spell(Key::Unidentified(winit::keyboard::NativeKey::Unidentified)),
+            None
         );
     }
 }

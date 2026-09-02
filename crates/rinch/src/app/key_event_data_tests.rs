@@ -48,13 +48,13 @@ fn bare_app() -> RinchApp {
 fn press_logical(
     app: &mut RinchApp,
     key: KeyCode,
-    logical_key: Option<char>,
+    logical_key: Option<&str>,
     modifiers: Modifiers,
 ) {
     app.handle_event(
         PlatformEvent::KeyDown {
             key,
-            logical_key,
+            logical_key: logical_key.map(str::to_string),
             text: None,
             modifiers,
         },
@@ -63,11 +63,11 @@ fn press_logical(
     );
 }
 
-fn release(app: &mut RinchApp, key: KeyCode, logical_key: Option<char>, modifiers: Modifiers) {
+fn release(app: &mut RinchApp, key: KeyCode, logical_key: Option<&str>, modifiers: Modifiers) {
     app.handle_event(
         PlatformEvent::KeyUp {
             key,
-            logical_key,
+            logical_key: logical_key.map(str::to_string),
             modifiers,
         },
         (800, 600),
@@ -80,18 +80,18 @@ fn press(app: &mut RinchApp, key: KeyCode, text: Option<&str>, modifiers: Modifi
 }
 
 /// The same press with the layout-mapped letter the desktop shell attaches to
-/// a real `KeyDown` (`RinchRuntime::winit_logical_letter`).
+/// a real `KeyDown` (`RinchRuntime::winit_logical_key_str`).
 fn press_on_layout(
     app: &mut RinchApp,
     key: KeyCode,
     text: Option<&str>,
-    logical_key: Option<char>,
+    logical_key: Option<&str>,
     modifiers: Modifiers,
 ) {
     app.handle_event(
         PlatformEvent::KeyDown {
             key,
-            logical_key,
+            logical_key: logical_key.map(str::to_string),
             text: text.map(str::to_string),
             modifiers,
         },
@@ -250,7 +250,7 @@ fn a_chord_on_a_non_qwerty_layout_names_the_keycap() {
 
     // AZERTY: the key labelled A sits at the physical QWERTY-Q position, and
     // Ctrl suppresses the text.
-    press_on_layout(&mut app, KeyCode::KeyQ, None, Some('a'), ctrl_down());
+    press_on_layout(&mut app, KeyCode::KeyQ, None, Some("a"), ctrl_down());
 
     let seen = seen.borrow();
     let ev = seen.last().expect("the interceptor was offered the chord");
@@ -342,7 +342,7 @@ fn a_press_and_its_release_agree_on_a_non_qwerty_layout() {
 
     // AZERTY: the key at the physical QWERTY-Q position types 'a'.
     press(&mut app, KeyCode::KeyQ, Some("a"), Modifiers::default());
-    release(&mut app, KeyCode::KeyQ, Some('a'), Modifiers::default());
+    release(&mut app, KeyCode::KeyQ, Some("a"), Modifiers::default());
 
     let seen = seen.borrow();
     assert_eq!(seen[0].key, "a", "the press reports the keycap letter");
@@ -364,8 +364,8 @@ fn a_chord_and_its_release_agree_too() {
         ctrl: true,
         ..Default::default()
     };
-    press_logical(&mut app, KeyCode::KeyQ, Some('a'), ctrl);
-    release(&mut app, KeyCode::KeyQ, Some('a'), ctrl);
+    press_logical(&mut app, KeyCode::KeyQ, Some("a"), ctrl);
+    release(&mut app, KeyCode::KeyQ, Some("a"), ctrl);
 
     let seen = seen.borrow();
     assert_eq!(seen[0].key, "a");
@@ -407,4 +407,147 @@ fn a_consuming_interceptor_does_not_strand_the_activation_latch() {
         app.node_activation_held, None,
         "the latch cleared even though the release was consumed"
     );
+}
+
+// ── the invariant the feature exists for ────────────────────────────────────
+
+/// **A press and its release report the same `key`.** Nothing asserted this
+/// across the shift regime before: the two agreement tests above sampled only
+/// lowercase / no-`text` inputs, and their claim of "by construction" was
+/// coincidence there — `Shift+A` went down as `"A"` (the press spelled itself
+/// from `text`, which keeps the capital) and came up as `"a"` (the release has
+/// no text and the old `logical_key` was a *lowercased* single ASCII letter).
+/// A shifted non-letter was worse: `'!'` failed the letter filter outright, so
+/// the release fell to the physical table and `Shift+1` came up as `"1"` after
+/// going down as `"!"`.
+///
+/// The cure is the widened field (issue #337): `logical_key` now carries the
+/// full case-accurate `KeyboardEvent.key` value, so both phases resolve to the
+/// same string whatever the regime. Table-driven over the shapes that reach
+/// different `hook_key_str` steps, so a future change to any one step has to
+/// keep the pairing.
+#[test]
+fn a_press_and_its_release_always_agree() {
+    let shift = Modifiers {
+        shift: true,
+        ..Default::default()
+    };
+    let ctrl_shift = Modifiers {
+        ctrl: true,
+        shift: true,
+        ..Default::default()
+    };
+    for (label, key, text, logical, mods) in [
+        (
+            "unshifted letter",
+            KeyCode::KeyA,
+            Some("a"),
+            Some("a"),
+            Modifiers::default(),
+        ),
+        ("shifted letter", KeyCode::KeyA, Some("A"), Some("A"), shift),
+        ("ctrl chord", KeyCode::KeyS, None, Some("s"), ctrl_down()),
+        (
+            "ctrl+shift chord",
+            KeyCode::KeyS,
+            None,
+            Some("S"),
+            ctrl_shift,
+        ),
+        (
+            "shifted non-letter",
+            KeyCode::Digit1,
+            Some("!"),
+            Some("!"),
+            shift,
+        ),
+        (
+            "non-QWERTY layout letter",
+            KeyCode::KeyQ,
+            Some("a"),
+            Some("a"),
+            Modifiers::default(),
+        ),
+        (
+            "named key",
+            KeyCode::Enter,
+            None,
+            Some("Enter"),
+            Modifiers::default(),
+        ),
+        (
+            "dead key",
+            KeyCode::Other,
+            None,
+            Some("Dead"),
+            Modifiers::default(),
+        ),
+        (
+            "no layout value at all",
+            KeyCode::KeyS,
+            None,
+            None,
+            Modifiers::default(),
+        ),
+    ] {
+        let mut app = bare_app();
+        let seen = recording_interceptor();
+        press_on_layout(&mut app, key, text, logical, mods);
+        release(&mut app, key, logical, mods);
+
+        let seen = seen.borrow();
+        assert_eq!(seen.len(), 2, "{label}: one press, one release");
+        assert_eq!(
+            seen[0].key, seen[1].key,
+            "{label}: press reported {:?} and release reported {:?} — a \
+             consumer pairing them by `key` would never match, and the key \
+             would look held for ever",
+            seen[0].key, seen[1].key
+        );
+    }
+}
+
+/// And the spelling matches what a browser reports — measured in Chromium
+/// rather than assumed: `Shift+A` is `"A"`, `Ctrl+Shift+S` is `"S"`, `Ctrl+S`
+/// is `"s"`, `Shift+1` is `"!"` on a US layout. `rinch-web` passes
+/// `event.key()` straight through, so pinning desktop to the browser's
+/// spelling is what makes the two backends agree on the same keystroke.
+#[test]
+fn the_key_spelling_matches_the_browser() {
+    let shift = Modifiers {
+        shift: true,
+        ..Default::default()
+    };
+    let ctrl_shift = Modifiers {
+        ctrl: true,
+        shift: true,
+        ..Default::default()
+    };
+    for (key, text, logical, mods, expected) in [
+        (KeyCode::KeyA, Some("A"), Some("A"), shift, "A"),
+        (KeyCode::KeyS, None, Some("S"), ctrl_shift, "S"),
+        (KeyCode::KeyS, None, Some("s"), ctrl_down(), "s"),
+        (
+            KeyCode::KeyA,
+            Some("a"),
+            Some("a"),
+            Modifiers::default(),
+            "a",
+        ),
+        (KeyCode::Digit1, Some("!"), Some("!"), shift, "!"),
+    ] {
+        let mut app = bare_app();
+        let seen = recording_interceptor();
+        press_on_layout(&mut app, key, text, logical, mods);
+        assert_eq!(
+            seen.borrow()
+                .last()
+                .expect("the key reached the interceptor")
+                .key,
+            expected,
+            "{key:?} with shift={} ctrl={}",
+            mods.shift,
+            mods.ctrl
+        );
+    }
 }
