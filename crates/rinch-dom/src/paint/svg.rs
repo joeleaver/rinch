@@ -5,7 +5,7 @@ use peniko::kurbo::{Affine, BezPath, Cap, Join, Point, Rect, Stroke};
 use peniko::{Brush, Fill, Gradient};
 
 use super::painter::Painter;
-use crate::layout::parse_color;
+use crate::layout::parse_color_with_current;
 use crate::node::{Node, NodeKind, NodeTree};
 
 // =============================================================================
@@ -93,15 +93,19 @@ pub(super) fn paint_svg(
         // declares none inherits the `<svg>`'s).
         let current_color = resolve_current_color(tree, child);
 
-        // Per-element fill/stroke (override SVG defaults)
-        let fill_color = match child.attributes.get("fill") {
-            Some(own) => resolve_svg_color(Some(own), current_color),
-            None => svg_fill.for_child(current_color),
+        // Per-element fill/stroke. An absent *or unusable* value falls back to
+        // the `<svg>` level, which is what SVG means by ignoring a bad
+        // presentation attribute; `none` does not fall back, it wins.
+        let resolve = |attr: Option<&String>, inherited: &InheritedPaint| match parse_svg_paint(
+            attr.map(|v| v.as_str()),
+            current_color,
+        ) {
+            SvgPaint::None => None,
+            SvgPaint::Color(c) => Some(c),
+            SvgPaint::Unset => inherited.for_child(current_color),
         };
-        let stroke_color = match child.attributes.get("stroke") {
-            Some(own) => resolve_svg_color(Some(own), current_color),
-            None => svg_stroke.for_child(current_color),
-        };
+        let fill_color = resolve(child.attributes.get("fill"), &svg_fill);
+        let stroke_color = resolve(child.attributes.get("stroke"), &svg_stroke);
         let stroke_w = child
             .attributes
             .get("stroke-width")
@@ -298,23 +302,74 @@ pub(super) fn resolve_current_color(tree: &NodeTree, node: &Node) -> AlphaColor<
     AlphaColor::<Srgb>::from_rgba8(0, 0, 0, 255)
 }
 
-/// Resolve an SVG `fill`/`stroke` attribute: `none`, `currentcolor` (any
-/// casing — the spec spells it `currentcolor`, Tabler emits `currentColor`),
-/// or a CSS `<color>`.
-pub(super) fn resolve_svg_color(
-    attr: Option<&str>,
-    current_color: AlphaColor<Srgb>,
-) -> Option<AlphaColor<Srgb>> {
-    let value = attr?.trim();
+/// What an SVG `fill`/`stroke` attribute asked for.
+///
+/// Three states, not `Option`, because "paint nothing" and "I could not use
+/// that" are different answers and the old `Option` conflated them (#258): a
+/// shape with `fill="notacolour"` went unpainted exactly like `fill="none"`,
+/// when SVG says an unusable presentation attribute is *ignored* — the shape
+/// keeps whatever it would have had without it.
+enum SvgPaint {
+    /// `none`, or an unresolvable `url()` with no fallback. Paint nothing.
+    None,
+    /// A resolved colour.
+    Color(AlphaColor<Srgb>),
+    /// Absent, or present but unusable. Both mean the same thing to the
+    /// caller: take the value that would have applied anyway — the `<svg>`'s
+    /// for a child, the property's initial value for the `<svg>` itself.
+    Unset,
+}
+
+/// Resolve an SVG `fill`/`stroke` attribute against an element's own `color`.
+///
+/// Handled, in order: `none`; `currentcolor` (any casing — the spec spells it
+/// lowercase, Tabler emits `currentColor`); `inherit`/`unset`, which for a
+/// paint (an inherited property) means the parent's value, i.e. `Unset`;
+/// `url(<ref>)` with an optional fallback; and anything `parse_color_with_current`
+/// accepts, which since #256 includes `color-mix()` and relative colours over
+/// `currentcolor`.
+///
+/// Two documented approximations. `url()` is *always* unresolvable here —
+/// `paint_svg` renders no `<defs>`, so there are no paint servers to find — and
+/// the reference is split at the first `)`, which a quoted URL containing one
+/// would defeat. And `initial`/`revert` land in `Unset` with everything else
+/// unusable, so they read as `inherit`; they differ only when the `<svg>`
+/// itself declares a paint.
+fn parse_svg_paint(attr: Option<&str>, current_color: AlphaColor<Srgb>) -> SvgPaint {
+    let Some(value) = attr.map(str::trim) else {
+        return SvgPaint::Unset;
+    };
     if value.eq_ignore_ascii_case("none") {
-        None
-    } else if value.eq_ignore_ascii_case("currentcolor") {
-        // `parse_color` cannot resolve this — it depends on the element — so
-        // the caller's tree walk does. Every icon says it, so this also skips
-        // the parse.
-        Some(current_color)
-    } else {
-        parse_color(value)
+        return SvgPaint::None;
+    }
+    if value.eq_ignore_ascii_case("currentcolor") {
+        // Resolved here rather than parsed: every icon in the tree says this,
+        // so it is worth skipping the parser for.
+        return SvgPaint::Color(current_color);
+    }
+    if value.eq_ignore_ascii_case("inherit") || value.eq_ignore_ascii_case("unset") {
+        return SvgPaint::Unset;
+    }
+    if value
+        .get(..4)
+        .is_some_and(|p| p.eq_ignore_ascii_case("url("))
+    {
+        let rest = &value[4..];
+        // The paint server cannot be found, so SVG 2 says use the fallback;
+        // with no fallback the element is not rendered (which is what Chrome
+        // does too).
+        return match rest.split_once(')') {
+            Some((_, fallback)) => match fallback.trim() {
+                "" => SvgPaint::None,
+                f => parse_svg_paint(Some(f), current_color),
+            },
+            // Unterminated `url(` — not a paint at all.
+            None => SvgPaint::Unset,
+        };
+    }
+    match parse_color_with_current(value, current_color) {
+        Some(c) => SvgPaint::Color(c),
+        None => SvgPaint::Unset,
     }
 }
 
@@ -337,10 +392,19 @@ impl InheritedPaint {
         svg_current_color: AlphaColor<Srgb>,
         initial: Option<AlphaColor<Srgb>>,
     ) -> Self {
-        match attr {
-            None => Self::Fixed(initial),
-            Some(v) if v.trim().eq_ignore_ascii_case("currentcolor") => Self::CurrentColor,
-            Some(v) => Self::Fixed(resolve_svg_color(Some(v), svg_current_color)),
+        // `currentcolor` is checked before parsing so it stays *symbolic*: it
+        // must resolve against each child's own `color`, not the `<svg>`'s.
+        // (A `currentcolor` reached any other way — as a `url()` fallback, or
+        // inside a `color-mix()` — resolves eagerly against the `<svg>`'s.)
+        if attr.is_some_and(|v| v.trim().eq_ignore_ascii_case("currentcolor")) {
+            return Self::CurrentColor;
+        }
+        match parse_svg_paint(attr, svg_current_color) {
+            // An unusable value on the `<svg>` is ignored, which leaves the
+            // property's initial value: black for `fill`, `none` for `stroke`.
+            SvgPaint::Unset => Self::Fixed(initial),
+            SvgPaint::None => Self::Fixed(None),
+            SvgPaint::Color(c) => Self::Fixed(Some(c)),
         }
     }
 

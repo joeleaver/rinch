@@ -8,7 +8,9 @@ mod taffy_conversion;
 mod text_layout;
 pub mod values;
 
-pub(crate) use from_stylo::color::{color_from_specified, color_from_stylo};
+pub(crate) use from_stylo::color::{
+    absolute_from_peniko, color_from_computed, color_from_specified, color_from_stylo,
+};
 pub(crate) use from_stylo::visual::accumulate_pct;
 pub use values::*;
 
