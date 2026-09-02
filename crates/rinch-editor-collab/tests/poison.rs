@@ -103,7 +103,7 @@ impl Live {
         tr.insert_text(text).unwrap();
         let before = self.state.doc.clone();
         let next = self.state.apply(tr);
-        let r = self.session.record_local(&before, &next.doc);
+        let r = self.session.record_local(&self.schema, &before, &next.doc);
         self.state = next;
         r
     }
@@ -119,7 +119,8 @@ impl Live {
         tr.insert_text("P").unwrap();
         let before = state.doc.clone();
         state = state.apply(tr);
-        peer.record_local(&before, &state.doc).unwrap();
+        peer.record_local(&self.schema, &before, &state.doc)
+            .unwrap();
         let delta = peer.save_incremental().unwrap();
         assert!(!delta.is_empty(), "the peer edit must produce a delta");
         delta
@@ -425,7 +426,7 @@ fn a_misrouted_reconciliation_diff_with_missing_dependencies_is_transient_and_he
 
     // C rewrites the block's type: paragraph -> heading.
     let heading_doc = doc_of(&schema, vec![heading(&schema, 1, "hello")]);
-    c.record_local(&doc0, &heading_doc).unwrap();
+    c.record_local(&schema, &doc0, &heading_doc).unwrap();
     let delta_c = c.save_incremental().unwrap();
     assert!(!delta_c.is_empty());
 
@@ -436,7 +437,7 @@ fn a_misrouted_reconciliation_diff_with_missing_dependencies_is_transient_and_he
         .unwrap()
         .expect("B adopts C's rewrite");
     let code_doc = doc_of(&schema, vec![code_block(&schema, "hello")]);
-    b.record_local(&b_state.doc, &code_doc).unwrap();
+    b.record_local(&schema, &b_state.doc, &code_doc).unwrap();
     let _ = b.save_incremental().unwrap();
 
     // The misroute: B's reconciliation answer FOR C, delivered to A.
@@ -468,7 +469,7 @@ fn a_misrouted_reconciliation_diff_with_missing_dependencies_is_transient_and_he
 
     // And A keeps collaborating: a local edit projects and broadcasts.
     let edited = doc_of(&schema, vec![code_block(&schema, "hello!")]);
-    a.record_local(&healed.doc, &edited).unwrap();
+    a.record_local(&schema, &healed.doc, &edited).unwrap();
     assert!(
         !a.save_incremental().unwrap().is_empty(),
         "the healed session broadcasts again"
@@ -618,7 +619,7 @@ fn recovery_is_a_fresh_session_from_a_healthy_snapshot() {
     tr.insert_text("R").unwrap();
     let before = state.doc.clone();
     state = state.apply(tr);
-    fresh.record_local(&before, &state.doc).unwrap();
+    fresh.record_local(&l.schema, &before, &state.doc).unwrap();
     assert!(
         !fresh.save_incremental().unwrap().is_empty(),
         "the fresh session collaborates normally"

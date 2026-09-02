@@ -246,7 +246,7 @@ impl Swarm {
     /// whatever it broadcasts.
     fn record_local(&mut self, seed: u64, p: usize, next: EditorState) {
         self.sessions[p]
-            .record_local(&self.states[p].doc, &next.doc)
+            .record_local(&self.schema, &self.states[p].doc, &next.doc)
             .expect("flat edit projects cleanly");
         let projected = self.sessions[p].projected_doc(&self.schema).unwrap();
         if !same(&projected, &next.doc) {

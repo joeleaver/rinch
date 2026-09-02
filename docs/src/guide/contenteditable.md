@@ -412,6 +412,31 @@ outside that scope fails loud rather than silently diverging —
 not projected). A runnable two-pane loopback (both editors in one window, no network)
 lives at `examples/collab-editor-demo/src/main.rs`.
 
+**Outbound stalls: an out-of-scope edit, and how it un-sticks.** The local edit that
+was refused is still in *your* document — only the CRDT declined it — so from that
+moment your editor holds content collaboration cannot express. Outbound is
+**stalled**: that edit and every one after it stays local, while inbound keeps
+working normally and the shared document stays healthy.
+
+`collab_outbound_stall()` reports it. Unlike `collab_take_error()`, which is a
+one-shot event you take and clear, this is the *state* — `Some(err)` for as long as
+the condition holds — so it is what to drive a persistent indicator from:
+
+```rust
+if let Some(err) = editor.collab_outbound_stall() {
+    // e.g. "Not syncing — remove the pasted table to resume." The error names the
+    // content: "collab does not support this content yet: node `blockquote` …".
+    show_banner(&err.to_string());
+}
+```
+
+The cure is to remove the offending content — undo the paste, unwrap the quote. You do
+not have to re-send anything: the next edit that projects re-bases on the CRDT and
+broadcasts **everything** that accumulated during the stall, in one delta. Nothing typed
+while stalled is lost (issue #220).
+
+This is not `SessionPoisoned` and needs no rejoin — see the next paragraph for that.
+
 **Errors: transient vs poisoned.** Most collaboration errors are *transient*: an
 undecodable blob from the transport, a local edit outside the staged scope, or a
 rebuild still waiting on an out-of-order delta's missing dependency — the session
