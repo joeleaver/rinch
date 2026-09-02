@@ -1293,6 +1293,43 @@ mod tests {
         }
     }
 
+    /// Issue #217 where a user actually meets it. `create_editor` mints a **new**
+    /// `Rc<Schema>` per handle and `NodeType`/`MarkType` equality is `Rc::ptr_eq`, so
+    /// the documented `doc()` → `load_doc()` pair hands one editor a document whose
+    /// marks belong to another editor's schema.
+    ///
+    /// On `main` the next `toggleBold` over that text answered `true` and left the run
+    /// carrying **two** `bold` marks — the document's real one plus a freshly added
+    /// foreign twin. That is silent corruption on a first-party path, and it is what
+    /// `Transform::add_mark`'s guard now refuses.
+    ///
+    /// What the guard does **not** do is make the pair work: `is_mark_active` still
+    /// answers `false` for text that is bold, and the command now simply fails. Fixing
+    /// that means re-interning the adopted document through the receiving schema, which
+    /// belongs to `load_doc` rather than to the transform.
+    #[test]
+    fn a_document_adopted_from_another_handle_never_grows_a_duplicate_mark() {
+        let s = Schema::starter_kit();
+        let a = mount(doc_node(&s, vec![para(&s, "hello")]));
+        a.handle.set_selection(Selection::text(Pos(1), Pos(6)));
+        assert!(a.handle.command("toggleBold"), "A bolds its own text");
+        assert_eq!(a.handle.doc().child(0).child(0).marks().len(), 1);
+
+        let b = mount(doc_node(&s, vec![para(&s, "x")]));
+        b.handle.load_doc(a.handle.doc());
+        b.handle.set_selection(Selection::text(Pos(1), Pos(6)));
+        // The command is refused rather than corrupting the run.
+        assert!(
+            !b.handle.command("toggleBold"),
+            "a foreign-schema document must refuse the mark, not accept it"
+        );
+        assert_eq!(
+            b.handle.doc().child(0).child(0).marks().len(),
+            1,
+            "exactly one bold: the document's own, with no foreign twin added beside it"
+        );
+    }
+
     fn schema() -> Schema {
         Schema::starter_kit()
     }
