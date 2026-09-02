@@ -459,6 +459,55 @@ impl AnimatableValue {
             ) => Some(AnimatableValue::LengthPercentageAuto(
                 LengthPercentageAutoValue::Length(a + (b - a) * t),
             )),
+
+            // Percentage-to-percentage, for all three value types (#255).
+            //
+            // Until an authored keyframe stop could carry a percentage at all
+            // there was nothing to interpolate, so these arms did not exist —
+            // and adding `Percent` to the extractor without adding them would
+            // have made a percentage stop *step* at 50% instead of animating,
+            // via the `_ => None` snap below. Better than being dropped, but
+            // not the fix.
+            (
+                AnimatableValue::Dimension(DimensionValue::Percent(a)),
+                AnimatableValue::Dimension(DimensionValue::Percent(b)),
+            ) => Some(AnimatableValue::Dimension(DimensionValue::Percent(
+                a + (b - a) * t,
+            ))),
+            (
+                AnimatableValue::LengthPercentage(LengthPercentageValue::Percent(a)),
+                AnimatableValue::LengthPercentage(LengthPercentageValue::Percent(b)),
+            ) => Some(AnimatableValue::LengthPercentage(
+                LengthPercentageValue::Percent(a + (b - a) * t),
+            )),
+            (
+                AnimatableValue::LengthPercentageAuto(LengthPercentageAutoValue::Percent(a)),
+                AnimatableValue::LengthPercentageAuto(LengthPercentageAutoValue::Percent(b)),
+            ) => Some(AnimatableValue::LengthPercentageAuto(
+                LengthPercentageAutoValue::Percent(a + (b - a) * t),
+            )),
+
+            // `Zero` is unitless, so it pairs with a percentage as readily as
+            // with a length — `padding: 0` to `padding: 10%` is a legal
+            // animation and must not snap.
+            (
+                AnimatableValue::LengthPercentage(LengthPercentageValue::Zero),
+                AnimatableValue::LengthPercentage(LengthPercentageValue::Percent(b)),
+            ) => Some(AnimatableValue::LengthPercentage(
+                LengthPercentageValue::Percent(b * t),
+            )),
+            (
+                AnimatableValue::LengthPercentage(LengthPercentageValue::Percent(a)),
+                AnimatableValue::LengthPercentage(LengthPercentageValue::Zero),
+            ) => Some(AnimatableValue::LengthPercentage(
+                LengthPercentageValue::Percent(a * (1.0 - t)),
+            )),
+            (
+                AnimatableValue::LengthPercentage(LengthPercentageValue::Zero),
+                AnimatableValue::LengthPercentage(LengthPercentageValue::Zero),
+            ) => Some(AnimatableValue::LengthPercentage(
+                LengthPercentageValue::Zero,
+            )),
             (AnimatableValue::Transform(a), AnimatableValue::Transform(b)) => {
                 Some(AnimatableValue::Transform(a.lerp(b, t as f64)))
             }
@@ -481,7 +530,13 @@ impl AnimatableValue {
                     pct_translate_h: [mix(ah[0], bh[0]), mix(ah[1], bh[1])],
                 })
             }
-            // Incompatible types — snap immediately
+            // Incompatible types — snap immediately.
+            //
+            // A length against a percentage lands here on purpose: CSS
+            // interpolates that pair as a `calc()`, and there is no value in
+            // `ComputedStyle` that can hold one. Snapping is wrong, but it is
+            // the same wrong the transition path has always been, and
+            // inventing a resolution here would need the containing block.
             _ => None,
         }
     }
