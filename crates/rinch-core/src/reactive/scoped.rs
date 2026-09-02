@@ -11,9 +11,13 @@
 //! *removal* to the scope that registered it via
 //! [`on_cleanup`](crate::reactive::on_cleanup). It is the "cleanup template",
 //! first written inline for the paste interceptor in
-//! [`crate::events::set_paste_interceptor`] and extracted here so keyboard,
-//! selection and (later) the websocket and menu registries share it verbatim
-//! rather than each paraphrasing it.
+//! [`crate::events::set_paste_interceptor`] and extracted here so the keyboard,
+//! selection and paste interceptors share it verbatim rather than each
+//! paraphrasing it. Those slots are its callers, and the shape they have in
+//! common is the shape it fits: **one slot, written once per component.**
+//!
+//! It is deliberately not the only such template in the codebase, and the other
+//! one is not a lesser variant of it — see [When *not* to use this](#when-not-to-use-this).
 //!
 //! # The three rules it encodes
 //!
@@ -64,10 +68,31 @@
 //! install updating a shared cell rather than queueing another release — would
 //! close it here instead, and is the obvious follow-up if a repeat-registering
 //! caller ever appears.
+//!
+//! This is not hypothetical. A keyed `install_scoped_entry` used to live beside
+//! `install_scoped_slot`, shipped ahead of the two registries it was written
+//! for. **Both of them rejected it, on exactly the grounds above, and it was
+//! removed without a caller ever being written** (issue #376):
+//!
+//! - The **menu** registry (`rinch::menu`) found it reclaims by the wrong scope.
+//!   Removal is tied to whichever scope is ambient when the entry is
+//!   *installed* — the component that **built** the menu, not the ones that own
+//!   the individual items. A component assembling a menu out of items
+//!   contributed by other, still-live components silently disabled all of them
+//!   when it unmounted. It also appended one cleanup and one pinning `Weak` per
+//!   item per rebuild, because a menu callback dispatches under its own owner,
+//!   so a rebuild from inside a callback re-registers with that owner ambient.
+//! - The **websocket** registry (`rinch-ws`) declined it before adopting it:
+//!   registration there is per-`on_message` call and a component may re-register
+//!   freely, so one cleanup per call grows without bound.
+//!
+//! Both took the owner-beside-the-callback template instead. The lesson is not
+//! that a keyed form is impossible, but that *keying* is itself the warning
+//! sign: a registry is keyed because it holds many entries that churn, which is
+//! precisely the shape this template is least suited to. For a keyed registry,
+//! reach for the dispatch check first.
 
 use std::cell::RefCell;
-use std::collections::HashMap;
-use std::hash::Hash;
 use std::rc::{Rc, Weak};
 use std::thread::LocalKey;
 
@@ -147,48 +172,6 @@ where
     let _previous = slot.with(|s| s.borrow_mut().take());
 }
 
-/// Install `value` under `key` in a keyed registry, tying its removal to the
-/// scope that is currently rendering.
-///
-/// The keyed twin of [`install_scoped_slot`], with the same three rules: the
-/// cleanup removes `key` only if the entry is *still* this value, so a
-/// re-registration at the same key (a menu rebuilt, a connection id reused)
-/// survives an earlier scope's disposal. This is what lets such a map shrink as
-/// well as grow.
-pub fn install_scoped_entry<K, T>(
-    map: &'static LocalKey<RefCell<HashMap<K, Rc<T>>>>,
-    key: K,
-    value: Rc<T>,
-) -> bool
-where
-    K: Eq + Hash + Clone + 'static,
-    T: ?Sized + 'static,
-{
-    let mine: Weak<T> = Rc::downgrade(&value);
-    let doomed = key.clone();
-    // Rule 3, as in `install_scoped_slot`.
-    let _previous = map.with(|m| m.borrow_mut().insert(key, value));
-    on_cleanup(move || {
-        let Some(ours) = mine.upgrade() else {
-            return;
-        };
-        // `try_with`/`try_borrow_mut`, as in `install_scoped_slot`.
-        let _displaced = map.try_with(|m| {
-            let Ok(mut entries) = m.try_borrow_mut() else {
-                return None;
-            };
-            if entries
-                .get(&doomed)
-                .is_some_and(|installed| Rc::ptr_eq(installed, &ours))
-            {
-                entries.remove(&doomed)
-            } else {
-                None
-            }
-        });
-    })
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -228,51 +211,59 @@ mod tests {
         assert_eq!(read(), None, "the owner of the slot reclaims it");
     }
 
-    /// The keyed form removes its entry, so the map shrinks rather than only
-    /// ever growing.
+    /// Rule 2 on its own, with the `Weak` guard taken out of the picture.
+    ///
+    /// [`a_scoped_slot_is_reclaimed_only_by_the_scope_that_filled_it`] looks like
+    /// it covers this and does not: it installs `Rc::new(..)` inline, so when the
+    /// second scope displaces the first value nothing holds a strong reference to
+    /// it, the first scope's `Weak` fails to upgrade, and the cleanup returns
+    /// early without ever reaching the [`Rc::ptr_eq`] comparison. Deleting that
+    /// comparison entirely leaves that test green.
+    ///
+    /// Here the caller keeps its own clone alive — an ordinary thing to do, and
+    /// what an interceptor the component also invokes directly looks like — so
+    /// the upgrade succeeds and `ptr_eq` is the only thing standing between the
+    /// first scope's disposal and a clobber of the second's registration.
     #[test]
-    fn a_scoped_map_entry_is_removed_on_disposal_and_the_map_shrinks() {
+    fn a_disposing_scope_whose_value_is_still_alive_elsewhere_does_not_clobber_the_slot() {
         thread_local! {
-            static MAP: RefCell<HashMap<String, Probe>> = RefCell::new(HashMap::new());
+            static SLOT: RefCell<Option<Probe>> = const { RefCell::new(None) };
         }
-        fn len() -> usize {
-            MAP.with(|m| m.borrow().len())
-        }
-
-        let scope = Scope::new();
-        scope.run(|| {
-            install_scoped_entry(&MAP, "a".to_string(), Rc::new(|| 1u32) as Probe);
-            install_scoped_entry(&MAP, "b".to_string(), Rc::new(|| 2u32) as Probe);
-        });
-        assert_eq!(len(), 2);
-
-        scope.dispose();
-        assert_eq!(len(), 0, "disposal removes the entries the scope installed");
-    }
-
-    #[test]
-    fn a_scoped_entry_re_registered_at_the_same_key_survives_the_earlier_scopes_disposal() {
-        thread_local! {
-            static MAP: RefCell<HashMap<u8, Probe>> = RefCell::new(HashMap::new());
-        }
-        fn read(key: u8) -> Option<u32> {
-            MAP.with(|m| m.borrow().get(&key).cloned()).map(|f| f())
+        fn read() -> Option<u32> {
+            SLOT.with(|s| s.borrow().clone()).map(|f| f())
         }
 
+        // Retained by the caller, so it outlives its eviction from the slot.
+        let retained: Probe = Rc::new(|| 1u32);
         let first = Scope::new();
-        first.run(|| install_scoped_entry(&MAP, 7u8, Rc::new(|| 1u32) as Probe));
+        first.run({
+            let retained = retained.clone();
+            move || install_scoped_slot(&SLOT, retained)
+        });
+
         let second = Scope::new();
-        second.run(|| install_scoped_entry(&MAP, 7u8, Rc::new(|| 2u32) as Probe));
+        second.run(|| install_scoped_slot(&SLOT, Rc::new(|| 2u32) as Probe));
+
+        assert_eq!(
+            Rc::strong_count(&retained),
+            1,
+            "precondition: the slot has released the first value, but the test \
+             still holds it — so the cleanup's `Weak` will upgrade and the \
+             `ptr_eq` guard is actually reached"
+        );
 
         first.dispose();
         assert_eq!(
-            read(7),
+            read(),
             Some(2),
-            "the later registration at the same key must survive"
+            "the first scope's value is still alive, so its cleanup upgrades — \
+             only the `Rc::ptr_eq` check stops it reclaiming a slot that now \
+             belongs to the second scope"
         );
 
         second.dispose();
-        assert_eq!(read(7), None);
+        assert_eq!(read(), None);
+        drop(retained);
     }
 
     /// Registration outside any render has no owner. Nothing removes it, and
