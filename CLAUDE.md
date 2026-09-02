@@ -1505,14 +1505,36 @@ fn main() {
 
 Borderless windows don't have native resize handles. Use `resize_inset` to enable custom resize handling:
 
-- `resize_inset: Some(f32)` - Enables resize handles within `inset + 8px` from edges
-- `resize_inset: None` (default) - Disables custom resize handles
+- `resize_inset: Some(f32)` - Enables resize handles within **`inset`** px of the edges. The shell defaults it to `Some(8.0)` for any borderless resizable window.
+- `resize_inset: None` (default before that fill-in) - Disables custom resize handles
 - Only active when `borderless: true` AND `resizable: true`
 - The cursor automatically changes to indicate resize direction on hover
-- Corner resize areas are larger (`inset + 16px`) for easier diagonal resizing
-- On Windows, transparent areas don't receive mouse events, so resize detection relies on the 8px extension into visible content
+- A **corner** is simply where two edge zones meet — an `inset` x `inset` square. It is *not* enlarged. `detect_resize_edge` used to carry a second `inset * 2` radius, but every guard reading it was implied by the `near_*` its arm already required, so the enlargement never took effect in any form the code has had; it has been removed rather than documented (#423). An app that wants bigger handles raises `resize_inset`.
+- On Windows, transparent areas don't receive mouse events, so resize detection relies on the zone reaching into visible content
 
-The `resize_inset` value should match your CSS content margin/padding to align the resize handles with the visible window edge.
+The `resize_inset` value should match your CSS content margin/padding to align the resize handles with the visible window edge. `BorderlessWindow` does **not** do this — its root is `100vw` x `100vh` with no margin — so on that component the zone genuinely overlaps your content, and the rule below is what keeps it usable.
+
+**A visible scrollbar thumb wins an edge press (#399, #420).** Because the zone
+overlaps content, the overlay scrollbar of a container flush with the window
+edge is painted *entirely inside* it: at the default 8px inset the East zone is
+`x > width - 8` and the thumb is drawn in `[width - 8, width - 2)`, so every
+pixel of the thumb you could see used to be a resize handle. The rule now is
+**what you can see, you can grab**, applied per axis. **Along** the track, a
+press (and the hover cursor) at the thumb's extent goes to the scrollbar, while
+the empty track past the thumb — and every edge with no bar on it — still
+resizes. **Across** the bar the grab is edge-forgiving: the whole 16px hit
+strip at thumb height goes to the scrollbar, *including* the 2px margin between
+the thumb and the window edge — the way a browser's bar in a maximised window
+is grabbable at the very last pixel. A **corner** never yields, so a diagonal
+resize stays reachable however tall the thumb grows. The predicate is
+`hit_testing::pointer_on_scrollbar_thumb`, which reads the thumb's along-axis
+extent from the shared `rinch_dom::paint::scrollbar` geometry — the same
+numbers paint draws with — over `find_scrollbar_hit`'s across-axis strip.
+
+A browser has no equivalent conflict: its resize border lives in the window
+frame *outside* the client area, so its scrollbars are grabbable right up to the
+edge. A borderless window has no frame to put it in, so something has to give,
+and the visible target is the one the user is aiming at.
 
 **What true Windows transparency would require (see issue #89 — not yet wired):**
 - DX12 backend with DirectComposition (`WGPU_DX12_PRESENTATION_SYSTEM=DxgiFromVisual`)

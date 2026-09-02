@@ -3,6 +3,37 @@
 use super::*;
 
 impl RinchApp {
+    /// Whether a visible scrollbar thumb should take a press that
+    /// [`detect_resize_edge`] claimed.
+    ///
+    /// A borderless window's resize inset overlaps whatever is flush with the
+    /// window edge, which for a `BorderlessWindow` (`100vw` x `100vh`, no
+    /// margin) is the scroll container filling it — so the painted thumb sat
+    /// entirely inside the East zone and a press dead-centre of it resized the
+    /// window (#399, #420). "What you can see, you can grab": the thumb takes
+    /// an *edge* press at its height — across the bar the grab is
+    /// edge-forgiving, the whole hit strip margin included, see
+    /// [`pointer_on_scrollbar_thumb`] — and the rest of the edge, the empty
+    /// track past the thumb and any edge with no bar, still resizes.
+    ///
+    /// A **corner** never yields, so a diagonal resize stays reachable however
+    /// tall the thumb grows. That is also the direction that resizes both axes
+    /// at once, and at the bottom-right it lands on the square `find_scrollbar_hit`
+    /// already declines when both bars are up.
+    fn scrollbar_thumb_beats_resize(
+        &self,
+        dir: rinch_platform::ResizeDirection,
+        x: f32,
+        y: f32,
+    ) -> bool {
+        if is_corner_resize(dir) {
+            return false;
+        }
+        self.doc
+            .as_ref()
+            .is_some_and(|doc| pointer_on_scrollbar_thumb(&doc.borrow().tree, x, y))
+    }
+
     /// The logical (CSS-pixel) viewport `window_size` presents.
     ///
     /// `window_size` is the **physical** surface size — the one genuinely
@@ -255,7 +286,9 @@ impl RinchApp {
                             // with; the old `inset * scale` against a physical
                             // `window_size` was compensating for a physical
                             // pointer.
-                            if let Some(dir) = detect_resize_edge(x, y, vp_w, vp_h, inset) {
+                            if let Some(dir) = detect_resize_edge(x, y, vp_w, vp_h, inset)
+                                && !self.scrollbar_thumb_beats_resize(dir, x, y)
+                            {
                                 actions
                                     .push(AppAction::SetCursor(resize_direction_to_cursor(&dir)));
                                 return actions;
@@ -484,7 +517,9 @@ impl RinchApp {
                     if props.borderless && props.resizable {
                         if let Some(inset) = props.resize_inset {
                             // One unit — logical; see the `MouseMove` twin above.
-                            if let Some(dir) = detect_resize_edge(x, y, vp_w, vp_h, inset) {
+                            if let Some(dir) = detect_resize_edge(x, y, vp_w, vp_h, inset)
+                                && !self.scrollbar_thumb_beats_resize(dir, x, y)
+                            {
                                 actions.push(AppAction::DragResizeWindow(dir));
                                 return actions;
                             }
