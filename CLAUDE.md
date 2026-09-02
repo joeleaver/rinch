@@ -770,6 +770,20 @@ The design rests on one invariant — **`model ≡ project(model)`**: every loca
 
 **Staged scope (design A22):** the first milestone covers **flat text-blocks + marks** (`paragraph`/`heading`/`code_block` with text + bold/italic/link/… marks) plus the **list containers** `bullet_list`/`ordered_list`/`list_item`, nested into each other and around text-blocks to any depth. Anything else — `blockquote`, tables, `task_list`/`task_item`, or an inline atom (`image`, `hard_break`, `horizontal_rule`) — is `CollabError::Unsupported`: the adapter **fails loud** rather than silently dropping a change (a silent drop would reintroduce the exact divergence class the editor rewrite killed).
 
+**An A22-refused local edit stalls outbound, it does not wedge it (#220).** The
+model applies the edit even though the CRDT refuses it, so from that moment the
+caller's `before` no longer describes the CRDT. `record_local` therefore treats
+`before` as a *hint*: if diffing against it fails, the change is re-projected
+against the CRDT's own read-back, which is authoritative. That is what makes the
+recovery real — before, the block-count gate refused **the very deletion that was
+the cure**, and once the counts realigned by coincidence the diff skipped the
+blocks it believed unchanged, so an edit made during the stall stayed local
+forever while `record_local` answered `Ok`. Silent divergence. Now removing the
+offending content resumes outbound on the spot and ships the whole backlog in one
+delta. `record_local` takes the `&Schema` for the read-back (a session cannot hold
+an `Rc<Schema>` — it must stay `Send`); `collab_outbound_stall()` reports the
+state while it holds.
+
 **Collab bytes are opaque.** A snapshot, a broadcast delta, a state vector, and a sync diff are all just `Vec<u8>` in yrs's lib0 v1 encoding — callers move them between calls without decoding them.
 
 ```rust
@@ -780,7 +794,7 @@ let mut a = CollabSession::new(&state)?;            // project state.doc onto a 
 let mut b = CollabSession::from_bytes(&a.snapshot())?;
 
 // After the editor applies a local transaction, project before→after onto the CRDT:
-a.record_local(&old_state.doc, &new_state.doc)?;
+a.record_local(new_state.schema(), &old_state.doc, &new_state.doc)?;
 
 // Broadcast a delta:
 let delta = a.save_incremental()?;
@@ -813,6 +827,7 @@ post_remote_delta(container_id, delta_bytes);
 | `is_collaborating()` / `stop_collaboration()` | Query / detach the session |
 | `is_collaboration_poisoned()` | Whether the session is **poisoned** (#196): an integrate left the shared CRDT unprojectable with nothing pending that could cure it (yrs has no rollback; a rebuild failure with updates parked on missing dependencies stays transient), so every convergence call — inbound AND outbound — fails sticky with `CollabError::SessionPoisoned` instead of one-way partitioning. Inbound is still attempted, and an update that makes the doc rebuildable again clears the poison; recovery in practice is `stop_collaboration()` + rejoin from a healthy peer's snapshot |
 | `collab_snapshot() -> Option<Vec<u8>>` | Current shared-doc snapshot for a *late*-joining guest |
+| `collab_outbound_stall() -> Option<CollabError>` | Why **outbound** is currently refusing (#220): a local edit outside A22 scope (a pasted table, an inserted rule) that the model applied but the CRDT would not. That edit and every one after it stays local; inbound keeps working and the shared doc is healthy. Unlike `collab_take_error` this does **not** clear — it is the *state*, so drive a persistent "not syncing — remove the table" banner from it. It clears itself on the next projectable edit, which broadcasts everything that accumulated. Not poison, no rejoin |
 | `collab_take_error() -> Option<CollabError>` | Take a fail-loud collab error. A22 projection errors are transient (the CRDT is left untouched — projection is all-or-nothing); a `SessionPoisoned` is not a one-off — taking it does not un-poison, every affected call re-fails with it |
 
 Free functions `collab_receive_for(container_id, &delta)` (main thread) and `post_remote_delta(container_id, delta)` (any thread) route an inbound delta to a registered editor. Runnable two-pane in-process loopback: `examples/collab-editor-demo`.
@@ -833,7 +848,7 @@ Free functions `collab_receive_for(container_id, &delta)` (main thread) and `pos
 | `crates/rinch-editor-collab/src/plugin.rs` | `CollabPlugin` + `CollabState` |
 | `crates/rinch-editor-collab/src/rebase.rs` | `rebase_steps` — local steps rebased over a remote mapping |
 | `crates/rinch-editor-collab/src/error.rs` | `CollabError` — the crate's one error type (`Engine`/`Unsupported`/`Schema`, plus the sticky `SessionPoisoned` a session fails with in both directions once an integrate has left the CRDT unprojectable with nothing pending to cure it — #196; cleared by an inbound update that makes the doc rebuildable again) |
-| `crates/rinch-editor-view/src/handle.rs` | `EditorHandle`'s collab methods (`start_collaboration_host/guest`, `collab_receive`, `collab_state_vector`, `collab_sync_diff`, `collab_snapshot`, `collab_take_error`, `stop_collaboration`, `is_collaborating`, `is_collaboration_poisoned`) — **not** in `rinch-editor-collab` |
+| `crates/rinch-editor-view/src/handle.rs` | `EditorHandle`'s collab methods (`start_collaboration_host/guest`, `collab_receive`, `collab_state_vector`, `collab_sync_diff`, `collab_snapshot`, `collab_take_error`, `collab_outbound_stall`, `stop_collaboration`, `is_collaborating`, `is_collaboration_poisoned`) — **not** in `rinch-editor-collab` |
 | `crates/rinch-editor-view/src/collab.rs` | `CollabBridge` — the seam driving `CollabSession` from an `EditorHandle` (outbound sink + last error) |
 | `crates/rinch-editor-view/src/registry.rs` | `collab_receive_for(container_id, &delta)` — routes an inbound delta to a registered editor |
 

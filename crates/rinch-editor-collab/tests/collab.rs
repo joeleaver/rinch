@@ -89,7 +89,7 @@ impl Peer {
         let before = self.state.doc.clone();
         let after = self.state.apply(tr);
         self.session
-            .record_local(&before, &after.doc)
+            .record_local(self.state.schema(), &before, &after.doc)
             .expect("project local");
         self.state = after;
     }
@@ -109,19 +109,29 @@ impl Peer {
     }
 }
 
-/// Build two peers sharing a schema, both starting from `blocks`. Peer B joins from
-/// peer A's CRDT snapshot.
-fn two_peers(blocks: Vec<Node>) -> (Rc<Schema>, Peer, Peer) {
-    let schema = Rc::new(Schema::starter_kit());
-    let a_state = EditorState::create(schema.clone(), doc_of(&schema, blocks), plugins());
+/// Build two peers over `schema`, both starting from `blocks`. Peer B joins from peer
+/// A's CRDT snapshot.
+///
+/// **`schema` is the caller's, deliberately** (issue #217). This used to mint its own
+/// `Schema::starter_kit()` and return it, shadowing the one the caller had already used
+/// to build `blocks` — so a test's document held nodes and marks from one `Schema` while
+/// `a.state.schema()` was a *different* one. `MarkType`/`NodeType` equality is
+/// `Rc::ptr_eq`, so a `Mark` built from the wrong instance matches nothing:
+/// `Transaction::remove_mark` removed nothing and returned `Ok`, and a test asserting
+/// only convergence then passed vacuously. Worse, peer B's document came from
+/// `projected_doc(&inner_schema)` while peer A's was the caller's original, so the two
+/// peers disagreed about mark identity with each other. One schema per test removes the
+/// whole class.
+fn two_peers(schema: &Rc<Schema>, blocks: Vec<Node>) -> (Peer, Peer) {
+    let a_state = EditorState::create(schema.clone(), doc_of(schema, blocks), plugins());
     let session_a = CollabSession::new(&a_state).expect("session A");
     let a = Peer {
         state: a_state,
         session: session_a,
     };
 
-    let b = join(&schema, &a.session.snapshot());
-    (schema, a, b)
+    let b = join(schema, &a.session.snapshot());
+    (a, b)
 }
 
 /// Join an existing session from `snapshot`, adopting the document it projects — the
@@ -276,10 +286,7 @@ fn projection_round_trips_text_and_marks() {
 #[test]
 fn concurrent_text_inserts_converge() {
     let schema = Rc::new(Schema::starter_kit());
-    let (schema, mut a, mut b) = {
-        let _ = &schema;
-        two_peers(vec![para(&schema, "Hello")])
-    };
+    let (mut a, mut b) = two_peers(&schema, vec![para(&schema, "Hello")]);
     // pos 1 = start of paragraph content, pos 6 = end of "Hello".
     a.type_at(1, "A"); // -> "AHello"
     b.type_at(6, "B"); // -> "HelloB"
@@ -297,10 +304,7 @@ fn concurrent_text_inserts_converge() {
 fn concurrent_insert_and_format_converge() {
     // The design's headline test: one peer inserts text, the other formats — converge.
     let schema = Rc::new(Schema::starter_kit());
-    let (schema, mut a, mut b) = {
-        let _ = &schema;
-        two_peers(vec![para(&schema, "Hello world")])
-    };
+    let (mut a, mut b) = two_peers(&schema, vec![para(&schema, "Hello world")]);
     a.type_at(1, "XXX"); // "XXXHello world"
     b.bold(7, 12); // bold "world" (chars 6..11 -> model 7..12)
     sync(&mut a, &mut b);
@@ -314,10 +318,7 @@ fn concurrent_insert_and_format_converge() {
 #[test]
 fn concurrent_block_split_and_text_edit_converge() {
     let schema = Rc::new(Schema::starter_kit());
-    let (schema, mut a, mut b) = {
-        let _ = &schema;
-        two_peers(vec![para(&schema, "Hello world")])
-    };
+    let (mut a, mut b) = two_peers(&schema, vec![para(&schema, "Hello world")]);
     // A splits the paragraph after "Hello" (model pos 6).
     a.local(|tr| {
         tr.set_selection(Selection::cursor(Pos(6)));
@@ -338,10 +339,7 @@ fn concurrent_block_split_and_text_edit_converge() {
 #[test]
 fn incremental_broadcast_converges() {
     let schema = Rc::new(Schema::starter_kit());
-    let (schema, mut a, mut b) = {
-        let _ = &schema;
-        two_peers(vec![para(&schema, "start")])
-    };
+    let (mut a, mut b) = two_peers(&schema, vec![para(&schema, "start")]);
     a.type_at(6, " more");
     // broadcast delta from A to B
     let delta = a.session.save_incremental().expect("delta encodes");
@@ -394,10 +392,7 @@ fn rebase_local_steps_over_a_remote_mapping() {
 #[test]
 fn concurrent_edits_in_different_blocks_converge() {
     let schema = Rc::new(Schema::starter_kit());
-    let (schema, mut a, mut b) = {
-        let _ = &schema;
-        two_peers(vec![para(&schema, "one"), para(&schema, "two")])
-    };
+    let (mut a, mut b) = two_peers(&schema, vec![para(&schema, "one"), para(&schema, "two")]);
     // block 0 content: pos 1..4 ("one"); block 1 content starts at pos 6.
     a.type_at(4, "A"); // "oneA" in block 0
     b.type_at(9, "B"); // "twoB" in block 1 (6 +1 open... 6 is before block1 open; 7 inside; "two" 7..10, end 10) -> pos 9 = before 'o' end
@@ -412,27 +407,43 @@ fn concurrent_edits_in_different_blocks_converge() {
 
 #[test]
 fn concurrent_mark_removal_and_typing_converge() {
+    // Issue #217: this used to pass vacuously. `two_peers` minted its own `Schema`, so
+    // `a.state.schema().mark_type("bold")` was a *different* `MarkType` handle from the
+    // one on the document — `MarkType` equality is `Rc::ptr_eq` — and `remove_mark`
+    // matched nothing, removed nothing, and returned `Ok`. The only assertion was
+    // convergence, which of course held: the peers agreed on a document that still had
+    // the bold on it. One schema per test (see `two_peers`) plus the mark assertion
+    // below is what makes the name true.
     let schema = Rc::new(Schema::starter_kit());
     let bold = Mark::simple(schema.mark_type("bold").unwrap().clone());
     let bolded = schema
         .create_node(
             "paragraph",
             Default::default(),
-            Fragment::from_node(schema.text_with_marks("word", vec![bold]).unwrap()),
+            Fragment::from_node(schema.text_with_marks("word", vec![bold.clone()]).unwrap()),
         )
         .unwrap();
-    let (schema, mut a, mut b) = {
-        let _ = &schema;
-        two_peers(vec![bolded])
-    };
+    let (mut a, mut b) = two_peers(&schema, vec![bolded]);
     // A removes the bold over "word" (model 1..5); B types at the end.
-    let bold_a = Mark::simple(a.state.schema().mark_type("bold").unwrap().clone());
     a.local(|tr| {
-        tr.remove_mark(1, 5, bold_a).unwrap();
+        tr.remove_mark(1, 5, bold).unwrap();
     });
+    // The removal must land *locally* before any sync — otherwise convergence below
+    // proves nothing about it.
+    assert!(
+        !norm(&a.state.doc).contains("bold"),
+        "A's own model lost the bold: {}",
+        norm(&a.state.doc)
+    );
     b.type_at(5, "!");
     sync(&mut a, &mut b);
     assert_converged(&a, &b, &schema);
+    // And it must survive the concurrent typing, on both peers, through the CRDT.
+    let t = norm(&a.session.projected_doc(&schema).unwrap());
+    assert_eq!(
+        t, "<paragraph >«word!|»</>",
+        "the bold removal and the concurrent typing both survive"
+    );
 }
 
 #[test]
@@ -447,10 +458,7 @@ fn concurrent_heading_level_change_and_typing_converge() {
             Fragment::from_node(schema.text("Title").unwrap()),
         )
         .unwrap();
-    let (schema, mut a, mut b) = {
-        let _ = &schema;
-        two_peers(vec![h])
-    };
+    let (mut a, mut b) = two_peers(&schema, vec![h]);
     // A changes the heading level to 2 (attr edit on block 0, before its open token).
     a.local(|tr| {
         tr.set_node_attr(0, "level", AttrValue::Int(2)).unwrap();
@@ -495,17 +503,16 @@ fn concurrent_bold_add_and_italic_removal_converge_without_resurrecting_the_ital
                 ]),
             )
             .unwrap();
-        let (schema, mut a, mut b) = {
-            let _ = &schema;
-            two_peers(vec![p])
-        };
+        let (mut a, mut b) = two_peers(&schema, vec![p]);
         // Model positions: "one" = 1..4, "three" = 9..14.
         let unitalic = |peer: &mut Peer| {
-            // The mark handed to `remove_mark` must be the peer's OWN instance:
-            // `Mark`/`MarkType` equality is Rc-pointer identity, so one built from a
-            // different `Schema::starter_kit()` matches nothing and the removal is a
-            // silent no-op (the host's doc holds this test's outer-schema marks, a
-            // guest's holds its join-rebuild's). Pull it off the document itself.
+            // Pull the mark off the document itself. `Mark`/`MarkType` equality is
+            // Rc-pointer identity, so a mark from a different `Schema::starter_kit()`
+            // can never match — which used to be a silent no-op, and which #217 turned
+            // into two changes: `two_peers` now takes the caller's schema (so both
+            // peers' documents share one), and `Transform::remove_mark` rejects a
+            // foreign-schema mark loudly. Reading the mark off the doc is still the
+            // robust way to ask for "whatever this document calls italic".
             let italic = {
                 let block = peer.state.doc.child(0);
                 (0..block.child_count())
@@ -561,10 +568,7 @@ fn concurrent_edits_to_different_attrs_of_the_same_block_both_survive() {
                 Fragment::from_node(schema.text("Title").unwrap()),
             )
             .unwrap();
-        let (schema, mut a, mut b) = {
-            let _ = &schema;
-            two_peers(vec![h])
-        };
+        let (mut a, mut b) = two_peers(&schema, vec![h]);
         let set = |peer: &mut Peer, attr: &'static str, value: AttrValue| {
             peer.local(|tr| {
                 tr.set_node_attr(0, attr, value).unwrap();
@@ -622,10 +626,7 @@ fn attr_set_vs_concurrent_attr_remove_of_different_key() {
                 Fragment::from_node(schema.text("Title").unwrap()),
             )
             .unwrap();
-        let (schema, mut a, mut b) = {
-            let _ = &schema;
-            two_peers(vec![h])
-        };
+        let (mut a, mut b) = two_peers(&schema, vec![h]);
         let set_level = |peer: &mut Peer| {
             peer.local(|tr| {
                 tr.set_node_attr(0, "level", AttrValue::Int(3)).unwrap();
@@ -818,10 +819,7 @@ fn concurrent_edits_in_different_list_items_converge() {
             list_item(&schema, vec![para(&schema, "two")]),
         ],
     );
-    let (schema, mut a, mut b) = {
-        let _ = &schema;
-        two_peers(vec![list])
-    };
+    let (mut a, mut b) = two_peers(&schema, vec![list]);
     // Positions: doc>ul>li>p>text. "one" ends at model pos 6; "two" ends at pos 13.
     a.type_at(6, "A"); // item 0 -> "oneA"
     b.type_at(13, "B"); // item 1 -> "twoB"
@@ -851,10 +849,7 @@ fn concurrent_list_item_edit_and_appended_item_converge() {
             list_item(&schema, vec![para(&schema, "beta")]),
         ],
     );
-    let (schema, mut a, mut b) = {
-        let _ = &schema;
-        two_peers(vec![list])
-    };
+    let (mut a, mut b) = two_peers(&schema, vec![list]);
     // A edits item 0: "alpha" content is pos 3..8, so type at pos 8 -> "alphaX".
     a.type_at(8, "X");
     // B appends a third list item at the end of the bullet list. The list content ends
@@ -928,10 +923,7 @@ fn a_delete_only_broadcast_delta_reaches_the_peer() {
     // drops these changes; this pins the broadcast path, where the sibling test pins the
     // handle wiring and the fuzz suites pin it statistically.
     let schema = Rc::new(Schema::starter_kit());
-    let (schema, mut a, mut b) = {
-        let _ = &schema;
-        two_peers(vec![para(&schema, "abcdef")])
-    };
+    let (mut a, mut b) = two_peers(&schema, vec![para(&schema, "abcdef")]);
     // Drop whatever the initial projection queued; both peers already share it.
     let _ = a.session.save_incremental().expect("drain");
 
@@ -985,10 +977,7 @@ fn concurrent_deletion_of_different_blocks_empties_the_crdt_and_self_heals() {
     // Before the fix the next local edit died with `Schema("reconcile_node: missing
     // node")`, nothing was broadcast, and the session never recovered.
     let schema = Rc::new(Schema::starter_kit());
-    let (schema, mut a, mut b) = {
-        let _ = &schema;
-        two_peers(vec![para(&schema, "one"), para(&schema, "two")])
-    };
+    let (mut a, mut b) = two_peers(&schema, vec![para(&schema, "one"), para(&schema, "two")]);
     delete_block(&mut a, 1); // A drops "two"
     delete_block(&mut b, 0); // B drops "one"
     assert_eq!(a.state.doc.child_count(), 1, "each peer deleted one block");
@@ -1037,10 +1026,7 @@ fn a_late_joiner_can_join_a_session_with_no_blocks_left() {
     // that state. The format marker is the discriminator now, so the join succeeds and
     // the joiner adopts the starter paragraph.
     let schema = Rc::new(Schema::starter_kit());
-    let (schema, mut a, mut b) = {
-        let _ = &schema;
-        two_peers(vec![para(&schema, "one"), para(&schema, "two")])
-    };
+    let (mut a, mut b) = two_peers(&schema, vec![para(&schema, "one"), para(&schema, "two")]);
     delete_block(&mut a, 1);
     delete_block(&mut b, 0);
     sync(&mut a, &mut b);
@@ -1080,10 +1066,7 @@ fn integrating_nothing_is_a_no_op_not_an_error() {
     // Neither decodes as an update, so both must be recognised rather than surfaced as a
     // spurious decode error — a caller that forwards its own empty delta is not wrong.
     let schema = Rc::new(Schema::starter_kit());
-    let (_schema, mut a, mut b) = {
-        let _ = &schema;
-        two_peers(vec![para(&schema, "steady")])
-    };
+    let (mut a, mut b) = two_peers(&schema, vec![para(&schema, "steady")]);
     let before = norm(&b.state.doc);
     for nothing in [Vec::new(), vec![0u8, 0u8]] {
         assert!(
@@ -1161,10 +1144,7 @@ fn projection_round_trips_marks_across_astral_pairs() {
 #[test]
 fn astral_inserts_and_deletes_keep_model_and_projection_in_step() {
     let schema = Rc::new(Schema::starter_kit());
-    let (schema, mut a, _b) = {
-        let _ = &schema;
-        two_peers(vec![para(&schema, "🐱🐶")])
-    };
+    let (mut a, _b) = two_peers(&schema, vec![para(&schema, "🐱🐶")]);
     // Char positions: 1 = before 🐱, 2 = between the two, 3 = after 🐶.
     let check = |a: &Peer, want: &str| {
         let projected = a.session.projected_doc(&schema).unwrap();
@@ -1200,10 +1180,7 @@ fn astral_inserts_and_deletes_keep_model_and_projection_in_step() {
 #[test]
 fn concurrent_edits_around_astral_pairs_converge() {
     let schema = Rc::new(Schema::starter_kit());
-    let (schema, mut a, mut b) = {
-        let _ = &schema;
-        two_peers(vec![para(&schema, "🐱🐶")])
-    };
+    let (mut a, mut b) = two_peers(&schema, vec![para(&schema, "🐱🐶")]);
     a.type_at(2, "A"); // A types between the two surrogate pairs
     b.bold(1, 3); // B marks both astral chars
     sync(&mut a, &mut b);

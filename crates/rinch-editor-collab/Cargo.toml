@@ -24,5 +24,21 @@ rinch-editor-core = { workspace = true }
 yrs = { version = "0.27", features = ["sync"] }
 thiserror.workspace = true
 
+[features]
+# Test-only determinism seam (issue #214): `crate::testing`, which builds a session
+# with a caller-pinned yrs client id so a fuzz trial replays bit-for-bit. OFF by
+# default and enabled ONLY by the self dev-dependency below, so it exists for this
+# crate's own tests and in no other build — two live peers sharing a client id
+# corrupt the shared CRDT, so the seam must not be reachable from an app.
+test-util = []
+
 [dev-dependencies]
 pretty_assertions = "1"
+# Turns `test-util` on for this crate's own test/bench targets. Cargo unifies it into the
+# lib build whenever those targets are in the resolve — so it is also on for the lib that
+# `cargo test --workspace` / `cargo clippy --all-targets` hand to *other* members. What it
+# never reaches is a build that does not resolve this crate's dev-dependencies: `cargo
+# build -p rinch --features collaboration` passes no `--cfg feature="test-util"`, so
+# `pub mod testing` is compiled out of every release. The facade's `collaboration`
+# feature never names it, so no downstream unification can switch it on either.
+rinch-editor-collab = { path = ".", features = ["test-util"] }

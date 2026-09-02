@@ -2005,9 +2005,13 @@ impl RinchRuntime {
     /// Blink the focused editor's caret by arming a `WaitUntil` wake for the next
     /// phase toggle (see [`crate::editor::caret_blink_tick`]). Owns the event
     /// loop's control flow: `WaitUntil` while a caret blinks, `Wait` otherwise.
+    ///
+    /// *Which* editor blinks is [`RinchApp::blinking_editor_id`]'s decision, not
+    /// this function's — it excludes a blurred window, so a backgrounded app
+    /// stops arming the only timed wake the loop has (issue #316).
     #[cfg(feature = "desktop")]
     fn tick_caret_blink(&mut self, event_loop: &dyn ActiveEventLoop) {
-        let focused = self.app.focused_editor_id();
+        let focused = self.app.blinking_editor_id();
         match crate::editor::caret_blink_tick(self.app.doc_key(), focused) {
             Some(blink) => {
                 if blink.redraw

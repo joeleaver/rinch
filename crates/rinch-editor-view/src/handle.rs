@@ -134,7 +134,10 @@ impl EditorCore {
         if prev.doc.same_ref(&next.doc) {
             return;
         }
-        match bridge.session.record_local(&prev.doc, &next.doc) {
+        match bridge
+            .session
+            .record_local(next.schema(), &prev.doc, &next.doc)
+        {
             // An empty delta means the projection produced no CRDT change at all, so
             // there is nothing for peers to apply.
             Ok(()) => match bridge.session.save_incremental() {
@@ -144,8 +147,13 @@ impl EditorCore {
             },
             // Design A22 fail-loud: an edit outside the staged flat-text scope
             // (a table, a nested block) cannot be projected. Surface it rather than
-            // silently diverging; apps should keep such edits out of a collab
-            // session for now.
+            // silently diverging.
+            //
+            // Outbound is now **stalled** (issue #220): this edit and every one after
+            // it stays local until the offending content is removed, at which point
+            // the session re-bases on the CRDT and the whole backlog broadcasts at
+            // once. `EditorHandle::collab_outbound_stall` is the flag to render that
+            // with — the error names the content to remove.
             Err(e) => bridge.last_error = Some(e),
         }
     }
@@ -1242,6 +1250,30 @@ impl EditorHandle {
         self.inner.borrow_mut().collab = None;
     }
 
+    /// Why this editor's **outbound** collaboration is currently refusing, if it is
+    /// (issue #220): a local edit outside the staged A22 scope — a pasted table, a
+    /// `blockquote` wrap — cannot be projected onto the CRDT, so this edit and every
+    /// one after it stays local until that content is removed.
+    ///
+    /// Unlike [`Self::collab_take_error`] this does **not** clear: it stays `Some` for
+    /// as long as the condition holds, so it is what an app should drive a persistent
+    /// "not syncing — remove the table to resume" indicator from. It clears itself the
+    /// moment a local edit projects again, and that same edit broadcasts everything
+    /// that accumulated meanwhile.
+    ///
+    /// This is deliberately **not** [poison](Self::is_collaboration_poisoned): the
+    /// shared document is healthy throughout, inbound integration keeps working, and
+    /// recovery needs no rejoin. `None` when not collaborating.
+    ///
+    /// Uses `try_borrow` — soft, like [`Self::collab_receive`] — so an `outbound`
+    /// callback may call it re-entrantly.
+    pub fn collab_outbound_stall(&self) -> Option<CollabError> {
+        let core = self.inner.try_borrow().ok()?;
+        core.collab
+            .as_ref()
+            .and_then(|b| b.session.outbound_stall().cloned())
+    }
+
     /// Take (and clear) the most recent collaboration error — e.g. an edit outside
     /// the staged flat-text scope that could not be projected (design A22). `None`
     /// when not collaborating or no error is pending.
@@ -1251,6 +1283,10 @@ impl EditorHandle {
     /// does not un-poison — see [`Self::is_collaboration_poisoned`]). Anything else
     /// (an undecodable blob, an out-of-scope local edit) is transient: the session
     /// keeps collaborating.
+    ///
+    /// For an out-of-scope local edit specifically, taking the error does not end the
+    /// condition — outbound stays stalled until the content is removed. Use
+    /// [`Self::collab_outbound_stall`] for the *state*; this is the one-shot event.
     pub fn collab_take_error(&self) -> Option<CollabError> {
         self.inner
             .borrow_mut()
@@ -1291,6 +1327,43 @@ mod tests {
             container_id,
             handle,
         }
+    }
+
+    /// Issue #217 where a user actually meets it. `create_editor` mints a **new**
+    /// `Rc<Schema>` per handle and `NodeType`/`MarkType` equality is `Rc::ptr_eq`, so
+    /// the documented `doc()` → `load_doc()` pair hands one editor a document whose
+    /// marks belong to another editor's schema.
+    ///
+    /// On `main` the next `toggleBold` over that text answered `true` and left the run
+    /// carrying **two** `bold` marks — the document's real one plus a freshly added
+    /// foreign twin. That is silent corruption on a first-party path, and it is what
+    /// `Transform::add_mark`'s guard now refuses.
+    ///
+    /// What the guard does **not** do is make the pair work: `is_mark_active` still
+    /// answers `false` for text that is bold, and the command now simply fails. Fixing
+    /// that means re-interning the adopted document through the receiving schema, which
+    /// belongs to `load_doc` rather than to the transform.
+    #[test]
+    fn a_document_adopted_from_another_handle_never_grows_a_duplicate_mark() {
+        let s = Schema::starter_kit();
+        let a = mount(doc_node(&s, vec![para(&s, "hello")]));
+        a.handle.set_selection(Selection::text(Pos(1), Pos(6)));
+        assert!(a.handle.command("toggleBold"), "A bolds its own text");
+        assert_eq!(a.handle.doc().child(0).child(0).marks().len(), 1);
+
+        let b = mount(doc_node(&s, vec![para(&s, "x")]));
+        b.handle.load_doc(a.handle.doc());
+        b.handle.set_selection(Selection::text(Pos(1), Pos(6)));
+        // The command is refused rather than corrupting the run.
+        assert!(
+            !b.handle.command("toggleBold"),
+            "a foreign-schema document must refuse the mark, not accept it"
+        );
+        assert_eq!(
+            b.handle.doc().child(0).child(0).marks().len(),
+            1,
+            "exactly one bold: the document's own, with no foreign twin added beside it"
+        );
     }
 
     fn schema() -> Schema {
@@ -2396,6 +2469,94 @@ mod tests {
                 host.collab_state_vector(),
                 guest.collab_state_vector(),
                 "converged peers have seen the same changes"
+            );
+        }
+
+        /// Issue #220, end to end through the handle. A horizontal rule is outside the
+        /// staged A22 scope, so inserting one while collaborating cannot be projected.
+        /// The editor still applies it — the model is the source of truth — so from that
+        /// point the local document holds a block the CRDT does not, and outbound
+        /// stalls.
+        ///
+        /// What used to happen: every later edit failed a block-count check whose
+        /// message named neither the cause nor the cure ("the model document holds 2
+        /// block(s) but the CRDT holds 1"), *including the deletion that was supposed
+        /// to be the cure*; and when the counts finally realigned, the diff skipped
+        /// every block it believed unchanged, so text typed during the stall stayed
+        /// local forever while `record_local` answered `Ok`.
+        ///
+        /// What must happen now: the stall is visible and self-describing, nothing
+        /// reaches the guest while it holds, and deleting the rule ships the whole
+        /// backlog in one delta.
+        #[test]
+        fn an_out_of_scope_edit_stalls_outbound_and_removing_it_ships_the_backlog() {
+            let s = schema();
+            let host = mount(doc_node(&s, vec![para(&s, "hello")])).handle;
+            let guest = mount(doc_node(&s, vec![para(&s, "")])).handle;
+            loopback(&host, &guest);
+            assert_eq!(doc_text(&guest), "hello");
+            assert!(host.collab_outbound_stall().is_none(), "healthy to start");
+
+            // Insert a horizontal rule — applied locally, refused by the projection.
+            host.set_selection(Selection::cursor(Pos(6)));
+            assert!(
+                host.command("insertHorizontalRule"),
+                "the editor applies it"
+            );
+            let stall = host
+                .collab_outbound_stall()
+                .expect("outbound must report itself stalled");
+            assert!(
+                stall.to_string().contains("horizontal_rule"),
+                "the stall must name the content to remove, got: {stall}"
+            );
+            assert!(
+                !host.is_collaboration_poisoned(),
+                "an out-of-scope LOCAL edit is not poison — the shared doc is healthy"
+            );
+
+            // Typing while stalled stays local — this is the text that used to be lost.
+            host.set_selection(Selection::cursor(Pos(6)));
+            assert!(host.insert_text("!!"));
+            assert!(
+                host.collab_outbound_stall().is_some(),
+                "still stalled while the rule is there"
+            );
+            assert_eq!(
+                doc_text(&guest),
+                "hello",
+                "nothing reached the guest during the stall"
+            );
+
+            // Delete the rule — selecting it and pressing Delete, as an app would. Note
+            // this is NOT `undo`: the text typed during the stall stays, which is the
+            // half that must survive.
+            assert!(
+                host.update(|state| {
+                    let doc = &state.doc;
+                    let last = doc.child_count() - 1;
+                    let from: usize = (0..last).map(|i| doc.child(i).node_size()).sum();
+                    let to = from + doc.child(last).node_size();
+                    let mut tr = state.tr();
+                    tr.delete(from, to).ok()?;
+                    Some(tr)
+                }),
+                "the rule is deleted"
+            );
+            assert!(
+                host.collab_outbound_stall().is_none(),
+                "removing the offending content resumes outbound: {:?}",
+                host.collab_outbound_stall().map(|e| e.to_string())
+            );
+            assert_eq!(
+                doc_text(&host),
+                "hello!!",
+                "the local document kept what was typed during the stall"
+            );
+            assert_eq!(
+                doc_text(&guest),
+                doc_text(&host),
+                "and the guest caught up on all of it in one delta"
             );
         }
 

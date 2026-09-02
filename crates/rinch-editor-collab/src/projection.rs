@@ -93,9 +93,9 @@ use yrs::types::Attrs as YAttrs;
 use yrs::types::text::YChange;
 use yrs::updates::decoder::Decode;
 use yrs::{
-    Any, Array, ArrayPrelim, ArrayRef, Doc, Map, MapPrelim, MapRef, OffsetKind, Options, Origin,
-    Out, ReadTxn, StateVector, Subscription, Text, TextPrelim, TextRef, Transact, TransactionMut,
-    Update,
+    Any, Array, ArrayPrelim, ArrayRef, ClientID, Doc, Map, MapPrelim, MapRef, OffsetKind, Options,
+    Origin, Out, ReadTxn, StateVector, Subscription, Text, TextPrelim, TextRef, Transact,
+    TransactionMut, Update,
 };
 
 use rinch_editor_core::{AttrValue, Attrs, Fragment, Mark, Node, Schema};
@@ -257,11 +257,21 @@ impl CollabDoc {
     /// The root is deliberately left unresolved: [`CollabDoc::load`] has to inspect what
     /// arrived *before* declaring a type for it, because declaring one reinterprets
     /// whatever is there (see the shape guard in `load`).
-    fn blank() -> (Doc, Outbox, Subscription) {
-        let doc = Doc::with_options(Options {
+    /// `client_id` is `None` on every production path, which keeps yrs's own
+    /// `ClientID::random()`. That randomness is load-bearing: the client id breaks ties
+    /// between concurrent inserts at the same position, so two live replicas sharing one
+    /// produce colliding block ids and corrupt the shared document. Only the test-only
+    /// [`crate::testing`] seam passes `Some`, and only so a fuzz trial replays
+    /// bit-for-bit (issue #214).
+    fn blank(client_id: Option<ClientID>) -> (Doc, Outbox, Subscription) {
+        let mut options = Options {
             offset_kind: OffsetKind::Utf16,
             ..Default::default()
-        });
+        };
+        if let Some(id) = client_id {
+            options.client_id = id;
+        }
+        let doc = Doc::with_options(options);
         let outbox: Outbox = Arc::new(Mutex::new(Vec::new()));
         let sink = outbox.clone();
         let remote = Origin::from(ENGINE_APPLY_ORIGIN);
@@ -281,6 +291,15 @@ impl CollabDoc {
     /// Build a fresh projection from a model document. Fails loud
     /// ([`CollabError::Unsupported`]) on any node outside the staged scope.
     pub fn from_doc(doc: &Node) -> Result<CollabDoc> {
+        CollabDoc::from_doc_with_client_id(doc, None)
+    }
+
+    /// [`CollabDoc::from_doc`] with the yrs client id optionally pinned — see
+    /// [`CollabDoc::blank`]. `None` is the production path.
+    pub(crate) fn from_doc_with_client_id(
+        doc: &Node,
+        client_id: Option<ClientID>,
+    ) -> Result<CollabDoc> {
         // Validate the whole document before opening the write transaction, so an
         // out-of-scope node leaves no half-built CRDT behind (design A22).
         let mut nodes = Vec::with_capacity(doc.child_count());
@@ -288,7 +307,7 @@ impl CollabDoc {
             nodes.push(read_node(doc.child(i))?);
         }
 
-        let (ydoc, outbox, updates) = CollabDoc::blank();
+        let (ydoc, outbox, updates) = CollabDoc::blank(client_id);
         // Both roots are resolved before the write transaction opens: resolving one takes
         // exclusive store access and panics if a transaction is already live.
         let content = ydoc.get_or_insert_array(CONTENT);
@@ -342,8 +361,17 @@ impl CollabDoc {
     /// schema requires, and the first local edit projects that paragraph into the CRDT
     /// (see [`CollabDoc::project_change`]).
     pub fn load(bytes: &[u8]) -> Result<CollabDoc> {
+        CollabDoc::load_with_client_id(bytes, None)
+    }
+
+    /// [`CollabDoc::load`] with the yrs client id optionally pinned — see
+    /// [`CollabDoc::blank`]. `None` is the production path.
+    pub(crate) fn load_with_client_id(
+        bytes: &[u8],
+        client_id: Option<ClientID>,
+    ) -> Result<CollabDoc> {
         let update = Update::decode_v1(bytes)?;
-        let (ydoc, outbox, updates) = CollabDoc::blank();
+        let (ydoc, outbox, updates) = CollabDoc::blank(client_id);
         {
             let mut txn = ydoc.transact_mut_with(Origin::from(ENGINE_APPLY_ORIGIN));
             txn.apply_update(update)?;
@@ -1274,7 +1302,7 @@ mod tests {
 
     /// Encode a whole foreign document as an update, for the `load` guard cases.
     fn foreign_update(build: impl FnOnce(&Doc)) -> Vec<u8> {
-        let (doc, _outbox, _sub) = CollabDoc::blank();
+        let (doc, _outbox, _sub) = CollabDoc::blank(None);
         build(&doc);
         doc.transact()
             .encode_state_as_update_v1(&StateVector::default())

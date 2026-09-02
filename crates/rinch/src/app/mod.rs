@@ -6,6 +6,8 @@
 //! [`PlatformEvent`]s, feeds them to `RinchApp`, and processes the returned
 //! [`AppAction`]s.
 
+#[cfg(test)]
+mod blink_and_click_focus_tests;
 mod click_handling;
 #[cfg(feature = "debug")]
 mod debug_commands;
@@ -22,6 +24,8 @@ pub(crate) mod hit_testing;
 mod input_commit_tests;
 #[cfg(test)]
 mod input_ime_tests;
+#[cfg(test)]
+mod key_event_data_tests;
 #[cfg(test)]
 mod node_ime_tests;
 mod select_widget;
@@ -2080,6 +2084,43 @@ impl RinchApp {
         node.attributes
             .get("tabindex")
             .and_then(|v| v.parse::<i32>().ok())
+    }
+
+    /// What a pointer press on `hit` focuses: the **nearest focusable
+    /// ancestor-or-self**, exactly as a browser resolves a mousedown's focus
+    /// target (issue #147, decision 2).
+    ///
+    /// Any parseable `tabindex` claims — `-1` included, since it is
+    /// click-focusable though not tabbable — so a click-focused custom control
+    /// has live Enter/Space and `on_key` immediately rather than only after
+    /// being reached by Tab. The walk stops at the first node that is focusable
+    /// **or** carries `data-oninput`: an `<input>` inside a focusable wrapper
+    /// belongs to the text engine, and announcing a gain-then-loss on the
+    /// wrapper for a click that was never the wrapper's would be wrong.
+    ///
+    /// **The one answer to "what does this press focus?"** — the mousedown
+    /// claim asks it, and so does `handle_click`'s decision about whether to
+    /// release a generic node's claim. Those two used to disagree (issue #316,
+    /// item 3): the release check accepted *any* ancestor, so a press on a
+    /// nested focusable — or on an `<input>` — inside the focused node counted
+    /// as "still inside it" and the outer node kept the keyboard while the user
+    /// interacted with something else.
+    pub(crate) fn resolve_click_focus(
+        tree: &rinch_dom::NodeTree,
+        hit: Option<usize>,
+    ) -> Option<usize> {
+        let mut cur = hit;
+        while let Some(nid) = cur {
+            let node = tree.get(nid)?;
+            if node.attributes.contains_key("data-oninput") {
+                return None;
+            }
+            if !Self::node_is_disabled_in_tree(tree, nid) && Self::node_tabindex(node).is_some() {
+                return Some(nid);
+            }
+            cur = node.parent;
+        }
+        None
     }
 
     /// Collect all focusable node IDs in DOM pre-order (natural tab order).

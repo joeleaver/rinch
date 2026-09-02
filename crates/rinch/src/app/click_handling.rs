@@ -273,17 +273,27 @@ impl RinchApp {
             None
         };
 
-        // A click on or inside a keyboard-focused generic node keeps its focus
-        // (the ring already dropped on mousedown); a click elsewhere blurs it.
+        // A press that still resolves to the keyboard-focused generic node
+        // keeps its focus (the ring already dropped on mousedown); a press that
+        // resolves anywhere else blurs it.
+        //
+        // `resolve_click_focus` is the same policy the mousedown claim applies
+        // (issue #316, item 3). This used to accept *any* ancestor, so a press
+        // on a nested focusable — or on an `<input>` — inside the focused node
+        // read as "still inside it" and the outer node kept the keyboard while
+        // the user interacted with something else. For a left button the claim
+        // has already run and installed its answer, so the two agree by
+        // construction and this branch does nothing; the right/middle path
+        // (`handle_click_with_button` straight off `MouseDown`) never runs the
+        // claim, and is where the disagreement was observable.
+        //
+        // Deliberately re-resolved rather than threaded down from the claim:
+        // between the two, `fire_focus_work` runs user code that may re-render
+        // the clicked subtree, and node ids are recycled slab indices — this
+        // `hit_id` is a *fresh* hit test, so it must be compared against a
+        // resolution from the same tree, not a possibly-stale id.
         let hit_inside_focused_node = if let FocusTarget::Node(fid) = self.focus_target {
-            let mut cur = Some(hit_id);
-            loop {
-                match cur {
-                    Some(nid) if nid == fid => break true,
-                    Some(nid) => cur = d.tree.get(nid).and_then(|n| n.parent),
-                    None => break false,
-                }
-            }
+            Self::resolve_click_focus(&d.tree, Some(hit_id)) == Some(fid)
         } else {
             false
         };

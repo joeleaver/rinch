@@ -437,14 +437,41 @@ impl RinchApp {
         matches!(self.focus_target, FocusTarget::Node(_))
     }
 
-    /// The container id of the focused new-editor, if one holds focus. Drives the
-    /// runtime's caret-blink tick.
+    /// The container id of the focused new-editor, if one holds focus. Drives
+    /// the post-layout caret/selection overlay pass.
     #[cfg(feature = "desktop")]
     pub(crate) fn focused_editor_id(&self) -> Option<usize> {
         match self.focus_target {
             FocusTarget::Editor(id) => Some(id),
             _ => None,
         }
+    }
+
+    /// The editor whose caret should be *blinking* — [`Self::focused_editor_id`]
+    /// gated on the window actually having OS focus (issue #316, item 2).
+    ///
+    /// A blurred window used to keep blinking, and the blink is the runtime's
+    /// **only** `WaitUntil` arm, so a rinch app in the background woke twice a
+    /// second for ever — to animate a caret nobody is typing into, in a window
+    /// that does not have the keyboard.
+    ///
+    /// The gate belongs here and not in `focused_editor_id`: that one also
+    /// feeds the post-layout `update_all_carets` pass, and starving *it* would
+    /// drop the selection highlight along with the caret. `caret_blink_tick`
+    /// already restores the previously-blinked caret to solid when its target
+    /// changes, so returning `None` here does exactly the right thing — a
+    /// blurred window shows a **static** caret and arms no wake, and refocusing
+    /// resumes the blink from the solid phase.
+    ///
+    /// A method on `RinchApp` rather than an `if` in the runtime because the
+    /// runtime owns the winit loop and has no test harness; this is the
+    /// decision, and it is testable.
+    #[cfg(feature = "desktop")]
+    pub(crate) fn blinking_editor_id(&self) -> Option<usize> {
+        if !self.window_focused {
+            return None;
+        }
+        self.focused_editor_id()
     }
 
     /// Whether a rich-text editor currently holds focus. Kept (and repointed at
