@@ -157,6 +157,15 @@ fn resize_direction(actions: &[AppAction]) -> Option<rinch_platform::ResizeDirec
     })
 }
 
+fn hover_cursor(app: &mut RinchApp, x: f32, y: f32) -> Option<rinch_platform::CursorStyle> {
+    app.handle_event(PlatformEvent::MouseMove { x, y }, PHYSICAL, SCALE)
+        .iter()
+        .find_map(|a| match a {
+            AppAction::SetCursor(c) => Some(*c),
+            _ => None,
+        })
+}
+
 /// `WindowProps::resize_inset` is documented as a CSS-pixel quantity ("should
 /// match the CSS padding/margin used for shadow effects"), and the pointer is
 /// logical, so the whole comparison is logical. `detect_resize_edge` used to be
@@ -176,6 +185,22 @@ fn the_resize_grab_zone_is_measured_in_logical_pixels_at_2x() {
         resize_direction(&actions),
         Some(rinch_platform::ResizeDirection::East),
         "a press 5 logical px inside the right edge must start an East resize"
+    );
+
+    // `MouseMove` runs the same test for the *cursor* rather than the drag, and
+    // is a separate call site — so it gets its own assertion rather than
+    // riding on the press's.
+    assert_eq!(
+        hover_cursor(&mut app, 795.0, 300.0),
+        Some(rinch_platform::CursorStyle::EResize),
+        "hovering the same point must show the East resize cursor"
+    );
+    // Not `None`: an ordinary hover still sets a cursor (`Auto` here, from the
+    // hovered node's computed style). What must not happen is a resize cursor.
+    assert_eq!(
+        hover_cursor(&mut app, 20.0, 300.0),
+        Some(rinch_platform::CursorStyle::Auto),
+        "…and 20 logical px in is an ordinary hover, not a West resize"
     );
 
     // 20 logical px from the left edge: outside the 12px zone, so an ordinary
@@ -233,10 +258,23 @@ fn the_drag_anchor_is_logical_and_the_ghost_translate_is_not() {
         "the anchor is where in the node the press landed, in logical pixels"
     );
 
-    // What the two paint paths compute. The ghost must sit at the node's
-    // painted origin plus the drag distance, in device pixels:
-    // (400 + 100) * 2 = 1000 across, 200 * 2 = 400 down.
-    let tx = (drag.cursor.0 - drag.anchor.0) as f64 * SCALE;
-    let ty = (drag.cursor.1 - drag.anchor.1) as f64 * SCALE;
-    assert_eq!((tx, ty), (1000.0, 400.0));
+    // What the two paint paths compute — asked of the *production* helper both
+    // of them call, not recomputed here: an assertion that re-derives the
+    // expression passes just as happily with the `* scale` deleted from
+    // `build_scene`/`build_pixels`, which is the whole thing this test is named
+    // for. The ghost must sit at the node's painted origin plus the drag
+    // distance, in device pixels: (400 + 100) * 2 = 1000 across, 200 * 2 = 400
+    // down.
+    assert_eq!(
+        drag.ghost_translate(SCALE),
+        (1000.0, 400.0),
+        "the ghost translate is device pixels, so it carries the scale the \
+         logical anchor does not"
+    );
+    assert_eq!(
+        drag.ghost_translate(1.0),
+        (500.0, 200.0),
+        "…and at 1x it degenerates to the logical offset, which is why \
+         deleting the scale is invisible on a 1x machine"
+    );
 }

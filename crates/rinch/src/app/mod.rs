@@ -75,7 +75,8 @@ use {
 pub(crate) struct PendingDrag {
     /// The DOM node with `draggable="true"`.
     pub node_id: usize,
-    /// Mouse position at mousedown (physical pixels).
+    /// Mouse position at mousedown, in **logical** (CSS) pixels — the space
+    /// every `PlatformEvent` pointer coordinate arrives in (#299).
     pub mousedown_pos: (f32, f32),
 }
 
@@ -95,12 +96,41 @@ pub(crate) struct ActiveDrag {
     /// Height of the snapshot pixmap in physical pixels.
     #[cfg(software_shell)]
     pub snapshot_height: u32,
-    /// Offset within element where the grab happened (physical px, relative to element top-left).
+    /// Offset within the element where the grab happened, relative to its
+    /// top-left, in **logical** pixels: it is `mousedown_pos` minus the node's
+    /// layout origin, and `mousedown_pos` is a logical pointer position (#299).
+    /// The snapshot beside it is *not* logical — see [`Self::ghost_translate`].
     pub anchor: (f32, f32),
-    /// Current cursor position (physical pixels).
+    /// Current cursor position, in **logical** pixels (#299).
     pub cursor: (f32, f32),
     /// Node ID of the current drop target (if hovering over one).
     pub over_target: Option<usize>,
+}
+
+#[cfg(any(
+    feature = "gpu",
+    feature = "android-gpu",
+    feature = "embed",
+    software_shell
+))]
+impl ActiveDrag {
+    /// Where to put the ghost so the grabbed point stays under the pointer, in
+    /// **device** pixels.
+    ///
+    /// The one place in the pointer path where the two spaces meet, and the
+    /// reason it is a named function rather than two copies of an expression:
+    /// `cursor` and `anchor` are both *logical* (#299), while `snapshot` was
+    /// rasterised by `paint_subtree` at `scale` and is blitted into a
+    /// *physical*-pixel framebuffer. Dropping the `* scale` puts the ghost at
+    /// `1/scale` of the distance it should travel and `scale` times too close
+    /// to the window origin — visible at 2x, invisible at 1x, and invisible to
+    /// any test that recomputes the expression instead of calling this.
+    pub(crate) fn ghost_translate(&self, scale: f64) -> (f64, f64) {
+        (
+            (self.cursor.0 - self.anchor.0) as f64 * scale,
+            (self.cursor.1 - self.anchor.1) as f64 * scale,
+        )
+    }
 }
 
 /// Movement threshold in physical pixels before a drag activates.
@@ -1089,11 +1119,9 @@ impl RinchApp {
         if let Some(ref drag) = self.active_dnd {
             if rinch_core::events::is_drag_ghost_visible() {
                 use peniko::kurbo::Affine;
-                // `cursor` and `anchor` are both logical (#299); the snapshot
-                // was painted at `scale`, so the translate that keeps the
-                // grabbed point under the pointer is scaled up to match.
-                let tx = (drag.cursor.0 - drag.anchor.0) as f64 * scale;
-                let ty = (drag.cursor.1 - drag.anchor.1) as f64 * scale;
+                // Logical anchor/cursor, device-pixel snapshot — see
+                // `ActiveDrag::ghost_translate` (#299).
+                let (tx, ty) = drag.ghost_translate(scale);
                 self.painter
                     .scene_mut()
                     .append(drag.snapshot.scene(), Some(Affine::translate((tx, ty))));
@@ -1267,8 +1295,8 @@ impl RinchApp {
                 if rinch_core::events::is_drag_ghost_visible() {
                     // Logical → device pixels, like the Vello twin above (#299):
                     // the blit lands in a physical-pixel pixmap.
-                    let dx = ((drag.cursor.0 - drag.anchor.0) as f64 * scale) as i32;
-                    let dy = ((drag.cursor.1 - drag.anchor.1) as f64 * scale) as i32;
+                    let (tx, ty) = drag.ghost_translate(scale);
+                    let (dx, dy) = (tx as i32, ty as i32);
                     Self::blit_drag_overlay(
                         painter.pixels_mut(),
                         w,

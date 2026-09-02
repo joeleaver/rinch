@@ -735,12 +735,12 @@ pub(crate) const SCROLLBAR_HIT_THICKNESS: f32 = 16.0;
 /// The `x`/`y` fed to [`find_scrollbar_hit`] are the pointer coordinates the
 /// shell hands `PlatformEvent`, compared here against **logical** layout rects
 /// straight out of Taffy — no scale factor is applied anywhere in this
-/// function. That is the same space the vertical bar has always been tested
-/// in, and it is exactly the mismatch #299 describes (the desktop shell passes
-/// winit's *physical* coordinates), so at a scale factor other than 1 both
-/// bars are displaced by the same amount and #299 fixes both at once. The
-/// paint pass is unaffected: it multiplies by `scale` and works in device
-/// pixels.
+/// function, and none is needed: since #299 those coordinates are logical on
+/// every host, so both bars are grabbable at any scale factor. (Before #299
+/// the desktop shell forwarded winit's *physical* position, which displaced
+/// both bars by the same amount; fixing the shell fixed both at once, with no
+/// change here.) The paint pass is unaffected: it multiplies by `scale` and
+/// works in device pixels.
 pub(crate) struct ScrollbarHit {
     /// The scroll container whose bar was hit.
     pub node_id: usize,
