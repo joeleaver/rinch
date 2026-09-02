@@ -3,7 +3,7 @@
 
 use crate::computed_style::values::*;
 
-use super::color::{color_from_absolute, color_from_stylo};
+use super::color::color_from_computed;
 
 pub(super) fn visibility_from_stylo(
     vis: &style::properties::longhands::visibility::computed_value::T,
@@ -247,11 +247,7 @@ pub(super) fn text_shadow_from_stylo(
         .0
         .iter()
         .map(|s| {
-            let color = if s.color.is_currentcolor() {
-                color_from_absolute(text_color)
-            } else {
-                color_from_stylo(&s.color)
-            };
+            let color = color_from_computed(&s.color, text_color);
             TextShadowValue {
                 offset_x: s.horizontal.px(),
                 offset_y: s.vertical.px(),
@@ -270,11 +266,7 @@ pub(super) fn box_shadow_from_stylo(
         .0
         .iter()
         .map(|s| {
-            let color = if s.base.color.is_currentcolor() {
-                color_from_absolute(text_color)
-            } else {
-                color_from_stylo(&s.base.color)
-            };
+            let color = color_from_computed(&s.base.color, text_color);
             BoxShadowValue {
                 offset_x: s.base.horizontal.px(),
                 offset_y: s.base.vertical.px(),
@@ -337,11 +329,7 @@ pub(super) fn background_from_stylo(
     }
 
     // Fall back to background-color
-    let color = if bg.background_color.is_currentcolor() {
-        color_from_absolute(text_color)
-    } else {
-        color_from_stylo(&bg.background_color)
-    };
+    let color = color_from_computed(&bg.background_color, text_color);
     match color {
         Some(c) => BackgroundValue::Color(c),
         None => BackgroundValue::None,
@@ -385,11 +373,7 @@ fn gradient_stops_from_stylo(
     for (i, item) in items.iter().enumerate() {
         match item {
             GenericGradientItem::SimpleColorStop(color) => {
-                let c = if color.is_currentcolor() {
-                    color_from_absolute(text_color)
-                } else {
-                    color_from_stylo(color)
-                };
+                let c = color_from_computed(color, text_color);
                 // Auto-distribute position
                 let offset = if total <= 1 {
                     0.0
@@ -399,11 +383,7 @@ fn gradient_stops_from_stylo(
                 stops.push(GradientStop { offset, color: c });
             }
             GenericGradientItem::ComplexColorStop { color, position } => {
-                let c = if color.is_currentcolor() {
-                    color_from_absolute(text_color)
-                } else {
-                    color_from_stylo(color)
-                };
+                let c = color_from_computed(color, text_color);
                 let offset = if let Some(pct) = position.to_percentage() {
                     pct.0
                 } else if let Some(len) = position.to_length() {

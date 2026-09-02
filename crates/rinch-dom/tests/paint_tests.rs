@@ -275,7 +275,8 @@ fn test_parse_color_css_color_4_functions() {
         rgba("color-mix(in srgb, red 25%, blue)"),
         Some((64, 0, 191, 255))
     );
-    // A mix over `currentcolor` is not absolute on its own.
+    // A mix over `currentcolor` is not absolute on its own — same contract as
+    // bare `currentcolor` below, and deliberately unchanged by #256.
     assert_eq!(rgba("color-mix(in srgb, currentcolor, blue)"), None);
 }
 
@@ -286,11 +287,20 @@ fn test_parse_color_rejects_junk() {
     assert_eq!(rgba("red junk"), None);
     assert_eq!(rgba("red; background: blue"), None);
     assert_eq!(rgba("red !important"), None);
+    // CSS-wide keywords are not colours. `paint::svg` names `inherit`/`unset`
+    // explicitly anyway, so its intent survives a parser that starts accepting
+    // them; this is why that arm is not redundant even though it is currently
+    // unobservable.
+    assert_eq!(rgba("inherit"), None);
+    assert_eq!(rgba("unset"), None);
+    assert_eq!(rgba("initial"), None);
 }
 
-/// `currentcolor` is not an absolute colour: the caller owns its resolution
-/// (`resolve_svg_color` walks the tree for it), so `parse_color` must say no
-/// rather than invent a value.
+/// `currentcolor` is not an absolute colour: it depends on an element, and
+/// `parse_color` has none, so it must say no rather than invent a value. A
+/// caller that *does* have the element calls `parse_color_with_current`
+/// instead (#256) — this contract is the reason that function exists rather
+/// than `parse_color` growing a default.
 #[test]
 fn test_parse_color_currentcolor_is_not_absolute() {
     assert_eq!(rgba("currentcolor"), None);
@@ -1482,6 +1492,162 @@ mod svg_paint {
                 "color: rgb(4, 5, 6)"
             ),
             [4, 5, 6, 255]
+        );
+    }
+
+    // === #256: a colour *derived from* `currentcolor` is still resolvable ===
+    //
+    // `currentcolor` was handled by a string compare, so it worked; every
+    // other form that depends on the element — a mix, a relative colour, a
+    // contrast colour — reached `parse_color`, which has no element and
+    // correctly declines, and the shape then painted nothing at all. These go
+    // through `parse_color_with_current`, which resolves against the child's
+    // own `color` the way the cascade does. Pixels are premultiplied.
+
+    /// A relative colour over `currentcolor`, keeping its alpha.
+    #[test]
+    fn svg_fill_relative_colour_over_currentcolor_paints() {
+        assert_eq!(
+            rect_centre_pixel(
+                "rgb(from currentcolor r g b / 50%)",
+                "color: rgb(10, 20, 30)"
+            ),
+            [5, 10, 15, 128],
+            "half-alpha rgb(10, 20, 30), premultiplied"
+        );
+    }
+
+    /// A `color-mix()` with `currentcolor` on one side.
+    #[test]
+    fn svg_fill_color_mix_over_currentcolor_paints() {
+        assert_eq!(
+            rect_centre_pixel(
+                "color-mix(in srgb, currentcolor, blue)",
+                "color: rgb(255, 0, 0)"
+            ),
+            [128, 0, 128, 255],
+            "half red, half blue"
+        );
+    }
+
+    /// `contrast-color()` — the fifth `ComputedColor` variant, resolved by the
+    /// same call rather than by an arm of our own.
+    #[test]
+    fn svg_fill_contrast_color_over_currentcolor_paints() {
+        assert_eq!(
+            rect_centre_pixel("contrast-color(currentcolor)", "color: rgb(255, 255, 255)"),
+            [0, 0, 0, 255],
+            "black contrasts with white better than white does"
+        );
+    }
+
+    // === #258: an unusable paint is ignored, not treated as `none` ===
+    //
+    // SVG's rule for a presentation attribute it cannot use is to ignore it,
+    // leaving whatever would have applied without it. rinch used to answer
+    // `None` for both "paint nothing" and "I could not parse that", so a typo
+    // in a `fill` made the shape disappear.
+
+    /// `fill="inherit"` takes the `<svg>`'s paint. It used to paint nothing.
+    #[test]
+    fn svg_fill_inherit_takes_the_svg_level_paint() {
+        assert_eq!(
+            svg_rect_centre_pixel(Some("red"), "", Some("inherit"), ""),
+            [255, 0, 0, 255]
+        );
+    }
+
+    /// `unset` on an inherited property means `inherit`.
+    #[test]
+    fn svg_fill_unset_takes_the_svg_level_paint() {
+        assert_eq!(
+            svg_rect_centre_pixel(Some("red"), "", Some("unset"), ""),
+            [255, 0, 0, 255]
+        );
+    }
+
+    /// A paint-server reference with a fallback colour uses the fallback —
+    /// `paint_svg` renders no `<defs>`, so every `url()` here is unresolvable.
+    #[test]
+    fn svg_fill_url_with_a_fallback_uses_the_fallback() {
+        assert_eq!(
+            rect_centre_pixel("url(#missing) rebeccapurple", ""),
+            [102, 51, 153, 255]
+        );
+    }
+
+    /// The same reference with *no* fallback is not rendered — the one case
+    /// where an unusable paint really does mean "paint nothing" (SVG 2, and
+    /// what Chrome does). This is why the resolver is a tri-state and not an
+    /// `Option`.
+    #[test]
+    fn svg_fill_url_without_a_fallback_paints_nothing() {
+        assert_eq!(rect_centre_pixel("url(#missing)", ""), [0, 0, 0, 0]);
+    }
+
+    /// An unparseable value falls back to the `<svg>` level...
+    #[test]
+    fn svg_fill_invalid_falls_back_to_the_svg_level() {
+        assert_eq!(
+            svg_rect_centre_pixel(Some("red"), "", Some("notacolour"), ""),
+            [255, 0, 0, 255]
+        );
+    }
+
+    /// ...and with nothing there either, to SVG's initial `fill`, black.
+    #[test]
+    fn svg_fill_invalid_with_no_svg_level_falls_back_to_black() {
+        assert_eq!(
+            svg_rect_centre_pixel(None, "", Some("notacolour"), ""),
+            [0, 0, 0, 255]
+        );
+    }
+
+    /// The same rule one level up: an unusable `fill` on the `<svg>` itself is
+    /// ignored, so its children inherit the initial value rather than nothing.
+    #[test]
+    fn svg_level_invalid_fill_falls_back_to_black() {
+        assert_eq!(
+            svg_rect_centre_pixel(Some("notacolour"), "", None, ""),
+            [0, 0, 0, 255]
+        );
+    }
+
+    /// The arm the tri-state exists to protect: `none` is a real answer and
+    /// must never fall back.
+    #[test]
+    fn svg_fill_none_still_beats_an_svg_level_paint() {
+        assert_eq!(
+            svg_rect_centre_pixel(Some("red"), "", Some("none"), ""),
+            [0, 0, 0, 0]
+        );
+    }
+
+    /// `stroke` goes through the same resolver, with `none` as its initial —
+    /// so an unusable stroke leaves the shape unstroked, not black-stroked.
+    #[test]
+    fn svg_stroke_follows_the_same_fallback_rules() {
+        let mut doc = RinchDocument::new();
+        let body = doc.body();
+        let svg = doc.create_element("svg");
+        doc.set_attribute(svg, "viewBox", "0 0 10 10");
+        doc.set_attribute(svg, "stroke", "red");
+        doc.set_attribute(svg, "style", "display: block; width: 20px; height: 20px");
+        doc.append_child(body, svg);
+        let rect = doc.create_element("rect");
+        doc.set_attribute(rect, "width", "10");
+        doc.set_attribute(rect, "height", "10");
+        doc.set_attribute(rect, "fill", "none");
+        doc.set_attribute(rect, "stroke", "notacolour");
+        doc.set_attribute(rect, "stroke-width", "10");
+        doc.append_child(svg, rect);
+        doc.resolve_layout(800.0, 600.0);
+        let mut painter = TinySkiaPainter::new(40, 40);
+        paint_skia(&mut doc, &mut painter);
+        assert_eq!(
+            pixel_at(&painter, 10, 10),
+            [255, 0, 0, 255],
+            "an unusable stroke falls back to the <svg>'s red, not to nothing"
         );
     }
 }

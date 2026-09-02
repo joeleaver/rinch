@@ -1071,3 +1071,119 @@ fn inline_style_named_and_hsl_colours_resolve_via_stylo() {
         );
     }
 }
+
+// ===== #256: colours derived from `currentcolor` reach the cascade =====
+//
+// `ComputedColor` has five variants. `color_from_stylo` answers only for
+// `Absolute`, and each of these ten call sites hand-checked `is_currentcolor()`
+// first — so `currentcolor` itself worked and the other three element-dependent
+// forms (`color-mix()`, a relative colour, `contrast-color()`) fell out as
+// `None`, i.e. the declaration was silently dropped. They now go through
+// stylo's own `resolve_to_absolute`, which is total over all five.
+
+/// One `<div>` with `style`, laid out; returns its computed style.
+fn computed(style: &str) -> rinch_dom::computed_style::ComputedStyle {
+    let mut doc = RinchDocument::new();
+    let body = doc.body();
+    let div = doc.create_element("div");
+    doc.set_attribute(div, "style", &format!("width: 10px; height: 10px; {style}"));
+    doc.append_child(body, div);
+    doc.resolve_layout(800.0, 600.0);
+    doc.tree.get(div.0).unwrap().computed_style.clone()
+}
+
+fn rgba8(color: Option<peniko::Color>) -> Option<(u8, u8, u8, u8)> {
+    let c = color?.to_rgba8();
+    Some((c.r, c.g, c.b, c.a))
+}
+
+#[test]
+fn background_color_mix_over_currentcolor_resolves() {
+    let style =
+        computed("color: rgb(255, 0, 0); background-color: color-mix(in srgb, currentcolor, blue)");
+    let BackgroundValue::Color(color) = style.background else {
+        panic!(
+            "a mix over currentcolor should resolve to a solid colour, got {:?}",
+            style.background
+        );
+    };
+    let c = color.to_rgba8();
+    assert_eq!((c.r, c.g, c.b, c.a), (128, 0, 128, 255));
+}
+
+/// All four sides, so no side's call site is left unpinned — each is its own
+/// line at the cascade and a rewrite could miss one.
+#[test]
+fn border_colours_relative_to_currentcolor_resolve_on_every_side() {
+    let style = computed(
+        "color: rgb(10, 20, 30); border: 2px solid; \
+         border-top-color: rgb(from currentcolor r g b / 50%); \
+         border-right-color: color-mix(in srgb, currentcolor, transparent); \
+         border-bottom-color: contrast-color(currentcolor); \
+         border-left-color: rgb(from currentcolor r g b / 25%)",
+    );
+    assert_eq!(rgba8(style.border_top_color), Some((10, 20, 30, 128)));
+    assert_eq!(rgba8(style.border_right_color), Some((10, 20, 30, 128)));
+    assert_eq!(
+        rgba8(style.border_bottom_color),
+        Some((255, 255, 255, 255)),
+        "white contrasts with a near-black currentcolor"
+    );
+    assert_eq!(rgba8(style.border_left_color), Some((10, 20, 30, 64)));
+}
+
+#[test]
+fn outline_colour_contrast_over_currentcolor_resolves() {
+    let style =
+        computed("color: rgb(255, 255, 255); outline: 2px solid contrast-color(currentcolor)");
+    assert_eq!(rgba8(style.outline_color), Some((0, 0, 0, 255)));
+}
+
+#[test]
+fn shadow_colours_derived_from_currentcolor_resolve() {
+    let style = computed(
+        "color: rgb(255, 0, 0); \
+         box-shadow: 1px 1px 2px color-mix(in srgb, currentcolor, blue); \
+         text-shadow: 1px 1px 2px color-mix(in srgb, currentcolor, blue)",
+    );
+    assert_eq!(
+        rgba8(style.box_shadow[0].color),
+        Some((128, 0, 128, 255)),
+        "a box-shadow colour derived from currentcolor used to be None"
+    );
+    assert_eq!(rgba8(style.text_shadow[0].color), Some((128, 0, 128, 255)));
+}
+
+#[test]
+fn gradient_stops_derived_from_currentcolor_resolve() {
+    let style = computed(
+        "color: rgb(255, 0, 0); \
+         background-image: linear-gradient(color-mix(in srgb, currentcolor, blue), \
+                                           rgb(from currentcolor r g b / 50%) 100%)",
+    );
+    let BackgroundValue::LinearGradient { stops, .. } = style.background else {
+        panic!("expected a linear gradient, got {:?}", style.background);
+    };
+    assert_eq!(rgba8(stops[0].color), Some((128, 0, 128, 255)));
+    assert_eq!(rgba8(stops[1].color), Some((255, 0, 0, 128)));
+}
+
+/// The rewrite must be *identity* on everything that already worked. Stylo's
+/// `resolve_to_absolute` returns `Absolute` unchanged and `CurrentColor` as
+/// `current` — exactly what the hand-written branches did — so this pins that
+/// the ten sites did not change meaning for the 99% case.
+#[test]
+fn absolute_and_bare_currentcolor_are_unchanged() {
+    let style = computed(
+        "color: rgb(1, 2, 3); border: 2px solid; outline: 1px solid rebeccapurple; \
+         background-color: currentcolor; box-shadow: 1px 1px 2px rgb(4, 5, 6)",
+    );
+    assert_eq!(rgba8(style.border_top_color), Some((1, 2, 3, 255)));
+    assert_eq!(rgba8(style.outline_color), Some((102, 51, 153, 255)));
+    let BackgroundValue::Color(bg) = style.background else {
+        panic!("expected a solid background");
+    };
+    let c = bg.to_rgba8();
+    assert_eq!((c.r, c.g, c.b, c.a), (1, 2, 3, 255));
+    assert_eq!(rgba8(style.box_shadow[0].color), Some((4, 5, 6, 255)));
+}

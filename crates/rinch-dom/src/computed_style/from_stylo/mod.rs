@@ -126,26 +126,10 @@ impl ComputedStyle {
             border_left_style: border_style_from_stylo(&border.border_left_style),
 
             // Border colors (per-side, resolve currentColor)
-            border_top_color: if border.border_top_color.is_currentcolor() {
-                color_from_absolute(&text.color)
-            } else {
-                color_from_stylo(&border.border_top_color)
-            },
-            border_right_color: if border.border_right_color.is_currentcolor() {
-                color_from_absolute(&text.color)
-            } else {
-                color_from_stylo(&border.border_right_color)
-            },
-            border_bottom_color: if border.border_bottom_color.is_currentcolor() {
-                color_from_absolute(&text.color)
-            } else {
-                color_from_stylo(&border.border_bottom_color)
-            },
-            border_left_color: if border.border_left_color.is_currentcolor() {
-                color_from_absolute(&text.color)
-            } else {
-                color_from_stylo(&border.border_left_color)
-            },
+            border_top_color: color_from_computed(&border.border_top_color, &text.color),
+            border_right_color: color_from_computed(&border.border_right_color, &text.color),
+            border_bottom_color: color_from_computed(&border.border_bottom_color, &text.color),
+            border_left_color: color_from_computed(&border.border_left_color, &text.color),
 
             // Background (color or gradient)
             background: background_from_stylo(background, &text.color),
@@ -181,11 +165,7 @@ impl ComputedStyle {
             } else {
                 outline_style.outline_width.0.to_f32_px()
             },
-            outline_color: if outline_style.outline_color.is_currentcolor() {
-                color_from_absolute(&text.color)
-            } else {
-                color_from_stylo(&outline_style.outline_color)
-            },
+            outline_color: color_from_computed(&outline_style.outline_color, &text.color),
             outline_style: border_style_from_stylo_outline(&outline_style.outline_style),
             outline_offset: outline_style.outline_offset.to_f32_px(),
 
