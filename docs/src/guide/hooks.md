@@ -160,7 +160,9 @@ fn shortcuts() -> NodeHandle {
     // Released when this component unmounts — the interceptor cannot outlive
     // `count` and read it after it is freed.
     set_keyboard_interceptor(move |k| {
-        if k.key == "j" { count.update(|n| *n += 1); true } else { false }
+        // Releases arrive here too (`k.is_up()`) — gate on the press or a
+        // held "j" counts twice.
+        if k.is_down() && k.key == "j" { count.update(|n| *n += 1); true } else { false }
     });
     rsx! { div { {|| count.get().to_string()} } }
 }

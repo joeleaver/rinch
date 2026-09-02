@@ -3824,6 +3824,7 @@ mod tab_focus_tests {
         app.handle_event(
             PlatformEvent::KeyUp {
                 key: KeyCode::Enter,
+                logical_key: None,
                 modifiers: Modifiers::default(),
             },
             (800, 600),
@@ -6283,6 +6284,7 @@ mod transform_aware_walk_tests {
         app.handle_event(
             PlatformEvent::KeyUp {
                 key,
+                logical_key: None,
                 modifiers: Modifiers::default(),
             },
             (800, 600),

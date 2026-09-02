@@ -236,14 +236,7 @@ mod tests {
 
     #[test]
     fn test_key_event_data_construction() {
-        let data = KeyEventData {
-            key: "a".into(),
-            code: "KeyA".into(),
-            ctrl: false,
-            shift: false,
-            alt: false,
-            meta: false,
-        };
+        let data = KeyEventData::new("a", "KeyA");
         assert_eq!(data.key, "a");
         assert_eq!(data.code, "KeyA");
         assert!(!data.ctrl);
@@ -258,14 +251,7 @@ mod tests {
             called_clone.set(true);
             true
         });
-        let data = KeyEventData {
-            key: "Enter".into(),
-            code: "Enter".into(),
-            ctrl: false,
-            shift: false,
-            alt: false,
-            meta: false,
-        };
+        let data = KeyEventData::new("Enter", "Enter");
         assert!(dispatch_keyboard_event(&data));
         assert!(called.get());
         clear_keyboard_interceptor();
@@ -274,14 +260,7 @@ mod tests {
     #[test]
     fn test_keyboard_interceptor_cleared() {
         clear_keyboard_interceptor();
-        let data = KeyEventData {
-            key: "a".into(),
-            code: "KeyA".into(),
-            ctrl: false,
-            shift: false,
-            alt: false,
-            meta: false,
-        };
+        let data = KeyEventData::new("a", "KeyA");
         assert!(!dispatch_keyboard_event(&data));
     }
 
@@ -289,14 +268,7 @@ mod tests {
     fn test_keyboard_interceptor_returns_false() {
         clear_keyboard_interceptor();
         set_keyboard_interceptor(|_| false);
-        let data = KeyEventData {
-            key: "a".into(),
-            code: "KeyA".into(),
-            ctrl: false,
-            shift: false,
-            alt: false,
-            meta: false,
-        };
+        let data = KeyEventData::new("a", "KeyA");
         assert!(!dispatch_keyboard_event(&data));
         clear_keyboard_interceptor();
     }
@@ -306,14 +278,7 @@ mod tests {
         clear_keyboard_interceptor();
         set_keyboard_interceptor(|_| false);
         set_keyboard_interceptor(|_| true);
-        let data = KeyEventData {
-            key: "a".into(),
-            code: "KeyA".into(),
-            ctrl: false,
-            shift: false,
-            alt: false,
-            meta: false,
-        };
+        let data = KeyEventData::new("a", "KeyA");
         assert!(dispatch_keyboard_event(&data));
         clear_keyboard_interceptor();
     }

@@ -170,7 +170,15 @@ fn key(app: &mut RinchApp, key: KeyCode, modifiers: Modifiers) {
         (800, 600),
         1.0,
     );
-    app.handle_event(PlatformEvent::KeyUp { key, modifiers }, (800, 600), 1.0);
+    app.handle_event(
+        PlatformEvent::KeyUp {
+            key,
+            logical_key: None,
+            modifiers,
+        },
+        (800, 600),
+        1.0,
+    );
 }
 
 fn tab(app: &mut RinchApp) {
