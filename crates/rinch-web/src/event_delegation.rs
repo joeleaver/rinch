@@ -1529,6 +1529,30 @@ pub fn setup_event_delegation(doc: &WebDocument) {
         if let Some(target) = event.target()
             && let Ok(el) = target.dyn_into::<web_sys::Element>()
         {
+            // `data-nofocus`: this press takes the click but not the keyboard
+            // (issue #312). `preventDefault()` on the pointerdown suppresses the
+            // browser's own focus change — the mechanism the desktop backend's
+            // claim walk now mirrors, and the one an editor toolbar has always
+            // needed here too: a `<button>` in a browser is focusable by
+            // default, so pressing Bold blurs the editor it acts on and the
+            // selection the command reads is gone.
+            //
+            // `data-rid` dispatch happens below in this same listener, so the
+            // click is unaffected. Matched with `closest`, so a whole toolbar
+            // can carry the attribute once — the same "anywhere on the
+            // ancestor chain" rule desktop applies. The `:not(…"false" i)` is
+            // the boolean-attribute rule desktop's `node_is_nofocus` applies:
+            // present means on whatever the value, and only the explicit
+            // `"false"` (any case) opts out.
+            if el
+                .closest("[data-nofocus]:not([data-nofocus=\"false\" i])")
+                .ok()
+                .flatten()
+                .is_some()
+            {
+                event.prevent_default();
+            }
+
             // Clear render surface focus if click is outside any surface
             if rinch::render_surface::focused_surface_id().is_some()
                 && el.closest("[data-render-surface]").ok().flatten().is_none()

@@ -26,6 +26,7 @@ rsx! {
 | `tabindex="-1"` | **Not** in the Tab order, but still focusable by click and programmatically — the standard "focus this dialog when it opens" idiom |
 | `disabled` / `data-disabled` | Takes no focus at all, and accepts no keyboard edit. Both spellings count — the component library writes the HTML one, the runtime's own widgets write the `data-` one. A boolean attribute: present means disabled whatever the value; only the explicit `"false"` opts out |
 | `readonly` | Focuses, moves its caret, selects and copies like any other field — and refuses every command that would change its text (typing, delete, cut, paste, undo/redo). Same boolean rule |
+| `data-nofocus` | A press here takes the **click** but not the keyboard: whatever is focused stays focused. Same boolean rule. Read anywhere on the pressed element's ancestor chain, so a toolbar carries it once |
 
 A **disabled `<fieldset>`** disables every control below it, which is what the
 element is for. HTML's carve-out is honoured: controls inside the fieldset's
@@ -56,17 +57,56 @@ Focus arrives three ways, and all three go through the same arbiter:
   resolves to nothing releases it — a nested focusable inside a focused node
   counts as "somewhere else", for every mouse button alike.
 
-  This applies to `tabindex="-1"` too, so a control that must **not** steal
-  focus from the field it sits beside — a toolbar button over a rich-text
-  editor, a spinner next to a number input — should carry no `tabindex` at all.
-  (`tabindex="-1"` keeps it out of the Tab order; it does not keep a click from
-  focusing it, in rinch or in a browser.)
+  This applies to `tabindex="-1"` too — it keeps an element out of the Tab
+  order, but it does not keep a click from focusing it, in rinch or in a
+  browser. A control that must **not** steal focus from the field it sits
+  beside — a toolbar button over a rich-text editor, a spinner next to a number
+  input — needs [`data-nofocus`](#taking-the-click-without-the-keyboard).
 - **`node.focus()` / `request_focus(node_id)`** — programmatic, also no ring.
 
 > **Desktop vs web parity.** On the desktop backend only elements carrying an
 > explicit `tabindex` (and `<input>`/`<textarea>`) are focusable. A `<button>`
 > or `<a href>` is *not* a Tab stop the way it is in a browser — give it a
 > `tabindex="0"` if you need one. Tracked as issue #252.
+
+### Taking the click without the keyboard
+
+An editor toolbar has a problem every GUI toolkit has to answer: pressing
+**Bold** must run the command *without* blurring the editor, or the command
+reads a selection that is no longer there. Browsers answer it with
+`preventDefault()` on `mousedown`, which suppresses the focus change while
+still delivering the click.
+
+`data-nofocus` is that mechanism:
+
+```rust
+rsx! {
+    // The whole toolbar opts out at once — every control inside it takes its
+    // click without taking the keyboard.
+    div { data-nofocus: "", class: "toolbar",
+        button { tabindex: "0", onclick: move || ed.command("toggleBold"), "B" }
+        button { tabindex: "0", onclick: move || ed.command("toggleItalic"), "I" }
+    }
+    Editor { editor: ed.clone() }
+}
+```
+
+The rules:
+
+- It is read **anywhere on the pressed element's ancestor chain**, so a toolbar
+  carries it once instead of every button in it. Put it on the toolbar, not on
+  a big content region — a press inside it suppresses the browser's default,
+  which includes starting a text selection.
+- It protects **whatever holds the keyboard** — the rich-text editor, an
+  `<input>`, a render surface, another focusable node — not just the editor.
+- The **click still fires**. `data-rid` dispatch is untouched.
+- A **text field inside** a `data-nofocus` region still focuses normally. A
+  link-URL field in a toolbar has to be usable, so the field's own claim wins
+  over the region's opt-out.
+- Boolean attribute, same rule as `data-disabled`: present means on whatever
+  the value, only the explicit `"false"` opts out.
+- It works on **both backends**. On the web it becomes `preventDefault()` on
+  the `pointerdown`.
 
 ## Registering a focus target
 
