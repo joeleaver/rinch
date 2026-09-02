@@ -47,13 +47,21 @@ fn child_of(doc: &mut RinchDocument, parent: NodeId, tag: &str, style: &str) -> 
 }
 
 fn rasterize(doc: &mut RinchDocument) -> Vec<u8> {
-    let mut painter = TinySkiaPainter::new(VW as u32, VH as u32);
+    rasterize_scale(doc, 1.0)
+}
+
+/// Rasterize at a DPI scale. Layout stays in logical pixels; the pixmap and
+/// every coordinate in it are physical.
+fn rasterize_scale(doc: &mut RinchDocument, scale: f64) -> Vec<u8> {
+    let pw = (VW as f64 * scale) as u32;
+    let ph = (VH as f64 * scale) as u32;
+    let mut painter = TinySkiaPainter::new(pw, ph);
     let mut layout_cx: parley::LayoutContext<Brush> = parley::LayoutContext::new();
     rinch_dom::paint::paint_document(
         &doc.tree,
         &mut painter,
-        1.0,
-        (VW, VH),
+        scale,
+        (pw as f32, ph as f32),
         &mut doc.font_cx,
         &mut layout_cx,
     );
@@ -74,7 +82,12 @@ fn color_count(px: &[u8], rgb: (u8, u8, u8)) -> u32 {
 }
 
 fn color_bbox(px: &[u8], rgb: (u8, u8, u8)) -> Option<(u32, u32, u32, u32)> {
-    let (w, h) = (VW as u32, VH as u32);
+    color_bbox_in(px, VW as u32, VH as u32, rgb)
+}
+
+/// `color_bbox` over a pixmap of explicit physical dimensions (for scaled
+/// rasterizations).
+fn color_bbox_in(px: &[u8], w: u32, h: u32, rgb: (u8, u8, u8)) -> Option<(u32, u32, u32, u32)> {
     let (mut x0, mut y0, mut x1, mut y1) = (u32::MAX, u32::MAX, 0u32, 0u32);
     for y in 0..h {
         for x in 0..w {
@@ -212,8 +225,6 @@ fn the_surviving_draw_is_inside_the_padding() {
     let px = rasterize(&mut doc);
 
     let (x0, y0, _, _) = color_bbox(&px, ONCE).expect("the button is painted at all");
-    let c = doc.tree.get(2).map(|n| n.layout).unwrap();
-    let _ = c;
     // The container starts at y=120 (the spacer); content begins one border +
     // one padding in on each axis.
     assert!(
@@ -267,26 +278,17 @@ fn the_issue_bodys_inline_anchor_repro() {
 // ── #407: the hoisted entry lands where the IFC put the box ────────────────
 
 /// An absolutely positioned box inside an inline-block inside a **padded** IFC
-/// root. The absolute is hoisted to the stacking root, and the walk that
-/// positions it descends through the inline-block — whose `layout.{x,y}` is
-/// relative to the IFC root's **content** box, while the accumulated offset is
-/// that root's **border-box** origin. Without the correction the hoisted box
-/// lands one padding+border up and to the left of the span it belongs to.
-///
-/// Asserted as containment of the *painted* box in the anchor's painted box,
-/// which is the relationship that actually has to hold — rather than a
-/// coordinate copied out of a previous run.
-#[test]
-fn a_hoisted_box_lands_inside_the_inline_block_that_anchors_it() {
+/// root — the #407 fixture. The absolute is hoisted to the stacking root, and
+/// the walk that positions it descends through the inline-block — whose
+/// `layout.{x,y}` is relative to the IFC root's **content** box, while the
+/// accumulated offset is that root's **border-box** origin. Without the
+/// correction the hoisted box lands one padding+border up and to the left of
+/// the span it belongs to.
+fn anchored_absolute_doc(container_style: &str) -> RinchDocument {
     let mut doc = RinchDocument::new();
     let body = doc.body();
     child_of(&mut doc, body, "div", "height: 60px");
-    let container = child_of(
-        &mut doc,
-        body,
-        "div",
-        "width: 400px; padding: 30px; border: 4px solid rgb(0, 0, 255); font-size: 16px",
-    );
+    let container = child_of(&mut doc, body, "div", container_style);
     let text = doc.create_text("Press ");
     doc.append_child(container, text);
     let anchor = child_of(
@@ -303,20 +305,121 @@ fn a_hoisted_box_lands_inside_the_inline_block_that_anchors_it() {
         "position: absolute; left: 10px; top: 10px; width: 20px; height: 20px; \
          background-color: rgb(255, 0, 0)",
     );
-    doc.resolve_layout(VW, VH);
-    let px = rasterize(&mut doc);
+    doc
+}
 
-    let anchor_box = color_bbox(&px, (0, 200, 0)).expect("the inline-block is painted");
-    let hoisted = color_bbox(&px, (255, 0, 0)).expect("the absolute box is painted");
-
+/// Containment of the *painted* absolute box in the anchor's painted box,
+/// which is the relationship that actually has to hold — rather than a
+/// coordinate copied out of a previous run. `w`/`h` are the pixmap's physical
+/// dimensions.
+fn assert_hoisted_inside_anchor(px: &[u8], w: u32, h: u32, what: &str) {
+    let anchor_box = color_bbox_in(px, w, h, (0, 200, 0)).expect("the inline-block is painted");
+    let hoisted = color_bbox_in(px, w, h, (255, 0, 0)).expect("the absolute box is painted");
     assert!(
         hoisted.0 >= anchor_box.0
             && hoisted.1 >= anchor_box.1
             && hoisted.2 <= anchor_box.2
             && hoisted.3 <= anchor_box.3,
-        "the hoisted box {hoisted:?} must land inside its anchor {anchor_box:?} \
-         — `left: 10px; top: 10px` of an 80x40 anchor cannot fall outside it. \
-         Landing up-and-left of the anchor is the padding+border the descend \
-         walk failed to add (#407)."
+        "{what}: the hoisted box {hoisted:?} must land inside its anchor \
+         {anchor_box:?} — `left: 10px; top: 10px` of an 80x40 anchor cannot \
+         fall outside it. Landing up-and-left of the anchor is the \
+         padding+border the descend walk failed to add (#407)."
+    );
+}
+
+#[test]
+fn a_hoisted_box_lands_inside_the_inline_block_that_anchors_it() {
+    let mut doc = anchored_absolute_doc(
+        "width: 400px; padding: 30px; border: 4px solid rgb(0, 0, 255); font-size: 16px",
+    );
+    doc.resolve_layout(VW, VH);
+    let px = rasterize(&mut doc);
+    assert_hoisted_inside_anchor(&px, VW as u32, VH as u32, "uniform padding");
+}
+
+/// The same relationship under **asymmetric** padding: dx = 30 + 4 = 34,
+/// dy = 10 + 4 = 14. The uniform fixture above puts dx == dy — the one regime
+/// where adding the x-offset to y and the y-offset to x reads identically, so
+/// an axis-swap mutant of `descend`'s correction survived it (and the rest of
+/// the workspace). Do not "simplify" this back to a uniform padding: the
+/// asymmetry is the assertion.
+#[test]
+fn the_hoisted_box_lands_right_under_asymmetric_padding() {
+    let mut doc = anchored_absolute_doc(
+        "width: 400px; padding: 10px 50px 20px 30px; border: 4px solid rgb(0, 0, 255); \
+         font-size: 16px",
+    );
+    doc.resolve_layout(VW, VH);
+    let px = rasterize(&mut doc);
+    assert_hoisted_inside_anchor(&px, VW as u32, VH as u32, "asymmetric padding");
+}
+
+/// The same relationship at paint scale 2.0. Every other test in the
+/// workspace paints at scale 1.0 — the fixed point where
+/// `layout.x * scale + dx` and `(layout.x + dx) * scale` agree — so only a
+/// non-1 scale can tell whether `descend` adds the IFC offset inside the
+/// multiply. It must: the offset is layout units, the accumulated sum is
+/// physical pixels. A mutant hoisting the offset out of the `* scale`
+/// survived the whole suite until this test.
+#[test]
+fn the_hoisted_box_lands_right_at_scale_2() {
+    let mut doc = anchored_absolute_doc(
+        "width: 400px; padding: 30px; border: 4px solid rgb(0, 0, 255); font-size: 16px",
+    );
+    doc.resolve_layout(VW, VH);
+    let px = rasterize_scale(&mut doc, 2.0);
+    assert_hoisted_inside_anchor(&px, VW as u32 * 2, VH as u32 * 2, "scale 2.0");
+}
+
+// ── the load-bearing term of `drawn_by_its_ifc` ─────────────────────────────
+
+/// `drawn_by_its_ifc` skips a box only when its IFC root holds a **live**
+/// inline layout (`text_layout.is_some()`). The predicate's doc calls that
+/// term load-bearing — a root with no cached layout draws nothing, so
+/// skipping its children would make them vanish rather than double — but
+/// nothing in the workspace could tell: dropping the term survived every
+/// suite. This pins it, by clearing the root's cached layout after layout
+/// resolution (the state virtualization's `estimated_height` roots are in)
+/// and asserting the hoisted child still reaches the screen through the
+/// stacking sequence.
+#[test]
+fn children_of_an_ifc_root_with_no_live_layout_still_paint() {
+    let mut doc = RinchDocument::new();
+    let body = doc.body();
+    child_of(&mut doc, body, "div", "height: 120px");
+    let container = child_of(
+        &mut doc,
+        body,
+        "div",
+        "width: 400px; padding: 40px; border: 2px solid rgb(0, 0, 255); \
+         font-size: 16px; background-color: rgb(255, 255, 255)",
+    );
+    let text = doc.create_text("Press ");
+    doc.append_child(container, text);
+    child_of(
+        &mut doc,
+        container,
+        "button",
+        &format!("position: relative; {BTN}"),
+    );
+    doc.resolve_layout(VW, VH);
+    doc.tree
+        .get_mut(container.0)
+        .expect("the container exists")
+        .text_layout = None;
+    let px = rasterize(&mut doc);
+
+    let once = color_count(&px, ONCE);
+    assert!(
+        once > ONE_DRAW / 2,
+        "with no live layout on its IFC root, the hoisted button must still \
+         be drawn by the stacking sequence — got {once} pixels of the \
+         single-draw colour. Zero means `drawn_by_its_ifc` skipped a box \
+         whose IFC cannot draw it."
+    );
+    assert!(
+        once <= ONE_DRAW,
+        "and drawn once, not doubled — got {once} pixels for a \
+         {ONE_DRAW}-pixel box"
     );
 }

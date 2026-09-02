@@ -323,6 +323,16 @@ pub fn ifc_content_box_offset(tree: &NodeTree, node: &Node) -> (f32, f32) {
 /// `paints_at_stacking_root`, which needs the offset correction below to be
 /// exactly right first. Tracked separately; the simple rule is correct about
 /// *where* and *how many*, which is what was broken.
+///
+/// **Caveat (#366).** The invariant assumes the stamp is honest, and today it
+/// is not always: `mark_inline_descendants` continues past a block-level child
+/// where `walk_inline_children` breaks, so an inline-level box after a block
+/// sibling inside an inline element carries an `ifc_root` whose IFC never
+/// draws it. Such a box satisfies this predicate and paints **nowhere**
+/// (before this guard it painted once at the viewport origin — garbage of a
+/// different shape; hit testing tapped it somewhere else again either way).
+/// If a box vanishes and its markup matches that shape, the bug is #366's
+/// overmark, not a new miss here.
 pub(crate) fn drawn_by_its_ifc(tree: &NodeTree, child: &Node) -> bool {
     child
         .ifc_root
@@ -816,7 +826,6 @@ fn paint_children_with_stacking(
     font_cx: &mut parley::FontContext,
     layout_cx: &mut parley::LayoutContext<Brush>,
     node_transform: Affine,
-    skip_ifc_children: bool,
 ) {
     let Some(node) = tree.get(node_id) else {
         return;
@@ -825,7 +834,6 @@ fn paint_children_with_stacking(
     // Content already drawn as inline boxes, via `paint_inline_layout`:
     // painting it again as a box would double it. See `drawn_by_its_ifc`.
     let already_drawn_inline = |child: &Node, _kind: PaintKind| drawn_by_its_ifc(tree, child);
-    let _ = skip_ifc_children;
 
     let is_body = node_id == tree.body_id;
     if is_body || node.creates_stacking_context() {
@@ -963,7 +971,6 @@ fn paint_node(
                 font_cx,
                 layout_cx,
                 parent_transform,
-                false,
             );
         } else if (layout.width == 0.0) != (layout.height == 0.0) {
             // A real box collapsed to zero in one dimension (e.g. an
@@ -1001,7 +1008,6 @@ fn paint_node(
                 font_cx,
                 layout_cx,
                 node_transform,
-                false,
             );
 
             if has_opacity {
@@ -1088,7 +1094,6 @@ fn paint_node(
             font_cx,
             layout_cx,
             node_transform,
-            false,
         );
         return;
     }
@@ -1688,7 +1693,6 @@ fn paint_node(
                     font_cx,
                     layout_cx,
                     node_transform,
-                    true, // skip IFC children
                 );
             } else {
                 // Normal paint path: recurse into all children
@@ -1704,7 +1708,6 @@ fn paint_node(
                     font_cx,
                     layout_cx,
                     node_transform,
-                    false,
                 );
             }
 
