@@ -108,17 +108,28 @@ Tab navigation, no Enter/Space activation, no DevTools shortcut. Returning
 exactly as it would for an unregistered node, so registering costs you nothing
 you did not ask for.
 
-`k.key` is spelled the way the browser spells `KeyboardEvent.key` for the keys
-rinch names — `"ArrowLeft"`, `"Enter"`, `"Escape"`, `"Tab"`, `"Space"`, and the
-inserted text for a character key — falling back to the physical key code for
-keys with no name (`"F5"`). `k.code` is always the physical key.
+`k.key` is spelled the way the browser spells `KeyboardEvent.key`, resolved in
+three steps:
 
-> Two gaps to know about. A modifier suppresses the inserted text, and only the
-> letters rinch itself binds (`a c e h i u v x y z`, `b`, `d`) are named back, so
-> `Ctrl+C` arrives as `k.key == "c"` but `Ctrl+S` arrives as `k.key == "KeyS"` —
-> match on `k.code` for combos outside that set. And a key bound to a **native
-> menu accelerator** is consumed by the menu before the document sees it, so
-> `on_key` never runs for it.
+1. **A named key wins over the text it would insert** — `"ArrowLeft"`,
+   `"Enter"`, `"Escape"`, `"Tab"`, `"PageUp"`, `"F1"`…`"F12"`, `"Shift"`, and
+   `"Space"` (not `" "`).
+2. **Otherwise the inserted text wins**, so a non-QWERTY layout reports the
+   letter actually typed rather than the physical QWERTY position: the AZERTY
+   key at the QWERTY-Q position is `k.key == "a"`, and Shift+A is `"A"`.
+3. **Otherwise the physical key's own US-layout character.** A modifier
+   suppresses the inserted text, so this is the step that names every chord:
+   `Ctrl+S` is `k.key == "s"`, `Cmd+1` is `"1"`, `Ctrl+-` is `"-"`.
+
+`k.code` is always the physical key (`"KeyS"`, `"Digit1"`). Every key rinch has
+a code for now reports a `k.key`; the lone exception is a key outside that set
+(`k.code == "Other"`) pressed with a modifier, which has no identity to report.
+
+> Two things to know. Step 3 reports the **lowercase** letter, because a
+> modifier has already suppressed the real text — `Ctrl+Shift+S` is `k.key ==
+> "s"`, so read `k.shift` (or match `k.code`) when the case matters. And a key
+> bound to a **native menu accelerator** is consumed by the menu before the
+> document sees it, so `on_key` never runs for it.
 
 Both focus callbacks run **after** the transition is complete: the arbiter and
 the DOM `:focus` state are already installed, so a callback may re-enter the
