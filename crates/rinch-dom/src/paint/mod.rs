@@ -1822,9 +1822,12 @@ fn paint_node(
                 if cs.filter_brightness != 1.0 {
                     let brightness = cs.filter_brightness;
                     if brightness < 1.0 {
-                        // Darken: overlay black with alpha = 1.0 - brightness
-                        let alpha = ((1.0 - brightness).clamp(0.0, 1.0) * 255.0) as u8;
-                        let dark = AlphaColor::<Srgb>::from_rgba8(0, 0, 0, alpha);
+                        // Darken: overlay black with alpha = 1.0 - brightness.
+                        // Hand the painter the float and let it do the single
+                        // 8-bit quantisation, by rounding — `x as u8` truncated,
+                        // biasing every filtered element one level light (#260).
+                        let dark = AlphaColor::<Srgb>::BLACK
+                            .with_alpha((1.0 - brightness).clamp(0.0, 1.0));
                         if radius > 0.0 {
                             let rrect = rect.to_rounded_rect(radii);
                             painter.fill_color(Fill::NonZero, node_transform, dark, &rrect.into());
@@ -1832,9 +1835,10 @@ fn paint_node(
                             painter.fill_color(Fill::NonZero, node_transform, dark, &rect.into());
                         }
                     } else if brightness > 1.0 {
-                        // Brighten: overlay white with alpha proportional to excess brightness
-                        let alpha = ((brightness - 1.0).clamp(0.0, 1.0) * 255.0) as u8;
-                        let light = AlphaColor::<Srgb>::from_rgba8(255, 255, 255, alpha);
+                        // Brighten: overlay white with alpha proportional to
+                        // excess brightness. Same rounding note as above.
+                        let light = AlphaColor::<Srgb>::WHITE
+                            .with_alpha((brightness - 1.0).clamp(0.0, 1.0));
                         if radius > 0.0 {
                             let rrect = rect.to_rounded_rect(radii);
                             painter.fill_color(Fill::NonZero, node_transform, light, &rrect.into());
