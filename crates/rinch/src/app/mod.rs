@@ -2115,6 +2115,16 @@ impl RinchApp {
             if node.attributes.contains_key("data-oninput") {
                 return None;
             }
+            // `node_is_disabled_in_tree`, **not** `node_is_disabled`: a control
+            // inside a `<fieldset disabled>` takes no claim from a press either
+            // (issue #315). Load-bearing, and easy to lose — the inline walk this
+            // function replaced (before #316 item 3 collapsed the two walks into
+            // one) asked the fieldset-aware question, so resolving that merge by
+            // taking the self-only predicate would delete the guarantee while
+            // compiling and passing everything else. Pinned by
+            // `a_press_on_a_focusable_inside_a_disabled_fieldset_claims_nothing`,
+            // which is the only test that separates the two predicates: a disabled
+            // `<fieldset>` is the one shape where they disagree.
             if !Self::node_is_disabled_in_tree(tree, nid) && Self::node_tabindex(node).is_some() {
                 return Some(nid);
             }

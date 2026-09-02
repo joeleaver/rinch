@@ -763,3 +763,82 @@ fn programmatic_focus_refuses_a_field_inside_a_disabled_fieldset() {
     assert_eq!(app.focus_target, FocusTarget::None);
     assert!(app.focused_input_state.is_none());
 }
+
+// ── 7. the guarantee a merge nearly deleted ────────────────────────────────
+
+/// A **generic focusable** inside a `<fieldset disabled>` takes no claim from a
+/// pointer press either.
+///
+/// This pins `resolve_click_focus`'s use of `node_is_disabled_in_tree` rather
+/// than `node_is_disabled`, and it exists because that call was one merge away
+/// from being deleted with nothing failing.
+///
+/// #316 item 3 collapsed the mousedown claim's inline walk and `handle_click`'s
+/// release check into the single `resolve_click_focus`. This branch's inline
+/// walk asked the **fieldset-aware** question; the collapsed function on `main`
+/// asked the self-only one. Resolving that conflict by taking `main`'s version
+/// verbatim — the obvious, ordinary-looking resolution — compiles, passes every
+/// other test, and silently removes this guarantee, because the only tests that
+/// would notice live on the branch whose behaviour was discarded.
+///
+/// A `<fieldset disabled>` is the only shape that separates the two predicates:
+/// every other disabled control fails both. So this is the one test that can
+/// tell them apart, and without it the difference is invisible.
+#[test]
+fn a_press_on_a_focusable_inside_a_disabled_fieldset_claims_nothing() {
+    let ids: Rc<std::cell::Cell<(usize, usize)>> = Rc::new(std::cell::Cell::new((0, 0)));
+    let ids_in = ids.clone();
+    let mut app = RinchApp::new(move |scope: &mut RenderScope| {
+        let root = scope.create_element("div");
+
+        // Enabled control outside the fieldset, as the control case: the same
+        // markup must still claim when nothing disables it.
+        let free = scope.create_element("div");
+        free.set_attribute("style", "display: block; width: 120px; height: 24px");
+        free.set_attribute("tabindex", "0");
+
+        let fieldset = scope.create_element("fieldset");
+        fieldset.set_attribute("style", "display: block");
+        fieldset.set_attribute("disabled", "");
+        // Not an `<input>` — a plain `tabindex` node, so the walk reaches the
+        // focusable arm rather than short-circuiting on `data-oninput`.
+        let inside = scope.create_element("div");
+        inside.set_attribute("style", "display: block; width: 120px; height: 24px");
+        inside.set_attribute("tabindex", "0");
+        fieldset.append_child(&inside);
+
+        root.append_child(&free);
+        root.append_child(&fieldset);
+        ids_in.set((free.node_id().0, inside.node_id().0));
+        root
+    });
+    app.mount_component(800.0, 600.0);
+    app.resolve_and_repaint(800.0, 600.0);
+    let (free, inside) = ids.get();
+
+    // Control: the same shape outside the fieldset does claim.
+    click_center(&mut app, free);
+    assert_eq!(
+        app.focus_target,
+        FocusTarget::Node(free),
+        "an enabled tabindex node still takes the claim"
+    );
+
+    // The guarantee: inside a disabled fieldset it does not — and the previous
+    // claim is released rather than left stranded.
+    click_center(&mut app, inside);
+    assert_eq!(
+        app.focus_target,
+        FocusTarget::None,
+        "a focusable inside a <fieldset disabled> takes no claim from a press"
+    );
+
+    // …and the DOM `:focus` does not land on it either, so no ring is painted
+    // on a control that owns no keyboard.
+    let focused_node = app.doc.as_ref().unwrap().borrow().tree.focused_node;
+    assert_ne!(
+        focused_node,
+        Some(inside),
+        "and no :focus ring is painted on it"
+    );
+}
