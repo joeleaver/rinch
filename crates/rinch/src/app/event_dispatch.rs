@@ -1259,6 +1259,19 @@ impl RinchApp {
                             // Space with no Node target falls through to the `_`
                             // arm below — the one text-input path (pre-#228), so
                             // a future change to that gate can't miss Space.
+                            // Alt+Down on a focused `<select>` opens its popup,
+                            // the browser's third way in beside Enter and Space
+                            // (issue #314). Anything else falls through.
+                            KeyCode::ArrowDown
+                                if alt
+                                    && matches!(self.focus_target, FocusTarget::Node(_))
+                                    && self.focused_node_is_select() =>
+                            {
+                                if let FocusTarget::Node(id) = self.focus_target {
+                                    self.open_select_popup(id, vp_w, vp_h);
+                                    actions.push(AppAction::RequestRedraw);
+                                }
+                            }
                             KeyCode::ArrowUp => self.handle_arrow_up(shift),
                             KeyCode::ArrowDown => self.handle_arrow_down(shift),
                             _ => {

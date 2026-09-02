@@ -21,6 +21,8 @@ mod focus_lifecycle_tests;
 mod hidpi_pointer_tests;
 pub(crate) mod hit_testing;
 #[cfg(test)]
+mod implicit_focus_tests;
+#[cfg(test)]
 mod input_commit_tests;
 #[cfg(test)]
 mod input_ime_tests;
@@ -2110,6 +2112,70 @@ impl RinchApp {
             .and_then(|v| v.parse::<i32>().ok())
     }
 
+    /// The `tabindex` a node **behaves as** — explicit, or implied by its tag
+    /// (issue #252).
+    ///
+    /// An explicit parseable `tabindex` always wins. That is the browser rule,
+    /// and it is what keeps the `tabindex="-1"` opt-outs on `NumberInput`'s and
+    /// `PasswordInput`'s stepper buttons working unchanged now that a
+    /// `<button>` is focusable by tag.
+    ///
+    /// Otherwise the **implicitly focusable** tags answer `0`: `<button>`,
+    /// `<select>`, `<textarea>`, `<input>`, and `<a>` **with a non-empty
+    /// `href`** (a bare `<a>` is not a link and is not focusable, in a browser
+    /// either). Before this, the desktop Tab order was text fields and `Tree`
+    /// nodes and *nothing else* — `Button`, `ActionIcon`, `CloseButton`, `Tab`,
+    /// `AccordionControl`, `Pagination`, `DropdownMenuItem`, `NavLink`, every
+    /// Modal/Drawer/Alert/Notification closer and the `BorderlessWindow`
+    /// controls were all unreachable by keyboard, while the same components are
+    /// ordinary Tab stops on `rinch-web`.
+    ///
+    /// `<summary>` is deliberately **not** in the set: rinch has no `<details>`
+    /// disclosure behaviour, so a focusable `<summary>` would be a Tab stop
+    /// that does nothing.
+    pub(crate) fn effective_tabindex(node: &rinch_dom::Node) -> Option<i32> {
+        if let Some(explicit) = Self::node_tabindex(node) {
+            return Some(explicit);
+        }
+        Self::tag_is_focusable(node).then_some(0)
+    }
+
+    /// Whether this node's **tag** makes it focusable without a `tabindex`.
+    fn tag_is_focusable(node: &rinch_dom::Node) -> bool {
+        match node.tag() {
+            Some("button" | "select" | "textarea" | "input") => true,
+            // A link is focusable because it navigates; one with no href does
+            // not, and a browser does not focus it either.
+            Some("a") => node
+                .attributes
+                .get("href")
+                .is_some_and(|h| !h.trim().is_empty()),
+            _ => false,
+        }
+    }
+
+    /// Whether focusing this node hands it to the **text engine**
+    /// (`FocusTarget::Input`, an `EditableState` over its `value`) rather than
+    /// taking it as a generic focusable node.
+    ///
+    /// `<select>` is excluded whatever handlers it carries, and that is issue
+    /// #424: a `<select>` with a change handler writes `data-oninput` like any
+    /// other control an app listens to, and branching on that attribute alone
+    /// installed an `EditableState` over the select's `value`. Tab onto it
+    /// turned it into a typable text field whose keystrokes rewrote `value` and
+    /// fired `oninput`. Widening the Tab order (#252) admits every `<select>`,
+    /// so the tag has to be tested first or the bug multiplies.
+    ///
+    /// `data-oninput` remains the signal, rather than the tag, because a custom
+    /// control an app drives itself has no tag of its own — and because the
+    /// text engine needs the handler id regardless. A `<input type="checkbox">`
+    /// inside a `Checkbox` carries none (the handler is on the `<label>`), so
+    /// it takes generic node focus and Space walks up to the label's
+    /// `data-rid`, which is the pattern working as designed.
+    pub(crate) fn node_takes_text_focus(node: &rinch_dom::Node) -> bool {
+        node.tag() != Some("select") && node.attributes.contains_key("data-oninput")
+    }
+
     /// What a pointer press on `hit` does to the keyboard claim.
     ///
     /// The **one** answer to "what does this press focus?" — the mousedown
@@ -2157,7 +2223,14 @@ impl RinchApp {
             if Self::node_is_nofocus(node) {
                 return PressFocus::Preserve;
             }
-            if node.attributes.contains_key("data-oninput") {
+            // A control with its own focus machinery is not a generic
+            // focusable: the text engine claims `<input>`/`<textarea>` (and
+            // any `data-oninput` node) on the click path, and a `<select>` is
+            // claimed by its popup. Taking `FocusTarget::Node` first would
+            // announce a gain-then-loss on it (issue #314).
+            if node.attributes.contains_key("data-oninput")
+                || matches!(node.tag(), Some("input" | "textarea" | "select"))
+            {
                 return PressFocus::Release;
             }
             // `node_is_disabled_in_tree`, **not** `node_is_disabled`: a control
@@ -2173,7 +2246,7 @@ impl RinchApp {
             // `<fieldset>` is the one shape where they disagree.
             if focusable.is_none()
                 && !Self::node_is_disabled_in_tree(tree, nid)
-                && Self::node_tabindex(node).is_some()
+                && Self::effective_tabindex(node).is_some()
             {
                 focusable = Some(nid);
             }
@@ -2225,7 +2298,7 @@ impl RinchApp {
             let self_disabled = Self::node_is_disabled(node);
             let skip_self = self_disabled
                 || inherited_disabled
-                || Self::node_tabindex(node).is_some_and(|v| v < 0)
+                || Self::effective_tabindex(node).is_some_and(|v| v < 0)
                 || node.layout.width <= 0.0
                 || node.layout.height <= 0.0
                 || matches!(
@@ -2235,9 +2308,11 @@ impl RinchApp {
                 );
 
             if !skip_self {
-                // Check if focusable
+                // Focusable: an effective `tabindex >= 0` — explicit, or
+                // implied by the tag (issue #252) — or a custom control that
+                // takes text input without one.
                 let has_oninput = node.attributes.contains_key("data-oninput");
-                let has_tabindex = Self::node_tabindex(node).is_some_and(|v| v >= 0);
+                let has_tabindex = Self::effective_tabindex(node).is_some_and(|v| v >= 0);
 
                 if has_oninput || has_tabindex {
                     result.push(nid);
@@ -2272,13 +2347,13 @@ impl RinchApp {
     /// or a generic `tabindex >= 0` node (issue #228). Keyboard-driven, so the
     /// focused node gets the `:focus-visible` ring either way.
     fn focus_element(&mut self, node_id: usize) {
-        let has_oninput = {
+        let takes_text_focus = {
             let Some(doc) = &self.doc else { return };
             let d = doc.borrow();
             let Some(node) = d.tree.get(node_id) else {
                 return;
             };
-            node.attributes.contains_key("data-oninput")
+            Self::node_takes_text_focus(node)
         };
 
         // A blurred owner's user code (a `data-onchange` commit, a registered
@@ -2292,7 +2367,7 @@ impl RinchApp {
         // announcing one would give a registered target a second
         // `on_focus_gained` with no `on_focus_lost` between them.
         let mut target_changed = false;
-        if has_oninput {
+        if takes_text_focus {
             // `try_focus_input` takes focus through the arbiter (tears down any
             // prior surface / editor / input).
             self.try_focus_input(node_id);
@@ -2341,10 +2416,30 @@ impl RinchApp {
     /// handler must not swallow the key), with a `ClickContext` synthesized
     /// from the handler node's absolute rect, cursor at its center. A node with
     /// no live handler anywhere in its chain is a quiet no-op.
+    /// Whether the generic node currently holding the keyboard is a
+    /// `<select>` — the one focusable whose Enter/Space/Alt+Down opens a popup
+    /// instead of dispatching a `data-rid` (issue #314).
+    pub(crate) fn focused_node_is_select(&self) -> bool {
+        let FocusTarget::Node(id) = self.focus_target else {
+            return false;
+        };
+        self.doc
+            .as_ref()
+            .is_some_and(|doc| doc.borrow().tree.get(id).and_then(|n| n.tag()) == Some("select"))
+    }
+
     fn activate_focused_node(&mut self, node_id: usize, vp_w: f32, vp_h: f32) {
         let Some(doc) = self.doc.clone() else {
             return;
         };
+        // A focused `<select>` opens its own popup (issue #314). Without this
+        // the walk below would keep going and fire the enclosing card's or
+        // form's `data-rid` instead — a keyboard activation landing on
+        // something the user was not aiming at.
+        if doc.borrow().tree.get(node_id).and_then(|n| n.tag()) == Some("select") {
+            self.open_select_popup(node_id, vp_w, vp_h);
+            return;
+        }
         let d = doc.borrow();
         let mut current = Some(node_id);
         while let Some(nid) = current {
@@ -2413,7 +2508,11 @@ impl RinchApp {
         let registered = crate::focus_registry::is_registered(self.doc_key(), node_id);
         let Some(doc) = &self.doc else { return false };
         let d = doc.borrow();
-        let focusable = registered || d.tree.get(node_id).and_then(Self::node_tabindex).is_some();
+        let focusable = registered
+            || d.tree
+                .get(node_id)
+                .and_then(Self::effective_tabindex)
+                .is_some();
         if !focusable {
             return false;
         }
@@ -2476,13 +2575,24 @@ impl RinchApp {
             return;
         }
 
-        let Some(oninput_str) = node.attributes.get("data-oninput") else {
-            // Any parseable tabindex makes a node programmatically focusable —
+        // Route by **tag** first, `data-oninput` second (issue #424). A
+        // `<select>` with a change handler writes `data-oninput` like any other
+        // control an app listens to, and branching on the attribute alone
+        // installed an `EditableState` over the select's `value` — Tab onto it
+        // made it a typable text field. See `node_takes_text_focus`.
+        let oninput_attr = Self::node_takes_text_focus(node)
+            .then(|| node.attributes.get("data-oninput"))
+            .flatten();
+        let Some(oninput_str) = oninput_attr else {
+            // Any effective tabindex makes a node programmatically focusable —
             // including negative ones: `tabindex="-1"` is the standard
             // focusable-but-not-tabbable idiom (`element.focus()` into a
-            // just-opened dialog), and only the Tab collector excludes it.
+            // just-opened dialog), and only the Tab collector excludes it. The
+            // tag-implied ones (issue #252) count too, which is how a focused
+            // `<select>` lands here as `FocusTarget::Node` — closed, like a
+            // browser, and opened by Enter/Space/Alt+Down.
             // (Disabled was already refused above, for both branches.)
-            let focusable = Self::node_tabindex(node).is_some();
+            let focusable = Self::effective_tabindex(node).is_some();
             drop(d);
             if focusable {
                 // Deferred for the same reason the input path below defers its

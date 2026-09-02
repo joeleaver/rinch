@@ -20,10 +20,30 @@ rsx! {
 }
 ```
 
+Focusability comes from the **tag** or from an explicit **`tabindex`**, and an
+explicit one always wins — the browser rule.
+
+| Focusable by tag | |
+|---|---|
+| `<button>`, `<select>`, `<textarea>`, `<input>` | always |
+| `<a>` | only with a non-empty `href` — a bare `<a>` is not a link |
+
+`<summary>` is deliberately **not** in the set: rinch has no `<details>`
+disclosure behaviour, so a focusable `<summary>` would be a Tab stop that does
+nothing.
+
+A focusable element that is **visually hidden but laid out** — `opacity: 0`, or
+`position: absolute` off-screen — *is* in the Tab order, and that is correct:
+`.sr-only` text and skip links depend on exactly that, as they do in a browser.
+What leaves the order is a zero-sized box, `display: none`, and
+`visibility: hidden`/`collapse`. Neither is `data-rid` a focusability signal — the `DropdownMenu`'s
+full-screen dismissal backdrop carries one, and so do clickable cards, table
+rows and list items; none of those should be Tab stops.
+
 | Attribute | Effect |
 |---|---|
-| `tabindex="0"` | Reachable by Tab, focusable by click and by `NodeHandle::focus()` |
-| `tabindex="-1"` | **Not** in the Tab order, but still focusable by click and programmatically — the standard "focus this dialog when it opens" idiom |
+| `tabindex="0"` | Reachable by Tab, focusable by click and by `NodeHandle::focus()`. Needed on anything that is not focusable by tag — a `div` you are driving yourself |
+| `tabindex="-1"` | **Not** in the Tab order, but still focusable by click and programmatically — the standard "focus this dialog when it opens" idiom, and the way to take a `<button>` *out* of the Tab order |
 | `disabled` / `data-disabled` | Takes no focus at all, and accepts no keyboard edit. Both spellings count — the component library writes the HTML one, the runtime's own widgets write the `data-` one. A boolean attribute: present means disabled whatever the value; only the explicit `"false"` opts out |
 | `readonly` | Focuses, moves its caret, selects and copies like any other field — and refuses every command that would change its text (typing, delete, cut, paste, undo/redo). Same boolean rule |
 | `data-nofocus` | A press here takes the **click** but not the keyboard: whatever is focused stays focused. Same boolean rule. Read anywhere on the pressed element's ancestor chain, so a toolbar carries it once |
@@ -64,10 +84,20 @@ Focus arrives three ways, and all three go through the same arbiter:
   input — needs [`data-nofocus`](#taking-the-click-without-the-keyboard).
 - **`node.focus()` / `request_focus(node_id)`** — programmatic, also no ring.
 
-> **Desktop vs web parity.** On the desktop backend only elements carrying an
-> explicit `tabindex` (and `<input>`/`<textarea>`) are focusable. A `<button>`
-> or `<a href>` is *not* a Tab stop the way it is in a browser — give it a
-> `tabindex="0"` if you need one. Tracked as issue #252.
+A focused `<select>` is **closed**, like a browser's: Enter, Space or Alt+Down
+opens its popup, and the popup then owns the keyboard until it commits or is
+dismissed — at which point focus returns to the closed control, so Tab carries
+on from there rather than restarting. (A click *outside* the popup is the
+exception: it belongs to whatever it landed on.) Everything else focusable activates the nearest ancestor-or-self
+`data-rid` on Enter/Space, which is what makes `div { tabindex: "0", onclick: … }`
+behave like a button — and what makes Space on a `Checkbox`'s visually hidden
+`<input>` toggle the `<label>` that wraps it.
+
+> **Still not matched to the web.** A positive `tabindex` does not order ahead
+> of DOM order — the collector is a plain pre-order walk (issue #435) — and a
+> Modal's or Drawer's backdrop does not contain Tab, so controls behind it stay
+> reachable. Arrow/Enter/Escape navigation of the `Select` component's open
+> option list is issue #434.
 
 ### Taking the click without the keyboard
 

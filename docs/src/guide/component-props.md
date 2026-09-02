@@ -280,6 +280,11 @@ Custom Default: `toggle_visibility` defaults to `true`.
 
 Options are passed as children: `option { value: "us", "United States" }`
 
+The trigger is a Tab stop (`tabindex="0"`, `role="combobox"`,
+`aria-haspopup="listbox"`, and an `aria-expanded` that tracks the open state).
+Enter and Space on it toggle the dropdown. Arrow/Enter/Escape navigation of the
+**open** option list is issue #434.
+
 ### Radio / RadioGroup
 
 **Radio:**
