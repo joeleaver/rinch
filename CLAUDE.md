@@ -2026,10 +2026,17 @@ get_text_content(id: 42)                  → get text in subtree
 node's box twice: `layout` is **parent-relative** (exactly the node's own `layout`, for checking a
 child's offset within its container) and `absolute` is the **on-screen** box. **Pass `absolute.x`/
 `absolute.y` (e.g. its center) to `click()`/`mouse_*`** — the `layout` x/y are NOT screen
-coordinates. `absolute` is the box **paint** draws, so a CSS transform on the node or any
-ancestor moves *and resizes* it, and a `position: fixed` node reports its viewport box. That is
-also why width/height can differ between the two: `layout` is the size Taffy gave the box,
-`absolute` is the size it covers on screen (they are equal wherever nothing scales it).
+coordinates. `absolute` is the box paint draws *up to the DPI scale*, so a CSS transform on the
+node or any ancestor moves *and resizes* it, and a `position: fixed` node reports its viewport
+box. That is also why width/height can differ between the two: `layout` is the size Taffy gave
+the box, `absolute` is the size it covers on screen (they are equal wherever nothing scales it).
+
+**Units: `absolute` and every input tool are in logical (CSS) pixels; `screenshot()` is in
+physical pixels.** They coincide at scale factor 1, which is every ordinary development display.
+On a HiDPI display (or under `WINIT_X11_SCALE_FACTOR`) they do not: to find a node in a
+screenshot, multiply its `absolute` box by the scale factor. Do **not** feed a coordinate read
+off a screenshot back into `click()` there — divide it first. `click()` and the pointer path a
+real mouse takes are the same logical space on every host (#299).
 
 **Step 3: Close the app**
 

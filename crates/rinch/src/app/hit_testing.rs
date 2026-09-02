@@ -326,7 +326,14 @@ pub(crate) fn pointer_in_node(
 
 /// Detect whether a mouse position is near a window edge for resize.
 ///
-/// All coordinates are in the same unit (physical pixels).
+/// All five arguments are in the same unit: **logical (CSS) pixels** — the
+/// pointer position `PlatformEvent` carries, the logical layout viewport, and
+/// `WindowProps::resize_inset`, which is documented as matching a CSS margin.
+/// The caller used to hand this the physical `window_size` and a
+/// `inset * scale_factor`, because the desktop shell fed physical pointer
+/// coordinates; #299 moved the pointer into logical space, so the whole
+/// comparison moved with it.
+///
 /// Returns the resize direction if the cursor is within the grab zone.
 pub(crate) fn detect_resize_edge(
     x: f32,
@@ -728,12 +735,12 @@ pub(crate) const SCROLLBAR_HIT_THICKNESS: f32 = 16.0;
 /// The `x`/`y` fed to [`find_scrollbar_hit`] are the pointer coordinates the
 /// shell hands `PlatformEvent`, compared here against **logical** layout rects
 /// straight out of Taffy — no scale factor is applied anywhere in this
-/// function. That is the same space the vertical bar has always been tested
-/// in, and it is exactly the mismatch #299 describes (the desktop shell passes
-/// winit's *physical* coordinates), so at a scale factor other than 1 both
-/// bars are displaced by the same amount and #299 fixes both at once. The
-/// paint pass is unaffected: it multiplies by `scale` and works in device
-/// pixels.
+/// function, and none is needed: since #299 those coordinates are logical on
+/// every host, so both bars are grabbable at any scale factor. (Before #299
+/// the desktop shell forwarded winit's *physical* position, which displaced
+/// both bars by the same amount; fixing the shell fixed both at once, with no
+/// change here.) The paint pass is unaffected: it multiplies by `scale` and
+/// works in device pixels.
 pub(crate) struct ScrollbarHit {
     /// The scroll container whose bar was hit.
     pub node_id: usize,

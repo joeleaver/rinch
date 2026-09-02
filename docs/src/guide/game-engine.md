@@ -558,6 +558,26 @@ PlatformEvent::KeyDown {
 PlatformEvent::Resized { width: 1920, height: 1080 }
 ```
 
+> **Pointer coordinates are logical (CSS) pixels, not physical ones** (issue
+> #299). `MouseMove`/`MouseDown`/`MouseUp`/`MouseWheel`, `MouseWheel`'s
+> `delta_x`/`delta_y`, and the `File*` positions are all in the space the
+> document is laid out in and `hit_test` probes. A windowing system that reports
+> physical pixels — winit does — must divide first, and
+> `rinch_platform::to_logical_point(point, scale)` is the shared conversion:
+>
+> ```rust
+> let (lx, ly) = rinch_platform::to_logical_point((position.x, position.y), window.scale_factor());
+> events.push(PlatformEvent::MouseMove { x: lx as f32, y: ly as f32 });
+> ```
+>
+> Forwarding the physical position instead displaces every click, hover, drag
+> and scroll by the scale factor times its distance from the window origin — it
+> is invisible at scale 1.0 and wrong everywhere else. Note this is the opposite
+> of `resize(w, h)` and `RinchContextConfig`'s `width`/`height`, which stay
+> **physical**; `scale_factor` is how rinch reconciles the two. `wants_mouse(x,
+> y)` takes the same logical pair, so ask it with exactly what you put on the
+> event. `examples/game-embed` does this.
+
 ### API Reference: Embed
 
 **RinchContext:**
