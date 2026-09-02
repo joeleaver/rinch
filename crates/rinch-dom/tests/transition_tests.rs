@@ -1053,6 +1053,10 @@ fn keyframes_scale_x_still_animates() {
 /// that arm, and a review mutant that deleted it survived the whole suite.
 /// Both channels: the px part rides the op, the percentage part rides the
 /// #212 linear form.
+///
+/// This pins only the 2D projection. The z component is dropped by design,
+/// and every other 3D operation still flattens to identity — that is #405,
+/// which this test makes no claim about.
 #[test]
 fn keyframes_translate3d_keeps_its_2d_translation() {
     let (doc, div) = animated_div(
