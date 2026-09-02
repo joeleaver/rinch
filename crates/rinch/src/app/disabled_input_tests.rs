@@ -723,3 +723,43 @@ fn a_disabled_field_composes_nothing() {
     );
     assert!(log.borrow().len() <= 1, "no commit: {:?}", log.borrow());
 }
+
+// ── 6. the route neither the collector nor the claim can guard ──────────────
+
+/// Programmatic focus — `request_focus`, or a click handler calling
+/// `node.focus()` — is the one way into a disabled field that neither the Tab
+/// collector nor the mousedown claim stands in front of: both filter *before*
+/// `try_focus_input` is reached, so its own refusal is the only thing there.
+///
+/// Found by mutation during review: deleting that refusal left the entire
+/// workspace suite green. It was correct and load-bearing, and completely
+/// unverified.
+#[test]
+fn programmatic_focus_refuses_a_disabled_field() {
+    let (mut app, ids, _log) = mount_fixture();
+
+    app.try_focus_input(ids.disabled);
+
+    assert_eq!(
+        app.focus_target,
+        FocusTarget::None,
+        "a disabled field takes no claim from `request_focus` either"
+    );
+    assert!(
+        app.focused_input_state.is_none(),
+        "and no EditableState is installed over it"
+    );
+}
+
+/// The same for a field disabled by an enclosing `<fieldset>` rather than by
+/// its own attribute — the refusal asks `node_is_disabled_in_tree`, so it must
+/// hold for the inherited case too.
+#[test]
+fn programmatic_focus_refuses_a_field_inside_a_disabled_fieldset() {
+    let (mut app, ids, _log) = mount_fixture();
+
+    app.try_focus_input(ids.in_fieldset);
+
+    assert_eq!(app.focus_target, FocusTarget::None);
+    assert!(app.focused_input_state.is_none());
+}
