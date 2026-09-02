@@ -355,6 +355,44 @@ fn add_mark_with_a_mark_from_another_schema_fails_loud() {
     );
 }
 
+/// The positive half of the contract, and the one nothing in this crate was asserting:
+/// `Transform::remove_mark` on a mark the document really carries must **issue a step**
+/// and lose the mark. Making the method return `Ok` with no steps left the whole
+/// `rinch-editor-core` suite green — only `rinch-editor-collab`'s tests noticed, which is
+/// a long way to reach for a core guarantee, and "removes nothing and answers `Ok`" is
+/// the exact shape of issue #217.
+#[test]
+fn remove_mark_actually_removes_the_mark() {
+    let s = sk();
+    let bolded = s
+        .branch(
+            "paragraph",
+            Fragment::from_node(s.text_with_marks("abcd", vec![bold(&s)]).unwrap()),
+        )
+        .unwrap();
+    let d = doc(&s, vec![bolded]);
+    let mut tf = Transform::new(&s, d.clone());
+    tf.remove_mark(1, 5, bold(&s)).expect("the mark is present");
+    assert_ne!(
+        tf.doc, d,
+        "removing a mark that is there must change the doc"
+    );
+    assert!(
+        tf.doc.child(0).child(0).marks().is_empty(),
+        "the bold must be gone: {:?}",
+        tf.doc.child(0).child(0).marks()
+    );
+
+    // And the mirror, so a no-op `add_mark` cannot hide either.
+    let plain = doc(&s, vec![para(&s, "abcd")]);
+    let mut tf2 = Transform::new(&s, plain.clone());
+    tf2.add_mark(1, 5, bold(&s)).expect("bold is allowed here");
+    assert!(
+        bold(&s).is_in(tf2.doc.child(0).child(0).marks()),
+        "the bold must have been added"
+    );
+}
+
 /// The guard must stay narrow. Finding no matching mark in the range is an **ordinary
 /// no-op**, not an error — it is what `toggleBold` over unbolded text does — and so is a
 /// same-type mark whose *attrs* differ (removing `link[href=a]` from `link[href=b]`).

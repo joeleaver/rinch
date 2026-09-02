@@ -109,6 +109,18 @@ handle off the document (or off `state.schema()`, which is the same instance).
 The same pointer identity is why comparing `Node`s across two editor handles fails even
 for structurally identical documents — compare their serialized HTML instead.
 
+**This reaches `EditorHandle` too.** `create_editor` mints a new `Rc<Schema>` per handle,
+and `load_doc` installs the `Node` you give it as-is, so `b.load_doc(a.doc())` hands `b` a
+document built by `a`'s schema. `b` then reports `is_mark_active("bold") == false` over
+text that is bold, and its formatting commands return `false` rather than editing it —
+before the guard above they returned `true` and left the run carrying *two* `bold` marks,
+one per schema. Move a document between handles through a serialization instead:
+
+```rust
+b.load_html(&to_html(&a.doc()));        // or
+b.load_doc(b_schema.node_from_doc(&a.doc().to_doc())?);
+```
+
 ### Serialization
 
 The durable save/load shape is a recursive, schema-derived structure (under the
