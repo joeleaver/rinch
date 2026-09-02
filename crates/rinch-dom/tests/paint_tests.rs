@@ -1996,6 +1996,249 @@ mod scrollbar_paint {
         painter
     }
 
+    /// A pixel somewhere in the vertical bar's strip, `dy` rows down the track.
+    /// The container is 200x100 at the origin and the bar is `thickness` thick
+    /// with a 2px margin, so the vertical thumb's centre column is x = 195 at
+    /// the default 6px thickness.
+    fn vbar_pixel(painter: &TinySkiaPainter, dy: u32) -> [u8; 4] {
+        pixel_at(painter, 195, dy)
+    }
+
+    /// How far a pixel is from a reference colour, worst channel.
+    fn delta(p: [u8; 4], rgb: [u8; 3]) -> u8 {
+        p[0].abs_diff(rgb[0])
+            .max(p[1].abs_diff(rgb[1]))
+            .max(p[2].abs_diff(rgb[2]))
+    }
+
+    /// #416: 40% black is a good default over light chrome and no scrollbar at
+    /// all over dark chrome. Composited over `#0b0e13` it resolves to about
+    /// `#070810` — a delta of 3-8 per channel, which does not read on a
+    /// monitor, so a dark app scrolled with no visible sign that there was
+    /// anything below the fold.
+    #[test]
+    fn a_dark_containers_thumb_is_visible_against_its_background() {
+        const PANEL: [u8; 3] = [0x0b, 0x0e, 0x13];
+        let p = paint_scroller(
+            "overflow-y: auto; background-color: #0b0e13; color: #e6e6e6",
+            "width: 40px; height: 800px",
+            (0.0, 0.0),
+        );
+        // The thumb starts 2px down and is 20px long at minimum, so row 10 is
+        // thumb and row 60 is bare panel.
+        let thumb = vbar_pixel(&p, 10);
+        let bare = vbar_pixel(&p, 60);
+
+        assert!(
+            delta(bare, PANEL) < 6,
+            "row 60 must be bare panel, got {bare:?}"
+        );
+        assert!(
+            delta(thumb, PANEL) > 60,
+            "the thumb must stand off a dark panel, got {thumb:?} against {PANEL:?}"
+        );
+        // The pre-fix answer was ~#070810 — a delta of at most 8. Stated so
+        // this test is known to bite.
+        assert!(
+            delta(thumb, PANEL) > 20,
+            "40% black over #0b0e13 must not pass"
+        );
+    }
+
+    /// The same container with light chrome is untouched: the default follows
+    /// the palette's *polarity*, so every light-themed app is pixel-identical.
+    #[test]
+    fn a_light_containers_thumb_is_still_forty_percent_black() {
+        let p = paint_scroller(
+            "overflow-y: auto; background-color: white; color: #212529",
+            "width: 40px; height: 800px",
+            (0.0, 0.0),
+        );
+        // 0.4 black over white is 153.
+        assert!(
+            delta(vbar_pixel(&p, 10), [153, 153, 153]) < 4,
+            "got {:?}",
+            vbar_pixel(&p, 10)
+        );
+    }
+
+    /// A coloured `color` must not tint the thumb — only its polarity is read,
+    /// so the neutral grey the bar has always been stays neutral.
+    #[test]
+    fn a_coloured_text_colour_does_not_tint_the_thumb() {
+        let p = paint_scroller(
+            "overflow-y: auto; background-color: white; color: rgb(200, 0, 0)",
+            "width: 40px; height: 800px",
+            (0.0, 0.0),
+        );
+        let t = vbar_pixel(&p, 10);
+        assert_eq!((t[0], t[1], t[2]), (153, 153, 153), "got {t:?}");
+    }
+
+    /// `--rinch-scrollbar-color: <thumb>` paints the thumb in that colour. The
+    /// real `scrollbar-color` is gecko-only in Stylo and compiled out of the
+    /// servo build rinch uses, so the value arrives through a custom property.
+    #[test]
+    fn a_custom_property_sets_the_thumb_colour() {
+        let p = paint_scroller(
+            "overflow-y: auto; --rinch-scrollbar-color: rgb(255, 0, 0)",
+            "width: 40px; height: 800px",
+            (0.0, 0.0),
+        );
+        let t = vbar_pixel(&p, 10);
+        assert_eq!((t[0], t[1], t[2], t[3]), (255, 0, 0, 255), "got {t:?}");
+    }
+
+    /// Two colours: thumb then track. The track is only painted when asked
+    /// for, because rinch's bar is an overlay and a track under it would
+    /// change the look of every existing app.
+    #[test]
+    fn a_second_colour_paints_a_track_behind_the_thumb() {
+        let styled = "overflow-y: auto; --rinch-scrollbar-color: rgb(255, 0, 0) rgb(0, 0, 255)";
+        let p = paint_scroller(styled, "width: 40px; height: 800px", (0.0, 0.0));
+        assert_eq!(
+            (vbar_pixel(&p, 10)[0], vbar_pixel(&p, 10)[2]),
+            (255, 0),
+            "the thumb is still red"
+        );
+        let track = vbar_pixel(&p, 60);
+        assert_eq!(
+            (track[0], track[1], track[2]),
+            (0, 0, 255),
+            "and the bare track below it is blue, got {track:?}"
+        );
+
+        // With one colour there is no track at all: row 60 is the container's
+        // own white background.
+        let one = paint_scroller(
+            "overflow-y: auto; --rinch-scrollbar-color: rgb(255, 0, 0)",
+            "width: 40px; height: 800px",
+            (0.0, 0.0),
+        );
+        assert_eq!(
+            vbar_pixel(&one, 60)[2],
+            255,
+            "no track means the container shows through"
+        );
+    }
+
+    /// `--rinch-scrollbar-width: none` suppresses the bar entirely.
+    #[test]
+    fn scrollbar_width_none_paints_nothing() {
+        let p = paint_scroller(
+            "overflow-y: auto; --rinch-scrollbar-width: none",
+            "width: 40px; height: 800px",
+            (0.0, 0.0),
+        );
+        assert!(
+            !any_thumb(&p, 184, 0, 200, 100),
+            "no thumb anywhere in the vertical strip"
+        );
+        assert_eq!(
+            vbar_pixel(&p, 10)[0],
+            255,
+            "the container's white background shows through"
+        );
+    }
+
+    /// ...and it turns the hit strip off too, because `scrollbars` is what
+    /// `find_scrollbar_hit` consumes. An app drawing its own bar could
+    /// otherwise only cover rinch's up, never switch it off.
+    #[test]
+    fn scrollbar_width_none_removes_the_bar_from_hit_testing_too() {
+        let mut doc = RinchDocument::new();
+        let body = doc.body();
+        let container = doc.create_element("div");
+        doc.set_attribute(
+            container,
+            "style",
+            "width: 200px; height: 100px; overflow-y: auto; --rinch-scrollbar-width: none",
+        );
+        doc.append_child(body, container);
+        let content = doc.create_element("div");
+        doc.set_attribute(content, "style", "width: 40px; height: 800px");
+        doc.append_child(container, content);
+        doc.resolve_layout(800.0, 600.0);
+
+        let bars = rinch_dom::paint::scrollbar::scrollbars(&doc.tree, container.0, 1.0);
+        assert!(bars.vertical.is_none(), "no bar to hit-test");
+
+        // Without the declaration the same container does have one, so the
+        // assertion above is about `none` and not about the fixture.
+        doc.set_attribute(
+            container,
+            "style",
+            "width: 200px; height: 100px; overflow-y: auto",
+        );
+        doc.resolve_layout(800.0, 600.0);
+        assert!(
+            rinch_dom::paint::scrollbar::scrollbars(&doc.tree, container.0, 1.0)
+                .vertical
+                .is_some()
+        );
+    }
+
+    /// `thin` narrows the thumb. The default 6px bar covers x ∈ [192, 198);
+    /// a 4px one covers [194, 198), so x = 192 tells them apart.
+    #[test]
+    fn scrollbar_width_thin_narrows_the_thumb() {
+        let thin = paint_scroller(
+            "overflow-y: auto; --rinch-scrollbar-width: thin",
+            "width: 40px; height: 800px",
+            (0.0, 0.0),
+        );
+        let wide = paint_scroller("overflow-y: auto", "width: 40px; height: 800px", (0.0, 0.0));
+        assert!(
+            is_thumb(pixel_at(&wide, 192, 10)),
+            "the default bar reaches x = 192"
+        );
+        assert!(
+            !is_thumb(pixel_at(&thin, 192, 10)),
+            "a thin one does not, got {:?}",
+            pixel_at(&thin, 192, 10)
+        );
+        assert!(
+            is_thumb(pixel_at(&thin, 196, 10)),
+            "but it is still there at x = 196"
+        );
+    }
+
+    /// The property inherits, so one declaration on `:root` restyles every
+    /// scroll region in an app — which is the whole reason it goes through a
+    /// custom property rather than the inline `style` attribute.
+    #[test]
+    fn a_root_declaration_reaches_a_nested_scroll_container() {
+        let mut doc = RinchDocument::new();
+        doc.load_css(":root { --rinch-scrollbar-color: rgb(0, 200, 0); }");
+        let body = doc.body();
+        let outer = doc.create_element("div");
+        doc.append_child(body, outer);
+        let container = doc.create_element("div");
+        doc.set_attribute(
+            container,
+            "style",
+            "width: 200px; height: 100px; background-color: white; overflow-y: auto",
+        );
+        doc.append_child(outer, container);
+        let content = doc.create_element("div");
+        doc.set_attribute(content, "style", "width: 40px; height: 800px");
+        doc.append_child(container, content);
+        doc.resolve_layout(800.0, 600.0);
+
+        let mut painter = TinySkiaPainter::new(800, 600);
+        let mut cx: parley::LayoutContext<Brush> = parley::LayoutContext::new();
+        rinch_dom::paint::paint_document(
+            &doc.tree,
+            &mut painter,
+            1.0,
+            (800.0, 600.0),
+            &mut doc.font_cx,
+            &mut cx,
+        );
+        let t = vbar_pixel(&painter, 10);
+        assert_eq!((t[0], t[1], t[2]), (0, 200, 0), "got {t:?}");
+    }
+
     /// The container is 200×100 at the origin; the bar is 6px thick with a 2px
     /// margin, so the horizontal thumb occupies y ∈ [92, 98).
     #[test]
