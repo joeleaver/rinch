@@ -108,17 +108,39 @@ Tab navigation, no Enter/Space activation, no DevTools shortcut. Returning
 exactly as it would for an unregistered node, so registering costs you nothing
 you did not ask for.
 
-`k.key` is spelled the way the browser spells `KeyboardEvent.key` for the keys
-rinch names — `"ArrowLeft"`, `"Enter"`, `"Escape"`, `"Tab"`, `"Space"`, and the
-inserted text for a character key — falling back to the physical key code for
-keys with no name (`"F5"`). `k.code` is always the physical key.
+`k.key` is spelled the way the browser spells `KeyboardEvent.key` — with one
+long-standing exception, the spacebar, which rinch names `"Space"` where a
+browser reports `" "` (so `rinch-web`, which forwards `event.key()`
+unchanged, reports `" "` there). It is resolved in four steps:
 
-> Two gaps to know about. A modifier suppresses the inserted text, and only the
-> letters rinch itself binds (`a c e h i u v x y z`, `b`, `d`) are named back, so
-> `Ctrl+C` arrives as `k.key == "c"` but `Ctrl+S` arrives as `k.key == "KeyS"` —
-> match on `k.code` for combos outside that set. And a key bound to a **native
-> menu accelerator** is consumed by the menu before the document sees it, so
-> `on_key` never runs for it.
+1. **A named key wins over the text it would insert** — `"ArrowLeft"`,
+   `"Enter"`, `"Escape"`, `"Tab"`, `"PageUp"`, `"F1"`…`"F12"`, `"Shift"`, and
+   `"Space"` (not `" "`).
+2. **Otherwise the inserted text wins**, so a non-QWERTY layout reports the
+   letter actually typed rather than the physical QWERTY position: the AZERTY
+   key at the QWERTY-Q position is `k.key == "a"`, and Shift+A is `"A"`.
+3. **Otherwise the keycap letter.** A modifier suppresses the inserted text,
+   but the layout-mapped letter survives it — so a chord keeps step 2's
+   promise: on AZERTY, `Ctrl` plus the key labelled A is `k.key == "a"`, the
+   same letter the editor's own keymap acts on.
+4. **Otherwise the physical key's US-layout character**, for events that carry
+   no layout letter at all (the debug channel, injected and embedded events):
+   `Ctrl+S` is `"s"`, `Cmd+1` is `"1"`, `Ctrl+-` is `"-"`.
+
+`k.code` is always the physical key (`"KeyS"`, `"Digit1"`).
+
+> Two things to know. Steps 3–4 report the **lowercase** letter, because a
+> modifier has already suppressed the real text — `Ctrl+Shift+S` is `k.key ==
+> "s"`, so read `k.shift` (or match `k.code`) when the case matters. And a key
+> bound to a **native menu accelerator** is consumed by the menu before the
+> document sees it, so `on_key` never runs for it.
+
+The one key that still reports nothing is one rinch has no `KeyCode` for
+(`k.code == "Other"`) pressed with a modifier: rinch's code set covers the
+letters, the digits, `-`, `=`, the named keys and `F1`–`F12`, so under a
+modifier **the rest of the punctuation** — `Ctrl+/`, `Ctrl+,`, `Ctrl+[` — has
+no spelling to fall back to and never reaches the hook. Unmodified those keys
+are fine: their character arrives as the inserted text.
 
 Both focus callbacks run **after** the transition is complete: the arbiter and
 the DOM `:focus` state are already installed, so a callback may re-enter the

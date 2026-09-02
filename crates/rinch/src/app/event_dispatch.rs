@@ -1080,7 +1080,7 @@ impl RinchApp {
                 let alt = modifiers.alt;
 
                 // Build key string for the user keyboard hook + global fallback.
-                let key_str: Option<String> = hook_key_str(key, text.as_deref(), ctrl);
+                let key_str: Option<String> = hook_key_str(key, text.as_deref(), logical_key);
 
                 tracing::trace!(?key, ?text, ?key_str, shift, ctrl, alt, "KeyDown event");
 
@@ -1095,7 +1095,7 @@ impl RinchApp {
                         ctrl,
                         shift,
                         alt,
-                        meta: false,
+                        meta: modifiers.meta,
                     };
                     if events::dispatch_keyboard_event(&key_data) {
                         actions.push(AppAction::RequestRedraw);
@@ -1145,7 +1145,7 @@ impl RinchApp {
                                     ctrl,
                                     shift,
                                     alt,
-                                    meta: false,
+                                    meta: modifiers.meta,
                                 },
                             ),
                         );
@@ -1197,10 +1197,12 @@ impl RinchApp {
                         // unregistered node nothing.
                         //
                         // The `key` string matches the document-level
-                        // interceptor's spelling (`hook_key_str`), falling back
-                        // to the physical code for keys it has no name for
-                        // (function keys), so a widget always sees a non-empty
-                        // key.
+                        // interceptor's spelling (`hook_key_str`), which names
+                        // every key rinch has a `KeyCode` for regardless of the
+                        // modifiers held (issue #336). The physical-code
+                        // fallback is left in for the one remaining hole — a
+                        // `KeyCode::Other` carrying no printable text — so a
+                        // widget always sees a non-empty key.
                         if let FocusTarget::Node(id) = self.focus_target {
                             let key_data = events::KeyEventData {
                                 key: key_str.clone().unwrap_or_else(|| format!("{:?}", key)),
@@ -2190,59 +2192,146 @@ pub(crate) enum Motion {
     DocEnd,
 }
 
-/// Derive the key string handed to the user keyboard hook (and global
-/// fallback) from a `KeyDown`'s keycode + text. Named keys report their name
-/// (`"Space"`, `"Enter"`, …); Ctrl+letter combos report the letter; everything
-/// else — including `KeyCode::Other`, which is how both real hardware and the
-/// debug channel deliver punctuation — falls through to the event's `text`
-/// field, so a hook sees `key: "."` for a period but `key: "Space"` for a
-/// spacebar press.
-pub(crate) fn hook_key_str(key: KeyCode, text: Option<&str>, ctrl: bool) -> Option<String> {
-    match key {
-        // Named keys
-        KeyCode::ArrowLeft => Some("ArrowLeft".into()),
-        KeyCode::ArrowRight => Some("ArrowRight".into()),
-        KeyCode::ArrowUp => Some("ArrowUp".into()),
-        KeyCode::ArrowDown => Some("ArrowDown".into()),
-        KeyCode::Home => Some("Home".into()),
-        KeyCode::End => Some("End".into()),
-        KeyCode::Enter => Some("Enter".into()),
-        KeyCode::Backspace => Some("Backspace".into()),
-        KeyCode::Delete => Some("Delete".into()),
-        KeyCode::Tab => Some("Tab".into()),
-        KeyCode::Escape => Some("Escape".into()),
-        KeyCode::PageUp => Some("PageUp".into()),
-        KeyCode::PageDown => Some("PageDown".into()),
-        KeyCode::Space => Some("Space".into()),
-        // Modifier keys (as physical key presses)
-        KeyCode::ShiftLeft => Some("Shift".into()),
-        KeyCode::ShiftRight => Some("Shift".into()),
-        KeyCode::ControlLeft => Some("Control".into()),
-        KeyCode::ControlRight => Some("Control".into()),
-        KeyCode::AltLeft => Some("Alt".into()),
-        KeyCode::AltRight => Some("Alt".into()),
-        // Ctrl+key combos: derive key letter from KeyCode
-        KeyCode::KeyA if ctrl => Some("a".into()),
-        KeyCode::KeyB if ctrl => Some("b".into()),
-        KeyCode::KeyC if ctrl => Some("c".into()),
-        KeyCode::KeyD if ctrl => Some("d".into()),
-        KeyCode::KeyE if ctrl => Some("e".into()),
-        KeyCode::KeyH if ctrl => Some("h".into()),
-        KeyCode::KeyI if ctrl => Some("i".into()),
-        KeyCode::KeyU if ctrl => Some("u".into()),
-        KeyCode::KeyV if ctrl => Some("v".into()),
-        KeyCode::KeyX if ctrl => Some("x".into()),
-        KeyCode::KeyY if ctrl => Some("y".into()),
-        KeyCode::KeyZ if ctrl => Some("z".into()),
-        // Regular character input: use text field (filter control chars)
-        _ => text.and_then(|t| {
-            if !t.is_empty() && t.chars().all(|c| !c.is_control()) {
-                Some(t.to_string())
-            } else {
-                None
-            }
-        }),
+/// Derive the key string handed to the user keyboard hook (and the focus
+/// registry's `on_key`) from a key event's keycode + text + layout-mapped
+/// letter, spelled the way a browser spells `KeyboardEvent.key` — bar the
+/// spacebar, which rinch has always named `"Space"` where a browser reports
+/// `" "` (`rinch-web` forwards `event.key()`, so it reports `" "`; that
+/// divergence predates issue #336 and `spacebar_reports_the_named_key_not_its_text`
+/// pins it deliberately). Four steps, in order:
+///
+/// 1. **A named key wins over the text it would insert** — a spacebar press
+///    reports `"Space"`, not `" "`, and Tab reports `"Tab"`, not `"\t"`.
+/// 2. **A printable `text` wins for character keys**, so a non-QWERTY layout
+///    reports the letter the user actually typed rather than the physical
+///    QWERTY position — the same rule [`editor_key_binding`] follows. This is
+///    also how punctuation is named: it arrives as `KeyCode::Other` from
+///    hardware and from the debug channel alike, with the character in `text`.
+/// 3. **`logical_key` — the keycap letter — is next.** A modifier suppresses
+///    `text`, but winit's logical key survives it, so this is what keeps step
+///    2's promise for a *chord*: on AZERTY, `Ctrl` plus the key labelled A
+///    reports `"a"`, not the `"q"` sitting at that physical position. Without
+///    it the interceptor would contradict [`editor_key_binding`], which reads
+///    the same field, about which letter was pressed.
+/// 4. **The physical key's own US-layout spelling is the last resort**, for
+///    events that carry no logical key at all (the debug channel, injected and
+///    embedded events): `Ctrl+S` → `"s"`, `Ctrl+1` → `"1"`, `F5` → `"F5"`.
+///
+/// Steps 3–4 are issue #336: before them, every key outside the twelve
+/// Ctrl+letter combos rinch itself binds returned `None` under a modifier, and
+/// the document-level interceptor was never even *invoked* for it — `Ctrl+S`
+/// was unobservable. Both report the letter in lowercase (the real text is
+/// gone by then), so a modified letter reports `"s"` whether or not Shift is
+/// held (unmodified, step 2 reports the real `"S"`); match on `k.code` when
+/// the distinction matters.
+///
+/// Returns `None` only for a key rinch has no `KeyCode` for — `KeyCode::Other`
+/// — carrying no printable text. Under a modifier that is every punctuation
+/// key except `-` and `=`, which have codes of their own.
+pub(crate) fn hook_key_str(
+    key: KeyCode,
+    text: Option<&str>,
+    logical_key: Option<char>,
+) -> Option<String> {
+    if let Some(named) = named_key_str(key) {
+        return Some(named.to_string());
     }
+    if let Some(t) = text.filter(|t| !t.is_empty() && t.chars().all(|c| !c.is_control())) {
+        return Some(t.to_string());
+    }
+    if let Some(c) = logical_key.filter(|c| !c.is_control()) {
+        return Some(c.to_lowercase().to_string());
+    }
+    character_key_str(key).map(str::to_string)
+}
+
+/// Keys whose *name* is their `KeyboardEvent.key` spelling, so it wins over
+/// whatever text they would insert.
+fn named_key_str(key: KeyCode) -> Option<&'static str> {
+    Some(match key {
+        KeyCode::ArrowLeft => "ArrowLeft",
+        KeyCode::ArrowRight => "ArrowRight",
+        KeyCode::ArrowUp => "ArrowUp",
+        KeyCode::ArrowDown => "ArrowDown",
+        KeyCode::Home => "Home",
+        KeyCode::End => "End",
+        KeyCode::Enter => "Enter",
+        KeyCode::Backspace => "Backspace",
+        KeyCode::Delete => "Delete",
+        KeyCode::Tab => "Tab",
+        KeyCode::Escape => "Escape",
+        KeyCode::PageUp => "PageUp",
+        KeyCode::PageDown => "PageDown",
+        KeyCode::Space => "Space",
+        // Modifier keys (as physical key presses)
+        KeyCode::ShiftLeft | KeyCode::ShiftRight => "Shift",
+        KeyCode::ControlLeft | KeyCode::ControlRight => "Control",
+        KeyCode::AltLeft | KeyCode::AltRight => "Alt",
+        // Function keys insert no text, so their name is all they ever have.
+        KeyCode::F1 => "F1",
+        KeyCode::F2 => "F2",
+        KeyCode::F3 => "F3",
+        KeyCode::F4 => "F4",
+        KeyCode::F5 => "F5",
+        KeyCode::F6 => "F6",
+        KeyCode::F7 => "F7",
+        KeyCode::F8 => "F8",
+        KeyCode::F9 => "F9",
+        KeyCode::F10 => "F10",
+        KeyCode::F11 => "F11",
+        KeyCode::F12 => "F12",
+        _ => return None,
+    })
+}
+
+/// The character a physical key produces on a US layout. Only reached when a
+/// modifier suppressed the event's `text` (or there was none to begin with —
+/// a `KeyUp` carries no text at all) *and* the event carries no layout-mapped
+/// `logical_key` either, so a chord still reports a key. Being physical, this
+/// is the step that gets a non-QWERTY layout wrong, which is why step 3 sits
+/// in front of it.
+fn character_key_str(key: KeyCode) -> Option<&'static str> {
+    Some(match key {
+        KeyCode::KeyA => "a",
+        KeyCode::KeyB => "b",
+        KeyCode::KeyC => "c",
+        KeyCode::KeyD => "d",
+        KeyCode::KeyE => "e",
+        KeyCode::KeyF => "f",
+        KeyCode::KeyG => "g",
+        KeyCode::KeyH => "h",
+        KeyCode::KeyI => "i",
+        KeyCode::KeyJ => "j",
+        KeyCode::KeyK => "k",
+        KeyCode::KeyL => "l",
+        KeyCode::KeyM => "m",
+        KeyCode::KeyN => "n",
+        KeyCode::KeyO => "o",
+        KeyCode::KeyP => "p",
+        KeyCode::KeyQ => "q",
+        KeyCode::KeyR => "r",
+        KeyCode::KeyS => "s",
+        KeyCode::KeyT => "t",
+        KeyCode::KeyU => "u",
+        KeyCode::KeyV => "v",
+        KeyCode::KeyW => "w",
+        KeyCode::KeyX => "x",
+        KeyCode::KeyY => "y",
+        KeyCode::KeyZ => "z",
+        KeyCode::Digit0 => "0",
+        KeyCode::Digit1 => "1",
+        KeyCode::Digit2 => "2",
+        KeyCode::Digit3 => "3",
+        KeyCode::Digit4 => "4",
+        KeyCode::Digit5 => "5",
+        KeyCode::Digit6 => "6",
+        KeyCode::Digit7 => "7",
+        KeyCode::Digit8 => "8",
+        KeyCode::Digit9 => "9",
+        KeyCode::Equal => "=",
+        KeyCode::Minus => "-",
+        _ => return None,
+    })
 }
 
 /// Translate a platform key event into an editor-core `KeyBinding` for keymap lookup.
@@ -3512,25 +3601,150 @@ mod hook_key_str_tests {
     use super::hook_key_str;
     use rinch_platform::KeyCode;
 
+    fn k(key: KeyCode, text: Option<&str>) -> Option<String> {
+        hook_key_str(key, text, None)
+    }
+
+    /// The same call with the layout-mapped letter the shell passes alongside
+    /// a real `KeyDown` (`winit_logical_letter`).
+    fn kl(key: KeyCode, text: Option<&str>, logical: char) -> Option<String> {
+        hook_key_str(key, text, Some(logical))
+    }
+
     #[test]
     fn other_keycode_falls_through_to_the_text_field() {
         // Punctuation — hardware and debug channel alike — arrives as
         // `KeyCode::Other` with the character in `text`; the hook must see the
         // character, not a named key (issue #151).
-        assert_eq!(
-            hook_key_str(KeyCode::Other, Some("."), false),
-            Some(".".to_string())
-        );
+        assert_eq!(k(KeyCode::Other, Some(".")), Some(".".to_string()));
+    }
+
+    #[test]
+    fn other_keycode_without_text_is_the_one_unnamed_key() {
+        // The only remaining `None`: a key with no `KeyCode` identity and no
+        // printable text to borrow one from.
+        assert_eq!(k(KeyCode::Other, None), None);
+        assert_eq!(k(KeyCode::Other, Some("")), None);
+        assert_eq!(k(KeyCode::Other, Some("\u{1}")), None);
     }
 
     #[test]
     fn spacebar_reports_the_named_key_not_its_text() {
         // A real (or injected) spacebar press is `KeyCode::Space` with
         // text=" " — the named-key arm must win so hooks see "Space".
+        assert_eq!(k(KeyCode::Space, Some(" ")), Some("Space".to_string()));
+        // Same for Tab, whose text is a control character anyway.
+        assert_eq!(k(KeyCode::Tab, Some("\t")), Some("Tab".to_string()));
+    }
+
+    #[test]
+    fn the_layout_letter_wins_over_the_physical_position() {
+        // Unmodified, `text` is what the layout actually produced: the AZERTY
+        // key at the physical QWERTY-Q position types 'a', and that is what a
+        // hook must see. (The same rule `editor_key_binding` follows.)
+        assert_eq!(k(KeyCode::KeyQ, Some("a")), Some("a".to_string()));
+        // Shift is not suppressed, so the capital survives.
+        assert_eq!(k(KeyCode::KeyA, Some("A")), Some("A".to_string()));
+    }
+
+    #[test]
+    fn a_modifier_chord_still_names_its_key() {
+        // Issue #336: a modifier suppresses `text`, and before the physical
+        // fallback every key outside the twelve Ctrl+letters rinch binds
+        // returned `None` — so the interceptor was never invoked for Ctrl+S at
+        // all. Every letter, digit and symbol now reports a spelling.
+        assert_eq!(k(KeyCode::KeyS, None), Some("s".to_string()));
+        assert_eq!(k(KeyCode::KeyC, None), Some("c".to_string()));
+        assert_eq!(k(KeyCode::Digit1, None), Some("1".to_string()));
+        assert_eq!(k(KeyCode::Digit0, None), Some("0".to_string()));
+        assert_eq!(k(KeyCode::Equal, None), Some("=".to_string()));
+        assert_eq!(k(KeyCode::Minus, None), Some("-".to_string()));
+    }
+
+    #[test]
+    fn function_keys_report_their_name() {
+        // They insert no text, so before #336 they reported nothing at all.
+        assert_eq!(k(KeyCode::F1, None), Some("F1".to_string()));
+        assert_eq!(k(KeyCode::F5, None), Some("F5".to_string()));
+        assert_eq!(k(KeyCode::F12, None), Some("F12".to_string()));
+    }
+
+    #[test]
+    fn every_named_keycode_reports_a_spelling_with_no_text() {
+        // The contract in one assertion: a `KeyUp` carries no text at all, so
+        // anything that returns `None` here is invisible to a release.
+        let named = [
+            KeyCode::ArrowLeft,
+            KeyCode::ArrowRight,
+            KeyCode::ArrowUp,
+            KeyCode::ArrowDown,
+            KeyCode::Home,
+            KeyCode::End,
+            KeyCode::PageUp,
+            KeyCode::PageDown,
+            KeyCode::Enter,
+            KeyCode::Backspace,
+            KeyCode::Delete,
+            KeyCode::Tab,
+            KeyCode::Escape,
+            KeyCode::Space,
+            KeyCode::ShiftLeft,
+            KeyCode::ShiftRight,
+            KeyCode::ControlLeft,
+            KeyCode::ControlRight,
+            KeyCode::AltLeft,
+            KeyCode::AltRight,
+        ];
+        for key in named {
+            assert!(k(key, None).is_some(), "{key:?} reports no key string");
+        }
+        for key in [
+            KeyCode::KeyA,
+            KeyCode::KeyZ,
+            KeyCode::Digit5,
+            KeyCode::F7,
+            KeyCode::Equal,
+            KeyCode::Minus,
+        ] {
+            assert!(k(key, None).is_some(), "{key:?} reports no key string");
+        }
+    }
+
+    #[test]
+    fn a_chord_reports_the_keycap_letter_not_the_physical_position() {
+        // AZERTY puts the key labelled A at the physical QWERTY-Q position. A
+        // modifier suppresses `text`, but winit's layout-mapped letter
+        // survives it and the shell hands it over — and `editor_key_binding`
+        // acts on exactly that field, so the interceptor has to agree with it
+        // or one keystroke means two different letters inside one runtime.
+        assert_eq!(kl(KeyCode::KeyQ, None, 'a'), Some("a".to_string()));
+        // On a US layout the two agree and nothing changes.
+        assert_eq!(kl(KeyCode::KeyS, None, 's'), Some("s".to_string()));
+        // Still lowercase: the real text is gone by this step, so `Ctrl+Shift`
+        // reports the same letter `Ctrl` does (read `k.shift` for the case).
+        assert_eq!(kl(KeyCode::KeyQ, None, 'A'), Some("a".to_string()));
+        // With no logical key at all — the debug channel, an injected or
+        // embedded event — the physical US fallback still names the chord.
+        assert_eq!(k(KeyCode::KeyQ, None), Some("q".to_string()));
+    }
+
+    #[test]
+    fn the_inserted_text_still_outranks_the_logical_letter() {
+        // Unmodified, `text` carries case (and dead-key composition) that the
+        // lowercase ASCII logical letter cannot, so Shift+A stays "A".
+        assert_eq!(kl(KeyCode::KeyA, Some("A"), 'a'), Some("A".to_string()));
+        // And a named key still outranks both.
         assert_eq!(
-            hook_key_str(KeyCode::Space, Some(" "), false),
+            kl(KeyCode::Space, Some(" "), 'q'),
             Some("Space".to_string())
         );
+    }
+
+    #[test]
+    fn both_physical_modifier_keys_share_one_name() {
+        assert_eq!(k(KeyCode::ShiftRight, None), k(KeyCode::ShiftLeft, None));
+        assert_eq!(k(KeyCode::AltRight, None), Some("Alt".to_string()));
+        assert_eq!(k(KeyCode::ControlRight, None), Some("Control".to_string()));
     }
 }
 
