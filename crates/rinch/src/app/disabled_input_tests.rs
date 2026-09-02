@@ -242,6 +242,30 @@ fn clicking_a_disabled_field_claims_nothing() {
     assert!(app.focused_input_state.is_none());
 }
 
+/// A disabled control takes no DOM `:focus` either. It owns no keyboard, so a
+/// focus ring on it would be the style lying about who does — and the ring is
+/// what the `.rinch-text-input:focus` rule paints, so this is visible.
+#[test]
+fn clicking_a_disabled_field_paints_no_focus_ring() {
+    let (mut app, ids, _log) = mount_fixture();
+
+    click_center(&mut app, ids.plain);
+    assert_eq!(
+        app.doc.as_ref().unwrap().borrow().tree.focused_node,
+        Some(ids.plain),
+        "an enabled field does take DOM focus, so the assertion below means \
+         something"
+    );
+
+    click_center(&mut app, ids.disabled);
+
+    assert_eq!(
+        app.doc.as_ref().unwrap().borrow().tree.focused_node,
+        None,
+        "a press on a disabled control leaves :focus nowhere"
+    );
+}
+
 /// The control it *should* claim, for contrast — so the test above is not
 /// passing because the click machinery is broken in the fixture.
 #[test]

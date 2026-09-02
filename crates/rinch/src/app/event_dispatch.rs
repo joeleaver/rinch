@@ -549,7 +549,7 @@ impl RinchApp {
                     // claims it below — taking Node focus first would announce a
                     // gain-then-loss on the wrapper for a click that was never
                     // the wrapper's.
-                    let (hit, click_focus_node) = {
+                    let (hit, click_focus_node, focus_dom_target) = {
                         let d = doc.borrow();
                         let hit = hit_test(&d.tree, x, y);
                         let mut cur = hit;
@@ -567,7 +567,14 @@ impl RinchApp {
                             }
                             cur = node.parent;
                         }
-                        (hit, found)
+                        // Where the DOM `:focus` state goes. A **disabled**
+                        // control gets it nowhere (issue #315): it takes no
+                        // keyboard claim, so painting a focus ring on it would
+                        // be the style lying about who owns the keyboard.
+                        let dom_target = found
+                            .or(hit)
+                            .filter(|&nid| !Self::node_is_disabled_in_tree(&d.tree, nid));
+                        (hit, found, dom_target)
                     };
                     // An arbiter-held generic node (issue #228), and whether
                     // this press lands back on it — i.e. resolves to the same
@@ -596,8 +603,9 @@ impl RinchApp {
                         d.update_active(hit);
                         // :focus applies to the clicked element (persists after
                         // release); anchored on the focusable ancestor for a
-                        // press inside one.
-                        d.update_focus(click_focus_node.or(hit));
+                        // press inside one, and nowhere at all for a disabled
+                        // one.
+                        d.update_focus(focus_dom_target);
                     }
                     // No outstanding doc borrow from here on: the arbiter's
                     // teardown re-borrows, and the callbacks it defers are user

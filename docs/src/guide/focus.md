@@ -33,6 +33,9 @@ first `<legend>` stay enabled, so the control that re-enables the section can
 live there. No other tag's `disabled` reaches its subtree — a disabled
 `<button>` does not disable a `<span>` inside it.
 
+A press on a disabled control also paints no DOM `:focus`, so a focus ring
+never appears on something that owns no keyboard.
+
 Disabled is re-checked at **edit** time, not only at focus time, so a field
 that goes disabled *while focused* — a reactive `disabled` prop re-rendering
 under a live caret — stops accepting keys immediately. It keeps the claim
