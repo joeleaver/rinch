@@ -89,7 +89,7 @@ impl Peer {
         let before = self.state.doc.clone();
         let after = self.state.apply(tr);
         self.session
-            .record_local(&before, &after.doc)
+            .record_local(self.state.schema(), &before, &after.doc)
             .expect("project local");
         self.state = after;
     }
