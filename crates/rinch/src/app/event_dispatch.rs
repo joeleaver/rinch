@@ -287,22 +287,23 @@ impl RinchApp {
                 if let Some(drag) = &self.scrollbar_drag {
                     let node_id = drag.node_id;
                     let axis = drag.axis;
-                    // Identical arithmetic on either axis — the `- 4.0` is the
-                    // vertical bar's existing 2px-margin-each-end track, kept as
-                    // it was rather than re-derived. The pointer is measured in
-                    // the container's own space, where the track length is: a
-                    // 10px pointer move inside a `scale(2)` container is 5px of
-                    // track (#203).
+                    // Identical arithmetic on either axis. The pointer is
+                    // measured in the container's own space, where the track
+                    // is: a 10px pointer move inside a `scale(2)` container is
+                    // 5px of track (#203). The conversion from track distance
+                    // to scroll distance is the paint pass's own geometry
+                    // (`ScrollbarTrack::scroll_for_drag`), so the thumb moves
+                    // exactly as far as the pointer did (#400) — it used to
+                    // divide by a track measured across the *content* box while
+                    // paint drew one across the border box, and to ignore the
+                    // 20px minimum thumb entirely.
                     let local = self
                         .doc
                         .as_ref()
                         .map(|doc| pointer_in_node(&doc.borrow().tree, node_id, x, y))
                         .unwrap_or((x, y));
-                    let moved = axis.along(local.0, local.1) - drag.start_pos;
-                    let track_len = drag.container_size - 4.0;
-                    let max_scroll = drag.content_size - drag.container_size;
-                    let scroll_delta = (moved as f64 / track_len) * drag.content_size;
-                    let new_scroll = (drag.start_scroll + scroll_delta).clamp(0.0, max_scroll);
+                    let moved = (axis.along(local.0, local.1) - drag.start_pos) as f64;
+                    let new_scroll = drag.track.scroll_for_drag(drag.start_scroll, moved);
 
                     let mut scroll_handler_to_fire: Option<usize> = None;
                     if let Some(doc) = &self.doc {
@@ -648,27 +649,24 @@ impl RinchApp {
                     let ScrollbarHit {
                         node_id,
                         axis,
-                        content_size,
-                        container_size,
+                        track,
                     } = hit;
                     let mut scroll_handler_to_fire: Option<usize> = None;
                     if let Some(doc) = &self.doc {
                         let mut d = doc.borrow_mut();
-                        // Jump-to-click: the same ratio arithmetic on either
-                        // axis, read along the one that was hit. The track is
-                        // measured in the container's own space — the space
-                        // `container_size` and the painted thumb live in — so
-                        // the pointer is mapped into it rather than compared
-                        // against a window-space origin, which under a
-                        // `scale()` ancestor is a different unit (#203).
+                        // Jump-to-click: a position along the track maps
+                        // linearly onto the scroll range, on either axis, read
+                        // along the one that was hit. The track is measured in
+                        // the container's own space — the space the painted
+                        // thumb lives in — so the pointer is mapped into it
+                        // rather than compared against a window-space origin,
+                        // which under a `scale()` ancestor is a different unit
+                        // (#203). The track itself comes from the paint pass
+                        // (#400), so the press and the thumb agree about where
+                        // the track's ends are.
                         let local = pointer_in_node(&d.tree, node_id, x, y);
-                        let margin = 2.0_f64;
-                        let track_len = container_size - margin * 2.0;
-                        let max_scroll = content_size - container_size;
-                        let click_ratio = ((axis.along(local.0, local.1) as f64 - margin)
-                            / track_len)
-                            .clamp(0.0, 1.0);
-                        let new_scroll = click_ratio * max_scroll;
+                        let new_scroll =
+                            track.scroll_for_click(axis.along(local.0, local.1) as f64);
 
                         let handler_id = d
                             .tree
@@ -701,8 +699,7 @@ impl RinchApp {
                             // above and like every later move.
                             start_pos: axis.along(local.0, local.1),
                             start_scroll: new_scroll,
-                            content_size,
-                            container_size,
+                            track,
                         });
                     }
                     let to_fire = scroll_handler_to_fire.and_then(|hid| {

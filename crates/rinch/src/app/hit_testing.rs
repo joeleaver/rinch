@@ -460,46 +460,11 @@ pub(crate) fn find_scroll_container(tree: &rinch_dom::NodeTree, start: usize) ->
 }
 
 /// Compute the total content height of a node from its children's layout bounds.
+///
+/// Delegates to [`rinch_dom::paint::scrollbar::content_extents`] so this and
+/// the paint pass cannot disagree about what "content" means (#400).
 pub(crate) fn compute_content_height(tree: &rinch_dom::NodeTree, node_id: usize) -> f64 {
-    let node = match tree.get(node_id) {
-        Some(n) => n,
-        None => return 0.0,
-    };
-    // Taffy child.layout.y is relative to the parent's border box,
-    // so it includes padding-top + border-top. Subtract that offset
-    // to get the content-relative height (consistent with
-    // compute_visible_content_area_height).
-    let content_top = (node.computed_style.padding_top.to_px()
-        + node.computed_style.border_top_width.to_px()) as f64;
-    let mut max_bottom: f64 = 0.0;
-    for &child_id in &node.children {
-        if let Some(child) = tree.get(child_id) {
-            let bottom = (child.layout.y + child.layout.height) as f64 - content_top;
-            if bottom > max_bottom {
-                max_bottom = bottom;
-            }
-        }
-    }
-    max_bottom
-}
-
-/// The visible content area height: layout.height minus padding and border.
-/// Children are positioned relative to the content box, so this is the actual
-/// viewport height for scroll calculations.
-pub(crate) fn compute_visible_content_area_height(
-    tree: &rinch_dom::NodeTree,
-    node_id: usize,
-) -> f64 {
-    let node = match tree.get(node_id) {
-        Some(n) => n,
-        None => return 0.0,
-    };
-    let cs = &node.computed_style;
-    let pad_top = cs.padding_top.to_px() as f64;
-    let pad_bottom = cs.padding_bottom.to_px() as f64;
-    let border_top = cs.border_top_width.to_px() as f64;
-    let border_bottom = cs.border_bottom_width.to_px() as f64;
-    (node.layout.height as f64 - pad_top - pad_bottom - border_top - border_bottom).max(0.0)
+    rinch_dom::paint::scrollbar::content_extents(tree, node_id).1
 }
 
 /// Find the nearest ancestor (or self) that is a horizontal scroll container.
@@ -677,49 +642,12 @@ fn find_hscroll_container_at_point_recursive(
 }
 
 /// Compute the total content width of a node from its children's layout bounds.
-pub(crate) fn compute_content_width(tree: &rinch_dom::NodeTree, node_id: usize) -> f64 {
-    let node = match tree.get(node_id) {
-        Some(n) => n,
-        None => return 0.0,
-    };
-    // Taffy child.layout.x is relative to the parent's border box, so it
-    // includes padding-left + border-left. Subtract that offset to get the
-    // content-relative width, the same way `compute_content_height` does and
-    // the same way `DomDocument::scroll_width` already did — without this the
-    // horizontal scrollbar would decide a padded container overflows when it
-    // does not, and size its thumb against a width the paint pass disagrees
-    // with.
-    let content_left = (node.computed_style.padding_left.to_px()
-        + node.computed_style.border_left_width.to_px()) as f64;
-    let mut max_right: f64 = 0.0;
-    for &child_id in &node.children {
-        if let Some(child) = tree.get(child_id) {
-            let right = (child.layout.x + child.layout.width) as f64 - content_left;
-            if right > max_right {
-                max_right = right;
-            }
-        }
-    }
-    max_right
-}
-
-/// The visible content area width: layout.width minus padding and border.
 ///
-/// The horizontal twin of [`compute_visible_content_area_height`].
-pub(crate) fn compute_visible_content_area_width(
-    tree: &rinch_dom::NodeTree,
-    node_id: usize,
-) -> f64 {
-    let node = match tree.get(node_id) {
-        Some(n) => n,
-        None => return 0.0,
-    };
-    let cs = &node.computed_style;
-    let pad_left = cs.padding_left.to_px() as f64;
-    let pad_right = cs.padding_right.to_px() as f64;
-    let border_left = cs.border_left_width.to_px() as f64;
-    let border_right = cs.border_right_width.to_px() as f64;
-    (node.layout.width as f64 - pad_left - pad_right - border_left - border_right).max(0.0)
+/// The horizontal twin of [`compute_content_height`], and the same delegation:
+/// one definition, so a padded container cannot decide it overflows when paint
+/// says it does not.
+pub(crate) fn compute_content_width(tree: &rinch_dom::NodeTree, node_id: usize) -> f64 {
+    rinch_dom::paint::scrollbar::content_extents(tree, node_id).0
 }
 
 /// The width of the invisible strip along a container's edge that counts as
@@ -746,10 +674,10 @@ pub(crate) struct ScrollbarHit {
     pub node_id: usize,
     /// Which of its two bars.
     pub axis: ScrollAxis,
-    /// Content extent along `axis`.
-    pub content_size: f64,
-    /// Visible content-area extent along `axis`.
-    pub container_size: f64,
+    /// That bar's geometry, in the container's own space — the *paint pass's*
+    /// own computation, so a press and a drag land where the thumb is drawn
+    /// rather than on a separately derived track (#400).
+    pub track: rinch_dom::paint::scrollbar::ScrollbarTrack,
 }
 
 /// Check if a point (x, y) hits a scrollbar.
@@ -816,31 +744,12 @@ fn find_scrollbar_hit_node(
         }
     }
 
-    use rinch_dom::computed_style::OverflowValue;
-    let cs = &node.computed_style;
-
-    // A bar exists on an axis when that axis is scrollable AND overflowing.
-    // `scroll` and `auto` behave identically here, matching what the vertical
-    // bar has always done: rinch paints a thumb and no track, so there is
-    // nothing for `scroll` to show when the content fits.
-    // The extents are only measured for an axis that is scrollable at all, so
-    // an ordinary node in the recursion pays nothing beyond the enum check.
-    let vertical = matches!(cs.overflow_y, OverflowValue::Scroll | OverflowValue::Auto)
-        .then(|| {
-            (
-                compute_content_height(tree, node_id),
-                compute_visible_content_area_height(tree, node_id),
-            )
-        })
-        .filter(|(content, visible)| content > visible);
-    let horizontal = matches!(cs.overflow_x, OverflowValue::Scroll | OverflowValue::Auto)
-        .then(|| {
-            (
-                compute_content_width(tree, node_id),
-                compute_visible_content_area_width(tree, node_id),
-            )
-        })
-        .filter(|(content, visible)| content > visible);
+    // Which bars exist, and where they are: the paint pass's own computation,
+    // asked for at scale 1 because these coordinates are logical (#400). Cheap
+    // for an ordinary node in the recursion — `scrollbars` returns after two
+    // enum checks when neither axis scrolls, without walking children.
+    let bars = rinch_dom::paint::scrollbar::scrollbars(tree, node_id, 1.0);
+    let (vertical, horizontal) = (bars.vertical, bars.horizontal);
 
     // The corner. Where both bars are present their strips would overlap in a
     // square at the far end, and one of them would silently win the click.
@@ -860,26 +769,24 @@ fn find_scrollbar_hit_node(
         nx + nw
     };
 
-    if let Some((content_size, container_size)) = vertical {
+    if let Some(track) = vertical {
         let scrollbar_left = nx + nw - t;
         if x >= scrollbar_left && x <= nx + nw && y >= ny && y <= v_end {
             return Some(ScrollbarHit {
                 node_id,
                 axis: ScrollAxis::Vertical,
-                content_size,
-                container_size,
+                track,
             });
         }
     }
 
-    if let Some((content_size, container_size)) = horizontal {
+    if let Some(track) = horizontal {
         let scrollbar_top = ny + nh - t;
         if y >= scrollbar_top && y <= ny + nh && x >= nx && x <= h_end {
             return Some(ScrollbarHit {
                 node_id,
                 axis: ScrollAxis::Horizontal,
-                content_size,
-                container_size,
+                track,
             });
         }
     }

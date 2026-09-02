@@ -186,8 +186,8 @@ impl ScrollAxis {
 
 /// State for an active scrollbar drag operation.
 ///
-/// Axis-generic: `start_pos`, `content_size` and `container_size` are all read
-/// along [`ScrollbarDrag::axis`].
+/// Axis-generic: `start_pos` and every distance in [`ScrollbarDrag::track`] are
+/// read along [`ScrollbarDrag::axis`].
 pub(crate) struct ScrollbarDrag {
     /// The node ID of the scroll container being scrolled.
     pub node_id: usize,
@@ -202,10 +202,10 @@ pub(crate) struct ScrollbarDrag {
     pub start_pos: f32,
     /// The scroll offset along `axis` when the drag started.
     pub start_scroll: f64,
-    /// Content extent along `axis` (for ratio calculation).
-    pub content_size: f64,
-    /// Container extent along `axis`.
-    pub container_size: f64,
+    /// The bar's geometry along `axis`, captured at the press — the *paint
+    /// pass's* own numbers, so the thumb moves exactly as far as the pointer
+    /// does (#400).
+    pub track: rinch_dom::paint::scrollbar::ScrollbarTrack,
 }
 
 // ── Focus arbiter ────────────────────────────────────────────────────────────
@@ -3093,6 +3093,159 @@ impl RinchApp {
 /// --features embed,theme,clipboard` step — NOT under `cargo test --workspace`,
 /// which unifies `rinch/gpu` on from the GPU examples and turns the cfg off.
 #[cfg(all(test, software_shell))]
+mod scrollbar_drag_pixel_tests {
+    //! A drag moves the *painted* thumb as far as the pointer moved (#400).
+    //!
+    //! The oracle is the rasterised frame, not a second copy of the geometry:
+    //! the whole defect was two derivations of the same track agreeing with
+    //! neither the screen nor each other, so a test that asks
+    //! `scrollbar::scrollbars` where the thumb is would pass whatever those
+    //! two did. These press the bar, drag it, and measure where the grey
+    //! pixels went.
+
+    use super::*;
+
+    const SIZE: (u32, u32) = (800, 600);
+
+    /// A thumb pixel: 40% black composited over the container's white
+    /// background, so opaque mid-grey. The bare track is white and the page
+    /// outside is white too, so nothing else in the scanned column matches.
+    fn is_thumb(p: [u8; 4]) -> bool {
+        p[3] > 200 && p[0] > 100 && p[0] < 200 && p[1] == p[0] && p[2] == p[0]
+    }
+
+    /// The vertical centre of the painted thumb in the column through its
+    /// middle, in device pixels. Uses the centre rather than an edge so the
+    /// antialiased round caps cancel instead of biasing the answer.
+    fn thumb_centre(app: &mut RinchApp, container_w: f32) -> f64 {
+        // What a real frame does: resolve, then paint. `build_pixels` skips
+        // painting entirely unless `scene_dirty`, which `resolve_and_repaint`
+        // is what sets — the shell reaches here via `AppAction::RequestRedraw`.
+        app.resolve_and_repaint(SIZE.0 as f32, SIZE.1 as f32);
+        app.has_previous_frame = false; // full repaint, no dirty-region cache
+        let (pixels, w, h) = app.build_pixels(1.0, SIZE, false);
+        // The thumb is `THICKNESS` wide, `MARGIN` in from the container's right
+        // edge; the container sits at the document origin.
+        let cx = (container_w as f64
+            - rinch_dom::paint::scrollbar::MARGIN
+            - rinch_dom::paint::scrollbar::THICKNESS / 2.0) as u32;
+        assert!(cx < w, "scan column inside the surface");
+        let (mut first, mut last) = (None::<u32>, None::<u32>);
+        for y in 0..h {
+            let i = ((y * w + cx) * 4) as usize;
+            if is_thumb([pixels[i], pixels[i + 1], pixels[i + 2], pixels[i + 3]]) {
+                first.get_or_insert(y);
+                last = Some(y);
+            }
+        }
+        let (first, last) = (
+            first.expect("a thumb is painted in the scanned column"),
+            last.unwrap(),
+        );
+        (first as f64 + last as f64) / 2.0
+    }
+
+    /// Mount one scroll container at the document origin and return the app.
+    fn mount(container_style: &str, content_style: &str) -> RinchApp {
+        let container_style = format!("position: absolute; left: 0; top: 0; {container_style}");
+        let content_style = content_style.to_string();
+        let mut app = RinchApp::new(move |scope: &mut RenderScope| {
+            let root = scope.create_element("div");
+            root.set_attribute(
+                "style",
+                "position: relative; width: 800px; height: 600px; background: white",
+            );
+            let container = scope.create_element("div");
+            container.set_attribute("style", &container_style);
+            let content = scope.create_element("div");
+            content.set_attribute("style", &content_style);
+            container.append_child(&content);
+            root.append_child(&container);
+            root
+        });
+        app.mount_component(800.0, 600.0);
+        app.resolve_and_repaint(800.0, 600.0);
+        app
+    }
+
+    fn press(app: &mut RinchApp, x: f32, y: f32) {
+        app.handle_event(
+            PlatformEvent::MouseDown {
+                x,
+                y,
+                button: rinch_platform::MouseButton::Left,
+            },
+            SIZE,
+            1.0,
+        );
+    }
+
+    fn drag_to(app: &mut RinchApp, x: f32, y: f32) {
+        app.handle_event(PlatformEvent::MouseMove { x, y }, SIZE, 1.0);
+    }
+
+    /// The 20px minimum thumb. 100px of a 800px document leaves a thumb of 12,
+    /// which paint draws at 20 — so the thumb can travel 76px, not the 84 a
+    /// track-length ratio assumes. The input path never knew about the clamp,
+    /// so the thumb *lagged*: before this fix a 40px drag moved it 36.2px.
+    #[test]
+    fn dragging_a_min_clamped_thumb_moves_it_as_far_as_the_pointer() {
+        let mut app = mount(
+            "width: 200px; height: 100px; overflow-y: auto; background: white",
+            "width: 40px; height: 800px; background: white",
+        );
+
+        // Press at the very top of the track: jump-to-click lands on 0.
+        press(&mut app, 196.0, 2.0);
+        let before = thumb_centre(&mut app, 200.0);
+
+        drag_to(&mut app, 196.0, 42.0);
+        let after = thumb_centre(&mut app, 200.0);
+
+        let moved = after - before;
+        assert!(
+            (moved - 40.0).abs() <= 1.0,
+            "a 40px drag must move the painted thumb 40px, moved {moved}"
+        );
+        // The pre-fix answer, stated so this test is known to bite.
+        assert!(
+            moved > 38.0,
+            "36.2px was the pre-fix answer, and it must not pass"
+        );
+    }
+
+    /// The other half: paint measures the track across the container's
+    /// **border box** and the input path used to measure it across the
+    /// **content box**, so any border or padding separated them. Here a 4px
+    /// border makes the two tracks 96 and 88 — before this fix a 30px drag
+    /// moved the thumb 32.7px, i.e. it ran *ahead* of the pointer.
+    #[test]
+    fn dragging_the_thumb_of_a_bordered_container_moves_it_as_far_as_the_pointer() {
+        let mut app = mount(
+            "box-sizing: border-box; width: 200px; height: 100px; border: 4px solid white; \
+             overflow-y: auto; background: white",
+            "width: 40px; height: 300px; background: white",
+        );
+
+        press(&mut app, 196.0, 2.0);
+        let before = thumb_centre(&mut app, 200.0);
+
+        drag_to(&mut app, 196.0, 32.0);
+        let after = thumb_centre(&mut app, 200.0);
+
+        let moved = after - before;
+        assert!(
+            (moved - 30.0).abs() <= 1.0,
+            "a 30px drag must move the painted thumb 30px, moved {moved}"
+        );
+        assert!(
+            moved < 32.0,
+            "32.7px was the pre-fix answer, and it must not pass"
+        );
+    }
+}
+
+#[cfg(all(test, software_shell))]
 mod drag_ghost_dirty_region_tests {
     use super::*;
     use peniko::kurbo::Rect;
@@ -4936,8 +5089,8 @@ mod horizontal_scrollbar_tests {
             .expect("the bottom strip is the horizontal scrollbar");
         assert_eq!(hit.node_id, id);
         assert_eq!(hit.axis, ScrollAxis::Horizontal);
-        assert_eq!(hit.content_size, 800.0, "content extent along the axis");
-        assert_eq!(hit.container_size, 200.0, "visible extent along the axis");
+        assert_eq!(hit.track.content, 800.0, "content extent along the axis");
+        assert_eq!(hit.track.visible, 200.0, "visible extent along the axis");
 
         // And nothing on the right-hand edge: this container does not scroll
         // vertically, so there is no vertical bar to grab.
@@ -4959,8 +5112,8 @@ mod horizontal_scrollbar_tests {
             .expect("the right strip is the vertical scrollbar");
         assert_eq!(hit.node_id, id);
         assert_eq!(hit.axis, ScrollAxis::Vertical);
-        assert_eq!(hit.content_size, 800.0);
-        assert_eq!(hit.container_size, 100.0);
+        assert_eq!(hit.track.content, 800.0);
+        assert_eq!(hit.track.visible, 100.0);
         assert!(
             find_scrollbar_hit(&d.tree, x + w / 2.0, y + h - 2.0).is_none(),
             "no horizontal bar on a vertical-only scroller"
@@ -5009,18 +5162,23 @@ mod horizontal_scrollbar_tests {
         press(&mut app, (x + 2.0, y + h - 2.0));
         assert_eq!(offsets(&app, id), (0.0, 0.0));
 
-        // Drag half the track. `scroll_delta = (moved / (container - 4)) *
-        // content` — the vertical bar's arithmetic, read along x.
+        // Drag half the thumb's travel. The thumb here is 196 * 200/800 = 49
+        // long on a 196px track, so it can travel 147 over 600px of scroll —
+        // and the scroll a drag produces is `moved * max_scroll / thumb_travel`
+        // (#400). No border, no padding, and the thumb is clear of the 20px
+        // minimum, which is the one case where the old
+        // `moved / track * content` happened to agree: both give 400.
         let moved = (w - 4.0) / 2.0;
         drag_to(&mut app, (x + 2.0 + moved, y + h - 2.0));
 
         let (left, top) = offsets(&app, id);
         assert!(left > 0.0, "the container scrolled right, got {left}");
         assert_eq!(top, 0.0, "the vertical offset is untouched");
+        let thumb_travel = 196.0 - 196.0 * 200.0 / 800.0;
         assert_eq!(
             left,
-            ((w as f64 - 4.0) / 2.0 / (200.0 - 4.0)) * 800.0,
-            "half the track is half the content, clamped by max_scroll"
+            moved as f64 * (800.0 - 200.0) / thumb_travel,
+            "the thumb follows the pointer"
         );
 
         // And the app was told, on the axis that moved (#177).
@@ -5047,10 +5205,61 @@ mod horizontal_scrollbar_tests {
 
         let (left, top) = offsets(&app, id);
         assert_eq!(left, 0.0, "the horizontal offset is untouched");
-        assert_eq!(top, ((h as f64 - 4.0) / 2.0 / (100.0 - 4.0)) * 800.0);
+        // 100px of an 800px document is a 12px thumb, which paint draws at the
+        // 20px minimum — so it travels 76 of the 96px track, not 84. This used
+        // to read `(moved / 96) * 800` = 400, which moved the thumb 43.4px for
+        // a 48px drag; the thumb lagged the pointer (#400).
+        let thumb_travel = 96.0 - 20.0;
+        assert_eq!(top, moved as f64 * (800.0 - 100.0) / thumb_travel);
         assert_eq!(
             *fired.borrow().last().expect("onscroll fired"),
             ScrollEvent::new(top, 0.0)
+        );
+    }
+
+    /// Jump-to-click at the far end of the track scrolls all the way. Pins
+    /// `ScrollbarTrack::scroll_for_click` against the same track paint draws
+    /// on: the press used to measure the track across the container's content
+    /// box, so on a padded or bordered container the end of the track was not
+    /// where the end of the thumb's travel was (#400).
+    #[test]
+    fn pressing_the_far_end_of_the_track_scrolls_to_the_end() {
+        let Bars {
+            mut app, id, rect, ..
+        } = mount(TALL, "width: 40px; height: 800px");
+        let (x, y, w, h) = rect;
+
+        // The track runs from `margin` to `height - margin` in the container's
+        // own space, so its far end is `h - 2`.
+        press(&mut app, (x + w - 2.0, y + h - 2.0));
+        assert_eq!(
+            offsets(&app, id),
+            (0.0, 800.0 - 100.0),
+            "the end of the track is the end of the content"
+        );
+    }
+
+    /// Jump-to-click in the *middle* of the track pins the mapping's slope,
+    /// not just its endpoints. The far-end pin above and the press-at-start
+    /// assertions in the drag tests both saturate the clamp, so a
+    /// `scroll_for_click` whose denominator is wrong — `thumb_travel` instead
+    /// of `track_len`, say — still lands them on 0 and `max_scroll` and
+    /// survives; review mutation-testing found exactly that mutant alive.
+    /// Halfway down a 96px track is halfway through 700px of scroll, and only
+    /// the correct denominator says so ((50-2)/76 * 700 ≈ 442 for the mutant).
+    #[test]
+    fn pressing_the_middle_of_the_track_scrolls_proportionally() {
+        let Bars {
+            mut app, id, rect, ..
+        } = mount(TALL, "width: 40px; height: 800px");
+        let (x, y, w, _h) = rect;
+
+        // pos = 50 on a track running [2, 98): ratio (50-2)/96 = 0.5 exactly.
+        press(&mut app, (x + w - 2.0, y + 50.0));
+        assert_eq!(
+            offsets(&app, id),
+            (0.0, (50.0 - 2.0) / 96.0 * 700.0),
+            "halfway along the track is halfway through the scroll range"
         );
     }
 
@@ -6822,19 +7031,22 @@ mod transform_aware_walk_tests {
         );
         assert_eq!(scroll_of(&app, sc_id), 0.0, "grabbed at the track's start");
 
-        // Drag 40 painted pixels down: 20 container pixels of a 96px track,
-        // over 1000px of scrollable content → 1100 * 20/96 ≈ 229.17.
+        // Drag 40 painted pixels down: 20 container pixels. The thumb here is
+        // 96 * 100/1100 = 8.7 long, so paint draws it at the 20px minimum and
+        // it can travel 76 of the 96px track over 1000px of scroll — 20px of
+        // pointer is 20 * 1000/76 ≈ 263.16 of scroll (#400; this used to read
+        // `1100 * 20/96` ≈ 229.17, which moved the thumb only 17.4px).
         mouse(&mut app, PlatformEvent::MouseMove { x: 384.0, y: 44.0 });
         let moved = scroll_of(&app, sc_id);
-        let expected = 1100.0 * 20.0 / 96.0;
+        let expected = 20.0 * 1000.0 / 76.0;
         assert!(
             (moved - expected).abs() < 0.5,
             "expected ~{expected}, got {moved}"
         );
-        // Treating the pointer move as 40 track pixels would have scrolled twice
-        // as far — and past the 1000px clamp, which is what made it obvious.
+        // Treating the pointer move as 40 track pixels would have scrolled
+        // twice as far, which is what this test is about.
         assert!(
-            moved < 1100.0 * 40.0 / 96.0 - 1.0,
+            moved < 40.0 * 1000.0 / 76.0 - 1.0,
             "the delta must be measured in the container's own space"
         );
     }
