@@ -125,7 +125,32 @@ impl RinchApp {
     }
 
     /// Open the popup for `select_id`, anchored to the control.
+    ///
+    /// A **disabled** `<select>` has no popup interaction at all, and the guard
+    /// lives here because this is the one place a popup comes into existence —
+    /// the mouse route (`handle_click`'s Phase 0.5), Enter/Space
+    /// (`activate_focused_node`) and Alt+Down all funnel through it.
+    ///
+    /// It has to be a whole-interaction refusal, not a check on the last step.
+    /// Phase 0.5 runs *ahead* of every focus and claim gate `disabled` added
+    /// (issue #315): it hit-tests, opens, and returns. So a disabled `<select>`
+    /// opened its popup, let an option be picked, and fired the app's change
+    /// handler — a disabled control mutating application state. Refusing only
+    /// the commit would have left the popup opening.
+    ///
+    /// The click is still **consumed** by Phase 0.5, deliberately: a browser
+    /// does not dispatch a click on a disabled form control at all, so an
+    /// enclosing card's `data-rid` must not run either. Same rule
+    /// `found_input_focus` follows for a disabled `<input>`.
     pub(super) fn open_select_popup(&mut self, select_id: usize, vp_w: f32, vp_h: f32) {
+        let disabled = self
+            .doc
+            .as_ref()
+            .is_some_and(|doc| Self::node_is_disabled_in_tree(&doc.borrow().tree, select_id));
+        if disabled {
+            return;
+        }
+
         // Start from a clean slate (also tears down any prior popup / focus).
         self.close_select_popup();
 

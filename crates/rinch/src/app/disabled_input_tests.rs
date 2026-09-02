@@ -26,6 +26,8 @@ struct Ids {
     disabled_false: usize,
     in_fieldset: usize,
     in_legend: usize,
+    select: usize,
+    select_in_fieldset: usize,
 }
 
 /// One document holding every case: an ordinary `<input>`, a `disabled` one, a
@@ -55,6 +57,8 @@ fn mount_fixture() -> (RinchApp, Ids, Rc<RefCell<Vec<String>>>) {
         record("disabled-false"),
         record("in-fieldset"),
         record("in-legend"),
+        record("select-input"),
+        record("select-change"),
     ];
 
     let ids: Rc<Cell<Option<Ids>>> = Rc::new(Cell::new(None));
@@ -80,6 +84,21 @@ fn mount_fixture() -> (RinchApp, Ids, Rc<RefCell<Vec<String>>>) {
         let disabled_false = field(scope, handlers[4].0);
         disabled_false.set_attribute("disabled", "false");
 
+        // A `<select>` with the handlers any app with a change listener writes.
+        // Starts **enabled** so a test can measure where its popup's options
+        // land, then disable it and click the same place.
+        let select = scope.create_element("select");
+        select.set_attribute("style", "display: block; width: 200px; height: 30px");
+        select.set_attribute("data-oninput", &handlers[7].0.to_string());
+        select.set_attribute("data-onchange", &handlers[8].0.to_string());
+        for (value, label) in [("a", "Alpha"), ("b", "Bravo")] {
+            let opt = scope.create_element("option");
+            opt.set_attribute("value", value);
+            let t = scope.create_text(label);
+            opt.append_child(&t);
+            select.append_child(&opt);
+        }
+
         let fieldset = scope.create_element("fieldset");
         fieldset.set_attribute("style", "width: 400px; height: 200px");
         fieldset.set_attribute("disabled", "");
@@ -90,9 +109,19 @@ fn mount_fixture() -> (RinchApp, Ids, Rc<RefCell<Vec<String>>>) {
         // A wrapper, so the inherited disable is tested through a level of
         // nesting rather than only parent-to-child.
         let wrapper = scope.create_element("div");
-        wrapper.set_attribute("style", "width: 300px; height: 60px");
+        wrapper.set_attribute("style", "width: 300px; height: 120px");
         let in_fieldset = field(scope, handlers[5].0);
         wrapper.append_child(&in_fieldset);
+        // A `<select>` nested below the disabled fieldset — the guard asks
+        // `node_is_disabled_in_tree`, not just the control's own attribute.
+        let select_in_fieldset = scope.create_element("select");
+        select_in_fieldset.set_attribute("style", "display: block; width: 200px; height: 30px");
+        let fs_opt = scope.create_element("option");
+        fs_opt.set_attribute("value", "x");
+        let fs_text = scope.create_text("X");
+        fs_opt.append_child(&fs_text);
+        select_in_fieldset.append_child(&fs_opt);
+        wrapper.append_child(&select_in_fieldset);
         fieldset.append_child(&legend);
         fieldset.append_child(&wrapper);
 
@@ -102,6 +131,7 @@ fn mount_fixture() -> (RinchApp, Ids, Rc<RefCell<Vec<String>>>) {
             &readonly,
             &data_disabled,
             &disabled_false,
+            &select,
         ] {
             root.append_child(n);
         }
@@ -115,6 +145,8 @@ fn mount_fixture() -> (RinchApp, Ids, Rc<RefCell<Vec<String>>>) {
             disabled_false: disabled_false.node_id().0,
             in_fieldset: in_fieldset.node_id().0,
             in_legend: in_legend.node_id().0,
+            select: select.node_id().0,
+            select_in_fieldset: select_in_fieldset.node_id().0,
         }));
         root
     });
@@ -141,6 +173,27 @@ fn type_str(app: &mut RinchApp, text: &str) {
     for ch in text.chars() {
         key(app, KeyCode::KeyA, Some(&ch.to_string()));
     }
+}
+
+fn click(app: &mut RinchApp, x: f32, y: f32) {
+    app.handle_event(
+        PlatformEvent::MouseDown {
+            x,
+            y,
+            button: MouseButton::Left,
+        },
+        (800, 600),
+        1.0,
+    );
+    app.handle_event(
+        PlatformEvent::MouseUp {
+            x,
+            y,
+            button: MouseButton::Left,
+        },
+        (800, 600),
+        1.0,
+    );
 }
 
 fn click_center(app: &mut RinchApp, id: usize) {
@@ -551,4 +604,122 @@ fn the_boolean_rule_is_presence_with_a_false_opt_out() {
     set_attr(&mut app, ids.disabled_false, "disabled", Some("no"));
     type_str(&mut app, "z");
     assert_eq!(focused_text(&app), "");
+}
+
+// ── 7. the sixth route: a <select> popup is a whole interaction ─────────────
+
+/// `handle_click`'s Phase 0.5 hit-tests for a `<select>`, opens its popup and
+/// **returns** — ahead of every focus and claim gate the rest of this PR
+/// installs. So a disabled `<select>` opened, let an option be picked, and
+/// fired the app's change handler: a disabled control mutating application
+/// state, which is the exact thing the PR title claims to prevent.
+///
+/// The repro is spatial, so it is built the way a user would hit it: measure
+/// where the popup's second option lands while the control is enabled, close
+/// it, disable the control, then click the control and that same point.
+#[test]
+fn a_disabled_select_neither_opens_nor_commits() {
+    let (mut app, ids, log) = mount_fixture();
+
+    // 1. Enabled: the popup opens and the option is where we think it is.
+    click_center(&mut app, ids.select);
+    assert!(app.is_select_open(), "the enabled control opens its popup");
+    let option_pt = {
+        let open = app.open_select.as_ref().expect("popup is open");
+        let bravo = open.option_ids[1];
+        let d = app.doc.as_ref().unwrap().borrow();
+        let (x, y, w, h) = painted_element_box(&d.tree, bravo);
+        (x + w / 2.0, y + h / 2.0)
+    };
+    key(&mut app, KeyCode::Escape, None);
+    assert!(!app.is_select_open());
+    log.borrow_mut().clear();
+
+    // 2. Disabled: the same two clicks must do nothing at all.
+    set_attr(&mut app, ids.select, "disabled", Some(""));
+    click_center(&mut app, ids.select);
+    assert!(!app.is_select_open(), "a disabled <select> opens no popup");
+    click(&mut app, option_pt.0, option_pt.1);
+
+    assert!(
+        log.borrow().is_empty(),
+        "a disabled <select> must not reach the app's handlers: {:?}",
+        log.borrow()
+    );
+    assert_eq!(
+        dom_value(&app, ids.select),
+        "",
+        "and must not write its own value"
+    );
+}
+
+/// The guard sits on the popup's single constructor, so it holds for every
+/// route in — not just the mouse one. Called directly, the way Enter/Space and
+/// Alt+Down call it.
+#[test]
+fn the_popup_constructor_itself_refuses_a_disabled_control() {
+    let (mut app, ids, _log) = mount_fixture();
+    set_attr(&mut app, ids.select, "disabled", Some(""));
+
+    app.open_select_popup(ids.select, 800.0, 600.0);
+
+    assert!(!app.is_select_open());
+    assert_eq!(app.focus_target, FocusTarget::None);
+}
+
+/// A `<select>` inside a disabled `<fieldset>` is disabled too, by the same
+/// rule the rest of this PR applies — the guard asks
+/// `node_is_disabled_in_tree`, not just the control's own attribute.
+#[test]
+fn a_select_in_a_disabled_fieldset_opens_nothing() {
+    let (mut app, ids, _log) = mount_fixture();
+
+    click_center(&mut app, ids.select_in_fieldset);
+    assert!(!app.is_select_open(), "a click opens nothing");
+
+    app.open_select_popup(ids.select_in_fieldset, 800.0, 600.0);
+    assert!(!app.is_select_open(), "and neither does the constructor");
+}
+
+// ── 8. IME composes nothing into a disabled field ──────────────────────────
+
+/// `dispatch_input_ime`'s `Preedit` arm writes `data-preedit` straight to the
+/// DOM without consulting `live_focused_input_handler`, so it sat outside
+/// every gate this PR installs: a preedit painted into a disabled field and —
+/// since `Commit` *is* gated — could never resolve.
+#[test]
+fn a_disabled_field_composes_nothing() {
+    let (mut app, ids, log) = mount_fixture();
+
+    click_center(&mut app, ids.plain);
+    set_attr(&mut app, ids.plain, "disabled", Some(""));
+
+    app.handle_event(
+        PlatformEvent::Ime(rinch_platform::ImeEvent::Preedit {
+            text: "\u{3053}".into(),
+            cursor: None,
+        }),
+        (800, 600),
+        1.0,
+    );
+
+    let preedit = app
+        .doc
+        .as_ref()
+        .unwrap()
+        .borrow()
+        .tree
+        .get(ids.plain)
+        .and_then(|n| n.attributes.get("data-preedit").cloned());
+    assert!(
+        preedit.is_none(),
+        "no preedit paints into a disabled field: {preedit:?}"
+    );
+    assert_eq!(
+        app.focus_target,
+        FocusTarget::None,
+        "and the IME event releases the claim through the same path a \
+         keystroke would, so the two orders agree"
+    );
+    assert!(log.borrow().len() <= 1, "no commit: {:?}", log.borrow());
 }

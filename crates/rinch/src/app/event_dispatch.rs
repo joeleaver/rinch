@@ -1327,7 +1327,20 @@ impl RinchApp {
                         }
                     }
                     FocusTarget::Input(node_id) => {
-                        self.dispatch_input_ime(node_id, ime);
+                        // A disabled field composes nothing (issue #315).
+                        // `dispatch_input_ime`'s `Preedit` arm writes
+                        // `data-preedit` straight to the DOM without touching
+                        // `live_focused_input_handler`, so it sat outside every
+                        // gate the rest of that issue installed: a preedit
+                        // painted into a disabled field, and — since `Commit`
+                        // *is* gated — could never resolve. Probing here
+                        // releases the claim through the same path a keystroke
+                        // would, so a field that goes disabled mid-composition
+                        // ends up in exactly one state whichever event lands
+                        // first.
+                        if self.live_focused_input_handler().is_some() {
+                            self.dispatch_input_ime(node_id, ime);
+                        }
                         actions.push(AppAction::RequestRedraw);
                     }
                     // A registered custom text component (issue #176) consumes
