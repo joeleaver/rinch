@@ -5,13 +5,17 @@ use super::*;
 impl RinchApp {
     /// The logical (CSS-pixel) viewport `window_size` presents.
     ///
-    /// `window_size` is the **physical** surface size, and pointer coordinates
-    /// arrive in the same physical units. The document, however, is laid out in
-    /// CSS pixels and paint multiplies every layout coordinate by the scale
-    /// factor, so anything that resolves layout — every `resolve_and_repaint`
-    /// below, and `ClickContext`'s viewport — must be handed *this*, never the
-    /// raw surface size. Handing layout the physical size lays the page out
-    /// `scale_factor` times too wide and paint then scales it up again.
+    /// `window_size` is the **physical** surface size — the one genuinely
+    /// physical quantity crossing this boundary. The document is laid out in CSS
+    /// pixels and paint multiplies every layout coordinate by the scale factor,
+    /// so anything that resolves layout — every `resolve_and_repaint` below, and
+    /// `ClickContext`'s viewport — must be handed *this*, never the raw surface
+    /// size. Handing layout the physical size lays the page out `scale_factor`
+    /// times too wide and paint then scales it up again.
+    ///
+    /// Pointer coordinates do **not** need this: they arrive already logical
+    /// (issue #299), converted by the shell with
+    /// `rinch_platform::to_logical_point`.
     ///
     /// Shares `rinch_platform::to_logical` with the shells rather than dividing
     /// again here: mount and resize lay out at the *rounded* logical size, so a
@@ -24,9 +28,11 @@ impl RinchApp {
 
     /// Process a platform event and return a list of actions for the shell.
     ///
-    /// `window_size` is in **physical** pixels (so are the pointer coordinates
-    /// carried by the mouse events); the logical layout viewport is derived from
-    /// it by [`Self::layout_viewport`].
+    /// `window_size` is in **physical** pixels; the logical layout viewport is
+    /// derived from it by [`Self::layout_viewport`]. The pointer coordinates
+    /// carried by the mouse and file-drag events are **logical**, on every host
+    /// — see [`rinch_platform::PlatformEvent`]'s *Coordinate space* note — so
+    /// they compare directly against the layout tree `hit_test` probes.
     #[allow(clippy::too_many_lines)]
     pub fn handle_event(
         &mut self,
@@ -242,9 +248,14 @@ impl RinchApp {
                 if let Some(ref props) = self.window_props {
                     if props.borderless && props.resizable {
                         if let Some(inset) = props.resize_inset {
-                            let (w, h) = (window_size.0 as f32, window_size.1 as f32);
-                            let inset_physical = inset * scale_factor as f32;
-                            if let Some(dir) = detect_resize_edge(x, y, w, h, inset_physical) {
+                            // Compared in one unit — logical (#299). `x`/`y`
+                            // and the viewport are already logical, and
+                            // `resize_inset` is documented as matching a CSS
+                            // margin, so it is a CSS-pixel quantity to begin
+                            // with; the old `inset * scale` against a physical
+                            // `window_size` was compensating for a physical
+                            // pointer.
+                            if let Some(dir) = detect_resize_edge(x, y, vp_w, vp_h, inset) {
                                 actions
                                     .push(AppAction::SetCursor(resize_direction_to_cursor(&dir)));
                                 return actions;
@@ -471,9 +482,8 @@ impl RinchApp {
                 if let Some(ref props) = self.window_props {
                     if props.borderless && props.resizable {
                         if let Some(inset) = props.resize_inset {
-                            let (w, h) = (window_size.0 as f32, window_size.1 as f32);
-                            let inset_physical = inset * scale_factor as f32;
-                            if let Some(dir) = detect_resize_edge(x, y, w, h, inset_physical) {
+                            // One unit — logical; see the `MouseMove` twin above.
+                            if let Some(dir) = detect_resize_edge(x, y, vp_w, vp_h, inset) {
                                 actions.push(AppAction::DragResizeWindow(dir));
                                 return actions;
                             }
@@ -2080,13 +2090,20 @@ impl RinchApp {
         let anchor = {
             let d = doc.borrow();
             // Where in the dragged node the press landed, in the node's own
-            // space — the space the snapshot below is painted in. A painted
-            // origin subtracted from the pointer would be the wrong unit inside
-            // a `scale()` ancestor (#203).
+            // space. A painted origin subtracted from the pointer would be the
+            // wrong unit inside a `scale()` ancestor (#203).
+            //
+            // `1.0`, not `scale_factor`: `mousedown_pos` is a `PlatformEvent`
+            // pointer position, which is logical (#299). The `paint_subtree`
+            // calls below deliberately keep `scale_factor` — they rasterise the
+            // drag ghost, which is a picture and belongs in device pixels — so
+            // the two adjacent scale arguments genuinely differ. The ghost's
+            // translate (`cursor - anchor`) is therefore logical and is scaled
+            // up at paint time; see `build_scene` / `build_pixels`.
             rinch_dom::paint::point_in_painted_box(
                 &d.tree,
                 node_id,
-                scale_factor,
+                1.0,
                 mousedown_pos.0 as f64,
                 mousedown_pos.1 as f64,
             )
@@ -2752,43 +2769,6 @@ impl RinchApp {
         }
     }
 
-    /// Like [`Self::editor_point_address`] but for a **physical** pointer position:
-    /// the layout is in logical pixels while pointer events arrive in physical
-    /// pixels, so we don't know up front whether the layout is logical or physical.
-    ///
-    /// Resolve in two passes so the scale hedge is sound (a wrong-space coordinate
-    /// must fail rather than silently snap): first try an **exact** textblock hit
-    /// at the raw point, then at the scale-divided point — a click on actual text
-    /// lands here in the correct space. Only if neither lands directly on a
-    /// textblock (a genuine click on chrome / padding / beside a short line) do we
-    /// **snap** to the nearest block, preferring the raw point. Snapping last (not
-    /// per-attempt) is what stops a HiDPI text-click from resolving to garbage in
-    /// the physical space before the logical retry runs.
-    pub(crate) fn editor_point_address_physical(
-        &self,
-        x: f32,
-        y: f32,
-        scale: f64,
-    ) -> Option<(usize, usize, usize)> {
-        let s = scale as f32;
-        let scaled = (s - 1.0).abs() > f32::EPSILON;
-        // Pass 1: exact textblock resolution (no snap) at raw, then scaled.
-        if let Some(r) = self.editor_point_address_in(x, y, false) {
-            return Some(r);
-        }
-        if scaled && let Some(r) = self.editor_point_address_in(x / s, y / s, false) {
-            return Some(r);
-        }
-        // Pass 2: genuine chrome click — snap to the nearest block, raw first.
-        if let Some(r) = self.editor_point_address_in(x, y, true) {
-            return Some(r);
-        }
-        if scaled {
-            return self.editor_point_address_in(x / s, y / s, true);
-        }
-        None
-    }
-
     /// Resolve a window/logical point to `(container id, textblock id, flat IFC
     /// byte offset)` inside whatever editor it lands on — the shared primitive for
     /// click, drag-select, and vertical/Home-End movement. Snaps to the nearest
@@ -2853,18 +2833,10 @@ impl RinchApp {
         Some((cont, tb, ifc_byte))
     }
 
-    /// Whether a physical click at `(x, y)` landed in a **task item's checkbox
+    /// Whether a click at logical `(x, y)` landed in a **task item's checkbox
     /// gutter** — the strip left of the item's content where the `::before` checkbox
     /// renders. A task item is the only block with an interactive marker (bullets and
-    /// numbers are inert), so this gates the checkbox-toggle click path. Tries raw
-    /// then scaled coordinates, matching the other physical click helpers.
-    fn editor_task_checkbox_at_physical(&self, x: f32, y: f32, scale: f64) -> bool {
-        let s = scale as f32;
-        let scaled = (s - 1.0).abs() > f32::EPSILON;
-        self.editor_task_checkbox_at(x, y) || (scaled && self.editor_task_checkbox_at(x / s, y / s))
-    }
-
-    /// The logical-coordinate core of [`Self::editor_task_checkbox_at_physical`].
+    /// numbers are inert), so this gates the checkbox-toggle click path.
     fn editor_task_checkbox_at(&self, x: f32, y: f32) -> bool {
         let Some(doc) = self.doc.clone() else {
             return false;
@@ -3145,19 +3117,6 @@ impl RinchApp {
         None
     }
 
-    /// Physical-coordinate variant of [`Self::editor_container_at`] (the raw-or-
-    /// scaled HiDPI hedge, mirroring [`Self::editor_point_address_physical`]).
-    pub(crate) fn editor_container_at_physical(&self, x: f32, y: f32, scale: f64) -> Option<usize> {
-        self.editor_container_at(x, y).or_else(|| {
-            let s = scale as f32;
-            if (s - 1.0).abs() > f32::EPSILON {
-                self.editor_container_at(x / s, y / s)
-            } else {
-                None
-            }
-        })
-    }
-
     /// The host id of an editor **leaf** node element — an `<img>`/`<hr>` whose
     /// `data-pm-type` is `image` or `horizontal_rule` — under logical point
     /// `(x, y)`, if the click landed on one inside an editor container. Walks up
@@ -3186,20 +3145,7 @@ impl RinchApp {
         None
     }
 
-    /// Physical-coordinate variant of [`Self::editor_leaf_at`] (the raw-or-scaled
-    /// HiDPI hedge, mirroring [`Self::editor_container_at_physical`]).
-    fn editor_leaf_at_physical(&self, x: f32, y: f32, scale: f64) -> Option<usize> {
-        self.editor_leaf_at(x, y).or_else(|| {
-            let s = scale as f32;
-            if (s - 1.0).abs() > f32::EPSILON {
-                self.editor_leaf_at(x / s, y / s)
-            } else {
-                None
-            }
-        })
-    }
-
-    /// Focus the new editor under a pointer click at physical `(x, y)` and set the
+    /// Focus the new editor under a pointer click at logical `(x, y)` and set the
     /// selection per the click gesture. Returns whether the click landed in an
     /// editor.
     ///
@@ -3227,7 +3173,7 @@ impl RinchApp {
         click_count: u8,
         shift: bool,
     ) -> bool {
-        let Some(container) = self.editor_container_at_physical(x, y, scale) else {
+        let Some(container) = self.editor_container_at(x, y) else {
             return false;
         };
         let Some(handle) = crate::editor::editor_for_doc(self.doc_key(), container) else {
@@ -3243,8 +3189,8 @@ impl RinchApp {
         // of placing a caret (the checkbox is a CSS `::before`, so the hit is geometric,
         // not a real element). Resolve the nearest textblock for a document position,
         // then toggle the enclosing task item.
-        if self.editor_task_checkbox_at_physical(x, y, scale)
-            && let Some((c, tb, ifc)) = self.editor_point_address_physical(x, y, scale)
+        if self.editor_task_checkbox_at(x, y)
+            && let Some((c, tb, ifc)) = self.editor_point_address(x, y)
             && c == container
             && let Some(pos) = handle.pos_at(tb, ifc)
             && handle.toggle_task_checked_at(pos.0)
@@ -3258,13 +3204,12 @@ impl RinchApp {
         // A click on a leaf node (an image or horizontal rule) selects the node
         // itself — a `Selection::Node`, outlined by the view — rather than placing a
         // text cursor (design §6 node-views). A node-select never arms a drag.
-        if let Some(leaf) = self.editor_leaf_at_physical(x, y, scale)
+        if let Some(leaf) = self.editor_leaf_at(x, y)
             && let Some(selection) = handle.node_selection_at_host(leaf)
         {
             handle.set_selection(selection);
             crate::editor::end_drag(self.input_doc());
-        } else if let Some((c, textblock, ifc_byte)) =
-            self.editor_point_address_physical(x, y, scale)
+        } else if let Some((c, textblock, ifc_byte)) = self.editor_point_address(x, y)
             && c == container
             && let Some(clicked) = handle.pos_at(textblock, ifc_byte)
         {
@@ -3296,7 +3241,7 @@ impl RinchApp {
         true
     }
 
-    /// Extend an in-progress drag-select to physical pointer `(x, y)`: the
+    /// Extend an in-progress drag-select to logical pointer `(x, y)`: the
     /// selection runs from the mousedown anchor to the position under the pointer.
     /// Returns whether a drag was active and updated.
     pub(crate) fn extend_editor_drag(
@@ -3309,7 +3254,7 @@ impl RinchApp {
         let Some((container, anchor)) = crate::editor::drag_anchor(self.input_doc()) else {
             return false;
         };
-        let Some((c, tb, ifc)) = self.editor_point_address_physical(x, y, scale) else {
+        let Some((c, tb, ifc)) = self.editor_point_address(x, y) else {
             return true; // dragged off the text; keep the drag, don't change selection
         };
         if c != container {

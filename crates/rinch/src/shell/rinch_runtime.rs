@@ -35,7 +35,7 @@ use rinch_core::events;
 use rinch_platform::PlatformRenderer;
 use rinch_platform::{
     AppAction, ImeEvent, KeyCode, Modifiers, MouseButton as PlatformMouseButton, PlatformEvent,
-    PlatformWindow, UserEvent, to_logical,
+    PlatformWindow, UserEvent, to_logical, to_logical_point,
 };
 
 use crate::app::RinchApp;
@@ -1679,10 +1679,18 @@ impl ApplicationHandler for RinchRuntime {
                 }
                 return;
             }
-            WindowEvent::PointerMoved { position, .. } => PlatformEvent::MouseMove {
-                x: position.x as f32,
-                y: position.y as f32,
-            },
+            WindowEvent::PointerMoved { position, .. } => {
+                // winit reports the pointer in **physical** pixels; every
+                // `PlatformEvent` coordinate is logical (#299). This is the
+                // conversion for the whole pointer stream: `MouseDown`,
+                // `MouseUp` and `MouseWheel` below all read the position back
+                // out of `app.cursor_pos`, which this event sets.
+                let (lx, ly) = to_logical_point((position.x, position.y), self.scale_factor());
+                PlatformEvent::MouseMove {
+                    x: lx as f32,
+                    y: ly as f32,
+                }
+            }
             WindowEvent::PointerButton {
                 state: ElementState::Pressed,
                 button,
@@ -1770,11 +1778,20 @@ impl ApplicationHandler for RinchRuntime {
             }
             WindowEvent::MouseWheel { delta, .. } => {
                 let (dx, dy) = match delta {
+                    // Lines, not pixels: the `* 40.0` is already a logical-px
+                    // convention, so there is nothing to convert.
                     winit::event::MouseScrollDelta::LineDelta(x, y) => {
                         (x as f64 * 40.0, y as f64 * 40.0)
                     }
-                    winit::event::MouseScrollDelta::PixelDelta(pos) => (pos.x, pos.y),
+                    // A pixel delta is a *physical* distance, and it is compared
+                    // against logical scroll extents — so it divides like a
+                    // position does, or a HiDPI trackpad scrolls `scale` times
+                    // too far (#299).
+                    winit::event::MouseScrollDelta::PixelDelta(pos) => {
+                        to_logical_point((pos.x, pos.y), self.scale_factor())
+                    }
                 };
+                // Already logical: set from the converted `PointerMoved` above.
                 let (cx, cy) = self.app.cursor_pos.unwrap_or((0.0, 0.0));
                 PlatformEvent::MouseWheel {
                     x: cx,
@@ -1877,13 +1894,14 @@ impl ApplicationHandler for RinchRuntime {
             WindowEvent::DragEntered { paths, position } => {
                 let size = self.window_size();
                 let scale = self.scale_factor();
+                // A file-drag position is a pointer position like any other, and
+                // is hit-tested against the layout tree (#299).
+                let position = to_logical_point((position.x, position.y), scale);
                 if paths.is_empty() {
                     // Wayland: paths arrive on drop, not on enter.
                     // Fire a FileDragMoved to trigger hover tracking.
                     let actions = self.app.handle_event(
-                        PlatformEvent::FileDragMoved {
-                            position: (position.x, position.y),
-                        },
+                        PlatformEvent::FileDragMoved { position },
                         size,
                         scale,
                     );
@@ -1892,10 +1910,7 @@ impl ApplicationHandler for RinchRuntime {
                     // X11/Windows: paths are known on enter.
                     for path in paths {
                         let actions = self.app.handle_event(
-                            PlatformEvent::FileHoverEnter {
-                                path,
-                                position: (position.x, position.y),
-                            },
+                            PlatformEvent::FileHoverEnter { path, position },
                             size,
                             scale,
                         );
@@ -1905,11 +1920,11 @@ impl ApplicationHandler for RinchRuntime {
                 return;
             }
             WindowEvent::DragMoved { position } => PlatformEvent::FileDragMoved {
-                position: (position.x, position.y),
+                position: to_logical_point((position.x, position.y), self.scale_factor()),
             },
             WindowEvent::DragDropped { paths, position } => PlatformEvent::FileDropped {
                 paths,
-                position: (position.x, position.y),
+                position: to_logical_point((position.x, position.y), self.scale_factor()),
             },
             WindowEvent::DragLeft { .. } => PlatformEvent::FileHoverCancelled,
             _ => return,
@@ -2193,11 +2208,14 @@ impl RinchRuntime {
             WindowEvent::PointerMoved { position, .. } => {
                 let size = self.devtools_size();
                 let scale = self.devtools_scale_factor();
+                // Same physical→logical conversion as the main window, against
+                // the DevTools window's own scale factor (#299).
+                let (lx, ly) = to_logical_point((position.x, position.y), scale);
                 if let Some(dt_app) = &mut self.devtools_app {
                     let actions = dt_app.handle_event(
                         PlatformEvent::MouseMove {
-                            x: position.x as f32,
-                            y: position.y as f32,
+                            x: lx as f32,
+                            y: ly as f32,
                         },
                         size,
                         scale,
@@ -2288,14 +2306,17 @@ impl RinchRuntime {
                 }
             }
             WindowEvent::MouseWheel { delta, .. } => {
+                let size = self.devtools_size();
+                let scale = self.devtools_scale_factor();
                 let (dx, dy) = match delta {
                     winit::event::MouseScrollDelta::LineDelta(x, y) => {
                         (x as f64 * 40.0, y as f64 * 40.0)
                     }
-                    winit::event::MouseScrollDelta::PixelDelta(pos) => (pos.x, pos.y),
+                    // Physical, like the main window's (#299).
+                    winit::event::MouseScrollDelta::PixelDelta(pos) => {
+                        to_logical_point((pos.x, pos.y), scale)
+                    }
                 };
-                let size = self.devtools_size();
-                let scale = self.devtools_scale_factor();
                 if let Some(dt_app) = &mut self.devtools_app {
                     let (cx, cy) = dt_app.cursor_pos.unwrap_or((0.0, 0.0));
                     let actions = dt_app.handle_event(

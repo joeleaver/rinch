@@ -13,6 +13,8 @@ mod event_dispatch;
 mod focus;
 #[cfg(test)]
 mod focus_lifecycle_tests;
+#[cfg(test)]
+mod hidpi_pointer_tests;
 pub(crate) mod hit_testing;
 #[cfg(test)]
 mod input_commit_tests;
@@ -1087,8 +1089,11 @@ impl RinchApp {
         if let Some(ref drag) = self.active_dnd {
             if rinch_core::events::is_drag_ghost_visible() {
                 use peniko::kurbo::Affine;
-                let tx = (drag.cursor.0 - drag.anchor.0) as f64;
-                let ty = (drag.cursor.1 - drag.anchor.1) as f64;
+                // `cursor` and `anchor` are both logical (#299); the snapshot
+                // was painted at `scale`, so the translate that keeps the
+                // grabbed point under the pointer is scaled up to match.
+                let tx = (drag.cursor.0 - drag.anchor.0) as f64 * scale;
+                let ty = (drag.cursor.1 - drag.anchor.1) as f64 * scale;
                 self.painter
                     .scene_mut()
                     .append(drag.snapshot.scene(), Some(Affine::translate((tx, ty))));
@@ -1260,8 +1265,10 @@ impl RinchApp {
             let mut ghost_rect = None;
             if let Some(ref drag) = self.active_dnd {
                 if rinch_core::events::is_drag_ghost_visible() {
-                    let dx = (drag.cursor.0 - drag.anchor.0) as i32;
-                    let dy = (drag.cursor.1 - drag.anchor.1) as i32;
+                    // Logical → device pixels, like the Vello twin above (#299):
+                    // the blit lands in a physical-pixel pixmap.
+                    let dx = ((drag.cursor.0 - drag.anchor.0) as f64 * scale) as i32;
+                    let dy = ((drag.cursor.1 - drag.anchor.1) as f64 * scale) as i32;
                     Self::blit_drag_overlay(
                         painter.pixels_mut(),
                         w,

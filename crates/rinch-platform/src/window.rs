@@ -66,13 +66,75 @@ pub trait PlatformWindow {
 /// A non-finite or non-positive `scale` falls back to 1x rather than dividing
 /// by zero, and the result never collapses to zero.
 pub fn to_logical(size: (u32, u32), scale: f64) -> (u32, u32) {
-    let scale = if scale.is_finite() && scale > 0.0 {
-        scale
-    } else {
-        1.0
-    };
+    let scale = sane_scale(scale);
     (
         ((size.0 as f64 / scale).round() as u32).max(1),
         ((size.1 as f64 / scale).round() as u32).max(1),
     )
+}
+
+/// Convert a physical (device-pixel) *point* to a logical (CSS-pixel) one.
+///
+/// The pointer twin of [`to_logical`], and the conversion every shell owes the
+/// runtime: `PlatformEvent`'s pointer coordinates are **logical on every host**
+/// (see [`crate::PlatformEvent`]), because hit testing probes the layout tree
+/// and the document is laid out in CSS pixels. A shell that forwards its
+/// windowing system's physical pointer position untouched displaces every click
+/// by the scale factor times its distance from the origin (issue #299).
+///
+/// Unlike [`to_logical`] this neither rounds nor clamps: a pointer position is
+/// meaningfully subpixel, and a legal one can be negative (a drag that left the
+/// window) or zero.
+///
+/// A non-finite or non-positive `scale` falls back to 1x rather than dividing
+/// by zero, exactly as [`to_logical`] does.
+pub fn to_logical_point(point: (f64, f64), scale: f64) -> (f64, f64) {
+    let scale = sane_scale(scale);
+    (point.0 / scale, point.1 / scale)
+}
+
+/// A scale factor safe to divide by: anything non-finite or non-positive
+/// degrades to 1x rather than producing an infinity or a NaN.
+fn sane_scale(scale: f64) -> f64 {
+    if scale.is_finite() && scale > 0.0 {
+        scale
+    } else {
+        1.0
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A size rounds to whole logical pixels and never collapses to zero; a
+    /// point keeps its fraction and its sign, because a pointer is not a size.
+    #[test]
+    fn a_point_is_not_rounded_or_clamped_the_way_a_size_is() {
+        assert_eq!(to_logical((1600, 1200), 2.0), (800, 600));
+        assert_eq!(to_logical((1, 1), 4.0), (1, 1), "a size never reaches 0");
+
+        assert_eq!(to_logical_point((900.0, 441.0), 2.0), (450.0, 220.5));
+        assert_eq!(
+            to_logical_point((-8.0, 0.0), 2.0),
+            (-4.0, 0.0),
+            "a pointer that left the window keeps its negative coordinate"
+        );
+    }
+
+    /// Both conversions degrade to 1x rather than dividing by zero or NaN.
+    #[test]
+    fn a_nonsense_scale_falls_back_to_1x() {
+        for bad in [0.0, -2.0, f64::NAN, f64::INFINITY] {
+            assert_eq!(to_logical((800, 600), bad), (800, 600));
+            assert_eq!(to_logical_point((100.0, 50.0), bad), (100.0, 50.0));
+        }
+    }
+
+    /// The whole change this helper exists for is an arithmetic identity at
+    /// scale 1.0 — which is why it is safe to put on every pointer path.
+    #[test]
+    fn scale_1_is_the_identity() {
+        assert_eq!(to_logical_point((123.25, -7.5), 1.0), (123.25, -7.5));
+    }
 }

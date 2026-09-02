@@ -326,7 +326,14 @@ pub(crate) fn pointer_in_node(
 
 /// Detect whether a mouse position is near a window edge for resize.
 ///
-/// All coordinates are in the same unit (physical pixels).
+/// All five arguments are in the same unit: **logical (CSS) pixels** — the
+/// pointer position `PlatformEvent` carries, the logical layout viewport, and
+/// `WindowProps::resize_inset`, which is documented as matching a CSS margin.
+/// The caller used to hand this the physical `window_size` and a
+/// `inset * scale_factor`, because the desktop shell fed physical pointer
+/// coordinates; #299 moved the pointer into logical space, so the whole
+/// comparison moved with it.
+///
 /// Returns the resize direction if the cursor is within the grab zone.
 pub(crate) fn detect_resize_edge(
     x: f32,

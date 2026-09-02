@@ -7,6 +7,23 @@ use std::path::PathBuf;
 /// Platform backends translate their native events into these variants.
 /// The rinch runtime processes these without any platform-specific knowledge.
 ///
+/// # Coordinate space
+///
+/// **Every pointer coordinate on this enum is in logical (CSS) pixels, on every
+/// host** — `MouseMove`/`MouseDown`/`MouseUp`/`MouseWheel`, the `position` on
+/// the `File*` variants, and `MouseWheel`'s `delta_x`/`delta_y`. That is the
+/// space the document is laid out in and the space `hit_test` probes, so a
+/// backend whose windowing system reports physical pixels must divide before
+/// constructing the event — [`crate::to_logical_point`] is the shared
+/// conversion. (`Resized` carries the logical viewport for the same reason;
+/// `RinchApp::handle_event`'s separate `window_size` argument is the one
+/// genuinely physical quantity, and it exists for the shell's own surface
+/// arithmetic.)
+///
+/// Forwarding physical coordinates instead displaces every click, hover,
+/// drag and scroll by the scale factor times its distance from the window
+/// origin — which is exactly what issue #299 was.
+///
 /// `#[non_exhaustive]`: a new variant can be added in a minor release without
 /// that being a breaking change for downstream code. Any `match` on this enum
 /// outside `rinch-platform` must carry a wildcard (`_`) arm.
@@ -23,13 +40,17 @@ pub enum PlatformEvent {
     Resized { width: u32, height: u32 },
     /// A redraw was requested.
     RedrawRequested,
-    /// Mouse cursor moved.
+    /// Mouse cursor moved. `x`/`y` are **logical** pixels (see the type's
+    /// *Coordinate space* note).
     MouseMove { x: f32, y: f32 },
-    /// Mouse button pressed.
+    /// Mouse button pressed. `x`/`y` are **logical** pixels.
     MouseDown { x: f32, y: f32, button: MouseButton },
-    /// Mouse button released.
+    /// Mouse button released. `x`/`y` are **logical** pixels.
     MouseUp { x: f32, y: f32, button: MouseButton },
-    /// Mouse wheel scrolled.
+    /// Mouse wheel scrolled. `x`/`y` are the **logical** pointer position and
+    /// `delta_x`/`delta_y` are a **logical**-pixel scroll distance — a backend
+    /// reporting a physical pixel delta must divide it too, or a HiDPI wheel
+    /// scrolls `scale` times too far.
     MouseWheel {
         x: f32,
         y: f32,
@@ -94,14 +115,16 @@ pub enum PlatformEvent {
     UserEvent(UserEvent),
     /// The event loop is about to wait for new events.
     AboutToWait,
-    /// A file drag entered the window from the OS.
+    /// A file drag entered the window from the OS. `position` is in **logical**
+    /// pixels, like every other pointer coordinate here.
     /// In winit 0.31, all paths arrive in a single DragEntered event.
     FileHoverEnter { path: PathBuf, position: (f64, f64) },
-    /// A file drag is moving over the window.
+    /// A file drag is moving over the window. `position` is **logical**.
     FileDragMoved { position: (f64, f64) },
     /// The OS file drag left the window without dropping.
     FileHoverCancelled,
-    /// Files were dropped onto the window from the OS.
+    /// Files were dropped onto the window from the OS. `position` is
+    /// **logical**.
     FileDropped {
         paths: Vec<PathBuf>,
         position: (f64, f64),
