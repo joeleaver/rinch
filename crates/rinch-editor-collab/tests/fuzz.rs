@@ -224,17 +224,33 @@ struct Swarm {
 
 /// A distinct, deterministic yrs client id for peer `p` of the trial at `seed`.
 ///
-/// Distinctness *within* a trial is by construction — the low byte is the peer index, so
-/// no two peers of one swarm can collide, which is the case that would corrupt the shared
-/// document. The value stays inside yrs's 53-bit client-id space for every `(seed, peer)`
-/// this file uses (seeds here are three digits).
+/// Distinctness *within* a trial is by construction — the low byte is a permutation of
+/// the peer indices, so no two peers of one swarm can collide, which is the case that
+/// would corrupt the shared document. The value stays inside yrs's 53-bit client-id space
+/// for every `(seed, peer)` this file uses (seeds here are three digits).
+///
+/// The low byte is a **per-seed permutation** rather than the peer index itself, because
+/// the client id is what yrs breaks a concurrent-insert tie by: ids that always ascend
+/// with the peer index would pin every trial in the suite to one tie-break ordering, and
+/// the random ids this replaced at least varied it. The permutation comes from the
+/// trial's own seed, so the ordering varies from trial to trial and a trial still replays
+/// bit-for-bit.
 fn client_id(seed: u64, peer: usize) -> u64 {
     assert!(
         peer < 255,
         "peer index must fit the low byte of the client id"
     );
     assert!(seed < (1 << 45), "seed must leave room for the peer byte");
-    (seed << 8) | (peer as u64 + 1)
+    let mut rank = [0u8; 255];
+    for (i, r) in rank.iter_mut().enumerate() {
+        *r = i as u8;
+    }
+    let mut rng = Rng::new(seed ^ 0x5EED_5EED);
+    for i in (1..rank.len()).rev() {
+        let j = rng.below(i + 1);
+        rank.swap(i, j);
+    }
+    (seed << 8) | (rank[peer] as u64 + 1)
 }
 
 impl Swarm {

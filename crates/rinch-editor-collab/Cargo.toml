@@ -34,7 +34,11 @@ test-util = []
 
 [dev-dependencies]
 pretty_assertions = "1"
-# Turns `test-util` on for this crate's own test/bench targets only. Cargo unifies it
-# into the lib build for those targets; it does NOT propagate to anything that depends
-# on this crate normally (the facade's `collaboration` feature never names it).
+# Turns `test-util` on for this crate's own test/bench targets. Cargo unifies it into the
+# lib build whenever those targets are in the resolve — so it is also on for the lib that
+# `cargo test --workspace` / `cargo clippy --all-targets` hand to *other* members. What it
+# never reaches is a build that does not resolve this crate's dev-dependencies: `cargo
+# build -p rinch --features collaboration` passes no `--cfg feature="test-util"`, so
+# `pub mod testing` is compiled out of every release. The facade's `collaboration`
+# feature never names it, so no downstream unification can switch it on either.
 rinch-editor-collab = { path = ".", features = ["test-util"] }
