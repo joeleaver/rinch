@@ -150,6 +150,7 @@ impl CollabSession {
         Ok(CollabSession {
             cdoc: CollabDoc::from_doc_with_client_id(&state.doc, Some(ClientID::new(client_id)))?,
             poisoned: None,
+            stalled: None,
         })
     }
 
@@ -160,6 +161,7 @@ impl CollabSession {
         Ok(CollabSession {
             cdoc: CollabDoc::load_with_client_id(bytes, Some(ClientID::new(client_id)))?,
             poisoned: None,
+            stalled: None,
         })
     }
 
