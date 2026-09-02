@@ -207,7 +207,6 @@ pub(super) fn transform_from_stylo(
 /// `px`/`py` are fractions (0.5 = 50%). The contribution to the final `(e, f)`
 /// is `L·(px·W, py·H)`, which is linear in `W` and `H` — hence four
 /// coefficients rather than a function list (#212).
-/// Fold a percentage translate into the running linear form (#212).
 ///
 /// Shared with the keyframe extractor so an authored `translate(50%, 0)` stop
 /// accumulates by exactly the same rule the cascade uses — the two must agree
