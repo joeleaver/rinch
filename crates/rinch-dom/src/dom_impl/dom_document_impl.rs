@@ -1,7 +1,5 @@
 //! `DomDocument` trait implementation for `RinchDocument`.
 
-use std::collections::HashMap;
-
 use rinch_core::dom::{DomDocument, NodeId};
 
 use peniko::color::{AlphaColor, Srgb};
@@ -929,17 +927,46 @@ fn plain_inset(
 
 impl RinchDocument {
     /// The node's inline `style` attribute with `properties` merged in — a
-    /// later declaration of a property replaces the earlier one.
+    /// later declaration of a property replaces the earlier one **in place**,
+    /// keeping every other declaration where the author wrote it.
+    ///
+    /// Order is load-bearing, not cosmetic (#265). `set_styles` parses this
+    /// string into the declaration block Stylo cascades, so whatever order
+    /// comes out here *is* the order two declarations of the same longhand —
+    /// or a shorthand and one of its longhands — resolve in. This used to
+    /// round-trip through a `HashMap`, which reshuffled the whole attribute on
+    /// every write with a per-process random order: `set_style("left", …)` on
+    /// a node whose attribute already said `inset: 0` produced `left` first
+    /// (loses) or `inset` first (wins) depending on the run, so a single
+    /// `assert` could pass all day and fail in CI. A `Vec` makes it a fact
+    /// about the input instead of a fact about the process.
+    ///
+    /// **Residual divergence from a browser**, deliberately accepted here: a
+    /// longhand *already in the attribute* before a shorthand that covers it
+    /// still loses to that shorthand — `"left: 5px; inset: 0"` plus
+    /// `set_style("left", "10px")` yields `"left: 10px; inset: 0"`, so `inset`
+    /// still wins and `left` computes to `0`. CSSOM expands `inset` into its
+    /// four longhands at parse time, so a browser answers `10px`. Closing that
+    /// gap means keeping Stylo's `PropertyDeclarationBlock` as the source of
+    /// truth (`prepare_for_update`/`update`, then `to_css` for the attribute)
+    /// rather than the string — a bigger change that inverts the
+    /// `merged → parse_inline_style → cache` invariant `inset_fast_path_values`
+    /// rests on, and canonicalises `get_attribute("style")` output. The
+    /// reported shape — shorthand first, longhand written later — is correct
+    /// with the `Vec`, and *every* shape is now deterministic.
     fn merged_inline_style(&self, node_id: usize, properties: &[(&str, &str)]) -> String {
-        let mut styles: HashMap<String, String> = self.tree.nodes[node_id]
+        let mut decls: Vec<(String, String)> = self.tree.nodes[node_id]
             .attributes
             .get("style")
             .map(|s| parse_style_string(s))
             .unwrap_or_default();
         for &(property, value) in properties {
-            styles.insert(property.to_string(), value.to_string());
+            match decls.iter_mut().find(|(k, _)| k == property) {
+                Some(slot) => slot.1 = value.to_string(),
+                None => decls.push((property.to_string(), value.to_string())),
+            }
         }
-        styles
+        decls
             .iter()
             .map(|(k, v)| format!("{}: {}", k, v))
             .collect::<Vec<_>>()
