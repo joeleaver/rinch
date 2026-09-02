@@ -1037,6 +1037,35 @@ fn keyframes_scale_y_still_animates() {
     assert!((m[3] - 0.7).abs() < 1e-6, "halfway from 0.4 to 1: {m:?}");
 }
 
+/// ...and `scaleX` the other axis. No shipped component uses it, which is
+/// exactly why it needs a pin of its own: a review mutant that made `scaleX`
+/// write the y axis survived the whole suite.
+#[test]
+fn keyframes_scale_x_still_animates() {
+    let (doc, div) = animated_div("0% { transform: scaleX(0.4); } 100% { transform: scaleX(1); }");
+    let (m, _, _) = animated_transform(&doc, div, 500.0);
+    assert!((m[3] - 1.0).abs() < 1e-6, "y untouched: {m:?}");
+    assert!((m[0] - 0.7).abs() < 1e-6, "halfway from 0.4 to 1: {m:?}");
+}
+
+/// `translate3d` is spelled out in the extractor *because* dropping it to the
+/// identity arm would silently lose a whole translation — but nothing pinned
+/// that arm, and a review mutant that deleted it survived the whole suite.
+/// Both channels: the px part rides the op, the percentage part rides the
+/// #212 linear form.
+#[test]
+fn keyframes_translate3d_keeps_its_2d_translation() {
+    let (doc, div) = animated_div(
+        "from { transform: translate3d(0, 0, 0); } to { transform: translate3d(20px, 50%, 7px); }",
+    );
+    let (m, _, pct_h) = animated_transform(&doc, div, 500.0);
+    assert!((m[4] - 10.0).abs() < 1e-6, "half of 20px: {m:?}");
+    assert!(
+        (pct_h[1] - 0.25).abs() < 1e-6,
+        "half of 50% of the height: {pct_h:?}"
+    );
+}
+
 /// `transform: none` is the identity, and interpolates component-wise against
 /// a `scale()` stop rather than falling back to matrix interpolation.
 #[test]
