@@ -3093,6 +3093,175 @@ impl RinchApp {
 /// --features embed,theme,clipboard` step — NOT under `cargo test --workspace`,
 /// which unifies `rinch/gpu` on from the GPU examples and turns the cfg off.
 #[cfg(all(test, software_shell))]
+mod resize_vs_scrollbar_tests {
+    //! A borderless window's resize inset does not swallow the scrollbar
+    //! thumb (#399, #420).
+    //!
+    //! The press target is read out of the **rasterised frame** — where the
+    //! grey thumb pixels actually are — rather than derived, because the whole
+    //! complaint is that the thing you can see is not the thing you can press.
+
+    use super::scrollbar_drag_pixel_tests::{thumb_centre, thumb_span};
+    use super::*;
+    use rinch_core::element::WindowProps;
+
+    const SIZE: (u32, u32) = (800, 600);
+
+    /// The `BorderlessWindow` shape that reproduces the bug: a resizable
+    /// borderless window at the shell's default 8px inset, whose whole client
+    /// area is one scroll container flush with every edge. The thumb is then
+    /// painted in `[792, 798)` and the East resize zone is `x > 792`.
+    fn app() -> RinchApp {
+        let mut app = RinchApp::new(move |scope: &mut RenderScope| {
+            let root = scope.create_element("div");
+            root.set_attribute(
+                "style",
+                "position: relative; width: 800px; height: 600px; background: white",
+            );
+            let container = scope.create_element("div");
+            container.set_attribute(
+                "style",
+                "position: absolute; left: 0; top: 0; width: 800px; height: 600px; \
+                 overflow-y: auto; background: white",
+            );
+            let content = scope.create_element("div");
+            content.set_attribute("style", "width: 100%; height: 2000px; background: white");
+            container.append_child(&content);
+            root.append_child(&container);
+            root
+        });
+        app.set_window_props(WindowProps {
+            borderless: true,
+            resizable: true,
+            resize_inset: Some(8.0),
+            ..Default::default()
+        });
+        app.mount_component(800.0, 600.0);
+        app.resolve_and_repaint(800.0, 600.0);
+        app
+    }
+
+    fn press(app: &mut RinchApp, x: f32, y: f32) -> Vec<AppAction> {
+        app.handle_event(
+            PlatformEvent::MouseDown {
+                x,
+                y,
+                button: rinch_platform::MouseButton::Left,
+            },
+            SIZE,
+            1.0,
+        )
+    }
+
+    fn resize_direction(actions: &[AppAction]) -> Option<rinch_platform::ResizeDirection> {
+        actions.iter().find_map(|a| match a {
+            AppAction::DragResizeWindow(d) => Some(*d),
+            _ => None,
+        })
+    }
+
+    fn hover_cursor(app: &mut RinchApp, x: f32, y: f32) -> Option<rinch_platform::CursorStyle> {
+        app.handle_event(PlatformEvent::MouseMove { x, y }, SIZE, 1.0)
+            .iter()
+            .find_map(|a| match a {
+                AppAction::SetCursor(c) => Some(*c),
+                _ => None,
+            })
+    }
+
+    /// The whole of #399/#420: a press dead-centre of the painted thumb.
+    #[test]
+    fn a_press_on_the_painted_thumb_scrolls_instead_of_resizing() {
+        let mut app = app();
+        let y = thumb_centre(&mut app, 800.0) as f32;
+        // The thumb is painted inside the East resize zone — that is the
+        // premise, so state it rather than assume it.
+        let x = 795.0;
+        assert_eq!(
+            super::hit_testing::detect_resize_edge(x, y, 800.0, 600.0, 8.0),
+            Some(rinch_platform::ResizeDirection::East),
+            "the press must be inside the resize zone, or this test proves nothing"
+        );
+
+        let actions = press(&mut app, x, y);
+        assert_eq!(
+            resize_direction(&actions),
+            None,
+            "a press on the visible thumb must not resize the window"
+        );
+        assert!(
+            app.scrollbar_drag.is_some(),
+            "and it must arm the scrollbar drag instead"
+        );
+    }
+
+    /// The cursor is the same decision at a different call site, so it gets its
+    /// own assertion rather than riding on the press's.
+    #[test]
+    fn hovering_the_painted_thumb_does_not_show_a_resize_cursor() {
+        let mut app = app();
+        let y = thumb_centre(&mut app, 800.0) as f32;
+        assert_ne!(
+            hover_cursor(&mut app, 795.0, y),
+            Some(rinch_platform::CursorStyle::EResize),
+            "the pointer over a thumb is not over a resize handle"
+        );
+    }
+
+    /// The other half of "what you can see, you can grab": the edge is still a
+    /// resize handle everywhere the thumb is not.
+    #[test]
+    fn a_press_on_the_empty_track_below_the_thumb_still_resizes() {
+        let mut app = app();
+        let (_, thumb_bottom) = thumb_span(&mut app, 800.0);
+        // Clear of the thumb and clear of the bottom corner zone.
+        let y = (thumb_bottom + 40.0) as f32;
+        assert!(y < 600.0 - 8.0, "still on the edge, not in the corner");
+
+        assert_eq!(
+            resize_direction(&press(&mut app, 795.0, y)),
+            Some(rinch_platform::ResizeDirection::East),
+            "the empty part of the edge is still a resize handle"
+        );
+        assert_eq!(
+            hover_cursor(&mut app, 795.0, y),
+            Some(rinch_platform::CursorStyle::EResize),
+            "and still shows the resize cursor"
+        );
+    }
+
+    /// A corner never yields, so a diagonal resize stays reachable however tall
+    /// the thumb grows. At scroll 0 the thumb starts 2px down, so the top-right
+    /// corner square is thumb.
+    #[test]
+    fn the_top_right_corner_resizes_even_where_the_thumb_is_painted() {
+        let mut app = app();
+        let (thumb_top, _) = thumb_span(&mut app, 800.0);
+        assert!(
+            thumb_top < 8.0,
+            "the thumb must reach into the corner square for this to bite, top {thumb_top}"
+        );
+        assert_eq!(
+            resize_direction(&press(&mut app, 795.0, 4.0)),
+            Some(rinch_platform::ResizeDirection::NorthEast),
+            "the corner is the resize's, thumb or no thumb"
+        );
+    }
+
+    /// A window with no scroll container at its edge is untouched: the whole
+    /// inset is still a resize handle.
+    #[test]
+    fn an_edge_with_no_scrollbar_on_it_is_unaffected() {
+        let mut app = app();
+        // The left edge has no bar on it at all.
+        assert_eq!(
+            resize_direction(&press(&mut app, 4.0, 300.0)),
+            Some(rinch_platform::ResizeDirection::West)
+        );
+    }
+}
+
+#[cfg(all(test, software_shell))]
 mod scrollbar_drag_pixel_tests {
     //! A drag moves the *painted* thumb as far as the pointer moved (#400).
     //!
@@ -3110,14 +3279,21 @@ mod scrollbar_drag_pixel_tests {
     /// A thumb pixel: 40% black composited over the container's white
     /// background, so opaque mid-grey. The bare track is white and the page
     /// outside is white too, so nothing else in the scanned column matches.
-    fn is_thumb(p: [u8; 4]) -> bool {
+    pub(super) fn is_thumb(p: [u8; 4]) -> bool {
         p[3] > 200 && p[0] > 100 && p[0] < 200 && p[1] == p[0] && p[2] == p[0]
     }
 
-    /// The vertical centre of the painted thumb in the column through its
-    /// middle, in device pixels. Uses the centre rather than an edge so the
-    /// antialiased round caps cancel instead of biasing the answer.
-    fn thumb_centre(app: &mut RinchApp, container_w: f32) -> f64 {
+    /// The vertical centre of the painted thumb, in device pixels.
+    pub(super) fn thumb_centre(app: &mut RinchApp, container_w: f32) -> f64 {
+        let (first, last) = thumb_span(app, container_w);
+        // The centre rather than an edge, so the antialiased round caps cancel
+        // instead of biasing the answer.
+        (first + last) / 2.0
+    }
+
+    /// The first and last painted thumb rows in the column through the thumb's
+    /// middle, in device pixels.
+    pub(super) fn thumb_span(app: &mut RinchApp, container_w: f32) -> (f64, f64) {
         // What a real frame does: resolve, then paint. `build_pixels` skips
         // painting entirely unless `scene_dirty`, which `resolve_and_repaint`
         // is what sets — the shell reaches here via `AppAction::RequestRedraw`.
@@ -3142,7 +3318,7 @@ mod scrollbar_drag_pixel_tests {
             first.expect("a thumb is painted in the scanned column"),
             last.unwrap(),
         );
-        (first as f64 + last as f64) / 2.0
+        (first as f64, last as f64)
     }
 
     /// Mount one scroll container at the document origin and return the app.
