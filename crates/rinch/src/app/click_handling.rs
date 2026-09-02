@@ -237,7 +237,16 @@ impl RinchApp {
             while let Some(nid) = check {
                 if let Some(node) = d.tree.get(nid) {
                     if let Some(oninput_str) = node.attributes.get("data-oninput") {
-                        if let Ok(handler_id) = oninput_str.parse::<usize>() {
+                        // A disabled field takes no claim from a press either
+                        // (issue #315). Resolving to "no input claim" rather
+                        // than continuing the walk is deliberate: a disabled
+                        // `<input>` inside a clickable card must not hand the
+                        // card's own handler an input focus it never asked for
+                        // — the walk stops at the field on the enabled path
+                        // too.
+                        if !Self::node_is_disabled_in_tree(&d.tree, nid)
+                            && let Ok(handler_id) = oninput_str.parse::<usize>()
+                        {
                             let value = node.attributes.get("value").cloned().unwrap_or_default();
                             found_input_focus = Some((nid, handler_id, value));
                         }

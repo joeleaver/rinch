@@ -24,7 +24,20 @@ rsx! {
 |---|---|
 | `tabindex="0"` | Reachable by Tab, focusable by click and by `NodeHandle::focus()` |
 | `tabindex="-1"` | **Not** in the Tab order, but still focusable by click and programmatically — the standard "focus this dialog when it opens" idiom |
-| `data-disabled` | Takes no focus at all. A boolean attribute: present means disabled whatever the value; only `data-disabled="false"` opts out |
+| `disabled` / `data-disabled` | Takes no focus at all, and accepts no keyboard edit. Both spellings count — the component library writes the HTML one, the runtime's own widgets write the `data-` one. A boolean attribute: present means disabled whatever the value; only the explicit `"false"` opts out |
+| `readonly` | Focuses, moves its caret, selects and copies like any other field — and refuses every command that would change its text (typing, delete, cut, paste, undo/redo). Same boolean rule |
+
+A **disabled `<fieldset>`** disables every control below it, which is what the
+element is for. HTML's carve-out is honoured: controls inside the fieldset's
+first `<legend>` stay enabled, so the control that re-enables the section can
+live there. No other tag's `disabled` reaches its subtree — a disabled
+`<button>` does not disable a `<span>` inside it.
+
+Disabled is re-checked at **edit** time, not only at focus time, so a field
+that goes disabled *while focused* — a reactive `disabled` prop re-rendering
+under a live caret — stops accepting keys immediately. It keeps the claim
+rather than being blurred: releasing it would fire the field's `data-onchange`
+commit, and a control going disabled is not the user committing an edit.
 
 Focus arrives three ways, and all three go through the same arbiter:
 

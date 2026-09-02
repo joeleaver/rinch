@@ -559,7 +559,8 @@ impl RinchApp {
                             if node.attributes.contains_key("data-oninput") {
                                 break;
                             }
-                            if !Self::node_is_disabled(node) && Self::node_tabindex(node).is_some()
+                            if !Self::node_is_disabled_in_tree(&d.tree, nid)
+                                && Self::node_tabindex(node).is_some()
                             {
                                 found = Some(nid);
                                 break;
