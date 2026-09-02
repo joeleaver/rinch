@@ -10,6 +10,7 @@
 //! resolved to `None` and the interceptor was never invoked for it at all.
 
 use super::*;
+use crate::focus_registry::{FocusEntry, register_focus_target};
 use crate::render_surface::{SurfaceEvent, SurfaceKeyData, create_render_surface};
 use rinch_core::Component;
 use rinch_core::events::{KeyEventData, set_keyboard_interceptor};
@@ -43,10 +44,22 @@ fn bare_app() -> RinchApp {
 }
 
 fn press(app: &mut RinchApp, key: KeyCode, text: Option<&str>, modifiers: Modifiers) {
+    press_on_layout(app, key, text, None, modifiers);
+}
+
+/// The same press with the layout-mapped letter the desktop shell attaches to
+/// a real `KeyDown` (`RinchRuntime::winit_logical_letter`).
+fn press_on_layout(
+    app: &mut RinchApp,
+    key: KeyCode,
+    text: Option<&str>,
+    logical_key: Option<char>,
+    modifiers: Modifiers,
+) {
     app.handle_event(
         PlatformEvent::KeyDown {
             key,
-            logical_key: None,
+            logical_key,
             text: text.map(str::to_string),
             modifiers,
         },
@@ -190,4 +203,75 @@ fn a_consuming_interceptor_still_swallows_the_key() {
     press(&mut app, KeyCode::KeyS, None, ctrl_down());
 
     assert_eq!(hits.get(), 2);
+}
+
+/// A chord on a non-QWERTY layout must name the **keycap**, not the physical
+/// position under it. The editor's own keymap already reads `logical_key` for
+/// exactly this reason, so an interceptor that read the physical table instead
+/// would disagree with the editor about which letter the user just pressed —
+/// and would still fail to see `Ctrl+A` by its own name on AZERTY, which is
+/// the bug #336 is about.
+#[test]
+fn a_chord_on_a_non_qwerty_layout_names_the_keycap() {
+    let mut app = bare_app();
+    let seen = recording_interceptor();
+
+    // AZERTY: the key labelled A sits at the physical QWERTY-Q position, and
+    // Ctrl suppresses the text.
+    press_on_layout(&mut app, KeyCode::KeyQ, None, Some('a'), ctrl_down());
+
+    let seen = seen.borrow();
+    let ev = seen.last().expect("the interceptor was offered the chord");
+    assert_eq!(
+        ev.key, "a",
+        "the keycap letter, not the physical one: {ev:?}"
+    );
+    assert_eq!(
+        ev.code, "KeyQ",
+        "the physical key is still reported as code"
+    );
+}
+
+// ── 3. the third payload: a registered focus target ─────────────────────────
+
+/// The `KeyDown` arm builds three payloads and only two carried the reported
+/// defect, so the third — a registered node's `on_key` (issue #147) — had no
+/// regression guard at all. Pin it too: a `meta: false` literal here would be
+/// the same bug in the one place nothing was watching.
+#[test]
+fn a_registered_focus_target_sees_the_meta_modifier() {
+    let seen: Rc<RefCell<Vec<KeyEventData>>> = Rc::new(RefCell::new(Vec::new()));
+    let sink = seen.clone();
+    let id: Rc<std::cell::Cell<usize>> = Rc::new(std::cell::Cell::new(0));
+    let id_in = id.clone();
+
+    let mut app = RinchApp::new(move |scope: &mut RenderScope| {
+        let root = scope.create_element("div");
+        let div = scope.create_element("div");
+        div.set_attribute("style", "width: 200px; height: 40px");
+        div.set_attribute("tabindex", "0");
+        let sink = sink.clone();
+        register_focus_target(
+            &div,
+            FocusEntry::new().on_key(move |k| {
+                sink.borrow_mut().push(k.clone());
+                true
+            }),
+        );
+        id_in.set(div.node_id().0);
+        root.append_child(&div);
+        root
+    });
+    app.mount_component(800.0, 600.0);
+    app.resolve_and_repaint(800.0, 600.0);
+    app.set_focus_target(FocusTarget::Node(id.get()));
+
+    press(&mut app, KeyCode::KeyK, None, meta_down());
+
+    let seen = seen.borrow();
+    let ev = seen
+        .last()
+        .expect("the registered target was offered the key");
+    assert!(ev.meta, "Meta/Cmd was held: {ev:?}");
+    assert_eq!(ev.key, "k");
 }

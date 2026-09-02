@@ -109,7 +109,7 @@ exactly as it would for an unregistered node, so registering costs you nothing
 you did not ask for.
 
 `k.key` is spelled the way the browser spells `KeyboardEvent.key`, resolved in
-three steps:
+four steps:
 
 1. **A named key wins over the text it would insert** — `"ArrowLeft"`,
    `"Enter"`, `"Escape"`, `"Tab"`, `"PageUp"`, `"F1"`…`"F12"`, `"Shift"`, and
@@ -117,19 +117,28 @@ three steps:
 2. **Otherwise the inserted text wins**, so a non-QWERTY layout reports the
    letter actually typed rather than the physical QWERTY position: the AZERTY
    key at the QWERTY-Q position is `k.key == "a"`, and Shift+A is `"A"`.
-3. **Otherwise the physical key's own US-layout character.** A modifier
-   suppresses the inserted text, so this is the step that names every chord:
-   `Ctrl+S` is `k.key == "s"`, `Cmd+1` is `"1"`, `Ctrl+-` is `"-"`.
+3. **Otherwise the keycap letter.** A modifier suppresses the inserted text,
+   but the layout-mapped letter survives it — so a chord keeps step 2's
+   promise: on AZERTY, `Ctrl` plus the key labelled A is `k.key == "a"`, the
+   same letter the editor's own keymap acts on.
+4. **Otherwise the physical key's US-layout character**, for events that carry
+   no layout letter at all (the debug channel, injected and embedded events):
+   `Ctrl+S` is `"s"`, `Cmd+1` is `"1"`, `Ctrl+-` is `"-"`.
 
-`k.code` is always the physical key (`"KeyS"`, `"Digit1"`). Every key rinch has
-a code for now reports a `k.key`; the lone exception is a key outside that set
-(`k.code == "Other"`) pressed with a modifier, which has no identity to report.
+`k.code` is always the physical key (`"KeyS"`, `"Digit1"`).
 
-> Two things to know. Step 3 reports the **lowercase** letter, because a
+> Two things to know. Steps 3–4 report the **lowercase** letter, because a
 > modifier has already suppressed the real text — `Ctrl+Shift+S` is `k.key ==
 > "s"`, so read `k.shift` (or match `k.code`) when the case matters. And a key
 > bound to a **native menu accelerator** is consumed by the menu before the
 > document sees it, so `on_key` never runs for it.
+
+The one key that still reports nothing is one rinch has no `KeyCode` for
+(`k.code == "Other"`) pressed with a modifier: rinch's code set covers the
+letters, the digits, `-`, `=`, the named keys and `F1`–`F12`, so under a
+modifier **the rest of the punctuation** — `Ctrl+/`, `Ctrl+,`, `Ctrl+[` — has
+no spelling to fall back to and never reaches the hook. Unmodified those keys
+are fine: their character arrives as the inserted text.
 
 Both focus callbacks run **after** the transition is complete: the arbiter and
 the DOM `:focus` state are already installed, so a callback may re-enter the

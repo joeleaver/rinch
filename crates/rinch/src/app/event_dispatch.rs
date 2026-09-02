@@ -1080,7 +1080,7 @@ impl RinchApp {
                 let alt = modifiers.alt;
 
                 // Build key string for the user keyboard hook + global fallback.
-                let key_str: Option<String> = hook_key_str(key, text.as_deref());
+                let key_str: Option<String> = hook_key_str(key, text.as_deref(), logical_key);
 
                 tracing::trace!(?key, ?text, ?key_str, shift, ctrl, alt, "KeyDown event");
 
@@ -2193,8 +2193,9 @@ pub(crate) enum Motion {
 }
 
 /// Derive the key string handed to the user keyboard hook (and the focus
-/// registry's `on_key`) from a key event's keycode + text, spelled the way a
-/// browser spells `KeyboardEvent.key`. Three steps, in order:
+/// registry's `on_key`) from a key event's keycode + text + layout-mapped
+/// letter, spelled the way a browser spells `KeyboardEvent.key`. Four steps,
+/// in order:
 ///
 /// 1. **A named key wins over the text it would insert** — a spacebar press
 ///    reports `"Space"`, not `" "`, and Tab reports `"Tab"`, not `"\t"`.
@@ -2203,26 +2204,40 @@ pub(crate) enum Motion {
 ///    QWERTY position — the same rule [`editor_key_binding`] follows. This is
 ///    also how punctuation is named: it arrives as `KeyCode::Other` from
 ///    hardware and from the debug channel alike, with the character in `text`.
-/// 3. **The physical key's own spelling is the fallback.** A modifier
-///    suppresses `text`, so this is the step that names `Ctrl+S` → `"s"`,
-///    `Ctrl+1` → `"1"` and `F5` → `"F5"`.
+/// 3. **`logical_key` — the keycap letter — is next.** A modifier suppresses
+///    `text`, but winit's logical key survives it, so this is what keeps step
+///    2's promise for a *chord*: on AZERTY, `Ctrl` plus the key labelled A
+///    reports `"a"`, not the `"q"` sitting at that physical position. Without
+///    it the interceptor would contradict [`editor_key_binding`], which reads
+///    the same field, about which letter was pressed.
+/// 4. **The physical key's own US-layout spelling is the last resort**, for
+///    events that carry no logical key at all (the debug channel, injected and
+///    embedded events): `Ctrl+S` → `"s"`, `Ctrl+1` → `"1"`, `F5` → `"F5"`.
 ///
-/// Step 3 is issue #336: before it, every key outside the twelve Ctrl+letter
-/// combos rinch itself binds returned `None` under a modifier, and the
-/// document-level interceptor was never even *invoked* for it — `Ctrl+S` was
-/// unobservable. The fallback is the US-layout character in lowercase, so a
-/// modified letter reports `"s"` whether or not Shift is held (unmodified,
-/// step 2 reports the real `"S"`); match on `k.code` when the distinction
-/// matters.
+/// Steps 3–4 are issue #336: before them, every key outside the twelve
+/// Ctrl+letter combos rinch itself binds returned `None` under a modifier, and
+/// the document-level interceptor was never even *invoked* for it — `Ctrl+S`
+/// was unobservable. Both report the letter in lowercase (the real text is
+/// gone by then), so a modified letter reports `"s"` whether or not Shift is
+/// held (unmodified, step 2 reports the real `"S"`); match on `k.code` when
+/// the distinction matters.
 ///
-/// Returns `None` only for a `KeyCode::Other` carrying no printable text — a
-/// key with no identity to report.
-pub(crate) fn hook_key_str(key: KeyCode, text: Option<&str>) -> Option<String> {
+/// Returns `None` only for a key rinch has no `KeyCode` for — `KeyCode::Other`
+/// — carrying no printable text. Under a modifier that is every punctuation
+/// key except `-` and `=`, which have codes of their own.
+pub(crate) fn hook_key_str(
+    key: KeyCode,
+    text: Option<&str>,
+    logical_key: Option<char>,
+) -> Option<String> {
     if let Some(named) = named_key_str(key) {
         return Some(named.to_string());
     }
     if let Some(t) = text.filter(|t| !t.is_empty() && t.chars().all(|c| !c.is_control())) {
         return Some(t.to_string());
+    }
+    if let Some(c) = logical_key.filter(|c| !c.is_control()) {
+        return Some(c.to_lowercase().to_string());
     }
     character_key_str(key).map(str::to_string)
 }
@@ -2268,7 +2283,10 @@ fn named_key_str(key: KeyCode) -> Option<&'static str> {
 
 /// The character a physical key produces on a US layout. Only reached when a
 /// modifier suppressed the event's `text` (or there was none to begin with —
-/// a `KeyUp` carries no text at all), so a chord still reports a key.
+/// a `KeyUp` carries no text at all) *and* the event carries no layout-mapped
+/// `logical_key` either, so a chord still reports a key. Being physical, this
+/// is the step that gets a non-QWERTY layout wrong, which is why step 3 sits
+/// in front of it.
 fn character_key_str(key: KeyCode) -> Option<&'static str> {
     Some(match key {
         KeyCode::KeyA => "a",
@@ -3581,7 +3599,13 @@ mod hook_key_str_tests {
     use rinch_platform::KeyCode;
 
     fn k(key: KeyCode, text: Option<&str>) -> Option<String> {
-        hook_key_str(key, text)
+        hook_key_str(key, text, None)
+    }
+
+    /// The same call with the layout-mapped letter the shell passes alongside
+    /// a real `KeyDown` (`winit_logical_letter`).
+    fn kl(key: KeyCode, text: Option<&str>, logical: char) -> Option<String> {
+        hook_key_str(key, text, Some(logical))
     }
 
     #[test]
@@ -3681,6 +3705,36 @@ mod hook_key_str_tests {
         ] {
             assert!(k(key, None).is_some(), "{key:?} reports no key string");
         }
+    }
+
+    #[test]
+    fn a_chord_reports_the_keycap_letter_not_the_physical_position() {
+        // AZERTY puts the key labelled A at the physical QWERTY-Q position. A
+        // modifier suppresses `text`, but winit's layout-mapped letter
+        // survives it and the shell hands it over — and `editor_key_binding`
+        // acts on exactly that field, so the interceptor has to agree with it
+        // or one keystroke means two different letters inside one runtime.
+        assert_eq!(kl(KeyCode::KeyQ, None, 'a'), Some("a".to_string()));
+        // On a US layout the two agree and nothing changes.
+        assert_eq!(kl(KeyCode::KeyS, None, 's'), Some("s".to_string()));
+        // Still lowercase: the real text is gone by this step, so `Ctrl+Shift`
+        // reports the same letter `Ctrl` does (read `k.shift` for the case).
+        assert_eq!(kl(KeyCode::KeyQ, None, 'A'), Some("a".to_string()));
+        // With no logical key at all — the debug channel, an injected or
+        // embedded event — the physical US fallback still names the chord.
+        assert_eq!(k(KeyCode::KeyQ, None), Some("q".to_string()));
+    }
+
+    #[test]
+    fn the_inserted_text_still_outranks_the_logical_letter() {
+        // Unmodified, `text` carries case (and dead-key composition) that the
+        // lowercase ASCII logical letter cannot, so Shift+A stays "A".
+        assert_eq!(kl(KeyCode::KeyA, Some("A"), 'a'), Some("A".to_string()));
+        // And a named key still outranks both.
+        assert_eq!(
+            kl(KeyCode::Space, Some(" "), 'q'),
+            Some("Space".to_string())
+        );
     }
 
     #[test]
