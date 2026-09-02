@@ -982,6 +982,15 @@ is `"false"`) and removes only the node from the Tab order, not its subtree. A
 the nearest focusable ancestor** of the hit node, browser-style, so a clicked
 `tabindex` div owns Enter/Space immediately.
 
+**`data-nofocus` takes the click without the keyboard** (issue #312) — the
+`preventDefault()`-on-mousedown mechanism browsers converged on, which an editor
+toolbar needs so Bold does not blur the editor it acts on. Same boolean rule as
+`data-disabled`, read **anywhere on the pressed node's ancestor chain** so a
+toolbar carries it once; it protects whatever holds the keyboard (editor, input,
+surface, node), the `data-rid` click still fires, and a text field *inside* the
+region still focuses normally. Both backends — on web it becomes
+`preventDefault()` on the `pointerdown`.
+
 A custom component that takes keyboard input registers for the lifecycle
 (issue #147, `crates/rinch/src/focus_registry.rs`, in the prelude):
 

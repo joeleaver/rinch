@@ -149,15 +149,18 @@ fn a_press_resolves_to_the_nearest_focusable() {
 
     assert_eq!(
         RinchApp::resolve_click_focus(&d.tree, Some(plain)),
-        Some(outer),
+        PressFocus::Node(outer),
         "a plain child belongs to the focusable that encloses it"
     );
     assert_eq!(
         RinchApp::resolve_click_focus(&d.tree, Some(inner)),
-        Some(inner),
+        PressFocus::Node(inner),
         "a nested focusable is its own answer, not its ancestor's"
     );
-    assert_eq!(RinchApp::resolve_click_focus(&d.tree, None), None);
+    assert_eq!(
+        RinchApp::resolve_click_focus(&d.tree, None),
+        PressFocus::Release
+    );
 }
 
 /// A left press on a plain child keeps the outer node's claim.
