@@ -1,8 +1,9 @@
 //! Android SAF (Storage Access Framework) file picker.
 //!
 //! Provides `pick_file` and `save_file` using ACTION_OPEN_DOCUMENT /
-//! ACTION_CREATE_DOCUMENT intents, plus `read_content_uri` to read
-//! bytes from a `content://` URI via ContentResolver.
+//! ACTION_CREATE_DOCUMENT intents, plus `read_content_uri` and
+//! `write_content_uri` to move bytes across a `content://` URI via
+//! ContentResolver.
 
 use jni::objects::JValue;
 
@@ -92,5 +93,35 @@ pub fn read_content_uri(uri: &str) -> Result<Vec<u8>, String> {
         // Convert i8 array to u8 array (safe reinterpret)
         let bytes: Vec<u8> = buf.into_iter().map(|b| b as u8).collect();
         Ok(bytes)
+    })
+}
+
+/// Write bytes to a `content://` URI via the Java ContentResolver — the other
+/// half of `read_content_uri`, and the piece `save_file` above needs to be
+/// useful on its own: `save_file`'s callback only ever hands back the URI of a
+/// document `ACTION_CREATE_DOCUMENT` created empty, and this is what puts the
+/// caller's bytes into it. Returns an error description on failure rather than
+/// nothing to write to, since a failed save is a failure a caller has to be
+/// able to show.
+pub fn write_content_uri(uri: &str, bytes: &[u8]) -> Result<(), String> {
+    bridge::with_activity(|env, activity| {
+        let juri = env.new_string(uri).map_err(|e| e.to_string())?;
+        let jbytes = env.byte_array_from_slice(bytes).map_err(|e| e.to_string())?;
+        let ok = env
+            .call_method(
+                activity,
+                "writeContentUri",
+                "(Ljava/lang/String;[B)Z",
+                &[JValue::Object(&juri), JValue::Object(&jbytes)],
+            )
+            .map_err(|e| format!("writeContentUri JNI call failed: {e}"))?
+            .z()
+            .map_err(|e| format!("writeContentUri return type error: {e}"))?;
+
+        if ok {
+            Ok(())
+        } else {
+            Err("writeContentUri returned false (IO error or invalid URI)".into())
+        }
     })
 }
