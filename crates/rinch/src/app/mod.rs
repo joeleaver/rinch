@@ -11,6 +11,8 @@ mod blink_and_click_focus_tests;
 mod click_handling;
 #[cfg(feature = "debug")]
 mod debug_commands;
+#[cfg(test)]
+mod disabled_input_tests;
 mod event_dispatch;
 mod focus;
 #[cfg(test)]
@@ -1580,18 +1582,63 @@ impl RinchApp {
     /// and a recycled one would aim the caret/value attribute writes at an
     /// unrelated element.
     ///
+    /// A **disabled** field is inert here too, and that is the third leg of
+    /// issue #315. The focus-side fixes (the Tab collector, the mousedown
+    /// claim) stop you *reaching* a field that was disabled when you got there;
+    /// only this one covers a field that goes disabled **while focused** — a
+    /// reactive `disabled` prop re-rendering under a live caret — which would
+    /// otherwise stay fully typable. Every key command funnels through
+    /// [`Self::handle_input_edit_command`] or lands here directly
+    /// ([`Self::handle_enter`]'s commit), so one guard covers them all.
+    ///
+    /// The claim is **released**, through
+    /// [`Self::release_focus_for_disabled`] — which is what a browser does
+    /// (focus moves to the body) — but without the `data-onchange` commit a
+    /// normal blur would fire, because a control going disabled is not the
+    /// user committing an edit. Keeping an inert claim instead would leave a
+    /// `:focus` ring on a control that owns no keyboard, keep the OS IME
+    /// enabled and its candidate box parked on it (`ime_state` reports
+    /// `enabled: true` for any `FocusTarget::Input`), and keep
+    /// `has_focused_input()` answering `true`, which is what an embed host
+    /// routes its keyboard on.
+    ///
     /// Must be called with no outstanding borrow of `self.doc` — `set_focus_target`
     /// writes DOM attributes.
     fn live_focused_input_handler(&mut self) -> Option<usize> {
         let handler_id = self.focused_input_handler_id?;
-        if events::has_input_handler(events::EventHandlerId(handler_id)) {
-            return Some(handler_id);
+        if !events::has_input_handler(events::EventHandlerId(handler_id)) {
+            tracing::debug!(
+                "focused input handler {handler_id} was freed with its scope; dropping focus"
+            );
+            self.set_focus_target(FocusTarget::None);
+            return None;
         }
-        tracing::debug!(
-            "focused input handler {handler_id} was freed with its scope; dropping focus"
-        );
-        self.set_focus_target(FocusTarget::None);
-        None
+        if self.focused_input_is_disabled() {
+            self.release_focus_for_disabled();
+            return None;
+        }
+        Some(handler_id)
+    }
+
+    /// Whether the field currently holding the input claim is disabled — by its
+    /// own attribute or by an enclosing `<fieldset disabled>`.
+    fn focused_input_is_disabled(&self) -> bool {
+        let Some(node_id) = self.focused_input_node_id else {
+            return false;
+        };
+        let Some(doc) = &self.doc else { return false };
+        let d = doc.borrow();
+        Self::node_is_disabled_in_tree(&d.tree, node_id)
+    }
+
+    /// Whether the field currently holding the input claim is read-only.
+    fn focused_input_is_readonly(&self) -> bool {
+        let Some(node_id) = self.focused_input_node_id else {
+            return false;
+        };
+        let Some(doc) = &self.doc else { return false };
+        let d = doc.borrow();
+        d.tree.get(node_id).is_some_and(Self::node_is_readonly)
     }
 
     /// Central dispatch: execute an EditCommand on the focused input's EditableState.
@@ -1599,6 +1646,12 @@ impl RinchApp {
         let Some(handler_id) = self.live_focused_input_handler() else {
             return;
         };
+        // A read-only field still focuses, moves its caret, selects and copies
+        // — it only refuses to change. So the gate is per *command*, not per
+        // field, and `EditCommand::mutates_text` is the exhaustive answer.
+        if cmd.mutates_text() && self.focused_input_is_readonly() {
+            return;
+        }
         // The edit applies to what the field displays: adopt any `value` write
         // that landed since the last sync (issue #238).
         self.adopt_focused_input_value_from_dom();
@@ -1964,29 +2017,85 @@ impl RinchApp {
         self.focus_element(focusable[target_idx]);
     }
 
-    /// Whether a node is disabled, and so takes no focus — not by Tab, not by
-    /// a mousedown claim.
+    /// Whether a node is disabled, and so takes no focus and accepts no edit —
+    /// not by Tab, not by a mousedown claim, not from the keyboard.
     ///
-    /// `data-disabled` is a **boolean attribute**, spelled the way HTML spells
-    /// one: present means disabled, whatever the value, and only the explicit
-    /// `"false"` opts out. The probe this replaces demanded the literal value
-    /// `"true"`, which no in-tree writer of `data-disabled` produces — the one
-    /// that exists (`select_widget.rs`, for a disabled `<option>`) writes `""`,
-    /// and callers following the HTML idiom write `""` too — so it matched
-    /// nothing but its own test and every `data-disabled` control stayed
-    /// tabbable.
+    /// **Both spellings count.** `data-disabled` is what the runtime's own
+    /// widgets write (`select_widget.rs`, for a disabled `<option>`); plain
+    /// `disabled` is what the whole component library writes — `Button`,
+    /// `ActionIcon`, `CloseButton`, `TextInput`, `Textarea`, `NumberInput`,
+    /// `PasswordInput`, `Checkbox`, `Radio`, `Switch`, `NavLink`, `Pagination`,
+    /// `Tabs`, `Accordion`, `DropdownMenu`, `Fieldset`. Consulting only the
+    /// first left every one of those tabbable, and a disabled `<input>` fully
+    /// typable, which is issue #315.
     ///
-    /// **Only `data-disabled`.** The plain HTML `disabled` attribute that the
-    /// component library writes (`Button`, `ActionIcon`, `Checkbox`, `Radio`,
-    /// `TextInput`, `Textarea`, …) is *not* consulted, so a disabled
-    /// `<input>`/`<textarea>` is still a Tab stop and still typable. Teaching
-    /// this probe that spelling is only half the fix — the pointer path
-    /// (`found_input_focus` in `click_handling.rs`) and the editable engine
-    /// would have to honour it too — so it is deliberately left alone here.
+    /// Either is a **boolean attribute**: present means disabled whatever the
+    /// value, and only the explicit `"false"` opts out. (Strict HTML has no
+    /// opt-out at all — `disabled="false"` disables — but rinch has documented
+    /// the `"false"` escape for `data-disabled` since it was written, and one
+    /// rule for both spellings beats two.) The probe this rule replaced
+    /// demanded the literal `"true"`, which no in-tree writer produces.
     pub(crate) fn node_is_disabled(node: &rinch_dom::Node) -> bool {
+        ["disabled", "data-disabled"].iter().any(|attr| {
+            node.attributes
+                .get(*attr)
+                .is_some_and(|v| !v.eq_ignore_ascii_case("false"))
+        })
+    }
+
+    /// Whether a node is **read-only**: it focuses, selects and copies like any
+    /// other field, but refuses every command that would change its text.
+    ///
+    /// A weaker thing than [`Self::node_is_disabled`], and the distinction is
+    /// the point — `ColorInput` in a non-free-form format is the one in-tree
+    /// writer, and it wants the field reachable and copyable while the swatch
+    /// owns the value. Same boolean-attribute rule.
+    pub(crate) fn node_is_readonly(node: &rinch_dom::Node) -> bool {
         node.attributes
-            .get("data-disabled")
+            .get("readonly")
             .is_some_and(|v| !v.eq_ignore_ascii_case("false"))
+    }
+
+    /// [`Self::node_is_disabled`] for the node itself, **or** an enclosing
+    /// `<fieldset disabled>`.
+    ///
+    /// `<fieldset>` is the one element whose `disabled` reaches past itself:
+    /// HTML disables every descendant control, which is the whole reason the
+    /// element exists. The exception HTML also carves — controls inside the
+    /// fieldset's **first `<legend>`** stay enabled, so a form can put its own
+    /// "enable this section" checkbox there — is honoured too.
+    ///
+    /// Everything else disables only itself (a disabled `<button>` does not
+    /// disable a `<span>` inside it), which is why the Tab collector's own
+    /// comment about not skipping subtrees still stands for every other tag.
+    pub(crate) fn node_is_disabled_in_tree(tree: &rinch_dom::NodeTree, node_id: usize) -> bool {
+        let mut cur = Some(node_id);
+        let mut child = None;
+        while let Some(nid) = cur {
+            let Some(node) = tree.get(nid) else {
+                return false;
+            };
+            let is_fieldset = node.tag() == Some("fieldset");
+            // Skip the fieldset's own check when we arrived through its first
+            // <legend>: that subtree is exempt.
+            let exempt = is_fieldset
+                && child.is_some_and(|c| Self::first_legend_child(tree, node) == Some(c));
+            if !exempt && (nid == node_id || is_fieldset) && Self::node_is_disabled(node) {
+                return true;
+            }
+            child = Some(nid);
+            cur = node.parent;
+        }
+        false
+    }
+
+    /// The id of `parent`'s first `<legend>` child, if it has one.
+    fn first_legend_child(tree: &rinch_dom::NodeTree, parent: &rinch_dom::Node) -> Option<usize> {
+        parent
+            .children
+            .iter()
+            .copied()
+            .find(|&c| tree.get(c).and_then(|n| n.tag()) == Some("legend"))
     }
 
     /// A node's `tabindex` as an integer, if it carries a parseable one.
@@ -2051,8 +2160,19 @@ impl RinchApp {
             if node.attributes.contains_key("data-oninput") {
                 return PressFocus::Release;
             }
+            // `node_is_disabled_in_tree`, **not** `node_is_disabled`: a control
+            // inside a `<fieldset disabled>` takes no claim from a press either
+            // (issue #315). Load-bearing, and easy to lose — the inline walk this
+            // function replaced (before #316 item 3 collapsed the two walks into
+            // one) asked the fieldset-aware question, and #312's `PressFocus`
+            // rewrite reintroduced the self-only one, so this merge had to choose
+            // deliberately: taking the self-only predicate deletes the guarantee
+            // while compiling and passing everything else. Pinned by
+            // `a_press_on_a_focusable_inside_a_disabled_fieldset_claims_nothing`,
+            // which is the only test that separates the two predicates: a disabled
+            // `<fieldset>` is the one shape where they disagree.
             if focusable.is_none()
-                && !Self::node_is_disabled(node)
+                && !Self::node_is_disabled_in_tree(tree, nid)
                 && Self::node_tabindex(node).is_some()
             {
                 focusable = Some(nid);
@@ -2085,20 +2205,26 @@ impl RinchApp {
         let d = doc.borrow();
         let mut result = Vec::new();
 
-        // Walk DOM tree depth-first from root (node 0)
-        let mut stack: Vec<usize> = vec![0];
-        while let Some(nid) = stack.pop() {
+        // Walk DOM tree depth-first from root (node 0). The flag rides the
+        // stack because `<fieldset disabled>` is the one element whose
+        // `disabled` reaches its whole subtree, and inheriting it downwards
+        // costs nothing where an ancestor walk per node would be quadratic.
+        let mut stack: Vec<(usize, bool)> = vec![(0, false)];
+        while let Some((nid, inherited_disabled)) = stack.pop() {
             let Some(node) = d.tree.get(nid) else {
                 continue;
             };
 
             // A disabled or negative-tabindex node is not itself focusable, but
             // its children still are (web semantics remove only the node from
-            // the Tab order, not its subtree). Same for zero-size or
-            // `visibility: hidden` (invisible, unclickable) nodes. The tabindex
-            // test parses like the focusable test below so `-2`, `-01`, … are
-            // negative too, not just the literal string "-1".
-            let skip_self = Self::node_is_disabled(node)
+            // the Tab order, not its subtree — `<fieldset>` above is the sole
+            // exception). Same for zero-size or `visibility: hidden`
+            // (invisible, unclickable) nodes. The tabindex test parses like the
+            // focusable test below so `-2`, `-01`, … are negative too, not just
+            // the literal string "-1".
+            let self_disabled = Self::node_is_disabled(node);
+            let skip_self = self_disabled
+                || inherited_disabled
                 || Self::node_tabindex(node).is_some_and(|v| v < 0)
                 || node.layout.width <= 0.0
                 || node.layout.height <= 0.0
@@ -2118,9 +2244,24 @@ impl RinchApp {
                 }
             }
 
+            // A disabled `<fieldset>` disables its descendants — except those
+            // inside its first `<legend>`, which HTML keeps enabled so a form
+            // can put the control that re-enables the section there.
+            let is_disabling_fieldset = self_disabled && node.tag() == Some("fieldset");
+            let disables_subtree = inherited_disabled || is_disabling_fieldset;
+            // Only *this* fieldset's legend is exempt from *this* fieldset. An
+            // outer disabled fieldset still reaches in, so an already-inherited
+            // disable is not undone by a nested legend.
+            let legend_exempt = (is_disabling_fieldset && !inherited_disabled)
+                .then(|| Self::first_legend_child(&d.tree, node))
+                .flatten();
+
             // Push children in reverse order so first child is processed first
             for &child_id in node.children.iter().rev() {
-                stack.push(child_id);
+                stack.push((
+                    child_id,
+                    disables_subtree && Some(child_id) != legend_exempt,
+                ));
             }
         }
 
@@ -2328,15 +2469,20 @@ impl RinchApp {
             return;
         };
 
+        // A disabled control takes no focus at all, programmatic included, and
+        // an `<input>` is no exception (issue #315) — the check sits above the
+        // branch so it covers the input and generic-node paths alike.
+        if Self::node_is_disabled_in_tree(&d.tree, node_id) {
+            return;
+        }
+
         let Some(oninput_str) = node.attributes.get("data-oninput") else {
             // Any parseable tabindex makes a node programmatically focusable —
             // including negative ones: `tabindex="-1"` is the standard
             // focusable-but-not-tabbable idiom (`element.focus()` into a
-            // just-opened dialog), and only the Tab collector excludes it. A
-            // disabled node takes no focus at all, programmatic included —
-            // the rule `collect_focusable_nodes` and the mousedown claim
-            // already apply, and what `docs/src/guide/focus.md` promises.
-            let focusable = !Self::node_is_disabled(node) && Self::node_tabindex(node).is_some();
+            // just-opened dialog), and only the Tab collector excludes it.
+            // (Disabled was already refused above, for both branches.)
+            let focusable = Self::node_tabindex(node).is_some();
             drop(d);
             if focusable {
                 // Deferred for the same reason the input path below defers its

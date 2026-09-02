@@ -536,10 +536,27 @@ impl RinchApp {
                     // re-borrowing between them buys nothing. The policy is
                     // `resolve_click_focus`, which `handle_click`'s release
                     // check also asks — one press, one answer (issue #316).
-                    let (hit, press_focus) = {
+                    let (hit, press_focus, focus_dom_target) = {
                         let d = doc.borrow();
                         let hit = hit_test(&d.tree, x, y);
-                        (hit, Self::resolve_click_focus(&d.tree, hit))
+                        let press_focus = Self::resolve_click_focus(&d.tree, hit);
+                        // Where the DOM `:focus` state goes. The outer
+                        // `Option` is *whether to touch it at all*: a
+                        // `data-nofocus` press moves no focus, so it must not
+                        // clear the ring either (issue #312). The inner one is
+                        // where it lands — and a **disabled** control is never
+                        // it (issue #315): it takes no keyboard claim, so a
+                        // focus ring on it would be the style lying about who
+                        // owns the keyboard. `PressFocus::Node` is already
+                        // disabled-filtered by `resolve_click_focus`.
+                        let dom_target = match press_focus {
+                            PressFocus::Preserve => None,
+                            PressFocus::Node(nid) => Some(Some(nid)),
+                            PressFocus::Release => Some(
+                                hit.filter(|&nid| !Self::node_is_disabled_in_tree(&d.tree, nid)),
+                            ),
+                        };
+                        (hit, press_focus, dom_target)
                     };
                     // The arbiter-held generic node (issue #228). A press that
                     // resolves anywhere other than it moves or releases the
@@ -564,16 +581,11 @@ impl RinchApp {
                         d.update_active(hit);
                         // :focus applies to the clicked element (persists after
                         // release); anchored on the focusable ancestor for a
-                        // press inside one. A `data-nofocus` press moves no
-                        // focus, so it must not move the DOM `:focus` either.
-                        match press_focus {
-                            PressFocus::Preserve => {}
-                            PressFocus::Node(nid) => {
-                                d.update_focus(Some(nid));
-                            }
-                            PressFocus::Release => {
-                                d.update_focus(hit);
-                            }
+                        // press inside one, nowhere at all for a disabled
+                        // one, and left exactly where it was for a
+                        // `data-nofocus` press.
+                        if let Some(target) = focus_dom_target {
+                            d.update_focus(target);
                         }
                     }
                     // No outstanding doc borrow from here on: the arbiter's
@@ -1305,7 +1317,20 @@ impl RinchApp {
                         }
                     }
                     FocusTarget::Input(node_id) => {
-                        self.dispatch_input_ime(node_id, ime);
+                        // A disabled field composes nothing (issue #315).
+                        // `dispatch_input_ime`'s `Preedit` arm writes
+                        // `data-preedit` straight to the DOM without touching
+                        // `live_focused_input_handler`, so it sat outside every
+                        // gate the rest of that issue installed: a preedit
+                        // painted into a disabled field, and — since `Commit`
+                        // *is* gated — could never resolve. Probing here
+                        // releases the claim through the same path a keystroke
+                        // would, so a field that goes disabled mid-composition
+                        // ends up in exactly one state whichever event lands
+                        // first.
+                        if self.live_focused_input_handler().is_some() {
+                            self.dispatch_input_ime(node_id, ime);
+                        }
                         actions.push(AppAction::RequestRedraw);
                     }
                     // A registered custom text component (issue #176) consumes
