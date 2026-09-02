@@ -2194,8 +2194,11 @@ pub(crate) enum Motion {
 
 /// Derive the key string handed to the user keyboard hook (and the focus
 /// registry's `on_key`) from a key event's keycode + text + layout-mapped
-/// letter, spelled the way a browser spells `KeyboardEvent.key`. Four steps,
-/// in order:
+/// letter, spelled the way a browser spells `KeyboardEvent.key` — bar the
+/// spacebar, which rinch has always named `"Space"` where a browser reports
+/// `" "` (`rinch-web` forwards `event.key()`, so it reports `" "`; that
+/// divergence predates issue #336 and `spacebar_reports_the_named_key_not_its_text`
+/// pins it deliberately). Four steps, in order:
 ///
 /// 1. **A named key wins over the text it would insert** — a spacebar press
 ///    reports `"Space"`, not `" "`, and Tab reports `"Tab"`, not `"\t"`.

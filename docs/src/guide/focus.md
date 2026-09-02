@@ -108,8 +108,10 @@ Tab navigation, no Enter/Space activation, no DevTools shortcut. Returning
 exactly as it would for an unregistered node, so registering costs you nothing
 you did not ask for.
 
-`k.key` is spelled the way the browser spells `KeyboardEvent.key`, resolved in
-four steps:
+`k.key` is spelled the way the browser spells `KeyboardEvent.key` — with one
+long-standing exception, the spacebar, which rinch names `"Space"` where a
+browser reports `" "` (so `rinch-web`, which forwards `event.key()`
+unchanged, reports `" "` there). It is resolved in four steps:
 
 1. **A named key wins over the text it would insert** — `"ArrowLeft"`,
    `"Enter"`, `"Escape"`, `"Tab"`, `"PageUp"`, `"F1"`…`"F12"`, `"Shift"`, and
