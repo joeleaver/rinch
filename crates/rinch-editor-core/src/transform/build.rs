@@ -326,13 +326,68 @@ impl<'a> Transform<'a> {
 
     // -- marks -----------------------------------------------------------
 
+    /// Reject a `mark` that cannot refer to any mark in **this** document (issue #217).
+    ///
+    /// `MarkType` equality is `Rc::ptr_eq` — two `Schema::starter_kit()` instances mint
+    /// two different `bold` handles that are never equal. So a `Mark` built from a
+    /// different `Schema` than the one behind the document matches nothing, and before
+    /// this guard the outcome was silent: [`Transform::remove_mark`] found no match,
+    /// issued no step, and returned `Ok`; [`Transform::add_mark`] found no match either
+    /// and *added a second, foreign-typed mark of the same name* beside the real one.
+    /// Both are always caller bugs, and both are invisible — the removal test that
+    /// exposed this asserted only convergence and passed for months while removing
+    /// nothing.
+    ///
+    /// Two hazards, because they are genuinely different and only the second one was the
+    /// bug actually found:
+    ///
+    /// * **The mark is foreign to this transform's schema.** Caught up front by identity
+    ///   against `self.schema`.
+    /// * **The *document* is foreign to this transform's schema.** The mark is this
+    ///   schema's, so the check above passes, but the document was built by another
+    ///   `Schema` and carries that one's handles. Caught by `foreign_twin` during the
+    ///   walk each caller already does: a node carrying a mark of the *same name* but a
+    ///   *different* `MarkType` handle is proof, and is never legitimate.
+    ///
+    /// Deliberately **not** an error: finding no such mark in the range at all. That is
+    /// an ordinary no-op — `toggleBold` over unbolded text, or removing `link[href=a]`
+    /// where the text carries `link[href=b]` (same type, different attrs, correctly no
+    /// match). Only a *type-identity* mismatch is reported.
+    fn check_mark_schema(&self, mark: &Mark) -> Result<(), StepError> {
+        if self.schema.mark_type(mark.type_name()) != Some(&mark.typ) {
+            return Err(StepError::new(format!(
+                "mark `{}` was built from a different Schema than this document's; \
+                 MarkType identity is per-Schema, so it can never match (issue #217)",
+                mark.type_name()
+            )));
+        }
+        Ok(())
+    }
+
+    /// The error for hazard 2 above: the document holds a same-named mark that is not
+    /// `mark`'s type.
+    fn foreign_twin(mark: &Mark) -> StepError {
+        StepError::new(format!(
+            "this document carries a `{}` mark from a different Schema instance than \
+             this transform's; MarkType identity is per-Schema, so the two can never \
+             match and the operation would silently do nothing (issue #217)",
+            mark.type_name()
+        ))
+    }
+
     /// Add `mark` across the inline range `from..to`, first removing any marks the
     /// new mark excludes. Port of `Transform.addMark`.
     pub fn add_mark(&mut self, from: usize, to: usize, mark: Mark) -> Result<&mut Self, StepError> {
+        self.check_mark_schema(&mark)?;
         let mut removed: Vec<RemoveMarkStep> = Vec::new();
         let mut added: Vec<AddMarkStep> = Vec::new();
+        let mut foreign: Option<StepError> = None;
         self.doc.nodes_between(from, to, &mut |node, pos, parent| {
             if !node.is_inline() {
+                return true;
+            }
+            if foreign_same_name(&mark, node.marks()) {
+                foreign.get_or_insert_with(|| Transform::foreign_twin(&mark));
                 return true;
             }
             let Some(parent) = parent else { return true };
@@ -362,6 +417,9 @@ impl<'a> Transform<'a> {
             }
             true
         });
+        if let Some(e) = foreign {
+            return Err(e);
+        }
         for s in removed {
             self.step(Box::new(s))?;
         }
@@ -379,9 +437,15 @@ impl<'a> Transform<'a> {
         to: usize,
         mark: Mark,
     ) -> Result<&mut Self, StepError> {
+        self.check_mark_schema(&mark)?;
         let mut matched: Vec<(usize, usize)> = Vec::new();
+        let mut foreign: Option<StepError> = None;
         self.doc.nodes_between(from, to, &mut |node, pos, _parent| {
             if !node.is_inline() {
+                return true;
+            }
+            if foreign_same_name(&mark, node.marks()) {
+                foreign.get_or_insert_with(|| Transform::foreign_twin(&mark));
                 return true;
             }
             if mark.is_in(node.marks()) {
@@ -396,6 +460,9 @@ impl<'a> Transform<'a> {
             }
             true
         });
+        if let Some(e) = foreign {
+            return Err(e);
+        }
         for (f, t) in matched {
             self.step(Box::new(RemoveMarkStep::new(f, t, mark.clone())))?;
         }
@@ -422,4 +489,13 @@ impl<'a> Transform<'a> {
     ) -> Result<&mut Self, StepError> {
         self.step(Box::new(SetDocAttrStep::new(attr, value)))
     }
+}
+
+/// Whether `set` holds a mark sharing `mark`'s *name* but not its `MarkType` handle —
+/// proof that `set`'s document was built by a different `Schema` (issue #217). `false`
+/// when every same-named mark is the same type, which includes the ordinary "no such
+/// mark here" case.
+fn foreign_same_name(mark: &Mark, set: &[Mark]) -> bool {
+    set.iter()
+        .any(|m| m.type_name() == mark.type_name() && m.typ != mark.typ)
 }

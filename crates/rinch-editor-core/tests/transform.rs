@@ -287,6 +287,108 @@ fn add_mark_disallowed_in_code_block_is_a_noop_not_error() {
 }
 
 // ---------------------------------------------------------------------------
+// Foreign-schema marks (issue #217)
+// ---------------------------------------------------------------------------
+
+/// `MarkType` equality is `Rc::ptr_eq`, so a mark built from a *second*
+/// `Schema::starter_kit()` can never equal one built from the first. `remove_mark` used
+/// to answer that by matching nothing and returning `Ok` — a removal that silently
+/// removed nothing, which is how a collab regression test passed vacuously for months.
+#[test]
+fn remove_mark_with_a_mark_from_another_schema_fails_loud() {
+    let s = sk();
+    let other = sk();
+    let bolded = s
+        .branch(
+            "paragraph",
+            Fragment::from_node(s.text_with_marks("abcd", vec![bold(&s)]).unwrap()),
+        )
+        .unwrap();
+    let d = doc(&s, vec![bolded]);
+    let Err(err) = Transform::new(&s, d).remove_mark(1, 5, bold(&other)) else {
+        panic!("a mark from another Schema must fail loud, not remove nothing");
+    };
+    assert!(
+        err.to_string().contains("different Schema"),
+        "expected a foreign-schema diagnosis, got: {err}"
+    );
+}
+
+/// The hazard that actually bit (#217): the *mark* belongs to the transform's schema, so
+/// a membership check passes — it is the **document** that was built by another
+/// `Schema`. Only comparing the document's own mark handles catches this one.
+#[test]
+fn remove_mark_on_a_document_from_another_schema_fails_loud() {
+    let s = sk();
+    let other = sk();
+    // The document's marks come from `other`; the transform (and the mark) from `s`.
+    let bolded = other
+        .branch(
+            "paragraph",
+            Fragment::from_node(other.text_with_marks("abcd", vec![bold(&other)]).unwrap()),
+        )
+        .unwrap();
+    let d = other.branch("doc", Fragment::from_node(bolded)).unwrap();
+    let Err(err) = Transform::new(&s, d).remove_mark(1, 5, bold(&s)) else {
+        panic!("a document from another Schema must fail loud, not remove nothing");
+    };
+    assert!(
+        err.to_string().contains("different Schema"),
+        "expected a foreign-schema diagnosis, got: {err}"
+    );
+}
+
+/// `add_mark`'s version is worse than a no-op: the foreign mark does not match, so it
+/// used to be *added* beside the document's real one, leaving a node carrying two
+/// same-named marks of different types.
+#[test]
+fn add_mark_with_a_mark_from_another_schema_fails_loud() {
+    let s = sk();
+    let other = sk();
+    let d = doc(&s, vec![para(&s, "abcd")]);
+    let Err(err) = Transform::new(&s, d).add_mark(2, 4, bold(&other)) else {
+        panic!("a mark from another Schema must fail loud, not be added beside the real one");
+    };
+    assert!(
+        err.to_string().contains("different Schema"),
+        "expected a foreign-schema diagnosis, got: {err}"
+    );
+}
+
+/// The guard must stay narrow. Finding no matching mark in the range is an **ordinary
+/// no-op**, not an error — it is what `toggleBold` over unbolded text does — and so is a
+/// same-type mark whose *attrs* differ (removing `link[href=a]` from `link[href=b]`).
+/// Only a type-*identity* mismatch is reported.
+#[test]
+fn removing_a_mark_that_is_simply_absent_is_still_a_quiet_no_op() {
+    let s = sk();
+    let d = doc(&s, vec![para(&s, "abcd")]);
+    let mut tf = Transform::new(&s, d.clone());
+    tf.remove_mark(1, 5, bold(&s))
+        .expect("removing an absent mark is a no-op, not an error");
+    assert_eq!(tf.doc, d, "and it changes nothing");
+
+    // Same mark type, different attrs: a genuine non-match.
+    let link = |href: &str| {
+        Mark::new(
+            s.mark_type("link").unwrap().clone(),
+            Attrs::new().with("href", href.to_string()),
+        )
+    };
+    let linked = s
+        .branch(
+            "paragraph",
+            Fragment::from_node(s.text_with_marks("abcd", vec![link("b")]).unwrap()),
+        )
+        .unwrap();
+    let d2 = doc(&s, vec![linked]);
+    let mut tf2 = Transform::new(&s, d2.clone());
+    tf2.remove_mark(1, 5, link("a"))
+        .expect("a different href is an ordinary non-match, not a schema error");
+    assert_eq!(tf2.doc, d2);
+}
+
+// ---------------------------------------------------------------------------
 // Attr steps
 // ---------------------------------------------------------------------------
 

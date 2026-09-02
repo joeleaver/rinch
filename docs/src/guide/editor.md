@@ -92,6 +92,23 @@ automatic insertion of required nodes. Required attrs (`link.href`, `image.src`,
 `heading.level`) are applied/enforced at the step boundary, so attr-aware round-trip
 is structural, not best-effort.
 
+**Node and mark types are interned per `Schema` instance, and compared by pointer.**
+`NodeType`/`MarkType` equality is `Rc::ptr_eq`, so two `Schema::starter_kit()` values
+mint two `bold` handles that are never equal — and a `Mark` carries its `MarkType`, so
+marks from different schemas never match either. One document, one `Schema`: build the
+document, the transform, and every mark you hand it from the *same* `Rc<Schema>`.
+
+Getting this wrong used to be silent. `Transform::remove_mark` matched nothing and
+returned `Ok`, so the removal quietly did nothing; `add_mark` added the foreign mark
+*beside* the document's real one. Both now fail loud with a `StepError` naming the cause
+(issue #217) — but only for a genuine type-identity mismatch. Removing a mark the range
+simply does not carry, or a `link[href=a]` where the text has `link[href=b]`, is still an
+ordinary no-op. The safest way to name "whatever this document calls bold" is to read the
+handle off the document (or off `state.schema()`, which is the same instance).
+
+The same pointer identity is why comparing `Node`s across two editor handles fails even
+for structurally identical documents — compare their serialized HTML instead.
+
 ### Serialization
 
 The durable save/load shape is a recursive, schema-derived structure (under the
