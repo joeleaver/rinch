@@ -427,8 +427,18 @@ impl Drop for RinchContext {
 // ── Debug integration ───────────────────────────────────────────────────────
 
 /// Re-export screenshot utilities for game engine integration.
+///
+/// The two gates differ because the items do: `encode_png` is plain CPU work,
+/// while `capture_texture_rgba` reads back a wgpu texture and is
+/// `#[cfg(feature = "gpu")]`. Re-exporting both on `debug` alone meant `rinch`
+/// with `debug` + `embed` and *without* `gpu` did not compile at all — a
+/// combination nothing in the workspace or CI had ever built, because
+/// `cargo test --workspace` unifies `rinch/gpu` on from `examples/game-embed`.
+/// Found by naming `debug` on CI's gated-test line for #401's pins.
+#[cfg(all(feature = "debug", feature = "gpu"))]
+pub use crate::shell::screenshot::capture_texture_rgba;
 #[cfg(feature = "debug")]
-pub use crate::shell::screenshot::{capture_texture_rgba, encode_png};
+pub use crate::shell::screenshot::encode_png;
 
 /// A pending screenshot request from the debug server.
 ///

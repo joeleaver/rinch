@@ -68,9 +68,9 @@ pub use context::{
 // Re-export event handling types
 pub use events::{
     AncestorBounds, ClickContext, Drag, DragContext, EventCallback, EventHandlerId,
-    FileDropCallback, InputCallback, InputContext, KeyEventData, ModifierState, MouseButton,
-    PasteEventData, PasteInterceptor, PrimaryButton, ScrollEvent, SelectionAction, TextHitInfo,
-    check_and_clear_input_handled, clear_handlers, clear_keyboard_interceptor,
+    FileDropCallback, InputCallback, InputContext, KeyEventData, KeyEventKind, ModifierState,
+    MouseButton, PasteEventData, PasteInterceptor, PrimaryButton, ScrollEvent, SelectionAction,
+    TextHitInfo, check_and_clear_input_handled, clear_handlers, clear_keyboard_interceptor,
     clear_paste_interceptor, clear_selection_callback, clear_selection_snapshot,
     clear_selection_sync_callback, click_ancestors, dispatch_event, dispatch_file_drop_event,
     dispatch_input_event, dispatch_keyboard_event, dispatch_paste_event, dispatch_selection,

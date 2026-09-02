@@ -57,7 +57,11 @@ fn widget(
                 let log = log.clone();
                 let consume = consume.clone();
                 move |k| {
-                    log.borrow_mut().push(format!("{tag}:key:{}", k.key));
+                    // Presses and releases are logged under different names
+                    // (issue #337): `on_key` sees both now, so a test that
+                    // counted `key:` entries would otherwise double silently.
+                    let phase = if k.is_up() { "keyup" } else { "key" };
+                    log.borrow_mut().push(format!("{tag}:{phase}:{}", k.key));
                     consume.borrow().iter().any(|c| c == &k.key)
                 }
             }),
@@ -113,6 +117,7 @@ fn key(app: &mut RinchApp, key: KeyCode, text: Option<&str>) {
     app.handle_event(
         PlatformEvent::KeyUp {
             key,
+            logical_key: None,
             modifiers: Modifiers::default(),
         },
         (800, 600),

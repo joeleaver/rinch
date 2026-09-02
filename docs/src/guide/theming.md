@@ -257,6 +257,58 @@ In dark mode, semantic colors flip:
 
 For dynamic dark mode toggling (e.g., a switch in your app), use `dark_mode_fn` on WASM or re-create the theme and call `update_theme()` on desktop.
 
+## Scrollbars
+
+A desktop scroll container paints an overlay thumb on each axis that is
+scrollable and overflowing. Two custom properties style it, and both **inherit**
+— one declaration on a root node restyles every scroll region in the app.
+
+```css
+:root {
+  --rinch-scrollbar-color: rgba(255, 255, 255, 0.35);              /* thumb */
+  --rinch-scrollbar-color: rgb(120 120 130) rgba(0, 0, 0, 0.15);   /* thumb, track */
+  --rinch-scrollbar-width: auto;                                   /* auto | thin | none */
+}
+```
+
+- **`--rinch-scrollbar-color: <thumb> [<track>]`** — any CSS colour. With one
+  colour only the thumb is painted, which is rinch's default overlay look; with
+  two, a track is painted behind it for the full length of the bar. `auto`
+  (the initial value) keeps the built-in default described below.
+- **`--rinch-scrollbar-width: auto | thin | none`** — `auto` is a 6px thumb,
+  `thin` a 4px one. **`none` removes the bar entirely**: nothing is painted and
+  nothing is hit-tested either, so an app drawing its own scrollbar can switch
+  rinch's off rather than covering it up.
+
+### Why not `scrollbar-color` / `scrollbar-width`?
+
+Those are the real CSS properties, and they are what these mirror — but they are
+**gecko-only in Stylo**. That is a codegen-time filter rather than a `#[cfg]`,
+so the servo build rinch uses emits no parser entry for either and drops the
+declaration. The `--rinch-` custom properties go through Stylo's custom-property
+cascade instead, which the servo build supports fully. If Stylo ever ships the
+real properties for servo, they will be honoured alongside these.
+
+Neither affects layout: rinch's bar is an overlay drawn on top of content and
+takes no space, so `thin` and `none` change what you see, not where anything
+sits.
+
+### The default follows your palette
+
+`auto` is **not** a fixed colour. The thumb is 40% black or 40% white, chosen by
+the luminance of the container's own computed `color`. A light theme's text is
+dark, so the thumb is the 40% black it has always been and nothing changes; a
+dark theme's text is light, so the thumb flips to white and is visible.
+
+Only the *polarity* follows the palette — the thumb stays neutral grey — so a
+container that happens to set `color: red` does not get a red thumb. `color` is
+read rather than `background-color` because it is always resolved: backgrounds
+are transparent by default, so a scroll region inheriting the page's dark
+background would have nothing to read.
+
+Desktop only. On the web the browser draws its own scrollbars, and the real CSS
+properties work there.
+
 ## Color Palette Reference
 
 | Color | Shade 0 (lightest) | Shade 6 (primary) | Notes |

@@ -3,7 +3,7 @@
 
 use crate::computed_style::values::*;
 
-use super::color::{color_from_absolute, color_from_stylo};
+use super::color::color_from_computed;
 
 pub(super) fn visibility_from_stylo(
     vis: &style::properties::longhands::visibility::computed_value::T,
@@ -207,7 +207,17 @@ pub(super) fn transform_from_stylo(
 /// `px`/`py` are fractions (0.5 = 50%). The contribution to the final `(e, f)`
 /// is `L·(px·W, py·H)`, which is linear in `W` and `H` — hence four
 /// coefficients rather than a function list (#212).
-fn accumulate_pct(m: &[f64; 6], px: f64, py: f64, pct_w: &mut [f64; 2], pct_h: &mut [f64; 2]) {
+///
+/// Shared with the keyframe extractor so an authored `translate(50%, 0)` stop
+/// accumulates by exactly the same rule the cascade uses — the two must agree
+/// or a transform would jump the moment an animation starts.
+pub(crate) fn accumulate_pct(
+    m: &[f64; 6],
+    px: f64,
+    py: f64,
+    pct_w: &mut [f64; 2],
+    pct_h: &mut [f64; 2],
+) {
     pct_w[0] += px * m[0];
     pct_w[1] += px * m[1];
     pct_h[0] += py * m[2];
@@ -247,11 +257,7 @@ pub(super) fn text_shadow_from_stylo(
         .0
         .iter()
         .map(|s| {
-            let color = if s.color.is_currentcolor() {
-                color_from_absolute(text_color)
-            } else {
-                color_from_stylo(&s.color)
-            };
+            let color = color_from_computed(&s.color, text_color);
             TextShadowValue {
                 offset_x: s.horizontal.px(),
                 offset_y: s.vertical.px(),
@@ -270,11 +276,7 @@ pub(super) fn box_shadow_from_stylo(
         .0
         .iter()
         .map(|s| {
-            let color = if s.base.color.is_currentcolor() {
-                color_from_absolute(text_color)
-            } else {
-                color_from_stylo(&s.base.color)
-            };
+            let color = color_from_computed(&s.base.color, text_color);
             BoxShadowValue {
                 offset_x: s.base.horizontal.px(),
                 offset_y: s.base.vertical.px(),
@@ -337,11 +339,7 @@ pub(super) fn background_from_stylo(
     }
 
     // Fall back to background-color
-    let color = if bg.background_color.is_currentcolor() {
-        color_from_absolute(text_color)
-    } else {
-        color_from_stylo(&bg.background_color)
-    };
+    let color = color_from_computed(&bg.background_color, text_color);
     match color {
         Some(c) => BackgroundValue::Color(c),
         None => BackgroundValue::None,
@@ -385,11 +383,7 @@ fn gradient_stops_from_stylo(
     for (i, item) in items.iter().enumerate() {
         match item {
             GenericGradientItem::SimpleColorStop(color) => {
-                let c = if color.is_currentcolor() {
-                    color_from_absolute(text_color)
-                } else {
-                    color_from_stylo(color)
-                };
+                let c = color_from_computed(color, text_color);
                 // Auto-distribute position
                 let offset = if total <= 1 {
                     0.0
@@ -399,11 +393,7 @@ fn gradient_stops_from_stylo(
                 stops.push(GradientStop { offset, color: c });
             }
             GenericGradientItem::ComplexColorStop { color, position } => {
-                let c = if color.is_currentcolor() {
-                    color_from_absolute(text_color)
-                } else {
-                    color_from_stylo(color)
-                };
+                let c = color_from_computed(color, text_color);
                 let offset = if let Some(pct) = position.to_percentage() {
                     pct.0
                 } else if let Some(len) = position.to_length() {

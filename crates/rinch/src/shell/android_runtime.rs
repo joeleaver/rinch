@@ -528,6 +528,9 @@ fn apply_ime_action(
                 dispatch(
                     PlatformEvent::KeyDown {
                         key: KeyCode::Other,
+                        // A soft-keyboard commit is synthesized text — no key
+                        // produced it, so there is no key value to report
+                        // (`None` = unknown, per the field's contract).
                         logical_key: None,
                         text: Some(ch.to_string()),
                         modifiers: Modifiers::default(),
@@ -633,17 +636,24 @@ fn collect_input_events(
                                     _ => None,
                                 });
 
+                            // The key-character-map char doubles as the logical
+                            // key value: it is the layout-produced, case-accurate
+                            // (`meta_state` includes Shift) character — exactly
+                            // what `KeyboardEvent.key` spells for a printable
+                            // key. Android hands us no DOM-style *name* for the
+                            // rest (Enter, arrows, CapsLock), so those stay
+                            // `None` and resolve through the physical `key`.
                             if let Some(key_code) = map_android_keycode(key.key_code()) {
                                 events.push(PlatformEvent::KeyDown {
                                     key: key_code,
-                                    logical_key: None,
+                                    logical_key: text.clone(),
                                     text,
                                     modifiers,
                                 });
                             } else if let Some(text) = text {
                                 events.push(PlatformEvent::KeyDown {
                                     key: KeyCode::Other,
-                                    logical_key: None,
+                                    logical_key: Some(text.clone()),
                                     text: Some(text),
                                     modifiers,
                                 });

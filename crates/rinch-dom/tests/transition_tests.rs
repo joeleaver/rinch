@@ -711,3 +711,403 @@ fn an_animation_that_ignores_transform_keeps_the_base_percentage_translate() {
         );
     }
 }
+
+// ── #255 / #412: a keyframe stop that is not a plain `px` length ──
+//
+// `convert_declaration` used to serialise every non-colour declaration back to
+// CSS text and re-parse it with a `strip_suffix("px")` mini-parser, so a stop
+// written as `10em`, `1.25rem`, `5%` or `translate(50%, 0)` produced no value
+// at all — the property simply vanished from the animation. It reads stylo's
+// typed specified value now.
+
+/// The animated value of `property` at `elapsed_ms` into the div's animation.
+fn animated_value(
+    doc: &rinch_dom::RinchDocument,
+    div: rinch_core::dom::NodeId,
+    elapsed_ms: f64,
+    property: TransitionProperty,
+) -> Option<AnimatableValue> {
+    let anim = doc
+        .tree
+        .active_animations
+        .get(&div.0)
+        .and_then(|anims| anims.first())
+        .expect("the div's animation should be active after layout");
+    let rinch_dom::animation::AnimationResult::Values(values) =
+        anim.values_at(anim.start_time_ms + elapsed_ms)
+    else {
+        panic!("a running animation should yield values");
+    };
+    values
+        .iter()
+        .find_map(|(prop, value)| (*prop == property).then(|| value.clone()))
+}
+
+/// The div's `font-size` is 16px and the root's is 16px, so `em` and `rem`
+/// land on the same numbers here; the tests that need to tell them apart set
+/// the div's own font size.
+fn animated_px(
+    doc: &rinch_dom::RinchDocument,
+    div: rinch_core::dom::NodeId,
+    ms: f64,
+    property: TransitionProperty,
+) -> Option<f32> {
+    match animated_value(doc, div, ms, property)? {
+        AnimatableValue::Dimension(DimensionValue::Length(px)) => Some(px),
+        AnimatableValue::LengthPercentage(LengthPercentageValue::Length(px)) => Some(px),
+        AnimatableValue::LengthPercentage(LengthPercentageValue::Zero) => Some(0.0),
+        AnimatableValue::LengthPercentageAuto(LengthPercentageAutoValue::Length(px)) => Some(px),
+        AnimatableValue::Float(v) => Some(v),
+        other => panic!("expected a length, got {other:?}"),
+    }
+}
+
+fn animated_percent(
+    doc: &rinch_dom::RinchDocument,
+    div: rinch_core::dom::NodeId,
+    ms: f64,
+    property: TransitionProperty,
+) -> Option<f32> {
+    match animated_value(doc, div, ms, property)? {
+        AnimatableValue::Dimension(DimensionValue::Percent(p)) => Some(p),
+        AnimatableValue::LengthPercentage(LengthPercentageValue::Percent(p)) => Some(p),
+        AnimatableValue::LengthPercentageAuto(LengthPercentageAutoValue::Percent(p)) => Some(p),
+        other => panic!("expected a percentage, got {other:?}"),
+    }
+}
+
+/// `em` resolves against the element's own font size.
+#[test]
+fn keyframes_em_width_stops_animate() {
+    let (doc, div) = animated_div("from { width: 10em; } to { width: 20em; }");
+    assert_eq!(
+        animated_px(&doc, div, 500.0, TransitionProperty::Width),
+        Some(240.0),
+        "halfway from 160px to 320px at the default 16px font size"
+    );
+}
+
+/// ...and against *this element's* font size, not the root's.
+#[test]
+fn keyframes_em_resolves_against_the_elements_own_font_size() {
+    let (doc, div) = animated_div(
+        "from { width: 10em; } to { width: 10em; }          } .tint { font-size: 32px; ",
+    );
+    assert_eq!(
+        animated_px(&doc, div, 500.0, TransitionProperty::Width),
+        Some(320.0),
+        "10em at a 32px font size"
+    );
+}
+
+/// `rem` resolves against the root's font size, so it is unmoved by the
+/// element's own.
+#[test]
+fn keyframes_rem_padding_stops_animate() {
+    let (doc, div) = animated_div(
+        "from { padding-top: 1.25rem; } to { padding-top: 2.5rem; }          } .tint { font-size: 32px; ",
+    );
+    assert_eq!(
+        animated_px(&doc, div, 500.0, TransitionProperty::PaddingTop),
+        Some(30.0),
+        "halfway from 20px to 40px against the root's 16px, not the div's 32px"
+    );
+}
+
+/// A percentage stop keeps its percentage — resolving it here would need the
+/// containing block, and `LengthPercentageValue` can carry it as authored.
+#[test]
+fn keyframes_percentage_stops_animate_as_percentages() {
+    let (doc, div) = animated_div("from { height: 5%; } to { height: 25%; }");
+    assert_eq!(
+        animated_percent(&doc, div, 500.0, TransitionProperty::Height),
+        Some(0.15),
+        "halfway from 5% to 25%"
+    );
+}
+
+/// The half of #255 the issue does not mention: emitting `Percent` without
+/// interpolation arms for it would make the stop *step* at 50% rather than
+/// animate. Three samples, one per third, prove it is a ramp.
+#[test]
+fn a_percentage_keyframe_ramps_rather_than_stepping() {
+    let (doc, div) = animated_div("from { margin-left: 0%; } to { margin-left: 30%; }");
+    let at = |ms| animated_percent(&doc, div, ms, TransitionProperty::MarginLeft).unwrap();
+    assert!((at(250.0) - 0.075).abs() < 1e-6, "quarter: {}", at(250.0));
+    assert!((at(500.0) - 0.15).abs() < 1e-6, "half: {}", at(500.0));
+    assert!(
+        (at(750.0) - 0.225).abs() < 1e-6,
+        "three quarters: {}",
+        at(750.0)
+    );
+}
+
+/// Percentage to percentage on a `<length-percentage>` property. The other
+/// percentage tests use `width`/`height` (a `DimensionValue`) and `margin`
+/// (a `LengthPercentageAutoValue`); this is the third value type, and it has
+/// its own interpolation arm.
+#[test]
+fn keyframes_percentage_padding_animates() {
+    let (doc, div) = animated_div("from { padding-top: 10%; } to { padding-top: 30%; }");
+    let mid = animated_percent(&doc, div, 500.0, TransitionProperty::PaddingTop).unwrap();
+    assert!((mid - 0.2).abs() < 1e-6, "halfway from 10% to 30%: {mid}");
+}
+
+/// A zero stop pairs with a percentage stop: `0` is unitless.
+#[test]
+fn keyframes_zero_to_percentage_animates() {
+    let (doc, div) = animated_div("from { padding-left: 0; } to { padding-left: 20%; }");
+    assert_eq!(
+        animated_percent(&doc, div, 500.0, TransitionProperty::PaddingLeft),
+        Some(0.1)
+    );
+}
+
+/// `border-width` is the one property still read from its CSS serialisation
+/// (stylo's `BorderSideWidth` hides its `LineWidth` behind a private field), so
+/// it gets its own coverage: `em` works, and so do the keyword widths.
+#[test]
+fn keyframes_border_width_em_and_keyword_stops_animate() {
+    let (doc, div) = animated_div("from { border-top-width: 1em; } to { border-top-width: 2em; }");
+    assert_eq!(
+        animated_px(&doc, div, 500.0, TransitionProperty::BorderTopWidth),
+        Some(24.0),
+        "halfway from 16px to 32px"
+    );
+
+    let (doc, div) =
+        animated_div("from { border-top-width: thin; } to { border-top-width: thick; }");
+    // A quarter of the way, not half: thin (1px), medium (3px) and thick (5px)
+    // are evenly spaced, so a midpoint sample reads 3px whether the three
+    // keywords are distinguished or all collapsed onto medium.
+    assert_eq!(
+        animated_px(&doc, div, 250.0, TransitionProperty::BorderTopWidth),
+        Some(2.0),
+        "a quarter of the way from thin (1px) to thick (5px)"
+    );
+}
+
+/// `font-size` in `rem` is exact — its base is the root. `em` and `%` are
+/// declined rather than resolved against the element's own (already-resolved)
+/// size, which would be the wrong base.
+#[test]
+fn keyframes_font_size_rem_animates_and_em_declines() {
+    let (doc, div) = animated_div("from { font-size: 1rem; } to { font-size: 2rem; }");
+    assert_eq!(
+        animated_px(&doc, div, 500.0, TransitionProperty::FontSize),
+        Some(24.0)
+    );
+
+    let (doc, div) = animated_div("from { font-size: 1em; } to { font-size: 2em; }");
+    assert!(
+        animated_value(&doc, div, 500.0, TransitionProperty::FontSize).is_none(),
+        "em on font-size needs the parent's size, which the extractor lacks"
+    );
+}
+
+// ── transform ──
+
+fn animated_transform(
+    doc: &rinch_dom::RinchDocument,
+    div: rinch_core::dom::NodeId,
+    ms: f64,
+) -> ([f64; 6], [f64; 2], [f64; 2]) {
+    match animated_value(doc, div, ms, TransitionProperty::Transform) {
+        Some(AnimatableValue::TransformComponents {
+            ops,
+            pct_translate_w,
+            pct_translate_h,
+        }) => (
+            rinch_dom::transition::compose_matrices(&ops),
+            pct_translate_w,
+            pct_translate_h,
+        ),
+        other => panic!("expected transform components, got {other:?}"),
+    }
+}
+
+/// #412: a percentage translate in an authored `@keyframes` stop. The old
+/// mini-parser routed `translate(50%, 0)` through `strip_suffix("px")`, got
+/// `None`, produced an empty op list and dropped the whole transform.
+#[test]
+fn keyframes_percentage_translate_populates_the_pct_channel() {
+    let (doc, div) =
+        animated_div("from { transform: translate(0%, 0); } to { transform: translate(50%, 0); }");
+    // Halfway through 0% -> 50%.
+    let (m, pct_w, pct_h) = animated_transform(&doc, div, 500.0);
+    assert!(
+        (pct_w[0] - 0.25).abs() < 1e-6 && pct_w[1].abs() < 1e-9,
+        "the x translate is a fraction of the border-box width: {pct_w:?}"
+    );
+    assert_eq!(pct_h, [0.0, 0.0]);
+    assert_eq!(
+        (m[4], m[5]),
+        (0.0, 0.0),
+        "no pixel part — the whole translate lives in the percentage channel"
+    );
+}
+
+/// The channel interpolates too, rather than snapping at the end.
+#[test]
+fn a_percentage_translate_ramps() {
+    let (doc, div) = animated_div(
+        "from { transform: translate(0%, 0); } to { transform: translate(40%, 20%); }",
+    );
+    let (_, pct_w, pct_h) = animated_transform(&doc, div, 500.0);
+    assert!((pct_w[0] - 0.2).abs() < 1e-6, "half of 40%: {pct_w:?}");
+    assert!((pct_h[1] - 0.1).abs() < 1e-6, "half of 20%: {pct_h:?}");
+}
+
+/// A `calc()` angle. Stylo folds it into `AngleDimension::Deg`, so the typed
+/// read handles it; `strip_suffix("deg")` saw `calc(45deg)` and gave up.
+#[test]
+fn keyframes_calc_angle_rotates() {
+    let (doc, div) = animated_div(
+        "from { transform: rotate(0deg); } to { transform: rotate(calc(30deg + 60deg)); }",
+    );
+    // Halfway through 0deg -> 90deg is 45deg.
+    let (m, _, _) = animated_transform(&doc, div, 500.0);
+    let root_half = std::f64::consts::FRAC_1_SQRT_2;
+    assert!(
+        (m[0] - root_half).abs() < 1e-6 && (m[1] - root_half).abs() < 1e-6,
+        "{m:?}"
+    );
+}
+
+/// `turn` was never broken — the issue's example is wrong about that — and must
+/// stay unbroken by the rewrite.
+#[test]
+fn keyframes_turn_angle_still_rotates() {
+    let (doc, div) =
+        animated_div("from { transform: rotate(0turn); } to { transform: rotate(0.25turn); }");
+    // Halfway through 0 -> a quarter turn is 45deg.
+    let (m, _, _) = animated_transform(&doc, div, 500.0);
+    let root_half = std::f64::consts::FRAC_1_SQRT_2;
+    assert!(
+        (m[0] - root_half).abs() < 1e-6 && (m[1] - root_half).abs() < 1e-6,
+        "{m:?}"
+    );
+}
+
+/// An `em` translate, which the px-only parser also dropped.
+#[test]
+fn keyframes_em_translate_animates() {
+    let (doc, div) =
+        animated_div("from { transform: translateX(0); } to { transform: translateX(2em); }");
+    let (m, _, _) = animated_transform(&doc, div, 500.0);
+    assert!((m[4] - 16.0).abs() < 1e-6, "half of 2em at 16px: {m:?}");
+}
+
+// ── the shapes every shipped component animates, which must not regress ──
+//
+// Seven of the nine `@keyframes` blocks in the workspace are `rotate(Ndeg)`;
+// the other two are `scale()`/`scaleY()` plus `opacity`. They are the whole
+// regression surface of the transform rewrite, so each is pinned here.
+
+#[test]
+fn keyframes_spin_still_rotates() {
+    let (doc, div) =
+        animated_div("from { transform: rotate(0deg); } to { transform: rotate(360deg); }");
+    let (m, _, _) = animated_transform(&doc, div, 250.0);
+    // A quarter of the way is 90deg.
+    assert!(m[0].abs() < 1e-6 && (m[1] - 1.0).abs() < 1e-6, "{m:?}");
+}
+
+#[test]
+fn keyframes_scale_and_opacity_still_animate() {
+    let (doc, div) = animated_div(
+        "0% { transform: scale(0); opacity: 0.5; } 100% { transform: scale(1); opacity: 1; }",
+    );
+    let (m, _, _) = animated_transform(&doc, div, 500.0);
+    assert!(
+        (m[0] - 0.5).abs() < 1e-6 && (m[3] - 0.5).abs() < 1e-6,
+        "{m:?}"
+    );
+    assert_eq!(
+        animated_px(&doc, div, 500.0, TransitionProperty::Opacity),
+        Some(0.75)
+    );
+}
+
+#[test]
+fn keyframes_scale_y_still_animates() {
+    let (doc, div) = animated_div("0% { transform: scaleY(0.4); } 100% { transform: scaleY(1); }");
+    let (m, _, _) = animated_transform(&doc, div, 500.0);
+    assert!((m[0] - 1.0).abs() < 1e-6, "x untouched: {m:?}");
+    assert!((m[3] - 0.7).abs() < 1e-6, "halfway from 0.4 to 1: {m:?}");
+}
+
+/// ...and `scaleX` the other axis. No shipped component uses it, which is
+/// exactly why it needs a pin of its own: a review mutant that made `scaleX`
+/// write the y axis survived the whole suite.
+#[test]
+fn keyframes_scale_x_still_animates() {
+    let (doc, div) = animated_div("0% { transform: scaleX(0.4); } 100% { transform: scaleX(1); }");
+    let (m, _, _) = animated_transform(&doc, div, 500.0);
+    assert!((m[3] - 1.0).abs() < 1e-6, "y untouched: {m:?}");
+    assert!((m[0] - 0.7).abs() < 1e-6, "halfway from 0.4 to 1: {m:?}");
+}
+
+/// `translate3d` is spelled out in the extractor *because* dropping it to the
+/// identity arm would silently lose a whole translation — but nothing pinned
+/// that arm, and a review mutant that deleted it survived the whole suite.
+/// Both channels: the px part rides the op, the percentage part rides the
+/// #212 linear form.
+///
+/// This pins only the 2D projection. The z component is dropped by design,
+/// and every other 3D operation still flattens to identity — that is #405,
+/// which this test makes no claim about.
+#[test]
+fn keyframes_translate3d_keeps_its_2d_translation() {
+    let (doc, div) = animated_div(
+        "from { transform: translate3d(0, 0, 0); } to { transform: translate3d(20px, 50%, 7px); }",
+    );
+    let (m, _, pct_h) = animated_transform(&doc, div, 500.0);
+    assert!((m[4] - 10.0).abs() < 1e-6, "half of 20px: {m:?}");
+    assert!(
+        (pct_h[1] - 0.25).abs() < 1e-6,
+        "half of 50% of the height: {pct_h:?}"
+    );
+}
+
+/// `transform: none` is the identity, and interpolates component-wise against
+/// a `scale()` stop rather than falling back to matrix interpolation.
+#[test]
+fn keyframes_transform_none_is_the_identity() {
+    let (doc, div) = animated_div("from { transform: none; } to { transform: scale(3); }");
+    let (m, _, _) = animated_transform(&doc, div, 500.0);
+    assert!(
+        (m[0] - 2.0).abs() < 1e-6 && (m[3] - 2.0).abs() < 1e-6,
+        "{m:?}"
+    );
+}
+
+/// The gaps that stay gaps, named so a future reader knows they are declined
+/// rather than forgotten: a mixed `calc()`, a viewport unit, an `ex`.
+#[test]
+fn keyframes_values_needing_more_than_a_font_size_are_declined() {
+    for stop in ["calc(1rem + 2px)", "10vw", "3ex", "5cqw"] {
+        // Both stops, so a surviving value cannot come from the other one.
+        let (doc, div) = animated_div(&format!(
+            "from {{ width: {stop}; }} to {{ width: {stop}; }}"
+        ));
+        // The animation may not exist at all — an entirely empty stop list is
+        // not registered — which is also "no value for width".
+        let width = doc
+            .tree
+            .active_animations
+            .get(&div.0)
+            .and_then(|anims| anims.first())
+            .and_then(|anim| match anim.values_at(anim.start_time_ms + 500.0) {
+                rinch_dom::animation::AnimationResult::Values(values) => values
+                    .iter()
+                    .find(|(prop, _)| *prop == TransitionProperty::Width)
+                    .map(|(_, v)| v.clone()),
+                _ => None,
+            });
+        assert!(
+            width.is_none(),
+            "`width: {stop}` should be declined, not guessed at — got {width:?}"
+        );
+    }
+}

@@ -258,86 +258,44 @@ impl RinchApp {
             DebugCommandKind::Scroll {
                 x,
                 y,
-                delta_x: _delta_x,
+                delta_x,
                 delta_y,
             } => {
+                // Route through the real input path so MCP matches a real
+                // wheel, exactly as `Click`/`MouseDown`/`MouseUp`/`MouseMove`/
+                // `TypeText` above already do.
+                //
+                // What used to be here was a hand-written parallel of the
+                // `MouseWheel` arm, and it had drifted in three ways (#401):
+                //
+                //  * it never called `tree.push_dirty`, which is what fills
+                //    `paint_dirty_nodes` — `compute_dirty_region`'s only input —
+                //    so the software renderer narrowed the repaint to whatever
+                //    else happened to be dirty and left most of the scrolled
+                //    container showing its pre-scroll pixels, *persistently*;
+                //  * it ignored `delta_x` for document scrolling, so a
+                //    horizontal scroller could not be driven at all;
+                //  * its sign was the opposite of `PlatformEvent::MouseWheel`'s
+                //    for the document, but *not* for a render surface, so MCP
+                //    handed a surface the reverse of what a real wheel does.
+                //
+                // The sign converts once, here at the boundary: the MCP tool
+                // documents positive as "scroll down"/"scroll right", while a
+                // wheel delta is negative in that direction (winit's
+                // `LineDelta`, and `MouseWheel`'s arm subtracts it from the
+                // scroll offset). Negating makes both the document and any
+                // render surface see what the physical gesture would produce.
                 self.cursor_pos = Some((x, y));
-
-                // Dispatch scroll to render surface if applicable
-                let surface_consumed = if let Some(doc) = &self.doc {
-                    let surface_hit = {
-                        let d = doc.borrow();
-                        if let Some(hit_id) = hit_test(&d.tree, x, y) {
-                            Self::find_render_surface_at(&d.tree, hit_id, x, y)
-                        } else {
-                            None
-                        }
-                    };
-                    if let Some((surface_id, local_x, local_y)) = surface_hit {
-                        crate::render_surface::dispatch_surface_event(
-                            surface_id,
-                            crate::render_surface::SurfaceEvent::MouseWheel {
-                                x: local_x,
-                                y: local_y,
-                                delta_x: _delta_x as f32,
-                                delta_y: delta_y as f32,
-                            },
-                        );
-                        true
-                    } else {
-                        false
-                    }
-                } else {
-                    false
-                };
-
-                if surface_consumed {
-                    actions.push(AppAction::RequestRedraw);
-                    return DebugResult::Json { data: json!(null) };
-                }
-
-                if let Some(doc) = &self.doc {
-                    let hit_node = hit_test(&doc.borrow().tree, x, y);
-                    if let Some(hit_node) = hit_node {
-                        let mut doc_mut = doc.borrow_mut();
-                        let mut scroll_handler_to_fire: Option<(usize, usize)> = None;
-                        if let Some(scroll_node_id) = find_scroll_container(&doc_mut.tree, hit_node)
-                            .or_else(|| find_scroll_container_at_point(&doc_mut.tree, x, y))
-                        {
-                            let nid = rinch_core::dom::NodeId(scroll_node_id);
-                            let content_height = doc_mut.scroll_height(nid);
-                            let visible_height = doc_mut.client_height(nid);
-                            let max_scroll = (content_height - visible_height).max(0.0);
-
-                            let handler_id = doc_mut
-                                .tree
-                                .nodes
-                                .get(scroll_node_id)
-                                .and_then(|n| n.attributes.get("data-onscroll"))
-                                .and_then(|s| s.parse::<usize>().ok());
-                            if let Some(node) = doc_mut.tree.nodes.get_mut(scroll_node_id) {
-                                let new_y = (node.scroll_offset.1 + delta_y).clamp(0.0, max_scroll);
-                                if new_y != node.scroll_offset.1 {
-                                    node.scroll_offset.1 = new_y;
-                                    node.dirty.insert(rinch_dom::DirtyFlags::PAINT);
-                                    doc_mut.tree.dirty_nodes.insert(scroll_node_id);
-                                    self.scene_dirty = true;
-                                    if let Some(hid) = handler_id {
-                                        scroll_handler_to_fire = Some((hid, scroll_node_id));
-                                    }
-                                }
-                            }
-                        }
-                        let event = scroll_handler_to_fire.map(|(hid, node_id)| {
-                            (hid, Self::scroll_event_for(&doc_mut.tree, node_id))
-                        });
-                        drop(doc_mut);
-                        if let Some((handler_id, event)) = event {
-                            use rinch_core::events::{EventHandlerId, dispatch_scroll_event};
-                            dispatch_scroll_event(EventHandlerId(handler_id), event);
-                        }
-                    }
-                }
+                actions.extend(self.handle_event(
+                    PlatformEvent::MouseWheel {
+                        x,
+                        y,
+                        delta_x: -delta_x,
+                        delta_y: -delta_y,
+                    },
+                    window_size,
+                    scale_factor,
+                ));
                 actions.push(AppAction::RequestRedraw);
                 DebugResult::Json { data: json!(null) }
             }
@@ -352,7 +310,12 @@ impl RinchApp {
                         '\x08' => (KeyCode::Backspace, None),
                         c => (char_to_keycode(c), Some(c.to_string())),
                     };
-                    let logical_key = ch.is_ascii_alphabetic().then(|| ch.to_ascii_lowercase());
+                    // The typed character is its own key value (MCP has no
+                    // layout to consult) — case-accurate, like the field asks.
+                    // The '\n'/'\t'/'\x08' branches fall out as `None` via the
+                    // control-character test, and their named `KeyCode`s spell
+                    // them instead.
+                    let logical_key = (!ch.is_control()).then(|| ch.to_string());
                     actions.extend(self.handle_event(
                         PlatformEvent::KeyDown {
                             key,
@@ -432,11 +395,14 @@ impl RinchApp {
                     k if k.chars().count() == 1 => Some(k.to_string()),
                     _ => None,
                 };
-                // A single-letter key name is its own logical letter (MCP has no layout).
+                // A single-character key name is its own key value, case and
+                // all (MCP has no layout to consult). Named keys stay `None`:
+                // their `KeyCode` spells them, and fabricating the name here
+                // would just shadow that table.
                 let logical_key = {
                     let mut it = key.chars();
                     match (it.next(), it.next()) {
-                        (Some(c), None) if c.is_ascii_alphabetic() => Some(c.to_ascii_lowercase()),
+                        (Some(c), None) if !c.is_control() => Some(c.to_string()),
                         _ => None,
                     }
                 };
@@ -714,5 +680,193 @@ mod keycode_mapping_tests {
         // The KeyPress handler turns this into a DebugResult::Error rather
         // than a silent no-text `Other` press.
         assert_eq!(keyname_to_keycode("NoSuchKey"), None);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    //! MCP `scroll()` drives the real wheel path (#401).
+    //!
+    //! These live in this module rather than `app/mod.rs` so they exist under
+    //! exactly the `cfg` the code does: the module is `#[cfg(feature =
+    //! "debug")]`, and a test placed outside it would silently compile to
+    //! nothing whenever `debug` is off.
+
+    use super::*;
+    use std::cell::Cell;
+
+    /// Physical == logical; every other test in this crate mounts at 800x600.
+    const VIEWPORT: (u32, u32) = (800, 600);
+
+    /// A 200x100 `overflow: auto` scroller at the document origin holding a
+    /// 900x1100 child, so it overflows on **both** axes and either delta moves
+    /// it — plus a 20x20 box parked at (600, 500), far enough away that a dirty
+    /// region computed from it alone cannot reach the scroller.
+    ///
+    /// Returns `(scroller, bystander)`.
+    fn app_with_scroller(ids: Rc<Cell<Option<(usize, usize)>>>) -> RinchApp {
+        let mut app = RinchApp::new(move |scope: &mut RenderScope| {
+            let root = scope.create_element("div");
+            root.set_attribute("style", "position: relative; width: 800px; height: 600px");
+            let sc = scope.create_element("div");
+            sc.set_attribute(
+                "style",
+                "position: absolute; left: 0; top: 0; width: 200px; height: 100px; \
+                 overflow: auto",
+            );
+            let content = scope.create_element("div");
+            content.set_attribute("style", "width: 900px; height: 1100px");
+            sc.append_child(&content);
+            root.append_child(&sc);
+
+            let bystander = scope.create_element("div");
+            bystander.set_attribute(
+                "style",
+                "position: absolute; left: 600px; top: 500px; width: 20px; height: 20px",
+            );
+            root.append_child(&bystander);
+
+            ids.set(Some((sc.node_id().0, bystander.node_id().0)));
+            root
+        });
+        app.mount_component(800.0, 600.0);
+        app.resolve_and_repaint(800.0, 600.0);
+        app
+    }
+
+    fn mcp_scroll(app: &mut RinchApp, x: f32, y: f32, delta_x: f64, delta_y: f64) {
+        let mut actions = Vec::new();
+        app.execute_debug_command(
+            DebugCommandKind::Scroll {
+                x,
+                y,
+                delta_x,
+                delta_y,
+            },
+            &mut actions,
+            1.0,
+            VIEWPORT,
+        );
+    }
+
+    fn offsets(app: &RinchApp, id: usize) -> (f64, f64) {
+        app.doc.as_ref().unwrap().borrow().tree.nodes[id].scroll_offset
+    }
+
+    /// The bug itself: `push_dirty` is what fills `paint_dirty_nodes`, which is
+    /// `compute_dirty_region`'s only input. Without it the software renderer
+    /// narrows the repaint to whatever else was dirty and leaves most of the
+    /// scrolled container showing pre-scroll pixels — persistently, because
+    /// nothing later re-dirties it.
+    ///
+    /// Asserting on `paint_dirty_nodes` rather than on a rasterised frame is
+    /// deliberate: the frame is only wrong when the region is *non-empty and
+    /// too small* (an empty `paint_dirty_nodes` makes `compute_dirty_region`
+    /// return `None`, which means a full repaint and a correct frame), so the
+    /// missing entry is the defect and a screenshot is a lossy view of it.
+    #[test]
+    fn an_mcp_scroll_pushes_the_container_paint_dirty() {
+        let ids: Rc<Cell<Option<(usize, usize)>>> = Rc::new(Cell::new(None));
+        let mut app = app_with_scroller(ids.clone());
+        let (sc, _bystander) = ids.get().expect("the node ids");
+
+        // Start from a clean slate so the assertion is about this scroll only.
+        app.doc
+            .as_ref()
+            .unwrap()
+            .borrow_mut()
+            .tree
+            .paint_dirty_nodes
+            .clear();
+
+        mcp_scroll(&mut app, 100.0, 50.0, 0.0, 300.0);
+
+        let dirty = app
+            .doc
+            .as_ref()
+            .unwrap()
+            .borrow()
+            .tree
+            .paint_dirty_nodes
+            .clone();
+        assert!(
+            dirty.contains(&sc),
+            "the scrolled container must be in paint_dirty_nodes, got {dirty:?}"
+        );
+    }
+
+    /// The live failure mode, reproduced: an *empty* `paint_dirty_nodes` makes
+    /// `compute_dirty_region` return `None`, which means a full repaint and a
+    /// correct frame — so the corruption only appears when something *else* was
+    /// already dirty (in the report, a drawer that had just closed). Seed one
+    /// unrelated dirty node and the region has to grow to cover the container
+    /// anyway.
+    #[test]
+    fn an_mcp_scroll_widens_a_dirty_region_that_already_has_other_nodes_in_it() {
+        let ids: Rc<Cell<Option<(usize, usize)>>> = Rc::new(Cell::new(None));
+        let mut app = app_with_scroller(ids.clone());
+        let (_sc, bystander) = ids.get().expect("the node ids");
+
+        // Something unrelated repainted this frame: the 20x20 box at
+        // (600, 500), whose own dirty region stops well short of the scroller.
+        {
+            let doc = app.doc.as_ref().unwrap();
+            let mut d = doc.borrow_mut();
+            d.tree.paint_dirty_nodes.clear();
+            d.tree.paint_dirty_nodes.push(bystander);
+            let alone = rinch_dom::paint::compute_dirty_region(&d.tree, 1.0, 800.0, 600.0)
+                .expect("the bystander is dirty");
+            assert!(
+                alone.x0 > 200.0 && alone.y0 > 100.0,
+                "the bystander must not already cover the scroller, got {alone:?}"
+            );
+        }
+
+        mcp_scroll(&mut app, 100.0, 50.0, 0.0, 300.0);
+
+        let region = {
+            let doc = app.doc.as_ref().unwrap();
+            let d = doc.borrow();
+            rinch_dom::paint::compute_dirty_region(&d.tree, 1.0, 800.0, 600.0)
+        }
+        .expect("something is dirty, so there is a region");
+
+        // The container is the 200x100 box at the origin, and the bystander
+        // sits at (600, 500) — so it is the *near* corner that proves the
+        // region grew: `x1`/`y1` alone are already past 200/100 from the
+        // bystander's own rect and would pass without the fix.
+        assert!(
+            region.x0 <= 0.0 && region.y0 <= 0.0,
+            "the region must reach the scrolled container at the origin, got {region:?}"
+        );
+        assert!(
+            region.x1 >= 200.0 && region.y1 >= 100.0,
+            "and cover all of it, got {region:?}"
+        );
+    }
+
+    /// The MCP tool documents positive as "scroll down" / "scroll right", while
+    /// a wheel delta is negative in those directions — so the sign has to
+    /// convert exactly once, at the boundary. Both axes, because the old
+    /// hand-written arm ignored `delta_x` for document scrolling entirely.
+    #[test]
+    fn an_mcp_scroll_moves_both_axes_in_the_documented_direction() {
+        let ids: Rc<Cell<Option<(usize, usize)>>> = Rc::new(Cell::new(None));
+        let mut app = app_with_scroller(ids.clone());
+        let (sc, _bystander) = ids.get().expect("the node ids");
+        assert_eq!(offsets(&app, sc), (0.0, 0.0));
+
+        mcp_scroll(&mut app, 100.0, 50.0, 120.0, 300.0);
+        let (left, top) = offsets(&app, sc);
+        assert!(top > 0.0, "positive delta_y must scroll down, got {top}");
+        assert!(left > 0.0, "positive delta_x must scroll right, got {left}");
+
+        // And back, so a wrong sign cannot pass by clamping at 0.
+        mcp_scroll(&mut app, 100.0, 50.0, -120.0, -300.0);
+        assert_eq!(
+            offsets(&app, sc),
+            (0.0, 0.0),
+            "a negative delta must undo it"
+        );
     }
 }

@@ -3,7 +3,37 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
+/// Which phase of a keystroke an event reports (issue #337).
+///
+/// A releases-aware consumer pairs a `Down` with its `Up` by comparing
+/// [`KeyEventData::key`]. That pairing only works because press and release
+/// are spelled by the same function from the same fields — see `hook_key_str`
+/// in the desktop runtime.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub enum KeyEventKind {
+    /// The key went down.
+    ///
+    /// **OS auto-repeat also arrives as `Down`**, and there is currently no
+    /// flag distinguishing it from a fresh press: the browser supplies one
+    /// (`KeyboardEvent.repeat`) but `PlatformEvent::KeyDown` does not carry
+    /// winit's, so a `repeat` field here would be truthful on web and silently
+    /// `false` on desktop — the exact divergence a document-level hook exists
+    /// to avoid. It arrives with the plumbing, in the issue that retires the
+    /// runtime's own hand-rolled activation latch.
+    #[default]
+    Down,
+    /// The key came up.
+    Up,
+}
+
 /// Keyboard event data for the global keyboard interceptor.
+///
+/// `#[non_exhaustive]`: build one with [`KeyEventData::new`] and the `with_*`
+/// setters rather than a struct literal, so a field added in a minor release
+/// is not a breaking change. Reading fields is unaffected — and reading is
+/// what an interceptor does, since these are delivered, not constructed, by
+/// app code.
+#[non_exhaustive]
 #[derive(Debug, Clone)]
 pub struct KeyEventData {
     /// The logical key value (e.g., "a", "Enter", "Backspace")
@@ -18,6 +48,63 @@ pub struct KeyEventData {
     pub alt: bool,
     /// Whether Meta/Super is pressed
     pub meta: bool,
+    /// Press or release (issue #337). Before it, only presses were ever
+    /// delivered, so a consumer had no way to see a key let go — and no way to
+    /// ask, either, since every event was implicitly a press.
+    pub kind: KeyEventKind,
+}
+
+impl KeyEventData {
+    /// A press of `key` (spelled as `KeyboardEvent.key`) at physical `code`,
+    /// with no modifiers held.
+    ///
+    /// Chain [`Self::with_modifiers`] and [`Self::with_kind`] for the rest.
+    /// The constructor takes only the two fields that have no sensible
+    /// default: every event has a key and a code, while "no modifiers, a
+    /// press" is the common case and reads better as an absence than as four
+    /// `false`s at every call site.
+    pub fn new(key: impl Into<String>, code: impl Into<String>) -> Self {
+        Self {
+            key: key.into(),
+            code: code.into(),
+            ctrl: false,
+            shift: false,
+            alt: false,
+            meta: false,
+            kind: KeyEventKind::Down,
+        }
+    }
+
+    /// Set all four modifiers at once, in the order they are declared:
+    /// **ctrl, shift, alt, meta**.
+    ///
+    /// One call rather than four setters because they are always known
+    /// together — they come off a single `Modifiers` — and splitting them
+    /// invites a site that sets three and forgets the fourth, which is exactly
+    /// how `meta` came to be hardcoded `false` on two of three paths (#336).
+    pub fn with_modifiers(mut self, ctrl: bool, shift: bool, alt: bool, meta: bool) -> Self {
+        self.ctrl = ctrl;
+        self.shift = shift;
+        self.alt = alt;
+        self.meta = meta;
+        self
+    }
+
+    /// Mark this as a press or a release.
+    pub fn with_kind(mut self, kind: KeyEventKind) -> Self {
+        self.kind = kind;
+        self
+    }
+
+    /// Whether this is a press — auto-repeat included.
+    pub fn is_down(&self) -> bool {
+        self.kind == KeyEventKind::Down
+    }
+
+    /// Whether this is a release.
+    pub fn is_up(&self) -> bool {
+        self.kind == KeyEventKind::Up
+    }
 }
 
 /// Type alias for the keyboard interceptor callback.
@@ -88,14 +175,18 @@ mod tests {
     use crate::reactive::{Scope, Signal};
 
     fn key(name: &str) -> KeyEventData {
-        KeyEventData {
-            key: name.to_string(),
-            code: name.to_string(),
-            ctrl: false,
-            shift: false,
-            alt: false,
-            meta: false,
-        }
+        KeyEventData::new(name.to_string(), name.to_string())
+    }
+
+    /// `with_modifiers` takes four positional bools — the shape whose failure
+    /// mode is a silent transposition, which no symmetric-modifier test can
+    /// see. Two asymmetric patterns pin every position to its field.
+    #[test]
+    fn with_modifiers_assigns_each_position_to_its_field() {
+        let a = KeyEventData::new("a", "KeyA").with_modifiers(true, false, true, false);
+        assert!(a.ctrl && !a.shift && a.alt && !a.meta, "{a:?}");
+        let b = KeyEventData::new("a", "KeyA").with_modifiers(false, true, false, true);
+        assert!(!b.ctrl && b.shift && !b.alt && b.meta, "{b:?}");
     }
 
     /// #183: a registry that outlives the component that filled it hands a
