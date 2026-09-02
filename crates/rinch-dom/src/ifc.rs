@@ -629,7 +629,15 @@ impl RinchDocument {
                 let is_comment = child.map(|c| c.is_comment()).unwrap_or(false);
                 // Skip comments — they have no Taffy node and should not
                 // trigger anonymous block box creation.
-                if is_comment {
+                //
+                // Out-of-flow children are skipped for the same reason and are
+                // just as load-bearing (#406): this loop used to end the
+                // current run on *any* non-inline child, so `a<abs/>b` became
+                // two runs, two anonymous boxes, and `a` and `b` on separate
+                // lines. Fixing `has_block` above without this leaves that
+                // split in place for any container that also has a real block
+                // sibling.
+                if is_comment || child.map(|c| c.is_out_of_flow()).unwrap_or(false) {
                     continue;
                 }
                 let is_inline = child.map(|c| c.is_inline()).unwrap_or(false);
@@ -1029,6 +1037,13 @@ impl RinchDocument {
                 }
             }
             // Block-level children are left in place (existing behavior).
+            //
+            // That covers out-of-flow children too, and deliberately: an
+            // absolute or fixed box keeps its Taffy node and an `ifc_root` of
+            // `None`, which is exactly what lets it paint from its stacking
+            // root rather than from this IFC (#289). Any future change here
+            // that starts marking block-level children must keep excluding
+            // `is_out_of_flow`, or the box loses its only route to the screen.
         }
     }
 
