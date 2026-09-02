@@ -61,6 +61,13 @@ pub mod remote;
 pub mod session;
 pub mod sync;
 
+/// Test-only determinism seam (issue #214) — pinned yrs client ids so a fuzz trial
+/// replays bit-for-bit. Behind the **`test-util`** feature, which only this crate's own
+/// dev-dependency enables, because two live peers sharing a client id corrupt the shared
+/// document. See the module docs.
+#[cfg(feature = "test-util")]
+pub mod testing;
+
 // The local projection (`CollabDoc::project_transaction` / `project_change`) is wired in
 // here as an inherent-impl module.
 mod project;

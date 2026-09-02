@@ -4906,6 +4906,7 @@ name = "rinch-editor-collab"
 version = "0.1.0"
 dependencies = [
  "pretty_assertions",
+ "rinch-editor-collab",
  "rinch-editor-core",
  "thiserror 1.0.69",
  "yrs",

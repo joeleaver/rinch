@@ -12,17 +12,26 @@
 //!    Once every peer has seen every delta, all peers must project to the *identical*
 //!    document. This is the exact incremental-delta path pimble / `EditorHandle` use.
 //!
-//! The **edit script** is deterministic — a fixed-seed xorshift PRNG — so a
-//! `(seed, peers, rounds)` triple always produces the same sequence of edits and
-//! deliveries. A failing trial is **not** replayable bit-for-bit, though: yrs breaks
-//! concurrent-insert ties by client id, `CollabDoc::blank()` takes yrs's default random
-//! one, and the resulting document feeds back into later positions, so two runs of the
-//! same binary at the same seed can diverge in edit count. Reproducing a failure exactly
-//! needs the client ids pinned as well.
+//! A trial is **replayable bit-for-bit** from its `(seed, peers, rounds)` triple
+//! (issue #214). Two things have to be pinned for that, not one. The **edit script**
+//! comes from a fixed-seed xorshift PRNG, which was always deterministic. The **client
+//! ids** were not: yrs breaks concurrent-insert ties by client id and `CollabDoc::blank`
+//! takes yrs's default *random* one, so the converged document differed run to run — and
+//! because later random positions are computed from that document, so did the edit count
+//! (measured: the same binary at the same seeds reached four different outcomes in four
+//! runs). Every session here is therefore built through
+//! [`rinch_editor_collab::testing::session_with_client_id`] with an id derived from the
+//! trial's own seed, so a failure reproduces exactly. `replaying_a_trial_is_byte_identical`
+//! pins that property.
+//!
+//! The seam is test-only (behind this crate's `test-util` feature) on purpose: two live
+//! peers sharing a client id corrupt the shared document, so production keeps the random
+//! ids.
 
 use std::rc::Rc;
 
 use rinch_editor_collab::CollabSession;
+use rinch_editor_collab::testing::{session_from_bytes_with_client_id, session_with_client_id};
 use rinch_editor_core::model::Fragment;
 use rinch_editor_core::{EditorState, Node, Pos, Schema, Selection, default_plugins};
 
@@ -213,20 +222,53 @@ struct Swarm {
     edits: usize,
 }
 
+/// A distinct, deterministic yrs client id for peer `p` of the trial at `seed`.
+///
+/// Distinctness *within* a trial is by construction — the low byte is a permutation of
+/// the peer indices, so no two peers of one swarm can collide, which is the case that
+/// would corrupt the shared document. The value stays inside yrs's 53-bit client-id space
+/// for every `(seed, peer)` this file uses (seeds here are three digits).
+///
+/// The low byte is a **per-seed permutation** rather than the peer index itself, because
+/// the client id is what yrs breaks a concurrent-insert tie by: ids that always ascend
+/// with the peer index would pin every trial in the suite to one tie-break ordering, and
+/// the random ids this replaced at least varied it. The permutation comes from the
+/// trial's own seed, so the ordering varies from trial to trial and a trial still replays
+/// bit-for-bit.
+fn client_id(seed: u64, peer: usize) -> u64 {
+    assert!(
+        peer < 255,
+        "peer index must fit the low byte of the client id"
+    );
+    assert!(seed < (1 << 45), "seed must leave room for the peer byte");
+    let mut rank = [0u8; 255];
+    for (i, r) in rank.iter_mut().enumerate() {
+        *r = i as u8;
+    }
+    let mut rng = Rng::new(seed ^ 0x5EED_5EED);
+    for i in (1..rank.len()).rev() {
+        let j = rng.below(i + 1);
+        rank.swap(i, j);
+    }
+    (seed << 8) | (rank[peer] as u64 + 1)
+}
+
 impl Swarm {
-    /// `peers` peers over `doc`, the others joining from peer 0's snapshot.
-    fn new(schema: Rc<Schema>, doc: Node, peers: usize) -> Swarm {
+    /// `peers` peers over `doc`, the others joining from peer 0's snapshot. Each peer's
+    /// yrs client id is pinned from `seed` so the trial replays bit-for-bit (issue #214).
+    fn new(seed: u64, schema: Rc<Schema>, doc: Node, peers: usize) -> Swarm {
         let init = EditorState::create(schema.clone(), doc, default_plugins());
-        let host = CollabSession::new(&init).unwrap();
+        let host = session_with_client_id(&init, client_id(seed, 0)).unwrap();
         let snapshot = host.snapshot();
 
         let mut states: Vec<EditorState> = Vec::with_capacity(peers);
         let mut sessions: Vec<CollabSession> = Vec::with_capacity(peers);
         states.push(init.clone());
         sessions.push(host);
-        for _ in 1..peers {
+        for p in 1..peers {
             states.push(init.clone());
-            sessions.push(CollabSession::from_bytes(&snapshot).unwrap());
+            sessions
+                .push(session_from_bytes_with_client_id(&snapshot, client_id(seed, p)).unwrap());
         }
         Swarm {
             schema,
@@ -340,15 +382,42 @@ impl Swarm {
     }
 }
 
+/// Everything about a finished trial that a replay must reproduce: how many local edits
+/// it made, and the full CRDT state every peer converged on (yrs's own bytes, so this
+/// covers block ids and tie-breaks, not just the visible text).
+#[derive(PartialEq, Eq, Debug)]
+struct Fingerprint {
+    edits: usize,
+    snapshots: Vec<Vec<u8>>,
+}
+
+impl Swarm {
+    fn fingerprint(&self) -> Fingerprint {
+        Fingerprint {
+            edits: self.edits,
+            snapshots: (0..self.peers())
+                .map(|p| self.sessions[p].snapshot())
+                .collect(),
+        }
+    }
+}
+
 /// Run one fuzz trial: `peers` peers, `rounds` interleaved edit/deliver steps, then a
-/// flush, asserting the two invariants throughout.
-fn fuzz_trial(seed: u64, peers: usize, rounds: usize) {
+/// flush, asserting the two invariants throughout. Returns the trial's fingerprint, which
+/// `replaying_a_trial_is_byte_identical` uses to pin replayability.
+fn fuzz_trial(seed: u64, peers: usize, rounds: usize) -> Fingerprint {
     let schema = schema();
     let mut rng = Rng::new(seed);
-    let mut swarm = Swarm::new(schema.clone(), initial_state(&schema).doc.clone(), peers);
+    let mut swarm = Swarm::new(
+        seed,
+        schema.clone(),
+        initial_state(&schema).doc.clone(),
+        peers,
+    );
     swarm.run_rounds(seed, rounds, &mut rng);
     swarm.flush(seed);
     swarm.assert_converged(seed);
+    swarm.fingerprint()
 }
 
 /// Delete block `index` of `state`'s document outright (its open token through its
@@ -376,14 +445,14 @@ fn insert_at(state: &EditorState, pos: usize, text: &str) -> Option<EditorState>
 /// every block, so the converged content array is provably empty — the state that used to
 /// wedge the session forever. Random edits then run on top of the healed state, so the
 /// ordinary invariant checks cover everything downstream of the recovery.
-fn fuzz_deletion_to_empty_trial(seed: u64, peers: usize, rounds: usize) {
+fn fuzz_deletion_to_empty_trial(seed: u64, peers: usize, rounds: usize) -> Fingerprint {
     assert!(peers >= 2, "the scenario needs two blocks to delete apart");
     let schema = schema();
     let mut rng = Rng::new(seed);
     let blocks: Vec<Node> = (0..peers)
         .map(|i| para(&schema, &format!("block{i}")))
         .collect();
-    let mut swarm = Swarm::new(schema.clone(), doc_of(&schema, blocks), peers);
+    let mut swarm = Swarm::new(seed, schema.clone(), doc_of(&schema, blocks), peers);
 
     // Concurrent: every peer deletes its own block, none having seen the others'.
     for p in 0..peers {
@@ -437,26 +506,27 @@ fn fuzz_deletion_to_empty_trial(seed: u64, peers: usize, rounds: usize) {
     swarm.run_rounds(seed, rounds, &mut rng);
     swarm.flush(seed);
     swarm.assert_converged(seed);
+    swarm.fingerprint()
 }
 
 #[test]
 fn fuzz_two_peers_converge() {
     for seed in 1..=24u64 {
-        fuzz_trial(seed, 2, 220);
+        let _ = fuzz_trial(seed, 2, 220);
     }
 }
 
 #[test]
 fn fuzz_three_peers_converge() {
     for seed in 100..=118u64 {
-        fuzz_trial(seed, 3, 320);
+        let _ = fuzz_trial(seed, 3, 320);
     }
 }
 
 #[test]
 fn fuzz_four_peers_converge() {
     for seed in 200..=214u64 {
-        fuzz_trial(seed, 4, 400);
+        let _ = fuzz_trial(seed, 4, 400);
     }
 }
 
@@ -464,7 +534,7 @@ fn fuzz_four_peers_converge() {
 fn fuzz_many_peers_converge() {
     // A few wider trials: more peers, longer runs, to shake out tail cases.
     for seed in 300..=305u64 {
-        fuzz_trial(seed, 6, 500);
+        let _ = fuzz_trial(seed, 6, 500);
     }
 }
 
@@ -475,12 +545,53 @@ fn fuzz_deletion_to_empty_recovers_and_converges() {
     // *different* blocks empty it on every peer at once, which random editing effectively
     // never produces. So the emptying is scripted, and the random fuzz resumes afterwards.
     for seed in 400..=407u64 {
-        fuzz_deletion_to_empty_trial(seed, 2, 220);
+        let _ = fuzz_deletion_to_empty_trial(seed, 2, 220);
     }
     for seed in 500..=505u64 {
-        fuzz_deletion_to_empty_trial(seed, 3, 320);
+        let _ = fuzz_deletion_to_empty_trial(seed, 3, 320);
     }
     for seed in 600..=603u64 {
-        fuzz_deletion_to_empty_trial(seed, 4, 400);
+        let _ = fuzz_deletion_to_empty_trial(seed, 4, 400);
     }
+}
+
+/// Issue #214: a `(seed, peers, rounds)` triple must reproduce a trial **exactly**, or a
+/// fuzz failure cannot be debugged — the report names a seed that does something else
+/// when you run it.
+///
+/// The check is not "the text matches": it compares each peer's whole yrs state, so a
+/// differing tie-break or block id fails it even when the visible document happens to
+/// agree. It also compares the edit *count*, which is the symptom that made the old
+/// non-determinism visible — random positions are drawn from the live document, so a
+/// different convergence changes which later edits are applicable at all.
+///
+/// Both trial shapes are covered. `fuzz_deletion_to_empty_trial` is the one that matters
+/// most: its whole subject is concurrent inserts into an emptied array, decided by
+/// exactly the client-id tie-break this pins.
+#[test]
+fn replaying_a_trial_is_byte_identical() {
+    for seed in [7u64, 113, 207] {
+        assert_eq!(
+            fuzz_trial(seed, 3, 120),
+            fuzz_trial(seed, 3, 120),
+            "random trial at seed {seed} must replay bit-for-bit"
+        );
+    }
+    for seed in [401u64, 502] {
+        assert_eq!(
+            fuzz_deletion_to_empty_trial(seed, 3, 120),
+            fuzz_deletion_to_empty_trial(seed, 3, 120),
+            "deletion-to-empty trial at seed {seed} must replay bit-for-bit"
+        );
+    }
+}
+
+/// The determinism above must not have been bought by making every trial *identical* —
+/// that would silently collapse the fuzz to one scenario repeated. Different seeds must
+/// still explore different documents.
+#[test]
+fn different_seeds_still_diverge() {
+    let a = fuzz_trial(11, 3, 120);
+    let b = fuzz_trial(12, 3, 120);
+    assert_ne!(a, b, "different seeds must produce different trials");
 }

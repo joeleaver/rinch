@@ -54,6 +54,8 @@
 //! and stays transient. Recovery in practice is a fresh session from a healthy peer's
 //! snapshot.
 
+#[cfg(feature = "test-util")]
+use yrs::ClientID;
 use yrs::updates::decoder::Decode;
 use yrs::updates::encoder::Encode;
 use yrs::{StateVector, Update};
@@ -94,6 +96,27 @@ impl CollabSession {
     pub fn from_bytes(bytes: &[u8]) -> Result<CollabSession> {
         Ok(CollabSession {
             cdoc: CollabDoc::load(bytes)?,
+            poisoned: None,
+        })
+    }
+
+    /// [`CollabSession::new`] with this replica's yrs client id pinned — the
+    /// [`crate::testing`] seam's implementation. Never a production path; see that
+    /// module for why.
+    #[cfg(feature = "test-util")]
+    pub(crate) fn new_with_client_id(state: &EditorState, client_id: u64) -> Result<CollabSession> {
+        Ok(CollabSession {
+            cdoc: CollabDoc::from_doc_with_client_id(&state.doc, Some(ClientID::new(client_id)))?,
+            poisoned: None,
+        })
+    }
+
+    /// [`CollabSession::from_bytes`] with this replica's yrs client id pinned — the
+    /// [`crate::testing`] seam's implementation. Never a production path.
+    #[cfg(feature = "test-util")]
+    pub(crate) fn from_bytes_with_client_id(bytes: &[u8], client_id: u64) -> Result<CollabSession> {
+        Ok(CollabSession {
+            cdoc: CollabDoc::load_with_client_id(bytes, Some(ClientID::new(client_id)))?,
             poisoned: None,
         })
     }
