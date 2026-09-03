@@ -110,15 +110,14 @@ impl DomDocument for RinchDocument {
         // Invalidate old IFC if child was in one
         self.invalidate_ifc_for_node(c);
         self.clear_ifc_root_recursive(c);
-        // Remove from old parent if any (both DOM and Taffy)
+        // Remove from old parent if any (both DOM and Taffy). The Taffy side
+        // must remove the node's *contribution*, not just its own id — a
+        // spliced `display: contents` node's slots are its children's (#517).
         if let Some(old_parent) = self.tree.nodes[c].parent {
             self.tree.nodes[old_parent].children.retain(|&x| x != c);
             // Remove from old taffy parent
-            if let (Some(old_taffy_parent), Some(child_taffy)) = (
-                self.tree.nodes[old_parent].taffy_id,
-                self.tree.nodes[c].taffy_id,
-            ) {
-                self.taffy_remove_child_safe(old_taffy_parent, child_taffy);
+            if let Some(old_taffy_parent) = self.tree.nodes[old_parent].taffy_id {
+                self.taffy_detach_contribution(old_taffy_parent, c);
             }
         }
         self.tree.nodes[c].parent = Some(p);
@@ -158,11 +157,11 @@ impl DomDocument for RinchDocument {
         self.clear_ifc_root_recursive(c);
         self.tree.nodes[p].children.retain(|&x| x != c);
         self.tree.nodes[c].parent = None;
-        // Sync taffy
-        if let (Some(parent_taffy), Some(child_taffy)) =
-            (self.tree.nodes[p].taffy_id, self.tree.nodes[c].taffy_id)
-        {
-            self.taffy_remove_child_safe(parent_taffy, child_taffy);
+        // Sync taffy: remove the child's contribution — for a spliced
+        // `display: contents` child that is its children's slots, not its
+        // own already-detached id (#517).
+        if let Some(parent_taffy) = self.tree.nodes[p].taffy_id {
+            self.taffy_detach_contribution(parent_taffy, c);
         }
         // Invalidate parent's IFC
         self.invalidate_parent_ifc(p);
@@ -178,14 +177,12 @@ impl DomDocument for RinchDocument {
         // Invalidate old IFC
         self.invalidate_ifc_for_node(c);
         self.clear_ifc_root_recursive(c);
-        // Remove from old parent if any
+        // Remove from old parent if any — the node's contribution, not just
+        // its own id (#517, see `taffy_detach_contribution`)
         if let Some(old_parent) = self.tree.nodes[c].parent {
             self.tree.nodes[old_parent].children.retain(|&x| x != c);
-            if let (Some(old_taffy_parent), Some(child_taffy)) = (
-                self.tree.nodes[old_parent].taffy_id,
-                self.tree.nodes[c].taffy_id,
-            ) {
-                self.taffy_remove_child_safe(old_taffy_parent, child_taffy);
+            if let Some(old_taffy_parent) = self.tree.nodes[old_parent].taffy_id {
+                self.taffy_detach_contribution(old_taffy_parent, c);
             }
         }
         self.tree.nodes[c].parent = Some(p);
@@ -242,14 +239,12 @@ impl DomDocument for RinchDocument {
         self.invalidate_ifc_for_node(new.0);
         self.clear_ifc_root_recursive(new.0);
         if let Some(parent_id) = self.tree.nodes[old.0].parent {
-            // Remove new from its old parent if any
+            // Remove new from its old parent if any — the node's
+            // contribution, not just its own id (#517)
             if let Some(old_parent) = self.tree.nodes[new.0].parent {
                 self.tree.nodes[old_parent].children.retain(|&x| x != new.0);
-                if let (Some(old_taffy_parent), Some(new_taffy)) = (
-                    self.tree.nodes[old_parent].taffy_id,
-                    self.tree.nodes[new.0].taffy_id,
-                ) {
-                    self.taffy_remove_child_safe(old_taffy_parent, new_taffy);
+                if let Some(old_taffy_parent) = self.tree.nodes[old_parent].taffy_id {
+                    self.taffy_detach_contribution(old_taffy_parent, new.0);
                 }
             }
             // Replace old with new in parent's children
@@ -259,11 +254,12 @@ impl DomDocument for RinchDocument {
                 .position(|&x| x == old.0)
             {
                 self.tree.nodes[parent_id].children[pos] = new.0;
-                // Sync taffy: remove old, insert new at same position
+                // Sync taffy: remove old's contribution (for a spliced
+                // `display: contents` node that is its children's slots,
+                // not its own already-detached id — #517), insert new at
+                // the same position
                 if let Some(parent_taffy) = self.tree.nodes[parent_id].taffy_id {
-                    if let Some(old_taffy) = self.tree.nodes[old.0].taffy_id {
-                        self.taffy_remove_child_safe(parent_taffy, old_taffy);
-                    }
+                    self.taffy_detach_contribution(parent_taffy, old.0);
                     if let Some(new_taffy) = self.tree.nodes[new.0].taffy_id {
                         let taffy_idx = self.compute_taffy_child_index(parent_id, pos);
                         let _ = self.tree.taffy.insert_child_at_index(
@@ -372,11 +368,11 @@ impl DomDocument for RinchDocument {
                 let old_children: Vec<_> = self.tree.nodes[n].children.clone();
                 for child in old_children {
                     self.tree.nodes[child].parent = None;
-                    // Remove from taffy parent
-                    if let (Some(parent_taffy), Some(child_taffy)) =
-                        (self.tree.nodes[n].taffy_id, self.tree.nodes[child].taffy_id)
-                    {
-                        self.taffy_remove_child_safe(parent_taffy, child_taffy);
+                    // Remove each child's contribution from taffy — for a
+                    // spliced `display: contents` child that is its
+                    // children's slots, not its own id (#517)
+                    if let Some(parent_taffy) = self.tree.nodes[n].taffy_id {
+                        self.taffy_detach_contribution(parent_taffy, child);
                     }
                 }
                 self.tree.nodes[n].children.clear();
@@ -586,14 +582,12 @@ impl DomDocument for RinchDocument {
         // Invalidate old IFC
         self.invalidate_ifc_for_node(c);
         self.clear_ifc_root_recursive(c);
-        // Remove from old parent if any
+        // Remove from old parent if any — the node's contribution, not just
+        // its own id (#517, see `taffy_detach_contribution`)
         if let Some(old_parent) = self.tree.nodes[c].parent {
             self.tree.nodes[old_parent].children.retain(|&x| x != c);
-            if let (Some(old_taffy_parent), Some(child_taffy)) = (
-                self.tree.nodes[old_parent].taffy_id,
-                self.tree.nodes[c].taffy_id,
-            ) {
-                self.taffy_remove_child_safe(old_taffy_parent, child_taffy);
+            if let Some(old_taffy_parent) = self.tree.nodes[old_parent].taffy_id {
+                self.taffy_detach_contribution(old_taffy_parent, c);
             }
         }
         self.tree.nodes[c].parent = Some(p);
@@ -655,17 +649,23 @@ impl DomDocument for RinchDocument {
         let old_children: Vec<_> = self.tree.nodes[node.0].children.clone();
         for child in old_children {
             self.clear_ifc_root_recursive(child);
-            // Remove from taffy parent
-            if let (Some(parent_taffy), Some(child_taffy)) = (
-                self.tree.nodes[node.0].taffy_id,
-                self.tree.nodes[child].taffy_id,
-            ) {
-                self.taffy_remove_child_safe(parent_taffy, child_taffy);
+            // Remove each child's contribution from taffy — for a spliced
+            // `display: contents` child that is its children's slots, not
+            // its own id (#517). Must run before `remove_subtree`, which
+            // drops the slab nodes the contribution walk reads.
+            if let Some(parent_taffy) = self.tree.nodes[node.0].taffy_id {
+                self.taffy_detach_contribution(parent_taffy, child);
             }
             self.tree.nodes[child].parent = None;
             self.tree.remove_subtree(child);
         }
         self.tree.nodes[node.0].children.clear();
+        // Clearing a subtree is a structural change: without these flags a
+        // clear-to-empty `set_inner_html` (nothing re-appended below) leaves
+        // `resolve_layout`'s dirty gate closed and the old geometry — the
+        // removed children's sizes included — stays on screen (#517).
+        self.tree.layout_dirty = true;
+        self.tree.ifc_dirty = true;
 
         // Parse HTML and create nodes
         if let Some(parsed_nodes) = parse_html_string(html) {
