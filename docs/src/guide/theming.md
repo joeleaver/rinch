@@ -138,6 +138,8 @@ This never changes layout geometry: 1 CSS px stays 1 layout unit, and paint
 applies the scale. One visible consequence: `border: 0.5px` on a 2x display
 renders as a real hairline instead of being snapped up to 1px.
 
+#### Generic font families on Android
+
 `monospace`, `ui-monospace`, `ui-sans-serif` and `ui-serif` resolve to a real
 device face on Android. They do not out of the box: the font backend looks the
 `monospace` slot up under the literal name `"monospace"`, which `/system/fonts`

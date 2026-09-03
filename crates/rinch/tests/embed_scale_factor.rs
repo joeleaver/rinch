@@ -124,7 +124,11 @@ fn a_context_mounts_with_its_config_scale_factor() {
 /// check re-resolves at the new logical size. Fractional, so a value rounded
 /// to 1 (height stays 10) or to 2 (width becomes 200) both fail.
 ///
-/// Kills: `set_scale_factor` storing the field without forwarding to the app.
+/// Kills: `set_scale_factor` storing the field without forwarding to the app,
+/// AND dropping the `self.scale_factor = scale` store — the viewport
+/// assertion pins the "re-lays out at the new logical size" half of the doc
+/// comment's promise, which the style assertions alone cannot see (the dpr
+/// push works either way).
 #[test]
 fn set_scale_factor_restyles_on_the_next_update() {
     on_ui_thread(|| {
@@ -141,6 +145,17 @@ fn set_scale_factor_restyles_on_the_next_update() {
             target_size(&ctx, &target),
             (100.0, 20.0),
             "1.25 matches the 1.2dppx rule and not the 2dppx one"
+        );
+
+        // The same update() re-laid the document out at the NEW logical size
+        // (physical 1000x750 / 1.25 = 800x600) — restyle and relayout land in
+        // one pass, as the `set_scale_factor` docs promise.
+        let doc = ctx.app().doc().expect("context has a document").clone();
+        let vp = doc.borrow().tree.viewport;
+        assert_eq!(
+            (vp.width, vp.height),
+            (800.0, 600.0),
+            "the viewport followed the scale change, not just the styles"
         );
     });
 }
