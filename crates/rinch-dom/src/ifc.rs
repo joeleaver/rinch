@@ -580,6 +580,46 @@ impl RinchDocument {
         }
     }
 
+    /// Remove the previous pass's IFC measure leaves (#466).
+    ///
+    /// A measure leaf is a Taffy-only node — no DOM identity, absent from
+    /// `taffy_map` — created by [`Self::setup_inline_formatting_contexts`] for
+    /// an IFC root whose out-of-flow children stay attached. Like anonymous
+    /// block boxes they are recreated from scratch each `ifc_dirty` pass, so
+    /// this runs first and unconditionally. `taffy.remove` detaches the leaf
+    /// from its parent whether or not it is still attached (an interim
+    /// `sync_display_contents` rebuild may already have dropped it).
+    fn cleanup_ifc_measure_leaves(&mut self) {
+        let leaves = std::mem::take(&mut self.tree.ifc_measure_leaves);
+        for (root_id, leaf) in leaves {
+            let _ = self.tree.taffy.remove(leaf);
+            // `remove` does not dirty the old parent. The mutation that made
+            // this pass run usually did, but mark it explicitly so a container
+            // that stops being an IFC root altogether cannot serve a cached
+            // layout that still includes the removed leaf's height.
+            if let Some(root_taffy) = self.tree.nodes.get(root_id).and_then(|n| n.taffy_id) {
+                let _ = self.tree.taffy.mark_dirty(root_taffy);
+            }
+        }
+    }
+
+    /// Mark an IFC root's measure leaf dirty in Taffy, if it has one (#466).
+    ///
+    /// Taffy caches layout per node and `mark_dirty` propagates *up* toward
+    /// the root — so marking the IFC root's own Taffy node does **not**
+    /// invalidate the measure cached on its child leaf: the stale measure
+    /// would be served straight back on the next compute, and a text edit in a
+    /// `text + absolute` container would never change the container's height.
+    /// Every site that marks an IFC root's Taffy node dirty to force a
+    /// re-measure must call this beside it. (Marking the leaf also dirties the
+    /// root — propagation is upward — but the sites keep their own root mark:
+    /// most roots have no leaf.)
+    pub(crate) fn mark_ifc_measure_dirty(&mut self, root_id: usize) {
+        if let Some(&leaf) = self.tree.ifc_measure_leaves.get(&root_id) {
+            let _ = self.tree.taffy.mark_dirty(leaf);
+        }
+    }
+
     /// Create anonymous block boxes for block containers with mixed content.
     ///
     /// Per CSS spec, when a block container has both inline-level and block-level
@@ -608,11 +648,20 @@ impl RinchDocument {
                     .map(|n| n.is_inline() && !n.is_comment())
                     .unwrap_or(false)
             });
+            // An out-of-flow child is not block *content* (#406): per CSS 2.1
+            // §9.2.1.1 an absolutely positioned box is out of flow and does not
+            // force anonymous block box generation, so a container whose only
+            // non-inline children are out of flow holds inline content only.
+            // Counting it here minted an anonymous box CSS would never create —
+            // and that box was, by accident, what kept the container's measure
+            // reachable. Its principled replacement is the measure leaf that
+            // `setup_inline_formatting_contexts` now creates for exactly this
+            // shape (see [`NodeContext::InlineRoot`]).
             let has_block = node.children.iter().any(|&c| {
                 self.tree
                     .nodes
                     .get(c)
-                    .map(|n| n.is_element() && !n.is_inline())
+                    .map(|n| n.is_element() && !n.is_inline() && !n.is_out_of_flow())
                     .unwrap_or(false)
             });
 
@@ -758,8 +807,9 @@ impl RinchDocument {
     /// paths (standalone Taffy vs IFC) and the sync bugs that arise when
     /// elements transition between them during editing.
     pub(crate) fn setup_inline_formatting_contexts(&mut self) {
-        // Clean up anonymous block boxes from previous layout pass,
-        // then recreate them for the current DOM state.
+        // Clean up the previous pass's measure leaves and anonymous block
+        // boxes, then recreate both for the current DOM state.
+        self.cleanup_ifc_measure_leaves();
         self.cleanup_anonymous_block_boxes();
         self.create_anonymous_block_boxes();
 
@@ -827,6 +877,14 @@ impl RinchDocument {
             // comment rendered correctly. Unmarked, the text stays in Taffy
             // as an ordinary text leaf and the container matches its
             // comment-free twin exactly.
+            //
+            // Out-of-flow children are excluded from `has_non_comment_inline`
+            // only *because* Stylo blockifies every out-of-flow box
+            // (`style_adjuster.rs`, `blockify_if!(is_absolutely_positioned)`),
+            // making `is_inline()` answer false for them. That reliance is
+            // correct here — an absolute box is not inline content — but it is
+            // a vendored dependency's style adjuster doing the excluding, so
+            // do not lean on it a fifth time without saying so (#406).
             let mut has_non_comment_inline = false;
             let mut all_children_are_comments = !node.children.is_empty();
             for &child_id in &node.children {
@@ -885,17 +943,117 @@ impl RinchDocument {
             // grandchildren join this root's IFC (issue #61).
             self.mark_inline_descendants(root_id, root_id, root_taffy);
 
-            // Set NodeContext::InlineRoot on the IFC root's Taffy node
-            // so the measure function fires for it
-            if let Some(ctx) = self.tree.taffy.get_node_context_mut(root_taffy) {
-                *ctx = NodeContext::InlineRoot(root_id);
-            } else {
-                // Element nodes don't have context by default — we need to set one.
-                // Taffy only calls measure for nodes with context, so we must ensure it has one.
+            // Decide which Taffy node carries `InlineRoot` — the leaf
+            // invariant (#466, see [`NodeContext::InlineRoot`]): Taffy
+            // consults a measure function only on a childless node, so the
+            // carrier must be one. When inline detachment emptied the root's
+            // Taffy node, the root itself is the carrier (the common case,
+            // below). When out-of-flow children remain attached — `has_block`
+            // no longer mints an anonymous box for `text + absolute` (#406) —
+            // the root is a non-leaf whose measure would be structurally
+            // unreachable, so a Taffy-only **measure leaf** child carries the
+            // context instead, and Taffy keeps doing 100% of the out-of-flow
+            // layout (containing block, inset resolution, static position).
+            //
+            // The decision reads the **DOM**, not the current Taffy
+            // attachment: `compute_taffy_child_index` counts DOM siblings
+            // that merely *have* a `taffy_id`, blind to attachment, and
+            // Taffy's out-of-range error is swallowed — so an out-of-flow
+            // child inserted between frames may be attached nowhere (#477).
+            // Deciding from attachment would silently drop that child;
+            // deciding from the DOM lets the canonicalization below heal it.
+            let mut out_of_flow_children: Vec<taffy::NodeId> = Vec::new();
+            let mut in_flow_stays_attached = false;
+            {
+                use crate::computed_style::values::DisplayValue;
+                for &child_id in &self.tree.nodes[root_id].children {
+                    let Some(child) = self.tree.nodes.get(child_id) else {
+                        continue;
+                    };
+                    if child.is_comment() {
+                        continue; // no Taffy node at all
+                    }
+                    match child.computed_style.display {
+                        // Generates no box; detached by the marking pass (#487).
+                        DisplayValue::None => continue,
+                        DisplayValue::Contents => {
+                            // A transparent wrapper's flattened content was
+                            // detached by the recursion above. An opaque one
+                            // stopped the marking pass, leaving its flattened
+                            // in-flow boxes (and any later siblings) attached.
+                            if !Self::contents_is_inline_transparent(&self.tree.nodes, child_id) {
+                                in_flow_stays_attached = true;
+                            }
+                            continue;
+                        }
+                        _ => {}
+                    }
+                    if child.is_inline() {
+                        continue; // detached into this IFC
+                    }
+                    let Some(child_taffy) = child.taffy_id else {
+                        continue;
+                    };
+                    if child.is_out_of_flow() {
+                        out_of_flow_children.push(child_taffy);
+                    } else {
+                        in_flow_stays_attached = true;
+                    }
+                }
+            }
+
+            if !in_flow_stays_attached && !out_of_flow_children.is_empty() {
+                // Canonicalize the root's Taffy children to exactly the
+                // DOM-ordered out-of-flow children — replacing whatever
+                // attachment history (including #477 damage) left behind —
+                // then put the measure leaf at **index 0, deliberately**: a
+                // block child's static position follows its siblings, so the
+                // leaf-first order preserves today's (and browsers')
+                // below-the-line static position for auto-inset absolute
+                // children. Appending it would silently move them to
+                // content-top.
                 let _ = self
                     .tree
                     .taffy
-                    .set_node_context(root_taffy, Some(NodeContext::InlineRoot(root_id)));
+                    .set_children(root_taffy, &out_of_flow_children);
+                let Ok(leaf) = self.tree.taffy.new_leaf_with_context(
+                    taffy::Style {
+                        display: taffy::Display::Block,
+                        ..Default::default()
+                    },
+                    NodeContext::InlineRoot(root_id),
+                ) else {
+                    continue;
+                };
+                let _ = self.tree.taffy.insert_child_at_index(root_taffy, 0, leaf);
+                self.tree.ifc_measure_leaves.insert(root_id, leaf);
+
+                // The context is a **move**, not a copy: the root itself has
+                // children now, so a stale `InlineRoot` left on it from an
+                // earlier pass must go (the sweep below skips this-pass
+                // roots). In-place write — the canonicalization above already
+                // dirtied the node.
+                if let Some(ctx) = self.tree.taffy.get_node_context_mut(root_taffy)
+                    && matches!(ctx, NodeContext::InlineRoot(_))
+                {
+                    *ctx = NodeContext::Element;
+                }
+            } else {
+                // Today's path: the root's own (now childless) Taffy node
+                // carries the context so the measure function fires for it.
+                // With an in-flow child still attached this leaves a non-leaf
+                // carrier exactly as before — bug-for-bug; the debug validator
+                // below owns flagging that shape.
+                if let Some(ctx) = self.tree.taffy.get_node_context_mut(root_taffy) {
+                    *ctx = NodeContext::InlineRoot(root_id);
+                } else {
+                    // Element nodes don't have context by default — we need to set one.
+                    // Taffy only calls measure for nodes with context, so we must ensure it has one.
+                    let _ = self
+                        .tree
+                        .taffy
+                        .set_node_context(root_taffy, Some(NodeContext::InlineRoot(root_id)));
+                }
             }
         }
 
@@ -961,11 +1119,12 @@ impl RinchDocument {
     /// [`Self::setup_inline_formatting_contexts`] this must be empty; a
     /// `debug_assertions` check there enforces it.
     ///
-    /// Coverage note: this walks DOM-owned Taffy nodes, which today is every
-    /// `InlineRoot` carrier (elements and anonymous block boxes both live in
-    /// the slab). If a future change hands the context to a Taffy node with no
-    /// DOM identity — e.g. #466's planned measure-leaf — that carrier must be
-    /// added to this walk.
+    /// Coverage note: this walks DOM-owned Taffy nodes (elements and anonymous
+    /// block boxes both live in the slab) **and** the Taffy-only measure
+    /// leaves in `ifc_measure_leaves` (#466), which have no DOM identity. If a
+    /// future change hands the context to yet another kind of carrier, that
+    /// carrier must be added to this walk. A measure-leaf violation is
+    /// reported under its IFC root's DOM id.
     pub fn ifc_leaf_invariant_violations(&self) -> Vec<usize> {
         let mut violations = Vec::new();
         for (id, node) in &self.tree.nodes {
@@ -978,6 +1137,18 @@ impl RinchDocument {
             ) && self.tree.taffy.children(taffy_id).map_or(0, |c| c.len()) > 0
             {
                 violations.push(id);
+            }
+        }
+        // Measure leaves must carry the context (a leaf without it makes its
+        // root's measure unreachable just as surely as a non-leaf carrier
+        // does) and must themselves be childless.
+        for (&root_id, &leaf) in &self.tree.ifc_measure_leaves {
+            let carries = matches!(
+                self.tree.taffy.get_node_context(leaf),
+                Some(NodeContext::InlineRoot(_))
+            );
+            if !carries || self.tree.taffy.children(leaf).map_or(0, |c| c.len()) > 0 {
+                violations.push(root_id);
             }
         }
         violations
@@ -1419,6 +1590,9 @@ impl RinchDocument {
                 if let Some(root_taffy) = self.tree.nodes[root_id].taffy_id {
                     let _ = self.tree.taffy.mark_dirty(root_taffy);
                 }
+                // The measure may be cached on the root's measure leaf rather
+                // than the root itself — dirty propagates up, not down (#466).
+                self.mark_ifc_measure_dirty(root_id);
             }
         }
 
@@ -1872,6 +2046,16 @@ impl RinchDocument {
                         scale,
                         collapse,
                     );
+                }
+                NodeKind::Element(_) if child.is_out_of_flow() => {
+                    // An out-of-flow box does not break an inline formatting
+                    // context (CSS 2.1 §9.4.2): its inline siblings carry on
+                    // across it, on the same line. It is laid out by Taffy
+                    // from its containing block, not by this IFC — walk past
+                    // it (#406). Falling into the `break` arm below split
+                    // `a<abs/>b` so that `b` never reached Parley at all:
+                    // `mark_inline_descendants` had already detached and
+                    // marked it, so it was neither laid out here nor by Taffy.
                 }
                 NodeKind::Comment(_) => {
                     // Skip comments in inline layout
