@@ -712,6 +712,17 @@ impl std::fmt::Debug for NodeHandle {
 /// The entire component is reconstructed on each signal change — suitable for
 /// component props that are closures (e.g., `variant: {|| if active.get() { "filled" } else { "light" }}`).
 ///
+/// Unlike `show_dom`/`match_dom`/`for_each_dom`, `render_fn` runs **tracked**:
+/// its signal reads are the only thing that can schedule a re-render, and the
+/// runtime cannot tell a prop read from a subtree read — only the caller knows
+/// where that line is. So a caller whose `render_fn` renders a user subtree
+/// must draw it itself: read the driving values in the tracked region and wrap
+/// the subtree render in [`crate::reactive::untracked`], or an incidental read
+/// deep in the subtree rebuilds the whole component — and resets its
+/// component-local state — on every change (issue #390). The `rsx!` macro's
+/// generated `render_fn` does exactly that: prop closures tracked, children +
+/// `Component::render` untracked.
+///
 /// Returns the marker comment node. The caller should NOT append it again.
 pub fn reactive_component_dom<R>(
     scope: &mut RenderScope,
