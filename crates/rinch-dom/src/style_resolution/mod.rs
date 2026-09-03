@@ -798,10 +798,20 @@ impl RinchDocument {
             // (e.g. background-color on hover) which don't affect layout.
             if let Ok(old_taffy_style) = self.tree.taffy.style(taffy_id) {
                 if old_taffy_style != &taffy_style {
-                    // Only set ifc_dirty when display changes — that's what affects
-                    // IFC structure (inline/block mixing, display:contents, display:none).
-                    // Other layout changes (width, padding, margin) don't need IFC rebuild.
-                    if old_taffy_style.display != taffy_style.display {
+                    // Only set ifc_dirty when display or position changes —
+                    // that's what affects IFC structure. Display covers
+                    // inline/block mixing, display:contents and display:none;
+                    // position covers in-flow ↔ out-of-flow flips (Taffy's
+                    // `position` is Absolute exactly for CSS absolute/fixed),
+                    // which change whether a sibling run needs an anonymous
+                    // box and whether this node's parent needs a measure leaf
+                    // (#466) — a runtime `static → absolute` toggle would
+                    // otherwise never re-run IFC setup and the leaf decision
+                    // would go stale. Other layout changes (width, padding,
+                    // margin) don't need IFC rebuild.
+                    if old_taffy_style.display != taffy_style.display
+                        || old_taffy_style.position != taffy_style.position
+                    {
                         self.tree.ifc_dirty = true;
                     }
                     let _ = self.tree.taffy.set_style(taffy_id, taffy_style);
