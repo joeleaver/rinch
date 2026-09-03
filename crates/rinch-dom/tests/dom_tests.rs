@@ -334,6 +334,16 @@ fn test_set_multiple_styles() {
 // "does this longhand beat that shorthand" a coin flip that a green local run
 // said nothing about. Every assertion here is full equality on purpose: a
 // `contains` cannot see an ordering bug.
+//
+// One of these tests is not like the others, and the difference is the whole
+// lesson of the bug: **a per-case assertion cannot reliably catch a
+// per-process randomisation; an invariance assertion can.** Each two-declaration
+// test below fails only when the hasher happens to pick the wrong one of two
+// orders — measured at 3-in-5, 2-in-5 and 4-in-5 runs on the unfixed code, so
+// any of them can be green all afternoon and red in CI. `merged_inline_style_is_
+// the_same_in_every_document` asserts that fifty documents agree with each
+// other rather than asserting what they agree *on*, and failed 5 runs out of 5.
+// Prefer that shape whenever the thing under test is nondeterministic.
 
 /// A property `set_style` adds is appended, so it lands *after* a shorthand
 /// already in the attribute and wins — the #265/#387 repro. Under the
