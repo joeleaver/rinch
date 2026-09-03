@@ -371,11 +371,12 @@ fn an_empty_field_steps_from_zero_clamped_into_range() {
 
 /// `decimal_scale` fixes what the component itself writes — the mount text,
 /// every stepper write, AND the `oninput` report, which must carry the text
-/// actually written. Kills the raw `to_string` write mutant (the step from
-/// 9.99 by 0.01 puts the float dust "10.000000000000002" in the field) and
-/// the report-payload mutant (`oninput` delivering `next.to_string()` while
-/// the field shows "10.00" — exactly the field/app divergence the report
-/// exists to prevent). The integer-valued fixtures cannot see either.
+/// actually written. Kills the unformatted write mutant (raw `to_string`
+/// mounts "10", not "10.00") and the report-payload mutant (`oninput`
+/// delivering `next.to_string()` — which is "10" here, since
+/// `(10.0 - 0.01) + 0.01` round-trips exactly in f64 — while the field shows
+/// "10.00": exactly the field/app divergence the report exists to prevent).
+/// The integer-valued fixtures can see neither.
 #[test]
 fn decimal_scale_formats_mount_and_stepped_writes() {
     let f = Fixture::mount(|log| {
