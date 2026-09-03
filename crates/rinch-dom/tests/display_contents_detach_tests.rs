@@ -8,8 +8,12 @@
 //! wrapper's own id is therefore not in the parent's list — detaching it is
 //! a silent no-op (`taffy_remove_child_safe` swallows it), and the spliced
 //! children stay behind as invisible siblings claiming layout space forever.
-//! `sync_display_contents` cannot heal the parent afterwards: it only
-//! rebuilds parents that *still* have a contents descendant.
+//! Historically `sync_display_contents` could not heal the parent afterwards
+//! either — it only rebuilt parents that *still* had a contents descendant.
+//! #520 taught it to heal departures (`Node::contents_spliced`), but that
+//! runs at the next layout pass; these detach paths must still remove the
+//! contribution themselves (a slab-freeing path like `set_inner_html` never
+//! reaches a later sync).
 //!
 //! PR #515 fixed `remove_node` (the reactive runtime's unmount path). This
 //! suite covers the sibling entry points — `remove_child`, `replace_node`

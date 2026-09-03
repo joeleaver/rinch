@@ -19,6 +19,12 @@
 //!   over-aggressive mutant is invisible to CI;
 //! - intermediate states are asserted, not just the final one — a
 //!   toggle-and-toggle-back fixture ends where broken code also ends.
+//!
+//! Every "Kills:" line below names a mutant that was ACTUALLY APPLIED to the
+//! fixed source, with this test observed failing, then reverted. 9 of the 12
+//! tests also fail on unfixed origin/main (1d505d8); the three that pass
+//! there are the designed guards (`block_wrapper_toggled_to_contents_splices`
+//! and the two plain twins) and say so in their own docs.
 
 use rinch_core::dom::{DomDocument, NodeId};
 use rinch_dom::RinchDocument;
@@ -58,6 +64,12 @@ fn restyle(doc: &mut RinchDocument, node: NodeId, style: &str) {
 
 /// A spliced wrapper toggled `contents → flex` must get its box back and its
 /// children must stop contributing to the grandparent.
+///
+/// Kills: departed detection removed from the sync scan; the departed
+/// wrapper's own child-list rebuild dropped; the departed ancestor walk
+/// dropped (this fixture has no OTHER contents node keeping the column in
+/// the affected set — the nested fixture below does, and misses that
+/// mutant); `truncate(1)` on the rebuilt child list.
 #[test]
 fn toggle_to_box_gives_box_back_and_unsplices() {
     let mut doc = RinchDocument::new();
@@ -102,6 +114,12 @@ fn toggle_to_box_gives_box_back_and_unsplices() {
 /// column. On unfixed main the intermediate pass never heals the splice, so
 /// the removal detaches an id that is not in the parent's list and the
 /// phantoms keep 200 of the 300px.
+///
+/// Kills: the `contents_spliced` flag never being set; the helper's own-id
+/// removal dropped. Deliberately NOT claimed against the sync half alone:
+/// with sync broken but the flag-gated helper intact, the detach itself
+/// heals — the two layers are redundant on this path, and that redundancy
+/// is the design.
 #[test]
 fn toggle_to_box_then_remove_frees_slots() {
     let mut doc = RinchDocument::new();
@@ -137,6 +155,12 @@ fn toggle_to_box_then_remove_frees_slots() {
 /// the wrapper computes a box display while its children still sit spliced.
 /// Computed display alone would say "nothing was spliced" — the exact hole in
 /// the #517 gate premise that #520 names.
+///
+/// Kills: the `contents_spliced` flag never being set (with the flag gone,
+/// BOTH healing layers vanish and the phantom is permanent). Either single
+/// layer alone — the flag-gated detach or the departed sync rebuild on the
+/// slab-surviving wrapper — passes this test; the `set_inner_html` variant
+/// below is the one only the detach layer can save.
 #[test]
 fn toggle_then_remove_before_layout_frees_slots() {
     let mut doc = RinchDocument::new();
@@ -168,6 +192,9 @@ fn toggle_then_remove_before_layout_frees_slots() {
 /// Same window, but the detach path frees the slab (`set_inner_html`'s
 /// child-clearing calls `remove_subtree`), so no later sync pass can heal —
 /// the detach itself must remove the spliced ids or they leak forever.
+///
+/// Kills: the helper's flag gate reverted to display-only; the flag never
+/// being set; the helper's own-id removal dropped.
 #[test]
 fn toggle_then_set_inner_html_clear_frees_slots() {
     let mut doc = RinchDocument::new();
@@ -207,6 +234,8 @@ fn toggle_then_set_inner_html_clear_frees_slots() {
 /// `apply_stylo_styles_to_taffy` sees no change for this toggle — without the
 /// computed-display crossing check nothing sets `ifc_dirty` and the toggle is
 /// silently ignored.
+///
+/// Kills: the crossing check removed from `apply_stylo_styles_to_taffy`.
 #[test]
 fn flex_wrapper_toggled_to_contents_splices() {
     let mut doc = RinchDocument::new();
@@ -274,6 +303,9 @@ fn block_wrapper_toggled_to_contents_splices() {
 /// Taffy-style comparison cannot flag the crossing, and the spliced children
 /// are not the wrapper's Taffy children — hiding the wrapper's box does not
 /// hide them. Only the crossing check + departed rebuild reach this state.
+///
+/// Kills: the crossing check removed; departed detection removed from the
+/// sync scan; the flag never being set.
 #[test]
 fn contents_toggled_to_none_hides_spliced_children() {
     let mut doc = RinchDocument::new();
@@ -305,6 +337,12 @@ fn contents_toggled_to_none_hides_spliced_children() {
 /// node's flattening ancestor lies BEHIND the still-contents outer wrapper,
 /// so the ancestor walk must skip through it, and the grandparent's rebuild
 /// must flatten the outer wrapper around the inner one's restored box.
+///
+/// Kills: departed detection removed; the departed wrapper's own child-list
+/// rebuild dropped; the flag never being set; `truncate(1)` on the rebuilt
+/// list. (The dropped-ancestor-walk mutant survives HERE — the
+/// still-contents outer wrapper keeps the column in the affected set — which
+/// is why `toggle_to_box_gives_box_back_and_unsplices` exists un-nested.)
 #[test]
 fn nested_wrappers_inner_toggle_heals_through_outer() {
     let mut doc = RinchDocument::new();
@@ -342,6 +380,11 @@ fn nested_wrappers_inner_toggle_heals_through_outer() {
 /// display — the current effective children of the outer wrapper are
 /// `[inner, a3]`, but the ids sitting in the column's list are the
 /// grandchildren's.
+///
+/// Kills: `collect_taffy_detach_candidates` swapped for the narrow
+/// `collect_effective_taffy_children` (this is the ONLY test that catches
+/// that mutant); the helper's flag gate reverted to display-only; the flag
+/// never being set; the own-id removal dropped.
 #[test]
 fn nested_wrappers_both_toggled_then_clear_frees_all_slots() {
     let mut doc = RinchDocument::new();
@@ -383,6 +426,11 @@ fn nested_wrappers_both_toggled_then_clear_frees_all_slots() {
 /// asserted — broken code agrees with correct code on the final state (the
 /// re-splice rebuilds the same list), so without the middle assert this
 /// fixture would pass vacuously.
+///
+/// Kills (via the middle asserts): departed detection removed; the own
+/// child-list rebuild dropped; the departed ancestor walk dropped;
+/// `truncate(1)`. Kills (via the re-splice leg, which is flex → contents):
+/// the crossing check removed.
 #[test]
 fn toggle_round_trip_re_splices() {
     let mut doc = RinchDocument::new();
@@ -419,6 +467,9 @@ fn toggle_round_trip_re_splices() {
 /// Twin of the toggle+remove tests: an ordinary display toggle on a plain
 /// wrapper, then removal. Sibling geometry must be exactly what a plain
 /// removal gives.
+///
+/// Kills: the helper's own-id removal dropped — the #519 blind-spot mutant,
+/// re-verified against the reshaped helper.
 #[test]
 fn plain_wrapper_display_toggle_then_remove_twin() {
     let mut doc = RinchDocument::new();
@@ -456,6 +507,8 @@ fn plain_wrapper_display_toggle_then_remove_twin() {
 /// Twin of the `set_inner_html` test: clearing a column whose wrapper was
 /// never `contents` (restyle flushed eagerly the same way) must leave fresh
 /// children a clean two-way split.
+///
+/// Kills: the helper's own-id removal dropped.
 #[test]
 fn plain_wrapper_clear_via_set_inner_html_twin() {
     let mut doc = RinchDocument::new();
