@@ -412,6 +412,14 @@ impl RinchDocument {
 
                             // Collapsed block (virtualized) — return estimated size
                             // without doing any Parley work.
+                            //
+                            // This early return only runs at all because the
+                            // node is a Taffy leaf — Taffy never consults a
+                            // measure function on a node with children (the
+                            // IFC leaf invariant, #466; see
+                            // `NodeContext::InlineRoot`). A non-leaf
+                            // virtualized root would silently get 0 from the
+                            // block algorithm instead of its estimate.
                             if let Some(est_h) = nodes[root_id].estimated_height {
                                 return taffy::Size {
                                     width: known_dims.width.unwrap_or(0.0),

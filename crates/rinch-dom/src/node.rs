@@ -83,6 +83,31 @@ pub enum NodeContext {
         height: u32,
     },
     /// IFC root that needs Parley TreeBuilder measurement.
+    ///
+    /// **The IFC leaf invariant (#466).** Taffy 0.12 consults a measure
+    /// function only on a node with zero children (`taffy_tree.rs:303-327`,
+    /// the `(_, false)` arm of the `match (display_mode, has_children)`
+    /// dispatch). Therefore the Taffy node carrying a live `InlineRoot` must
+    /// be childless: the IFC root's own node when inline detachment emptied
+    /// it, or its dedicated measure-leaf when out-of-flow children remain
+    /// attached. After `setup_inline_formatting_contexts`, no Taffy node with
+    /// children carries `InlineRoot`, and every root discovered this pass has
+    /// its context on exactly one childless node.
+    ///
+    /// A non-leaf carrying this context does not merely measure wrong — the
+    /// measure is *structurally unreachable* (Taffy runs the block algorithm
+    /// instead), so an auto-height IFC root collapses to `h = 0`: the block
+    /// algorithm sums in-flow children, of which a root whose inline content
+    /// was detached has none. Block virtualization depends on the same
+    /// invariant — `estimated_height`'s early return lives *inside* the
+    /// measure closure (`layout_engine.rs`), so a non-leaf virtualized root
+    /// would silently report 0 instead of its estimate.
+    ///
+    /// `setup_inline_formatting_contexts` enforces this: it sweeps the stale
+    /// context off any non-leaf not (re)marked a root this pass, and a
+    /// `debug_assertions` validator
+    /// ([`crate::RinchDocument::ifc_leaf_invariant_violations`]) checks the
+    /// invariant after every setup pass.
     InlineRoot(usize), // stores the RawNodeId of the IFC root
 }
 
