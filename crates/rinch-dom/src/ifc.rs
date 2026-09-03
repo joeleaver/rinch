@@ -746,8 +746,14 @@ impl RinchDocument {
                 anon_node.display_mode = DisplayMode::Block;
                 anon_node.parent = Some(parent_id);
                 anon_node.children = run.clone();
-                // Inherit computed style from parent for font properties
-                anon_node.computed_style = self.tree.nodes[parent_id].computed_style.clone();
+                // Inherited properties only (CSS 2.1 §9.2.1.1). Cloning the
+                // parent's whole style gave the anonymous box a box model its
+                // Taffy style (below) does not have, and paint double-counted
+                // the parent's padding+border for everything this IFC draws
+                // (#319) — see [`ComputedStyle::for_anonymous_box`].
+                anon_node.computed_style = crate::computed_style::ComputedStyle::for_anonymous_box(
+                    &self.tree.nodes[parent_id].computed_style,
+                );
 
                 // Create Taffy node for the anonymous box
                 let anon_taffy = self

@@ -162,6 +162,13 @@ impl Scrollbars {
 ///
 /// In logical pixels — this is layout's own unit, and every caller either wants
 /// it that way or scales the result itself.
+///
+/// The padding+border sum below is deliberately *not*
+/// [`super::ifc_root_content_origin`]: that helper defines where an IFC draws
+/// its inline content, and its doc contract is about anonymous roots — while
+/// this one measures a scroll container's own scrollable overflow, and a
+/// scroll container is never an anonymous box (an anonymous box's style
+/// carries no `overflow`).
 pub fn content_extents(tree: &NodeTree, node_id: usize) -> (f64, f64) {
     let Some(node) = tree.get(node_id) else {
         return (0.0, 0.0);
