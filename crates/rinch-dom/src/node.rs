@@ -396,6 +396,21 @@ pub struct Node {
     /// measuring via Parley. Used by contenteditable block virtualization to
     /// collapse off-screen blocks. IFC building and painting are skipped.
     pub estimated_height: Option<f32>,
+
+    /// True while a `sync_display_contents` pass has this node's children
+    /// spliced into an ancestor's Taffy child list (and the node's own Taffy
+    /// node detached) because it computed `display: contents` — and no later
+    /// pass has healed that state (#520).
+    ///
+    /// Set by `sync_display_contents` on every node it treats as contents;
+    /// cleared by the same function when the node no longer computes
+    /// `Contents` (after rebuilding the node's own Taffy child list and its
+    /// flattening ancestor's). Between the toggle and that healing pass, the
+    /// computed display says "box" while the Taffy tree still holds the
+    /// splice — this flag is the only record of that, which is why
+    /// `taffy_detach_contribution` consults it: computed display alone
+    /// cannot distinguish a healed wrapper from a stale-spliced one.
+    pub contents_spliced: bool,
 }
 
 impl std::fmt::Debug for Node {
@@ -456,6 +471,7 @@ impl Node {
             active_sensitive: Cell::new(false),
             focus_sensitive: Cell::new(false),
             estimated_height: None,
+            contents_spliced: false,
         }
     }
 
@@ -501,6 +517,7 @@ impl Node {
             active_sensitive: Cell::new(false),
             focus_sensitive: Cell::new(false),
             estimated_height: None,
+            contents_spliced: false,
         }
     }
 
@@ -545,6 +562,7 @@ impl Node {
             active_sensitive: Cell::new(false),
             focus_sensitive: Cell::new(false),
             estimated_height: None,
+            contents_spliced: false,
         }
     }
 
@@ -587,6 +605,7 @@ impl Node {
             active_sensitive: Cell::new(false),
             focus_sensitive: Cell::new(false),
             estimated_height: None,
+            contents_spliced: false,
         }
     }
 

@@ -747,6 +747,21 @@ impl RinchDocument {
             };
             self.tree.nodes[node_id].display_mode = display_mode;
 
+            // A node crossing into or out of `display: contents` changes the
+            // *tree* — `sync_display_contents` must splice or heal — which the
+            // Taffy-style comparison below cannot be trusted to notice (#520):
+            // `Contents` maps to `taffy::Display::Flex`, so `flex → contents`
+            // compares equal, and a spliced wrapper's Taffy style was stamped
+            // `Display::None` by the sync pass, so `contents → none` compares
+            // equal on the display field. Set the flags on the computed-display
+            // crossing itself, independent of that comparison.
+            if (old_display == crate::computed_style::DisplayValue::Contents)
+                != (new_style.display == crate::computed_style::DisplayValue::Contents)
+            {
+                self.tree.ifc_dirty = true;
+                self.tree.layout_dirty = true;
+            }
+
             // Convert to Taffy style (from current computed_style which may have transition values)
             let dd = self.default_display_for_node(node_id);
             let mut taffy_style = self.tree.nodes[node_id].computed_style.to_taffy_style(dd);
