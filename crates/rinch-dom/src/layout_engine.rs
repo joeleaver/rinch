@@ -1309,6 +1309,49 @@ impl RinchDocument {
         }
     }
 
+    /// Remove `node_id`'s *contribution* to `parent_taffy`'s Taffy children —
+    /// which is not always the node's own `taffy_id` (#517).
+    ///
+    /// A `display: contents` node owns no box: after a layout pass,
+    /// `sync_display_contents` has spliced the node's effective children
+    /// (recursively flattened through nested contents nodes) directly into
+    /// the parent's Taffy child list and detached the node's own Taffy node.
+    /// Detaching only the node's own id there is a silent no-op
+    /// (`taffy_remove_child_safe` swallows it), and the spliced-in children
+    /// stay behind as invisible siblings claiming layout space forever —
+    /// `sync_display_contents` cannot heal the parent afterwards, because it
+    /// only rebuilds parents that *still* have a contents descendant.
+    ///
+    /// Both the effective set and the node's own id are removed, because
+    /// `computed_style.display` describes the state as of the last
+    /// `resolve_layout` and cannot say which of the two is currently
+    /// attached: a wrapper re-appended after a splice contributes its own id
+    /// until the next layout pass re-splices it, while still computing as
+    /// `Contents`. Whichever set is absent, `taffy_remove_child_safe`
+    /// swallows it; the two sets are never both present, so nothing is
+    /// over-removed. Every detach path (`remove_child`, `replace_node`,
+    /// `set_text_content`/`set_inner_html` child-clearing, and the
+    /// reparent legs of `append_child`/`insert_before`/`insert_child`)
+    /// goes through here; `remove_node` carries its own copy of this logic
+    /// (PR #515).
+    pub(crate) fn taffy_detach_contribution(
+        &mut self,
+        parent_taffy: taffy::NodeId,
+        node_id: usize,
+    ) {
+        use crate::computed_style::values::DisplayValue;
+
+        if self.tree.nodes[node_id].computed_style.display == DisplayValue::Contents {
+            for effective_taffy in Self::collect_effective_taffy_children(&self.tree.nodes, node_id)
+            {
+                self.taffy_remove_child_safe(parent_taffy, effective_taffy);
+            }
+        }
+        if let Some(node_taffy) = self.tree.nodes[node_id].taffy_id {
+            self.taffy_remove_child_safe(parent_taffy, node_taffy);
+        }
+    }
+
     /// Clear ifc_root on a node and all its descendants.
     pub(crate) fn clear_ifc_root_recursive(&mut self, node_id: usize) {
         // Use iterative approach to avoid stack overflow
