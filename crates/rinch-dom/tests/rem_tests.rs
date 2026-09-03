@@ -232,3 +232,141 @@ fn device_pixel_ratio_reaches_resolution_media_queries_and_survives_resize() {
         "dpr survives the viewport-driven rebuild"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Adopted from the adversarial review campaign for PR #507. These are shaped
+// as probes for specific mutant classes that survived the original suite,
+// rather than as feature tests — each was the sole kill for a live mutation
+// of this PR's own code.
+// ---------------------------------------------------------------------------
+
+/// The scenario that justified dropping stylo's `used_root_font_size()`
+/// gate: a bare `set_viewport()` — which `RinchApp` calls directly
+/// (`app/mod.rs`), with no cache clear — rebuilds the Device, and a fresh
+/// Device resets that flag to `false`. A root font-size change right after
+/// must still recascade descendants; an implementation that trusts the flag
+/// skips the recascade and leaves stale `rem` layout.
+///
+/// Kills: reinstating stylo's flag-gate around the descendant recascade.
+#[test]
+fn root_font_size_change_after_bare_set_viewport_recascades() {
+    let mut doc = RinchDocument::new();
+    doc.load_css("html { font-size: 20px } .x { width: 2rem }");
+    let body = doc.body();
+    let div = doc.create_element("div");
+    doc.set_attribute(div, "class", "x");
+    doc.append_child(body, div);
+
+    doc.resolve_layout(800.0, 600.0);
+    assert_eq!(width(&doc, div), 40.0);
+
+    doc.set_viewport(800.0, 600.0); // bare Device rebuild, no cache clear
+    let html = NodeId(doc.tree.html_id);
+    doc.set_style(html, "font-size", "24px");
+    doc.resolve_layout(800.0, 600.0);
+    assert_eq!(width(&doc, div), 48.0, "2rem against the 24px root");
+}
+
+/// The one witness that `device_params.root_font_size` actually tracks the
+/// Device — the invariant this PR's architecture introduces. If
+/// `sync_root_font_size` writes the Device but not the stored param, the
+/// Device *looks* right until the next rebuild restores the stale 16px
+/// default; every full-recascade fixture then self-heals (the root
+/// recascades first and re-syncs before descendants resolve), so the bug
+/// is only visible on a descendant-ONLY recascade after a bare
+/// `set_viewport()` to a new size — no full invalidation, root cache-hit,
+/// sync never runs, the descendant resolves `rem` against the restored
+/// default.
+///
+/// Kills: dropping `self.device_params.root_font_size = size;` in
+/// `sync_root_font_size`.
+#[test]
+fn descendant_recascade_after_bare_set_viewport_keeps_the_basis() {
+    let mut doc = RinchDocument::new();
+    doc.load_css("html { font-size: 20px } .x { width: 2rem }");
+    let body = doc.body();
+    let div = doc.create_element("div");
+    doc.set_attribute(div, "class", "x");
+    doc.append_child(body, div);
+
+    doc.resolve_layout(800.0, 600.0);
+    assert_eq!(width(&doc, div), 40.0);
+
+    // Bare rebuild to a NEW size, so resolve_layout's own viewport-change
+    // branch (full invalidation) never fires — tree.viewport is already
+    // synced when it runs.
+    doc.set_viewport(1024.0, 768.0);
+    doc.set_style(div, "height", "5px"); // dirty ONLY the descendant
+    doc.resolve_layout(1024.0, 768.0);
+    assert_eq!(
+        width(&doc, div),
+        40.0,
+        "descendant recascade against the rebuilt Device keeps the 20px basis"
+    );
+}
+
+/// Moving the root BACK to a smaller size must also recascade — the change
+/// detection is symmetric, not grow-only. (A `<=` comparison in the basis
+/// gate passes every other fixture in this file.)
+#[test]
+fn root_font_size_shrink_recascades() {
+    let mut doc = RinchDocument::new();
+    doc.load_css("html { font-size: 20px } .x { width: 2rem }");
+    let body = doc.body();
+    let div = doc.create_element("div");
+    doc.set_attribute(div, "class", "x");
+    doc.append_child(body, div);
+
+    doc.resolve_layout(800.0, 600.0);
+    assert_eq!(width(&doc, div), 40.0);
+
+    let html = NodeId(doc.tree.html_id);
+    doc.set_style(html, "font-size", "10px");
+    doc.resolve_layout(800.0, 600.0);
+    assert_eq!(width(&doc, div), 20.0, "2rem against the 10px root");
+}
+
+/// The "not too much" direction: a root recascade that does NOT change the
+/// root font-size (here, a `color` change on `<html>`) must not clear
+/// descendant caches — without the equality gate, any root restyle defeats
+/// targeted invalidation tree-wide. Cache retention is observed directly
+/// via ServoArc pointer identity of the descendant's cached primary style.
+///
+/// Kills: removing the `size == device_params.root_font_size` early return
+/// from `sync_root_font_size`.
+#[test]
+fn unchanged_basis_keeps_descendant_caches() {
+    let mut doc = RinchDocument::new();
+    doc.load_css("html { font-size: 20px } .x { width: 2rem }");
+    let body = doc.body();
+    let div = doc.create_element("div");
+    doc.set_attribute(div, "class", "x");
+    doc.append_child(body, div);
+    doc.resolve_layout(800.0, 600.0);
+    assert_eq!(width(&doc, div), 40.0);
+
+    let arc_before = doc.tree.nodes[div.0]
+        .stylo_element_data
+        .borrow()
+        .as_ref()
+        .and_then(|d| d.styles.primary.clone())
+        .expect("descendant has a cached style");
+
+    // Recascade the root without touching its font-size.
+    let html = NodeId(doc.tree.html_id);
+    doc.set_style(html, "color", "red");
+    doc.resolve_layout(800.0, 600.0);
+
+    let arc_after = doc.tree.nodes[div.0]
+        .stylo_element_data
+        .borrow()
+        .as_ref()
+        .and_then(|d| d.styles.primary.clone())
+        .expect("descendant still has a cached style");
+
+    assert!(
+        servo_arc::Arc::ptr_eq(&arc_before, &arc_after),
+        "descendant cache must be retained when the rem basis did not change"
+    );
+    assert_eq!(width(&doc, div), 40.0);
+}
