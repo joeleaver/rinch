@@ -289,6 +289,58 @@ pub fn ifc_content_box_offset(tree: &NodeTree, node: &Node) -> (f32, f32) {
     )
 }
 
+/// A box whose IFC has a live inline layout is drawn **by that IFC and by
+/// nothing else** — not by a tree-order walk, not by a stacking sequence
+/// (#365).
+///
+/// This replaced a positional predicate that had two independent ways to miss:
+///
+/// ```text
+/// skip_ifc_children && kind != PaintKind::StackingContext && child.ifc_root == Some(node_id)
+/// ```
+///
+/// The third term can never match for a subtree hoisted to an *ancestor* — the
+/// box's `ifc_root` names its own IFC, not the node being painted — and the
+/// second excluded any inline-level box that is itself a stacking context,
+/// even as a direct child of the node doing the painting. Either miss drew the
+/// box twice: once by `paint_inline_layout` at the IFC root's **content**
+/// origin, once by the stacking sequence at its **border-box** origin, exactly
+/// one padding+border apart. `position: relative` alone is enough to reach it
+/// (it makes an inline-block `is_positioned_z_auto`), so
+/// `<button style="position: relative">` inside a padded paragraph — the
+/// ordinary tooltip-anchor idiom — reproduced it.
+///
+/// `text_layout.is_some()` is load-bearing, not a nicety: an IFC root that is
+/// virtualized (`estimated_height`) or has no cached layout draws nothing at
+/// all, and skipping its children there would make them **vanish** rather than
+/// double. That is what the old `skip_ifc_children` flag was standing in for,
+/// positionally and only at the sites that happened to pass it.
+///
+/// **Known divergence.** The IFC's draw is the survivor, so an inline-level
+/// box paints in *inline order* rather than at its `z-index` — visible for
+/// something like `<button style="position: relative; z-index: -1">` inside
+/// text. Preserving z-order instead means making the hoisted entry the
+/// survivor and having `paint_inline_layout` skip boxes that
+/// `paints_at_stacking_root`, which needs the offset correction below to be
+/// exactly right first. Tracked separately; the simple rule is correct about
+/// *where* and *how many*, which is what was broken.
+///
+/// **Caveat (#366).** The invariant assumes the stamp is honest, and today it
+/// is not always: `mark_inline_descendants` continues past a block-level child
+/// where `walk_inline_children` breaks, so an inline-level box after a block
+/// sibling inside an inline element carries an `ifc_root` whose IFC never
+/// draws it. Such a box satisfies this predicate and paints **nowhere**
+/// (before this guard it painted once at the viewport origin — garbage of a
+/// different shape; hit testing tapped it somewhere else again either way).
+/// If a box vanishes and its markup matches that shape, the bug is #366's
+/// overmark, not a new miss here.
+pub(crate) fn drawn_by_its_ifc(tree: &NodeTree, child: &Node) -> bool {
+    child
+        .ifc_root
+        .and_then(|r| tree.get(r))
+        .is_some_and(|r| r.text_layout.is_some())
+}
+
 /// Compose a node's CSS transform onto `parent_transform`, applied about the
 /// node's transform-origin. Percentage-based translate values are resolved
 /// against the node's layout box (so they resolve to 0 on a collapsed axis).
@@ -775,17 +827,14 @@ fn paint_children_with_stacking(
     font_cx: &mut parley::FontContext,
     layout_cx: &mut parley::LayoutContext<Brush>,
     node_transform: Affine,
-    skip_ifc_children: bool,
 ) {
     let Some(node) = tree.get(node_id) else {
         return;
     };
 
-    // Content this node has already drawn as inline boxes, via
-    // `paint_inline_layout`: painting it again as a box would double it.
-    let already_drawn_inline = |child: &Node, kind: PaintKind| {
-        skip_ifc_children && kind != PaintKind::StackingContext && child.ifc_root == Some(node_id)
-    };
+    // Content already drawn as inline boxes, via `paint_inline_layout`:
+    // painting it again as a box would double it. See `drawn_by_its_ifc`.
+    let already_drawn_inline = |child: &Node, _kind: PaintKind| drawn_by_its_ifc(tree, child);
 
     let is_body = node_id == tree.body_id;
     if is_body || node.creates_stacking_context() {
@@ -923,7 +972,6 @@ fn paint_node(
                 font_cx,
                 layout_cx,
                 parent_transform,
-                false,
             );
         } else if (layout.width == 0.0) != (layout.height == 0.0) {
             // A real box collapsed to zero in one dimension (e.g. an
@@ -961,7 +1009,6 @@ fn paint_node(
                 font_cx,
                 layout_cx,
                 node_transform,
-                false,
             );
 
             if has_opacity {
@@ -1048,7 +1095,6 @@ fn paint_node(
             font_cx,
             layout_cx,
             node_transform,
-            false,
         );
         return;
     }
@@ -1648,7 +1694,6 @@ fn paint_node(
                     font_cx,
                     layout_cx,
                     node_transform,
-                    true, // skip IFC children
                 );
             } else {
                 // Normal paint path: recurse into all children
@@ -1664,7 +1709,6 @@ fn paint_node(
                     font_cx,
                     layout_cx,
                     node_transform,
-                    false,
                 );
             }
 

@@ -1829,6 +1829,66 @@ mod tests {
         );
     }
 
+    /// A hoisted inline-block — `position: relative` in a padded IFC — is
+    /// tapped where its IFC **paints** it: the root's content origin plus the
+    /// parley position. Not one padding+border up-left at the plain border-box
+    /// chain position, where the pre-#365 ghost copy used to paint.
+    ///
+    /// This is also the pin for `stacking.rs`'s entry-push rule: the hoisted
+    /// `PaintEntry`'s offset must stay border-box-relative, because this
+    /// file's `descend` adds `ifc_content_box_offset` itself when it enters
+    /// the entry node. Add the offset at the entry push in `collect_hoisted`
+    /// and this test fails by exactly one padding+border — the offset
+    /// double-added. Before this test existed, that mutation survived the
+    /// entire workspace.
+    #[test]
+    fn a_hoisted_inline_block_is_tapped_where_its_ifc_paints_it() {
+        let mut doc = RinchDocument::new();
+        let body = doc.body();
+        let container = doc.create_element("div");
+        doc.set_attribute(
+            container,
+            "style",
+            "width: 400px; padding: 40px; border: 2px solid rgb(0,0,255); font-size: 16px",
+        );
+        doc.append_child(body, container);
+        let t = doc.create_text("Press ");
+        doc.append_child(container, t);
+        let button = doc.create_element("button");
+        doc.set_attribute(
+            button,
+            "style",
+            "position: relative; width: 60px; height: 24px",
+        );
+        doc.append_child(container, button);
+        doc.resolve_layout(800.0, 600.0);
+
+        // Where the IFC paints the button: body origin + container origin +
+        // padding+border + the parley x/y the IFC wrote into the button's own
+        // layout. Derived from the tree, not copied from a run.
+        let b = doc.tree.get(button.0).unwrap();
+        let c = doc.tree.get(container.0).unwrap();
+        let cs = &c.computed_style;
+        let pad_x = cs.padding_left.to_px() + cs.border_left_width.to_px();
+        let pad_y = cs.padding_top.to_px() + cs.border_top_width.to_px();
+        let body_l = doc.tree.get(doc.tree.body_id).unwrap().layout;
+        let px = body_l.x + c.layout.x + pad_x + b.layout.x + b.layout.width / 2.0;
+        let py = body_l.y + c.layout.y + pad_y + b.layout.y + b.layout.height / 2.0;
+        assert_eq!(
+            hit_test(&doc.tree, px, py),
+            Some(button.0),
+            "the button is tapped at the position its IFC paints it"
+        );
+        // One padding+border up-left — the ghost position — must NOT tap the
+        // button: nothing paints it there.
+        assert_ne!(
+            hit_test(&doc.tree, px - pad_x, py - pad_y),
+            Some(button.0),
+            "the border-box chain position taps something else — nothing \
+             paints the button there"
+        );
+    }
+
     /// #423: a corner is where two edge zones meet, and nothing more.
     ///
     /// The `corner = inset * 2` radius this function used to carry never took
