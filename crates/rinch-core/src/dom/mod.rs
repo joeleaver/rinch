@@ -974,4 +974,52 @@ mod tests {
 
         assert!(fired.get(), "on_cleanup must still run on dispose()");
     }
+
+    /// A component cleanup that reads a signal must not subscribe the re-render
+    /// effect (issue #494).
+    ///
+    /// A re-render disposes the previous component scope from inside
+    /// `reactive_component_dom`'s effect, so an `on_cleanup` registered by the
+    /// component body runs with that effect as the current observer. A tracked
+    /// read there would re-render the whole component — resetting its
+    /// component-local state — on every later write to that signal. Counts
+    /// renders, since the DOM is identical either way.
+    #[test]
+    fn a_component_cleanup_that_reads_a_signal_does_not_subscribe_the_rerender_effect() {
+        use crate::reactive::{Signal, on_cleanup};
+        use std::cell::Cell;
+
+        let doc = Rc::new(RefCell::new(MockDomDocument::new()));
+        let body = doc.borrow().body();
+        let mut scope = RenderScope::new(doc.clone(), body);
+        let parent = scope.parent();
+
+        let rev = Signal::new(0u32);
+        let probe = Signal::new(0u32);
+        let renders = Rc::new(Cell::new(0usize));
+
+        let count = renders.clone();
+        let _marker = reactive_component_dom(&mut scope, &parent, move |s| {
+            count.set(count.get() + 1);
+            let _ = rev.get(); // the tracked "prop" read driving re-renders
+            on_cleanup(move || {
+                let _ = probe.get();
+            });
+            s.create_element("div")
+        });
+
+        rev.set(1); // re-render: disposes the previous scope, runs its cleanup
+        let renders_before = renders.get();
+
+        probe.set(1);
+        assert_eq!(
+            renders.get(),
+            renders_before,
+            "a write to a signal only the cleanup read must not re-render the component"
+        );
+
+        // Positive control: a write the re-render effect legitimately tracks.
+        rev.set(2);
+        assert_eq!(renders.get(), renders_before + 1);
+    }
 }

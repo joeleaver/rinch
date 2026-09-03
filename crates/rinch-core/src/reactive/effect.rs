@@ -299,6 +299,12 @@ fn unsubscribe_deps(id: ObserverId) {
 /// Removing the entry — rather than emptying a slot that stays in the container
 /// forever — is what makes disposal actually reclaim (issue #141, final bullet).
 pub(super) fn dispose_effect(id: ObserverId) {
+    // Dropping the closure below runs user `Drop` code, and a read from it
+    // must not subscribe whoever is mid-run (issue #494). The dispose fixpoint
+    // already suspends the stack for its own call here; this covers the direct
+    // `Effect::dispose` path, which runs outside any fixpoint. (Suspending an
+    // already-empty stack is a no-op, so the two compose.)
+    let _untracked = super::scope::SuspendObservers::take();
     let inner = EFFECTS.with(|effects| effects.borrow_mut().remove(&id));
     if let Some(inner) = &inner {
         // Belt and braces. Removal alone already makes `run_effect` a no-op,

@@ -825,4 +825,57 @@ mod tests {
             "writing a signal only the items' `Drop` read must not re-run the windowing pass"
         );
     }
+
+    /// A doomed row's cleanup that reads a signal must not subscribe the
+    /// windowing effect (issue #494) — the disposal counterpart of the
+    /// untracked row render and item drop above (issue #345).
+    #[test]
+    fn a_doomed_rows_cleanup_that_reads_a_signal_does_not_subscribe_the_windowing_effect() {
+        use std::cell::Cell;
+
+        let doc = Rc::new(RefCell::new(MockDomDocument::new()));
+        let body = doc.borrow().body();
+        let mut scope = RenderScope::new(doc.clone(), body);
+
+        let items = Signal::new(vec![1u32, 2, 3]);
+        let probe = Signal::new(0u32);
+        let passes = Rc::new(Cell::new(0usize));
+
+        let count = passes.clone();
+        let list = super::virtual_list(
+            &mut scope,
+            20.0,
+            move || {
+                count.set(count.get() + 1);
+                items.get()
+            },
+            |item: &u32| *item,
+            1,
+            move |item: u32, s: &mut RenderScope| {
+                // Registered against the row's own scope, read by the disposal
+                // fixpoint when the row leaves the window.
+                crate::reactive::on_cleanup(move || {
+                    let _ = probe.get();
+                });
+                let node = s.create_element("div");
+                node.set_attribute("data-name", &item.to_string());
+                node
+            },
+        );
+        let _ = list;
+
+        items.update(|v| v.retain(|&i| i != 2)); // dooms row 2, running its cleanup
+        let passes_before = passes.get();
+
+        probe.set(1);
+        assert_eq!(
+            passes.get(),
+            passes_before,
+            "a write to a signal only a doomed row's cleanup read must not re-run the windowing pass"
+        );
+
+        // Positive control: a write the windowing effect legitimately tracks.
+        items.update(|v| v.push(4));
+        assert_eq!(passes.get(), passes_before + 1);
+    }
 }
