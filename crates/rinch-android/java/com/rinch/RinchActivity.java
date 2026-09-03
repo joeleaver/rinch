@@ -670,4 +670,27 @@ public class RinchActivity extends NativeActivity {
             return null;
         }
     }
+
+    // ── Content URI Writer ───────────────────────────────────────────────
+
+    // The other half of the pair above, and the one `shareImage` above needed
+    // only for a MediaStore JPEG it created itself — this one takes whatever
+    // URI `saveFilePicker`'s `ACTION_CREATE_DOCUMENT` handed back, which can be
+    // any document provider on the device, not just MediaStore. The idiom is
+    // the same `openOutputStream` call `shareImage` makes, but that one never
+    // reports failure to its caller because a failed share has nothing
+    // downstream waiting on it; a failed save does, so this one returns
+    // whether it worked rather than swallowing the exception silently.
+    public boolean writeContentUri(String uriString, byte[] bytes) {
+        try {
+            Uri uri = Uri.parse(uriString);
+            java.io.OutputStream os = getContentResolver().openOutputStream(uri);
+            if (os == null) return false;
+            os.write(bytes);
+            os.close();
+            return true;
+        } catch (Exception e) {
+            return false;
+        }
+    }
 }
