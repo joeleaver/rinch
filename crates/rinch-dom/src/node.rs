@@ -740,6 +740,13 @@ pub struct NodeTree {
     /// IDs of anonymous block box nodes created during layout.
     /// Tracked for cleanup at the start of each layout pass.
     pub anonymous_block_boxes: Vec<RawNodeId>,
+    /// Taffy-only measure leaves for IFC roots whose out-of-flow children stay
+    /// attached (#466): IFC root DOM id → the childless Taffy node carrying its
+    /// [`NodeContext::InlineRoot`]. These nodes have **no DOM identity** — they
+    /// are absent from `taffy_map` and from the slab — so every consumer that
+    /// maps a Taffy id back to a DOM node must `get`-and-skip, never index.
+    /// Recreated each `ifc_dirty` pass exactly like `anonymous_block_boxes`.
+    pub ifc_measure_leaves: HashMap<RawNodeId, taffy::NodeId>,
     /// Active CSS transitions per node, keyed by property.
     pub active_transitions: HashMap<RawNodeId, HashMap<TransitionProperty, ActiveTransition>>,
     /// Active CSS animations per node.
@@ -871,6 +878,7 @@ impl NodeTree {
             active_node: None,
             guard,
             anonymous_block_boxes: Vec::new(),
+            ifc_measure_leaves: HashMap::new(),
             active_transitions: HashMap::new(),
             active_animations: HashMap::new(),
             transitions_enabled: false,
