@@ -73,6 +73,60 @@ public class RinchActivity extends NativeActivity {
         addContentView(inputView, lp);
     }
 
+    // ── Window-state replay across recreation (issue #475) ──────────────
+
+    /**
+     * The window state the app has asked for, mirrored where the window
+     * cannot keep it.
+     *
+     * A configuration change — a rotation without {@code configChanges}, a
+     * locale or font-size change, a theme switch — destroys this activity and
+     * builds the next one around a <em>new</em> window, and window flags and
+     * insets-controller state die with the old one. The native side's own
+     * state (the keep-screen-on refcount, the app's idea of its bar
+     * appearance) lives in the process and survives, so nothing over there
+     * can notice the divergence: the app still believes it holds a flag the
+     * new window has never seen. These statics survive exactly as long as
+     * that native state does — the process — and
+     * {@link #onAttachedToWindow()} replays them onto each new window.
+     *
+     * {@code null} means "the app never asked" and is never replayed, so a
+     * fresh window keeps its platform defaults until the app says otherwise.
+     * Recorded on whichever thread the native call arrives on, <em>before</em>
+     * the UI-thread post that applies the value, so a recreation racing the
+     * post still replays what was asked for; {@code volatile} is all the
+     * coherence a single boxed write needs.
+     *
+     * One place owns the replay, on purpose: a setter added to this class
+     * that writes window state without recording it here inherits the
+     * original bug.
+     */
+    private static volatile Boolean requestedKeepScreenOn;
+    private static volatile Boolean requestedLightStatusBars;
+    private static volatile Boolean requestedLightNavigationBars;
+
+    @Override
+    public void onAttachedToWindow() {
+        super.onAttachedToWindow();
+        // Attach rather than onCreate: the insets controller the bar
+        // appearance writes through does not exist until the decor view is
+        // attached to the window manager. Going through the public setters
+        // keeps one code path per property; each re-records the value it is
+        // handed, which is the value already recorded.
+        Boolean keepOn = requestedKeepScreenOn;
+        if (keepOn != null) {
+            setKeepScreenOn(keepOn);
+        }
+        Boolean lightStatus = requestedLightStatusBars;
+        if (lightStatus != null) {
+            setLightStatusBars(lightStatus);
+        }
+        Boolean lightNav = requestedLightNavigationBars;
+        if (lightNav != null) {
+            setLightNavigationBars(lightNav);
+        }
+    }
+
     // ── Safe Area Insets ─────────────────────────────────────────────────
 
     public int[] getSafeAreaInsets() {
@@ -119,6 +173,7 @@ public class RinchActivity extends NativeActivity {
      * @param light whether the bar's background is light
      */
     public void setLightStatusBars(boolean light) {
+        requestedLightStatusBars = light; // survives recreation; replayed on attach
         runOnUiThread(() -> setBarAppearance(
             android.view.WindowInsetsController.APPEARANCE_LIGHT_STATUS_BARS, light));
     }
@@ -134,6 +189,7 @@ public class RinchActivity extends NativeActivity {
      * @param light whether the bar's background is light
      */
     public void setLightNavigationBars(boolean light) {
+        requestedLightNavigationBars = light; // survives recreation; replayed on attach
         runOnUiThread(() -> setBarAppearance(
             android.view.WindowInsetsController.APPEARANCE_LIGHT_NAVIGATION_BARS, light));
     }
@@ -210,6 +266,7 @@ public class RinchActivity extends NativeActivity {
      * @param keepOn whether the screen should stay on while this window shows
      */
     public void setKeepScreenOn(boolean keepOn) {
+        requestedKeepScreenOn = keepOn; // survives recreation; replayed on attach
         // On the UI thread, and only there. Window flags are read by the view
         // hierarchy without a lock, and a flag written from the native frame
         // thread is a flag whose effect is decided by a race: on a good day the
