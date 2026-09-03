@@ -1267,6 +1267,9 @@ impl RinchDocument {
             if let Some(taffy_id) = self.tree.nodes.get(node_id).and_then(|n| n.taffy_id) {
                 let _ = self.tree.taffy.mark_dirty(taffy_id);
             }
+            // The measure may live on this root's measure leaf, which a mark
+            // on the root does not reach — dirty propagates up, not down (#466).
+            self.mark_ifc_measure_dirty(node_id);
         } else {
             // Fallback: walk ancestors to find one with text_layout (the IFC root)
             let mut cur = self.tree.nodes.get(node_id).and_then(|n| n.parent);
@@ -1333,6 +1336,11 @@ impl RinchDocument {
         if let Some(taffy_id) = self.tree.nodes.get(parent_id).and_then(|n| n.taffy_id) {
             let _ = self.tree.taffy.mark_dirty(taffy_id);
         }
+        // The measure may live on this root's measure leaf, which the mark
+        // above does not reach — dirty propagates up, not down (#466). Without
+        // this, a text edit in a `text + absolute` container serves the leaf's
+        // cached measure and the container's height never changes.
+        self.mark_ifc_measure_dirty(parent_id);
         // NOTE: Do NOT clear ifc_root on children here. This function handles
         // text/style invalidation where the IFC structure is unchanged. Clearing
         // ifc_root would prevent build_ifc_layouts() from finding this IFC root
