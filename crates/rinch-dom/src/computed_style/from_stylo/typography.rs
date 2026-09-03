@@ -56,17 +56,20 @@ pub(super) fn line_height_from_stylo(lh: &style::values::computed::LineHeight) -
 }
 
 pub(super) fn letter_spacing_from_stylo(ls: &style::values::computed::text::LetterSpacing) -> f32 {
-    // LetterSpacing wraps a LengthPercentage
-    if let Some(len) = ls.0.to_length() {
-        len.px()
-    } else {
-        0.0
-    }
+    // LetterSpacing wraps a LengthPercentage. A percentage here is
+    // font-relative (resolved per glyph at used-value time — Chrome keeps
+    // `calc(50% - 10px)` unresolved in the computed value), which the px-only
+    // spacing rinch hands Parley cannot express. Keep the length part of a
+    // mixed calc rather than dropping the whole value.
+    let (px, _pct) = super::calc::split_length_percentage(&ls.0);
+    px
 }
 
 pub(super) fn word_spacing_from_stylo(ws: &style::values::computed::text::WordSpacing) -> f32 {
-    // WordSpacing wraps a LengthPercentage - use to_length() method
-    ws.to_length().map(|l| l.px()).unwrap_or(0.0)
+    // Same shape as letter_spacing_from_stylo: the percentage part is
+    // font-relative and not representable in px-only spacing.
+    let (px, _pct) = super::calc::split_length_percentage(ws);
+    px
 }
 
 pub(super) fn text_align_from_stylo(align: &style::values::computed::TextAlign) -> TextAlignValue {

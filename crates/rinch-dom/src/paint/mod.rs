@@ -1362,10 +1362,11 @@ fn paint_node(
             let (radius, radii) = {
                 let cs = &node.computed_style;
                 let resolve_size = node.layout.width.min(node.layout.height);
-                let tl = cs.border_radius_top_left.resolve(resolve_size) as f64 * scale;
-                let tr = cs.border_radius_top_right.resolve(resolve_size) as f64 * scale;
-                let br = cs.border_radius_bottom_right.resolve(resolve_size) as f64 * scale;
-                let bl = cs.border_radius_bottom_left.resolve(resolve_size) as f64 * scale;
+                let tl = cs.border_radius_top_left.resolve(resolve_size).max(0.0) as f64 * scale;
+                let tr = cs.border_radius_top_right.resolve(resolve_size).max(0.0) as f64 * scale;
+                let br =
+                    cs.border_radius_bottom_right.resolve(resolve_size).max(0.0) as f64 * scale;
+                let bl = cs.border_radius_bottom_left.resolve(resolve_size).max(0.0) as f64 * scale;
                 let radii = RoundedRectRadii::new(tl, tr, br, bl);
                 // Uniform radius for code paths that don't support per-corner yet
                 let avg = (tl + tr + br + bl) / 4.0;

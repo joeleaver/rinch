@@ -1,17 +1,28 @@
 //! Box model Stylo conversion functions: lengths, margins, gaps, insets, borders.
 
+use super::calc::split_length_percentage;
 use crate::computed_style::values::*;
+
+/// The one `LengthPercentage` → `LengthPercentageValue` conversion. A mixed
+/// `calc()` — which `to_length()`/`to_percentage()` both refuse — becomes a
+/// `Calc { px, pct }` pair instead of silently degrading to `Zero` (#278).
+pub(super) fn lp_value_from_stylo(
+    lp: &style::values::computed::LengthPercentage,
+) -> LengthPercentageValue {
+    if let Some(len) = lp.to_length() {
+        LengthPercentageValue::Length(len.px())
+    } else if let Some(pct) = lp.to_percentage() {
+        LengthPercentageValue::Percent(pct.0)
+    } else {
+        let (px, pct) = split_length_percentage(lp);
+        LengthPercentageValue::Calc { px, pct }
+    }
+}
 
 pub(super) fn length_percentage_from_stylo(
     lp: &style::values::computed::NonNegativeLengthPercentage,
 ) -> LengthPercentageValue {
-    if let Some(len) = lp.0.to_length() {
-        LengthPercentageValue::Length(len.px())
-    } else if let Some(pct) = lp.0.to_percentage() {
-        LengthPercentageValue::Percent(pct.0)
-    } else {
-        LengthPercentageValue::Zero
-    }
+    lp_value_from_stylo(&lp.0)
 }
 
 pub(super) fn margin_from_stylo_generic(
@@ -20,16 +31,24 @@ pub(super) fn margin_from_stylo_generic(
     use style::values::generics::length::GenericMargin;
     match margin {
         GenericMargin::Auto => LengthPercentageAutoValue::Auto,
-        GenericMargin::LengthPercentage(lp) => {
-            if let Some(len) = lp.to_length() {
-                LengthPercentageAutoValue::Length(len.px())
-            } else if let Some(pct) = lp.to_percentage() {
-                LengthPercentageAutoValue::Percent(pct.0)
-            } else {
-                LengthPercentageAutoValue::Length(0.0)
-            }
-        }
+        GenericMargin::LengthPercentage(lp) => lp_auto_value_from_stylo(lp),
         _ => LengthPercentageAutoValue::Auto,
+    }
+}
+
+/// The one `LengthPercentage` → `LengthPercentageAutoValue` conversion. A
+/// mixed `calc()` becomes `Calc { px, pct }` instead of `Length(0.0)` — the
+/// exact defect of #278 (`left: calc(50% - 10px)` sat at 0).
+fn lp_auto_value_from_stylo(
+    lp: &style::values::computed::LengthPercentage,
+) -> LengthPercentageAutoValue {
+    if let Some(len) = lp.to_length() {
+        LengthPercentageAutoValue::Length(len.px())
+    } else if let Some(pct) = lp.to_percentage() {
+        LengthPercentageAutoValue::Percent(pct.0)
+    } else {
+        let (px, pct) = split_length_percentage(lp);
+        LengthPercentageAutoValue::Calc { px, pct }
     }
 }
 
@@ -51,15 +70,7 @@ pub(super) fn inset_from_stylo_generic(
     use style::values::generics::position::GenericInset;
     match inset {
         GenericInset::Auto => LengthPercentageAutoValue::Auto,
-        GenericInset::LengthPercentage(lp) => {
-            if let Some(len) = lp.to_length() {
-                LengthPercentageAutoValue::Length(len.px())
-            } else if let Some(pct) = lp.to_percentage() {
-                LengthPercentageAutoValue::Percent(pct.0)
-            } else {
-                LengthPercentageAutoValue::Length(0.0)
-            }
-        }
+        GenericInset::LengthPercentage(lp) => lp_auto_value_from_stylo(lp),
         _ => LengthPercentageAutoValue::Auto,
     }
 }
@@ -68,16 +79,10 @@ pub(super) fn border_radius_from_stylo(
     radius: &style::values::computed::BorderCornerRadius,
 ) -> LengthPercentageValue {
     // BorderCornerRadius is a Size with width and height for elliptical radii
-    // We just take the width (horizontal radius) for simplicity
-    let width = &radius.0.width;
-    if let Some(len) = width.0.to_length() {
-        LengthPercentageValue::Length(len.px())
-    } else if let Some(pct) = width.0.to_percentage() {
-        // Store the percentage to be resolved at paint time when dimensions are known
-        LengthPercentageValue::Percent(pct.0)
-    } else {
-        LengthPercentageValue::Zero
-    }
+    // We just take the width (horizontal radius) for simplicity.
+    // Percentages (and the percentage part of a calc) are resolved at paint
+    // time when dimensions are known.
+    lp_value_from_stylo(&radius.0.width.0)
 }
 
 /// Check if a border style is 'none' or 'hidden' (meaning no border should be painted).

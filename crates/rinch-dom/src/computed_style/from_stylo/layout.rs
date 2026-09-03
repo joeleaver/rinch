@@ -1,6 +1,21 @@
 //! Layout-related Stylo conversion functions: display, position, overflow, size, flex, alignment.
 
+use super::calc::split_length_percentage;
 use crate::computed_style::values::*;
+
+/// A size-flavored `LengthPercentage` → `DimensionValue`. A mixed `calc()`
+/// becomes `Calc { px, pct }` instead of silently degrading to `Auto` (#278
+/// family: `width: calc(50% + 25px)` used to lay out as content-sized).
+fn dimension_from_lp(lp: &style::values::computed::LengthPercentage) -> DimensionValue {
+    if let Some(len) = lp.to_length() {
+        DimensionValue::Length(len.px())
+    } else if let Some(pct) = lp.to_percentage() {
+        DimensionValue::Percent(pct.0)
+    } else {
+        let (px, pct) = split_length_percentage(lp);
+        DimensionValue::Calc { px, pct }
+    }
+}
 
 pub(super) fn display_from_stylo(display: &style::values::computed::Display) -> DisplayValue {
     use style::values::specified::box_::{DisplayInside, DisplayOutside};
@@ -56,15 +71,7 @@ pub(super) fn size_from_stylo(size: &style::values::computed::Size) -> Dimension
     use style::values::computed::Size;
     match size {
         Size::Auto => DimensionValue::Auto,
-        Size::LengthPercentage(lp) => {
-            if let Some(len) = lp.0.to_length() {
-                DimensionValue::Length(len.px())
-            } else if let Some(pct) = lp.0.to_percentage() {
-                DimensionValue::Percent(pct.0)
-            } else {
-                DimensionValue::Auto
-            }
-        }
+        Size::LengthPercentage(lp) => dimension_from_lp(&lp.0),
         Size::MaxContent | Size::MinContent | Size::FitContent | Size::Stretch => {
             DimensionValue::Auto
         }
@@ -76,15 +83,7 @@ pub(super) fn max_size_from_stylo(size: &style::values::computed::MaxSize) -> Di
     use style::values::computed::MaxSize;
     match size {
         MaxSize::None => DimensionValue::Auto,
-        MaxSize::LengthPercentage(lp) => {
-            if let Some(len) = lp.0.to_length() {
-                DimensionValue::Length(len.px())
-            } else if let Some(pct) = lp.0.to_percentage() {
-                DimensionValue::Percent(pct.0)
-            } else {
-                DimensionValue::Auto
-            }
-        }
+        MaxSize::LengthPercentage(lp) => dimension_from_lp(&lp.0),
         MaxSize::MaxContent | MaxSize::MinContent | MaxSize::FitContent | MaxSize::Stretch => {
             DimensionValue::Auto
         }

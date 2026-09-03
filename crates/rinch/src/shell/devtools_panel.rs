@@ -170,6 +170,7 @@ fn fmt_lp(v: &rinch_dom::computed_style::LengthPercentageValue) -> String {
         LengthPercentageValue::Zero => "0".into(),
         LengthPercentageValue::Length(px) => format!("{:.1}px", px),
         LengthPercentageValue::Percent(pct) => format!("{:.1}%", pct),
+        LengthPercentageValue::Calc { px, pct } => format!("calc({:.1}% + {:.1}px)", pct, px),
     }
 }
 
@@ -179,6 +180,7 @@ fn fmt_lpa(v: &rinch_dom::computed_style::LengthPercentageAutoValue) -> String {
         LengthPercentageAutoValue::Auto => "auto".into(),
         LengthPercentageAutoValue::Length(px) => format!("{:.1}px", px),
         LengthPercentageAutoValue::Percent(pct) => format!("{:.1}%", pct),
+        LengthPercentageAutoValue::Calc { px, pct } => format!("calc({:.1}% + {:.1}px)", pct, px),
     }
 }
 
