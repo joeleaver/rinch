@@ -1215,7 +1215,11 @@ impl RinchDocument {
     /// Recursively collect the effective Taffy children for a node,
     /// flattening any `display:contents` children so their grandchildren
     /// appear directly in the parent's child list.
-    fn collect_effective_taffy_children(
+    ///
+    /// `pub(crate)`, not private, because `remove_node` (in
+    /// `dom_impl::dom_document_impl`) needs this same flattening on the
+    /// removal path — see the comment there (card K48).
+    pub(crate) fn collect_effective_taffy_children(
         nodes: &slab::Slab<crate::node::Node>,
         node_id: usize,
     ) -> Vec<taffy::NodeId> {
