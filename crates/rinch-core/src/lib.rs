@@ -77,11 +77,10 @@ pub use events::{
     find_click_ancestor, finish_drag, fire_selection_sync, get_click_context, get_input_context,
     get_modifier_state, get_saved_selection, has_paste_interceptor, is_drag_ghost_visible,
     query_selection_ranges, register_file_drop_handler, register_handler, register_input_handler,
-    request_focus, request_selection_clear, reset_drag_ghost_visibility, restore_drag_ghost,
-    save_selection_snapshot, set_click_ancestors, set_click_context, set_input_context,
-    set_keyboard_interceptor, set_modifier_state, set_paste_interceptor, set_selection_callback,
-    set_selection_sync_callback, suppress_drag_ghost, take_pending_focus_request,
-    take_pending_selection_clear, update_drag, update_drag_with_button,
+    request_focus, reset_drag_ghost_visibility, restore_drag_ghost, save_selection_snapshot,
+    set_click_ancestors, set_click_context, set_input_context, set_keyboard_interceptor,
+    set_modifier_state, set_paste_interceptor, set_selection_callback, set_selection_sync_callback,
+    suppress_drag_ghost, take_pending_focus_request, update_drag, update_drag_with_button,
 };
 
 // Re-export DOM types for fine-grained rendering

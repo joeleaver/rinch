@@ -29,13 +29,38 @@ pub enum SelectionAction {
 /// Returns selection ranges for QueryRanges, empty vec otherwise.
 pub type SelectionCallback = Rc<dyn Fn(SelectionAction) -> Vec<(usize, usize, usize)>>;
 
+/// The per-document callback map (issue #478) — see
+/// [`DocScopedSlotMap`](crate::reactive::DocScopedSlotMap).
+type SelectionSlots =
+    crate::reactive::DocScopedSlotMap<dyn Fn(SelectionAction) -> Vec<(usize, usize, usize)>>;
+
+/// The per-document saved snapshot, on the same key (issue #478).
+///
+/// Its values are plain `Vec`s, not `Rc`s, so [`get_saved_selection`] and
+/// [`clear_selection_snapshot`] cannot route through
+/// [`read_doc_scoped_slot`](crate::reactive::read_doc_scoped_slot) /
+/// [`clear_doc_scoped_slot`](crate::reactive::clear_doc_scoped_slot) and
+/// instead hand-roll the same resolution rule — own entry first, ownerless
+/// `None` entry as the fallback. The copies must stay in step with the shared
+/// helpers; the fallback-arm pins in the test module hold each one.
+type SnapshotMap = std::collections::BTreeMap<Option<u64>, Vec<(usize, usize, usize)>>;
+
 thread_local! {
-    static SELECTION_CALLBACK: RefCell<Option<SelectionCallback>> = const { RefCell::new(None) };
-    static SAVED_SELECTION: RefCell<Vec<(usize, usize, usize)>> = const { RefCell::new(Vec::new()) };
+    /// One callback slot **per document**, plus the ownerless `None` entry —
+    /// keyed exactly like the keyboard interceptor (issues #340, #478), so two
+    /// documents on one thread keep their own selection delegation.
+    static SELECTION_CALLBACK: RefCell<SelectionSlots> =
+        const { RefCell::new(SelectionSlots::new()) };
+    /// The saved snapshot, **per document** on the same key (issue #478): one
+    /// document's PointerDown saving its selection must not clobber the
+    /// snapshot another document's toolbar command is about to fall back to.
+    static SAVED_SELECTION: RefCell<SnapshotMap> = const { RefCell::new(SnapshotMap::new()) };
 }
 
-/// Set the global text selection callback, which delegates selection operations
-/// to the document that owns the text.
+/// Set the current document's text selection callback, which delegates
+/// selection operations to the document that owns the text. A registration
+/// made outside any dispatch fills the thread-global fallback slot, serving
+/// every document that has no callback of its own (issue #478).
 ///
 /// Nothing in the tree registers one today — the claim that "the window manager
 /// sets this" was stale — so this is a public seam rather than a live path.
@@ -51,44 +76,64 @@ pub fn set_selection_callback<F>(cb: F)
 where
     F: Fn(SelectionAction) -> Vec<(usize, usize, usize)> + 'static,
 {
-    crate::reactive::install_scoped_slot(&SELECTION_CALLBACK, Rc::new(cb));
+    crate::reactive::install_doc_scoped_slot(&SELECTION_CALLBACK, Rc::new(cb));
 }
 
-/// Clear the global text selection callback.
+/// Clear the text selection callback a dispatch would reach right now: the
+/// current document's own if it has one, else the thread-global fallback.
 pub fn clear_selection_callback() {
-    crate::reactive::clear_scoped_slot(&SELECTION_CALLBACK);
+    crate::reactive::clear_doc_scoped_slot(&SELECTION_CALLBACK);
 }
 
-/// Dispatch a selection action to the callback.
+/// Dispatch a selection action to the dispatching document's callback (or the
+/// thread-global fallback).
 ///
 /// The `Rc` is cloned out before the call so the callback may re-enter (install
 /// a different callback, query the selection again) without a double borrow.
 pub fn dispatch_selection(action: SelectionAction) -> Vec<(usize, usize, usize)> {
-    match crate::reactive::read_scoped_slot(&SELECTION_CALLBACK) {
+    match crate::reactive::read_doc_scoped_slot(&SELECTION_CALLBACK) {
         Some(cb) => cb(action),
         None => Vec::new(),
     }
 }
 
-/// Save the current selection ranges as a snapshot.
+/// Save the current document's selection ranges as its snapshot.
 /// Called before PointerDown dispatch, which may clear selection.
 pub fn save_selection_snapshot() {
     let ranges = dispatch_selection(SelectionAction::QueryRanges);
+    let key = crate::context::current_dispatching_doc();
     SAVED_SELECTION.with(|s| {
-        *s.borrow_mut() = ranges;
+        s.borrow_mut().insert(key, ranges);
     });
 }
 
-/// Clear the saved selection snapshot.
+/// Clear the saved selection snapshot a read would reach right now: the
+/// current document's own if it has one, else the ownerless one.
 pub fn clear_selection_snapshot() {
+    let caller = crate::context::current_dispatching_doc();
     SAVED_SELECTION.with(|s| {
-        s.borrow_mut().clear();
+        let mut map = s.borrow_mut();
+        if let Some(doc) = caller
+            && map.remove(&Some(doc)).is_some()
+        {
+            return;
+        }
+        map.remove(&None);
     });
 }
 
-/// Get the saved selection snapshot.
+/// Get the saved selection snapshot — the dispatching document's own, falling
+/// back to the one saved outside any dispatch.
 pub fn get_saved_selection() -> Vec<(usize, usize, usize)> {
-    SAVED_SELECTION.with(|s| s.borrow().clone())
+    let caller = crate::context::current_dispatching_doc();
+    SAVED_SELECTION.with(|s| {
+        let map = s.borrow();
+        caller
+            .and_then(|doc| map.get(&Some(doc)))
+            .or_else(|| map.get(&None))
+            .cloned()
+            .unwrap_or_default()
+    })
 }
 
 /// Query the current text selection ranges.
@@ -112,11 +157,16 @@ pub fn query_selection_ranges() -> Vec<(usize, usize, usize)> {
 /// The callback receives the current selection ranges (block_index, start, end).
 pub type SelectionSyncCallback = Rc<dyn Fn(Vec<(usize, usize, usize)>)>;
 
+/// The per-document sync-callback map (issue #478).
+type SyncSlots = crate::reactive::DocScopedSlotMap<dyn Fn(Vec<(usize, usize, usize)>)>;
+
 thread_local! {
-    static SELECTION_SYNC_CALLBACK: RefCell<Option<SelectionSyncCallback>> = const { RefCell::new(None) };
+    /// Per-document on the same key as [`SELECTION_CALLBACK`] (issue #478).
+    static SELECTION_SYNC_CALLBACK: RefCell<SyncSlots> = const { RefCell::new(SyncSlots::new()) };
 }
 
-/// Set the callback invoked on mouseup to sync drag selection.
+/// Set the current document's callback invoked on mouseup to sync drag
+/// selection (per-document like [`set_selection_callback`], issue #478).
 ///
 /// **Released on unmount**, on the same terms as
 /// [`set_selection_callback`] (issue #183).
@@ -124,54 +174,26 @@ pub fn set_selection_sync_callback<F>(cb: F)
 where
     F: Fn(Vec<(usize, usize, usize)>) + 'static,
 {
-    crate::reactive::install_scoped_slot(&SELECTION_SYNC_CALLBACK, Rc::new(cb));
+    crate::reactive::install_doc_scoped_slot(&SELECTION_SYNC_CALLBACK, Rc::new(cb));
 }
 
-/// Clear the selection sync callback.
+/// Clear the selection sync callback a fire would reach right now: the current
+/// document's own if it has one, else the thread-global fallback.
 pub fn clear_selection_sync_callback() {
-    crate::reactive::clear_scoped_slot(&SELECTION_SYNC_CALLBACK);
+    crate::reactive::clear_doc_scoped_slot(&SELECTION_SYNC_CALLBACK);
 }
 
-/// Fire the selection sync callback with current LIVE ranges only.
-/// Uses dispatch_selection directly instead of query_selection_ranges()
-/// to avoid the saved-snapshot fallback (which is only for toolbar commands).
+/// Fire the dispatching document's selection sync callback with current LIVE
+/// ranges only. Uses dispatch_selection directly instead of
+/// query_selection_ranges() to avoid the saved-snapshot fallback (which is
+/// only for toolbar commands).
 ///
 /// The `Rc` is cloned out before the call so the callback may re-enter.
 pub fn fire_selection_sync() {
     let ranges = dispatch_selection(SelectionAction::QueryRanges);
-    if let Some(cb) = crate::reactive::read_scoped_slot(&SELECTION_SYNC_CALLBACK) {
+    if let Some(cb) = crate::reactive::read_doc_scoped_slot(&SELECTION_SYNC_CALLBACK) {
         cb(ranges);
     }
-}
-
-// --- Deferred selection clear ---
-// When the DOM is rebuilt (e.g., editor re-render via Effect), the text selection
-// may reference nodes that no longer exist. The Effect cannot call dispatch_selection(Clear)
-// directly because the DOM doc may be mutably borrowed by the event handler that triggered
-// the Effect. Instead, the Effect sets this flag, and the window manager clears the selection
-// in redraw() before paint, when no borrows are active.
-
-thread_local! {
-    static PENDING_SELECTION_CLEAR: Cell<bool> = const { Cell::new(false) };
-}
-
-/// Request that the text selection be cleared before the next paint.
-/// Safe to call from Effects (does not borrow the DOM doc).
-pub fn request_selection_clear() {
-    PENDING_SELECTION_CLEAR.with(|c| c.set(true));
-}
-
-/// Check and consume the pending selection clear flag.
-/// Called by the window manager in redraw() before paint.
-pub fn take_pending_selection_clear() -> bool {
-    PENDING_SELECTION_CLEAR.with(|c| {
-        if c.get() {
-            c.set(false);
-            true
-        } else {
-            false
-        }
-    })
 }
 
 // --- Focus request mechanism ---
@@ -328,6 +350,234 @@ mod tests {
             dispatch_selection(SelectionAction::QueryRanges).is_empty(),
             "a released callback must not read its component's freed state"
         );
+    }
+
+    // ── per-document routing (issue #478) ────────────────────────────────────
+
+    /// Two documents on one thread each keep their own selection callback:
+    /// each document's queries answer from its own document, not from
+    /// whichever registered last.
+    #[test]
+    fn two_documents_selection_callbacks_coexist_and_route_by_dispatching_document() {
+        use crate::context::push_dispatching_doc;
+
+        clear_selection_callback();
+        {
+            let _a = push_dispatching_doc(1);
+            set_selection_callback(|_| vec![(1, 0, 0)]);
+        }
+        {
+            let _b = push_dispatching_doc(2);
+            set_selection_callback(|_| vec![(2, 0, 0)]);
+        }
+
+        {
+            let _a = push_dispatching_doc(1);
+            assert_eq!(
+                dispatch_selection(SelectionAction::QueryRanges),
+                vec![(1, 0, 0)],
+                "doc 1's query answers from doc 1's callback — doc 2's \
+                 registration must not displace it"
+            );
+        }
+        {
+            let _b = push_dispatching_doc(2);
+            assert_eq!(
+                dispatch_selection(SelectionAction::QueryRanges),
+                vec![(2, 0, 0)]
+            );
+        }
+
+        {
+            let _a = push_dispatching_doc(1);
+            clear_selection_callback();
+        }
+        {
+            let _b = push_dispatching_doc(2);
+            clear_selection_callback();
+        }
+        assert!(dispatch_selection(SelectionAction::QueryRanges).is_empty());
+    }
+
+    /// Same for the sync slot: mouseup in one document must not notify the
+    /// other document's editor.
+    #[test]
+    fn two_documents_selection_sync_callbacks_coexist_and_route_by_dispatching_document() {
+        use crate::context::push_dispatching_doc;
+
+        clear_selection_callback();
+        clear_selection_sync_callback();
+        let hits: Rc<RefCell<Vec<&'static str>>> = Rc::new(RefCell::new(Vec::new()));
+
+        {
+            let _a = push_dispatching_doc(1);
+            let h = hits.clone();
+            set_selection_sync_callback(move |_| h.borrow_mut().push("doc1"));
+        }
+        {
+            let _b = push_dispatching_doc(2);
+            let h = hits.clone();
+            set_selection_sync_callback(move |_| h.borrow_mut().push("doc2"));
+        }
+
+        {
+            let _a = push_dispatching_doc(1);
+            fire_selection_sync();
+        }
+        assert_eq!(
+            *hits.borrow(),
+            vec!["doc1"],
+            "doc 1's mouseup notifies doc 1's editor, not doc 2's"
+        );
+        {
+            let _b = push_dispatching_doc(2);
+            fire_selection_sync();
+        }
+        assert_eq!(*hits.borrow(), vec!["doc1", "doc2"]);
+
+        {
+            let _a = push_dispatching_doc(1);
+            clear_selection_sync_callback();
+        }
+        {
+            let _b = push_dispatching_doc(2);
+            clear_selection_sync_callback();
+        }
+    }
+
+    /// The saved snapshot is per document too: doc 2's PointerDown saving its
+    /// own selection must not clobber the snapshot doc 1's toolbar command is
+    /// about to fall back to.
+    #[test]
+    fn each_documents_selection_snapshot_survives_the_other_documents_save() {
+        use crate::context::push_dispatching_doc;
+
+        clear_selection_callback();
+        {
+            let _a = push_dispatching_doc(1);
+            set_selection_callback(|_| vec![(1, 10, 20)]);
+            save_selection_snapshot();
+        }
+        {
+            let _b = push_dispatching_doc(2);
+            set_selection_callback(|_| vec![(2, 30, 40)]);
+            save_selection_snapshot();
+        }
+
+        {
+            let _a = push_dispatching_doc(1);
+            assert_eq!(
+                get_saved_selection(),
+                vec![(1, 10, 20)],
+                "doc 1's snapshot is doc 1's selection — doc 2's save must not \
+                 overwrite it"
+            );
+        }
+        {
+            let _b = push_dispatching_doc(2);
+            assert_eq!(get_saved_selection(), vec![(2, 30, 40)]);
+        }
+
+        {
+            let _a = push_dispatching_doc(1);
+            clear_selection_snapshot();
+            clear_selection_callback();
+        }
+        {
+            let _b = push_dispatching_doc(2);
+            assert_eq!(
+                get_saved_selection(),
+                vec![(2, 30, 40)],
+                "clearing doc 1's snapshot leaves doc 2's in place"
+            );
+            clear_selection_snapshot();
+            clear_selection_callback();
+        }
+        assert!(get_saved_selection().is_empty());
+    }
+
+    /// A snapshot saved outside any dispatch — the only kind a backend that
+    /// never marks dispatch (rinch-web) can save — is the fallback every
+    /// document reads: the pre-#478 behaviour of this family rests on it.
+    ///
+    /// Kills: dropping `get_saved_selection`'s fallback to the ownerless
+    /// entry (found open by review mutation on #498).
+    #[test]
+    fn a_snapshot_saved_outside_any_dispatch_is_the_fallback_every_document_reads() {
+        use crate::context::push_dispatching_doc;
+
+        clear_selection_callback();
+        set_selection_callback(|_| vec![(9, 5, 8)]);
+        save_selection_snapshot(); // no marker: fills the ownerless entry
+
+        assert_eq!(
+            get_saved_selection(),
+            vec![(9, 5, 8)],
+            "a read outside any dispatch reaches the ownerless snapshot"
+        );
+        {
+            let _a = push_dispatching_doc(1);
+            assert_eq!(
+                get_saved_selection(),
+                vec![(9, 5, 8)],
+                "a document with no snapshot of its own falls back to the \
+                 ownerless one"
+            );
+        }
+
+        clear_selection_snapshot();
+        clear_selection_callback();
+        assert!(get_saved_selection().is_empty());
+    }
+
+    /// The snapshot's clear resolves exactly like its read — the hand-rolled
+    /// copy of the rule (see [`SnapshotMap`]) must stay in step with
+    /// `clear_doc_scoped_slot`: from a document's dispatch with no snapshot of
+    /// its own it removes the ownerless one a read would reach, and when the
+    /// document HAS its own it removes exactly that one, leaving the ownerless
+    /// snapshot for everyone else.
+    ///
+    /// Kills: a raw-ambient-key clear (the fallback arm dropped), and a clear
+    /// that takes the ownerless entry besides the document's own (both found
+    /// open by review mutation on #498).
+    #[test]
+    fn clearing_a_snapshot_from_a_documents_dispatch_resolves_like_the_read() {
+        use crate::context::push_dispatching_doc;
+
+        // Arm 1: no snapshot of its own — the clear reaches the ownerless one.
+        clear_selection_callback();
+        set_selection_callback(|_| vec![(9, 5, 8)]);
+        save_selection_snapshot();
+        {
+            let _a = push_dispatching_doc(1);
+            clear_selection_snapshot();
+        }
+        assert!(
+            get_saved_selection().is_empty(),
+            "the ownerless snapshot a doc-1 read would have reached is the one \
+             cleared"
+        );
+        clear_selection_callback();
+
+        // Arm 2: with a snapshot of its own, the clear takes only that one.
+        set_selection_callback(|_| vec![(9, 5, 8)]);
+        save_selection_snapshot(); // the ownerless entry again
+        {
+            let _a = push_dispatching_doc(1);
+            set_selection_callback(|_| vec![(1, 0, 3)]);
+            save_selection_snapshot(); // doc 1's own
+            clear_selection_snapshot(); // removes doc 1's, not the ownerless one
+            clear_selection_callback();
+        }
+        assert_eq!(
+            get_saved_selection(),
+            vec![(9, 5, 8)],
+            "the ownerless snapshot survives a document clearing its own"
+        );
+
+        clear_selection_snapshot();
+        clear_selection_callback();
+        assert!(get_saved_selection().is_empty());
     }
 
     /// The dispatch must not hold the slot's borrow across user code.

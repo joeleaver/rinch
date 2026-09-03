@@ -1370,8 +1370,9 @@ another app or tab — so a web app can paste from outside itself.
 browser's `paste` event arrives *after* the keydown, web paste logic should hang off
 `rinch_core::set_paste_interceptor(|data: &PasteEventData| -> bool)` (dispatched
 **after** the buffers are filled, so `paste_text()` works inside it) rather than off an
-intercepted Ctrl+V, which is still `prevent_default()`ed. One slot per thread, like
-`set_keyboard_interceptor`; desktop never dispatches it (no OS paste event).
+intercepted Ctrl+V, which is still `prevent_default()`ed. One slot per document plus a
+thread-global fallback, like `set_keyboard_interceptor` (#340/#478); desktop never
+dispatches it (no OS paste event).
 
 **The built-in editor's Ctrl+V is asynchronous** — see the `anchor_selection` row in the
 `EditorHandle` table. The plain `<input>`/`<textarea>` paste path

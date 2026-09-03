@@ -15,6 +15,9 @@
 //! selection and paste interceptors share it verbatim rather than each
 //! paraphrasing it. Those slots are its callers, and the shape they have in
 //! common is the shape it fits: **one slot, written once per component.**
+//! Since #340/#478 those interceptors use the doc-keyed variant below —
+//! [`install_doc_scoped_slot`] — which is this template replicated per
+//! document, one slot per `(document)` with the same lifetime rules per entry.
 //!
 //! It is deliberately not the only such template in the codebase, and the other
 //! one is not a lesser variant of it — see [When *not* to use this](#when-not-to-use-this).
@@ -93,10 +96,12 @@
 //! reach for the dispatch check first.
 
 use std::cell::RefCell;
+use std::collections::BTreeMap;
 use std::rc::{Rc, Weak};
 use std::thread::LocalKey;
 
 use super::on_cleanup;
+use crate::context::current_dispatching_doc;
 
 /// Install `value` into a single-slot registry, tying its removal to the scope
 /// that is currently rendering.
@@ -170,6 +175,124 @@ where
     T: ?Sized + 'static,
 {
     let _previous = slot.with(|s| s.borrow_mut().take());
+}
+
+// ============================================================================
+// Doc-keyed slots (issues #340, #478)
+// ============================================================================
+
+/// The map behind a doc-keyed slot: one entry per registering document, plus
+/// the `None` entry for registrations made outside any dispatch.
+///
+/// `BTreeMap` rather than `HashMap` for the `const` initializer — the key set
+/// is a handful of documents, so lookup cost is irrelevant.
+pub type DocScopedSlotMap<T> = BTreeMap<Option<u64>, Rc<T>>;
+
+/// [`install_scoped_slot`], replicated **per document** (issues #340, #478).
+///
+/// A single slot shared by every document on the thread is last-wins: two
+/// documents pumping their event streams through one thread-local (a desktop
+/// app and its DevTools window, two embedded `RinchContext`s) let the second
+/// registration silently disable the first, and whichever remains then drives
+/// both documents — the class #134 fixed for the editor/bounds registries and
+/// #139 for the pointer-capture drag. Here each document gets its own entry,
+/// keyed by [`current_dispatching_doc`] at install time; installing with no
+/// document dispatching — from `main`, a timer, at mount, or on a backend that
+/// never marks dispatch (rinch-web) — fills the ownerless `None` entry, which
+/// [`read_doc_scoped_slot`] serves to every document as the fallback. That
+/// keeps the pre-#340 behaviour exactly for the single-document app: register
+/// at startup, intercept everything.
+///
+/// Same growth characteristics as [`install_scoped_slot`] — one entry and one
+/// cleanup per (document, component) registration, written once per component.
+/// The #376 warning about keyed registries is about keys that *churn*; a
+/// document key does not.
+///
+/// The three rules of [`install_scoped_slot`] carry over unchanged, with the
+/// cleanup reclaiming only **its own document's entry** (the key is captured at
+/// install, not re-read at dispose — the scope may be disposed while another
+/// document, or none, is dispatching) and only while that entry still holds the
+/// value it installed ([`Rc::ptr_eq`]).
+pub fn install_doc_scoped_slot<T>(
+    slot: &'static LocalKey<RefCell<DocScopedSlotMap<T>>>,
+    value: Rc<T>,
+) -> bool
+where
+    T: ?Sized + 'static,
+{
+    let key = current_dispatching_doc();
+    let mine: Weak<T> = Rc::downgrade(&value);
+    // Rule 3: the displaced value is dropped when `_previous` goes out of scope
+    // at the end of this function, long after the `borrow_mut` has ended.
+    let _previous = slot.with(|s| s.borrow_mut().insert(key, value));
+    on_cleanup(move || {
+        let Some(ours) = mine.upgrade() else {
+            // Rule 2: already replaced by a later registration from the same
+            // document, which owns the entry now.
+            return;
+        };
+        let _displaced = slot.try_with(|s| {
+            let Ok(mut current) = s.try_borrow_mut() else {
+                return None;
+            };
+            if current
+                .get(&key)
+                .is_some_and(|installed| Rc::ptr_eq(installed, &ours))
+            {
+                current.remove(&key)
+            } else {
+                None
+            }
+        });
+    })
+}
+
+/// Clone the value a dispatch should reach out of a doc-keyed slot, so it can
+/// be **called** with no borrow held.
+///
+/// The dispatching document's own entry wins; a document with none falls back
+/// to the ownerless `None` entry. A dispatch outside any document reaches the
+/// `None` entry only — with several documents' entries live there is no one
+/// right answer for "whose", and rinch-web (which never marks dispatch) only
+/// ever *fills* the `None` entry, so this is also the consistent one.
+pub fn read_doc_scoped_slot<T>(
+    slot: &'static LocalKey<RefCell<DocScopedSlotMap<T>>>,
+) -> Option<Rc<T>>
+where
+    T: ?Sized + 'static,
+{
+    let caller = current_dispatching_doc();
+    slot.with(|s| {
+        let map = s.borrow();
+        caller
+            .and_then(|doc| map.get(&Some(doc)))
+            .or_else(|| map.get(&None))
+            .cloned()
+    })
+}
+
+/// Remove the entry a dispatch would reach right now — the resolution rule of
+/// [`read_doc_scoped_slot`], not the raw ambient key.
+///
+/// Resolving matters: a component that registered at mount (no document
+/// dispatching, so the `None` entry) and clears from inside an event handler
+/// (its document's dispatch) must clear the interceptor that is in effect, not
+/// no-op against its document's empty entry. The value is dropped **after**
+/// the borrow ends (rule 3).
+pub fn clear_doc_scoped_slot<T>(slot: &'static LocalKey<RefCell<DocScopedSlotMap<T>>>)
+where
+    T: ?Sized + 'static,
+{
+    let caller = current_dispatching_doc();
+    let _previous = slot.with(|s| {
+        let mut map = s.borrow_mut();
+        if let Some(doc) = caller
+            && let Some(removed) = map.remove(&Some(doc))
+        {
+            return Some(removed);
+        }
+        map.remove(&None)
+    });
 }
 
 #[cfg(test)]
@@ -353,6 +476,125 @@ mod tests {
             "the cleared value's Drop ran, and outside the borrow"
         );
         SLOT.with(|s| s.borrow_mut().take());
+    }
+
+    // ── the doc-keyed variant (issues #340, #478) ────────────────────────────
+
+    /// The cleanup reclaims the entry under the key it *installed* at, however
+    /// the ambient marker has moved by dispose time — and only while that
+    /// entry still holds its value.
+    #[test]
+    fn a_doc_keyed_cleanup_reclaims_its_own_documents_entry_wherever_disposal_happens() {
+        use crate::context::push_dispatching_doc;
+
+        thread_local! {
+            static SLOT: RefCell<DocScopedSlotMap<dyn Fn() -> u32>> =
+                const { RefCell::new(DocScopedSlotMap::new()) };
+        }
+
+        let scope = Scope::new();
+        {
+            let _a = push_dispatching_doc(1);
+            scope.run(|| install_doc_scoped_slot(&SLOT, Rc::new(|| 1u32) as Probe));
+        }
+        {
+            let _b = push_dispatching_doc(2);
+            install_doc_scoped_slot(&SLOT, Rc::new(|| 2u32) as Probe);
+        }
+
+        // Disposal happens while document 2 — not 1 — is dispatching.
+        {
+            let _b = push_dispatching_doc(2);
+            scope.dispose();
+        }
+        {
+            let _a = push_dispatching_doc(1);
+            assert!(
+                read_doc_scoped_slot(&SLOT).is_none(),
+                "the cleanup removed document 1's entry, the one it installed"
+            );
+        }
+        {
+            let _b = push_dispatching_doc(2);
+            assert_eq!(
+                read_doc_scoped_slot(&SLOT).map(|f| f()),
+                Some(2),
+                "document 2's entry — under the marker current at dispose — was not touched"
+            );
+            clear_doc_scoped_slot(&SLOT);
+        }
+    }
+
+    /// Rule 2 per entry: a disposing scope whose value was already replaced by
+    /// a later registration *from the same document* leaves the entry alone.
+    #[test]
+    fn a_doc_keyed_cleanup_does_not_clobber_a_later_registration_under_the_same_key() {
+        use crate::context::push_dispatching_doc;
+
+        thread_local! {
+            static SLOT: RefCell<DocScopedSlotMap<dyn Fn() -> u32>> =
+                const { RefCell::new(DocScopedSlotMap::new()) };
+        }
+
+        // Retained by the caller so the cleanup's `Weak` upgrades and the
+        // `ptr_eq` guard is actually reached (see the single-slot twin above).
+        let retained: Probe = Rc::new(|| 1u32);
+        let first = Scope::new();
+        {
+            let _a = push_dispatching_doc(1);
+            first.run({
+                let retained = retained.clone();
+                move || install_doc_scoped_slot(&SLOT, retained)
+            });
+            install_doc_scoped_slot(&SLOT, Rc::new(|| 2u32) as Probe);
+        }
+
+        first.dispose();
+        {
+            let _a = push_dispatching_doc(1);
+            assert_eq!(
+                read_doc_scoped_slot(&SLOT).map(|f| f()),
+                Some(2),
+                "the first scope's cleanup must not reclaim an entry that now \
+                 belongs to a later registration"
+            );
+            clear_doc_scoped_slot(&SLOT);
+        }
+        drop(retained);
+    }
+
+    /// Rule 3 on the doc-keyed install path: the displaced value's `Drop` may
+    /// re-enter the map and must run after the `borrow_mut` ends.
+    #[test]
+    fn the_doc_keyed_displaced_value_is_dropped_after_the_maps_borrow_ends() {
+        thread_local! {
+            static SLOT: RefCell<DocScopedSlotMap<dyn Fn() -> u32>> =
+                const { RefCell::new(DocScopedSlotMap::new()) };
+            static DROPPED: Cell<bool> = const { Cell::new(false) };
+        }
+
+        struct Reenter;
+        impl Drop for Reenter {
+            fn drop(&mut self) {
+                // A double borrow if the drop ran under the install's
+                // `borrow_mut`.
+                let occupied = SLOT.with(|s| !s.borrow().is_empty());
+                assert!(occupied, "the replacement is installed by now");
+                DROPPED.with(|d| d.set(true));
+            }
+        }
+
+        let guard = Reenter;
+        install_doc_scoped_slot(
+            &SLOT,
+            Rc::new(move || {
+                let _ = &guard;
+                1u32
+            }) as Probe,
+        );
+        install_doc_scoped_slot(&SLOT, Rc::new(|| 2u32) as Probe);
+        assert!(DROPPED.with(|d| d.get()), "the displaced value was dropped");
+        clear_doc_scoped_slot(&SLOT);
     }
 
     /// The read half must not hold the slot's borrow across the call, so a
