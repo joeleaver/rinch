@@ -1333,3 +1333,116 @@ fn a_nested_transparent_wrapper_still_hands_its_absolute_box_to_taffy() {
         "inked exactly at its container-relative insets"
     );
 }
+
+/// The collector holds the display-first rule for the *pathological nested*
+/// wrapper: an inner `display: contents; position: absolute` wrapper is
+/// boxless (Stylo does not blockify contents), so `is_out_of_flow()` answers
+/// true for an element with no box to take out of flow — and the collector
+/// must recurse into it like any other transparent wrapper, not treat it as
+/// an out-of-flow box. This is the same precedence `has_block` and the scan
+/// are pinned to; the collector was the one site claiming it undefended
+/// (found by the #502 review's mutation campaign — the flip survived the
+/// whole suite).
+///
+/// The depth-1 box applies the sibling test's lesson: it arms the leaf branch
+/// under any partial-collection mutant, so `set_children` is what drops the
+/// deep box and the ink stays the witness in release builds too, where the
+/// in-setup validator vanishes.
+///
+/// Kills: checking `is_out_of_flow` before display in
+/// `collect_contents_out_of_flow` — the inner wrapper is pushed (its detached
+/// Taffy node) or skipped instead of recursed, the deep box never reaches the
+/// canonicalization, and it is dropped from layout: (0, 0, 0, 0), no red ink,
+/// validator green.
+#[test]
+fn an_absolutely_positioned_nested_wrapper_still_hands_its_absolute_box_to_taffy() {
+    use rinch_dom::computed_style::DisplayValue;
+
+    let mut doc = RinchDocument::new();
+    let body = doc.body();
+    let container = child_of(
+        &mut doc,
+        body,
+        "div",
+        "position: relative; font-size: 16px; line-height: 20px; width: 400px; \
+         background: rgb(0, 0, 255)",
+    );
+    let outer = child_of(&mut doc, container, "div", "display: contents");
+    text_in(&mut doc, outer, "hello");
+    let shallow = child_of(
+        &mut doc,
+        outer,
+        "div",
+        "position: absolute; left: 200px; top: 3px; width: 40px; height: 8px; \
+         background: rgb(255, 128, 0)",
+    );
+    let inner = child_of(
+        &mut doc,
+        outer,
+        "div",
+        "display: contents; position: absolute",
+    );
+    let abs = child_of(
+        &mut doc,
+        inner,
+        "div",
+        "position: absolute; left: 32px; top: 9px; width: 50px; height: 10px; \
+         background: rgb(255, 0, 0)",
+    );
+    let deep_text = text_in(&mut doc, inner, "world");
+    doc.resolve_layout(VW, VH);
+
+    // The inner wrapper really is the pathological combination this pins.
+    assert_eq!(
+        doc.tree.get(inner.0).unwrap().computed_style.display,
+        DisplayValue::Contents,
+        "precondition: Stylo left the inner wrapper un-blockified"
+    );
+    assert!(
+        doc.tree.get(inner.0).unwrap().is_out_of_flow(),
+        "precondition: the position predicate alone calls it out of flow"
+    );
+
+    assert_eq!(doc.ifc_leaf_invariant_violations(), Vec::<usize>::new());
+    assert!(
+        doc.tree.ifc_measure_leaves.contains_key(&container.0),
+        "the container gets its measure leaf"
+    );
+    assert_eq!(
+        doc.tree.get(deep_text.0).unwrap().ifc_root,
+        Some(container.0),
+        "the text behind both wrappers flows in the container's IFC"
+    );
+    let (sx, sy, ..) = layout_of(&doc, shallow);
+    assert!(
+        (sx - 200.0).abs() < 0.5 && (sy - 3.0).abs() < 0.5,
+        "the depth-1 absolute box is laid out at its insets, got ({sx}, {sy})"
+    );
+    let (x, y, w, h) = layout_of(&doc, abs);
+    assert!(
+        (x - 32.0).abs() < 0.5
+            && (y - 9.0).abs() < 0.5
+            && (w - 50.0).abs() < 0.5
+            && (h - 10.0).abs() < 0.5,
+        "the absolute box behind the contents+absolute wrapper is laid out at \
+         its insets, got ({x}, {y}, {w}, {h})"
+    );
+    let px = rasterize(&mut doc);
+    let (cx, cy, ..) = color_bbox(&px, (0, 0, 255)).expect("the container is painted");
+    let orange = color_bbox(&px, (255, 128, 0)).expect("the depth-1 absolute box is painted");
+    assert_eq!(
+        orange,
+        (cx + 200, cy + 3, cx + 200 + 40, cy + 3 + 8),
+        "the depth-1 box is inked at its container-relative insets"
+    );
+    let red = color_bbox(&px, (255, 0, 0)).expect(
+        "the absolute box behind the contents+absolute wrapper is painted — \
+         treating the boxless wrapper as out-of-flow drops its subtree from \
+         layout",
+    );
+    assert_eq!(
+        red,
+        (cx + 32, cy + 9, cx + 32 + 50, cy + 9 + 10),
+        "inked exactly at its container-relative insets"
+    );
+}

@@ -1294,6 +1294,13 @@ impl RinchDocument {
     /// of flow), and `display:none` generates no box. An in-flow block-level box
     /// cannot occur here: the wrapper was judged transparent, which the scan
     /// answers only when no such box exists at any depth.
+    ///
+    /// Four sites now encode this precedence — `has_block` in
+    /// [`Self::create_anonymous_block_boxes`], the decision loop in
+    /// [`Self::setup_inline_formatting_contexts`], [`Self::scan_contents_children`],
+    /// and this collector — and they must agree: display before position, always
+    /// (a flip here silently drops the wrapper's out-of-flow descendants from
+    /// layout). A shared classifier (#366) should collapse all four into one.
     fn collect_contents_out_of_flow(
         nodes: &slab::Slab<Node>,
         wrapper_id: usize,
