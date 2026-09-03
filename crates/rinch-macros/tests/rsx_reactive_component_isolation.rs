@@ -208,3 +208,65 @@ fn component_local_state_survives_an_inner_scrutinee_change() {
     assert_eq!(renders.get(), 1);
     assert_eq!(text(&root), "cold42more");
 }
+
+// ============================================================
+// Root position: the expression path
+// ============================================================
+
+/// The same isolation, with the reactive-prop component as the rsx! *root*.
+///
+/// A reactive-prop component nested under an element routes through
+/// `generate_reactive_component_stmt` (the statement path); one at the root of
+/// the rsx! block routes through `element_to_dom_component_reactive` (the
+/// expression path, with its display:contents wrapper). The two paths carry
+/// the untracked wrap in duplicate, so the two tests above — both nesting
+/// `Probe` inside a `div` — pin only the statement path, and reverting the
+/// expression path's wrap alone leaves them green. Here it is the *nesting
+/// depth* that decides which code runs: do not "simplify" this fixture by
+/// putting `Probe` in a `div`, and do not strip the `div` from the others.
+#[component]
+fn root_count_fixture(
+    variant: Signal<bool>,
+    scrutinee: Signal<u32>,
+    renders: Rc<Cell<u32>>,
+) -> NodeHandle {
+    rsx! {
+        Probe {
+            tone: {move || if variant.get() { "warm".to_string() } else { "cold".to_string() }},
+            renders: renders.clone(),
+            match scrutinee.get() {
+                0 => span { "zero" },
+                _ => span { "more" },
+            }
+        }
+    }
+}
+
+#[test]
+fn a_root_level_reactive_component_gets_the_same_isolation() {
+    let variant = Signal::new(false);
+    let scrutinee = Signal::new(0u32);
+    let renders = Rc::new(Cell::new(0u32));
+
+    let (_doc, _scope, root) =
+        mount(|s| root_count_fixture(s, variant, scrutinee, renders.clone()));
+
+    assert_eq!(renders.get(), 1, "one initial render");
+    assert_eq!(text(&root), "coldzero");
+
+    scrutinee.set(5);
+    assert_eq!(text(&root), "coldmore", "the inner match swapped its arm");
+    assert_eq!(
+        renders.get(),
+        1,
+        "an inner scrutinee change must not re-render a root-level component"
+    );
+
+    variant.set(true);
+    assert_eq!(
+        renders.get(),
+        2,
+        "a prop signal change still re-renders the component"
+    );
+    assert_eq!(text(&root), "warmmore");
+}
