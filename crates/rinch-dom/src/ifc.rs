@@ -657,11 +657,32 @@ impl RinchDocument {
             // reachable. Its principled replacement is the measure leaf that
             // `setup_inline_formatting_contexts` now creates for exactly this
             // shape (see [`NodeContext::InlineRoot`]).
+            //
+            // Classification is **display-first**: the exclusion does not
+            // apply to a `display: contents` child. Stylo does not blockify
+            // `display: contents` (`equivalent_block_display` maps
+            // `DisplayOutside::None` to itself), so `position: absolute` on
+            // such a wrapper leaves `is_out_of_flow()` true while the element
+            // generates **no box** — and a boxless element has no box to take
+            // out of flow (browsers ignore `position` on it). Excluding it
+            // here newly rooted the container while the wrapper's flattened
+            // in-flow boxes stayed attached — the exact non-leaf carrier the
+            // #466 validator exists to catch, on markup main rendered fine.
+            // The carve-out keeps main's classification for the combination.
+            // (The decision loop in `setup_inline_formatting_contexts` and
+            // `scan_contents_children` are already display-first; a future
+            // shared classifier must enforce that one precedence.)
             let has_block = node.children.iter().any(|&c| {
                 self.tree
                     .nodes
                     .get(c)
-                    .map(|n| n.is_element() && !n.is_inline() && !n.is_out_of_flow())
+                    .map(|n| {
+                        n.is_element()
+                            && !n.is_inline()
+                            && (n.computed_style.display
+                                == crate::computed_style::values::DisplayValue::Contents
+                                || !n.is_out_of_flow())
+                    })
                     .unwrap_or(false)
             });
 
@@ -2047,7 +2068,11 @@ impl RinchDocument {
                         collapse,
                     );
                 }
-                NodeKind::Element(_) if child.is_out_of_flow() => {
+                NodeKind::Element(_)
+                    if child.is_out_of_flow()
+                        && child.computed_style.display
+                            != crate::computed_style::values::DisplayValue::Contents =>
+                {
                     // An out-of-flow box does not break an inline formatting
                     // context (CSS 2.1 §9.4.2): its inline siblings carry on
                     // across it, on the same line. It is laid out by Taffy
@@ -2056,6 +2081,17 @@ impl RinchDocument {
                     // `a<abs/>b` so that `b` never reached Parley at all:
                     // `mark_inline_descendants` had already detached and
                     // marked it, so it was neither laid out here nor by Taffy.
+                    //
+                    // The `Contents` guard keeps this walk exactly aligned
+                    // with `mark_inline_descendants`: an *opaque*
+                    // `display: contents` wrapper that also declares
+                    // `position: absolute` is boxless (Stylo does not
+                    // blockify contents, so `is_out_of_flow()` answers true
+                    // for it), the marking pass `break`s at it, and walking
+                    // past it here would flow text the mark left attached —
+                    // a double draw. With `has_block`'s matching carve-out
+                    // such a shape is never rooted at all, so this guard is
+                    // unreachable belt-and-braces, not a second fix.
                 }
                 NodeKind::Comment(_) => {
                     // Skip comments in inline layout

@@ -919,3 +919,67 @@ fn a_percentage_inline_block_recorrection_reaches_the_measure_child() {
          (~{ib_h}px tall), not the stale min-content-collapsed one; got {h}"
     );
 }
+
+/// A `display: contents` child that also declares `position: absolute` is
+/// **not** out of flow for classification: Stylo does not blockify
+/// `display: contents` (`equivalent_block_display` maps `DisplayOutside::None`
+/// to itself), so the wrapper keeps `display: Contents` while
+/// `is_out_of_flow()` answers `true` — and a boxless element has no box to
+/// take out of flow (browsers ignore `position` on it). `has_block` must
+/// classify it by **display first**: it counts as block content exactly as on
+/// main, keeping the anonymous-box path, so the #466 flip never newly roots
+/// this shape. (Adapted from the #497 review's probe A, which falsified the
+/// "no newly-rooted shape reaches the fall-through" claim: excluding the
+/// wrapper as out-of-flow rooted the container, the decision loop's
+/// display-first Contents arm said opaque, and the fall-through stamped
+/// `InlineRoot` on a root with attached children — a debug_assert panic on
+/// markup main renders.)
+///
+/// Kills: applying the out-of-flow exclusion to `Contents` children — this
+/// resolve panics on the in-setup validator in debug builds.
+#[test]
+fn an_absolutely_positioned_contents_wrapper_still_counts_as_block_content() {
+    use rinch_dom::computed_style::DisplayValue;
+
+    let mut doc = RinchDocument::new();
+    let body = doc.body();
+    let container = child_of(
+        &mut doc,
+        body,
+        "div",
+        "position: relative; font-size: 16px; line-height: 20px; width: 400px",
+    );
+    text_in(&mut doc, container, "aaa ");
+    let wrapper = child_of(
+        &mut doc,
+        container,
+        "span",
+        "display: contents; position: absolute",
+    );
+    child_of(&mut doc, wrapper, "div", "width: 30px; height: 30px");
+    text_in(&mut doc, container, " bbb");
+    doc.resolve_layout(VW, VH);
+
+    // The wrapper really is the pathological combination this pins.
+    assert_eq!(
+        doc.tree.get(wrapper.0).unwrap().computed_style.display,
+        DisplayValue::Contents,
+        "precondition: Stylo left the wrapper un-blockified"
+    );
+    assert!(
+        doc.tree.get(wrapper.0).unwrap().is_out_of_flow(),
+        "precondition: the position predicate alone calls it out of flow"
+    );
+
+    assert_eq!(doc.ifc_leaf_invariant_violations(), Vec::<usize>::new());
+    assert_eq!(
+        anon_box_count(&doc),
+        1,
+        "the wrapper counts as block content (display-first), so the text run \
+         is wrapped exactly as on main — the container is never newly rooted"
+    );
+    assert!(
+        !doc.tree.ifc_measure_leaves.contains_key(&container.0),
+        "no measure leaf: this container is not an IFC root"
+    );
+}
