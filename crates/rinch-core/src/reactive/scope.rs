@@ -389,6 +389,67 @@ thread_local! {
     static DISPOSE_CTX: RefCell<Option<DisposeCtx>> = const { RefCell::new(None) };
 }
 
+/// Suspends the **entire** observer stack until dropped.
+///
+/// Teardown's counterpart to [`untracked`](super::untracked), which pops
+/// exactly one observer and is the right depth for a *render* boundary: user
+/// render code always runs exactly one boundary deep, and every boundary wraps
+/// its render in one `untracked`, so a single pop leaves the stack balanced at
+/// any nesting depth (the #491 invariant). Disposal has no such structural
+/// position — the fixpoint can start from a reconcile effect (one observer
+/// live), from a bare `Effect::new` first run nested inside another effect
+/// (two live, with nothing having balanced the outer frame), or from
+/// `run_effect` dropping a retired closure after its own observer already
+/// popped (whatever the surrounding context holds). "A teardown read
+/// subscribes nobody" is depth-independent, so the guard is too: every frame
+/// is suspended, and restored on drop — including while unwinding, for the
+/// same reason `untracked`'s `RestoreObserver` restores (#232): a panic caught
+/// upstream must not leave the stack short.
+///
+/// Effects that *run* during the suspension track normally — a cleanup that
+/// writes a signal flushes effects synchronously, and a cleanup may even
+/// create one; each pushes its own observer onto the emptied stack. Only the
+/// observers that were mid-run when disposal began are hidden, and those are
+/// exactly the ones a teardown read must not subscribe (issue #494).
+pub(in crate::reactive) struct SuspendObservers {
+    saved: Vec<ObserverId>,
+}
+
+impl SuspendObservers {
+    pub(in crate::reactive) fn take() -> Self {
+        SuspendObservers {
+            saved: RUNTIME.with(|rt| std::mem::take(&mut rt.borrow_mut().observer_stack)),
+        }
+    }
+}
+
+impl Drop for SuspendObservers {
+    fn drop(&mut self) {
+        if self.saved.is_empty() {
+            return;
+        }
+        let saved = std::mem::take(&mut self.saved);
+        // `try_with`: TLS may already be torn down at thread exit.
+        let _ = RUNTIME.try_with(|rt| {
+            if let Ok(mut rt) = rt.try_borrow_mut() {
+                // The saved frames go back *under* anything still on the stack:
+                // an observer pushed during the suspension and not yet popped
+                // belongs to a frame above this guard, and its `ObserverGuard`
+                // pops blindly from the top. (In normal flow the stack is empty
+                // again here — every run that started during the suspension has
+                // finished — so this is belt and braces for unwinding.)
+                let since = std::mem::replace(&mut rt.observer_stack, saved);
+                rt.observer_stack.extend(since);
+            } else {
+                tracing::error!(
+                    "disposal could not restore the observer stack (runtime already \
+                     borrowed); an effect may silently stop subscribing"
+                );
+            }
+        });
+    }
+}
+
 /// Clears the in-flight [`DisposeCtx`] on drop, including while unwinding.
 ///
 /// The fixpoint runs arbitrary user code — cleanups, closure drops, value drops
@@ -409,8 +470,13 @@ impl Drop for DisposeCtxGuard {
             .ok()
             .flatten();
         // Dropped out here with no borrow held: an abandoned batch still holds
-        // un-run cleanups and freed values, i.e. more arbitrary user `Drop`s.
-        drop(leftover);
+        // un-run cleanups and freed values, i.e. more arbitrary user `Drop`s —
+        // still teardown user code, so still untracked (issue #494), even on
+        // this unwinding path.
+        if leftover.is_some() {
+            let _untracked = SuspendObservers::take();
+            drop(leftover);
+        }
     }
 }
 
@@ -483,6 +549,19 @@ fn take_batch<T>(f: impl FnOnce(&mut DisposeCtx) -> &mut Vec<T>) -> Vec<T> {
 /// is for tests: after a dispose triggered from inside an effect, assert
 /// liveness once the flush has settled, not on the line after `dispose()`.
 fn run_dispose_fixpoint() {
+    // Teardown is untracked (issue #494). Every level below runs user code —
+    // step 1 drops handler closures, step 2 effect closures, step 3 runs
+    // `on_cleanup`s, step 4 drops memo cached values, step 6 drops signal
+    // values — and the fixpoint runs inside whatever effect asked for the
+    // disposal (every reconcile entry point disposes outgoing scopes from its
+    // own effect). A signal read anywhere in that user code would otherwise
+    // subscribe the observers that were mid-run when disposal began, and the
+    // reconcile would re-run on every later write to that signal, driven by a
+    // scope that no longer exists. One guard across the whole drain covers
+    // cascades too: a cleanup that disposes a further scope only pushes work
+    // onto the in-flight context, and that work drains in later iterations of
+    // this same loop, still under this guard.
+    let _untracked = SuspendObservers::take();
     loop {
         // 1. Handlers.
         let handlers = take_batch(|ctx| &mut ctx.handlers);
@@ -1543,5 +1622,299 @@ mod tests {
 
         assert!(!memo.is_alive());
         assert_eq!(runs.get(), 2, "the surviving observer still runs");
+    }
+
+    // ------------------------------------------------------------------
+    // Issue #494: teardown user code must not subscribe any observer.
+    // ------------------------------------------------------------------
+
+    /// Reads a signal from inside `Drop` — arbitrary user code at teardown
+    /// time, the way a cached handle or a pooled resource might check state on
+    /// the way out.
+    struct ReadsSignalOnDrop {
+        probe: Signal<u32>,
+    }
+
+    impl Drop for ReadsSignalOnDrop {
+        fn drop(&mut self) {
+            let _ = self.probe.get();
+        }
+    }
+
+    /// An `on_cleanup` that reads a signal must not subscribe the effect that
+    /// disposed the scope (issue #494).
+    ///
+    /// Every reconcile entry point disposes outgoing scopes from inside its own
+    /// effect, so disposal user code runs with that effect as the current
+    /// observer. A tracked cleanup read would join the effect's dependency set:
+    /// the effect then re-runs whenever that signal changes, driven by a scope
+    /// that no longer exists. The final state is identical either way — the
+    /// spurious run re-reads its real inputs and settles — so the assertion
+    /// counts runs, not state.
+    #[test]
+    fn a_cleanup_that_reads_a_signal_does_not_subscribe_the_disposing_effect() {
+        let probe = Signal::new(0u32);
+        let trigger = Signal::new(0u32);
+        let runs = Rc::new(Cell::new(0usize));
+
+        let doomed = Scope::new();
+        doomed.on_cleanup(move || {
+            // The whole point: user code, reading a signal, at teardown.
+            let _ = probe.get();
+        });
+        let doomed = Rc::new(RefCell::new(Some(doomed)));
+
+        let hits = runs.clone();
+        let _effect = Effect::new(move || {
+            hits.set(hits.get() + 1);
+            trigger.get();
+            // `take()` on its own line, mirroring the reconcile sites (#141).
+            let scope = doomed.borrow_mut().take();
+            if let Some(scope) = scope {
+                scope.dispose();
+            }
+        });
+        assert_eq!(runs.get(), 1, "the effect ran once and disposed the scope");
+
+        probe.set(1);
+        assert_eq!(
+            runs.get(),
+            1,
+            "a write to a signal only the cleanup read must not re-run the disposing effect"
+        );
+
+        // Positive control: the counter can tell a re-run apart from silence.
+        trigger.set(1);
+        assert_eq!(runs.get(), 2, "a tracked write still re-runs the effect");
+    }
+
+    /// A freed signal value's `Drop` runs user code too (fixpoint step 6), and
+    /// a read from it must not subscribe the disposing effect either (issue
+    /// #494) — the other half of the defect, distinct from `on_cleanup`.
+    #[test]
+    fn a_freed_signal_values_drop_that_reads_a_signal_does_not_subscribe_the_disposing_effect() {
+        let probe = Signal::new(0u32);
+        let trigger = Signal::new(0u32);
+        let runs = Rc::new(Cell::new(0usize));
+
+        let doomed = Scope::new();
+        doomed.run(|| {
+            // Owned by the scope: freed in step 5, its value dropped in step 6.
+            Signal::new(ReadsSignalOnDrop { probe });
+        });
+        let doomed = Rc::new(RefCell::new(Some(doomed)));
+
+        let hits = runs.clone();
+        let _effect = Effect::new(move || {
+            hits.set(hits.get() + 1);
+            trigger.get();
+            let scope = doomed.borrow_mut().take();
+            if let Some(scope) = scope {
+                scope.dispose();
+            }
+        });
+        assert_eq!(runs.get(), 1);
+
+        probe.set(1);
+        assert_eq!(
+            runs.get(),
+            1,
+            "a write to a signal only the freed value's Drop read must not re-run the effect"
+        );
+
+        trigger.set(1);
+        assert_eq!(runs.get(), 2, "a tracked write still re-runs the effect");
+    }
+
+    /// Dropping a disposed effect's closure (fixpoint step 2) runs user `Drop`
+    /// code too — a captured value can read a signal on the way out — so the
+    /// guard covers the whole fixpoint, not only the cleanup and value-drop
+    /// steps issue #494 names.
+    #[test]
+    fn an_effect_closure_drop_that_reads_a_signal_does_not_subscribe_the_disposing_effect() {
+        let probe = Signal::new(0u32);
+        let trigger = Signal::new(0u32);
+        let runs = Rc::new(Cell::new(0usize));
+
+        let doomed = Scope::new();
+        doomed.run(|| {
+            let payload = ReadsSignalOnDrop { probe };
+            // Fire-and-forget: the scope owns the effect (#141), and disposing
+            // it drops the closure — and with it, `payload`.
+            Effect::new(move || {
+                let _keep = &payload;
+            });
+        });
+        let doomed = Rc::new(RefCell::new(Some(doomed)));
+
+        let hits = runs.clone();
+        let _effect = Effect::new(move || {
+            hits.set(hits.get() + 1);
+            trigger.get();
+            let scope = doomed.borrow_mut().take();
+            if let Some(scope) = scope {
+                scope.dispose();
+            }
+        });
+        assert_eq!(runs.get(), 1);
+
+        probe.set(1);
+        assert_eq!(
+            runs.get(),
+            1,
+            "a write to a signal only the dropped closure's payload read must not re-run the effect"
+        );
+
+        trigger.set(1);
+        assert_eq!(runs.get(), 2, "a tracked write still re-runs the effect");
+    }
+
+    /// A disposal that cascades — a cleanup that disposes a further scope —
+    /// keeps its teardown untracked at every level (issue #494).
+    ///
+    /// The inner scope's work joins the in-flight fixpoint: its cleanup and its
+    /// value drop run in *later* fixpoint iterations, not inside the outer
+    /// cleanup call, so a guard has to hold across the whole drain rather than
+    /// around any one call into user code.
+    #[test]
+    fn a_cascading_disposals_teardown_reads_do_not_subscribe_the_disposing_effect() {
+        let probe_cleanup = Signal::new(0u32);
+        let probe_drop = Signal::new(0u32);
+        let trigger = Signal::new(0u32);
+        let runs = Rc::new(Cell::new(0usize));
+
+        let inner = Scope::new();
+        inner.on_cleanup(move || {
+            let _ = probe_cleanup.get();
+        });
+        inner.run(|| {
+            Signal::new(ReadsSignalOnDrop { probe: probe_drop });
+        });
+
+        let outer = Scope::new();
+        outer.on_cleanup(move || inner.dispose());
+        let doomed = Rc::new(RefCell::new(Some(outer)));
+
+        let hits = runs.clone();
+        let _effect = Effect::new(move || {
+            hits.set(hits.get() + 1);
+            trigger.get();
+            let scope = doomed.borrow_mut().take();
+            if let Some(scope) = scope {
+                scope.dispose();
+            }
+        });
+        assert_eq!(runs.get(), 1);
+
+        probe_cleanup.set(1);
+        probe_drop.set(1);
+        assert_eq!(
+            runs.get(),
+            1,
+            "neither the cascaded cleanup's read nor the cascaded value drop's read may \
+             re-run the disposing effect"
+        );
+
+        trigger.set(1);
+        assert_eq!(runs.get(), 2, "a tracked write still re-runs the effect");
+    }
+
+    /// A teardown read subscribes no observer at ANY stack depth (issue #494).
+    ///
+    /// Disposal is not a render boundary: it can begin with several observers
+    /// live — here a bare `Effect::new` running inside another effect, stack
+    /// `[outer, inner]`, where nothing has balanced the outer frame (bare
+    /// `Effect::new` is not one of the #491 boundaries). A one-`untracked`
+    /// guard — the render-side shape — would pop `inner` and hand the
+    /// cleanup's read to `outer`, trading one wrong subscriber for another.
+    /// This test fails the unfixed code (the inner effect re-runs) AND that
+    /// mutant (the outer effect re-runs): teardown suspends the whole stack.
+    #[test]
+    fn a_teardown_read_subscribes_no_observer_at_any_stack_depth() {
+        let probe = Signal::new(0u32);
+        let outer_trigger = Signal::new(0u32);
+        let outer_runs = Rc::new(Cell::new(0usize));
+        let inner_runs = Rc::new(Cell::new(0usize));
+
+        let doomed = Scope::new();
+        doomed.on_cleanup(move || {
+            let _ = probe.get();
+        });
+        let doomed = Rc::new(RefCell::new(Some(doomed)));
+
+        let outer_hits = outer_runs.clone();
+        let inner_hits = inner_runs.clone();
+        let _outer = Effect::new(move || {
+            outer_hits.set(outer_hits.get() + 1);
+            outer_trigger.get();
+            // Only the first run builds the inner effect and hands it the
+            // scope; a (buggy) outer re-run must not re-arm the fixture.
+            if let Some(scope) = doomed.borrow_mut().take() {
+                let inner_hits = inner_hits.clone();
+                let scope = RefCell::new(Some(scope));
+                let _inner = Effect::new(move || {
+                    inner_hits.set(inner_hits.get() + 1);
+                    if let Some(scope) = scope.borrow_mut().take() {
+                        scope.dispose();
+                    }
+                });
+            }
+        });
+        assert_eq!(outer_runs.get(), 1);
+        assert_eq!(inner_runs.get(), 1);
+
+        probe.set(1);
+        assert_eq!(
+            inner_runs.get(),
+            1,
+            "the top observer (the inner effect) must not be subscribed by the cleanup's read"
+        );
+        assert_eq!(
+            outer_runs.get(),
+            1,
+            "nor the observer beneath it (the outer effect) — one pop is not enough"
+        );
+
+        // Positive control on the outer effect.
+        outer_trigger.set(1);
+        assert_eq!(outer_runs.get(), 2);
+    }
+
+    /// `Effect::dispose` drops the closure directly — outside any scope
+    /// fixpoint — and a captured value's `Drop` that reads a signal must not
+    /// subscribe the effect that called it (issue #494). The guard for this
+    /// path lives in `dispose_effect` itself, which the fixpoint's step 2 also
+    /// calls (a second suspension of an already-empty stack is a no-op).
+    #[test]
+    fn a_direct_effect_disposes_closure_drop_does_not_subscribe_the_disposing_effect() {
+        let probe = Signal::new(0u32);
+        let trigger = Signal::new(0u32);
+        let runs = Rc::new(Cell::new(0usize));
+
+        let payload = ReadsSignalOnDrop { probe };
+        let victim = Effect::new(move || {
+            let _keep = &payload;
+        });
+        let victim = Rc::new(RefCell::new(Some(victim)));
+
+        let hits = runs.clone();
+        let _disposer = Effect::new(move || {
+            hits.set(hits.get() + 1);
+            trigger.get();
+            if let Some(victim) = victim.borrow_mut().take() {
+                victim.dispose();
+            }
+        });
+        assert_eq!(runs.get(), 1);
+
+        probe.set(1);
+        assert_eq!(
+            runs.get(),
+            1,
+            "a write to a signal only the dropped closure's payload read must not re-run the effect"
+        );
+
+        trigger.set(1);
+        assert_eq!(runs.get(), 2, "a tracked write still re-runs the effect");
     }
 }
