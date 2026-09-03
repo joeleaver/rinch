@@ -12,10 +12,12 @@
 //! supplied it stays the field's single write path, and the stepper's internal
 //! write is inert (`controlled_steppers_stay_callback_only`).
 //!
-//! Fixture note: mount values are chosen so a stepped field can never coincide
-//! with its mount text — a fixture sitting on the one value where correct and
-//! broken code agree passes vacuously. Every stepped assertion is on a value
-//! the mount never held.
+//! Fixture note: a fixture sitting on the one value where correct and broken
+//! code agree passes vacuously, so stepped assertions land on values the
+//! mount never held — except where a round-trip deliberately returns to the
+//! mount text after visibly leaving it (the decimal test's 10.00 → 9.99 →
+//! 10.00), which is non-vacuous because the immediately preceding assertion
+//! pinned the field elsewhere.
 //!
 //! Harness note: as in `number_input_value_fn.rs`, the desktop runtime mirrors
 //! typed text into the `value` attribute before dispatching `oninput`, so
@@ -159,12 +161,14 @@ fn an_uncontrolled_stepper_click_moves_the_field() {
 }
 
 /// The write is reported through `oninput` — after the `onincrement`
-/// notification, and carrying exactly the text written. Kills three mutants:
-/// no report at all (an app tracking the number in a signal via `oninput`
-/// silently diverges from the field), the report firing before the
-/// notification (an app doing arithmetic in `onincrement` and syncing in
-/// `oninput` would end on the pre-click value), and reporting an unclamped or
-/// unformatted text that differs from the field.
+/// notification. Kills two mutants: no report at all (an app tracking the
+/// number in a signal via `oninput` silently diverges from the field), and
+/// the report firing before the notification (an app doing arithmetic in
+/// `onincrement` and syncing in `oninput` would end on the pre-click value).
+/// This fixture is integer-valued, where raw `to_string` and the formatted
+/// text coincide — the report-payload mutant (reporting `next.to_string()`
+/// instead of the text actually written) is killed by
+/// `decimal_scale_formats_mount_and_stepped_writes`.
 #[test]
 fn an_uncontrolled_step_reports_the_written_text_through_oninput() {
     let f = Fixture::uncontrolled();
@@ -218,12 +222,13 @@ fn stepping_clamps_at_max_and_min() {
 /// docs' own bare example (`NumberInput { label: "Quantity" }`). Kills the
 /// mutant that keeps handler registration gated on `onincrement`/
 /// `ondecrement` being present: there the buttons carry no `data-rid` and
-/// this test panics looking one up.
+/// this test panics looking one up. The fixture passes no `step` either, so
+/// it also pins the 1.0 default that makes the bare shape step at all — the
+/// `step.unwrap_or(0.0)` mutant leaves the field at "5".
 #[test]
 fn a_stepper_with_no_callbacks_still_steps() {
     let f = Fixture::mount(|_| NumberInput {
         value: Some(5.0),
-        step: Some(1.0),
         ..Default::default()
     });
 
@@ -364,17 +369,27 @@ fn an_empty_field_steps_from_zero_clamped_into_range() {
     assert_eq!(f.field_text(), "5", "0 + 1 clamped up to min");
 }
 
-/// `decimal_scale` fixes what the component itself writes — the mount text
-/// and every stepper write. Kills the raw `to_string` mutant, whose step from
-/// 9.99 by 0.01 writes the float dust "10.000000000000002".
+/// `decimal_scale` fixes what the component itself writes — the mount text,
+/// every stepper write, AND the `oninput` report, which must carry the text
+/// actually written. Kills the raw `to_string` write mutant (the step from
+/// 9.99 by 0.01 puts the float dust "10.000000000000002" in the field) and
+/// the report-payload mutant (`oninput` delivering `next.to_string()` while
+/// the field shows "10.00" — exactly the field/app divergence the report
+/// exists to prevent). The integer-valued fixtures cannot see either.
 #[test]
 fn decimal_scale_formats_mount_and_stepped_writes() {
-    let f = Fixture::mount(|_| NumberInput {
-        value: Some(10.0),
-        min: Some(0.0),
-        step: Some(0.01),
-        decimal_scale: Some(2),
-        ..Default::default()
+    let f = Fixture::mount(|log| {
+        let inp = log.clone();
+        NumberInput {
+            value: Some(10.0),
+            min: Some(0.0),
+            step: Some(0.01),
+            decimal_scale: Some(2),
+            oninput: Some(InputCallback::new(move |text: String| {
+                inp.borrow_mut().push(format!("input:{text}"));
+            })),
+            ..Default::default()
+        }
     });
 
     assert_eq!(f.field_text(), "10.00", "the mount text carries the scale");
@@ -386,6 +401,28 @@ fn decimal_scale_formats_mount_and_stepped_writes() {
         "10.00",
         "9.99 + 0.01 is written scaled, not as float dust"
     );
+    assert_eq!(
+        f.log.borrow().as_slice(),
+        ["input:9.99".to_string(), "input:10.00".to_string()],
+        "oninput reports the formatted text the field shows, not the raw f64"
+    );
+}
+
+/// The documented degenerate: with `min > max`, min wins — `clamp_to`
+/// applies `min` last rather than panicking like `f64::clamp`. From an empty
+/// base, + computes 0 + 1 = 1; max caps it to 3, then min lifts it to 5.
+/// Kills the order-swapped mutant (min applied first, then max, writes "3").
+#[test]
+fn a_degenerate_min_above_max_favors_min() {
+    let f = Fixture::mount(|_| NumberInput {
+        min: Some(5.0),
+        max: Some(3.0),
+        step: Some(1.0),
+        ..Default::default()
+    });
+
+    f.click_stepper("up");
+    assert_eq!(f.field_text(), "5");
 }
 
 /// Without `decimal_scale`, repeated ±step arithmetic still cannot surface
