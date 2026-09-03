@@ -926,17 +926,29 @@ fn a_percentage_inline_block_recorrection_reaches_the_measure_child() {
 /// to itself), so the wrapper keeps `display: Contents` while
 /// `is_out_of_flow()` answers `true` — and a boxless element has no box to
 /// take out of flow (browsers ignore `position` on it). `has_block` must
-/// classify it by **display first**: it counts as block content exactly as on
-/// main, keeping the anonymous-box path, so the #466 flip never newly roots
-/// this shape. (Adapted from the #497 review's probe A, which falsified the
+/// classify it by **display first**: it counts as block content, keeping the
+/// anonymous-box path, so the #466 flip never newly roots this shape.
+/// (Adapted from the #497 review's probe A, which falsified the
 /// "no newly-rooted shape reaches the fall-through" claim: excluding the
 /// wrapper as out-of-flow rooted the container, the decision loop's
 /// display-first Contents arm said opaque, and the fall-through stamped
 /// `InlineRoot` on a root with attached children — a debug_assert panic on
 /// markup main renders.)
 ///
-/// Kills: applying the out-of-flow exclusion to `Contents` children — this
-/// resolve panics on the in-setup validator in debug builds.
+/// The expected anonymous-box count is **2**, where main produced 1: main's
+/// run-grouping loop tested `position` before `display`, so it *skipped* this
+/// wrapper and fused the two text runs into one anonymous box — painting the
+/// wrapped 30px block after `bbb` despite sitting between the texts in the
+/// DOM. Display-first ([`InlineFlowRole`], #366) ends the run at the wrapper
+/// exactly as at the block it stands for: `[anon(aaa), wrapper(block),
+/// anon(bbb)]`, which is the structure browsers build (they ignore the
+/// wrapper's `position` and lay the inner div out as an ordinary in-flow
+/// block between the texts).
+///
+/// Kills: applying the out-of-flow exclusion to `Contents` children in
+/// `has_block` — zero anonymous boxes, and this resolve panics on the
+/// in-setup validator in debug builds; and the run-grouping loop reverting to
+/// position-first — one fused box.
 #[test]
 fn an_absolutely_positioned_contents_wrapper_still_counts_as_block_content() {
     use rinch_dom::computed_style::DisplayValue;
@@ -974,9 +986,10 @@ fn an_absolutely_positioned_contents_wrapper_still_counts_as_block_content() {
     assert_eq!(doc.ifc_leaf_invariant_violations(), Vec::<usize>::new());
     assert_eq!(
         anon_box_count(&doc),
-        1,
-        "the wrapper counts as block content (display-first), so the text run \
-         is wrapped exactly as on main — the container is never newly rooted"
+        2,
+        "the wrapper counts as block content AND ends the text run \
+         (display-first at both sites): one anonymous box per text run, the \
+         wrapped block between them, and the container is never newly rooted"
     );
     assert!(
         !doc.tree.ifc_measure_leaves.contains_key(&container.0),

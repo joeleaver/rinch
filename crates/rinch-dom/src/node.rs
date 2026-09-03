@@ -184,6 +184,46 @@ pub enum DisplayMode {
     InlineBlock,
 }
 
+/// How a box participates in its parent's inline formatting context.
+///
+/// Returned by [`Node::inline_flow_role`], the one classifier every IFC
+/// decision consumes (#366) — see its doc for the precedence contract.
+///
+/// Whether a [`InlineFlowRole::Contents`] wrapper is *transparent* to the
+/// surrounding IFC is deliberately a separate, recursive question
+/// (`contents_is_inline_transparent` in `ifc.rs`): answering it eagerly here
+/// would scan the wrapper's subtree at every classification, and the
+/// recursive consumers (the contents scan and collector) would re-scan every
+/// level of a nested-wrapper chain once per ancestor.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InlineFlowRole {
+    /// A comment node: invisible and boxless. It flows *with* inline content
+    /// — it must neither split a run nor break the inline walk — but it is
+    /// not inline content itself: it renders nothing, has no Taffy node, and
+    /// must not establish an IFC on its own (#490).
+    Comment,
+    /// `display: none` — no box at all. Neither inline content nor a block:
+    /// it cannot force anonymous-box generation, split a run, or break the
+    /// inline flow.
+    NoBox,
+    /// `display: contents` — no box of its own; its children flatten into
+    /// the parent. Whether the wrapper is transparent to the surrounding IFC
+    /// (wraps no in-flow block-level box) is the separate recursive question
+    /// above.
+    Contents,
+    /// Inline-level content: a text node, or an element with display
+    /// `inline` / `inline-block`.
+    Inline,
+    /// An out-of-flow box — `position: absolute`/`fixed` (CSS 2.1 §9.3).
+    /// Not inline content, yet it neither forces anonymous boxes (§9.2.1.1)
+    /// nor breaks an inline formatting context (§9.4.2): inline siblings
+    /// carry on across it, on the same line.
+    OutOfFlow,
+    /// An in-flow block-level box — the one thing that breaks the inline
+    /// flow.
+    InFlowBlock,
+}
+
 /// Maps a range of bytes in the IFC flat text to a specific DOM node.
 ///
 /// Built during `walk_inline_children()` so that IFC byte offsets can be
@@ -668,6 +708,66 @@ impl Node {
     /// Whether this node is a comment node.
     pub fn is_comment(&self) -> bool {
         matches!(&self.kind, NodeKind::Comment(_))
+    }
+
+    /// How this box participates in a parent's inline formatting context —
+    /// THE shared classifier for every IFC decision (#366).
+    ///
+    /// Seven sites used to hand-roll this classification — `has_inline`,
+    /// `has_block` and the run-grouping loop in `create_anonymous_block_boxes`,
+    /// the decision loop in `setup_inline_formatting_contexts`,
+    /// `scan_contents_children`, `collect_contents_out_of_flow`,
+    /// `mark_inline_descendants` and `walk_inline_children` — and they were
+    /// caught disagreeing twice in one review cycle (#466): once on
+    /// display-vs-position precedence (a `debug_assert` panic on markup `main`
+    /// rendered fine), once on continue-vs-break at a block-level child
+    /// (#366 itself). They all consume this method now; any new IFC decision
+    /// must too, not paraphrase it.
+    ///
+    /// The precedence is **display before position, always**:
+    ///
+    /// 1. A comment is a [`InlineFlowRole::Comment`] — it has no display and
+    ///    no box, and [`Self::is_inline`] answers `true` for it, so it must
+    ///    be told apart before the inline check.
+    /// 2. `display: none` is a [`InlineFlowRole::NoBox`] — whatever
+    ///    `position` says, since a boxless element has no box to take out of
+    ///    flow.
+    /// 3. `display: contents` is a [`InlineFlowRole::Contents`] — again
+    ///    whatever `position` says: Stylo does not blockify
+    ///    `display: contents` (`equivalent_block_display` maps
+    ///    `DisplayOutside::None` to itself), so `position: absolute` on such
+    ///    a wrapper leaves [`Self::is_out_of_flow`] answering `true` while
+    ///    the element generates **no box** (browsers ignore `position` on
+    ///    it). Classifying it out-of-flow instead rooted containers whose
+    ///    flattened in-flow boxes stayed attached — the non-leaf carrier the
+    ///    #466 validator exists to catch.
+    /// 4. Inline-level content is [`InlineFlowRole::Inline`].
+    /// 5. Only now does `position` speak: `absolute`/`fixed` is
+    ///    [`InlineFlowRole::OutOfFlow`].
+    /// 6. Everything left is an in-flow block-level box,
+    ///    [`InlineFlowRole::InFlowBlock`].
+    ///
+    /// A text node never goes through style resolution, so its
+    /// `computed_style.display` keeps the default (`Flex`) and it falls
+    /// through steps 2–3 to `Inline` — the same #342 hazard note as
+    /// [`Self::is_out_of_flow`].
+    pub fn inline_flow_role(&self) -> InlineFlowRole {
+        use crate::computed_style::values::DisplayValue;
+        if self.is_comment() {
+            return InlineFlowRole::Comment;
+        }
+        match self.computed_style.display {
+            DisplayValue::None => return InlineFlowRole::NoBox,
+            DisplayValue::Contents => return InlineFlowRole::Contents,
+            _ => {}
+        }
+        if self.is_inline() {
+            return InlineFlowRole::Inline;
+        }
+        if self.is_out_of_flow() {
+            return InlineFlowRole::OutOfFlow;
+        }
+        InlineFlowRole::InFlowBlock
     }
 }
 

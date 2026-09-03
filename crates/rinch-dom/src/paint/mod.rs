@@ -346,15 +346,18 @@ pub(crate) fn ifc_root_content_origin(root: &Node) -> (f32, f32) {
 /// exactly right first. Tracked separately; the simple rule is correct about
 /// *where* and *how many*, which is what was broken.
 ///
-/// **Caveat (#366).** The invariant assumes the stamp is honest, and today it
-/// is not always: `mark_inline_descendants` continues past a block-level child
-/// where `walk_inline_children` breaks, so an inline-level box after a block
-/// sibling inside an inline element carries an `ifc_root` whose IFC never
-/// draws it. Such a box satisfies this predicate and paints **nowhere**
-/// (before this guard it painted once at the viewport origin — garbage of a
-/// different shape; hit testing tapped it somewhere else again either way).
-/// If a box vanishes and its markup matches that shape, the bug is #366's
-/// overmark, not a new miss here.
+/// **Residual (#513).** The stamp is honest now: `mark_inline_descendants`
+/// breaks at an in-flow block-level child exactly where
+/// `walk_inline_children` stops building the line (#366), so a box carrying
+/// an `ifc_root` really is flowed by that IFC. What remains is that block
+/// content inside an inline element still renders **nowhere**, and so does
+/// everything after it: the walk stops at the block, so neither it nor its
+/// later siblings reach a line — and they cannot paint from the tree walk
+/// either, because this predicate skips their marked inline ancestor (the
+/// `<a>`) as drawn-by-its-IFC and never descends beneath it. There is no
+/// block-in-inline splitting to give them boxes of their own. If a box
+/// vanishes and its markup matches `<a>text<div>block</div>tail</a>`, that
+/// is #513, not a new miss here.
 pub(crate) fn drawn_by_its_ifc(tree: &NodeTree, child: &Node) -> bool {
     child
         .ifc_root
