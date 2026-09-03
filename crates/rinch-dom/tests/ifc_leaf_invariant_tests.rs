@@ -420,6 +420,107 @@ fn a_comment_only_container_is_still_a_marked_leaf() {
     );
 }
 
+/// The ink-bearing corner of the comment rule (#490): comment +
+/// contents-wrapped text + block sibling — exactly `div { if x { "text" }
+/// Block{} }` in rsx. On main the comment made the container a root, so
+/// `mark_inline_descendants` detached the wrapper-flattened text into a root
+/// whose measure could never run (the block child stayed attached): the line
+/// contributed nothing to the height and painted at y = 0 over the block,
+/// while the identical markup *without* the marker comment rendered
+/// correctly. Withholding the mark leaves the text in Taffy as an ordinary
+/// text leaf.
+///
+/// The control agreement is the load-bearing half: PRs 2 and 3 rework
+/// exactly this region, and without it this corner could regress while the
+/// no-ink comment-beside-block test stays green.
+///
+/// Kills: reverting the comment amendment (h collapses to the block's 30 and
+/// the control disagrees), and any future change that makes a marker comment
+/// alter its siblings' layout.
+#[test]
+fn contents_wrapped_text_beside_a_comment_matches_its_comment_free_twin() {
+    fn build(with_comment: bool) -> (RinchDocument, NodeId, NodeId) {
+        let mut doc = RinchDocument::new();
+        let body = doc.body();
+        let container = child_of(
+            &mut doc,
+            body,
+            "div",
+            "font-size: 16px; line-height: 20px; width: 400px",
+        );
+        if with_comment {
+            let marker = doc.create_comment("show");
+            doc.append_child(container, marker);
+        }
+        let wrapper = child_of(&mut doc, container, "span", "display: contents");
+        text_in(&mut doc, wrapper, "hello world");
+        let block = child_of(&mut doc, container, "div", "height: 30px");
+        doc.resolve_layout(VW, VH);
+        (doc, container, block)
+    }
+
+    let (doc, container, block) = build(true);
+    assert_eq!(doc.ifc_leaf_invariant_violations(), Vec::<usize>::new());
+    let h = height_of(&doc, container);
+    assert!(
+        (h - 50.0).abs() < 2.0,
+        "text line (20) + block child (30) expected — on main the comment \
+         made this 30, the text line contributing nothing, got {h}"
+    );
+    let block_y = doc.tree.get(block.0).unwrap().layout.y;
+    assert!(
+        (block_y - 20.0).abs() < 2.0,
+        "the block sits below the text line, not under it at y=0, got {block_y}"
+    );
+
+    // Control: the same markup without the marker comment. A `show_dom`
+    // marker must not change its siblings' layout.
+    let (doc2, container2, block2) = build(false);
+    assert_eq!(
+        height_of(&doc, container),
+        height_of(&doc2, container2),
+        "comment and comment-free twins must agree on the container height"
+    );
+    assert_eq!(
+        doc.tree.get(block.0).unwrap().layout.y,
+        doc2.tree.get(block2.0).unwrap().layout.y,
+        "comment and comment-free twins must agree on the block position"
+    );
+}
+
+/// An empty container is not a marked root — it takes the empty-block line
+/// floor path instead, and its height comes from that floor, not from a
+/// measure over nothing (which answers 0).
+///
+/// Kills: mutating `all_children_are_comments`'s initializer from
+/// `!children.is_empty()` to `true`, which would mark every empty container
+/// — the natural-identity value where mutants hide. Near-equivalent today
+/// only because the line floor is applied redundantly at two other sites;
+/// this pins the discovery path itself.
+#[test]
+fn an_empty_container_is_not_a_marked_root_and_keeps_the_line_floor() {
+    let mut doc = RinchDocument::new();
+    let body = doc.body();
+    let container = child_of(
+        &mut doc,
+        body,
+        "div",
+        "font-size: 16px; line-height: 20px; width: 400px",
+    );
+    doc.resolve_layout(VW, VH);
+
+    assert!(
+        !carries_inline_root(&doc, container),
+        "an empty div establishes no IFC"
+    );
+    assert_eq!(doc.ifc_leaf_invariant_violations(), Vec::<usize>::new());
+    let h = height_of(&doc, container);
+    assert!(
+        (h - 20.0).abs() < 2.0,
+        "the empty-block line floor gives one line box, got {h}"
+    );
+}
+
 // ── display:none children of an IFC root (#466's fifth shape) ───────────────
 
 /// A `display: none` child generates no box, and `scan_contents_children`

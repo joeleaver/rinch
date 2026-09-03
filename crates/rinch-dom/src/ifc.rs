@@ -812,11 +812,21 @@ impl RinchDocument {
             // make that parent an IFC root *while the branch root stayed
             // attached as a Taffy child* — a non-leaf carrying `InlineRoot`,
             // minted fresh every pass through this very loop, so the stale
-            // sweep below could never touch it. The context was dead data
-            // (Taffy's block arm never consults it — see the leaf invariant on
-            // [`NodeContext::InlineRoot`]), so not writing it is
-            // observationally identical; `create_anonymous_block_boxes`
-            // already excludes comments from `has_inline` for the same reason.
+            // sweep below could never touch it. (`create_anonymous_block_boxes`
+            // already excludes comments from `has_inline` for the same reason.)
+            //
+            // With no other inline content in reach, withholding the mark is
+            // observationally identical — the context was dead data Taffy's
+            // block arm never consults (the leaf invariant on
+            // [`NodeContext::InlineRoot`]). With contents-wrapped text beside
+            // the comment it is a *fix* (#490): `mark_inline_descendants`
+            // detached that text into the root whose measure could never run,
+            // so the line contributed nothing to the height and painted at
+            // y = 0 over the block sibling — `div { if x { "text" } Block{} }`
+            // rendered corrupted while the same markup without the marker
+            // comment rendered correctly. Unmarked, the text stays in Taffy
+            // as an ordinary text leaf and the container matches its
+            // comment-free twin exactly.
             let mut has_non_comment_inline = false;
             let mut all_children_are_comments = !node.children.is_empty();
             for &child_id in &node.children {
