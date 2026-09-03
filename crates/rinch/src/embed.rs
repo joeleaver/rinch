@@ -174,7 +174,10 @@ impl RinchContext {
 
         // Mount the component (builds DOM, runs initial layout) at the
         // *logical* viewport — `width`/`height` are physical (see
-        // `rinch_platform::to_logical`).
+        // `rinch_platform::to_logical`). The display scale goes in first so
+        // the initial style resolution sees the right `device_pixel_ratio`
+        // (issue #211).
+        app.set_device_pixel_ratio(scale_factor);
         let (logical_w, logical_h) = rinch_platform::to_logical((width, height), scale_factor);
         app.mount_component(logical_w as f32, logical_h as f32);
 
@@ -287,8 +290,15 @@ impl RinchContext {
     }
 
     /// Update the display scale factor (DPI).
+    ///
+    /// Pushes the new scale into Stylo's `device_pixel_ratio` (issue #211),
+    /// marking the document style-dirty when the value changed — the next
+    /// [`update`](RinchContext::update) re-resolves at the new logical size
+    /// (physical size ÷ scale), so `resolution`-gated styles and the layout
+    /// viewport change together.
     pub fn set_scale_factor(&mut self, scale: f64) {
         self.scale_factor = scale;
+        self.app.set_device_pixel_ratio(scale);
     }
 
     /// Replace this context's theme at runtime.

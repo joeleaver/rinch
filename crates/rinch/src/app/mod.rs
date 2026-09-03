@@ -12,6 +12,8 @@ mod click_handling;
 #[cfg(feature = "debug")]
 mod debug_commands;
 #[cfg(test)]
+mod device_pixel_ratio_tests;
+#[cfg(test)]
 mod disabled_input_tests;
 mod event_dispatch;
 mod focus;
@@ -330,6 +332,11 @@ pub struct RinchApp {
     pub(crate) scene_dirty: bool,
     /// Text rendering scale for HiDPI/mobile (applied to Parley font sizes).
     pub(crate) text_scale: f32,
+    /// Display scale factor pushed into Stylo's `Device` (issue #211): drives
+    /// `resolution` media queries, `image-set()` and border-width snapping.
+    /// Distinct from `text_scale` (glyph rasterization) — this one changes
+    /// which CSS rules match, never layout geometry.
+    pub(crate) device_pixel_ratio: f64,
     /// Whether we have a previous frame's pixels for dirty region caching.
     #[cfg(software_shell)]
     pub(crate) has_previous_frame: bool,
@@ -460,6 +467,7 @@ impl RinchApp {
             modifiers: Modifiers::default(),
             scene_dirty: true,
             text_scale: 1.0,
+            device_pixel_ratio: 1.0,
             #[cfg(software_shell)]
             has_previous_frame: false,
             #[cfg(software_shell)]
@@ -601,6 +609,12 @@ impl RinchApp {
     pub fn mount_component(&mut self, viewport_width: f32, viewport_height: f32) {
         let doc = Rc::new(RefCell::new(RinchDocument::new()));
         doc.borrow_mut().tree.text_scale = self.text_scale;
+        // Push the display scale into Stylo before any style resolution, so a
+        // document mounted on a HiDPI display resolves `resolution` media
+        // queries correctly from the first paint — not after the first resize
+        // (issue #211). No-op at the 1.0 default.
+        doc.borrow_mut()
+            .set_device_pixel_ratio(self.device_pixel_ratio as f32);
 
         // Set up network image loader if feature enabled (replaces default FileImageLoader)
         #[cfg(all(feature = "image-network", not(target_arch = "wasm32")))]
@@ -2756,6 +2770,23 @@ impl RinchApp {
         self.text_scale = scale;
         if let Some(doc) = &self.doc {
             doc.borrow_mut().tree.text_scale = scale;
+        }
+    }
+
+    /// Set the display scale factor Stylo sees as `device_pixel_ratio`
+    /// (issue #211): `resolution` media queries, `image-set()` candidate
+    /// selection and border-width device-pixel snapping. It does not change
+    /// layout geometry — 1 CSS px stays 1 layout unit.
+    ///
+    /// Call before [`mount_component`](Self::mount_component) so the initial
+    /// style resolution sees the right value; calling it on a mounted app (a
+    /// window dragged to a display with a different scale) marks the document
+    /// style- and layout-dirty, and the next resolve restyles it. No-op when
+    /// the value is unchanged.
+    pub fn set_device_pixel_ratio(&mut self, dpr: f64) {
+        self.device_pixel_ratio = dpr;
+        if let Some(doc) = &self.doc {
+            doc.borrow_mut().set_device_pixel_ratio(dpr as f32);
         }
     }
 

@@ -126,6 +126,18 @@ Changing it at runtime recascades the document, and the basis survives
 window resizes. `em` is unaffected: it keeps resolving against the element's
 own inherited font-size.
 
+#### Resolution media queries follow the display
+
+The shell feeds the window's scale factor to Stylo as `device_pixel_ratio`,
+so `@media (min-resolution: 2dppx)` (and the `-webkit-device-pixel-ratio`
+forms), `image-set()` candidate selection, and border-width device-pixel
+snapping all reflect the display the window is actually on — from the first
+paint, and re-resolved when the window moves to a display with a different
+scale. Fractional scales (1.25, 1.5) match fractionally, as in a browser.
+This never changes layout geometry: 1 CSS px stays 1 layout unit, and paint
+applies the scale. One visible consequence: `border: 0.5px` on a 2x display
+renders as a real hairline instead of being snapped up to 1px.
+
 #### Generic font families on Android
 
 `monospace`, `ui-monospace`, `ui-sans-serif` and `ui-serif` resolve to a real
