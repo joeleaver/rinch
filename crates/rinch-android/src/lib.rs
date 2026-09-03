@@ -34,8 +34,10 @@
 //! [`sensors`] — are not. Their registries, drains and scope-lifetime rules (see
 //! `scoped`) compile and are unit-tested on every CI machine, and only the JNI
 //! half of each operation sits behind the `cfg`, as a small private function
-//! that is a no-op off-device. Nothing in this repository builds an APK in CI,
-//! so logic left behind the `cfg` is logic nothing checks (issue #183 PR5).
+//! that is a no-op off-device. [`screen`] takes the same split for a different
+//! structure — a refcounted guard rather than a registry — so its edges are
+//! host-tested too. Nothing in this repository builds an APK in CI, so logic
+//! left behind the `cfg` is logic nothing checks (issue #183 PR5).
 
 #[cfg(target_os = "android")]
 mod bridge;
@@ -57,7 +59,6 @@ pub mod notification;
 #[cfg(target_os = "android")]
 pub mod permissions;
 pub(crate) mod scoped;
-#[cfg(target_os = "android")]
 pub mod screen;
 pub mod sensors;
 #[cfg(target_os = "android")]
