@@ -141,11 +141,22 @@ pub fn generate_reactive_component_stmt(
             ..Default::default()
         };
 
-        let #temp_var = __scope.create_element("template");
-        #(#children_code)*
-        let #children_var: Vec<rinch::core::NodeHandle> = #temp_var.children();
+        // The subtree render runs untracked (issue #390), the way `show_dom`,
+        // `match_dom` and `for_each_dom` render their branches: a signal the
+        // component body or a child reads while rendering must not subscribe
+        // the re-render effect — nested control flow and `{|| expr}` closures
+        // create their own effects for that, and a subscription here would
+        // rebuild the whole subtree (resetting its component-local state) on
+        // every inner change. The prop closures above and the
+        // style/class/shorthand closures below stay in the tracked region:
+        // their signal reads are what schedule a re-render.
+        let #result_var = rinch::core::reactive::untracked(|| {
+            let #temp_var = __scope.create_element("template");
+            #(#children_code)*
+            let #children_var: Vec<rinch::core::NodeHandle> = #temp_var.children();
 
-        let #result_var = rinch::core::Component::render(&#comp_var, __scope, &#children_var);
+            rinch::core::Component::render(&#comp_var, __scope, &#children_var)
+        });
         #style_code
         #class_code
         #shorthand_code
@@ -345,11 +356,22 @@ pub fn element_to_dom_component_reactive(
             ..Default::default()
         };
 
-        let #temp_var = __scope.create_element("template");
-        #(#children_code)*
-        let #children_var: Vec<rinch::core::NodeHandle> = #temp_var.children();
+        // The subtree render runs untracked (issue #390), the way `show_dom`,
+        // `match_dom` and `for_each_dom` render their branches: a signal the
+        // component body or a child reads while rendering must not subscribe
+        // the re-render effect — nested control flow and `{|| expr}` closures
+        // create their own effects for that, and a subscription here would
+        // rebuild the whole subtree (resetting its component-local state) on
+        // every inner change. The prop closures above and the
+        // style/class/shorthand closures below stay in the tracked region:
+        // their signal reads are what schedule a re-render.
+        let #result_var = rinch::core::reactive::untracked(|| {
+            let #temp_var = __scope.create_element("template");
+            #(#children_code)*
+            let #children_var: Vec<rinch::core::NodeHandle> = #temp_var.children();
 
-        let #result_var = rinch::core::Component::render(&#comp_var, __scope, &#children_var);
+            rinch::core::Component::render(&#comp_var, __scope, &#children_var)
+        });
         #style_code
         #class_code
         #shorthand_code
