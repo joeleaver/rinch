@@ -118,9 +118,16 @@ fn remove_child_nested_wrappers_flatten_recursively() {
     );
 }
 
-/// Removing one wrapper must not disturb a sibling wrapper's splice.
-/// Kills: over-removal — a detach that strips the parent's whole effective
-/// child set instead of only the removed node's contribution.
+/// Removing one wrapper must not disturb a sibling wrapper's splice —
+/// this pins the survivor-growth contract, nothing more. It does NOT kill
+/// an over-removal mutant (one that strips the parent's whole effective
+/// child set): the surviving sibling wrapper keeps `col` in
+/// `sync_display_contents`'s affected set, so the next layout rebuilds the
+/// list from the DOM and heals the over-removal before the assert — and no
+/// fixture can avoid that, because a surviving spliced sibling *implies*
+/// the heal. The tests that actually kill over-removal are the move-heal
+/// ones below: their old parent leaves the affected set, so an
+/// over-removed sibling stays missing.
 #[test]
 fn remove_child_leaves_sibling_wrapper_spliced() {
     let mut doc = RinchDocument::new();
@@ -171,10 +178,19 @@ fn remove_child_plain_node_frees_its_own_slot() {
     );
 }
 
-/// Removing the wrapper BEFORE any layout pass: styles are not yet resolved,
-/// no splice has happened, and the wrapper's own Taffy id genuinely is the
-/// parent's child — the plain-node leg must detach it.
-/// Guards the pre-first-layout window (the `else`/own-id half of the fix).
+/// Removing the wrapper BEFORE any layout pass. Styles ARE already
+/// resolved — `append_child` restyles eagerly via
+/// `recompute_node_styles_recursive`, so the wrapper computes `Contents`
+/// at detach time — but no splice has happened yet, and the wrapper's own
+/// Taffy id genuinely is the parent's child. This is exactly the window
+/// where an either/or detach (contents ⇒ effective set only) removes
+/// nothing real; the both-removals design covers it.
+///
+/// Scope honestly stated: this asserts the pre-splice removal leaves no
+/// phantom, but it cannot witness the own-id removal by geometry — a
+/// leaked pre-splice wrapper sits at its default Taffy style and measures
+/// zero, so the own-id-disabled mutant survives it. The plain-node twins
+/// are the guard for that line.
 #[test]
 fn remove_child_pre_layout_detaches_the_wrapper_itself() {
     let mut doc = RinchDocument::new();
