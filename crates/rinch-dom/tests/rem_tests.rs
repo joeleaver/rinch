@@ -94,6 +94,24 @@ fn percentage_root_font_size_computes_the_rem_basis() {
     assert_eq!(width(&doc, div), 40.0, "2rem against 125% of 16px = 20px");
 }
 
+/// Same for an `em` root font-size: `html { font-size: 1.25em }` resolves
+/// against the 16px initial, computing a 20px `rem` basis.
+/// (Chrome oracle: root computed font-size 20px, 2rem box 40px wide.)
+#[test]
+fn em_root_font_size_computes_the_rem_basis() {
+    let mut doc = RinchDocument::new();
+    doc.load_css("html { font-size: 1.25em } .x { width: 2rem }");
+
+    let body = doc.body();
+    let div = doc.create_element("div");
+    doc.set_attribute(div, "class", "x");
+    doc.append_child(body, div);
+
+    doc.resolve_layout(800.0, 600.0);
+
+    assert_eq!(width(&doc, div), 40.0, "2rem against 1.25em of 16px = 20px");
+}
+
 /// `rem` on the root's own `font-size` refers to the property's *initial*
 /// value (16px), and descendants then resolve `rem` against the root's
 /// computed result.
