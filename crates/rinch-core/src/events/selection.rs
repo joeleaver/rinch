@@ -35,6 +35,14 @@ type SelectionSlots =
     crate::reactive::DocScopedSlotMap<dyn Fn(SelectionAction) -> Vec<(usize, usize, usize)>>;
 
 /// The per-document saved snapshot, on the same key (issue #478).
+///
+/// Its values are plain `Vec`s, not `Rc`s, so [`get_saved_selection`] and
+/// [`clear_selection_snapshot`] cannot route through
+/// [`read_doc_scoped_slot`](crate::reactive::read_doc_scoped_slot) /
+/// [`clear_doc_scoped_slot`](crate::reactive::clear_doc_scoped_slot) and
+/// instead hand-roll the same resolution rule — own entry first, ownerless
+/// `None` entry as the fallback. The copies must stay in step with the shared
+/// helpers; the fallback-arm pins in the test module hold each one.
 type SnapshotMap = std::collections::BTreeMap<Option<u64>, Vec<(usize, usize, usize)>>;
 
 thread_local! {
@@ -485,6 +493,90 @@ mod tests {
             clear_selection_snapshot();
             clear_selection_callback();
         }
+        assert!(get_saved_selection().is_empty());
+    }
+
+    /// A snapshot saved outside any dispatch — the only kind a backend that
+    /// never marks dispatch (rinch-web) can save — is the fallback every
+    /// document reads: the pre-#478 behaviour of this family rests on it.
+    ///
+    /// Kills: dropping `get_saved_selection`'s fallback to the ownerless
+    /// entry (found open by review mutation on #498).
+    #[test]
+    fn a_snapshot_saved_outside_any_dispatch_is_the_fallback_every_document_reads() {
+        use crate::context::push_dispatching_doc;
+
+        clear_selection_callback();
+        set_selection_callback(|_| vec![(9, 5, 8)]);
+        save_selection_snapshot(); // no marker: fills the ownerless entry
+
+        assert_eq!(
+            get_saved_selection(),
+            vec![(9, 5, 8)],
+            "a read outside any dispatch reaches the ownerless snapshot"
+        );
+        {
+            let _a = push_dispatching_doc(1);
+            assert_eq!(
+                get_saved_selection(),
+                vec![(9, 5, 8)],
+                "a document with no snapshot of its own falls back to the \
+                 ownerless one"
+            );
+        }
+
+        clear_selection_snapshot();
+        clear_selection_callback();
+        assert!(get_saved_selection().is_empty());
+    }
+
+    /// The snapshot's clear resolves exactly like its read — the hand-rolled
+    /// copy of the rule (see [`SnapshotMap`]) must stay in step with
+    /// `clear_doc_scoped_slot`: from a document's dispatch with no snapshot of
+    /// its own it removes the ownerless one a read would reach, and when the
+    /// document HAS its own it removes exactly that one, leaving the ownerless
+    /// snapshot for everyone else.
+    ///
+    /// Kills: a raw-ambient-key clear (the fallback arm dropped), and a clear
+    /// that takes the ownerless entry besides the document's own (both found
+    /// open by review mutation on #498).
+    #[test]
+    fn clearing_a_snapshot_from_a_documents_dispatch_resolves_like_the_read() {
+        use crate::context::push_dispatching_doc;
+
+        // Arm 1: no snapshot of its own — the clear reaches the ownerless one.
+        clear_selection_callback();
+        set_selection_callback(|_| vec![(9, 5, 8)]);
+        save_selection_snapshot();
+        {
+            let _a = push_dispatching_doc(1);
+            clear_selection_snapshot();
+        }
+        assert!(
+            get_saved_selection().is_empty(),
+            "the ownerless snapshot a doc-1 read would have reached is the one \
+             cleared"
+        );
+        clear_selection_callback();
+
+        // Arm 2: with a snapshot of its own, the clear takes only that one.
+        set_selection_callback(|_| vec![(9, 5, 8)]);
+        save_selection_snapshot(); // the ownerless entry again
+        {
+            let _a = push_dispatching_doc(1);
+            set_selection_callback(|_| vec![(1, 0, 3)]);
+            save_selection_snapshot(); // doc 1's own
+            clear_selection_snapshot(); // removes doc 1's, not the ownerless one
+            clear_selection_callback();
+        }
+        assert_eq!(
+            get_saved_selection(),
+            vec![(9, 5, 8)],
+            "the ownerless snapshot survives a document clearing its own"
+        );
+
+        clear_selection_snapshot();
+        clear_selection_callback();
         assert!(get_saved_selection().is_empty());
     }
 

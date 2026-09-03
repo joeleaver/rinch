@@ -495,6 +495,52 @@ mod tests {
         );
     }
 
+    /// The other half of the clear-resolution rule: when the dispatching
+    /// document HAS an interceptor of its own, `clear_keyboard_interceptor`
+    /// removes exactly that one entry — the thread-global fallback it was
+    /// shadowing survives for every other document.
+    ///
+    /// Kills: a clear that takes the fallback entry besides the document's
+    /// own — which would silently destroy an app-wide interceptor the moment
+    /// any component cleared its own (found open by review mutation on
+    /// #498; the naive-exact-key sibling is pinned above).
+    #[test]
+    fn clearing_a_documents_own_interceptor_leaves_the_global_fallback_in_place() {
+        use crate::context::push_dispatching_doc;
+
+        clear_keyboard_interceptor();
+        let hits: Rc<RefCell<Vec<&'static str>>> = Rc::new(RefCell::new(Vec::new()));
+
+        let h = hits.clone();
+        set_keyboard_interceptor(move |_| {
+            h.borrow_mut().push("global");
+            true
+        });
+        {
+            let _a = push_dispatching_doc(1);
+            let h = hits.clone();
+            set_keyboard_interceptor(move |_| {
+                h.borrow_mut().push("doc1");
+                true
+            });
+            // Removes doc 1's own entry — and nothing else.
+            clear_keyboard_interceptor();
+        }
+
+        {
+            let _b = push_dispatching_doc(2);
+            assert!(
+                dispatch_keyboard_event(&key("x")),
+                "doc 2 still falls back to the global interceptor — clearing \
+                 doc 1's own entry must not take the fallback with it"
+            );
+        }
+        assert_eq!(hits.borrow().last(), Some(&"global"));
+
+        clear_keyboard_interceptor();
+        assert!(!dispatch_keyboard_event(&key("x")));
+    }
+
     /// The dispatch must not hold the slot's borrow across user code: an
     /// interceptor is allowed to install its replacement from inside its own
     /// dispatch.

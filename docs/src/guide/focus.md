@@ -382,8 +382,9 @@ blurred, IME reports disabled and no composition is routed, but the claim — an
   (issue #340): a hook registered while a document's events are being
   dispatched intercepts only that document's keys, and one registered from
   `main` or at mount is the thread-global fallback that intercepts for every
-  document without its own — so two windows on one thread no longer clobber
-  each other's registration. Its *lifetime* does match the arbiter's, though:
+  document without its own — so two windows that each register from inside
+  their own event handling no longer clobber each other. Registrations made
+  outside any dispatch still share the single fallback slot, last-wins. Its *lifetime* does match the arbiter's, though:
   registering it during a render releases it when that component unmounts,
   exactly as a `FocusEntry` is deregistered (issue #183). Registering it from
   `main` keeps app lifetime.
