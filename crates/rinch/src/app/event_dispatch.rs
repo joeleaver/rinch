@@ -1456,8 +1456,18 @@ impl RinchApp {
                     _ => {}
                 }
             }
-            PlatformEvent::ScaleFactorChanged(_) => {
-                // The shell handles reconfiguring the renderer; we just need a redraw.
+            PlatformEvent::ScaleFactorChanged(sf) => {
+                // Push the new display scale into Stylo — `resolution` media
+                // queries, `image-set()` and border-width snapping re-resolve
+                // (issue #211). The document marks itself style- and
+                // layout-dirty, so the desktop paint preamble
+                // (`has_pending_layout`) and embed's post-event dirty check
+                // both re-resolve before the next frame — at the live logical
+                // viewport, which may itself be changing (winit follows this
+                // event with a `SurfaceResized`). No-op when the value is
+                // unchanged. The shell handles reconfiguring the renderer; we
+                // just need a redraw.
+                self.set_device_pixel_ratio(sf);
                 actions.push(AppAction::RequestRedraw);
             }
             PlatformEvent::UserEvent(UserEvent::ReRender) => {

@@ -175,6 +175,12 @@ fn run_loop(android_app: AndroidApp, mut app: RinchApp) {
                             surface = GpuContext::attach(&mut gpu, &native_window, w, h);
                         }
 
+                        // Push the display scale into Stylo (issue #211).
+                        // Before the mount, so the initial style resolution
+                        // sees the right `resolution` media features; on a
+                        // re-`InitWindow` with a changed density it restyles
+                        // the live document (no-op when unchanged).
+                        app.set_device_pixel_ratio(scale_factor);
                         if !mounted {
                             let (lw, lh) = rinch_platform::to_logical((w, h), scale_factor);
                             app.set_text_scale(scale_factor as f32);

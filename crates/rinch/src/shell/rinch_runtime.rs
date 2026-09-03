@@ -366,7 +366,10 @@ impl RinchRuntime {
         // Create a separate RinchApp for DevTools with the panel component
         let mut dt_app = RinchApp::new(super::devtools_panel::devtools_root);
 
-        // Mount the DevTools component at its logical viewport size.
+        // Mount the DevTools component at its logical viewport size, with the
+        // display scale pushed first (issue #211) — same order as the main
+        // window mount.
+        dt_app.set_device_pixel_ratio(dt_scale);
         let dt_logical = to_logical((size.width, size.height), dt_scale);
         dt_app.mount_component(dt_logical.0 as f32, dt_logical.1 as f32);
 
@@ -652,7 +655,11 @@ impl RinchRuntime {
         }));
 
         // Mount the component at the *logical* viewport size — `size` above is
-        // the physical surface size (see `to_logical`).
+        // the physical surface size (see `to_logical`). The display scale goes
+        // in first so the initial style resolution sees the right
+        // `device_pixel_ratio` (issue #211) — winit does not promise a
+        // `ScaleFactorChanged` at window creation.
+        self.app.set_device_pixel_ratio(scale);
         let logical = to_logical((size.width, size.height), scale);
         self.app.mount_component(logical.0 as f32, logical.1 as f32);
 
@@ -1677,6 +1684,15 @@ impl ApplicationHandler for RinchRuntime {
                     height: logical.1,
                 }
             }
+            WindowEvent::ScaleFactorChanged { scale_factor, .. } => {
+                // The window moved to a display with a different scale (or the
+                // user changed it). `handle_event` pushes the value into
+                // Stylo's `device_pixel_ratio` (issue #211); the renderer
+                // needs no reconfigure here — winit follows this event with a
+                // `SurfaceResized` carrying the new physical size, handled
+                // above.
+                PlatformEvent::ScaleFactorChanged(scale_factor)
+            }
             WindowEvent::RedrawRequested => {
                 // Drain queued native events (debug commands, injected input)
                 // before painting so a command that arrived while the loop was
@@ -2226,6 +2242,22 @@ impl RinchRuntime {
                 if let Some(dt_app) = &mut self.devtools_app {
                     let logical = to_logical((size.width, size.height), dt_scale);
                     dt_app.resize_layout(logical.0, logical.1);
+                }
+                if let Some(w) = &self.devtools_window {
+                    w.request_redraw();
+                }
+            }
+            WindowEvent::ScaleFactorChanged { scale_factor, .. } => {
+                // The DevTools window is its own document — push the new
+                // display scale into its Stylo device too (issue #211).
+                let size = self.devtools_size();
+                let dt_scale = self.devtools_scale_factor();
+                if let Some(dt_app) = &mut self.devtools_app {
+                    let _ = dt_app.handle_event(
+                        PlatformEvent::ScaleFactorChanged(scale_factor),
+                        size,
+                        dt_scale,
+                    );
                 }
                 if let Some(w) = &self.devtools_window {
                     w.request_redraw();
