@@ -114,6 +114,18 @@ var(--rinch-h1-line-height)
 var(--rinch-h1-font-weight)
 ```
 
+#### Scaling the whole UI with `rem`
+
+`rem` lengths resolve against the computed font-size of the root (`<html>`)
+element, exactly as in a browser. The root defaults to 16px, so `1rem` is
+16px until you say otherwise; `html { font-size: 20px }` (or a relative value
+like `125%`, resolved against the 16px initial) rescales every `rem` length
+in the app — stylesheets and inline styles alike — which makes a root
+font-size rule the one-line way to scale a `rem`-based design up or down.
+Changing it at runtime recascades the document, and the basis survives
+window resizes. `em` is unaffected: it keeps resolving against the element's
+own inherited font-size.
+
 #### Generic font families on Android
 
 `monospace`, `ui-monospace`, `ui-sans-serif` and `ui-serif` resolve to a real
