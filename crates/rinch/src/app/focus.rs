@@ -63,6 +63,38 @@ impl RinchApp {
         changed
     }
 
+    /// Release the keyboard from a control that has just become **disabled**,
+    /// without running its `data-onchange` commit (issue #315).
+    ///
+    /// The **one** transition where that commit is suppressed. Everywhere else
+    /// it is load-bearing — a window blur deliberately *retains* the claim
+    /// precisely so alt-tabbing cannot fire `onchange` on every field (#226) —
+    /// but a control going disabled is not the user committing an edit, and
+    /// browsers agree: focus moves to the body and no `change` is dispatched.
+    ///
+    /// Deliberately **not** a general "blur without side effects". It drops
+    /// only `input_commit`; a registered target still hears `on_focus_lost`,
+    /// the DOM `:focus` and ring still clear, the popup teardown still runs.
+    /// Called from exactly one place ([`Self::live_focused_input_handler`]) so
+    /// a later caller reaching for it has to justify itself here first.
+    ///
+    /// The preedit is dropped rather than committed for two reasons: composed
+    /// text must not land in a field that just became disabled, and the
+    /// teardown's commit-before-blur re-enters `live_focused_input_handler`,
+    /// which would route straight back into this function. The `data-preedit`
+    /// attribute is cleared by the teardown's `clear_input_focus_attrs`
+    /// regardless.
+    pub(crate) fn release_focus_for_disabled(&mut self) {
+        self.focused_input_preedit = None;
+        let (_, work) = self.set_focus_target_deferred(FocusTarget::None);
+        if let Some(mut work) = work {
+            // The suppression, and the whole point of this function.
+            work.input_commit = None;
+            Self::fire_focus_work(Some(work));
+        }
+        self.scene_dirty = true;
+    }
+
     /// Dispatch the work collected by [`Self::set_focus_target_deferred`], if
     /// any. Returns whether an input's `data-onchange` commit actually fired —
     /// the input paths re-adopt the DOM value afterwards, because the handler
@@ -405,14 +437,41 @@ impl RinchApp {
         matches!(self.focus_target, FocusTarget::Node(_))
     }
 
-    /// The container id of the focused new-editor, if one holds focus. Drives the
-    /// runtime's caret-blink tick.
+    /// The container id of the focused new-editor, if one holds focus. Drives
+    /// the post-layout caret/selection overlay pass.
     #[cfg(feature = "desktop")]
     pub(crate) fn focused_editor_id(&self) -> Option<usize> {
         match self.focus_target {
             FocusTarget::Editor(id) => Some(id),
             _ => None,
         }
+    }
+
+    /// The editor whose caret should be *blinking* — [`Self::focused_editor_id`]
+    /// gated on the window actually having OS focus (issue #316, item 2).
+    ///
+    /// A blurred window used to keep blinking, and the blink is the runtime's
+    /// **only** `WaitUntil` arm, so a rinch app in the background woke twice a
+    /// second for ever — to animate a caret nobody is typing into, in a window
+    /// that does not have the keyboard.
+    ///
+    /// The gate belongs here and not in `focused_editor_id`: that one also
+    /// feeds the post-layout `update_all_carets` pass, and starving *it* would
+    /// drop the selection highlight along with the caret. `caret_blink_tick`
+    /// already restores the previously-blinked caret to solid when its target
+    /// changes, so returning `None` here does exactly the right thing — a
+    /// blurred window shows a **static** caret and arms no wake, and refocusing
+    /// resumes the blink from the solid phase.
+    ///
+    /// A method on `RinchApp` rather than an `if` in the runtime because the
+    /// runtime owns the winit loop and has no test harness; this is the
+    /// decision, and it is testable.
+    #[cfg(feature = "desktop")]
+    pub(crate) fn blinking_editor_id(&self) -> Option<usize> {
+        if !self.window_focused {
+            return None;
+        }
+        self.focused_editor_id()
     }
 
     /// Whether a rich-text editor currently holds focus. Kept (and repointed at

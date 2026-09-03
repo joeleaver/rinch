@@ -83,6 +83,31 @@ pub enum NodeContext {
         height: u32,
     },
     /// IFC root that needs Parley TreeBuilder measurement.
+    ///
+    /// **The IFC leaf invariant (#466).** Taffy 0.12 consults a measure
+    /// function only on a node with zero children (`taffy_tree.rs:303-327`,
+    /// the `(_, false)` arm of the `match (display_mode, has_children)`
+    /// dispatch). Therefore the Taffy node carrying a live `InlineRoot` must
+    /// be childless: the IFC root's own node when inline detachment emptied
+    /// it, or its dedicated measure-leaf when out-of-flow children remain
+    /// attached. After `setup_inline_formatting_contexts`, no Taffy node with
+    /// children carries `InlineRoot`, and every root discovered this pass has
+    /// its context on exactly one childless node.
+    ///
+    /// A non-leaf carrying this context does not merely measure wrong — the
+    /// measure is *structurally unreachable* (Taffy runs the block algorithm
+    /// instead), so an auto-height IFC root collapses to `h = 0`: the block
+    /// algorithm sums in-flow children, of which a root whose inline content
+    /// was detached has none. Block virtualization depends on the same
+    /// invariant — `estimated_height`'s early return lives *inside* the
+    /// measure closure (`layout_engine.rs`), so a non-leaf virtualized root
+    /// would silently report 0 instead of its estimate.
+    ///
+    /// `setup_inline_formatting_contexts` enforces this: it sweeps the stale
+    /// context off any non-leaf not (re)marked a root this pass, and a
+    /// `debug_assertions` validator
+    /// ([`crate::RinchDocument::ifc_leaf_invariant_violations`]) checks the
+    /// invariant after every setup pass.
     InlineRoot(usize), // stores the RawNodeId of the IFC root
 }
 
@@ -592,6 +617,31 @@ impl Node {
             self.computed_style.position,
             crate::computed_style::PositionValue::Static
         ) || !self.computed_style.transform.is_identity
+    }
+
+    /// Whether this box is taken **out of flow** — CSS 2.1 §9.3.
+    ///
+    /// An out-of-flow box is neither inline content nor in-flow block content,
+    /// and every inline-formatting-context decision has to say so explicitly:
+    /// per §9.2.1.1 it does not force anonymous block box generation, and per
+    /// §9.4.2 it does not break an inline formatting context — its inline
+    /// siblings carry on across it, on the same line.
+    ///
+    /// `ifc.rs` used to have no such predicate at all, and excluded these boxes
+    /// only *incidentally*: Stylo blockifies an out-of-flow box, so
+    /// [`Self::is_inline`] answers `false`. That is the right answer where the
+    /// question is "is this inline content" and the **wrong** one where it is
+    /// "does this break the flow" — which is issues #406 and #289.
+    ///
+    /// Keys on `position` alone. `PositionValue::Static` is the default, so a
+    /// text node — which never goes through style resolution — answers `false`,
+    /// which is what #342 was about when a wrong default hoisted text nodes.
+    pub fn is_out_of_flow(&self) -> bool {
+        matches!(
+            self.computed_style.position,
+            crate::computed_style::PositionValue::Absolute
+                | crate::computed_style::PositionValue::Fixed
+        )
     }
 
     /// Get the text content if this is a text node.

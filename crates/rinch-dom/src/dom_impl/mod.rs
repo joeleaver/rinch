@@ -1,7 +1,5 @@
 //! DomDocument implementation for rinch-dom.
 
-use std::collections::HashMap;
-
 use peniko::Brush;
 use servo_arc::Arc as ServoArc;
 
@@ -902,16 +900,31 @@ impl RinchDocument {
     }
 }
 
-/// Parse a CSS style string like "display: flex; gap: 8px" into key-value pairs.
-pub(super) fn parse_style_string(style: &str) -> HashMap<String, String> {
-    let mut result = HashMap::new();
+/// Parse a CSS style string like "display: flex; gap: 8px" into key-value
+/// pairs, **in declaration order**.
+///
+/// The order is the point (#265): the caller joins these back into the `style`
+/// attribute and the result is handed to Stylo as the element's declaration
+/// block, so the order in this `Vec` is the order the cascade resolves. A
+/// `HashMap` here made every rewrite of the attribute reshuffle it, which made
+/// `inset: 0` vs `left: 25px` a coin flip *per process*.
+pub(super) fn parse_style_string(style: &str) -> Vec<(String, String)> {
+    let mut result: Vec<(String, String)> = Vec::new();
     for part in style.split(';') {
         let part = part.trim();
         if part.is_empty() {
             continue;
         }
         if let Some((key, value)) = part.split_once(':') {
-            result.insert(key.trim().to_string(), value.trim().to_string());
+            let key = key.trim();
+            let value = value.trim();
+            // Replace in place rather than append, the way CSSOM collapses a
+            // property declared twice in one attribute: the last value wins but
+            // keeps the *first* declaration's position.
+            match result.iter_mut().find(|(k, _)| k == key) {
+                Some(slot) => slot.1 = value.to_string(),
+                None => result.push((key.to_string(), value.to_string())),
+            }
         }
     }
     result

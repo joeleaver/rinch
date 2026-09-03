@@ -91,7 +91,7 @@ impl RinchApp {
     pub fn handle_event(
         &mut self,
         event: PlatformEvent,
-        window_size: (u32, u32), // physical pixels, not logical
+        window_size: (u32, u32), // physical pixels (pointer coords are logical)
         scale_factor: f64,
     ) -> Vec<AppAction> {
         match event {
@@ -109,13 +109,21 @@ impl RinchApp {
 }
 ```
 
-`window_size` is always the **physical** surface size, and pointer coordinates
-carried by the mouse events are in the same physical units. Every shell
-converts it to the logical (CSS-pixel) layout viewport with the shared
-`rinch_platform::to_logical` — never by dividing inline — so that mount,
-resize and every other relayout agree on the same viewport. Inside `RinchApp`
-this conversion happens once per `handle_event` call via
-`RinchApp::layout_viewport`.
+`window_size` is always the **physical** surface size — the one genuinely
+physical quantity crossing this boundary. Every shell converts it to the
+logical (CSS-pixel) layout viewport with the shared `rinch_platform::to_logical`
+— never by dividing inline — so that mount, resize and every other relayout
+agree on the same viewport. Inside `RinchApp` this conversion happens once per
+`handle_event` call via `RinchApp::layout_viewport`.
+
+The **pointer** coordinates carried by `PlatformEvent` are the opposite: they
+are **logical on every host**, and it is each shell's job to convert before
+constructing the event, with `rinch_platform::to_logical_point`. The document is
+laid out in CSS pixels and `hit_test` probes that layout tree directly, so a
+shell that forwards its windowing system's physical pointer position displaces
+every click by the scale factor times its distance from the window origin
+(issue #299 — the desktop shell did exactly this until it was fixed).
+`MouseWheel`'s pixel delta converts the same way.
 
 **Platform backends** implement traits from `rinch-platform`:
 - `PlatformWindow` - Window creation, properties, frame buffer access

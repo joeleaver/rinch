@@ -5,7 +5,9 @@ use peniko::Color;
 use style::values::computed::TransitionProperty as StyloTransitionProperty;
 use style::values::generics::easing::TimingKeyword;
 
-use crate::computed_style::{DimensionValue, LengthPercentageAutoValue, LengthPercentageValue};
+use crate::computed_style::{
+    DimensionValue, LengthPercentageAutoValue, LengthPercentageValue, TransformValue,
+};
 
 // =============================================================================
 // TransitionProperty — which CSS properties can be transitioned
@@ -334,9 +336,76 @@ pub enum AnimatableValue {
     Dimension(DimensionValue),
     LengthPercentage(LengthPercentageValue),
     LengthPercentageAuto(LengthPercentageAutoValue),
-    Transform([f64; 6]),
+    Transform(AnimatableTransform),
     /// Component-based transform for correct interpolation of rotate, scale, etc.
-    TransformComponents(Vec<TransformOp>),
+    ///
+    /// The percentage translate rides alongside the ops rather than inside
+    /// them: a `TransformOp` is resolved by `compose_matrices`, which has no
+    /// box to resolve a percentage against.
+    TransformComponents {
+        ops: Vec<TransformOp>,
+        pct_translate_w: [f64; 2],
+        pct_translate_h: [f64; 2],
+    },
+}
+
+/// A transform captured for interpolation.
+///
+/// The composed matrix **plus** the percentage-translate coefficients that
+/// `TransformValue` deliberately keeps outside it, because a percentage
+/// translate cannot be resolved until the element's border box is known
+/// (#212).
+///
+/// Carrying only the matrix — which is what the transition machinery used to do
+/// — makes every percentage translate read as `0` for the whole duration of a
+/// transition (#403). Since the final translation is *linear* in these four
+/// coefficients, interpolating them alongside the six matrix entries is exact;
+/// there is no need to resolve them against the box first, and no way to, since
+/// diffing happens before layout.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct AnimatableTransform {
+    pub matrix: [f64; 6],
+    pub pct_translate_w: [f64; 2],
+    pub pct_translate_h: [f64; 2],
+}
+
+impl AnimatableTransform {
+    /// The interpolable projection of a computed transform.
+    pub fn from_style(tf: &TransformValue) -> Self {
+        Self {
+            matrix: tf.matrix,
+            pct_translate_w: tf.pct_translate_w,
+            pct_translate_h: tf.pct_translate_h,
+        }
+    }
+
+    /// Write an interpolated transform back into a computed style.
+    ///
+    /// `is_identity` is `false` unconditionally: an element mid-transition has
+    /// a transform even on the frame where it happens to compose to the
+    /// identity, and the flag also decides whether the element establishes a
+    /// stacking context — which must not flicker across the animation.
+    pub fn to_style(self) -> TransformValue {
+        TransformValue {
+            matrix: self.matrix,
+            is_identity: false,
+            pct_translate_w: self.pct_translate_w,
+            pct_translate_h: self.pct_translate_h,
+        }
+    }
+
+    fn lerp(&self, to: &AnimatableTransform, t: f64) -> Self {
+        let mix = |a: f64, b: f64| a + (b - a) * t;
+        Self {
+            matrix: std::array::from_fn(|i| mix(self.matrix[i], to.matrix[i])),
+            pct_translate_w: std::array::from_fn(|i| {
+                mix(self.pct_translate_w[i], to.pct_translate_w[i])
+            }),
+            pct_translate_h: std::array::from_fn(|i| {
+                mix(self.pct_translate_h[i], to.pct_translate_h[i])
+            }),
+        }
+    }
 }
 
 /// Individual transform operations for component-wise interpolation.
@@ -390,19 +459,84 @@ impl AnimatableValue {
             ) => Some(AnimatableValue::LengthPercentageAuto(
                 LengthPercentageAutoValue::Length(a + (b - a) * t),
             )),
+
+            // Percentage-to-percentage, for all three value types (#255).
+            //
+            // Until an authored keyframe stop could carry a percentage at all
+            // there was nothing to interpolate, so these arms did not exist —
+            // and adding `Percent` to the extractor without adding them would
+            // have made a percentage stop *step* at 50% instead of animating,
+            // via the `_ => None` snap below. Better than being dropped, but
+            // not the fix.
+            (
+                AnimatableValue::Dimension(DimensionValue::Percent(a)),
+                AnimatableValue::Dimension(DimensionValue::Percent(b)),
+            ) => Some(AnimatableValue::Dimension(DimensionValue::Percent(
+                a + (b - a) * t,
+            ))),
+            (
+                AnimatableValue::LengthPercentage(LengthPercentageValue::Percent(a)),
+                AnimatableValue::LengthPercentage(LengthPercentageValue::Percent(b)),
+            ) => Some(AnimatableValue::LengthPercentage(
+                LengthPercentageValue::Percent(a + (b - a) * t),
+            )),
+            (
+                AnimatableValue::LengthPercentageAuto(LengthPercentageAutoValue::Percent(a)),
+                AnimatableValue::LengthPercentageAuto(LengthPercentageAutoValue::Percent(b)),
+            ) => Some(AnimatableValue::LengthPercentageAuto(
+                LengthPercentageAutoValue::Percent(a + (b - a) * t),
+            )),
+
+            // `Zero` is unitless, so it pairs with a percentage as readily as
+            // with a length — `padding: 0` to `padding: 10%` is a legal
+            // animation and must not snap.
+            (
+                AnimatableValue::LengthPercentage(LengthPercentageValue::Zero),
+                AnimatableValue::LengthPercentage(LengthPercentageValue::Percent(b)),
+            ) => Some(AnimatableValue::LengthPercentage(
+                LengthPercentageValue::Percent(b * t),
+            )),
+            (
+                AnimatableValue::LengthPercentage(LengthPercentageValue::Percent(a)),
+                AnimatableValue::LengthPercentage(LengthPercentageValue::Zero),
+            ) => Some(AnimatableValue::LengthPercentage(
+                LengthPercentageValue::Percent(a * (1.0 - t)),
+            )),
+            (
+                AnimatableValue::LengthPercentage(LengthPercentageValue::Zero),
+                AnimatableValue::LengthPercentage(LengthPercentageValue::Zero),
+            ) => Some(AnimatableValue::LengthPercentage(
+                LengthPercentageValue::Zero,
+            )),
             (AnimatableValue::Transform(a), AnimatableValue::Transform(b)) => {
-                let mut result = [0.0_f64; 6];
-                for i in 0..6 {
-                    result[i] = a[i] + (b[i] - a[i]) * t as f64;
-                }
-                Some(AnimatableValue::Transform(result))
+                Some(AnimatableValue::Transform(a.lerp(b, t as f64)))
             }
-            (AnimatableValue::TransformComponents(a), AnimatableValue::TransformComponents(b)) => {
-                Some(AnimatableValue::TransformComponents(
-                    TransformOp::interpolate_lists(a, b, t as f64),
-                ))
+            (
+                AnimatableValue::TransformComponents {
+                    ops: a,
+                    pct_translate_w: aw,
+                    pct_translate_h: ah,
+                },
+                AnimatableValue::TransformComponents {
+                    ops: b,
+                    pct_translate_w: bw,
+                    pct_translate_h: bh,
+                },
+            ) => {
+                let mix = |x: f64, y: f64| x + (y - x) * t as f64;
+                Some(AnimatableValue::TransformComponents {
+                    ops: TransformOp::interpolate_lists(a, b, t as f64),
+                    pct_translate_w: [mix(aw[0], bw[0]), mix(aw[1], bw[1])],
+                    pct_translate_h: [mix(ah[0], bh[0]), mix(ah[1], bh[1])],
+                })
             }
-            // Incompatible types — snap immediately
+            // Incompatible types — snap immediately.
+            //
+            // A length against a percentage lands here on purpose: CSS
+            // interpolates that pair as a `calc()`, and there is no value in
+            // `ComputedStyle` that can hold one. Snapping is wrong, but it is
+            // the same wrong the transition path has always been, and
+            // inventing a resolution here would need the containing block.
             _ => None,
         }
     }

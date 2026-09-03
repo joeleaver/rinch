@@ -4,10 +4,12 @@
 //!
 //! * **`new` / `from_bytes`** — start a session from a fresh model, or join a peer's
 //!   saved CRDT.
-//! * **`record_local(before, after)`** — after the editor applies a local transaction,
-//!   project the `before → after` change onto the CRDT (immediate projection keeps the
-//!   `model ≡ project(model)` invariant and means there is never an unconfirmed backlog
-//!   to rebase).
+//! * **`record_local(schema, before, after)`** — after the editor applies a local
+//!   transaction, project the `before → after` change onto the CRDT (immediate
+//!   projection keeps the `model ≡ project(model)` invariant and means there is never an
+//!   unconfirmed backlog to rebase). A change the staged scope cannot express is refused
+//!   loud, and the next projectable edit re-bases on the CRDT and catches up — see
+//!   *Outbound stalls* below.
 //! * **`save_incremental` / `state_vector` / `sync_diff`** — produce something to send:
 //!   the next broadcast delta (the updates of the local transactions since the last
 //!   call), this replica's state vector, or the diff a peer at a given state vector is
@@ -18,6 +20,40 @@
 //!
 //! Because both peers rebuild from the same converged CRDT, their models converge. The
 //! session never consults the host DOM — it is pure model ↔ CRDT.
+//!
+//! ## Outbound stalls (issue #220)
+//!
+//! A local edit outside the staged A22 scope — pasting a table, wrapping in a
+//! `blockquote` — is refused by `record_local` with the CRDT untouched. But the *model*
+//! has already applied it, so from that moment the caller's `before` is a false
+//! description of the CRDT.
+//!
+//! Diffing against it was what turned one refused edit into a wedge. Every later call
+//! failed the block-count gate — **including the undo that was supposed to be the
+//! cure** — until the counts happened to realign by coincidence. And when they did, the
+//! diff skipped every block it believed unchanged, so an edit made during the wedge sat
+//! in the model and never reached the CRDT: `record_local` returned `Ok` on a document
+//! that no longer matched its own projection, with nothing reporting it. Silent
+//! divergence.
+//!
+//! `record_local` therefore treats the caller's `before` as a *hint*. If diffing against
+//! it fails, the change is re-projected against [`CollabDoc::to_doc`] — the CRDT's own
+//! read-back, which by construction describes what is really there. That heals every
+//! accumulated difference in one write, and it makes the failure honest: if the content
+//! really is out of scope the error names it (`Unsupported: blockquote`) instead of a
+//! block-count symptom.
+//!
+//! Once stalled, the hint is skipped entirely rather than tried first. The fast diff
+//! verifies only the block *count* and then skips every block the transaction did not
+//! touch, so an out-of-scope block that keeps its index — a `blockquote` wrapped around
+//! a paragraph in place — lets a later edit elsewhere pass, answer `Ok`, and clear the
+//! stall while the model and the CRDT still differ. `before` is known to be false from
+//! the moment of the first refusal; there is nothing left to trust in it.
+//!
+//! [`CollabSession::outbound_stall`] reports the state in between, so an app can say
+//! "not syncing — remove the table" rather than leaving the user to wonder. It is
+//! **not** poison: local-outbound-only, the shared CRDT is healthy throughout, inbound
+//! keeps working, and it clears itself on the next projectable edit.
 //!
 //! ## Poisoning (issue #196)
 //!
@@ -54,6 +90,8 @@
 //! and stays transient. Recovery in practice is a fresh session from a healthy peer's
 //! snapshot.
 
+#[cfg(feature = "test-util")]
+use yrs::ClientID;
 use yrs::updates::decoder::Decode;
 use yrs::updates::encoder::Encode;
 use yrs::{StateVector, Update};
@@ -78,6 +116,10 @@ pub struct CollabSession {
     /// The sticky poison error, set the moment an integrate leaves the CRDT
     /// unprojectable (see the module docs). `None` for a healthy session.
     poisoned: Option<CollabError>,
+    /// Why outbound is currently refusing, if it is — see
+    /// [`CollabSession::outbound_stall`] (issue #220). Cleared by the next successful
+    /// [`CollabSession::record_local`]; unrelated to `poisoned`.
+    stalled: Option<CollabError>,
 }
 
 impl CollabSession {
@@ -87,6 +129,7 @@ impl CollabSession {
         Ok(CollabSession {
             cdoc: CollabDoc::from_doc(&state.doc)?,
             poisoned: None,
+            stalled: None,
         })
     }
 
@@ -95,6 +138,30 @@ impl CollabSession {
         Ok(CollabSession {
             cdoc: CollabDoc::load(bytes)?,
             poisoned: None,
+            stalled: None,
+        })
+    }
+
+    /// [`CollabSession::new`] with this replica's yrs client id pinned — the
+    /// [`crate::testing`] seam's implementation. Never a production path; see that
+    /// module for why.
+    #[cfg(feature = "test-util")]
+    pub(crate) fn new_with_client_id(state: &EditorState, client_id: u64) -> Result<CollabSession> {
+        Ok(CollabSession {
+            cdoc: CollabDoc::from_doc_with_client_id(&state.doc, Some(ClientID::new(client_id)))?,
+            poisoned: None,
+            stalled: None,
+        })
+    }
+
+    /// [`CollabSession::from_bytes`] with this replica's yrs client id pinned — the
+    /// [`crate::testing`] seam's implementation. Never a production path.
+    #[cfg(feature = "test-util")]
+    pub(crate) fn from_bytes_with_client_id(bytes: &[u8], client_id: u64) -> Result<CollabSession> {
+        Ok(CollabSession {
+            cdoc: CollabDoc::load_with_client_id(bytes, Some(ClientID::new(client_id)))?,
+            poisoned: None,
+            stalled: None,
         })
     }
 
@@ -169,15 +236,101 @@ impl CollabSession {
     /// Project a just-applied local change (`before` = old `state.doc`, `after` = new
     /// `state.doc`) onto the CRDT. Fails loud on out-of-scope content.
     ///
-    /// An ordinary failure here is **not** sticky: the CRDT is untouched (the
-    /// projection is all-or-nothing, issue #194) and the offending *local* content can
-    /// be edited away (undo the table paste), after which projection resumes. On a
-    /// [poisoned](Self::is_poisoned) session, though, this refuses with the sticky
-    /// error before reading anything: a replica that cannot receive must not keep
+    /// The CRDT is untouched by a failure (the projection is all-or-nothing, issue
+    /// #194), and a failure is **not** sticky: edit the offending local content away and
+    /// the very next call resumes — carrying everything that accumulated meanwhile. On a
+    /// [poisoned](Self::is_poisoned) session, though, this refuses with the sticky error
+    /// before reading anything: a replica that cannot receive must not keep
     /// projecting-and-broadcasting as though it were converging (issue #196).
-    pub fn record_local(&mut self, before: &Node, after: &Node) -> Result<()> {
+    ///
+    /// # Recovering from a refused edit (issue #220)
+    ///
+    /// `before` is the caller's claim about what the CRDT holds, and after a refusal it
+    /// is a **false** claim: the model applied the edit, the CRDT did not. Diffing
+    /// against it was what wedged the session — every later call failed the block-count
+    /// gate, *including the undo that was supposed to be the cure*, until the counts
+    /// happened to realign. And when they did, the diff skipped every block it believed
+    /// unchanged, so an edit made during the wedge stayed in the model and never reached
+    /// the CRDT: `record_local` returned `Ok` on a document that no longer matched its
+    /// projection, with nothing reporting it. Silent divergence, which is the one thing
+    /// this crate exists to prevent.
+    ///
+    /// So the fast diff against `before` is only the *first* attempt. If it fails, the
+    /// change is re-projected against the CRDT's own read-back — the authoritative base,
+    /// which by construction describes what is really there — and that heals every
+    /// accumulated difference at once, not just the blocks this edit touched. If *that*
+    /// also fails the change really is out of scope, and the error names the actual
+    /// offending content (`Unsupported: blockquote`) rather than the block-count symptom
+    /// the old path reported.
+    ///
+    /// `schema` is a parameter rather than session state because
+    /// [`CollabSession`](Self) must stay `Send` and `Rc<Schema>` is not.
+    ///
+    /// The re-base reads the whole document, so a session left stalled by content the
+    /// caller never removes pays that on every edit. That is the intended trade: the
+    /// cheap path is unchanged for every session that is actually converging, and a
+    /// stalled one is a state the app is being told about via
+    /// [`Self::outbound_stall`].
+    pub fn record_local(&mut self, schema: &Schema, before: &Node, after: &Node) -> Result<()> {
         self.guard()?;
-        self.cdoc.project_change(before, after)
+        let fallback = match self.stalled.clone() {
+            // Already stalled: `before` is a *known*-false description of the CRDT, so
+            // the fast diff must not be tried at all. It verifies only the block count
+            // (`project_change` gate 1) and then skips every block the transaction did
+            // not touch — an `Rc`-identity prefix/suffix that is never compared against
+            // the CRDT. A stalled session whose out-of-scope block keeps its index and
+            // is left alone by the next edit therefore passes the fast path, answers
+            // `Ok`, and clears this very flag while the model and the CRDT still differ:
+            // `<paragraph>Zone<blockquote>two` against `<paragraph>Zone<paragraph>two`,
+            // silent, with `outbound_stall()` reporting healthy. Go straight to the
+            // authoritative base instead — which is also what makes the "a stalled
+            // session pays the read-back per edit" note below true.
+            Some(prev) => prev,
+            None => match self.cdoc.project_change(before, after) {
+                Ok(()) => return Ok(()),
+                Err(e) => e,
+            },
+        };
+        // The caller's `before` did not describe the CRDT. Re-base on what does.
+        // `to_doc` failing means the shared document is unprojectable — report it, but
+        // do not poison: poison is for *inbound* damage (issue #196), and this path has
+        // written nothing.
+        let base = match self.cdoc.to_doc(schema) {
+            Ok(base) => base,
+            Err(_) => {
+                self.stalled = Some(fallback.clone());
+                return Err(fallback);
+            }
+        };
+        match self.cdoc.project_change(&base, after) {
+            Ok(()) => {
+                self.stalled = None;
+                Ok(())
+            }
+            Err(e) => {
+                self.stalled = Some(e.clone());
+                Err(e)
+            }
+        }
+    }
+
+    /// Why this replica's **outbound** is currently refusing, if it is (issue #220).
+    ///
+    /// `Some` from the moment a local edit cannot be projected — content outside the
+    /// staged A22 scope (a table paste, a `blockquote` wrap) — until a later
+    /// [`Self::record_local`] succeeds. While it is `Some`, local edits are **not**
+    /// reaching peers; inbound integration is unaffected and the shared document is
+    /// healthy throughout.
+    ///
+    /// The cure is to remove the offending content, which the error names. This is
+    /// deliberately *not* [poison](Self::is_poisoned): it is local-outbound-only, the
+    /// shared CRDT is untouched, and it clears itself on the next projectable edit.
+    ///
+    /// An app can render this directly — "not syncing: {error}" — which is the whole
+    /// point: before, the app saw a block-count mismatch that named neither the cause
+    /// nor the cure.
+    pub fn outbound_stall(&self) -> Option<&CollabError> {
+        self.stalled.as_ref()
     }
 
     /// The next broadcast delta: the updates of every locally-projected transaction since

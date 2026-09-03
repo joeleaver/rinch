@@ -3,7 +3,7 @@
 
 use crate::computed_style::values::*;
 
-use super::color::{color_from_absolute, color_from_stylo};
+use super::color::color_from_computed;
 
 pub(super) fn visibility_from_stylo(
     vis: &style::properties::longhands::visibility::computed_value::T,
@@ -93,11 +93,13 @@ pub(super) fn transform_from_stylo(
     // Compose all operations into a single 2D affine matrix [a, b, c, d, e, f]
     let mut m = [1.0_f64, 0.0, 0.0, 1.0, 0.0, 0.0]; // identity
 
-    // Accumulate percentage-based translate values (resolved at paint time).
-    // These are stored separately and added to the matrix after resolving
-    // against element dimensions.
-    let mut translate_x_pct = 0.0_f64;
-    let mut translate_y_pct = 0.0_f64;
+    // The percentage part of a translate cannot be resolved here — the
+    // element's border box is not known until Taffy has run — so it is
+    // accumulated separately and folded in at paint time. What is accumulated
+    // is the *linear form* in (width, height): see `accumulate_pct` and the
+    // `TransformValue` type doc (#212).
+    let mut pct_w = [0.0_f64; 2];
+    let mut pct_h = [0.0_f64; 2];
 
     for op in &*transform.0 {
         let op_matrix = match op {
@@ -122,19 +124,31 @@ pub(super) fn transform_from_stylo(
             GenericTransformOperation::ScaleY(sy) => [1.0, 0.0, 0.0, *sy as f64, 0.0, 0.0],
             GenericTransformOperation::TranslateX(tx) => {
                 let (px, pct) = length_or_pct_split(tx);
-                translate_x_pct += pct;
+                accumulate_pct(&m, pct, 0.0, &mut pct_w, &mut pct_h);
                 [1.0, 0.0, 0.0, 1.0, px, 0.0]
             }
             GenericTransformOperation::TranslateY(ty) => {
-                let (px, pct) = length_or_pct_split(ty);
-                translate_y_pct += pct;
-                [1.0, 0.0, 0.0, 1.0, 0.0, px]
+                let (py, pct) = length_or_pct_split(ty);
+                accumulate_pct(&m, 0.0, pct, &mut pct_w, &mut pct_h);
+                [1.0, 0.0, 0.0, 1.0, 0.0, py]
             }
             GenericTransformOperation::Translate(tx, ty) => {
                 let (tx_px, tx_pct) = length_or_pct_split(tx);
                 let (ty_px, ty_pct) = length_or_pct_split(ty);
-                translate_x_pct += tx_pct;
-                translate_y_pct += ty_pct;
+                accumulate_pct(&m, tx_pct, ty_pct, &mut pct_w, &mut pct_h);
+                [1.0, 0.0, 0.0, 1.0, tx_px, ty_px]
+            }
+            // `translate3d()` is the 2D translate with a z the flattening
+            // drops. It is handled here rather than falling into the catch-all
+            // below *because* it carries two `LengthPercentage`s: routed to
+            // the `_ => identity` arm it would silently lose the whole
+            // translation, and added later without this accumulation it would
+            // reintroduce #212. The other 3D operations stay unimplemented
+            // (#405).
+            GenericTransformOperation::Translate3D(tx, ty, _tz) => {
+                let (tx_px, tx_pct) = length_or_pct_split(tx);
+                let (ty_px, ty_pct) = length_or_pct_split(ty);
+                accumulate_pct(&m, tx_pct, ty_pct, &mut pct_w, &mut pct_h);
                 [1.0, 0.0, 0.0, 1.0, tx_px, ty_px]
             }
             GenericTransformOperation::SkewX(angle) => {
@@ -164,7 +178,7 @@ pub(super) fn transform_from_stylo(
         m = [a, b, c, d, e, f];
     }
 
-    let has_pct = translate_x_pct.abs() > 1e-9 || translate_y_pct.abs() > 1e-9;
+    let has_pct = pct_w.iter().chain(&pct_h).any(|c| c.abs() > 1e-9);
 
     let is_identity = !has_pct
         && (m[0] - 1.0).abs() < 1e-6
@@ -177,14 +191,46 @@ pub(super) fn transform_from_stylo(
     TransformValue {
         matrix: m,
         is_identity,
-        translate_x_pct,
-        translate_y_pct,
+        pct_translate_w: pct_w,
+        pct_translate_h: pct_h,
     }
 }
 
+/// Fold one percentage translate into the running coefficients, in the frame
+/// the functions before it establish.
+///
+/// `m` must be the matrix as it stands *before* this operation is composed in.
+/// A translate leaves the linear part alone, so `m[0..4]` is the `L` this
+/// offset is expressed in; reading it after the multiply happens to give the
+/// same value today and would be wrong the moment anyone reorders the loop.
+///
+/// `px`/`py` are fractions (0.5 = 50%). The contribution to the final `(e, f)`
+/// is `L·(px·W, py·H)`, which is linear in `W` and `H` — hence four
+/// coefficients rather than a function list (#212).
+///
+/// Shared with the keyframe extractor so an authored `translate(50%, 0)` stop
+/// accumulates by exactly the same rule the cascade uses — the two must agree
+/// or a transform would jump the moment an animation starts.
+pub(crate) fn accumulate_pct(
+    m: &[f64; 6],
+    px: f64,
+    py: f64,
+    pct_w: &mut [f64; 2],
+    pct_h: &mut [f64; 2],
+) {
+    pct_w[0] += px * m[0];
+    pct_w[1] += px * m[1];
+    pct_h[0] += py * m[2];
+    pct_h[1] += py * m[3];
+}
+
 /// Split a LengthPercentage into (px_value, percentage_fraction).
-/// Returns (px, 0.0) for lengths, (0.0, fraction) for percentages,
-/// (px, fraction) for calc() combinations.
+///
+/// Returns `(px, 0.0)` for a plain length and `(0.0, fraction)` for a plain
+/// percentage. A genuinely mixed `calc()` — one stylo could not simplify to a
+/// single leaf — answers **`(0.0, 0.0)`**, i.e. no translation at all, because
+/// `to_length()` and `to_percentage()` both return `None` for it. That is
+/// issue #404; nothing in the workspace currently writes such a calc.
 fn length_or_pct_split(lp: &style::values::computed::LengthPercentage) -> (f64, f64) {
     let px = lp.to_length().map_or(0.0, |l| l.px() as f64);
     let pct = lp.to_percentage().map_or(0.0, |p| p.0 as f64);
@@ -211,11 +257,7 @@ pub(super) fn text_shadow_from_stylo(
         .0
         .iter()
         .map(|s| {
-            let color = if s.color.is_currentcolor() {
-                color_from_absolute(text_color)
-            } else {
-                color_from_stylo(&s.color)
-            };
+            let color = color_from_computed(&s.color, text_color);
             TextShadowValue {
                 offset_x: s.horizontal.px(),
                 offset_y: s.vertical.px(),
@@ -234,11 +276,7 @@ pub(super) fn box_shadow_from_stylo(
         .0
         .iter()
         .map(|s| {
-            let color = if s.base.color.is_currentcolor() {
-                color_from_absolute(text_color)
-            } else {
-                color_from_stylo(&s.base.color)
-            };
+            let color = color_from_computed(&s.base.color, text_color);
             BoxShadowValue {
                 offset_x: s.base.horizontal.px(),
                 offset_y: s.base.vertical.px(),
@@ -301,11 +339,7 @@ pub(super) fn background_from_stylo(
     }
 
     // Fall back to background-color
-    let color = if bg.background_color.is_currentcolor() {
-        color_from_absolute(text_color)
-    } else {
-        color_from_stylo(&bg.background_color)
-    };
+    let color = color_from_computed(&bg.background_color, text_color);
     match color {
         Some(c) => BackgroundValue::Color(c),
         None => BackgroundValue::None,
@@ -349,11 +383,7 @@ fn gradient_stops_from_stylo(
     for (i, item) in items.iter().enumerate() {
         match item {
             GenericGradientItem::SimpleColorStop(color) => {
-                let c = if color.is_currentcolor() {
-                    color_from_absolute(text_color)
-                } else {
-                    color_from_stylo(color)
-                };
+                let c = color_from_computed(color, text_color);
                 // Auto-distribute position
                 let offset = if total <= 1 {
                     0.0
@@ -363,11 +393,7 @@ fn gradient_stops_from_stylo(
                 stops.push(GradientStop { offset, color: c });
             }
             GenericGradientItem::ComplexColorStop { color, position } => {
-                let c = if color.is_currentcolor() {
-                    color_from_absolute(text_color)
-                } else {
-                    color_from_stylo(color)
-                };
+                let c = color_from_computed(color, text_color);
                 let offset = if let Some(pct) = position.to_percentage() {
                     pct.0
                 } else if let Some(len) = position.to_length() {

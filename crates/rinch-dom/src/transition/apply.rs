@@ -1,8 +1,8 @@
 //! Apply interpolated transition values back to ComputedStyle.
 
-use crate::computed_style::{BackgroundValue, ComputedStyle, TransformValue};
+use crate::computed_style::{BackgroundValue, ComputedStyle};
 
-use super::types::{AnimatableValue, TransitionProperty, compose_matrices};
+use super::types::{AnimatableTransform, AnimatableValue, TransitionProperty, compose_matrices};
 
 /// Write an interpolated AnimatableValue into the correct ComputedStyle field.
 pub fn apply_value_to_style(
@@ -89,22 +89,23 @@ pub fn apply_value_to_style(
         (TransitionProperty::FontSize, AnimatableValue::Float(v)) => {
             style.font_size = *v;
         }
-        (TransitionProperty::Transform, AnimatableValue::Transform(m)) => {
-            style.transform = TransformValue {
-                matrix: *m,
-                is_identity: false,
-                translate_x_pct: 0.0,
-                translate_y_pct: 0.0,
-            };
+        (TransitionProperty::Transform, AnimatableValue::Transform(tf)) => {
+            style.transform = tf.to_style();
         }
-        (TransitionProperty::Transform, AnimatableValue::TransformComponents(ops)) => {
-            let matrix = compose_matrices(ops);
-            style.transform = TransformValue {
-                matrix,
-                is_identity: false,
-                translate_x_pct: 0.0,
-                translate_y_pct: 0.0,
-            };
+        (
+            TransitionProperty::Transform,
+            AnimatableValue::TransformComponents {
+                ops,
+                pct_translate_w,
+                pct_translate_h,
+            },
+        ) => {
+            style.transform = AnimatableTransform {
+                matrix: compose_matrices(ops),
+                pct_translate_w: *pct_translate_w,
+                pct_translate_h: *pct_translate_h,
+            }
+            .to_style();
         }
         _ => {}
     }

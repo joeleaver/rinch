@@ -1062,9 +1062,13 @@ impl ApplicationHandler for App {
                 self.prev_mouse = self.mouse_phys;
                 self.mouse_phys = (px, py);
 
-                // Always send mouse move to rinch (for hover effects)
+                // Always send mouse move to rinch (for hover effects).
+                // `PlatformEvent` pointer coordinates are logical on every host
+                // (#299) — winit reports physical, so divide before handing them
+                // over, exactly as the desktop shell does.
+                let (lx, ly) = self.logical_mouse();
                 self.pending_events
-                    .push(PlatformEvent::MouseMove { x: px, y: py });
+                    .push(PlatformEvent::MouseMove { x: lx, y: ly });
             }
 
             WindowEvent::PointerButton { state, button, .. } => {
@@ -1080,11 +1084,13 @@ impl ApplicationHandler for App {
                     }
                     _ => return,
                 };
-                let (px, py) = self.mouse_phys;
+                // Logical, like every other `PlatformEvent` coordinate (#299) —
+                // and the same pair `wants_mouse` is already asked with, so the
+                // question and the event can no longer disagree at HiDPI.
+                let (lx, ly) = self.logical_mouse();
 
                 match state {
                     ElementState::Pressed => {
-                        let (lx, ly) = self.logical_mouse();
                         let wants_ui = self
                             .rinch_ctx
                             .as_ref()
@@ -1092,8 +1098,8 @@ impl ApplicationHandler for App {
 
                         if wants_ui {
                             self.pending_events.push(PlatformEvent::MouseDown {
-                                x: px,
-                                y: py,
+                                x: lx,
+                                y: ly,
                                 button: platform_btn,
                             });
                         } else if platform_btn == PlatformMouseButton::Left {
@@ -1105,8 +1111,8 @@ impl ApplicationHandler for App {
                             self.dragging = false;
                         } else {
                             self.pending_events.push(PlatformEvent::MouseUp {
-                                x: px,
-                                y: py,
+                                x: lx,
+                                y: ly,
                                 button: platform_btn,
                             });
                         }
@@ -1115,9 +1121,13 @@ impl ApplicationHandler for App {
             }
 
             WindowEvent::MouseWheel { delta, .. } => {
+                // A `LineDelta`'s `* 40.0` is already a logical-pixel convention;
+                // a `PixelDelta` is a *physical* distance and divides like a
+                // position does, or a HiDPI trackpad scrolls `scale` times too
+                // far (#299).
                 let scroll_y = match delta {
                     winit::event::MouseScrollDelta::LineDelta(_, y) => y as f64 * 40.0,
-                    winit::event::MouseScrollDelta::PixelDelta(pos) => pos.y,
+                    winit::event::MouseScrollDelta::PixelDelta(pos) => pos.y / self.scale_factor(),
                 };
                 let (lx, ly) = self.logical_mouse();
                 let wants_ui = self
@@ -1126,10 +1136,9 @@ impl ApplicationHandler for App {
                     .is_some_and(|ctx| ctx.wants_mouse(lx, ly));
 
                 if wants_ui {
-                    let (px, py) = self.mouse_phys;
                     self.pending_events.push(PlatformEvent::MouseWheel {
-                        x: px,
-                        y: py,
+                        x: lx,
+                        y: ly,
                         delta_x: 0.0,
                         delta_y: scroll_y,
                     });

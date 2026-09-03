@@ -8,6 +8,7 @@ mod contenteditable;
 pub mod image;
 mod layer_bounds;
 pub mod painter;
+pub mod scrollbar;
 mod select;
 mod svg;
 mod text;
@@ -288,6 +289,58 @@ pub fn ifc_content_box_offset(tree: &NodeTree, node: &Node) -> (f32, f32) {
     )
 }
 
+/// A box whose IFC has a live inline layout is drawn **by that IFC and by
+/// nothing else** — not by a tree-order walk, not by a stacking sequence
+/// (#365).
+///
+/// This replaced a positional predicate that had two independent ways to miss:
+///
+/// ```text
+/// skip_ifc_children && kind != PaintKind::StackingContext && child.ifc_root == Some(node_id)
+/// ```
+///
+/// The third term can never match for a subtree hoisted to an *ancestor* — the
+/// box's `ifc_root` names its own IFC, not the node being painted — and the
+/// second excluded any inline-level box that is itself a stacking context,
+/// even as a direct child of the node doing the painting. Either miss drew the
+/// box twice: once by `paint_inline_layout` at the IFC root's **content**
+/// origin, once by the stacking sequence at its **border-box** origin, exactly
+/// one padding+border apart. `position: relative` alone is enough to reach it
+/// (it makes an inline-block `is_positioned_z_auto`), so
+/// `<button style="position: relative">` inside a padded paragraph — the
+/// ordinary tooltip-anchor idiom — reproduced it.
+///
+/// `text_layout.is_some()` is load-bearing, not a nicety: an IFC root that is
+/// virtualized (`estimated_height`) or has no cached layout draws nothing at
+/// all, and skipping its children there would make them **vanish** rather than
+/// double. That is what the old `skip_ifc_children` flag was standing in for,
+/// positionally and only at the sites that happened to pass it.
+///
+/// **Known divergence.** The IFC's draw is the survivor, so an inline-level
+/// box paints in *inline order* rather than at its `z-index` — visible for
+/// something like `<button style="position: relative; z-index: -1">` inside
+/// text. Preserving z-order instead means making the hoisted entry the
+/// survivor and having `paint_inline_layout` skip boxes that
+/// `paints_at_stacking_root`, which needs the offset correction below to be
+/// exactly right first. Tracked separately; the simple rule is correct about
+/// *where* and *how many*, which is what was broken.
+///
+/// **Caveat (#366).** The invariant assumes the stamp is honest, and today it
+/// is not always: `mark_inline_descendants` continues past a block-level child
+/// where `walk_inline_children` breaks, so an inline-level box after a block
+/// sibling inside an inline element carries an `ifc_root` whose IFC never
+/// draws it. Such a box satisfies this predicate and paints **nowhere**
+/// (before this guard it painted once at the viewport origin — garbage of a
+/// different shape; hit testing tapped it somewhere else again either way).
+/// If a box vanishes and its markup matches that shape, the bug is #366's
+/// overmark, not a new miss here.
+pub(crate) fn drawn_by_its_ifc(tree: &NodeTree, child: &Node) -> bool {
+    child
+        .ifc_root
+        .and_then(|r| tree.get(r))
+        .is_some_and(|r| r.text_layout.is_some())
+}
+
 /// Compose a node's CSS transform onto `parent_transform`, applied about the
 /// node's transform-origin. Percentage-based translate values are resolved
 /// against the node's layout box (so they resolve to 0 on a collapsed axis).
@@ -313,11 +366,15 @@ pub fn compose_node_transform(
         return parent_transform;
     }
     let mut m = tf.matrix;
-    // Resolve percentage-based translate against element dimensions
-    if tf.translate_x_pct.abs() > 1e-9 || tf.translate_y_pct.abs() > 1e-9 {
-        m[4] += tf.translate_x_pct * node.layout.width as f64;
-        m[5] += tf.translate_y_pct * node.layout.height as f64;
-    }
+    // A percentage translate resolves against the element's own border box —
+    // but *in the frame its position in the function list establishes*, so its
+    // contribution is a linear form in the box's width and height, not a pair
+    // of pixel offsets added to the end of the composed matrix (#212).
+    // `TransformValue` carries the four coefficients; this is where the box
+    // they multiply finally arrives.
+    let (w, h) = (node.layout.width as f64, node.layout.height as f64);
+    m[4] += tf.pct_translate_w[0] * w + tf.pct_translate_h[0] * h;
+    m[5] += tf.pct_translate_w[1] * w + tf.pct_translate_h[1] * h;
     // The translate components are *lengths*: `m[4]`/`m[5]` come from the
     // stylesheet in CSS px and the percentage part resolves against the CSS-px
     // layout box, so both need converting to the physical-pixel space this
@@ -770,17 +827,14 @@ fn paint_children_with_stacking(
     font_cx: &mut parley::FontContext,
     layout_cx: &mut parley::LayoutContext<Brush>,
     node_transform: Affine,
-    skip_ifc_children: bool,
 ) {
     let Some(node) = tree.get(node_id) else {
         return;
     };
 
-    // Content this node has already drawn as inline boxes, via
-    // `paint_inline_layout`: painting it again as a box would double it.
-    let already_drawn_inline = |child: &Node, kind: PaintKind| {
-        skip_ifc_children && kind != PaintKind::StackingContext && child.ifc_root == Some(node_id)
-    };
+    // Content already drawn as inline boxes, via `paint_inline_layout`:
+    // painting it again as a box would double it. See `drawn_by_its_ifc`.
+    let already_drawn_inline = |child: &Node, _kind: PaintKind| drawn_by_its_ifc(tree, child);
 
     let is_body = node_id == tree.body_id;
     if is_body || node.creates_stacking_context() {
@@ -918,7 +972,6 @@ fn paint_node(
                 font_cx,
                 layout_cx,
                 parent_transform,
-                false,
             );
         } else if (layout.width == 0.0) != (layout.height == 0.0) {
             // A real box collapsed to zero in one dimension (e.g. an
@@ -956,7 +1009,6 @@ fn paint_node(
                 font_cx,
                 layout_cx,
                 node_transform,
-                false,
             );
 
             if has_opacity {
@@ -1043,7 +1095,6 @@ fn paint_node(
             font_cx,
             layout_cx,
             node_transform,
-            false,
         );
         return;
     }
@@ -1643,7 +1694,6 @@ fn paint_node(
                     font_cx,
                     layout_cx,
                     node_transform,
-                    true, // skip IFC children
                 );
             } else {
                 // Normal paint path: recurse into all children
@@ -1659,7 +1709,6 @@ fn paint_node(
                     font_cx,
                     layout_cx,
                     node_transform,
-                    false,
                 );
             }
 
@@ -1671,140 +1720,89 @@ fn paint_node(
             //
             // Both axes, from one set of metrics (#178): thickness 6, margin 2,
             // minimum thumb 20, 40% black, fully rounded — the numbers the
-            // vertical bar has always used, so the two read as one feature. The
-            // horizontal bar appears on exactly the condition the vertical one
-            // does, read on `overflow-x`: scrollable (`scroll` or `auto` — rinch
-            // draws a thumb and no track, so there is nothing for `scroll` to
-            // show when the content fits) and overflowing.
+            // vertical bar has always used, so the two read as one feature.
             //
-            // Gated up front so a node that scrolls on neither axis — almost
-            // every node — pays two enum checks and does not walk its children
-            // measuring extents nothing will read.
+            // The geometry itself lives in `paint::scrollbar`, shared with the
+            // desktop input path, because the two used to derive it separately
+            // and had drifted apart (#400): a drag did not move the thumb the
+            // distance the pointer moved. Anything about *where* a bar is
+            // belongs there; what is left here is how it is drawn.
+            //
+            // Gated up front on the two overflow enums captured before the
+            // children were painted, so a node that scrolls on neither axis —
+            // almost every node — pays two enum checks and nothing else.
             if matches!(overflow_y, OverflowValue::Scroll | OverflowValue::Auto)
                 || matches!(overflow_x, OverflowValue::Scroll | OverflowValue::Auto)
             {
                 let node = tree.get(node_id).unwrap(); // re-borrow after children done
-                let cs = &node.computed_style;
-                // Taffy child.layout.{x,y} are relative to the parent's border
-                // box, so the content extents include the leading padding+border
-                // offset. Subtract it to get content-relative extents.
-                let content_top =
-                    (cs.padding_top.to_px() + cs.border_top_width.to_px()) as f64 * scale;
-                let content_left =
-                    (cs.padding_left.to_px() + cs.border_left_width.to_px()) as f64 * scale;
-                let mut content_height: f64 = 0.0;
-                let mut content_width: f64 = 0.0;
-                for &child_id in &node.children {
-                    if let Some(child) = tree.get(child_id) {
-                        let bottom =
-                            (child.layout.y + child.layout.height) as f64 * scale - content_top;
-                        if bottom > content_height {
-                            content_height = bottom;
-                        }
-                        let right =
-                            (child.layout.x + child.layout.width) as f64 * scale - content_left;
-                        if right > content_width {
-                            content_width = right;
-                        }
-                    }
-                }
-                // Visible content area = layout extent minus padding and border
-                let pad_v = (cs.padding_top.to_px() + cs.padding_bottom.to_px()) as f64 * scale;
-                let border_v =
-                    (cs.border_top_width.to_px() + cs.border_bottom_width.to_px()) as f64 * scale;
-                let visible_h = (h - pad_v - border_v).max(0.0);
-                let pad_h = (cs.padding_left.to_px() + cs.padding_right.to_px()) as f64 * scale;
-                let border_h =
-                    (cs.border_left_width.to_px() + cs.border_right_width.to_px()) as f64 * scale;
-                let visible_w = (w - pad_h - border_h).max(0.0);
+                let bars = scrollbar::scrollbars(tree, node_id, scale);
+                let thickness = bars.thickness;
+                let margin = bars.margin;
 
-                let show_vertical =
-                    matches!(overflow_y, OverflowValue::Scroll | OverflowValue::Auto)
-                        && content_height > visible_h;
-                let show_horizontal =
-                    matches!(overflow_x, OverflowValue::Scroll | OverflowValue::Auto)
-                        && content_width > visible_w;
-
-                let thickness = 6.0 * scale;
-                let margin = 2.0 * scale;
-                let min_thumb = 20.0 * scale;
-                let thumb_color = AlphaColor::<Srgb>::new([0.0, 0.0, 0.0, 0.4_f32]);
-                // The corner. With both bars up, each track gives up the other
-                // bar's footprint at its far end so the two thumbs cannot pile
-                // into the same square. Nothing is painted there — hit-testing
-                // agrees, giving the corner to neither bar.
-                let v_corner = if show_horizontal {
-                    thickness + margin
-                } else {
-                    0.0
-                };
-                let h_corner = if show_vertical {
-                    thickness + margin
-                } else {
-                    0.0
+                // The thumb's colour follows `--rinch-scrollbar-color`, or the
+                // container's own palette when that says `auto` (#416).
+                // `--rinch-scrollbar-width: none` reaches here as "no bars",
+                // so nothing below runs for it.
+                let mut fill_rounded = |rect: Rect, colour: AlphaColor<Srgb>| {
+                    let shape = RoundedRect::from_rect(rect, thickness * 0.5);
+                    painter.fill(
+                        Fill::NonZero,
+                        node_transform,
+                        &Brush::Solid(colour),
+                        &shape.into(),
+                    );
                 };
 
-                if show_vertical {
+                if let Some(track) = bars.vertical {
                     let scrollbar_x = x + w - thickness - margin;
-                    let visible_ratio = visible_h / content_height;
-                    let max_scroll = content_height - visible_h;
-                    let scroll_ratio = if max_scroll > 0.0 {
-                        (node.scroll_offset.1 * scale / max_scroll).clamp(0.0, 1.0)
-                    } else {
-                        0.0
-                    };
-
-                    let track_height = (h - margin * 2.0 - v_corner).max(0.0);
-                    let thumb_height = (track_height * visible_ratio).max(min_thumb);
-                    let thumb_travel = (track_height - thumb_height).max(0.0);
-                    let thumb_y = y + margin + thumb_travel * scroll_ratio;
-
-                    let thumb_rect = RoundedRect::from_rect(
+                    // A track is only painted when asked for: rinch's bar is an
+                    // overlay, and a track under it would change the look of
+                    // every existing app.
+                    if let Some(track_color) = bars.track_color {
+                        fill_rounded(
+                            Rect::new(
+                                scrollbar_x,
+                                y + track.track_start,
+                                scrollbar_x + thickness,
+                                y + track.track_start + track.track_len,
+                            ),
+                            track_color,
+                        );
+                    }
+                    let thumb_y = y + track.thumb_start(node.scroll_offset.1 * scale);
+                    fill_rounded(
                         Rect::new(
                             scrollbar_x,
                             thumb_y,
                             scrollbar_x + thickness,
-                            thumb_y + thumb_height,
+                            thumb_y + track.thumb_len,
                         ),
-                        thickness * 0.5,
-                    );
-                    painter.fill(
-                        Fill::NonZero,
-                        node_transform,
-                        &Brush::Solid(thumb_color),
-                        &thumb_rect.into(),
+                        bars.thumb_color,
                     );
                 }
 
-                if show_horizontal {
+                if let Some(track) = bars.horizontal {
                     let scrollbar_y = y + h - thickness - margin;
-                    let visible_ratio = visible_w / content_width;
-                    let max_scroll = content_width - visible_w;
-                    let scroll_ratio = if max_scroll > 0.0 {
-                        (node.scroll_offset.0 * scale / max_scroll).clamp(0.0, 1.0)
-                    } else {
-                        0.0
-                    };
-
-                    let track_width = (w - margin * 2.0 - h_corner).max(0.0);
-                    let thumb_width = (track_width * visible_ratio).max(min_thumb);
-                    let thumb_travel = (track_width - thumb_width).max(0.0);
-                    let thumb_x = x + margin + thumb_travel * scroll_ratio;
-
-                    let thumb_rect = RoundedRect::from_rect(
+                    if let Some(track_color) = bars.track_color {
+                        fill_rounded(
+                            Rect::new(
+                                x + track.track_start,
+                                scrollbar_y,
+                                x + track.track_start + track.track_len,
+                                scrollbar_y + thickness,
+                            ),
+                            track_color,
+                        );
+                    }
+                    let thumb_x = x + track.thumb_start(node.scroll_offset.0 * scale);
+                    fill_rounded(
                         Rect::new(
                             thumb_x,
                             scrollbar_y,
-                            thumb_x + thumb_width,
+                            thumb_x + track.thumb_len,
                             scrollbar_y + thickness,
                         ),
-                        thickness * 0.5,
-                    );
-                    painter.fill(
-                        Fill::NonZero,
-                        node_transform,
-                        &Brush::Solid(thumb_color),
-                        &thumb_rect.into(),
+                        bars.thumb_color,
                     );
                 }
             }
@@ -1818,9 +1816,12 @@ fn paint_node(
                 if cs.filter_brightness != 1.0 {
                     let brightness = cs.filter_brightness;
                     if brightness < 1.0 {
-                        // Darken: overlay black with alpha = 1.0 - brightness
-                        let alpha = ((1.0 - brightness).clamp(0.0, 1.0) * 255.0) as u8;
-                        let dark = AlphaColor::<Srgb>::from_rgba8(0, 0, 0, alpha);
+                        // Darken: overlay black with alpha = 1.0 - brightness.
+                        // Hand the painter the float and let it do the single
+                        // 8-bit quantisation, by rounding — `x as u8` truncated,
+                        // biasing every filtered element one level light (#260).
+                        let dark = AlphaColor::<Srgb>::BLACK
+                            .with_alpha((1.0 - brightness).clamp(0.0, 1.0));
                         if radius > 0.0 {
                             let rrect = rect.to_rounded_rect(radii);
                             painter.fill_color(Fill::NonZero, node_transform, dark, &rrect.into());
@@ -1828,9 +1829,10 @@ fn paint_node(
                             painter.fill_color(Fill::NonZero, node_transform, dark, &rect.into());
                         }
                     } else if brightness > 1.0 {
-                        // Brighten: overlay white with alpha proportional to excess brightness
-                        let alpha = ((brightness - 1.0).clamp(0.0, 1.0) * 255.0) as u8;
-                        let light = AlphaColor::<Srgb>::from_rgba8(255, 255, 255, alpha);
+                        // Brighten: overlay white with alpha proportional to
+                        // excess brightness. Same rounding note as above.
+                        let light = AlphaColor::<Srgb>::WHITE
+                            .with_alpha((brightness - 1.0).clamp(0.0, 1.0));
                         if radius > 0.0 {
                             let rrect = rect.to_rounded_rect(radii);
                             painter.fill_color(Fill::NonZero, node_transform, light, &rrect.into());

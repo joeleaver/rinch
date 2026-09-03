@@ -1529,6 +1529,30 @@ pub fn setup_event_delegation(doc: &WebDocument) {
         if let Some(target) = event.target()
             && let Ok(el) = target.dyn_into::<web_sys::Element>()
         {
+            // `data-nofocus`: this press takes the click but not the keyboard
+            // (issue #312). `preventDefault()` on the pointerdown suppresses the
+            // browser's own focus change — the mechanism the desktop backend's
+            // claim walk now mirrors, and the one an editor toolbar has always
+            // needed here too: a `<button>` in a browser is focusable by
+            // default, so pressing Bold blurs the editor it acts on and the
+            // selection the command reads is gone.
+            //
+            // `data-rid` dispatch happens below in this same listener, so the
+            // click is unaffected. Matched with `closest`, so a whole toolbar
+            // can carry the attribute once — the same "anywhere on the
+            // ancestor chain" rule desktop applies. The `:not(…"false" i)` is
+            // the boolean-attribute rule desktop's `node_is_nofocus` applies:
+            // present means on whatever the value, and only the explicit
+            // `"false"` (any case) opts out.
+            if el
+                .closest("[data-nofocus]:not([data-nofocus=\"false\" i])")
+                .ok()
+                .flatten()
+                .is_some()
+            {
+                event.prevent_default();
+            }
+
             // Clear render surface focus if click is outside any surface
             if rinch::render_surface::focused_surface_id().is_some()
                 && el.closest("[data-render-surface]").ok().flatten().is_none()
@@ -1956,14 +1980,12 @@ pub fn setup_event_delegation(doc: &WebDocument) {
             return;
         }
 
-        let key_data = events::KeyEventData {
-            key: event.key(),
-            code: event.code(),
-            ctrl: event.ctrl_key() || event.meta_key(),
-            shift: event.shift_key(),
-            alt: event.alt_key(),
-            meta: event.meta_key(),
-        };
+        let key_data = events::KeyEventData::new(event.key(), event.code()).with_modifiers(
+            event.ctrl_key() || event.meta_key(),
+            event.shift_key(),
+            event.alt_key(),
+            event.meta_key(),
+        );
         if events::dispatch_keyboard_event(&key_data) {
             event.prevent_default();
             event.stop_propagation();
@@ -2021,9 +2043,29 @@ pub fn setup_event_delegation(doc: &WebDocument) {
         .unwrap();
     keydown_closure.forget();
 
-    // keyup: route to a focused render surface (games need key-release). No app
-    // keyup delegation path exists, so this only acts when a surface is focused.
+    // keyup: the document-level interceptor first, then a focused render surface
+    // (games need key-release).
+    //
+    // The interceptor half is issue #337's web leg. Releases reached no app
+    // code on *either* backend — fixing only desktop would have turned a shared
+    // gap into a divergence, which is the thing an app most notices, since the
+    // whole point of an interceptor is that it is the one hook that behaves the
+    // same everywhere.
+    //
+    // Its return value is ignored, matching desktop: there is nothing
+    // downstream of a release to suppress, and `prevent_default` on a keyup
+    // suppresses nothing a browser would have done anyway.
     let keyup_closure = Closure::wrap(Box::new(move |event: web_sys::KeyboardEvent| {
+        let key_data = events::KeyEventData::new(event.key(), event.code())
+            .with_modifiers(
+                event.ctrl_key() || event.meta_key(),
+                event.shift_key(),
+                event.alt_key(),
+                event.meta_key(),
+            )
+            .with_kind(events::KeyEventKind::Up);
+        events::dispatch_keyboard_event(&key_data);
+
         if let Some(surface_id) = rinch::render_surface::focused_surface_id() {
             let key_data = rinch::render_surface::SurfaceKeyData {
                 key: event.key(),

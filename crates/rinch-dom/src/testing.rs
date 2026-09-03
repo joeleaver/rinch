@@ -303,6 +303,14 @@ pub fn get_node_detail(tree: &NodeTree, id: RawNodeId) -> Option<Value> {
 /// transform scales the box: `layout` is the size Taffy gave it, `absolute` is
 /// the size it covers on screen. Reporting the layout size there would make
 /// "click the centre of `absolute`" miss inside any `scale()` container (#203).
+///
+/// # Units
+///
+/// Both boxes are in **logical (CSS) pixels** — `painted_border_box` is asked
+/// at scale `1.0` — which is the space `click()`/`mouse_*` take and the space
+/// the pointer arrives in on every host (#299), so the two agree at any DPI. A
+/// `screenshot()` is in *physical* pixels, so on a HiDPI display a node sits at
+/// `absolute * scale_factor` within the image.
 fn geometry_json(tree: &NodeTree, node: &crate::node::Node, id: RawNodeId) -> (Value, Value) {
     let r = crate::paint::painted_border_box(tree, id, 1.0);
     (

@@ -115,12 +115,17 @@ impl RinchApp {
         // (unless it lands inside the editor's own container chrome). A click
         // that *hits* a `data-rid` (e.g. a toolbar button) preserves editor
         // focus so "click Bold, keep typing" works (audit S2) and falls through
-        // to Phase 3 to dispatch the handler. Left-clicks inside the editor are
-        // handled earlier by `try_new_editor_click` and never reach here.
+        // to Phase 3 to dispatch the handler. `data-nofocus` says the same
+        // thing explicitly (issue #312), and covers the toolbar chrome *around*
+        // the buttons — its blank space must not blur the editor either.
+        // Left-clicks inside the editor are handled earlier by
+        // `try_new_editor_click` and never reach here.
         enum ClickFocus {
-            /// Hit a `data-rid` handler — preserve editor focus, continue.
+            /// Hit a `data-rid` handler or a `data-nofocus` region — preserve
+            /// editor focus, continue.
             PreserveEditor,
-            /// No `data-rid` under the click — blur the editor if outside it.
+            /// Nothing under the click asked for the editor's focus to be kept
+            /// — blur the editor if the press landed outside it.
             Blur,
             /// No hit at all.
             NoHit,
@@ -130,11 +135,11 @@ impl RinchApp {
             let d = doc.borrow();
             if let Some(hit_id) = hit_test(&d.tree, x, y) {
                 let mut walk = Some(hit_id);
-                let mut has_rid = false;
+                let mut preserves = false;
                 while let Some(nid) = walk {
                     if let Some(node) = d.tree.get(nid) {
-                        if node.attributes.contains_key("data-rid") {
-                            has_rid = true;
+                        if node.attributes.contains_key("data-rid") || Self::node_is_nofocus(node) {
+                            preserves = true;
                             break;
                         }
                         walk = node.parent;
@@ -142,7 +147,7 @@ impl RinchApp {
                         break;
                     }
                 }
-                if has_rid {
+                if preserves {
                     ClickFocus::PreserveEditor
                 } else {
                     ClickFocus::Blur
@@ -237,7 +242,16 @@ impl RinchApp {
             while let Some(nid) = check {
                 if let Some(node) = d.tree.get(nid) {
                     if let Some(oninput_str) = node.attributes.get("data-oninput") {
-                        if let Ok(handler_id) = oninput_str.parse::<usize>() {
+                        // A disabled field takes no claim from a press either
+                        // (issue #315). Resolving to "no input claim" rather
+                        // than continuing the walk is deliberate: a disabled
+                        // `<input>` inside a clickable card must not hand the
+                        // card's own handler an input focus it never asked for
+                        // — the walk stops at the field on the enabled path
+                        // too.
+                        if !Self::node_is_disabled_in_tree(&d.tree, nid)
+                            && let Ok(handler_id) = oninput_str.parse::<usize>()
+                        {
                             let value = node.attributes.get("value").cloned().unwrap_or_default();
                             found_input_focus = Some((nid, handler_id, value));
                         }
@@ -264,19 +278,31 @@ impl RinchApp {
             None
         };
 
-        // A click on or inside a keyboard-focused generic node keeps its focus
-        // (the ring already dropped on mousedown); a click elsewhere blurs it.
-        let hit_inside_focused_node = if let FocusTarget::Node(fid) = self.focus_target {
-            let mut cur = Some(hit_id);
-            loop {
-                match cur {
-                    Some(nid) if nid == fid => break true,
-                    Some(nid) => cur = d.tree.get(nid).and_then(|n| n.parent),
-                    None => break false,
-                }
-            }
-        } else {
-            false
+        // Whether this press leaves the current claim alone: it resolves to the
+        // keyboard-focused generic node itself (the ring already dropped on
+        // mousedown), or it declines to move focus at all (`data-nofocus`,
+        // issue #312 — which protects an `<input>` or surface claim too, not
+        // just a node's). Anything else blurs.
+        //
+        // `resolve_click_focus` is the same policy the mousedown claim applies
+        // (issue #316, item 3). This used to accept *any* ancestor, so a press
+        // on a nested focusable — or on an `<input>` — inside the focused node
+        // read as "still inside it" and the outer node kept the keyboard while
+        // the user interacted with something else. For a left button the claim
+        // has already run and installed its answer, so the two agree by
+        // construction and this branch does nothing; the right/middle path
+        // (`handle_click_with_button` straight off `MouseDown`) never runs the
+        // claim, and is where the disagreement was observable.
+        //
+        // Deliberately re-resolved rather than threaded down from the claim:
+        // between the two, `fire_focus_work` runs user code that may re-render
+        // the clicked subtree, and node ids are recycled slab indices — this
+        // `hit_id` is a *fresh* hit test, so it must be compared against a
+        // resolution from the same tree, not a possibly-stale id.
+        let press_keeps_claim = match Self::resolve_click_focus(&d.tree, Some(hit_id)) {
+            PressFocus::Preserve => true,
+            PressFocus::Node(nid) => self.focus_target == FocusTarget::Node(nid),
+            PressFocus::Release => false,
         };
 
         // Pre-resolve the click's claim (data-rid / data-drag-window) BEFORE
@@ -364,7 +390,7 @@ impl RinchApp {
                 self.adopt_focused_input_value_from_dom();
                 self.focused_input_baseline = self.focused_input_value.clone();
             }
-        } else if !hit_inside_focused_node
+        } else if !press_keeps_claim
             && matches!(
                 self.focus_target,
                 FocusTarget::Input(_) | FocusTarget::Surface(_) | FocusTarget::Node(_)

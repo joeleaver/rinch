@@ -3,15 +3,50 @@
 use super::*;
 
 impl RinchApp {
+    /// Whether a visible scrollbar thumb should take a press that
+    /// [`detect_resize_edge`] claimed.
+    ///
+    /// A borderless window's resize inset overlaps whatever is flush with the
+    /// window edge, which for a `BorderlessWindow` (`100vw` x `100vh`, no
+    /// margin) is the scroll container filling it — so the painted thumb sat
+    /// entirely inside the East zone and a press dead-centre of it resized the
+    /// window (#399, #420). "What you can see, you can grab": the thumb takes
+    /// an *edge* press at its height — across the bar the grab is
+    /// edge-forgiving, the whole hit strip margin included, see
+    /// [`pointer_on_scrollbar_thumb`] — and the rest of the edge, the empty
+    /// track past the thumb and any edge with no bar, still resizes.
+    ///
+    /// A **corner** never yields, so a diagonal resize stays reachable however
+    /// tall the thumb grows. That is also the direction that resizes both axes
+    /// at once, and at the bottom-right it lands on the square `find_scrollbar_hit`
+    /// already declines when both bars are up.
+    fn scrollbar_thumb_beats_resize(
+        &self,
+        dir: rinch_platform::ResizeDirection,
+        x: f32,
+        y: f32,
+    ) -> bool {
+        if is_corner_resize(dir) {
+            return false;
+        }
+        self.doc
+            .as_ref()
+            .is_some_and(|doc| pointer_on_scrollbar_thumb(&doc.borrow().tree, x, y))
+    }
+
     /// The logical (CSS-pixel) viewport `window_size` presents.
     ///
-    /// `window_size` is the **physical** surface size, and pointer coordinates
-    /// arrive in the same physical units. The document, however, is laid out in
-    /// CSS pixels and paint multiplies every layout coordinate by the scale
-    /// factor, so anything that resolves layout — every `resolve_and_repaint`
-    /// below, and `ClickContext`'s viewport — must be handed *this*, never the
-    /// raw surface size. Handing layout the physical size lays the page out
-    /// `scale_factor` times too wide and paint then scales it up again.
+    /// `window_size` is the **physical** surface size — the one genuinely
+    /// physical quantity crossing this boundary. The document is laid out in CSS
+    /// pixels and paint multiplies every layout coordinate by the scale factor,
+    /// so anything that resolves layout — every `resolve_and_repaint` below, and
+    /// `ClickContext`'s viewport — must be handed *this*, never the raw surface
+    /// size. Handing layout the physical size lays the page out `scale_factor`
+    /// times too wide and paint then scales it up again.
+    ///
+    /// Pointer coordinates do **not** need this: they arrive already logical
+    /// (issue #299), converted by the shell with
+    /// `rinch_platform::to_logical_point`.
     ///
     /// Shares `rinch_platform::to_logical` with the shells rather than dividing
     /// again here: mount and resize lay out at the *rounded* logical size, so a
@@ -24,9 +59,11 @@ impl RinchApp {
 
     /// Process a platform event and return a list of actions for the shell.
     ///
-    /// `window_size` is in **physical** pixels (so are the pointer coordinates
-    /// carried by the mouse events); the logical layout viewport is derived from
-    /// it by [`Self::layout_viewport`].
+    /// `window_size` is in **physical** pixels; the logical layout viewport is
+    /// derived from it by [`Self::layout_viewport`]. The pointer coordinates
+    /// carried by the mouse and file-drag events are **logical**, on every host
+    /// — see [`rinch_platform::PlatformEvent`]'s *Coordinate space* note — so
+    /// they compare directly against the layout tree `hit_test` probes.
     #[allow(clippy::too_many_lines)]
     pub fn handle_event(
         &mut self,
@@ -242,9 +279,16 @@ impl RinchApp {
                 if let Some(ref props) = self.window_props {
                     if props.borderless && props.resizable {
                         if let Some(inset) = props.resize_inset {
-                            let (w, h) = (window_size.0 as f32, window_size.1 as f32);
-                            let inset_physical = inset * scale_factor as f32;
-                            if let Some(dir) = detect_resize_edge(x, y, w, h, inset_physical) {
+                            // Compared in one unit — logical (#299). `x`/`y`
+                            // and the viewport are already logical, and
+                            // `resize_inset` is documented as matching a CSS
+                            // margin, so it is a CSS-pixel quantity to begin
+                            // with; the old `inset * scale` against a physical
+                            // `window_size` was compensating for a physical
+                            // pointer.
+                            if let Some(dir) = detect_resize_edge(x, y, vp_w, vp_h, inset)
+                                && !self.scrollbar_thumb_beats_resize(dir, x, y)
+                            {
                                 actions
                                     .push(AppAction::SetCursor(resize_direction_to_cursor(&dir)));
                                 return actions;
@@ -276,22 +320,23 @@ impl RinchApp {
                 if let Some(drag) = &self.scrollbar_drag {
                     let node_id = drag.node_id;
                     let axis = drag.axis;
-                    // Identical arithmetic on either axis — the `- 4.0` is the
-                    // vertical bar's existing 2px-margin-each-end track, kept as
-                    // it was rather than re-derived. The pointer is measured in
-                    // the container's own space, where the track length is: a
-                    // 10px pointer move inside a `scale(2)` container is 5px of
-                    // track (#203).
+                    // Identical arithmetic on either axis. The pointer is
+                    // measured in the container's own space, where the track
+                    // is: a 10px pointer move inside a `scale(2)` container is
+                    // 5px of track (#203). The conversion from track distance
+                    // to scroll distance is the paint pass's own geometry
+                    // (`ScrollbarTrack::scroll_for_drag`), so the thumb moves
+                    // exactly as far as the pointer did (#400) — it used to
+                    // divide by a track measured across the *content* box while
+                    // paint drew one across the border box, and to ignore the
+                    // 20px minimum thumb entirely.
                     let local = self
                         .doc
                         .as_ref()
                         .map(|doc| pointer_in_node(&doc.borrow().tree, node_id, x, y))
                         .unwrap_or((x, y));
-                    let moved = axis.along(local.0, local.1) - drag.start_pos;
-                    let track_len = drag.container_size - 4.0;
-                    let max_scroll = drag.content_size - drag.container_size;
-                    let scroll_delta = (moved as f64 / track_len) * drag.content_size;
-                    let new_scroll = (drag.start_scroll + scroll_delta).clamp(0.0, max_scroll);
+                    let moved = (axis.along(local.0, local.1) - drag.start_pos) as f64;
+                    let new_scroll = drag.track.scroll_for_drag(drag.start_scroll, moved);
 
                     let mut scroll_handler_to_fire: Option<usize> = None;
                     if let Some(doc) = &self.doc {
@@ -471,9 +516,10 @@ impl RinchApp {
                 if let Some(ref props) = self.window_props {
                     if props.borderless && props.resizable {
                         if let Some(inset) = props.resize_inset {
-                            let (w, h) = (window_size.0 as f32, window_size.1 as f32);
-                            let inset_physical = inset * scale_factor as f32;
-                            if let Some(dir) = detect_resize_edge(x, y, w, h, inset_physical) {
+                            // One unit — logical; see the `MouseMove` twin above.
+                            if let Some(dir) = detect_resize_edge(x, y, vp_w, vp_h, inset)
+                                && !self.scrollbar_thumb_beats_resize(dir, x, y)
+                            {
                                 actions.push(AppAction::DragResizeWindow(dir));
                                 return actions;
                             }
@@ -523,53 +569,39 @@ impl RinchApp {
                 if let Some(doc) = self.doc.clone() {
                     // The hit and the focus target it resolves to, in one
                     // borrow: the walk starts where the hit test lands, so
-                    // re-borrowing between them buys nothing.
-                    //
-                    // The nearest focusable ancestor-or-self of the hit, as a
-                    // browser resolves a mousedown's focus target (issue #147,
-                    // decision 2): any parseable `tabindex` — including `-1`,
-                    // which is click-focusable but not tabbable — claims
-                    // `FocusTarget::Node`, so a click-focused custom control has
-                    // live Enter/Space and `on_key` immediately instead of only
-                    // after being reached by Tab.
-                    //
-                    // The walk stops at the first node that is focusable *or*
-                    // carries `data-oninput`: an `<input>` inside a focusable
-                    // wrapper belongs to the text engine, and `handle_click`
-                    // claims it below — taking Node focus first would announce a
-                    // gain-then-loss on the wrapper for a click that was never
-                    // the wrapper's.
-                    let (hit, click_focus_node) = {
+                    // re-borrowing between them buys nothing. The policy is
+                    // `resolve_click_focus`, which `handle_click`'s release
+                    // check also asks — one press, one answer (issue #316).
+                    let (hit, press_focus, focus_dom_target) = {
                         let d = doc.borrow();
                         let hit = hit_test(&d.tree, x, y);
-                        let mut cur = hit;
-                        let mut found = None;
-                        while let Some(nid) = cur {
-                            let Some(node) = d.tree.get(nid) else { break };
-                            if node.attributes.contains_key("data-oninput") {
-                                break;
-                            }
-                            if !Self::node_is_disabled(node) && Self::node_tabindex(node).is_some()
-                            {
-                                found = Some(nid);
-                                break;
-                            }
-                            cur = node.parent;
-                        }
-                        (hit, found)
+                        let press_focus = Self::resolve_click_focus(&d.tree, hit);
+                        // Where the DOM `:focus` state goes. The outer
+                        // `Option` is *whether to touch it at all*: a
+                        // `data-nofocus` press moves no focus, so it must not
+                        // clear the ring either (issue #312). The inner one is
+                        // where it lands — and a **disabled** control is never
+                        // it (issue #315): it takes no keyboard claim, so a
+                        // focus ring on it would be the style lying about who
+                        // owns the keyboard. `PressFocus::Node` is already
+                        // disabled-filtered by `resolve_click_focus`.
+                        let dom_target = match press_focus {
+                            PressFocus::Preserve => None,
+                            PressFocus::Node(nid) => Some(Some(nid)),
+                            PressFocus::Release => Some(
+                                hit.filter(|&nid| !Self::node_is_disabled_in_tree(&d.tree, nid)),
+                            ),
+                        };
+                        (hit, press_focus, dom_target)
                     };
-                    // An arbiter-held generic node (issue #228), and whether
-                    // this press lands back on it — i.e. resolves to the same
-                    // focusable, so a press on a plain child of the focused node
-                    // is still "inside" it. A press that resolves anywhere else
-                    // moves or releases the claim right here, so paths that
-                    // return before `handle_click` (pending drag, scrollbar, no
-                    // hit) can't strand an invisible, still-Enter-activatable
-                    // claim.
-                    let node_claim = if let FocusTarget::Node(fid) = self.focus_target {
-                        Some((fid, click_focus_node == Some(fid)))
-                    } else {
-                        None
+                    // The arbiter-held generic node (issue #228). A press that
+                    // resolves anywhere other than it moves or releases the
+                    // claim right here, so paths that return before
+                    // `handle_click` (pending drag, scrollbar, no hit) can't
+                    // strand an invisible, still-Enter-activatable claim.
+                    let node_claim = match self.focus_target {
+                        FocusTarget::Node(fid) => Some(fid),
+                        _ => None,
                     };
                     // Any mousedown drops the keyboard focus ring wherever it
                     // is (it only ever lives on the focused node): pointer
@@ -585,25 +617,36 @@ impl RinchApp {
                         d.update_active(hit);
                         // :focus applies to the clicked element (persists after
                         // release); anchored on the focusable ancestor for a
-                        // press inside one.
-                        d.update_focus(click_focus_node.or(hit));
+                        // press inside one, nowhere at all for a disabled
+                        // one, and left exactly where it was for a
+                        // `data-nofocus` press.
+                        if let Some(target) = focus_dom_target {
+                            d.update_focus(target);
+                        }
                     }
                     // No outstanding doc borrow from here on: the arbiter's
                     // teardown re-borrows, and the callbacks it defers are user
                     // code that may mutate the DOM.
-                    match (click_focus_node, node_claim) {
+                    match press_focus {
+                        // The press declined to move focus (issue #312): the
+                        // current owner keeps the keyboard — editor, input,
+                        // surface or node alike — and the click still fires from
+                        // `handle_click` below. This is the
+                        // `preventDefault()`-on-mousedown escape hatch, which
+                        // desktop had no equivalent of.
+                        PressFocus::Preserve => {}
                         // Re-press inside the already-focused node: nothing to
                         // do, the claim and its state stay put.
-                        (_, Some((_, true))) => {}
-                        (Some(nid), _) => {
+                        PressFocus::Node(nid) if node_claim == Some(nid) => {}
+                        PressFocus::Node(nid) => {
                             let (_, work) = self.set_focus_target_deferred(FocusTarget::Node(nid));
                             Self::fire_focus_work(work);
                             self.notify_node_focus_gained(nid);
                         }
-                        (None, Some((_, false))) => {
+                        PressFocus::Release if node_claim.is_some() => {
                             self.set_focus_target(FocusTarget::None);
                         }
-                        (None, None) => {}
+                        PressFocus::Release => {}
                     }
                 }
 
@@ -641,27 +684,24 @@ impl RinchApp {
                     let ScrollbarHit {
                         node_id,
                         axis,
-                        content_size,
-                        container_size,
+                        track,
                     } = hit;
                     let mut scroll_handler_to_fire: Option<usize> = None;
                     if let Some(doc) = &self.doc {
                         let mut d = doc.borrow_mut();
-                        // Jump-to-click: the same ratio arithmetic on either
-                        // axis, read along the one that was hit. The track is
-                        // measured in the container's own space — the space
-                        // `container_size` and the painted thumb live in — so
-                        // the pointer is mapped into it rather than compared
-                        // against a window-space origin, which under a
-                        // `scale()` ancestor is a different unit (#203).
+                        // Jump-to-click: a position along the track maps
+                        // linearly onto the scroll range, on either axis, read
+                        // along the one that was hit. The track is measured in
+                        // the container's own space — the space the painted
+                        // thumb lives in — so the pointer is mapped into it
+                        // rather than compared against a window-space origin,
+                        // which under a `scale()` ancestor is a different unit
+                        // (#203). The track itself comes from the paint pass
+                        // (#400), so the press and the thumb agree about where
+                        // the track's ends are.
                         let local = pointer_in_node(&d.tree, node_id, x, y);
-                        let margin = 2.0_f64;
-                        let track_len = container_size - margin * 2.0;
-                        let max_scroll = content_size - container_size;
-                        let click_ratio = ((axis.along(local.0, local.1) as f64 - margin)
-                            / track_len)
-                            .clamp(0.0, 1.0);
-                        let new_scroll = click_ratio * max_scroll;
+                        let new_scroll =
+                            track.scroll_for_click(axis.along(local.0, local.1) as f64);
 
                         let handler_id = d
                             .tree
@@ -694,8 +734,7 @@ impl RinchApp {
                             // above and like every later move.
                             start_pos: axis.along(local.0, local.1),
                             start_scroll: new_scroll,
-                            content_size,
-                            container_size,
+                            track,
                         });
                     }
                     let to_fire = scroll_handler_to_fire.and_then(|hid| {
@@ -1070,7 +1109,8 @@ impl RinchApp {
                 let alt = modifiers.alt;
 
                 // Build key string for the user keyboard hook + global fallback.
-                let key_str: Option<String> = hook_key_str(key, text.as_deref(), ctrl);
+                let key_str: Option<String> =
+                    hook_key_str(key, text.as_deref(), logical_key.as_deref());
 
                 tracing::trace!(?key, ?text, ?key_str, shift, ctrl, alt, "KeyDown event");
 
@@ -1079,14 +1119,8 @@ impl RinchApp {
                 //    capturing DOM listener. Render surfaces no longer hijack this
                 //    slot — they are routed by `FocusTarget::Surface` below.
                 if let Some(ref ks) = key_str {
-                    let key_data = events::KeyEventData {
-                        key: ks.clone(),
-                        code: format!("{:?}", key),
-                        ctrl,
-                        shift,
-                        alt,
-                        meta: false,
-                    };
+                    let key_data = events::KeyEventData::new(ks.clone(), format!("{:?}", key))
+                        .with_modifiers(ctrl, shift, alt, modifiers.meta);
                     if events::dispatch_keyboard_event(&key_data) {
                         actions.push(AppAction::RequestRedraw);
                         return actions;
@@ -1104,7 +1138,7 @@ impl RinchApp {
                             self.dispatch_new_editor_key(
                                 &handle,
                                 key,
-                                logical_key,
+                                logical_key.as_deref(),
                                 text.as_deref(),
                                 shift,
                                 ctrl,
@@ -1135,7 +1169,7 @@ impl RinchApp {
                                     ctrl,
                                     shift,
                                     alt,
-                                    meta: false,
+                                    meta: modifiers.meta,
                                 },
                             ),
                         );
@@ -1187,19 +1221,23 @@ impl RinchApp {
                         // unregistered node nothing.
                         //
                         // The `key` string matches the document-level
-                        // interceptor's spelling (`hook_key_str`), falling back
-                        // to the physical code for keys it has no name for
-                        // (function keys), so a widget always sees a non-empty
-                        // key.
+                        // interceptor's spelling (`hook_key_str`), which names
+                        // every key rinch has a `KeyCode` for regardless of the
+                        // modifiers held (issue #336). The physical-code
+                        // fallback is left in for the one remaining hole — a
+                        // `KeyCode::Other` carrying no printable text — so a
+                        // widget always sees a non-empty key.
                         if let FocusTarget::Node(id) = self.focus_target {
-                            let key_data = events::KeyEventData {
-                                key: key_str.clone().unwrap_or_else(|| format!("{:?}", key)),
-                                code: format!("{:?}", key),
+                            let key_data = events::KeyEventData::new(
+                                key_str.clone().unwrap_or_else(|| format!("{:?}", key)),
+                                format!("{:?}", key),
+                            )
+                            .with_modifiers(
                                 ctrl,
                                 shift,
                                 alt,
-                                meta: modifiers.meta,
-                            };
+                                modifiers.meta,
+                            );
                             if crate::focus_registry::offer_key(self.doc_key(), id, &key_data) {
                                 actions.push(AppAction::RequestRedraw);
                                 return actions;
@@ -1250,6 +1288,19 @@ impl RinchApp {
                             // Space with no Node target falls through to the `_`
                             // arm below — the one text-input path (pre-#228), so
                             // a future change to that gate can't miss Space.
+                            // Alt+Down on a focused `<select>` opens its popup,
+                            // the browser's third way in beside Enter and Space
+                            // (issue #314). Anything else falls through.
+                            KeyCode::ArrowDown
+                                if alt
+                                    && matches!(self.focus_target, FocusTarget::Node(_))
+                                    && self.focused_node_is_select() =>
+                            {
+                                if let FocusTarget::Node(id) = self.focus_target {
+                                    self.open_select_popup(id, vp_w, vp_h);
+                                    actions.push(AppAction::RequestRedraw);
+                                }
+                            }
                             KeyCode::ArrowUp => self.handle_arrow_up(shift),
                             KeyCode::ArrowDown => self.handle_arrow_down(shift),
                             _ => {
@@ -1264,28 +1315,90 @@ impl RinchApp {
                     }
                 }
             }
-            PlatformEvent::KeyUp { key, modifiers } => {
+            PlatformEvent::KeyUp {
+                key,
+                logical_key,
+                modifiers,
+            } => {
                 // Release the Enter/Space activation latch (issue #228): the
                 // next KeyDown of this key is a fresh physical press.
                 if self.node_activation_held == Some(key) {
                     self.node_activation_held = None;
                 }
-                // Forward key release to focused render surface.
-                if let Some(surface_id) = crate::render_surface::focused_surface_id() {
-                    let key_str = format!("{:?}", key);
-                    crate::render_surface::dispatch_surface_event(
-                        surface_id,
-                        crate::render_surface::SurfaceEvent::KeyUp(
-                            crate::render_surface::SurfaceKeyData {
-                                key: key_str.clone(),
-                                code: key_str,
-                                ctrl: modifiers.primary(),
-                                shift: modifiers.shift,
-                                alt: modifiers.alt,
-                                meta: modifiers.meta,
-                            },
-                        ),
-                    );
+
+                let shift = modifiers.shift;
+                let ctrl = modifiers.primary();
+                let alt = modifiers.alt;
+
+                // Spelled by the same function as the press, from the same
+                // fields (issue #337). A release carries no `text` — a key
+                // inserts nothing on the way up — so `hook_key_str` resolves it
+                // through `logical_key` and then the physical table, which is
+                // exactly what the press falls back to once a modifier has
+                // suppressed its text. That is what makes a press and its
+                // release agree **by construction** rather than by
+                // coincidence: a consumer pairing them by `key` (the whole
+                // point of hearing releases — "is W still held") cannot be
+                // handed `"a"` down and `"q"` up on a non-QWERTY layout.
+                let key_str: Option<String> = hook_key_str(key, None, logical_key.as_deref());
+
+                tracing::trace!(?key, ?key_str, shift, ctrl, alt, "KeyUp event");
+
+                // 1. The document-level interceptor, mirroring the KeyDown arm.
+                //    Its **return value is ignored**: there is nothing
+                //    downstream to suppress. The only runtime work a release
+                //    does is clear the activation latch — which must happen
+                //    whatever a handler thinks, or a consumed release strands
+                //    the latch and the next press is swallowed — and the
+                //    surface forward below, which is the surface's own claim.
+                if let Some(ref ks) = key_str {
+                    let key_data = events::KeyEventData::new(ks.clone(), format!("{:?}", key))
+                        .with_modifiers(ctrl, shift, alt, modifiers.meta)
+                        .with_kind(events::KeyEventKind::Up);
+                    events::dispatch_keyboard_event(&key_data);
+                }
+
+                // 2. Then the focus arbiter's holder, again mirroring KeyDown.
+                //    Delivered to whoever holds the claim **at release time**,
+                //    browser-style — so a focus change mid-chord can hand a
+                //    target a release it never saw pressed. That is the
+                //    tradeoff a stateless router makes, and it is why a widget
+                //    tracking held keys should treat `on_focus_lost` as
+                //    "everything is up".
+                match self.focus_target {
+                    FocusTarget::Surface(surface_id) => {
+                        crate::render_surface::dispatch_surface_event(
+                            surface_id,
+                            crate::render_surface::SurfaceEvent::KeyUp(
+                                crate::render_surface::SurfaceKeyData {
+                                    key: key_str.clone().unwrap_or_default(),
+                                    code: format!("{:?}", key),
+                                    ctrl,
+                                    shift,
+                                    alt,
+                                    meta: modifiers.meta,
+                                },
+                            ),
+                        );
+                    }
+                    FocusTarget::Node(id) => {
+                        // The same stale-claim self-heal the KeyDown arm runs:
+                        // node ids are recycled slab indices, so a claim whose
+                        // node was unmounted must not be handed a release that
+                        // now names an unrelated element.
+                        if !self.node_target_is_live(id) {
+                            self.set_focus_target(FocusTarget::None);
+                        } else {
+                            let key_data = events::KeyEventData::new(
+                                key_str.clone().unwrap_or_else(|| format!("{:?}", key)),
+                                format!("{:?}", key),
+                            )
+                            .with_modifiers(ctrl, shift, alt, modifiers.meta)
+                            .with_kind(events::KeyEventKind::Up);
+                            crate::focus_registry::offer_key(self.doc_key(), id, &key_data);
+                        }
+                    }
+                    _ => {}
                 }
             }
             PlatformEvent::Ime(ime) => {
@@ -1308,7 +1421,20 @@ impl RinchApp {
                         }
                     }
                     FocusTarget::Input(node_id) => {
-                        self.dispatch_input_ime(node_id, ime);
+                        // A disabled field composes nothing (issue #315).
+                        // `dispatch_input_ime`'s `Preedit` arm writes
+                        // `data-preedit` straight to the DOM without touching
+                        // `live_focused_input_handler`, so it sat outside every
+                        // gate the rest of that issue installed: a preedit
+                        // painted into a disabled field, and — since `Commit`
+                        // *is* gated — could never resolve. Probing here
+                        // releases the claim through the same path a keystroke
+                        // would, so a field that goes disabled mid-composition
+                        // ends up in exactly one state whichever event lands
+                        // first.
+                        if self.live_focused_input_handler().is_some() {
+                            self.dispatch_input_ime(node_id, ime);
+                        }
                         actions.push(AppAction::RequestRedraw);
                     }
                     // A registered custom text component (issue #176) consumes
@@ -2080,13 +2206,20 @@ impl RinchApp {
         let anchor = {
             let d = doc.borrow();
             // Where in the dragged node the press landed, in the node's own
-            // space — the space the snapshot below is painted in. A painted
-            // origin subtracted from the pointer would be the wrong unit inside
-            // a `scale()` ancestor (#203).
+            // space. A painted origin subtracted from the pointer would be the
+            // wrong unit inside a `scale()` ancestor (#203).
+            //
+            // `1.0`, not `scale_factor`: `mousedown_pos` is a `PlatformEvent`
+            // pointer position, which is logical (#299). The `paint_subtree`
+            // calls below deliberately keep `scale_factor` — they rasterise the
+            // drag ghost, which is a picture and belongs in device pixels — so
+            // the two adjacent scale arguments genuinely differ. The ghost's
+            // translate (`cursor - anchor`) is therefore logical and is scaled
+            // up at paint time; see `build_scene` / `build_pixels`.
             rinch_dom::paint::point_in_painted_box(
                 &d.tree,
                 node_id,
-                scale_factor,
+                1.0,
                 mousedown_pos.0 as f64,
                 mousedown_pos.1 as f64,
             )
@@ -2173,59 +2306,160 @@ pub(crate) enum Motion {
     DocEnd,
 }
 
-/// Derive the key string handed to the user keyboard hook (and global
-/// fallback) from a `KeyDown`'s keycode + text. Named keys report their name
-/// (`"Space"`, `"Enter"`, …); Ctrl+letter combos report the letter; everything
-/// else — including `KeyCode::Other`, which is how both real hardware and the
-/// debug channel deliver punctuation — falls through to the event's `text`
-/// field, so a hook sees `key: "."` for a period but `key: "Space"` for a
-/// spacebar press.
-pub(crate) fn hook_key_str(key: KeyCode, text: Option<&str>, ctrl: bool) -> Option<String> {
-    match key {
-        // Named keys
-        KeyCode::ArrowLeft => Some("ArrowLeft".into()),
-        KeyCode::ArrowRight => Some("ArrowRight".into()),
-        KeyCode::ArrowUp => Some("ArrowUp".into()),
-        KeyCode::ArrowDown => Some("ArrowDown".into()),
-        KeyCode::Home => Some("Home".into()),
-        KeyCode::End => Some("End".into()),
-        KeyCode::Enter => Some("Enter".into()),
-        KeyCode::Backspace => Some("Backspace".into()),
-        KeyCode::Delete => Some("Delete".into()),
-        KeyCode::Tab => Some("Tab".into()),
-        KeyCode::Escape => Some("Escape".into()),
-        KeyCode::PageUp => Some("PageUp".into()),
-        KeyCode::PageDown => Some("PageDown".into()),
-        KeyCode::Space => Some("Space".into()),
-        // Modifier keys (as physical key presses)
-        KeyCode::ShiftLeft => Some("Shift".into()),
-        KeyCode::ShiftRight => Some("Shift".into()),
-        KeyCode::ControlLeft => Some("Control".into()),
-        KeyCode::ControlRight => Some("Control".into()),
-        KeyCode::AltLeft => Some("Alt".into()),
-        KeyCode::AltRight => Some("Alt".into()),
-        // Ctrl+key combos: derive key letter from KeyCode
-        KeyCode::KeyA if ctrl => Some("a".into()),
-        KeyCode::KeyB if ctrl => Some("b".into()),
-        KeyCode::KeyC if ctrl => Some("c".into()),
-        KeyCode::KeyD if ctrl => Some("d".into()),
-        KeyCode::KeyE if ctrl => Some("e".into()),
-        KeyCode::KeyH if ctrl => Some("h".into()),
-        KeyCode::KeyI if ctrl => Some("i".into()),
-        KeyCode::KeyU if ctrl => Some("u".into()),
-        KeyCode::KeyV if ctrl => Some("v".into()),
-        KeyCode::KeyX if ctrl => Some("x".into()),
-        KeyCode::KeyY if ctrl => Some("y".into()),
-        KeyCode::KeyZ if ctrl => Some("z".into()),
-        // Regular character input: use text field (filter control chars)
-        _ => text.and_then(|t| {
-            if !t.is_empty() && t.chars().all(|c| !c.is_control()) {
-                Some(t.to_string())
-            } else {
-                None
-            }
-        }),
+/// Derive the key string handed to the user keyboard hook (and the focus
+/// registry's `on_key`) from a key event's keycode + text + layout-mapped
+/// key value, spelled the way a browser spells `KeyboardEvent.key` — bar the
+/// spacebar, which rinch has always named `"Space"` where a browser reports
+/// `" "` (`rinch-web` forwards `event.key()`, so it reports `" "`; that
+/// divergence predates issue #336 and `spacebar_reports_the_named_key_not_its_text`
+/// pins it deliberately). Four steps, in order:
+///
+/// 1. **A named key wins over the text it would insert** — a spacebar press
+///    reports `"Space"`, not `" "`, and Tab reports `"Tab"`, not `"\t"`.
+/// 2. **A printable `text` wins for character keys**, so a non-QWERTY layout
+///    reports the letter the user actually typed rather than the physical
+///    QWERTY position — the same rule [`editor_key_binding`] follows. This is
+///    also how punctuation is named: it arrives as `KeyCode::Other` from
+///    hardware and from the debug channel alike, with the character in `text`.
+/// 3. **`logical_key` — the layout-produced key value — is next.** A modifier
+///    suppresses `text`, but winit's logical key survives it, so this is what
+///    keeps step 2's promise for a *chord*: on AZERTY, `Ctrl` plus the key
+///    labelled A reports `"a"`, not the `"q"` sitting at that physical
+///    position. Without it the interceptor would contradict
+///    [`editor_key_binding`], which reads the same field, about which letter
+///    was pressed. The field is already `KeyboardEvent.key`-spelled at the
+///    source, so it passes through **verbatim**: `Shift+A` is `"A"`,
+///    `Shift+1` is `"!"` where the layout puts one, a dead key is `"Dead"` —
+///    and a key rinch has no `KeyCode` for but winit names (CapsLock, a media
+///    key) now reports that name instead of being invisible.
+/// 4. **The physical key's own US-layout spelling is the last resort**, for
+///    events that carry no logical key at all (the debug channel, injected and
+///    embedded events): `Ctrl+S` → `"s"`, `Ctrl+1` → `"1"`, `F5` → `"F5"`.
+///
+/// Steps 3–4 are issue #336: before them, every key outside the twelve
+/// Ctrl+letter combos rinch itself binds returned `None` under a modifier, and
+/// the document-level interceptor was never even *invoked* for it — `Ctrl+S`
+/// was unobservable.
+///
+/// **Case passes through untouched.** #336's `logical_key` was a lowercased
+/// single ASCII letter, so a press took step 2 and kept its capital while its
+/// release (which has no text) took step 3 and lost it: `Shift+A` went down as
+/// `"A"` and came up as `"a"`. That defeats the one thing a release is for —
+/// pairing it with its press (issue #337) — and it made desktop disagree with
+/// `rinch-web`, which passes `event.key()` through untouched. The cure was
+/// widening the field to the full case-accurate key value, so the two steps
+/// agree *by construction*; a consumer wanting a case-insensitive identity
+/// folds at the comparison site, as [`editor_key_binding`] does.
+///
+/// Returns `None` only for a key rinch has no `KeyCode` for — `KeyCode::Other`
+/// — carrying no printable text and no logical key value. Under a modifier
+/// that is every punctuation key except `-` and `=` when the event's source
+/// supplies no `logical_key` (the debug channel); a real winit event names
+/// them through step 3.
+pub(crate) fn hook_key_str(
+    key: KeyCode,
+    text: Option<&str>,
+    logical_key: Option<&str>,
+) -> Option<String> {
+    if let Some(named) = named_key_str(key) {
+        return Some(named.to_string());
     }
+    if let Some(t) = text.filter(|t| !t.is_empty() && t.chars().all(|c| !c.is_control())) {
+        return Some(t.to_string());
+    }
+    if let Some(l) = logical_key.filter(|l| !l.is_empty() && l.chars().all(|c| !c.is_control())) {
+        return Some(l.to_string());
+    }
+    character_key_str(key).map(str::to_string)
+}
+
+/// Keys whose *name* is their `KeyboardEvent.key` spelling, so it wins over
+/// whatever text they would insert.
+fn named_key_str(key: KeyCode) -> Option<&'static str> {
+    Some(match key {
+        KeyCode::ArrowLeft => "ArrowLeft",
+        KeyCode::ArrowRight => "ArrowRight",
+        KeyCode::ArrowUp => "ArrowUp",
+        KeyCode::ArrowDown => "ArrowDown",
+        KeyCode::Home => "Home",
+        KeyCode::End => "End",
+        KeyCode::Enter => "Enter",
+        KeyCode::Backspace => "Backspace",
+        KeyCode::Delete => "Delete",
+        KeyCode::Tab => "Tab",
+        KeyCode::Escape => "Escape",
+        KeyCode::PageUp => "PageUp",
+        KeyCode::PageDown => "PageDown",
+        KeyCode::Space => "Space",
+        // Modifier keys (as physical key presses)
+        KeyCode::ShiftLeft | KeyCode::ShiftRight => "Shift",
+        KeyCode::ControlLeft | KeyCode::ControlRight => "Control",
+        KeyCode::AltLeft | KeyCode::AltRight => "Alt",
+        // Function keys insert no text, so their name is all they ever have.
+        KeyCode::F1 => "F1",
+        KeyCode::F2 => "F2",
+        KeyCode::F3 => "F3",
+        KeyCode::F4 => "F4",
+        KeyCode::F5 => "F5",
+        KeyCode::F6 => "F6",
+        KeyCode::F7 => "F7",
+        KeyCode::F8 => "F8",
+        KeyCode::F9 => "F9",
+        KeyCode::F10 => "F10",
+        KeyCode::F11 => "F11",
+        KeyCode::F12 => "F12",
+        _ => return None,
+    })
+}
+
+/// The character a physical key produces on a US layout. Only reached when a
+/// modifier suppressed the event's `text` (or there was none to begin with —
+/// a `KeyUp` carries no text at all) *and* the event carries no layout-mapped
+/// `logical_key` either, so a chord still reports a key. Being physical, this
+/// is the step that gets a non-QWERTY layout wrong, which is why step 3 sits
+/// in front of it.
+fn character_key_str(key: KeyCode) -> Option<&'static str> {
+    Some(match key {
+        KeyCode::KeyA => "a",
+        KeyCode::KeyB => "b",
+        KeyCode::KeyC => "c",
+        KeyCode::KeyD => "d",
+        KeyCode::KeyE => "e",
+        KeyCode::KeyF => "f",
+        KeyCode::KeyG => "g",
+        KeyCode::KeyH => "h",
+        KeyCode::KeyI => "i",
+        KeyCode::KeyJ => "j",
+        KeyCode::KeyK => "k",
+        KeyCode::KeyL => "l",
+        KeyCode::KeyM => "m",
+        KeyCode::KeyN => "n",
+        KeyCode::KeyO => "o",
+        KeyCode::KeyP => "p",
+        KeyCode::KeyQ => "q",
+        KeyCode::KeyR => "r",
+        KeyCode::KeyS => "s",
+        KeyCode::KeyT => "t",
+        KeyCode::KeyU => "u",
+        KeyCode::KeyV => "v",
+        KeyCode::KeyW => "w",
+        KeyCode::KeyX => "x",
+        KeyCode::KeyY => "y",
+        KeyCode::KeyZ => "z",
+        KeyCode::Digit0 => "0",
+        KeyCode::Digit1 => "1",
+        KeyCode::Digit2 => "2",
+        KeyCode::Digit3 => "3",
+        KeyCode::Digit4 => "4",
+        KeyCode::Digit5 => "5",
+        KeyCode::Digit6 => "6",
+        KeyCode::Digit7 => "7",
+        KeyCode::Digit8 => "8",
+        KeyCode::Digit9 => "9",
+        KeyCode::Equal => "=",
+        KeyCode::Minus => "-",
+        _ => return None,
+    })
 }
 
 /// Translate a platform key event into an editor-core `KeyBinding` for keymap lookup.
@@ -2237,17 +2471,35 @@ pub(crate) fn hook_key_str(key: KeyCode, text: Option<&str>, ctrl: bool) -> Opti
 /// must match the `8` key regardless of what Shift+8 types. This mirrors the web view
 /// (logical `event.key()` for letters, physical `event.code()` otherwise). Returns `None`
 /// for keys with no bindable identity, which then fall through to text input.
+/// The one `char` of a one-`char` string, or `None` — the shape a
+/// single-letter test on a DOM key string takes (`"A"` yes, `"F5"` no).
+#[cfg(feature = "desktop")]
+fn single_char(s: &str) -> Option<char> {
+    let mut it = s.chars();
+    match (it.next(), it.next()) {
+        (Some(c), None) => Some(c),
+        _ => None,
+    }
+}
+
 #[cfg(feature = "desktop")]
 fn editor_key_binding(
     key: KeyCode,
-    logical_key: Option<char>,
+    logical_key: Option<&str>,
     ctrl: bool,
     shift: bool,
     alt: bool,
 ) -> Option<rinch_editor_core::KeyBinding> {
     use rinch_editor_core::{Key, KeyBinding, Modifiers};
-    // A layout-mapped ASCII letter wins over the physical position.
-    if let Some(c) = logical_key.filter(|c| c.is_ascii_alphabetic()) {
+    // A layout-mapped ASCII letter wins over the physical position. The field
+    // is case-accurate (`"A"` under Shift, issue #337) while a keymap chord is
+    // a case-insensitive identity plus a shift *flag*, so this is the
+    // comparison site that folds — the source must not, or a press and its
+    // release would spell differently.
+    if let Some(c) = logical_key
+        .and_then(single_char)
+        .filter(char::is_ascii_alphabetic)
+    {
         return Some(KeyBinding::new(
             Key::Char(c.to_ascii_lowercase()),
             Modifiers {
@@ -2336,7 +2588,7 @@ impl RinchApp {
         &mut self,
         handle: &crate::editor::EditorHandle,
         key: KeyCode,
-        logical_key: Option<char>,
+        logical_key: Option<&str>,
         text: Option<&str>,
         shift: bool,
         ctrl: bool,
@@ -2752,43 +3004,6 @@ impl RinchApp {
         }
     }
 
-    /// Like [`Self::editor_point_address`] but for a **physical** pointer position:
-    /// the layout is in logical pixels while pointer events arrive in physical
-    /// pixels, so we don't know up front whether the layout is logical or physical.
-    ///
-    /// Resolve in two passes so the scale hedge is sound (a wrong-space coordinate
-    /// must fail rather than silently snap): first try an **exact** textblock hit
-    /// at the raw point, then at the scale-divided point — a click on actual text
-    /// lands here in the correct space. Only if neither lands directly on a
-    /// textblock (a genuine click on chrome / padding / beside a short line) do we
-    /// **snap** to the nearest block, preferring the raw point. Snapping last (not
-    /// per-attempt) is what stops a HiDPI text-click from resolving to garbage in
-    /// the physical space before the logical retry runs.
-    pub(crate) fn editor_point_address_physical(
-        &self,
-        x: f32,
-        y: f32,
-        scale: f64,
-    ) -> Option<(usize, usize, usize)> {
-        let s = scale as f32;
-        let scaled = (s - 1.0).abs() > f32::EPSILON;
-        // Pass 1: exact textblock resolution (no snap) at raw, then scaled.
-        if let Some(r) = self.editor_point_address_in(x, y, false) {
-            return Some(r);
-        }
-        if scaled && let Some(r) = self.editor_point_address_in(x / s, y / s, false) {
-            return Some(r);
-        }
-        // Pass 2: genuine chrome click — snap to the nearest block, raw first.
-        if let Some(r) = self.editor_point_address_in(x, y, true) {
-            return Some(r);
-        }
-        if scaled {
-            return self.editor_point_address_in(x / s, y / s, true);
-        }
-        None
-    }
-
     /// Resolve a window/logical point to `(container id, textblock id, flat IFC
     /// byte offset)` inside whatever editor it lands on — the shared primitive for
     /// click, drag-select, and vertical/Home-End movement. Snaps to the nearest
@@ -2853,18 +3068,10 @@ impl RinchApp {
         Some((cont, tb, ifc_byte))
     }
 
-    /// Whether a physical click at `(x, y)` landed in a **task item's checkbox
+    /// Whether a click at logical `(x, y)` landed in a **task item's checkbox
     /// gutter** — the strip left of the item's content where the `::before` checkbox
     /// renders. A task item is the only block with an interactive marker (bullets and
-    /// numbers are inert), so this gates the checkbox-toggle click path. Tries raw
-    /// then scaled coordinates, matching the other physical click helpers.
-    fn editor_task_checkbox_at_physical(&self, x: f32, y: f32, scale: f64) -> bool {
-        let s = scale as f32;
-        let scaled = (s - 1.0).abs() > f32::EPSILON;
-        self.editor_task_checkbox_at(x, y) || (scaled && self.editor_task_checkbox_at(x / s, y / s))
-    }
-
-    /// The logical-coordinate core of [`Self::editor_task_checkbox_at_physical`].
+    /// numbers are inert), so this gates the checkbox-toggle click path.
     fn editor_task_checkbox_at(&self, x: f32, y: f32) -> bool {
         let Some(doc) = self.doc.clone() else {
             return false;
@@ -3145,19 +3352,6 @@ impl RinchApp {
         None
     }
 
-    /// Physical-coordinate variant of [`Self::editor_container_at`] (the raw-or-
-    /// scaled HiDPI hedge, mirroring [`Self::editor_point_address_physical`]).
-    pub(crate) fn editor_container_at_physical(&self, x: f32, y: f32, scale: f64) -> Option<usize> {
-        self.editor_container_at(x, y).or_else(|| {
-            let s = scale as f32;
-            if (s - 1.0).abs() > f32::EPSILON {
-                self.editor_container_at(x / s, y / s)
-            } else {
-                None
-            }
-        })
-    }
-
     /// The host id of an editor **leaf** node element — an `<img>`/`<hr>` whose
     /// `data-pm-type` is `image` or `horizontal_rule` — under logical point
     /// `(x, y)`, if the click landed on one inside an editor container. Walks up
@@ -3186,20 +3380,7 @@ impl RinchApp {
         None
     }
 
-    /// Physical-coordinate variant of [`Self::editor_leaf_at`] (the raw-or-scaled
-    /// HiDPI hedge, mirroring [`Self::editor_container_at_physical`]).
-    fn editor_leaf_at_physical(&self, x: f32, y: f32, scale: f64) -> Option<usize> {
-        self.editor_leaf_at(x, y).or_else(|| {
-            let s = scale as f32;
-            if (s - 1.0).abs() > f32::EPSILON {
-                self.editor_leaf_at(x / s, y / s)
-            } else {
-                None
-            }
-        })
-    }
-
-    /// Focus the new editor under a pointer click at physical `(x, y)` and set the
+    /// Focus the new editor under a pointer click at logical `(x, y)` and set the
     /// selection per the click gesture. Returns whether the click landed in an
     /// editor.
     ///
@@ -3227,7 +3408,7 @@ impl RinchApp {
         click_count: u8,
         shift: bool,
     ) -> bool {
-        let Some(container) = self.editor_container_at_physical(x, y, scale) else {
+        let Some(container) = self.editor_container_at(x, y) else {
             return false;
         };
         let Some(handle) = crate::editor::editor_for_doc(self.doc_key(), container) else {
@@ -3243,8 +3424,8 @@ impl RinchApp {
         // of placing a caret (the checkbox is a CSS `::before`, so the hit is geometric,
         // not a real element). Resolve the nearest textblock for a document position,
         // then toggle the enclosing task item.
-        if self.editor_task_checkbox_at_physical(x, y, scale)
-            && let Some((c, tb, ifc)) = self.editor_point_address_physical(x, y, scale)
+        if self.editor_task_checkbox_at(x, y)
+            && let Some((c, tb, ifc)) = self.editor_point_address(x, y)
             && c == container
             && let Some(pos) = handle.pos_at(tb, ifc)
             && handle.toggle_task_checked_at(pos.0)
@@ -3258,13 +3439,12 @@ impl RinchApp {
         // A click on a leaf node (an image or horizontal rule) selects the node
         // itself — a `Selection::Node`, outlined by the view — rather than placing a
         // text cursor (design §6 node-views). A node-select never arms a drag.
-        if let Some(leaf) = self.editor_leaf_at_physical(x, y, scale)
+        if let Some(leaf) = self.editor_leaf_at(x, y)
             && let Some(selection) = handle.node_selection_at_host(leaf)
         {
             handle.set_selection(selection);
             crate::editor::end_drag(self.input_doc());
-        } else if let Some((c, textblock, ifc_byte)) =
-            self.editor_point_address_physical(x, y, scale)
+        } else if let Some((c, textblock, ifc_byte)) = self.editor_point_address(x, y)
             && c == container
             && let Some(clicked) = handle.pos_at(textblock, ifc_byte)
         {
@@ -3296,7 +3476,7 @@ impl RinchApp {
         true
     }
 
-    /// Extend an in-progress drag-select to physical pointer `(x, y)`: the
+    /// Extend an in-progress drag-select to logical pointer `(x, y)`: the
     /// selection runs from the mousedown anchor to the position under the pointer.
     /// Returns whether a drag was active and updated.
     pub(crate) fn extend_editor_drag(
@@ -3309,7 +3489,7 @@ impl RinchApp {
         let Some((container, anchor)) = crate::editor::drag_anchor(self.input_doc()) else {
             return false;
         };
-        let Some((c, tb, ifc)) = self.editor_point_address_physical(x, y, scale) else {
+        let Some((c, tb, ifc)) = self.editor_point_address(x, y) else {
             return true; // dragged off the text; keep the drag, don't change selection
         };
         if c != container {
@@ -3567,25 +3747,170 @@ mod hook_key_str_tests {
     use super::hook_key_str;
     use rinch_platform::KeyCode;
 
+    fn k(key: KeyCode, text: Option<&str>) -> Option<String> {
+        hook_key_str(key, text, None)
+    }
+
+    /// The same call with the layout-mapped key value the shell passes
+    /// alongside a real `KeyDown` (`winit_logical_key_str`).
+    fn kl(key: KeyCode, text: Option<&str>, logical: &str) -> Option<String> {
+        hook_key_str(key, text, Some(logical))
+    }
+
     #[test]
     fn other_keycode_falls_through_to_the_text_field() {
         // Punctuation — hardware and debug channel alike — arrives as
         // `KeyCode::Other` with the character in `text`; the hook must see the
         // character, not a named key (issue #151).
-        assert_eq!(
-            hook_key_str(KeyCode::Other, Some("."), false),
-            Some(".".to_string())
-        );
+        assert_eq!(k(KeyCode::Other, Some(".")), Some(".".to_string()));
+    }
+
+    #[test]
+    fn other_keycode_without_text_is_the_one_unnamed_key() {
+        // The only remaining `None`: a key with no `KeyCode` identity and no
+        // printable text to borrow one from.
+        assert_eq!(k(KeyCode::Other, None), None);
+        assert_eq!(k(KeyCode::Other, Some("")), None);
+        assert_eq!(k(KeyCode::Other, Some("\u{1}")), None);
     }
 
     #[test]
     fn spacebar_reports_the_named_key_not_its_text() {
         // A real (or injected) spacebar press is `KeyCode::Space` with
         // text=" " — the named-key arm must win so hooks see "Space".
+        assert_eq!(k(KeyCode::Space, Some(" ")), Some("Space".to_string()));
+        // Same for Tab, whose text is a control character anyway.
+        assert_eq!(k(KeyCode::Tab, Some("\t")), Some("Tab".to_string()));
+    }
+
+    #[test]
+    fn the_layout_letter_wins_over_the_physical_position() {
+        // Unmodified, `text` is what the layout actually produced: the AZERTY
+        // key at the physical QWERTY-Q position types 'a', and that is what a
+        // hook must see. (The same rule `editor_key_binding` follows.)
+        assert_eq!(k(KeyCode::KeyQ, Some("a")), Some("a".to_string()));
+        // Shift is not suppressed, so the capital survives.
+        assert_eq!(k(KeyCode::KeyA, Some("A")), Some("A".to_string()));
+    }
+
+    #[test]
+    fn a_modifier_chord_still_names_its_key() {
+        // Issue #336: a modifier suppresses `text`, and before the physical
+        // fallback every key outside the twelve Ctrl+letters rinch binds
+        // returned `None` — so the interceptor was never invoked for Ctrl+S at
+        // all. Every letter, digit and symbol now reports a spelling.
+        assert_eq!(k(KeyCode::KeyS, None), Some("s".to_string()));
+        assert_eq!(k(KeyCode::KeyC, None), Some("c".to_string()));
+        assert_eq!(k(KeyCode::Digit1, None), Some("1".to_string()));
+        assert_eq!(k(KeyCode::Digit0, None), Some("0".to_string()));
+        assert_eq!(k(KeyCode::Equal, None), Some("=".to_string()));
+        assert_eq!(k(KeyCode::Minus, None), Some("-".to_string()));
+    }
+
+    #[test]
+    fn function_keys_report_their_name() {
+        // They insert no text, so before #336 they reported nothing at all.
+        assert_eq!(k(KeyCode::F1, None), Some("F1".to_string()));
+        assert_eq!(k(KeyCode::F5, None), Some("F5".to_string()));
+        assert_eq!(k(KeyCode::F12, None), Some("F12".to_string()));
+    }
+
+    #[test]
+    fn every_named_keycode_reports_a_spelling_with_no_text() {
+        // The contract in one assertion: a `KeyUp` carries no text at all, so
+        // anything that returns `None` here is invisible to a release.
+        let named = [
+            KeyCode::ArrowLeft,
+            KeyCode::ArrowRight,
+            KeyCode::ArrowUp,
+            KeyCode::ArrowDown,
+            KeyCode::Home,
+            KeyCode::End,
+            KeyCode::PageUp,
+            KeyCode::PageDown,
+            KeyCode::Enter,
+            KeyCode::Backspace,
+            KeyCode::Delete,
+            KeyCode::Tab,
+            KeyCode::Escape,
+            KeyCode::Space,
+            KeyCode::ShiftLeft,
+            KeyCode::ShiftRight,
+            KeyCode::ControlLeft,
+            KeyCode::ControlRight,
+            KeyCode::AltLeft,
+            KeyCode::AltRight,
+        ];
+        for key in named {
+            assert!(k(key, None).is_some(), "{key:?} reports no key string");
+        }
+        for key in [
+            KeyCode::KeyA,
+            KeyCode::KeyZ,
+            KeyCode::Digit5,
+            KeyCode::F7,
+            KeyCode::Equal,
+            KeyCode::Minus,
+        ] {
+            assert!(k(key, None).is_some(), "{key:?} reports no key string");
+        }
+    }
+
+    #[test]
+    fn a_chord_reports_the_keycap_letter_not_the_physical_position() {
+        // AZERTY puts the key labelled A at the physical QWERTY-Q position. A
+        // modifier suppresses `text`, but winit's layout-mapped letter
+        // survives it and the shell hands it over — and `editor_key_binding`
+        // acts on exactly that field, so the interceptor has to agree with it
+        // or one keystroke means two different letters inside one runtime.
+        assert_eq!(kl(KeyCode::KeyQ, None, "a"), Some("a".to_string()));
+        // On a US layout the two agree and nothing changes.
+        assert_eq!(kl(KeyCode::KeyS, None, "s"), Some("s".to_string()));
+        // Case passes through: `Ctrl+Shift+A` reports `"A"` where `Ctrl+A`
+        // reports `"a"` — measured browser behaviour, and the only spelling
+        // under which a shifted press and its release agree (issue #337).
+        assert_eq!(kl(KeyCode::KeyQ, None, "A"), Some("A".to_string()));
+        // With no logical key at all — the debug channel, an injected or
+        // embedded event — the physical US fallback still names the chord.
+        assert_eq!(k(KeyCode::KeyQ, None), Some("q".to_string()));
+    }
+
+    #[test]
+    fn the_inserted_text_still_outranks_the_logical_letter() {
+        // Unmodified, `text` carries dead-key composition that the logical
+        // key value cannot; when both are present they normally agree.
+        assert_eq!(kl(KeyCode::KeyA, Some("A"), "A"), Some("A".to_string()));
+        // And a named key still outranks both.
         assert_eq!(
-            hook_key_str(KeyCode::Space, Some(" "), false),
+            kl(KeyCode::Space, Some(" "), " "),
             Some("Space".to_string())
         );
+    }
+
+    #[test]
+    fn the_widened_logical_value_passes_through_verbatim() {
+        // A shifted non-letter chord — or its release, which never has text —
+        // names the layout's glyph, not the physical digit under it. The old
+        // single-ASCII-letter field dropped `'!'` entirely, so a release fell
+        // to the physical table and disagreed with its own press.
+        assert_eq!(kl(KeyCode::Digit1, None, "!"), Some("!".to_string()));
+        // A key rinch has no `KeyCode` for but winit names is visible now.
+        assert_eq!(
+            kl(KeyCode::Other, None, "CapsLock"),
+            Some("CapsLock".to_string())
+        );
+        // A dead key spells the way a browser spells one.
+        assert_eq!(kl(KeyCode::Other, None, "Dead"), Some("Dead".to_string()));
+        // The empty string and control characters are still no spelling at all.
+        assert_eq!(kl(KeyCode::Other, None, ""), None);
+        assert_eq!(kl(KeyCode::Other, None, "\u{1}"), None);
+    }
+
+    #[test]
+    fn both_physical_modifier_keys_share_one_name() {
+        assert_eq!(k(KeyCode::ShiftRight, None), k(KeyCode::ShiftLeft, None));
+        assert_eq!(k(KeyCode::AltRight, None), Some("Alt".to_string()));
+        assert_eq!(k(KeyCode::ControlRight, None), Some("Control".to_string()));
     }
 }
 
@@ -3599,7 +3924,7 @@ mod editor_key_binding_tests {
     fn logical_letter_wins_over_physical_position() {
         // Dvorak: the key that types 'b' sits at the physical QWERTY-N position, so
         // `key`=KeyN but `logical`=Some('b'). The logical letter must win → Mod-b.
-        let b = editor_key_binding(KeyCode::KeyN, Some('b'), true, false, false).unwrap();
+        let b = editor_key_binding(KeyCode::KeyN, Some("b"), true, false, false).unwrap();
         assert_eq!(
             b,
             KeyBinding::new(
@@ -3624,8 +3949,27 @@ mod editor_key_binding_tests {
     fn digits_use_the_physical_key_ignoring_a_non_letter_logical() {
         // Shift+8 has a logical '*' (not a letter) → fall back to the physical Digit8='8'
         // so `Mod-Shift-8` matches regardless of the shifted glyph.
-        let b = editor_key_binding(KeyCode::Digit8, Some('*'), true, true, false).unwrap();
+        let b = editor_key_binding(KeyCode::Digit8, Some("*"), true, true, false).unwrap();
         assert_eq!(b.key, Key::Char('8'));
         assert!(b.mods.primary && b.mods.shift);
+    }
+
+    #[test]
+    fn a_capital_folds_here_at_the_comparison_site() {
+        // `logical_key` is case-accurate now (issue #337): Ctrl+Shift+B
+        // arrives as `"B"`. The keymap's identity is the lowercase letter plus
+        // the shift *flag*, so the fold happens here — not at the source,
+        // where it made a press and its release spell differently.
+        let b = editor_key_binding(KeyCode::KeyB, Some("B"), true, true, false).unwrap();
+        assert_eq!(b.key, Key::Char('b'));
+        assert!(b.mods.shift, "the shift flag still carries the case intent");
+    }
+
+    #[test]
+    fn a_named_logical_value_is_not_mistaken_for_a_letter() {
+        // The widened field can carry `"Enter"`; only a *single* ASCII letter
+        // takes the logical arm — everything else keeps resolving physically.
+        let b = editor_key_binding(KeyCode::Enter, Some("Enter"), false, false, false).unwrap();
+        assert_eq!(b.key, Key::Enter);
     }
 }

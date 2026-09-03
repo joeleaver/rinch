@@ -552,11 +552,41 @@ PlatformEvent::MouseUp { x: 100.0, y: 200.0, button: MouseButton::Left }
 PlatformEvent::MouseWheel { x: 100.0, y: 200.0, delta_x: 0.0, delta_y: -30.0 }
 PlatformEvent::KeyDown {
     key: KeyCode::KeyA,
+    // The layout-produced `KeyboardEvent.key` value, case-accurate ("A" under
+    // Shift). `None` = unknown; the app then falls back to the physical `key`.
+    logical_key: Some("a".into()),
     text: Some("a".into()),
+    modifiers: Modifiers::default(),
+}
+PlatformEvent::KeyUp {
+    key: KeyCode::KeyA,
+    // Spell it like the press, or a consumer pairing press with release by
+    // key string ("is A still held") never matches.
+    logical_key: Some("a".into()),
     modifiers: Modifiers::default(),
 }
 PlatformEvent::Resized { width: 1920, height: 1080 }
 ```
+
+> **Pointer coordinates are logical (CSS) pixels, not physical ones** (issue
+> #299). `MouseMove`/`MouseDown`/`MouseUp`/`MouseWheel`, `MouseWheel`'s
+> `delta_x`/`delta_y`, and the `File*` positions are all in the space the
+> document is laid out in and `hit_test` probes. A windowing system that reports
+> physical pixels — winit does — must divide first, and
+> `rinch_platform::to_logical_point(point, scale)` is the shared conversion:
+>
+> ```rust
+> let (lx, ly) = rinch_platform::to_logical_point((position.x, position.y), window.scale_factor());
+> events.push(PlatformEvent::MouseMove { x: lx as f32, y: ly as f32 });
+> ```
+>
+> Forwarding the physical position instead displaces every click, hover, drag
+> and scroll by the scale factor times its distance from the window origin — it
+> is invisible at scale 1.0 and wrong everywhere else. Note this is the opposite
+> of `resize(w, h)` and `RinchContextConfig`'s `width`/`height`, which stay
+> **physical**; `scale_factor` is how rinch reconciles the two. `wants_mouse(x,
+> y)` takes the same logical pair, so ask it with exactly what you put on the
+> event. `examples/game-embed` does this.
 
 ### API Reference: Embed
 

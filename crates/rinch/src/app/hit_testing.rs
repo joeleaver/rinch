@@ -326,7 +326,22 @@ pub(crate) fn pointer_in_node(
 
 /// Detect whether a mouse position is near a window edge for resize.
 ///
-/// All coordinates are in the same unit (physical pixels).
+/// All five arguments are in the same unit: **logical (CSS) pixels** — the
+/// pointer position `PlatformEvent` carries, the logical layout viewport, and
+/// `WindowProps::resize_inset`, which is documented as matching a CSS margin.
+/// The caller used to hand this the physical `window_size` and a
+/// `inset * scale_factor`, because the desktop shell fed physical pointer
+/// coordinates; #299 moved the pointer into logical space, so the whole
+/// comparison moved with it.
+///
+/// The grab zone is `inset` px deep on every edge, and a corner is where two of
+/// those zones meet — an `inset` x `inset` square. Nothing is added to `inset`
+/// and no corner is enlarged (see the comment in the body, and #423).
+///
+/// This answers only "is this position in the zone". Whether the press is
+/// actually *given* to a resize is the caller's decision: a visible scrollbar
+/// thumb takes an edge press off it (#399/#420, [`pointer_on_scrollbar_thumb`]).
+///
 /// Returns the resize direction if the cursor is within the grab zone.
 pub(crate) fn detect_resize_edge(
     x: f32,
@@ -336,33 +351,95 @@ pub(crate) fn detect_resize_edge(
     inset: f32,
 ) -> Option<rinch_platform::ResizeDirection> {
     use rinch_platform::ResizeDirection::*;
-    // The inset defines the full resize grab zone from the window edge.
-    // No additional grab extension — keep resize handles within the inset
-    // so they don't overlap content (e.g. scrollbars).
+    // The inset is the whole grab zone, on every edge. There is no additive
+    // extension and no enlarged corner: a corner is simply where two edge zones
+    // meet, an `inset` x `inset` square.
+    //
+    // There used to be a second, larger `corner = inset * 2` radius here whose
+    // four guards read `corner_top || corner_left` and so on. Every one of them
+    // was a tautology — the arm they guarded already required `near_top` or
+    // `near_left`, and `near_x` implies `corner_x` for any `corner > edge` — so
+    // the enlargement never took effect in either the additive form or the
+    // multiplicative one that replaced it. Deleting it changes no behaviour
+    // (`the_corner_is_where_two_edge_zones_meet` pins that) and stops the code
+    // promising something it does not do; CLAUDE.md promised it too, and no
+    // longer does (#423).
+    //
+    // Making it real was considered and rejected: a 16px corner at the default
+    // 8px inset reaches into a `BorderlessWindow`'s window-control buttons,
+    // which sit within 10px of the top-right corner. An app that wants bigger
+    // handles can raise `resize_inset`.
     let edge = inset;
-    let corner = inset * 2.0;
 
     let near_left = x < edge;
     let near_right = x > window_width - edge;
     let near_top = y < edge;
     let near_bottom = y > window_height - edge;
 
-    let corner_left = x < corner;
-    let corner_right = x > window_width - corner;
-    let corner_top = y < corner;
-    let corner_bottom = y > window_height - corner;
-
     match (near_top, near_bottom, near_left, near_right) {
-        (true, _, true, _) if corner_top || corner_left => Some(NorthWest),
-        (true, _, _, true) if corner_top || corner_right => Some(NorthEast),
-        (_, true, true, _) if corner_bottom || corner_left => Some(SouthWest),
-        (_, true, _, true) if corner_bottom || corner_right => Some(SouthEast),
+        (true, _, true, _) => Some(NorthWest),
+        (true, _, _, true) => Some(NorthEast),
+        (_, true, true, _) => Some(SouthWest),
+        (_, true, _, true) => Some(SouthEast),
         (true, _, _, _) => Some(North),
         (_, true, _, _) => Some(South),
         (_, _, true, _) => Some(West),
         (_, _, _, true) => Some(East),
         _ => None,
     }
+}
+
+/// Whether a resize direction is a corner (diagonal) rather than an edge.
+///
+/// The distinction matters because an edge yields to a visible scrollbar thumb
+/// and a corner does not — see [`pointer_on_scrollbar_thumb`].
+pub(crate) fn is_corner_resize(dir: rinch_platform::ResizeDirection) -> bool {
+    use rinch_platform::ResizeDirection::*;
+    matches!(dir, NorthEast | NorthWest | SouthEast | SouthWest)
+}
+
+/// Whether the pointer is on a scroll container's thumb: its **painted**
+/// extent along the track, over [`find_scrollbar_hit`]'s full strip across it.
+///
+/// A borderless window's resize inset overlaps whatever content is flush with
+/// the window edge, and for a `BorderlessWindow` — whose root is `100vw` x
+/// `100vh` with no margin — that is the scroll container filling it. At the
+/// default 8px inset the East zone is `x > width - 8` and the thumb is painted
+/// in `[width - 8, width - 2)`, so *every pixel of the thumb you can see* was a
+/// resize handle and a press dead-centre of it resized the window (#399, #420).
+///
+/// The rule that resolves it is "what you can see, you can grab", applied per
+/// axis. **Along** the track, a press at the thumb's extent goes to the
+/// scrollbar, and the empty track past it — like every edge with no bar on it
+/// — still resizes. **Across** the bar the test is [`find_scrollbar_hit`]'s
+/// whole hit strip, so the 2px margin between the thumb and the window edge
+/// grabs the thumb too: edge-forgiving, the way a browser's bar in a maximised
+/// window is grabbable at the very last pixel. A browser has no equivalent
+/// *resize* conflict, because its resize border lives in the window frame
+/// *outside* the client area; a borderless window has no frame to put it in,
+/// so something has to give, and the visible target is the one the user is
+/// aiming at.
+///
+/// Corners are excluded by the caller ([`is_corner_resize`]), so a diagonal
+/// resize is always reachable however tall the thumb grows.
+pub(crate) fn pointer_on_scrollbar_thumb(tree: &rinch_dom::NodeTree, x: f32, y: f32) -> bool {
+    let Some(hit) = find_scrollbar_hit(tree, x, y) else {
+        return false;
+    };
+    let Some(node) = tree.get(hit.node_id) else {
+        return false;
+    };
+    let scroll = match hit.axis {
+        ScrollAxis::Vertical => node.scroll_offset.1,
+        ScrollAxis::Horizontal => node.scroll_offset.0,
+    };
+    // The thumb's extent along the track, in the container's own space — the
+    // same space the pointer is mapped into, so a scroller under a
+    // `transform: scale()` answers about the thumb you can see (#203).
+    let local = pointer_in_node(tree, hit.node_id, x, y);
+    let along = hit.axis.along(local.0, local.1) as f64;
+    let start = hit.track.thumb_start(scroll);
+    along >= start && along <= start + hit.track.thumb_len
 }
 
 /// Map a resize direction to the appropriate cursor style.
@@ -453,46 +530,11 @@ pub(crate) fn find_scroll_container(tree: &rinch_dom::NodeTree, start: usize) ->
 }
 
 /// Compute the total content height of a node from its children's layout bounds.
+///
+/// Delegates to [`rinch_dom::paint::scrollbar::content_extents`] so this and
+/// the paint pass cannot disagree about what "content" means (#400).
 pub(crate) fn compute_content_height(tree: &rinch_dom::NodeTree, node_id: usize) -> f64 {
-    let node = match tree.get(node_id) {
-        Some(n) => n,
-        None => return 0.0,
-    };
-    // Taffy child.layout.y is relative to the parent's border box,
-    // so it includes padding-top + border-top. Subtract that offset
-    // to get the content-relative height (consistent with
-    // compute_visible_content_area_height).
-    let content_top = (node.computed_style.padding_top.to_px()
-        + node.computed_style.border_top_width.to_px()) as f64;
-    let mut max_bottom: f64 = 0.0;
-    for &child_id in &node.children {
-        if let Some(child) = tree.get(child_id) {
-            let bottom = (child.layout.y + child.layout.height) as f64 - content_top;
-            if bottom > max_bottom {
-                max_bottom = bottom;
-            }
-        }
-    }
-    max_bottom
-}
-
-/// The visible content area height: layout.height minus padding and border.
-/// Children are positioned relative to the content box, so this is the actual
-/// viewport height for scroll calculations.
-pub(crate) fn compute_visible_content_area_height(
-    tree: &rinch_dom::NodeTree,
-    node_id: usize,
-) -> f64 {
-    let node = match tree.get(node_id) {
-        Some(n) => n,
-        None => return 0.0,
-    };
-    let cs = &node.computed_style;
-    let pad_top = cs.padding_top.to_px() as f64;
-    let pad_bottom = cs.padding_bottom.to_px() as f64;
-    let border_top = cs.border_top_width.to_px() as f64;
-    let border_bottom = cs.border_bottom_width.to_px() as f64;
-    (node.layout.height as f64 - pad_top - pad_bottom - border_top - border_bottom).max(0.0)
+    rinch_dom::paint::scrollbar::content_extents(tree, node_id).1
 }
 
 /// Find the nearest ancestor (or self) that is a horizontal scroll container.
@@ -670,49 +712,12 @@ fn find_hscroll_container_at_point_recursive(
 }
 
 /// Compute the total content width of a node from its children's layout bounds.
-pub(crate) fn compute_content_width(tree: &rinch_dom::NodeTree, node_id: usize) -> f64 {
-    let node = match tree.get(node_id) {
-        Some(n) => n,
-        None => return 0.0,
-    };
-    // Taffy child.layout.x is relative to the parent's border box, so it
-    // includes padding-left + border-left. Subtract that offset to get the
-    // content-relative width, the same way `compute_content_height` does and
-    // the same way `DomDocument::scroll_width` already did — without this the
-    // horizontal scrollbar would decide a padded container overflows when it
-    // does not, and size its thumb against a width the paint pass disagrees
-    // with.
-    let content_left = (node.computed_style.padding_left.to_px()
-        + node.computed_style.border_left_width.to_px()) as f64;
-    let mut max_right: f64 = 0.0;
-    for &child_id in &node.children {
-        if let Some(child) = tree.get(child_id) {
-            let right = (child.layout.x + child.layout.width) as f64 - content_left;
-            if right > max_right {
-                max_right = right;
-            }
-        }
-    }
-    max_right
-}
-
-/// The visible content area width: layout.width minus padding and border.
 ///
-/// The horizontal twin of [`compute_visible_content_area_height`].
-pub(crate) fn compute_visible_content_area_width(
-    tree: &rinch_dom::NodeTree,
-    node_id: usize,
-) -> f64 {
-    let node = match tree.get(node_id) {
-        Some(n) => n,
-        None => return 0.0,
-    };
-    let cs = &node.computed_style;
-    let pad_left = cs.padding_left.to_px() as f64;
-    let pad_right = cs.padding_right.to_px() as f64;
-    let border_left = cs.border_left_width.to_px() as f64;
-    let border_right = cs.border_right_width.to_px() as f64;
-    (node.layout.width as f64 - pad_left - pad_right - border_left - border_right).max(0.0)
+/// The horizontal twin of [`compute_content_height`], and the same delegation:
+/// one definition, so a padded container cannot decide it overflows when paint
+/// says it does not.
+pub(crate) fn compute_content_width(tree: &rinch_dom::NodeTree, node_id: usize) -> f64 {
+    rinch_dom::paint::scrollbar::content_extents(tree, node_id).0
 }
 
 /// The width of the invisible strip along a container's edge that counts as
@@ -728,21 +733,21 @@ pub(crate) const SCROLLBAR_HIT_THICKNESS: f32 = 16.0;
 /// The `x`/`y` fed to [`find_scrollbar_hit`] are the pointer coordinates the
 /// shell hands `PlatformEvent`, compared here against **logical** layout rects
 /// straight out of Taffy — no scale factor is applied anywhere in this
-/// function. That is the same space the vertical bar has always been tested
-/// in, and it is exactly the mismatch #299 describes (the desktop shell passes
-/// winit's *physical* coordinates), so at a scale factor other than 1 both
-/// bars are displaced by the same amount and #299 fixes both at once. The
-/// paint pass is unaffected: it multiplies by `scale` and works in device
-/// pixels.
+/// function, and none is needed: since #299 those coordinates are logical on
+/// every host, so both bars are grabbable at any scale factor. (Before #299
+/// the desktop shell forwarded winit's *physical* position, which displaced
+/// both bars by the same amount; fixing the shell fixed both at once, with no
+/// change here.) The paint pass is unaffected: it multiplies by `scale` and
+/// works in device pixels.
 pub(crate) struct ScrollbarHit {
     /// The scroll container whose bar was hit.
     pub node_id: usize,
     /// Which of its two bars.
     pub axis: ScrollAxis,
-    /// Content extent along `axis`.
-    pub content_size: f64,
-    /// Visible content-area extent along `axis`.
-    pub container_size: f64,
+    /// That bar's geometry, in the container's own space — the *paint pass's*
+    /// own computation, so a press and a drag land where the thumb is drawn
+    /// rather than on a separately derived track (#400).
+    pub track: rinch_dom::paint::scrollbar::ScrollbarTrack,
 }
 
 /// Check if a point (x, y) hits a scrollbar.
@@ -809,31 +814,12 @@ fn find_scrollbar_hit_node(
         }
     }
 
-    use rinch_dom::computed_style::OverflowValue;
-    let cs = &node.computed_style;
-
-    // A bar exists on an axis when that axis is scrollable AND overflowing.
-    // `scroll` and `auto` behave identically here, matching what the vertical
-    // bar has always done: rinch paints a thumb and no track, so there is
-    // nothing for `scroll` to show when the content fits.
-    // The extents are only measured for an axis that is scrollable at all, so
-    // an ordinary node in the recursion pays nothing beyond the enum check.
-    let vertical = matches!(cs.overflow_y, OverflowValue::Scroll | OverflowValue::Auto)
-        .then(|| {
-            (
-                compute_content_height(tree, node_id),
-                compute_visible_content_area_height(tree, node_id),
-            )
-        })
-        .filter(|(content, visible)| content > visible);
-    let horizontal = matches!(cs.overflow_x, OverflowValue::Scroll | OverflowValue::Auto)
-        .then(|| {
-            (
-                compute_content_width(tree, node_id),
-                compute_visible_content_area_width(tree, node_id),
-            )
-        })
-        .filter(|(content, visible)| content > visible);
+    // Which bars exist, and where they are: the paint pass's own computation,
+    // asked for at scale 1 because these coordinates are logical (#400). Cheap
+    // for an ordinary node in the recursion — `scrollbars` returns after two
+    // enum checks when neither axis scrolls, without walking children.
+    let bars = rinch_dom::paint::scrollbar::scrollbars(tree, node_id, 1.0);
+    let (vertical, horizontal) = (bars.vertical, bars.horizontal);
 
     // The corner. Where both bars are present their strips would overlap in a
     // square at the far end, and one of them would silently win the click.
@@ -853,26 +839,24 @@ fn find_scrollbar_hit_node(
         nx + nw
     };
 
-    if let Some((content_size, container_size)) = vertical {
+    if let Some(track) = vertical {
         let scrollbar_left = nx + nw - t;
         if x >= scrollbar_left && x <= nx + nw && y >= ny && y <= v_end {
             return Some(ScrollbarHit {
                 node_id,
                 axis: ScrollAxis::Vertical,
-                content_size,
-                container_size,
+                track,
             });
         }
     }
 
-    if let Some((content_size, container_size)) = horizontal {
+    if let Some(track) = horizontal {
         let scrollbar_top = ny + nh - t;
         if y >= scrollbar_top && y <= ny + nh && x >= nx && x <= h_end {
             return Some(ScrollbarHit {
                 node_id,
                 axis: ScrollAxis::Horizontal,
-                content_size,
-                container_size,
+                track,
             });
         }
     }
@@ -1055,6 +1039,99 @@ mod tests {
             hit_test(&doc.tree, 220.0, 160.0),
             Some(modal.0),
             "the button's untransformed layout centre must miss the button"
+        );
+    }
+
+    /// A percentage translate that is *not* the first function in the list
+    /// composes in the frame the functions before it establish (#212) — and
+    /// paint and hit testing have to say so together.
+    ///
+    /// `scale(2) translateX(50%)` on a 100px-wide box moves it 100px, not 50:
+    /// the offset is scaled by the `scale` that precedes it, exactly as a
+    /// `translateX(50px)` in the same position would be. The whole point of
+    /// #203 is that the box a click reports is the box paint drew, so this
+    /// asserts both ends against one hand-computed rect.
+    #[test]
+    fn a_scaled_percentage_translate_paints_and_hits_in_the_same_place() {
+        let (mut doc, container) = container_doc();
+        // Layout box (100,60)-(200,100), origin at its centre (150,80).
+        // m = [2,0,0,2, 100, 0]  (the 50% of 100px doubled by the scale), so
+        // the composed map is p -> (2x - 50, 2y - 80) and the painted box is
+        // (150,40)-(350,120). Before the fix m[4] was 50, putting it at
+        // (100,40)-(300,120).
+        let boxed = child_of(
+            &mut doc,
+            container,
+            "position: absolute; left: 100px; top: 60px; width: 100px; height: 40px; \
+             transform: scale(2) translateX(50%)",
+        );
+        doc.resolve_layout(800.0, 600.0);
+
+        let (px, py, pw, ph) = super::painted_element_box(&doc.tree, boxed.0);
+        for (got, want, what) in [
+            (px, 150.0, "x"),
+            (py, 40.0, "y"),
+            (pw, 200.0, "width"),
+            (ph, 80.0, "height"),
+        ] {
+            assert!(
+                (got - want).abs() < 0.01,
+                "painted {what}: got {got}, expected {want}"
+            );
+        }
+
+        assert_eq!(
+            hit_test(&doc.tree, 340.0, 80.0),
+            Some(boxed.0),
+            "a point inside the painted box's right end must hit it"
+        );
+        assert_eq!(
+            hit_test(&doc.tree, 110.0, 80.0),
+            Some(container.0),
+            "a point where the un-scaled offset used to put the box must miss it"
+        );
+    }
+
+    /// The same reconvergence with a rotation, where the offset changes
+    /// direction rather than magnitude.
+    ///
+    /// `rotate(45deg) translateX(50%)` sends the box's centre 50px along the
+    /// rotated x-axis, i.e. to `(150, 80) + (35.36, 35.36)`. Before the fix the
+    /// offset was applied in the outer frame, landing the centre at `(200, 80)`
+    /// — far enough away that each position misses the other's quad.
+    #[test]
+    fn a_rotated_percentage_translate_paints_and_hits_in_the_same_place() {
+        let (mut doc, container) = container_doc();
+        let boxed = child_of(
+            &mut doc,
+            container,
+            "position: absolute; left: 100px; top: 60px; width: 100px; height: 40px; \
+             transform: rotate(45deg) translateX(50%)",
+        );
+        doc.resolve_layout(800.0, 600.0);
+
+        // The bounding box of an affine image of a rectangle is centred on the
+        // image of the rectangle's centre, so this reads paint's answer for
+        // where the box went without hand-computing the rotated corners.
+        let (px, py, pw, ph) = super::painted_element_box(&doc.tree, boxed.0);
+        let (cx, cy) = (px + pw / 2.0, py + ph / 2.0);
+        let offset = 50.0 * std::f32::consts::FRAC_1_SQRT_2;
+        assert!(
+            (cx - (150.0 + offset)).abs() < 0.01 && (cy - (80.0 + offset)).abs() < 0.01,
+            "painted centre: got ({cx}, {cy}), expected ({}, {})",
+            150.0 + offset,
+            80.0 + offset
+        );
+
+        assert_eq!(
+            hit_test(&doc.tree, cx, cy),
+            Some(boxed.0),
+            "the painted centre must hit the box"
+        );
+        assert_eq!(
+            hit_test(&doc.tree, 200.0, 80.0),
+            Some(container.0),
+            "where the un-rotated offset used to put the box must now miss it"
         );
     }
 
@@ -1750,5 +1827,100 @@ mod tests {
             super::find_scrollbar_hit(&doc.tree, 192.0, 50.0).is_none(),
             "and not at the un-shifted viewport box"
         );
+    }
+
+    /// A hoisted inline-block — `position: relative` in a padded IFC — is
+    /// tapped where its IFC **paints** it: the root's content origin plus the
+    /// parley position. Not one padding+border up-left at the plain border-box
+    /// chain position, where the pre-#365 ghost copy used to paint.
+    ///
+    /// This is also the pin for `stacking.rs`'s entry-push rule: the hoisted
+    /// `PaintEntry`'s offset must stay border-box-relative, because this
+    /// file's `descend` adds `ifc_content_box_offset` itself when it enters
+    /// the entry node. Add the offset at the entry push in `collect_hoisted`
+    /// and this test fails by exactly one padding+border — the offset
+    /// double-added. Before this test existed, that mutation survived the
+    /// entire workspace.
+    #[test]
+    fn a_hoisted_inline_block_is_tapped_where_its_ifc_paints_it() {
+        let mut doc = RinchDocument::new();
+        let body = doc.body();
+        let container = doc.create_element("div");
+        doc.set_attribute(
+            container,
+            "style",
+            "width: 400px; padding: 40px; border: 2px solid rgb(0,0,255); font-size: 16px",
+        );
+        doc.append_child(body, container);
+        let t = doc.create_text("Press ");
+        doc.append_child(container, t);
+        let button = doc.create_element("button");
+        doc.set_attribute(
+            button,
+            "style",
+            "position: relative; width: 60px; height: 24px",
+        );
+        doc.append_child(container, button);
+        doc.resolve_layout(800.0, 600.0);
+
+        // Where the IFC paints the button: body origin + container origin +
+        // padding+border + the parley x/y the IFC wrote into the button's own
+        // layout. Derived from the tree, not copied from a run.
+        let b = doc.tree.get(button.0).unwrap();
+        let c = doc.tree.get(container.0).unwrap();
+        let cs = &c.computed_style;
+        let pad_x = cs.padding_left.to_px() + cs.border_left_width.to_px();
+        let pad_y = cs.padding_top.to_px() + cs.border_top_width.to_px();
+        let body_l = doc.tree.get(doc.tree.body_id).unwrap().layout;
+        let px = body_l.x + c.layout.x + pad_x + b.layout.x + b.layout.width / 2.0;
+        let py = body_l.y + c.layout.y + pad_y + b.layout.y + b.layout.height / 2.0;
+        assert_eq!(
+            hit_test(&doc.tree, px, py),
+            Some(button.0),
+            "the button is tapped at the position its IFC paints it"
+        );
+        // One padding+border up-left — the ghost position — must NOT tap the
+        // button: nothing paints it there.
+        assert_ne!(
+            hit_test(&doc.tree, px - pad_x, py - pad_y),
+            Some(button.0),
+            "the border-box chain position taps something else — nothing \
+             paints the button there"
+        );
+    }
+
+    /// #423: a corner is where two edge zones meet, and nothing more.
+    ///
+    /// The `corner = inset * 2` radius this function used to carry never took
+    /// effect — each of its four guards was implied by the `near_*` its arm
+    /// already required — so removing it is an identity. This pins that, and
+    /// pins the geometry CLAUDE.md now documents.
+    #[test]
+    fn the_corner_is_where_two_edge_zones_meet() {
+        use super::detect_resize_edge;
+        use rinch_platform::ResizeDirection::*;
+        let at = |x, y| detect_resize_edge(x, y, 800.0, 600.0, 8.0);
+
+        // Inside one zone only — an edge, on all four sides.
+        assert_eq!(at(4.0, 300.0), Some(West));
+        assert_eq!(at(796.0, 300.0), Some(East));
+        assert_eq!(at(400.0, 4.0), Some(North));
+        assert_eq!(at(400.0, 596.0), Some(South));
+
+        // Inside two — a corner, on all four.
+        assert_eq!(at(4.0, 4.0), Some(NorthWest));
+        assert_eq!(at(796.0, 4.0), Some(NorthEast));
+        assert_eq!(at(4.0, 596.0), Some(SouthWest));
+        assert_eq!(at(796.0, 596.0), Some(SouthEast));
+
+        // 12px in from the left and 4px down: inside the old `inset * 2` corner
+        // radius on x, outside the edge zone on x. A corner that actually
+        // enlarged would answer NorthWest here. It does not, and never did.
+        assert_eq!(at(12.0, 4.0), Some(North));
+        assert_eq!(at(4.0, 12.0), Some(West));
+
+        // And outside everything.
+        assert_eq!(at(400.0, 300.0), None);
+        assert_eq!(at(12.0, 12.0), None);
     }
 }

@@ -770,6 +770,20 @@ The design rests on one invariant — **`model ≡ project(model)`**: every loca
 
 **Staged scope (design A22):** the first milestone covers **flat text-blocks + marks** (`paragraph`/`heading`/`code_block` with text + bold/italic/link/… marks) plus the **list containers** `bullet_list`/`ordered_list`/`list_item`, nested into each other and around text-blocks to any depth. Anything else — `blockquote`, tables, `task_list`/`task_item`, or an inline atom (`image`, `hard_break`, `horizontal_rule`) — is `CollabError::Unsupported`: the adapter **fails loud** rather than silently dropping a change (a silent drop would reintroduce the exact divergence class the editor rewrite killed).
 
+**An A22-refused local edit stalls outbound, it does not wedge it (#220).** The
+model applies the edit even though the CRDT refuses it, so from that moment the
+caller's `before` no longer describes the CRDT. `record_local` therefore treats
+`before` as a *hint*: if diffing against it fails, the change is re-projected
+against the CRDT's own read-back, which is authoritative. That is what makes the
+recovery real — before, the block-count gate refused **the very deletion that was
+the cure**, and once the counts realigned by coincidence the diff skipped the
+blocks it believed unchanged, so an edit made during the stall stayed local
+forever while `record_local` answered `Ok`. Silent divergence. Now removing the
+offending content resumes outbound on the spot and ships the whole backlog in one
+delta. `record_local` takes the `&Schema` for the read-back (a session cannot hold
+an `Rc<Schema>` — it must stay `Send`); `collab_outbound_stall()` reports the
+state while it holds.
+
 **Collab bytes are opaque.** A snapshot, a broadcast delta, a state vector, and a sync diff are all just `Vec<u8>` in yrs's lib0 v1 encoding — callers move them between calls without decoding them.
 
 ```rust
@@ -780,7 +794,7 @@ let mut a = CollabSession::new(&state)?;            // project state.doc onto a 
 let mut b = CollabSession::from_bytes(&a.snapshot())?;
 
 // After the editor applies a local transaction, project before→after onto the CRDT:
-a.record_local(&old_state.doc, &new_state.doc)?;
+a.record_local(new_state.schema(), &old_state.doc, &new_state.doc)?;
 
 // Broadcast a delta:
 let delta = a.save_incremental()?;
@@ -813,6 +827,7 @@ post_remote_delta(container_id, delta_bytes);
 | `is_collaborating()` / `stop_collaboration()` | Query / detach the session |
 | `is_collaboration_poisoned()` | Whether the session is **poisoned** (#196): an integrate left the shared CRDT unprojectable with nothing pending that could cure it (yrs has no rollback; a rebuild failure with updates parked on missing dependencies stays transient), so every convergence call — inbound AND outbound — fails sticky with `CollabError::SessionPoisoned` instead of one-way partitioning. Inbound is still attempted, and an update that makes the doc rebuildable again clears the poison; recovery in practice is `stop_collaboration()` + rejoin from a healthy peer's snapshot |
 | `collab_snapshot() -> Option<Vec<u8>>` | Current shared-doc snapshot for a *late*-joining guest |
+| `collab_outbound_stall() -> Option<CollabError>` | Why **outbound** is currently refusing (#220): a local edit outside A22 scope (a pasted table, an inserted rule) that the model applied but the CRDT would not. That edit and every one after it stays local; inbound keeps working and the shared doc is healthy. Unlike `collab_take_error` this does **not** clear — it is the *state*, so drive a persistent "not syncing — remove the table" banner from it. It clears itself on the next projectable edit, which broadcasts everything that accumulated. Not poison, no rejoin |
 | `collab_take_error() -> Option<CollabError>` | Take a fail-loud collab error. A22 projection errors are transient (the CRDT is left untouched — projection is all-or-nothing); a `SessionPoisoned` is not a one-off — taking it does not un-poison, every affected call re-fails with it |
 
 Free functions `collab_receive_for(container_id, &delta)` (main thread) and `post_remote_delta(container_id, delta)` (any thread) route an inbound delta to a registered editor. Runnable two-pane in-process loopback: `examples/collab-editor-demo`.
@@ -833,7 +848,7 @@ Free functions `collab_receive_for(container_id, &delta)` (main thread) and `pos
 | `crates/rinch-editor-collab/src/plugin.rs` | `CollabPlugin` + `CollabState` |
 | `crates/rinch-editor-collab/src/rebase.rs` | `rebase_steps` — local steps rebased over a remote mapping |
 | `crates/rinch-editor-collab/src/error.rs` | `CollabError` — the crate's one error type (`Engine`/`Unsupported`/`Schema`, plus the sticky `SessionPoisoned` a session fails with in both directions once an integrate has left the CRDT unprojectable with nothing pending to cure it — #196; cleared by an inbound update that makes the doc rebuildable again) |
-| `crates/rinch-editor-view/src/handle.rs` | `EditorHandle`'s collab methods (`start_collaboration_host/guest`, `collab_receive`, `collab_state_vector`, `collab_sync_diff`, `collab_snapshot`, `collab_take_error`, `stop_collaboration`, `is_collaborating`, `is_collaboration_poisoned`) — **not** in `rinch-editor-collab` |
+| `crates/rinch-editor-view/src/handle.rs` | `EditorHandle`'s collab methods (`start_collaboration_host/guest`, `collab_receive`, `collab_state_vector`, `collab_sync_diff`, `collab_snapshot`, `collab_take_error`, `collab_outbound_stall`, `stop_collaboration`, `is_collaborating`, `is_collaboration_poisoned`) — **not** in `rinch-editor-collab` |
 | `crates/rinch-editor-view/src/collab.rs` | `CollabBridge` — the seam driving `CollabSession` from an `EditorHandle` (outbound sink + last error) |
 | `crates/rinch-editor-view/src/registry.rs` | `collab_receive_for(container_id, &delta)` — routes an inbound delta to a registered editor |
 
@@ -959,13 +974,45 @@ open `<select>`, the rich-text editor, a render surface, or a generic focusable
 DOM node (`FocusTarget::Node`). Every transition goes through
 `RinchApp::set_focus_target`, which tears the previous owner down first.
 
-Focusability on desktop comes from an explicit `tabindex` (or `data-oninput`).
-`tabindex="-1"` is focusable by click and programmatically but not tabbable;
-`data-disabled` is a **boolean attribute** (present = disabled unless the value
-is `"false"`) and removes only the node from the Tab order, not its subtree. A
-`<button>`/`<a>` is not a desktop Tab stop — issue #252. A **mouse press claims
+Focusability on desktop comes from the **tag** or an explicit `tabindex` (or a
+`data-oninput` on a custom control), and an explicit `tabindex` always wins —
+the browser rule (issue #252). Focusable by tag: `<button>`, `<select>`,
+`<textarea>`, `<input>`, and `<a>` with a non-empty `href`. **Not** `<summary>`
+(rinch has no `<details>` behaviour) and **not** `data-rid` (the DropdownMenu
+backdrop carries one). `tabindex="-1"` is focusable by click and
+programmatically but not tabbable;
+`disabled` and `data-disabled` are both honoured (issue #315) as **boolean
+attributes** (present = disabled unless the value is `"false"`), take no focus
+by any route, and are re-checked at edit time: a field that goes disabled
+*while focused* stops accepting keys **and releases the keyboard** — with its
+`data-onchange` commit suppressed, since going disabled is not the user
+committing an edit (`release_focus_for_disabled`, the only transition that
+suppresses it). `readonly` focuses and selects but
+refuses every text-changing command. A disabled `<fieldset>` disables its
+subtree (except its first `<legend>`); every other tag's `disabled` removes
+only the node from the Tab order, not its subtree. A **mouse press claims
 the nearest focusable ancestor** of the hit node, browser-style, so a clicked
 `tabindex` div owns Enter/Space immediately.
+
+A focused **`<select>` is closed**, like a browser's — Enter/Space/Alt+Down
+opens its popup, which then owns the keyboard (issue #314). It is never handed
+to the text engine, whatever handlers it carries: branching on `data-oninput`
+without a tag guard used to install an `EditableState` over a select's `value`
+and make it a typable text field (issue #424). `Select`'s trigger `<div>`
+carries `tabindex="0"` + combobox ARIA (issue #251); arrow/Enter/Escape
+navigation of its **open** option list is issue #434.
+
+Still unmatched to the web: a positive `tabindex` does not order ahead of DOM
+order (issue #435), and a Modal/Drawer backdrop does not contain Tab.
+
+**`data-nofocus` takes the click without the keyboard** (issue #312) — the
+`preventDefault()`-on-mousedown mechanism browsers converged on, which an editor
+toolbar needs so Bold does not blur the editor it acts on. Same boolean rule as
+`data-disabled`, read **anywhere on the pressed node's ancestor chain** so a
+toolbar carries it once; it protects whatever holds the keyboard (editor, input,
+surface, node), the `data-rid` click still fires, and a text field *inside* the
+region still focuses normally. Both backends — on web it becomes
+`preventDefault()` on the `pointerdown`.
 
 A custom component that takes keyboard input registers for the lifecycle
 (issue #147, `crates/rinch/src/focus_registry.rs`, in the prelude):
@@ -988,7 +1035,21 @@ register_focus_target(
 - Both focus callbacks run **after** the transition completes (deferred through
   the same `PendingFocusWork` mechanism as a blurred input's `data-onchange`),
   so they may re-enter the runtime freely.
-- `on_key` is offered before the runtime's own handling; `true` consumes.
+- `on_key` is offered before the runtime's own handling; `true` consumes. It
+  sees **releases too** (#337): `k.kind`/`k.is_up()` tell the phases apart
+  (auto-repeat is a `Down`, currently indistinguishable from a fresh press —
+  desktop carries no repeat flag). A press and its release are spelled
+  by the same rule from the same fields, so pairing them by `k.key` works by
+  construction — a release carries no text and resolves through `logical_key`,
+  which `PlatformEvent::KeyUp` now carries for exactly that reason.
+  `logical_key` is `Option<String>` holding the full **case-accurate**
+  `KeyboardEvent.key` value (`"A"` under Shift, `"!"`, `"Enter"`, `"Dead"`;
+  it was a lowercased `Option<char>` letter, which made a shifted release
+  disagree with its own press) — lowercase at the comparison site, as
+  `editor_key_binding` does, never at the source. A release's
+  return value is ignored (nothing downstream to suppress, and the activation
+  latch must clear regardless). `KeyEventData` is `#[non_exhaustive]` — build
+  one with `KeyEventData::new(key, code)` plus `with_modifiers`/`with_kind`.
   `set_keyboard_interceptor` is unrelated — a document-level capture-phase hook
   dispatched *before* the arbiter. It shares the *lifetime* rule though (#183):
   registering it during a render releases it on unmount, ownerless registration
@@ -1052,7 +1113,42 @@ Both use the same `Painter` trait (`crates/rinch-dom/src/paint/painter.rs`):
 
 The software renderer includes **dirty region caching**: when only a few nodes change, only the affected rectangular area is cleared and repainted. Subtrees outside the dirty region are skipped during paint traversal.
 
-**Scrollbars.** A scroll container paints an overlay thumb on each axis that is scrollable (`overflow-{x,y}: scroll | auto`) *and* overflowing — 6px thick, 2px margin, 20px minimum thumb, 40% black, fully rounded. Both bars are hit-tested over a wider 16px strip along their edge and can be dragged (issue #178). Where both are present each track gives up the other bar's footprint at its far end, so the bottom-right **corner belongs to neither**: nothing paints there and clicking it falls through to the container. Desktop only — on the web the browser draws its own.
+**Scrollbars.** A scroll container paints an overlay thumb on each axis that is scrollable (`overflow-{x,y}: scroll | auto`) *and* overflowing — 6px thick, 2px margin, 20px minimum thumb, fully rounded, and a neutral 40% that follows the container's palette (see **Styling the bar** below). Both bars are hit-tested over a wider 16px strip along their edge and can be dragged (issue #178). Where both are present each track gives up the other bar's footprint at its far end, so the bottom-right **corner belongs to neither**: nothing paints there and clicking it falls through to the container. Desktop only — on the web the browser draws its own.
+
+That geometry lives in **one place**, `crates/rinch-dom/src/paint/scrollbar.rs`
+(`scrollbars(tree, node_id, scale)` → a `ScrollbarTrack` per axis): paint draws
+the thumb from it, and `find_scrollbar_hit` plus the `MouseDown`/`MouseMove`
+arms in `crates/rinch/src/app/` press and drag it by it. They used to derive it
+separately and had drifted (#400) — paint measured the track across the
+container's **border** box and input across its **content** box, and input never
+knew about the 20px minimum thumb — so a drag did not move the thumb the
+distance the pointer moved. A drag now converts pointer distance to scroll
+distance through `ScrollbarTrack::scroll_for_drag`, whose denominator is the
+thumb's **travel** (`track_len - thumb_len`), not the track length. Anything new
+that needs to know where a bar is should ask that module rather than re-derive
+it.
+
+**Styling the bar (#416).** Two inherited custom properties:
+`--rinch-scrollbar-color: <thumb> [<track>]` and `--rinch-scrollbar-width: auto
+| thin | none`. One declaration on `:root` restyles every scroll region.
+`thin` is a 4px thumb; **`none` removes the bar from paint *and* from hit
+testing**, so an app drawing its own can switch rinch's off rather than cover
+it up. A track is painted only when a second colour is given.
+
+They are `--rinch-` custom properties rather than the real `scrollbar-color` /
+`scrollbar-width` because both real properties are **gecko-only in Stylo** — a
+codegen-time filter, not a `#[cfg]`, so the servo build rinch uses emits no
+parser entry and drops the declaration (grep this repo's generated
+`properties.rs` for `scrollbar_color`: nothing). Custom properties cascade and
+inherit normally in that build, which is what makes the root declaration work.
+
+The `auto` default is **not a fixed colour**: the thumb is 40% black or 40%
+white, chosen by the luminance of the container's computed `color`. A light
+theme's text is dark, so the thumb is the 40% black it has always been; a dark
+theme's text is light, so it flips to white and becomes visible — which is the
+whole of #416, with no opt-in. Only the polarity follows the palette, so a
+`color: red` container does not get a red thumb; `color` is read rather than
+`background-color` because backgrounds are transparent by default.
 
 **Viewport holes.** A `data-viewport` node is a compositing hole: `find_viewport_rects`
 (`crates/rinch-dom/src/paint/mod.rs`) cuts its rect out of every clipping ancestor's
@@ -1431,14 +1527,36 @@ fn main() {
 
 Borderless windows don't have native resize handles. Use `resize_inset` to enable custom resize handling:
 
-- `resize_inset: Some(f32)` - Enables resize handles within `inset + 8px` from edges
-- `resize_inset: None` (default) - Disables custom resize handles
+- `resize_inset: Some(f32)` - Enables resize handles within **`inset`** px of the edges. The shell defaults it to `Some(8.0)` for any borderless resizable window.
+- `resize_inset: None` (default before that fill-in) - Disables custom resize handles
 - Only active when `borderless: true` AND `resizable: true`
 - The cursor automatically changes to indicate resize direction on hover
-- Corner resize areas are larger (`inset + 16px`) for easier diagonal resizing
-- On Windows, transparent areas don't receive mouse events, so resize detection relies on the 8px extension into visible content
+- A **corner** is simply where two edge zones meet — an `inset` x `inset` square. It is *not* enlarged. `detect_resize_edge` used to carry a second `inset * 2` radius, but every guard reading it was implied by the `near_*` its arm already required, so the enlargement never took effect in any form the code has had; it has been removed rather than documented (#423). An app that wants bigger handles raises `resize_inset`.
+- On Windows, transparent areas don't receive mouse events, so resize detection relies on the zone reaching into visible content
 
-The `resize_inset` value should match your CSS content margin/padding to align the resize handles with the visible window edge.
+The `resize_inset` value should match your CSS content margin/padding to align the resize handles with the visible window edge. `BorderlessWindow` does **not** do this — its root is `100vw` x `100vh` with no margin — so on that component the zone genuinely overlaps your content, and the rule below is what keeps it usable.
+
+**A visible scrollbar thumb wins an edge press (#399, #420).** Because the zone
+overlaps content, the overlay scrollbar of a container flush with the window
+edge is painted *entirely inside* it: at the default 8px inset the East zone is
+`x > width - 8` and the thumb is drawn in `[width - 8, width - 2)`, so every
+pixel of the thumb you could see used to be a resize handle. The rule now is
+**what you can see, you can grab**, applied per axis. **Along** the track, a
+press (and the hover cursor) at the thumb's extent goes to the scrollbar, while
+the empty track past the thumb — and every edge with no bar on it — still
+resizes. **Across** the bar the grab is edge-forgiving: the whole 16px hit
+strip at thumb height goes to the scrollbar, *including* the 2px margin between
+the thumb and the window edge — the way a browser's bar in a maximised window
+is grabbable at the very last pixel. A **corner** never yields, so a diagonal
+resize stays reachable however tall the thumb grows. The predicate is
+`hit_testing::pointer_on_scrollbar_thumb`, which reads the thumb's along-axis
+extent from the shared `rinch_dom::paint::scrollbar` geometry — the same
+numbers paint draws with — over `find_scrollbar_hit`'s across-axis strip.
+
+A browser has no equivalent conflict: its resize border lives in the window
+frame *outside* the client area, so its scrollbars are grabbable right up to the
+edge. A borderless window has no frame to put it in, so something has to give,
+and the visible target is the one the user is aiming at.
 
 **What true Windows transparency would require (see issue #89 — not yet wired):**
 - DX12 backend with DirectComposition (`WGPU_DX12_PRESENTATION_SYSTEM=DxgiFromVisual`)
@@ -2026,10 +2144,17 @@ get_text_content(id: 42)                  → get text in subtree
 node's box twice: `layout` is **parent-relative** (exactly the node's own `layout`, for checking a
 child's offset within its container) and `absolute` is the **on-screen** box. **Pass `absolute.x`/
 `absolute.y` (e.g. its center) to `click()`/`mouse_*`** — the `layout` x/y are NOT screen
-coordinates. `absolute` is the box **paint** draws, so a CSS transform on the node or any
-ancestor moves *and resizes* it, and a `position: fixed` node reports its viewport box. That is
-also why width/height can differ between the two: `layout` is the size Taffy gave the box,
-`absolute` is the size it covers on screen (they are equal wherever nothing scales it).
+coordinates. `absolute` is the box paint draws *up to the DPI scale*, so a CSS transform on the
+node or any ancestor moves *and resizes* it, and a `position: fixed` node reports its viewport
+box. That is also why width/height can differ between the two: `layout` is the size Taffy gave
+the box, `absolute` is the size it covers on screen (they are equal wherever nothing scales it).
+
+**Units: `absolute` and every input tool are in logical (CSS) pixels; `screenshot()` is in
+physical pixels.** They coincide at scale factor 1, which is every ordinary development display.
+On a HiDPI display (or under `WINIT_X11_SCALE_FACTOR`) they do not: to find a node in a
+screenshot, multiply its `absolute` box by the scale factor. Do **not** feed a coordinate read
+off a screenshot back into `click()` there — divide it first. `click()` and the pointer path a
+real mouse takes are the same logical space on every host (#299).
 
 **Step 3: Close the app**
 

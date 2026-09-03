@@ -7,6 +7,23 @@ use std::path::PathBuf;
 /// Platform backends translate their native events into these variants.
 /// The rinch runtime processes these without any platform-specific knowledge.
 ///
+/// # Coordinate space
+///
+/// **Every pointer coordinate on this enum is in logical (CSS) pixels, on every
+/// host** — `MouseMove`/`MouseDown`/`MouseUp`/`MouseWheel`, the `position` on
+/// the `File*` variants, and `MouseWheel`'s `delta_x`/`delta_y`. That is the
+/// space the document is laid out in and the space `hit_test` probes, so a
+/// backend whose windowing system reports physical pixels must divide before
+/// constructing the event — [`crate::to_logical_point`] is the shared
+/// conversion. (`Resized` carries the logical viewport for the same reason;
+/// `RinchApp::handle_event`'s separate `window_size` argument is the one
+/// genuinely physical quantity, and it exists for the shell's own surface
+/// arithmetic.)
+///
+/// Forwarding physical coordinates instead displaces every click, hover,
+/// drag and scroll by the scale factor times its distance from the window
+/// origin — which is exactly what issue #299 was.
+///
 /// `#[non_exhaustive]`: a new variant can be added in a minor release without
 /// that being a breaking change for downstream code. Any `match` on this enum
 /// outside `rinch-platform` must carry a wildcard (`_`) arm.
@@ -23,13 +40,17 @@ pub enum PlatformEvent {
     Resized { width: u32, height: u32 },
     /// A redraw was requested.
     RedrawRequested,
-    /// Mouse cursor moved.
+    /// Mouse cursor moved. `x`/`y` are **logical** pixels (see the type's
+    /// *Coordinate space* note).
     MouseMove { x: f32, y: f32 },
-    /// Mouse button pressed.
+    /// Mouse button pressed. `x`/`y` are **logical** pixels.
     MouseDown { x: f32, y: f32, button: MouseButton },
-    /// Mouse button released.
+    /// Mouse button released. `x`/`y` are **logical** pixels.
     MouseUp { x: f32, y: f32, button: MouseButton },
-    /// Mouse wheel scrolled.
+    /// Mouse wheel scrolled. `x`/`y` are the **logical** pointer position and
+    /// `delta_x`/`delta_y` are a **logical**-pixel scroll distance — a backend
+    /// reporting a physical pixel delta must divide it too, or a HiDPI wheel
+    /// scrolls `scale` times too far.
     MouseWheel {
         x: f32,
         y: f32,
@@ -58,19 +79,57 @@ pub enum PlatformEvent {
     KeyDown {
         /// The **physical** key (layout-independent position).
         key: KeyCode,
-        /// The **logical** letter this key produces in the active layout, lowercased
-        /// (`Some('b')` for the Dvorak/AZERTY key labelled B), when it is a single
-        /// ASCII letter — used so `Mod`+letter shortcuts follow the layout label rather
-        /// than the physical position. `None` for non-letters or when unknown; the
-        /// consumer then falls back to `key`. Distinct from `text` (which is the text to
-        /// insert, and is suppressed by modifiers).
-        logical_key: Option<char>,
+        /// The **logical** key value this key produces in the active layout,
+        /// spelled exactly as a browser spells [`KeyboardEvent.key`] — so the
+        /// desktop shell reports the same strings `rinch-web` forwards from the
+        /// browser, and a press and its release spell alike (issue #337):
+        ///
+        /// - a printable key is the string it produces, **case-accurate**
+        ///   (`"a"`, `"A"` under Shift, `"!"` where the layout puts one, `"é"`)
+        ///   and layout-mapped (`"b"` for the Dvorak/AZERTY key labelled B) —
+        ///   unlike [`text`](Self::KeyDown::text), it survives a `Ctrl`/`Cmd`
+        ///   chord, which is why `Mod`+letter shortcuts read it;
+        /// - a named key is its W3C [key-values] name (`"Enter"`, `"ArrowLeft"`,
+        ///   `"Shift"`, `"Meta"` for the OS key) — bar the spacebar, which the
+        ///   spec deliberately spells as its character, `" "`;
+        /// - a dead key is `"Dead"`, as in a browser;
+        /// - `None` when the backend cannot tell (the debug channel's named
+        ///   keys, Android's hardware-key path outside what its character map
+        ///   resolves, a key winit itself reports as unidentified). The
+        ///   consumer then falls back to `key`.
+        ///
+        /// **Case is identity here**: consumers wanting a case-insensitive
+        /// match (`Mod+B` on `"B"` or `"b"`) must fold at the comparison site,
+        /// as `editor_key_binding` does — a lowercased source made a `Shift`
+        /// chord's release disagree with its own press, which defeats pairing
+        /// them, the thing `KeyUp` exists for.
+        ///
+        /// [`KeyboardEvent.key`]: https://developer.mozilla.org/docs/Web/API/KeyboardEvent/key
+        /// [key-values]: https://w3c.github.io/uievents-key/
+        logical_key: Option<String>,
         /// The text this keypress would insert (suppressed under Ctrl/Cmd), or `None`.
         text: Option<String>,
         modifiers: Modifiers,
     },
     /// Key released.
-    KeyUp { key: KeyCode, modifiers: Modifiers },
+    ///
+    /// Carries `logical_key` for the same reason [`KeyDown`](Self::KeyDown)
+    /// does, and it is load-bearing rather than cosmetic (issue #337): a
+    /// consumer pairs a press with its release by comparing the key string, so
+    /// if a release resolved the *physical* letter while its press resolved the
+    /// *layout* letter, the pairing would silently never match — on AZERTY a
+    /// press of `"a"` would release as `"q"`, and the key would look held for
+    /// ever. winit's `KeyEvent` is one struct for both states and populates
+    /// `logical_key` on each; only `text` is press-gated.
+    KeyUp {
+        /// The **physical** key (layout-independent position).
+        key: KeyCode,
+        /// The **logical** key value this key produces in the active layout,
+        /// spelled like the browser's `KeyboardEvent.key` — see
+        /// [`KeyDown::logical_key`](Self::KeyDown).
+        logical_key: Option<String>,
+        modifiers: Modifiers,
+    },
     /// Modifier keys changed.
     ModifiersChanged(Modifiers),
     /// The window gained (`true`) or lost (`false`) **OS** focus.
@@ -94,14 +153,16 @@ pub enum PlatformEvent {
     UserEvent(UserEvent),
     /// The event loop is about to wait for new events.
     AboutToWait,
-    /// A file drag entered the window from the OS.
+    /// A file drag entered the window from the OS. `position` is in **logical**
+    /// pixels, like every other pointer coordinate here.
     /// In winit 0.31, all paths arrive in a single DragEntered event.
     FileHoverEnter { path: PathBuf, position: (f64, f64) },
-    /// A file drag is moving over the window.
+    /// A file drag is moving over the window. `position` is **logical**.
     FileDragMoved { position: (f64, f64) },
     /// The OS file drag left the window without dropping.
     FileHoverCancelled,
-    /// Files were dropped onto the window from the OS.
+    /// Files were dropped onto the window from the OS. `position` is
+    /// **logical**.
     FileDropped {
         paths: Vec<PathBuf>,
         position: (f64, f64),

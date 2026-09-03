@@ -92,6 +92,35 @@ automatic insertion of required nodes. Required attrs (`link.href`, `image.src`,
 `heading.level`) are applied/enforced at the step boundary, so attr-aware round-trip
 is structural, not best-effort.
 
+**Node and mark types are interned per `Schema` instance, and compared by pointer.**
+`NodeType`/`MarkType` equality is `Rc::ptr_eq`, so two `Schema::starter_kit()` values
+mint two `bold` handles that are never equal — and a `Mark` carries its `MarkType`, so
+marks from different schemas never match either. One document, one `Schema`: build the
+document, the transform, and every mark you hand it from the *same* `Rc<Schema>`.
+
+Getting this wrong used to be silent. `Transform::remove_mark` matched nothing and
+returned `Ok`, so the removal quietly did nothing; `add_mark` added the foreign mark
+*beside* the document's real one. Both now fail loud with a `StepError` naming the cause
+(issue #217) — but only for a genuine type-identity mismatch. Removing a mark the range
+simply does not carry, or a `link[href=a]` where the text has `link[href=b]`, is still an
+ordinary no-op. The safest way to name "whatever this document calls bold" is to read the
+handle off the document (or off `state.schema()`, which is the same instance).
+
+The same pointer identity is why comparing `Node`s across two editor handles fails even
+for structurally identical documents — compare their serialized HTML instead.
+
+**This reaches `EditorHandle` too.** `create_editor` mints a new `Rc<Schema>` per handle,
+and `load_doc` installs the `Node` you give it as-is, so `b.load_doc(a.doc())` hands `b` a
+document built by `a`'s schema. `b` then reports `is_mark_active("bold") == false` over
+text that is bold, and its formatting commands return `false` rather than editing it —
+before the guard above they returned `true` and left the run carrying *two* `bold` marks,
+one per schema. Move a document between handles through a serialization instead:
+
+```rust
+b.load_html(&to_html(&a.doc()));        // or
+b.load_doc(b_schema.node_from_doc(&a.doc().to_doc())?);
+```
+
 ### Serialization
 
 The durable save/load shape is a recursive, schema-derived structure (under the

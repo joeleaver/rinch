@@ -20,31 +20,123 @@ rsx! {
 }
 ```
 
+Focusability comes from the **tag** or from an explicit **`tabindex`**, and an
+explicit one always wins — the browser rule.
+
+| Focusable by tag | |
+|---|---|
+| `<button>`, `<select>`, `<textarea>`, `<input>` | always |
+| `<a>` | only with a non-empty `href` — a bare `<a>` is not a link |
+
+`<summary>` is deliberately **not** in the set: rinch has no `<details>`
+disclosure behaviour, so a focusable `<summary>` would be a Tab stop that does
+nothing.
+
+A focusable element that is **visually hidden but laid out** — `opacity: 0`, or
+`position: absolute` off-screen — *is* in the Tab order, and that is correct:
+`.sr-only` text and skip links depend on exactly that, as they do in a browser.
+What leaves the order is a zero-sized box, `display: none`, and
+`visibility: hidden`/`collapse`. Neither is `data-rid` a focusability signal — the `DropdownMenu`'s
+full-screen dismissal backdrop carries one, and so do clickable cards, table
+rows and list items; none of those should be Tab stops.
+
 | Attribute | Effect |
 |---|---|
-| `tabindex="0"` | Reachable by Tab, focusable by click and by `NodeHandle::focus()` |
-| `tabindex="-1"` | **Not** in the Tab order, but still focusable by click and programmatically — the standard "focus this dialog when it opens" idiom |
-| `data-disabled` | Takes no focus at all. A boolean attribute: present means disabled whatever the value; only `data-disabled="false"` opts out |
+| `tabindex="0"` | Reachable by Tab, focusable by click and by `NodeHandle::focus()`. Needed on anything that is not focusable by tag — a `div` you are driving yourself |
+| `tabindex="-1"` | **Not** in the Tab order, but still focusable by click and programmatically — the standard "focus this dialog when it opens" idiom, and the way to take a `<button>` *out* of the Tab order |
+| `disabled` / `data-disabled` | Takes no focus at all, and accepts no keyboard edit. Both spellings count — the component library writes the HTML one, the runtime's own widgets write the `data-` one. A boolean attribute: present means disabled whatever the value; only the explicit `"false"` opts out |
+| `readonly` | Focuses, moves its caret, selects and copies like any other field — and refuses every command that would change its text (typing, delete, cut, paste, undo/redo). Same boolean rule |
+| `data-nofocus` | A press here takes the **click** but not the keyboard: whatever is focused stays focused. Same boolean rule. Read anywhere on the pressed element's ancestor chain, so a toolbar carries it once |
+
+A **disabled `<fieldset>`** disables every control below it, which is what the
+element is for. HTML's carve-out is honoured: controls inside the fieldset's
+first `<legend>` stay enabled, so the control that re-enables the section can
+live there. No other tag's `disabled` reaches its subtree — a disabled
+`<button>` does not disable a `<span>` inside it.
+
+A press on a disabled control also paints no DOM `:focus`, so a focus ring
+never appears on something that owns no keyboard.
+
+Disabled is re-checked at **edit** time, not only at focus time, so a field
+that goes disabled *while focused* — a reactive `disabled` prop re-rendering
+under a live caret — stops accepting keys immediately, and **releases the
+keyboard**, the way a browser moves focus to the body. The one thing that
+release does *not* do is fire the field's `data-onchange` commit: everywhere
+else that commit is load-bearing (a window blur deliberately keeps the claim so
+alt-tabbing cannot fire it), but a control going disabled is not the user
+committing an edit, and browsers dispatch no `change` for it either.
 
 Focus arrives three ways, and all three go through the same arbiter:
 
 - **Tab / Shift+Tab** — walks the focusable elements in DOM order, and paints
   the `:focus-visible` keyboard ring.
-- **A mouse press** — claims the *nearest focusable ancestor* of whatever was
-  hit, exactly as a browser does. Pointer focus does **not** paint the
-  `:focus-visible` ring.
+- **A mouse press** — claims the *nearest focusable ancestor-or-self* of
+  whatever was hit, exactly as a browser does. Pointer focus does **not** paint
+  the `:focus-visible` ring. A press that resolves to something *other* than
+  the current claim holder takes the keyboard away from it, and a press that
+  resolves to nothing releases it — a nested focusable inside a focused node
+  counts as "somewhere else", for every mouse button alike.
 
-  This applies to `tabindex="-1"` too, so a control that must **not** steal
-  focus from the field it sits beside — a toolbar button over a rich-text
-  editor, a spinner next to a number input — should carry no `tabindex` at all.
-  (`tabindex="-1"` keeps it out of the Tab order; it does not keep a click from
-  focusing it, in rinch or in a browser.)
+  This applies to `tabindex="-1"` too — it keeps an element out of the Tab
+  order, but it does not keep a click from focusing it, in rinch or in a
+  browser. A control that must **not** steal focus from the field it sits
+  beside — a toolbar button over a rich-text editor, a spinner next to a number
+  input — needs [`data-nofocus`](#taking-the-click-without-the-keyboard).
 - **`node.focus()` / `request_focus(node_id)`** — programmatic, also no ring.
 
-> **Desktop vs web parity.** On the desktop backend only elements carrying an
-> explicit `tabindex` (and `<input>`/`<textarea>`) are focusable. A `<button>`
-> or `<a href>` is *not* a Tab stop the way it is in a browser — give it a
-> `tabindex="0"` if you need one. Tracked as issue #252.
+A focused `<select>` is **closed**, like a browser's: Enter, Space or Alt+Down
+opens its popup, and the popup then owns the keyboard until it commits or is
+dismissed — at which point focus returns to the closed control, so Tab carries
+on from there rather than restarting. (A click *outside* the popup is the
+exception: it belongs to whatever it landed on.) Everything else focusable activates the nearest ancestor-or-self
+`data-rid` on Enter/Space, which is what makes `div { tabindex: "0", onclick: … }`
+behave like a button — and what makes Space on a `Checkbox`'s visually hidden
+`<input>` toggle the `<label>` that wraps it.
+
+> **Still not matched to the web.** A positive `tabindex` does not order ahead
+> of DOM order — the collector is a plain pre-order walk (issue #435) — and a
+> Modal's or Drawer's backdrop does not contain Tab, so controls behind it stay
+> reachable. Arrow/Enter/Escape navigation of the `Select` component's open
+> option list is issue #434.
+
+### Taking the click without the keyboard
+
+An editor toolbar has a problem every GUI toolkit has to answer: pressing
+**Bold** must run the command *without* blurring the editor, or the command
+reads a selection that is no longer there. Browsers answer it with
+`preventDefault()` on `mousedown`, which suppresses the focus change while
+still delivering the click.
+
+`data-nofocus` is that mechanism:
+
+```rust
+rsx! {
+    // The whole toolbar opts out at once — every control inside it takes its
+    // click without taking the keyboard.
+    div { data-nofocus: "", class: "toolbar",
+        button { tabindex: "0", onclick: move || ed.command("toggleBold"), "B" }
+        button { tabindex: "0", onclick: move || ed.command("toggleItalic"), "I" }
+    }
+    Editor { editor: ed.clone() }
+}
+```
+
+The rules:
+
+- It is read **anywhere on the pressed element's ancestor chain**, so a toolbar
+  carries it once instead of every button in it. Put it on the toolbar, not on
+  a big content region — a press inside it suppresses the browser's default,
+  which includes starting a text selection.
+- It protects **whatever holds the keyboard** — the rich-text editor, an
+  `<input>`, a render surface, another focusable node — not just the editor.
+- The **click still fires**. `data-rid` dispatch is untouched.
+- A **text field inside** a `data-nofocus` region still focuses normally. A
+  link-URL field in a toolbar has to be usable, so the field's own claim wins
+  over the region's opt-out.
+- Boolean attribute, same rule as `data-disabled`: present means on whatever
+  the value, only the explicit `"false"` opts out.
+- It works on **both backends**. On the web it becomes `preventDefault()` on
+  the `pointerdown`.
 
 ## Registering a focus target
 
@@ -99,8 +191,38 @@ registers the node without asking for anything back.
 |---|---|
 | `on_focus_gained` | Tab onto the node, a press on it (or on any of its children), `focus()` / `request_focus`, and when the **window** regains OS focus while this target still holds the claim |
 | `on_focus_lost` | Anything else takes the keyboard — another registered widget, an `<input>`, a `<select>`, the rich-text editor, a render surface — a press landing outside, and when the **window** loses OS focus |
-| `on_key` | Every `KeyDown` while this target holds focus, **before** the runtime's own handling |
+| `on_key` | Every `KeyDown` **and `KeyUp`** while this target holds focus, **before** the runtime's own handling — read `k.kind` (or `k.is_up()`) to tell them apart |
 | `on_ime` | Every IME composition event while this target holds focus (see [IME](#ime) below) |
+
+### Presses and releases
+
+`k.kind` is `KeyEventKind::Down` or `Up`; `k.is_down()` / `k.is_up()` are the
+shorthands. **OS auto-repeat arrives as `Down`**, and nothing yet distinguishes
+it from a fresh press — the browser supplies a flag but the desktop platform
+event does not carry winit's, so exposing one would be truthful on web and
+silently wrong on desktop. It arrives with that plumbing.
+
+A press and its release are spelled by the same rule, from the same fields, so
+**pairing them by `k.key` works by construction** — which is what "is W still
+held" needs. Concretely: the platform event's `logical_key` carries the full
+layout-produced `KeyboardEvent.key` value on the press and the release alike,
+case included. On AZERTY, the key labelled A is `"a"` on the way down *and* on
+the way up, not `"a"` down and `"q"` up; `Shift+A` is `"A"` both ways, and
+`Shift+1` is `"!"` both ways — the same strings a browser reports, so the same
+consumer code works against `rinch-web`. Case is identity, so a Shift pressed
+*mid-hold* changes what the eventual release spells (`"w"` down, `"W"` up) —
+exactly as in a browser; track held keys by the physical `k.code`, or fold
+case at the comparison, if that matters to you.
+
+Two things to know:
+
+- A release is delivered to whoever holds the claim **at release time**. A
+  focus change mid-chord can therefore hand a target a release it never saw
+  pressed — treat `on_focus_lost` as "everything is up" if you track held keys.
+- **A release's return value is ignored.** There is nothing downstream of it to
+  suppress, and the runtime's own release work (clearing the Enter/Space
+  activation latch) must happen whatever a handler thinks — otherwise a
+  consumed release would strand the latch and swallow the next press.
 
 `on_key` returns `true` to **consume** the key. A consumed key stops there: no
 Tab navigation, no Enter/Space activation, no DevTools shortcut. Returning
@@ -108,17 +230,46 @@ Tab navigation, no Enter/Space activation, no DevTools shortcut. Returning
 exactly as it would for an unregistered node, so registering costs you nothing
 you did not ask for.
 
-`k.key` is spelled the way the browser spells `KeyboardEvent.key` for the keys
-rinch names — `"ArrowLeft"`, `"Enter"`, `"Escape"`, `"Tab"`, `"Space"`, and the
-inserted text for a character key — falling back to the physical key code for
-keys with no name (`"F5"`). `k.code` is always the physical key.
+`k.key` is spelled the way the browser spells `KeyboardEvent.key` — with one
+long-standing exception, the spacebar, which rinch names `"Space"` where a
+browser reports `" "` (so `rinch-web`, which forwards `event.key()`
+unchanged, reports `" "` there). It is resolved in four steps:
 
-> Two gaps to know about. A modifier suppresses the inserted text, and only the
-> letters rinch itself binds (`a c e h i u v x y z`, `b`, `d`) are named back, so
-> `Ctrl+C` arrives as `k.key == "c"` but `Ctrl+S` arrives as `k.key == "KeyS"` —
-> match on `k.code` for combos outside that set. And a key bound to a **native
-> menu accelerator** is consumed by the menu before the document sees it, so
-> `on_key` never runs for it.
+1. **A named key wins over the text it would insert** — `"ArrowLeft"`,
+   `"Enter"`, `"Escape"`, `"Tab"`, `"PageUp"`, `"F1"`…`"F12"`, `"Shift"`, and
+   `"Space"` (not `" "`).
+2. **Otherwise the inserted text wins**, so a non-QWERTY layout reports the
+   letter actually typed rather than the physical QWERTY position: the AZERTY
+   key at the QWERTY-Q position is `k.key == "a"`, and Shift+A is `"A"`.
+3. **Otherwise the layout's key value.** A modifier suppresses the inserted
+   text, but the layout-produced `KeyboardEvent.key` value survives it — so a
+   chord keeps step 2's promise: on AZERTY, `Ctrl` plus the key labelled A is
+   `k.key == "a"` (and `Ctrl+Shift` makes it `"A"` — the value is
+   case-accurate), the same letter the editor's own keymap acts on. It also
+   names shifted punctuation (`Ctrl+Shift+1` is `"!"` where the layout puts
+   one), a dead key (`"Dead"`), and keys rinch has no `KeyCode` of its own for
+   but the platform names — CapsLock, media keys.
+4. **Otherwise the physical key's US-layout character**, for events that carry
+   no layout value at all (the debug channel, injected and embedded events):
+   `Ctrl+S` is `"s"`, `Cmd+1` is `"1"`, `Ctrl+-` is `"-"`.
+
+`k.code` is always the physical key (`"KeyS"`, `"Digit1"`).
+
+> Two things to know. `k.key` is **case-accurate**, browser-style —
+> `Ctrl+S` is `"s"`, `Ctrl+Shift+S` is `"S"` — and a press and its release
+> spell alike (both read the modifier state of their own moment), which is
+> what pairing them by `k.key` relies on. And a key bound to a **native menu
+> accelerator** is consumed by the menu before the document sees it — but only
+> the *press*: the release still arrives (the menu consumes nothing on the way
+> up), so it is one more source of a release with no visible press.
+
+The one key that still reports nothing is one rinch has no `KeyCode` for
+(`k.code == "Other"`) arriving with **no layout value and no inserted text**.
+A real keystroke carries the layout value (unless the platform itself cannot
+identify the key), so this is mostly the injected regime: the debug channel names only single characters and the named keys, so
+an injected `Ctrl+/` has no spelling to fall back to and never reaches the
+hook. From the keyboard those keys are fine: `Ctrl+/` reports `"/"` through
+step 3, and unmodified the character arrives as the inserted text.
 
 Both focus callbacks run **after** the transition is complete: the arbiter and
 the DOM `:focus` state are already installed, so a callback may re-enter the
@@ -155,6 +306,13 @@ So the pair to expect is `on_focus_lost` on window blur, `on_focus_gained` on
 window refocus, with no key routing in between. Use it to hide a caret and idle
 a blink timer. While the window is blurred, rinch reports the OS IME disabled,
 so a candidate box follows the window that actually has the keyboard.
+
+The runtime does the same for its own caret: the rich-text editor's caret stops
+blinking while the window is blurred and shows **solid**, resuming from the
+solid phase on refocus. The blink is the event loop's only timed wake, so a
+backgrounded rinch app now idles completely instead of waking twice a second to
+animate a caret nobody can type into. The selection highlight is unaffected —
+the claim is still held, so a blurred window still shows what is selected.
 
 ### IME
 

@@ -700,8 +700,8 @@ pub(crate) static BLANK_URL_DATA: std::sync::LazyLock<style::stylesheets::UrlExt
 /// identifiers are rejected.
 ///
 /// Returns `None` for anything that is not an absolute colour — including
-/// `currentcolor`, by design: it depends on the element, so the caller resolves
-/// it (see `paint::svg::resolve_svg_color`).
+/// `currentcolor`, by design: it depends on the element, so a caller that has
+/// one calls [`parse_color_with_current`] instead.
 pub fn parse_color(value: &str) -> Option<peniko::Color> {
     use cssparser::{Parser, ParserInput};
     use style::context::QuirksMode;
@@ -728,6 +728,46 @@ pub fn parse_color(value: &str) -> Option<peniko::Color> {
     // without a device, which leaves `currentcolor` & co. non-absolute.
     let computed = Color::parse_and_compute(&context, &mut parser, None)?;
     crate::computed_style::color_from_stylo(&computed)
+}
+
+/// Like [`parse_color`], but resolves against an element's `color` instead of
+/// declining (#256).
+///
+/// `parse_color` answers `None` for every non-absolute colour, which is right
+/// for a caller with no element in hand but wrong for one that has it: an SVG
+/// `fill` is resolved per element, and `currentcolor`, `color-mix(in srgb,
+/// currentcolor, blue)`, `rgb(from currentcolor r g b / 50%)` and
+/// `contrast-color(currentcolor)` are all resolvable once `current` is known.
+/// Only the first of those was handled, by a string compare in
+/// `paint::svg::resolve_svg_color`; the rest painted nothing at all.
+///
+/// `parse_color` is deliberately left as it is — a bare-value parser with no
+/// element context must keep declining, and `paint_tests` pins that.
+pub fn parse_color_with_current(value: &str, current: peniko::Color) -> Option<peniko::Color> {
+    use cssparser::{Parser, ParserInput};
+    use style::context::QuirksMode;
+    use style::parser::ParserContext;
+    use style::stylesheets::{CssRuleType, Origin};
+    use style::values::specified::Color;
+    use style_traits::ParsingMode;
+
+    let context = ParserContext::new(
+        Origin::Author,
+        &BLANK_URL_DATA,
+        Some(CssRuleType::Style),
+        ParsingMode::DEFAULT,
+        QuirksMode::NoQuirks,
+        /* namespaces = */ Default::default(),
+        None,
+        None,
+    );
+    let mut input = ParserInput::new(value.trim());
+    let mut parser = Parser::new(&mut input);
+    let computed = Color::parse_and_compute(&context, &mut parser, None)?;
+    crate::computed_style::color_from_computed(
+        &computed,
+        &crate::computed_style::absolute_from_peniko(current),
+    )
 }
 
 /// Check if a style string contains "display: contents".
