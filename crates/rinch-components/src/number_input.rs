@@ -4,6 +4,7 @@
 
 use rinch_core::dom::{NodeHandle, RenderScope};
 use rinch_core::{Callback, Component, InputCallback};
+use std::cell::Cell;
 use std::rc::Rc;
 
 /// Reactive callback type for string state.
@@ -52,6 +53,18 @@ impl std::str::FromStr for NumberInputSize {
 ///
 /// Allows users to input numbers with optional step controls.
 ///
+/// Works in two modes (#501):
+///
+/// - **Uncontrolled** (no `value_fn`): the component owns the field. A
+///   stepper click steps the displayed number itself — seeded from `value`
+///   (or `default_value`), moved by every parsed keystroke — clamped to
+///   `[min, max]`, and reports the written text through `oninput`.
+///   `onincrement`/`ondecrement` remain pure notifications.
+/// - **Controlled** (`value_fn` supplied): the signal → effect → DOM chain is
+///   the field's single write path (#264). The steppers stay callback-only —
+///   write the signal in `onincrement`/`ondecrement` and the effect carries
+///   it to the field.
+///
 /// # Example
 ///
 /// ```ignore
@@ -73,9 +86,12 @@ pub struct NumberInput {
     /// Current value.
     pub value: Option<f64>,
     /// Reactive value getter - use this for fine-grained updates.
-    /// When provided, the input value updates automatically when the signal changes.
+    /// When provided, the input value updates automatically when the signal
+    /// changes, and it is the field's single write path: the steppers become
+    /// callback-only (write the signal in `onincrement`/`ondecrement` and the
+    /// effect carries it to the DOM).
     pub value_fn: Option<ReactiveString>,
-    /// Default value.
+    /// Initial value of an uncontrolled field when `value` is absent.
     pub default_value: Option<f64>,
     /// Minimum value.
     pub min: Option<f64>,
@@ -99,11 +115,14 @@ pub struct NumberInput {
     pub size: String,
     /// Border radius (xs, sm, md, lg, xl).
     pub radius: String,
-    /// Callback when increment button is clicked.
+    /// Callback when increment button is clicked. A notification, not a
+    /// value: uncontrolled, the component steps the field itself and reports
+    /// the written text through `oninput` after this fires (#501).
     pub onincrement: Option<Callback>,
-    /// Callback when decrement button is clicked.
+    /// Callback when decrement button is clicked (see `onincrement`).
     pub ondecrement: Option<Callback>,
-    /// Callback when value changes (from direct input).
+    /// Callback when value changes (from direct input, and — uncontrolled —
+    /// from a stepper write, which reports the text it wrote).
     pub oninput: Option<InputCallback>,
     /// Callback when the typed gesture commits (focus leaves the input after a
     /// modification, or Enter) — HTML `change` semantics, receives the final
@@ -173,6 +192,36 @@ impl NumberInput {
     }
 }
 
+/// The text the component itself writes into the field for `v` (#501):
+/// `decimal_scale` fixes the number of decimals; without it, the value is
+/// rounded to 10 decimal places first so repeated ±step arithmetic cannot
+/// surface float dust ("0.30000000000000004").
+fn format_shown(v: f64, decimal_scale: Option<u32>) -> String {
+    if let Some(scale) = decimal_scale {
+        return format!("{:.*}", scale as usize, v);
+    }
+    let rounded = (v * 1e10).round() / 1e10;
+    if rounded.is_finite() {
+        rounded.to_string()
+    } else {
+        v.to_string()
+    }
+}
+
+/// Clamp to `[min, max]`, each bound optional. `min` is applied last so the
+/// degenerate `min > max` favors `min` rather than panicking like
+/// `f64::clamp`.
+fn clamp_to(v: f64, min: Option<f64>, max: Option<f64>) -> f64 {
+    let v = match max {
+        Some(mx) => v.min(mx),
+        None => v,
+    };
+    match min {
+        Some(mn) => v.max(mn),
+        None => v,
+    }
+}
+
 impl Component for NumberInput {
     fn render(&self, __scope: &mut RenderScope, _children: &[NodeHandle]) -> NodeHandle {
         let container = rinch_macros::rsx! { div { class: "rinch-number-input" } };
@@ -209,6 +258,17 @@ impl Component for NumberInput {
         let input =
             rinch_macros::rsx! { input { class: "rinch-number-input__input", r#type: "number" } };
 
+        // Uncontrolled display state (#501). With no `value_fn` nothing else
+        // writes the field, so the steppers own it: `shown` is the number the
+        // field currently displays, as this component last heard it — the
+        // mount value, then every stepper write and every parsed keystroke.
+        // `None` is an empty field. With a `value_fn`, `shown` is never read:
+        // the signal → effect → DOM chain below is the field's single write
+        // path (#264), and a second writer here is exactly how controlled
+        // inputs desync.
+        let controlled = self.value_fn.is_some();
+        let shown: Rc<Cell<Option<f64>>> = Rc::new(Cell::new(self.value.or(self.default_value)));
+
         // Reactive value binding
         if let Some(ref value_fn) = self.value_fn {
             // Set initial value
@@ -222,8 +282,8 @@ impl Component for NumberInput {
                 let current_value = value_fn();
                 input_clone.set_attribute("value", &current_value);
             });
-        } else if let Some(v) = self.value {
-            input.set_attribute("value", &v.to_string());
+        } else if let Some(v) = shown.get() {
+            input.set_attribute("value", &format_shown(v, self.decimal_scale));
         }
         if let Some(min) = self.min {
             input.set_attribute("min", &min.to_string());
@@ -257,7 +317,17 @@ impl Component for NumberInput {
         // reported nowhere (#244 review).
         if self.oninput.is_some() || self.onchange.is_some() {
             let callback = self.oninput.clone();
-            let handler_id = __scope.register_input_handler(move |value| {
+            let typed_record = (!controlled).then(|| shown.clone());
+            let handler_id = __scope.register_input_handler(move |value: String| {
+                // A parsed keystroke moves the uncontrolled stepping base
+                // (#501): after typing "3", + must write 4, not step the
+                // mount value. An unparseable partial ("", "1e") leaves the
+                // base where it was — the next stepper write replaces it.
+                if let Some(record) = &typed_record {
+                    if let Ok(n) = value.trim().parse::<f64>() {
+                        record.set(Some(n));
+                    }
+                }
                 if let Some(cb) = &callback {
                     cb.invoke(value);
                 }
@@ -286,6 +356,44 @@ impl Component for NumberInput {
         if !self.hide_controls {
             let controls = rinch_macros::rsx! { div { class: "rinch-number-input__controls" } };
 
+            // The stepper write (#501). Uncontrolled, a click computes the
+            // next value from `shown`, clamps it to [min, max], writes it,
+            // and reports the written text through `oninput` — the same
+            // channel a keystroke reports through, and the report is
+            // deliberately last so it carries the text the field ends on. A
+            // clamped click that moves nothing writes nothing and reports
+            // nothing (HTML's input event fires only when the value changes);
+            // `onincrement`/`ondecrement` still fire either way, as they
+            // always have. Controlled or disabled, this is inert: the
+            // value_fn effect stays the single write path, and a disabled
+            // field's number must not move.
+            let step = self.step.unwrap_or(1.0);
+            let min = self.min;
+            let max = self.max;
+            let apply_step = {
+                let shown = shown.clone();
+                let input = input.clone();
+                let oninput = self.oninput.clone();
+                let decimal_scale = self.decimal_scale;
+                let disabled = self.disabled;
+                Rc::new(move |delta: f64| {
+                    if controlled || disabled {
+                        return;
+                    }
+                    let base = shown.get().unwrap_or(0.0);
+                    let next = clamp_to(base + delta, min, max);
+                    if shown.get() == Some(next) {
+                        return;
+                    }
+                    shown.set(Some(next));
+                    let text = format_shown(next, decimal_scale);
+                    input.set_attribute("value", &text);
+                    if let Some(cb) = &oninput {
+                        cb.invoke(text);
+                    }
+                })
+            };
+
             // Increment button
             let up_btn = rinch_macros::rsx! {
                 button {
@@ -297,10 +405,19 @@ impl Component for NumberInput {
             up_btn.set_attribute("aria-label", "Increment");
             up_btn.append_child(&crate::icons::chevron_up_dom(__scope));
 
-            if let Some(cb) = &self.onincrement {
-                let handler_id = __scope.register_handler({
-                    let cb = cb.clone();
-                    move || cb.invoke()
+            // Registered whenever the stepper has work to do: uncontrolled it
+            // writes the field even with no callback (the docs' bare
+            // `NumberInput { label: "Quantity" }` must step); controlled it
+            // is callback-only, so with no callback it stays inert like
+            // pre-#501.
+            if !controlled || self.onincrement.is_some() {
+                let cb = self.onincrement.clone();
+                let apply_step = apply_step.clone();
+                let handler_id = __scope.register_handler(move || {
+                    if let Some(cb) = &cb {
+                        cb.invoke();
+                    }
+                    apply_step(step);
                 });
                 up_btn.set_attribute("data-rid", &handler_id.to_string());
             }
@@ -316,10 +433,14 @@ impl Component for NumberInput {
             down_btn.set_attribute("aria-label", "Decrement");
             down_btn.append_child(&crate::icons::chevron_down_small_dom(__scope));
 
-            if let Some(cb) = &self.ondecrement {
-                let handler_id = __scope.register_handler({
-                    let cb = cb.clone();
-                    move || cb.invoke()
+            if !controlled || self.ondecrement.is_some() {
+                let cb = self.ondecrement.clone();
+                let apply_step = apply_step.clone();
+                let handler_id = __scope.register_handler(move || {
+                    if let Some(cb) = &cb {
+                        cb.invoke();
+                    }
+                    apply_step(-step);
                 });
                 down_btn.set_attribute("data-rid", &handler_id.to_string());
             }
