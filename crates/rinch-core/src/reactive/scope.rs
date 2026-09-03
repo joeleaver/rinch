@@ -512,8 +512,10 @@ fn take_batch<T>(f: impl FnOnce(&mut DisposeCtx) -> &mut Vec<T>) -> Vec<T> {
 ///
 /// Strictly: handlers → effects → cleanups → memos → signals → value drops.
 ///
-/// - **Handlers first.** Unregistering them is the only step that runs no user
-///   code at all, and doing it first means a re-entrant dispatch arriving during
+/// - **Handlers first.** Unregistering them runs no user *callbacks* (dropping
+///   a callback still drops its captured state, so user `Drop`s can run — the
+///   observer guard above covers them like every other step), and doing it
+///   first means a re-entrant dispatch arriving during
 ///   teardown (a cleanup that pumps the event loop, a `Drop` that fires a
 ///   callback) finds nothing to call, instead of calling into a component whose
 ///   signals are about to be freed.
@@ -1631,6 +1633,7 @@ mod tests {
     /// Reads a signal from inside `Drop` — arbitrary user code at teardown
     /// time, the way a cached handle or a pooled resource might check state on
     /// the way out.
+    #[derive(Clone)]
     struct ReadsSignalOnDrop {
         probe: Signal<u32>,
     }
@@ -1912,6 +1915,93 @@ mod tests {
             runs.get(),
             1,
             "a write to a signal only the dropped closure's payload read must not re-run the effect"
+        );
+
+        trigger.set(1);
+        assert_eq!(runs.get(), 2, "a tracked write still re-runs the effect");
+    }
+
+    /// Dropping an unregistered handler's callback (fixpoint step 1) runs user
+    /// `Drop` code as well — the callback is an `Rc<dyn Fn()>` closing over
+    /// arbitrary user state — so step 1 is a defect site like the others
+    /// (issue #494). Together with the step-4 test below, this pins the two
+    /// steps no other #494 test reaches: a guard rebuilt per-step that left
+    /// either bare would pass every other test in this family and leak here.
+    #[test]
+    fn a_handler_closure_drop_that_reads_a_signal_does_not_subscribe_the_disposing_effect() {
+        let probe = Signal::new(0u32);
+        let trigger = Signal::new(0u32);
+        let runs = Rc::new(Cell::new(0usize));
+
+        let doomed = Scope::new();
+        doomed.run(|| {
+            let payload = ReadsSignalOnDrop { probe };
+            // Recorded against the ambient owner (#141); disposal unregisters
+            // it, dropping the callback — and with it, `payload`.
+            let _id = crate::events::register_handler(Rc::new(move || {
+                let _keep = &payload;
+            }));
+        });
+        let doomed = Rc::new(RefCell::new(Some(doomed)));
+
+        let hits = runs.clone();
+        let _effect = Effect::new(move || {
+            hits.set(hits.get() + 1);
+            trigger.get();
+            let scope = doomed.borrow_mut().take();
+            if let Some(scope) = scope {
+                scope.dispose();
+            }
+        });
+        assert_eq!(runs.get(), 1);
+
+        probe.set(1);
+        assert_eq!(
+            runs.get(),
+            1,
+            "a write to a signal only the dropped handler's payload read must not re-run the effect"
+        );
+
+        trigger.set(1);
+        assert_eq!(runs.get(), 2, "a tracked write still re-runs the effect");
+    }
+
+    /// Freeing a memo (fixpoint step 4) drops its cached value — more user
+    /// `Drop` code — and a read from it must not subscribe the disposing
+    /// effect either (issue #494). See the step-1 test above for why these two
+    /// are pinned individually.
+    #[test]
+    fn a_freed_memos_cached_value_drop_that_reads_a_signal_does_not_subscribe_the_disposing_effect()
+    {
+        let probe = Signal::new(0u32);
+        let trigger = Signal::new(0u32);
+        let runs = Rc::new(Cell::new(0usize));
+
+        let doomed = Scope::new();
+        let memo = doomed.run(|| Memo::new(move || ReadsSignalOnDrop { probe }));
+        // Materialize the cache: an unread memo holds no value to drop. The
+        // clone `get` hands back drops right here — before the effect below
+        // exists, with no observer live — so the only drop that happens during
+        // disposal is the *cached* value's, in step 4.
+        let _ = memo.get();
+        let doomed = Rc::new(RefCell::new(Some(doomed)));
+
+        let hits = runs.clone();
+        let _effect = Effect::new(move || {
+            hits.set(hits.get() + 1);
+            trigger.get();
+            let scope = doomed.borrow_mut().take();
+            if let Some(scope) = scope {
+                scope.dispose();
+            }
+        });
+        assert_eq!(runs.get(), 1);
+
+        probe.set(1);
+        assert_eq!(
+            runs.get(),
+            1,
+            "a write to a signal only the freed memo value's Drop read must not re-run the effect"
         );
 
         trigger.set(1);
