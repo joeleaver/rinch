@@ -998,11 +998,24 @@ impl RinchDocument {
                         // Generates no box; detached by the marking pass (#487).
                         DisplayValue::None => continue,
                         DisplayValue::Contents => {
-                            // A transparent wrapper's flattened content was
-                            // detached by the recursion above. An opaque one
-                            // stopped the marking pass, leaving its flattened
-                            // in-flow boxes (and any later siblings) attached.
-                            if !Self::contents_is_inline_transparent(&self.tree.nodes, child_id) {
+                            if Self::contents_is_inline_transparent(&self.tree.nodes, child_id) {
+                                // A transparent wrapper's flattened *in-flow*
+                                // content was detached by the recursion above —
+                                // but its out-of-flow descendants (which no
+                                // longer make it opaque, #289) were reparented
+                                // into this root's Taffy node by
+                                // `sync_display_contents` and stay attached.
+                                // Collect them so the canonicalization below
+                                // keeps them laid out by Taffy.
+                                Self::collect_contents_out_of_flow(
+                                    &self.tree.nodes,
+                                    child_id,
+                                    &mut out_of_flow_children,
+                                );
+                            } else {
+                                // An opaque one stopped the marking pass,
+                                // leaving its flattened in-flow boxes (and any
+                                // later siblings) attached.
                                 in_flow_stays_attached = true;
                             }
                             continue;
@@ -1181,10 +1194,11 @@ impl RinchDocument {
     /// `display:contents` is transparent, so a block container whose children
     /// are contents wrappers full of inline text must establish the IFC itself
     /// (issue #61). This is only consulted when `root_id` has no *direct* inline
-    /// children. Returns false when any block-level element is found among the
-    /// flattened content — mixed inline+block behind `display:contents` is out of
-    /// scope here (it needs anonymous-block-box handling) and is left untouched
-    /// rather than regressed.
+    /// children. Returns false when any **in-flow** block-level element is found
+    /// among the flattened content — mixed inline+block behind `display:contents`
+    /// is out of scope here (it needs anonymous-block-box handling) and is left
+    /// untouched rather than regressed. An out-of-flow box does not count as
+    /// block content (#289): it neither breaks the inline flow nor belongs to it.
     fn contents_wraps_only_inline(nodes: &slab::Slab<Node>, root_id: usize) -> bool {
         let mut found_contents_inline = false;
         Self::scan_contents_children(nodes, root_id, &mut found_contents_inline)
@@ -1214,8 +1228,9 @@ impl RinchDocument {
 
     /// Recursively classify `node_id`'s children, descending only through
     /// `display:contents` wrappers. Sets `found_inline` when inline content is
-    /// seen under a contents wrapper. Returns false as soon as a block-level
-    /// (non-contents) element is encountered.
+    /// seen under a contents wrapper. Returns false as soon as an **in-flow**
+    /// block-level (non-contents) element is encountered; an out-of-flow box is
+    /// skipped (#289).
     fn scan_contents_children(
         nodes: &slab::Slab<Node>,
         node_id: usize,
@@ -1241,12 +1256,81 @@ impl RinchDocument {
                 }
             } else if child.is_inline() {
                 *found_inline = true;
+            } else if child.is_out_of_flow() {
+                // An out-of-flow box neither breaks an inline formatting
+                // context (CSS 2.1 §9.4.2) nor belongs to it — skip it, as the
+                // decision loop in `setup_inline_formatting_contexts` and
+                // `walk_inline_children` already do (#289). It stays attached
+                // to the IFC root's Taffy node with `ifc_root == None`, so
+                // Taffy lays it out and the stacking sequence paints it, while
+                // the #466 measure leaf keeps the root's inline measure
+                // reachable. Classification is **display-first** (see
+                // `has_block`): this arm sits after the `Contents` recursion,
+                // so a boxless `display: contents; position: absolute` wrapper
+                // — which has no box to take out of flow — recurses above like
+                // any other wrapper instead of being skipped here.
             } else {
-                // A real block-level box — mixed content, not our case.
+                // A real in-flow block-level box — mixed content, not our case.
                 return false;
             }
         }
         true
+    }
+
+    /// Collect, in flattened DOM order, the Taffy ids of the out-of-flow boxes
+    /// a **transparent** `display:contents` wrapper flattens into its IFC root,
+    /// descending through nested (necessarily transparent) wrappers.
+    ///
+    /// `sync_display_contents` reparented these boxes into the root's Taffy
+    /// node, and — unlike the wrapper's in-flow content, which the marking pass
+    /// detaches — they stay attached there: the IFC never claims an out-of-flow
+    /// box (#289). The measure-leaf canonicalization must therefore count them
+    /// exactly like the root's own out-of-flow children, or `set_children`
+    /// silently drops them from layout.
+    ///
+    /// Classification is display-first, matching [`Self::scan_contents_children`]
+    /// and the decision loop: a nested `Contents` wrapper is recursed into even
+    /// when it also declares `position: absolute` (boxless — no box to take out
+    /// of flow), and `display:none` generates no box. An in-flow block-level box
+    /// cannot occur here: the wrapper was judged transparent, which the scan
+    /// answers only when no such box exists at any depth.
+    ///
+    /// Four sites now encode this precedence — `has_block` in
+    /// [`Self::create_anonymous_block_boxes`], the decision loop in
+    /// [`Self::setup_inline_formatting_contexts`], [`Self::scan_contents_children`],
+    /// and this collector — and they must agree: display before position, always
+    /// (a flip here silently drops the wrapper's out-of-flow descendants from
+    /// layout). A shared classifier (#366) should collapse all four into one.
+    fn collect_contents_out_of_flow(
+        nodes: &slab::Slab<Node>,
+        wrapper_id: usize,
+        out: &mut Vec<taffy::NodeId>,
+    ) {
+        use crate::computed_style::values::DisplayValue;
+        for &child_id in &nodes[wrapper_id].children {
+            let Some(child) = nodes.get(child_id) else {
+                continue;
+            };
+            if child.is_comment() {
+                continue;
+            }
+            match child.computed_style.display {
+                DisplayValue::None => continue,
+                DisplayValue::Contents => {
+                    Self::collect_contents_out_of_flow(nodes, child_id, out);
+                    continue;
+                }
+                _ => {}
+            }
+            if child.is_inline() {
+                continue; // detached into the IFC by the marking pass
+            }
+            if child.is_out_of_flow()
+                && let Some(child_taffy) = child.taffy_id
+            {
+                out.push(child_taffy);
+            }
+        }
     }
 
     /// Detach the inline descendants of an IFC root from Taffy and mark their
