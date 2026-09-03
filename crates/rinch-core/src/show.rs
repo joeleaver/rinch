@@ -491,4 +491,126 @@ mod tests {
         );
         clear_context();
     }
+
+    /// A branch cleanup that reads a signal must not subscribe the show's
+    /// condition-watching effect (issue #494).
+    ///
+    /// Flipping the condition disposes the outgoing branch from inside the show
+    /// effect, so its `on_cleanup`s run with that effect as the current
+    /// observer — a tracked read there would re-run the show on every later
+    /// write to that signal, for the rest of the show's life, driven by a scope
+    /// that no longer exists. The DOM is identical either way, so the assertion
+    /// counts condition evaluations, not final state, with a positive control
+    /// proving the counter can see a re-run.
+    #[test]
+    fn a_branch_cleanup_that_reads_a_signal_does_not_subscribe_the_show_effect() {
+        use crate::dom::traits::DomDocument;
+        use crate::dom::{RenderScope, mock::MockDomDocument};
+        use crate::reactive::{Signal, on_cleanup};
+        use std::cell::RefCell;
+
+        let doc = Rc::new(RefCell::new(MockDomDocument::new()));
+        let body = doc.borrow().body();
+        let mut scope = RenderScope::new(doc.clone(), body);
+        let parent = scope.parent();
+
+        let cond = Signal::new(true);
+        let probe = Signal::new(0u32);
+        let passes = Rc::new(Cell::new(0usize));
+
+        let count = passes.clone();
+        let _marker = crate::show::show_dom(
+            &mut scope,
+            &parent,
+            move || {
+                count.set(count.get() + 1);
+                cond.get()
+            },
+            move |s: &mut RenderScope| {
+                // Registered against the branch's own scope (the ambient
+                // owner), read by the disposal fixpoint when the condition
+                // flips.
+                on_cleanup(move || {
+                    let _ = probe.get();
+                });
+                s.create_element("div")
+            },
+            Some(move |s: &mut RenderScope| s.create_element("span")),
+        );
+
+        cond.set(false); // dispose the then-branch, running its cleanup
+        let passes_before = passes.get();
+
+        probe.set(1);
+        assert_eq!(
+            passes.get(),
+            passes_before,
+            "a write to a signal only the branch cleanup read must not re-run the show effect"
+        );
+
+        // Positive control: a write the show effect legitimately tracks.
+        cond.set(true);
+        assert_eq!(passes.get(), passes_before + 1);
+    }
+
+    /// A signal value owned by the outgoing branch runs its `Drop` during the
+    /// same disposal (fixpoint step 6), and a read from it must not subscribe
+    /// the show effect either (issue #494) — the value-drop half, through a
+    /// real reconcile site.
+    #[test]
+    fn a_branch_signal_values_drop_that_reads_a_signal_does_not_subscribe_the_show_effect() {
+        use crate::dom::traits::DomDocument;
+        use crate::dom::{RenderScope, mock::MockDomDocument};
+        use crate::reactive::Signal;
+        use std::cell::RefCell;
+
+        /// Reads `probe` on drop — user code at value-teardown time.
+        struct ReadsSignalOnDrop {
+            probe: Signal<u32>,
+        }
+        impl Drop for ReadsSignalOnDrop {
+            fn drop(&mut self) {
+                let _ = self.probe.get();
+            }
+        }
+
+        let doc = Rc::new(RefCell::new(MockDomDocument::new()));
+        let body = doc.borrow().body();
+        let mut scope = RenderScope::new(doc.clone(), body);
+        let parent = scope.parent();
+
+        let cond = Signal::new(true);
+        let probe = Signal::new(0u32);
+        let passes = Rc::new(Cell::new(0usize));
+
+        let count = passes.clone();
+        let _marker = crate::show::show_dom(
+            &mut scope,
+            &parent,
+            move || {
+                count.set(count.get() + 1);
+                cond.get()
+            },
+            move |s: &mut RenderScope| {
+                // Owned by the branch scope: freed with the branch, its value
+                // dropped by the fixpoint's final step.
+                Signal::new(ReadsSignalOnDrop { probe });
+                s.create_element("div")
+            },
+            Some(move |s: &mut RenderScope| s.create_element("span")),
+        );
+
+        cond.set(false); // dispose the then-branch, dropping its signal's value
+        let passes_before = passes.get();
+
+        probe.set(1);
+        assert_eq!(
+            passes.get(),
+            passes_before,
+            "a write to a signal only the freed value's Drop read must not re-run the show effect"
+        );
+
+        cond.set(true);
+        assert_eq!(passes.get(), passes_before + 1);
+    }
 }
