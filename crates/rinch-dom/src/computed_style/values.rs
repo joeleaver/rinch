@@ -232,8 +232,9 @@ impl DimensionValue {
     /// layout-tree traits themselves; `TaffyTree`'s `resolve_calc_value` is
     /// hardcoded to `0.0` (taffy-0.12.2, `src/tree/taffy_tree.rs:391`). So the
     /// length part goes in as a *seed* and `resolve_layout_calcs`
-    /// (`calc_layout.rs`) overwrites it with the resolved length before any
-    /// layout result is read.
+    /// (`calc_layout.rs`) overwrites it with the resolved length before a
+    /// layout result is read — on the converged path; a run that hits the
+    /// fixpoint's iteration cap reads the last iterate (see `calc_layout.rs`).
     pub fn to_taffy(&self) -> taffy::Dimension {
         match self {
             Self::Auto => taffy::Dimension::auto(),
@@ -324,8 +325,9 @@ impl LengthPercentageValue {
     /// A `Calc` cannot be represented in a Taffy value (see
     /// [`DimensionValue::to_taffy`]); the clamped length part is a seed that
     /// `resolve_layout_calcs` (`calc_layout.rs`) overwrites with the resolved
-    /// length before any layout result is read. Every Taffy consumer of this
-    /// enum (padding, gap) is non-negative, hence the floor.
+    /// length before a layout result is read (converged path; see there).
+    /// Every Taffy consumer of this enum (padding, gap) is non-negative,
+    /// hence the floor.
     pub fn to_taffy(&self) -> taffy::LengthPercentage {
         match self {
             Self::Zero => taffy::LengthPercentage::length(0.0),
@@ -425,8 +427,8 @@ impl LengthPercentageAutoValue {
     /// A `Calc` cannot be represented in a Taffy value (see
     /// [`DimensionValue::to_taffy`]); the length part is a seed that
     /// `resolve_layout_calcs` (`calc_layout.rs`) overwrites with the resolved
-    /// length before any layout result is read. No floor — margins and insets
-    /// are legally negative.
+    /// length before a layout result is read (converged path; see
+    /// `calc_layout.rs`). No floor — margins and insets are legally negative.
     pub fn to_taffy(&self) -> taffy::LengthPercentageAuto {
         match self {
             Self::Auto => taffy::LengthPercentageAuto::auto(),

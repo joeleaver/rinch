@@ -211,14 +211,28 @@ impl RinchDocument {
         // block has a size. Resolve every such value against the sizes the
         // compute above produced and re-run until nothing moves — a calc
         // container whose child is calc-sized converges one level per pass.
-        // No layout result is read (and nothing painted) from a seed value.
-        // The cap only guards a pathological self-feeding cycle; the last
-        // iterate wins there, mirroring how browsers break percentage cycles.
-        for _ in 0..8 {
-            if !self.resolve_layout_calcs() {
+        // On the converged path no layout result is read (and nothing
+        // painted) from a seed value. Percentage cycles are not what the cap
+        // is for — those are broken the way browsers and Taffy break them,
+        // by resolving a percentage against an *indefinite* basis as
+        // zero/auto (`calc_axis_definite`). The cap bounds the residual
+        // content-feedback corner (e.g. `min-size: auto` growing a nominally
+        // definite axis): a capped run lays out from the last iterate — a
+        // wrong but bounded answer after 8 extra computes — and says so on
+        // stderr once per process rather than hiding it.
+        let mut calc_passes = 0;
+        while self.resolve_layout_calcs() {
+            text_layout_cache = self.run_taffy_compute(root_taffy, available_space, perf);
+            calc_passes += 1;
+            if calc_passes >= 8 {
+                static CAP_WARNING: std::sync::Once = std::sync::Once::new();
+                CAP_WARNING.call_once(|| {
+                    eprintln!(
+                        "[rinch] calc() layout fixpoint hit its iteration cap; a mixed                          calc() in this document is feeding back into its own basis and                          its layout is approximate (reported once per process)"
+                    );
+                });
                 break;
             }
-            text_layout_cache = self.run_taffy_compute(root_taffy, available_space, perf);
         }
 
         // Read layout results back into nodes

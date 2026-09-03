@@ -127,11 +127,19 @@ pub(crate) fn apply_out_of_flow_size_overrides(
             }
             _ => {}
         }
-    } else if kind == OutOfFlowKind::IcbAbsolute
-        && let DimensionValue::Percent(p) = cs.width
-    {
-        // Taffy would resolve the percentage against the direct parent.
-        taffy_style.size.width = taffy::Dimension::length((vw * p).max(0.0));
+    } else if kind == OutOfFlowKind::IcbAbsolute {
+        // Taffy would resolve these against the direct parent; the containing
+        // block is the ICB, i.e. the viewport. A mixed calc() takes the same
+        // arm as a plain percentage (#278/#496 review).
+        match cs.width {
+            DimensionValue::Percent(p) => {
+                taffy_style.size.width = taffy::Dimension::length((vw * p).max(0.0));
+            }
+            DimensionValue::Calc { px, pct } => {
+                taffy_style.size.width = taffy::Dimension::length((vw * pct + px).max(0.0));
+            }
+            _ => {}
+        }
     }
 
     if taffy_style.size.height == taffy::Dimension::auto() {
@@ -144,9 +152,15 @@ pub(crate) fn apply_out_of_flow_size_overrides(
             }
             _ => {}
         }
-    } else if kind == OutOfFlowKind::IcbAbsolute
-        && let DimensionValue::Percent(p) = cs.height
-    {
-        taffy_style.size.height = taffy::Dimension::length((vh * p).max(0.0));
+    } else if kind == OutOfFlowKind::IcbAbsolute {
+        match cs.height {
+            DimensionValue::Percent(p) => {
+                taffy_style.size.height = taffy::Dimension::length((vh * p).max(0.0));
+            }
+            DimensionValue::Calc { px, pct } => {
+                taffy_style.size.height = taffy::Dimension::length((vh * pct + px).max(0.0));
+            }
+            _ => {}
+        }
     }
 }
