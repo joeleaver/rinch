@@ -219,9 +219,9 @@ Custom Default: `toggle_visibility` defaults to `true`.
 | `description` | `String` | `""` | |
 | `error` | `String` | `""` | |
 | `placeholder` | `String` | `""` | |
-| `value` | `Option<f64>` | `None` | |
-| `value_fn` | `Option<ReactiveString>` | `None` | Reactive value binding (auto-wrapped) |
-| `default_value` | `Option<f64>` | `None` | |
+| `value` | `Option<f64>` | `None` | Initial value; uncontrolled, the steppers move the field from here |
+| `value_fn` | `Option<ReactiveString>` | `None` | Reactive value binding (auto-wrapped); when set, it is the field's single write path and the steppers are callback-only |
+| `default_value` | `Option<f64>` | `None` | Initial value of an uncontrolled field when `value` is absent |
 | `min` | `Option<f64>` | `None` | |
 | `max` | `Option<f64>` | `None` | |
 | `step` | `Option<f64>` | `None` | |
@@ -233,9 +233,9 @@ Custom Default: `toggle_visibility` defaults to `true`.
 | `required` | `bool` | `false` | |
 | `size` | `String` | `""` | |
 | `radius` | `String` | `""` | |
-| `onincrement` | `Option<Callback>` | `None` | |
-| `ondecrement` | `Option<Callback>` | `None` | |
-| `oninput` | `Option<InputCallback>` | `None` | Receives `String` from direct text entry |
+| `onincrement` | `Option<Callback>` | `None` | Notification; uncontrolled, the component steps the field itself and reports through `oninput` (#501) |
+| `ondecrement` | `Option<Callback>` | `None` | Notification (see `onincrement`) |
+| `oninput` | `Option<InputCallback>` | `None` | Receives `String` from direct text entry, and — uncontrolled — each stepper-written value |
 | `onchange` | `Option<InputCallback>` | `None` | Commit boundary (#226): fires once with the final value when the gesture ends (blur after a modification, or Enter); only if the value changed since focus |
 
 ### Checkbox
