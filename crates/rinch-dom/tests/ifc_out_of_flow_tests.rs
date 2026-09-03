@@ -983,3 +983,330 @@ fn an_absolutely_positioned_contents_wrapper_still_counts_as_block_content() {
         "no measure leaf: this container is not an IFC root"
     );
 }
+
+// ── #289: an out-of-flow box behind a `display:contents` wrapper ────────────
+//
+// `scan_contents_children` classified any non-inline child as "a real
+// block-level box", out-of-flow ones included, so a `display:contents` wrapper
+// whose only non-inline content is absolutely positioned was judged opaque and
+// pushed out of the IFC: its texts stayed attached to the container as bare
+// Taffy text leaves and stacked as blocks, one per line. #289 could not ship
+// the obvious one-line skip on its own — marking the wrapper transparent
+// leaves the reparented absolute grandchild attached to the container's Taffy
+// node, and before #466's measure-child that made the container a non-leaf
+// whose inline measure could never fire (h = 0). With PR 2 merged the skip is
+// safe: the measure leaf supplies the height, and the decision loop collects
+// the wrapper's flattened out-of-flow boxes so canonicalization keeps them
+// laid out by Taffy.
+//
+// Every test here was run against the pre-fix tree (origin/main with PR 2
+// merged and the scan un-skipped) or the named mutant, and failed.
+
+/// #289's own markup: the text behind the wrapper flows in the container's IFC
+/// at line height, **and** the absolute grandchild's ink is present — both
+/// asserted, because the historical failure mode was fixing one by losing the
+/// other (the naive skip hid the absolute box; the opaque wrapper stacked the
+/// text as blocks).
+///
+/// Kills: reverting the scan's out-of-flow skip (= main: the two text runs
+/// stack as bare Taffy leaves, one per line — height 106, narrow ink — instead
+/// of sharing one 48px line); and stamping `ifc_root` on the absolute
+/// grandchild (paint skips it — no red ink).
+#[test]
+fn text_behind_a_contents_wrapper_flows_and_its_absolute_grandchild_paints() {
+    let mut doc = RinchDocument::new();
+    let body = doc.body();
+    let container = child_of(
+        &mut doc,
+        body,
+        "div",
+        "position: relative; font-size: 40px; line-height: 48px; width: 700px; \
+         padding: 7px 0 3px 0; color: rgb(0, 128, 0); background: rgb(0, 0, 255)",
+    );
+    // The marker comment from #289's fixture — `show_dom` emits one beside
+    // every branch root, so the wrapper idiom always has it in practice.
+    let marker = doc.create_comment("m");
+    doc.append_child(container, marker);
+    let wrapper = child_of(&mut doc, container, "div", "display: contents");
+    text_in(&mut doc, wrapper, "AAAA");
+    child_of(
+        &mut doc,
+        wrapper,
+        "div",
+        "position: absolute; left: 32px; top: 9px; width: 50px; height: 10px; \
+         background: rgb(255, 0, 0)",
+    );
+    text_in(&mut doc, wrapper, "BBBB");
+    doc.resolve_layout(VW, VH);
+
+    assert_eq!(doc.ifc_leaf_invariant_violations(), Vec::<usize>::new());
+    assert_eq!(
+        anon_box_count(&doc),
+        0,
+        "no direct inline children, no anonymous box"
+    );
+    let h = height_of(&doc, container);
+    assert!(
+        (h - 58.0).abs() < 2.0,
+        "one 48px line + 7px/3px padding = 58 expected — the wrapped text \
+         flows in the container's IFC, got {h}"
+    );
+
+    let px = rasterize(&mut doc);
+    let (gx0, _, gx1, _) =
+        color_bbox(&px, (0, 128, 0)).expect("the wrapped text is painted at all");
+    assert!(
+        gx1 - gx0 > 120,
+        "AAAA and BBBB share one line box, so the inked span is wide; got \
+         {}px — a narrow span means the runs stacked as separate blocks",
+        gx1 - gx0
+    );
+    let (cx, cy, ..) = color_bbox(&px, (0, 0, 255)).expect("the container is painted");
+    let red = color_bbox(&px, (255, 0, 0)).expect(
+        "the absolute grandchild is painted at all — no red ink means marking \
+         the wrapper transparent hid the box (#289's historical trap)",
+    );
+    assert_eq!(
+        red,
+        (cx + 32, cy + 9, cx + 32 + 50, cy + 9 + 10),
+        "the box is inked exactly at its container-relative insets"
+    );
+}
+
+/// The structural half: marking the wrapper transparent leaves the reparented
+/// absolute grandchild attached, so the decision loop must see it *through*
+/// the wrapper and arm the measure leaf — the scan's skip alone stamps
+/// `InlineRoot` on a container that still has a Taffy child.
+///
+/// Kills: skipping out-of-flow children in the scan **without** collecting
+/// them through transparent wrappers in the decision loop (the in-setup
+/// validator panics in debug builds; no leaf is minted); and, run pre-fix,
+/// the whole change reverted (no leaf on main either).
+#[test]
+fn a_contents_wrapped_absolute_grandchild_gets_the_measure_leaf() {
+    let mut doc = RinchDocument::new();
+    let body = doc.body();
+    let container = child_of(
+        &mut doc,
+        body,
+        "div",
+        "position: relative; font-size: 16px; line-height: 20px; width: 400px",
+    );
+    let wrapper = child_of(&mut doc, container, "div", "display: contents");
+    let text = text_in(&mut doc, wrapper, "hello world");
+    let abs = child_of(
+        &mut doc,
+        wrapper,
+        "div",
+        "position: absolute; left: 32px; top: 9px; width: 50px; height: 10px",
+    );
+    doc.resolve_layout(VW, VH);
+
+    assert_eq!(doc.ifc_leaf_invariant_violations(), Vec::<usize>::new());
+    assert_eq!(
+        doc.tree.get(wrapper.0).unwrap().ifc_root,
+        Some(container.0),
+        "the wrapper is transparent to the container's IFC"
+    );
+    assert_eq!(
+        doc.tree.get(text.0).unwrap().ifc_root,
+        Some(container.0),
+        "the wrapped text is the container's inline content"
+    );
+    assert_eq!(
+        doc.tree.get(abs.0).unwrap().ifc_root,
+        None,
+        "an out-of-flow grandchild is nobody's inline content"
+    );
+
+    let container_taffy = doc.tree.get(container.0).unwrap().taffy_id.unwrap();
+    let &leaf = doc
+        .tree
+        .ifc_measure_leaves
+        .get(&container.0)
+        .expect("a root whose attached children are all out-of-flow gets a measure leaf");
+    assert!(
+        matches!(
+            doc.tree.taffy.get_node_context(leaf),
+            Some(NodeContext::InlineRoot(id)) if *id == container.0
+        ),
+        "the leaf carries InlineRoot naming the container"
+    );
+    let children = doc.tree.taffy.children(container_taffy).unwrap();
+    assert_eq!(
+        children.first().copied(),
+        Some(leaf),
+        "the leaf sits at index 0, before the out-of-flow grandchild"
+    );
+    let abs_taffy = doc.tree.get(abs.0).unwrap().taffy_id.unwrap();
+    assert!(
+        children.contains(&abs_taffy),
+        "the absolute grandchild stays attached — Taffy does its layout"
+    );
+    assert!(
+        !matches!(
+            doc.tree.taffy.get_node_context(container_taffy),
+            Some(NodeContext::InlineRoot(_))
+        ),
+        "the container (a non-leaf) must not keep the context"
+    );
+}
+
+/// Classification stays **display-first** in the scan: a `display: contents;
+/// position: absolute` wrapper is boxless (Stylo does not blockify contents),
+/// so it has no box to take out of flow — the scan recurses into it like any
+/// other wrapper rather than skipping it as out-of-flow. PR 2's review found
+/// exactly this precedence disagreement live in `has_block`; this pins the
+/// scan against the same mistake.
+///
+/// Kills: placing the out-of-flow skip ahead of the `Contents` arm — the
+/// wrapper is then skipped, the container never becomes a root, and the two
+/// texts stack as bare Taffy leaves (height 96, `ifc_root == None`).
+#[test]
+fn an_absolutely_positioned_contents_wrapper_recurses_display_first_in_the_scan() {
+    let mut doc = RinchDocument::new();
+    let body = doc.body();
+    let container = child_of(
+        &mut doc,
+        body,
+        "div",
+        "position: relative; font-size: 40px; line-height: 48px; width: 700px",
+    );
+    let wrapper = child_of(
+        &mut doc,
+        container,
+        "span",
+        "display: contents; position: absolute",
+    );
+    let a = text_in(&mut doc, wrapper, "AAAA");
+    text_in(&mut doc, wrapper, "BBBB");
+    doc.resolve_layout(VW, VH);
+
+    assert!(
+        doc.tree.get(wrapper.0).unwrap().is_out_of_flow(),
+        "precondition: the position predicate alone calls the wrapper out of flow"
+    );
+    assert_eq!(doc.ifc_leaf_invariant_violations(), Vec::<usize>::new());
+    assert_eq!(
+        doc.tree.get(a.0).unwrap().ifc_root,
+        Some(container.0),
+        "the wrapped text flows in the container's IFC — the boxless wrapper \
+         was recursed into, not skipped as out-of-flow"
+    );
+    let h = height_of(&doc, container);
+    assert!(
+        (h - 48.0).abs() < 1.0,
+        "both runs share one 48px line, got {h} — 96 means the wrapper was \
+         skipped and the texts stacked as blocks"
+    );
+}
+
+/// The skip narrows the block arm, it does not delete it: a wrapper mixing
+/// text with an **in-flow** block stays opaque, exactly as on main — mixed
+/// content behind `display:contents` is still the anonymous-box problem, not
+/// this IFC's.
+///
+/// Kills: a scan that skips every non-inline child — the wrapper turns
+/// transparent, the decision loop's collector (rightly) refuses the in-flow
+/// block, and canonicalization detaches it: the block loses its box and its
+/// ink, and the container shrinks to one line.
+#[test]
+fn a_wrapper_mixing_text_and_an_in_flow_block_stays_opaque() {
+    let mut doc = RinchDocument::new();
+    let body = doc.body();
+    let container = child_of(
+        &mut doc,
+        body,
+        "div",
+        "font-size: 40px; line-height: 48px; width: 700px",
+    );
+    let wrapper = child_of(&mut doc, container, "div", "display: contents");
+    text_in(&mut doc, wrapper, "hello");
+    let block = child_of(
+        &mut doc,
+        wrapper,
+        "div",
+        "width: 60px; height: 30px; background: rgb(255, 0, 255)",
+    );
+    doc.resolve_layout(VW, VH);
+
+    assert_eq!(doc.ifc_leaf_invariant_violations(), Vec::<usize>::new());
+    assert_eq!(
+        doc.tree.get(wrapper.0).unwrap().ifc_root,
+        None,
+        "an in-flow block keeps the wrapper opaque"
+    );
+    let (_, _, bw, bh) = layout_of(&doc, block);
+    assert!(
+        (bw - 60.0).abs() < 0.5 && (bh - 30.0).abs() < 0.5,
+        "the in-flow block keeps its box, got {bw}x{bh}"
+    );
+    let h = height_of(&doc, container);
+    assert!(
+        h >= 78.0 - 1.0,
+        "one 48px line plus the 30px block, got {h} — a smaller height means \
+         the block was detached from layout"
+    );
+    let px = rasterize(&mut doc);
+    assert!(
+        color_bbox(&px, (255, 0, 255)).is_some(),
+        "the in-flow block is still painted"
+    );
+}
+
+/// The collector flattens through *nested* transparent wrappers, exactly like
+/// the scan and the marking pass do: an absolute box two `display:contents`
+/// levels down is still handed to Taffy by the canonicalization.
+///
+/// Kills: a collector that only looks at the wrapper's direct children — the
+/// depth-2 absolute box is dropped by `set_children`, never laid out, and
+/// paints no ink at its insets.
+#[test]
+fn a_nested_transparent_wrapper_still_hands_its_absolute_box_to_taffy() {
+    let mut doc = RinchDocument::new();
+    let body = doc.body();
+    let container = child_of(
+        &mut doc,
+        body,
+        "div",
+        "position: relative; font-size: 16px; line-height: 20px; width: 400px; \
+         background: rgb(0, 0, 255)",
+    );
+    let outer = child_of(&mut doc, container, "div", "display: contents");
+    text_in(&mut doc, outer, "hello");
+    let inner = child_of(&mut doc, outer, "div", "display: contents");
+    let abs = child_of(
+        &mut doc,
+        inner,
+        "div",
+        "position: absolute; left: 32px; top: 9px; width: 50px; height: 10px; \
+         background: rgb(255, 0, 0)",
+    );
+    text_in(&mut doc, inner, "world");
+    doc.resolve_layout(VW, VH);
+
+    assert_eq!(doc.ifc_leaf_invariant_violations(), Vec::<usize>::new());
+    assert!(
+        doc.tree.ifc_measure_leaves.contains_key(&container.0),
+        "the container gets its measure leaf"
+    );
+    let (x, y, w, h) = layout_of(&doc, abs);
+    assert!(
+        (x - 32.0).abs() < 0.5
+            && (y - 9.0).abs() < 0.5
+            && (w - 50.0).abs() < 0.5
+            && (h - 10.0).abs() < 0.5,
+        "the depth-2 absolute box is laid out at its insets, got ({x}, {y}, {w}, {h})"
+    );
+    let px = rasterize(&mut doc);
+    let (cx, cy, ..) = color_bbox(&px, (0, 0, 255)).expect("the container is painted");
+    let red = color_bbox(&px, (255, 0, 0)).expect(
+        "the depth-2 absolute box is painted — dropping it from the \
+                 canonicalization loses its only route to layout",
+    );
+    assert_eq!(
+        red,
+        (cx + 32, cy + 9, cx + 32 + 50, cy + 9 + 10),
+        "inked exactly at its container-relative insets"
+    );
+}
