@@ -279,6 +279,35 @@ This covers `sensors::start`, `location::start`, `lifecycle::on_pause` /
 you have the fix you wanted, rather than at unmount. What they no longer have to
 be is a leak-preventing ritual.
 
+### Keeping the screen on: a guard, not a callback
+
+One Android service ties itself to the component by a third shape.
+`screen::keep_screen_on()` returns a **guard** — the display is held awake
+while the `KeepScreenOn` value is alive, and dropping it releases the hold
+(refcounted, so several holders compose). There is no callback to check at
+dispatch: a window flag is written once and never dispatched again, so nothing
+would ever visit it to notice a dead owner. The guard supplies the release
+structurally instead.
+
+Most callers want the reactive form, which is also where unmount release comes
+from — the effect underneath is scope-owned, and disposal drops the closure
+holding the guard:
+
+```rust
+#[component]
+fn player() -> NodeHandle {
+    let playing = Signal::new(false);
+    // Held while `playing` is true; released when it goes false — or when
+    // this component unmounts mid-playback, whichever comes first.
+    rinch_android::screen::keep_screen_on_while(move || playing.get());
+    // ...
+}
+```
+
+`keep_screen_on_while(|| true)` reads as "while this component is mounted".
+The opt-out for a kiosk binary that genuinely never releases is
+`keep_screen_on().leak()`, from `android_main`.
+
 [`set_keyboard_interceptor`]: ./focus.md#where-this-does-not-apply
 [`set_paste_interceptor`]: ./platform.md#clipboard
 
