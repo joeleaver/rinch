@@ -414,10 +414,10 @@ pub(super) fn paint_box_shadow(
     let radii = {
         let cs = &node.computed_style;
         let resolve_size = node.layout.width.min(node.layout.height);
-        let tl = cs.border_radius_top_left.resolve(resolve_size) as f64 * scale;
-        let tr = cs.border_radius_top_right.resolve(resolve_size) as f64 * scale;
-        let br = cs.border_radius_bottom_right.resolve(resolve_size) as f64 * scale;
-        let bl = cs.border_radius_bottom_left.resolve(resolve_size) as f64 * scale;
+        let tl = cs.border_radius_top_left.resolve(resolve_size).max(0.0) as f64 * scale;
+        let tr = cs.border_radius_top_right.resolve(resolve_size).max(0.0) as f64 * scale;
+        let br = cs.border_radius_bottom_right.resolve(resolve_size).max(0.0) as f64 * scale;
+        let bl = cs.border_radius_bottom_left.resolve(resolve_size).max(0.0) as f64 * scale;
         RoundedRectRadii::new(tl, tr, br, bl)
     };
     let has_radius = radii.top_left > 0.0

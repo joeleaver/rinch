@@ -226,15 +226,13 @@ pub(crate) fn accumulate_pct(
 
 /// Split a LengthPercentage into (px_value, percentage_fraction).
 ///
-/// Returns `(px, 0.0)` for a plain length and `(0.0, fraction)` for a plain
-/// percentage. A genuinely mixed `calc()` — one stylo could not simplify to a
-/// single leaf — answers **`(0.0, 0.0)`**, i.e. no translation at all, because
-/// `to_length()` and `to_percentage()` both return `None` for it. That is
-/// issue #404; nothing in the workspace currently writes such a calc.
+/// Returns `(px, 0.0)` for a plain length, `(0.0, fraction)` for a plain
+/// percentage, and the recovered affine pair for a genuinely mixed `calc()` —
+/// `translateX(calc(50% - 10px))` yields `(-10.0, 0.5)` (#404; it used to
+/// yield `(0.0, 0.0)`, no translation at all). See `from_stylo/calc.rs`.
 fn length_or_pct_split(lp: &style::values::computed::LengthPercentage) -> (f64, f64) {
-    let px = lp.to_length().map_or(0.0, |l| l.px() as f64);
-    let pct = lp.to_percentage().map_or(0.0, |p| p.0 as f64);
-    (px, pct)
+    let (px, pct) = super::calc::split_length_percentage(lp);
+    (px as f64, pct as f64)
 }
 
 pub(super) fn transform_origin_component_from_stylo(
@@ -245,7 +243,10 @@ pub(super) fn transform_origin_component_from_stylo(
     } else if let Some(pct) = origin.to_percentage() {
         LengthPercentageValue::Percent(pct.0)
     } else {
-        LengthPercentageValue::Percent(0.5) // default 50%
+        // A mixed calc used to degrade to the 50% default; carry the pair
+        // and let paint resolve it against the box (#278/#404 family).
+        let (px, pct) = super::calc::split_length_percentage(origin);
+        LengthPercentageValue::Calc { px, pct }
     }
 }
 
@@ -400,7 +401,11 @@ fn gradient_stops_from_stylo(
                     // Length stops need container size to resolve -- approximate
                     len.px() / 100.0
                 } else {
-                    i as f32 / (total - 1).max(1) as f32
+                    // Mixed calc: same px/100 approximation as the plain-length
+                    // arm for the length part, plus the exact percentage part.
+                    // Used to fall through to the auto-distributed index.
+                    let (px, pct) = super::calc::split_length_percentage(position);
+                    pct + px / 100.0
                 };
                 stops.push(GradientStop { offset, color: c });
             }

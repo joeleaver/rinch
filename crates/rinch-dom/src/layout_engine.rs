@@ -206,6 +206,21 @@ impl RinchDocument {
             text_layout_cache = self.run_taffy_compute(root_taffy, available_space, perf);
         }
 
+        // #278: a mixed `calc(%, px)` value has no Taffy representation (see
+        // `calc_layout.rs`), so its style carries a seed until the containing
+        // block has a size. Resolve every such value against the sizes the
+        // compute above produced and re-run until nothing moves — a calc
+        // container whose child is calc-sized converges one level per pass.
+        // No layout result is read (and nothing painted) from a seed value.
+        // The cap only guards a pathological self-feeding cycle; the last
+        // iterate wins there, mirroring how browsers break percentage cycles.
+        for _ in 0..8 {
+            if !self.resolve_layout_calcs() {
+                break;
+            }
+            text_layout_cache = self.run_taffy_compute(root_taffy, available_space, perf);
+        }
+
         // Read layout results back into nodes
         let t = web_time::Instant::now();
         self.read_layout_results(self.tree.root_id);
@@ -1085,6 +1100,7 @@ impl RinchDocument {
             match d {
                 DimensionValue::Length(v) => Some(*v),
                 DimensionValue::Percent(p) => Some(p * vh),
+                DimensionValue::Calc { px, pct } => Some(px + pct * vh),
                 DimensionValue::Auto => None,
             }
         };
