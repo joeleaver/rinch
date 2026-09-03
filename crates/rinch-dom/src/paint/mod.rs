@@ -274,7 +274,8 @@ pub fn compute_absolute_position(tree: &NodeTree, node_id: RawNodeId, scale: f64
 /// at the box's old address.
 ///
 /// Returns `(0.0, 0.0)` for every box the IFC does not position, which is all
-/// of them outside a text flow.
+/// of them outside a text flow — and for a box an **anonymous** IFC root
+/// positions, whose content-box origin *is* its layout origin (#319).
 pub fn ifc_content_box_offset(tree: &NodeTree, node: &Node) -> (f32, f32) {
     if node.display_mode != crate::DisplayMode::InlineBlock {
         return (0.0, 0.0);
@@ -282,6 +283,26 @@ pub fn ifc_content_box_offset(tree: &NodeTree, node: &Node) -> (f32, f32) {
     let Some(root) = node.ifc_root.and_then(|id| tree.get(id)) else {
         return (0.0, 0.0);
     };
+    ifc_root_content_origin(root)
+}
+
+/// Where an IFC root starts drawing its inline content, relative to its
+/// border-box origin: one padding+border in — the content-box origin — in
+/// unscaled CSS px.
+///
+/// Every site that positions or bounds what `paint_inline_layout` draws reads
+/// this one definition rather than re-summing padding and border by hand:
+/// paint's IFC arm, the selection-highlight block, `layer_bounds`' two inline
+/// arms, and [`ifc_content_box_offset`] (the child-side bridge that stacking,
+/// hit testing and caret placement go through). Hand-rolled copies of this sum
+/// are exactly how paint and its geometry consumers drift apart (#466).
+///
+/// For an **anonymous block box** the answer is `(0, 0)` by construction:
+/// [`crate::computed_style::ComputedStyle::for_anonymous_box`] carries no box
+/// model (#319), so its laid-out and painted geometry coincide — the parent's
+/// padding is applied once, by Taffy, when it places the anonymous box inside
+/// the parent's content box, and never again here.
+pub(crate) fn ifc_root_content_origin(root: &Node) -> (f32, f32) {
     let cs = &root.computed_style;
     (
         cs.padding_left.to_px() + cs.border_left_width.to_px(),
@@ -1631,10 +1652,9 @@ fn paint_node(
                 if sel_start != sel_end {
                     if let Some(ref inline_layout) = node.text_layout {
                         let cs = &node.computed_style;
-                        let pad_x =
-                            (cs.padding_left.to_px() + cs.border_left_width.to_px()) as f64 * scale;
-                        let pad_y =
-                            (cs.padding_top.to_px() + cs.border_top_width.to_px()) as f64 * scale;
+                        let (off_x, off_y) = ifc_root_content_origin(node);
+                        let pad_x = off_x as f64 * scale;
+                        let pad_y = off_y as f64 * scale;
                         let text_x = x + pad_x;
                         let text_y = y + pad_y;
                         let text_len = inline_layout.text_content.len();
@@ -1661,15 +1681,11 @@ fn paint_node(
             if let Some(inline_layout) = &node.text_layout {
                 // Paint inline content at the content-box origin (inside padding+border),
                 // accounting for scroll offset.
-                let cs = &node.computed_style;
+                let (off_x, off_y) = ifc_root_content_origin(node);
                 let scroll_x = node.scroll_offset.0 * scale;
                 let scroll_y = node.scroll_offset.1 * scale;
-                let content_x = x
-                    + (cs.padding_left.to_px() + cs.border_left_width.to_px()) as f64 * scale
-                    - scroll_x;
-                let content_y = y
-                    + (cs.padding_top.to_px() + cs.border_top_width.to_px()) as f64 * scale
-                    - scroll_y;
+                let content_x = x + off_x as f64 * scale - scroll_x;
+                let content_y = y + off_y as f64 * scale - scroll_y;
                 let ifc_text_shadows = node.computed_style.text_shadow.as_slice();
                 paint_inline_layout(
                     tree,

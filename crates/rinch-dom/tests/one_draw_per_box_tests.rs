@@ -423,3 +423,80 @@ fn children_of_an_ifc_root_with_no_live_layout_still_paint() {
          {ONE_DRAW}-pixel box"
     );
 }
+
+// ── the anonymous IFC root (#472's free result, ground moved by #319) ───────
+
+/// `text, block-div, button` as direct children: mixed content, so the inline
+/// runs live in **anonymous** block boxes and the button's IFC root is one of
+/// them. #472's review measured this shape as its free result: `main` painted
+/// 2880px — two full copies — and the merged tree exactly 1440, inside the
+/// container. This pins that, and pins where the surviving draw sits now that
+/// #319 removed the anonymous box's phantom box model: at the **laid-out**
+/// position (container origin + the anonymous box's Taffy position + the
+/// button's IFC position), not one padding+border further in.
+///
+/// Kills: regressing `already_drawn_inline`/`drawn_by_its_ifc` for anonymous
+/// roots (the count doubles), and restoring the full style clone in
+/// `create_anonymous_block_boxes` (the draw shifts 42px right and down of the
+/// layout sum — where the pre-#319 tree painted it).
+#[test]
+fn an_inline_block_in_an_anonymous_ifc_root_is_drawn_once_where_laid_out() {
+    let mut doc = RinchDocument::new();
+    let body = doc.body();
+    child_of(&mut doc, body, "div", "height: 120px");
+    let container = child_of(
+        &mut doc,
+        body,
+        "div",
+        "width: 400px; padding: 40px; border: 2px solid rgb(0, 0, 255); \
+         font-size: 16px; background-color: rgb(255, 255, 255)",
+    );
+    let text = doc.create_text("Press ");
+    doc.append_child(container, text);
+    child_of(&mut doc, container, "div", "height: 20px");
+    let button = child_of(&mut doc, container, "button", BTN);
+    doc.resolve_layout(VW, VH);
+
+    let anon = doc
+        .tree
+        .get(button.0)
+        .unwrap()
+        .ifc_root
+        .expect("the button is inline content of some IFC");
+    assert!(
+        doc.tree.get(anon).unwrap().is_anonymous_block_box,
+        "mixed content puts the button's run in an anonymous block box"
+    );
+
+    // The layout sum, derived at runtime: the button leads its run, so the
+    // IFC puts it at the anonymous box's own origin.
+    let c = &doc.tree.get(container.0).unwrap().layout;
+    let a = &doc.tree.get(anon).unwrap().layout;
+    let b = &doc.tree.get(button.0).unwrap().layout;
+    let (ex, ey) = (c.x + a.x + b.x, c.y + a.y + b.y);
+    assert_eq!(
+        (ex.fract(), ey.fract()),
+        (0.0, 0.0),
+        "the expected origin must be integral for an exact bbox comparison — \
+         if this fires the fixture needs adjusting, not the tolerance"
+    );
+
+    let px = rasterize(&mut doc);
+    assert_drawn_once(&px, (255, 0, 0), "anonymous IFC root");
+    assert_eq!(
+        color_bbox(&px, ONCE),
+        Some((ex as u32, ey as u32, ex as u32 + 60, ey as u32 + 24)),
+        "the surviving draw sits at the layout sum"
+    );
+    assert_ne!(
+        color_bbox(&px, ONCE),
+        Some((
+            ex as u32 + 42,
+            ey as u32 + 42,
+            ex as u32 + 102,
+            ey as u32 + 66
+        )),
+        "one padding+border further in is where the anonymous box's cloned \
+         box model painted it before #319"
+    );
+}
