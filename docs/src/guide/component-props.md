@@ -220,6 +220,7 @@ Custom Default: `toggle_visibility` defaults to `true`.
 | `error` | `String` | `""` | |
 | `placeholder` | `String` | `""` | |
 | `value` | `Option<f64>` | `None` | |
+| `value_fn` | `Option<ReactiveString>` | `None` | Reactive value binding (auto-wrapped) |
 | `default_value` | `Option<f64>` | `None` | |
 | `min` | `Option<f64>` | `None` | |
 | `max` | `Option<f64>` | `None` | |

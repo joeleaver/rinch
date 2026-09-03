@@ -4,6 +4,10 @@
 
 use rinch_core::dom::{NodeHandle, RenderScope};
 use rinch_core::{Callback, Component, InputCallback};
+use std::rc::Rc;
+
+/// Reactive callback type for string state.
+pub type ReactiveString = Rc<dyn Fn() -> String>;
 
 /// NumberInput size.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -68,6 +72,9 @@ pub struct NumberInput {
     pub placeholder: String,
     /// Current value.
     pub value: Option<f64>,
+    /// Reactive value getter - use this for fine-grained updates.
+    /// When provided, the input value updates automatically when the signal changes.
+    pub value_fn: Option<ReactiveString>,
     /// Default value.
     pub default_value: Option<f64>,
     /// Minimum value.
@@ -112,6 +119,7 @@ impl std::fmt::Debug for NumberInput {
             .field("error", &self.error)
             .field("placeholder", &self.placeholder)
             .field("value", &self.value)
+            .field("value_fn", &self.value_fn.as_ref().map(|_| "<reactive>"))
             .field("default_value", &self.default_value)
             .field("min", &self.min)
             .field("max", &self.max)
@@ -201,7 +209,20 @@ impl Component for NumberInput {
         let input =
             rinch_macros::rsx! { input { class: "rinch-number-input__input", r#type: "number" } };
 
-        if let Some(v) = self.value {
+        // Reactive value binding
+        if let Some(ref value_fn) = self.value_fn {
+            // Set initial value
+            let initial_value = value_fn();
+            input.set_attribute("value", &initial_value);
+
+            // Create Effect for reactive updates
+            let value_fn = value_fn.clone();
+            let input_clone = input.clone();
+            __scope.create_effect(move || {
+                let current_value = value_fn();
+                input_clone.set_attribute("value", &current_value);
+            });
+        } else if let Some(v) = self.value {
             input.set_attribute("value", &v.to_string());
         }
         if let Some(min) = self.min {
