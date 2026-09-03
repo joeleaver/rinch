@@ -1255,12 +1255,17 @@ fn a_wrapper_mixing_text_and_an_in_flow_block_stays_opaque() {
 }
 
 /// The collector flattens through *nested* transparent wrappers, exactly like
-/// the scan and the marking pass do: an absolute box two `display:contents`
-/// levels down is still handed to Taffy by the canonicalization.
+/// the scan and the marking pass do: absolute boxes one **and** two
+/// `display:contents` levels down are both handed to Taffy by the
+/// canonicalization. Two depths on purpose — with only the deep box, an
+/// empty collection skips the leaf branch entirely and the validator fires
+/// first; with a depth-1 box collected, a partial recursion arms the leaf
+/// branch and `set_children` is what drops the deep box, so the ink is the
+/// only witness.
 ///
 /// Kills: a collector that only looks at the wrapper's direct children — the
 /// depth-2 absolute box is dropped by `set_children`, never laid out, and
-/// paints no ink at its insets.
+/// paints no ink at its insets (while the validator stays green).
 #[test]
 fn a_nested_transparent_wrapper_still_hands_its_absolute_box_to_taffy() {
     let mut doc = RinchDocument::new();
@@ -1274,6 +1279,13 @@ fn a_nested_transparent_wrapper_still_hands_its_absolute_box_to_taffy() {
     );
     let outer = child_of(&mut doc, container, "div", "display: contents");
     text_in(&mut doc, outer, "hello");
+    let shallow = child_of(
+        &mut doc,
+        outer,
+        "div",
+        "position: absolute; left: 200px; top: 3px; width: 40px; height: 8px; \
+         background: rgb(255, 128, 0)",
+    );
     let inner = child_of(&mut doc, outer, "div", "display: contents");
     let abs = child_of(
         &mut doc,
@@ -1290,6 +1302,11 @@ fn a_nested_transparent_wrapper_still_hands_its_absolute_box_to_taffy() {
         doc.tree.ifc_measure_leaves.contains_key(&container.0),
         "the container gets its measure leaf"
     );
+    let (sx, sy, ..) = layout_of(&doc, shallow);
+    assert!(
+        (sx - 200.0).abs() < 0.5 && (sy - 3.0).abs() < 0.5,
+        "the depth-1 absolute box is laid out at its insets, got ({sx}, {sy})"
+    );
     let (x, y, w, h) = layout_of(&doc, abs);
     assert!(
         (x - 32.0).abs() < 0.5
@@ -1300,6 +1317,12 @@ fn a_nested_transparent_wrapper_still_hands_its_absolute_box_to_taffy() {
     );
     let px = rasterize(&mut doc);
     let (cx, cy, ..) = color_bbox(&px, (0, 0, 255)).expect("the container is painted");
+    let orange = color_bbox(&px, (255, 128, 0)).expect("the depth-1 absolute box is painted");
+    assert_eq!(
+        orange,
+        (cx + 200, cy + 3, cx + 200 + 40, cy + 3 + 8),
+        "the depth-1 box is inked at its container-relative insets"
+    );
     let red = color_bbox(&px, (255, 0, 0)).expect(
         "the depth-2 absolute box is painted — dropping it from the \
                  canonicalization loses its only route to layout",
