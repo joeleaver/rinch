@@ -607,16 +607,17 @@ impl RinchRuntime {
                 // so the compositor can find it via the app_id.
                 #[cfg(target_os = "linux")]
                 {
-                    let app_id = props.app_id.as_deref().unwrap_or("rinch-app");
-                    install_wayland_icon(app_id, icon_data);
+                    let app_id = resolved_app_id(props.app_id.as_deref());
+                    install_wayland_icon(&app_id, icon_data);
                 }
             }
             // Set app_id / WM_CLASS on Linux for desktop integration
             #[cfg(target_os = "linux")]
             {
-                let app_id = props.app_id.as_deref().unwrap_or("rinch-app");
+                let app_id = resolved_app_id(props.app_id.as_deref());
                 use winit::platform::wayland::WindowAttributesWayland;
-                let wayland_attrs = WindowAttributesWayland::default().with_name(app_id, app_id);
+                let wayland_attrs =
+                    WindowAttributesWayland::default().with_name(app_id.as_str(), app_id.as_str());
                 window_attrs = window_attrs.with_platform_attributes(Box::new(wayland_attrs));
             }
         }
@@ -710,9 +711,10 @@ impl RinchRuntime {
             }
             #[cfg(target_os = "linux")]
             {
-                let app_id = props.app_id.as_deref().unwrap_or("rinch-app");
+                let app_id = resolved_app_id(props.app_id.as_deref());
                 use winit::platform::wayland::WindowAttributesWayland;
-                let wayland_attrs = WindowAttributesWayland::default().with_name(app_id, app_id);
+                let wayland_attrs =
+                    WindowAttributesWayland::default().with_name(app_id.as_str(), app_id.as_str());
                 window_attrs = window_attrs.with_platform_attributes(Box::new(wayland_attrs));
             }
         }
@@ -2555,7 +2557,10 @@ fn blit_rgba(
 ///     rinch::run_rinch("Counter", 800, 600, app);
 /// }
 /// ```
-#[deprecated(since = "0.2.0", note = "Use `run` instead")]
+#[deprecated(
+    since = "0.2.0",
+    note = "use `App::new(component).title(title).size(width, height).run()`"
+)]
 pub fn run_rinch<F>(title: &str, width: u32, height: u32, component: F)
 where
     F: FnOnce(&mut RenderScope) -> NodeHandle + 'static,
@@ -2635,7 +2640,10 @@ where
 }
 
 /// Run a rinch-dom application with full window configuration.
-#[deprecated(since = "0.2.0", note = "Use `run_with_window_props` instead")]
+#[deprecated(
+    since = "0.2.0",
+    note = "use `App::new(component).window_props(props).run()`"
+)]
 pub fn run_rinch_with_window_props<F>(component: F, props: rinch_core::element::WindowProps)
 where
     F: FnOnce(&mut RenderScope) -> NodeHandle + 'static,
@@ -2761,6 +2769,48 @@ fn load_window_icon(png_data: &[u8]) -> Result<winit::icon::Icon, Box<dyn std::e
 }
 
 /// Write the icon PNG to a data directory and create a `.desktop` file so Wayland
+/// The Wayland `app_id` / X11 `WM_CLASS` this window identifies itself by.
+///
+/// An app that sets [`WindowProps::app_id`] gets exactly that. Everything else
+/// gets its **own** identity, derived from the executable's file stem, rather
+/// than a constant shared with every other rinch application.
+///
+/// A shared default is not merely a cosmetic label. `install_wayland_icon`
+/// writes `~/.local/share/applications/{app_id}.desktop` carrying
+/// `Name={app_id}`, and compositors match a window to a desktop entry by
+/// `app_id` — so under one constant, the first rinch app to ship an icon
+/// supplies the dock icon *and* the displayed name for every other rinch app
+/// on the machine, and they group together as a single application.
+///
+/// Falls back to `"rinch-app"` only when the executable path is unavailable,
+/// which is where the old behaviour came from.
+#[cfg(target_os = "linux")]
+fn resolved_app_id(explicit: Option<&str>) -> String {
+    if let Some(id) = explicit {
+        return id.to_string();
+    }
+    std::env::current_exe()
+        .ok()
+        .as_deref()
+        .and_then(app_id_from_exe_path)
+        .unwrap_or_else(|| "rinch-app".to_string())
+}
+
+/// The identity an executable path implies: its **whole** file name.
+///
+/// Not `file_stem`. A stem truncates at the last dot, so the reverse-DNS
+/// binary names this convention is built for — `com.example.notes` — would
+/// register as `com.example` and collide with every sibling in that namespace,
+/// which is the exact failure the derivation exists to prevent. Linux
+/// executables carry no extension for a stem to usefully strip, and this
+/// function is Linux-only.
+#[cfg(target_os = "linux")]
+fn app_id_from_exe_path(path: &std::path::Path) -> Option<String> {
+    path.file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .filter(|name| !name.is_empty())
+}
+
 /// compositors can display the icon in the taskbar via `app_id` matching.
 #[cfg(target_os = "linux")]
 fn install_wayland_icon(app_id: &str, png_data: &[u8]) {
@@ -3126,5 +3176,108 @@ mod letterbox_backdrop {
             radii_at_shared_corners((1.0, 0.0, 199.0, 300.0), card, [8.0; 4]),
             [8.0; 4]
         );
+    }
+}
+
+/// The Wayland/X11 application identity (issue #493 review).
+///
+/// These pin the property that makes the identity worth deriving at all: two
+/// different rinch applications must not answer to the same `app_id`. A
+/// constant default made every app that did not set one share a single desktop
+/// identity — and because `install_wayland_icon` writes
+/// `{app_id}.desktop` with `Name={app_id}`, that meant the first rinch app to
+/// ship an icon supplied the dock icon and name for all the others.
+#[cfg(all(test, target_os = "linux"))]
+mod app_id_tests {
+    use super::{app_id_from_exe_path, resolved_app_id};
+
+    /// The identity `resolved_app_id` would derive from a given executable path.
+    fn id_of(path: &str) -> Option<String> {
+        app_id_from_exe_path(std::path::Path::new(path))
+    }
+
+    /// An explicit `app_id` is handed back untouched — never re-derived, and
+    /// never blended with the executable name.
+    #[test]
+    fn an_explicit_app_id_is_used_verbatim() {
+        assert_eq!(
+            resolved_app_id(Some("com.example.notes")),
+            "com.example.notes"
+        );
+    }
+
+    /// The explicit value wins even when it happens to be the old constant, so
+    /// an app that deliberately asks for `rinch-app` still gets it.
+    #[test]
+    fn an_explicit_app_id_equal_to_the_old_default_is_still_honoured() {
+        assert_eq!(resolved_app_id(Some("rinch-app")), "rinch-app");
+    }
+
+    /// With nothing declared, the identity comes from *this* executable — the
+    /// whole point. Asserting against the real `current_exe` file stem rather
+    /// than a literal keeps the test true under `cargo test`, a renamed test
+    /// binary, and CI alike.
+    #[test]
+    fn an_undeclared_app_id_is_derived_from_the_executable() {
+        let expected = std::env::current_exe()
+            .ok()
+            .and_then(|p| p.file_name().map(|s| s.to_string_lossy().into_owned()))
+            .expect("the test binary has a path");
+        assert!(!expected.is_empty());
+        assert_eq!(resolved_app_id(None), expected);
+    }
+
+    /// The regression this replaces: an undeclared id must NOT be the shared
+    /// constant. A test binary is never named `rinch-app`, so this fails the
+    /// moment the derivation is dropped — which the equality test above would
+    /// too, but this one names the defect.
+    #[test]
+    fn an_undeclared_app_id_is_not_the_shared_constant() {
+        assert_ne!(
+            resolved_app_id(None),
+            "rinch-app",
+            "every rinch app sharing one app_id makes compositors group them \
+             as a single application and match one another's .desktop entry"
+        );
+    }
+
+    /// Two different executables get two different identities. This is the
+    /// property the collision fix rests on, and neither test above states it:
+    /// both would pass a derivation that returned a constant of its own.
+    #[test]
+    fn different_executables_get_different_identities() {
+        assert_ne!(id_of("/usr/bin/my-notes"), id_of("/usr/bin/my-paint"));
+        assert_eq!(
+            id_of("/home/u/target/release/my-notes"),
+            Some("my-notes".into())
+        );
+    }
+
+    /// A dotted, reverse-DNS binary name survives whole.
+    ///
+    /// This is the case that makes `file_name` the right call and `file_stem`
+    /// the wrong one: a stem truncates at the last dot, so `com.example.notes`
+    /// would register as `com.example` and collide with every sibling in that
+    /// namespace — reintroducing, in a smaller blast radius, the exact
+    /// collision this derivation exists to remove. A fixture using only
+    /// undotted names cannot see the difference, because there `file_stem` and
+    /// `file_name` agree.
+    #[test]
+    fn a_dotted_executable_name_is_not_truncated_at_the_dot() {
+        assert_eq!(
+            id_of("/usr/bin/com.example.notes"),
+            Some("com.example.notes".into())
+        );
+        assert_ne!(
+            id_of("/usr/bin/com.example.notes"),
+            id_of("/usr/bin/com.example.paint")
+        );
+    }
+
+    /// A path with no file name at all falls back rather than yielding an
+    /// empty identity.
+    #[test]
+    fn a_path_with_no_file_name_yields_nothing_to_derive_from() {
+        assert_eq!(id_of("/"), None);
     }
 }
