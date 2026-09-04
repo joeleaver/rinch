@@ -36,7 +36,10 @@ use rinch_core::element::{ThemeProviderProps, WindowProps};
 /// exists only when building for Android, so it is not linked here).
 ///
 /// Every configuration method is independent, so any combination is
-/// expressible. Nothing happens until a terminal method is called; a terminal
+/// expressible. The `F` parameter is the root component; it is usually an
+/// unnameable closure, but `App<Box<dyn FnOnce(&mut RenderScope) -> NodeHandle>>`
+/// is a real type, so an `App` can be stored in a struct or passed to a
+/// function when configuration has to be built up across call sites. Nothing happens until a terminal method is called; a terminal
 /// method takes over the thread and returns only when the application exits its
 /// event loop.
 ///
@@ -128,7 +131,8 @@ where
     }
 
     /// Add a native menu bar. Each `(label, Menu)` pair becomes a top-level
-    /// submenu.
+    /// submenu. Calling this twice replaces the menu rather than appending to
+    /// it.
     ///
     /// Desktop only, in every sense that matters: Android has no window menu
     /// bar, and an Android build does not have this method — it is gated on
@@ -157,13 +161,14 @@ where
     /// device via [`gpu_handle`](crate::shell::desktop::gpu_handle).
     ///
     /// Mutually exclusive with [`external_gpu`](App::external_gpu) — the last
-    /// one set on *this* builder wins.
+    /// one set on *this* builder wins, because the builder holds one field and
+    /// installs it once.
     ///
-    /// Across builders it does not: the choice is installed into a process-wide
-    /// `OnceLock` at [`run`](App::run), and a second install is ignored. Since
-    /// `run` returns when the event loop exits, a program that runs a second
-    /// `App` in the same process silently keeps the first one's GPU
-    /// configuration.
+    /// It is installed into a process-wide `OnceLock` at [`run`](App::run),
+    /// which ignores a second install, so a second `App` could not change it.
+    /// That is unreachable rather than dangerous: a second `run` panics first,
+    /// at `EventLoop::new`, because winit permits one event loop per process
+    /// and answers `RecreationAttempt` after the first.
     #[cfg(feature = "gpu")]
     pub fn gpu_config(mut self, gpu: crate::shell::desktop::RinchGpuConfig) -> Self {
         self.gpu = Some(crate::shell::desktop::GpuInit::Config(gpu));
