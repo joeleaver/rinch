@@ -411,6 +411,29 @@ impl RinchApp {
 
     /// Commit option `index`: write the value back to the `<select>`, dispatch the
     /// change handler, and close the popup.
+    ///
+    /// A **disabled** `<select>` commits nothing, and the guard lives here for
+    /// the same reason [`Self::open_select_popup`]'s lives there: this is the
+    /// one place a commit happens, so both routes to it — an option click via
+    /// `handle_open_select_click` and `Enter`/`Space` via `handle_select_key`
+    /// — are covered by the single check.
+    ///
+    /// The open-side guard cannot reach this case. It refuses to *build* a
+    /// popup for a disabled control; this is the popup that was legitimately
+    /// built for an enabled one and whose control went disabled underneath it
+    /// — a reactive `disabled` prop re-rendering while the list is up. The
+    /// only state consulted until now was `open.disabled[idx]`, the per-**option**
+    /// flag snapshotted at build time, so the control's own change was invisible
+    /// and it committed: wrote `value`, fired `oninput`/`onchange`. That is the
+    /// second half of issue #447, and the same "a disabled control mutates
+    /// application state" the first half was filed for.
+    ///
+    /// The orphaned popup is **dismissed** rather than left up. It can never
+    /// commit again, and its backdrop is modal (`handle_click`'s Phase -1
+    /// consumes every click while open), so leaving it would trap the pointer
+    /// against a control that is no longer listening. Focus is not handed back
+    /// to the control either — [`Self::focus_select_control`] refuses a
+    /// disabled one on the same rule.
     fn commit_select(&mut self, index: usize, vp_w: f32, vp_h: f32) {
         let Some(open) = self.open_select.as_ref() else {
             return;
@@ -422,6 +445,12 @@ impl RinchApp {
         let Some(doc) = self.doc.clone() else {
             return;
         };
+
+        if Self::node_is_disabled_in_tree(&doc.borrow().tree, select_id) {
+            self.close_select_popup();
+            self.resolve_and_repaint(vp_w, vp_h);
+            return;
+        }
 
         let initial_value = open.initial_value.clone();
         let (input_handler_id, change_handler_id, value_changed) = {
