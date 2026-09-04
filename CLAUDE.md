@@ -245,6 +245,7 @@ fn main() {
 | `App::new(component)` | Start configuring around the root component |
 | `.title(title)` / `.size(w, h)` | Window title and initial logical size |
 | `.theme(ThemeProviderProps)` | Colors, radius, dark mode |
+| `.fonts(&[AppFont])` | Typefaces the build carries in its own binary (issue #286) |
 | `.menu(Vec<(&str, Menu)>)` | Native menu bar |
 | `.window_props(WindowProps)` | Borderless, transparent, icon, `app_id`, `on_close_requested`, … |
 | `.gpu_config(RinchGpuConfig)` / `.external_gpu(ExternalGpu)` | GPU device (`gpu` feature) |
@@ -284,6 +285,46 @@ are untouched. See **Window identity on Wayland** below.
 They exist because none of them could express its own combinations:
 `run_with_menu` took no window props, `run_with_window_props` took no menu
 without a second function, and neither could take whatever landed next.
+
+### App-bundled fonts (`.fonts`)
+
+`App::fonts(&[AppFont])` registers typefaces the build carries, before the
+first layout pass — which is the whole reason it is a builder method and not a
+function you call beforehand: a face that arrives after the first measurement
+cannot un-measure it, so the first frame renders in a fallback and reflows.
+Applies on Android too (the platform that needs it most), and it is the one
+configuration method besides `.theme()` that does. A second `.fonts()` call
+**appends**, unlike `.title()` / `.menu()`, which replace.
+
+**A face is reachable by its own family name, and by nothing else, unless it
+asks.** Registering `Newsreader.ttf` answers `font-family: Newsreader`
+immediately. A *generic* — `serif`, `sans-serif`, `monospace`, `system-ui` — is
+not the name of anything; it is a slot the platform fills, and a bundled face is
+in one only by declaring it: `AppFont::serif/sans_serif/monospace(bytes)`, or a
+struct literal over `generics` for the rest. Since essentially every real stack
+ends in a generic, a face that claims none will usually not be picked at all.
+
+**A claim is a prepend, not an append** (`rinch_dom::fonts::claim_generic_families`).
+The #322 Android repair fills an empty generic slot by *appending* a platform
+family into the collection's own list, at context construction, before any app
+font can register — so an appended claim would sit behind it and silently lose,
+on Android only. What was in the slot stays behind the claim, so a character the
+declared face lacks still falls through to the platform's entry.
+
+**`AppFont::script_fallback` is off by default and should stay off wherever the
+platform has fonts.** fontique resolves a script's fallback from the app's own
+list first and the platform's second — as an alternative, not a chain — so an
+entry there *replaces* that script's platform fallback. Measured, not argued:
+with it set on a Latin face, `漢字` in a stack headed by that face resolves to
+the bundled face at **glyph 0** (`.notdef`), where without it the platform's CJK
+face answers with real glyphs. It is on for `RinchApp::register_font_data`, the
+wasm/embed front door, because wasm has no system fonts and a last-resort face
+is the only thing that renders a character the author did not name a font for.
+
+Guide: `docs/src/guide/fonts.md`. Fixtures live in `crates/rinch/assets/fonts/`
+and `crates/rinch-dom/assets/fonts/` rather than under `examples/`, because
+`cargo package` does not carry `examples/` and each crate has to be able to
+compile its own test target.
 
 ### Window identity on Wayland
 

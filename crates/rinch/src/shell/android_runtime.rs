@@ -43,11 +43,21 @@ fn dispatch_to_main_thread(f: Box<dyn FnOnce() + Send>) {
 /// The seam [`crate::App::run_android`] drives; it has already applied the
 /// theme. Everything public goes through the builder, so there is exactly one
 /// Android startup path.
-pub(crate) fn run_component<F>(android_app: AndroidApp, component: F)
-where
+pub(crate) fn run_component<F>(
+    android_app: AndroidApp,
+    component: F,
+    fonts: &[crate::font::AppFont],
+) where
     F: FnOnce(&mut RenderScope) -> NodeHandle + 'static,
 {
-    let app = RinchApp::new(component);
+    // Ahead of `run_loop`, which is what eventually calls `mount_component`:
+    // the faces are in the font context before the first measurement, not
+    // after it. This matters more here than on desktop — an Android device's
+    // font list is whatever its OEM shipped, and the `monospace` slot in
+    // particular is one fontique leaves empty (see the #322 repair in
+    // `rinch_dom::fonts`).
+    let mut app = RinchApp::new(component);
+    app.register_app_fonts(fonts);
     run_loop(android_app, app);
 }
 

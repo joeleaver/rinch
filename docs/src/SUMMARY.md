@@ -18,6 +18,7 @@
 - [Components Library](./guide/components.md)
   - [Component Props Reference](./guide/component-props.md)
 - [Theming](./guide/theming.md)
+- [Fonts](./guide/fonts.md)
 - [WASM: Running in the Browser](./guide/wasm.md)
 - [Windows](./guide/windows.md)
 - [Menus](./guide/menus.md)
