@@ -248,7 +248,7 @@ fn main() {
 | `.menu(Vec<(&str, Menu)>)` | Native menu bar |
 | `.window_props(WindowProps)` | Borderless, transparent, icon, `app_id`, `on_close_requested`, … |
 | `.gpu_config(RinchGpuConfig)` / `.external_gpu(ExternalGpu)` | GPU device (`gpu` feature) |
-| `.run()` | Start on desktop; never returns |
+| `.run()` | Start on desktop; runs until the event loop exits |
 | `.run_android(android_app)` | Start on Android (`android` feature, Android target) |
 
 `.title()` / `.size()` are applied **over** `.window_props()` in either call
@@ -628,7 +628,7 @@ fn child_component() -> NodeHandle {
 
 ## Threading Model
 
-Rinch **owns the main thread**. `App::run()` calls winit's event loop, which takes over and never returns. All UI state (`Signal`, `Effect`, `NodeHandle`, `RenderScope`) is `!Send` — the reactive system is thread-local.
+Rinch **owns the main thread**. `App::run()` calls winit's event loop, which takes over the thread and returns only once the application exits it (`close_current_window`, or an `on_close_requested` answering `true`). All UI state (`Signal`, `Effect`, `NodeHandle`, `RenderScope`) is `!Send` — the reactive system is thread-local.
 
 **Async / tokio:** A tokio runtime can coexist but only on a **separate background thread**. You cannot run `#[tokio::main]` and `App::run()` on the same thread.
 

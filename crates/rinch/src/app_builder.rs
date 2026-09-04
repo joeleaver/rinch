@@ -33,8 +33,9 @@ use rinch_core::element::{ThemeProviderProps, WindowProps};
 /// Android).
 ///
 /// Every configuration method is independent, so any combination is
-/// expressible. Nothing happens until a terminal method is called; the terminal
-/// methods take over the thread and do not return.
+/// expressible. Nothing happens until a terminal method is called; a terminal
+/// method takes over the thread and returns only when the application exits its
+/// event loop.
 ///
 /// # Example
 ///
@@ -149,7 +150,13 @@ where
     /// device via [`gpu_handle`](crate::gpu_handle).
     ///
     /// Mutually exclusive with [`external_gpu`](App::external_gpu) — the last
-    /// one set wins.
+    /// one set on *this* builder wins.
+    ///
+    /// Across builders it does not: the choice is installed into a process-wide
+    /// `OnceLock` at [`run`](App::run), and a second install is ignored. Since
+    /// `run` returns when the event loop exits, a program that runs a second
+    /// `App` in the same process silently keeps the first one's GPU
+    /// configuration.
     #[cfg(feature = "gpu")]
     pub fn gpu_config(mut self, gpu: crate::shell::desktop::RinchGpuConfig) -> Self {
         self.gpu = Some(crate::shell::desktop::GpuInit::Config(gpu));
@@ -192,8 +199,13 @@ where
         }
     }
 
-    /// Start the application on the desktop. Takes over the thread and does not
-    /// return.
+    /// Start the application on the desktop.
+    ///
+    /// Takes over the thread and returns only when the application exits its
+    /// event loop — which it does through
+    /// [`close_current_window`](crate::windows::close_current_window) or an
+    /// `on_close_requested` that answers `true`. Most applications treat this
+    /// as the last statement in `main`.
     ///
     /// # Panics
     ///
@@ -241,8 +253,9 @@ where
         }
     }
 
-    /// Start the application on Android. Takes over the thread and does not
-    /// return.
+    /// Start the application on Android.
+    ///
+    /// Takes over the thread and returns only when the Activity's loop ends.
     ///
     /// The same configuration methods apply everywhere; only the terminal
     /// differs, so an app that targets both platforms writes the chain once.

@@ -39,14 +39,14 @@ fn main() {
 | `.window_props(props)` | Full `WindowProps` — borderless, transparent, icon, `app_id`, … |
 | `.gpu_config(cfg)` | Raise the compositor device's features/limits (`gpu` feature) |
 | `.external_gpu(gpu)` | Composite onto an embedder-provided device (`gpu` feature) |
-| `.run()` | Start on desktop; takes over the thread and does not return |
+| `.run()` | Start on desktop; takes over the thread until the event loop exits |
 | `.run_android(android_app)` | Start on Android (`android` feature, Android target) |
 
 `.title()` and `.size()` are applied **over** `.window_props()` whatever the call
 order, so a title set explicitly is never silently lost to a later
 `window_props`. Every other window field comes from `props`.
 
-Nothing happens until a terminal method is called.
+Nothing happens until a terminal method is called. A terminal method takes over the thread and returns only when the application exits its event loop, so it is normally the last statement in `main`.
 
 #### With a theme
 
