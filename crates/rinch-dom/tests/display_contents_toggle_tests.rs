@@ -229,11 +229,20 @@ fn toggle_then_set_inner_html_clear_frees_slots() {
 // The reverse toggle (box → contents)
 // ---------------------------------------------------------------------------
 
-/// A FLEX wrapper toggled to `contents` must splice. `Contents` maps to
-/// `taffy::Display::Flex`, so the Taffy-style comparison in
-/// `apply_stylo_styles_to_taffy` sees no change for this toggle — without the
-/// computed-display crossing check nothing sets `ifc_dirty` and the toggle is
-/// silently ignored.
+/// A FLEX wrapper toggled to `contents` must splice.
+///
+/// `Contents` maps to `taffy::Display::Flex`, so the **display field** of the
+/// Taffy-style comparison in `apply_stylo_styles_to_taffy` compares equal
+/// across this toggle — and `ifc_dirty` is gated on exactly that field, so
+/// without the computed-display crossing check sync never re-runs and the
+/// children are never spliced.
+///
+/// Note the rest of the comparison is *not* blind here: this fixture's restyle
+/// also drops `flex: 1`/`flex-direction`, so `layout_dirty` does get set and
+/// unfixed `main` re-lays-out — to a different wrong answer (a1 ≈ 19), not to
+/// the pre-toggle values. A fixture holding every other property equal is
+/// ignored entirely, not even re-laid-out; this one is kept because it is the
+/// shape an app actually writes.
 ///
 /// Kills: the crossing check removed from `apply_stylo_styles_to_taffy`.
 #[test]
@@ -260,13 +269,13 @@ fn flex_wrapper_toggled_to_contents_splices() {
     assert_eq!(
         height_of(&doc, a1),
         100.0,
-        "children must join the column directly (75 = toggle silently ignored)"
+        "children must join the column directly (unfixed main gives ~19 — sync never re-ran)"
     );
     assert_eq!(height_of(&doc, a2), 100.0, "second child likewise");
     assert_eq!(
         height_of(&doc, b),
         100.0,
-        "sibling must share three ways (150 = toggle silently ignored)"
+        "sibling must share three ways (unfixed main leaves the wrapper's box in the column)"
     );
 }
 
