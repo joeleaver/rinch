@@ -209,8 +209,14 @@ where
     ///
     /// # Panics
     ///
-    /// Panics if the event loop, window, or (with an external GPU device) the
-    /// surface cannot be created.
+    /// - The event loop or the window cannot be created.
+    /// - The event loop reports an error *while running*. This one fires long
+    ///   after startup, so a panic out of `run` is not by itself evidence that
+    ///   the configuration was wrong.
+    /// - With the `gpu` feature: no suitable adapter is found, or the window
+    ///   surface cannot be created. With
+    ///   [`external_gpu`](App::external_gpu), additionally if the supplied
+    ///   adapter cannot present to that surface.
     #[cfg(feature = "desktop")]
     pub fn run(self) {
         let Startup {
