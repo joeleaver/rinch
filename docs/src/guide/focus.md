@@ -57,6 +57,20 @@ live there. No other tag's `disabled` reaches its subtree — a disabled
 A press on a disabled control also paints no DOM `:focus`, so a focus ring
 never appears on something that owns no keyboard.
 
+The same rule drives the CSS **`:disabled`** and **`:enabled`** pseudo-classes,
+so a control that refuses input also *looks* disabled — `input:disabled { ... }`
+matches, and a control below a disabled `<fieldset>` matches with it (the first
+`<legend>` exemption included). Styling is deliberately **narrower** than focus
+in one way: HTML defines both pseudo-classes over form elements only, so a
+`<div data-disabled>` is still removed from the Tab order but does **not** match
+`:disabled` — matching it would style on desktop what a browser, and therefore
+rinch-web, leaves alone.
+
+A native **`<select>`** refuses the whole popup interaction, not just the last
+step: a disabled one opens no popup, and one disabled while its popup is
+already up dismisses it and commits nothing rather than firing `oninput` /
+`onchange`.
+
 Disabled is re-checked at **edit** time, not only at focus time, so a field
 that goes disabled *while focused* — a reactive `disabled` prop re-rendering
 under a live caret — stops accepting keys immediately, and **releases the
