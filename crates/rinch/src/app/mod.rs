@@ -17,6 +17,8 @@ mod focus;
 mod focus_lifecycle_tests;
 #[cfg(test)]
 mod hidpi_pointer_tests;
+#[cfg(test)]
+mod hit_test_font_tests;
 pub(crate) mod hit_testing;
 #[cfg(test)]
 mod input_commit_tests;
