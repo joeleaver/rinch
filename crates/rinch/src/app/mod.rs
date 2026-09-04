@@ -2051,12 +2051,17 @@ impl RinchApp {
     /// the `"false"` escape for `data-disabled` since it was written, and one
     /// rule for both spellings beats two.) The probe this rule replaced
     /// demanded the literal `"true"`, which no in-tree writer produces.
+    ///
+    /// The rule itself lives in `rinch-dom` ([`rinch_dom::node_is_disabled`]),
+    /// below both of its consumers: this focus machinery and CSS
+    /// `:disabled`/`:enabled` matching (issue #429). Two hand-rolled copies is
+    /// how a control comes to refuse input while still *styling* itself as
+    /// enabled. Note CSS is deliberately **narrower** — it applies this rule
+    /// only to the elements HTML lets be disabled, while focus applies it to
+    /// any node, since rinch lets any `tabindex` node opt out of the Tab
+    /// order.
     pub(crate) fn node_is_disabled(node: &rinch_dom::Node) -> bool {
-        ["disabled", "data-disabled"].iter().any(|attr| {
-            node.attributes
-                .get(*attr)
-                .is_some_and(|v| !v.eq_ignore_ascii_case("false"))
-        })
+        rinch_dom::node_is_disabled(node)
     }
 
     /// Whether a node is **read-only**: it focuses, selects and copies like any
@@ -2085,33 +2090,7 @@ impl RinchApp {
     /// disable a `<span>` inside it), which is why the Tab collector's own
     /// comment about not skipping subtrees still stands for every other tag.
     pub(crate) fn node_is_disabled_in_tree(tree: &rinch_dom::NodeTree, node_id: usize) -> bool {
-        let mut cur = Some(node_id);
-        let mut child = None;
-        while let Some(nid) = cur {
-            let Some(node) = tree.get(nid) else {
-                return false;
-            };
-            let is_fieldset = node.tag() == Some("fieldset");
-            // Skip the fieldset's own check when we arrived through its first
-            // <legend>: that subtree is exempt.
-            let exempt = is_fieldset
-                && child.is_some_and(|c| Self::first_legend_child(tree, node) == Some(c));
-            if !exempt && (nid == node_id || is_fieldset) && Self::node_is_disabled(node) {
-                return true;
-            }
-            child = Some(nid);
-            cur = node.parent;
-        }
-        false
-    }
-
-    /// The id of `parent`'s first `<legend>` child, if it has one.
-    fn first_legend_child(tree: &rinch_dom::NodeTree, parent: &rinch_dom::Node) -> Option<usize> {
-        parent
-            .children
-            .iter()
-            .copied()
-            .find(|&c| tree.get(c).and_then(|n| n.tag()) == Some("legend"))
+        rinch_dom::node_is_disabled_in_tree(tree, node_id)
     }
 
     /// A node's `tabindex` as an integer, if it carries a parseable one.
@@ -2342,7 +2321,7 @@ impl RinchApp {
             // outer disabled fieldset still reaches in, so an already-inherited
             // disable is not undone by a nested legend.
             let legend_exempt = (is_disabling_fieldset && !inherited_disabled)
-                .then(|| Self::first_legend_child(&d.tree, node))
+                .then(|| rinch_dom::first_legend_child(&d.tree, node))
                 .flatten();
 
             // Push children in reverse order so first child is processed first

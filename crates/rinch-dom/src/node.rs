@@ -1056,3 +1056,93 @@ impl NodeTree {
         }
     }
 }
+
+// ── The `disabled` rule ─────────────────────────────────────────────────────
+//
+// One rule, two consumers that must not drift: the desktop focus machinery in
+// `rinch` (Tab order, the mousedown claim, the edit gate — issue #315) and CSS
+// `:disabled`/`:enabled` matching in `stylo_impl` (issue #429). It lives here,
+// below both, because a second hand-rolled copy is exactly how a control comes
+// to refuse input while still *styling* itself as enabled.
+
+/// Whether a node carries a **disabled** marker.
+///
+/// Two spellings count. `data-disabled` is what rinch's own widgets write
+/// (`select_widget.rs`, for a disabled `<option>`); the plain HTML `disabled`
+/// is what the component library writes — `Button`, `ActionIcon`,
+/// `CloseButton`, `TextInput`, `Textarea`, `NumberInput`, `PasswordInput`,
+/// `Checkbox`, `Radio`, `Switch`, `NavLink`, `Pagination`, `Tabs`,
+/// `Accordion`, `DropdownMenu`, `Fieldset`.
+///
+/// Either is a **boolean attribute**: present means disabled whatever the
+/// value, and only the explicit `"false"` opts out. (Strict HTML has no
+/// opt-out at all — `disabled="false"` disables — but rinch has documented the
+/// `"false"` escape for `data-disabled` since it was written, and one rule for
+/// both spellings beats two.)
+pub fn node_is_disabled(node: &Node) -> bool {
+    ["disabled", "data-disabled"].iter().any(|attr| {
+        node.attributes
+            .get(*attr)
+            .is_some_and(|v| !v.eq_ignore_ascii_case("false"))
+    })
+}
+
+/// [`node_is_disabled`] for the node itself, **or** an enclosing
+/// `<fieldset disabled>`.
+///
+/// `<fieldset>` is the one element whose `disabled` reaches past itself: HTML
+/// disables every descendant control, which is the whole reason the element
+/// exists. The exception HTML also carves — controls inside the fieldset's
+/// **first `<legend>`** stay enabled, so a form can put its own "enable this
+/// section" checkbox there — is honoured too.
+///
+/// Everything else disables only itself (a disabled `<button>` does not
+/// disable a `<span>` inside it).
+pub fn node_is_disabled_in_tree(tree: &NodeTree, node_id: RawNodeId) -> bool {
+    let mut cur = Some(node_id);
+    let mut child = None;
+    while let Some(nid) = cur {
+        let Some(node) = tree.get(nid) else {
+            return false;
+        };
+        let is_fieldset = node.tag() == Some("fieldset");
+        // Skip the fieldset's own check when we arrived through its first
+        // <legend>: that subtree is exempt.
+        let exempt =
+            is_fieldset && child.is_some_and(|c| first_legend_child(tree, node) == Some(c));
+        if !exempt && (nid == node_id || is_fieldset) && node_is_disabled(node) {
+            return true;
+        }
+        child = Some(nid);
+        cur = node.parent;
+    }
+    false
+}
+
+/// The id of `parent`'s first `<legend>` child, if it has one.
+///
+/// Public because the Tab collector needs the same exemption while walking
+/// top-down with an inherited-disable flag on its stack, rather than by asking
+/// [`node_is_disabled_in_tree`] per node.
+pub fn first_legend_child(tree: &NodeTree, parent: &Node) -> Option<RawNodeId> {
+    parent
+        .children
+        .iter()
+        .copied()
+        .find(|&c| tree.get(c).and_then(|n| n.tag()) == Some("legend"))
+}
+
+/// Whether a tag names an element HTML lets be disabled — the set `:disabled`
+/// and `:enabled` are defined over.
+///
+/// CSS is deliberately narrower here than the focus machinery, which applies
+/// [`node_is_disabled`] to *any* node because rinch lets any `tabindex` node
+/// opt out of the Tab order. `:disabled` is specified over form controls only,
+/// so a `<div data-disabled>` must not match it — matching would style on
+/// desktop what `rinch-web` leaves unstyled in a real browser.
+pub fn tag_is_disableable(tag: Option<&str>) -> bool {
+    matches!(
+        tag,
+        Some("button" | "input" | "select" | "textarea" | "option" | "optgroup" | "fieldset")
+    )
+}

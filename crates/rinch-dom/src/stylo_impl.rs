@@ -380,8 +380,35 @@ impl<'a> Element for RinchNode<'a> {
                 self.node().focus_sensitive.set(true);
                 self.node().is_focus_visible
             }
-            NonTSPseudoClass::Enabled => true,
-            NonTSPseudoClass::Disabled => false,
+            // `:enabled` / `:disabled` (issue #429). These answered a
+            // hardcoded `true`/`false`, so `button:disabled { ... }` matched
+            // nothing at all however the element was marked, while `:enabled`
+            // matched everything — including a disabled control and a `<div>`.
+            // Components papered over it with a `--disabled` modifier class
+            // written beside the attribute, which is why it went unnoticed.
+            //
+            // The state is read from the attribute rather than from
+            // `ElementState::DISABLED`, because Stylo does not gate these on
+            // the bitflag: neither is in `RARE_PSEUDO_CLASS_STATES`, so the
+            // selector is always reached and this predicate is the whole
+            // answer. Invalidation needs no `*_sensitive` flag either (unlike
+            // hover/focus, which change without an attribute write) —
+            // `set_attribute` already re-resolves the node and its subtree,
+            // which is exactly what a `<fieldset disabled>` toggle needs.
+            //
+            // Narrower than the focus machinery's rule on purpose: HTML
+            // defines both pseudo-classes over form controls only, so a
+            // `<div data-disabled>` — which rinch *does* remove from the Tab
+            // order — must not style as disabled, or desktop would paint what
+            // a real browser (and therefore `rinch-web`) leaves alone.
+            NonTSPseudoClass::Enabled => {
+                crate::node::tag_is_disableable(self.node().tag())
+                    && !crate::node::node_is_disabled_in_tree(self.tree, self.id)
+            }
+            NonTSPseudoClass::Disabled => {
+                crate::node::tag_is_disableable(self.node().tag())
+                    && crate::node::node_is_disabled_in_tree(self.tree, self.id)
+            }
             NonTSPseudoClass::Checked => {
                 // Check for checked attribute on input/checkbox
                 self.node()

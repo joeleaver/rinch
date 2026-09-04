@@ -1346,3 +1346,283 @@ fn absolute_and_bare_currentcolor_are_unchanged() {
     assert_eq!((c.r, c.g, c.b, c.a), (1, 2, 3, 255));
     assert_eq!(rgba8(style.box_shadow[0].color), Some((4, 5, 6, 255)));
 }
+
+// ── :disabled / :enabled (issue #429) ───────────────────────────────────────
+
+/// #429: `:disabled` matched nothing at all. `match_non_ts_pseudo_class`
+/// answered a hardcoded `false` for it (and a hardcoded `true` for
+/// `:enabled`), so `button:disabled { ... }` never applied however the element
+/// was marked — components had to write a `--disabled` modifier class beside
+/// the attribute, which is why it went unnoticed.
+///
+/// The assertion is deliberately on the **computed style**, not on any flag:
+/// the flag is the mechanism, a rule that changes a resolved value is the
+/// feature. Both directions are pinned, so a matcher that answered a
+/// hardcoded `true` would fail just as loudly as the `false` that shipped.
+///
+/// Kills `Disabled => false` (the enabled-state assertion below is unaffected,
+/// the disabled one drops 0.5 → 1.0) and `Disabled => true` (the reverse).
+#[test]
+fn a_disabled_rule_matches_a_disabled_control() {
+    let mut doc = RinchDocument::new();
+    doc.load_css("button:disabled { opacity: 0.5 }");
+    let body = doc.body();
+    let btn = doc.create_element("button");
+    doc.set_attribute(btn, "style", "width: 80px; height: 30px");
+    doc.append_child(body, btn);
+    doc.resolve_layout(800.0, 600.0);
+    let opacity = |doc: &RinchDocument| doc.tree.get(btn.0).unwrap().computed_style.opacity;
+
+    assert_eq!(opacity(&doc), 1.0, "an enabled control must not match");
+
+    doc.set_attribute(btn, "disabled", "");
+    doc.resolve_layout(800.0, 600.0);
+    assert_eq!(opacity(&doc), 0.5, "a disabled control must match");
+
+    // And the rule must drop again when the attribute goes — a reactive
+    // `disabled` prop toggles both ways.
+    doc.remove_attribute(btn, "disabled");
+    doc.resolve_layout(800.0, 600.0);
+    assert_eq!(opacity(&doc), 1.0, "re-enabling must drop the rule");
+}
+
+/// The boolean-attribute rule `:disabled` shares with the focus machinery:
+/// presence is enough whatever the value, `data-disabled` is the second
+/// accepted spelling, and only the explicit `"false"` opts out.
+///
+/// Kills a matcher that demands the literal `"true"` — no in-tree writer
+/// produces it, every one writes `disabled=""`. Applied, this test stops on
+/// its first assertion: `disabled=""` resolves 1.0 where 0.5 is required.
+#[test]
+fn the_disabled_selector_follows_the_boolean_attribute_rule() {
+    let mut doc = RinchDocument::new();
+    doc.load_css("input:disabled, textarea:disabled { opacity: 0.5 }");
+    let body = doc.body();
+    let mk = |doc: &mut RinchDocument, attr: Option<(&str, &str)>| {
+        let el = doc.create_element("input");
+        doc.set_attribute(el, "style", "width: 80px; height: 30px");
+        if let Some((k, v)) = attr {
+            doc.set_attribute(el, k, v);
+        }
+        let body = doc.body();
+        doc.append_child(body, el);
+        el
+    };
+    let empty = mk(&mut doc, Some(("disabled", "")));
+    let arbitrary = mk(&mut doc, Some(("disabled", "disabled")));
+    let data = mk(&mut doc, Some(("data-disabled", "")));
+    let opted_out = mk(&mut doc, Some(("disabled", "false")));
+    let opted_out_mixed_case = mk(&mut doc, Some(("disabled", "FALSE")));
+    let plain = mk(&mut doc, None);
+    // A second tag from the disableable set. `.rinch-textarea__input:disabled`
+    // is a shipped rule, so dropping `textarea` from `tag_is_disableable`
+    // would silently stop it applying — and, with only `<input>` here, would
+    // change no test.
+    let textarea = {
+        let el = doc.create_element("textarea");
+        doc.set_attribute(el, "disabled", "");
+        let body = doc.body();
+        doc.append_child(body, el);
+        el
+    };
+    let _ = body;
+    doc.resolve_layout(800.0, 600.0);
+    let opacity = |doc: &RinchDocument, id: rinch_core::dom::NodeId| {
+        doc.tree.get(id.0).unwrap().computed_style.opacity
+    };
+
+    assert_eq!(opacity(&doc, empty), 0.5, r#"disabled="" is disabled"#);
+    assert_eq!(
+        opacity(&doc, arbitrary),
+        0.5,
+        r#"disabled="disabled" is disabled"#
+    );
+    assert_eq!(
+        opacity(&doc, data),
+        0.5,
+        r#"data-disabled="" is the second spelling"#
+    );
+    assert_eq!(
+        opacity(&doc, opted_out),
+        1.0,
+        r#"disabled="false" is the documented opt-out"#
+    );
+    assert_eq!(
+        opacity(&doc, opted_out_mixed_case),
+        1.0,
+        "the opt-out is case-insensitive"
+    );
+    assert_eq!(opacity(&doc, plain), 1.0, "no attribute is enabled");
+    assert_eq!(
+        opacity(&doc, textarea),
+        0.5,
+        "the rule is not <input>-only — every disableable tag matches"
+    );
+}
+
+/// `<fieldset disabled>` disables its subtree for styling exactly as it does
+/// for focus, and HTML's first-`<legend>` carve-out survives — a control the
+/// focus machinery still admits must not style as disabled.
+///
+/// The fieldset starts **enabled** and is disabled mid-test, which pins two
+/// things the always-disabled version could not. It proves the subtree really
+/// is following the fieldset rather than sitting at a value it held all along,
+/// and it exercises the invalidation claim: `set_attribute` re-resolves the
+/// node **and its subtree**, so no `*_sensitive` flag is needed for an
+/// attribute-driven pseudo-class the way `:hover`/`:focus` need one. Without
+/// that descendant invalidation the nested control would keep its stale 1.0.
+///
+/// `<fieldset>` is also the **only** tag whose `disabled` reaches past itself.
+/// The `data-disabled` div is here to hold that line: rinch removes such a
+/// node from the Tab order, but it must not drag its subtree into `:disabled`.
+///
+/// Kills a matcher that reads only the element's own attribute (`nested` stays
+/// 1.0 after the toggle), one that skips the legend exemption (`in_legend`
+/// falls to 0.5), and one where **any** disabled ancestor disables the subtree
+/// (`under_div` rises to 0.5).
+#[test]
+fn a_disabled_fieldset_styles_its_subtree_except_the_first_legend() {
+    let mut doc = RinchDocument::new();
+    doc.load_css("input:disabled { opacity: 0.5 }");
+    let body = doc.body();
+    let fieldset = doc.create_element("fieldset");
+    doc.append_child(body, fieldset);
+
+    let legend = doc.create_element("legend");
+    doc.append_child(fieldset, legend);
+    let in_legend = doc.create_element("input");
+    doc.append_child(legend, in_legend);
+
+    // Below the legend, and one level of nesting down, so the walk is tested
+    // rather than a parent-to-child special case.
+    let wrapper = doc.create_element("div");
+    doc.append_child(fieldset, wrapper);
+    let nested = doc.create_element("input");
+    doc.append_child(wrapper, nested);
+
+    // A non-fieldset carrying the attribute: disabled itself for focus
+    // purposes, but its subtree is untouched.
+    let div = doc.create_element("div");
+    doc.set_attribute(div, "data-disabled", "");
+    doc.append_child(body, div);
+    let under_div = doc.create_element("input");
+    doc.append_child(div, under_div);
+
+    doc.resolve_layout(800.0, 600.0);
+    let opacity = |doc: &RinchDocument, id: rinch_core::dom::NodeId| {
+        doc.tree.get(id.0).unwrap().computed_style.opacity
+    };
+
+    assert_eq!(
+        opacity(&doc, nested),
+        1.0,
+        "baseline: an enabled fieldset disables nothing"
+    );
+
+    doc.set_attribute(fieldset, "disabled", "");
+    doc.resolve_layout(800.0, 600.0);
+
+    assert_eq!(
+        opacity(&doc, nested),
+        0.5,
+        "a control below a disabled fieldset styles as disabled — and the \
+         descendant restyle reached it without a *_sensitive flag"
+    );
+    assert_eq!(
+        opacity(&doc, in_legend),
+        1.0,
+        "a control in the fieldset's first legend stays enabled"
+    );
+    assert_eq!(
+        opacity(&doc, under_div),
+        1.0,
+        "only <fieldset> reaches past itself: a data-disabled <div> does not \
+         disable its subtree"
+    );
+
+    // And the toggle runs both ways.
+    doc.remove_attribute(fieldset, "disabled");
+    doc.resolve_layout(800.0, 600.0);
+    assert_eq!(
+        opacity(&doc, nested),
+        1.0,
+        "re-enabling the fieldset releases its subtree"
+    );
+}
+
+/// `:enabled` was the same defect wearing the opposite sign — a hardcoded
+/// `true`, so it matched a *disabled* control and a `<div>` alike. Fixing only
+/// `:disabled` would have left a control matching **both** at once.
+///
+/// Kills `Enabled => true` — the value that shipped. Applied, the disabled
+/// control resolves 0.5 where 1.0 is required. (The `<div>` case is the tag
+/// test's job; `a_disabled_div_is_not_a_disabled_control` is what pins it.)
+#[test]
+fn the_enabled_selector_is_the_complement_over_form_controls() {
+    let mut doc = RinchDocument::new();
+    doc.load_css(":enabled { opacity: 0.5 }");
+    let body = doc.body();
+    let enabled = doc.create_element("input");
+    doc.append_child(body, enabled);
+    let disabled = doc.create_element("input");
+    doc.set_attribute(disabled, "disabled", "");
+    doc.append_child(body, disabled);
+    // Not a form control at all: HTML defines neither pseudo-class over it.
+    let div = doc.create_element("div");
+    doc.append_child(body, div);
+
+    doc.resolve_layout(800.0, 600.0);
+    let opacity = |doc: &RinchDocument, id: rinch_core::dom::NodeId| {
+        doc.tree.get(id.0).unwrap().computed_style.opacity
+    };
+
+    assert_eq!(opacity(&doc, enabled), 0.5, "an enabled control matches");
+    assert_eq!(
+        opacity(&doc, disabled),
+        1.0,
+        "a disabled control must not match :enabled"
+    );
+    assert_eq!(
+        opacity(&doc, div),
+        1.0,
+        "a <div> is neither enabled nor disabled"
+    );
+}
+
+/// `:disabled` is specified over form controls only, so a `<div>` carrying the
+/// attribute must not match — desktop must not style what `rinch-web` leaves
+/// alone in a real browser. This is the one place the CSS rule is deliberately
+/// narrower than the focus rule, which applies to any `tabindex` node.
+///
+/// Kills a matcher that drops the tag test and asks the attribute alone.
+#[test]
+fn a_disabled_div_is_not_a_disabled_control() {
+    let mut doc = RinchDocument::new();
+    doc.load_css(":disabled { opacity: 0.5 }");
+    let body = doc.body();
+    let div = doc.create_element("div");
+    doc.set_attribute(div, "disabled", "");
+    doc.append_child(body, div);
+    // The positive control, in the same document and the same bare rule: a
+    // real control with the same attribute does match, so a pass cannot mean
+    // "the bare :disabled rule never applies to anything".
+    let input = doc.create_element("input");
+    doc.set_attribute(input, "disabled", "");
+    doc.append_child(body, input);
+
+    doc.resolve_layout(800.0, 600.0);
+    let opacity = |doc: &RinchDocument, id: rinch_core::dom::NodeId| {
+        doc.tree.get(id.0).unwrap().computed_style.opacity
+    };
+
+    assert_eq!(
+        opacity(&doc, input),
+        0.5,
+        "positive control: a bare :disabled rule does apply to a real control"
+    );
+    assert_eq!(
+        opacity(&doc, div),
+        1.0,
+        "a <div disabled> is not a disabled control"
+    );
+}

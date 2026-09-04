@@ -28,6 +28,7 @@ struct Ids {
     in_legend: usize,
     select: usize,
     select_in_fieldset: usize,
+    fieldset: usize,
 }
 
 /// One document holding every case: an ordinary `<input>`, a `disabled` one, a
@@ -147,6 +148,7 @@ fn mount_fixture() -> (RinchApp, Ids, Rc<RefCell<Vec<String>>>) {
             in_legend: in_legend.node_id().0,
             select: select.node_id().0,
             select_in_fieldset: select_in_fieldset.node_id().0,
+            fieldset: fieldset.node_id().0,
         }));
         root
     });
@@ -248,6 +250,27 @@ fn dom_value(app: &RinchApp, id: usize) -> String {
         .get(id)
         .and_then(|n| n.attributes.get("value").cloned())
         .unwrap_or_default()
+}
+
+/// The centre of the open popup's **first** option — the fieldset's `<select>`
+/// carries only one.
+fn first_option_point(app: &RinchApp) -> (f32, f32) {
+    let open = app.open_select.as_ref().expect("popup is open");
+    let opt = open.option_ids[0];
+    let d = app.doc.as_ref().unwrap().borrow();
+    let (x, y, w, h) = painted_element_box(&d.tree, opt);
+    (x + w / 2.0, y + h / 2.0)
+}
+
+/// The centre of the open popup's **second** option, measured from the live
+/// panel — so a test clicks where the option actually is rather than at a
+/// guessed coordinate that might land nowhere.
+fn second_option_point(app: &RinchApp) -> (f32, f32) {
+    let open = app.open_select.as_ref().expect("popup is open");
+    let bravo = open.option_ids[1];
+    let d = app.doc.as_ref().unwrap().borrow();
+    let (x, y, w, h) = painted_element_box(&d.tree, bravo);
+    (x + w / 2.0, y + h / 2.0)
 }
 
 fn focused_text(app: &RinchApp) -> String {
@@ -679,6 +702,159 @@ fn a_select_in_a_disabled_fieldset_opens_nothing() {
 
     app.open_select_popup(ids.select_in_fieldset, 800.0, 600.0);
     assert!(!app.is_select_open(), "and neither does the constructor");
+}
+
+/// The other half of issue #447: the popup that is **already open** when the
+/// control goes disabled.
+///
+/// `open_select_popup`'s guard closes the route *in*, and cannot close this
+/// one — the popup already exists. `handle_open_select_click` consulted only
+/// `open.disabled[idx]`, the per-**option** flag captured when the popup was
+/// built, and never the `<select>`'s own live state. So a control disabled by
+/// a reactive prop while its list was up still committed: it wrote `value` and
+/// fired `oninput`/`onchange`, which is the same "disabled control mutates
+/// application state" this file exists to prevent.
+///
+/// Both halves run against the same measured point in the same fixture, so a
+/// pass cannot mean "the click missed the option": phase 1 commits `"b"` and
+/// phase 2, disabled between the open and the click, must not.
+///
+/// Kills the mutant that drops the `commit_select` guard: without it phase 2
+/// records `["select-input:b", "select-change:b"]` and `value` becomes `"b"`.
+#[test]
+fn a_select_disabled_while_open_commits_nothing() {
+    // Where the second option lands, and proof that clicking it commits.
+    let (mut app, ids, log) = mount_fixture();
+    click_center(&mut app, ids.select);
+    assert!(app.is_select_open(), "the enabled control opens its popup");
+    let option_pt = second_option_point(&app);
+    click(&mut app, option_pt.0, option_pt.1);
+    assert_eq!(
+        dom_value(&app, ids.select),
+        "b",
+        "positive control: the measured point really is option 2, and it commits"
+    );
+    assert_eq!(
+        &*log.borrow(),
+        &["select-input:b".to_string(), "select-change:b".to_string()],
+        "positive control: the commit reaches the app's handlers"
+    );
+
+    // The same click, on a control disabled while its popup was open.
+    let (mut app, ids, log) = mount_fixture();
+    click_center(&mut app, ids.select);
+    assert!(app.is_select_open());
+    let option_pt = second_option_point(&app);
+    set_attr(&mut app, ids.select, "disabled", Some(""));
+
+    click(&mut app, option_pt.0, option_pt.1);
+
+    assert!(
+        log.borrow().is_empty(),
+        "a <select> disabled while open must not reach the app's handlers: {:?}",
+        log.borrow()
+    );
+    assert_eq!(
+        dom_value(&app, ids.select),
+        "",
+        "and must not write its own value"
+    );
+    assert!(
+        !app.is_select_open(),
+        "the orphaned popup is dismissed rather than left up to be clicked again"
+    );
+}
+
+/// The guard sits on the commit's single constructor, so it holds for the
+/// keyboard route too — `Enter` on the highlighted option, which reaches
+/// `commit_select` without passing through `handle_open_select_click`.
+///
+/// Kills the mutant that guards only the mouse path (an early return in
+/// `handle_open_select_click` instead of in `commit_select`): this test still
+/// commits `"a"` under it.
+#[test]
+fn the_commit_itself_refuses_a_disabled_control() {
+    // Positive control: Enter on the highlighted option commits while enabled.
+    let (mut app, ids, log) = mount_fixture();
+    click_center(&mut app, ids.select);
+    assert!(app.is_select_open());
+    key(&mut app, KeyCode::Enter, None);
+    assert_eq!(
+        dom_value(&app, ids.select),
+        "a",
+        "positive control: Enter commits the highlighted option"
+    );
+    assert_eq!(
+        &*log.borrow(),
+        &["select-input:a".to_string()],
+        "positive control: oninput fires (onchange does not — the value did not change)"
+    );
+
+    let (mut app, ids, log) = mount_fixture();
+    click_center(&mut app, ids.select);
+    assert!(app.is_select_open());
+    set_attr(&mut app, ids.select, "disabled", Some(""));
+
+    key(&mut app, KeyCode::Enter, None);
+
+    assert!(
+        log.borrow().is_empty(),
+        "Enter on a disabled control commits nothing: {:?}",
+        log.borrow()
+    );
+    assert_eq!(dom_value(&app, ids.select), "");
+}
+
+/// The commit guard asks `node_is_disabled_in_tree`, not `node_is_disabled`,
+/// so a `<select>` disabled by an enclosing `<fieldset>` refuses too.
+///
+/// This is the canonical shape rather than a contrived one: a form disables a
+/// whole `<fieldset>` on submit while one of its combo boxes is still open,
+/// and the click already in flight lands on an option. The select's *own*
+/// attributes never change, so a guard reading only them sees an enabled
+/// control and commits.
+///
+/// There is repo precedent for pinning exactly this distinction — the
+/// `resolve_click_focus` test below exists because that call "was one merge
+/// away" from the weaker predicate.
+///
+/// Kills swapping `node_is_disabled_in_tree` for `node_is_disabled` in
+/// `commit_select`: the value becomes `"x"` and the popup closes as a normal
+/// commit.
+#[test]
+fn a_select_disabled_by_its_fieldset_commits_nothing() {
+    // Positive control: with the fieldset enabled, this exact click commits.
+    let (mut app, ids, _log) = mount_fixture();
+    set_attr(&mut app, ids.fieldset, "disabled", None);
+    click_center(&mut app, ids.select_in_fieldset);
+    assert!(
+        app.is_select_open(),
+        "positive control: an enabled fieldset lets its select open"
+    );
+    let option_pt = first_option_point(&app);
+    click(&mut app, option_pt.0, option_pt.1);
+    assert_eq!(
+        dom_value(&app, ids.select_in_fieldset),
+        "x",
+        "positive control: the measured point is the option, and it commits"
+    );
+
+    // The real case: the fieldset goes disabled while the popup is up.
+    let (mut app, ids, _log) = mount_fixture();
+    set_attr(&mut app, ids.fieldset, "disabled", None);
+    click_center(&mut app, ids.select_in_fieldset);
+    assert!(app.is_select_open());
+    let option_pt = first_option_point(&app);
+    set_attr(&mut app, ids.fieldset, "disabled", Some(""));
+
+    click(&mut app, option_pt.0, option_pt.1);
+
+    assert_eq!(
+        dom_value(&app, ids.select_in_fieldset),
+        "",
+        "a <select> disabled by its fieldset must not write its value"
+    );
+    assert!(!app.is_select_open(), "and the orphaned popup is dismissed");
 }
 
 // ── 8. IME composes nothing into a disabled field ──────────────────────────
