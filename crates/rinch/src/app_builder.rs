@@ -68,6 +68,9 @@ pub struct App<F> {
     pub(crate) title: Option<String>,
     pub(crate) size: Option<(u32, u32)>,
     pub(crate) theme: Option<ThemeProviderProps>,
+    /// Faces the build carries, in the order they were added. Not an `Option`:
+    /// "no bundled fonts" and "an empty list of them" are the same startup.
+    pub(crate) fonts: Vec<crate::font::AppFont>,
     #[cfg(feature = "desktop")]
     pub(crate) menus: Option<Vec<(String, crate::menu::Menu)>>,
     #[cfg(feature = "gpu")]
@@ -86,6 +89,7 @@ where
             title: None,
             size: None,
             theme: None,
+            fonts: Vec::new(),
             #[cfg(feature = "desktop")]
             menus: None,
             #[cfg(feature = "gpu")]
@@ -117,6 +121,49 @@ where
     /// `rinch-components` visible out of the box.
     pub fn theme(mut self, theme: ThemeProviderProps) -> Self {
         self.theme = Some(theme);
+        self
+    }
+
+    /// Bundle typefaces the build carries in its own binary.
+    ///
+    /// The platform's font list is not a promise anyone can keep — a phone has
+    /// whatever the OEM shipped, a Linux desktop whatever the user installed —
+    /// so an app with a designed identity, or one whose content needs a real
+    /// monospaced face, has to carry the file. This is where those bytes come
+    /// in.
+    ///
+    /// They are part of the startup configuration rather than something to
+    /// register beforehand because a face has to be in the font context
+    /// **before the first layout pass**, or the first frame is measured against
+    /// a fallback and then reflows. Passing them here leaves no ordering to get
+    /// wrong.
+    ///
+    /// See [`AppFont`](crate::font::AppFont) for what a face is reachable
+    /// *as*. The short version: registering a file is enough for
+    /// `font-family: <the name in the file>`, and a generic like `monospace`
+    /// is a slot rather than a name, so a bundled face answers it only by
+    /// asking to.
+    ///
+    /// Calling this more than once registers all of them, in call order —
+    /// unlike [`title`](App::title) or [`menu`](App::menu), a second call adds
+    /// rather than replaces, because two font lists have nothing to disagree
+    /// about and silently dropping the first would be the worse default.
+    ///
+    /// ```ignore
+    /// use rinch::prelude::*;
+    ///
+    /// const FACES: &[AppFont] = &[
+    ///     AppFont::serif(include_bytes!("../assets/Newsreader.ttf")),
+    ///     AppFont::monospace(include_bytes!("../assets/DejaVuSansMono.ttf")),
+    /// ];
+    ///
+    /// App::new(app).title("My App").fonts(FACES).run();
+    /// ```
+    ///
+    /// Applies on Android too — the one configuration method besides
+    /// [`theme`](App::theme) that does, and the platform that needs it most.
+    pub fn fonts(mut self, fonts: &[crate::font::AppFont]) -> Self {
+        self.fonts.extend_from_slice(fonts);
         self
     }
 
@@ -204,6 +251,7 @@ where
         Startup {
             props: resolve_window_props(self.props, self.title, self.size),
             theme: self.theme.unwrap_or_default(),
+            fonts: self.fonts,
             menus: self.menus,
             #[cfg(feature = "gpu")]
             gpu: self.gpu,
@@ -239,6 +287,7 @@ where
             component,
             props,
             theme,
+            fonts,
             menus,
             #[cfg(feature = "gpu")]
             gpu,
@@ -255,7 +304,7 @@ where
 
         #[cfg(target_os = "linux")]
         {
-            run_desktop_linux(component, props, menus);
+            run_desktop_linux(component, props, menus, &fonts);
         }
 
         #[cfg(not(target_os = "linux"))]
@@ -271,6 +320,7 @@ where
                 component,
                 props,
                 native_menu,
+                &fonts,
             );
         }
     }
@@ -306,7 +356,7 @@ where
         }
 
         crate::setup_theme_css(&self.theme.unwrap_or_default());
-        crate::shell::android_runtime::run_component(android_app, self.component);
+        crate::shell::android_runtime::run_component(android_app, self.component, &self.fonts);
     }
 }
 
@@ -320,11 +370,14 @@ fn run_desktop_linux<F>(
     component: F,
     props: WindowProps,
     menus: Option<Vec<(String, crate::menu::Menu)>>,
+    fonts: &[crate::font::AppFont],
 ) where
     F: FnOnce(&mut RenderScope) -> NodeHandle + 'static,
 {
     let Some(menu_data) = menus else {
-        crate::shell::rinch_runtime::run_rinch_with_window_props_and_menu(component, props, None);
+        crate::shell::rinch_runtime::run_rinch_with_window_props_and_menu(
+            component, props, None, fonts,
+        );
         return;
     };
 
@@ -352,6 +405,7 @@ fn run_desktop_linux<F>(
             wrapped,
             props,
             Some(native_menu),
+            fonts,
         );
         return;
     }
@@ -431,6 +485,7 @@ fn run_desktop_linux<F>(
         wrapped,
         props,
         Some(native_menu),
+        fonts,
     );
 }
 
@@ -450,6 +505,8 @@ pub(crate) struct Startup<F> {
     /// The theme to install — the default when none was configured, which is
     /// what makes components visible out of the box.
     pub(crate) theme: ThemeProviderProps,
+    /// Faces to register before the first layout pass.
+    pub(crate) fonts: Vec<crate::font::AppFont>,
     pub(crate) menus: Option<Vec<(String, crate::menu::Menu)>>,
     #[cfg(feature = "gpu")]
     pub(crate) gpu: Option<crate::shell::desktop::GpuInit>,
@@ -631,12 +688,26 @@ mod tests {
             .title("Recorded")
             .size(1280, 720)
             .theme(theme)
+            .fonts(&[crate::font::AppFont::monospace(FIXTURE_FACE)])
             .menu(vec![("File", crate::menu::Menu::new())])
             .into_startup();
 
         assert_eq!(startup.props.title, "Recorded");
         assert_eq!((startup.props.width, startup.props.height), (1280, 720));
         assert_eq!(startup.theme.primary_color.as_deref(), Some("cyan"));
+        assert_eq!(
+            startup.fonts.len(),
+            1,
+            "fonts() must record the face it was given"
+        );
+        assert_eq!(
+            startup.fonts[0].generics,
+            &[
+                crate::font::GenericFamily::Monospace,
+                crate::font::GenericFamily::UiMonospace
+            ],
+            "and record the generics it declared, not just the bytes"
+        );
         let labels: Vec<&str> = startup
             .menus
             .as_ref()
@@ -645,6 +716,48 @@ mod tests {
             .map(|(label, _)| label.as_str())
             .collect();
         assert_eq!(labels, vec!["File"]);
+    }
+
+    /// A face for the builder tests. Its bytes are never rendered here — only
+    /// carried — so any real font file does.
+    const FIXTURE_FACE: &[u8] = include_bytes!("../assets/fonts/Inter-Regular.ttf");
+
+    /// `fonts()` accumulates rather than replacing, and does so **in call
+    /// order** — which is the order they are registered in, and therefore the
+    /// order two faces claiming one generic resolve in. Replacing would
+    /// silently drop the first call; a set would lose the order.
+    ///
+    /// The two entries are given *different* generics so a swap is visible: two
+    /// `AppFont::new` faces would be indistinguishable in the resolved list and
+    /// the ordering half of this test would hold for a broken implementation.
+    #[test]
+    fn fonts_accumulate_across_calls_in_call_order() {
+        use crate::font::{AppFont, GenericFamily};
+
+        let startup = App::new(component)
+            .fonts(&[AppFont::serif(FIXTURE_FACE)])
+            .fonts(&[
+                AppFont::monospace(FIXTURE_FACE),
+                AppFont::sans_serif(FIXTURE_FACE),
+            ])
+            .into_startup();
+
+        let firsts: Vec<GenericFamily> = startup.fonts.iter().map(|f| f.generics[0]).collect();
+        assert_eq!(
+            firsts,
+            vec![
+                GenericFamily::Serif,
+                GenericFamily::Monospace,
+                GenericFamily::SansSerif
+            ],
+            "a second fonts() call must append to the first, in order"
+        );
+    }
+
+    /// An app that bundles nothing carries an empty list, not a surprise.
+    #[test]
+    fn omitting_fonts_bundles_none() {
+        assert!(App::new(component).into_startup().fonts.is_empty());
     }
 
     /// With no `.theme()`, the DEFAULT theme is installed rather than nothing —
