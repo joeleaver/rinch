@@ -23,14 +23,17 @@
 //! Adding the next feature is one more method, and it composes with everything
 //! already here. The seven `run_*` functions still exist as deprecated shims
 //! over this builder, so nothing breaks — but they are shims, not a second
-//! implementation: every desktop startup path runs the same code below.
+//! implementation: every *public* desktop entry point runs the same code below.
+//! (`shell::rinch_runtime::run_rinch_with_window_props_and_menu` remains public
+//! and is what this dispatches into; it sits below the layer that resolves
+//! window props and installs theme CSS, and does neither.)
 
 use rinch_core::dom::{NodeHandle, RenderScope};
 use rinch_core::element::{ThemeProviderProps, WindowProps};
 
 /// A rinch application, configured by builder methods and started by a terminal
-/// method ([`run`](App::run) on desktop, [`run_android`](App::run_android) on
-/// Android).
+/// method ([`run`](App::run) on desktop, `run_android` on Android — the latter
+/// exists only when building for Android, so it is not linked here).
 ///
 /// Every configuration method is independent, so any combination is
 /// expressible. Nothing happens until a terminal method is called; a terminal
@@ -51,6 +54,8 @@ use rinch_core::element::{ThemeProviderProps, WindowProps};
 ///     App::new(app).title("Hello").size(640, 480).run();
 /// }
 /// ```
+#[must_use = "an App does nothing until a terminal method (`run` on desktop, \
+              `run_android` on Android) is called"]
 pub struct App<F> {
     pub(crate) component: F,
     /// The window configuration. [`title`](App::title) and [`size`](App::size)
@@ -125,10 +130,12 @@ where
     /// Add a native menu bar. Each `(label, Menu)` pair becomes a top-level
     /// submenu.
     ///
-    /// Android has no window menu bar. A build with both `android` and
-    /// `desktop` can call this and then [`run_android`](App::run_android),
-    /// which warns and ignores it; an Android-only build does not have this
-    /// method at all.
+    /// Desktop only, in every sense that matters: Android has no window menu
+    /// bar, and an Android build does not have this method — it is gated on
+    /// `desktop`, which cannot currently be enabled for an Android target at
+    /// all (`muda` has no Android backend). The `run_android` path therefore
+    /// carries a warning for a configured menu that nothing can presently
+    /// reach.
     #[cfg(feature = "desktop")]
     pub fn menu(mut self, menus: Vec<(&str, crate::menu::Menu)>) -> Self {
         self.menus = Some(
@@ -147,7 +154,7 @@ where
     /// when an embedding renderer needs a higher-capability device so it can
     /// build its pipelines and textures on *rinch's* device and hand back a
     /// `TextureView` for zero-copy present. After startup, obtain the shared
-    /// device via [`gpu_handle`](crate::gpu_handle).
+    /// device via [`gpu_handle`](crate::shell::desktop::gpu_handle).
     ///
     /// Mutually exclusive with [`external_gpu`](App::external_gpu) — the last
     /// one set on *this* builder wins.
@@ -209,14 +216,18 @@ where
     ///
     /// # Panics
     ///
-    /// - The event loop or the window cannot be created.
-    /// - The event loop reports an error *while running*. This one fires long
-    ///   after startup, so a panic out of `run` is not by itself evidence that
-    ///   the configuration was wrong.
-    /// - With the `gpu` feature: no suitable adapter is found, or the window
-    ///   surface cannot be created. With
-    ///   [`external_gpu`](App::external_gpu), additionally if the supplied
-    ///   adapter cannot present to that surface.
+    /// Startup does not report failure — it aborts. The event loop, the window,
+    /// the presentation surface, and (on the `gpu` feature) the adapter,
+    /// device and renderer each panic rather than returning an error, on both
+    /// the default software backend and the GPU one.
+    ///
+    /// Two cases are worth separating from that:
+    ///
+    /// - The event loop reporting an error *while running*, which fires long
+    ///   after startup — so a panic out of `run` is not by itself evidence
+    ///   that the configuration was wrong.
+    /// - With [`external_gpu`](App::external_gpu), the supplied adapter being
+    ///   unable to present to rinch's window surface.
     #[cfg(feature = "desktop")]
     pub fn run(self) {
         let Startup {
@@ -515,6 +526,54 @@ mod tests {
     /// [`App::into_startup`], which runs no user code.
     fn component(scope: &mut RenderScope) -> NodeHandle {
         scope.create_element("div")
+    }
+
+    /// The GPU choice is one field, so the last of
+    /// [`App::gpu_config`] / [`App::external_gpu`] set on a builder is the one
+    /// that reaches `run`.
+    ///
+    /// Only the `gpu_config` half is exercised: `ExternalGpu` needs a real
+    /// instance, adapter and device, which a unit test has no way to build.
+    /// What this pins is the part that would break silently — moving
+    /// `set_gpu_init` out of `run()` and into the builder methods would invert
+    /// the semantics to first-one-wins, and nothing else in the suite touches
+    /// `gpu` at all.
+    #[cfg(feature = "gpu")]
+    #[test]
+    fn the_last_gpu_choice_set_is_the_one_that_reaches_run() {
+        use crate::shell::desktop::{GpuInit, RinchGpuConfig};
+
+        let first = RinchGpuConfig {
+            required_features: crate::wgpu::Features::empty(),
+            required_limits: crate::wgpu::Limits {
+                max_texture_dimension_2d: 4096,
+                ..Default::default()
+            },
+        };
+        let second = RinchGpuConfig {
+            required_features: crate::wgpu::Features::empty(),
+            required_limits: crate::wgpu::Limits {
+                max_texture_dimension_2d: 8192,
+                ..Default::default()
+            },
+        };
+        assert_ne!(
+            first.required_limits.max_texture_dimension_2d,
+            second.required_limits.max_texture_dimension_2d,
+            "the two configs must be distinguishable or this proves nothing"
+        );
+
+        let startup = App::new(component)
+            .gpu_config(first)
+            .gpu_config(second)
+            .into_startup();
+
+        match startup.gpu {
+            Some(GpuInit::Config(cfg)) => {
+                assert_eq!(cfg.required_limits.max_texture_dimension_2d, 8192)
+            }
+            _ => panic!("gpu_config must record a Config"),
+        }
     }
 
     /// **The canonical chain.** Every doc example, and almost every migrated
