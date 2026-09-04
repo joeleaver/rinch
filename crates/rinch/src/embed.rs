@@ -174,7 +174,10 @@ impl RinchContext {
 
         // Mount the component (builds DOM, runs initial layout) at the
         // *logical* viewport — `width`/`height` are physical (see
-        // `rinch_platform::to_logical`).
+        // `rinch_platform::to_logical`). The display scale goes in first so
+        // the initial style resolution sees the right `device_pixel_ratio`
+        // (issue #211).
+        app.set_device_pixel_ratio(scale_factor);
         let (logical_w, logical_h) = rinch_platform::to_logical((width, height), scale_factor);
         app.mount_component(logical_w as f32, logical_h as f32);
 
@@ -287,8 +290,15 @@ impl RinchContext {
     }
 
     /// Update the display scale factor (DPI).
+    ///
+    /// Pushes the new scale into Stylo's `device_pixel_ratio` (issue #211),
+    /// marking the document style-dirty when the value changed — the next
+    /// [`update`](RinchContext::update) re-resolves at the new logical size
+    /// (physical size ÷ scale), so `resolution`-gated styles and the layout
+    /// viewport change together.
     pub fn set_scale_factor(&mut self, scale: f64) {
         self.scale_factor = scale;
+        self.app.set_device_pixel_ratio(scale);
     }
 
     /// Replace this context's theme at runtime.
@@ -427,8 +437,18 @@ impl Drop for RinchContext {
 // ── Debug integration ───────────────────────────────────────────────────────
 
 /// Re-export screenshot utilities for game engine integration.
+///
+/// The two gates differ because the items do: `encode_png` is plain CPU work,
+/// while `capture_texture_rgba` reads back a wgpu texture and is
+/// `#[cfg(feature = "gpu")]`. Re-exporting both on `debug` alone meant `rinch`
+/// with `debug` + `embed` and *without* `gpu` did not compile at all — a
+/// combination nothing in the workspace or CI had ever built, because
+/// `cargo test --workspace` unifies `rinch/gpu` on from `examples/game-embed`.
+/// Found by naming `debug` on CI's gated-test line for #401's pins.
+#[cfg(all(feature = "debug", feature = "gpu"))]
+pub use crate::shell::screenshot::capture_texture_rgba;
 #[cfg(feature = "debug")]
-pub use crate::shell::screenshot::{capture_texture_rgba, encode_png};
+pub use crate::shell::screenshot::encode_png;
 
 /// A pending screenshot request from the debug server.
 ///

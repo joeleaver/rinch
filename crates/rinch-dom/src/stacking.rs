@@ -227,6 +227,19 @@ fn collect_hoisted(
             (parent_offset_x, parent_offset_y)
         };
 
+        // No `ifc_content_box_offset` on the entry itself, deliberately, though
+        // the obvious symmetry with `descend` below says there should be — and
+        // NOT because the correction would be dead code. This sequence is
+        // shared with hit testing, whose own `descend`
+        // (`crates/rinch/src/app/hit_testing.rs`) adds the IFC offset itself
+        // when it enters a node, so the entry's offset must stay the plain
+        // border-box chain or every tap on a hoisted inline-block lands one
+        // padding+border off (the offset double-added).
+        // `a_hoisted_inline_block_is_tapped_where_its_ifc_paints_it` in that
+        // file pins it. Paint, for its part, never positions such a box
+        // through this entry: with a live IFC it is skipped by
+        // `drawn_by_its_ifc`, and with a virtualized one (`estimated_height`)
+        // it is not painted at all.
         out.push((
             dom_order,
             PaintEntry {
@@ -269,8 +282,17 @@ fn descend(
     out: &mut Vec<(usize, PaintEntry)>,
     order: &mut usize,
 ) {
-    let x = parent_offset_x + child.layout.x as f64 * scale - child.scroll_offset.0 * scale;
-    let y = parent_offset_y + child.layout.y as f64 * scale - child.scroll_offset.1 * scale;
+    // Unlike the entry push in `collect_hoisted` (which must NOT add this —
+    // see the comment there), the offset IS added here: this walk is entering
+    // `child`'s own coordinate space to place its hoisted descendants, and an
+    // IFC-positioned box's `layout.{x,y}` is content-box-relative, so
+    // descending through one without the correction puts every hoisted
+    // descendant a padding+border out (#407).
+    let (ifc_dx, ifc_dy) = crate::paint::ifc_content_box_offset(tree, child);
+    let x =
+        parent_offset_x + (child.layout.x + ifc_dx) as f64 * scale - child.scroll_offset.0 * scale;
+    let y =
+        parent_offset_y + (child.layout.y + ifc_dy) as f64 * scale - child.scroll_offset.1 * scale;
     collect_hoisted(tree, &child.children, scale, x, y, hoist_fixed, out, order);
 }
 

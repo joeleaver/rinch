@@ -290,23 +290,26 @@ pub fn inputs_section() -> NodeHandle {
                         Text { weight: "600", "Number Input" }
                         Text { size: "sm", color: "dimmed", "Numeric input with controls" }
                         Space { h: "xs" }
+                        // Controlled: the signal owns the number, the
+                        // value_fn effect carries it to the field, and the
+                        // steppers write the signal (#264).
                         NumberInput {
-                            label: "Quantity",
-                            value: Some(quantity.get()),
+                            label: "Quantity (controlled)",
+                            value_fn: move || quantity.get().to_string(),
                             min: Some(0.0),
                             step: Some(1.0),
                             onincrement: move || quantity.update(|v| *v += 1.0),
                             ondecrement: move || quantity.update(|v| *v = (*v - 1.0).max(0.0))
                         }
+                        // Uncontrolled: the component owns the number — the
+                        // steppers step, clamp and format it themselves (#501).
                         NumberInput {
-                            label: "Price",
+                            label: "Price (uncontrolled)",
                             prefix: "$",
                             value: Some(price.get()),
                             min: Some(0.0),
                             step: Some(0.01),
                             decimal_scale: Some(2),
-                            onincrement: move || price.update(|v| *v += 0.01),
-                            ondecrement: move || price.update(|v| *v = (*v - 0.01).max(0.0))
                         }
                     }
                 }

@@ -2101,4 +2101,63 @@ mod tests {
         assert_eq!(total, 3, "three rows, not a duplicated sibling");
         assert_eq!(ids.len(), total, "every mounted node appears exactly once");
     }
+
+    /// A removed item's cleanup that reads a signal must not subscribe the
+    /// reconcile effect (issue #494).
+    ///
+    /// The reconcile tail already drops the item *collection* untracked (issue
+    /// #345); this pins the scope disposal a few lines above it — the doomed
+    /// scopes' cleanups run inside the same effect, and a tracked read there
+    /// would re-run the whole list diff on every later write to that signal.
+    /// Counts reconcile passes via the collection closure, since the DOM is
+    /// identical either way.
+    #[test]
+    fn a_removed_items_cleanup_that_reads_a_signal_does_not_subscribe_the_reconcile_effect() {
+        use crate::dom::traits::DomDocument;
+        use crate::dom::{RenderScope, mock::MockDomDocument};
+        use crate::reactive::{Signal, on_cleanup};
+        use std::cell::RefCell;
+
+        let doc = Rc::new(RefCell::new(MockDomDocument::new()));
+        let body = doc.borrow().body();
+        let mut scope = RenderScope::new(doc.clone(), body);
+        let parent = scope.parent();
+
+        let items = Signal::new(vec![1u32, 2]);
+        let probe = Signal::new(0u32);
+        let passes = Rc::new(Cell::new(0usize));
+
+        let count = passes.clone();
+        let _marker = super::for_each_dom_typed(
+            &mut scope,
+            &parent,
+            move || {
+                count.set(count.get() + 1);
+                items.get()
+            },
+            |item: &u32| item.to_string(),
+            move |_item: u32, s: &mut RenderScope| {
+                // Registered against the item's own scope, read by the
+                // disposal fixpoint when the item leaves the list.
+                on_cleanup(move || {
+                    let _ = probe.get();
+                });
+                s.create_element("div")
+            },
+        );
+
+        items.update(|v| v.retain(|&i| i != 2)); // dispose item 2's scope
+        let passes_before = passes.get();
+
+        probe.set(1);
+        assert_eq!(
+            passes.get(),
+            passes_before,
+            "a write to a signal only a removed item's cleanup read must not re-run the reconcile"
+        );
+
+        // Positive control: a write the reconcile effect legitimately tracks.
+        items.update(|v| v.push(3));
+        assert_eq!(passes.get(), passes_before + 1);
+    }
 }

@@ -172,6 +172,14 @@ pub enum DimensionValue {
     Auto,
     Length(f32),
     Percent(f32),
+    /// A mixed `calc()` combining a length and a percentage (#278/#404):
+    /// resolves to `px + pct * basis` (`pct` is a fraction, 0.5 = 50%).
+    /// A non-affine calc (`min()`/`max()`/`clamp()` inside) is stored as its
+    /// large-basis linearization — see `from_stylo/calc.rs`.
+    Calc {
+        px: f32,
+        pct: f32,
+    },
 }
 
 impl DimensionValue {
@@ -218,17 +226,37 @@ impl DimensionValue {
     }
 
     /// Convert to Taffy Dimension.
+    ///
+    /// A `Calc` cannot be represented in a Taffy value — Taffy 0.12's calc
+    /// pointer (`CompactLength::calc`) only works for callers implementing the
+    /// layout-tree traits themselves; `TaffyTree`'s `resolve_calc_value` is
+    /// hardcoded to `0.0` (taffy-0.12.2, `src/tree/taffy_tree.rs:391`). So the
+    /// length part goes in as a *seed* and `resolve_layout_calcs`
+    /// (`calc_layout.rs`) overwrites it with the resolved length before a
+    /// layout result is read — on the converged path; a run that hits the
+    /// fixpoint's iteration cap reads the last iterate (see `calc_layout.rs`).
     pub fn to_taffy(&self) -> taffy::Dimension {
         match self {
             Self::Auto => taffy::Dimension::auto(),
             Self::Length(v) => taffy::Dimension::length(*v),
             Self::Percent(v) => taffy::Dimension::percent(*v),
+            Self::Calc { px, .. } => taffy::Dimension::length(px.max(0.0)),
         }
     }
 
     /// Whether this is Auto.
     pub fn is_auto(&self) -> bool {
         matches!(self, Self::Auto)
+    }
+
+    /// The resolved length a `Calc` takes at `basis`, floored at zero the way
+    /// stylo's own `resolve()` floors a non-negative property. `None` for
+    /// every other variant — Taffy resolves those itself.
+    pub fn resolve_calc(&self, basis: f32) -> Option<f32> {
+        match self {
+            Self::Calc { px, pct } => Some((px + pct * basis).max(0.0)),
+            _ => None,
+        }
     }
 }
 
@@ -239,6 +267,17 @@ pub enum LengthPercentageValue {
     Zero,
     Length(f32),
     Percent(f32),
+    /// A mixed `calc()` combining a length and a percentage (#278/#404):
+    /// resolves to `px + pct * basis` (`pct` is a fraction, 0.5 = 50%).
+    /// The pair is the *unclamped* affine; a consumer of a non-negative
+    /// property (padding, gap, border-radius) floors the resolution at zero
+    /// itself, because this enum also carries `transform-origin`, which may
+    /// legally resolve negative. A non-affine calc is stored as its
+    /// large-basis linearization — see `from_stylo/calc.rs`.
+    Calc {
+        px: f32,
+        pct: f32,
+    },
 }
 
 impl LengthPercentageValue {
@@ -282,20 +321,32 @@ impl LengthPercentageValue {
     }
 
     /// Convert to Taffy LengthPercentage.
+    ///
+    /// A `Calc` cannot be represented in a Taffy value (see
+    /// [`DimensionValue::to_taffy`]); the clamped length part is a seed that
+    /// `resolve_layout_calcs` (`calc_layout.rs`) overwrites with the resolved
+    /// length before a layout result is read (converged path; see there).
+    /// Every Taffy consumer of this enum (padding, gap) is non-negative,
+    /// hence the floor.
     pub fn to_taffy(&self) -> taffy::LengthPercentage {
         match self {
             Self::Zero => taffy::LengthPercentage::length(0.0),
             Self::Length(v) => taffy::LengthPercentage::length(*v),
             Self::Percent(v) => taffy::LengthPercentage::percent(*v),
+            Self::Calc { px, .. } => taffy::LengthPercentage::length(px.max(0.0)),
         }
     }
 
     /// Get as f32 length (resolving percentage against container size).
+    ///
+    /// A `Calc` resolves unclamped — `transform-origin` may be negative; a
+    /// non-negative consumer (border-radius) floors the result itself.
     pub fn resolve(&self, container_size: f32) -> f32 {
         match self {
             Self::Zero => 0.0,
             Self::Length(v) => *v,
             Self::Percent(v) => *v * container_size,
+            Self::Calc { px, pct } => *px + *pct * container_size,
         }
     }
 
@@ -304,7 +355,8 @@ impl LengthPercentageValue {
         match self {
             Self::Zero => 0.0,
             Self::Length(v) => *v,
-            Self::Percent(_) => 0.0, // Percentages need container size
+            Self::Percent(_) => 0.0,      // Percentages need container size
+            Self::Calc { px, .. } => *px, // the percentage part needs container size
         }
     }
 }
@@ -316,6 +368,15 @@ pub enum LengthPercentageAutoValue {
     Auto,
     Length(f32),
     Percent(f32),
+    /// A mixed `calc()` combining a length and a percentage (#278/#404):
+    /// resolves to `px + pct * basis` (`pct` is a fraction, 0.5 = 50%).
+    /// Never clamped — margins and insets are legally negative. A non-affine
+    /// calc is stored as its large-basis linearization — see
+    /// `from_stylo/calc.rs`.
+    Calc {
+        px: f32,
+        pct: f32,
+    },
 }
 
 impl LengthPercentageAutoValue {
@@ -362,11 +423,18 @@ impl LengthPercentageAutoValue {
     }
 
     /// Convert to Taffy LengthPercentageAuto.
+    ///
+    /// A `Calc` cannot be represented in a Taffy value (see
+    /// [`DimensionValue::to_taffy`]); the length part is a seed that
+    /// `resolve_layout_calcs` (`calc_layout.rs`) overwrites with the resolved
+    /// length before a layout result is read (converged path; see
+    /// `calc_layout.rs`). No floor — margins and insets are legally negative.
     pub fn to_taffy(&self) -> taffy::LengthPercentageAuto {
         match self {
             Self::Auto => taffy::LengthPercentageAuto::auto(),
             Self::Length(v) => taffy::LengthPercentageAuto::length(*v),
             Self::Percent(v) => taffy::LengthPercentageAuto::percent(*v),
+            Self::Calc { px, .. } => taffy::LengthPercentageAuto::length(*px),
         }
     }
 
@@ -375,6 +443,7 @@ impl LengthPercentageAutoValue {
         match self {
             Self::Length(v) => *v,
             Self::Auto | Self::Percent(_) => 0.0,
+            Self::Calc { px, .. } => *px, // the percentage part needs a reference size
         }
     }
 
@@ -385,6 +454,7 @@ impl LengthPercentageAutoValue {
             Self::Auto => None,
             Self::Length(v) => Some(*v),
             Self::Percent(v) => Some(*v * reference),
+            Self::Calc { px, pct } => Some(*px + *pct * reference),
         }
     }
 }
@@ -588,6 +658,109 @@ impl OverflowValue {
             Self::Hidden => taffy::Overflow::Hidden,
             Self::Scroll | Self::Auto => taffy::Overflow::Scroll,
             Self::Clip => taffy::Overflow::Clip,
+        }
+    }
+}
+
+/// How wide a scroll container's overlay scrollbar is drawn — the CSS
+/// `scrollbar-width` keywords, read from the `--rinch-scrollbar-width` custom
+/// property (see [`ScrollbarColorValue`] for why it is not the real property).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize)]
+pub enum ScrollbarWidthValue {
+    /// The default 6px thumb.
+    #[default]
+    Auto,
+    /// A narrower 4px thumb, for dense chrome.
+    Thin,
+    /// No bar at all: nothing is painted, and nothing is hit-tested either, so
+    /// an app that draws its own scrollbar can turn rinch's off rather than
+    /// covering it up.
+    None,
+}
+
+impl ScrollbarWidthValue {
+    /// Parse from a CSS keyword. Anything unrecognised is `auto`, matching how
+    /// a browser treats an invalid keyword on this property.
+    pub fn parse(value: &str) -> Self {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "thin" => Self::Thin,
+            "none" => Self::None,
+            _ => Self::Auto,
+        }
+    }
+}
+
+/// What colour a scroll container's overlay scrollbar is drawn in — the CSS
+/// `scrollbar-color: <thumb> <track>` shape.
+///
+/// # Why this is not `scrollbar-color`
+///
+/// The real property is **gecko-only in Stylo** (`engines="gecko"` on the
+/// longhand in `properties/longhands/inherited_ui.mako.rs`), and that is a
+/// codegen-time filter, not a `#[cfg]`: the servo build rinch uses emits no
+/// `LonghandId` for it, no parser entry and no field on any style struct, so
+/// `scrollbar-color: red blue` in a stylesheet is an unknown declaration and
+/// Stylo drops it. Grepping this repo's own generated `properties.rs` for
+/// `scrollbar_color` finds nothing.
+///
+/// So the value arrives through a **custom property**, `--rinch-scrollbar-color`,
+/// which the servo build does support fully: it cascades, it inherits, and it
+/// composes with `var()`. One declaration on `:root` therefore restyles every
+/// scroll region in an app, which is the property the real one would have had.
+/// If Stylo ever ships `scrollbar-color` for servo, this is where it plugs in.
+///
+/// `thumb: None` means `auto` — the built-in default, which is not a fixed
+/// colour: see `paint::scrollbar::thumb_color`.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize)]
+pub struct ScrollbarColorValue {
+    /// The thumb's colour, or `None` for `auto`.
+    #[serde(serialize_with = "color_serde::serialize")]
+    pub thumb: Option<peniko::Color>,
+    /// The track's colour. `None` means no track is painted — rinch's bar is
+    /// an overlay with no track by default, so this stays absent unless asked
+    /// for.
+    #[serde(serialize_with = "color_serde::serialize")]
+    pub track: Option<peniko::Color>,
+}
+
+impl ScrollbarColorValue {
+    /// Parse `auto` or `<color> [<color>]`.
+    ///
+    /// Splits on whitespace **outside parentheses**, so `rgb(255 0 0)` stays
+    /// one token; a naive `split_whitespace` would tear the modern space-
+    /// separated colour syntaxes apart. An unparseable first colour leaves the
+    /// whole declaration as `auto` rather than half-applying it.
+    pub fn parse(value: &str) -> Self {
+        let value = value.trim();
+        if value.is_empty() || value.eq_ignore_ascii_case("auto") {
+            return Self::default();
+        }
+        let mut parts: Vec<&str> = Vec::new();
+        let (mut depth, mut start) = (0i32, 0usize);
+        let bytes = value.as_bytes();
+        for (i, b) in bytes.iter().enumerate() {
+            match b {
+                b'(' => depth += 1,
+                b')' => depth -= 1,
+                _ if b.is_ascii_whitespace() && depth == 0 => {
+                    if i > start {
+                        parts.push(&value[start..i]);
+                    }
+                    start = i + 1;
+                }
+                _ => {}
+            }
+        }
+        if start < value.len() {
+            parts.push(&value[start..]);
+        }
+        let thumb = parts.first().and_then(|p| crate::layout::parse_color(p));
+        if thumb.is_none() {
+            return Self::default();
+        }
+        Self {
+            thumb,
+            track: parts.get(1).and_then(|p| crate::layout::parse_color(p)),
         }
     }
 }

@@ -83,6 +83,31 @@ pub enum NodeContext {
         height: u32,
     },
     /// IFC root that needs Parley TreeBuilder measurement.
+    ///
+    /// **The IFC leaf invariant (#466).** Taffy 0.12 consults a measure
+    /// function only on a node with zero children (`taffy_tree.rs:303-327`,
+    /// the `(_, false)` arm of the `match (display_mode, has_children)`
+    /// dispatch). Therefore the Taffy node carrying a live `InlineRoot` must
+    /// be childless: the IFC root's own node when inline detachment emptied
+    /// it, or its dedicated measure-leaf when out-of-flow children remain
+    /// attached. After `setup_inline_formatting_contexts`, no Taffy node with
+    /// children carries `InlineRoot`, and every root discovered this pass has
+    /// its context on exactly one childless node.
+    ///
+    /// A non-leaf carrying this context does not merely measure wrong — the
+    /// measure is *structurally unreachable* (Taffy runs the block algorithm
+    /// instead), so an auto-height IFC root collapses to `h = 0`: the block
+    /// algorithm sums in-flow children, of which a root whose inline content
+    /// was detached has none. Block virtualization depends on the same
+    /// invariant — `estimated_height`'s early return lives *inside* the
+    /// measure closure (`layout_engine.rs`), so a non-leaf virtualized root
+    /// would silently report 0 instead of its estimate.
+    ///
+    /// `setup_inline_formatting_contexts` enforces this: it sweeps the stale
+    /// context off any non-leaf not (re)marked a root this pass, and a
+    /// `debug_assertions` validator
+    /// ([`crate::RinchDocument::ifc_leaf_invariant_violations`]) checks the
+    /// invariant after every setup pass.
     InlineRoot(usize), // stores the RawNodeId of the IFC root
 }
 
@@ -157,6 +182,46 @@ pub enum DisplayMode {
     Inline,
     /// Inline-block element — inline positioning but block-level content.
     InlineBlock,
+}
+
+/// How a box participates in its parent's inline formatting context.
+///
+/// Returned by [`Node::inline_flow_role`], the one classifier every IFC
+/// decision consumes (#366) — see its doc for the precedence contract.
+///
+/// Whether a [`InlineFlowRole::Contents`] wrapper is *transparent* to the
+/// surrounding IFC is deliberately a separate, recursive question
+/// (`contents_is_inline_transparent` in `ifc.rs`): answering it eagerly here
+/// would scan the wrapper's subtree at every classification, and the
+/// recursive consumers (the contents scan and collector) would re-scan every
+/// level of a nested-wrapper chain once per ancestor.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InlineFlowRole {
+    /// A comment node: invisible and boxless. It flows *with* inline content
+    /// — it must neither split a run nor break the inline walk — but it is
+    /// not inline content itself: it renders nothing, has no Taffy node, and
+    /// must not establish an IFC on its own (#490).
+    Comment,
+    /// `display: none` — no box at all. Neither inline content nor a block:
+    /// it cannot force anonymous-box generation, split a run, or break the
+    /// inline flow.
+    NoBox,
+    /// `display: contents` — no box of its own; its children flatten into
+    /// the parent. Whether the wrapper is transparent to the surrounding IFC
+    /// (wraps no in-flow block-level box) is the separate recursive question
+    /// above.
+    Contents,
+    /// Inline-level content: a text node, or an element with display
+    /// `inline` / `inline-block`.
+    Inline,
+    /// An out-of-flow box — `position: absolute`/`fixed` (CSS 2.1 §9.3).
+    /// Not inline content, yet it neither forces anonymous boxes (§9.2.1.1)
+    /// nor breaks an inline formatting context (§9.4.2): inline siblings
+    /// carry on across it, on the same line.
+    OutOfFlow,
+    /// An in-flow block-level box — the one thing that breaks the inline
+    /// flow.
+    InFlowBlock,
 }
 
 /// Maps a range of bytes in the IFC flat text to a specific DOM node.
@@ -331,6 +396,21 @@ pub struct Node {
     /// measuring via Parley. Used by contenteditable block virtualization to
     /// collapse off-screen blocks. IFC building and painting are skipped.
     pub estimated_height: Option<f32>,
+
+    /// True while a `sync_display_contents` pass has this node's children
+    /// spliced into an ancestor's Taffy child list (and the node's own Taffy
+    /// node detached) because it computed `display: contents` — and no later
+    /// pass has healed that state (#520).
+    ///
+    /// Set by `sync_display_contents` on every node it treats as contents;
+    /// cleared by the same function when the node no longer computes
+    /// `Contents` (after rebuilding the node's own Taffy child list and its
+    /// flattening ancestor's). Between the toggle and that healing pass, the
+    /// computed display says "box" while the Taffy tree still holds the
+    /// splice — this flag is the only record of that, which is why
+    /// `taffy_detach_contribution` consults it: computed display alone
+    /// cannot distinguish a healed wrapper from a stale-spliced one.
+    pub contents_spliced: bool,
 }
 
 impl std::fmt::Debug for Node {
@@ -391,6 +471,7 @@ impl Node {
             active_sensitive: Cell::new(false),
             focus_sensitive: Cell::new(false),
             estimated_height: None,
+            contents_spliced: false,
         }
     }
 
@@ -436,6 +517,7 @@ impl Node {
             active_sensitive: Cell::new(false),
             focus_sensitive: Cell::new(false),
             estimated_height: None,
+            contents_spliced: false,
         }
     }
 
@@ -480,6 +562,7 @@ impl Node {
             active_sensitive: Cell::new(false),
             focus_sensitive: Cell::new(false),
             estimated_height: None,
+            contents_spliced: false,
         }
     }
 
@@ -522,6 +605,7 @@ impl Node {
             active_sensitive: Cell::new(false),
             focus_sensitive: Cell::new(false),
             estimated_height: None,
+            contents_spliced: false,
         }
     }
 
@@ -594,6 +678,31 @@ impl Node {
         ) || !self.computed_style.transform.is_identity
     }
 
+    /// Whether this box is taken **out of flow** — CSS 2.1 §9.3.
+    ///
+    /// An out-of-flow box is neither inline content nor in-flow block content,
+    /// and every inline-formatting-context decision has to say so explicitly:
+    /// per §9.2.1.1 it does not force anonymous block box generation, and per
+    /// §9.4.2 it does not break an inline formatting context — its inline
+    /// siblings carry on across it, on the same line.
+    ///
+    /// `ifc.rs` used to have no such predicate at all, and excluded these boxes
+    /// only *incidentally*: Stylo blockifies an out-of-flow box, so
+    /// [`Self::is_inline`] answers `false`. That is the right answer where the
+    /// question is "is this inline content" and the **wrong** one where it is
+    /// "does this break the flow" — which is issues #406 and #289.
+    ///
+    /// Keys on `position` alone. `PositionValue::Static` is the default, so a
+    /// text node — which never goes through style resolution — answers `false`,
+    /// which is what #342 was about when a wrong default hoisted text nodes.
+    pub fn is_out_of_flow(&self) -> bool {
+        matches!(
+            self.computed_style.position,
+            crate::computed_style::PositionValue::Absolute
+                | crate::computed_style::PositionValue::Fixed
+        )
+    }
+
     /// Get the text content if this is a text node.
     pub fn text_content(&self) -> Option<&str> {
         match &self.kind {
@@ -618,6 +727,66 @@ impl Node {
     /// Whether this node is a comment node.
     pub fn is_comment(&self) -> bool {
         matches!(&self.kind, NodeKind::Comment(_))
+    }
+
+    /// How this box participates in a parent's inline formatting context —
+    /// THE shared classifier for every IFC decision (#366).
+    ///
+    /// Seven sites used to hand-roll this classification — `has_inline`,
+    /// `has_block` and the run-grouping loop in `create_anonymous_block_boxes`,
+    /// the decision loop in `setup_inline_formatting_contexts`,
+    /// `scan_contents_children`, `collect_contents_out_of_flow`,
+    /// `mark_inline_descendants` and `walk_inline_children` — and they were
+    /// caught disagreeing twice in one review cycle (#466): once on
+    /// display-vs-position precedence (a `debug_assert` panic on markup `main`
+    /// rendered fine), once on continue-vs-break at a block-level child
+    /// (#366 itself). They all consume this method now; any new IFC decision
+    /// must too, not paraphrase it.
+    ///
+    /// The precedence is **display before position, always**:
+    ///
+    /// 1. A comment is a [`InlineFlowRole::Comment`] — it has no display and
+    ///    no box, and [`Self::is_inline`] answers `true` for it, so it must
+    ///    be told apart before the inline check.
+    /// 2. `display: none` is a [`InlineFlowRole::NoBox`] — whatever
+    ///    `position` says, since a boxless element has no box to take out of
+    ///    flow.
+    /// 3. `display: contents` is a [`InlineFlowRole::Contents`] — again
+    ///    whatever `position` says: Stylo does not blockify
+    ///    `display: contents` (`equivalent_block_display` maps
+    ///    `DisplayOutside::None` to itself), so `position: absolute` on such
+    ///    a wrapper leaves [`Self::is_out_of_flow`] answering `true` while
+    ///    the element generates **no box** (browsers ignore `position` on
+    ///    it). Classifying it out-of-flow instead rooted containers whose
+    ///    flattened in-flow boxes stayed attached — the non-leaf carrier the
+    ///    #466 validator exists to catch.
+    /// 4. Inline-level content is [`InlineFlowRole::Inline`].
+    /// 5. Only now does `position` speak: `absolute`/`fixed` is
+    ///    [`InlineFlowRole::OutOfFlow`].
+    /// 6. Everything left is an in-flow block-level box,
+    ///    [`InlineFlowRole::InFlowBlock`].
+    ///
+    /// A text node never goes through style resolution, so its
+    /// `computed_style.display` keeps the default (`Flex`) and it falls
+    /// through steps 2–3 to `Inline` — the same #342 hazard note as
+    /// [`Self::is_out_of_flow`].
+    pub fn inline_flow_role(&self) -> InlineFlowRole {
+        use crate::computed_style::values::DisplayValue;
+        if self.is_comment() {
+            return InlineFlowRole::Comment;
+        }
+        match self.computed_style.display {
+            DisplayValue::None => return InlineFlowRole::NoBox,
+            DisplayValue::Contents => return InlineFlowRole::Contents,
+            _ => {}
+        }
+        if self.is_inline() {
+            return InlineFlowRole::Inline;
+        }
+        if self.is_out_of_flow() {
+            return InlineFlowRole::OutOfFlow;
+        }
+        InlineFlowRole::InFlowBlock
     }
 }
 
@@ -690,6 +859,13 @@ pub struct NodeTree {
     /// IDs of anonymous block box nodes created during layout.
     /// Tracked for cleanup at the start of each layout pass.
     pub anonymous_block_boxes: Vec<RawNodeId>,
+    /// Taffy-only measure leaves for IFC roots whose out-of-flow children stay
+    /// attached (#466): IFC root DOM id → the childless Taffy node carrying its
+    /// [`NodeContext::InlineRoot`]. These nodes have **no DOM identity** — they
+    /// are absent from `taffy_map` and from the slab — so every consumer that
+    /// maps a Taffy id back to a DOM node must `get`-and-skip, never index.
+    /// Recreated each `ifc_dirty` pass exactly like `anonymous_block_boxes`.
+    pub ifc_measure_leaves: HashMap<RawNodeId, taffy::NodeId>,
     /// Active CSS transitions per node, keyed by property.
     pub active_transitions: HashMap<RawNodeId, HashMap<TransitionProperty, ActiveTransition>>,
     /// Active CSS animations per node.
@@ -821,6 +997,7 @@ impl NodeTree {
             active_node: None,
             guard,
             anonymous_block_boxes: Vec::new(),
+            ifc_measure_leaves: HashMap::new(),
             active_transitions: HashMap::new(),
             active_animations: HashMap::new(),
             transitions_enabled: false,
@@ -878,4 +1055,94 @@ impl NodeTree {
             }
         }
     }
+}
+
+// ── The `disabled` rule ─────────────────────────────────────────────────────
+//
+// One rule, two consumers that must not drift: the desktop focus machinery in
+// `rinch` (Tab order, the mousedown claim, the edit gate — issue #315) and CSS
+// `:disabled`/`:enabled` matching in `stylo_impl` (issue #429). It lives here,
+// below both, because a second hand-rolled copy is exactly how a control comes
+// to refuse input while still *styling* itself as enabled.
+
+/// Whether a node carries a **disabled** marker.
+///
+/// Two spellings count. `data-disabled` is what rinch's own widgets write
+/// (`select_widget.rs`, for a disabled `<option>`); the plain HTML `disabled`
+/// is what the component library writes — `Button`, `ActionIcon`,
+/// `CloseButton`, `TextInput`, `Textarea`, `NumberInput`, `PasswordInput`,
+/// `Checkbox`, `Radio`, `Switch`, `NavLink`, `Pagination`, `Tabs`,
+/// `Accordion`, `DropdownMenu`, `Fieldset`.
+///
+/// Either is a **boolean attribute**: present means disabled whatever the
+/// value, and only the explicit `"false"` opts out. (Strict HTML has no
+/// opt-out at all — `disabled="false"` disables — but rinch has documented the
+/// `"false"` escape for `data-disabled` since it was written, and one rule for
+/// both spellings beats two.)
+pub fn node_is_disabled(node: &Node) -> bool {
+    ["disabled", "data-disabled"].iter().any(|attr| {
+        node.attributes
+            .get(*attr)
+            .is_some_and(|v| !v.eq_ignore_ascii_case("false"))
+    })
+}
+
+/// [`node_is_disabled`] for the node itself, **or** an enclosing
+/// `<fieldset disabled>`.
+///
+/// `<fieldset>` is the one element whose `disabled` reaches past itself: HTML
+/// disables every descendant control, which is the whole reason the element
+/// exists. The exception HTML also carves — controls inside the fieldset's
+/// **first `<legend>`** stay enabled, so a form can put its own "enable this
+/// section" checkbox there — is honoured too.
+///
+/// Everything else disables only itself (a disabled `<button>` does not
+/// disable a `<span>` inside it).
+pub fn node_is_disabled_in_tree(tree: &NodeTree, node_id: RawNodeId) -> bool {
+    let mut cur = Some(node_id);
+    let mut child = None;
+    while let Some(nid) = cur {
+        let Some(node) = tree.get(nid) else {
+            return false;
+        };
+        let is_fieldset = node.tag() == Some("fieldset");
+        // Skip the fieldset's own check when we arrived through its first
+        // <legend>: that subtree is exempt.
+        let exempt =
+            is_fieldset && child.is_some_and(|c| first_legend_child(tree, node) == Some(c));
+        if !exempt && (nid == node_id || is_fieldset) && node_is_disabled(node) {
+            return true;
+        }
+        child = Some(nid);
+        cur = node.parent;
+    }
+    false
+}
+
+/// The id of `parent`'s first `<legend>` child, if it has one.
+///
+/// Public because the Tab collector needs the same exemption while walking
+/// top-down with an inherited-disable flag on its stack, rather than by asking
+/// [`node_is_disabled_in_tree`] per node.
+pub fn first_legend_child(tree: &NodeTree, parent: &Node) -> Option<RawNodeId> {
+    parent
+        .children
+        .iter()
+        .copied()
+        .find(|&c| tree.get(c).and_then(|n| n.tag()) == Some("legend"))
+}
+
+/// Whether a tag names an element HTML lets be disabled — the set `:disabled`
+/// and `:enabled` are defined over.
+///
+/// CSS is deliberately narrower here than the focus machinery, which applies
+/// [`node_is_disabled`] to *any* node because rinch lets any `tabindex` node
+/// opt out of the Tab order. `:disabled` is specified over form controls only,
+/// so a `<div data-disabled>` must not match it — matching would style on
+/// desktop what `rinch-web` leaves unstyled in a real browser.
+pub fn tag_is_disableable(tag: Option<&str>) -> bool {
+    matches!(
+        tag,
+        Some("button" | "input" | "select" | "textarea" | "option" | "optgroup" | "fieldset")
+    )
 }

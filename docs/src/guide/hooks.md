@@ -160,7 +160,9 @@ fn shortcuts() -> NodeHandle {
     // Released when this component unmounts — the interceptor cannot outlive
     // `count` and read it after it is freed.
     set_keyboard_interceptor(move |k| {
-        if k.key == "j" { count.update(|n| *n += 1); true } else { false }
+        // Releases arrive here too (`k.is_up()`) — gate on the press or a
+        // held "j" counts twice.
+        if k.is_down() && k.key == "j" { count.update(|n| *n += 1); true } else { false }
     });
     rsx! { div { {|| count.get().to_string()} } }
 }
@@ -174,8 +176,12 @@ consequences are worth knowing:
   from `main()`, from startup code or from a detached callback has no owner, so
   nothing removes it — unchanged, and what app-wide shortcuts rely on.
 - **An earlier component unmounting never clears a later one's registration.**
-  These are single, last-wins slots; the release only reclaims the slot if it is
-  still holding the callback that registered it.
+  These are single, last-wins slots — per document, since two documents can
+  share a thread (issues #340, #478): a registration made while a document's
+  events are being dispatched belongs to that document, one made outside any
+  dispatch (from `main`, at mount) is the thread-global fallback every
+  document without its own reaches. The release only reclaims the slot if it
+  is still holding the callback that registered it.
 - **Register once per component, not once per event.** Each call from inside a
   live component queues its own release, and those accumulate until the component
   unmounts. Installing a hook from a render (as above) is the intended shape;
@@ -276,6 +282,35 @@ This covers `sensors::start`, `location::start`, `lifecycle::on_pause` /
 `sensors::stop` and `location::stop` remain the way to stop early — the moment
 you have the fix you wanted, rather than at unmount. What they no longer have to
 be is a leak-preventing ritual.
+
+### Keeping the screen on: a guard, not a callback
+
+One Android service ties itself to the component by a third shape.
+`screen::keep_screen_on()` returns a **guard** — the display is held awake
+while the `KeepScreenOn` value is alive, and dropping it releases the hold
+(refcounted, so several holders compose). There is no callback to check at
+dispatch: a window flag is written once and never dispatched again, so nothing
+would ever visit it to notice a dead owner. The guard supplies the release
+structurally instead.
+
+Most callers want the reactive form, which is also where unmount release comes
+from — the effect underneath is scope-owned, and disposal drops the closure
+holding the guard:
+
+```rust
+#[component]
+fn player() -> NodeHandle {
+    let playing = Signal::new(false);
+    // Held while `playing` is true; released when it goes false — or when
+    // this component unmounts mid-playback, whichever comes first.
+    rinch_android::screen::keep_screen_on_while(move || playing.get());
+    // ...
+}
+```
+
+`keep_screen_on_while(|| true)` reads as "while this component is mounted".
+The opt-out for a kiosk binary that genuinely never releases is
+`keep_screen_on().leak()`, from `android_main`.
 
 [`set_keyboard_interceptor`]: ./focus.md#where-this-does-not-apply
 [`set_paste_interceptor`]: ./platform.md#clipboard

@@ -275,7 +275,8 @@ fn test_parse_color_css_color_4_functions() {
         rgba("color-mix(in srgb, red 25%, blue)"),
         Some((64, 0, 191, 255))
     );
-    // A mix over `currentcolor` is not absolute on its own.
+    // A mix over `currentcolor` is not absolute on its own — same contract as
+    // bare `currentcolor` below, and deliberately unchanged by #256.
     assert_eq!(rgba("color-mix(in srgb, currentcolor, blue)"), None);
 }
 
@@ -286,11 +287,20 @@ fn test_parse_color_rejects_junk() {
     assert_eq!(rgba("red junk"), None);
     assert_eq!(rgba("red; background: blue"), None);
     assert_eq!(rgba("red !important"), None);
+    // CSS-wide keywords are not colours. `paint::svg` names `inherit`/`unset`
+    // explicitly anyway, so its intent survives a parser that starts accepting
+    // them; this is why that arm is not redundant even though it is currently
+    // unobservable.
+    assert_eq!(rgba("inherit"), None);
+    assert_eq!(rgba("unset"), None);
+    assert_eq!(rgba("initial"), None);
 }
 
-/// `currentcolor` is not an absolute colour: the caller owns its resolution
-/// (`resolve_svg_color` walks the tree for it), so `parse_color` must say no
-/// rather than invent a value.
+/// `currentcolor` is not an absolute colour: it depends on an element, and
+/// `parse_color` has none, so it must say no rather than invent a value. A
+/// caller that *does* have the element calls `parse_color_with_current`
+/// instead (#256) — this contract is the reason that function exists rather
+/// than `parse_color` growing a default.
 #[test]
 fn test_parse_color_currentcolor_is_not_absolute() {
     assert_eq!(rgba("currentcolor"), None);
@@ -1484,6 +1494,162 @@ mod svg_paint {
             [4, 5, 6, 255]
         );
     }
+
+    // === #256: a colour *derived from* `currentcolor` is still resolvable ===
+    //
+    // `currentcolor` was handled by a string compare, so it worked; every
+    // other form that depends on the element — a mix, a relative colour, a
+    // contrast colour — reached `parse_color`, which has no element and
+    // correctly declines, and the shape then painted nothing at all. These go
+    // through `parse_color_with_current`, which resolves against the child's
+    // own `color` the way the cascade does. Pixels are premultiplied.
+
+    /// A relative colour over `currentcolor`, keeping its alpha.
+    #[test]
+    fn svg_fill_relative_colour_over_currentcolor_paints() {
+        assert_eq!(
+            rect_centre_pixel(
+                "rgb(from currentcolor r g b / 50%)",
+                "color: rgb(10, 20, 30)"
+            ),
+            [5, 10, 15, 128],
+            "half-alpha rgb(10, 20, 30), premultiplied"
+        );
+    }
+
+    /// A `color-mix()` with `currentcolor` on one side.
+    #[test]
+    fn svg_fill_color_mix_over_currentcolor_paints() {
+        assert_eq!(
+            rect_centre_pixel(
+                "color-mix(in srgb, currentcolor, blue)",
+                "color: rgb(255, 0, 0)"
+            ),
+            [128, 0, 128, 255],
+            "half red, half blue"
+        );
+    }
+
+    /// `contrast-color()` — the fifth `ComputedColor` variant, resolved by the
+    /// same call rather than by an arm of our own.
+    #[test]
+    fn svg_fill_contrast_color_over_currentcolor_paints() {
+        assert_eq!(
+            rect_centre_pixel("contrast-color(currentcolor)", "color: rgb(255, 255, 255)"),
+            [0, 0, 0, 255],
+            "black contrasts with white better than white does"
+        );
+    }
+
+    // === #258: an unusable paint is ignored, not treated as `none` ===
+    //
+    // SVG's rule for a presentation attribute it cannot use is to ignore it,
+    // leaving whatever would have applied without it. rinch used to answer
+    // `None` for both "paint nothing" and "I could not parse that", so a typo
+    // in a `fill` made the shape disappear.
+
+    /// `fill="inherit"` takes the `<svg>`'s paint. It used to paint nothing.
+    #[test]
+    fn svg_fill_inherit_takes_the_svg_level_paint() {
+        assert_eq!(
+            svg_rect_centre_pixel(Some("red"), "", Some("inherit"), ""),
+            [255, 0, 0, 255]
+        );
+    }
+
+    /// `unset` on an inherited property means `inherit`.
+    #[test]
+    fn svg_fill_unset_takes_the_svg_level_paint() {
+        assert_eq!(
+            svg_rect_centre_pixel(Some("red"), "", Some("unset"), ""),
+            [255, 0, 0, 255]
+        );
+    }
+
+    /// A paint-server reference with a fallback colour uses the fallback —
+    /// `paint_svg` renders no `<defs>`, so every `url()` here is unresolvable.
+    #[test]
+    fn svg_fill_url_with_a_fallback_uses_the_fallback() {
+        assert_eq!(
+            rect_centre_pixel("url(#missing) rebeccapurple", ""),
+            [102, 51, 153, 255]
+        );
+    }
+
+    /// The same reference with *no* fallback is not rendered — the one case
+    /// where an unusable paint really does mean "paint nothing" (SVG 2, and
+    /// what Chrome does). This is why the resolver is a tri-state and not an
+    /// `Option`.
+    #[test]
+    fn svg_fill_url_without_a_fallback_paints_nothing() {
+        assert_eq!(rect_centre_pixel("url(#missing)", ""), [0, 0, 0, 0]);
+    }
+
+    /// An unparseable value falls back to the `<svg>` level...
+    #[test]
+    fn svg_fill_invalid_falls_back_to_the_svg_level() {
+        assert_eq!(
+            svg_rect_centre_pixel(Some("red"), "", Some("notacolour"), ""),
+            [255, 0, 0, 255]
+        );
+    }
+
+    /// ...and with nothing there either, to SVG's initial `fill`, black.
+    #[test]
+    fn svg_fill_invalid_with_no_svg_level_falls_back_to_black() {
+        assert_eq!(
+            svg_rect_centre_pixel(None, "", Some("notacolour"), ""),
+            [0, 0, 0, 255]
+        );
+    }
+
+    /// The same rule one level up: an unusable `fill` on the `<svg>` itself is
+    /// ignored, so its children inherit the initial value rather than nothing.
+    #[test]
+    fn svg_level_invalid_fill_falls_back_to_black() {
+        assert_eq!(
+            svg_rect_centre_pixel(Some("notacolour"), "", None, ""),
+            [0, 0, 0, 255]
+        );
+    }
+
+    /// The arm the tri-state exists to protect: `none` is a real answer and
+    /// must never fall back.
+    #[test]
+    fn svg_fill_none_still_beats_an_svg_level_paint() {
+        assert_eq!(
+            svg_rect_centre_pixel(Some("red"), "", Some("none"), ""),
+            [0, 0, 0, 0]
+        );
+    }
+
+    /// `stroke` goes through the same resolver, with `none` as its initial —
+    /// so an unusable stroke leaves the shape unstroked, not black-stroked.
+    #[test]
+    fn svg_stroke_follows_the_same_fallback_rules() {
+        let mut doc = RinchDocument::new();
+        let body = doc.body();
+        let svg = doc.create_element("svg");
+        doc.set_attribute(svg, "viewBox", "0 0 10 10");
+        doc.set_attribute(svg, "stroke", "red");
+        doc.set_attribute(svg, "style", "display: block; width: 20px; height: 20px");
+        doc.append_child(body, svg);
+        let rect = doc.create_element("rect");
+        doc.set_attribute(rect, "width", "10");
+        doc.set_attribute(rect, "height", "10");
+        doc.set_attribute(rect, "fill", "none");
+        doc.set_attribute(rect, "stroke", "notacolour");
+        doc.set_attribute(rect, "stroke-width", "10");
+        doc.append_child(svg, rect);
+        doc.resolve_layout(800.0, 600.0);
+        let mut painter = TinySkiaPainter::new(40, 40);
+        paint_skia(&mut doc, &mut painter);
+        assert_eq!(
+            pixel_at(&painter, 10, 10),
+            [255, 0, 0, 255],
+            "an unusable stroke falls back to the <svg>'s red, not to nothing"
+        );
+    }
 }
 
 /// Regression for the paint half of issue #61 (see `ifc.rs`,
@@ -1828,6 +1994,249 @@ mod scrollbar_paint {
             &mut paint_layout_cx,
         );
         painter
+    }
+
+    /// A pixel somewhere in the vertical bar's strip, `dy` rows down the track.
+    /// The container is 200x100 at the origin and the bar is `thickness` thick
+    /// with a 2px margin, so the vertical thumb's centre column is x = 195 at
+    /// the default 6px thickness.
+    fn vbar_pixel(painter: &TinySkiaPainter, dy: u32) -> [u8; 4] {
+        pixel_at(painter, 195, dy)
+    }
+
+    /// How far a pixel is from a reference colour, worst channel.
+    fn delta(p: [u8; 4], rgb: [u8; 3]) -> u8 {
+        p[0].abs_diff(rgb[0])
+            .max(p[1].abs_diff(rgb[1]))
+            .max(p[2].abs_diff(rgb[2]))
+    }
+
+    /// #416: 40% black is a good default over light chrome and no scrollbar at
+    /// all over dark chrome. Composited over `#0b0e13` it resolves to about
+    /// `#070810` — a delta of 3-8 per channel, which does not read on a
+    /// monitor, so a dark app scrolled with no visible sign that there was
+    /// anything below the fold.
+    #[test]
+    fn a_dark_containers_thumb_is_visible_against_its_background() {
+        const PANEL: [u8; 3] = [0x0b, 0x0e, 0x13];
+        let p = paint_scroller(
+            "overflow-y: auto; background-color: #0b0e13; color: #e6e6e6",
+            "width: 40px; height: 800px",
+            (0.0, 0.0),
+        );
+        // The thumb starts 2px down and is 20px long at minimum, so row 10 is
+        // thumb and row 60 is bare panel.
+        let thumb = vbar_pixel(&p, 10);
+        let bare = vbar_pixel(&p, 60);
+
+        assert!(
+            delta(bare, PANEL) < 6,
+            "row 60 must be bare panel, got {bare:?}"
+        );
+        assert!(
+            delta(thumb, PANEL) > 60,
+            "the thumb must stand off a dark panel, got {thumb:?} against {PANEL:?}"
+        );
+        // The pre-fix answer was ~#070810 — a delta of at most 8. Stated so
+        // this test is known to bite.
+        assert!(
+            delta(thumb, PANEL) > 20,
+            "40% black over #0b0e13 must not pass"
+        );
+    }
+
+    /// The same container with light chrome is untouched: the default follows
+    /// the palette's *polarity*, so every light-themed app is pixel-identical.
+    #[test]
+    fn a_light_containers_thumb_is_still_forty_percent_black() {
+        let p = paint_scroller(
+            "overflow-y: auto; background-color: white; color: #212529",
+            "width: 40px; height: 800px",
+            (0.0, 0.0),
+        );
+        // 0.4 black over white is 153.
+        assert!(
+            delta(vbar_pixel(&p, 10), [153, 153, 153]) < 4,
+            "got {:?}",
+            vbar_pixel(&p, 10)
+        );
+    }
+
+    /// A coloured `color` must not tint the thumb — only its polarity is read,
+    /// so the neutral grey the bar has always been stays neutral.
+    #[test]
+    fn a_coloured_text_colour_does_not_tint_the_thumb() {
+        let p = paint_scroller(
+            "overflow-y: auto; background-color: white; color: rgb(200, 0, 0)",
+            "width: 40px; height: 800px",
+            (0.0, 0.0),
+        );
+        let t = vbar_pixel(&p, 10);
+        assert_eq!((t[0], t[1], t[2]), (153, 153, 153), "got {t:?}");
+    }
+
+    /// `--rinch-scrollbar-color: <thumb>` paints the thumb in that colour. The
+    /// real `scrollbar-color` is gecko-only in Stylo and compiled out of the
+    /// servo build rinch uses, so the value arrives through a custom property.
+    #[test]
+    fn a_custom_property_sets_the_thumb_colour() {
+        let p = paint_scroller(
+            "overflow-y: auto; --rinch-scrollbar-color: rgb(255, 0, 0)",
+            "width: 40px; height: 800px",
+            (0.0, 0.0),
+        );
+        let t = vbar_pixel(&p, 10);
+        assert_eq!((t[0], t[1], t[2], t[3]), (255, 0, 0, 255), "got {t:?}");
+    }
+
+    /// Two colours: thumb then track. The track is only painted when asked
+    /// for, because rinch's bar is an overlay and a track under it would
+    /// change the look of every existing app.
+    #[test]
+    fn a_second_colour_paints_a_track_behind_the_thumb() {
+        let styled = "overflow-y: auto; --rinch-scrollbar-color: rgb(255, 0, 0) rgb(0, 0, 255)";
+        let p = paint_scroller(styled, "width: 40px; height: 800px", (0.0, 0.0));
+        assert_eq!(
+            (vbar_pixel(&p, 10)[0], vbar_pixel(&p, 10)[2]),
+            (255, 0),
+            "the thumb is still red"
+        );
+        let track = vbar_pixel(&p, 60);
+        assert_eq!(
+            (track[0], track[1], track[2]),
+            (0, 0, 255),
+            "and the bare track below it is blue, got {track:?}"
+        );
+
+        // With one colour there is no track at all: row 60 is the container's
+        // own white background.
+        let one = paint_scroller(
+            "overflow-y: auto; --rinch-scrollbar-color: rgb(255, 0, 0)",
+            "width: 40px; height: 800px",
+            (0.0, 0.0),
+        );
+        assert_eq!(
+            vbar_pixel(&one, 60)[2],
+            255,
+            "no track means the container shows through"
+        );
+    }
+
+    /// `--rinch-scrollbar-width: none` suppresses the bar entirely.
+    #[test]
+    fn scrollbar_width_none_paints_nothing() {
+        let p = paint_scroller(
+            "overflow-y: auto; --rinch-scrollbar-width: none",
+            "width: 40px; height: 800px",
+            (0.0, 0.0),
+        );
+        assert!(
+            !any_thumb(&p, 184, 0, 200, 100),
+            "no thumb anywhere in the vertical strip"
+        );
+        assert_eq!(
+            vbar_pixel(&p, 10)[0],
+            255,
+            "the container's white background shows through"
+        );
+    }
+
+    /// ...and it turns the hit strip off too, because `scrollbars` is what
+    /// `find_scrollbar_hit` consumes. An app drawing its own bar could
+    /// otherwise only cover rinch's up, never switch it off.
+    #[test]
+    fn scrollbar_width_none_removes_the_bar_from_hit_testing_too() {
+        let mut doc = RinchDocument::new();
+        let body = doc.body();
+        let container = doc.create_element("div");
+        doc.set_attribute(
+            container,
+            "style",
+            "width: 200px; height: 100px; overflow-y: auto; --rinch-scrollbar-width: none",
+        );
+        doc.append_child(body, container);
+        let content = doc.create_element("div");
+        doc.set_attribute(content, "style", "width: 40px; height: 800px");
+        doc.append_child(container, content);
+        doc.resolve_layout(800.0, 600.0);
+
+        let bars = rinch_dom::paint::scrollbar::scrollbars(&doc.tree, container.0, 1.0);
+        assert!(bars.vertical.is_none(), "no bar to hit-test");
+
+        // Without the declaration the same container does have one, so the
+        // assertion above is about `none` and not about the fixture.
+        doc.set_attribute(
+            container,
+            "style",
+            "width: 200px; height: 100px; overflow-y: auto",
+        );
+        doc.resolve_layout(800.0, 600.0);
+        assert!(
+            rinch_dom::paint::scrollbar::scrollbars(&doc.tree, container.0, 1.0)
+                .vertical
+                .is_some()
+        );
+    }
+
+    /// `thin` narrows the thumb. The default 6px bar covers x ∈ [192, 198);
+    /// a 4px one covers [194, 198), so x = 192 tells them apart.
+    #[test]
+    fn scrollbar_width_thin_narrows_the_thumb() {
+        let thin = paint_scroller(
+            "overflow-y: auto; --rinch-scrollbar-width: thin",
+            "width: 40px; height: 800px",
+            (0.0, 0.0),
+        );
+        let wide = paint_scroller("overflow-y: auto", "width: 40px; height: 800px", (0.0, 0.0));
+        assert!(
+            is_thumb(pixel_at(&wide, 192, 10)),
+            "the default bar reaches x = 192"
+        );
+        assert!(
+            !is_thumb(pixel_at(&thin, 192, 10)),
+            "a thin one does not, got {:?}",
+            pixel_at(&thin, 192, 10)
+        );
+        assert!(
+            is_thumb(pixel_at(&thin, 196, 10)),
+            "but it is still there at x = 196"
+        );
+    }
+
+    /// The property inherits, so one declaration on `:root` restyles every
+    /// scroll region in an app — which is the whole reason it goes through a
+    /// custom property rather than the inline `style` attribute.
+    #[test]
+    fn a_root_declaration_reaches_a_nested_scroll_container() {
+        let mut doc = RinchDocument::new();
+        doc.load_css(":root { --rinch-scrollbar-color: rgb(0, 200, 0); }");
+        let body = doc.body();
+        let outer = doc.create_element("div");
+        doc.append_child(body, outer);
+        let container = doc.create_element("div");
+        doc.set_attribute(
+            container,
+            "style",
+            "width: 200px; height: 100px; background-color: white; overflow-y: auto",
+        );
+        doc.append_child(outer, container);
+        let content = doc.create_element("div");
+        doc.set_attribute(content, "style", "width: 40px; height: 800px");
+        doc.append_child(container, content);
+        doc.resolve_layout(800.0, 600.0);
+
+        let mut painter = TinySkiaPainter::new(800, 600);
+        let mut cx: parley::LayoutContext<Brush> = parley::LayoutContext::new();
+        rinch_dom::paint::paint_document(
+            &doc.tree,
+            &mut painter,
+            1.0,
+            (800.0, 600.0),
+            &mut doc.font_cx,
+            &mut cx,
+        );
+        let t = vbar_pixel(&painter, 10);
+        assert_eq!((t[0], t[1], t[2]), (0, 200, 0), "got {t:?}");
     }
 
     /// The container is 200×100 at the origin; the bar is 6px thick with a 2px
@@ -2749,5 +3158,207 @@ mod opacity_layer_bounds {
             "push_layer applies the node's transform to the bounds shape, so the \
              bounds are the untransformed border box"
         );
+    }
+}
+
+/// #260: every colour channel the paint pipeline hands a painter is *rounded*
+/// to 8 bits, never truncated.
+///
+/// Truncation is not a rounding-mode preference, it is a systematic one-sided
+/// bias: it can only ever move a value down, and box shadows stack eight
+/// layers, so eight truncations compound. Every assertion below is an exact
+/// byte, and every one of them was one level lighter before.
+mod channel_rounding {
+    use super::transform_paint::{paint_skia, pixel_at};
+    use super::*;
+    use rinch_core::dom::NodeId;
+    use rinch_dom::paint::skia_painter::TinySkiaPainter;
+
+    /// One absolutely-positioned 100x100 div at (100, 100), painted.
+    fn painted(style: &str) -> TinySkiaPainter {
+        let mut doc = RinchDocument::new();
+        let body = doc.body();
+        let div = doc.create_element("div");
+        doc.set_attribute(
+            div,
+            "style",
+            &format!(
+                "position: absolute; left: 100px; top: 100px; width: 100px; height: 100px; {style}"
+            ),
+        );
+        doc.append_child(body, div);
+        let _: NodeId = div;
+        doc.resolve_layout(800.0, 600.0);
+        let mut painter = TinySkiaPainter::new(800, 600);
+        paint_skia(&mut doc, &mut painter);
+        painter
+    }
+
+    /// `filter: brightness(b)` overlays black at alpha `1 - b`, which is exact
+    /// for a darken: white through `brightness(0.35)` is `255 x 0.35 = 89.25`.
+    ///
+    /// The overlay alpha is `0.65 x 255 = 165.75`. Truncated to 165 the pixel
+    /// came out 90; rounded to 166 it is 89, the byte a browser shows.
+    #[test]
+    fn brightness_darken_rounds_the_overlay_alpha() {
+        let painter = painted("background-color: rgb(255,255,255); filter: brightness(0.35)");
+        assert_eq!(
+            pixel_at(&painter, 150, 150),
+            [89, 89, 89, 255],
+            "255 x 0.35 = 89.25; truncating the 165.75 overlay alpha gave 90"
+        );
+    }
+
+    /// The brighten half of the same overlay: white at alpha `b - 1` over
+    /// black, so the pixel *is* the alpha. `0.65 x 255 = 165.75` again.
+    #[test]
+    fn brightness_brighten_rounds_the_overlay_alpha() {
+        let painter = painted("background-color: rgb(0,0,0); filter: brightness(1.65)");
+        assert_eq!(
+            pixel_at(&painter, 150, 150),
+            [166, 166, 166, 255],
+            "the overlay alpha is 165.75; truncating gave 165"
+        );
+    }
+
+    /// A blurred box shadow is eight concentric layers. The outermost band is
+    /// covered by exactly *one* of them — the `t = 1.0` layer, whose alpha is
+    /// `255 x (1 - 0.7) / 8 = 9.5625` for an opaque shadow — so it reads the
+    /// per-layer quantiser directly, with nothing composited on top.
+    #[test]
+    fn shadow_outer_layer_rounds_its_alpha() {
+        let painter = painted("box-shadow: 0 0 40px 0 rgb(0,0,0)");
+        assert_eq!(
+            pixel_at(&painter, 100 - 19, 150),
+            [0, 0, 0, 10],
+            "the outermost layer's alpha is 9.5625; truncating gave 9"
+        );
+    }
+
+    /// And the bias compounds where the layers overlap: nearer the box, ten
+    /// layers' worth of truncation used to add up to three whole levels of
+    /// missing shadow.
+    #[test]
+    fn shadow_stacked_layers_do_not_compound_a_truncation_bias() {
+        let painter = painted("box-shadow: 0 0 40px 0 rgb(0,0,0)");
+        assert_eq!(
+            pixel_at(&painter, 100 - 10, 150),
+            [0, 0, 0, 69],
+            "eight truncated layers summed to 66"
+        );
+    }
+
+    /// The shadow's own RGB reaches the layers unchanged. This never broke,
+    /// which is exactly why it needs pinning: the per-layer colour used to be
+    /// rebuilt from three hand-extracted bytes, and now it is the shadow colour
+    /// with its alpha scaled — a rebuild that dropped the hue would be
+    /// invisible to every other test here, all of which use a black shadow.
+    #[test]
+    fn a_coloured_shadow_keeps_its_hue_in_every_layer() {
+        let painter = painted("box-shadow: 0 0 40px 0 rgb(255,0,0)");
+        assert_eq!(
+            pixel_at(&painter, 100 - 19, 150),
+            [10, 0, 0, 10],
+            "premultiplied red at the outermost layer's alpha"
+        );
+    }
+
+    /// A translucent shadow's own alpha *scales* each layer's alpha; it does
+    /// not merely set the colour. Every other shadow case here is opaque, where
+    /// scaling and setting give the same byte — so this is the only assertion
+    /// that can tell them apart.
+    #[test]
+    fn a_translucent_shadow_scales_every_layer_by_its_own_alpha() {
+        let painter = painted("box-shadow: 0 0 40px 0 rgba(0,0,0,0.5)");
+        assert_eq!(
+            pixel_at(&painter, 100 - 19, 150),
+            [0, 0, 0, 5],
+            "(128/255) x 9.5625 = 4.80; ignoring the shadow's alpha would give 10"
+        );
+    }
+
+    /// A shadow colour is already 8-bit-quantised before paint ever sees it,
+    /// which is why removing the `to_rgba8` re-snap in `paint_shadows` is
+    /// redundancy removal rather than a precision gain.
+    ///
+    /// `rgb(0.5% 99.5% 33.3%)` is as far from byte-aligned as CSS lets you
+    /// write; it paints identically to the `rgb(1, 254, 85)` it rounds to,
+    /// because `color_from_absolute` rounded it on the way into
+    /// `ComputedStyle`. So no input exists that the re-snap could have
+    /// changed — including the `color-mix()` and percentage cases you would
+    /// expect to be the counterexamples.
+    #[test]
+    fn a_shadow_colour_is_already_quantised_before_paint() {
+        let percent = painted("box-shadow: 0 0 40px 0 rgb(0.5% 99.5% 33.3%)");
+        let bytes = painted("box-shadow: 0 0 40px 0 rgb(1, 254, 85)");
+        assert_eq!(
+            pixel_at(&percent, 100 - 19, 150),
+            pixel_at(&bytes, 100 - 19, 150)
+        );
+        assert_eq!(
+            pixel_at(&percent, 100 - 10, 150),
+            pixel_at(&bytes, 100 - 10, 150)
+        );
+    }
+
+    /// `brightness()` has no upper bound in CSS, but an overlay alpha does.
+    /// Anything at or past `brightness(2)` is a fully opaque white wash.
+    #[test]
+    fn an_out_of_range_brightness_clamps_the_overlay_alpha() {
+        let painter = painted("background-color: rgb(0,0,0); filter: brightness(3)");
+        assert_eq!(
+            pixel_at(&painter, 150, 150),
+            [255, 255, 255, 255],
+            "alpha 2.0 must clamp to 1.0, not wrap"
+        );
+    }
+
+    /// A faint shadow used to paint **nothing at all** — not a dim shadow, an
+    /// absent one.
+    ///
+    /// The per-layer skip threshold was `(alpha * 255.0) as u8 == 0`, which
+    /// truncates, so it discarded every layer whose alpha was under a *whole*
+    /// level rather than under half of one. `alpha_scale` peaks at 0.114, so
+    /// for a faint shadow that is every layer there is: at `rgba(0,0,0,0.03)`
+    /// and below, the entire 800x600 framebuffer came back zero.
+    ///
+    /// Nothing in the suite noticed — every other shadow test here is opaque
+    /// or half-opaque, well clear of the threshold — so this is the third
+    /// blind spot of the same kind as `a_translucent_shadow_...`: an input
+    /// class no test reached, rather than a line no test covered.
+    #[test]
+    fn a_faint_shadow_is_painted_rather_than_skipped() {
+        for alpha in ["0.02", "0.025", "0.03"] {
+            let painter = painted(&format!("box-shadow: 0 0 40px 0 rgba(0,0,0,{alpha})"));
+            let lit = painter.pixels().iter().filter(|b| **b != 0).count();
+            assert!(
+                lit > 0,
+                "`rgba(0,0,0,{alpha})` must paint something; the whole buffer was blank"
+            );
+            assert_eq!(
+                pixel_at(&painter, 100 - 2, 150)[3],
+                match alpha {
+                    "0.02" => 2,
+                    "0.025" => 3,
+                    _ => 5,
+                },
+                "just outside the box, 2px out (alpha = {alpha})"
+            );
+        }
+    }
+
+    /// The guard the truncation used to provide by accident: a layer whose
+    /// alpha rounds to zero is skipped rather than filled. A fully transparent
+    /// shadow must paint nothing at all.
+    #[test]
+    fn a_transparent_shadow_still_paints_nothing() {
+        let painter = painted("box-shadow: 0 0 40px 0 rgba(0,0,0,0)");
+        for dx in [1u32, 10, 19] {
+            assert_eq!(
+                pixel_at(&painter, 100 - dx, 150),
+                [0, 0, 0, 0],
+                "a zero-alpha shadow must not tint anything (dx = {dx})"
+            );
+        }
     }
 }

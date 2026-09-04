@@ -6,20 +6,13 @@ mod state_tracking;
 
 use servo_arc::Arc as ServoArc;
 
-use euclid::Scale;
 use rinch_core::dom::NodeId;
 use style::context::QuirksMode;
-use style::media_queries::{Device, MediaType};
-use style::properties::ComputedValues;
-use style::properties::style_structs::Font as StyloFont;
-use style::queries::values::PrefersColorScheme;
 
 use crate::RinchDocument;
 use crate::computed_style::ComputedStyle;
 use crate::layout;
 use crate::node::{DirtyFlags, DisplayMode, NodeTree};
-
-use super::dom_impl::SimpleFontMetricsProvider;
 
 impl RinchDocument {
     /// Load CSS into the document's stylesheet.
@@ -114,23 +107,11 @@ impl RinchDocument {
         // Update our internal viewport tracking
         self.tree.viewport = crate::layout::Viewport { width, height };
 
-        // Create a new Device with the updated viewport
-        let viewport_size = euclid::Size2D::new(width, height);
-        let device_pixel_ratio = Scale::new(1.0);
-        let font_metrics_provider = Box::new(SimpleFontMetricsProvider);
-        let default_font = StyloFont::initial_values();
-        let default_computed_values =
-            ComputedValues::initial_values_with_font_override(default_font);
-
-        let device = Device::new(
-            MediaType::screen(),
-            QuirksMode::NoQuirks,
-            viewport_size,
-            device_pixel_ratio,
-            font_metrics_provider,
-            default_computed_values,
-            PrefersColorScheme::Light,
-        );
+        // Create a new Device with the updated viewport. Everything else the
+        // Device carries is rebuilt from `device_params`, so a resize cannot
+        // silently reset the root font-size (#279) or the device pixel ratio
+        // (#211) back to their defaults.
+        let device = crate::dom_impl::build_device(width, height, &self.device_params);
 
         // Update the stylist's device using StylesheetGuards
         let guard = self.tree.guard.read();
@@ -142,6 +123,38 @@ impl RinchDocument {
             .force_stylesheet_origins_dirty(Origin::UserAgent.into());
         self.stylist
             .force_stylesheet_origins_dirty(Origin::Author.into());
+    }
+
+    /// Set the device pixel ratio (DPI scale factor) for the Stylo Device
+    /// (issue #211).
+    ///
+    /// This drives the `resolution` media features (`@media (min-resolution:
+    /// 2dppx)`), `image-set()` candidate selection, and border-width
+    /// device-pixel snapping. It does **not** change layout geometry — 1 CSS
+    /// px remains 1 layout unit. The value survives viewport-driven `Device`
+    /// rebuilds.
+    ///
+    /// Every cached style is invalidated, since any rule gated on a
+    /// resolution media query may now match differently.
+    pub fn set_device_pixel_ratio(&mut self, dpr: f32) {
+        if !dpr.is_finite() || dpr <= 0.0 || dpr == self.device_params.device_pixel_ratio {
+            return;
+        }
+        self.device_params.device_pixel_ratio = dpr;
+
+        // Rebuild the Device from the updated params (this also forces all
+        // stylesheet origins dirty, which media-feature changes require).
+        let viewport = self.tree.viewport;
+        self.set_stylist_viewport(viewport.width, viewport.height);
+
+        // Invalidate all cached styles and force a full re-resolve +
+        // relayout, mirroring resolve_layout's viewport-change branch.
+        for (node_id, _) in self.tree.nodes.iter() {
+            *self.tree.nodes[node_id].stylo_element_data.borrow_mut() = None;
+        }
+        self.tree.style_roots.clear();
+        self.tree.styles_dirty = true;
+        self.tree.layout_dirty = true;
     }
 
     /// Parse a CSS string into an author-origin Stylo stylesheet.
@@ -734,6 +747,21 @@ impl RinchDocument {
             };
             self.tree.nodes[node_id].display_mode = display_mode;
 
+            // A node crossing into or out of `display: contents` changes the
+            // *tree* — `sync_display_contents` must splice or heal — which the
+            // Taffy-style comparison below cannot be trusted to notice (#520):
+            // `Contents` maps to `taffy::Display::Flex`, so `flex → contents`
+            // compares equal, and a spliced wrapper's Taffy style was stamped
+            // `Display::None` by the sync pass, so `contents → none` compares
+            // equal on the display field. Set the flags on the computed-display
+            // crossing itself, independent of that comparison.
+            if (old_display == crate::computed_style::DisplayValue::Contents)
+                != (new_style.display == crate::computed_style::DisplayValue::Contents)
+            {
+                self.tree.ifc_dirty = true;
+                self.tree.layout_dirty = true;
+            }
+
             // Convert to Taffy style (from current computed_style which may have transition values)
             let dd = self.default_display_for_node(node_id);
             let mut taffy_style = self.tree.nodes[node_id].computed_style.to_taffy_style(dd);
@@ -798,10 +826,20 @@ impl RinchDocument {
             // (e.g. background-color on hover) which don't affect layout.
             if let Ok(old_taffy_style) = self.tree.taffy.style(taffy_id) {
                 if old_taffy_style != &taffy_style {
-                    // Only set ifc_dirty when display changes — that's what affects
-                    // IFC structure (inline/block mixing, display:contents, display:none).
-                    // Other layout changes (width, padding, margin) don't need IFC rebuild.
-                    if old_taffy_style.display != taffy_style.display {
+                    // Only set ifc_dirty when display or position changes —
+                    // that's what affects IFC structure. Display covers
+                    // inline/block mixing, display:contents and display:none;
+                    // position covers in-flow ↔ out-of-flow flips (Taffy's
+                    // `position` is Absolute exactly for CSS absolute/fixed),
+                    // which change whether a sibling run needs an anonymous
+                    // box and whether this node's parent needs a measure leaf
+                    // (#466) — a runtime `static → absolute` toggle would
+                    // otherwise never re-run IFC setup and the leaf decision
+                    // would go stale. Other layout changes (width, padding,
+                    // margin) don't need IFC rebuild.
+                    if old_taffy_style.display != taffy_style.display
+                        || old_taffy_style.position != taffy_style.position
+                    {
                         self.tree.ifc_dirty = true;
                     }
                     let _ = self.tree.taffy.set_style(taffy_id, taffy_style);

@@ -525,6 +525,13 @@ overlay.resize(&device, new_width, new_height);
 ctx.set_scale_factor(window.scale_factor());
 ```
 
+`set_scale_factor` also feeds Stylo's `device_pixel_ratio` (issue #211): CSS
+`resolution` media queries (`@media (min-resolution: 2dppx)`), `image-set()`
+candidate selection, and border-width device-pixel snapping all follow the
+value you pass. A changed scale restyles the document on the next `update()`,
+which also re-lays it out at the new logical size. The initial value comes
+from `RinchContextConfig::scale_factor` and is live from the first layout.
+
 Hit testing is transform-aware, so the usual `position: absolute; left: 50%;
 top: 50%; transform: translate(-50%, -50%)` centering idiom is fully clickable —
 a transformed subtree is hit where it is *painted*.
@@ -552,7 +559,17 @@ PlatformEvent::MouseUp { x: 100.0, y: 200.0, button: MouseButton::Left }
 PlatformEvent::MouseWheel { x: 100.0, y: 200.0, delta_x: 0.0, delta_y: -30.0 }
 PlatformEvent::KeyDown {
     key: KeyCode::KeyA,
+    // The layout-produced `KeyboardEvent.key` value, case-accurate ("A" under
+    // Shift). `None` = unknown; the app then falls back to the physical `key`.
+    logical_key: Some("a".into()),
     text: Some("a".into()),
+    modifiers: Modifiers::default(),
+}
+PlatformEvent::KeyUp {
+    key: KeyCode::KeyA,
+    // Spell it like the press, or a consumer pairing press with release by
+    // key string ("is A still held") never matches.
+    logical_key: Some("a".into()),
     modifiers: Modifiers::default(),
 }
 PlatformEvent::Resized { width: 1920, height: 1080 }

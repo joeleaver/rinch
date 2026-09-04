@@ -2356,14 +2356,16 @@ mod inset_fast_path {
     /// against the initial containing block, so an inset change is not
     /// inset-only for it. Taking the fast path would leave the stale width.
     ///
-    /// The insets are written as longhands, not `inset: 0`: `merged_inline_style`
-    /// joins a `HashMap`, so a `set_style` longhand lands on a random side of a
-    /// shorthand already in the attribute and is silently lost about half the
-    /// time. That is its own bug (#387), not this one.
+    /// The insets are the `inset: 0` shorthand, which is what an app writes.
+    /// This used to be spelled as four longhands to dodge #265:
+    /// `merged_inline_style` joined a `HashMap`, so a `set_style` longhand
+    /// landed on a random side of a shorthand already in the attribute and was
+    /// silently lost about half the time. The order is deterministic now, and
+    /// the appended longhand wins.
     #[test]
     fn set_style_left_on_an_icb_absolute_reaches_stylo() {
         const UNPOSITIONED: &str = "width: 300px; height: 200px";
-        const FILLING: &str = "position: absolute; left: 0; top: 0; right: 0; bottom: 0";
+        const FILLING: &str = "position: absolute; inset: 0";
 
         let (mut doc, node) = positioned(UNPOSITIONED, FILLING);
         assert_eq!(
@@ -2399,6 +2401,41 @@ mod inset_fast_path {
         let expected = twin(PARENT, CHILD, &overrides);
         assert_eq!((expected.x, expected.y), (15.0, 39.0));
         assert_eq!(layout_of(&doc, child), expected);
+    }
+
+    /// #265, end to end: a `set_style` longhand must beat a shorthand that was
+    /// already in the attribute, because it is written after it. Half of all
+    /// runs used to lay this out at `left: 0` — the same code, the same input,
+    /// a different hash seed.
+    ///
+    /// `positioned` gives the child a positioned parent, so this is the fast
+    /// path too: the fast path and the oracle must agree on which declaration
+    /// won, which is the invariant the `merged → parse_inline_style → cache`
+    /// pipeline exists to keep.
+    #[test]
+    fn set_style_longhand_beats_a_shorthand_already_in_the_attribute() {
+        const FILLING: &str = "position: absolute; inset: 0";
+        let (mut doc, child) = positioned(PARENT, FILLING);
+
+        let overrides = [("left", "25px")];
+        set_and_resolve(&mut doc, child, &overrides, Path::Fast);
+
+        assert_eq!(
+            doc.get_attribute(child, "style").unwrap(),
+            "position: absolute; inset: 0; left: 25px",
+            "the appended longhand must come last, every run"
+        );
+
+        let expected = twin(PARENT, FILLING, &overrides);
+        assert_eq!(
+            expected.x, 30.0,
+            "oracle sanity: 25px inside the parent's 5px left border"
+        );
+        assert_eq!(
+            layout_of(&doc, child),
+            expected,
+            "`left: 25px` was written after `inset: 0`, so it wins"
+        );
     }
 }
 

@@ -159,6 +159,15 @@ fn max_track_from_stylo(
 /// Convert Stylo LengthPercentage to Taffy LengthPercentage.
 /// This is similar to length_percentage_from_stylo in box_model but works with plain
 /// LengthPercentage instead of NonNegativeLengthPercentage, and returns a Taffy type.
+///
+/// This converter does NOT route a mixed `calc()` through `Calc { px, pct }`
+/// like the rest of the #278 family, because its output is a bare Taffy value
+/// stored inside `grid_template_*`/`grid_auto_*` on the Taffy style — there is
+/// no `ComputedStyle` slot to carry the pair to `resolve_layout_calcs`, and
+/// Taffy's own calc pointer resolves to `0.0` under `TaffyTree` (taffy-0.12.2,
+/// `src/tree/taffy_tree.rs:391`). Until grid tracks grow a side channel, a
+/// mixed calc keeps its percentage component — `calc(50% - 10px)` sizes the
+/// track at `50%`, off by the length part, where it used to collapse to `0`.
 fn length_percentage_from_stylo_lp(
     lp: &style::values::computed::LengthPercentage,
 ) -> taffy::LengthPercentage {
@@ -167,6 +176,11 @@ fn length_percentage_from_stylo_lp(
     } else if let Some(pct) = lp.to_percentage() {
         taffy::LengthPercentage::percent(pct.0)
     } else {
-        taffy::LengthPercentage::length(0.0)
+        let (px, pct) = super::calc::split_length_percentage(lp);
+        if pct != 0.0 {
+            taffy::LengthPercentage::percent(pct)
+        } else {
+            taffy::LengthPercentage::length(px)
+        }
     }
 }

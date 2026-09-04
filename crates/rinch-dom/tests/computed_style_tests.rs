@@ -1071,3 +1071,558 @@ fn inline_style_named_and_hsl_colours_resolve_via_stylo() {
         );
     }
 }
+
+// ===== Ported from the deleted `ComputedStyle::from_props` tests (#254) =====
+//
+// `from_props` was a second, hand-rolled style resolver that nothing but its
+// own three tests called. Those tests therefore asserted what `from_props`
+// did, not what the renderer does — and since every real style resolution goes
+// through stylo (`style_resolution/` -> `ComputedStyle::from_stylo`), the two
+// could drift apart without a single test noticing.
+//
+// The assertions worth keeping are the ones about *values CSS should produce*.
+// They are re-stated here against a real `RinchDocument`, so they now run
+// through the cascade the renderer actually uses. Two of the three gained
+// coverage in the move: the `flex: 1` shorthand is now checked as stylo
+// expands it, and `flex-direction` is checked by the layout it produces rather
+// than by reading a struct field back.
+
+/// Was `test_computed_style_from_props`: `display`, `width`, `flex-grow` and a
+/// longhand `padding` resolve to the expected computed values.
+#[test]
+fn declared_longhands_resolve_through_the_cascade() {
+    let mut doc = RinchDocument::new();
+    let body = doc.body();
+    let div = doc.create_element("div");
+    doc.set_attribute(
+        div,
+        "style",
+        "display: flex; width: 100px; flex-grow: 1; padding-top: 10px",
+    );
+    doc.append_child(body, div);
+    doc.resolve_layout(800.0, 600.0);
+
+    let style = &doc.tree.get(div.0).unwrap().computed_style;
+    assert!(
+        matches!(style.display, DisplayValue::Flex),
+        "display should be Flex, got {:?}",
+        style.display
+    );
+    assert!(
+        matches!(style.width, rinch_dom::computed_style::DimensionValue::Length(v)
+            if approx_eq(v, 100.0, 0.01)),
+        "width should be 100px, got {:?}",
+        style.width
+    );
+    assert!(
+        approx_eq(style.flex_grow, 1.0, 0.01),
+        "flex-grow should be 1, got {}",
+        style.flex_grow
+    );
+    assert!(
+        matches!(style.padding_top, rinch_dom::computed_style::LengthPercentageValue::Length(v)
+            if approx_eq(v, 10.0, 0.01)),
+        "padding-top should be 10px, got {:?}",
+        style.padding_top
+    );
+}
+
+/// Was `test_flex_shorthand`: `flex: 1` expands to `1 1 0%`.
+///
+/// **This is the one place the port changed an expected value, and it is the
+/// issue's thesis showing up as a concrete number.** The deleted test asserted
+/// a flex-basis of `Length(0.0)`, because that is what `from_props` built.
+/// Stylo produces `Percent(0.0)`, and stylo is right: CSS Flexbox expands
+/// `flex: <number>` to `<number> 1 0%`, a percentage. So the dead resolver's
+/// test had been green for as long as it existed while encoding a value the
+/// real cascade never produces — exactly the drift that makes a second
+/// unmaintained style path worth deleting rather than maintaining.
+///
+/// The two coincide for a container with a definite main size, which is why
+/// nothing downstream ever noticed.
+#[test]
+fn the_flex_shorthand_expands_to_one_one_zero() {
+    let mut doc = RinchDocument::new();
+    let body = doc.body();
+    let container = doc.create_element("div");
+    doc.set_attribute(container, "style", "display: flex; width: 300px");
+    doc.append_child(body, container);
+    let item = doc.create_element("div");
+    doc.set_attribute(item, "style", "flex: 1");
+    doc.append_child(container, item);
+    doc.resolve_layout(800.0, 600.0);
+
+    let style = &doc.tree.get(item.0).unwrap().computed_style;
+    assert!(
+        approx_eq(style.flex_grow, 1.0, 0.01),
+        "flex: 1 sets flex-grow: 1, got {}",
+        style.flex_grow
+    );
+    assert!(
+        approx_eq(style.flex_shrink, 1.0, 0.01),
+        "flex: 1 sets flex-shrink: 1, got {}",
+        style.flex_shrink
+    );
+    assert!(
+        matches!(style.flex_basis, rinch_dom::computed_style::DimensionValue::Percent(v)
+            if approx_eq(v, 0.0, 0.01)),
+        "flex: 1 sets flex-basis: 0%, got {:?}",
+        style.flex_basis
+    );
+
+    // And the expansion is load-bearing, not decorative: a lone `flex: 1` item
+    // fills its container because the basis is 0 and the grow factor is 1.
+    let laid_out = doc.tree.get(item.0).unwrap().layout;
+    assert!(
+        approx_eq(laid_out.width, 300.0, 0.5),
+        "the item should grow to the container's 300px, got {}",
+        laid_out.width
+    );
+}
+
+/// Was `test_to_taffy_style`: `display: flex` + `flex-direction: column` reach
+/// Taffy.
+///
+/// The original read the two fields back off a `taffy::Style` it had just
+/// built, which cannot fail for any reason a user would care about. This
+/// asserts the same wiring by its consequence — children stack on the cross
+/// axis — so it fails if the direction stops reaching the layout engine.
+#[test]
+fn flex_direction_column_reaches_the_layout_engine() {
+    let mut doc = RinchDocument::new();
+    let body = doc.body();
+    let container = doc.create_element("div");
+    doc.set_attribute(
+        container,
+        "style",
+        "display: flex; flex-direction: column; width: 200px",
+    );
+    doc.append_child(body, container);
+    for _ in 0..2 {
+        let child = doc.create_element("div");
+        doc.set_attribute(child, "style", "width: 50px; height: 30px");
+        doc.append_child(container, child);
+    }
+    doc.resolve_layout(800.0, 600.0);
+
+    let style = &doc.tree.get(container.0).unwrap().computed_style;
+    assert!(
+        matches!(style.display, DisplayValue::Flex),
+        "display should be Flex, got {:?}",
+        style.display
+    );
+
+    let kids = doc.tree.get(container.0).unwrap().children.clone();
+    assert_eq!(kids.len(), 2, "both children are in the tree");
+    let first = doc.tree.get(kids[0]).unwrap().layout;
+    let second = doc.tree.get(kids[1]).unwrap().layout;
+    assert!(
+        approx_eq(second.y - first.y, 30.0, 0.5),
+        "a column flex container stacks its children vertically: expected the \
+         second child 30px below the first, got {} -> {}",
+        first.y,
+        second.y
+    );
+    assert!(
+        approx_eq(first.x, second.x, 0.5),
+        "and does not advance them along the inline axis: {} vs {}",
+        first.x,
+        second.x
+    );
+}
+
+// ===== #256: colours derived from `currentcolor` reach the cascade =====
+//
+// `ComputedColor` has five variants. `color_from_stylo` answers only for
+// `Absolute`, and each of these ten call sites hand-checked `is_currentcolor()`
+// first — so `currentcolor` itself worked and the other three element-dependent
+// forms (`color-mix()`, a relative colour, `contrast-color()`) fell out as
+// `None`, i.e. the declaration was silently dropped. They now go through
+// stylo's own `resolve_to_absolute`, which is total over all five.
+
+/// One `<div>` with `style`, laid out; returns its computed style.
+fn computed(style: &str) -> rinch_dom::computed_style::ComputedStyle {
+    let mut doc = RinchDocument::new();
+    let body = doc.body();
+    let div = doc.create_element("div");
+    doc.set_attribute(div, "style", &format!("width: 10px; height: 10px; {style}"));
+    doc.append_child(body, div);
+    doc.resolve_layout(800.0, 600.0);
+    doc.tree.get(div.0).unwrap().computed_style.clone()
+}
+
+fn rgba8(color: Option<peniko::Color>) -> Option<(u8, u8, u8, u8)> {
+    let c = color?.to_rgba8();
+    Some((c.r, c.g, c.b, c.a))
+}
+
+#[test]
+fn background_color_mix_over_currentcolor_resolves() {
+    let style =
+        computed("color: rgb(255, 0, 0); background-color: color-mix(in srgb, currentcolor, blue)");
+    let BackgroundValue::Color(color) = style.background else {
+        panic!(
+            "a mix over currentcolor should resolve to a solid colour, got {:?}",
+            style.background
+        );
+    };
+    let c = color.to_rgba8();
+    assert_eq!((c.r, c.g, c.b, c.a), (128, 0, 128, 255));
+}
+
+/// All four sides, so no side's call site is left unpinned — each is its own
+/// line at the cascade and a rewrite could miss one.
+#[test]
+fn border_colours_relative_to_currentcolor_resolve_on_every_side() {
+    let style = computed(
+        "color: rgb(10, 20, 30); border: 2px solid; \
+         border-top-color: rgb(from currentcolor r g b / 50%); \
+         border-right-color: color-mix(in srgb, currentcolor, transparent); \
+         border-bottom-color: contrast-color(currentcolor); \
+         border-left-color: rgb(from currentcolor r g b / 25%)",
+    );
+    assert_eq!(rgba8(style.border_top_color), Some((10, 20, 30, 128)));
+    assert_eq!(rgba8(style.border_right_color), Some((10, 20, 30, 128)));
+    assert_eq!(
+        rgba8(style.border_bottom_color),
+        Some((255, 255, 255, 255)),
+        "white contrasts with a near-black currentcolor"
+    );
+    assert_eq!(rgba8(style.border_left_color), Some((10, 20, 30, 64)));
+}
+
+#[test]
+fn outline_colour_contrast_over_currentcolor_resolves() {
+    let style =
+        computed("color: rgb(255, 255, 255); outline: 2px solid contrast-color(currentcolor)");
+    assert_eq!(rgba8(style.outline_color), Some((0, 0, 0, 255)));
+}
+
+#[test]
+fn shadow_colours_derived_from_currentcolor_resolve() {
+    let style = computed(
+        "color: rgb(255, 0, 0); \
+         box-shadow: 1px 1px 2px color-mix(in srgb, currentcolor, blue); \
+         text-shadow: 1px 1px 2px color-mix(in srgb, currentcolor, blue)",
+    );
+    assert_eq!(
+        rgba8(style.box_shadow[0].color),
+        Some((128, 0, 128, 255)),
+        "a box-shadow colour derived from currentcolor used to be None"
+    );
+    assert_eq!(rgba8(style.text_shadow[0].color), Some((128, 0, 128, 255)));
+}
+
+#[test]
+fn gradient_stops_derived_from_currentcolor_resolve() {
+    let style = computed(
+        "color: rgb(255, 0, 0); \
+         background-image: linear-gradient(color-mix(in srgb, currentcolor, blue), \
+                                           rgb(from currentcolor r g b / 50%) 100%)",
+    );
+    let BackgroundValue::LinearGradient { stops, .. } = style.background else {
+        panic!("expected a linear gradient, got {:?}", style.background);
+    };
+    assert_eq!(rgba8(stops[0].color), Some((128, 0, 128, 255)));
+    assert_eq!(rgba8(stops[1].color), Some((255, 0, 0, 128)));
+}
+
+/// The rewrite must be *identity* on everything that already worked. Stylo's
+/// `resolve_to_absolute` returns `Absolute` unchanged and `CurrentColor` as
+/// `current` — exactly what the hand-written branches did — so this pins that
+/// the ten sites did not change meaning for the 99% case.
+#[test]
+fn absolute_and_bare_currentcolor_are_unchanged() {
+    let style = computed(
+        "color: rgb(1, 2, 3); border: 2px solid; outline: 1px solid rebeccapurple; \
+         background-color: currentcolor; box-shadow: 1px 1px 2px rgb(4, 5, 6)",
+    );
+    assert_eq!(rgba8(style.border_top_color), Some((1, 2, 3, 255)));
+    assert_eq!(rgba8(style.outline_color), Some((102, 51, 153, 255)));
+    let BackgroundValue::Color(bg) = style.background else {
+        panic!("expected a solid background");
+    };
+    let c = bg.to_rgba8();
+    assert_eq!((c.r, c.g, c.b, c.a), (1, 2, 3, 255));
+    assert_eq!(rgba8(style.box_shadow[0].color), Some((4, 5, 6, 255)));
+}
+
+// ── :disabled / :enabled (issue #429) ───────────────────────────────────────
+
+/// #429: `:disabled` matched nothing at all. `match_non_ts_pseudo_class`
+/// answered a hardcoded `false` for it (and a hardcoded `true` for
+/// `:enabled`), so `button:disabled { ... }` never applied however the element
+/// was marked — components had to write a `--disabled` modifier class beside
+/// the attribute, which is why it went unnoticed.
+///
+/// The assertion is deliberately on the **computed style**, not on any flag:
+/// the flag is the mechanism, a rule that changes a resolved value is the
+/// feature. Both directions are pinned, so a matcher that answered a
+/// hardcoded `true` would fail just as loudly as the `false` that shipped.
+///
+/// Kills `Disabled => false` (the enabled-state assertion below is unaffected,
+/// the disabled one drops 0.5 → 1.0) and `Disabled => true` (the reverse).
+#[test]
+fn a_disabled_rule_matches_a_disabled_control() {
+    let mut doc = RinchDocument::new();
+    doc.load_css("button:disabled { opacity: 0.5 }");
+    let body = doc.body();
+    let btn = doc.create_element("button");
+    doc.set_attribute(btn, "style", "width: 80px; height: 30px");
+    doc.append_child(body, btn);
+    doc.resolve_layout(800.0, 600.0);
+    let opacity = |doc: &RinchDocument| doc.tree.get(btn.0).unwrap().computed_style.opacity;
+
+    assert_eq!(opacity(&doc), 1.0, "an enabled control must not match");
+
+    doc.set_attribute(btn, "disabled", "");
+    doc.resolve_layout(800.0, 600.0);
+    assert_eq!(opacity(&doc), 0.5, "a disabled control must match");
+
+    // And the rule must drop again when the attribute goes — a reactive
+    // `disabled` prop toggles both ways.
+    doc.remove_attribute(btn, "disabled");
+    doc.resolve_layout(800.0, 600.0);
+    assert_eq!(opacity(&doc), 1.0, "re-enabling must drop the rule");
+}
+
+/// The boolean-attribute rule `:disabled` shares with the focus machinery:
+/// presence is enough whatever the value, `data-disabled` is the second
+/// accepted spelling, and only the explicit `"false"` opts out.
+///
+/// Kills a matcher that demands the literal `"true"` — no in-tree writer
+/// produces it, every one writes `disabled=""`. Applied, this test stops on
+/// its first assertion: `disabled=""` resolves 1.0 where 0.5 is required.
+#[test]
+fn the_disabled_selector_follows_the_boolean_attribute_rule() {
+    let mut doc = RinchDocument::new();
+    doc.load_css("input:disabled, textarea:disabled { opacity: 0.5 }");
+    let body = doc.body();
+    let mk = |doc: &mut RinchDocument, attr: Option<(&str, &str)>| {
+        let el = doc.create_element("input");
+        doc.set_attribute(el, "style", "width: 80px; height: 30px");
+        if let Some((k, v)) = attr {
+            doc.set_attribute(el, k, v);
+        }
+        let body = doc.body();
+        doc.append_child(body, el);
+        el
+    };
+    let empty = mk(&mut doc, Some(("disabled", "")));
+    let arbitrary = mk(&mut doc, Some(("disabled", "disabled")));
+    let data = mk(&mut doc, Some(("data-disabled", "")));
+    let opted_out = mk(&mut doc, Some(("disabled", "false")));
+    let opted_out_mixed_case = mk(&mut doc, Some(("disabled", "FALSE")));
+    let plain = mk(&mut doc, None);
+    // A second tag from the disableable set. `.rinch-textarea__input:disabled`
+    // is a shipped rule, so dropping `textarea` from `tag_is_disableable`
+    // would silently stop it applying — and, with only `<input>` here, would
+    // change no test.
+    let textarea = {
+        let el = doc.create_element("textarea");
+        doc.set_attribute(el, "disabled", "");
+        let body = doc.body();
+        doc.append_child(body, el);
+        el
+    };
+    let _ = body;
+    doc.resolve_layout(800.0, 600.0);
+    let opacity = |doc: &RinchDocument, id: rinch_core::dom::NodeId| {
+        doc.tree.get(id.0).unwrap().computed_style.opacity
+    };
+
+    assert_eq!(opacity(&doc, empty), 0.5, r#"disabled="" is disabled"#);
+    assert_eq!(
+        opacity(&doc, arbitrary),
+        0.5,
+        r#"disabled="disabled" is disabled"#
+    );
+    assert_eq!(
+        opacity(&doc, data),
+        0.5,
+        r#"data-disabled="" is the second spelling"#
+    );
+    assert_eq!(
+        opacity(&doc, opted_out),
+        1.0,
+        r#"disabled="false" is the documented opt-out"#
+    );
+    assert_eq!(
+        opacity(&doc, opted_out_mixed_case),
+        1.0,
+        "the opt-out is case-insensitive"
+    );
+    assert_eq!(opacity(&doc, plain), 1.0, "no attribute is enabled");
+    assert_eq!(
+        opacity(&doc, textarea),
+        0.5,
+        "the rule is not <input>-only — every disableable tag matches"
+    );
+}
+
+/// `<fieldset disabled>` disables its subtree for styling exactly as it does
+/// for focus, and HTML's first-`<legend>` carve-out survives — a control the
+/// focus machinery still admits must not style as disabled.
+///
+/// The fieldset starts **enabled** and is disabled mid-test, which pins two
+/// things the always-disabled version could not. It proves the subtree really
+/// is following the fieldset rather than sitting at a value it held all along,
+/// and it exercises the invalidation claim: `set_attribute` re-resolves the
+/// node **and its subtree**, so no `*_sensitive` flag is needed for an
+/// attribute-driven pseudo-class the way `:hover`/`:focus` need one. Without
+/// that descendant invalidation the nested control would keep its stale 1.0.
+///
+/// `<fieldset>` is also the **only** tag whose `disabled` reaches past itself.
+/// The `data-disabled` div is here to hold that line: rinch removes such a
+/// node from the Tab order, but it must not drag its subtree into `:disabled`.
+///
+/// Kills a matcher that reads only the element's own attribute (`nested` stays
+/// 1.0 after the toggle), one that skips the legend exemption (`in_legend`
+/// falls to 0.5), and one where **any** disabled ancestor disables the subtree
+/// (`under_div` rises to 0.5).
+#[test]
+fn a_disabled_fieldset_styles_its_subtree_except_the_first_legend() {
+    let mut doc = RinchDocument::new();
+    doc.load_css("input:disabled { opacity: 0.5 }");
+    let body = doc.body();
+    let fieldset = doc.create_element("fieldset");
+    doc.append_child(body, fieldset);
+
+    let legend = doc.create_element("legend");
+    doc.append_child(fieldset, legend);
+    let in_legend = doc.create_element("input");
+    doc.append_child(legend, in_legend);
+
+    // Below the legend, and one level of nesting down, so the walk is tested
+    // rather than a parent-to-child special case.
+    let wrapper = doc.create_element("div");
+    doc.append_child(fieldset, wrapper);
+    let nested = doc.create_element("input");
+    doc.append_child(wrapper, nested);
+
+    // A non-fieldset carrying the attribute: disabled itself for focus
+    // purposes, but its subtree is untouched.
+    let div = doc.create_element("div");
+    doc.set_attribute(div, "data-disabled", "");
+    doc.append_child(body, div);
+    let under_div = doc.create_element("input");
+    doc.append_child(div, under_div);
+
+    doc.resolve_layout(800.0, 600.0);
+    let opacity = |doc: &RinchDocument, id: rinch_core::dom::NodeId| {
+        doc.tree.get(id.0).unwrap().computed_style.opacity
+    };
+
+    assert_eq!(
+        opacity(&doc, nested),
+        1.0,
+        "baseline: an enabled fieldset disables nothing"
+    );
+
+    doc.set_attribute(fieldset, "disabled", "");
+    doc.resolve_layout(800.0, 600.0);
+
+    assert_eq!(
+        opacity(&doc, nested),
+        0.5,
+        "a control below a disabled fieldset styles as disabled — and the \
+         descendant restyle reached it without a *_sensitive flag"
+    );
+    assert_eq!(
+        opacity(&doc, in_legend),
+        1.0,
+        "a control in the fieldset's first legend stays enabled"
+    );
+    assert_eq!(
+        opacity(&doc, under_div),
+        1.0,
+        "only <fieldset> reaches past itself: a data-disabled <div> does not \
+         disable its subtree"
+    );
+
+    // And the toggle runs both ways.
+    doc.remove_attribute(fieldset, "disabled");
+    doc.resolve_layout(800.0, 600.0);
+    assert_eq!(
+        opacity(&doc, nested),
+        1.0,
+        "re-enabling the fieldset releases its subtree"
+    );
+}
+
+/// `:enabled` was the same defect wearing the opposite sign — a hardcoded
+/// `true`, so it matched a *disabled* control and a `<div>` alike. Fixing only
+/// `:disabled` would have left a control matching **both** at once.
+///
+/// Kills `Enabled => true` — the value that shipped. Applied, the disabled
+/// control resolves 0.5 where 1.0 is required. (The `<div>` case is the tag
+/// test's job; `a_disabled_div_is_not_a_disabled_control` is what pins it.)
+#[test]
+fn the_enabled_selector_is_the_complement_over_form_controls() {
+    let mut doc = RinchDocument::new();
+    doc.load_css(":enabled { opacity: 0.5 }");
+    let body = doc.body();
+    let enabled = doc.create_element("input");
+    doc.append_child(body, enabled);
+    let disabled = doc.create_element("input");
+    doc.set_attribute(disabled, "disabled", "");
+    doc.append_child(body, disabled);
+    // Not a form control at all: HTML defines neither pseudo-class over it.
+    let div = doc.create_element("div");
+    doc.append_child(body, div);
+
+    doc.resolve_layout(800.0, 600.0);
+    let opacity = |doc: &RinchDocument, id: rinch_core::dom::NodeId| {
+        doc.tree.get(id.0).unwrap().computed_style.opacity
+    };
+
+    assert_eq!(opacity(&doc, enabled), 0.5, "an enabled control matches");
+    assert_eq!(
+        opacity(&doc, disabled),
+        1.0,
+        "a disabled control must not match :enabled"
+    );
+    assert_eq!(
+        opacity(&doc, div),
+        1.0,
+        "a <div> is neither enabled nor disabled"
+    );
+}
+
+/// `:disabled` is specified over form controls only, so a `<div>` carrying the
+/// attribute must not match — desktop must not style what `rinch-web` leaves
+/// alone in a real browser. This is the one place the CSS rule is deliberately
+/// narrower than the focus rule, which applies to any `tabindex` node.
+///
+/// Kills a matcher that drops the tag test and asks the attribute alone.
+#[test]
+fn a_disabled_div_is_not_a_disabled_control() {
+    let mut doc = RinchDocument::new();
+    doc.load_css(":disabled { opacity: 0.5 }");
+    let body = doc.body();
+    let div = doc.create_element("div");
+    doc.set_attribute(div, "disabled", "");
+    doc.append_child(body, div);
+    // The positive control, in the same document and the same bare rule: a
+    // real control with the same attribute does match, so a pass cannot mean
+    // "the bare :disabled rule never applies to anything".
+    let input = doc.create_element("input");
+    doc.set_attribute(input, "disabled", "");
+    doc.append_child(body, input);
+
+    doc.resolve_layout(800.0, 600.0);
+    let opacity = |doc: &RinchDocument, id: rinch_core::dom::NodeId| {
+        doc.tree.get(id.0).unwrap().computed_style.opacity
+    };
+
+    assert_eq!(
+        opacity(&doc, input),
+        0.5,
+        "positive control: a bare :disabled rule does apply to a real control"
+    );
+    assert_eq!(
+        opacity(&doc, div),
+        1.0,
+        "a <div disabled> is not a disabled control"
+    );
+}

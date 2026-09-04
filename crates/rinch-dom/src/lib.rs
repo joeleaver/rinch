@@ -5,6 +5,7 @@
 //! Implements the [`DomDocument`] trait from rinch-core.
 
 pub mod animation;
+mod calc_layout;
 pub mod computed_style;
 mod dom_impl;
 pub mod fonts;
@@ -29,6 +30,7 @@ pub mod transition;
 pub use computed_style::ComputedStyle;
 pub use dom_impl::RinchDocument;
 pub use node::{
-    DirtyFlags, DisplayMode, ElementData, IfcTextRange, InlineLayout, LayoutResult, Node,
-    NodeContext, NodeKind, NodeTree, TextData, TextMeasure,
+    DirtyFlags, DisplayMode, ElementData, IfcTextRange, InlineFlowRole, InlineLayout, LayoutResult,
+    Node, NodeContext, NodeKind, NodeTree, TextData, TextMeasure, first_legend_child,
+    node_is_disabled, node_is_disabled_in_tree, tag_is_disableable,
 };

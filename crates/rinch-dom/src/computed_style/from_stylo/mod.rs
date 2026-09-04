@@ -1,11 +1,12 @@
 //! Stylo-to-ComputedStyle conversion methods.
 
 mod box_model;
+mod calc;
 pub(crate) mod color;
 mod grid;
 mod layout;
 mod typography;
-mod visual;
+pub(crate) mod visual;
 
 use super::ComputedStyle;
 use super::values::*;
@@ -17,6 +18,43 @@ use grid::*;
 use layout::*;
 use typography::*;
 use visual::*;
+
+thread_local! {
+    /// The two custom-property names, interned once per thread rather than on
+    /// every node: `from_stylo` runs for each dirty node on each style pass,
+    /// and `Atom::from(&str)` is an atom-table lookup, not free.
+    ///
+    /// No leading `--`: Stylo's `custom_properties::Name` is the atom *without*
+    /// the prefix.
+    static SCROLLBAR_COLOR: style::Atom = style::Atom::from("rinch-scrollbar-color");
+    static SCROLLBAR_WIDTH: style::Atom = style::Atom::from("rinch-scrollbar-width");
+}
+
+/// Read one custom property's post-`var()` token string off a cascaded style.
+///
+/// Unregistered custom properties are declared to inherit
+/// (`PropertyRegistrationData::unregistered()`), and each element's map is
+/// seeded from its parent's, so a declaration on `:root` is readable here from
+/// any descendant — which is what makes a single app-wide
+/// `--rinch-scrollbar-color` work.
+///
+/// The value is always the universal (untyped) form for an unregistered
+/// property, but `to_variable_value` covers the registered case too rather than
+/// relying on that.
+fn custom_property<R>(
+    cv: &ComputedValues,
+    key: &'static std::thread::LocalKey<style::Atom>,
+    f: impl FnOnce(&str) -> R,
+) -> Option<R> {
+    key.with(|name| {
+        cv.custom_properties()
+            .get(
+                style::properties_and_values::registry::PropertyRegistrationData::unregistered(),
+                name,
+            )
+            .map(|v| f(v.to_variable_value().css.trim()))
+    })
+}
 
 impl ComputedStyle {
     // =========================================================================
@@ -47,6 +85,10 @@ impl ComputedStyle {
             position: position_from_stylo(&box_style.position),
             overflow_x: overflow_from_stylo(&box_style.overflow_x),
             overflow_y: overflow_from_stylo(&box_style.overflow_y),
+            scrollbar_color: custom_property(cv, &SCROLLBAR_COLOR, ScrollbarColorValue::parse)
+                .unwrap_or_default(),
+            scrollbar_width: custom_property(cv, &SCROLLBAR_WIDTH, ScrollbarWidthValue::parse)
+                .unwrap_or_default(),
 
             // Dimensions
             width: size_from_stylo(&position_style.width),
@@ -126,26 +168,10 @@ impl ComputedStyle {
             border_left_style: border_style_from_stylo(&border.border_left_style),
 
             // Border colors (per-side, resolve currentColor)
-            border_top_color: if border.border_top_color.is_currentcolor() {
-                color_from_absolute(&text.color)
-            } else {
-                color_from_stylo(&border.border_top_color)
-            },
-            border_right_color: if border.border_right_color.is_currentcolor() {
-                color_from_absolute(&text.color)
-            } else {
-                color_from_stylo(&border.border_right_color)
-            },
-            border_bottom_color: if border.border_bottom_color.is_currentcolor() {
-                color_from_absolute(&text.color)
-            } else {
-                color_from_stylo(&border.border_bottom_color)
-            },
-            border_left_color: if border.border_left_color.is_currentcolor() {
-                color_from_absolute(&text.color)
-            } else {
-                color_from_stylo(&border.border_left_color)
-            },
+            border_top_color: color_from_computed(&border.border_top_color, &text.color),
+            border_right_color: color_from_computed(&border.border_right_color, &text.color),
+            border_bottom_color: color_from_computed(&border.border_bottom_color, &text.color),
+            border_left_color: color_from_computed(&border.border_left_color, &text.color),
 
             // Background (color or gradient)
             background: background_from_stylo(background, &text.color),
@@ -181,11 +207,7 @@ impl ComputedStyle {
             } else {
                 outline_style.outline_width.0.to_f32_px()
             },
-            outline_color: if outline_style.outline_color.is_currentcolor() {
-                color_from_absolute(&text.color)
-            } else {
-                color_from_stylo(&outline_style.outline_color)
-            },
+            outline_color: color_from_computed(&outline_style.outline_color, &text.color),
             outline_style: border_style_from_stylo_outline(&outline_style.outline_style),
             outline_offset: outline_style.outline_offset.to_f32_px(),
 

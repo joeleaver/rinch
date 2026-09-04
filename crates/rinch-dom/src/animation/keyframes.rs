@@ -1,13 +1,13 @@
 //! Extract keyframe stop values from Stylo's KeyframesAnimation.
 
-use style::properties::{LonghandId, PropertyDeclaration, PropertyDeclarationId};
+use style::properties::PropertyDeclaration;
 use style::shared_lock::SharedRwLockReadGuard;
 use style::stylesheets::keyframes_rule::{KeyframesAnimation, KeyframesStepValue};
 use style::values::specified::Color as SpecifiedColor;
 
 use crate::computed_style::{
     ComputedStyle, DimensionValue, LengthPercentageAutoValue, LengthPercentageValue,
-    color_from_specified,
+    accumulate_pct, color_from_specified,
 };
 use crate::transition::types::{AnimatableValue, TransformOp, TransitionProperty};
 
@@ -16,14 +16,18 @@ use crate::transition::types::TimingFunction;
 
 /// Extract KeyframeStops from a Stylo KeyframesAnimation.
 ///
-/// For `ComputedValues` steps (auto-generated 0%/100%), we use `base_style` values.
-/// For `Declarations` steps, colours are read as typed stylo values; the other
-/// properties are serialized to CSS text and parsed back. `parent_color` is
-/// what a `color: currentcolor` stop inherits.
+/// For `ComputedValues` steps (auto-generated 0%/100%), we use `base_style`
+/// values. For `Declarations` steps the stop's *typed* specified value is
+/// matched directly — the same discipline `plain_inset` uses on the inset fast
+/// path — rather than serialised to CSS text and re-parsed.
+///
+/// `parent_color` is what a `color: currentcolor` stop inherits;
+/// `root_font_size` is what a `rem` stop resolves against.
 pub fn extract_keyframe_stops(
     animation: &KeyframesAnimation,
     base_style: &ComputedStyle,
     parent_color: Option<peniko::Color>,
+    root_font_size: f32,
     guard: &SharedRwLockReadGuard,
 ) -> Vec<KeyframeStop> {
     let mut stops = Vec::new();
@@ -39,7 +43,8 @@ pub fn extract_keyframe_stops(
             }
             KeyframesStepValue::Declarations { block } => {
                 let block = block.read_with(guard);
-                let values = extract_declaration_values(block, base_style, parent_color);
+                let values =
+                    extract_declaration_values(block, base_style, parent_color, root_font_size);
 
                 // Extract per-keyframe timing function if declared
                 let tf = if step.declared_timing_function {
@@ -68,11 +73,14 @@ fn extract_declaration_values(
     block: &style::properties::PropertyDeclarationBlock,
     base_style: &ComputedStyle,
     parent_color: Option<peniko::Color>,
+    root_font_size: f32,
 ) -> Vec<(TransitionProperty, AnimatableValue)> {
     let mut values = Vec::new();
 
     for declaration in block.normal_declaration_iter() {
-        if let Some((prop, val)) = convert_declaration(declaration, base_style, parent_color) {
+        if let Some((prop, val)) =
+            convert_declaration(declaration, base_style, parent_color, root_font_size)
+        {
             values.push((prop, val));
         }
     }
@@ -82,12 +90,22 @@ fn extract_declaration_values(
 
 /// Convert a single PropertyDeclaration to our (TransitionProperty, AnimatableValue).
 ///
-/// Colour longhands are read as typed stylo values. Everything else goes
-/// through ToCss serialization and is parsed back from the text.
+/// Every arm reads the **typed** specified value stylo already parsed. This
+/// used to serialise each declaration back to CSS text with `to_css()` and
+/// re-parse it with a private mini-parser that understood `px` and nothing
+/// else — so `width: 10em`, `padding: 1.25rem`, `height: 5%`,
+/// `transform: rotate(calc(45deg))` and `transform: translate(50%, 0)` all
+/// returned `None` and the whole stop was dropped on the floor (#255).
+///
+/// `border-*-width` is the one property still going through its serialisation:
+/// stylo's `BorderSideWidth` is a newtype over a **private** `LineWidth` field
+/// with no accessor, so there is no typed value to match from outside the
+/// crate. See `border_width_px`.
 fn convert_declaration(
     declaration: &PropertyDeclaration,
     base_style: &ComputedStyle,
     parent_color: Option<peniko::Color>,
+    root_font_size: f32,
 ) -> Option<(TransitionProperty, AnimatableValue)> {
     if let Some((property, color)) = color_declaration(declaration) {
         let color = match color {
@@ -103,134 +121,147 @@ fn convert_declaration(
         return Some((property, AnimatableValue::Color(color)));
     }
 
-    let id = declaration.id();
-    let css_text = {
-        let mut s = String::new();
-        declaration.to_css(&mut s).ok()?;
-        s
-    };
+    let fs = base_style.font_size;
+    let len = |lp: &SpecLengthPercentage| StopLength::resolve(lp, fs, root_font_size);
 
-    match id {
-        PropertyDeclarationId::Longhand(LonghandId::Opacity) => {
-            let val: f32 = css_text.trim().parse().ok()?;
+    match declaration {
+        // `Opacity` is the second stylo newtype with a private field (see
+        // `border_width`), but it always serialises as a bare number — its
+        // `Parse` converts a `<percentage>` to a `<number>` up front — so
+        // reading the serialisation loses nothing here.
+        PropertyDeclaration::Opacity(_) => {
+            let mut css = String::new();
+            declaration.to_css(&mut css).ok()?;
+            let v: f32 = css.trim().parse().ok()?;
             Some((
                 TransitionProperty::Opacity,
-                AnimatableValue::Float(val.clamp(0.0, 1.0)),
+                AnimatableValue::Float(v.clamp(0.0, 1.0)),
             ))
         }
-        PropertyDeclarationId::Longhand(LonghandId::Width) => parse_css_dimension(&css_text)
-            .map(|d| (TransitionProperty::Width, AnimatableValue::Dimension(d))),
-        PropertyDeclarationId::Longhand(LonghandId::Height) => parse_css_dimension(&css_text)
-            .map(|d| (TransitionProperty::Height, AnimatableValue::Dimension(d))),
-        PropertyDeclarationId::Longhand(LonghandId::PaddingTop) => {
-            parse_css_length(&css_text).map(|lp| {
-                (
-                    TransitionProperty::PaddingTop,
-                    AnimatableValue::LengthPercentage(lp),
-                )
-            })
+
+        PropertyDeclaration::Width(w) => Some((
+            TransitionProperty::Width,
+            AnimatableValue::Dimension(size(w, fs, root_font_size)?),
+        )),
+        PropertyDeclaration::Height(h) => Some((
+            TransitionProperty::Height,
+            AnimatableValue::Dimension(size(h, fs, root_font_size)?),
+        )),
+
+        PropertyDeclaration::PaddingTop(p) => Some((
+            TransitionProperty::PaddingTop,
+            AnimatableValue::LengthPercentage(len(&p.0)?.length_percentage()),
+        )),
+        PropertyDeclaration::PaddingRight(p) => Some((
+            TransitionProperty::PaddingRight,
+            AnimatableValue::LengthPercentage(len(&p.0)?.length_percentage()),
+        )),
+        PropertyDeclaration::PaddingBottom(p) => Some((
+            TransitionProperty::PaddingBottom,
+            AnimatableValue::LengthPercentage(len(&p.0)?.length_percentage()),
+        )),
+        PropertyDeclaration::PaddingLeft(p) => Some((
+            TransitionProperty::PaddingLeft,
+            AnimatableValue::LengthPercentage(len(&p.0)?.length_percentage()),
+        )),
+
+        PropertyDeclaration::MarginTop(m) => Some((
+            TransitionProperty::MarginTop,
+            AnimatableValue::LengthPercentageAuto(margin(m, fs, root_font_size)?),
+        )),
+        PropertyDeclaration::MarginRight(m) => Some((
+            TransitionProperty::MarginRight,
+            AnimatableValue::LengthPercentageAuto(margin(m, fs, root_font_size)?),
+        )),
+        PropertyDeclaration::MarginBottom(m) => Some((
+            TransitionProperty::MarginBottom,
+            AnimatableValue::LengthPercentageAuto(margin(m, fs, root_font_size)?),
+        )),
+        PropertyDeclaration::MarginLeft(m) => Some((
+            TransitionProperty::MarginLeft,
+            AnimatableValue::LengthPercentageAuto(margin(m, fs, root_font_size)?),
+        )),
+
+        PropertyDeclaration::BorderTopWidth(_) => Some((
+            TransitionProperty::BorderTopWidth,
+            AnimatableValue::LengthPercentage(border_width(declaration, fs, root_font_size)?),
+        )),
+        PropertyDeclaration::BorderRightWidth(_) => Some((
+            TransitionProperty::BorderRightWidth,
+            AnimatableValue::LengthPercentage(border_width(declaration, fs, root_font_size)?),
+        )),
+        PropertyDeclaration::BorderBottomWidth(_) => Some((
+            TransitionProperty::BorderBottomWidth,
+            AnimatableValue::LengthPercentage(border_width(declaration, fs, root_font_size)?),
+        )),
+        PropertyDeclaration::BorderLeftWidth(_) => Some((
+            TransitionProperty::BorderLeftWidth,
+            AnimatableValue::LengthPercentage(border_width(declaration, fs, root_font_size)?),
+        )),
+
+        // `font-size` resolves against the *parent's* font size, which the
+        // extractor does not have — the element's own is already the resolved
+        // one. So `em` and `%` are declined here rather than resolved against
+        // the wrong base; `rem` is exact, because its base is the root.
+        PropertyDeclaration::FontSize(f) => {
+            use style::values::specified::FontSize;
+            let px = match f {
+                FontSize::Length(lp) => match StopLength::resolve_no_em(lp, root_font_size)? {
+                    StopLength::Px(px) => px,
+                    StopLength::Percent(_) => return None,
+                },
+                _ => return None,
+            };
+            Some((TransitionProperty::FontSize, AnimatableValue::Float(px)))
         }
-        PropertyDeclarationId::Longhand(LonghandId::PaddingRight) => parse_css_length(&css_text)
-            .map(|lp| {
-                (
-                    TransitionProperty::PaddingRight,
-                    AnimatableValue::LengthPercentage(lp),
-                )
-            }),
-        PropertyDeclarationId::Longhand(LonghandId::PaddingBottom) => parse_css_length(&css_text)
-            .map(|lp| {
-                (
-                    TransitionProperty::PaddingBottom,
-                    AnimatableValue::LengthPercentage(lp),
-                )
-            }),
-        PropertyDeclarationId::Longhand(LonghandId::PaddingLeft) => parse_css_length(&css_text)
-            .map(|lp| {
-                (
-                    TransitionProperty::PaddingLeft,
-                    AnimatableValue::LengthPercentage(lp),
-                )
-            }),
-        PropertyDeclarationId::Longhand(LonghandId::MarginTop) => {
-            parse_css_margin(&css_text).map(|lpa| {
-                (
-                    TransitionProperty::MarginTop,
-                    AnimatableValue::LengthPercentageAuto(lpa),
-                )
-            })
+
+        PropertyDeclaration::Transform(t) => {
+            let (ops, pct_translate_w, pct_translate_h) = transform_ops(t, fs, root_font_size)?;
+            Some((
+                TransitionProperty::Transform,
+                AnimatableValue::TransformComponents {
+                    ops,
+                    pct_translate_w,
+                    pct_translate_h,
+                },
+            ))
         }
-        PropertyDeclarationId::Longhand(LonghandId::MarginRight) => parse_css_margin(&css_text)
-            .map(|lpa| {
-                (
-                    TransitionProperty::MarginRight,
-                    AnimatableValue::LengthPercentageAuto(lpa),
-                )
-            }),
-        PropertyDeclarationId::Longhand(LonghandId::MarginBottom) => parse_css_margin(&css_text)
-            .map(|lpa| {
-                (
-                    TransitionProperty::MarginBottom,
-                    AnimatableValue::LengthPercentageAuto(lpa),
-                )
-            }),
-        PropertyDeclarationId::Longhand(LonghandId::MarginLeft) => {
-            parse_css_margin(&css_text).map(|lpa| {
-                (
-                    TransitionProperty::MarginLeft,
-                    AnimatableValue::LengthPercentageAuto(lpa),
-                )
-            })
-        }
-        PropertyDeclarationId::Longhand(LonghandId::BorderTopWidth) => parse_css_length(&css_text)
-            .map(|lp| {
-                (
-                    TransitionProperty::BorderTopWidth,
-                    AnimatableValue::LengthPercentage(lp),
-                )
-            }),
-        PropertyDeclarationId::Longhand(LonghandId::BorderRightWidth) => {
-            parse_css_length(&css_text).map(|lp| {
-                (
-                    TransitionProperty::BorderRightWidth,
-                    AnimatableValue::LengthPercentage(lp),
-                )
-            })
-        }
-        PropertyDeclarationId::Longhand(LonghandId::BorderBottomWidth) => {
-            parse_css_length(&css_text).map(|lp| {
-                (
-                    TransitionProperty::BorderBottomWidth,
-                    AnimatableValue::LengthPercentage(lp),
-                )
-            })
-        }
-        PropertyDeclarationId::Longhand(LonghandId::BorderLeftWidth) => parse_css_length(&css_text)
-            .map(|lp| {
-                (
-                    TransitionProperty::BorderLeftWidth,
-                    AnimatableValue::LengthPercentage(lp),
-                )
-            }),
-        PropertyDeclarationId::Longhand(LonghandId::FontSize) => parse_css_px_value(&css_text)
-            .map(|px| (TransitionProperty::FontSize, AnimatableValue::Float(px))),
-        PropertyDeclarationId::Longhand(LonghandId::Transform) => {
-            parse_css_transform_components(&css_text).map(|ops| {
-                (
-                    TransitionProperty::Transform,
-                    // An authored `@keyframes` stop is parsed by this file's own
-                    // mini-parser, which drops a percentage translate on the
-                    // floor before it ever reaches a `TransformOp` — a separate
-                    // gap from #403, tracked as its own issue. The channel is
-                    // zero here until that is fixed.
-                    AnimatableValue::TransformComponents {
-                        ops,
-                        pct_translate_w: [0.0, 0.0],
-                        pct_translate_h: [0.0, 0.0],
-                    },
-                )
-            })
-        }
+
         _ => None, // Unsupported property — silently skip
+    }
+}
+
+/// `width`/`height`: `auto`, a length or a percentage. `min-content` and its
+/// siblings are `#[animation(error)]` in stylo and are declined here too.
+fn size(
+    s: &style::values::specified::Size,
+    font_size: f32,
+    root_font_size: f32,
+) -> Option<DimensionValue> {
+    use style::values::generics::length::GenericSize;
+    match s {
+        GenericSize::Auto => Some(DimensionValue::Auto),
+        GenericSize::LengthPercentage(lp) => {
+            Some(StopLength::resolve(&lp.0, font_size, root_font_size)?.dimension())
+        }
+        _ => None,
+    }
+}
+
+/// `margin-*`: `auto`, a length or a percentage. The two anchor-positioning
+/// variants need an anchor element and are declined.
+fn margin(
+    m: &style::values::specified::length::Margin,
+    font_size: f32,
+    root_font_size: f32,
+) -> Option<LengthPercentageAutoValue> {
+    use style::values::generics::length::GenericMargin;
+    match m {
+        GenericMargin::Auto => Some(LengthPercentageAutoValue::Auto),
+        GenericMargin::LengthPercentage(lp) => {
+            Some(StopLength::resolve(lp, font_size, root_font_size)?.length_percentage_auto())
+        }
+        _ => None,
     }
 }
 
@@ -302,171 +333,244 @@ fn color_declaration(
 }
 
 // =============================================================================
-// CSS text parsing helpers
+// Specified-value resolution
 // =============================================================================
 
-/// Parse a CSS dimension value (width/height): "100px", "auto", etc.
-fn parse_css_dimension(css: &str) -> Option<DimensionValue> {
-    let css = css.trim();
-    if css == "auto" {
-        return Some(DimensionValue::Auto);
-    }
-    parse_css_px_value(css).map(DimensionValue::Length)
+type SpecLengthPercentage = style::values::specified::LengthPercentage;
+
+/// A `<length-percentage>` from an authored keyframe stop, resolved as far as
+/// the extractor can take it.
+///
+/// It is deliberately *not* total. A keyframe stop is read before layout, with
+/// no stylo `Context`, so anything needing more than a font size is declined —
+/// by name, so the gaps are a list rather than a shrug:
+///
+/// - `calc()` — may mix lengths and percentages, and flattening needs the
+///   containing block.
+/// - `vw`/`vh`/`vmin`/`vmax`/`svh`/… — needs the viewport (stylo's `Device` is
+///   not threaded into the extractor).
+/// - `cqw`/`cqh`/… — needs a query container.
+/// - every font-relative unit but `em` and `rem`: `ex`, `ch`, `cap`, `ic`,
+///   `lh` and their `r` forms need font metrics we do not carry here.
+///
+/// A declined value means the whole stop is dropped for that property, exactly
+/// as before — the point of #255 is that the *list above* used to also contain
+/// `em`, `rem` and every percentage.
+#[derive(Clone, Copy)]
+enum StopLength {
+    Px(f32),
+    Percent(f32),
 }
 
-/// Parse a CSS length/percentage value: "10px", "0", etc.
-fn parse_css_length(css: &str) -> Option<LengthPercentageValue> {
-    let css = css.trim();
-    if css == "0" || css == "0px" {
-        return Some(LengthPercentageValue::Zero);
+impl StopLength {
+    fn resolve(lp: &SpecLengthPercentage, font_size: f32, root_font_size: f32) -> Option<Self> {
+        use style::values::specified::length::{FontRelativeLength, NoCalcLength};
+        match lp {
+            SpecLengthPercentage::Length(NoCalcLength::Absolute(abs)) => {
+                let px = abs.to_px();
+                px.is_finite().then_some(Self::Px(px))
+            }
+            SpecLengthPercentage::Length(NoCalcLength::FontRelative(FontRelativeLength::Em(v))) => {
+                Some(Self::Px(v * font_size))
+            }
+            SpecLengthPercentage::Length(NoCalcLength::FontRelative(FontRelativeLength::Rem(
+                v,
+            ))) => Some(Self::Px(v * root_font_size)),
+            SpecLengthPercentage::Percentage(pct) => Some(Self::Percent(pct.0)),
+            _ => None,
+        }
     }
-    parse_css_px_value(css).map(LengthPercentageValue::Length)
+
+    /// `resolve` without the `em` arm, for a property whose `em` is relative to
+    /// something the extractor does not have.
+    fn resolve_no_em(lp: &SpecLengthPercentage, root_font_size: f32) -> Option<Self> {
+        use style::values::specified::length::{FontRelativeLength, NoCalcLength};
+        if matches!(
+            lp,
+            SpecLengthPercentage::Length(NoCalcLength::FontRelative(FontRelativeLength::Em(_)))
+        ) {
+            return None;
+        }
+        Self::resolve(lp, 0.0, root_font_size)
+    }
+
+    fn dimension(self) -> DimensionValue {
+        match self {
+            Self::Px(px) => DimensionValue::Length(px),
+            Self::Percent(p) => DimensionValue::Percent(p),
+        }
+    }
+
+    fn length_percentage(self) -> LengthPercentageValue {
+        match self {
+            // A zero length is unitless, and `LengthPercentageValue` has a
+            // variant that says so. It matters: `Zero` interpolates against a
+            // percentage as well as against a length, so `padding: 0` to
+            // `padding: 20%` animates instead of snapping.
+            Self::Px(0.0) => LengthPercentageValue::Zero,
+            Self::Px(px) => LengthPercentageValue::Length(px),
+            Self::Percent(p) => LengthPercentageValue::Percent(p),
+        }
+    }
+
+    fn length_percentage_auto(self) -> LengthPercentageAutoValue {
+        match self {
+            Self::Px(px) => LengthPercentageAutoValue::Length(px),
+            Self::Percent(p) => LengthPercentageAutoValue::Percent(p),
+        }
+    }
 }
 
-/// Parse a CSS margin value: "10px", "auto", "0", etc.
-fn parse_css_margin(css: &str) -> Option<LengthPercentageAutoValue> {
+/// `border-*-width`, the one property that has to go through its own CSS
+/// serialisation.
+///
+/// `style::values::specified::BorderSideWidth` is `struct BorderSideWidth(LineWidth)`
+/// with a **private** field and no accessor, so there is no way to match its
+/// typed value from outside stylo — `to_css()` or a full `computed::Context`
+/// are the only doors, and building a `Context` here is the larger change this
+/// extractor still wants. `border-width` takes no percentage in CSS, so the
+/// grammar this has to cover is just `thin | medium | thick | <length>`.
+fn border_width(
+    declaration: &PropertyDeclaration,
+    font_size: f32,
+    root_font_size: f32,
+) -> Option<LengthPercentageValue> {
+    let mut css = String::new();
+    declaration.to_css(&mut css).ok()?;
     let css = css.trim();
-    if css == "auto" {
-        return Some(LengthPercentageAutoValue::Auto);
-    }
-    parse_css_px_value(css).map(LengthPercentageAutoValue::Length)
+    // The CSS 2.1 keyword widths, as stylo computes them.
+    let px = match css {
+        "thin" => 1.0,
+        "medium" => 3.0,
+        "thick" => 5.0,
+        _ => serialised_length_px(css, font_size, root_font_size)?,
+    };
+    Some(LengthPercentageValue::Length(px))
 }
 
-/// Parse a pixel value from CSS text like "100px", "0".
-fn parse_css_px_value(css: &str) -> Option<f32> {
+/// A length from stylo's own serialisation: `10px`, `1.5em`, `0.5rem`, `0`.
+/// Anything else — a `calc()`, a viewport unit, a container unit — is declined,
+/// same as [`StopLength::resolve`].
+fn serialised_length_px(css: &str, font_size: f32, root_font_size: f32) -> Option<f32> {
     let css = css.trim();
     if css == "0" {
         return Some(0.0);
     }
-    if let Some(num) = css.strip_suffix("px") {
-        return num.parse().ok();
-    }
-    // Try parsing as bare number (some properties serialize without units when 0)
-    if let Ok(v) = css.parse::<f32>() {
-        return Some(v);
+    for (suffix, scale) in [("px", 1.0), ("rem", root_font_size), ("em", font_size)] {
+        if let Some(num) = css.strip_suffix(suffix) {
+            let v: f32 = num.trim().parse().ok()?;
+            return (v * scale).is_finite().then_some(v * scale);
+        }
     }
     None
 }
 
-/// Parse a CSS transform value into individual TransformOp components.
-/// This preserves the individual operations (rotate, scale, etc.) so they can
-/// be interpolated component-wise rather than as matrices.
-fn parse_css_transform_components(css: &str) -> Option<Vec<TransformOp>> {
-    let css = css.trim();
-    if css == "none" {
-        return Some(vec![TransformOp::Scale(1.0, 1.0)]); // identity as scale
+/// A specified `transform` list as component ops, plus the percentage part of
+/// its translates as the linear form in (width, height) — the #212 channel,
+/// accumulated by the same `accumulate_pct` the cascade uses.
+///
+/// Percentage translates are why this is typed now: `translate(50%, 0)` used to
+/// be parsed by a `strip_suffix("px")` and dropped, taking the whole transform
+/// with it (#412). `calc(45deg)` came back the same way — stylo folds a
+/// `calc()` angle into `AngleDimension::Deg`, so `Angle::radians()` handles it
+/// where `strip_suffix("deg")` could not.
+///
+/// The 3D operations stay unimplemented and flatten to identity, matching
+/// `transform_from_stylo`'s own `_` arm (#405). `translate3d` is spelled out
+/// rather than left to that arm for the same reason it is there: it carries two
+/// `LengthPercentage`s, and dropping it silently would lose a whole
+/// translation.
+fn transform_ops(
+    transform: &style::values::specified::Transform,
+    font_size: f32,
+    root_font_size: f32,
+) -> Option<(Vec<TransformOp>, [f64; 2], [f64; 2])> {
+    use style::values::generics::transform::GenericTransformOperation as Op;
+
+    // `transform: none`. Identity as a scale, so it interpolates
+    // component-wise against a `scale()` stop rather than falling back to
+    // matrix interpolation.
+    if transform.0.is_empty() {
+        return Some((vec![TransformOp::Scale(1.0, 1.0)], [0.0; 2], [0.0; 2]));
     }
 
-    let mut ops = Vec::new();
+    let mut ops: Vec<TransformOp> = Vec::new();
+    let mut m = [1.0_f64, 0.0, 0.0, 1.0, 0.0, 0.0];
+    let mut pct_w = [0.0_f64; 2];
+    let mut pct_h = [0.0_f64; 2];
 
-    let mut remaining = css;
-    while !remaining.is_empty() {
-        remaining = remaining.trim_start();
-        if remaining.is_empty() {
-            break;
-        }
+    // A translate's px part goes into the op; its percentage part goes into the
+    // linear form, accumulated against the matrix *as composed so far*.
+    let split = |lp: &SpecLengthPercentage| match StopLength::resolve(lp, font_size, root_font_size)
+    {
+        Some(StopLength::Px(px)) => Some((px as f64, 0.0)),
+        Some(StopLength::Percent(p)) => Some((0.0, p as f64)),
+        None => None,
+    };
 
-        if let Some((func, args, rest)) = parse_transform_function(remaining) {
-            if let Some(op) = eval_transform_to_op(&func, &args) {
-                ops.push(op);
+    for op in transform.0.iter() {
+        let top = match op {
+            Op::Matrix(mat) => TransformOp::Matrix([
+                mat.a.get() as f64,
+                mat.b.get() as f64,
+                mat.c.get() as f64,
+                mat.d.get() as f64,
+                mat.e.get() as f64,
+                mat.f.get() as f64,
+            ]),
+            Op::Rotate(angle) => TransformOp::Rotate(angle.radians() as f64),
+            Op::Scale(sx, sy) => TransformOp::Scale(sx.get() as f64, sy.get() as f64),
+            Op::ScaleX(sx) => TransformOp::Scale(sx.get() as f64, 1.0),
+            Op::ScaleY(sy) => TransformOp::Scale(1.0, sy.get() as f64),
+            Op::SkewX(angle) => TransformOp::SkewX(angle.radians() as f64),
+            Op::SkewY(angle) => TransformOp::SkewY(angle.radians() as f64),
+            Op::Skew(ax, ay) => TransformOp::Matrix([
+                1.0,
+                (ay.radians() as f64).tan(),
+                (ax.radians() as f64).tan(),
+                1.0,
+                0.0,
+                0.0,
+            ]),
+            Op::TranslateX(tx) => {
+                let (px, pct) = split(tx)?;
+                accumulate_pct(&m, pct, 0.0, &mut pct_w, &mut pct_h);
+                TransformOp::Translate(px, 0.0)
             }
-            remaining = rest;
-        } else {
-            break;
-        }
-    }
-
-    if ops.is_empty() { None } else { Some(ops) }
-}
-
-/// Convert a transform function to a TransformOp (preserving the operation type).
-fn eval_transform_to_op(func: &str, args: &str) -> Option<TransformOp> {
-    match func {
-        "rotate" => {
-            let rad = parse_angle_value(args)?;
-            Some(TransformOp::Rotate(rad))
-        }
-        "scale" => {
-            let parts: Vec<&str> = args.split(',').map(str::trim).collect();
-            let sx: f64 = parts.first()?.parse().ok()?;
-            let sy: f64 = parts.get(1).and_then(|s| s.parse().ok()).unwrap_or(sx);
-            Some(TransformOp::Scale(sx, sy))
-        }
-        "scaleX" => {
-            let sx: f64 = args.trim().parse().ok()?;
-            Some(TransformOp::Scale(sx, 1.0))
-        }
-        "scaleY" => {
-            let sy: f64 = args.trim().parse().ok()?;
-            Some(TransformOp::Scale(1.0, sy))
-        }
-        "translateX" => {
-            let tx = parse_css_px_value(args)? as f64;
-            Some(TransformOp::Translate(tx, 0.0))
-        }
-        "translateY" => {
-            let ty = parse_css_px_value(args)? as f64;
-            Some(TransformOp::Translate(0.0, ty))
-        }
-        "translate" => {
-            let parts: Vec<&str> = args.split(',').map(str::trim).collect();
-            let tx = parse_css_px_value(parts.first()?)? as f64;
-            let ty = parts
-                .get(1)
-                .and_then(|s| parse_css_px_value(s))
-                .unwrap_or(0.0) as f64;
-            Some(TransformOp::Translate(tx, ty))
-        }
-        "skewX" => {
-            let rad = parse_angle_value(args)?;
-            Some(TransformOp::SkewX(rad))
-        }
-        "skewY" => {
-            let rad = parse_angle_value(args)?;
-            Some(TransformOp::SkewY(rad))
-        }
-        "matrix" => {
-            let parts: Vec<f64> = args
-                .split(',')
-                .map(|s| s.trim().parse().unwrap_or(0.0))
-                .collect();
-            if parts.len() >= 6 {
-                Some(TransformOp::Matrix([
-                    parts[0], parts[1], parts[2], parts[3], parts[4], parts[5],
-                ]))
-            } else {
-                None
+            Op::TranslateY(ty) => {
+                let (py, pct) = split(ty)?;
+                accumulate_pct(&m, 0.0, pct, &mut pct_w, &mut pct_h);
+                TransformOp::Translate(0.0, py)
             }
-        }
-        _ => None,
-    }
-}
+            Op::Translate(tx, ty) => {
+                let (px, x_pct) = split(tx)?;
+                let (py, y_pct) = split(ty)?;
+                accumulate_pct(&m, x_pct, y_pct, &mut pct_w, &mut pct_h);
+                TransformOp::Translate(px, py)
+            }
+            Op::Translate3D(tx, ty, _tz) => {
+                let (px, x_pct) = split(tx)?;
+                let (py, y_pct) = split(ty)?;
+                accumulate_pct(&m, x_pct, y_pct, &mut pct_w, &mut pct_h);
+                TransformOp::Translate(px, py)
+            }
+            // 3D operations flatten to identity, as in the cascade (#405).
+            _ => TransformOp::Matrix([1.0, 0.0, 0.0, 1.0, 0.0, 0.0]),
+        };
 
-fn parse_transform_function(css: &str) -> Option<(String, String, &str)> {
-    let open = css.find('(')?;
-    let func = css[..open].trim().to_string();
-    let close = css[open..].find(')')? + open;
-    let args = css[open + 1..close].trim().to_string();
-    Some((func, args, &css[close + 1..]))
-}
-
-fn parse_angle_value(s: &str) -> Option<f64> {
-    let s = s.trim();
-    if let Some(deg) = s.strip_suffix("deg") {
-        let d: f64 = deg.trim().parse().ok()?;
-        Some(d * std::f64::consts::PI / 180.0)
-    } else if let Some(rad) = s.strip_suffix("rad") {
-        rad.trim().parse().ok()
-    } else if let Some(turn) = s.strip_suffix("turn") {
-        let t: f64 = turn.trim().parse().ok()?;
-        Some(t * 2.0 * std::f64::consts::PI)
-    } else if let Some(grad) = s.strip_suffix("grad") {
-        let g: f64 = grad.trim().parse().ok()?;
-        Some(g * std::f64::consts::PI / 200.0)
-    } else {
-        // Try as bare number (radians)
-        s.parse().ok()
+        let o = top.to_matrix();
+        m = [
+            m[0] * o[0] + m[2] * o[1],
+            m[1] * o[0] + m[3] * o[1],
+            m[0] * o[2] + m[2] * o[3],
+            m[1] * o[2] + m[3] * o[3],
+            m[0] * o[4] + m[2] * o[5] + m[4],
+            m[1] * o[4] + m[3] * o[5] + m[5],
+        ];
+        ops.push(top);
     }
+
+    Some((ops, pct_w, pct_h))
 }
 
 /// Convert a specified timing function to our TimingFunction.

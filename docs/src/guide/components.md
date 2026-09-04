@@ -178,10 +178,27 @@ PasswordInput {
     placeholder: "Enter password"
 }
 
-// NumberInput
+// NumberInput — uncontrolled: the component owns the number, so the
+// +/- steppers step, clamp to [min, max] and format it themselves,
+// reporting each written value through `oninput` (#501)
 NumberInput {
     label: "Quantity",
-    placeholder: "0"
+    value: Some(1.0),
+    min: Some(0.0),
+    step: Some(1.0)
+}
+
+// NumberInput — controlled: pass `value_fn` and the signal becomes the
+// field's single write path; the steppers stay callback-only, so write
+// the signal in `onincrement`/`ondecrement` (#264)
+let quantity = Signal::new(1.0);
+NumberInput {
+    label: "Quantity",
+    value_fn: move || quantity.get().to_string(),
+    min: Some(0.0),
+    step: Some(1.0),
+    onincrement: move || quantity.update(|v| *v += 1.0),
+    ondecrement: move || quantity.update(|v| *v = (*v - 1.0).max(0.0))
 }
 
 // Textarea

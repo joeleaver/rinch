@@ -3,7 +3,7 @@
 
 use crate::computed_style::values::*;
 
-use super::color::{color_from_absolute, color_from_stylo};
+use super::color::color_from_computed;
 
 pub(super) fn visibility_from_stylo(
     vis: &style::properties::longhands::visibility::computed_value::T,
@@ -207,7 +207,17 @@ pub(super) fn transform_from_stylo(
 /// `px`/`py` are fractions (0.5 = 50%). The contribution to the final `(e, f)`
 /// is `L·(px·W, py·H)`, which is linear in `W` and `H` — hence four
 /// coefficients rather than a function list (#212).
-fn accumulate_pct(m: &[f64; 6], px: f64, py: f64, pct_w: &mut [f64; 2], pct_h: &mut [f64; 2]) {
+///
+/// Shared with the keyframe extractor so an authored `translate(50%, 0)` stop
+/// accumulates by exactly the same rule the cascade uses — the two must agree
+/// or a transform would jump the moment an animation starts.
+pub(crate) fn accumulate_pct(
+    m: &[f64; 6],
+    px: f64,
+    py: f64,
+    pct_w: &mut [f64; 2],
+    pct_h: &mut [f64; 2],
+) {
     pct_w[0] += px * m[0];
     pct_w[1] += px * m[1];
     pct_h[0] += py * m[2];
@@ -216,15 +226,13 @@ fn accumulate_pct(m: &[f64; 6], px: f64, py: f64, pct_w: &mut [f64; 2], pct_h: &
 
 /// Split a LengthPercentage into (px_value, percentage_fraction).
 ///
-/// Returns `(px, 0.0)` for a plain length and `(0.0, fraction)` for a plain
-/// percentage. A genuinely mixed `calc()` — one stylo could not simplify to a
-/// single leaf — answers **`(0.0, 0.0)`**, i.e. no translation at all, because
-/// `to_length()` and `to_percentage()` both return `None` for it. That is
-/// issue #404; nothing in the workspace currently writes such a calc.
+/// Returns `(px, 0.0)` for a plain length, `(0.0, fraction)` for a plain
+/// percentage, and the recovered affine pair for a genuinely mixed `calc()` —
+/// `translateX(calc(50% - 10px))` yields `(-10.0, 0.5)` (#404; it used to
+/// yield `(0.0, 0.0)`, no translation at all). See `from_stylo/calc.rs`.
 fn length_or_pct_split(lp: &style::values::computed::LengthPercentage) -> (f64, f64) {
-    let px = lp.to_length().map_or(0.0, |l| l.px() as f64);
-    let pct = lp.to_percentage().map_or(0.0, |p| p.0 as f64);
-    (px, pct)
+    let (px, pct) = super::calc::split_length_percentage(lp);
+    (px as f64, pct as f64)
 }
 
 pub(super) fn transform_origin_component_from_stylo(
@@ -235,7 +243,10 @@ pub(super) fn transform_origin_component_from_stylo(
     } else if let Some(pct) = origin.to_percentage() {
         LengthPercentageValue::Percent(pct.0)
     } else {
-        LengthPercentageValue::Percent(0.5) // default 50%
+        // A mixed calc used to degrade to the 50% default; carry the pair
+        // and let paint resolve it against the box (#278/#404 family).
+        let (px, pct) = super::calc::split_length_percentage(origin);
+        LengthPercentageValue::Calc { px, pct }
     }
 }
 
@@ -247,11 +258,7 @@ pub(super) fn text_shadow_from_stylo(
         .0
         .iter()
         .map(|s| {
-            let color = if s.color.is_currentcolor() {
-                color_from_absolute(text_color)
-            } else {
-                color_from_stylo(&s.color)
-            };
+            let color = color_from_computed(&s.color, text_color);
             TextShadowValue {
                 offset_x: s.horizontal.px(),
                 offset_y: s.vertical.px(),
@@ -270,11 +277,7 @@ pub(super) fn box_shadow_from_stylo(
         .0
         .iter()
         .map(|s| {
-            let color = if s.base.color.is_currentcolor() {
-                color_from_absolute(text_color)
-            } else {
-                color_from_stylo(&s.base.color)
-            };
+            let color = color_from_computed(&s.base.color, text_color);
             BoxShadowValue {
                 offset_x: s.base.horizontal.px(),
                 offset_y: s.base.vertical.px(),
@@ -337,11 +340,7 @@ pub(super) fn background_from_stylo(
     }
 
     // Fall back to background-color
-    let color = if bg.background_color.is_currentcolor() {
-        color_from_absolute(text_color)
-    } else {
-        color_from_stylo(&bg.background_color)
-    };
+    let color = color_from_computed(&bg.background_color, text_color);
     match color {
         Some(c) => BackgroundValue::Color(c),
         None => BackgroundValue::None,
@@ -385,11 +384,7 @@ fn gradient_stops_from_stylo(
     for (i, item) in items.iter().enumerate() {
         match item {
             GenericGradientItem::SimpleColorStop(color) => {
-                let c = if color.is_currentcolor() {
-                    color_from_absolute(text_color)
-                } else {
-                    color_from_stylo(color)
-                };
+                let c = color_from_computed(color, text_color);
                 // Auto-distribute position
                 let offset = if total <= 1 {
                     0.0
@@ -399,18 +394,18 @@ fn gradient_stops_from_stylo(
                 stops.push(GradientStop { offset, color: c });
             }
             GenericGradientItem::ComplexColorStop { color, position } => {
-                let c = if color.is_currentcolor() {
-                    color_from_absolute(text_color)
-                } else {
-                    color_from_stylo(color)
-                };
+                let c = color_from_computed(color, text_color);
                 let offset = if let Some(pct) = position.to_percentage() {
                     pct.0
                 } else if let Some(len) = position.to_length() {
                     // Length stops need container size to resolve -- approximate
                     len.px() / 100.0
                 } else {
-                    i as f32 / (total - 1).max(1) as f32
+                    // Mixed calc: same px/100 approximation as the plain-length
+                    // arm for the length part, plus the exact percentage part.
+                    // Used to fall through to the auto-distributed index.
+                    let (px, pct) = super::calc::split_length_percentage(position);
+                    pct + px / 100.0
                 };
                 stops.push(GradientStop { offset, color: c });
             }

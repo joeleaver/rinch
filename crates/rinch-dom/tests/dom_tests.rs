@@ -325,6 +325,127 @@ fn test_set_multiple_styles() {
     assert!(style.contains("gap"));
 }
 
+// === Inline style declaration order (#265) ===
+//
+// `set_style` rewrites the whole `style` attribute, and `set_styles` parses
+// that string into the declaration block Stylo cascades — so the order these
+// tests assert is the order the cascade resolves, not cosmetics. It used to
+// come out of a `HashMap`, i.e. a fresh random order per process, which made
+// "does this longhand beat that shorthand" a coin flip that a green local run
+// said nothing about. Every assertion here is full equality on purpose: a
+// `contains` cannot see an ordering bug.
+//
+// One of these tests is not like the others, and the difference is the whole
+// lesson of the bug: **a per-case assertion cannot reliably catch a
+// per-process randomisation; an invariance assertion can.** Each two-declaration
+// test below fails only when the hasher happens to pick the wrong one of two
+// orders — measured at 3-in-5, 2-in-5 and 4-in-5 runs on the unfixed code, so
+// any of them can be green all afternoon and red in CI. `merged_inline_style_is_
+// the_same_in_every_document` asserts that fifty documents agree with each
+// other rather than asserting what they agree *on*, and failed 5 runs out of 5.
+// Prefer that shape whenever the thing under test is nondeterministic.
+
+/// A property `set_style` adds is appended, so it lands *after* a shorthand
+/// already in the attribute and wins — the #265/#387 repro. Under the
+/// `HashMap` this string came out `"left: 25px; inset: 0"` about half the time,
+/// silently discarding the caller's write.
+#[test]
+fn set_style_appends_after_an_existing_shorthand() {
+    let mut doc = RinchDocument::new();
+    let div = doc.create_element("div");
+    doc.set_attribute(div, "style", "inset: 0");
+    doc.set_style(div, "left", "25px");
+    assert_eq!(
+        doc.get_attribute(div, "style").unwrap(),
+        "inset: 0; left: 25px"
+    );
+}
+
+/// A property that is *already* declared is replaced where it stands; the
+/// declarations around it do not move.
+#[test]
+fn set_style_replaces_a_declaration_in_place() {
+    let mut doc = RinchDocument::new();
+    let div = doc.create_element("div");
+    doc.set_attribute(div, "style", "color: red; gap: 4px");
+    doc.set_style(div, "color", "blue");
+    assert_eq!(
+        doc.get_attribute(div, "style").unwrap(),
+        "color: blue; gap: 4px"
+    );
+}
+
+/// A batch that mixes a replacement with an addition does both: `color` stays
+/// where it was, `padding` goes on the end.
+#[test]
+fn set_styles_batch_replaces_in_place_and_appends() {
+    let mut doc = RinchDocument::new();
+    let div = doc.create_element("div");
+    doc.set_attribute(div, "style", "color: red; gap: 4px");
+    doc.set_styles(div, &[("color", "blue"), ("padding", "2px")]);
+    assert_eq!(
+        doc.get_attribute(div, "style").unwrap(),
+        "color: blue; gap: 4px; padding: 2px"
+    );
+}
+
+/// Two *new* properties in one batch land in the caller's order. This needs
+/// two additions to say anything: a batch of one replacement plus one addition
+/// gives the same string whichever order it is applied in, so it cannot pin
+/// this.
+#[test]
+fn set_styles_batch_keeps_its_own_order() {
+    let mut doc = RinchDocument::new();
+    let div = doc.create_element("div");
+    doc.set_attribute(div, "style", "color: red");
+    doc.set_styles(div, &[("padding", "2px"), ("margin", "1px")]);
+    assert_eq!(
+        doc.get_attribute(div, "style").unwrap(),
+        "color: red; padding: 2px; margin: 1px"
+    );
+}
+
+/// A property declared twice in one authored attribute collapses the way CSSOM
+/// collapses it: the last value, at the first position.
+#[test]
+fn parsing_an_attribute_collapses_a_repeated_property_in_place() {
+    let mut doc = RinchDocument::new();
+    let div = doc.create_element("div");
+    doc.set_attribute(div, "style", "color: red; gap: 4px; color: green");
+    doc.set_style(div, "gap", "8px");
+    assert_eq!(
+        doc.get_attribute(div, "style").unwrap(),
+        "color: green; gap: 8px"
+    );
+}
+
+/// Belt and braces for the property the other tests rest on: the same input
+/// gives the same string in fifty freshly built documents. This is the test
+/// that would have caught the original measurement (92 differing results in
+/// 200 documents) without depending on which order the hasher happened to pick
+/// in the run that reported it.
+#[test]
+fn merged_inline_style_is_the_same_in_every_document() {
+    let mut seen: Vec<String> = Vec::new();
+    for _ in 0..50 {
+        let mut doc = RinchDocument::new();
+        let div = doc.create_element("div");
+        doc.set_attribute(div, "style", "inset: 0; width: 10px; height: 10px");
+        doc.set_style(div, "left", "25px");
+        doc.set_style(div, "width", "20px");
+        seen.push(doc.get_attribute(div, "style").unwrap());
+    }
+    let first = &seen[0];
+    assert_eq!(
+        first, "inset: 0; width: 20px; height: 10px; left: 25px",
+        "the one order every document must produce"
+    );
+    assert!(
+        seen.iter().all(|s| s == first),
+        "inline style order differs between documents: {seen:?}"
+    );
+}
+
 // === Dirty Tracking ===
 
 #[test]

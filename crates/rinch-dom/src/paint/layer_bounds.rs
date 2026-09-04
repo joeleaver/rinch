@@ -422,12 +422,9 @@ impl Walk<'_> {
         // approximation left where it was rather than a new one introduced here.
         let mut extent = Extent::Within(transform.transform_rect_bbox(own));
         if let Some(inline) = &node.text_layout {
-            let content_x = x
-                + (cs.padding_left.to_px() + cs.border_left_width.to_px()) as f64 * self.scale
-                - scroll.x;
-            let content_y = y
-                + (cs.padding_top.to_px() + cs.border_top_width.to_px()) as f64 * self.scale
-                - scroll.y;
+            let (off_x, off_y) = super::ifc_root_content_origin(node);
+            let content_x = x + off_x as f64 * self.scale - scroll.x;
+            let content_y = y + off_y as f64 * self.scale - scroll.y;
             let text = Rect::new(
                 content_x,
                 content_y,
@@ -537,11 +534,9 @@ impl Walk<'_> {
             })
         };
         if let Some(inline) = node.text_layout.as_ref().filter(|l| has_inline_boxes(l)) {
-            let cs = &node.computed_style;
-            let content_x = offset_x
-                + (cs.padding_left.to_px() + cs.border_left_width.to_px()) as f64 * self.scale;
-            let content_y = offset_y
-                + (cs.padding_top.to_px() + cs.border_top_width.to_px()) as f64 * self.scale;
+            let (off_x, off_y) = super::ifc_root_content_origin(node);
+            let content_x = offset_x + off_x as f64 * self.scale;
+            let content_y = offset_y + off_y as f64 * self.scale;
             for line in inline.layout.lines() {
                 // Lines are charged to the same budget as nodes: a very long
                 // article inside a translucent element is a walk like any other.

@@ -89,7 +89,10 @@ pub use scope::{OwnedCounts, Owner, OwnerGuard, Scope, current_owner, on_cleanup
 /// handlers to the scope currently rendering, and `crate::context` ties a
 /// store/context entry to the scope that created it (issue #141).
 pub(crate) use scope::{on_cleanup_for_ambient_owner, record_handler};
-pub use scoped::{clear_scoped_slot, install_scoped_entry, install_scoped_slot, read_scoped_slot};
+pub use scoped::{
+    DocScopedSlotMap, clear_doc_scoped_slot, clear_scoped_slot, install_doc_scoped_slot,
+    install_scoped_slot, read_doc_scoped_slot, read_scoped_slot,
+};
 pub use signal::Signal;
 
 use std::any::Any;

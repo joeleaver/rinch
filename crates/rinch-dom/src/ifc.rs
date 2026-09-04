@@ -6,7 +6,9 @@ use peniko::Brush;
 
 use crate::RinchDocument;
 use crate::layout;
-use crate::node::{DisplayMode, InlineLayout, LayoutResult, Node, NodeContext, NodeKind};
+use crate::node::{
+    DisplayMode, InlineFlowRole, InlineLayout, LayoutResult, Node, NodeContext, NodeKind,
+};
 
 /// Write the one-line height floor an empty block container is owed onto its
 /// Taffy style.
@@ -580,6 +582,46 @@ impl RinchDocument {
         }
     }
 
+    /// Remove the previous pass's IFC measure leaves (#466).
+    ///
+    /// A measure leaf is a Taffy-only node — no DOM identity, absent from
+    /// `taffy_map` — created by [`Self::setup_inline_formatting_contexts`] for
+    /// an IFC root whose out-of-flow children stay attached. Like anonymous
+    /// block boxes they are recreated from scratch each `ifc_dirty` pass, so
+    /// this runs first and unconditionally. `taffy.remove` detaches the leaf
+    /// from its parent whether or not it is still attached (an interim
+    /// `sync_display_contents` rebuild may already have dropped it).
+    fn cleanup_ifc_measure_leaves(&mut self) {
+        let leaves = std::mem::take(&mut self.tree.ifc_measure_leaves);
+        for (root_id, leaf) in leaves {
+            let _ = self.tree.taffy.remove(leaf);
+            // `remove` does not dirty the old parent. The mutation that made
+            // this pass run usually did, but mark it explicitly so a container
+            // that stops being an IFC root altogether cannot serve a cached
+            // layout that still includes the removed leaf's height.
+            if let Some(root_taffy) = self.tree.nodes.get(root_id).and_then(|n| n.taffy_id) {
+                let _ = self.tree.taffy.mark_dirty(root_taffy);
+            }
+        }
+    }
+
+    /// Mark an IFC root's measure leaf dirty in Taffy, if it has one (#466).
+    ///
+    /// Taffy caches layout per node and `mark_dirty` propagates *up* toward
+    /// the root — so marking the IFC root's own Taffy node does **not**
+    /// invalidate the measure cached on its child leaf: the stale measure
+    /// would be served straight back on the next compute, and a text edit in a
+    /// `text + absolute` container would never change the container's height.
+    /// Every site that marks an IFC root's Taffy node dirty to force a
+    /// re-measure must call this beside it. (Marking the leaf also dirties the
+    /// root — propagation is upward — but the sites keep their own root mark:
+    /// most roots have no leaf.)
+    pub(crate) fn mark_ifc_measure_dirty(&mut self, root_id: usize) {
+        if let Some(&leaf) = self.tree.ifc_measure_leaves.get(&root_id) {
+            let _ = self.tree.taffy.mark_dirty(leaf);
+        }
+    }
+
     /// Create anonymous block boxes for block containers with mixed content.
     ///
     /// Per CSS spec, when a block container has both inline-level and block-level
@@ -605,14 +647,42 @@ impl RinchDocument {
                 self.tree
                     .nodes
                     .get(c)
-                    .map(|n| n.is_inline() && !n.is_comment())
+                    .map(|n| n.inline_flow_role() == InlineFlowRole::Inline)
                     .unwrap_or(false)
             });
+            // An out-of-flow child is not block *content* (#406): per CSS 2.1
+            // §9.2.1.1 an absolutely positioned box is out of flow and does not
+            // force anonymous block box generation, so a container whose only
+            // non-inline children are out of flow holds inline content only.
+            // Counting it here minted an anonymous box CSS would never create —
+            // and that box was, by accident, what kept the container's measure
+            // reachable. Its principled replacement is the measure leaf that
+            // `setup_inline_formatting_contexts` creates for exactly this
+            // shape (see [`NodeContext::InlineRoot`]). A `display: none` child
+            // generates no box either (#366): counting it minted an anonymous
+            // box for a child browsers lay out nothing for, and — with the run
+            // grouping below ending the run on it — split `a<none/>b` onto two
+            // lines browsers render as one.
+            //
+            // A `display: contents` child still counts, transparent or not: an
+            // opaque wrapper holds real in-flow block content, and for a
+            // transparent one this keeps main's classification of the mixed
+            // direct-inline-plus-wrapper shape, which stays out of scope here.
+            // The display-first precedence — `display: contents; position:
+            // absolute` is `Contents`, never `OutOfFlow`, because Stylo does
+            // not blockify contents and a boxless element has no box to take
+            // out of flow — is [`Node::inline_flow_role`]'s contract now
+            // (#366); this site used to carry its own carve-out for it.
             let has_block = node.children.iter().any(|&c| {
                 self.tree
                     .nodes
                     .get(c)
-                    .map(|n| n.is_element() && !n.is_inline())
+                    .map(|n| {
+                        matches!(
+                            n.inline_flow_role(),
+                            InlineFlowRole::Contents | InlineFlowRole::InFlowBlock
+                        )
+                    })
                     .unwrap_or(false)
             });
 
@@ -625,18 +695,33 @@ impl RinchDocument {
             let mut current_run: Vec<usize> = Vec::new();
 
             for &child_id in &node.children {
-                let child = self.tree.nodes.get(child_id);
-                let is_comment = child.map(|c| c.is_comment()).unwrap_or(false);
-                // Skip comments — they have no Taffy node and should not
-                // trigger anonymous block box creation.
-                if is_comment {
+                let Some(role) = self.tree.nodes.get(child_id).map(|c| c.inline_flow_role()) else {
                     continue;
-                }
-                let is_inline = child.map(|c| c.is_inline()).unwrap_or(false);
-                if is_inline {
-                    current_run.push(child_id);
-                } else if !current_run.is_empty() {
-                    runs.push(std::mem::take(&mut current_run));
+                };
+                match role {
+                    // A comment has no Taffy node and no box. An out-of-flow
+                    // box neither joins a run nor ends one (#406): ending the
+                    // current run on it made `a<abs/>b` two runs, two
+                    // anonymous boxes, two lines — a split `has_block` alone
+                    // cannot prevent when a real block sibling is present. A
+                    // `display: none` child is boxless too (#366) and used to
+                    // end the run the same wrong way.
+                    InlineFlowRole::Comment | InlineFlowRole::NoBox | InlineFlowRole::OutOfFlow => {
+                        continue;
+                    }
+                    InlineFlowRole::Inline => current_run.push(child_id),
+                    // An in-flow block ends the run; so does a `display:
+                    // contents` wrapper, transparent or not, matching
+                    // `has_block` above. Display-first (#366): a `contents;
+                    // position: absolute` wrapper lands here, not in the
+                    // out-of-flow skip — this loop used to test `position`
+                    // first and skip it, leaving its wrapped block painted
+                    // after text that follows it in the DOM.
+                    InlineFlowRole::Contents | InlineFlowRole::InFlowBlock => {
+                        if !current_run.is_empty() {
+                            runs.push(std::mem::take(&mut current_run));
+                        }
+                    }
                 }
             }
             if !current_run.is_empty() {
@@ -668,8 +753,14 @@ impl RinchDocument {
                 anon_node.display_mode = DisplayMode::Block;
                 anon_node.parent = Some(parent_id);
                 anon_node.children = run.clone();
-                // Inherit computed style from parent for font properties
-                anon_node.computed_style = self.tree.nodes[parent_id].computed_style.clone();
+                // Inherited properties only (CSS 2.1 §9.2.1.1). Cloning the
+                // parent's whole style gave the anonymous box a box model its
+                // Taffy style (below) does not have, and paint double-counted
+                // the parent's padding+border for everything this IFC draws
+                // (#319) — see [`ComputedStyle::for_anonymous_box`].
+                anon_node.computed_style = crate::computed_style::ComputedStyle::for_anonymous_box(
+                    &self.tree.nodes[parent_id].computed_style,
+                );
 
                 // Create Taffy node for the anonymous box
                 let anon_taffy = self
@@ -750,8 +841,9 @@ impl RinchDocument {
     /// paths (standalone Taffy vs IFC) and the sync bugs that arise when
     /// elements transition between them during editing.
     pub(crate) fn setup_inline_formatting_contexts(&mut self) {
-        // Clean up anonymous block boxes from previous layout pass,
-        // then recreate them for the current DOM state.
+        // Clean up the previous pass's measure leaves and anonymous block
+        // boxes, then recreate both for the current DOM state.
+        self.cleanup_ifc_measure_leaves();
         self.cleanup_anonymous_block_boxes();
         self.create_anonymous_block_boxes();
 
@@ -795,29 +887,71 @@ impl RinchDocument {
                 continue;
             }
 
-            let inline_children: Vec<usize> = node
-                .children
-                .iter()
-                .filter(|&&child_id| {
-                    self.tree
-                        .nodes
-                        .get(child_id)
-                        .map(|c| c.is_inline())
-                        .unwrap_or(false)
-                })
-                .copied()
-                .collect();
+            // Classify the children once. A comment answers `is_inline()`
+            // with `true` (it flows with inline content and must not split a
+            // run), but it is not inline *content*: it renders nothing and has
+            // no Taffy node. It therefore must not establish an IFC on its own
+            // when non-inline children are present (#466): `show_dom`'s marker
+            // comment next to its branch root under a block parent used to
+            // make that parent an IFC root *while the branch root stayed
+            // attached as a Taffy child* — a non-leaf carrying `InlineRoot`,
+            // minted fresh every pass through this very loop, so the stale
+            // sweep below could never touch it. (`create_anonymous_block_boxes`
+            // already excludes comments from `has_inline` for the same reason.)
+            //
+            // With no other inline content in reach, withholding the mark is
+            // observationally identical — the context was dead data Taffy's
+            // block arm never consults (the leaf invariant on
+            // [`NodeContext::InlineRoot`]). With contents-wrapped text beside
+            // the comment it is a *fix* (#490): `mark_inline_descendants`
+            // detached that text into the root whose measure could never run,
+            // so the line contributed nothing to the height and painted at
+            // y = 0 over the block sibling — `div { if x { "text" } Block{} }`
+            // rendered corrupted while the same markup without the marker
+            // comment rendered correctly. Unmarked, the text stays in Taffy
+            // as an ordinary text leaf and the container matches its
+            // comment-free twin exactly.
+            //
+            // Out-of-flow children are excluded from `has_non_comment_inline`
+            // because [`Node::inline_flow_role`] classifies them `OutOfFlow`,
+            // not `Inline` — an absolute box is not inline content. (Under the
+            // hood that still rests on Stylo blockifying every out-of-flow box
+            // — `style_adjuster.rs`, `blockify_if!(is_absolutely_positioned)`
+            // — but the reliance is now stated once, in the classifier, not
+            // leaned on silently per site; #406.)
+            let mut has_non_comment_inline = false;
+            let mut all_children_are_comments = !node.children.is_empty();
+            for &child_id in &node.children {
+                let Some(child) = self.tree.nodes.get(child_id) else {
+                    continue;
+                };
+                match child.inline_flow_role() {
+                    InlineFlowRole::Comment => continue,
+                    InlineFlowRole::Inline => {
+                        all_children_are_comments = false;
+                        has_non_comment_inline = true;
+                    }
+                    _ => all_children_are_comments = false,
+                }
+            }
 
             // Activate IFC for any block element with inline children.
             // Even a single text child uses IFC — it's a degenerate case with one
             // text range. This avoids needing two measurement paths (standalone vs IFC)
             // and the sync bugs that arise when elements transition between them.
             //
+            // A container holding nothing but comments keeps the root+measure
+            // path it always had (a collapsed `show_dom` branch is exactly
+            // this shape) — the comment rule above only withholds roothood
+            // when a non-inline child would stay attached.
+            //
             // `contents_wraps_only_inline` also activates the IFC when the only
             // inline content lives *behind* `display:contents` wrapper(s) — as
             // rsx `if`/`match` emit — so a block parent flows that wrapped text
             // itself instead of leaving it stranded on the phantom wrapper (#61).
-            if !inline_children.is_empty() || Self::contents_wraps_only_inline(&self.tree.nodes, id)
+            if has_non_comment_inline
+                || all_children_are_comments
+                || Self::contents_wraps_only_inline(&self.tree.nodes, id)
             {
                 ifc_roots.push(id);
             } else if node.children.is_empty() {
@@ -833,7 +967,7 @@ impl RinchDocument {
             }
         }
 
-        for root_id in ifc_roots {
+        for &root_id in &ifc_roots {
             let root_taffy = match self.tree.nodes[root_id].taffy_id {
                 Some(t) => t,
                 None => continue,
@@ -844,19 +978,221 @@ impl RinchDocument {
             // grandchildren join this root's IFC (issue #61).
             self.mark_inline_descendants(root_id, root_id, root_taffy);
 
-            // Set NodeContext::InlineRoot on the IFC root's Taffy node
-            // so the measure function fires for it
-            if let Some(ctx) = self.tree.taffy.get_node_context_mut(root_taffy) {
-                *ctx = NodeContext::InlineRoot(root_id);
-            } else {
-                // Element nodes don't have context by default — we need to set one.
-                // Taffy only calls measure for nodes with context, so we must ensure it has one.
+            // Decide which Taffy node carries `InlineRoot` — the leaf
+            // invariant (#466, see [`NodeContext::InlineRoot`]): Taffy
+            // consults a measure function only on a childless node, so the
+            // carrier must be one. When inline detachment emptied the root's
+            // Taffy node, the root itself is the carrier (the common case,
+            // below). When out-of-flow children remain attached — `has_block`
+            // no longer mints an anonymous box for `text + absolute` (#406) —
+            // the root is a non-leaf whose measure would be structurally
+            // unreachable, so a Taffy-only **measure leaf** child carries the
+            // context instead, and Taffy keeps doing 100% of the out-of-flow
+            // layout (containing block, inset resolution, static position).
+            //
+            // The decision reads the **DOM**, not the current Taffy
+            // attachment: `compute_taffy_child_index` counts DOM siblings
+            // that merely *have* a `taffy_id`, blind to attachment, and
+            // Taffy's out-of-range error is swallowed — so an out-of-flow
+            // child inserted between frames may be attached nowhere (#477).
+            // Deciding from attachment would silently drop that child;
+            // deciding from the DOM lets the canonicalization below heal it.
+            let mut out_of_flow_children: Vec<taffy::NodeId> = Vec::new();
+            let mut in_flow_stays_attached = false;
+            for &child_id in &self.tree.nodes[root_id].children {
+                let Some(child) = self.tree.nodes.get(child_id) else {
+                    continue;
+                };
+                match child.inline_flow_role() {
+                    // A comment has no Taffy node at all; a `display: none`
+                    // child generates no box and was detached by the marking
+                    // pass (#487); inline content was detached into this IFC.
+                    InlineFlowRole::Comment | InlineFlowRole::NoBox | InlineFlowRole::Inline => {}
+                    InlineFlowRole::Contents => {
+                        if Self::contents_is_inline_transparent(&self.tree.nodes, child_id) {
+                            // A transparent wrapper's flattened *in-flow*
+                            // content was detached by the recursion above —
+                            // but its out-of-flow descendants (which no
+                            // longer make it opaque, #289) were reparented
+                            // into this root's Taffy node by
+                            // `sync_display_contents` and stay attached.
+                            // Collect them so the canonicalization below
+                            // keeps them laid out by Taffy.
+                            Self::collect_contents_out_of_flow(
+                                &self.tree.nodes,
+                                child_id,
+                                &mut out_of_flow_children,
+                            );
+                        } else {
+                            // An opaque one stopped the marking pass,
+                            // leaving its flattened in-flow boxes (and any
+                            // later siblings) attached.
+                            in_flow_stays_attached = true;
+                        }
+                    }
+                    InlineFlowRole::OutOfFlow => {
+                        if let Some(child_taffy) = child.taffy_id {
+                            out_of_flow_children.push(child_taffy);
+                        }
+                    }
+                    InlineFlowRole::InFlowBlock => {
+                        if child.taffy_id.is_some() {
+                            in_flow_stays_attached = true;
+                        }
+                    }
+                }
+            }
+
+            if !in_flow_stays_attached && !out_of_flow_children.is_empty() {
+                // Canonicalize the root's Taffy children to exactly the
+                // DOM-ordered out-of-flow children — replacing whatever
+                // attachment history (including #477 damage) left behind —
+                // then put the measure leaf at **index 0, deliberately**: a
+                // block child's static position follows its siblings, so the
+                // leaf-first order preserves today's (and browsers')
+                // below-the-line static position for auto-inset absolute
+                // children. Appending it would silently move them to
+                // content-top.
                 let _ = self
                     .tree
                     .taffy
-                    .set_node_context(root_taffy, Some(NodeContext::InlineRoot(root_id)));
+                    .set_children(root_taffy, &out_of_flow_children);
+                let Ok(leaf) = self.tree.taffy.new_leaf_with_context(
+                    taffy::Style {
+                        display: taffy::Display::Block,
+                        ..Default::default()
+                    },
+                    NodeContext::InlineRoot(root_id),
+                ) else {
+                    continue;
+                };
+                let _ = self.tree.taffy.insert_child_at_index(root_taffy, 0, leaf);
+                self.tree.ifc_measure_leaves.insert(root_id, leaf);
+
+                // The context is a **move**, not a copy: the root itself has
+                // children now, so a stale `InlineRoot` left on it from an
+                // earlier pass must go (the sweep below skips this-pass
+                // roots). In-place write — the canonicalization above already
+                // dirtied the node.
+                if let Some(ctx) = self.tree.taffy.get_node_context_mut(root_taffy)
+                    && matches!(ctx, NodeContext::InlineRoot(_))
+                {
+                    *ctx = NodeContext::Element;
+                }
+            } else {
+                // Today's path: the root's own (now childless) Taffy node
+                // carries the context so the measure function fires for it.
+                // With an in-flow child still attached this leaves a non-leaf
+                // carrier exactly as before — bug-for-bug; the debug validator
+                // below owns flagging that shape.
+                if let Some(ctx) = self.tree.taffy.get_node_context_mut(root_taffy) {
+                    *ctx = NodeContext::InlineRoot(root_id);
+                } else {
+                    // Element nodes don't have context by default — we need to set one.
+                    // Taffy only calls measure for nodes with context, so we must ensure it has one.
+                    let _ = self
+                        .tree
+                        .taffy
+                        .set_node_context(root_taffy, Some(NodeContext::InlineRoot(root_id)));
+                }
             }
         }
+
+        // Stale-context sweep (#466). The loop above only ever *sets*
+        // `InlineRoot` — nothing clears one when a node stops being an IFC
+        // root. A container that was all-inline (and got the context) and then
+        // gained a block child is no longer a root — an anonymous box takes
+        // over its inline run — but its Taffy node keeps the stale `InlineRoot`
+        // while now having Taffy children. That context is dead data: Taffy
+        // consults a measure function only on a childless node (the leaf
+        // invariant on [`NodeContext::InlineRoot`]), so clearing it is
+        // observationally identical — which is exactly why this sweep is
+        // restricted to nodes whose Taffy node *has children*. A childless
+        // stale carrier is deliberately left alone: its measure IS reachable,
+        // so clearing it would change measure behaviour. The `children > 0`
+        // guard is load-bearing — do not widen it.
+        let roots_this_pass: std::collections::HashSet<usize> = ifc_roots.iter().copied().collect();
+        for (id, node) in &self.tree.nodes {
+            if roots_this_pass.contains(&id) {
+                continue;
+            }
+            let Some(taffy_id) = node.taffy_id else {
+                continue;
+            };
+            if !matches!(
+                self.tree.taffy.get_node_context(taffy_id),
+                Some(NodeContext::InlineRoot(_))
+            ) {
+                continue;
+            }
+            if self.tree.taffy.children(taffy_id).map_or(0, |c| c.len()) == 0 {
+                continue;
+            }
+            if let Some(ctx) = self.tree.taffy.get_node_context_mut(taffy_id) {
+                // In-place write, not `set_node_context`, which would
+                // `mark_dirty` the node and invalidate Taffy's layout cache —
+                // the sweep must be observationally neutral.
+                *ctx = NodeContext::Element;
+            }
+        }
+
+        #[cfg(debug_assertions)]
+        {
+            let violations = self.ifc_leaf_invariant_violations();
+            debug_assert!(
+                violations.is_empty(),
+                "IFC leaf invariant violated (#466): Taffy node(s) carrying \
+                 NodeContext::InlineRoot have Taffy children after \
+                 setup_inline_formatting_contexts (DOM node ids {violations:?}). \
+                 Taffy consults a measure function only on a childless node, so \
+                 these roots' inline measure is structurally unreachable and \
+                 their auto height collapses to 0."
+            );
+        }
+    }
+
+    /// Every violation of the IFC leaf invariant (#466): DOM nodes whose Taffy
+    /// node carries [`NodeContext::InlineRoot`] while having Taffy children.
+    ///
+    /// Taffy 0.12 consults a measure function only on a node with zero
+    /// children, so a non-leaf carrying `InlineRoot` can never be measured —
+    /// an auto-height IFC root in that state collapses to `h = 0`. After
+    /// [`Self::setup_inline_formatting_contexts`] this must be empty; a
+    /// `debug_assertions` check there enforces it.
+    ///
+    /// Coverage note: this walks DOM-owned Taffy nodes (elements and anonymous
+    /// block boxes both live in the slab) **and** the Taffy-only measure
+    /// leaves in `ifc_measure_leaves` (#466), which have no DOM identity. If a
+    /// future change hands the context to yet another kind of carrier, that
+    /// carrier must be added to this walk. A measure-leaf violation is
+    /// reported under its IFC root's DOM id.
+    pub fn ifc_leaf_invariant_violations(&self) -> Vec<usize> {
+        let mut violations = Vec::new();
+        for (id, node) in &self.tree.nodes {
+            let Some(taffy_id) = node.taffy_id else {
+                continue;
+            };
+            if matches!(
+                self.tree.taffy.get_node_context(taffy_id),
+                Some(NodeContext::InlineRoot(_))
+            ) && self.tree.taffy.children(taffy_id).map_or(0, |c| c.len()) > 0
+            {
+                violations.push(id);
+            }
+        }
+        // Measure leaves must carry the context (a leaf without it makes its
+        // root's measure unreachable just as surely as a non-leaf carrier
+        // does) and must themselves be childless.
+        for (&root_id, &leaf) in &self.tree.ifc_measure_leaves {
+            let carries = matches!(
+                self.tree.taffy.get_node_context(leaf),
+                Some(NodeContext::InlineRoot(_))
+            );
+            if !carries || self.tree.taffy.children(leaf).map_or(0, |c| c.len()) > 0 {
+                violations.push(root_id);
+            }
+        }
+        violations
     }
 
     /// Whether `root_id`'s only inline-level content lives behind one or more
@@ -865,10 +1201,11 @@ impl RinchDocument {
     /// `display:contents` is transparent, so a block container whose children
     /// are contents wrappers full of inline text must establish the IFC itself
     /// (issue #61). This is only consulted when `root_id` has no *direct* inline
-    /// children. Returns false when any block-level element is found among the
-    /// flattened content — mixed inline+block behind `display:contents` is out of
-    /// scope here (it needs anonymous-block-box handling) and is left untouched
-    /// rather than regressed.
+    /// children. Returns false when any **in-flow** block-level element is found
+    /// among the flattened content — mixed inline+block behind `display:contents`
+    /// is out of scope here (it needs anonymous-block-box handling) and is left
+    /// untouched rather than regressed. An out-of-flow box does not count as
+    /// block content (#289): it neither breaks the inline flow nor belongs to it.
     fn contents_wraps_only_inline(nodes: &slab::Slab<Node>, root_id: usize) -> bool {
         let mut found_contents_inline = false;
         Self::scan_contents_children(nodes, root_id, &mut found_contents_inline)
@@ -898,39 +1235,100 @@ impl RinchDocument {
 
     /// Recursively classify `node_id`'s children, descending only through
     /// `display:contents` wrappers. Sets `found_inline` when inline content is
-    /// seen under a contents wrapper. Returns false as soon as a block-level
-    /// (non-contents) element is encountered.
+    /// seen under a contents wrapper. Returns false as soon as an **in-flow**
+    /// block-level (non-contents) element is encountered; an out-of-flow box is
+    /// skipped (#289).
     fn scan_contents_children(
         nodes: &slab::Slab<Node>,
         node_id: usize,
         found_inline: &mut bool,
     ) -> bool {
-        use crate::computed_style::values::DisplayValue;
         for &child_id in &nodes[node_id].children {
             let child = match nodes.get(child_id) {
                 Some(c) => c,
                 None => continue,
             };
-            if child.is_comment() {
-                continue;
-            }
-            // `display:none` generates no box at all, so it is neither inline
-            // content nor a block-level box that could break the inline flow.
-            if child.computed_style.display == DisplayValue::None {
-                continue;
-            }
-            if child.computed_style.display == DisplayValue::Contents {
-                if !Self::scan_contents_children(nodes, child_id, found_inline) {
+            match child.inline_flow_role() {
+                // A comment renders nothing; `display: none` generates no box
+                // at all — neither is inline content nor a block-level box
+                // that could break the inline flow.
+                InlineFlowRole::Comment | InlineFlowRole::NoBox => {}
+                InlineFlowRole::Contents => {
+                    if !Self::scan_contents_children(nodes, child_id, found_inline) {
+                        return false;
+                    }
+                }
+                InlineFlowRole::Inline => *found_inline = true,
+                InlineFlowRole::OutOfFlow => {
+                    // An out-of-flow box neither breaks an inline formatting
+                    // context (CSS 2.1 §9.4.2) nor belongs to it — skip it,
+                    // as the decision loop in
+                    // `setup_inline_formatting_contexts` and
+                    // `walk_inline_children` do (#289). It stays attached to
+                    // the IFC root's Taffy node with `ifc_root == None`, so
+                    // Taffy lays it out and the stacking sequence paints it,
+                    // while the #466 measure leaf keeps the root's inline
+                    // measure reachable. Display-first classification —
+                    // [`Node::inline_flow_role`]'s contract — is what sends a
+                    // boxless `display: contents; position: absolute` wrapper
+                    // into the recursion above rather than this skip.
+                }
+                InlineFlowRole::InFlowBlock => {
+                    // A real in-flow block-level box — mixed content, not our
+                    // case.
                     return false;
                 }
-            } else if child.is_inline() {
-                *found_inline = true;
-            } else {
-                // A real block-level box — mixed content, not our case.
-                return false;
             }
         }
         true
+    }
+
+    /// Collect, in flattened DOM order, the Taffy ids of the out-of-flow boxes
+    /// a **transparent** `display:contents` wrapper flattens into its IFC root,
+    /// descending through nested (necessarily transparent) wrappers.
+    ///
+    /// `sync_display_contents` reparented these boxes into the root's Taffy
+    /// node, and — unlike the wrapper's in-flow content, which the marking pass
+    /// detaches — they stay attached there: the IFC never claims an out-of-flow
+    /// box (#289). The measure-leaf canonicalization must therefore count them
+    /// exactly like the root's own out-of-flow children, or `set_children`
+    /// silently drops them from layout.
+    ///
+    /// Classification is [`Node::inline_flow_role`] — display before
+    /// position, always (#366): a nested `Contents` wrapper is recursed into
+    /// even when it also declares `position: absolute` (boxless — no box to
+    /// take out of flow), and `display:none` generates no box. A flip of that
+    /// precedence here would silently drop the wrapper's out-of-flow
+    /// descendants from layout. An in-flow block-level box cannot occur here:
+    /// the wrapper was judged transparent, which the scan answers only when no
+    /// such box exists at any depth.
+    fn collect_contents_out_of_flow(
+        nodes: &slab::Slab<Node>,
+        wrapper_id: usize,
+        out: &mut Vec<taffy::NodeId>,
+    ) {
+        for &child_id in &nodes[wrapper_id].children {
+            let Some(child) = nodes.get(child_id) else {
+                continue;
+            };
+            match child.inline_flow_role() {
+                InlineFlowRole::Contents => {
+                    Self::collect_contents_out_of_flow(nodes, child_id, out);
+                }
+                InlineFlowRole::OutOfFlow => {
+                    if let Some(child_taffy) = child.taffy_id {
+                        out.push(child_taffy);
+                    }
+                }
+                // Comments and `display: none` have no box; inline content
+                // was detached into the IFC by the marking pass; an in-flow
+                // block cannot occur (see above).
+                InlineFlowRole::Comment
+                | InlineFlowRole::NoBox
+                | InlineFlowRole::Inline
+                | InlineFlowRole::InFlowBlock => {}
+            }
+        }
     }
 
     /// Detach the inline descendants of an IFC root from Taffy and mark their
@@ -948,87 +1346,141 @@ impl RinchDocument {
     /// [`Self::walk_inline_children`], which stops building the line there.
     ///
     /// The set of nodes marked here must be *exactly* the set
-    /// [`Self::walk_inline_children`] flows into this IFC, so the recursion
-    /// follows the same rule it does: down through `display: inline` elements
-    /// and transparent `display:contents` wrappers, and **not** into an
-    /// `inline-block`, which is a box the IFC only measures and places — its
-    /// interior is laid out and painted by Taffy, on its own.
+    /// [`Self::walk_inline_children`] flows into this IFC, so both consume
+    /// [`Node::inline_flow_role`] and act on it the same way (#366): inline
+    /// content joins, an out-of-flow or boxless child is walked past, an
+    /// in-flow block-level child (or the opaque contents wrapper standing for
+    /// one) **stops** the pass. The recursion follows the walk's rule too:
+    /// down through `display: inline` elements and transparent
+    /// `display:contents` wrappers, and **not** into an `inline-block`, which
+    /// is a box the IFC only measures and places — its interior is laid out
+    /// and painted by Taffy, on its own.
     fn mark_inline_descendants(
         &mut self,
         root_id: usize,
         node_id: usize,
         root_taffy: taffy::NodeId,
     ) {
-        use crate::computed_style::values::DisplayValue;
         // Read the root's Taffy children once. Taffy hands back an owned `Vec`,
         // so asking per child cloned the whole list on every iteration — and the
         // recursion below multiplies that by the number of inline descendants.
         let root_taffy_children = self.tree.taffy.children(root_taffy).unwrap_or_default();
         let children: Vec<usize> = self.tree.nodes[node_id].children.clone();
         for child_id in children {
-            let (is_contents, is_inline, is_inline_element, child_taffy) =
-                match self.tree.nodes.get(child_id) {
-                    Some(c) => (
-                        c.computed_style.display == DisplayValue::Contents,
-                        c.is_inline(),
-                        c.is_element() && c.display_mode == DisplayMode::Inline,
-                        c.taffy_id,
-                    ),
-                    None => continue,
-                };
-            if is_contents {
-                // Only a wrapper that holds *no block-level box* is part of
-                // this IFC. One that wraps blocks (an rsx `Vec<NodeHandle>`
-                // child, a component's subtree) keeps `ifc_root == None` so the
-                // paint tree-walk still descends into it — marking it would
-                // make paint skip the wrapper and every box beneath it.
-                //
-                // `break`, not `continue`: `walk_inline_children` treats such a
-                // wrapper exactly like the block it wraps and *stops* building
-                // the line at it, so anything after it never reaches Parley.
-                // Marking a later sibling would make paint skip a box that the
-                // IFC then never draws — the same silent disappearance, one
-                // sibling along. Stopping here leaves those boxes in Taffy, so
-                // they still lay out and paint (as a block would after a block).
-                if !Self::contents_is_inline_transparent(&self.tree.nodes, child_id) {
-                    break;
-                }
-                if let Some(c) = self.tree.nodes.get_mut(child_id) {
-                    c.ifc_root = Some(root_id);
-                }
-                self.mark_inline_descendants(root_id, child_id, root_taffy);
-            } else if is_inline {
-                if let Some(child_taffy) = child_taffy
-                    && root_taffy_children.contains(&child_taffy)
-                {
-                    let _ = self.tree.taffy.remove_child(root_taffy, child_taffy);
-                }
-                if let Some(c) = self.tree.nodes.get_mut(child_id) {
-                    c.ifc_root = Some(root_id);
-                }
-                // Everything inside a `display: inline` element belongs to this
-                // IFC too. Marking the `<a>` and stopping was enough for text —
-                // `walk_inline_children` recurses through it either way — but it
-                // left any inline-block descendant with `ifc_root == None`, so
-                // `compute_inline_block_layouts` never measured it and the
-                // `InlineBox` pushed for it read a `layout` that was still zero:
-                // an `<img>` inside a link disappeared, right `src` and computed
-                // size, 0x0 box.
-                //
-                // An `inline-block` is where the recursion stops, exactly as it
-                // does in `walk_inline_children`. Its interior is Taffy's, not
-                // this IFC's: marking it would make `read_layout_results` hold a
-                // nested inline-block at its stale x/y (it keeps the IFC's
-                // position for anything carrying an `ifc_root`), make
-                // `ifc_content_box_offset` add this root's padding to its hit
-                // rect, resolve its percentage sizes against the wrong
-                // containing block, and strip `cached_text_parley` from the text
-                // inside every `<button>`.
-                if is_inline_element {
+            let (role, is_inline_element, child_taffy) = match self.tree.nodes.get(child_id) {
+                Some(c) => (
+                    c.inline_flow_role(),
+                    c.is_element() && c.display_mode == DisplayMode::Inline,
+                    c.taffy_id,
+                ),
+                None => continue,
+            };
+            match role {
+                InlineFlowRole::Contents => {
+                    // Only a wrapper that holds *no block-level box* is part of
+                    // this IFC. One that wraps blocks (an rsx `Vec<NodeHandle>`
+                    // child, a component's subtree) keeps `ifc_root == None` so the
+                    // paint tree-walk still descends into it — marking it would
+                    // make paint skip the wrapper and every box beneath it.
+                    //
+                    // `break`, not `continue`: `walk_inline_children` treats such a
+                    // wrapper exactly like the block it wraps and *stops* building
+                    // the line at it, so anything after it never reaches Parley.
+                    // Marking a later sibling would make paint skip a box that the
+                    // IFC then never draws — the same silent disappearance, one
+                    // sibling along. Stopping here leaves those boxes in Taffy, so
+                    // they still lay out and paint (as a block would after a block).
+                    if !Self::contents_is_inline_transparent(&self.tree.nodes, child_id) {
+                        break;
+                    }
+                    if let Some(c) = self.tree.nodes.get_mut(child_id) {
+                        c.ifc_root = Some(root_id);
+                    }
                     self.mark_inline_descendants(root_id, child_id, root_taffy);
                 }
+                // A comment rides with the inline arm: it has no Taffy node to
+                // detach and no interior to recurse into, but the mark keeps
+                // IFC discovery (`build_ifc_layouts` finds roots by marked
+                // children) seeing a comment-only container.
+                InlineFlowRole::Comment | InlineFlowRole::Inline => {
+                    if let Some(child_taffy) = child_taffy
+                        && root_taffy_children.contains(&child_taffy)
+                    {
+                        let _ = self.tree.taffy.remove_child(root_taffy, child_taffy);
+                    }
+                    if let Some(c) = self.tree.nodes.get_mut(child_id) {
+                        c.ifc_root = Some(root_id);
+                    }
+                    // Everything inside a `display: inline` element belongs to this
+                    // IFC too. Marking the `<a>` and stopping was enough for text —
+                    // `walk_inline_children` recurses through it either way — but it
+                    // left any inline-block descendant with `ifc_root == None`, so
+                    // `compute_inline_block_layouts` never measured it and the
+                    // `InlineBox` pushed for it read a `layout` that was still zero:
+                    // an `<img>` inside a link disappeared, right `src` and computed
+                    // size, 0x0 box.
+                    //
+                    // An `inline-block` is where the recursion stops, exactly as it
+                    // does in `walk_inline_children`. Its interior is Taffy's, not
+                    // this IFC's: marking it would make `read_layout_results` hold a
+                    // nested inline-block at its stale x/y (it keeps the IFC's
+                    // position for anything carrying an `ifc_root`), make
+                    // `ifc_content_box_offset` add this root's padding to its hit
+                    // rect, resolve its percentage sizes against the wrong
+                    // containing block, and strip `cached_text_parley` from the text
+                    // inside every `<button>`.
+                    if is_inline_element {
+                        self.mark_inline_descendants(root_id, child_id, root_taffy);
+                    }
+                }
+                InlineFlowRole::NoBox => {
+                    // A `display: none` child generates no box at all — which is
+                    // exactly why `scan_contents_children` skips it when deciding
+                    // that a contents wrapper is transparent to this IFC. But its
+                    // Taffy node — reparented here by `sync_display_contents`, or
+                    // a direct sibling of the wrapper — still counts toward
+                    // Taffy's `has_children`, and one attached child makes this
+                    // root's measure structurally unreachable (the leaf invariant
+                    // on [`NodeContext::InlineRoot`]): the container collapsed to
+                    // `h = 0` with its visible text laid out but never given a
+                    // box. Detach it like the inline children. It takes no space
+                    // under any algorithm, so the only geometry this changes is
+                    // the collapse itself; when it becomes visible again, the
+                    // display change sets `ifc_dirty` and
+                    // `sync_display_contents`'s rebuild re-attaches it from DOM
+                    // order. Not marked with `ifc_root` — it is not this IFC's
+                    // content, it is nobody's content.
+                    if let Some(child_taffy) = child_taffy
+                        && root_taffy_children.contains(&child_taffy)
+                    {
+                        let _ = self.tree.taffy.remove_child(root_taffy, child_taffy);
+                    }
+                }
+                InlineFlowRole::OutOfFlow => {
+                    // Left in place, unmarked, and walked past — deliberately:
+                    // an absolute or fixed box keeps its Taffy node and an
+                    // `ifc_root` of `None`, which is exactly what lets it
+                    // paint from its stacking root rather than from this IFC
+                    // (#289), and `walk_inline_children` walks past it the
+                    // same way (#406). Any future change here that starts
+                    // marking block-level children must keep excluding
+                    // `OutOfFlow`, or the box loses its only route to the
+                    // screen.
+                }
+                InlineFlowRole::InFlowBlock => {
+                    // An in-flow block-level child ends the marking pass —
+                    // `break`, not `continue`, matching where
+                    // `walk_inline_children` stops building the line (#366).
+                    // Continuing used to stamp `ifc_root` on every later
+                    // sibling — `<a>text<div>block</div>tail</a>` marked
+                    // `tail` — so every consumer of the field (paint's
+                    // `already_drawn_inline` skip, IFC invalidation routing,
+                    // the inline-block special cases) believed an IFC owned a
+                    // box no IFC lays out or draws. The block itself and
+                    // everything after it stay in Taffy, unmarked.
+                    break;
+                }
             }
-            // Block-level children are left in place (existing behavior).
         }
     }
 
@@ -1265,6 +1717,9 @@ impl RinchDocument {
                 if let Some(root_taffy) = self.tree.nodes[root_id].taffy_id {
                     let _ = self.tree.taffy.mark_dirty(root_taffy);
                 }
+                // The measure may be cached on the root's measure leaf rather
+                // than the root itself — dirty propagates up, not down (#466).
+                self.mark_ifc_measure_dirty(root_id);
             }
         }
 
@@ -1531,6 +1986,13 @@ impl RinchDocument {
                 Some(c) => c,
                 None => continue,
             };
+            // The flow decision is [`Node::inline_flow_role`]'s — the same
+            // classifier `mark_inline_descendants` consumes, which is what
+            // keeps "mark exactly what this walk flows" a single rule (#366).
+            // The first four arms are the dispatch *within* `Inline` (text,
+            // `<br>`, inline element, inline-block); the remaining arms map
+            // one role each.
+            let role = child.inline_flow_role();
             match &child.kind {
                 NodeKind::Text(text_data) => {
                     if !text_data.content.is_empty() {
@@ -1571,7 +2033,9 @@ impl RinchDocument {
                     }
                 }
                 NodeKind::Element(_)
-                    if child.display_mode == DisplayMode::Inline && child.tag() == Some("br") =>
+                    if role == InlineFlowRole::Inline
+                        && child.display_mode == DisplayMode::Inline
+                        && child.tag() == Some("br") =>
                 {
                     // <br> elements insert a hard line break.
                     let start = *flat_pos;
@@ -1593,7 +2057,10 @@ impl RinchDocument {
                     });
                     child_positions.push((child_id, LayoutResult::default()));
                 }
-                NodeKind::Element(_) if child.display_mode == DisplayMode::Inline => {
+                NodeKind::Element(_)
+                    if role == InlineFlowRole::Inline
+                        && child.display_mode == DisplayMode::Inline =>
+                {
                     // Push style span for inline element using typed ComputedStyle
                     let child_computed = &child.computed_style;
                     let mut props: Vec<parley::style::StyleProperty<'_, Brush>> = Vec::new();
@@ -1682,8 +2149,9 @@ impl RinchDocument {
                         }
                     }
                 }
-                NodeKind::Element(_) if child.display_mode == DisplayMode::InlineBlock => {
-                    // Inline-block: measure via Taffy first, then embed as InlineBox
+                NodeKind::Element(_) if role == InlineFlowRole::Inline => {
+                    // Inline-block (the only remaining `Inline`-role element):
+                    // measure via Taffy first, then embed as InlineBox
                     let child_layout = &child.layout;
                     builder.push_inline_box(parley::InlineBox {
                         id: child_id as u64,
@@ -1695,8 +2163,7 @@ impl RinchDocument {
                     child_positions.push((child_id, LayoutResult::default()));
                 }
                 NodeKind::Element(_)
-                    if child.computed_style.display
-                        == crate::computed_style::values::DisplayValue::Contents
+                    if role == InlineFlowRole::Contents
                         && Self::contents_is_inline_transparent(nodes, child_id) =>
                 {
                     // `display:contents` generates no box — it is transparent.
@@ -1719,11 +2186,44 @@ impl RinchDocument {
                         collapse,
                     );
                 }
+                NodeKind::Element(_)
+                    if matches!(role, InlineFlowRole::OutOfFlow | InlineFlowRole::NoBox) =>
+                {
+                    // An out-of-flow box does not break an inline formatting
+                    // context (CSS 2.1 §9.4.2): its inline siblings carry on
+                    // across it, on the same line. It is laid out by Taffy
+                    // from its containing block, not by this IFC — walk past
+                    // it (#406). Falling into the `break` arm below split
+                    // `a<abs/>b` so that `b` never reached Parley at all:
+                    // `mark_inline_descendants` had already detached and
+                    // marked it, so it was neither laid out here nor by Taffy.
+                    //
+                    // A `display: none` child generates no box and is walked
+                    // past the same way (#366). It used to fall into the
+                    // `break` arm — while the marking pass detaches it and
+                    // *continues* — so inline content after it was marked but
+                    // never flowed: `<a>text<none/>tail</a>` silently dropped
+                    // `tail`, the exact divergence class this classifier
+                    // exists to kill.
+                    //
+                    // Classifying by role keeps this walk exactly aligned
+                    // with `mark_inline_descendants`: an *opaque*
+                    // `display: contents` wrapper that also declares
+                    // `position: absolute` is boxless (Stylo does not
+                    // blockify contents, so `is_out_of_flow()` answers true
+                    // for it), its role is `Contents` — display before
+                    // position — and it `break`s below, matching where the
+                    // marking pass stops. Walking past it instead would flow
+                    // text the mark left attached — a double draw.
+                }
                 NodeKind::Comment(_) => {
                     // Skip comments in inline layout
                 }
                 _ => {
-                    // Block children break inline flow — stop here
+                    // An in-flow block-level child — or the opaque
+                    // `display: contents` wrapper standing for one — breaks
+                    // the inline flow: stop here, exactly where
+                    // `mark_inline_descendants` stops marking (#366).
                     break;
                 }
             }

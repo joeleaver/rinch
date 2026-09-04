@@ -1,7 +1,5 @@
 //! DomDocument implementation for rinch-dom.
 
-use std::collections::HashMap;
-
 use peniko::Brush;
 use servo_arc::Arc as ServoArc;
 
@@ -48,6 +46,63 @@ impl style::servo::media_queries::FontMetricsProvider for SimpleFontMetricsProvi
     }
 }
 
+/// Parameters baked into the Stylo [`Device`] that must survive its rebuild.
+///
+/// `set_stylist_viewport` reconstructs the whole `Device` on every viewport
+/// change, so any value written directly onto a `Device` is silently reset to
+/// its default by the first window resize. Anything that has to persist lives
+/// here instead, and [`build_device`] re-applies it on every construction
+/// (issues #279, #211).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct DeviceParams {
+    /// The computed font-size of the root (`<html>`) element in CSS px — the
+    /// basis every `rem` length resolves against (#279). Kept in sync by
+    /// `sync_root_font_size` whenever the root element is (re)cascaded.
+    pub root_font_size: f32,
+    /// Device pixel ratio. Drives the `resolution` media features,
+    /// `image-set()` candidate selection, and border-width device-pixel
+    /// snapping (#211). Does not affect layout geometry: 1 CSS px stays
+    /// 1 layout unit regardless.
+    pub device_pixel_ratio: f32,
+}
+
+impl Default for DeviceParams {
+    fn default() -> Self {
+        Self {
+            root_font_size: 16.0,
+            device_pixel_ratio: 1.0,
+        }
+    }
+}
+
+/// Build a Stylo [`Device`] from the surviving [`DeviceParams`].
+///
+/// Both construction sites — [`RinchDocument::new`] and
+/// `set_stylist_viewport` — must go through this, so a viewport-driven
+/// rebuild cannot silently reset the root font-size or the device pixel
+/// ratio back to their defaults (#279, #211).
+pub(crate) fn build_device(width: f32, height: f32, params: &DeviceParams) -> Device {
+    let viewport_size = euclid::Size2D::new(width, height);
+    let device_pixel_ratio = Scale::new(params.device_pixel_ratio);
+    let font_metrics_provider = Box::new(SimpleFontMetricsProvider);
+    let default_font = StyloFont::initial_values();
+    let default_computed_values = ComputedValues::initial_values_with_font_override(default_font);
+
+    let device = Device::new(
+        MediaType::screen(),
+        QuirksMode::NoQuirks,
+        viewport_size,
+        device_pixel_ratio,
+        font_metrics_provider,
+        default_computed_values,
+        PrefersColorScheme::Light,
+    );
+    // A fresh Device starts at the 16px initial — restore the root element's
+    // font-size so a rebuild doesn't erase the `rem` basis.
+    device.set_root_font_size(params.root_font_size);
+    device
+}
+
 /// The primary document type for rinch-dom.
 ///
 /// Implements [`DomDocument`] using a slab-allocated node tree.
@@ -66,6 +121,9 @@ pub struct RinchDocument {
     pub layout_cx: parley::LayoutContext<Brush>,
     /// Stylo CSS engine stylist for CSS cascade and selector matching.
     pub stylist: Stylist,
+    /// Device parameters that must survive the `Device` rebuild in
+    /// `set_stylist_viewport` — see [`DeviceParams`].
+    pub(crate) device_params: DeviceParams,
     /// The theme stylesheet, held in a stable slot before every app sheet so app
     /// CSS always cascades over it. Managed by `set_theme_css`.
     pub(crate) theme_stylesheet: Option<style::stylesheets::DocumentStyleSheet>,
@@ -115,22 +173,8 @@ impl RinchDocument {
         style_config::set_bool("layout.unimplemented", true);
 
         // Create the Stylo Device with default viewport and settings
-        let viewport_size = euclid::Size2D::new(800.0, 600.0);
-        let device_pixel_ratio = Scale::new(1.0);
-        let font_metrics_provider = Box::new(SimpleFontMetricsProvider);
-        let default_font = StyloFont::initial_values();
-        let default_computed_values =
-            ComputedValues::initial_values_with_font_override(default_font);
-
-        let device = Device::new(
-            MediaType::screen(),
-            QuirksMode::NoQuirks,
-            viewport_size,
-            device_pixel_ratio,
-            font_metrics_provider,
-            default_computed_values,
-            PrefersColorScheme::Light,
-        );
+        let device_params = DeviceParams::default();
+        let device = build_device(800.0, 600.0, &device_params);
 
         let stylist = Stylist::new(device, QuirksMode::NoQuirks);
 
@@ -140,6 +184,7 @@ impl RinchDocument {
             font_cx: crate::fonts::new_font_context(),
             layout_cx: parley::LayoutContext::new(),
             stylist,
+            device_params,
             theme_stylesheet: None,
             author_stylesheets: Vec::new(),
             has_bare_focus_rules: false,
@@ -902,16 +947,31 @@ impl RinchDocument {
     }
 }
 
-/// Parse a CSS style string like "display: flex; gap: 8px" into key-value pairs.
-pub(super) fn parse_style_string(style: &str) -> HashMap<String, String> {
-    let mut result = HashMap::new();
+/// Parse a CSS style string like "display: flex; gap: 8px" into key-value
+/// pairs, **in declaration order**.
+///
+/// The order is the point (#265): the caller joins these back into the `style`
+/// attribute and the result is handed to Stylo as the element's declaration
+/// block, so the order in this `Vec` is the order the cascade resolves. A
+/// `HashMap` here made every rewrite of the attribute reshuffle it, which made
+/// `inset: 0` vs `left: 25px` a coin flip *per process*.
+pub(super) fn parse_style_string(style: &str) -> Vec<(String, String)> {
+    let mut result: Vec<(String, String)> = Vec::new();
     for part in style.split(';') {
         let part = part.trim();
         if part.is_empty() {
             continue;
         }
         if let Some((key, value)) = part.split_once(':') {
-            result.insert(key.trim().to_string(), value.trim().to_string());
+            let key = key.trim();
+            let value = value.trim();
+            // Replace in place rather than append, the way CSSOM collapses a
+            // property declared twice in one attribute: the last value wins but
+            // keeps the *first* declaration's position.
+            match result.iter_mut().find(|(k, _)| k == key) {
+                Some(slot) => slot.1 = value.to_string(),
+                None => result.push((key.to_string(), value.to_string())),
+            }
         }
     }
     result

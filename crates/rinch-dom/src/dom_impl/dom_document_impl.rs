@@ -1,7 +1,5 @@
 //! `DomDocument` trait implementation for `RinchDocument`.
 
-use std::collections::HashMap;
-
 use rinch_core::dom::{DomDocument, NodeId};
 
 use peniko::color::{AlphaColor, Srgb};
@@ -112,15 +110,14 @@ impl DomDocument for RinchDocument {
         // Invalidate old IFC if child was in one
         self.invalidate_ifc_for_node(c);
         self.clear_ifc_root_recursive(c);
-        // Remove from old parent if any (both DOM and Taffy)
+        // Remove from old parent if any (both DOM and Taffy). The Taffy side
+        // must remove the node's *contribution*, not just its own id — a
+        // spliced `display: contents` node's slots are its children's (#517).
         if let Some(old_parent) = self.tree.nodes[c].parent {
             self.tree.nodes[old_parent].children.retain(|&x| x != c);
             // Remove from old taffy parent
-            if let (Some(old_taffy_parent), Some(child_taffy)) = (
-                self.tree.nodes[old_parent].taffy_id,
-                self.tree.nodes[c].taffy_id,
-            ) {
-                self.taffy_remove_child_safe(old_taffy_parent, child_taffy);
+            if let Some(old_taffy_parent) = self.tree.nodes[old_parent].taffy_id {
+                self.taffy_detach_contribution(old_taffy_parent, c);
             }
         }
         self.tree.nodes[c].parent = Some(p);
@@ -160,11 +157,11 @@ impl DomDocument for RinchDocument {
         self.clear_ifc_root_recursive(c);
         self.tree.nodes[p].children.retain(|&x| x != c);
         self.tree.nodes[c].parent = None;
-        // Sync taffy
-        if let (Some(parent_taffy), Some(child_taffy)) =
-            (self.tree.nodes[p].taffy_id, self.tree.nodes[c].taffy_id)
-        {
-            self.taffy_remove_child_safe(parent_taffy, child_taffy);
+        // Sync taffy: remove the child's contribution — for a spliced
+        // `display: contents` child that is its children's slots, not its
+        // own already-detached id (#517).
+        if let Some(parent_taffy) = self.tree.nodes[p].taffy_id {
+            self.taffy_detach_contribution(parent_taffy, c);
         }
         // Invalidate parent's IFC
         self.invalidate_parent_ifc(p);
@@ -180,14 +177,12 @@ impl DomDocument for RinchDocument {
         // Invalidate old IFC
         self.invalidate_ifc_for_node(c);
         self.clear_ifc_root_recursive(c);
-        // Remove from old parent if any
+        // Remove from old parent if any — the node's contribution, not just
+        // its own id (#517, see `taffy_detach_contribution`)
         if let Some(old_parent) = self.tree.nodes[c].parent {
             self.tree.nodes[old_parent].children.retain(|&x| x != c);
-            if let (Some(old_taffy_parent), Some(child_taffy)) = (
-                self.tree.nodes[old_parent].taffy_id,
-                self.tree.nodes[c].taffy_id,
-            ) {
-                self.taffy_remove_child_safe(old_taffy_parent, child_taffy);
+            if let Some(old_taffy_parent) = self.tree.nodes[old_parent].taffy_id {
+                self.taffy_detach_contribution(old_taffy_parent, c);
             }
         }
         self.tree.nodes[c].parent = Some(p);
@@ -244,14 +239,12 @@ impl DomDocument for RinchDocument {
         self.invalidate_ifc_for_node(new.0);
         self.clear_ifc_root_recursive(new.0);
         if let Some(parent_id) = self.tree.nodes[old.0].parent {
-            // Remove new from its old parent if any
+            // Remove new from its old parent if any — the node's
+            // contribution, not just its own id (#517)
             if let Some(old_parent) = self.tree.nodes[new.0].parent {
                 self.tree.nodes[old_parent].children.retain(|&x| x != new.0);
-                if let (Some(old_taffy_parent), Some(new_taffy)) = (
-                    self.tree.nodes[old_parent].taffy_id,
-                    self.tree.nodes[new.0].taffy_id,
-                ) {
-                    self.taffy_remove_child_safe(old_taffy_parent, new_taffy);
+                if let Some(old_taffy_parent) = self.tree.nodes[old_parent].taffy_id {
+                    self.taffy_detach_contribution(old_taffy_parent, new.0);
                 }
             }
             // Replace old with new in parent's children
@@ -261,11 +254,12 @@ impl DomDocument for RinchDocument {
                 .position(|&x| x == old.0)
             {
                 self.tree.nodes[parent_id].children[pos] = new.0;
-                // Sync taffy: remove old, insert new at same position
+                // Sync taffy: remove old's contribution (for a spliced
+                // `display: contents` node that is its children's slots,
+                // not its own already-detached id — #517), insert new at
+                // the same position
                 if let Some(parent_taffy) = self.tree.nodes[parent_id].taffy_id {
-                    if let Some(old_taffy) = self.tree.nodes[old.0].taffy_id {
-                        self.taffy_remove_child_safe(parent_taffy, old_taffy);
-                    }
+                    self.taffy_detach_contribution(parent_taffy, old.0);
                     if let Some(new_taffy) = self.tree.nodes[new.0].taffy_id {
                         let taffy_idx = self.compute_taffy_child_index(parent_id, pos);
                         let _ = self.tree.taffy.insert_child_at_index(
@@ -374,11 +368,11 @@ impl DomDocument for RinchDocument {
                 let old_children: Vec<_> = self.tree.nodes[n].children.clone();
                 for child in old_children {
                     self.tree.nodes[child].parent = None;
-                    // Remove from taffy parent
-                    if let (Some(parent_taffy), Some(child_taffy)) =
-                        (self.tree.nodes[n].taffy_id, self.tree.nodes[child].taffy_id)
-                    {
-                        self.taffy_remove_child_safe(parent_taffy, child_taffy);
+                    // Remove each child's contribution from taffy — for a
+                    // spliced `display: contents` child that is its
+                    // children's slots, not its own id (#517)
+                    if let Some(parent_taffy) = self.tree.nodes[n].taffy_id {
+                        self.taffy_detach_contribution(parent_taffy, child);
                     }
                 }
                 self.tree.nodes[n].children.clear();
@@ -588,14 +582,12 @@ impl DomDocument for RinchDocument {
         // Invalidate old IFC
         self.invalidate_ifc_for_node(c);
         self.clear_ifc_root_recursive(c);
-        // Remove from old parent if any
+        // Remove from old parent if any — the node's contribution, not just
+        // its own id (#517, see `taffy_detach_contribution`)
         if let Some(old_parent) = self.tree.nodes[c].parent {
             self.tree.nodes[old_parent].children.retain(|&x| x != c);
-            if let (Some(old_taffy_parent), Some(child_taffy)) = (
-                self.tree.nodes[old_parent].taffy_id,
-                self.tree.nodes[c].taffy_id,
-            ) {
-                self.taffy_remove_child_safe(old_taffy_parent, child_taffy);
+            if let Some(old_taffy_parent) = self.tree.nodes[old_parent].taffy_id {
+                self.taffy_detach_contribution(old_taffy_parent, c);
             }
         }
         self.tree.nodes[c].parent = Some(p);
@@ -657,17 +649,23 @@ impl DomDocument for RinchDocument {
         let old_children: Vec<_> = self.tree.nodes[node.0].children.clone();
         for child in old_children {
             self.clear_ifc_root_recursive(child);
-            // Remove from taffy parent
-            if let (Some(parent_taffy), Some(child_taffy)) = (
-                self.tree.nodes[node.0].taffy_id,
-                self.tree.nodes[child].taffy_id,
-            ) {
-                self.taffy_remove_child_safe(parent_taffy, child_taffy);
+            // Remove each child's contribution from taffy — for a spliced
+            // `display: contents` child that is its children's slots, not
+            // its own id (#517). Must run before `remove_subtree`, which
+            // drops the slab nodes the contribution walk reads.
+            if let Some(parent_taffy) = self.tree.nodes[node.0].taffy_id {
+                self.taffy_detach_contribution(parent_taffy, child);
             }
             self.tree.nodes[child].parent = None;
             self.tree.remove_subtree(child);
         }
         self.tree.nodes[node.0].children.clear();
+        // Clearing a subtree is a structural change: without these flags a
+        // clear-to-empty `set_inner_html` (nothing re-appended below) leaves
+        // `resolve_layout`'s dirty gate closed and the old geometry — the
+        // removed children's sizes included — stays on screen (#517).
+        self.tree.layout_dirty = true;
+        self.tree.ifc_dirty = true;
 
         // Parse HTML and create nodes
         if let Some(parsed_nodes) = parse_html_string(html) {
@@ -929,17 +927,46 @@ fn plain_inset(
 
 impl RinchDocument {
     /// The node's inline `style` attribute with `properties` merged in — a
-    /// later declaration of a property replaces the earlier one.
+    /// later declaration of a property replaces the earlier one **in place**,
+    /// keeping every other declaration where the author wrote it.
+    ///
+    /// Order is load-bearing, not cosmetic (#265). `set_styles` parses this
+    /// string into the declaration block Stylo cascades, so whatever order
+    /// comes out here *is* the order two declarations of the same longhand —
+    /// or a shorthand and one of its longhands — resolve in. This used to
+    /// round-trip through a `HashMap`, which reshuffled the whole attribute on
+    /// every write with a per-process random order: `set_style("left", …)` on
+    /// a node whose attribute already said `inset: 0` produced `left` first
+    /// (loses) or `inset` first (wins) depending on the run, so a single
+    /// `assert` could pass all day and fail in CI. A `Vec` makes it a fact
+    /// about the input instead of a fact about the process.
+    ///
+    /// **Residual divergence from a browser**, deliberately accepted here: a
+    /// longhand *already in the attribute* before a shorthand that covers it
+    /// still loses to that shorthand — `"left: 5px; inset: 0"` plus
+    /// `set_style("left", "10px")` yields `"left: 10px; inset: 0"`, so `inset`
+    /// still wins and `left` computes to `0`. CSSOM expands `inset` into its
+    /// four longhands at parse time, so a browser answers `10px`. Closing that
+    /// gap means keeping Stylo's `PropertyDeclarationBlock` as the source of
+    /// truth (`prepare_for_update`/`update`, then `to_css` for the attribute)
+    /// rather than the string — a bigger change that inverts the
+    /// `merged → parse_inline_style → cache` invariant `inset_fast_path_values`
+    /// rests on, and canonicalises `get_attribute("style")` output. The
+    /// reported shape — shorthand first, longhand written later — is correct
+    /// with the `Vec`, and *every* shape is now deterministic.
     fn merged_inline_style(&self, node_id: usize, properties: &[(&str, &str)]) -> String {
-        let mut styles: HashMap<String, String> = self.tree.nodes[node_id]
+        let mut decls: Vec<(String, String)> = self.tree.nodes[node_id]
             .attributes
             .get("style")
             .map(|s| parse_style_string(s))
             .unwrap_or_default();
         for &(property, value) in properties {
-            styles.insert(property.to_string(), value.to_string());
+            match decls.iter_mut().find(|(k, _)| k == property) {
+                Some(slot) => slot.1 = value.to_string(),
+                None => decls.push((property.to_string(), value.to_string())),
+            }
         }
-        styles
+        decls
             .iter()
             .map(|(k, v)| format!("{}: {}", k, v))
             .collect::<Vec<_>>()

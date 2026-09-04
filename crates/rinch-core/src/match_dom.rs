@@ -218,4 +218,61 @@ mod tests {
         );
         assert_eq!(scope.owned_counts().signals, 0);
     }
+
+    /// An arm cleanup that reads a signal must not subscribe the match's
+    /// discriminant-watching effect (issue #494).
+    ///
+    /// Swapping arms disposes the outgoing arm from inside the match effect, so
+    /// a tracked cleanup read would re-run the match — re-evaluating the
+    /// discriminant — on every later write to that signal. Counts discriminant
+    /// evaluations, since the DOM is identical either way.
+    #[test]
+    fn an_arm_cleanup_that_reads_a_signal_does_not_subscribe_the_match_effect() {
+        use crate::reactive::on_cleanup;
+        use std::cell::Cell;
+
+        let doc = Rc::new(RefCell::new(MockDomDocument::new()));
+        let body = doc.borrow().body();
+        let mut scope = RenderScope::new(doc.clone(), body);
+        let parent = scope.parent();
+
+        let which = Signal::new(0usize);
+        let probe = Signal::new(0u32);
+        let passes = Rc::new(Cell::new(0usize));
+
+        let branches: Vec<super::BranchFn> = vec![
+            Box::new(move |s: &mut RenderScope| {
+                on_cleanup(move || {
+                    let _ = probe.get();
+                });
+                s.create_element("div")
+            }),
+            Box::new(|s: &mut RenderScope| s.create_element("span")),
+        ];
+
+        let count = passes.clone();
+        let _marker = super::match_dom(
+            &mut scope,
+            &parent,
+            move || {
+                count.set(count.get() + 1);
+                which.get()
+            },
+            branches,
+        );
+
+        which.set(1); // swap arms: disposes arm 0, running its cleanup
+        let passes_before = passes.get();
+
+        probe.set(1);
+        assert_eq!(
+            passes.get(),
+            passes_before,
+            "a write to a signal only the arm's cleanup read must not re-run the match effect"
+        );
+
+        // Positive control: a write the match effect legitimately tracks.
+        which.set(0);
+        assert_eq!(passes.get(), passes_before + 1);
+    }
 }

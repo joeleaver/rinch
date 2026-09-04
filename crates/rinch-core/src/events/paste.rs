@@ -40,19 +40,30 @@ pub struct PasteEventData {
 /// browser inserting into a focused control, should be suppressed).
 pub type PasteInterceptor = Rc<dyn Fn(&PasteEventData) -> bool>;
 
+/// The per-document interceptor map (issue #478) — see
+/// [`DocScopedSlotMap`](crate::reactive::DocScopedSlotMap).
+type InterceptorSlots = crate::reactive::DocScopedSlotMap<dyn Fn(&PasteEventData) -> bool>;
+
 thread_local! {
-    /// The one interceptor slot for the whole thread — the same single-slot,
-    /// last-wins caveat as [`KEYBOARD_INTERCEPTOR`](super::set_keyboard_interceptor):
-    /// two documents on one thread share it.
-    static PASTE_INTERCEPTOR: RefCell<Option<PasteInterceptor>> = const { RefCell::new(None) };
+    /// One interceptor slot **per document**, plus the ownerless `None` entry —
+    /// keyed exactly like [`KEYBOARD_INTERCEPTOR`](super::set_keyboard_interceptor)
+    /// (issues #340, #478): two documents on one thread no longer clobber each
+    /// other's registration, and dispatch prefers the dispatching document's
+    /// interceptor over the thread-global fallback.
+    static PASTE_INTERCEPTOR: RefCell<InterceptorSlots> =
+        const { RefCell::new(InterceptorSlots::new()) };
 }
 
-/// Set the global paste interceptor.
+/// Set the paste interceptor for the current document.
 ///
 /// Runs **after** the platform's clipboard content has been made readable, so a
 /// handler may call `rinch::clipboard::paste_text()` / `paste_html()` inside it
-/// and get the just-pasted content. Only one interceptor can be active at a time,
-/// per thread, not per document: a second call replaces the first.
+/// and get the just-pasted content. Only one interceptor can be active at a time
+/// **per document**: a second call from the same document replaces the first
+/// (issue #478). Registering outside any dispatch — from `main`, a timer, or at
+/// mount, and everywhere on rinch-web, which never marks dispatch — fills the
+/// thread-global fallback slot, which serves every document that has no
+/// interceptor of its own.
 ///
 /// **Released on unmount.** Registering from inside a render ties the
 /// interceptor to the ambient scope, so disposing that scope clears it — a
@@ -70,28 +81,31 @@ pub fn set_paste_interceptor<F>(cb: F)
 where
     F: Fn(&PasteEventData) -> bool + 'static,
 {
-    crate::reactive::install_scoped_slot(&PASTE_INTERCEPTOR, Rc::new(cb));
+    crate::reactive::install_doc_scoped_slot(&PASTE_INTERCEPTOR, Rc::new(cb));
 }
 
-/// Clear the global paste interceptor.
+/// Clear the paste interceptor a dispatch would reach right now: the current
+/// document's own if it has one, else the thread-global fallback.
 pub fn clear_paste_interceptor() {
-    crate::reactive::clear_scoped_slot(&PASTE_INTERCEPTOR);
+    crate::reactive::clear_doc_scoped_slot(&PASTE_INTERCEPTOR);
 }
 
-/// Whether a paste interceptor is registered.
+/// Whether a paste dispatched by the current document would reach an
+/// interceptor.
 ///
 /// Lets a backend skip the work of reading `clipboardData` when nothing would
 /// consume it.
 pub fn has_paste_interceptor() -> bool {
-    PASTE_INTERCEPTOR.with(|i| i.borrow().is_some())
+    crate::reactive::read_doc_scoped_slot(&PASTE_INTERCEPTOR).is_some()
 }
 
-/// Dispatch a paste to the interceptor. Returns true if it was handled.
+/// Dispatch a paste to the dispatching document's interceptor (or the
+/// thread-global fallback). Returns true if it was handled.
 ///
 /// The `Rc` is cloned out before the call so the handler may re-enter (register a
 /// different interceptor, for instance) without a double borrow.
 pub fn dispatch_paste_event(data: &PasteEventData) -> bool {
-    match crate::reactive::read_scoped_slot(&PASTE_INTERCEPTOR) {
+    match crate::reactive::read_doc_scoped_slot(&PASTE_INTERCEPTOR) {
         Some(cb) => cb(data),
         None => false,
     }
@@ -194,6 +208,82 @@ mod tests {
             !dispatch_paste_event(&data),
             "a cleared interceptor leaves the paste to the platform"
         );
+    }
+
+    // ── per-document routing (issue #478) ────────────────────────────────────
+
+    /// Two documents on one thread each keep their own paste interceptor, and
+    /// `has_paste_interceptor` answers for the *dispatching* document — a
+    /// backend must not read `clipboardData` for a document whose paste
+    /// nothing would consume.
+    ///
+    /// Under the old single slot, doc 2's registration displaced doc 1's (so
+    /// doc 1's paste ran doc 2's interceptor) and `has_paste_interceptor`
+    /// answered `true` for every document on the thread.
+    #[test]
+    fn two_documents_paste_interceptors_coexist_and_route_by_dispatching_document() {
+        use crate::context::push_dispatching_doc;
+
+        clear_paste_interceptor();
+        let hits: Rc<RefCell<Vec<&'static str>>> = Rc::new(RefCell::new(Vec::new()));
+
+        {
+            let _a = push_dispatching_doc(1);
+            let h = hits.clone();
+            set_paste_interceptor(move |_| {
+                h.borrow_mut().push("doc1");
+                true
+            });
+        }
+        {
+            let _b = push_dispatching_doc(2);
+            let h = hits.clone();
+            set_paste_interceptor(move |_| {
+                h.borrow_mut().push("doc2");
+                true
+            });
+        }
+
+        {
+            let _a = push_dispatching_doc(1);
+            assert!(has_paste_interceptor());
+            assert!(
+                dispatch_paste_event(&PasteEventData::default()),
+                "doc 1 still has an interceptor — doc 2's registration must not displace it"
+            );
+        }
+        assert_eq!(
+            *hits.borrow(),
+            vec!["doc1"],
+            "doc 1's paste reaches doc 1's interceptor, not doc 2's"
+        );
+
+        {
+            let _b = push_dispatching_doc(2);
+            assert!(dispatch_paste_event(&PasteEventData::default()));
+        }
+        assert_eq!(*hits.borrow(), vec!["doc1", "doc2"]);
+
+        {
+            let _c = push_dispatching_doc(3);
+            assert!(
+                !has_paste_interceptor(),
+                "a third document with no interceptor of its own and no global \
+                 fallback has nothing a paste would reach"
+            );
+            assert!(!dispatch_paste_event(&PasteEventData::default()));
+        }
+        assert_eq!(*hits.borrow(), vec!["doc1", "doc2"]);
+
+        {
+            let _a = push_dispatching_doc(1);
+            clear_paste_interceptor();
+        }
+        {
+            let _b = push_dispatching_doc(2);
+            clear_paste_interceptor();
+        }
+        assert!(!has_paste_interceptor());
     }
 
     #[test]

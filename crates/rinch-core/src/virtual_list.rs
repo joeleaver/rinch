@@ -268,9 +268,18 @@ where
                 let mut child_scope = RenderScope::new(doc, window_id);
                 // Each virtualized row owns what its view creates, so scrolling
                 // it out of the window takes them with it (issue #141).
+                //
+                // The render itself runs untracked, matching `for_each_dom`'s
+                // `Insert` arm (issue #345): a signal the row's view reads
+                // while rendering must not subscribe this windowing effect —
+                // every write to it would re-run the whole windowing pass
+                // instead of just the row's own reactive bindings. Rows create
+                // their own effects for reactivity via `{|| expr}` closures.
+                // The owner guard is a separate stack from `untracked`'s
+                // observer stack (issue #141) and stays outside.
                 let node = {
                     let _owner = child_scope.push_owner();
-                    view(item_data.clone(), &mut child_scope)
+                    crate::reactive::untracked(|| view(item_data.clone(), &mut child_scope))
                 };
                 state.insert(
                     k.clone(),
@@ -357,6 +366,15 @@ where
         for scope in doomed {
             scope.dispose();
         }
+
+        // The item collection is dropped last, and untracked, matching
+        // `for_each_dom`'s reconcile tail: dropping it drops the user's data,
+        // and a `Drop` impl that reads a signal would otherwise subscribe this
+        // windowing effect to it — an unrelated write would then re-run the
+        // whole windowing pass. The by-key map holds borrows into the
+        // collection, so it goes first (no user data of its own).
+        drop(new_items_by_key);
+        crate::reactive::untracked(move || drop(all_items));
     });
 
     scope.create_effect_from(effect);
@@ -653,5 +671,211 @@ mod tests {
         let window = list.children().remove(1);
         assert_eq!(window.children().len(), 2);
         assert_eq!(row_names(&window), ["A", "B"]);
+    }
+
+    /// A signal a row's view reads while rendering must not subscribe the
+    /// windowing effect (issue #345).
+    ///
+    /// The row render runs inside the windowing effect, so without `untracked`
+    /// every such read joins the effect's dependency set and a write to it
+    /// re-runs the whole windowing pass — recomputing the range, re-diffing the
+    /// keys, re-appending the window — where the fixed cost should be the one
+    /// row's own reactive bindings. The DOM ends up identical either way, so
+    /// the assertion counts passes (via the items closure, called once at the
+    /// top of every pass), not final state.
+    #[test]
+    fn a_signal_a_row_reads_while_rendering_does_not_subscribe_the_windowing_effect() {
+        use std::cell::Cell;
+
+        let doc = Rc::new(RefCell::new(MockDomDocument::new()));
+        let body = doc.borrow().body();
+        let mut scope = RenderScope::new(doc.clone(), body);
+
+        // Read by every row during render — the "selected id" shape from the
+        // issue. Deliberately read bare (not via a `{|| expr}` effect): the
+        // bare read is what would leak into the windowing effect.
+        let selected = Signal::new(0u32);
+
+        // Counts windowing passes: the items closure runs once per pass.
+        let passes = Rc::new(Cell::new(0usize));
+        // Counts row renders, to prove rows actually rendered (and so actually
+        // read `selected`) before the write under test.
+        let row_renders = Rc::new(Cell::new(0usize));
+
+        let items = Signal::new(vec![1u32, 2, 3]);
+        let count = passes.clone();
+        let rows = row_renders.clone();
+        let list = super::virtual_list(
+            &mut scope,
+            20.0,
+            move || {
+                count.set(count.get() + 1);
+                items.get()
+            },
+            |item: &u32| *item,
+            1,
+            move |item: u32, s: &mut RenderScope| {
+                rows.set(rows.get() + 1);
+                let node = s.create_element("div");
+                let styled = if selected.get() == item { "sel" } else { "row" };
+                node.set_attribute("data-name", styled);
+                node
+            },
+        );
+        let _ = list;
+
+        assert!(
+            row_renders.get() > 0,
+            "rows rendered, so `selected` was read"
+        );
+        let passes_before = passes.get();
+        assert!(passes_before > 0);
+
+        selected.set(2);
+
+        assert_eq!(
+            passes.get(),
+            passes_before,
+            "writing a signal only row views read must not re-run the windowing pass"
+        );
+        assert_eq!(
+            row_renders.get(),
+            3,
+            "and must not re-render the rows either"
+        );
+
+        // Positive control: the counter can tell a re-run apart from silence —
+        // a write the windowing effect legitimately tracks does re-run it.
+        items.update(|v| v.push(4));
+        assert_eq!(
+            passes.get(),
+            passes_before + 1,
+            "a write to the item list still re-runs the windowing pass"
+        );
+    }
+
+    /// Dropping the pass's item collection runs user `Drop` code, and a `Drop`
+    /// impl that reads a signal must not subscribe the windowing effect
+    /// (issue #345, matching `for_each_dom`'s reconcile tail).
+    ///
+    /// Every pass clones the whole collection out of the items closure and
+    /// drops it at the end of the pass, so a tracked drop would subscribe the
+    /// effect on the very first pass.
+    #[test]
+    fn an_items_drop_that_reads_a_signal_does_not_subscribe_the_windowing_effect() {
+        use std::cell::Cell;
+
+        /// Reads `probe` on drop. `PartialEq` on the key alone, so the value
+        /// can ride the windowing diff.
+        #[derive(Clone)]
+        struct DropReadsSignal {
+            id: u32,
+            probe: Signal<u32>,
+        }
+        impl PartialEq for DropReadsSignal {
+            fn eq(&self, other: &Self) -> bool {
+                self.id == other.id
+            }
+        }
+        impl Drop for DropReadsSignal {
+            fn drop(&mut self) {
+                // The whole point: user code, reading a signal, at drop time.
+                let _ = self.probe.get();
+            }
+        }
+
+        let doc = Rc::new(RefCell::new(MockDomDocument::new()));
+        let body = doc.borrow().body();
+        let mut scope = RenderScope::new(doc.clone(), body);
+
+        let probe = Signal::new(0u32);
+        let items = vec![
+            DropReadsSignal { id: 1, probe },
+            DropReadsSignal { id: 2, probe },
+        ];
+
+        let passes = Rc::new(Cell::new(0usize));
+        let count = passes.clone();
+        let list = super::virtual_list(
+            &mut scope,
+            20.0,
+            move || {
+                count.set(count.get() + 1);
+                items.clone()
+            },
+            |item: &DropReadsSignal| item.id,
+            1,
+            |item: DropReadsSignal, s: &mut RenderScope| {
+                let node = s.create_element("div");
+                node.set_attribute("data-name", &item.id.to_string());
+                node
+            },
+        );
+
+        let window = list.children().remove(1);
+        assert_eq!(row_names(&window), ["1", "2"]);
+        let passes_before = passes.get();
+        assert!(passes_before > 0);
+
+        probe.set(1);
+
+        assert_eq!(
+            passes.get(),
+            passes_before,
+            "writing a signal only the items' `Drop` read must not re-run the windowing pass"
+        );
+    }
+
+    /// A doomed row's cleanup that reads a signal must not subscribe the
+    /// windowing effect (issue #494) — the disposal counterpart of the
+    /// untracked row render and item drop above (issue #345).
+    #[test]
+    fn a_doomed_rows_cleanup_that_reads_a_signal_does_not_subscribe_the_windowing_effect() {
+        use std::cell::Cell;
+
+        let doc = Rc::new(RefCell::new(MockDomDocument::new()));
+        let body = doc.borrow().body();
+        let mut scope = RenderScope::new(doc.clone(), body);
+
+        let items = Signal::new(vec![1u32, 2, 3]);
+        let probe = Signal::new(0u32);
+        let passes = Rc::new(Cell::new(0usize));
+
+        let count = passes.clone();
+        let list = super::virtual_list(
+            &mut scope,
+            20.0,
+            move || {
+                count.set(count.get() + 1);
+                items.get()
+            },
+            |item: &u32| *item,
+            1,
+            move |item: u32, s: &mut RenderScope| {
+                // Registered against the row's own scope, read by the disposal
+                // fixpoint when the row leaves the window.
+                crate::reactive::on_cleanup(move || {
+                    let _ = probe.get();
+                });
+                let node = s.create_element("div");
+                node.set_attribute("data-name", &item.to_string());
+                node
+            },
+        );
+        let _ = list;
+
+        items.update(|v| v.retain(|&i| i != 2)); // dooms row 2, running its cleanup
+        let passes_before = passes.get();
+
+        probe.set(1);
+        assert_eq!(
+            passes.get(),
+            passes_before,
+            "a write to a signal only a doomed row's cleanup read must not re-run the windowing pass"
+        );
+
+        // Positive control: a write the windowing effect legitimately tracks.
+        items.update(|v| v.push(4));
+        assert_eq!(passes.get(), passes_before + 1);
     }
 }

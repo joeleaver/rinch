@@ -283,6 +283,17 @@ impl RinchDocument {
             computed.clone()
         };
 
+        // The root element's computed font-size is the basis every `rem`
+        // length resolves against. Stylo feeds it to the Device itself in
+        // `finish_restyle`, but that lives in stylo's own traversal and
+        // rinch-dom hand-rolls the cascade, so it never runs — do it here
+        // whenever the root is (re)cascaded (issue #279). This must happen
+        // before recursing into children so descendants cascade against the
+        // fresh value.
+        if node_id == self.tree.html_id {
+            self.sync_root_font_size(&computed);
+        }
+
         // Check for ::before and ::after pseudo-elements
         use style::selector_parser::PseudoElement;
         self.resolve_pseudo_element(node_id, &computed, PseudoElement::Before);
@@ -298,5 +309,46 @@ impl RinchDocument {
         for child_id in children {
             self.resolve_styles_recursive(child_id, Some(computed.clone()));
         }
+    }
+
+    /// Feed the root (`<html>`) element's computed font-size back to the
+    /// Stylo `Device` as the `rem` basis, mirroring what stylo's own
+    /// `finish_restyle` does for documents it traverses (issue #279).
+    ///
+    /// When the basis actually changes, every cached descendant style may
+    /// hold a `rem` length resolved against the old value, so all descendant
+    /// caches are cleared; the caller is mid-walk at the root, so this same
+    /// walk recascades them. (Stylo gates the recascade on
+    /// `Device::used_root_font_size()`; we skip that optimization because the
+    /// flag resets to `false` with every Device rebuild — a missed recascade
+    /// would leave stale `rem` layout, while a spurious one only costs time
+    /// on an event as rare as a root font-size change.)
+    fn sync_root_font_size(&mut self, root_style: &ServoArc<ComputedValues>) {
+        let device = self.stylist.device();
+        // Keep the root style pointer fresh too — root font metrics
+        // (rex/rch/ric) resolve through it.
+        device.set_root_style(root_style);
+
+        let size = root_style
+            .effective_zoom
+            .unzoom(root_style.get_font().clone_font_size().computed_size().px());
+        if size == self.device_params.root_font_size {
+            return;
+        }
+        self.device_params.root_font_size = size;
+        device.set_root_font_size(size);
+
+        // Descendants cached before this change resolved `rem` against the
+        // old basis — clear them so the walk we're inside recascades them.
+        let html_id = self.tree.html_id;
+        for (node_id, _) in self.tree.nodes.iter() {
+            if node_id == html_id {
+                continue;
+            }
+            *self.tree.nodes[node_id].stylo_element_data.borrow_mut() = None;
+        }
+        // A recascaded `rem` length is a Taffy style change; make sure the
+        // relayout isn't skipped when nothing else marked layout dirty.
+        self.tree.layout_dirty = true;
     }
 }

@@ -206,6 +206,35 @@ impl RinchDocument {
             text_layout_cache = self.run_taffy_compute(root_taffy, available_space, perf);
         }
 
+        // #278: a mixed `calc(%, px)` value has no Taffy representation (see
+        // `calc_layout.rs`), so its style carries a seed until the containing
+        // block has a size. Resolve every such value against the sizes the
+        // compute above produced and re-run until nothing moves — a calc
+        // container whose child is calc-sized converges one level per pass.
+        // On the converged path no layout result is read (and nothing
+        // painted) from a seed value. Percentage cycles are not what the cap
+        // is for — those are broken the way browsers and Taffy break them,
+        // by resolving a percentage against an *indefinite* basis as
+        // zero/auto (`calc_axis_definite`). The cap bounds the residual
+        // content-feedback corner (e.g. `min-size: auto` growing a nominally
+        // definite axis): a capped run lays out from the last iterate — a
+        // wrong but bounded answer after 8 extra computes — and says so on
+        // stderr once per process rather than hiding it.
+        let mut calc_passes = 0;
+        while self.resolve_layout_calcs() {
+            text_layout_cache = self.run_taffy_compute(root_taffy, available_space, perf);
+            calc_passes += 1;
+            if calc_passes >= 8 {
+                static CAP_WARNING: std::sync::Once = std::sync::Once::new();
+                CAP_WARNING.call_once(|| {
+                    eprintln!(
+                        "[rinch] calc() layout fixpoint hit its iteration cap; a mixed                          calc() in this document is feeding back into its own basis and                          its layout is approximate (reported once per process)"
+                    );
+                });
+                break;
+            }
+        }
+
         // Read layout results back into nodes
         let t = web_time::Instant::now();
         self.read_layout_results(self.tree.root_id);
@@ -412,6 +441,14 @@ impl RinchDocument {
 
                             // Collapsed block (virtualized) — return estimated size
                             // without doing any Parley work.
+                            //
+                            // This early return only runs at all because the
+                            // node is a Taffy leaf — Taffy never consults a
+                            // measure function on a node with children (the
+                            // IFC leaf invariant, #466; see
+                            // `NodeContext::InlineRoot`). A non-leaf
+                            // virtualized root would silently get 0 from the
+                            // block algorithm instead of its estimate.
                             if let Some(est_h) = nodes[root_id].estimated_height {
                                 return taffy::Size {
                                     width: known_dims.width.unwrap_or(0.0),
@@ -1077,6 +1114,7 @@ impl RinchDocument {
             match d {
                 DimensionValue::Length(v) => Some(*v),
                 DimensionValue::Percent(p) => Some(p * vh),
+                DimensionValue::Calc { px, pct } => Some(px + pct * vh),
                 DimensionValue::Auto => None,
             }
         };
@@ -1096,6 +1134,13 @@ impl RinchDocument {
     /// the DOM structure each time, so calling it multiple times produces the
     /// same result. Nested display:contents (e.g. from `else if` chains) are
     /// handled by recursively flattening.
+    ///
+    /// A parent is rebuilt when its contents-descendant status changed in
+    /// **either direction** (#520): entering (a child now computes `Contents`)
+    /// or leaving (a child a previous pass spliced no longer does —
+    /// `Node::contents_spliced`). A departed wrapper additionally gets its own
+    /// Taffy child list rebuilt, because the splice moved its children's Taffy
+    /// ids into the ancestor's list and nothing else gives them back.
     pub(crate) fn sync_display_contents(&mut self) {
         use crate::computed_style::values::DisplayValue;
 
@@ -1110,25 +1155,58 @@ impl RinchDocument {
         // 2×2 text-sized) parent — see issue #25.
         let mut affected_parents: Vec<usize> = Vec::new();
         let mut all_contents_nodes: Vec<usize> = Vec::new();
+        // Nodes a previous pass spliced as `display: contents` that no longer
+        // compute `Contents` (#520): the wrapper's box must come back and its
+        // children must stop contributing to the flattening ancestor.
+        let mut departed_nodes: Vec<usize> = Vec::new();
 
         for (id, node) in &self.tree.nodes {
-            if node.computed_style.display == DisplayValue::Contents {
+            let is_contents = node.computed_style.display == DisplayValue::Contents;
+            if is_contents {
                 all_contents_nodes.push(id);
-
-                // Walk up to find nearest non-display-contents ancestor
-                let mut ancestor = node.parent;
-                while let Some(anc_id) = ancestor {
-                    let anc_is_contents =
-                        self.tree.nodes[anc_id].computed_style.display == DisplayValue::Contents;
-                    if !anc_is_contents {
-                        if !affected_parents.contains(&anc_id) {
-                            affected_parents.push(anc_id);
-                        }
-                        break;
-                    }
-                    ancestor = self.tree.nodes[anc_id].parent;
-                }
+            } else if node.contents_spliced {
+                departed_nodes.push(id);
+            } else {
+                continue;
             }
+
+            // Walk up to find nearest non-display-contents ancestor. For a
+            // departed node this is the ancestor still holding the splice (or
+            // about to hold the wrapper's own box) — it needs the same rebuild
+            // a current contents node's ancestor does.
+            let mut ancestor = node.parent;
+            while let Some(anc_id) = ancestor {
+                let anc_is_contents =
+                    self.tree.nodes[anc_id].computed_style.display == DisplayValue::Contents;
+                if !anc_is_contents {
+                    if !affected_parents.contains(&anc_id) {
+                        affected_parents.push(anc_id);
+                    }
+                    break;
+                }
+                ancestor = self.tree.nodes[anc_id].parent;
+            }
+        }
+
+        // Rebuild each departed wrapper's own Taffy child list (#520). Taffy's
+        // `set_children` removes each adopted child from its previous parent,
+        // so this both restores the wrapper's box contents and pulls the
+        // spliced ids out of whatever list still holds them — including a
+        // parent the wrapper was already detached from (a toggle followed by a
+        // removal before any layout pass), which the affected-parents rebuild
+        // below cannot reach because a detached wrapper has no ancestors.
+        for &node_id in &departed_nodes {
+            self.tree.nodes[node_id].contents_spliced = false;
+            let node_taffy = match self.tree.nodes[node_id].taffy_id {
+                Some(t) => t,
+                None => continue,
+            };
+            let new_children = Self::collect_effective_taffy_children(&self.tree.nodes, node_id);
+            let _ = self.tree.taffy.set_children(node_taffy, &new_children);
+            for &child_taffy in &new_children {
+                let _ = self.tree.taffy.mark_dirty(child_taffy);
+            }
+            let _ = self.tree.taffy.mark_dirty(node_taffy);
         }
 
         // For each affected parent, rebuild its taffy children by flattening
@@ -1153,15 +1231,18 @@ impl RinchDocument {
         // Taffy's mark_dirty propagation stops at already-empty ancestors,
         // which can leave stale cached layouts when available space hasn't
         // changed but children have been swapped.
-        if !affected_parents.is_empty() {
+        if !affected_parents.is_empty() || !departed_nodes.is_empty() {
             if let Some(root_taffy) = self.tree.nodes[self.tree.root_id].taffy_id {
                 let _ = self.tree.taffy.mark_dirty(root_taffy);
             }
         }
 
         // Set all display:contents nodes' taffy to display:none so they don't
-        // participate in layout themselves.
+        // participate in layout themselves. `contents_spliced` records that
+        // this pass owns the node's Taffy contribution, so a later pass (or a
+        // detach path) can tell a healed wrapper from a stale-spliced one.
         for node_id in all_contents_nodes {
+            self.tree.nodes[node_id].contents_spliced = true;
             if let Some(node_taffy) = self.tree.nodes[node_id].taffy_id {
                 let _ = self.tree.taffy.set_style(
                     node_taffy,
@@ -1229,6 +1310,9 @@ impl RinchDocument {
             if let Some(taffy_id) = self.tree.nodes.get(node_id).and_then(|n| n.taffy_id) {
                 let _ = self.tree.taffy.mark_dirty(taffy_id);
             }
+            // The measure may live on this root's measure leaf, which a mark
+            // on the root does not reach — dirty propagates up, not down (#466).
+            self.mark_ifc_measure_dirty(node_id);
         } else {
             // Fallback: walk ancestors to find one with text_layout (the IFC root)
             let mut cur = self.tree.nodes.get(node_id).and_then(|n| n.parent);
@@ -1268,6 +1352,101 @@ impl RinchDocument {
         }
     }
 
+    /// Remove `node_id`'s *contribution* to `parent_taffy`'s Taffy children —
+    /// which is not always the node's own `taffy_id` (#517).
+    ///
+    /// A `display: contents` node owns no box: after a layout pass,
+    /// `sync_display_contents` has spliced the node's effective children
+    /// (recursively flattened through nested contents nodes) directly into
+    /// the parent's Taffy child list and detached the node's own Taffy node.
+    /// Detaching only the node's own id there is a silent no-op
+    /// (`taffy_remove_child_safe` swallows it), and the spliced-in children
+    /// stay behind as invisible siblings claiming layout space forever.
+    ///
+    /// The gate is `computed_style.display == Contents` **or**
+    /// `Node::contents_spliced` (#520). Computed display alone is not enough:
+    /// it describes the node *now*, while the splice describes what a past
+    /// `sync_display_contents` pass did. A wrapper restyled away from
+    /// `contents` (eagerly — e.g. `append_child`'s
+    /// `recompute_node_styles_recursive` flushes every pending style root)
+    /// and then detached before the next layout pass computes a box display
+    /// while its children still sit spliced in the parent's list; only the
+    /// flag records that. Conversely a freshly attached wrapper computes
+    /// `Contents` while its own id is what the parent holds (the splice
+    /// happens only in `resolve_layout`), so the node's own id is removed
+    /// unconditionally as well.
+    ///
+    /// When the gate fires, the removal set is every descendant's Taffy id,
+    /// flattening through children that are or were spliced
+    /// (`collect_taffy_detach_candidates`) — not just the *current* effective
+    /// children, which would miss the grandchildren of a nested wrapper whose
+    /// own toggle hasn't been synced yet. Nothing is over-removed: every
+    /// candidate is a proper descendant of `node_id`, and a descendant's id
+    /// found directly in `parent_taffy`'s list can only be (possibly stale)
+    /// splice attachment — the whole subtree is leaving, so it must go
+    /// either way. Whatever is absent, `taffy_remove_child_safe` swallows.
+    /// Every detach path (`remove_child`, `replace_node`,
+    /// `set_text_content`/`set_inner_html` child-clearing, and the reparent
+    /// legs of `append_child`/`insert_before`/`insert_child`) goes through
+    /// here.
+    ///
+    /// `remove_node` does NOT: PR #515 gave it the either/or form, which is
+    /// semantically different (it skips the own-id removal for a
+    /// `Contents`-computing node). Unifying `remove_node` onto this helper
+    /// would therefore CHANGE #515's behaviour — covering the
+    /// attached-but-unspliced window it currently misses — which may well be
+    /// wanted, but do it knowingly, not as a deduplication.
+    pub(crate) fn taffy_detach_contribution(
+        &mut self,
+        parent_taffy: taffy::NodeId,
+        node_id: usize,
+    ) {
+        use crate::computed_style::values::DisplayValue;
+
+        let node = &self.tree.nodes[node_id];
+        if node.computed_style.display == DisplayValue::Contents || node.contents_spliced {
+            let mut candidates = Vec::new();
+            Self::collect_taffy_detach_candidates(&self.tree.nodes, node_id, &mut candidates);
+            for candidate_taffy in candidates {
+                self.taffy_remove_child_safe(parent_taffy, candidate_taffy);
+            }
+        }
+        if let Some(node_taffy) = self.tree.nodes[node_id].taffy_id {
+            self.taffy_remove_child_safe(parent_taffy, node_taffy);
+        }
+    }
+
+    /// Every Taffy id under `node_id` that a splice may have left in an
+    /// ancestor's Taffy child list (#517, #520): each child's own id, recursing
+    /// through children that either compute `Contents` now or were spliced by
+    /// a past pass and not yet healed (`Node::contents_spliced`).
+    ///
+    /// This is deliberately a superset of `collect_effective_taffy_children`:
+    /// it exists for *removal* via `taffy_remove_child_safe`, where an id that
+    /// was never attached is swallowed, so erring wide is free — while erring
+    /// narrow (flattening only through *current* contents children) leaves a
+    /// nested wrapper's grandchildren stranded when both wrappers were toggled
+    /// away from `contents` in the same flush.
+    fn collect_taffy_detach_candidates(
+        nodes: &slab::Slab<crate::node::Node>,
+        node_id: usize,
+        out: &mut Vec<taffy::NodeId>,
+    ) {
+        use crate::computed_style::values::DisplayValue;
+
+        for &child_id in &nodes[node_id].children {
+            let Some(child) = nodes.get(child_id) else {
+                continue;
+            };
+            if let Some(child_taffy) = child.taffy_id {
+                out.push(child_taffy);
+            }
+            if child.computed_style.display == DisplayValue::Contents || child.contents_spliced {
+                Self::collect_taffy_detach_candidates(nodes, child_id, out);
+            }
+        }
+    }
+
     /// Clear ifc_root on a node and all its descendants.
     pub(crate) fn clear_ifc_root_recursive(&mut self, node_id: usize) {
         // Use iterative approach to avoid stack overflow
@@ -1295,6 +1474,11 @@ impl RinchDocument {
         if let Some(taffy_id) = self.tree.nodes.get(parent_id).and_then(|n| n.taffy_id) {
             let _ = self.tree.taffy.mark_dirty(taffy_id);
         }
+        // The measure may live on this root's measure leaf, which the mark
+        // above does not reach — dirty propagates up, not down (#466). Without
+        // this, a text edit in a `text + absolute` container serves the leaf's
+        // cached measure and the container's height never changes.
+        self.mark_ifc_measure_dirty(parent_id);
         // NOTE: Do NOT clear ifc_root on children here. This function handles
         // text/style invalidation where the IFC structure is unchanged. Clearing
         // ifc_root would prevent build_ifc_layouts() from finding this IFC root

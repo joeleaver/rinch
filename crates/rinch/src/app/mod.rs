@@ -11,6 +11,10 @@ mod blink_and_click_focus_tests;
 mod click_handling;
 #[cfg(feature = "debug")]
 mod debug_commands;
+#[cfg(test)]
+mod device_pixel_ratio_tests;
+#[cfg(test)]
+mod disabled_input_tests;
 mod event_dispatch;
 mod focus;
 #[cfg(test)]
@@ -20,6 +24,8 @@ mod hidpi_pointer_tests;
 #[cfg(test)]
 mod hit_test_font_tests;
 pub(crate) mod hit_testing;
+#[cfg(test)]
+mod implicit_focus_tests;
 #[cfg(test)]
 mod input_commit_tests;
 #[cfg(test)]
@@ -184,8 +190,8 @@ impl ScrollAxis {
 
 /// State for an active scrollbar drag operation.
 ///
-/// Axis-generic: `start_pos`, `content_size` and `container_size` are all read
-/// along [`ScrollbarDrag::axis`].
+/// Axis-generic: `start_pos` and every distance in [`ScrollbarDrag::track`] are
+/// read along [`ScrollbarDrag::axis`].
 pub(crate) struct ScrollbarDrag {
     /// The node ID of the scroll container being scrolled.
     pub node_id: usize,
@@ -200,10 +206,10 @@ pub(crate) struct ScrollbarDrag {
     pub start_pos: f32,
     /// The scroll offset along `axis` when the drag started.
     pub start_scroll: f64,
-    /// Content extent along `axis` (for ratio calculation).
-    pub content_size: f64,
-    /// Container extent along `axis`.
-    pub container_size: f64,
+    /// The bar's geometry along `axis`, captured at the press — the *paint
+    /// pass's* own numbers, so the thumb moves exactly as far as the pointer
+    /// does (#400).
+    pub track: rinch_dom::paint::scrollbar::ScrollbarTrack,
 }
 
 // ── Focus arbiter ────────────────────────────────────────────────────────────
@@ -328,6 +334,11 @@ pub struct RinchApp {
     pub(crate) scene_dirty: bool,
     /// Text rendering scale for HiDPI/mobile (applied to Parley font sizes).
     pub(crate) text_scale: f32,
+    /// Display scale factor pushed into Stylo's `Device` (issue #211): drives
+    /// `resolution` media queries, `image-set()` and border-width snapping.
+    /// Distinct from `text_scale` (glyph rasterization) — this one changes
+    /// which CSS rules match, never layout geometry.
+    pub(crate) device_pixel_ratio: f64,
     /// Whether we have a previous frame's pixels for dirty region caching.
     #[cfg(software_shell)]
     pub(crate) has_previous_frame: bool,
@@ -458,6 +469,7 @@ impl RinchApp {
             modifiers: Modifiers::default(),
             scene_dirty: true,
             text_scale: 1.0,
+            device_pixel_ratio: 1.0,
             #[cfg(software_shell)]
             has_previous_frame: false,
             #[cfg(software_shell)]
@@ -599,6 +611,12 @@ impl RinchApp {
     pub fn mount_component(&mut self, viewport_width: f32, viewport_height: f32) {
         let doc = Rc::new(RefCell::new(RinchDocument::new()));
         doc.borrow_mut().tree.text_scale = self.text_scale;
+        // Push the display scale into Stylo before any style resolution, so a
+        // document mounted on a HiDPI display resolves `resolution` media
+        // queries correctly from the first paint — not after the first resize
+        // (issue #211). No-op at the 1.0 default.
+        doc.borrow_mut()
+            .set_device_pixel_ratio(self.device_pixel_ratio as f32);
 
         // Set up network image loader if feature enabled (replaces default FileImageLoader)
         #[cfg(all(feature = "image-network", not(target_arch = "wasm32")))]
@@ -1582,18 +1600,63 @@ impl RinchApp {
     /// and a recycled one would aim the caret/value attribute writes at an
     /// unrelated element.
     ///
+    /// A **disabled** field is inert here too, and that is the third leg of
+    /// issue #315. The focus-side fixes (the Tab collector, the mousedown
+    /// claim) stop you *reaching* a field that was disabled when you got there;
+    /// only this one covers a field that goes disabled **while focused** — a
+    /// reactive `disabled` prop re-rendering under a live caret — which would
+    /// otherwise stay fully typable. Every key command funnels through
+    /// [`Self::handle_input_edit_command`] or lands here directly
+    /// ([`Self::handle_enter`]'s commit), so one guard covers them all.
+    ///
+    /// The claim is **released**, through
+    /// [`Self::release_focus_for_disabled`] — which is what a browser does
+    /// (focus moves to the body) — but without the `data-onchange` commit a
+    /// normal blur would fire, because a control going disabled is not the
+    /// user committing an edit. Keeping an inert claim instead would leave a
+    /// `:focus` ring on a control that owns no keyboard, keep the OS IME
+    /// enabled and its candidate box parked on it (`ime_state` reports
+    /// `enabled: true` for any `FocusTarget::Input`), and keep
+    /// `has_focused_input()` answering `true`, which is what an embed host
+    /// routes its keyboard on.
+    ///
     /// Must be called with no outstanding borrow of `self.doc` — `set_focus_target`
     /// writes DOM attributes.
     fn live_focused_input_handler(&mut self) -> Option<usize> {
         let handler_id = self.focused_input_handler_id?;
-        if events::has_input_handler(events::EventHandlerId(handler_id)) {
-            return Some(handler_id);
+        if !events::has_input_handler(events::EventHandlerId(handler_id)) {
+            tracing::debug!(
+                "focused input handler {handler_id} was freed with its scope; dropping focus"
+            );
+            self.set_focus_target(FocusTarget::None);
+            return None;
         }
-        tracing::debug!(
-            "focused input handler {handler_id} was freed with its scope; dropping focus"
-        );
-        self.set_focus_target(FocusTarget::None);
-        None
+        if self.focused_input_is_disabled() {
+            self.release_focus_for_disabled();
+            return None;
+        }
+        Some(handler_id)
+    }
+
+    /// Whether the field currently holding the input claim is disabled — by its
+    /// own attribute or by an enclosing `<fieldset disabled>`.
+    fn focused_input_is_disabled(&self) -> bool {
+        let Some(node_id) = self.focused_input_node_id else {
+            return false;
+        };
+        let Some(doc) = &self.doc else { return false };
+        let d = doc.borrow();
+        Self::node_is_disabled_in_tree(&d.tree, node_id)
+    }
+
+    /// Whether the field currently holding the input claim is read-only.
+    fn focused_input_is_readonly(&self) -> bool {
+        let Some(node_id) = self.focused_input_node_id else {
+            return false;
+        };
+        let Some(doc) = &self.doc else { return false };
+        let d = doc.borrow();
+        d.tree.get(node_id).is_some_and(Self::node_is_readonly)
     }
 
     /// Central dispatch: execute an EditCommand on the focused input's EditableState.
@@ -1601,6 +1664,12 @@ impl RinchApp {
         let Some(handler_id) = self.live_focused_input_handler() else {
             return;
         };
+        // A read-only field still focuses, moves its caret, selects and copies
+        // — it only refuses to change. So the gate is per *command*, not per
+        // field, and `EditCommand::mutates_text` is the exhaustive answer.
+        if cmd.mutates_text() && self.focused_input_is_readonly() {
+            return;
+        }
         // The edit applies to what the field displays: adopt any `value` write
         // that landed since the last sync (issue #238).
         self.adopt_focused_input_value_from_dom();
@@ -1966,29 +2035,64 @@ impl RinchApp {
         self.focus_element(focusable[target_idx]);
     }
 
-    /// Whether a node is disabled, and so takes no focus — not by Tab, not by
-    /// a mousedown claim.
+    /// Whether a node is disabled, and so takes no focus and accepts no edit —
+    /// not by Tab, not by a mousedown claim, not from the keyboard.
     ///
-    /// `data-disabled` is a **boolean attribute**, spelled the way HTML spells
-    /// one: present means disabled, whatever the value, and only the explicit
-    /// `"false"` opts out. The probe this replaces demanded the literal value
-    /// `"true"`, which no in-tree writer of `data-disabled` produces — the one
-    /// that exists (`select_widget.rs`, for a disabled `<option>`) writes `""`,
-    /// and callers following the HTML idiom write `""` too — so it matched
-    /// nothing but its own test and every `data-disabled` control stayed
-    /// tabbable.
+    /// **Both spellings count.** `data-disabled` is what the runtime's own
+    /// widgets write (`select_widget.rs`, for a disabled `<option>`); plain
+    /// `disabled` is what the whole component library writes — `Button`,
+    /// `ActionIcon`, `CloseButton`, `TextInput`, `Textarea`, `NumberInput`,
+    /// `PasswordInput`, `Checkbox`, `Radio`, `Switch`, `NavLink`, `Pagination`,
+    /// `Tabs`, `Accordion`, `DropdownMenu`, `Fieldset`. Consulting only the
+    /// first left every one of those tabbable, and a disabled `<input>` fully
+    /// typable, which is issue #315.
     ///
-    /// **Only `data-disabled`.** The plain HTML `disabled` attribute that the
-    /// component library writes (`Button`, `ActionIcon`, `Checkbox`, `Radio`,
-    /// `TextInput`, `Textarea`, …) is *not* consulted, so a disabled
-    /// `<input>`/`<textarea>` is still a Tab stop and still typable. Teaching
-    /// this probe that spelling is only half the fix — the pointer path
-    /// (`found_input_focus` in `click_handling.rs`) and the editable engine
-    /// would have to honour it too — so it is deliberately left alone here.
+    /// Either is a **boolean attribute**: present means disabled whatever the
+    /// value, and only the explicit `"false"` opts out. (Strict HTML has no
+    /// opt-out at all — `disabled="false"` disables — but rinch has documented
+    /// the `"false"` escape for `data-disabled` since it was written, and one
+    /// rule for both spellings beats two.) The probe this rule replaced
+    /// demanded the literal `"true"`, which no in-tree writer produces.
+    ///
+    /// The rule itself lives in `rinch-dom` ([`rinch_dom::node_is_disabled`]),
+    /// below both of its consumers: this focus machinery and CSS
+    /// `:disabled`/`:enabled` matching (issue #429). Two hand-rolled copies is
+    /// how a control comes to refuse input while still *styling* itself as
+    /// enabled. Note CSS is deliberately **narrower** — it applies this rule
+    /// only to the elements HTML lets be disabled, while focus applies it to
+    /// any node, since rinch lets any `tabindex` node opt out of the Tab
+    /// order.
     pub(crate) fn node_is_disabled(node: &rinch_dom::Node) -> bool {
+        rinch_dom::node_is_disabled(node)
+    }
+
+    /// Whether a node is **read-only**: it focuses, selects and copies like any
+    /// other field, but refuses every command that would change its text.
+    ///
+    /// A weaker thing than [`Self::node_is_disabled`], and the distinction is
+    /// the point — `ColorInput` in a non-free-form format is the one in-tree
+    /// writer, and it wants the field reachable and copyable while the swatch
+    /// owns the value. Same boolean-attribute rule.
+    pub(crate) fn node_is_readonly(node: &rinch_dom::Node) -> bool {
         node.attributes
-            .get("data-disabled")
+            .get("readonly")
             .is_some_and(|v| !v.eq_ignore_ascii_case("false"))
+    }
+
+    /// [`Self::node_is_disabled`] for the node itself, **or** an enclosing
+    /// `<fieldset disabled>`.
+    ///
+    /// `<fieldset>` is the one element whose `disabled` reaches past itself:
+    /// HTML disables every descendant control, which is the whole reason the
+    /// element exists. The exception HTML also carves — controls inside the
+    /// fieldset's **first `<legend>`** stay enabled, so a form can put its own
+    /// "enable this section" checkbox there — is honoured too.
+    ///
+    /// Everything else disables only itself (a disabled `<button>` does not
+    /// disable a `<span>` inside it), which is why the Tab collector's own
+    /// comment about not skipping subtrees still stands for every other tag.
+    pub(crate) fn node_is_disabled_in_tree(tree: &rinch_dom::NodeTree, node_id: usize) -> bool {
+        rinch_dom::node_is_disabled_in_tree(tree, node_id)
     }
 
     /// A node's `tabindex` as an integer, if it carries a parseable one.
@@ -2001,6 +2105,70 @@ impl RinchApp {
         node.attributes
             .get("tabindex")
             .and_then(|v| v.parse::<i32>().ok())
+    }
+
+    /// The `tabindex` a node **behaves as** — explicit, or implied by its tag
+    /// (issue #252).
+    ///
+    /// An explicit parseable `tabindex` always wins. That is the browser rule,
+    /// and it is what keeps the `tabindex="-1"` opt-outs on `NumberInput`'s and
+    /// `PasswordInput`'s stepper buttons working unchanged now that a
+    /// `<button>` is focusable by tag.
+    ///
+    /// Otherwise the **implicitly focusable** tags answer `0`: `<button>`,
+    /// `<select>`, `<textarea>`, `<input>`, and `<a>` **with a non-empty
+    /// `href`** (a bare `<a>` is not a link and is not focusable, in a browser
+    /// either). Before this, the desktop Tab order was text fields and `Tree`
+    /// nodes and *nothing else* — `Button`, `ActionIcon`, `CloseButton`, `Tab`,
+    /// `AccordionControl`, `Pagination`, `DropdownMenuItem`, `NavLink`, every
+    /// Modal/Drawer/Alert/Notification closer and the `BorderlessWindow`
+    /// controls were all unreachable by keyboard, while the same components are
+    /// ordinary Tab stops on `rinch-web`.
+    ///
+    /// `<summary>` is deliberately **not** in the set: rinch has no `<details>`
+    /// disclosure behaviour, so a focusable `<summary>` would be a Tab stop
+    /// that does nothing.
+    pub(crate) fn effective_tabindex(node: &rinch_dom::Node) -> Option<i32> {
+        if let Some(explicit) = Self::node_tabindex(node) {
+            return Some(explicit);
+        }
+        Self::tag_is_focusable(node).then_some(0)
+    }
+
+    /// Whether this node's **tag** makes it focusable without a `tabindex`.
+    fn tag_is_focusable(node: &rinch_dom::Node) -> bool {
+        match node.tag() {
+            Some("button" | "select" | "textarea" | "input") => true,
+            // A link is focusable because it navigates; one with no href does
+            // not, and a browser does not focus it either.
+            Some("a") => node
+                .attributes
+                .get("href")
+                .is_some_and(|h| !h.trim().is_empty()),
+            _ => false,
+        }
+    }
+
+    /// Whether focusing this node hands it to the **text engine**
+    /// (`FocusTarget::Input`, an `EditableState` over its `value`) rather than
+    /// taking it as a generic focusable node.
+    ///
+    /// `<select>` is excluded whatever handlers it carries, and that is issue
+    /// #424: a `<select>` with a change handler writes `data-oninput` like any
+    /// other control an app listens to, and branching on that attribute alone
+    /// installed an `EditableState` over the select's `value`. Tab onto it
+    /// turned it into a typable text field whose keystrokes rewrote `value` and
+    /// fired `oninput`. Widening the Tab order (#252) admits every `<select>`,
+    /// so the tag has to be tested first or the bug multiplies.
+    ///
+    /// `data-oninput` remains the signal, rather than the tag, because a custom
+    /// control an app drives itself has no tag of its own — and because the
+    /// text engine needs the handler id regardless. A `<input type="checkbox">`
+    /// inside a `Checkbox` carries none (the handler is on the `<label>`), so
+    /// it takes generic node focus and Space walks up to the label's
+    /// `data-rid`, which is the pattern working as designed.
+    pub(crate) fn node_takes_text_focus(node: &rinch_dom::Node) -> bool {
+        node.tag() != Some("select") && node.attributes.contains_key("data-oninput")
     }
 
     /// What a pointer press on `hit` does to the keyboard claim.
@@ -2050,12 +2218,30 @@ impl RinchApp {
             if Self::node_is_nofocus(node) {
                 return PressFocus::Preserve;
             }
-            if node.attributes.contains_key("data-oninput") {
+            // A control with its own focus machinery is not a generic
+            // focusable: the text engine claims `<input>`/`<textarea>` (and
+            // any `data-oninput` node) on the click path, and a `<select>` is
+            // claimed by its popup. Taking `FocusTarget::Node` first would
+            // announce a gain-then-loss on it (issue #314).
+            if node.attributes.contains_key("data-oninput")
+                || matches!(node.tag(), Some("input" | "textarea" | "select"))
+            {
                 return PressFocus::Release;
             }
+            // `node_is_disabled_in_tree`, **not** `node_is_disabled`: a control
+            // inside a `<fieldset disabled>` takes no claim from a press either
+            // (issue #315). Load-bearing, and easy to lose — the inline walk this
+            // function replaced (before #316 item 3 collapsed the two walks into
+            // one) asked the fieldset-aware question, and #312's `PressFocus`
+            // rewrite reintroduced the self-only one, so this merge had to choose
+            // deliberately: taking the self-only predicate deletes the guarantee
+            // while compiling and passing everything else. Pinned by
+            // `a_press_on_a_focusable_inside_a_disabled_fieldset_claims_nothing`,
+            // which is the only test that separates the two predicates: a disabled
+            // `<fieldset>` is the one shape where they disagree.
             if focusable.is_none()
-                && !Self::node_is_disabled(node)
-                && Self::node_tabindex(node).is_some()
+                && !Self::node_is_disabled_in_tree(tree, nid)
+                && Self::effective_tabindex(node).is_some()
             {
                 focusable = Some(nid);
             }
@@ -2087,21 +2273,27 @@ impl RinchApp {
         let d = doc.borrow();
         let mut result = Vec::new();
 
-        // Walk DOM tree depth-first from root (node 0)
-        let mut stack: Vec<usize> = vec![0];
-        while let Some(nid) = stack.pop() {
+        // Walk DOM tree depth-first from root (node 0). The flag rides the
+        // stack because `<fieldset disabled>` is the one element whose
+        // `disabled` reaches its whole subtree, and inheriting it downwards
+        // costs nothing where an ancestor walk per node would be quadratic.
+        let mut stack: Vec<(usize, bool)> = vec![(0, false)];
+        while let Some((nid, inherited_disabled)) = stack.pop() {
             let Some(node) = d.tree.get(nid) else {
                 continue;
             };
 
             // A disabled or negative-tabindex node is not itself focusable, but
             // its children still are (web semantics remove only the node from
-            // the Tab order, not its subtree). Same for zero-size or
-            // `visibility: hidden` (invisible, unclickable) nodes. The tabindex
-            // test parses like the focusable test below so `-2`, `-01`, … are
-            // negative too, not just the literal string "-1".
-            let skip_self = Self::node_is_disabled(node)
-                || Self::node_tabindex(node).is_some_and(|v| v < 0)
+            // the Tab order, not its subtree — `<fieldset>` above is the sole
+            // exception). Same for zero-size or `visibility: hidden`
+            // (invisible, unclickable) nodes. The tabindex test parses like the
+            // focusable test below so `-2`, `-01`, … are negative too, not just
+            // the literal string "-1".
+            let self_disabled = Self::node_is_disabled(node);
+            let skip_self = self_disabled
+                || inherited_disabled
+                || Self::effective_tabindex(node).is_some_and(|v| v < 0)
                 || node.layout.width <= 0.0
                 || node.layout.height <= 0.0
                 || matches!(
@@ -2111,18 +2303,35 @@ impl RinchApp {
                 );
 
             if !skip_self {
-                // Check if focusable
+                // Focusable: an effective `tabindex >= 0` — explicit, or
+                // implied by the tag (issue #252) — or a custom control that
+                // takes text input without one.
                 let has_oninput = node.attributes.contains_key("data-oninput");
-                let has_tabindex = Self::node_tabindex(node).is_some_and(|v| v >= 0);
+                let has_tabindex = Self::effective_tabindex(node).is_some_and(|v| v >= 0);
 
                 if has_oninput || has_tabindex {
                     result.push(nid);
                 }
             }
 
+            // A disabled `<fieldset>` disables its descendants — except those
+            // inside its first `<legend>`, which HTML keeps enabled so a form
+            // can put the control that re-enables the section there.
+            let is_disabling_fieldset = self_disabled && node.tag() == Some("fieldset");
+            let disables_subtree = inherited_disabled || is_disabling_fieldset;
+            // Only *this* fieldset's legend is exempt from *this* fieldset. An
+            // outer disabled fieldset still reaches in, so an already-inherited
+            // disable is not undone by a nested legend.
+            let legend_exempt = (is_disabling_fieldset && !inherited_disabled)
+                .then(|| rinch_dom::first_legend_child(&d.tree, node))
+                .flatten();
+
             // Push children in reverse order so first child is processed first
             for &child_id in node.children.iter().rev() {
-                stack.push(child_id);
+                stack.push((
+                    child_id,
+                    disables_subtree && Some(child_id) != legend_exempt,
+                ));
             }
         }
 
@@ -2133,13 +2342,13 @@ impl RinchApp {
     /// or a generic `tabindex >= 0` node (issue #228). Keyboard-driven, so the
     /// focused node gets the `:focus-visible` ring either way.
     fn focus_element(&mut self, node_id: usize) {
-        let has_oninput = {
+        let takes_text_focus = {
             let Some(doc) = &self.doc else { return };
             let d = doc.borrow();
             let Some(node) = d.tree.get(node_id) else {
                 return;
             };
-            node.attributes.contains_key("data-oninput")
+            Self::node_takes_text_focus(node)
         };
 
         // A blurred owner's user code (a `data-onchange` commit, a registered
@@ -2153,7 +2362,7 @@ impl RinchApp {
         // announcing one would give a registered target a second
         // `on_focus_gained` with no `on_focus_lost` between them.
         let mut target_changed = false;
-        if has_oninput {
+        if takes_text_focus {
             // `try_focus_input` takes focus through the arbiter (tears down any
             // prior surface / editor / input).
             self.try_focus_input(node_id);
@@ -2202,10 +2411,30 @@ impl RinchApp {
     /// handler must not swallow the key), with a `ClickContext` synthesized
     /// from the handler node's absolute rect, cursor at its center. A node with
     /// no live handler anywhere in its chain is a quiet no-op.
+    /// Whether the generic node currently holding the keyboard is a
+    /// `<select>` — the one focusable whose Enter/Space/Alt+Down opens a popup
+    /// instead of dispatching a `data-rid` (issue #314).
+    pub(crate) fn focused_node_is_select(&self) -> bool {
+        let FocusTarget::Node(id) = self.focus_target else {
+            return false;
+        };
+        self.doc
+            .as_ref()
+            .is_some_and(|doc| doc.borrow().tree.get(id).and_then(|n| n.tag()) == Some("select"))
+    }
+
     fn activate_focused_node(&mut self, node_id: usize, vp_w: f32, vp_h: f32) {
         let Some(doc) = self.doc.clone() else {
             return;
         };
+        // A focused `<select>` opens its own popup (issue #314). Without this
+        // the walk below would keep going and fire the enclosing card's or
+        // form's `data-rid` instead — a keyboard activation landing on
+        // something the user was not aiming at.
+        if doc.borrow().tree.get(node_id).and_then(|n| n.tag()) == Some("select") {
+            self.open_select_popup(node_id, vp_w, vp_h);
+            return;
+        }
         let d = doc.borrow();
         let mut current = Some(node_id);
         while let Some(nid) = current {
@@ -2274,7 +2503,11 @@ impl RinchApp {
         let registered = crate::focus_registry::is_registered(self.doc_key(), node_id);
         let Some(doc) = &self.doc else { return false };
         let d = doc.borrow();
-        let focusable = registered || d.tree.get(node_id).and_then(Self::node_tabindex).is_some();
+        let focusable = registered
+            || d.tree
+                .get(node_id)
+                .and_then(Self::effective_tabindex)
+                .is_some();
         if !focusable {
             return false;
         }
@@ -2330,15 +2563,31 @@ impl RinchApp {
             return;
         };
 
-        let Some(oninput_str) = node.attributes.get("data-oninput") else {
-            // Any parseable tabindex makes a node programmatically focusable —
+        // A disabled control takes no focus at all, programmatic included, and
+        // an `<input>` is no exception (issue #315) — the check sits above the
+        // branch so it covers the input and generic-node paths alike.
+        if Self::node_is_disabled_in_tree(&d.tree, node_id) {
+            return;
+        }
+
+        // Route by **tag** first, `data-oninput` second (issue #424). A
+        // `<select>` with a change handler writes `data-oninput` like any other
+        // control an app listens to, and branching on the attribute alone
+        // installed an `EditableState` over the select's `value` — Tab onto it
+        // made it a typable text field. See `node_takes_text_focus`.
+        let oninput_attr = Self::node_takes_text_focus(node)
+            .then(|| node.attributes.get("data-oninput"))
+            .flatten();
+        let Some(oninput_str) = oninput_attr else {
+            // Any effective tabindex makes a node programmatically focusable —
             // including negative ones: `tabindex="-1"` is the standard
             // focusable-but-not-tabbable idiom (`element.focus()` into a
-            // just-opened dialog), and only the Tab collector excludes it. A
-            // disabled node takes no focus at all, programmatic included —
-            // the rule `collect_focusable_nodes` and the mousedown claim
-            // already apply, and what `docs/src/guide/focus.md` promises.
-            let focusable = !Self::node_is_disabled(node) && Self::node_tabindex(node).is_some();
+            // just-opened dialog), and only the Tab collector excludes it. The
+            // tag-implied ones (issue #252) count too, which is how a focused
+            // `<select>` lands here as `FocusTarget::Node` — closed, like a
+            // browser, and opened by Enter/Space/Alt+Down.
+            // (Disabled was already refused above, for both branches.)
+            let focusable = Self::effective_tabindex(node).is_some();
             drop(d);
             if focusable {
                 // Deferred for the same reason the input path below defers its
@@ -2502,6 +2751,23 @@ impl RinchApp {
         self.text_scale = scale;
         if let Some(doc) = &self.doc {
             doc.borrow_mut().tree.text_scale = scale;
+        }
+    }
+
+    /// Set the display scale factor Stylo sees as `device_pixel_ratio`
+    /// (issue #211): `resolution` media queries, `image-set()` candidate
+    /// selection and border-width device-pixel snapping. It does not change
+    /// layout geometry — 1 CSS px stays 1 layout unit.
+    ///
+    /// Call before [`mount_component`](Self::mount_component) so the initial
+    /// style resolution sees the right value; calling it on a mounted app (a
+    /// window dragged to a display with a different scale) marks the document
+    /// style- and layout-dirty, and the next resolve restyles it. No-op when
+    /// the value is unchanged.
+    pub fn set_device_pixel_ratio(&mut self, dpr: f64) {
+        self.device_pixel_ratio = dpr;
+        if let Some(doc) = &self.doc {
+            doc.borrow_mut().set_device_pixel_ratio(dpr as f32);
         }
     }
 
@@ -2838,6 +3104,406 @@ impl RinchApp {
 /// Gated on `software_shell`, so these run under CI's `cargo test -p rinch
 /// --features embed,theme,clipboard` step — NOT under `cargo test --workspace`,
 /// which unifies `rinch/gpu` on from the GPU examples and turns the cfg off.
+#[cfg(all(test, software_shell))]
+mod resize_vs_scrollbar_tests {
+    //! A borderless window's resize inset does not swallow the scrollbar
+    //! thumb (#399, #420).
+    //!
+    //! The press target is read out of the **rasterised frame** — where the
+    //! grey thumb pixels actually are — rather than derived, because the whole
+    //! complaint is that the thing you can see is not the thing you can press.
+
+    use super::scrollbar_drag_pixel_tests::{thumb_centre, thumb_span};
+    use super::*;
+    use rinch_core::element::WindowProps;
+
+    const SIZE: (u32, u32) = (800, 600);
+
+    /// The `BorderlessWindow` shape that reproduces the bug: a resizable
+    /// borderless window at the shell's default 8px inset, whose whole client
+    /// area is one scroll container flush with every edge. The thumb is then
+    /// painted in `[792, 798)` and the East resize zone is `x > 792`.
+    fn app() -> RinchApp {
+        let mut app = RinchApp::new(move |scope: &mut RenderScope| {
+            let root = scope.create_element("div");
+            root.set_attribute(
+                "style",
+                "position: relative; width: 800px; height: 600px; background: white",
+            );
+            let container = scope.create_element("div");
+            container.set_attribute(
+                "style",
+                "position: absolute; left: 0; top: 0; width: 800px; height: 600px; \
+                 overflow-y: auto; background: white",
+            );
+            let content = scope.create_element("div");
+            content.set_attribute("style", "width: 100%; height: 2000px; background: white");
+            container.append_child(&content);
+            root.append_child(&container);
+            root
+        });
+        app.set_window_props(WindowProps {
+            borderless: true,
+            resizable: true,
+            resize_inset: Some(8.0),
+            ..Default::default()
+        });
+        app.mount_component(800.0, 600.0);
+        app.resolve_and_repaint(800.0, 600.0);
+        app
+    }
+
+    fn press(app: &mut RinchApp, x: f32, y: f32) -> Vec<AppAction> {
+        app.handle_event(
+            PlatformEvent::MouseDown {
+                x,
+                y,
+                button: rinch_platform::MouseButton::Left,
+            },
+            SIZE,
+            1.0,
+        )
+    }
+
+    fn resize_direction(actions: &[AppAction]) -> Option<rinch_platform::ResizeDirection> {
+        actions.iter().find_map(|a| match a {
+            AppAction::DragResizeWindow(d) => Some(*d),
+            _ => None,
+        })
+    }
+
+    fn hover_cursor(app: &mut RinchApp, x: f32, y: f32) -> Option<rinch_platform::CursorStyle> {
+        app.handle_event(PlatformEvent::MouseMove { x, y }, SIZE, 1.0)
+            .iter()
+            .find_map(|a| match a {
+                AppAction::SetCursor(c) => Some(*c),
+                _ => None,
+            })
+    }
+
+    /// The whole of #399/#420: a press dead-centre of the painted thumb.
+    #[test]
+    fn a_press_on_the_painted_thumb_scrolls_instead_of_resizing() {
+        let mut app = app();
+        let y = thumb_centre(&mut app, 800.0) as f32;
+        // The thumb is painted inside the East resize zone — that is the
+        // premise, so state it rather than assume it.
+        let x = 795.0;
+        assert_eq!(
+            super::hit_testing::detect_resize_edge(x, y, 800.0, 600.0, 8.0),
+            Some(rinch_platform::ResizeDirection::East),
+            "the press must be inside the resize zone, or this test proves nothing"
+        );
+
+        let actions = press(&mut app, x, y);
+        assert_eq!(
+            resize_direction(&actions),
+            None,
+            "a press on the visible thumb must not resize the window"
+        );
+        assert!(
+            app.scrollbar_drag.is_some(),
+            "and it must arm the scrollbar drag instead"
+        );
+    }
+
+    /// The cursor is the same decision at a different call site, so it gets its
+    /// own assertion rather than riding on the press's.
+    #[test]
+    fn hovering_the_painted_thumb_does_not_show_a_resize_cursor() {
+        let mut app = app();
+        let y = thumb_centre(&mut app, 800.0) as f32;
+        assert_ne!(
+            hover_cursor(&mut app, 795.0, y),
+            Some(rinch_platform::CursorStyle::EResize),
+            "the pointer over a thumb is not over a resize handle"
+        );
+    }
+
+    /// The other half of "what you can see, you can grab": the edge is still a
+    /// resize handle everywhere the thumb is not.
+    #[test]
+    fn a_press_on_the_empty_track_below_the_thumb_still_resizes() {
+        let mut app = app();
+        let (_, thumb_bottom) = thumb_span(&mut app, 800.0);
+        // Clear of the thumb and clear of the bottom corner zone.
+        let y = (thumb_bottom + 40.0) as f32;
+        assert!(y < 600.0 - 8.0, "still on the edge, not in the corner");
+
+        assert_eq!(
+            resize_direction(&press(&mut app, 795.0, y)),
+            Some(rinch_platform::ResizeDirection::East),
+            "the empty part of the edge is still a resize handle"
+        );
+        assert_eq!(
+            hover_cursor(&mut app, 795.0, y),
+            Some(rinch_platform::CursorStyle::EResize),
+            "and still shows the resize cursor"
+        );
+    }
+
+    /// A corner never yields, so a diagonal resize stays reachable however tall
+    /// the thumb grows. At scroll 0 the thumb starts 2px down, so the top-right
+    /// corner square is thumb.
+    #[test]
+    fn the_top_right_corner_resizes_even_where_the_thumb_is_painted() {
+        let mut app = app();
+        let (thumb_top, _) = thumb_span(&mut app, 800.0);
+        assert!(
+            thumb_top < 8.0,
+            "the thumb must reach into the corner square for this to bite, top {thumb_top}"
+        );
+        assert_eq!(
+            resize_direction(&press(&mut app, 795.0, 4.0)),
+            Some(rinch_platform::ResizeDirection::NorthEast),
+            "the corner is the resize's, thumb or no thumb"
+        );
+    }
+
+    /// A window with no scroll container at its edge is untouched: the whole
+    /// inset is still a resize handle.
+    #[test]
+    fn an_edge_with_no_scrollbar_on_it_is_unaffected() {
+        let mut app = app();
+        // The left edge has no bar on it at all.
+        assert_eq!(
+            resize_direction(&press(&mut app, 4.0, 300.0)),
+            Some(rinch_platform::ResizeDirection::West)
+        );
+    }
+
+    /// Every pin above presses at scroll 0, where `thumb_start(scroll)` and
+    /// `thumb_start(0)` coincide — so a `pointer_on_scrollbar_thumb` that
+    /// ignores the scroll offset (the thumb always tested at its scroll-0
+    /// position) passes all of them; review mutation-testing found exactly
+    /// that mutant alive. In any *scrolled* window it is the original bug
+    /// back again: the mid-track thumb you can see resizes the window, and
+    /// the empty track where the thumb sat at scroll 0 steals the resize
+    /// press for the bar. This presses a scrolled window on both spots.
+    #[test]
+    fn a_scrolled_thumb_wins_where_it_is_painted_not_where_scroll_zero_put_it() {
+        let mut app = app();
+        // Scroll halfway down: 2000px of content in a 600px window leaves
+        // max_scroll = 1400, so the painted thumb moves well clear of the
+        // span it held at scroll 0.
+        app.handle_event(
+            PlatformEvent::MouseWheel {
+                x: 400.0,
+                y: 300.0,
+                delta_x: 0.0,
+                delta_y: -700.0,
+            },
+            SIZE,
+            1.0,
+        );
+        let (thumb_top, thumb_bottom) = thumb_span(&mut app, 800.0);
+        // The probe for the vacated track, and the premises that make it
+        // probative: inside the span the thumb held at scroll 0 (which ran
+        // [margin, margin + thumb_len)), above the thumb as painted now, and
+        // clear of the 8px corner square.
+        let old_y = 100.0_f32;
+        let thumb_len = thumb_bottom - thumb_top;
+        assert!(
+            f64::from(old_y) < 2.0 + thumb_len && f64::from(old_y) < thumb_top,
+            "the probe must be where the thumb was and no longer is \
+             (scroll-0 span [2, {:.1}), painted top {thumb_top})",
+            2.0 + thumb_len,
+        );
+
+        // The vacated track is empty edge: it resizes, and arms no drag. This
+        // press returns before any scroll state changes, so the span read
+        // above stays valid for the second half.
+        let actions = press(&mut app, 795.0, old_y);
+        assert_eq!(
+            resize_direction(&actions),
+            Some(rinch_platform::ResizeDirection::East),
+            "the track the thumb has scrolled away from is a resize handle"
+        );
+        assert!(
+            app.scrollbar_drag.is_none(),
+            "and no scrollbar drag is armed there"
+        );
+
+        // The thumb where it is *painted* — mid-track — goes to the scrollbar.
+        let y = ((thumb_top + thumb_bottom) / 2.0) as f32;
+        assert_eq!(
+            super::hit_testing::detect_resize_edge(795.0, y, 800.0, 600.0, 8.0),
+            Some(rinch_platform::ResizeDirection::East),
+            "the press must be inside the resize zone, or this test proves nothing"
+        );
+        let actions = press(&mut app, 795.0, y);
+        assert_eq!(
+            resize_direction(&actions),
+            None,
+            "a press on the visible mid-track thumb must not resize the window"
+        );
+        assert!(
+            app.scrollbar_drag.is_some(),
+            "and it must arm the scrollbar drag instead"
+        );
+    }
+}
+
+#[cfg(all(test, software_shell))]
+mod scrollbar_drag_pixel_tests {
+    //! A drag moves the *painted* thumb as far as the pointer moved (#400).
+    //!
+    //! The oracle is the rasterised frame, not a second copy of the geometry:
+    //! the whole defect was two derivations of the same track agreeing with
+    //! neither the screen nor each other, so a test that asks
+    //! `scrollbar::scrollbars` where the thumb is would pass whatever those
+    //! two did. These press the bar, drag it, and measure where the grey
+    //! pixels went.
+
+    use super::*;
+
+    const SIZE: (u32, u32) = (800, 600);
+
+    /// A thumb pixel: 40% black composited over the container's white
+    /// background, so opaque mid-grey. The bare track is white and the page
+    /// outside is white too, so nothing else in the scanned column matches.
+    pub(super) fn is_thumb(p: [u8; 4]) -> bool {
+        p[3] > 200 && p[0] > 100 && p[0] < 200 && p[1] == p[0] && p[2] == p[0]
+    }
+
+    /// The vertical centre of the painted thumb, in device pixels.
+    pub(super) fn thumb_centre(app: &mut RinchApp, container_w: f32) -> f64 {
+        let (first, last) = thumb_span(app, container_w);
+        // The centre rather than an edge, so the antialiased round caps cancel
+        // instead of biasing the answer.
+        (first + last) / 2.0
+    }
+
+    /// The first and last painted thumb rows in the column through the thumb's
+    /// middle, in device pixels.
+    pub(super) fn thumb_span(app: &mut RinchApp, container_w: f32) -> (f64, f64) {
+        // What a real frame does: resolve, then paint. `build_pixels` skips
+        // painting entirely unless `scene_dirty`, which `resolve_and_repaint`
+        // is what sets — the shell reaches here via `AppAction::RequestRedraw`.
+        app.resolve_and_repaint(SIZE.0 as f32, SIZE.1 as f32);
+        app.has_previous_frame = false; // full repaint, no dirty-region cache
+        let (pixels, w, h) = app.build_pixels(1.0, SIZE, false);
+        // The thumb is `THICKNESS` wide, `MARGIN` in from the container's right
+        // edge; the container sits at the document origin.
+        let cx = (container_w as f64
+            - rinch_dom::paint::scrollbar::MARGIN
+            - rinch_dom::paint::scrollbar::THICKNESS / 2.0) as u32;
+        assert!(cx < w, "scan column inside the surface");
+        let (mut first, mut last) = (None::<u32>, None::<u32>);
+        for y in 0..h {
+            let i = ((y * w + cx) * 4) as usize;
+            if is_thumb([pixels[i], pixels[i + 1], pixels[i + 2], pixels[i + 3]]) {
+                first.get_or_insert(y);
+                last = Some(y);
+            }
+        }
+        let (first, last) = (
+            first.expect("a thumb is painted in the scanned column"),
+            last.unwrap(),
+        );
+        (first as f64, last as f64)
+    }
+
+    /// Mount one scroll container at the document origin and return the app.
+    fn mount(container_style: &str, content_style: &str) -> RinchApp {
+        let container_style = format!("position: absolute; left: 0; top: 0; {container_style}");
+        let content_style = content_style.to_string();
+        let mut app = RinchApp::new(move |scope: &mut RenderScope| {
+            let root = scope.create_element("div");
+            root.set_attribute(
+                "style",
+                "position: relative; width: 800px; height: 600px; background: white",
+            );
+            let container = scope.create_element("div");
+            container.set_attribute("style", &container_style);
+            let content = scope.create_element("div");
+            content.set_attribute("style", &content_style);
+            container.append_child(&content);
+            root.append_child(&container);
+            root
+        });
+        app.mount_component(800.0, 600.0);
+        app.resolve_and_repaint(800.0, 600.0);
+        app
+    }
+
+    fn press(app: &mut RinchApp, x: f32, y: f32) {
+        app.handle_event(
+            PlatformEvent::MouseDown {
+                x,
+                y,
+                button: rinch_platform::MouseButton::Left,
+            },
+            SIZE,
+            1.0,
+        );
+    }
+
+    fn drag_to(app: &mut RinchApp, x: f32, y: f32) {
+        app.handle_event(PlatformEvent::MouseMove { x, y }, SIZE, 1.0);
+    }
+
+    /// The 20px minimum thumb. 100px of a 800px document leaves a thumb of 12,
+    /// which paint draws at 20 — so the thumb can travel 76px, not the 84 a
+    /// track-length ratio assumes. The input path never knew about the clamp,
+    /// so the thumb *lagged*: before this fix a 40px drag moved it 36.2px.
+    #[test]
+    fn dragging_a_min_clamped_thumb_moves_it_as_far_as_the_pointer() {
+        let mut app = mount(
+            "width: 200px; height: 100px; overflow-y: auto; background: white",
+            "width: 40px; height: 800px; background: white",
+        );
+
+        // Press at the very top of the track: jump-to-click lands on 0.
+        press(&mut app, 196.0, 2.0);
+        let before = thumb_centre(&mut app, 200.0);
+
+        drag_to(&mut app, 196.0, 42.0);
+        let after = thumb_centre(&mut app, 200.0);
+
+        let moved = after - before;
+        assert!(
+            (moved - 40.0).abs() <= 1.0,
+            "a 40px drag must move the painted thumb 40px, moved {moved}"
+        );
+        // The pre-fix answer, stated so this test is known to bite.
+        assert!(
+            moved > 38.0,
+            "36.2px was the pre-fix answer, and it must not pass"
+        );
+    }
+
+    /// The other half: paint measures the track across the container's
+    /// **border box** and the input path used to measure it across the
+    /// **content box**, so any border or padding separated them. Here a 4px
+    /// border makes the two tracks 96 and 88 — before this fix a 30px drag
+    /// moved the thumb 32.7px, i.e. it ran *ahead* of the pointer.
+    #[test]
+    fn dragging_the_thumb_of_a_bordered_container_moves_it_as_far_as_the_pointer() {
+        let mut app = mount(
+            "box-sizing: border-box; width: 200px; height: 100px; border: 4px solid white; \
+             overflow-y: auto; background: white",
+            "width: 40px; height: 300px; background: white",
+        );
+
+        press(&mut app, 196.0, 2.0);
+        let before = thumb_centre(&mut app, 200.0);
+
+        drag_to(&mut app, 196.0, 32.0);
+        let after = thumb_centre(&mut app, 200.0);
+
+        let moved = after - before;
+        assert!(
+            (moved - 30.0).abs() <= 1.0,
+            "a 30px drag must move the painted thumb 30px, moved {moved}"
+        );
+        assert!(
+            moved < 32.0,
+            "32.7px was the pre-fix answer, and it must not pass"
+        );
+    }
+}
+
 #[cfg(all(test, software_shell))]
 mod drag_ghost_dirty_region_tests {
     use super::*;
@@ -3570,6 +4236,7 @@ mod tab_focus_tests {
         app.handle_event(
             PlatformEvent::KeyUp {
                 key: KeyCode::Enter,
+                logical_key: None,
                 modifiers: Modifiers::default(),
             },
             (800, 600),
@@ -4681,8 +5348,8 @@ mod horizontal_scrollbar_tests {
             .expect("the bottom strip is the horizontal scrollbar");
         assert_eq!(hit.node_id, id);
         assert_eq!(hit.axis, ScrollAxis::Horizontal);
-        assert_eq!(hit.content_size, 800.0, "content extent along the axis");
-        assert_eq!(hit.container_size, 200.0, "visible extent along the axis");
+        assert_eq!(hit.track.content, 800.0, "content extent along the axis");
+        assert_eq!(hit.track.visible, 200.0, "visible extent along the axis");
 
         // And nothing on the right-hand edge: this container does not scroll
         // vertically, so there is no vertical bar to grab.
@@ -4704,8 +5371,8 @@ mod horizontal_scrollbar_tests {
             .expect("the right strip is the vertical scrollbar");
         assert_eq!(hit.node_id, id);
         assert_eq!(hit.axis, ScrollAxis::Vertical);
-        assert_eq!(hit.content_size, 800.0);
-        assert_eq!(hit.container_size, 100.0);
+        assert_eq!(hit.track.content, 800.0);
+        assert_eq!(hit.track.visible, 100.0);
         assert!(
             find_scrollbar_hit(&d.tree, x + w / 2.0, y + h - 2.0).is_none(),
             "no horizontal bar on a vertical-only scroller"
@@ -4754,18 +5421,23 @@ mod horizontal_scrollbar_tests {
         press(&mut app, (x + 2.0, y + h - 2.0));
         assert_eq!(offsets(&app, id), (0.0, 0.0));
 
-        // Drag half the track. `scroll_delta = (moved / (container - 4)) *
-        // content` — the vertical bar's arithmetic, read along x.
+        // Drag half the thumb's travel. The thumb here is 196 * 200/800 = 49
+        // long on a 196px track, so it can travel 147 over 600px of scroll —
+        // and the scroll a drag produces is `moved * max_scroll / thumb_travel`
+        // (#400). No border, no padding, and the thumb is clear of the 20px
+        // minimum, which is the one case where the old
+        // `moved / track * content` happened to agree: both give 400.
         let moved = (w - 4.0) / 2.0;
         drag_to(&mut app, (x + 2.0 + moved, y + h - 2.0));
 
         let (left, top) = offsets(&app, id);
         assert!(left > 0.0, "the container scrolled right, got {left}");
         assert_eq!(top, 0.0, "the vertical offset is untouched");
+        let thumb_travel = 196.0 - 196.0 * 200.0 / 800.0;
         assert_eq!(
             left,
-            ((w as f64 - 4.0) / 2.0 / (200.0 - 4.0)) * 800.0,
-            "half the track is half the content, clamped by max_scroll"
+            moved as f64 * (800.0 - 200.0) / thumb_travel,
+            "the thumb follows the pointer"
         );
 
         // And the app was told, on the axis that moved (#177).
@@ -4792,10 +5464,61 @@ mod horizontal_scrollbar_tests {
 
         let (left, top) = offsets(&app, id);
         assert_eq!(left, 0.0, "the horizontal offset is untouched");
-        assert_eq!(top, ((h as f64 - 4.0) / 2.0 / (100.0 - 4.0)) * 800.0);
+        // 100px of an 800px document is a 12px thumb, which paint draws at the
+        // 20px minimum — so it travels 76 of the 96px track, not 84. This used
+        // to read `(moved / 96) * 800` = 400, which moved the thumb 43.4px for
+        // a 48px drag; the thumb lagged the pointer (#400).
+        let thumb_travel = 96.0 - 20.0;
+        assert_eq!(top, moved as f64 * (800.0 - 100.0) / thumb_travel);
         assert_eq!(
             *fired.borrow().last().expect("onscroll fired"),
             ScrollEvent::new(top, 0.0)
+        );
+    }
+
+    /// Jump-to-click at the far end of the track scrolls all the way. Pins
+    /// `ScrollbarTrack::scroll_for_click` against the same track paint draws
+    /// on: the press used to measure the track across the container's content
+    /// box, so on a padded or bordered container the end of the track was not
+    /// where the end of the thumb's travel was (#400).
+    #[test]
+    fn pressing_the_far_end_of_the_track_scrolls_to_the_end() {
+        let Bars {
+            mut app, id, rect, ..
+        } = mount(TALL, "width: 40px; height: 800px");
+        let (x, y, w, h) = rect;
+
+        // The track runs from `margin` to `height - margin` in the container's
+        // own space, so its far end is `h - 2`.
+        press(&mut app, (x + w - 2.0, y + h - 2.0));
+        assert_eq!(
+            offsets(&app, id),
+            (0.0, 800.0 - 100.0),
+            "the end of the track is the end of the content"
+        );
+    }
+
+    /// Jump-to-click in the *middle* of the track pins the mapping's slope,
+    /// not just its endpoints. The far-end pin above and the press-at-start
+    /// assertions in the drag tests both saturate the clamp, so a
+    /// `scroll_for_click` whose denominator is wrong — `thumb_travel` instead
+    /// of `track_len`, say — still lands them on 0 and `max_scroll` and
+    /// survives; review mutation-testing found exactly that mutant alive.
+    /// Halfway down a 96px track is halfway through 700px of scroll, and only
+    /// the correct denominator says so ((50-2)/76 * 700 ≈ 442 for the mutant).
+    #[test]
+    fn pressing_the_middle_of_the_track_scrolls_proportionally() {
+        let Bars {
+            mut app, id, rect, ..
+        } = mount(TALL, "width: 40px; height: 800px");
+        let (x, y, w, _h) = rect;
+
+        // pos = 50 on a track running [2, 98): ratio (50-2)/96 = 0.5 exactly.
+        press(&mut app, (x + w - 2.0, y + 50.0));
+        assert_eq!(
+            offsets(&app, id),
+            (0.0, (50.0 - 2.0) / 96.0 * 700.0),
+            "halfway along the track is halfway through the scroll range"
         );
     }
 
@@ -6029,6 +6752,7 @@ mod transform_aware_walk_tests {
         app.handle_event(
             PlatformEvent::KeyUp {
                 key,
+                logical_key: None,
                 modifiers: Modifiers::default(),
             },
             (800, 600),
@@ -6566,19 +7290,22 @@ mod transform_aware_walk_tests {
         );
         assert_eq!(scroll_of(&app, sc_id), 0.0, "grabbed at the track's start");
 
-        // Drag 40 painted pixels down: 20 container pixels of a 96px track,
-        // over 1000px of scrollable content → 1100 * 20/96 ≈ 229.17.
+        // Drag 40 painted pixels down: 20 container pixels. The thumb here is
+        // 96 * 100/1100 = 8.7 long, so paint draws it at the 20px minimum and
+        // it can travel 76 of the 96px track over 1000px of scroll — 20px of
+        // pointer is 20 * 1000/76 ≈ 263.16 of scroll (#400; this used to read
+        // `1100 * 20/96` ≈ 229.17, which moved the thumb only 17.4px).
         mouse(&mut app, PlatformEvent::MouseMove { x: 384.0, y: 44.0 });
         let moved = scroll_of(&app, sc_id);
-        let expected = 1100.0 * 20.0 / 96.0;
+        let expected = 20.0 * 1000.0 / 76.0;
         assert!(
             (moved - expected).abs() < 0.5,
             "expected ~{expected}, got {moved}"
         );
-        // Treating the pointer move as 40 track pixels would have scrolled twice
-        // as far — and past the 1000px clamp, which is what made it obvious.
+        // Treating the pointer move as 40 track pixels would have scrolled
+        // twice as far, which is what this test is about.
         assert!(
-            moved < 1100.0 * 40.0 / 96.0 - 1.0,
+            moved < 40.0 * 1000.0 / 76.0 - 1.0,
             "the delta must be measured in the container's own space"
         );
     }

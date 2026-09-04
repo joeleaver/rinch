@@ -269,10 +269,11 @@ When creating borderless windows, native resize handles are not available. Rinch
 The `resize_inset` value defines the distance (in logical pixels) from the window edges where resize handles are active. This is useful for transparent windows where the visible content is inset from the actual window edges for shadow effects.
 
 **How it works:**
-- Resize handles are active within `resize_inset + 8px` from each edge
-- Corner resize areas are larger (`resize_inset + 16px`) for easier diagonal resizing
+- Resize handles are active within `resize_inset` from each edge — the inset is the whole grab zone, with nothing added to it
+- A corner is simply where two edge zones meet, a `resize_inset` x `resize_inset` square; it is not enlarged, so raise `resize_inset` if you want bigger diagonal handles
+- A visible scrollbar thumb takes an edge press (and the hover cursor) off the zone where the two overlap; the empty track past the thumb still resizes, and a corner never yields to the thumb
 - The cursor automatically changes to indicate resize direction when hovering edges
-- Only works when both `borderless: true` and `resizable: true` are set
+- Only works when both `borderless: true` and `resizable: true` are set (for such windows the shell defaults `resize_inset` to `Some(8.0)`)
 - On Windows, transparent areas don't receive mouse events, so the resize detection only works on visible content
 
 **Example with shadow:**

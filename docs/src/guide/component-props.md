@@ -219,8 +219,9 @@ Custom Default: `toggle_visibility` defaults to `true`.
 | `description` | `String` | `""` | |
 | `error` | `String` | `""` | |
 | `placeholder` | `String` | `""` | |
-| `value` | `Option<f64>` | `None` | |
-| `default_value` | `Option<f64>` | `None` | |
+| `value` | `Option<f64>` | `None` | Initial value; uncontrolled, the steppers move the field from here |
+| `value_fn` | `Option<ReactiveString>` | `None` | Reactive value binding (auto-wrapped); when set, it is the field's single write path and the steppers are callback-only |
+| `default_value` | `Option<f64>` | `None` | Initial value of an uncontrolled field when `value` is absent |
 | `min` | `Option<f64>` | `None` | |
 | `max` | `Option<f64>` | `None` | |
 | `step` | `Option<f64>` | `None` | |
@@ -232,9 +233,9 @@ Custom Default: `toggle_visibility` defaults to `true`.
 | `required` | `bool` | `false` | |
 | `size` | `String` | `""` | |
 | `radius` | `String` | `""` | |
-| `onincrement` | `Option<Callback>` | `None` | |
-| `ondecrement` | `Option<Callback>` | `None` | |
-| `oninput` | `Option<InputCallback>` | `None` | Receives `String` from direct text entry |
+| `onincrement` | `Option<Callback>` | `None` | Notification; uncontrolled, the component steps the field itself and reports through `oninput` (#501) |
+| `ondecrement` | `Option<Callback>` | `None` | Notification (see `onincrement`) |
+| `oninput` | `Option<InputCallback>` | `None` | Receives `String` from direct text entry, and — uncontrolled — each stepper-written value |
 | `onchange` | `Option<InputCallback>` | `None` | Commit boundary (#226): fires once with the final value when the gesture ends (blur after a modification, or Enter); only if the value changed since focus |
 
 ### Checkbox
@@ -279,6 +280,11 @@ Custom Default: `toggle_visibility` defaults to `true`.
 | `onchange` | `Option<InputCallback>` | `None` | Receives selected value as `String` |
 
 Options are passed as children: `option { value: "us", "United States" }`
+
+The trigger is a Tab stop (`tabindex="0"`, `role="combobox"`,
+`aria-haspopup="listbox"`, and an `aria-expanded` that tracks the open state).
+Enter and Space on it toggle the dropdown. Arrow/Enter/Escape navigation of the
+**open** option list is issue #434.
 
 ### Radio / RadioGroup
 
@@ -437,8 +443,8 @@ Text input with inline color preview and dropdown ColorPicker.
 | `description` | `String` | `""` | Description text below the input |
 | `error` | `String` | `""` | Error message (shows error styling) |
 | `placeholder` | `String` | `""` | Placeholder text |
-| `size` | `String` | `""` | Input size |
-| `radius` | `String` | `""` | Border radius |
+| `size` | `String` | `""` | Field size: `xs`, `sm`, `md`, `lg`, `xl`. Unset or unrecognised means `md`. Scales the field's height, padding and font size, and the preview swatch alongside them |
+| `radius` | `String` | `""` | Field border radius: `xs`, `sm`, `md`, `lg`, `xl`. Unset or unrecognised leaves the default `sm` |
 | `disabled` | `bool` | `false` | Disable the input |
 | `value` | `String` | `""` | Current color value |
 | `value_fn` | `Option<ReactiveString>` | `None` | Reactive value binding |
@@ -447,8 +453,22 @@ Text input with inline color preview and dropdown ColorPicker.
 | `alpha` | `bool` | `false` | Show alpha slider in picker |
 | `swatches` | `Vec<String>` | `[]` | Preset swatch colors |
 | `swatches_per_row` | `Option<usize>` | `7` | Swatches per row |
-| `close_on_click_outside` | `bool` | `false` | Close dropdown on outside click |
 | `disallow_input` | `bool` | `false` | Disallow typing (picker only) |
+
+`size` and `radius` were declared but unread until #263. **`size` always
+resolves to a step, `radius` does not**: an unrecognised `size` falls back to
+`md` — matching `TextInput`, whose `size` parses with `unwrap_or_default()` —
+and `md` reproduces the geometry the field was hard-coded to before, so nothing
+resizes by upgrading. An unrecognised `radius` emits no class at all and leaves
+the base `--rinch-radius-sm` standing, which is what `DropdownMenu`, `Modal` and
+`Card` do.
+
+**The dropdown is dismissed by clicking the field again.** `ColorInput` has no
+click-outside dismissal — it mounts no backdrop and registers no outside-click
+handler. A `close_on_click_outside` prop was declared alongside `size` and
+`radius` and read by nothing; it was removed in #263 rather than wired, because
+unlike those two there was no behaviour behind it to connect, and adding one is
+a new interaction rather than a repair.
 
 **The dropdown picker is bound to the input's current colour** (#237). Typed
 text previews in it live (a parseable keystroke moves its panel and thumbs,

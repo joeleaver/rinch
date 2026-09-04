@@ -339,9 +339,11 @@ set_paste_interceptor(|data: &PasteEventData| {
 });
 ```
 
-The interceptor is a single slot per thread (like `set_keyboard_interceptor`) and
-is dispatched by rinch-web; desktop reads the clipboard directly when Ctrl+V
-arrives and has no OS paste event to hang it off.
+The interceptor is a single slot **per document** — plus a thread-global
+fallback for registrations made outside any dispatch, which is where every
+registration on rinch-web lands (like `set_keyboard_interceptor`; issues #340,
+#478) — and is dispatched by rinch-web; desktop reads the clipboard directly
+when Ctrl+V arrives and has no OS paste event to hang it off.
 
 Registering it from inside a render ties it to that component: unmounting
 releases the slot, so an interceptor that captured a `Signal` can never outlive
