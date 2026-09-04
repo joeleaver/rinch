@@ -1396,7 +1396,7 @@ fn a_disabled_rule_matches_a_disabled_control() {
 #[test]
 fn the_disabled_selector_follows_the_boolean_attribute_rule() {
     let mut doc = RinchDocument::new();
-    doc.load_css("input:disabled { opacity: 0.5 }");
+    doc.load_css("input:disabled, textarea:disabled { opacity: 0.5 }");
     let body = doc.body();
     let mk = |doc: &mut RinchDocument, attr: Option<(&str, &str)>| {
         let el = doc.create_element("input");
@@ -1414,6 +1414,17 @@ fn the_disabled_selector_follows_the_boolean_attribute_rule() {
     let opted_out = mk(&mut doc, Some(("disabled", "false")));
     let opted_out_mixed_case = mk(&mut doc, Some(("disabled", "FALSE")));
     let plain = mk(&mut doc, None);
+    // A second tag from the disableable set. `.rinch-textarea__input:disabled`
+    // is a shipped rule, so dropping `textarea` from `tag_is_disableable`
+    // would silently stop it applying — and, with only `<input>` here, would
+    // change no test.
+    let textarea = {
+        let el = doc.create_element("textarea");
+        doc.set_attribute(el, "disabled", "");
+        let body = doc.body();
+        doc.append_child(body, el);
+        el
+    };
     let _ = body;
     doc.resolve_layout(800.0, 600.0);
     let opacity = |doc: &RinchDocument, id: rinch_core::dom::NodeId| {
@@ -1442,21 +1453,39 @@ fn the_disabled_selector_follows_the_boolean_attribute_rule() {
         "the opt-out is case-insensitive"
     );
     assert_eq!(opacity(&doc, plain), 1.0, "no attribute is enabled");
+    assert_eq!(
+        opacity(&doc, textarea),
+        0.5,
+        "the rule is not <input>-only — every disableable tag matches"
+    );
 }
 
 /// `<fieldset disabled>` disables its subtree for styling exactly as it does
 /// for focus, and HTML's first-`<legend>` carve-out survives — a control the
 /// focus machinery still admits must not style as disabled.
 ///
-/// Kills a matcher that reads only the element's own attribute (`nested` drops
-/// to 1.0) and one that skips the legend exemption (`in_legend` falls to 0.5).
+/// The fieldset starts **enabled** and is disabled mid-test, which pins two
+/// things the always-disabled version could not. It proves the subtree really
+/// is following the fieldset rather than sitting at a value it held all along,
+/// and it exercises the invalidation claim: `set_attribute` re-resolves the
+/// node **and its subtree**, so no `*_sensitive` flag is needed for an
+/// attribute-driven pseudo-class the way `:hover`/`:focus` need one. Without
+/// that descendant invalidation the nested control would keep its stale 1.0.
+///
+/// `<fieldset>` is also the **only** tag whose `disabled` reaches past itself.
+/// The `data-disabled` div is here to hold that line: rinch removes such a
+/// node from the Tab order, but it must not drag its subtree into `:disabled`.
+///
+/// Kills a matcher that reads only the element's own attribute (`nested` stays
+/// 1.0 after the toggle), one that skips the legend exemption (`in_legend`
+/// falls to 0.5), and one where **any** disabled ancestor disables the subtree
+/// (`under_div` rises to 0.5).
 #[test]
 fn a_disabled_fieldset_styles_its_subtree_except_the_first_legend() {
     let mut doc = RinchDocument::new();
     doc.load_css("input:disabled { opacity: 0.5 }");
     let body = doc.body();
     let fieldset = doc.create_element("fieldset");
-    doc.set_attribute(fieldset, "disabled", "");
     doc.append_child(body, fieldset);
 
     let legend = doc.create_element("legend");
@@ -1471,6 +1500,14 @@ fn a_disabled_fieldset_styles_its_subtree_except_the_first_legend() {
     let nested = doc.create_element("input");
     doc.append_child(wrapper, nested);
 
+    // A non-fieldset carrying the attribute: disabled itself for focus
+    // purposes, but its subtree is untouched.
+    let div = doc.create_element("div");
+    doc.set_attribute(div, "data-disabled", "");
+    doc.append_child(body, div);
+    let under_div = doc.create_element("input");
+    doc.append_child(div, under_div);
+
     doc.resolve_layout(800.0, 600.0);
     let opacity = |doc: &RinchDocument, id: rinch_core::dom::NodeId| {
         doc.tree.get(id.0).unwrap().computed_style.opacity
@@ -1478,13 +1515,38 @@ fn a_disabled_fieldset_styles_its_subtree_except_the_first_legend() {
 
     assert_eq!(
         opacity(&doc, nested),
+        1.0,
+        "baseline: an enabled fieldset disables nothing"
+    );
+
+    doc.set_attribute(fieldset, "disabled", "");
+    doc.resolve_layout(800.0, 600.0);
+
+    assert_eq!(
+        opacity(&doc, nested),
         0.5,
-        "a control below a disabled fieldset styles as disabled"
+        "a control below a disabled fieldset styles as disabled — and the \
+         descendant restyle reached it without a *_sensitive flag"
     );
     assert_eq!(
         opacity(&doc, in_legend),
         1.0,
         "a control in the fieldset's first legend stays enabled"
+    );
+    assert_eq!(
+        opacity(&doc, under_div),
+        1.0,
+        "only <fieldset> reaches past itself: a data-disabled <div> does not \
+         disable its subtree"
+    );
+
+    // And the toggle runs both ways.
+    doc.remove_attribute(fieldset, "disabled");
+    doc.resolve_layout(800.0, 600.0);
+    assert_eq!(
+        opacity(&doc, nested),
+        1.0,
+        "re-enabling the fieldset releases its subtree"
     );
 }
 

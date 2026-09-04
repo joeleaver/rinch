@@ -28,6 +28,7 @@ struct Ids {
     in_legend: usize,
     select: usize,
     select_in_fieldset: usize,
+    fieldset: usize,
 }
 
 /// One document holding every case: an ordinary `<input>`, a `disabled` one, a
@@ -147,6 +148,7 @@ fn mount_fixture() -> (RinchApp, Ids, Rc<RefCell<Vec<String>>>) {
             in_legend: in_legend.node_id().0,
             select: select.node_id().0,
             select_in_fieldset: select_in_fieldset.node_id().0,
+            fieldset: fieldset.node_id().0,
         }));
         root
     });
@@ -248,6 +250,16 @@ fn dom_value(app: &RinchApp, id: usize) -> String {
         .get(id)
         .and_then(|n| n.attributes.get("value").cloned())
         .unwrap_or_default()
+}
+
+/// The centre of the open popup's **first** option — the fieldset's `<select>`
+/// carries only one.
+fn first_option_point(app: &RinchApp) -> (f32, f32) {
+    let open = app.open_select.as_ref().expect("popup is open");
+    let opt = open.option_ids[0];
+    let d = app.doc.as_ref().unwrap().borrow();
+    let (x, y, w, h) = painted_element_box(&d.tree, opt);
+    (x + w / 2.0, y + h / 2.0)
 }
 
 /// The centre of the open popup's **second** option, measured from the live
@@ -791,6 +803,58 @@ fn the_commit_itself_refuses_a_disabled_control() {
         log.borrow()
     );
     assert_eq!(dom_value(&app, ids.select), "");
+}
+
+/// The commit guard asks `node_is_disabled_in_tree`, not `node_is_disabled`,
+/// so a `<select>` disabled by an enclosing `<fieldset>` refuses too.
+///
+/// This is the canonical shape rather than a contrived one: a form disables a
+/// whole `<fieldset>` on submit while one of its combo boxes is still open,
+/// and the click already in flight lands on an option. The select's *own*
+/// attributes never change, so a guard reading only them sees an enabled
+/// control and commits.
+///
+/// There is repo precedent for pinning exactly this distinction — the
+/// `resolve_click_focus` test below exists because that call "was one merge
+/// away" from the weaker predicate.
+///
+/// Kills swapping `node_is_disabled_in_tree` for `node_is_disabled` in
+/// `commit_select`: the value becomes `"x"` and the popup closes as a normal
+/// commit.
+#[test]
+fn a_select_disabled_by_its_fieldset_commits_nothing() {
+    // Positive control: with the fieldset enabled, this exact click commits.
+    let (mut app, ids, _log) = mount_fixture();
+    set_attr(&mut app, ids.fieldset, "disabled", None);
+    click_center(&mut app, ids.select_in_fieldset);
+    assert!(
+        app.is_select_open(),
+        "positive control: an enabled fieldset lets its select open"
+    );
+    let option_pt = first_option_point(&app);
+    click(&mut app, option_pt.0, option_pt.1);
+    assert_eq!(
+        dom_value(&app, ids.select_in_fieldset),
+        "x",
+        "positive control: the measured point is the option, and it commits"
+    );
+
+    // The real case: the fieldset goes disabled while the popup is up.
+    let (mut app, ids, _log) = mount_fixture();
+    set_attr(&mut app, ids.fieldset, "disabled", None);
+    click_center(&mut app, ids.select_in_fieldset);
+    assert!(app.is_select_open());
+    let option_pt = first_option_point(&app);
+    set_attr(&mut app, ids.fieldset, "disabled", Some(""));
+
+    click(&mut app, option_pt.0, option_pt.1);
+
+    assert_eq!(
+        dom_value(&app, ids.select_in_fieldset),
+        "",
+        "a <select> disabled by its fieldset must not write its value"
+    );
+    assert!(!app.is_select_open(), "and the orphaned popup is dismissed");
 }
 
 // ── 8. IME composes nothing into a disabled field ──────────────────────────
