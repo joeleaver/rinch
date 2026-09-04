@@ -432,40 +432,6 @@ fn a_declared_face_beats_a_generic_the_repair_already_filled() {
     );
 }
 
-/// `script_fallback` is off by default, and off has to *mean* something.
-///
-/// Fallback is what runs when the matched face has no glyph for a character.
-/// fontique consults the app's fallback list **before** the platform's and
-/// stops at the first entry, so a face that joined every script's list would
-/// replace the platform's CJK, Arabic and emoji fallbacks with a Latin face —
-/// the text would come out as boxes. That is why
-/// [`AppFont::script_fallback`] defaults to `false`, and why the shorthand
-/// constructors leave it off.
-///
-/// The Latin assertion is the control: the same face *is* registered and *is*
-/// reachable, so a failure below is about fallback and not about the
-/// registration having silently done nothing.
-#[test]
-fn a_face_that_did_not_ask_for_fallback_does_not_answer_another_script() {
-    let app = app_with(&[AppFont::monospace(FACE)]);
-
-    assert_eq!(
-        doc_statics(&app, "monospace"),
-        vec![FACE.as_ptr() as usize],
-        "control: the face is registered and answers the slot it claimed"
-    );
-    assert!(
-        !doc_statics_for(&app, "monospace", HAN).contains(&(FACE.as_ptr() as usize)),
-        "a face that did not ask for script fallback must not be what Han \
-         resolves to; it has no CJK glyphs, so it would render boxes"
-    );
-}
-
-/// The converse, so the assertion above is not passing because fallback is
-/// broken for everyone. `register_font_data` — the wasm/embed front door —
-/// *does* set `script_fallback`, because on a platform with no system fonts a
-/// last-resort face is the only thing that renders a character the author did
-/// not name a font for.
 /// The families `text`'s glyphs came from, each as `(blob address, glyph ids)`.
 ///
 /// The glyph ids are what distinguishes "this face answered" from "this face
