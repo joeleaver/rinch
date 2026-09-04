@@ -237,5 +237,9 @@ fn main() {
         ..Default::default()
     };
 
-    run_with_theme("Todo App", 500, 700, app, theme);
+    App::new(app)
+        .title("Todo App")
+        .size(500, 700)
+        .theme(theme)
+        .run();
 }

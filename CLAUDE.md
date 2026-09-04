@@ -205,7 +205,7 @@ The `rinch` crate re-exports everything through its prelude. You do NOT need sep
 rinch = { workspace = true, features = ["desktop", "components", "theme"] }
 ```
 
-**Important:** The workspace dependency uses `default-features = false`, so `"desktop"` must be listed explicitly. Without it, `run()` and other desktop APIs won't be available.
+**Important:** The workspace dependency uses `default-features = false`, so `"desktop"` must be listed explicitly. Without it, `App` and other desktop APIs won't be available.
 
 ```rust
 // In your code - prelude includes all components:
@@ -217,7 +217,9 @@ use rinch::prelude::*;
 
 ## Application Entry Point
 
-Use the `run` function to start a rinch application. **`run()` automatically loads theme and component CSS** when those features are enabled, so components work out of the box:
+**`App` is the entry point** (issue #493). Every startup option is one method and
+they all compose. Theme and component CSS load automatically when those features
+are enabled, so components work out of the box even with no `.theme(...)`:
 
 ```rust
 use rinch::prelude::*;
@@ -234,12 +236,24 @@ fn app() -> NodeHandle {
 }
 
 fn main() {
-    // This works with components - theme CSS is auto-loaded
-    run("My App", 800, 600, app);
+    App::new(app).title("My App").size(800, 600).run();
 }
 ```
 
-To customize the theme (colors, radius, dark mode), use `run_with_theme()`:
+| Method | Purpose |
+|--------|---------|
+| `App::new(component)` | Start configuring around the root component |
+| `.title(title)` / `.size(w, h)` | Window title and initial logical size |
+| `.theme(ThemeProviderProps)` | Colors, radius, dark mode |
+| `.menu(Vec<(&str, Menu)>)` | Native menu bar |
+| `.window_props(WindowProps)` | Borderless, transparent, icon, `app_id`, `on_close_requested`, … |
+| `.gpu_config(RinchGpuConfig)` / `.external_gpu(ExternalGpu)` | GPU device (`gpu` feature) |
+| `.run()` | Start on desktop; runs until the event loop exits |
+| `.run_android(android_app)` | Start on Android (`android` feature, Android target) |
+
+`.title()` / `.size()` are applied **over** `.window_props()` in either call
+order, so an explicit title is never silently lost to a later `window_props`.
+Everything else comes from `props`. Nothing runs until a terminal method.
 
 ```rust
 fn main() {
@@ -249,9 +263,46 @@ fn main() {
         dark_mode: false,
         ..Default::default()
     };
-    run_with_theme("My App", 800, 600, app, theme);
+    App::new(app)
+        .title("My App")
+        .size(800, 600)
+        .theme(theme)
+        .run();
 }
 ```
+
+The seven `run_*` functions (`run`, `run_with_theme`, `run_with_menu`,
+`run_with_window_props`, `run_with_window_props_and_menu`, `run_with_gpu_config`,
+`run_with_external_device`) and the two Android ones (`run_android`,
+`run_android_with_theme`) are now **`#[deprecated]` shims over `App`**, and each
+deprecation note names its builder chain. Behaviour is unchanged with one
+deliberate exception: unifying the startup paths also unified the Linux
+**Wayland `app_id`**, which is now derived per application from the executable
+name instead of the shared constant `"rinch-app"` (an explicit
+`WindowProps::app_id` still wins). X11 `WM_CLASS` and every non-Linux platform
+are untouched. See **Window identity on Wayland** below.
+They exist because none of them could express its own combinations:
+`run_with_menu` took no window props, `run_with_window_props` took no menu
+without a second function, and neither could take whatever landed next.
+
+### Window identity on Wayland
+
+A window's `app_id` is how a Wayland compositor decides which `.desktop` entry,
+icon and taskbar group a window belongs to. rinch derives it from the
+executable's file name unless `WindowProps::app_id` says otherwise
+(`resolved_app_id`, `shell/rinch_runtime.rs`), at **both** the initial
+`create_window` and the `show_window` re-creation path that minimize-to-tray
+restores through.
+
+It used to default to the constant `"rinch-app"` for every app that did not set
+one. That is not merely a label: `install_wayland_icon` writes
+`~/.local/share/applications/{app_id}.desktop` carrying `Name={app_id}`, so
+under one shared constant the first rinch app to ship an icon supplied the dock
+icon *and* the displayed name for every other rinch app on the machine, and
+they grouped together as a single application. The whole name is used, not the
+`file_stem` — a stem truncates at the last dot, so a reverse-DNS binary name
+like `com.example.notes` would register as `com.example` and collide with its
+own siblings.
 
 The `#[component]` macro auto-injects `__scope: &mut RenderScope` as the first parameter, which is required by the `rsx!` macro. Components return a `NodeHandle`. You can also write `fn app(__scope: &mut RenderScope) -> NodeHandle` manually if preferred.
 
@@ -273,7 +324,7 @@ fn app() -> NodeHandle {
 }
 
 fn main() {
-    run("My App", 800, 600, app);
+    App::new(app).title("My App").size(800, 600).run();
 }
 ```
 
@@ -464,7 +515,7 @@ fn app() -> NodeHandle {
 }
 
 fn main() {
-    run("My App", 800, 600, app);
+    App::new(app).title("My App").size(800, 600).run();
 }
 ```
 
@@ -577,9 +628,9 @@ fn child_component() -> NodeHandle {
 
 ## Threading Model
 
-Rinch **owns the main thread**. `run()` calls winit's event loop, which takes over and never returns. All UI state (`Signal`, `Effect`, `NodeHandle`, `RenderScope`) is `!Send` — the reactive system is thread-local.
+Rinch **owns the main thread**. `App::run()` calls winit's event loop, which takes over the thread and returns only once the application exits it (`close_current_window`, or an `on_close_requested` answering `true`). All UI state (`Signal`, `Effect`, `NodeHandle`, `RenderScope`) is `!Send` — the reactive system is thread-local.
 
-**Async / tokio:** A tokio runtime can coexist but only on a **separate background thread**. You cannot run `#[tokio::main]` and `rinch::run()` on the same thread.
+**Async / tokio:** A tokio runtime can coexist but only on a **separate background thread**. You cannot run `#[tokio::main]` and `App::run()` on the same thread.
 
 ```rust
 fn main() {
@@ -592,7 +643,7 @@ fn main() {
     });
 
     // Main thread — rinch owns it
-    run("My App", 800, 600, app);
+    App::new(app).title("My App").size(800, 600).run();
 }
 ```
 
@@ -621,7 +672,7 @@ adds the "wake the event loop" side effect that embed has no use for.
 
 ## Native Menus
 
-Native menus use a unified `Menu`/`MenuItem` builder API shared between window menu bars and tray context menus. Use `run_with_menu` to add a menu bar:
+Native menus use a unified `Menu`/`MenuItem` builder API shared between window menu bars and tray context menus. Add a menu bar with `App::menu`:
 
 ```rust
 use rinch::prelude::*;
@@ -643,10 +694,11 @@ fn main() {
     let edit_menu = Menu::new()
         .item(MenuItem::new("Undo").shortcut("Ctrl+Z"));
 
-    run_with_menu("My App", 800, 600, app, vec![
-        ("File", file_menu),
-        ("Edit", edit_menu),
-    ]);
+    App::new(app)
+        .title("My App")
+        .size(800, 600)
+        .menu(vec![("File", file_menu), ("Edit", edit_menu)])
+        .run();
 }
 ```
 
@@ -1446,7 +1498,11 @@ fn main() {
         ..Default::default()
     };
 
-    run_with_theme("Themed App", 800, 600, app, theme);
+    App::new(app)
+        .title("Themed App")
+        .size(800, 600)
+        .theme(theme)
+        .run();
 }
 ```
 
@@ -1520,7 +1576,7 @@ fn main() {
         ..Default::default()
     };
 
-    run_with_window_props(app, window_props, None);
+    App::new(app).window_props(window_props).run();
 }
 ```
 
@@ -1707,8 +1763,8 @@ rsx! { RenderSurface { surface: Some(surface), style: "flex: 1;" } }
 
 | Entry point | Ownership | Use when |
 |---|---|---|
-| `run_with_gpu_config(component, props, theme, RinchGpuConfig { required_features, required_limits })` | rinch creates the device (surface-compatible adapter) with your extra features/limits | You just need more capability — **recommended**, always presents correctly |
-| `run_with_external_device(component, props, theme, ExternalGpu { instance, adapter, device, queue })` | You create the whole stack; rinch makes only the surface, validates present-support, composites onto your device | You must keep your exact `DeviceDescriptor` |
+| `App::new(component).gpu_config(RinchGpuConfig { required_features, required_limits })` | rinch creates the device (surface-compatible adapter) with your extra features/limits | You just need more capability — **recommended**, always presents correctly |
+| `App::new(component).external_gpu(ExternalGpu { instance, adapter, device, queue })` | You create the whole stack; rinch makes only the surface, validates present-support, composites onto your device | You must keep your exact `DeviceDescriptor` |
 
 Construct `wgpu` types from **`rinch::wgpu`** (rinch pins a patched fork — a separate `wgpu` dep won't type-match). Both are `#[cfg(feature = "gpu")]`, re-exported in the prelude. Example: `examples/gpu-device-config` (`RINCH_GPU_MODE=external` toggles the two modes).
 
@@ -1724,7 +1780,7 @@ Construct `wgpu` types from **`rinch::wgpu`** (rinch pins a patched fork — a s
 - `crates/rinch/src/render_surface.rs` — All RenderSurface types and registry (incl. the wasm32 canvas path: `canvas_element`, `set_resize_callback`, `setup_canvas_events`, `setup_resize_observer`, `WebSurfaceCleanup`)
 - `crates/rinch-web/src/event_delegation.rs` — document-level keyboard/focus routing into the surface (`KeyDown`/`KeyUp`/`TextInput`, focus-clear on outside click)
 - `crates/rinch/src/shell/desktop.rs` — `GpuHandle`, `RinchGpuConfig`, `ExternalGpu`, `WgpuRenderer::new` device injection
-- `crates/rinch/src/shell/mod.rs` — `run_with_gpu_config` / `run_with_external_device`
+- `crates/rinch/src/app_builder.rs` — the `App` builder (incl. `gpu_config` / `external_gpu`); `crates/rinch/src/shell/mod.rs` holds the deprecated shims
 
 ### Embed API
 

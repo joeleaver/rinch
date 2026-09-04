@@ -8,12 +8,12 @@
 //!
 //! This example proves the enabler two ways (pick with `RINCH_GPU_MODE`):
 //!
-//!   * **`config`** (default) — start rinch with [`run_with_gpu_config`],
+//!   * **`config`** (default) — start rinch with [`App::gpu_config`],
 //!     bumping `max_storage_buffers_per_shader_stage` from the wgpu default of 8
 //!     to 32. rinch owns the device.
 //!   * **`external`** — the embedder builds the whole GPU stack with its own
 //!     `DeviceDescriptor` (as `arvx-render`'s `new_headless` does) and hands it
-//!     to rinch via [`run_with_external_device`]. rinch composites onto that
+//!     to rinch via [`App::external_gpu`]. rinch composites onto that
 //!     exact device.
 //!
 //! Either way the panel reads the *resolved* device back out of [`gpu_handle`]
@@ -81,7 +81,7 @@ fn app() -> NodeHandle {
             h1 { style: "margin:0; font-size:20px;", "Shared GPU device (issue #57)" }
             p {
                 style: "margin:0; color:#555; font-size:13px;",
-                "run_with_gpu_config raised the compositor device's limits. \
+                "App::gpu_config raised the compositor device's limits. \
                  These values are read back from gpu_handle()."
             }
             div {
@@ -99,7 +99,7 @@ fn app() -> NodeHandle {
     }
 }
 
-/// `RINCH_GPU_MODE=zerocopy` — prove ask #3: the same `run_with_gpu_config`
+/// `RINCH_GPU_MODE=zerocopy` — prove ask #3: the same `App::gpu_config`
 /// device (configurable features) ALSO does zero-copy GPU layer compositing.
 ///
 /// We create a texture on **rinch's shared device**, fill it with a solid color,
@@ -177,7 +177,7 @@ fn zerocopy_app() -> NodeHandle {
             h1 { style: "margin:0; font-size:18px;", "Zero-copy GPU layer (issue #57 ask #3)" }
             p {
                 style: "margin:0; color:#333; font-size:13px;",
-                "The teal box is a wgpu texture created on the run_with_gpu_config device \
+                "The teal box is a wgpu texture created on the App::gpu_config device \
                  and composited directly by WgpuRenderer — no CPU readback."
             }
             {viewport}
@@ -215,10 +215,13 @@ fn main() {
                 borderless: true,
                 ..props
             };
-            run_with_gpu_config(zerocopy_app, props, None, gpu);
+            App::new(zerocopy_app)
+                .window_props(props)
+                .gpu_config(gpu)
+                .run();
         }
         // Default: rinch owns the device, requested with our raised limits.
-        _ => run_with_gpu_config(app, props, None, gpu),
+        _ => App::new(app).window_props(props).gpu_config(gpu).run(),
     }
 }
 
@@ -255,5 +258,5 @@ fn run_external(app: fn(&mut RenderScope) -> NodeHandle, props: WindowProps) {
         device: Arc::new(device),
         queue: Arc::new(queue),
     };
-    run_with_external_device(app, props, None, gpu);
+    App::new(app).window_props(props).external_gpu(gpu).run();
 }

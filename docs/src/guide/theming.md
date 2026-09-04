@@ -16,13 +16,17 @@ fn main() {
         dark_mode: false,
         ..Default::default()
     };
-    run_with_theme("My App", 800, 600, app, theme);
+    App::new(app)
+        .title("My App")
+        .size(800, 600)
+        .theme(theme)
+        .run();
 }
 ```
 
 That's it. Every component picks up your colors, radius, and spacing through CSS variables. Toggle `dark_mode: true` and the whole UI flips. All semantic colors — body background, text, borders, placeholders — adjust automatically.
 
-Use `run()` instead of `run_with_theme()` to get the default theme (blue primary, light mode, small radius).
+Omit `.theme(...)` to get the default theme (blue primary, light mode, small radius) — it is loaded either way, which is what makes components visible out of the box.
 
 ## ThemeProviderProps
 

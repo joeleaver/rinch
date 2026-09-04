@@ -59,10 +59,15 @@ use rinch_core::dom::{NodeHandle, RenderScope};
 #[cfg(feature = "desktop")]
 use rinch_core::element::ThemeProviderProps;
 
+// ── Entry points ─────────────────────────────────────────────────────────────
+//
+// Every function below is a thin shim over [`crate::App`] (issue #493), which
+// holds the actual startup logic. They are deprecated because they cannot
+// express their own combinations — `run_with_menu` takes no window props,
+// `run_with_window_props` takes no menu without a second function, and neither
+// can take whatever feature lands next. `App` composes all of it.
+
 /// Run a rinch application with fine-grained reactive rendering.
-///
-/// This is the primary entry point for rinch applications. The component function
-/// receives a RenderScope and builds the DOM tree directly.
 ///
 /// # Example
 ///
@@ -80,23 +85,22 @@ use rinch_core::element::ThemeProviderProps;
 /// }
 ///
 /// fn main() {
-///     run("My App", 800, 600, app);
+///     App::new(app).title("My App").size(800, 600).run();
 /// }
 /// ```
 #[cfg(feature = "desktop")]
-#[allow(deprecated)]
+#[deprecated(
+    since = "0.3.0",
+    note = "use `App::new(component).title(title).size(width, height).run()`"
+)]
 pub fn run<F>(title: &str, width: u32, height: u32, component: F)
 where
     F: FnOnce(&mut RenderScope) -> NodeHandle + 'static,
 {
-    // Auto-load default theme CSS when theme feature is enabled
-    // This ensures components are visible even without run_with_theme()
-    #[cfg(feature = "theme")]
-    {
-        crate::setup_theme_css(&rinch_core::element::ThemeProviderProps::default());
-    }
-
-    rinch_runtime::run_rinch(title, width, height, component);
+    crate::App::new(component)
+        .title(title)
+        .size(width, height)
+        .run();
 }
 
 /// Run a rinch application with theme configuration.
@@ -104,7 +108,10 @@ where
 /// This sets up theme CSS variables before running the application, making them
 /// available throughout the component tree.
 #[cfg(feature = "desktop")]
-#[allow(deprecated)]
+#[deprecated(
+    since = "0.3.0",
+    note = "use `App::new(component).title(title).size(width, height).theme(theme).run()`"
+)]
 pub fn run_with_theme<F>(
     title: &str,
     width: u32,
@@ -114,8 +121,11 @@ pub fn run_with_theme<F>(
 ) where
     F: FnOnce(&mut RenderScope) -> NodeHandle + 'static,
 {
-    crate::setup_theme_css(&theme);
-    rinch_runtime::run_rinch(title, width, height, component);
+    crate::App::new(component)
+        .title(title)
+        .size(width, height)
+        .theme(theme)
+        .run();
 }
 
 #[cfg(feature = "desktop")]
@@ -136,9 +146,17 @@ use rinch_core::element::WindowProps;
 ///     .separator()
 ///     .item(MenuItem::new("Quit").on_click(|| std::process::exit(0)));
 ///
-/// run_with_menu("My App", 800, 600, app, vec![("File", file_menu)]);
+/// App::new(app)
+///     .title("My App")
+///     .size(800, 600)
+///     .menu(vec![("File", file_menu)])
+///     .run();
 /// ```
 #[cfg(feature = "desktop")]
+#[deprecated(
+    since = "0.3.0",
+    note = "use `App::new(component).title(title).size(width, height).menu(menus).run()`"
+)]
 pub fn run_with_menu<F>(
     title: &str,
     width: u32,
@@ -148,197 +166,48 @@ pub fn run_with_menu<F>(
 ) where
     F: FnOnce(&mut RenderScope) -> NodeHandle + 'static,
 {
-    #[cfg(feature = "theme")]
-    {
-        crate::setup_theme_css(&rinch_core::element::ThemeProviderProps::default());
-    }
-
-    let props = WindowProps {
-        title: title.into(),
-        width,
-        height,
-        ..Default::default()
-    };
-
-    #[cfg(target_os = "linux")]
-    {
-        // Clone menu data before build_native_menu_bar consumes it
-        let menu_data: Vec<(String, crate::menu::Menu)> = menus
-            .iter()
-            .map(|(l, m)| (l.to_string(), m.clone()))
-            .collect();
-        // Still build native menu to register shortcuts + callbacks in thread-local
-        let native_menu = crate::menu::build_native_menu_bar(menus);
-        // run_with_menu uses default WindowProps (not borderless), so no title bar offset
-        let wrapped = move |scope: &mut RenderScope| {
-            let content = component(scope);
-            let menu_refs: Vec<(&str, &crate::menu::Menu)> =
-                menu_data.iter().map(|(l, m)| (l.as_str(), m)).collect();
-            crate::menu::app_menu_bar::render_with_menu_bar(scope, &menu_refs, content, 0)
-        };
-        rinch_runtime::run_rinch_with_window_props_and_menu(wrapped, props, Some(native_menu));
-    }
-
-    #[cfg(not(target_os = "linux"))]
-    {
-        let native_menu = crate::menu::build_native_menu_bar(menus);
-        rinch_runtime::run_rinch_with_window_props_and_menu(component, props, Some(native_menu));
-    }
+    crate::App::new(component)
+        .title(title)
+        .size(width, height)
+        .menu(menus)
+        .run();
 }
 
 /// Run a rinch application with full window configuration and theme.
 #[cfg(feature = "desktop")]
-#[allow(deprecated)]
+#[deprecated(
+    since = "0.3.0",
+    note = "use `App::new(component).window_props(props).run()`, adding `.theme(theme)` if there is one"
+)]
 pub fn run_with_window_props<F>(component: F, props: WindowProps, theme: Option<ThemeProviderProps>)
 where
     F: FnOnce(&mut RenderScope) -> NodeHandle + 'static,
 {
-    run_with_window_props_and_menu(component, props, theme, None);
+    let mut app = crate::App::new(component).window_props(props);
+    app.theme = theme;
+    app.run();
 }
 
 /// Run a rinch application with full window configuration, theme, and optional native menu.
 #[cfg(feature = "desktop")]
+#[deprecated(
+    since = "0.3.0",
+    note = "use `App::new(component).window_props(props).menu(menus).run()`, adding `.theme(theme)` if there is one"
+)]
 pub fn run_with_window_props_and_menu<F>(
     component: F,
-    mut props: WindowProps,
+    props: WindowProps,
     theme: Option<ThemeProviderProps>,
     menus: Option<Vec<(&str, crate::menu::Menu)>>,
 ) where
     F: FnOnce(&mut RenderScope) -> NodeHandle + 'static,
 {
-    // Auto-enable resize handles for borderless windows
-    if props.borderless && props.resizable && props.resize_inset.is_none() {
-        props.resize_inset = Some(8.0);
+    let mut app = crate::App::new(component).window_props(props);
+    app.theme = theme;
+    if let Some(menus) = menus {
+        app = app.menu(menus);
     }
-    #[cfg(feature = "theme")]
-    {
-        if let Some(theme) = theme {
-            crate::setup_theme_css(&theme);
-        } else {
-            crate::setup_theme_css(&rinch_core::element::ThemeProviderProps::default());
-        }
-    }
-    #[cfg(not(feature = "theme"))]
-    {
-        let _ = theme;
-    }
-
-    #[cfg(target_os = "linux")]
-    {
-        if let Some(menus) = menus {
-            // Clone menu data before build_native_menu_bar consumes it
-            let menu_data: Vec<(String, crate::menu::Menu)> = menus
-                .iter()
-                .map(|(l, m)| (l.to_string(), m.clone()))
-                .collect();
-            // Still build native menu to register shortcuts + callbacks in thread-local
-            let native_menu = crate::menu::build_native_menu_bar(menus);
-
-            if props.borderless {
-                // Borderless: set MenuBarContext — BorderlessWindow renders the bar internally.
-                // The bar uses absolute positioning and must be the LAST child for correct
-                // hit testing. BorderlessWindow handles this ordering.
-                const TITLEBAR_HEIGHT: u32 = 36;
-                let menu_in_titlebar = props.menu_in_titlebar;
-                let wrapped = move |scope: &mut RenderScope| {
-                    let menu_data_rc = std::rc::Rc::new(menu_data);
-
-                    if menu_in_titlebar {
-                        // Inline titlebar layout: split renderers share a Signal
-                        use rinch_core::reactive::Signal;
-                        let active_menu: Signal<i32> = Signal::new(-1);
-
-                        let items_renderer: rinch_core::MenuBarRenderer = {
-                            let md = menu_data_rc.clone();
-                            std::rc::Rc::new(move |scope| {
-                                let refs: Vec<(&str, &crate::menu::Menu)> =
-                                    md.iter().map(|(l, m)| (l.as_str(), m)).collect();
-                                crate::menu::app_menu_bar::render_menu_items_inline(
-                                    scope,
-                                    &refs,
-                                    active_menu,
-                                )
-                            })
-                        };
-
-                        let overlay_renderer: rinch_core::MenuBarRenderer = {
-                            std::rc::Rc::new(move |scope| {
-                                crate::menu::app_menu_bar::render_inline_overlay(scope, active_menu)
-                            })
-                        };
-
-                        // Estimate inline row width for titlebar spacer:
-                        // 10px padding-left + hamburger(~36px) + 2px gap per item
-                        // + each label (~8px/char + 16px padding) + 10px padding-right
-                        let labels_width: u32 = menu_data_rc
-                            .iter()
-                            .map(|(l, _)| (l.len() as u32) * 8 + 16 + 2)
-                            .sum();
-                        let spacer_w = 10 + 36 + labels_width + 10;
-
-                        rinch_core::create_context(rinch_core::MenuBarContext {
-                            renderer: items_renderer.clone(),
-                            bar_height: 0,
-                            layout: rinch_core::MenuBarLayout::InlineTitlebar,
-                            items_renderer: Some(items_renderer),
-                            overlay_renderer: Some(overlay_renderer),
-                            spacer_width: spacer_w,
-                        });
-                    } else {
-                        // Below-titlebar layout: single standalone renderer
-                        let renderer: rinch_core::MenuBarRenderer = {
-                            let md = menu_data_rc.clone();
-                            std::rc::Rc::new(move |scope| {
-                                let refs: Vec<(&str, &crate::menu::Menu)> =
-                                    md.iter().map(|(l, m)| (l.as_str(), m)).collect();
-                                crate::menu::app_menu_bar::render_menu_bar_standalone(
-                                    scope,
-                                    &refs,
-                                    TITLEBAR_HEIGHT,
-                                )
-                            })
-                        };
-                        rinch_core::create_context(rinch_core::MenuBarContext {
-                            renderer,
-                            bar_height: crate::menu::app_menu_bar::MENU_BAR_HEIGHT,
-                            layout: rinch_core::MenuBarLayout::BelowTitlebar,
-                            items_renderer: None,
-                            overlay_renderer: None,
-                            spacer_width: 0,
-                        });
-                    }
-
-                    component(scope)
-                };
-                rinch_runtime::run_rinch_with_window_props_and_menu(
-                    wrapped,
-                    props,
-                    Some(native_menu),
-                );
-            } else {
-                // Non-borderless: existing wrapper approach
-                let wrapped = move |scope: &mut RenderScope| {
-                    let content = component(scope);
-                    let menu_refs: Vec<(&str, &crate::menu::Menu)> =
-                        menu_data.iter().map(|(l, m)| (l.as_str(), m)).collect();
-                    crate::menu::app_menu_bar::render_with_menu_bar(scope, &menu_refs, content, 0)
-                };
-                rinch_runtime::run_rinch_with_window_props_and_menu(
-                    wrapped,
-                    props,
-                    Some(native_menu),
-                );
-            }
-        } else {
-            rinch_runtime::run_rinch_with_window_props_and_menu(component, props, None);
-        }
-    }
-
-    #[cfg(not(target_os = "linux"))]
-    {
-        let native_menu = menus.map(crate::menu::build_native_menu_bar);
-        rinch_runtime::run_rinch_with_window_props_and_menu(component, props, native_menu);
-    }
+    app.run();
 }
 
 /// Run a rinch application, raising the compositor GPU device's features/limits.
@@ -349,7 +218,7 @@ pub fn run_with_window_props_and_menu<F>(
 /// **rinch's** device and hand back a `TextureView` for zero-copy present (see
 /// [`create_render_surface`](crate::render_surface::create_render_surface) and
 /// [`GpuTextureRegistrar`](crate::render_surface::GpuTextureRegistrar)) — pass a
-/// [`RinchGpuConfig`](crate::shell::desktop::RinchGpuConfig) here.
+/// [`RinchGpuConfig`](crate::shell::desktop::RinchGpuConfig).
 ///
 /// rinch still owns the instance, picks a surface-compatible adapter, and
 /// creates the device, so window presentation is always correct. After startup,
@@ -359,17 +228,22 @@ pub fn run_with_window_props_and_menu<F>(
 ///
 /// ```ignore
 /// use rinch::prelude::*;
-/// use rinch::shell::desktop::RinchGpuConfig;
 ///
 /// let mut limits = wgpu::Limits::default();
 /// limits.max_storage_buffers_per_shader_stage = 32;
-/// let gpu = RinchGpuConfig {
-///     required_features: wgpu::Features::FLOAT32_FILTERABLE,
-///     required_limits: limits,
-/// };
-/// run_with_gpu_config(app, WindowProps::default(), None, gpu);
+/// App::new(app)
+///     .window_props(WindowProps::default())
+///     .gpu_config(RinchGpuConfig {
+///         required_features: wgpu::Features::FLOAT32_FILTERABLE,
+///         required_limits: limits,
+///     })
+///     .run();
 /// ```
 #[cfg(feature = "gpu")]
+#[deprecated(
+    since = "0.3.0",
+    note = "use `App::new(component).window_props(props).gpu_config(gpu).run()`"
+)]
 pub fn run_with_gpu_config<F>(
     component: F,
     props: WindowProps,
@@ -378,8 +252,11 @@ pub fn run_with_gpu_config<F>(
 ) where
     F: FnOnce(&mut RenderScope) -> NodeHandle + 'static,
 {
-    crate::shell::desktop::set_gpu_init(crate::shell::desktop::GpuInit::Config(gpu));
-    run_with_window_props(component, props, theme);
+    let mut app = crate::App::new(component)
+        .window_props(props)
+        .gpu_config(gpu);
+    app.theme = theme;
+    app.run();
 }
 
 /// Run a rinch application on an embedder-provided GPU device.
@@ -392,9 +269,9 @@ pub fn run_with_gpu_config<F>(
 /// device is published through [`gpu_handle`](crate::gpu_handle).
 ///
 /// Prefer this when the embedder must keep its exact device descriptor; prefer
-/// [`run_with_gpu_config`] when it only needs to raise features/limits and would
-/// rather let rinch own device creation (which guarantees surface
-/// compatibility).
+/// [`App::gpu_config`](crate::App::gpu_config) when it only needs to raise
+/// features/limits and would rather let rinch own device creation (which
+/// guarantees surface compatibility).
 ///
 /// # Panics
 ///
@@ -402,6 +279,10 @@ pub fn run_with_gpu_config<F>(
 /// adapter/device must be created from an adapter that supports the target
 /// window (on multi-GPU systems, create the adapter with a compatible surface).
 #[cfg(feature = "gpu")]
+#[deprecated(
+    since = "0.3.0",
+    note = "use `App::new(component).window_props(props).external_gpu(gpu).run()`"
+)]
 pub fn run_with_external_device<F>(
     component: F,
     props: WindowProps,
@@ -410,6 +291,9 @@ pub fn run_with_external_device<F>(
 ) where
     F: FnOnce(&mut RenderScope) -> NodeHandle + 'static,
 {
-    crate::shell::desktop::set_gpu_init(crate::shell::desktop::GpuInit::External(gpu));
-    run_with_window_props(component, props, theme);
+    let mut app = crate::App::new(component)
+        .window_props(props)
+        .external_gpu(gpu);
+    app.theme = theme;
+    app.run();
 }

@@ -17,8 +17,8 @@ fn app() -> NodeHandle {
 }
 
 fn main() {
-    // Window title, width, height, and app function
-    run("My Application", 800, 600, app);
+    // Window title, size, and root component
+    App::new(app).title("My Application").size(800, 600).run();
 }
 ```
 
@@ -52,7 +52,7 @@ fn main() {
         resize_inset: None,     // No custom resize handles
     };
 
-    run_with_window_props(app, props, None);
+    App::new(app).window_props(props).run();
 }
 ```
 
@@ -99,7 +99,7 @@ fn main() {
         ..Default::default()
     };
 
-    run_with_window_props(app, props, None);
+    App::new(app).window_props(props).run();
 }
 ```
 
@@ -258,7 +258,7 @@ fn main() {
         ..Default::default()
     };
 
-    run_with_window_props(app, props, None);
+    App::new(app).window_props(props).run();
 }
 ```
 
@@ -306,7 +306,7 @@ fn main() {
         resize_inset: Some(12.0),  // Match CSS margin
         ..Default::default()
     };
-    run_with_window_props(app, props, None);
+    App::new(app).window_props(props).run();
 }
 ```
 

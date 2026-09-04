@@ -40,7 +40,11 @@ fn main() {
         primary_color: Some("cyan".into()),
         ..Default::default()
     };
-    run_with_theme("My App", 800, 600, app, theme);
+    App::new(app)
+        .title("My App")
+        .size(800, 600)
+        .theme(theme)
+        .run();
 }
 ```
 
@@ -648,7 +652,7 @@ fn main() {
         ..Default::default()
     };
 
-    run_with_window_props(app, window_props, None);
+    App::new(app).window_props(window_props).run();
 }
 ```
 
@@ -900,7 +904,11 @@ fn main() {
         primary_color: Some("blue".into()),
         ..Default::default()
     };
-    run_with_theme("Custom Components", 800, 600, app, theme);
+    App::new(app)
+        .title("Custom Components")
+        .size(800, 600)
+        .theme(theme)
+        .run();
 }
 ```
 
@@ -1299,5 +1307,9 @@ let theme = ThemeProviderProps {
 };
 
 // Components automatically adapt to the theme
-run_with_theme("My App", 800, 600, app, theme);
+App::new(app)
+    .title("My App")
+    .size(800, 600)
+    .theme(theme)
+    .run();
 ```

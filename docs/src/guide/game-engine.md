@@ -53,7 +53,7 @@ fn app() -> NodeHandle {
 }
 
 fn main() {
-    run("My App", 1280, 720, app);
+    App::new(app).title("My App").size(1280, 720).run();
 }
 ```
 
@@ -118,7 +118,7 @@ let gpu = RinchGpuConfig {
         ..Default::default()
     },
 };
-run_with_gpu_config(app, WindowProps::default(), None, gpu);
+App::new(app).gpu_config(gpu).run();
 ```
 
 After startup, `gpu_handle()` returns the shared `device`, `queue`, **and `adapter`** (use `adapter.limits()` to clamp, e.g. `max_buffer_size = min(adapter, 2 GiB)`). The requested features/limits are passed through verbatim — if the adapter can't satisfy them, device creation fails loudly rather than silently dropping a capability.
@@ -135,10 +135,10 @@ let gpu = ExternalGpu {
     device: Arc::new(device),
     queue: Arc::new(queue),
 };
-run_with_external_device(app, WindowProps::default(), None, gpu);
+App::new(app).external_gpu(gpu).run();
 ```
 
-The provided device is published through `gpu_handle()`. On a single-GPU machine a headless adapter (`compatible_surface: None`) usually presents fine; on multi-GPU systems create the adapter from a surface-compatible one, or prefer `run_with_gpu_config` (which guarantees compatibility). See the `gpu-device-config` example for both modes.
+The provided device is published through `gpu_handle()`. On a single-GPU machine a headless adapter (`compatible_surface: None`) usually presents fine; on multi-GPU systems create the adapter from a surface-compatible one, or prefer `App::gpu_config` (which guarantees compatibility). See the `gpu-device-config` example for both modes.
 
 ### Layout Size
 

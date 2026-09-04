@@ -9,7 +9,6 @@ use std::rc::Rc;
 use rinch::menu::{Menu, MenuItem};
 use rinch::prelude::*;
 use rinch::tray::TrayIconBuilder;
-use rinch::{WindowProps, run_with_window_props_and_menu};
 use rinch_tabler_icons::{TablerIcon, TablerIconStyle, render_tabler_icon};
 use ui_zoo::{
     init_all_sections, nav_links, overlays_demo_overlays, section_content, theme_controls,
@@ -280,18 +279,17 @@ fn main() {
     // Set up theme CSS (loads into thread-local, picked up by rinch-dom runtime)
     rinch::setup_theme_css(&theme);
 
-    run_with_window_props_and_menu(
-        move |scope| {
-            build_app(
-                current_section,
-                primary_color,
-                default_radius,
-                dark_mode,
-                scope,
-            )
-        },
-        window_props,
-        Some(theme),
-        Some(menus),
-    );
+    App::new(move |scope| {
+        build_app(
+            current_section,
+            primary_color,
+            default_radius,
+            dark_mode,
+            scope,
+        )
+    })
+    .window_props(window_props)
+    .theme(theme)
+    .menu(menus)
+    .run();
 }

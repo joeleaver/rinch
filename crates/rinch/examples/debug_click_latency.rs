@@ -54,5 +54,8 @@ fn app() -> NodeHandle {
 }
 
 fn main() {
-    rinch::run("debug-click-latency-probe", 900, 600, app);
+    App::new(app)
+        .title("debug-click-latency-probe")
+        .size(900, 600)
+        .run();
 }

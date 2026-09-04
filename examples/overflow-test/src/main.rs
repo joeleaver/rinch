@@ -51,5 +51,5 @@ fn app() -> NodeHandle {
 }
 
 fn main() {
-    rinch::run("issue #32 repro", 600, 300, app);
+    App::new(app).title("issue #32 repro").size(600, 300).run();
 }

@@ -483,7 +483,7 @@ fn App() -> NodeHandle {
 }
 
 fn main() {
-    run("My App", 800, 600, app);
+    App::new(app).title("My App").size(800, 600).run();
 }
 ```
 

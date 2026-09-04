@@ -1,3 +1,6 @@
 fn main() {
-    rinch::shell::run("Paint Demo", 1150, 750, paint::app);
+    rinch::App::new(paint::app)
+        .title("Paint Demo")
+        .size(1150, 750)
+        .run();
 }

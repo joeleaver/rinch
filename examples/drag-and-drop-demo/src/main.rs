@@ -511,5 +511,9 @@ fn main() {
         default_radius: Some("md".into()),
         ..Default::default()
     };
-    run_with_theme("Drag & Drop Demo", 900, 700, app, theme);
+    App::new(app)
+        .title("Drag & Drop Demo")
+        .size(900, 700)
+        .theme(theme)
+        .run();
 }

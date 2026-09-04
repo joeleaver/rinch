@@ -30,7 +30,7 @@ fn app() -> NodeHandle {
 }
 
 fn main() {
-    run("Counter", 800, 600, app);
+    App::new(app).title("Counter").size(800, 600).run();
 }
 ```
 

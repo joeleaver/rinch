@@ -75,7 +75,11 @@
 //!     .item(MenuItem::new("Quit").on_click(|| std::process::exit(0)));
 //!
 //! // For native menu bar:
-//! run_with_menu("My App", 800, 600, app, vec![("File", file_menu)]);
+//! App::new(app)
+//!     .title("My App")
+//!     .size(800, 600)
+//!     .menu(vec![("File", file_menu)])
+//!     .run();
 //!
 //! // For tray context menu:
 //! TrayIconBuilder::new().with_menu(menu).build()?;
@@ -930,7 +934,7 @@ mod tests {
         );
     }
 
-    /// The contract every in-tree menu depends on: `run_with_menu` builds the
+    /// The contract every in-tree menu depends on: `App::menu` builds the
     /// bar from `main`, before the event loop, with no ambient owner, and
     /// `examples/ui-zoo-desktop` deliberately creates its signals there "so menu
     /// callbacks can reference them". Requiring an owner would break it.

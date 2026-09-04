@@ -219,5 +219,9 @@ fn main() {
         ..Default::default()
     };
 
-    run_with_theme("Markdown Editor", 900, 700, app, theme);
+    App::new(app)
+        .title("Markdown Editor")
+        .size(900, 700)
+        .theme(theme)
+        .run();
 }

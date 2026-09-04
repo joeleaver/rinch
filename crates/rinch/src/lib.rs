@@ -44,6 +44,12 @@
 
 #[cfg(any(feature = "desktop", feature = "android", feature = "embed"))]
 pub mod app;
+
+/// The [`App`] builder — the single entry point that composes every startup
+/// option (issue #493).
+#[cfg(any(feature = "desktop", all(feature = "android", target_os = "android")))]
+pub mod app_builder;
+
 /// The ProseMirror-style desktop rich-text editor view. Part of the `desktop`
 /// feature; implements `rinch_editor_core::EditorView` over rinch-dom primitives.
 #[cfg(feature = "desktop")]
@@ -116,11 +122,16 @@ pub mod components {
 
 pub mod prelude {
     //! Common imports for rinch applications.
+    // The one entry point that composes every startup option (issue #493).
+    #[cfg(any(feature = "desktop", all(feature = "android", target_os = "android")))]
+    pub use crate::app_builder::App;
     #[cfg(all(feature = "android", target_os = "android"))]
+    #[allow(deprecated)]
     pub use crate::shell::android_runtime::{
         run as run_android, run_with_theme as run_android_with_theme,
     };
     #[cfg(feature = "desktop")]
+    #[allow(deprecated)]
     pub use crate::shell::{run, run_with_theme};
     #[cfg(all(feature = "android", target_os = "android"))]
     pub use android_activity::AndroidApp;
@@ -209,6 +220,7 @@ pub mod prelude {
     #[cfg(feature = "gpu")]
     pub use crate::shell::desktop::{ExternalGpu, GpuHandle, RinchGpuConfig, gpu_handle};
     #[cfg(feature = "gpu")]
+    #[allow(deprecated)]
     pub use crate::shell::{run_with_external_device, run_with_gpu_config};
 
     // Re-export theme types when the theme feature is enabled
@@ -236,6 +248,8 @@ pub use rinch_core::element::{
 // prelude, alongside `Effect`, for the same reason: they are advanced tools, and
 // `unowned` in particular is an attractive nuisance — it turns a lifetime bug
 // into a permanent leak. Reach for `Signal::try_get` / `is_alive` first.
+#[cfg(any(feature = "desktop", all(feature = "android", target_os = "android")))]
+pub use app_builder::App;
 pub use rinch_core::{
     Effect, Memo, Owner, Scope, Signal, batch, current_owner, derived, unowned, untracked,
 };
@@ -247,6 +261,7 @@ pub use shell::{
     run_with_menu, run_with_theme, run_with_window_props, run_with_window_props_and_menu,
 };
 #[cfg(feature = "gpu")]
+#[allow(deprecated)]
 pub use shell::{run_with_external_device, run_with_gpu_config};
 
 /// Re-export of the exact `wgpu` rinch links against.
