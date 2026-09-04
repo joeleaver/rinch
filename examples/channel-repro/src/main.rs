@@ -72,5 +72,5 @@ fn app() -> NodeHandle {
 }
 
 fn main() {
-    rinch::shell::run("channel-repro", 620, 220, app);
+    App::new(app).title("channel-repro").size(620, 220).run();
 }

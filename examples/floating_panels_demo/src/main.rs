@@ -18,7 +18,11 @@ fn main() {
         ..Default::default()
     };
 
-    run_with_theme("Floating Panels", 1200, 800, app, theme);
+    App::new(app)
+        .title("Floating Panels")
+        .size(1200, 800)
+        .theme(theme)
+        .run();
 }
 
 #[component]

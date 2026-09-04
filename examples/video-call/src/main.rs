@@ -77,7 +77,11 @@ fn main() {
         ..Default::default()
     };
 
-    run_with_theme("Rinch Video Call", 960, 700, app, theme);
+    App::new(app)
+        .title("Rinch Video Call")
+        .size(960, 700)
+        .theme(theme)
+        .run();
 }
 
 // ── App Component ───────────────────────────────────────────────────────────

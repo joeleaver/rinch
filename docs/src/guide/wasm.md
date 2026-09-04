@@ -68,7 +68,7 @@ my-app = { path = "../my-app" }
 use rinch::prelude::*;
 
 fn main() {
-    run("My App", 800, 600, my_app::app);
+    App::new(my_app::app).title("My App").size(800, 600).run();
 }
 ```
 

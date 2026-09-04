@@ -104,5 +104,5 @@ fn app() -> NodeHandle {
 }
 
 fn main() {
-    rinch::run("Hello rinch-dom", 800, 600, app);
+    App::new(app).title("Hello rinch-dom").size(800, 600).run();
 }

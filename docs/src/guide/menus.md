@@ -4,7 +4,7 @@ Rinch provides native menu support through the `muda` library. Menus use a unifi
 
 ## Native Menus
 
-Use `run_with_menu` to add a native menu bar to your window:
+Add a native menu bar with `App::menu`:
 
 ```rust
 use rinch::prelude::*;
@@ -23,11 +23,18 @@ fn main() {
         .separator()
         .item(MenuItem::new("Quit").on_click(|| std::process::exit(0)));
 
-    run_with_menu("My App", 800, 600, app, vec![("File", file_menu)]);
+    App::new(app)
+        .title("My App")
+        .size(800, 600)
+        .menu(vec![("File", file_menu)])
+        .run();
 }
 ```
 
-For apps without menus, use `run("My App", 800, 600, app)`.
+For apps without menus, just leave `.menu(...)` off. `.menu()` composes with
+every other builder method, so a menu bar and custom window props (borderless,
+transparent, an icon) go on the same chain — which no `run_*` signature could
+express.
 
 ## Menu Types
 
@@ -91,7 +98,7 @@ A callback belongs to the component that **created** it — the scope that was r
 
 Ownership is per item, not per menu: one `Menu` may collect items contributed by several components, and each item's callback stops on its own component's unmount. This holds however the item is activated — a native menu click, a tray click, the Linux in-app menu bar, or the keyboard shortcut.
 
-Build the menu outside any component — from `main`, before `run_with_menu`, which is what all the examples do — and there is no owner to record, so the callback lives for the life of the app:
+Build the menu outside any component — from `main`, before `App::run`, which is what all the examples do — and there is no owner to record, so the callback lives for the life of the app:
 
 ```rust
 fn main() {
@@ -101,7 +108,11 @@ fn main() {
     let file_menu = Menu::new()
         .item(MenuItem::new("Reset").on_click(move || count.set(0)));
 
-    run_with_menu("My App", 800, 600, app, vec![("File", file_menu)]);
+    App::new(app)
+        .title("My App")
+        .size(800, 600)
+        .menu(vec![("File", file_menu)])
+        .run();
 }
 ```
 
@@ -318,10 +329,14 @@ fn main() {
             show_about.update(|v| *v = !*v);
         }));
 
-    run_with_menu("My App", 800, 600, app, vec![
-        ("File", file_menu),
-        ("Edit", edit_menu),
-        ("Help", help_menu),
-    ]);
+    App::new(app)
+        .title("My App")
+        .size(800, 600)
+        .menu(vec![
+            ("File", file_menu),
+            ("Edit", edit_menu),
+            ("Help", help_menu),
+        ])
+        .run();
 }
 ```

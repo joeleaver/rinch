@@ -85,5 +85,8 @@ fn app() -> NodeHandle {
 }
 
 fn main() {
-    run("Collaborative Editor Demo", 1100, 720, app);
+    App::new(app)
+        .title("Collaborative Editor Demo")
+        .size(1100, 720)
+        .run();
 }

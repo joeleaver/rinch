@@ -21,7 +21,7 @@ pub enum Element {
 
 ### `WindowProps`
 
-Configuration for a window (used at the runtime level via `run_with_window_props`):
+Configuration for a window (passed at the runtime level via `App::window_props`):
 
 ```rust
 pub struct WindowProps {

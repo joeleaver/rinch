@@ -849,5 +849,5 @@ fn dnd_tree_node(
 // =============================================================================
 
 fn main() {
-    run("Tree Demo", 900, 800, app);
+    App::new(app).title("Tree Demo").size(900, 800).run();
 }

@@ -38,35 +38,41 @@ fn dispatch_to_main_thread(f: Box<dyn FnOnce() + Send>) {
 
 // ── Entry points ─────────────────────────────────────────────────────────────
 
-/// Run a rinch application on Android with default theme.
+/// Mount `component` and take over the thread with the Android event loop.
 ///
-/// Call this from your `android_main(app)` entry point:
-///
-/// ```ignore
-/// use android_activity::AndroidApp;
-///
-/// #[no_mangle]
-/// fn android_main(app: AndroidApp) {
-///     rinch::shell::android_runtime::run(app, "My App", 0, 0, my_component);
-/// }
-/// ```
-pub fn run<F>(android_app: AndroidApp, _title: &str, _width: u32, _height: u32, component: F)
+/// The seam [`crate::App::run_android`] drives; it has already applied the
+/// theme. Everything public goes through the builder, so there is exactly one
+/// Android startup path.
+pub(crate) fn run_component<F>(android_app: AndroidApp, component: F)
 where
     F: FnOnce(&mut RenderScope) -> NodeHandle + 'static,
 {
-    #[cfg(feature = "theme")]
-    {
-        crate::setup_theme_css(&ThemeProviderProps::default());
-    }
-
     let app = RinchApp::new(component);
     run_loop(android_app, app);
 }
 
+/// Run a rinch application on Android with default theme.
+#[deprecated(
+    since = "0.3.0",
+    note = "use `App::new(component).run_android(android_app)`"
+)]
+pub fn run<F>(android_app: AndroidApp, title: &str, _width: u32, _height: u32, component: F)
+where
+    F: FnOnce(&mut RenderScope) -> NodeHandle + 'static,
+{
+    crate::App::new(component)
+        .title(title)
+        .run_android(android_app);
+}
+
 /// Run a rinch application on Android with theme configuration.
+#[deprecated(
+    since = "0.3.0",
+    note = "use `App::new(component).theme(theme).run_android(android_app)`"
+)]
 pub fn run_with_theme<F>(
     android_app: AndroidApp,
-    _title: &str,
+    title: &str,
     _width: u32,
     _height: u32,
     component: F,
@@ -74,9 +80,10 @@ pub fn run_with_theme<F>(
 ) where
     F: FnOnce(&mut RenderScope) -> NodeHandle + 'static,
 {
-    crate::setup_theme_css(&theme);
-    let app = RinchApp::new(component);
-    run_loop(android_app, app);
+    crate::App::new(component)
+        .title(title)
+        .theme(theme)
+        .run_android(android_app);
 }
 
 // ── Main loop ────────────────────────────────────────────────────────────────

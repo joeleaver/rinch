@@ -29,7 +29,7 @@ fn app() -> NodeHandle {
 }
 
 fn main() {
-    run("Counter", 400, 300, app);
+    App::new(app).title("Counter").size(400, 300).run();
 }
 ```
 
@@ -239,7 +239,11 @@ fn main() {
         dark_mode: false,
         ..Default::default()
     };
-    run_with_theme("My App", 800, 600, app, theme);
+    App::new(app)
+        .title("My App")
+        .size(800, 600)
+        .theme(theme)
+        .run();
 }
 ```
 

@@ -56,10 +56,14 @@ fn app() -> NodeHandle {
 }
 
 fn main() {
-    run_with_theme("My App", 800, 600, app, ThemeProviderProps {
-        primary_color: Some("cyan".into()),
-        ..Default::default()
-    });
+    App::new(app)
+        .title("My App")
+        .size(800, 600)
+        .theme(ThemeProviderProps {
+            primary_color: Some("cyan".into()),
+            ..Default::default()
+        })
+        .run();
 }
 ```
 
@@ -78,7 +82,7 @@ You should see a window with a title, description, two buttons, and a count that
 1. `#[component]` injected a `__scope: &mut RenderScope` parameter. You never see it, but `rsx!` needs it.
 2. `rsx!` built a DOM tree: created elements, set attributes, wired event handlers.
 3. `{|| format!("Count: {}", count.get())}` created an Effect that reads `count` and updates a text node. When `count` changes, that closure re-runs and updates *only that text node*.
-4. `run_with_theme` opened a window, loaded theme CSS, mounted the component, and started the event loop.
+4. `App::new(app)…run()` opened a window, loaded theme CSS, mounted the component, and started the event loop. `App` is the one entry point: every startup option — title, size, theme, menu bar, window props, GPU device — is a method on it, and they all compose.
 
 Your `app` function ran exactly once. It will never run again. The closures handle everything from here.
 

@@ -107,5 +107,5 @@ fn app() -> NodeHandle {
 }
 
 fn main() {
-    run("New Editor Demo", 960, 800, app);
+    App::new(app).title("New Editor Demo").size(960, 800).run();
 }
