@@ -124,8 +124,10 @@ where
     /// Add a native menu bar. Each `(label, Menu)` pair becomes a top-level
     /// submenu.
     ///
-    /// Ignored (with a warning) by [`run_android`](App::run_android) — Android
-    /// has no window menu bar.
+    /// Android has no window menu bar. A build with both `android` and
+    /// `desktop` can call this and then [`run_android`](App::run_android),
+    /// which warns and ignores it; an Android-only build does not have this
+    /// method at all.
     #[cfg(feature = "desktop")]
     pub fn menu(mut self, menus: Vec<(&str, crate::menu::Menu)>) -> Self {
         self.menus = Some(
@@ -175,6 +177,21 @@ where
         self
     }
 
+    /// Resolve the whole configuration. Pure: no thread is taken over, no
+    /// global is written, nothing is registered — so a test can assert that a
+    /// builder chain produced what it claims to.
+    #[cfg(feature = "desktop")]
+    pub(crate) fn into_startup(self) -> Startup<F> {
+        Startup {
+            props: resolve_window_props(self.props, self.title, self.size),
+            theme: self.theme.unwrap_or_default(),
+            menus: self.menus,
+            #[cfg(feature = "gpu")]
+            gpu: self.gpu,
+            component: self.component,
+        }
+    }
+
     /// Start the application on the desktop. Takes over the thread and does not
     /// return.
     ///
@@ -184,19 +201,23 @@ where
     /// surface cannot be created.
     #[cfg(feature = "desktop")]
     pub fn run(self) {
+        let Startup {
+            component,
+            props,
+            theme,
+            menus,
+            #[cfg(feature = "gpu")]
+            gpu,
+        } = self.into_startup();
+
         #[cfg(feature = "gpu")]
-        if let Some(gpu) = self.gpu {
+        if let Some(gpu) = gpu {
             crate::shell::desktop::set_gpu_init(gpu);
         }
 
-        let props = resolve_window_props(self.props, self.title, self.size);
-
         // A no-op when the `theme` feature is off, which is why this is not
         // itself feature-gated.
-        crate::setup_theme_css(&self.theme.unwrap_or_default());
-
-        let component = self.component;
-        let menus = self.menus;
+        crate::setup_theme_css(&theme);
 
         #[cfg(target_os = "linux")]
         {
@@ -225,17 +246,18 @@ where
     ///
     /// The same configuration methods apply everywhere; only the terminal
     /// differs, so an app that targets both platforms writes the chain once.
-    /// Android draws into the Activity's own surface, so
-    /// [`size`](App::size) and the window fields of
-    /// [`window_props`](App::window_props) do not apply, and
-    /// [`menu`](App::menu) warns and is ignored.
+    /// Android draws into the Activity's own surface and takes its label from
+    /// the manifest, so [`title`](App::title), [`size`](App::size) and
+    /// [`window_props`](App::window_props) are all inert here — only
+    /// [`theme`](App::theme) and the component apply. [`menu`](App::menu),
+    /// where it exists, warns and is ignored.
     ///
     /// Call it from `android_main`:
     ///
     /// ```ignore
     /// #[unsafe(no_mangle)]
     /// fn android_main(android_app: AndroidApp) {
-    ///     App::new(app).title("My App").run_android(android_app);
+    ///     App::new(app).run_android(android_app);
     /// }
     /// ```
     #[cfg(all(feature = "android", target_os = "android"))]
@@ -377,6 +399,27 @@ fn run_desktop_linux<F>(
     );
 }
 
+/// Everything a terminal method needs, with every builder rule already applied.
+///
+/// This is the seam that makes the chain testable. [`App::run`] itself takes
+/// over the thread and can never be unit-tested, so without a pure step in
+/// front of it every configuration method could silently be a no-op — `.title()`,
+/// `.size()`, `.theme()` and `.menu()` all could, and a suite that only tested
+/// [`resolve_window_props`] in isolation stayed green through all of them.
+#[cfg(feature = "desktop")]
+pub(crate) struct Startup<F> {
+    pub(crate) component: F,
+    /// Window props with `title` / `size` folded in and the borderless resize
+    /// inset armed.
+    pub(crate) props: WindowProps,
+    /// The theme to install — the default when none was configured, which is
+    /// what makes components visible out of the box.
+    pub(crate) theme: ThemeProviderProps,
+    pub(crate) menus: Option<Vec<(String, crate::menu::Menu)>>,
+    #[cfg(feature = "gpu")]
+    pub(crate) gpu: Option<crate::shell::desktop::GpuInit>,
+}
+
 /// Fold the builder's `title` / `size` overrides into the window props, and
 /// arm the borderless resize handles.
 ///
@@ -447,6 +490,118 @@ mod tests {
         let resolved = resolve_window_props(distinctive_props(), None, Some((640, 480)));
         assert_eq!((resolved.width, resolved.height), (640, 480));
         assert_eq!(resolved.title, "From props");
+    }
+
+    /// A component that is never called — every test here stops at
+    /// [`App::into_startup`], which runs no user code.
+    fn component(scope: &mut RenderScope) -> NodeHandle {
+        scope.create_element("div")
+    }
+
+    /// **The canonical chain.** Every doc example, and almost every migrated
+    /// call site, sets `title` AND `size` together — and until this test, no
+    /// fixture passed both overrides at once, so a `resolve_window_props` that
+    /// handled either alone but dropped both together was invisible.
+    #[test]
+    fn title_and_size_are_both_applied_when_both_are_set() {
+        let startup = App::new(component)
+            .title("From title()")
+            .size(640, 480)
+            .window_props(distinctive_props())
+            .into_startup();
+        assert_eq!(startup.props.title, "From title()");
+        assert_eq!((startup.props.width, startup.props.height), (640, 480));
+    }
+
+    /// Order does not matter: `.window_props()` after `.title()`/`.size()` must
+    /// not silently swallow them. Replace-semantics here would open the window
+    /// named "Rinch Window" with no diagnostic.
+    #[test]
+    fn window_props_does_not_swallow_an_earlier_title_or_size() {
+        let after = App::new(component)
+            .title("Mine")
+            .size(640, 480)
+            .window_props(distinctive_props())
+            .into_startup();
+        let before = App::new(component)
+            .window_props(distinctive_props())
+            .title("Mine")
+            .size(640, 480)
+            .into_startup();
+        assert_eq!(after.props.title, "Mine");
+        assert_eq!(before.props.title, "Mine");
+        assert_eq!(
+            (after.props.width, after.props.height),
+            (before.props.width, before.props.height)
+        );
+    }
+
+    /// Each builder method must actually record its argument. Without this,
+    /// every one of them could be a no-op body and the suite stayed green.
+    #[test]
+    fn every_builder_method_records_its_argument() {
+        let theme = ThemeProviderProps {
+            primary_color: Some("cyan".into()),
+            ..Default::default()
+        };
+        let startup = App::new(component)
+            .title("Recorded")
+            .size(1280, 720)
+            .theme(theme)
+            .menu(vec![("File", crate::menu::Menu::new())])
+            .into_startup();
+
+        assert_eq!(startup.props.title, "Recorded");
+        assert_eq!((startup.props.width, startup.props.height), (1280, 720));
+        assert_eq!(startup.theme.primary_color.as_deref(), Some("cyan"));
+        let labels: Vec<&str> = startup
+            .menus
+            .as_ref()
+            .expect("menu() was called")
+            .iter()
+            .map(|(label, _)| label.as_str())
+            .collect();
+        assert_eq!(labels, vec!["File"]);
+    }
+
+    /// With no `.theme()`, the DEFAULT theme is installed rather than nothing —
+    /// that is what makes `rinch-components` visible out of the box, and a
+    /// regression would leave every component in every app unstyled.
+    #[test]
+    fn omitting_the_theme_still_installs_the_default() {
+        let startup = App::new(component).into_startup();
+        assert_eq!(
+            startup.theme.primary_color,
+            ThemeProviderProps::default().primary_color
+        );
+        assert!(startup.menus.is_none());
+    }
+
+    /// The fields the builder does **not** resolve must survive untouched. This
+    /// covers `app_id`, on which the Wayland identity now depends, and
+    /// `on_close_requested`, which a minimize-to-tray app cannot work without.
+    #[test]
+    fn window_props_fields_the_builder_does_not_resolve_are_preserved() {
+        let props = WindowProps {
+            transparent: true,
+            always_on_top: true,
+            menu_in_titlebar: true,
+            x: Some(17),
+            y: Some(23),
+            app_id: Some("com.example.notes".into()),
+            ..distinctive_props()
+        };
+        let startup = App::new(component)
+            .title("Anything")
+            .size(1, 2)
+            .window_props(props)
+            .into_startup();
+
+        assert!(startup.props.transparent);
+        assert!(startup.props.always_on_top);
+        assert!(startup.props.menu_in_titlebar);
+        assert_eq!((startup.props.x, startup.props.y), (Some(17), Some(23)));
+        assert_eq!(startup.props.app_id.as_deref(), Some("com.example.notes"));
     }
 
     #[test]
