@@ -643,6 +643,23 @@ impl Painter for TinySkiaPainter {
 
         let bounds = path.bounds();
         if bounds.width() < 0.001 || bounds.height() < 0.001 {
+            // Card K51: a degenerate clip path is not the same thing as no
+            // clip at all, and treating them alike is what let a `height: 0`
+            // `overflow: hidden` box (card J1's collapsed group) go on
+            // painting its rows at full size, in their old position, forever
+            // — the `previous_mask` restored here on `pop_layer` was `None`
+            // for that box (nothing above it was clipping), so this branch
+            // used to leave `self.clip_mask` at the `None` `.take()` set it
+            // to and paint every descendant unclipped. A path whose bounds
+            // round to nothing is the *strictest* clip there is, not the
+            // absence of one: nothing behind it should show, and `Mask::new`
+            // already hands back exactly that — a mask of zeroes — so
+            // installing it costs nothing an ordinary clip wasn't already
+            // going to pay a few lines below.
+            let w = self.pixmap.width();
+            let h = self.pixmap.height();
+            let mask = Mask::new(w, h).expect("failed to create clip mask");
+            self.clip_mask = Some(mask);
             self.layer_stack.push(LayerState::Clip { previous_mask });
             return;
         }

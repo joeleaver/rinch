@@ -1062,6 +1062,40 @@ fn paint_node(
                 painter.push_layer(BlendMode::Normal, opacity, node_transform, &bounds);
             }
 
+            // Card K51. #142's fix (above) answers "does this node still need
+            // to paint its children" and never asks what its `overflow` is —
+            // which was fine for the case it was written for, an *unclipped*
+            // auto-height wrapper whose only content is absolutely positioned
+            // and already escaping it. The same zero-in-one-dimension shape
+            // also describes a card J1 group closed to `height: 0` on purpose,
+            // whose wrapper carries `overflow: hidden` precisely so its real,
+            // in-flow rows stop being seen — and every ordinary place this file
+            // turns `overflow: hidden` into a clip lives below the early
+            // `return` this branch takes, so it never ran for a node whose own
+            // layout box was degenerate. The rows kept painting at full size,
+            // in their old on-screen position, for exactly as long as the
+            // wrapper's height said not to: always, since nothing here ever
+            // asked. Pushing the clip this node's own `overflow` already asks
+            // for — its own (zero-area) rect — before painting children keeps
+            // #142's case exactly as it was: an absolutely-positioned escapee
+            // is never inside an ancestor clip that doesn't exist. It only
+            // starts clipping the case #142 didn't have in front of it.
+            //
+            // Both halves of that come from [`clip::clip_shape`], the way the
+            // full-size bracket below does, because this is an *eighth* clip
+            // site and #324 stage A landed to stop there being eight answers.
+            // An earlier draft of this hunk spelled the predicate as
+            // `overflow_y` against `Hidden | Scroll | Auto` — one of the four
+            // spellings stage A deleted, and the one that misses
+            // `overflow: clip`. The radii come back and are dropped rather
+            // than pushed as a `RoundedRect`: this box is zero-area by the
+            // definition of the branch it sits in, and a rect enclosing
+            // nothing encloses nothing rounded either.
+            let clip = clip_shape(node, scale, x, y);
+            if let Some((clip_rect, _radii)) = clip {
+                painter.push_clip(Fill::NonZero, node_transform, &clip_rect.into());
+            }
+
             let scroll_x = node.scroll_offset.0 * scale;
             let scroll_y = node.scroll_offset.1 * scale;
             paint_children_with_stacking(
@@ -1075,6 +1109,10 @@ fn paint_node(
                 layout_cx,
                 node_transform,
             );
+
+            if clip.is_some() {
+                painter.pop_layer();
+            }
 
             if has_opacity {
                 painter.pop_layer();
