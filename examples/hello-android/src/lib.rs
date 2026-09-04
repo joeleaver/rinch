@@ -268,7 +268,5 @@ fn StressTest(on_back: Callback, children: &[NodeHandle]) -> NodeHandle {
 #[cfg(target_os = "android")]
 #[unsafe(no_mangle)]
 fn android_main(android_app: AndroidApp) {
-    App::new(app)
-        .title("Hello Android")
-        .run_android(android_app);
+    App::new(app).run_android(android_app);
 }

@@ -57,7 +57,7 @@ pub fn gpu_handle() -> Option<&'static GpuHandle> {
 ///
 /// rinch still creates the instance, picks a surface-compatible adapter, and
 /// owns the device, so surface presentation is always correct. Use this via
-/// [`crate::run_with_gpu_config`]. The requested features/limits are passed
+/// [`crate::App::gpu_config`]. The requested features/limits are passed
 /// through verbatim — if the adapter cannot satisfy them, device creation fails
 /// loudly rather than silently dropping a capability.
 #[derive(Clone, Default)]
@@ -72,7 +72,7 @@ pub struct RinchGpuConfig {
 ///
 /// When an embedder would rather own device creation with its exact
 /// `DeviceDescriptor`, it can hand the whole stack to rinch via
-/// [`crate::run_with_external_device`]. rinch creates only the window surface
+/// [`crate::App::external_gpu`]. rinch creates only the window surface
 /// (from the provided `instance`) and validates that `adapter` can present to
 /// it; it does **not** call `request_device`. The provided device becomes the
 /// one published through [`gpu_handle`].
@@ -272,10 +272,10 @@ impl WgpuRenderer {
             Some(GpuInit::External(g)) => {
                 assert!(
                     g.adapter.is_surface_supported(&surface),
-                    "run_with_external_device: the supplied adapter cannot present to \
+                    "App::external_gpu: the supplied adapter cannot present to \
                      rinch's window surface. The adapter/device must be created from an \
                      adapter that supports the target window (create the adapter with a \
-                     compatible surface, or use run_with_gpu_config to let rinch own the device)."
+                     compatible surface, or use App::gpu_config to let rinch own the device)."
                 );
                 g.adapter.clone()
             }
@@ -330,7 +330,7 @@ impl WgpuRenderer {
                     }))
                     .expect(
                         "Failed to create device (the adapter may not support the \
-                         features/limits requested via run_with_gpu_config)",
+                         features/limits requested via App::gpu_config)",
                     );
                 (Arc::new(raw_device), Arc::new(raw_queue))
             }

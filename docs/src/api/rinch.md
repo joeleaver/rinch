@@ -102,11 +102,16 @@ App::new(app)
 
 `run`, `run_with_theme`, `run_with_menu`, `run_with_window_props`,
 `run_with_window_props_and_menu`, `run_with_gpu_config` and
-`run_with_external_device` still exist as thin shims over `App` and behave
-exactly as before, but they are `#[deprecated]`. Each one's deprecation note
-names the equivalent builder chain. The two Android entry points
-(`run_android`, `run_android_with_theme`) are deprecated the same way, in favour
-of `.run_android(android_app)`.
+`run_with_external_device` still exist as thin shims over `App`, but they are
+`#[deprecated]`, and each one's deprecation note names the equivalent builder
+chain. The two Android entry points (`run_android`, `run_android_with_theme`)
+are deprecated the same way, in favour of `.run_android(android_app)`.
+
+Behaviour through the shims is unchanged with one deliberate exception:
+unifying the startup paths also unified the Linux Wayland `app_id`, which is
+now derived per application from the executable name rather than defaulting to
+the shared constant `"rinch-app"`. An explicit `WindowProps::app_id` still
+wins; X11 `WM_CLASS` and non-Linux platforms are unaffected.
 
 ## Prelude
 
@@ -209,12 +214,17 @@ pub use rinch_renderer as renderer;  // desktop feature
 
 ### `rinch::shell`
 
-Application runtime and event loop. The entry point is [`rinch::App`](#rinchapp);
-everything here is a deprecated shim over it:
+Application runtime and event loop. The entry point is [`rinch::App`](#rinchapp).
+
+Deprecated shims over `App`:
 - `run()`, `run_with_theme()`, `run_with_menu()` - title/size, plus theme or menu bar
 - `run_with_window_props()`, `run_with_window_props_and_menu()` - full window props
 - `run_with_gpu_config()`, `run_with_external_device()` - GPU device selection (`gpu` feature)
-- `run_rinch()`, `run_rinch_with_window_props()` - lower-level runtime entry points
+
+Lower-level runtime entry points, deprecated since 0.2.0 and **not** shims over
+`App` — they predate it and sit below the layer that installs theme CSS, so
+unlike `App::run` they load no theme at all:
+- `run_rinch()`, `run_rinch_with_window_props()`
 
 ### `rinch::menu`
 

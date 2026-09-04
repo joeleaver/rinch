@@ -274,11 +274,35 @@ fn main() {
 The seven `run_*` functions (`run`, `run_with_theme`, `run_with_menu`,
 `run_with_window_props`, `run_with_window_props_and_menu`, `run_with_gpu_config`,
 `run_with_external_device`) and the two Android ones (`run_android`,
-`run_android_with_theme`) are now **`#[deprecated]` shims over `App`** — they
-behave exactly as before, and each deprecation note names its builder chain.
+`run_android_with_theme`) are now **`#[deprecated]` shims over `App`**, and each
+deprecation note names its builder chain. Behaviour is unchanged with one
+deliberate exception: unifying the startup paths also unified the Linux
+**Wayland `app_id`**, which is now derived per application from the executable
+name instead of the shared constant `"rinch-app"` (an explicit
+`WindowProps::app_id` still wins). X11 `WM_CLASS` and every non-Linux platform
+are untouched. See **Window identity on Wayland** below.
 They exist because none of them could express its own combinations:
 `run_with_menu` took no window props, `run_with_window_props` took no menu
 without a second function, and neither could take whatever landed next.
+
+### Window identity on Wayland
+
+A window's `app_id` is how a Wayland compositor decides which `.desktop` entry,
+icon and taskbar group a window belongs to. rinch derives it from the
+executable's file name unless `WindowProps::app_id` says otherwise
+(`resolved_app_id`, `shell/rinch_runtime.rs`), at **both** the initial
+`create_window` and the `show_window` re-creation path that minimize-to-tray
+restores through.
+
+It used to default to the constant `"rinch-app"` for every app that did not set
+one. That is not merely a label: `install_wayland_icon` writes
+`~/.local/share/applications/{app_id}.desktop` carrying `Name={app_id}`, so
+under one shared constant the first rinch app to ship an icon supplied the dock
+icon *and* the displayed name for every other rinch app on the machine, and
+they grouped together as a single application. The whole name is used, not the
+`file_stem` — a stem truncates at the last dot, so a reverse-DNS binary name
+like `com.example.notes` would register as `com.example` and collide with its
+own siblings.
 
 The `#[component]` macro auto-injects `__scope: &mut RenderScope` as the first parameter, which is required by the `rsx!` macro. Components return a `NodeHandle`. You can also write `fn app(__scope: &mut RenderScope) -> NodeHandle` manually if preferred.
 
