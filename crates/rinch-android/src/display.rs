@@ -102,6 +102,86 @@ pub fn refresh_rate_hz() -> Option<f32> {
     })
 }
 
+/// The size of the window this activity draws into, in physical pixels, as
+/// `(width, height)`.
+///
+/// **What this is for.** Everything else in this module answers a question
+/// about the screen except the first one an app asks: how wide is it. The
+/// width handed to `run_android_with_fonts` is not it — Android ignores that
+/// number and the shell lays out against whatever the `ANativeWindow` turned
+/// out to be — so an app that needs a pixel width for something it rasterises
+/// has had nothing to ask. SetListArray's card K31 is where that surfaced: it
+/// passes a 393-wide window because 393 is the canvas its designs were drawn
+/// on, and on a moto g stylus 5G, which is 1080 physical pixels at density 400
+/// and therefore 432 logical, every page it drew came out 393 wide with a
+/// strip of backdrop down each side. Wrong by a different amount on every
+/// handset, and invisible in a simulator that is 393 wide by construction.
+///
+/// Physical pixels, matching [`safe_area_insets`], because that is the unit
+/// Android measures in. Divide by `density_dpi() / 160` — the same scale
+/// factor `shell::android_runtime` derives at `InitWindow` — to reach the
+/// logical pixels a stylesheet is written in, and the answer will agree with
+/// the size the shell laid out at.
+///
+/// `None` if the JNI call chain fails or the platform reports a non-positive
+/// size, which leaves the caller to pick its own fallback rather than have one
+/// invented here — the same contract [`density_dpi`] keeps.
+pub fn viewport_size() -> Option<(u32, u32)> {
+    bridge::with_activity(|env, activity| {
+        let obj = env
+            .call_method(activity, "getViewportSize", "()[I", &[])
+            .ok()?
+            .l()
+            .ok()?;
+        if obj.is_null() {
+            return None;
+        }
+        let arr: jni::objects::JIntArray = obj.into();
+        let mut buf = [0i32; 2];
+        env.get_int_array_region(&arr, 0, &mut buf).ok()?;
+        // A zero or negative dimension is not a small window, it is a window
+        // that was not there to measure — the activity asked before it had one.
+        // Saying `None` sends the caller to its fallback; dividing by it would
+        // send it somewhere much stranger.
+        (buf[0] > 0 && buf[1] > 0).then_some((buf[0] as u32, buf[1] as u32))
+    })
+}
+
+/// How much of the bottom edge the soft keyboard is covering right now, in
+/// physical pixels. Zero when it is down.
+///
+/// Kept apart from [`safe_area_insets`] on purpose, and the split is the whole
+/// point rather than tidiness. The safe area is hardware: the gesture bar and
+/// the cutout are where they are for the life of the process, so a caller
+/// reads it once at mount and is entitled to assume it will not move. The
+/// keyboard moves several times a minute. Folding the two together would
+/// either make every safe-area reader poll at the keyboard's rate, or make the
+/// number it cached at mount silently wrong the first time someone typed.
+///
+/// This is a poll and not a subscription: it reports the inset at the instant
+/// it is asked, so a caller that wants to move with the keyboard asks once per
+/// frame while it cares. The push version — `setDecorFitsSystemWindows(false)`
+/// and an `OnApplyWindowInsetsListener` on the Java side — is deliberately not
+/// wired here, because turning decor fitting off changes where the window lays
+/// out underneath the `ANativeWindow` the shell draws into, and that is a
+/// change to every rinch app's geometry rather than an addition to it.
+///
+/// `None` when the window has no insets to report yet, which happens before
+/// the first layout pass and is not the same answer as "the keyboard is down".
+pub fn ime_inset() -> Option<u32> {
+    bridge::with_activity(|env, activity| {
+        let px = env
+            .call_method(activity, "getImeInset", "()I", &[])
+            .ok()?
+            .i()
+            .ok()?;
+        // The Java side returns -1 for "no insets yet" rather than throwing,
+        // because a window that has not been laid out is an ordinary moment in
+        // an activity's life and not a fault worth an exception.
+        (px >= 0).then_some(px as u32)
+    })
+}
+
 pub fn density_dpi() -> Option<i32> {
     bridge::with_activity(|env, activity| {
         // getResources().getDisplayMetrics().densityDpi
