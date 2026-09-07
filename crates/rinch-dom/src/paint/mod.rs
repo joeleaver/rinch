@@ -30,13 +30,13 @@ use peniko::color::{AlphaColor, Srgb};
 use peniko::kurbo::{Affine, BezPath, Point, Rect, RoundedRect, RoundedRectRadii, Shape};
 use peniko::{Brush, Fill};
 
-use painter::{BlendMode, Painter};
+use painter::{BlendMode, PaintShape, Painter};
 
 use crate::computed_style::{
     BackgroundValue, DisplayValue, OverflowValue, PositionValue, VisibilityValue,
 };
 use crate::node::{Node, NodeKind, NodeTree, RawNodeId};
-use crate::stacking::{PaintKind, paints_at_stacking_root, stacking_paint_order};
+use crate::stacking::{ClipSpan, PaintKind, paints_at_stacking_root, stacking_paint_order};
 
 /// Compute the dirty region (union of all paint-dirty node rects) in physical pixels.
 ///
@@ -842,6 +842,22 @@ pub fn paint_document(
 /// order; an ancestor stacking context has the rest. [`paints_at_stacking_root`]
 /// is the one predicate that decides which is which, and hit testing asks it the
 /// same question so that what is on top is also what is tapped.
+///
+/// An entry hoisted past a clipping ancestor carries that ancestor's clip in
+/// its [`clip chain`](crate::stacking::PaintOrder::clips_for) — pushed here,
+/// around the entry, because `overflow` no longer creates a stacking context
+/// and the bracket `paint_node` would have opened for it is not on the
+/// painter's stack any more (#324). The clips are in this root's own space,
+/// like the offsets, so they all go under `node_transform` with no per-clip
+/// composition.
+///
+/// Consecutive entries that share a chain share one push. That is not a
+/// heuristic: identical [`ClipSpan`](crate::stacking::ClipSpan)s name the same
+/// clips, so leaving them on the stack across the run is exactly what pushing
+/// and popping each time would do — and the run is the common shape, since the
+/// rows of one scroller are contiguous in tree order and usually all at `z: 0`.
+/// It matters because `TinySkiaPainter::push_clip` allocates a full-surface
+/// `Mask` per push.
 #[allow(clippy::too_many_arguments)]
 fn paint_children_with_stacking(
     tree: &NodeTree,
@@ -864,11 +880,31 @@ fn paint_children_with_stacking(
 
     let is_body = node_id == tree.body_id;
     if is_body || node.creates_stacking_context() {
-        for entry in stacking_paint_order(tree, node_id, is_body, scale, offset_x, offset_y) {
+        let order = stacking_paint_order(tree, node_id, is_body, scale, offset_x, offset_y);
+        let mut open = ClipSpan::EMPTY;
+        for entry in order.iter() {
             if let Some(child) = tree.get(entry.node_id)
                 && already_drawn_inline(child, entry.kind)
             {
                 continue;
+            }
+            if entry.clips != open {
+                for _ in 0..open.len() {
+                    painter.pop_layer();
+                }
+                open = entry.clips;
+                for clip in order.clips_for(entry) {
+                    let shape: PaintShape = if clip.radii.top_left > 0.0
+                        || clip.radii.top_right > 0.0
+                        || clip.radii.bottom_right > 0.0
+                        || clip.radii.bottom_left > 0.0
+                    {
+                        clip.rect.to_rounded_rect(clip.radii).into()
+                    } else {
+                        clip.rect.into()
+                    };
+                    painter.push_clip(Fill::NonZero, node_transform, &shape);
+                }
             }
             paint_node(
                 tree,
@@ -881,6 +917,9 @@ fn paint_children_with_stacking(
                 layout_cx,
                 node_transform,
             );
+        }
+        for _ in 0..open.len() {
+            painter.pop_layer();
         }
     } else {
         for &child_id in &node.children {

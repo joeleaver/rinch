@@ -51,6 +51,17 @@ fn clips(style: &str) -> bool {
     doc.tree.get(d.0).unwrap().clips_overflow()
 }
 
+/// Whether a plain div carrying `style` creates a stacking context.
+fn sc(style: &str) -> bool {
+    let mut doc = RinchDocument::new();
+    let body = doc.body();
+    let d = doc.create_element("div");
+    doc.set_attribute(d, "style", &format!("width: 100px; height: 100px; {style}"));
+    doc.append_child(body, d);
+    doc.resolve_layout(800.0, 600.0);
+    doc.tree.get(d.0).unwrap().creates_stacking_context()
+}
+
 // ── Which spelling is reachable ─────────────────────────────────────────────
 
 /// The reason the old `overflow_y`-only spelling never actually misfired for
@@ -125,31 +136,76 @@ fn a_box_clips_when_either_axis_is_not_visible() {
     assert!(clips("overflow-y: clip"));
 }
 
-/// Clipping forms a stacking context in rinch — not CSS, but the invariant that
-/// keeps a hoisted descendant inside the bracket that is entitled to clip it
-/// (#324 stage B is what removes the deviation). It has to follow the *same*
-/// predicate: an `overflow: clip` box that clipped without forming one would
-/// let its own z-indexed children escape the clip it just gained.
+/// Clipping is **not** stacking, since #324 stage B — the whole point of the
+/// clip chain. Stage A had to make every clipping box a stacking context so the
+/// bracket it opened enclosed the boxes it was entitled to clip; stage B gives
+/// each hoisted entry the chain instead, and this is the pin that the arm is
+/// gone rather than quietly re-added the next time something escapes a clip.
+///
+/// Sampled across the whole clip predicate — `hidden`, `scroll`, `auto`, `clip`
+/// and single-axis `clip` — because a partial re-add is the plausible
+/// regression, not a wholesale one.
 #[test]
-fn a_clipping_box_forms_a_stacking_context_however_it_clips() {
-    let sc = |style: &str| {
-        let mut doc = RinchDocument::new();
-        let body = doc.body();
-        let d = doc.create_element("div");
-        doc.set_attribute(d, "style", &format!("width: 100px; height: 100px; {style}"));
-        doc.append_child(body, d);
-        doc.resolve_layout(800.0, 600.0);
-        doc.tree.get(d.0).unwrap().creates_stacking_context()
-    };
+fn a_clipping_box_is_not_a_stacking_context() {
+    assert!(!sc(""), "the initial value forms nothing either");
+    assert!(!sc("overflow: hidden"));
+    assert!(!sc("overflow: scroll"));
+    assert!(!sc("overflow: auto"));
+    assert!(!sc("overflow: clip"));
+    assert!(!sc("overflow-x: clip"));
 
-    assert!(!sc(""));
-    assert!(sc("overflow: hidden"));
+    // The clip is still there — this is a change to stacking alone.
+    assert!(clips("overflow: hidden"));
+    assert!(clips("overflow: clip"));
+}
+
+/// The CSS list, as far as `ComputedStyle` can express it: a positioned box with
+/// an explicit `z-index`, `opacity < 1`, a transform — and `position: fixed` or
+/// `sticky` whatever the `z-index`, which #324 stage B added alongside dropping
+/// the `overflow` arm because both are the same three lines.
+///
+/// `position: relative` with no `z-index` is the row that matters most: it forms
+/// no stacking context, but it *is* hoisted (`paints_at_stacking_root`), which
+/// is why dropping the `overflow` arm moved every one of them out to the body.
+#[test]
+fn the_stacking_context_creators_are_the_css_ones() {
+    assert!(!sc("position: relative"), "no z-index, no context");
+    assert!(!sc("position: absolute"));
+    assert!(!sc("z-index: 5"), "a static box ignores z-index");
+
+    assert!(sc("position: relative; z-index: 5"));
+    assert!(sc("position: absolute; z-index: 0"), "an explicit 0 counts");
+    assert!(sc("opacity: 0.5"));
+    assert!(sc("transform: translateX(10px)"));
+
     assert!(
-        sc("overflow: clip"),
-        "an `overflow: clip` box did not form one, so its clip — once it got a \
-         clip — would have been a bracket its own hoisted children skipped"
+        sc("position: fixed"),
+        "a fixed box is viewport-level content: its descendants travel with it"
     );
-    assert!(sc("overflow-x: clip"));
+    assert!(sc("position: sticky"));
+}
+
+/// The trap dropping the `overflow` arm springs, stated as a test rather than a
+/// paragraph: a `position: relative` box with no `z-index` forms no stacking
+/// context and is hoisted anyway. Every one of those in the component library —
+/// `.rinch-slider`, the ColorPicker panels, `.rinch-navlink`, any `Paper` with a
+/// badge — moved out to the body when the arm went, which is why the clip chain
+/// had to arrive in the same change.
+#[test]
+fn a_relative_box_with_no_z_index_hoists_without_forming_a_context() {
+    let mut doc = RinchDocument::new();
+    let body = doc.body();
+    let d = doc.create_element("div");
+    doc.set_attribute(d, "style", "position: relative; width: 10px; height: 10px");
+    doc.append_child(body, d);
+    doc.resolve_layout(800.0, 600.0);
+    let node = doc.tree.get(d.0).unwrap();
+
+    assert!(!node.creates_stacking_context());
+    assert!(
+        paints_at_stacking_root(node),
+        "hoisted regardless — Appendix E step 8"
+    );
 }
 
 // ── What the disagreement cost ──────────────────────────────────────────────
@@ -188,6 +244,17 @@ fn resolve(tree: &NodeTree, id: RawNodeId, ox: f32, oy: f32, x: f32, y: f32) -> 
             let order =
                 stacking_paint_order(tree, id, is_body, 1.0, (nx - sx) as f64, (ny - sy) as f64);
             for entry in order.iter().rev() {
+                // The entry's clip chain: the clipping ancestors it was hoisted
+                // past, which `check_children` above never sees because
+                // `overflow` is not a stacking context (#324 stage B). Rect-only,
+                // like that gate.
+                if !order
+                    .clips_for(entry)
+                    .iter()
+                    .all(|c| c.contains(x as f64, y as f64))
+                {
+                    continue;
+                }
                 if let Some(hit) = resolve(
                     tree,
                     entry.node_id,
@@ -449,22 +516,19 @@ mod painted {
     /// `z-index: 5` rather than `auto` on purpose — every entry at 0 is the
     /// fixed point where the sort key decides nothing.
     ///
-    /// # Read this before #324 stage B changes it
+    /// # The two halves, after stage B
     ///
-    /// The two halves of this test have **opposite** fates.
-    ///
-    /// * The **pixel** assertions are the invariant. "A z-indexed descendant of
-    ///   a clipping box is clipped by it" is true in CSS, is true now, and must
-    ///   still be true after stage B — through the hoisted entry's clip chain
-    ///   rather than through the stacking context. They are the guard that
-    ///   stops stage B from silently un-fixing stage A, and stage B must not
-    ///   weaken them.
-    /// * The **ordering** assertion is a detail of the current model and stage
-    ///   B is *expected* to invert it: once the `overflow` arm is gone the
-    ///   container is no longer a stacking context, so the panel is collected
-    ///   into the body's sequence after all — and is clipped anyway, by the
-    ///   chain. Rewrite that assertion; do not take it as licence to delete the
-    ///   test around it.
+    /// * The **pixel** assertions are the invariant, and are **unchanged** from
+    ///   stage A. "A z-indexed descendant of a clipping box is clipped by it" is
+    ///   true in CSS, was true through the stacking context, and is true now
+    ///   through the hoisted entry's clip chain. They are the guard that stage B
+    ///   did not silently un-fix stage A: drop the chain and keep the dropped
+    ///   arm and (130, 130) goes green.
+    /// * The **ordering** assertion is the one stage B inverted, exactly as
+    ///   stage A predicted it would. The container is no longer a stacking
+    ///   context, so the panel *is* collected into the body's sequence — and
+    ///   carries a one-link chain naming the container, which is what clips it
+    ///   there.
     #[test]
     fn a_z_indexed_child_of_a_clip_box_is_clipped_by_it() {
         let mut doc = RinchDocument::new();
@@ -486,12 +550,22 @@ mod painted {
         doc.append_child(container, panel);
         doc.resolve_layout(800.0, 600.0);
 
-        // ── The ordering assertion: current-model detail, stage B inverts it ──
+        // ── The ordering assertion: inverted by stage B, chain and all ──
         let body_order = stacking_paint_order(&doc.tree, doc.tree.body_id, true, 1.0, 0.0, 0.0);
-        assert!(
-            !body_order.iter().any(|e| e.node_id == raw(panel)),
-            "the panel belongs to the container's sequence, not the body's — it \
-             used to be hoisted straight past the box that clips it"
+        let entry = body_order.iter().find(|e| e.node_id == raw(panel)).expect(
+            "the panel is hoisted to the body now: an `overflow: clip` box \
+                 is not a stacking context and does not stop the walk",
+        );
+        let chain = body_order.clips_for(entry);
+        assert_eq!(
+            chain.len(),
+            1,
+            "and it carries exactly the one clipping ancestor it passed"
+        );
+        assert_eq!(
+            chain[0].rect,
+            peniko::kurbo::Rect::new(0.0, 0.0, 100.0, 100.0),
+            "which is the container's own border box"
         );
 
         // ── The pixel assertions: the invariant, which must survive stage B ──

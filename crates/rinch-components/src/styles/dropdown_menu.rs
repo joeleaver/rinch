@@ -122,25 +122,32 @@ pub fn styles() -> String {
    close_on_click_outside is true. Its z-index sits below the dropdown panel's
    (100) so that a click on an item still lands on the item.
 
-   It is `position: absolute`, and it has to be. A `position: fixed` box is
-   viewport-level content in Rinch: it is hoisted out of every ancestor clip,
-   and — because Rinch makes an overflow clip a stacking context — out of every
-   ancestor stacking context along with it. A fixed backdrop is therefore above
-   everything that is not itself fixed, whatever the z-indexes say, because the
-   99 and the 100 are then being compared across two stacking contexts, which
-   is to say not compared at all. Behind any `overflow` ancestor — every scroll
-   container, and most app roots — a fixed backdrop covered the panel and
+   It is `position: absolute`, and it used to have to be. A `position: fixed`
+   box is viewport-level content in Rinch: it is hoisted out of every ancestor
+   clip, and — because Rinch made an overflow clip a stacking context — out of
+   every ancestor stacking context along with it. A fixed backdrop was therefore
+   above everything that is not itself fixed, whatever the z-indexes said,
+   because the 99 and the 100 were being compared across two stacking contexts,
+   which is to say not compared at all. Behind any `overflow` ancestor — every
+   scroll container, and most app roots — a fixed backdrop covered the panel and
    swallowed every tap on the menu: the menu closed and the item never ran.
 
-   Absolute puts the backdrop back in the panel's own stacking context, where
-   the two z-indexes are comparable and the panel wins. The insets are what a
+   Absolute puts the backdrop in the panel's own stacking context, where the two
+   z-indexes are comparable and the panel wins. The insets are what a
    viewport-covering box costs once it can no longer be viewport-positioned:
    100vw/100vh in each direction from a root that is on screen by construction
    (the menu is open, so its target is visible) covers the viewport at any
-   scroll position. The price is that the backdrop is now clipped by whatever
-   clips the panel, so a click beyond *that* box does not dismiss — the popup
-   and its dismiss region share one clip, which is the trade a fixed backdrop
-   was never able to make in the other direction. */
+   scroll position. The price is that the backdrop is clipped by whatever clips
+   the panel, so a click beyond *that* box does not dismiss — the popup and its
+   dismiss region share one clip.
+
+   That price is now optional. #324 stage B took `overflow` out of
+   `Node::creates_stacking_context` and gave each hoisted box its own clip chain,
+   so the 99 and the 100 meet in one sequence and `fixed` orders correctly —
+   `popup_backdrop_hit_tests::a_fixed_backdrop_no_longer_swallows_the_item_it_sits_under`
+   in `rinch/src/app/mod.rs` is the pin. Going back to `fixed` (and dropping the
+   100vw/100vh insets with it) is #324's stage C, and it buys back
+   whole-viewport outside-click dismissal. */
 .rinch-dropdown-menu__backdrop {
     position: absolute;
     top: -100vh;

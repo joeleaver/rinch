@@ -212,21 +212,35 @@ fn hit_test_node(
             // read backwards — the last box painted is the first one tapped.
             // Same function, same offsets, opposite direction: the two cannot
             // drift apart the way two hand-written phase walks did.
-            for entry in stacking_paint_order(
+            let order = stacking_paint_order(
                 tree,
                 node_id,
                 is_body,
                 1.0,
                 (nx - sx) as f64,
                 (ny - sy) as f64,
-            )
-            .iter()
-            .rev()
-            {
+            );
+            for entry in order.iter().rev() {
                 let Some(child) = tree.get(entry.node_id) else {
                     continue;
                 };
                 if is_stretched_ifc_text(child) {
+                    continue;
+                }
+                // The clipping ancestors this entry was hoisted past. Since
+                // #324 an `overflow` box is not a stacking context, so the
+                // walk went straight through them and the `check_children`
+                // gate below never saw them — the chain is what keeps a
+                // hoisted box unreachable exactly where it is unpainted.
+                //
+                // The clips are in this root's own space, which is the space
+                // `x`/`y` are in here, and at scale 1.0 because that is what
+                // this walk asked `stacking_paint_order` for.
+                if !order
+                    .clips_for(entry)
+                    .iter()
+                    .all(|c| c.contains(x as f64, y as f64))
+                {
                     continue;
                 }
                 if let Some(hit) = hit_test_node(
@@ -1495,10 +1509,11 @@ mod tests {
     // taps land where those pixels are.
 
     /// The bug: a floating action button over a scrolling list was untappable.
-    /// The scroller is a stacking context (Rinch makes one for `overflow`) and
-    /// the FAB is `position: absolute` with no `z-index`, so hit testing walked
-    /// the z == 0 stacking contexts — the scroller — before the plain children,
-    /// and every tap fell through to the row underneath.
+    /// The FAB is `position: absolute` with no `z-index`, so hit testing walked
+    /// the z == 0 stacking contexts — which at the time included the scroller,
+    /// because Rinch made one for every `overflow` (#324 stage B stopped) —
+    /// before the plain children, and every tap fell through to the row
+    /// underneath.
     #[test]
     fn a_tap_on_a_positioned_z_auto_box_over_a_scroller_hits_the_box() {
         let mut doc = RinchDocument::new();
@@ -1533,6 +1548,206 @@ mod tests {
             hit_test(&doc.tree, 40.0, 40.0),
             Some(row.0),
             "and clear of the FAB the list still takes its own taps"
+        );
+    }
+
+    /// A box hoisted past a clipping ancestor is **not tappable outside it**.
+    ///
+    /// Since #324 stage B an `overflow` box is not a stacking context, so the
+    /// walk goes straight through it and `check_children` — the gate that used to
+    /// contain this — never sees it. What contains it now is the entry's clip
+    /// chain, applied here. `rinch-dom`'s `clip_chain_tests` pin the same rule in
+    /// pixels; this pins the *real* walk, which lives in this crate and which
+    /// those tests can only model.
+    ///
+    /// The container is **scrolled**, and the panel reaches well past it on both
+    /// axes: a probe inside the clip proves nothing on its own, and at scroll 0 a
+    /// clip taken at the wrong origin is the same rect.
+    #[test]
+    fn a_tap_outside_a_hoisted_boxs_clipping_ancestor_misses_it() {
+        let mut doc = RinchDocument::new();
+        let body = doc.body();
+        doc.set_attribute(body, "style", "position: relative");
+
+        // Not at the document origin: a chain rect that forgot the accumulated
+        // offset would still be right against a container at y = 0.
+        let spacer = child_of(&mut doc, body, "width: 300px; height: 60px");
+
+        let scroller = doc.create_element("div");
+        doc.set_attribute(
+            scroller,
+            "style",
+            "position: relative; overflow: hidden; width: 200px; height: 100px",
+        );
+        doc.append_child(body, scroller);
+
+        let panel = doc.create_element("div");
+        doc.set_attribute(
+            panel,
+            "style",
+            "position: absolute; left: 0; top: 0; width: 400px; height: 400px; \
+             z-index: 5",
+        );
+        doc.append_child(scroller, panel);
+
+        doc.resolve_layout(800.0, 600.0);
+        doc.tree.nodes[scroller.0].scroll_offset = (0.0, 40.0);
+
+        // The scroller's box is x in [0, 200), y in [60, 160). Scrolled 40, the
+        // panel covers y in [20, 420) — so it reaches outside on three sides.
+        assert_eq!(
+            hit_test(&doc.tree, 100.0, 100.0),
+            Some(panel.0),
+            "inside the scroller the panel takes the tap"
+        );
+        assert_eq!(
+            hit_test(&doc.tree, 100.0, 30.0),
+            Some(spacer.0),
+            "above the scroller's own top edge the tap reaches the spacer behind \
+             it — the panel paints from y = 20 unclipped and is not there to be \
+             tapped"
+        );
+        assert_eq!(
+            hit_test(&doc.tree, 100.0, 200.0),
+            Some(doc.tree.body_id),
+            "…nor below its bottom edge"
+        );
+        assert_eq!(
+            hit_test(&doc.tree, 300.0, 100.0),
+            Some(doc.tree.body_id),
+            "…nor past its right edge: the chain clips both axes"
+        );
+    }
+
+    /// …and the chain stops where CSS says it does. An absolute is not clipped by
+    /// an `overflow` ancestor below its containing block, so it stays tappable
+    /// out there.
+    ///
+    /// Three levels, because that is the shallowest arrangement in which the rule
+    /// has anything to say: `outer` clips and is above the containing block,
+    /// `mid` is the containing block, `inner` clips and is below it.
+    #[test]
+    fn a_tap_outside_a_clip_below_the_containing_block_still_hits_the_absolute() {
+        let mut doc = RinchDocument::new();
+        let body = doc.body();
+        doc.set_attribute(body, "style", "position: relative");
+
+        let outer = doc.create_element("div");
+        doc.set_attribute(
+            outer,
+            "style",
+            "position: relative; overflow: hidden; width: 200px; height: 200px",
+        );
+        doc.append_child(body, outer);
+        let mid = doc.create_element("div");
+        doc.set_attribute(
+            mid,
+            "style",
+            "position: relative; width: 100px; height: 100px",
+        );
+        doc.append_child(outer, mid);
+        let inner = doc.create_element("div");
+        doc.set_attribute(
+            inner,
+            "style",
+            "overflow: hidden; width: 50px; height: 50px",
+        );
+        doc.append_child(mid, inner);
+        let abs = doc.create_element("div");
+        doc.set_attribute(
+            abs,
+            "style",
+            "position: absolute; left: 0; top: 0; width: 300px; height: 300px; z-index: 5",
+        );
+        doc.append_child(inner, abs);
+
+        doc.resolve_layout(800.0, 600.0);
+        doc.tree.nodes[outer.0].scroll_offset = (0.0, 30.0);
+
+        assert_eq!(
+            hit_test(&doc.tree, 25.0, 25.0),
+            Some(abs.0),
+            "inside every box"
+        );
+        assert_eq!(
+            hit_test(&doc.tree, 150.0, 150.0),
+            Some(abs.0),
+            "outside `inner`'s 50x50 box: `inner` is below the containing block, \
+             so it is not in the absolute's containing-block chain"
+        );
+        assert_eq!(
+            hit_test(&doc.tree, 150.0, 180.0),
+            Some(abs.0),
+            "…and still inside `outer`, whose clip does not move with its own \
+             30px scroll offset"
+        );
+        assert_eq!(
+            hit_test(&doc.tree, 250.0, 100.0),
+            Some(doc.tree.body_id),
+            "but `outer` does clip it, so past its right edge the tap is the \
+             body's"
+        );
+    }
+
+    /// **Every** link of the chain is applied, not just the outermost.
+    ///
+    /// Two nested clipping boxes, and the probe that matters is between them:
+    /// inside the outer, outside the inner. With one clip, or with only the first
+    /// link checked, that point answers the panel; it must not. Every other chain
+    /// fixture has a single effective link, which is the fixed point this leaves.
+    #[test]
+    fn every_link_of_a_two_clip_chain_is_applied_to_a_tap() {
+        let mut doc = RinchDocument::new();
+        let body = doc.body();
+        doc.set_attribute(body, "style", "position: relative");
+
+        let outer = doc.create_element("div");
+        doc.set_attribute(
+            outer,
+            "style",
+            "overflow: hidden; width: 300px; height: 300px",
+        );
+        doc.append_child(body, outer);
+        let inner = doc.create_element("div");
+        doc.set_attribute(
+            inner,
+            "style",
+            "overflow: hidden; width: 100px; height: 100px",
+        );
+        doc.append_child(outer, inner);
+
+        let panel = doc.create_element("div");
+        doc.set_attribute(
+            panel,
+            "style",
+            "position: relative; z-index: 5; width: 400px; height: 400px",
+        );
+        doc.append_child(inner, panel);
+
+        doc.resolve_layout(800.0, 600.0);
+        doc.tree.nodes[inner.0].scroll_offset = (0.0, 20.0);
+
+        assert_eq!(
+            hit_test(&doc.tree, 50.0, 50.0),
+            Some(panel.0),
+            "inside both clips"
+        );
+        assert_eq!(
+            hit_test(&doc.tree, 50.0, 95.0),
+            Some(panel.0),
+            "right down to the inner box's own bottom edge — its 20px scroll \
+             offset does not move it"
+        );
+        assert_eq!(
+            hit_test(&doc.tree, 150.0, 150.0),
+            Some(outer.0),
+            "outside the inner clip and inside the outer one: the tap is the \
+             outer box's. Check only the first link and this answers the panel"
+        );
+        assert_eq!(
+            hit_test(&doc.tree, 350.0, 150.0),
+            Some(doc.tree.body_id),
+            "and outside both it is the body's"
         );
     }
 
@@ -1917,5 +2132,121 @@ mod tests {
         // And outside everything.
         assert_eq!(at(400.0, 300.0), None);
         assert_eq!(at(12.0, 12.0), None);
+    }
+
+    /// A chained box under a **transform** is tapped where it paints.
+    ///
+    /// The chain lives in the collecting root's own untransformed space, and so
+    /// does the `x`/`y` this walk holds — but `vx`/`vy`, the viewport point kept
+    /// beside them for `position: fixed` subtrees, does not. The two coincide
+    /// everywhere except under a transform, which is why nothing else in the
+    /// file tells them apart: swap the filter to `vx`/`vy` and every other test
+    /// still passes while a hoisted box becomes untappable *inside its own
+    /// clip*.
+    ///
+    /// The arrangement is ordinary — a transformed panel (the
+    /// `translate(-50%,-50%)` centred-modal idiom two tests up) holding a
+    /// scroller with `position: relative` rows.
+    #[test]
+    fn a_tap_on_a_chained_box_under_a_transform_lands_where_it_paints() {
+        let mut doc = RinchDocument::new();
+        let body = doc.body();
+
+        let tx = doc.create_element("div");
+        doc.set_attribute(
+            tx,
+            "style",
+            "position: relative; z-index: 1; transform: translate(100px, 100px); \
+             width: 400px; height: 400px",
+        );
+        doc.append_child(body, tx);
+
+        let clipbox = doc.create_element("div");
+        doc.set_attribute(
+            clipbox,
+            "style",
+            "overflow: hidden; width: 100px; height: 100px",
+        );
+        doc.append_child(tx, clipbox);
+
+        let panel = doc.create_element("div");
+        doc.set_attribute(
+            panel,
+            "style",
+            "position: relative; z-index: 5; width: 300px; height: 300px",
+        );
+        doc.append_child(clipbox, panel);
+
+        doc.resolve_layout(800.0, 600.0);
+        doc.tree.nodes[clipbox.0].scroll_offset = (0.0, 20.0);
+
+        assert_eq!(
+            hit_test(&doc.tree, 150.0, 150.0),
+            Some(panel.0),
+            "inside the clip at its transformed position — the chain is tested \
+             in the root's own space, so the probe point must be too"
+        );
+        assert_eq!(
+            hit_test(&doc.tree, 250.0, 250.0),
+            Some(tx.0),
+            "outside the clip and inside the transformed root: the panel reaches \
+             here unclipped and must not take the tap"
+        );
+        assert_eq!(
+            hit_test(&doc.tree, 50.0, 50.0),
+            Some(doc.tree.body_id),
+            "and above the transform entirely"
+        );
+    }
+
+    /// A chain link is inclusive on both edges, like the `check_children` gate
+    /// it stands in for — so a tap on the last pixel of a clipping ancestor
+    /// still reaches the box hoisted past it.
+    ///
+    /// `ClipRect::contains` says so in a doc comment and nothing measured it:
+    /// every other chain probe sits comfortably inside or outside, which is the
+    /// fixed point where `<` and `<=` agree.
+    #[test]
+    fn a_chain_link_is_inclusive_on_its_own_edge() {
+        let mut doc = RinchDocument::new();
+        let body = doc.body();
+        doc.set_attribute(body, "style", "position: relative");
+
+        let clipbox = doc.create_element("div");
+        doc.set_attribute(
+            clipbox,
+            "style",
+            "overflow: hidden; width: 100px; height: 100px",
+        );
+        doc.append_child(body, clipbox);
+
+        let panel = doc.create_element("div");
+        doc.set_attribute(
+            panel,
+            "style",
+            "position: relative; z-index: 5; width: 400px; height: 400px",
+        );
+        doc.append_child(clipbox, panel);
+
+        doc.resolve_layout(800.0, 600.0);
+        doc.tree.nodes[clipbox.0].scroll_offset = (0.0, 20.0);
+
+        assert_eq!(
+            hit_test(&doc.tree, 100.0, 50.0),
+            Some(panel.0),
+            "x = 100 is the clip's own right edge, and the gate this stands in \
+             for is inclusive there"
+        );
+        assert_eq!(
+            hit_test(&doc.tree, 50.0, 100.0),
+            Some(panel.0),
+            "…and so is its bottom edge, which its scroll offset does not move"
+        );
+        assert_eq!(
+            hit_test(&doc.tree, 101.0, 50.0),
+            Some(doc.tree.body_id),
+            "one pixel past it is out, so the pair above is an edge and not just \
+             a generous rect"
+        );
     }
 }

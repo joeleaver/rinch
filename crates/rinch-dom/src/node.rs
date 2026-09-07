@@ -631,48 +631,76 @@ impl Node {
     ///
     /// A stacking context is formed when any of:
     /// - `position` is not `static` AND `z-index` is explicitly set (not `auto`)
+    /// - `position` is `fixed` or `sticky`, whatever the `z-index`
     /// - `opacity < 1.0`
     /// - `transform` is non-identity
-    /// - the box clips its overflow ([`Node::clips_overflow`]) — a deviation
-    ///   from CSS that the arm below explains, tracked as #324
+    ///
+    /// **Not the whole CSS list, and the shortfall is not only an
+    /// expressibility one.** `clip-path`, `mask`, `isolation`,
+    /// `mix-blend-mode`, `contain: paint` and `will-change` are absent from
+    /// `ComputedStyle` altogether, so those need new style plumbing per
+    /// property. But two creators are representable **today** and still
+    /// missing, measured rather than assumed:
+    ///
+    /// - **a non-`none` `filter`** (CSS Filter Effects §2.1). `filter:
+    ///   brightness(0.5)` reaches `ComputedStyle::filter_brightness` and paint
+    ///   consumes it, and this function still answers `false`. (`blur()` is the
+    ///   genuinely unexpressed part — only the four scalars survive
+    ///   `from_stylo`.)
+    /// - **a flex or grid item with a `z-index` other than `auto`**, even at
+    ///   `position: static` (css-flexbox-1 §5.4, css-grid-1 §6). Both the
+    ///   `z_index` and the parent's `display` are already here.
+    ///
+    /// Neither is folded in here, because adding a creator changes which boxes
+    /// hoist — the very axis stage B is re-founding — and landing both at once
+    /// would make a regression impossible to attribute. **Tracked as #542.**
+    /// The six properties `ComputedStyle` does not carry at all (and `blur()`,
+    /// which really is unexpressed) need per-property style plumbing and are a
+    /// separate piece of work again.
+    ///
+    /// Related, and probably to be fixed together: **#415**, this same function
+    /// answering `false` for a `transform` that composes to the identity, where
+    /// CSS keys on `not none`. Same class of gap — a creator this predicate can
+    /// see and does not count.
+    ///
+    /// One honest consequence of stage B: a box declaring **both** a filter and
+    /// a clipping `overflow` used to get a stacking context by accident, via
+    /// the `overflow` arm this function no longer has. Its clipping survives —
+    /// the chain carries that — but its ordering does not, so stage B slightly
+    /// widens #542's exposure rather than leaving it untouched. A filter box
+    /// without an `overflow` was already wrong before.
+    ///
+    /// **`overflow` is not on the list.** It used to be, so that a hoisted
+    /// descendant stayed inside the clip bracket paint opened around one
+    /// stacking context's sequence; that cost the same user-visible bug twice
+    /// (#317's dropdown backdrops, #534's menu-bar overlay), because two
+    /// `z-index` values in different contexts were compared when CSS says they
+    /// never are. #324 stage B decoupled the two: a hoisted
+    /// [`crate::stacking::PaintEntry`] now carries the chain of clipping
+    /// ancestors it was lifted past, and its consumer re-applies them. Clipping
+    /// is [`Node::clips_overflow`] and stacking is this, and nothing needs them
+    /// to be the same question.
     pub fn creates_stacking_context(&self) -> bool {
         use crate::computed_style::PositionValue;
 
-        if !matches!(self.computed_style.position, PositionValue::Static)
-            && self.computed_style.z_index.is_some()
-        {
-            return true;
+        match self.computed_style.position {
+            // A fixed box is viewport-level content and a sticky box is
+            // repositioned during scroll; both create a stacking context
+            // unconditionally, so their descendants travel with them rather
+            // than being hoisted out into a sequence they no longer share a
+            // coordinate space with.
+            PositionValue::Fixed | PositionValue::Sticky => return true,
+            PositionValue::Static => {}
+            _ => {
+                if self.computed_style.z_index.is_some() {
+                    return true;
+                }
+            }
         }
         if self.computed_style.opacity < 1.0 {
             return true;
         }
         if !self.computed_style.transform.is_identity {
-            return true;
-        }
-        // Overflow clipping must create a stacking context so that descendant
-        // SCs (e.g. z-indexed children) are collected and painted within the
-        // clip layer rather than escaping to an ancestor SC.
-        //
-        // Not CSS — `overflow` establishes a clipping boundary and nothing
-        // about paint order — but a consequence of rinch applying the clip as a
-        // paint-time bracket around one stacking context's sequence. It is the
-        // same predicate paint opens the bracket with, so that the set of boxes
-        // painted inside it is exactly the set the bracket is entitled to clip;
-        // any daylight between the two is a box that escapes its own clip.
-        //
-        // **This arm is temporary, and `overflow: clip` reaches it only since
-        // #324 stage A.** Stage A widened the predicate to fix a box that
-        // clipped clicks and painted unclipped; a `clip` box therefore had to
-        // start forming a stacking context too, or the clip it had just gained
-        // would be a bracket its own hoisted descendants skipped. Stage B
-        // deletes this arm and gives each hoisted entry its own clip chain
-        // instead — and when it does, **`overflow: clip` must go on clipping,
-        // through the chain.** Dropping the arm without that silently un-fixes
-        // stage A. The pixel assertions in
-        // `clip_predicate_tests::a_z_indexed_child_of_a_clip_box_is_clipped_by_it`
-        // are the guard; the ordering assertion beside them is the one stage B
-        // is expected to invert.
-        if self.clips_overflow() {
             return true;
         }
         false
@@ -702,8 +730,11 @@ impl Node {
     /// Per CSS that is any *positioned* element — `position` other than
     /// `static` — plus, since a transform makes an element the containing block
     /// for all its descendants, any element with a non-identity `transform`.
-    /// Overflow deliberately does not count: it forms a stacking context (see
-    /// [`Node::creates_stacking_context`]) but not a containing block.
+    /// Overflow deliberately does not count. It never established a containing
+    /// block; it used to form a *stacking context*, and this line used to cite
+    /// that as the reason the two questions are separate. Since #324 stage B it
+    /// forms neither — see [`Node::creates_stacking_context`] — so `overflow` is
+    /// simply absent from both lists, and the answer here is unchanged.
     ///
     /// This is what stops the walk in `out_of_flow::out_of_flow_kind`, which is
     /// how issue #204's ICB case is told apart from a layout Taffy already gets

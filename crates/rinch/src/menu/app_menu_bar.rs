@@ -230,25 +230,28 @@ pub(crate) fn render_inline_overlay(
 ///
 /// Fixed used to be close enough, because the window container was not a
 /// stacking context and both boxes surfaced at the viewport. `BorderlessWindow`
-/// gives that container `overflow: hidden`, which in Rinch *does* form a
-/// stacking context ([`rinch_dom::node::Node::creates_stacking_context`]) — so
-/// the menus stayed trapped inside it at the container's own `z == 0` while the
-/// overlay escaped to the viewport at `199` and covered them. Every entry click
-/// hit the overlay and merely dismissed the menu (#527).
+/// gives that container `overflow: hidden`, and rinch used to make a stacking
+/// context of every clipping box — so the menus stayed trapped inside it at the
+/// container's own `z == 0` while the overlay escaped to the viewport at `199`
+/// and covered them. Every entry click hit the overlay and merely dismissed the
+/// menu (#527).
 ///
-/// Keeping the overlay in the menus' own stacking context makes the ordering
-/// hold under either rule.
+/// **The deviation that caused it is gone.** #324 stage B took `overflow` out
+/// of [`rinch_dom::node::Node::creates_stacking_context`] and gave each hoisted
+/// box its own clip chain instead, so the `199` and the `201` now meet in one
+/// sequence and `fixed` would order correctly. `absolute` is kept for the
+/// moment because it also works and the revert is #324's stage C, along with
+/// `DropdownMenu`/`Select`'s backdrops (PR #317, the same workaround at the
+/// first site).
 ///
-/// **This is a workaround, not the fix.** That `overflow` forms a stacking
-/// context at all is issue #324 — CSS says it does not, and rinch does it only
-/// because its overflow clip is applied per stacking context. `DropdownMenu`
-/// and `Select` had the identical bug and took the identical `absolute`
-/// workaround (PR #317); this is the second site. The cost here is
+/// **The revert is two edits, and they must land together.** The overlay's
+/// `position` in `rinch-components`' `app_menu_bar` stylesheet, *and*
 /// `render_menu_bar_standalone`'s `top: -top_offset`, which exists purely to
-/// undo the containing-block change this workaround forces. When #324 lands,
-/// all three overlays should go back to `position: fixed` and that
-/// compensation should be deleted — the tests below cover all three layouts
-/// and should stay green across that revert.
+/// undo the containing-block change `absolute` forces. Measured while landing
+/// stage B: changing only the `position` leaves the compensation shifting a
+/// now-viewport-anchored overlay 36px off the top of the window and
+/// `the_below_titlebar_overlay_covers_the_whole_window` fails; changing both
+/// leaves all seven tests below green.
 fn build_overlay(
     scope: &mut RenderScope,
     active_menu: Signal<i32>,
@@ -775,12 +778,12 @@ mod tests {
     }
 
     /// The open dropdown sits *inside* the window container, whose
-    /// `overflow: hidden` makes it a stacking context; the dismiss overlay used
-    /// to be `position: fixed`, which hoists it out to the viewport's stacking
-    /// context instead. Its `z-index: 199` and the menu row's `201` were then
-    /// being compared across two different stacking contexts — which `z-index`
-    /// does not do — so the overlay covered the menu and every entry click
-    /// merely dismissed it (#527).
+    /// `overflow: hidden` used to make it a stacking context (#324 stage B
+    /// stopped); the dismiss overlay used to be `position: fixed`, which hoists
+    /// it out to the viewport's stacking context instead. Its `z-index: 199`
+    /// and the menu row's `201` were then being compared across two different
+    /// stacking contexts — which `z-index` does not do — so the overlay covered
+    /// the menu and every entry click merely dismissed it (#527).
     #[test]
     fn a_click_inside_an_open_dropdown_runs_the_entry_not_the_dismiss_overlay() {
         let (doc, overlay_id, entry_id, _) = open_inline_menu();

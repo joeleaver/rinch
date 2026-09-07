@@ -3,8 +3,14 @@
 //! [`Node::clips_overflow`](crate::node::Node::clips_overflow) is the predicate
 //! and [`clip_shape`] is the geometry, and everything that needs either asks
 //! here: paint's clip bracket, its dirty-region subtree prune, the layer-bounds
-//! walk, `creates_stacking_context`, and — across the crate boundary — hit
-//! testing's `check_children` gate and `RinchApp`'s viewport clip walks.
+//! walk, the hoisted entry's clip chain in [`crate::stacking`], and — across
+//! the crate boundary — hit testing's `check_children` gate and `RinchApp`'s
+//! two viewport clip walks.
+//!
+//! `creates_stacking_context` was on that list until #324 **stage B**, and is
+//! deliberately not any more: clipping and stacking are separate questions now,
+//! and the chain is what replaced the coupling. See
+//! [`Node::creates_stacking_context`](crate::node::Node::creates_stacking_context).
 //!
 //! Those seven sites used to hold **four** different predicates (#324), which
 //! was more than a tidiness complaint. Paint, `layer_bounds` and

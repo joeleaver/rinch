@@ -13,7 +13,7 @@ use rinch_dom::{RinchDocument, node::LayoutResult};
 
 /// The body's paint sequence: what `paint_children_with_stacking` walks for the
 /// root, and what hit testing walks in reverse.
-fn body_order(doc: &RinchDocument) -> Vec<PaintEntry> {
+fn body_order(doc: &RinchDocument) -> rinch_dom::stacking::PaintOrder {
     stacking_paint_order(&doc.tree, doc.tree.body_id, true, 1.0, 0.0, 0.0)
 }
 
@@ -48,6 +48,17 @@ fn resolve(tree: &NodeTree, id: RawNodeId, ox: f32, oy: f32, x: f32, y: f32) -> 
             let order =
                 stacking_paint_order(tree, id, is_body, 1.0, (nx - sx) as f64, (ny - sy) as f64);
             for entry in order.iter().rev() {
+                // The entry's clip chain: the clipping ancestors it was hoisted
+                // past, which `check_children` above never sees because
+                // `overflow` is not a stacking context (#324 stage B). Rect-only,
+                // like that gate.
+                if !order
+                    .clips_for(entry)
+                    .iter()
+                    .all(|c| c.contains(x as f64, y as f64))
+                {
+                    continue;
+                }
                 if let Some(hit) = resolve(
                     tree,
                     entry.node_id,
@@ -78,9 +89,11 @@ fn resolve(tree: &NodeTree, id: RawNodeId, ox: f32, oy: f32, x: f32, y: f32) -> 
 }
 
 /// A scrolling list with a floating action button over it — the arrangement the
-/// bug was found in. The scroller is a stacking context (Rinch makes one for
-/// `overflow`), the FAB is `position: absolute` with no `z-index`, and the FAB
-/// comes second in the markup.
+/// bug was found in. The FAB is `position: absolute` with no `z-index`, so it is
+/// an Appendix E step-8 entry; the scroller is a plain in-flow box, which is a
+/// step-4 one. It used to be a stacking context, because Rinch made one for
+/// every `overflow` — #324 stage B stopped, so the two now sit in the CSS phases
+/// they belong to rather than both landing at `z == 0`.
 struct ScrollerAndFab {
     doc: RinchDocument,
     scroller: RawNodeId,
@@ -140,11 +153,15 @@ fn a_positioned_z_auto_box_is_ordered_above_an_earlier_scroller() {
     assert_eq!(
         ids(&order),
         vec![f.scroller, f.fab],
-        "the FAB is a step-8 entry at z == 0 and comes later in the markup, so it \
-         paints after the scroller — not before it, and not in a phase the \
-         scroller's z == 0 stacking context is allowed to paint over"
+        "the FAB is a step-8 entry and the scroller a step-4 one, so the FAB \
+         paints after it — this is the tap that used to fall through to the row"
     );
-    assert_eq!(order[0].kind, PaintKind::StackingContext);
+    assert_eq!(
+        order[0].kind,
+        PaintKind::InFlow,
+        "the scroller is an ordinary in-flow child since #324 stage B: `overflow` \
+         is a clip, not a stacking context"
+    );
     assert_eq!(order[1].kind, PaintKind::PositionedAuto);
     assert_eq!(order[1].z_index, 0, "`z-index: auto` enters at z == 0");
 }
@@ -168,19 +185,29 @@ fn a_tap_over_the_positioned_box_resolves_to_it_and_not_the_scroller() {
     );
 }
 
+/// A positioned box beats an in-flow scroller **whatever the tree order** —
+/// Appendix E puts in-flow non-positioned content (step 4) below positioned
+/// `z-index: auto` content (step 8), and tree order only breaks ties *within* a
+/// step.
+///
+/// This assertion is the inverse of the one #324 stage B replaced. It used to
+/// read `[fab, scroller]` with "both enter at z == 0, so the one written later
+/// wins", which was true only because `overflow` made the scroller a stacking
+/// context and dragged it up into step 8 beside the FAB. A browser has always
+/// painted the FAB on top here; rinch does now too.
 #[test]
-fn tree_order_decides_between_a_positioned_box_and_a_scroller_at_the_same_level() {
+fn a_positioned_box_beats_an_in_flow_scroller_written_after_it() {
     let f = scroller_and_fab(true);
     let order = body_order(&f.doc);
 
     assert_eq!(
         ids(&order),
-        vec![f.fab, f.scroller],
-        "both enter at z == 0, so the one written later wins"
+        vec![f.scroller, f.fab],
+        "in-flow content paints below positioned content, markup order or not"
     );
     assert_eq!(
         resolve(&f.doc.tree, f.doc.tree.body_id, 0.0, 0.0, 170.0, 170.0),
-        Some(f.row),
+        Some(f.fab),
         "and the reverse read agrees with the forward one"
     );
 }
