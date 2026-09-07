@@ -60,6 +60,9 @@ pub mod embed;
 /// Gated with [`app`], whose focus arbiter it serves.
 #[cfg(any(feature = "desktop", feature = "android", feature = "embed"))]
 pub mod focus_registry;
+/// App-bundled fonts: the bytes a build carries and the CSS names they answer to.
+#[cfg(any(feature = "desktop", feature = "android", feature = "embed"))]
+pub mod font;
 #[cfg(feature = "desktop")]
 pub mod menu;
 pub mod render_surface;
@@ -125,6 +128,8 @@ pub mod prelude {
     // The one entry point that composes every startup option (issue #493).
     #[cfg(any(feature = "desktop", all(feature = "android", target_os = "android")))]
     pub use crate::app_builder::App;
+    #[cfg(any(feature = "desktop", feature = "android", feature = "embed"))]
+    pub use crate::font::{AppFont, GenericFamily};
     #[cfg(all(feature = "android", target_os = "android"))]
     #[allow(deprecated)]
     pub use crate::shell::android_runtime::{

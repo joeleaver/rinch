@@ -245,9 +245,16 @@ impl RinchRuntime {
         width: u32,
         height: u32,
         component: impl FnOnce(&mut RenderScope) -> NodeHandle + 'static,
+        fonts: &[crate::font::AppFont],
     ) -> Self {
+        // Before the window, before the component, and therefore before the
+        // first layout pass: an app-bundled face has to be in the font context
+        // that measures the first frame, or that frame is measured against a
+        // fallback and reflows once the real face arrives.
+        let mut app = RinchApp::new(component);
+        app.register_app_fonts(fonts);
         Self {
-            app: RinchApp::new(component),
+            app,
             window: None,
             #[cfg(feature = "gpu")]
             renderer: None,
@@ -2648,7 +2655,7 @@ where
         send_native_event(RinchNativeEvent::ReRender);
     });
 
-    let mut runtime = RinchRuntime::new(title, width, height, component);
+    let mut runtime = RinchRuntime::new(title, width, height, component, &[]);
     runtime.proxy = Some(proxy.clone());
 
     // Install push-based menu event handler (covers native + tray menus)
@@ -2707,14 +2714,49 @@ pub fn run_rinch_with_window_props<F>(component: F, props: rinch_core::element::
 where
     F: FnOnce(&mut RenderScope) -> NodeHandle + 'static,
 {
-    run_rinch_with_window_props_and_menu(component, props, None);
+    run_rinch_with_window_props_and_menu(component, props, None, &[]);
 }
 
-/// Run a rinch-dom application with full window configuration and optional native menu.
+/// Assemble the runtime from everything that is **not** the event loop.
+///
+/// Extracted so this assembly can be unit-tested: [`RinchRuntime::new`] opens
+/// no window, so window props, the native menu and the bundled faces can all be
+/// pinned without a display. Its caller cannot be tested at all — it creates the
+/// winit event loop and then never returns — which is exactly why as little as
+/// possible happens there.
+///
+/// What that leaves untested is the caller forwarding its own four arguments
+/// into this call. That residue is structural and shared with every other
+/// terminal path in the crate (issue #493): a *new* call site cannot silently
+/// drop the fonts, because the parameter is required and has no default.
+fn build_runtime<F>(
+    component: F,
+    props: &rinch_core::element::WindowProps,
+    native_menu: Option<muda::Menu>,
+    fonts: &[crate::font::AppFont],
+) -> RinchRuntime
+where
+    F: FnOnce(&mut RenderScope) -> NodeHandle + 'static,
+{
+    let mut runtime = RinchRuntime::new(&props.title, props.width, props.height, component, fonts);
+    runtime.app.set_window_props(props.clone());
+    runtime.native_menu = native_menu;
+    runtime
+}
+
+/// Run a rinch-dom application with full window configuration, an optional
+/// native menu, and the app's own bundled typefaces.
+///
+/// The single desktop dispatch target: [`App::run`](crate::App::run) resolves
+/// every builder option and lands here. `fonts` is a parameter rather than
+/// something registered beforehand because the faces have to reach the
+/// `RinchApp` at construction — ahead of the window, and therefore ahead of
+/// the first layout pass. Pass `&[]` for a build that carries none.
 pub fn run_rinch_with_window_props_and_menu<F>(
     component: F,
     props: rinch_core::element::WindowProps,
     native_menu: Option<muda::Menu>,
+    fonts: &[crate::font::AppFont],
 ) where
     F: FnOnce(&mut RenderScope) -> NodeHandle + 'static,
 {
@@ -2740,10 +2782,8 @@ pub fn run_rinch_with_window_props_and_menu<F>(
         send_native_event(RinchNativeEvent::ReRender);
     });
 
-    let mut runtime = RinchRuntime::new(&props.title, props.width, props.height, component);
+    let mut runtime = build_runtime(component, &props, native_menu, fonts);
     runtime.proxy = Some(proxy.clone());
-    runtime.app.set_window_props(props.clone());
-    runtime.native_menu = native_menu;
 
     // Install push-based menu event handler (covers native + tray menus)
     crate::menu::install_menu_event_handler();
@@ -3411,5 +3451,100 @@ mod logical_key_spelling {
             spell(Key::Unidentified(winit::keyboard::NativeKey::Unidentified)),
             None
         );
+    }
+}
+
+#[cfg(test)]
+mod bundled_font_tests {
+    use super::*;
+    use crate::font::AppFont;
+
+    const FACE: &[u8] = include_bytes!("../../assets/fonts/Inter-Regular.ttf");
+
+    fn component(scope: &mut RenderScope) -> NodeHandle {
+        scope.create_element("div")
+    }
+
+    /// The runtime registers a build's bundled faces **at construction** — the
+    /// only moment early enough, since `RinchRuntime::new` runs before the
+    /// window and therefore before the first layout pass. A face that arrived
+    /// later would leave the first frame measured against a fallback, then
+    /// reflow.
+    ///
+    /// This is testable only because `new` is a pure struct build: it opens no
+    /// window and touches no event loop. [`App::run`](crate::App::run) around
+    /// it is not, which is exactly why the registration lives here rather than
+    /// further in.
+    #[test]
+    fn the_runtime_registers_bundled_fonts_at_construction() {
+        let runtime = RinchRuntime::new(
+            "t",
+            800,
+            600,
+            component,
+            &[AppFont::monospace(FACE), AppFont::serif(FACE)],
+        );
+        let generics: Vec<_> = runtime
+            .app
+            .pending_fonts
+            .iter()
+            .map(|f| f.generics[0])
+            .collect();
+        assert_eq!(
+            generics,
+            vec![
+                parley::fontique::GenericFamily::Monospace,
+                parley::fontique::GenericFamily::Serif
+            ],
+            "both faces must reach the app, in the order they were declared"
+        );
+    }
+
+    /// And a build that bundles none is not handed a phantom face.
+    #[test]
+    fn no_bundled_fonts_registers_nothing() {
+        let runtime = RinchRuntime::new("t", 800, 600, component, &[]);
+        assert!(runtime.app.pending_fonts.is_empty());
+    }
+
+    /// The assembly the real desktop path actually uses. `App::run` resolves
+    /// the builder and lands in `run_rinch_with_window_props_and_menu`, which
+    /// creates the event loop and can never be tested — so everything it does
+    /// *before* that lives in `build_runtime`, and this is what pins it.
+    ///
+    /// Both halves matter and neither was covered before: the faces must
+    /// survive the trip (a `&[]` here and `App::fonts` would be a builder
+    /// method with no effect on any real window), and so must the window props
+    /// that carry the title, size and `app_id`.
+    #[test]
+    fn build_runtime_carries_both_the_window_props_and_the_bundled_fonts() {
+        let props = rinch_core::element::WindowProps {
+            title: "Carried".into(),
+            width: 1024,
+            height: 768,
+            app_id: Some("com.example.carried".into()),
+            ..Default::default()
+        };
+
+        let runtime = build_runtime(component, &props, None, &[AppFont::monospace(FACE)]);
+
+        assert_eq!(
+            runtime.app.pending_fonts.len(),
+            1,
+            "the bundled face must reach the app the window will mount"
+        );
+        assert_eq!(
+            runtime.app.pending_fonts[0].generics[0],
+            parley::fontique::GenericFamily::Monospace,
+            "and reach it with the generic it declared"
+        );
+        assert_eq!((runtime.width, runtime.height), (1024, 768));
+        assert_eq!(runtime.title, "Carried");
+        let carried = runtime
+            .app
+            .window_props
+            .as_ref()
+            .expect("window props must reach the app");
+        assert_eq!(carried.app_id.as_deref(), Some("com.example.carried"));
     }
 }

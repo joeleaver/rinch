@@ -52,6 +52,31 @@ pub fn repair_generic_families(collection: &mut Collection) {
     }
 }
 
+/// Put families an app *declared* for a generic at the head of that slot.
+///
+/// The claim goes to the front, not the tail, because of who else writes the
+/// slot. fontique resolves a generic from the collection's own list first and
+/// the platform backend's map second, so `append_generic_families` — which
+/// extends the tail of the collection's own list — is already ahead of
+/// fontconfig. But [`repair_generic_families`] fills an empty slot by
+/// appending into that same list, at context construction, before any app
+/// font has a chance to register: an appended claim would sit *behind* the
+/// repair's platform face and silently lose, on Android only. A face the app
+/// explicitly declared for a slot outranks any platform fallback, so a claim
+/// is a prepend.
+///
+/// What was in the slot stays behind the claim rather than being replaced, so
+/// a character the claimed face lacks can still fall through to the platform's
+/// entry. When several claims name the same slot, the most recent goes first.
+pub fn claim_generic_families(
+    collection: &mut Collection,
+    generic: GenericFamily,
+    families: impl Iterator<Item = FamilyId>,
+) {
+    let incumbents: Vec<FamilyId> = collection.generic_families(generic).collect();
+    collection.set_generic_families(generic, families.chain(incumbents));
+}
+
 /// Monospace candidates, in preference order.
 ///
 /// `Roboto Mono` first because it is the face that matches the Roboto UI font
@@ -425,5 +450,99 @@ mod tests {
                 "{generic:?} has no AOSP face worth naming — see the module docs"
             );
         }
+    }
+    /// The `claim_generic_families` tests register a real font file — family
+    /// ids only exist for registered fonts — under override names, so the
+    /// families are distinct whatever the file's own `name` table says and
+    /// nothing depends on the host having fonts installed.
+    const CLAIM_FIXTURE: &[u8] = include_bytes!("../assets/fonts/Inter-Regular.ttf");
+
+    /// A no-system-fonts collection with one family per name in `names`, all
+    /// from [`CLAIM_FIXTURE`], plus the families' ids in the same order.
+    fn collection_with(names: &[&str]) -> (Collection, Vec<FamilyId>) {
+        use parley::fontique::{Blob, CollectionOptions, FontInfoOverride};
+        let mut collection = Collection::new(CollectionOptions {
+            system_fonts: false,
+            shared: false,
+        });
+        let ids = names
+            .iter()
+            .map(|name| {
+                let registered = collection.register_fonts(
+                    Blob::new(std::sync::Arc::new(CLAIM_FIXTURE)),
+                    Some(FontInfoOverride {
+                        family_name: Some(name),
+                        ..Default::default()
+                    }),
+                );
+                assert_eq!(registered.len(), 1, "one file, one family");
+                registered[0].0
+            })
+            .collect();
+        (collection, ids)
+    }
+
+    /// The order `font-family: monospace` would try families in.
+    fn slot(collection: &mut Collection) -> Vec<FamilyId> {
+        collection
+            .generic_families(GenericFamily::Monospace)
+            .collect()
+    }
+
+    /// A claim on a slot nobody filled is simply that face.
+    #[test]
+    fn a_claim_on_an_empty_generic_is_its_only_entry() {
+        let (mut collection, ids) = collection_with(&["App Mono"]);
+        claim_generic_families(
+            &mut collection,
+            GenericFamily::Monospace,
+            ids.iter().copied(),
+        );
+        assert_eq!(slot(&mut collection), ids);
+    }
+
+    /// The reason this helper exists instead of `append_generic_families`:
+    /// the #322 repair has already **appended** a platform family into the
+    /// slot by the time an app font registers (it runs at context
+    /// construction), so an appended claim would resolve second. A claim goes
+    /// ahead of the incumbent — and keeps it, so a character the claimed face
+    /// lacks can still fall through to the platform's.
+    #[test]
+    fn a_claim_goes_ahead_of_a_repair_filled_slot_and_keeps_it() {
+        let (mut collection, ids) = collection_with(&["Platform Mono", "App Mono"]);
+        let (platform, app) = (ids[0], ids[1]);
+        // What `repair_generic_families` does to an empty slot.
+        collection.append_generic_families(GenericFamily::Monospace, core::iter::once(platform));
+
+        claim_generic_families(
+            &mut collection,
+            GenericFamily::Monospace,
+            core::iter::once(app),
+        );
+        assert_eq!(
+            slot(&mut collection),
+            vec![app, platform],
+            "the declared face resolves first; the repaired one stays as the fallthrough"
+        );
+    }
+
+    /// Two claims on one slot: the most recent goes first. The case is
+    /// degenerate — a real app declares one face per generic — but the order
+    /// is documented, so it is pinned.
+    #[test]
+    fn the_most_recent_claim_on_a_slot_goes_first() {
+        let (mut collection, ids) = collection_with(&["First Mono", "Second Mono"]);
+        let (first, second) = (ids[0], ids[1]);
+        claim_generic_families(
+            &mut collection,
+            GenericFamily::Monospace,
+            core::iter::once(first),
+        );
+        claim_generic_families(
+            &mut collection,
+            GenericFamily::Monospace,
+            core::iter::once(second),
+        );
+        assert_eq!(slot(&mut collection), vec![second, first]);
     }
 }
