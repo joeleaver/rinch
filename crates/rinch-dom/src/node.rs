@@ -658,6 +658,11 @@ impl Node {
     /// which really is unexpressed) need per-property style plumbing and are a
     /// separate piece of work again.
     ///
+    /// Related, and probably to be fixed together: **#415**, this same function
+    /// answering `false` for a `transform` that composes to the identity, where
+    /// CSS keys on `not none`. Same class of gap — a creator this predicate can
+    /// see and does not count.
+    ///
     /// One honest consequence of stage B: a box declaring **both** a filter and
     /// a clipping `overflow` used to get a stacking context by accident, via
     /// the `overflow` arm this function no longer has. Its clipping survives —

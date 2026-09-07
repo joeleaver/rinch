@@ -1380,7 +1380,10 @@ Neither was folded into stage B, because adding a creator changes which boxes
 hoist — the axis stage B is re-founding — and landing both at once would make a
 regression impossible to attribute. **Tracked as #542**; the six properties
 `ComputedStyle` does not carry at all (plus `blur()`, which really is
-unexpressed) need per-property plumbing and are separate work again.
+unexpressed) need per-property plumbing and are separate work again. **#415** is
+the related one, in this same function and the same class: a `transform` that
+composes to the identity creates no stacking context here, where CSS keys on
+`not none`.
 
 Stage B slightly **widens** that exposure rather than leaving it untouched: a box
 declaring **both** a filter and a clipping `overflow` used to get a stacking
