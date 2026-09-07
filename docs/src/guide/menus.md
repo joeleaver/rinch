@@ -229,9 +229,19 @@ That last one is a full-window overlay rinch renders under the open menu, at
 `fixed` — a fixed box is hoisted to the viewport's stacking context, and two
 `z-index`es in different stacking contexts are never compared, so a fixed
 overlay would cover the very menu it sits beneath (issue #527, a consequence of
-issue #324). An overlay of your own that must sit *above* the menu bar
-therefore needs a `z-index` above `201` **and** to be in the same stacking
-context as the bar, which for anything rendered at the document root it is.
+issue #324).
+
+**To put an overlay of your own above the menu bar, render it at the document
+root with a `z-index` above `201`.** That works in either window type, which is
+the only reason to state it as one rule: the two do not get there the same way.
+In a plain window the bar and your overlay are boxes of the same stacking
+context, so the `z-index`es are compared directly and `> 201` is what wins. In a
+borderless one the bar is *inside* `BorderlessWindow`'s container — a stacking
+context, because of its `overflow: hidden` — while a root-level sibling is not,
+so the two numbers are never compared at all and a root overlay sits above the
+bar at **any** `z-index`. Don't rely on that second case: it is the #324
+asymmetry, and it goes away when #324 is fixed. `> 201` at the root survives
+either way.
 
 ## Context Menus
 

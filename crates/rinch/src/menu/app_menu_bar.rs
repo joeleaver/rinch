@@ -522,10 +522,23 @@ fn build_menu_entries_with_flyouts(
                 });
                 trigger.set_attribute("data-onenter", &enter_id.0.to_string());
 
-                // …and so does a click. Hover normally gets there first, but a
-                // trigger with no `data-rid` lets the click walk past it to
-                // whatever handler is above — which is how clicking `Go To`
-                // came to close the whole menu (#527).
+                // …and so does a click. Hover normally gets there first, so
+                // this is a backstop — but without it a click on the trigger
+                // finds no `data-rid` on the trigger or on any ancestor of it,
+                // and so runs nothing at all. (Before #527 was fixed it was
+                // worse than nothing: the dismiss overlay won the hit test
+                // outright and closed the whole menu. That was the overlay
+                // being above the trigger in paint order, not the click
+                // "falling through" to it — the dispatcher's walk is up the
+                // ancestor chain, and it never leaves the menu.)
+                //
+                // Carrying a `data-rid` also makes the trigger match every
+                // other element in the bar for focus: the walk in
+                // `click_handling.rs` that chooses `ClickFocus::PreserveEditor`
+                // over `Blur` stops at any `data-rid`, so clicking a submenu
+                // trigger no longer blurs a focused rich-text editor the way it
+                // used to, while labels, entries and the overlay always
+                // preserved it.
                 let click_id = scope.register_handler(move || {
                     active_flyout.set(flyout_idx);
                 });
@@ -676,6 +689,19 @@ mod tests {
         rinch_core::events::dispatch_event(rinch_core::events::EventHandlerId(rid));
     }
 
+    /// Run a node's `data-onenter` handler, as the hover dispatcher would.
+    fn run_onenter_handler(doc: &Rc<RefCell<RinchDocument>>, node_id: usize) {
+        let id: usize = doc
+            .borrow()
+            .tree
+            .get(node_id)
+            .and_then(|n| n.attributes.get("data-onenter"))
+            .unwrap_or_else(|| panic!("node {node_id} carries no data-onenter"))
+            .parse()
+            .unwrap();
+        rinch_core::events::dispatch_event(rinch_core::events::EventHandlerId(id));
+    }
+
     fn center(doc: &RinchDocument, id: usize) -> (f32, f32) {
         let r = rinch_dom::paint::painted_border_box(&doc.tree, id, 1.0);
         (r.center().x as f32, r.center().y as f32)
@@ -789,12 +815,38 @@ mod tests {
     fn a_click_outside_an_open_menu_still_reaches_the_dismiss_overlay() {
         let (doc, overlay_id, _, _) = open_inline_menu();
         let d = doc.borrow();
+        let overlay_rid = rid_of(&d, overlay_id);
 
-        assert_eq!(
-            rid_under(&d, VIEWPORT_W / 2.0, VIEWPORT_H / 2.0).as_deref(),
-            Some(rid_of(&d, overlay_id).as_str()),
-            "a click in the middle of the window must still dismiss the menu"
+        // The window's edges, not just its middle. The middle is covered by
+        // every candidate offset and every candidate size, so it pins nothing
+        // about the overlay's geometry — an overlay shifted or shrunk by any
+        // amount short of half the window still answers there. This is the
+        // layout `BorderlessWindow` apps actually use and the one #527 broke,
+        // so it gets the strictest coverage of the three.
+        let row = nodes_with_class(&d, "rinch-app-menu-bar__inline-row")[0];
+        let row_box = rinch_dom::paint::painted_border_box(&d.tree, row, 1.0);
+        let below_row = row_box.y1 as f32 + 2.0;
+        assert!(
+            row_box.x1 < (VIEWPORT_W - 2.0) as f64,
+            "the sample at the top-right corner assumes the menu row does not \
+             reach it; row = {row_box:?}"
         );
+
+        for (x, y) in [
+            (2.0, below_row),
+            (VIEWPORT_W - 2.0, below_row),
+            (2.0, VIEWPORT_H - 2.0),
+            (VIEWPORT_W - 2.0, VIEWPORT_H - 2.0),
+            // Beside the row rather than below it, which pins the top edge.
+            (VIEWPORT_W - 2.0, 2.0),
+            (VIEWPORT_W / 2.0, VIEWPORT_H / 2.0),
+        ] {
+            assert_eq!(
+                rid_under(&d, x, y).as_deref(),
+                Some(overlay_rid.as_str()),
+                "a click at ({x}, {y}) must dismiss the open menu"
+            );
+        }
     }
 
     /// Hover-to-switch rides the same hit test (`data-onenter` is resolved from
@@ -975,10 +1027,15 @@ mod tests {
         );
     }
 
-    /// A submenu trigger carried no `data-rid` at all, so a click on it walked
-    /// past the menus to whatever was above — the dismiss overlay, which closed
-    /// the whole menu. Hover normally opens a flyout first, but the click must
-    /// open it too rather than land somewhere else (#527).
+    /// A submenu trigger carried no `data-rid` at all, so a click on it reached
+    /// no handler on any ancestor and opened nothing — while pre-fix the
+    /// overlay won the hit test outright and closed the whole menu (#527).
+    ///
+    /// **Two** submenus, and the assertions are about the *second*. With one,
+    /// `flyout_idx == 0` and `active_flyout.set(flyout_idx)` is indistinguishable
+    /// from `set(0)` — the fixed point this repo keeps rediscovering. The same
+    /// fixture pins the pre-existing `data-onenter` hover handler's index for
+    /// free, which had the identical blind spot, so both are checked here.
     #[test]
     fn clicking_a_submenu_trigger_opens_its_flyout() {
         let doc = Rc::new(RefCell::new(RinchDocument::new()));
@@ -999,7 +1056,8 @@ mod tests {
         row.set_attribute("class", "rinch-app-menu-bar__inline-row");
 
         let goto = Menu::new().item(MenuItem::new("Overview").on_click(|| {}));
-        let view = Menu::new().submenu("Go To", goto);
+        let recent = Menu::new().item(MenuItem::new("Reopen").on_click(|| {}));
+        let view = Menu::new().submenu("Go To", goto).submenu("Recent", recent);
         let menus: Vec<(&str, &Menu)> = vec![("View", &view)];
         row.append_child(&render_menu_items_inline(&mut scope, &menus, active_menu));
         layer.append_child(&row);
@@ -1009,35 +1067,66 @@ mod tests {
         active_menu.set(0);
         doc.borrow_mut().resolve_layout(VIEWPORT_W, VIEWPORT_H);
 
-        let (trigger, flyout) = {
+        let (triggers, flyouts) = {
             let d = doc.borrow();
             (
-                nodes_with_class(&d, "rinch-app-menu-submenu__trigger")[0],
-                nodes_with_class(&d, "rinch-app-menu-submenu__flyout")[0],
+                nodes_with_class(&d, "rinch-app-menu-submenu__trigger"),
+                nodes_with_class(&d, "rinch-app-menu-submenu__flyout"),
             )
         };
-        assert!(
-            !is_displayed(&doc.borrow(), flyout),
-            "the flyout starts hidden"
+        assert_eq!(triggers.len(), 2, "two submenu triggers");
+        assert_eq!(flyouts.len(), 2, "two flyout panels");
+
+        /// Which flyouts are showing, as a `[bool; 2]`.
+        fn shown(doc: &Rc<RefCell<RinchDocument>>, flyouts: &[usize]) -> Vec<bool> {
+            let d = doc.borrow();
+            flyouts.iter().map(|&f| is_displayed(&d, f)).collect()
+        }
+
+        assert_eq!(
+            shown(&doc, &flyouts),
+            [false, false],
+            "both flyouts start hidden"
         );
 
-        let (x, y) = center(&doc.borrow(), trigger);
+        // The click routes to the second trigger's own handler…
+        let (x, y) = center(&doc.borrow(), triggers[1]);
         assert_eq!(
             rid_under(&doc.borrow(), x, y).as_deref(),
-            Some(rid_of(&doc.borrow(), trigger).as_str()),
+            Some(rid_of(&doc.borrow(), triggers[1]).as_str()),
             "a click on a submenu trigger must run the trigger's own handler"
         );
 
-        run_rid_handler(&doc, trigger);
+        // …and running it opens the second flyout, not the first.
+        run_rid_handler(&doc, triggers[1]);
         doc.borrow_mut().resolve_layout(VIEWPORT_W, VIEWPORT_H);
-        assert!(
-            is_displayed(&doc.borrow(), flyout),
-            "clicking the submenu trigger must open its flyout"
+        assert_eq!(
+            shown(&doc, &flyouts),
+            [false, true],
+            "clicking the second submenu trigger must open the second flyout"
         );
         assert_eq!(
             active_menu.get(),
             0,
             "…and must not close the menu it lives in"
+        );
+
+        // Hover, the older path, indexes its flyout the same way. Driven from
+        // the first trigger so it has to move the selection back, then from the
+        // second so neither direction can be a no-op.
+        run_onenter_handler(&doc, triggers[0]);
+        doc.borrow_mut().resolve_layout(VIEWPORT_W, VIEWPORT_H);
+        assert_eq!(
+            shown(&doc, &flyouts),
+            [true, false],
+            "hovering the first submenu trigger must open the first flyout"
+        );
+        run_onenter_handler(&doc, triggers[1]);
+        doc.borrow_mut().resolve_layout(VIEWPORT_W, VIEWPORT_H);
+        assert_eq!(
+            shown(&doc, &flyouts),
+            [false, true],
+            "hovering the second submenu trigger must open the second flyout"
         );
     }
 }
