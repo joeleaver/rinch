@@ -633,8 +633,10 @@ impl Node {
     /// - `position` is not `static` AND `z-index` is explicitly set (not `auto`)
     /// - `opacity < 1.0`
     /// - `transform` is non-identity
+    /// - the box clips its overflow ([`Node::clips_overflow`]) — a deviation
+    ///   from CSS that the arm below explains, tracked as #324
     pub fn creates_stacking_context(&self) -> bool {
-        use crate::computed_style::{OverflowValue, PositionValue};
+        use crate::computed_style::PositionValue;
 
         if !matches!(self.computed_style.position, PositionValue::Static)
             && self.computed_style.z_index.is_some()
@@ -650,13 +652,48 @@ impl Node {
         // Overflow clipping must create a stacking context so that descendant
         // SCs (e.g. z-indexed children) are collected and painted within the
         // clip layer rather than escaping to an ancestor SC.
-        if matches!(
-            self.computed_style.overflow_y,
-            OverflowValue::Hidden | OverflowValue::Scroll | OverflowValue::Auto
-        ) {
+        //
+        // Not CSS — `overflow` establishes a clipping boundary and nothing
+        // about paint order — but a consequence of rinch applying the clip as a
+        // paint-time bracket around one stacking context's sequence. It is the
+        // same predicate paint opens the bracket with, so that the set of boxes
+        // painted inside it is exactly the set the bracket is entitled to clip;
+        // any daylight between the two is a box that escapes its own clip.
+        //
+        // **This arm is temporary, and `overflow: clip` reaches it only since
+        // #324 stage A.** Stage A widened the predicate to fix a box that
+        // clipped clicks and painted unclipped; a `clip` box therefore had to
+        // start forming a stacking context too, or the clip it had just gained
+        // would be a bracket its own hoisted descendants skipped. Stage B
+        // deletes this arm and gives each hoisted entry its own clip chain
+        // instead — and when it does, **`overflow: clip` must go on clipping,
+        // through the chain.** Dropping the arm without that silently un-fixes
+        // stage A. The pixel assertions in
+        // `clip_predicate_tests::a_z_indexed_child_of_a_clip_box_is_clipped_by_it`
+        // are the guard; the ordering assertion beside them is the one stage B
+        // is expected to invert.
+        if self.clips_overflow() {
             return true;
         }
         false
+    }
+
+    /// Whether this box clips content that overflows it.
+    ///
+    /// **The** clip predicate: see [`crate::paint::clip`] for why it reads both
+    /// axes and what still deviates from CSS. `overflow: clip` counts, which
+    /// is the half the paint-side spellings used to miss (#324).
+    ///
+    /// This is a question about *clipping* and deliberately not about
+    /// *scrollability* — `visible` and `clip` are the two non-scrollable
+    /// values and only one of them clips. Code looking for the nearest scroll
+    /// container (sticky positioning, wheel routing, the scrollbar overlays)
+    /// wants a different predicate and must not borrow this one.
+    pub fn clips_overflow(&self) -> bool {
+        use crate::computed_style::OverflowValue;
+
+        !matches!(self.computed_style.overflow_x, OverflowValue::Visible)
+            || !matches!(self.computed_style.overflow_y, OverflowValue::Visible)
     }
 
     /// Whether this node establishes a containing block for absolutely

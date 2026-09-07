@@ -87,7 +87,7 @@
 use peniko::kurbo::{Affine, Rect, Vec2};
 
 use super::{compose_node_transform, painter::PaintShape};
-use crate::computed_style::{DisplayValue, OverflowValue, PositionValue};
+use crate::computed_style::{DisplayValue, PositionValue};
 use crate::node::{DisplayMode, Node, NodeKind, NodeTree, RawNodeId};
 
 /// A rect no clip can cut anything out of, at any scale a real window reaches.
@@ -456,21 +456,23 @@ impl Walk<'_> {
 
         let mut children = self.children(node, x - scroll.x, y - scroll.y, transform, depth);
 
-        // Where the subtree is genuinely clipped, the bounds shrink. Note the
-        // predicate: `paint_node` decides to clip on `overflow_y` alone and then
-        // clips both axes with it, so a box with `overflow-x: hidden` and
-        // `overflow-y: visible` is *not* clipped by this painter however much
-        // CSS would like it to be, and this walk must not pretend otherwise.
+        // Where the subtree is genuinely clipped, the bounds shrink. The
+        // predicate has to be the one `paint_node` opens its clip bracket with
+        // and not an approximation of it, so it is literally that function —
+        // `Node::clips_overflow`, shared since #324, where this walk used to
+        // carry its own copy of paint's `overflow_y`-only spelling and a
+        // paragraph explaining that it was deliberately mirroring a deviation.
+        //
+        // The rect is the border box, radii and all: a rounded clip is inside
+        // its own square, so intersecting with the square is the conservative
+        // answer and the one an *extent* wants.
         //
         // Paint also sometimes decides not to push a clip it is entitled to
         // (card K43: a clip that covers the render target, or one nothing
         // reaches past). Intersecting anyway stays correct in both of those
         // cases — the first only drops content that is off-window, the second
         // drops nothing at all.
-        if matches!(
-            cs.overflow_y,
-            OverflowValue::Hidden | OverflowValue::Scroll | OverflowValue::Auto
-        ) {
+        if node.clips_overflow() {
             children = children.clipped_to(transform.transform_rect_bbox(rect));
         }
 

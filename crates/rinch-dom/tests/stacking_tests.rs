@@ -7,7 +7,6 @@
 
 use peniko::Brush;
 use rinch_core::dom::DomDocument;
-use rinch_dom::computed_style::OverflowValue;
 use rinch_dom::node::{NodeTree, RawNodeId};
 use rinch_dom::stacking::{PaintEntry, PaintKind, paints_at_stacking_root, stacking_paint_order};
 use rinch_dom::{RinchDocument, node::LayoutResult};
@@ -42,9 +41,7 @@ fn resolve(tree: &NodeTree, id: RawNodeId, ox: f32, oy: f32, x: f32, y: f32) -> 
     let (nx, ny) = (ox + lx, oy + ly);
     let inside = x >= nx && x <= nx + width && y >= ny && y <= ny + height;
 
-    let clips = !matches!(node.computed_style.overflow_x, OverflowValue::Visible)
-        || !matches!(node.computed_style.overflow_y, OverflowValue::Visible);
-    if !clips || inside {
+    if !node.clips_overflow() || inside {
         let (sx, sy) = (node.scroll_offset.0 as f32, node.scroll_offset.1 as f32);
         let is_body = id == tree.body_id;
         if is_body || node.creates_stacking_context() {

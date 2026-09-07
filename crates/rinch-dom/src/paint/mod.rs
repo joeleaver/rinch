@@ -4,6 +4,7 @@
 //! for backgrounds, borders, and text.
 
 mod borders;
+pub mod clip;
 mod contenteditable;
 pub mod image;
 mod layer_bounds;
@@ -18,6 +19,7 @@ pub mod vello_painter;
 pub mod skia_painter;
 
 use borders::*;
+pub use clip::{border_radii, clip_shape};
 use contenteditable::*;
 use layer_bounds::opacity_layer_shape;
 pub use layer_bounds::{UNBOUNDED, opacity_layer_bounds};
@@ -1098,24 +1100,29 @@ fn paint_node(
         !intersects_dirty_region(bbox.x0, bbox.y0, bbox.width(), bbox.height())
     };
     if node_outside_dirty {
-        let overflow_clips = matches!(
-            node.computed_style.overflow_x,
-            OverflowValue::Hidden | OverflowValue::Scroll | OverflowValue::Auto
-        ) || matches!(
-            node.computed_style.overflow_y,
-            OverflowValue::Hidden | OverflowValue::Scroll | OverflowValue::Auto
-        );
-        if overflow_clips || node.children.is_empty() {
+        if node.clips_overflow() || node.children.is_empty() {
             return;
         }
-        // Skip drawing this node but recurse into children
+        // Skip drawing this node but recurse into children.
+        //
+        // At the children's own origin, like every other call in this function:
+        // a container's children are laid out against its *scrolled* content
+        // origin, so passing the unscrolled one would place the whole subtree
+        // `scroll_offset` too far down and right. That was #408 — a latent
+        // trap rather than a live bug, because a node only carries a scroll
+        // offset if it scrolls and a node that scrolls answers
+        // `clips_overflow`, so the guard one line up already returned. Both
+        // halves of that argument now read the same predicate, but correctness
+        // here should not depend on a guard above it at all.
+        let scroll_x = node.scroll_offset.0 * scale;
+        let scroll_y = node.scroll_offset.1 * scale;
         paint_children_with_stacking(
             tree,
             node_id,
             painter,
             scale,
-            x,
-            y,
+            x - scroll_x,
+            y - scroll_y,
             font_cx,
             layout_cx,
             node_transform,
@@ -1381,21 +1388,14 @@ fn paint_node(
                 VisibilityValue::Hidden | VisibilityValue::Collapse
             );
 
-            // Get border-radius from computed style (use average of all 4 corners)
-            // Resolve percentage values against element dimensions
-            let (radius, radii) = {
-                let cs = &node.computed_style;
-                let resolve_size = node.layout.width.min(node.layout.height);
-                let tl = cs.border_radius_top_left.resolve(resolve_size).max(0.0) as f64 * scale;
-                let tr = cs.border_radius_top_right.resolve(resolve_size).max(0.0) as f64 * scale;
-                let br =
-                    cs.border_radius_bottom_right.resolve(resolve_size).max(0.0) as f64 * scale;
-                let bl = cs.border_radius_bottom_left.resolve(resolve_size).max(0.0) as f64 * scale;
-                let radii = RoundedRectRadii::new(tl, tr, br, bl);
-                // Uniform radius for code paths that don't support per-corner yet
-                let avg = (tl + tr + br + bl) / 4.0;
-                (avg, radii)
-            };
+            // Get border-radius from computed style, resolving percentages
+            // against the element's shorter side. `clip::border_radii` is the
+            // one definition, so the clip shape and the background it clips
+            // cannot round differently.
+            let radii = border_radii(node, scale);
+            // Uniform radius for code paths that don't support per-corner yet
+            let radius =
+                (radii.top_left + radii.top_right + radii.bottom_right + radii.bottom_left) / 4.0;
 
             // Get opacity from computed style and push layer if needed
             // The layer's bounds are the union of what the subtree
@@ -1413,13 +1413,18 @@ fn paint_node(
             }
 
             // Handle overflow clipping — detect early so we can cut holes
-            // in the background for viewport descendants.
+            // in the background for viewport descendants. The two enums are
+            // captured here for the scrollbar overlays at the bottom, which ask
+            // a different question (is this a *scroll* container) than the clip
+            // bracket does.
             let overflow_y = node.computed_style.overflow_y;
             let overflow_x = node.computed_style.overflow_x;
-            let clips = matches!(
-                overflow_y,
-                OverflowValue::Hidden | OverflowValue::Scroll | OverflowValue::Auto
-            );
+            // The clip shape comes from `clip::clip_shape` so that everything
+            // that needs to know where this box clips asks one function:
+            // `layer_bounds` and the dirty-region prune today, a hoisted
+            // entry's clip chain in #324's second stage.
+            let clip = clip_shape(node, scale, x, y);
+            let clips = clip.is_some();
 
             // Whether the background below is going to write a pixel at all.
             //
@@ -1625,12 +1630,12 @@ fn paint_node(
                 }
             }
 
-            if clips {
+            if let Some((clip_rect, clip_radii)) = clip {
                 if radius > 0.0 {
-                    let clip_rrect = rect.to_rounded_rect(radii);
+                    let clip_rrect = clip_rect.to_rounded_rect(clip_radii);
                     painter.push_clip(Fill::NonZero, node_transform, &clip_rrect.into());
                 } else {
-                    painter.push_clip(Fill::NonZero, node_transform, &rect.into());
+                    painter.push_clip(Fill::NonZero, node_transform, &clip_rect.into());
                 }
             }
 
