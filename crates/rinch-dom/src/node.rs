@@ -631,48 +631,47 @@ impl Node {
     ///
     /// A stacking context is formed when any of:
     /// - `position` is not `static` AND `z-index` is explicitly set (not `auto`)
+    /// - `position` is `fixed` or `sticky`, whatever the `z-index`
     /// - `opacity < 1.0`
     /// - `transform` is non-identity
-    /// - the box clips its overflow ([`Node::clips_overflow`]) — a deviation
-    ///   from CSS that the arm below explains, tracked as #324
+    ///
+    /// This is the CSS list (CSS 2.1 Appendix E, css-position-3 §10) minus the
+    /// creators rinch's `ComputedStyle` cannot yet express — `filter`,
+    /// `clip-path`, `mask`, `isolation`, `mix-blend-mode`, `contain: paint`,
+    /// `will-change`. Those are new style plumbing per property rather than a
+    /// stacking change, and are tracked separately with #415.
+    ///
+    /// **`overflow` is not on the list.** It used to be, so that a hoisted
+    /// descendant stayed inside the clip bracket paint opened around one
+    /// stacking context's sequence; that cost the same user-visible bug twice
+    /// (#317's dropdown backdrops, #534's menu-bar overlay), because two
+    /// `z-index` values in different contexts were compared when CSS says they
+    /// never are. #324 stage B decoupled the two: a hoisted
+    /// [`crate::stacking::PaintEntry`] now carries the chain of clipping
+    /// ancestors it was lifted past, and its consumer re-applies them. Clipping
+    /// is [`Node::clips_overflow`] and stacking is this, and nothing needs them
+    /// to be the same question.
     pub fn creates_stacking_context(&self) -> bool {
         use crate::computed_style::PositionValue;
 
-        if !matches!(self.computed_style.position, PositionValue::Static)
-            && self.computed_style.z_index.is_some()
-        {
-            return true;
+        match self.computed_style.position {
+            // A fixed box is viewport-level content and a sticky box is
+            // repositioned during scroll; both create a stacking context
+            // unconditionally, so their descendants travel with them rather
+            // than being hoisted out into a sequence they no longer share a
+            // coordinate space with.
+            PositionValue::Fixed | PositionValue::Sticky => return true,
+            PositionValue::Static => {}
+            _ => {
+                if self.computed_style.z_index.is_some() {
+                    return true;
+                }
+            }
         }
         if self.computed_style.opacity < 1.0 {
             return true;
         }
         if !self.computed_style.transform.is_identity {
-            return true;
-        }
-        // Overflow clipping must create a stacking context so that descendant
-        // SCs (e.g. z-indexed children) are collected and painted within the
-        // clip layer rather than escaping to an ancestor SC.
-        //
-        // Not CSS — `overflow` establishes a clipping boundary and nothing
-        // about paint order — but a consequence of rinch applying the clip as a
-        // paint-time bracket around one stacking context's sequence. It is the
-        // same predicate paint opens the bracket with, so that the set of boxes
-        // painted inside it is exactly the set the bracket is entitled to clip;
-        // any daylight between the two is a box that escapes its own clip.
-        //
-        // **This arm is temporary, and `overflow: clip` reaches it only since
-        // #324 stage A.** Stage A widened the predicate to fix a box that
-        // clipped clicks and painted unclipped; a `clip` box therefore had to
-        // start forming a stacking context too, or the clip it had just gained
-        // would be a bracket its own hoisted descendants skipped. Stage B
-        // deletes this arm and gives each hoisted entry its own clip chain
-        // instead — and when it does, **`overflow: clip` must go on clipping,
-        // through the chain.** Dropping the arm without that silently un-fixes
-        // stage A. The pixel assertions in
-        // `clip_predicate_tests::a_z_indexed_child_of_a_clip_box_is_clipped_by_it`
-        // are the guard; the ordering assertion beside them is the one stage B
-        // is expected to invert.
-        if self.clips_overflow() {
             return true;
         }
         false

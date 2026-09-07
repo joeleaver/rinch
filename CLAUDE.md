@@ -780,29 +780,31 @@ falls through to the app rather than being swallowed, and every chord matching
 the key is tried in registration order — so a dead duplicate cannot shadow a live
 one.
 
-**The Linux in-app bar's dismiss overlay must share a stacking context with the
-bar** (#527). It is a full-window box at `z-index: 199` under the bar's `201`,
-and `z-index` orders boxes only *within* one stacking context. It used to be
-`position: fixed`, which hoists a box out to the viewport's context — fine while
-nothing between it and the body formed one, but `BorderlessWindow`'s container
-carries `overflow: hidden`, and in Rinch that **does** form a stacking context
-(`Node::creates_stacking_context`; in a browser it does not — that deviation is
-issue **#324**). The menus stayed trapped inside it at that container's own
-`z == 0` while the overlay escaped to `199` above them, so it covered its own
-menus and every item click merely dismissed the menu — and every *hover* with
-it, so hover-to-switch and submenu flyouts were dead too. It is now
-`position: absolute`, a sibling of the bar inside the menu layer, which orders
-correctly under either rule.
+**The Linux in-app bar's dismiss overlay is `position: absolute`, a sibling of
+the bar inside the menu layer** (#527). It is a full-window box at
+`z-index: 199` under the bar's `201`, and `z-index` orders boxes only *within*
+one stacking context. It used to be `position: fixed`, which hoists a box out to
+the viewport's context — fine while nothing between it and the body formed one,
+but `BorderlessWindow`'s container carries `overflow: hidden`, and rinch used to
+make a stacking context of every clipping box. The menus stayed trapped inside
+it at that container's own `z == 0` while the overlay escaped to `199` above
+them, so it covered its own menus and every item click merely dismissed the menu
+— and every *hover* with it, so hover-to-switch and submenu flyouts were dead
+too.
 
-That is the **same workaround** `DropdownMenu` and `Select` already take for
-their backdrops (PR #317), now at a second site, and it is a workaround rather
-than a fix: `render_menu_bar_standalone` has to pass `top: -top_offset` purely
-to undo the containing-block change it forces. **When #324 lands, revert all
-three menu-bar overlays to `position: fixed` and delete that compensation**;
-`menu::app_menu_bar`'s tests cover all three layouts and should stay green
-across the revert. The non-borderless layout (`render_with_menu_bar`) was never
-broken — its wrapper carries no `overflow`, so nothing between the bar and the
-body formed a context.
+That deviation is **gone** (#324 stage B): `overflow` creates no stacking
+context, so the `199` and the `201` meet in one sequence and the `fixed`
+spelling would order correctly too. The `absolute` one is kept for now — it also
+works, and reverting it is #324's stage C, together with `DropdownMenu`/`Select`'s
+backdrops (PR #317) and the `top: -top_offset` compensation
+`render_menu_bar_standalone` passes purely to undo the containing-block change
+`absolute` forces. **Those two edits must land together** — measured while
+landing stage B, and spelled out under **Stacking contexts and the clip chain**
+below. `menu::app_menu_bar`'s tests cover all three layouts and are green both
+ways round.
+The non-borderless layout (`render_with_menu_bar`) was never broken — its
+wrapper carries no `overflow`, so nothing between the bar and the body formed a
+context.
 
 The registry also shrinks now. It used to only ever grow: building a new native
 menu bar releases the previous bar's ids, and dropping a `TrayIcon` releases that
@@ -1335,20 +1337,17 @@ it, so `overflow-x: hidden; overflow-y: visible` is **unreachable** — pinned i
 Stylo bump ever changes that. `clip` beside `visible` is the pair the spec
 allows, so it stays asymmetric.
 
-Three deviations from CSS remain **in the predicate and the shape** — this is
-not an inventory of everything rinch gets wrong about `overflow`, which also
-covers scrolling, `text-overflow` and scrollbars. Clipping forms a stacking
-context, which CSS does not do — the clip is a paint-time bracket around one
-sequence, so a hoisted box would otherwise escape it; removing that means giving
-a hoisted entry its own clip chain, which is #324's stage B. **When stage B
-drops that arm, `overflow: clip` must go on clipping through the chain** —
-`clip` only started forming a stacking context in stage A, and dropping the arm
-without a chain silently un-fixes it. rinch clips both
-axes with one rect, so `overflow-x: clip; overflow-y: visible` clips vertically
-too (#535). And the rect is the **border** box where CSS clips to the padding
-box, so a clipping container with a non-zero `border-width` lets its content
-paint over its own border (#536); with no border the two coincide, which is
-every clipping box in the component library.
+Two deviations from CSS remain **in the predicate and the shape** — this is not
+an inventory of everything rinch gets wrong about `overflow`, which also covers
+scrolling, `text-overflow` and scrollbars. rinch clips both axes with one rect,
+so `overflow-x: clip; overflow-y: visible` clips vertically too (#535). And the
+rect is the **border** box where CSS clips to the padding box, so a clipping
+container with a non-zero `border-width` lets its content paint over its own
+border (#536); with no border the two coincide, which is every clipping box in
+the component library.
+
+A third one is gone: **clipping no longer forms a stacking context** — see
+**Stacking contexts and the clip chain** below.
 
 Anything new that asks "does this clip" must call the predicate, not re-derive
 it. Code looking for the nearest *scroll* container (sticky positioning, wheel
@@ -1356,7 +1355,75 @@ routing, the scrollbar overlays) wants a different question and must not borrow
 this one: `visible` and `clip` are the two non-scrollable values and only one of
 them clips.
 
+**Stacking contexts and the clip chain.** `Node::creates_stacking_context()` is
+the CSS list, as far as `ComputedStyle` can express it: a positioned box with an
+explicit `z-index`, `position: fixed` or `sticky` whatever the `z-index`,
+`opacity < 1`, a non-identity `transform`. The creators rinch cannot yet
+represent — `filter`, `clip-path`, `mask`, `isolation`, `mix-blend-mode`,
+`contain: paint`, `will-change` — are new style plumbing per property and are
+tracked with #415, not here.
+
+**`overflow` is not on that list** (#324 stage B). It used to be, so that a
+descendant hoisted to an ancestor's paint sequence stayed inside the bracket
+paint opened around it — clipping was made a stacking question because the clip
+was implemented as a per-sequence bracket. That cost the same user-visible bug
+twice, because it made rinch compare two `z-index` values from different
+stacking contexts, which CSS never does: #317's `DropdownMenu`/`Select`
+backdrops and #534's menu-bar overlay, each fixed by respelling a `fixed`
+overlay as `absolute`.
+
+Clipping is decoupled from stacking now. Every hoisted
+`stacking::PaintEntry` carries a **clip chain** — the clipping ancestors between
+it and the collecting root, as a `ClipSpan` into `PaintOrder::clips` — and its
+consumer re-applies them: `paint_children_with_stacking` pushes them around the
+entry, `hit_test_node` rejects a probe point outside them. Four rules make it
+correct, and each has a fixture in
+`crates/rinch-dom/tests/clip_chain_tests.rs`:
+
+- **A link's rect is the clipping box's own `clip_shape`, at its PRE-scroll
+  painted origin.** A container's box does not move when its content scrolls.
+  Invisible at scroll offset 0, which is why every fixture is scrolled.
+- **`position: absolute` truncates its chain at its containing block.** CSS does
+  not clip an absolute by an `overflow` ancestor below its containing block, so
+  `descend` tracks `live.len()` as of the nearest
+  `establishes_abs_containing_block()` and an absolute entry takes only that
+  prefix. This is also what keeps #204's initial-containing-block correction
+  correct. `position: fixed` takes an **empty** chain; everything else takes the
+  whole one — an in-flow or `relative` box is clipped by every clipping
+  ancestor, containing block or not.
+- **The collecting root's own clip is in no chain.** Paint opens that bracket
+  before it walks the sequence, and hit testing gates the whole walk on it.
+- **No transform composition is needed.** A transform creates a stacking
+  context, so `descend` never crosses one and every link lives in the collecting
+  root's own untransformed space — the same space the entries' offsets are in.
+
+Hit testing tests a link's **rect only**, ignoring its radii, matching the
+`check_children` gate it stands in for; paint pushes the rounded shape. That is
+the pre-existing rounded-corner divergence, not a new one.
+
+**Cost.** `TinySkiaPainter::push_clip` allocates a full-surface `Mask`, so a
+push is not free — but consecutive entries that share a `ClipSpan` share one
+push, which is exact rather than a heuristic (identical spans name identical
+clips), and it collapses the shape that motivated the worry: a scroller with 200
+positioned rows is **one** push, not 200. Measured at 1200x800, software
+painter, best of 40: 200 positioned rows in one scroller 1.82 → 1.90ms (+4.5%);
+an adversarial 50 scrollers x 4 rows, where the runs interleave and 99 pushes are
+needed, 2.73 → 3.08ms (+13%). Building the body's sequence went 1 → 3us. The
+containment skip the scoping proposed (don't push a clip the entry is entirely
+inside) is **not** implemented: a sound version needs a subtree extent per entry,
+which is a new per-frame walk for every positioned box, and the run reuse already
+took the realistic case.
+
+**When #324's stage C reverts the two workarounds**, the overlay's `position` and
+its compensating offset must move **together**. Measured: flipping
+`.rinch-app-menu-bar__overlay` back to `fixed` while leaving
+`render_menu_bar_standalone`'s `top: -top_offset` in place fails
+`the_below_titlebar_overlay_covers_the_whole_window` — the compensation then
+shifts a viewport-anchored overlay off the top of the window. Change both and all
+seven `menu::app_menu_bar` tests are green.
+
 **Key files:**
+- `crates/rinch-dom/src/stacking.rs` — the paint sequence and the clip chain
 - `crates/rinch-dom/src/paint/clip.rs` — the clip predicate and shape
 - `crates/rinch-dom/src/paint/painter.rs` — Abstract `Painter` trait
 - `crates/rinch-dom/src/paint/vello_painter.rs` — GPU backend

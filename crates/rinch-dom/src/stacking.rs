@@ -44,6 +44,50 @@
 //! It stops at a real stacking context, whose descendants are that context's
 //! business.
 //!
+//! # Clip chains
+//!
+//! Hoisting a box out of its parent's run moves it out of every clip bracket
+//! between it and the collecting root — and `overflow` does not create a
+//! stacking context, so those brackets are ordinary boxes the walk passes
+//! straight through. Each entry therefore records the **chain of clipping
+//! ancestors** it was hoisted past, as a [`ClipSpan`] into [`PaintOrder::clips`],
+//! and its consumer re-applies them on entry: paint pushes them, hit testing
+//! rejects a probe point outside them. That is what lets `creates_stacking_context`
+//! match the CSS list (#324) instead of forming a context for every scroller so
+//! that the bracket would happen to enclose the right set of boxes.
+//!
+//! A clip is recorded at the clipping node's own **pre-scroll** painted origin.
+//! A container's box does not move when its content scrolls, and taking the
+//! chain rect from the walk's accumulated (scrolled) offset is invisible at
+//! scroll offset 0 — `clip_predicate_tests::a_scrolled_container_clips_at_its_own_box`
+//! is the pin.
+//!
+//! The **collecting root's own** clip is deliberately not in any chain. Paint
+//! opens that bracket before it walks the sequence and hit testing gates the
+//! whole walk on it, so putting it in the chain would apply it twice; the walk
+//! starts at the root's children for exactly that reason.
+//!
+//! ## `position: absolute` truncates its chain
+//!
+//! CSS does not clip an absolutely positioned box by an `overflow` ancestor
+//! that is not in its **containing-block** chain: the box is positioned against
+//! its containing block, and a scroller it merely sits inside in the markup has
+//! nothing to say about it. So the walk tracks how many clips were on the stack
+//! at the nearest [`Node::establishes_abs_containing_block`] ancestor, and an
+//! absolute entry's chain is truncated there. `position: fixed` resolves against
+//! the viewport and takes an **empty** chain.
+//!
+//! This is also what keeps #204's initial-containing-block correction correct:
+//! an absolute that `out_of_flow.rs` resolved against the viewport must not then
+//! be clipped by the unpositioned scroller it was written inside.
+//!
+//! **Known gap.** The root's own bracket is applied unconditionally, so an
+//! absolute hoisted to a root that clips but establishes no containing block —
+//! `opacity: 0.9; overflow: hidden` on a static box, and nothing positioned
+//! between — is clipped by it where CSS would not. It is the same shape as
+//! #386's "the nearest positioned ancestor is not the direct parent" and needs
+//! the clip moved off the bracket to fix.
+//!
 //! # Transforms
 //!
 //! The accumulated offsets never cross a CSS transform, so an entry always lands
@@ -51,7 +95,9 @@
 //! and hit testing's probe point are both already in. A transformed box creates a
 //! stacking context, so the walk stops at it; and a positioned `z-index: auto`
 //! box that the walk descends *through* has, by the same rule, no transform of
-//! its own.
+//! its own. The clip chain inherits that: every clip it records is in the
+//! collecting root's untransformed space, so a consumer pushes all of them under
+//! the root's own transform with no per-clip composition.
 //!
 //! # `position: fixed`
 //!
@@ -60,8 +106,13 @@
 //! zeroed (its `layout.x`/`layout.y` are already viewport coordinates), and at
 //! every deeper level it is left out entirely — the body already has it.
 
+use std::ops::Deref;
+
+use peniko::kurbo::{Rect, RoundedRectRadii};
+
 use crate::computed_style::PositionValue;
 use crate::node::{Node, NodeTree, RawNodeId};
+use crate::paint::clip_shape;
 
 /// How a consumer descends into a [`PaintEntry`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -78,6 +129,62 @@ pub enum PaintKind {
     PositionedAuto,
 }
 
+/// One clipping ancestor a hoisted entry was lifted past, in the collecting
+/// root's own space and in the caller's units.
+///
+/// Exactly what [`crate::paint::clip_shape`] hands back, which is what makes
+/// the chain the same shape as the bracket `paint_node` would have opened —
+/// the two cannot drift apart because there is one derivation.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ClipRect {
+    /// The clipping box's border box.
+    pub rect: Rect,
+    /// Its `border-radius`, already resolved and scaled. All-zero for a square
+    /// clip.
+    pub radii: RoundedRectRadii,
+}
+
+impl ClipRect {
+    /// Whether `(x, y)` is inside the clip, **ignoring the radii**.
+    ///
+    /// Rect-only on purpose: hit testing's own `check_children` gate has always
+    /// tested a clipping box's plain layout rect, so a rounded chain link that
+    /// cut its corners here would make a hoisted box *less* reachable than the
+    /// unhoisted box beside it. Inclusive on both edges, like that gate.
+    pub fn contains(&self, x: f64, y: f64) -> bool {
+        x >= self.rect.x0 && x <= self.rect.x1 && y >= self.rect.y0 && y <= self.rect.y1
+    }
+}
+
+/// A range of [`PaintOrder::clips`] — one entry's chain of clipping ancestors.
+///
+/// A range rather than a `Vec` on the entry so that [`PaintEntry`] stays `Copy`:
+/// both consumers copy entries out of the sorted sequence.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct ClipSpan {
+    /// First index into [`PaintOrder::clips`].
+    pub start: u32,
+    /// One past the last.
+    pub end: u32,
+}
+
+impl ClipSpan {
+    /// No clipping ancestors: the entry paints unclipped by anything between it
+    /// and the collecting root.
+    pub const EMPTY: Self = Self { start: 0, end: 0 };
+
+    /// Whether this chain is empty — the overwhelmingly common case, and the
+    /// one a consumer should short-circuit on.
+    pub fn is_empty(self) -> bool {
+        self.start == self.end
+    }
+
+    /// How many clipping ancestors are in the chain.
+    pub fn len(self) -> usize {
+        (self.end - self.start) as usize
+    }
+}
+
 /// One child of a stacking-context root, in paint order.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct PaintEntry {
@@ -92,6 +199,40 @@ pub struct PaintEntry {
     pub offset_y: f64,
     /// `z-index`, with `auto` counting as `0`. Always `0` for [`PaintKind::InFlow`].
     pub z_index: i32,
+    /// The clipping ancestors this entry was hoisted past, as a range of
+    /// [`PaintOrder::clips`] — see the module docs. Read it through
+    /// [`PaintOrder::clips_for`].
+    pub clips: ClipSpan,
+}
+
+/// A stacking-context root's paint sequence, plus the clip chains its entries
+/// index into.
+///
+/// Derefs to the entries, so `order.iter()`, `order[i]` and `order.len()` read
+/// as they did when this was a plain `Vec<PaintEntry>`.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct PaintOrder {
+    /// The children, back to front.
+    pub entries: Vec<PaintEntry>,
+    /// Every chain any entry references, concatenated. Append-only during
+    /// collection and never reordered afterwards, so a [`ClipSpan`] survives the
+    /// sort that orders `entries`.
+    pub clips: Vec<ClipRect>,
+}
+
+impl PaintOrder {
+    /// The clipping ancestors `entry` was hoisted past, outermost first.
+    pub fn clips_for(&self, entry: &PaintEntry) -> &[ClipRect] {
+        &self.clips[entry.clips.start as usize..entry.clips.end as usize]
+    }
+}
+
+impl Deref for PaintOrder {
+    type Target = [PaintEntry];
+
+    fn deref(&self) -> &[PaintEntry] {
+        &self.entries
+    }
 }
 
 /// Whether `node` is positioned with `z-index: auto` — CSS 2.1 Appendix E step
@@ -130,34 +271,39 @@ pub fn stacking_paint_order(
     scale: f64,
     offset_x: f64,
     offset_y: f64,
-) -> Vec<PaintEntry> {
+) -> PaintOrder {
     let Some(node) = tree.get(node_id) else {
-        return Vec::new();
+        return PaintOrder::default();
     };
 
     // Steps 1, 3 and 4: everything hoisted to this root, gathered in tree order
     // and then sorted by (z, tree order). Collected first so `order` counts
     // every node the walk passes, direct children included.
-    let mut hoisted: Vec<(usize, PaintEntry)> = Vec::new();
-    let mut order = 0usize;
-    collect_hoisted(
+    let mut collector = Collector {
         tree,
-        &node.children,
         scale,
-        offset_x,
-        offset_y,
-        is_body,
-        &mut hoisted,
-        &mut order,
-    );
+        hoist_fixed: is_body,
+        hoisted: Vec::new(),
+        clips: Vec::new(),
+        live: Vec::new(),
+        cb_depth: 0,
+        order: 0,
+    };
+    collector.collect_hoisted(&node.children, offset_x, offset_y);
+
+    let Collector {
+        mut hoisted, clips, ..
+    } = collector;
     hoisted.sort_by_key(|(dom_order, e)| (e.z_index, *dom_order));
 
     let split = hoisted.partition_point(|(_, e)| e.z_index < 0);
-    let mut sequence: Vec<PaintEntry> = Vec::with_capacity(hoisted.len() + node.children.len());
-    sequence.extend(hoisted[..split].iter().map(|(_, e)| *e));
+    let mut entries: Vec<PaintEntry> = Vec::with_capacity(hoisted.len() + node.children.len());
+    entries.extend(hoisted[..split].iter().map(|(_, e)| *e));
 
     // Step 2: the root's own in-flow, non-positioned children, in tree order.
-    sequence.extend(node.children.iter().filter_map(|&child_id| {
+    // Nothing was hoisted past anything to reach here, so the chain is empty by
+    // construction — the root's own bracket is all that applies.
+    entries.extend(node.children.iter().filter_map(|&child_id| {
         let child = tree.get(child_id)?;
         (!paints_at_stacking_root(child)).then_some(PaintEntry {
             node_id: child_id,
@@ -165,177 +311,239 @@ pub fn stacking_paint_order(
             offset_x,
             offset_y,
             z_index: 0,
+            clips: ClipSpan::EMPTY,
         })
     }));
 
-    sequence.extend(hoisted[split..].iter().map(|(_, e)| *e));
-    sequence
+    entries.extend(hoisted[split..].iter().map(|(_, e)| *e));
+    PaintOrder { entries, clips }
 }
 
-/// Gather every hoisted descendant of `children` in tree order, paired with the
-/// tree-order index that breaks ties within a z level.
-#[allow(clippy::too_many_arguments)]
-fn collect_hoisted(
-    tree: &NodeTree,
-    children: &[RawNodeId],
+/// The hoisting walk's state: the entries found so far, and the chain of
+/// clipping ancestors currently open above the cursor.
+struct Collector<'a> {
+    tree: &'a NodeTree,
     scale: f64,
-    parent_offset_x: f64,
-    parent_offset_y: f64,
     hoist_fixed: bool,
-    out: &mut Vec<(usize, PaintEntry)>,
-    order: &mut usize,
-) {
-    for &child_id in children {
-        let Some(child) = tree.get(child_id) else {
-            continue;
+    /// Hoisted entries, paired with the tree-order index that breaks ties
+    /// within a z level.
+    hoisted: Vec<(usize, PaintEntry)>,
+    /// The output side table, append-only.
+    clips: Vec<ClipRect>,
+    /// The clipping ancestors between the collecting root and the cursor,
+    /// outermost first. A stack: pushed on entering a clipping box, popped on
+    /// leaving it.
+    live: Vec<ClipRect>,
+    /// `live.len()` as of the nearest ancestor that establishes a containing
+    /// block for absolutely positioned boxes — the point an absolute entry's
+    /// chain is truncated at. Counted *after* that ancestor's own clip is
+    /// pushed, because a `position: relative; overflow: hidden` box does clip
+    /// its own absolute children.
+    cb_depth: usize,
+    order: usize,
+}
+
+impl Collector<'_> {
+    /// Materialise the chain that applies to `node`, as a range of
+    /// [`Self::clips`].
+    fn span(&mut self, node: &Node) -> ClipSpan {
+        let n = match node.computed_style.position {
+            // Viewport-relative: no ancestor between here and the root is in
+            // its containing-block chain.
+            PositionValue::Fixed => 0,
+            PositionValue::Absolute => self.cb_depth,
+            _ => self.live.len(),
         };
-        let dom_order = *order;
-        *order += 1;
-
-        let is_fixed = child.computed_style.position == PositionValue::Fixed;
-        let is_sc = child.creates_stacking_context();
-
-        if !is_sc && !is_positioned_z_auto(child) {
-            // Not hoisted: descend through it, accumulating its offset, to reach
-            // the hoisted boxes below.
-            descend(
-                tree,
-                child,
-                scale,
-                parent_offset_x,
-                parent_offset_y,
-                hoist_fixed,
-                out,
-                order,
-            );
-            continue;
+        if n == 0 {
+            return ClipSpan::EMPTY;
         }
 
-        // A fixed box belongs to the viewport, i.e. to the body's sequence.
-        // Below the body it is left out; the body picks it up by walking into
-        // the stacking contexts that would otherwise have hidden it.
-        if is_fixed && !hoist_fixed {
-            continue;
+        // Siblings under one scroller all want the same chain, and a scroll
+        // region with fifty positioned rows would otherwise copy it fifty
+        // times. Reuse the tail when it is already exactly this chain — a
+        // memoisation, so correctness never rests on the compare.
+        let tail = self.clips.len().saturating_sub(n);
+        if self.clips.len() >= n && self.clips[tail..] == self.live[..n] {
+            return ClipSpan {
+                start: tail as u32,
+                end: self.clips.len() as u32,
+            };
         }
 
-        // Fixed boxes are viewport-relative: `layout.x`/`layout.y` are already
-        // absolute, so the accumulated offset must not be added — to the entry,
-        // or to anything hoisted out from under it.
-        let (base_x, base_y) = if is_fixed {
-            (0.0, 0.0)
-        } else {
-            (parent_offset_x, parent_offset_y)
-        };
-
-        // No `ifc_content_box_offset` on the entry itself, deliberately, though
-        // the obvious symmetry with `descend` below says there should be — and
-        // NOT because the correction would be dead code. This sequence is
-        // shared with hit testing, whose own `descend`
-        // (`crates/rinch/src/app/hit_testing.rs`) adds the IFC offset itself
-        // when it enters a node, so the entry's offset must stay the plain
-        // border-box chain or every tap on a hoisted inline-block lands one
-        // padding+border off (the offset double-added).
-        // `a_hoisted_inline_block_is_tapped_where_its_ifc_paints_it` in that
-        // file pins it. Paint, for its part, never positions such a box
-        // through this entry: with a live IFC it is skipped by
-        // `drawn_by_its_ifc`, and with a virtualized one (`estimated_height`)
-        // it is not painted at all.
-        out.push((
-            dom_order,
-            PaintEntry {
-                node_id: child_id,
-                kind: if is_sc {
-                    PaintKind::StackingContext
-                } else {
-                    PaintKind::PositionedAuto
-                },
-                offset_x: base_x,
-                offset_y: base_y,
-                z_index: child.computed_style.z_index.unwrap_or(0),
-            },
-        ));
-
-        if is_sc {
-            // A stacking context owns its descendants — except the fixed ones,
-            // which the body reaches past it for.
-            if hoist_fixed {
-                collect_fixed(tree, &child.children, out, order);
-            }
-        } else {
-            // A positioned `z-index: auto` box is entered as an ordinary node,
-            // so its own hoisted descendants are this sequence's, not its.
-            descend(tree, child, scale, base_x, base_y, hoist_fixed, out, order);
+        let start = self.clips.len();
+        self.clips.extend_from_slice(&self.live[..n]);
+        ClipSpan {
+            start: start as u32,
+            end: self.clips.len() as u32,
         }
     }
-}
 
-/// Recurse into `child`'s children with `child`'s own layout offset and scroll
-/// folded into the accumulated offset.
-#[allow(clippy::too_many_arguments)]
-fn descend(
-    tree: &NodeTree,
-    child: &Node,
-    scale: f64,
-    parent_offset_x: f64,
-    parent_offset_y: f64,
-    hoist_fixed: bool,
-    out: &mut Vec<(usize, PaintEntry)>,
-    order: &mut usize,
-) {
-    // Unlike the entry push in `collect_hoisted` (which must NOT add this —
-    // see the comment there), the offset IS added here: this walk is entering
-    // `child`'s own coordinate space to place its hoisted descendants, and an
-    // IFC-positioned box's `layout.{x,y}` is content-box-relative, so
-    // descending through one without the correction puts every hoisted
-    // descendant a padding+border out (#407).
-    let (ifc_dx, ifc_dy) = crate::paint::ifc_content_box_offset(tree, child);
-    let x =
-        parent_offset_x + (child.layout.x + ifc_dx) as f64 * scale - child.scroll_offset.0 * scale;
-    let y =
-        parent_offset_y + (child.layout.y + ifc_dy) as f64 * scale - child.scroll_offset.1 * scale;
-    collect_hoisted(tree, &child.children, scale, x, y, hoist_fixed, out, order);
-}
+    /// Gather every hoisted descendant of `children` in tree order.
+    fn collect_hoisted(
+        &mut self,
+        children: &[RawNodeId],
+        parent_offset_x: f64,
+        parent_offset_y: f64,
+    ) {
+        for &child_id in children {
+            let Some(child) = self.tree.get(child_id) else {
+                continue;
+            };
+            let dom_order = self.order;
+            self.order += 1;
 
-/// Walk into stacking contexts the body would otherwise not see past, collecting
-/// the `position: fixed` boxes inside them.
-///
-/// A fixed modal nested in an `overflow: auto` container is viewport-level
-/// content that happens to live in the markup under a clip; without this it
-/// would paint inside that clip, and be hit-tested inside it too.
-fn collect_fixed(
-    tree: &NodeTree,
-    children: &[RawNodeId],
-    out: &mut Vec<(usize, PaintEntry)>,
-    order: &mut usize,
-) {
-    for &child_id in children {
-        let Some(child) = tree.get(child_id) else {
-            continue;
-        };
-        let dom_order = *order;
-        *order += 1;
+            let is_fixed = child.computed_style.position == PositionValue::Fixed;
+            let is_sc = child.creates_stacking_context();
 
-        if child.computed_style.position == PositionValue::Fixed {
-            // A fixed box is positioned by definition, so it is hoisted either
-            // way: a stacking context when it carries a `z-index` (or an
-            // opacity/transform/overflow of its own), and a step-8 entry when
-            // its `z-index` is `auto`.
-            out.push((
+            if !is_sc && !is_positioned_z_auto(child) {
+                // Not hoisted: descend through it, accumulating its offset (and
+                // its clip, if it has one), to reach the hoisted boxes below.
+                self.descend(child, parent_offset_x, parent_offset_y);
+                continue;
+            }
+
+            // A fixed box belongs to the viewport, i.e. to the body's sequence.
+            // Below the body it is left out; the body picks it up by walking
+            // into the stacking contexts that would otherwise have hidden it.
+            if is_fixed && !self.hoist_fixed {
+                continue;
+            }
+
+            // Fixed boxes are viewport-relative: `layout.x`/`layout.y` are already
+            // absolute, so the accumulated offset must not be added — to the entry,
+            // or to anything hoisted out from under it.
+            let (base_x, base_y) = if is_fixed {
+                (0.0, 0.0)
+            } else {
+                (parent_offset_x, parent_offset_y)
+            };
+
+            // The chain the *ancestors* impose. Not this box's own clip: paint
+            // opens that bracket itself when it enters the entry, and hit
+            // testing gates on it there.
+            let clips = self.span(child);
+
+            // No `ifc_content_box_offset` on the entry itself, deliberately, though
+            // the obvious symmetry with `descend` below says there should be — and
+            // NOT because the correction would be dead code. This sequence is
+            // shared with hit testing, whose own `descend`
+            // (`crates/rinch/src/app/hit_testing.rs`) adds the IFC offset itself
+            // when it enters a node, so the entry's offset must stay the plain
+            // border-box chain or every tap on a hoisted inline-block lands one
+            // padding+border off (the offset double-added).
+            // `a_hoisted_inline_block_is_tapped_where_its_ifc_paints_it` in that
+            // file pins it. Paint, for its part, never positions such a box
+            // through this entry: with a live IFC it is skipped by
+            // `drawn_by_its_ifc`, and with a virtualized one (`estimated_height`)
+            // it is not painted at all.
+            self.hoisted.push((
                 dom_order,
                 PaintEntry {
                     node_id: child_id,
-                    kind: if child.creates_stacking_context() {
+                    kind: if is_sc {
                         PaintKind::StackingContext
                     } else {
                         PaintKind::PositionedAuto
                     },
-                    offset_x: 0.0,
-                    offset_y: 0.0,
+                    offset_x: base_x,
+                    offset_y: base_y,
                     z_index: child.computed_style.z_index.unwrap_or(0),
+                    clips,
                 },
             ));
+
+            if is_sc {
+                // A stacking context owns its descendants — except the fixed ones,
+                // which the body reaches past it for.
+                if self.hoist_fixed {
+                    self.collect_fixed(&child.children);
+                }
+            } else {
+                // A positioned `z-index: auto` box is entered as an ordinary node,
+                // so its own hoisted descendants are this sequence's, not its.
+                self.descend(child, base_x, base_y);
+            }
+        }
+    }
+
+    /// Recurse into `child`'s children with `child`'s own layout offset, scroll
+    /// and clip folded into the walk's state.
+    fn descend(&mut self, child: &Node, parent_offset_x: f64, parent_offset_y: f64) {
+        // Unlike the entry push in `collect_hoisted` (which must NOT add this —
+        // see the comment there), the offset IS added here: this walk is entering
+        // `child`'s own coordinate space to place its hoisted descendants, and an
+        // IFC-positioned box's `layout.{x,y}` is content-box-relative, so
+        // descending through one without the correction puts every hoisted
+        // descendant a padding+border out (#407).
+        let (ifc_dx, ifc_dy) = crate::paint::ifc_content_box_offset(self.tree, child);
+
+        // `child`'s own painted origin, *before* its scroll offset: the box does
+        // not move when its content scrolls, so this is where its clip is. Its
+        // children, which do move, are placed at the scrolled origin below.
+        let cx = parent_offset_x + (child.layout.x + ifc_dx) as f64 * self.scale;
+        let cy = parent_offset_y + (child.layout.y + ifc_dy) as f64 * self.scale;
+        let x = cx - child.scroll_offset.0 * self.scale;
+        let y = cy - child.scroll_offset.1 * self.scale;
+
+        let pushed = match clip_shape(child, self.scale, cx, cy) {
+            Some((rect, radii)) => {
+                self.live.push(ClipRect { rect, radii });
+                true
+            }
+            None => false,
+        };
+        let outer_cb = self.cb_depth;
+        if child.establishes_abs_containing_block() {
+            self.cb_depth = self.live.len();
         }
 
-        collect_fixed(tree, &child.children, out, order);
+        self.collect_hoisted(&child.children, x, y);
+
+        self.cb_depth = outer_cb;
+        if pushed {
+            self.live.pop();
+        }
+    }
+
+    /// Walk into stacking contexts the body would otherwise not see past,
+    /// collecting the `position: fixed` boxes inside them.
+    ///
+    /// A fixed modal nested in an `overflow: auto` container is viewport-level
+    /// content that happens to live in the markup under a clip; without this it
+    /// would paint inside that clip, and be hit-tested inside it too. Its chain
+    /// is empty for the same reason.
+    fn collect_fixed(&mut self, children: &[RawNodeId]) {
+        for &child_id in children {
+            let Some(child) = self.tree.get(child_id) else {
+                continue;
+            };
+            let dom_order = self.order;
+            self.order += 1;
+
+            if child.computed_style.position == PositionValue::Fixed {
+                // A fixed box creates a stacking context unconditionally
+                // (#324), so this asks and gets `StackingContext` every time —
+                // but it keeps asking rather than hard-coding the answer,
+                // because the coupling is a fact about `creates_stacking_context`
+                // and not one this walk should re-state.
+                self.hoisted.push((
+                    dom_order,
+                    PaintEntry {
+                        node_id: child_id,
+                        kind: if child.creates_stacking_context() {
+                            PaintKind::StackingContext
+                        } else {
+                            PaintKind::PositionedAuto
+                        },
+                        offset_x: 0.0,
+                        offset_y: 0.0,
+                        z_index: child.computed_style.z_index.unwrap_or(0),
+                        clips: ClipSpan::EMPTY,
+                    },
+                ));
+            }
+
+            self.collect_fixed(&child.children);
+        }
     }
 }
