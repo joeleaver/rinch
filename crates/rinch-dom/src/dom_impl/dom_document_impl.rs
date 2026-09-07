@@ -291,12 +291,41 @@ impl DomDocument for RinchDocument {
         self.clear_ifc_root_recursive(node.0);
         if let Some(parent_id) = self.tree.nodes[node.0].parent {
             self.tree.nodes[parent_id].children.retain(|&x| x != node.0);
-            // Sync taffy
-            if let (Some(parent_taffy), Some(node_taffy)) = (
-                self.tree.nodes[parent_id].taffy_id,
-                self.tree.nodes[node.0].taffy_id,
-            ) {
-                self.taffy_remove_child_safe(parent_taffy, node_taffy);
+            // Sync taffy: remove this node's *contribution* to the parent's
+            // Taffy child list, which for a `display: contents` wrapper is its
+            // spliced-in descendants rather than its own (detached) id.
+            //
+            // `sync_display_contents` polyfills `display: contents` — which
+            // Taffy has no native concept of — by setting the wrapper's own
+            // Taffy style to `display: none` and splicing its children's Taffy
+            // ids directly into the parent's list. So the wrapper's own
+            // `taffy_id` is not among `parent_taffy`'s children, and removing
+            // *that* id is a silent no-op (`taffy_remove_child_safe` swallows
+            // a "not actually a child" removal by design). The node that
+            // really did occupy the slot — the child spliced in on the
+            // wrapper's behalf — was never asked to leave, and stayed a
+            // permanent invisible sibling still claiming its share of
+            // `flex-grow`.
+            //
+            // Reported against a route table where the one arm whose body is a
+            // reactive `if` gets an rsx `display: contents` marker div: the
+            // first navigation away from it stranded that screen's real root
+            // as a phantom `flex: 1` sibling of the app root, so every screen
+            // reached afterwards split the height with a ghost. Two `flex: 1`
+            // divs under a `flex: 1` column, one behind a contents wrapper, is
+            // the whole reproduction.
+            //
+            // This goes through the shared `taffy_detach_contribution` (#517)
+            // rather than an either/or of its own, which matters twice over.
+            // It removes the flattened set **and** the node's own id instead
+            // of choosing between them, so a node that computes `Contents`
+            // while its own Taffy node is still attached — the window between
+            // a display toggle and the sync that heals it — is covered; and it
+            // consults `Node::contents_spliced` as well as computed display
+            // (#520), which is the only record of a wrapper still spliced
+            // after its computed display has already changed back.
+            if let Some(parent_taffy) = self.tree.nodes[parent_id].taffy_id {
+                self.taffy_detach_contribution(parent_taffy, node.0);
             }
             self.invalidate_parent_ifc(parent_id);
             self.tree.layout_dirty = true; // Structural change needs full layout

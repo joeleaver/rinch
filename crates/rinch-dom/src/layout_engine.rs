@@ -1258,6 +1258,7 @@ impl RinchDocument {
     /// Recursively collect the effective Taffy children for a node,
     /// flattening any `display:contents` children so their grandchildren
     /// appear directly in the parent's child list.
+    ///
     fn collect_effective_taffy_children(
         nodes: &slab::Slab<crate::node::Node>,
         node_id: usize,
@@ -1390,12 +1391,16 @@ impl RinchDocument {
     /// legs of `append_child`/`insert_before`/`insert_child`) goes through
     /// here.
     ///
-    /// `remove_node` does NOT: PR #515 gave it the either/or form, which is
-    /// semantically different (it skips the own-id removal for a
-    /// `Contents`-computing node). Unifying `remove_node` onto this helper
-    /// would therefore CHANGE #515's behaviour — covering the
-    /// attached-but-unspliced window it currently misses — which may well be
-    /// wanted, but do it knowingly, not as a deduplication.
+    /// `remove_node` goes through here too (#515). It was written with an
+    /// either/or — flattened set for a `Contents`-computing node, own id
+    /// otherwise — and that was changed to this deliberately, not folded in as
+    /// a deduplication. Two reasons. The either/or misses the window where a
+    /// node computes `Contents` while its own Taffy node is still attached
+    /// (between a display toggle and the sync that heals it), and it cannot
+    /// see `contents_spliced` at all. And it made a whole mutant class
+    /// invisible: forcing its `is_contents` true — so a *plain* node's own id
+    /// is never removed — passed the entire rinch-dom suite. Removing both
+    /// sets unconditionally cannot express that bug.
     pub(crate) fn taffy_detach_contribution(
         &mut self,
         parent_taffy: taffy::NodeId,
