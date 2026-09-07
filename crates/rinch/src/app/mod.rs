@@ -4596,16 +4596,24 @@ mod popup_backdrop_hit_tests {
     //! `DropdownMenu` is two boxes over the page: the panel, and an invisible
     //! backdrop that catches the clicks that miss it. Which of the two a tap
     //! resolves to is decided by [`rinch_dom::stacking`], and the panel is only
-    //! above the backdrop while the two are in the *same* stacking context —
-    //! a `position: fixed` backdrop is not. Rinch hoists a fixed box to the
-    //! body so it escapes every ancestor clip, and because an overflow clip
-    //! *is* a stacking context here, it escapes every ancestor stacking
-    //! context with it: it then outranks every non-fixed box on the page
-    //! whatever the z-indexes say, panel included.
+    //! above the backdrop while the two are in the *same* stacking context.
     //!
-    //! So these tests mount the real component under its real stylesheet,
-    //! behind an `overflow: hidden` root — the shape of every app that has a
-    //! scroll container or a fixed-height shell — and tap an item.
+    //! They used not to be. Rinch hoists a `position: fixed` box to the body so
+    //! it escapes every ancestor clip, and an overflow clip *was* a stacking
+    //! context here, so it escaped every ancestor stacking context with it: a
+    //! fixed backdrop then outranked every non-fixed box on the page whatever
+    //! the z-indexes said, panel included. That is why #317 respelled the
+    //! backdrop `absolute`.
+    //!
+    //! **#324 stage B ended that.** `overflow` creates no stacking context, so
+    //! the backdrop's `99` and the panel's `100` meet in one sequence and `100`
+    //! wins — which is why the test below is called
+    //! `a_fixed_backdrop_no_longer_swallows_the_item_it_sits_under` and asserts
+    //! the opposite of what it used to.
+    //!
+    //! These tests mount the real component under its real stylesheet, behind
+    //! an `overflow: hidden` root — the shape of every app that has a scroll
+    //! container or a fixed-height shell — and tap an item.
 
     use super::*;
     use std::cell::Cell;
@@ -4857,11 +4865,13 @@ mod popup_backdrop_hit_tests {
     }
 
     /// The other half, with the fixed spelling: a tap that misses the panel is
-    /// still caught, and by the *whole viewport* rather than by the popup's
-    /// clipping ancestor — the dismissal reach #317 had to give up.
+    /// still caught.
     ///
-    /// The probe is outside the shell entirely, which an `absolute` backdrop
-    /// inside a clipped shell cannot reach.
+    /// What #317 gave up was the dismissal's *reach* — an `absolute` backdrop
+    /// is clipped by whatever clips the panel and a fixed one is not — but this
+    /// fixture cannot show that, and the comment in the body says why: the
+    /// shell is the whole viewport here, so there is no "outside the shell" to
+    /// aim at.
     #[test]
     fn a_fixed_backdrop_dismisses_from_outside_the_clipping_shell() {
         let mut menu = mount(Some(

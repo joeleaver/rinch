@@ -111,19 +111,28 @@ pub fn styles() -> String {
 
 /* Click-outside overlay.
 
-   `absolute`, deliberately not `fixed`: this box is authored to sit *below* the
-   menu row (199 against its 201), and `z-index` only orders boxes inside one
+   `absolute` rather than `fixed`: this box is authored to sit *below* the menu
+   row (199 against its 201), and `z-index` only orders boxes inside one
    stacking context. `fixed` hoists it out to the viewport's context, where its
-   199 no longer means anything relative to a row nested inside the window
-   container — which BorderlessWindow makes a stacking context via
+   199 no longer meant anything relative to a row nested inside the window
+   container — which BorderlessWindow made a stacking context via
    `overflow: hidden`. The overlay then covered its own menus and swallowed
    every entry click (#527). Its containing block is the menu layer, pinned at
    the window's top-left; the below-titlebar layout passes an inline `top` to
    climb back up to it.
 
-   A workaround, not the fix: `overflow` forming a stacking context is issue
-   #324, and this is the second site to paper over it after the
-   DropdownMenu/Select backdrops. Revert to `fixed` when #324 lands. */
+   **That deviation is gone.** #324 stage B took `overflow` out of
+   `Node::creates_stacking_context`, so the 199 and the 201 meet in one sequence
+   and `fixed` orders correctly too. Reverting to it is #324's stage C, along
+   with the DropdownMenu/Select backdrops (#317, the first site).
+
+   **The revert is two edits and they must land together**: this `position`, AND
+   `render_menu_bar_standalone`'s `top: -{top_offset}px` in
+   `rinch/src/menu/app_menu_bar.rs`, which exists purely to undo the
+   containing-block change `absolute` forces. Measured while landing stage B:
+   change only this one and a viewport-anchored overlay is shifted 36px off the
+   top of the window, so `the_below_titlebar_overlay_covers_the_whole_window`
+   fails; change both and all seven `menu::app_menu_bar` tests pass. */
 .rinch-app-menu-bar__overlay {
     position: absolute;
     top: 0;

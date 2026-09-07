@@ -635,11 +635,26 @@ impl Node {
     /// - `opacity < 1.0`
     /// - `transform` is non-identity
     ///
-    /// This is the CSS list (CSS 2.1 Appendix E, css-position-3 §10) minus the
-    /// creators rinch's `ComputedStyle` cannot yet express — `filter`,
-    /// `clip-path`, `mask`, `isolation`, `mix-blend-mode`, `contain: paint`,
-    /// `will-change`. Those are new style plumbing per property rather than a
-    /// stacking change, and are tracked separately with #415.
+    /// **Not the whole CSS list, and the shortfall is not only an
+    /// expressibility one.** `clip-path`, `mask`, `isolation`,
+    /// `mix-blend-mode`, `contain: paint` and `will-change` are absent from
+    /// `ComputedStyle` altogether, so those need new style plumbing per
+    /// property. But two creators are representable **today** and still
+    /// missing, measured rather than assumed:
+    ///
+    /// - **a non-`none` `filter`** (CSS Filter Effects §2.1). `filter:
+    ///   brightness(0.5)` reaches `ComputedStyle::filter_brightness` and paint
+    ///   consumes it, and this function still answers `false`. (`blur()` is the
+    ///   genuinely unexpressed part — only the four scalars survive
+    ///   `from_stylo`.)
+    /// - **a flex or grid item with a `z-index` other than `auto`**, even at
+    ///   `position: static` (css-flexbox-1 §5.4, css-grid-1 §6). Both the
+    ///   `z_index` and the parent's `display` are already here.
+    ///
+    /// Neither is a regression — both predate #324 — and neither is folded in
+    /// here, because adding a stacking-context creator changes paint order for
+    /// existing markup and wants its own change. Tracked separately, with
+    /// #415.
     ///
     /// **`overflow` is not on the list.** It used to be, so that a hoisted
     /// descendant stayed inside the clip bracket paint opened around one
@@ -701,8 +716,11 @@ impl Node {
     /// Per CSS that is any *positioned* element — `position` other than
     /// `static` — plus, since a transform makes an element the containing block
     /// for all its descendants, any element with a non-identity `transform`.
-    /// Overflow deliberately does not count: it forms a stacking context (see
-    /// [`Node::creates_stacking_context`]) but not a containing block.
+    /// Overflow deliberately does not count. It never established a containing
+    /// block; it used to form a *stacking context*, and this line used to cite
+    /// that as the reason the two questions are separate. Since #324 stage B it
+    /// forms neither — see [`Node::creates_stacking_context`] — so `overflow` is
+    /// simply absent from both lists, and the answer here is unchanged.
     ///
     /// This is what stops the walk in `out_of_flow::out_of_flow_kind`, which is
     /// how issue #204's ICB case is told apart from a layout Taffy already gets

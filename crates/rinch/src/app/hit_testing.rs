@@ -2133,4 +2133,120 @@ mod tests {
         assert_eq!(at(400.0, 300.0), None);
         assert_eq!(at(12.0, 12.0), None);
     }
+
+    /// A chained box under a **transform** is tapped where it paints.
+    ///
+    /// The chain lives in the collecting root's own untransformed space, and so
+    /// does the `x`/`y` this walk holds — but `vx`/`vy`, the viewport point kept
+    /// beside them for `position: fixed` subtrees, does not. The two coincide
+    /// everywhere except under a transform, which is why nothing else in the
+    /// file tells them apart: swap the filter to `vx`/`vy` and every other test
+    /// still passes while a hoisted box becomes untappable *inside its own
+    /// clip*.
+    ///
+    /// The arrangement is ordinary — a transformed panel (the
+    /// `translate(-50%,-50%)` centred-modal idiom two tests up) holding a
+    /// scroller with `position: relative` rows.
+    #[test]
+    fn a_tap_on_a_chained_box_under_a_transform_lands_where_it_paints() {
+        let mut doc = RinchDocument::new();
+        let body = doc.body();
+
+        let tx = doc.create_element("div");
+        doc.set_attribute(
+            tx,
+            "style",
+            "position: relative; z-index: 1; transform: translate(100px, 100px); \
+             width: 400px; height: 400px",
+        );
+        doc.append_child(body, tx);
+
+        let clipbox = doc.create_element("div");
+        doc.set_attribute(
+            clipbox,
+            "style",
+            "overflow: hidden; width: 100px; height: 100px",
+        );
+        doc.append_child(tx, clipbox);
+
+        let panel = doc.create_element("div");
+        doc.set_attribute(
+            panel,
+            "style",
+            "position: relative; z-index: 5; width: 300px; height: 300px",
+        );
+        doc.append_child(clipbox, panel);
+
+        doc.resolve_layout(800.0, 600.0);
+        doc.tree.nodes[clipbox.0].scroll_offset = (0.0, 20.0);
+
+        assert_eq!(
+            hit_test(&doc.tree, 150.0, 150.0),
+            Some(panel.0),
+            "inside the clip at its transformed position — the chain is tested \
+             in the root's own space, so the probe point must be too"
+        );
+        assert_eq!(
+            hit_test(&doc.tree, 250.0, 250.0),
+            Some(tx.0),
+            "outside the clip and inside the transformed root: the panel reaches \
+             here unclipped and must not take the tap"
+        );
+        assert_eq!(
+            hit_test(&doc.tree, 50.0, 50.0),
+            Some(doc.tree.body_id),
+            "and above the transform entirely"
+        );
+    }
+
+    /// A chain link is inclusive on both edges, like the `check_children` gate
+    /// it stands in for — so a tap on the last pixel of a clipping ancestor
+    /// still reaches the box hoisted past it.
+    ///
+    /// `ClipRect::contains` says so in a doc comment and nothing measured it:
+    /// every other chain probe sits comfortably inside or outside, which is the
+    /// fixed point where `<` and `<=` agree.
+    #[test]
+    fn a_chain_link_is_inclusive_on_its_own_edge() {
+        let mut doc = RinchDocument::new();
+        let body = doc.body();
+        doc.set_attribute(body, "style", "position: relative");
+
+        let clipbox = doc.create_element("div");
+        doc.set_attribute(
+            clipbox,
+            "style",
+            "overflow: hidden; width: 100px; height: 100px",
+        );
+        doc.append_child(body, clipbox);
+
+        let panel = doc.create_element("div");
+        doc.set_attribute(
+            panel,
+            "style",
+            "position: relative; z-index: 5; width: 400px; height: 400px",
+        );
+        doc.append_child(clipbox, panel);
+
+        doc.resolve_layout(800.0, 600.0);
+        doc.tree.nodes[clipbox.0].scroll_offset = (0.0, 20.0);
+
+        assert_eq!(
+            hit_test(&doc.tree, 100.0, 50.0),
+            Some(panel.0),
+            "x = 100 is the clip's own right edge, and the gate this stands in \
+             for is inclusive there"
+        );
+        assert_eq!(
+            hit_test(&doc.tree, 50.0, 100.0),
+            Some(panel.0),
+            "…and so is its bottom edge, which its scroll offset does not move"
+        );
+        assert_eq!(
+            hit_test(&doc.tree, 101.0, 50.0),
+            Some(doc.tree.body_id),
+            "one pixel past it is out, so the pair above is an edge and not just \
+             a generous rect"
+        );
+    }
 }

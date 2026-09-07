@@ -897,4 +897,165 @@ mod painted {
         assert_eq!(pixel_at(&painter, 50, 50), RED);
         assert_eq!(pixel_at(&painter, 150, 50), NOTHING);
     }
+
+    /// A chain link under a **transform**, which nothing else here covers.
+    ///
+    /// The collecting root is transformed, so every link is recorded in that
+    /// root's own untransformed space and paint pushes it under
+    /// `node_transform` with no per-clip composition. The module docs assert
+    /// that; this measures it. Its twin in
+    /// `rinch/src/app/hit_testing.rs`
+    /// (`a_tap_on_a_chained_box_under_a_transform_lands_where_it_paints`) reads
+    /// the same fixture from the input side, and the two are the only thing
+    /// standing between the chain and a probe point taken in the wrong space.
+    ///
+    /// The transform is a 100px translate, so a link left in screen space —
+    /// or a probe point taken in viewport space — is off by exactly that.
+    #[test]
+    fn a_chain_link_under_a_transform_clips_where_the_transform_puts_it() {
+        let mut doc = RinchDocument::new();
+        let body = doc.body();
+
+        let tx = doc.create_element("div");
+        doc.set_attribute(
+            tx,
+            "style",
+            "position: relative; z-index: 1; transform: translate(100px, 100px); \
+             width: 400px; height: 400px",
+        );
+        doc.append_child(body, tx);
+
+        let clipbox = doc.create_element("div");
+        doc.set_attribute(
+            clipbox,
+            "style",
+            "overflow: hidden; width: 100px; height: 100px",
+        );
+        doc.append_child(tx, clipbox);
+
+        let panel = doc.create_element("div");
+        doc.set_attribute(
+            panel,
+            "style",
+            "position: relative; z-index: 5; width: 300px; height: 300px; \
+             background-color: rgb(255, 0, 0)",
+        );
+        doc.append_child(clipbox, panel);
+
+        doc.resolve_layout(800.0, 600.0);
+        doc.tree.nodes[raw(clipbox)].scroll_offset = (0.0, 20.0);
+
+        let inner = stacking_paint_order(&doc.tree, raw(tx), false, 1.0, 0.0, 0.0);
+        assert_eq!(
+            chain_of(&inner, raw(panel)),
+            vec![(0.0, 0.0, 100.0, 100.0)],
+            "the link is in the transformed root's own space, not on screen"
+        );
+
+        let mut painter = TinySkiaPainter::new(500, 500);
+        paint(&mut doc, &mut painter);
+
+        assert_eq!(
+            pixel_at(&painter, 150, 150),
+            RED,
+            "inside the clip, which the transform has moved to (100,100)-(200,200)"
+        );
+        assert_eq!(
+            pixel_at(&painter, 120, 120),
+            RED,
+            "…and near its top-left corner"
+        );
+        assert_eq!(
+            pixel_at(&painter, 250, 250),
+            NOTHING,
+            "outside the clip and inside the transformed root, where the panel \
+             reaches unclipped: a link pushed without the transform paints here"
+        );
+        assert_eq!(
+            pixel_at(&painter, 50, 50),
+            NOTHING,
+            "and above the transform entirely, where a link left in screen space \
+             would have put the clip"
+        );
+    }
+}
+
+/// The run-length reuse is not decoration: it is what keeps the full-surface
+/// `Mask` that `TinySkiaPainter::push_clip` allocates from being paid once per
+/// hoisted box. `sibling_scrollers_do_not_share_a_chain` pins that the reuse is
+/// never *wrong*; nothing pinned that it happens at all, so a refactor could
+/// quietly turn it off and leave every pixel identical.
+///
+/// Counted the way `paint_children_with_stacking` counts: a run starts wherever
+/// an entry's `ClipSpan` differs from the one currently open.
+///
+/// Note the 200-row row is a **fixed point**: one scroller means the table only
+/// ever holds one chain, so a collector that reused far less would still answer
+/// 1 there. The 50-scroller row is the one that discriminates — reusing only
+/// when the whole table matches takes it to 197.
+#[test]
+fn consecutive_entries_that_share_a_chain_share_one_clip_push() {
+    fn pushes(order: &PaintOrder) -> (usize, usize) {
+        let mut open = rinch_dom::stacking::ClipSpan::EMPTY;
+        let mut n = 0usize;
+        for e in order.iter() {
+            if e.clips != open {
+                open = e.clips;
+                n += open.len();
+            }
+        }
+        (n, order.clips.len())
+    }
+
+    let mut doc = RinchDocument::new();
+    let body = doc.body();
+    doc.set_attribute(body, "style", "position: relative");
+    let s = doc.create_element("div");
+    doc.set_attribute(
+        s,
+        "style",
+        "position: relative; overflow: auto; width: 300px; height: 400px",
+    );
+    doc.append_child(body, s);
+    for _ in 0..200 {
+        div(
+            &mut doc,
+            s,
+            "position: relative; width: 300px; height: 20px",
+        );
+    }
+    doc.resolve_layout(800.0, 600.0);
+    doc.tree.nodes[raw(s)].scroll_offset = (0.0, 100.0);
+    assert_eq!(
+        pushes(&body_order(&doc)),
+        (1, 1),
+        "200 positioned rows under one scroller are one push and one table entry"
+    );
+
+    let mut doc2 = RinchDocument::new();
+    let body2 = doc2.body();
+    doc2.set_attribute(body2, "style", "position: relative");
+    for _ in 0..50 {
+        let s = doc2.create_element("div");
+        doc2.set_attribute(
+            s,
+            "style",
+            "position: relative; overflow: auto; width: 300px; height: 40px",
+        );
+        doc2.append_child(body2, s);
+        for _ in 0..4 {
+            div(
+                &mut doc2,
+                s,
+                "position: relative; width: 300px; height: 20px",
+            );
+        }
+    }
+    doc2.resolve_layout(800.0, 600.0);
+    assert_eq!(
+        pushes(&body_order(&doc2)),
+        (50, 50),
+        "50 scrollers of 4 rows are one push each, not one per row — this is the \
+         row a length-only or whole-table reuse takes to 197"
+    );
 }

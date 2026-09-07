@@ -802,6 +802,7 @@ backdrops (PR #317) and the `top: -top_offset` compensation
 landing stage B, and spelled out under **Stacking contexts and the clip chain**
 below. `menu::app_menu_bar`'s tests cover all three layouts and are green both
 ways round.
+
 The non-borderless layout (`render_with_menu_bar`) was never broken — its
 wrapper carries no `overflow`, so nothing between the bar and the body formed a
 context.
@@ -1321,8 +1322,10 @@ it the overlay now covers the window, as it always has on the web.
 **Overflow clipping.** One predicate — `Node::clips_overflow()`, "either axis is
 not `visible`" — and one shape, `paint::clip_shape` (the rounded border box).
 Everything that needs either asks those: paint's clip bracket, its dirty-region
-subtree prune, the layer-bounds walk, `creates_stacking_context`, hit testing's
-`check_children` gate, and `RinchApp`'s two viewport clip walks. Those seven
+subtree prune, the layer-bounds walk, a hoisted entry's clip chain, hit
+testing's `check_children` gate, and `RinchApp`'s two viewport clip walks.
+(`creates_stacking_context` was on that list until stage B and is deliberately
+not any more — see **Stacking contexts and the clip chain** below.) Those seven
 sites held **four** different predicates before #324 stage A, and the
 disagreement was real rather than cosmetic: paint, `layer_bounds` and
 `creates_stacking_context` matched `overflow_y` against `Hidden | Scroll | Auto`
@@ -1355,13 +1358,27 @@ routing, the scrollbar overlays) wants a different question and must not borrow
 this one: `visible` and `clip` are the two non-scrollable values and only one of
 them clips.
 
-**Stacking contexts and the clip chain.** `Node::creates_stacking_context()` is
-the CSS list, as far as `ComputedStyle` can express it: a positioned box with an
-explicit `z-index`, `position: fixed` or `sticky` whatever the `z-index`,
-`opacity < 1`, a non-identity `transform`. The creators rinch cannot yet
-represent — `filter`, `clip-path`, `mask`, `isolation`, `mix-blend-mode`,
-`contain: paint`, `will-change` — are new style plumbing per property and are
-tracked with #415, not here.
+**Stacking contexts and the clip chain.** `Node::creates_stacking_context()`
+answers: a positioned box with an explicit `z-index`, `position: fixed` or
+`sticky` whatever the `z-index`, `opacity < 1`, a non-identity `transform`.
+
+That is **not** the whole CSS list, and the shortfall is not only about what
+`ComputedStyle` can hold. `clip-path`, `mask`, `isolation`, `mix-blend-mode`,
+`contain: paint` and `will-change` are absent from `ComputedStyle` altogether
+and need new style plumbing per property. But **two creators are representable
+today and simply missing** (measured, not argued):
+
+- a non-`none` **`filter`** (CSS Filter Effects §2.1) — `filter: brightness(0.5)`
+  reaches `ComputedStyle::filter_brightness` and paint consumes it, and the
+  predicate still answers `false`. (`blur()` really is unexpressed; only the four
+  scalars survive `from_stylo`.)
+- a **flex or grid item with a `z-index`** other than `auto`, even at
+  `position: static` (css-flexbox-1 §5.4, css-grid-1 §6) — both the `z_index`
+  and the parent's `display` are already in `ComputedStyle`.
+
+Neither is a regression; both predate #324, and neither was folded into stage B,
+because adding a creator changes paint order for existing markup. Tracked with
+#415.
 
 **`overflow` is not on that list** (#324 stage B). It used to be, so that a
 descendant hoisted to an ancestor's paint sequence stayed inside the bracket
@@ -1401,14 +1418,38 @@ Hit testing tests a link's **rect only**, ignoring its radii, matching the
 `check_children` gate it stands in for; paint pushes the rounded shape. That is
 the pre-existing rounded-corner divergence, not a new one.
 
+**Two behaviour changes that follow from the rules, are CSS-correct, and will
+still surprise someone.**
+
+- **An `absolute` with no positioned ancestor now escapes an intervening
+  *static* `overflow: hidden` entirely.** It resolves against the initial
+  containing block (#204), so no `overflow` box between it and the root is in
+  its containing-block chain and its chain is empty. Before, that box was a
+  stacking context and its bracket caught everything hoisted into its sequence,
+  so the absolute was clipped. **Measured against Chromium**, not reasoned:
+  `elementFromPoint` 100px outside a static `overflow: hidden` 200x200 box
+  answers the absolute, and its `offsetParent` is `BODY`. On a transparent
+  borderless window the visible form is an absolute painting into the rounded
+  corners; the remedy is the browser's — put `position: relative` on the wrapper
+  you meant to clip with.
+- **A `z-index: -1` descendant of a scroller now sorts into the *body's* step 1**
+  rather than the scroller's, so it paints behind the scroller's own background
+  instead of merely behind its content. Still clipped by the chain. This one
+  follows from the same rule rather than being separately measured — the
+  scroller is not a stacking context, so it cannot hold a negative-`z` layer of
+  its own.
+
 **Cost.** `TinySkiaPainter::push_clip` allocates a full-surface `Mask`, so a
 push is not free — but consecutive entries that share a `ClipSpan` share one
 push, which is exact rather than a heuristic (identical spans name identical
 clips), and it collapses the shape that motivated the worry: a scroller with 200
 positioned rows is **one** push, not 200. Measured at 1200x800, software
 painter, best of 40: 200 positioned rows in one scroller 1.82 → 1.90ms (+4.5%);
-an adversarial 50 scrollers x 4 rows, where the runs interleave and 99 pushes are
-needed, 2.73 → 3.08ms (+13%). Building the body's sequence went 1 → 3us. The
+an adversarial 50 scrollers x 4 rows — one push per scroller, so **50**, since
+each scroller's own entry carries no chain and interrupts the run — 2.73 →
+3.08ms (+13%). Building the body's sequence went 1 → 3us. Both counts are pinned
+by `clip_chain_tests::consecutive_entries_that_share_a_chain_share_one_clip_push`
+rather than left as an annotation on a deleted benchmark. The
 containment skip the scoping proposed (don't push a clip the entry is entirely
 inside) is **not** implemented: a sound version needs a subtree extent per entry,
 which is a new per-frame walk for every positioned box, and the run reuse already
