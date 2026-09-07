@@ -664,10 +664,25 @@ impl RinchDocument {
             // grouping below ending the run on it — split `a<none/>b` onto two
             // lines browsers render as one.
             //
-            // A `display: contents` child still counts, transparent or not: an
-            // opaque wrapper holds real in-flow block content, and for a
-            // transparent one this keeps main's classification of the mixed
-            // direct-inline-plus-wrapper shape, which stays out of scope here.
+            // A `display: contents` child counts only when it is **opaque** —
+            // when it actually wraps in-flow block-level content. CSS 2.1
+            // §9.2.1.1 generates an anonymous block box for a block container
+            // holding both inline and block-level in-flow children, and a
+            // transparent wrapper contributes no such child: it wraps inline
+            // content, nothing, or only out-of-flow boxes, all of which are
+            // exactly what #406 and #366 already established do not force one.
+            //
+            // Counting it unconditionally was #518. `text` beside a
+            // `display: contents` wrapper whose only child is absolutely
+            // positioned minted an anonymous box, which left the wrapper's own
+            // `display: none` Taffy node attached with the absolute trapped
+            // beneath it — laid out 0x0, never positioned, never painted.
+            // The IFC scan had already classified that wrapper as transparent
+            // (#289/#502), so the two sites disagreed about the same node, and
+            // the absolute fell through the gap. That is the defect family the
+            // whole #466 sequence was about, surviving in the one site that
+            // still asked the question its own way.
+            //
             // The display-first precedence — `display: contents; position:
             // absolute` is `Contents`, never `OutOfFlow`, because Stylo does
             // not blockify contents and a boxless element has no box to take
@@ -677,11 +692,12 @@ impl RinchDocument {
                 self.tree
                     .nodes
                     .get(c)
-                    .map(|n| {
-                        matches!(
-                            n.inline_flow_role(),
-                            InlineFlowRole::Contents | InlineFlowRole::InFlowBlock
-                        )
+                    .map(|n| match n.inline_flow_role() {
+                        InlineFlowRole::InFlowBlock => true,
+                        InlineFlowRole::Contents => {
+                            !Self::contents_is_inline_transparent(&self.tree.nodes, c)
+                        }
+                        _ => false,
                     })
                     .unwrap_or(false)
             });
@@ -710,14 +726,29 @@ impl RinchDocument {
                         continue;
                     }
                     InlineFlowRole::Inline => current_run.push(child_id),
-                    // An in-flow block ends the run; so does a `display:
-                    // contents` wrapper, transparent or not, matching
-                    // `has_block` above. Display-first (#366): a `contents;
-                    // position: absolute` wrapper lands here, not in the
-                    // out-of-flow skip — this loop used to test `position`
-                    // first and skip it, leaving its wrapped block painted
-                    // after text that follows it in the DOM.
-                    InlineFlowRole::Contents | InlineFlowRole::InFlowBlock => {
+                    // An in-flow block ends the run; so does an **opaque**
+                    // `display: contents` wrapper, matching `has_block` above
+                    // — the two must agree about the same node or a container
+                    // is classified as mixed and then grouped as if it were
+                    // not (#518). A transparent wrapper contributes no
+                    // block-level box, so it no more ends a run than a
+                    // `display: none` child does: ending it there would split
+                    // the text on either side into two anonymous boxes, and
+                    // two lines, where browsers render one.
+                    //
+                    // Display-first (#366): a `contents; position: absolute`
+                    // wrapper lands here, not in the out-of-flow skip — this
+                    // loop used to test `position` first and skip it, leaving
+                    // its wrapped block painted after text that follows it in
+                    // the DOM.
+                    InlineFlowRole::Contents => {
+                        if !Self::contents_is_inline_transparent(&self.tree.nodes, child_id)
+                            && !current_run.is_empty()
+                        {
+                            runs.push(std::mem::take(&mut current_run));
+                        }
+                    }
+                    InlineFlowRole::InFlowBlock => {
                         if !current_run.is_empty() {
                             runs.push(std::mem::take(&mut current_run));
                         }
