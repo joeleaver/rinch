@@ -6,6 +6,14 @@ You have two options. The first one is almost always what you want.
 
 Write a function with a PascalCase name and `#[component]`. The macro generates a struct, a `Default` impl, and a `Component` trait impl. Parameters become props. Done.
 
+> **The name's case is what makes it a component.** `rsx!` reads it to tell
+> markup from a component, so `MyThing { … }` calls your function while
+> `my_thing { … }` is looked up as an HTML tag. A lowercase `#[component]`
+> function is still perfectly good Rust — it just has to be called as one:
+> `{ my_thing(__scope) }`. Writing `my_thing { … }` is a compile error that says
+> so (issue #528); before that it rendered an empty `<my_thing>` element and
+> never called the function.
+
 ```rust
 use rinch::prelude::*;
 

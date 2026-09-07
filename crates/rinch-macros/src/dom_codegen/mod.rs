@@ -50,6 +50,7 @@ use quote::quote;
 use crate::element::RsxElement;
 use crate::helpers::{get_closure_expr, is_literal_expr};
 use crate::node::RsxNode;
+use crate::tags;
 
 use captures::{collect_capture_idents, is_move_closure, shadow_clones};
 
@@ -216,8 +217,69 @@ pub fn element_to_dom(element: &RsxElement, ctx: &mut DomCodegenContext) -> Toke
         return component::element_to_dom_component(element, ctx);
     }
 
+    // A lowercase name that is not a tag is almost always a lowercase
+    // `#[component]` function, which `rsx!` cannot recognise: it decides
+    // component-or-tag from the *case* of the name, so `todo_input {}` used to
+    // become an empty `<todo_input>` element and the function was never called
+    // (issue #528). Every symptom pointed away from the cause — it compiled
+    // with no warning, it rendered a real DOM node so the tree looked
+    // structural rather than missing, and the node was empty and unstyled so
+    // it read as a CSS problem. Now it says so, and names both ways out.
+    if !tags::is_known_tag(&name) {
+        return unknown_element_error(element).to_compile_error();
+    }
+
     // Generate HTML element
     html::element_to_dom_html(element, ctx)
+}
+
+/// The diagnostic for an element name `rsx!` can make no sense of.
+///
+/// Two audiences, and the message has to serve both without guessing wrong
+/// about which one is reading. A snake_case name is a lowercase `#[component]`
+/// function — `#[component]` documents lowercase and PascalCase as
+/// interchangeable ways to *define* one, so the asymmetry at the call site is
+/// not something a reader would think to check — and it gets the two fixes.
+/// A near-miss on a real tag is an ordinary typo and gets the suggestion
+/// instead. `closest_tag` deliberately declines to suggest anything for a
+/// snake_case name, so these cases do not blur into each other: telling
+/// someone that `todo_input` might be a misspelt `output` sends them looking
+/// for a typo that is not there.
+fn unknown_element_error(element: &RsxElement) -> syn::Error {
+    let name = element.name.to_string();
+
+    let help = match tags::closest_tag(&name) {
+        Some(tag) => format!("help: did you mean `{tag}`?"),
+        None => format!(
+            "note: `rsx!` reads an element name's case to tell markup from a \
+             component, so a lowercase name is only ever an HTML or SVG tag\n\
+             help: rename it to PascalCase — `#[component] fn {pascal}(…)` \
+             invoked as `{pascal} {{ … }}` — which also gives it props and \
+             children\n\
+             help: or call it as a plain function in an expression position: \
+             `{{ {name}(__scope) }}`",
+            pascal = to_pascal_case(&name),
+        ),
+    };
+
+    syn::Error::new_spanned(
+        &element.name,
+        format!("`{name}` is not a known HTML or SVG element\n{help}"),
+    )
+}
+
+/// `todo_input` -> `TodoInput`, for naming the rename in the diagnostic.
+fn to_pascal_case(name: &str) -> String {
+    name.split('_')
+        .filter(|part| !part.is_empty())
+        .map(|part| {
+            let mut chars = part.chars();
+            match chars.next() {
+                Some(first) => first.to_ascii_uppercase().to_string() + chars.as_str(),
+                None => String::new(),
+            }
+        })
+        .collect()
 }
 
 /// Generate DOM construction code for an RSX node.
@@ -333,7 +395,88 @@ pub fn node_to_dom(node: &RsxNode, ctx: &mut DomCodegenContext) -> TokenStream2 
 #[cfg(test)]
 mod tests {
     use super::helpers::is_likely_reactive;
-    use syn::{Expr, parse_quote};
+    use super::*;
+    use syn::{Expr, parse_quote, parse_str};
+
+    /// Generate an element and return the code as a string.
+    fn codegen(src: &str) -> String {
+        let element: RsxElement = parse_str(src).expect("parses");
+        let mut ctx = DomCodegenContext::new();
+        element_to_dom(&element, &mut ctx).to_string()
+    }
+
+    // ── Unknown element names (issue #528) ───────────────────────────────
+
+    /// The bug: a lowercase `#[component]` function in element position became
+    /// an empty element of that name and the function was never called. It
+    /// compiled, it rendered a real node, and the node was empty — so every
+    /// symptom pointed at CSS. Now it is a compile error.
+    #[test]
+    fn a_lowercase_component_name_is_a_compile_error() {
+        let out = codegen("todo_input {}");
+        assert!(
+            out.contains("compile_error"),
+            "`todo_input {{}}` must not silently become an element: {out}"
+        );
+        assert!(
+            !out.contains("create_element"),
+            "and must not generate one either: {out}"
+        );
+    }
+
+    /// The diagnostic has to name both ways out, because which one is right
+    /// depends on what the reader wanted — a real component with props and
+    /// children, or a one-off helper called inline.
+    #[test]
+    fn the_diagnostic_names_both_fixes() {
+        let element: RsxElement = parse_str("todo_input {}").expect("parses");
+        let msg = unknown_element_error(&element).to_string();
+        assert!(
+            msg.contains("TodoInput"),
+            "must name the PascalCase rename: {msg}"
+        );
+        assert!(
+            msg.contains("todo_input(__scope)"),
+            "must name the plain-function call: {msg}"
+        );
+    }
+
+    /// An ordinary typo gets the suggestion instead — and, importantly, a
+    /// snake_case component does *not*, so the two cases never blur.
+    #[test]
+    fn a_typo_suggests_a_tag_and_a_component_name_does_not() {
+        let typo: RsxElement = parse_str("dvi {}").expect("parses");
+        let msg = unknown_element_error(&typo).to_string();
+        assert!(msg.contains("did you mean `div`"), "{msg}");
+
+        let component: RsxElement = parse_str("todo_input {}").expect("parses");
+        let msg = unknown_element_error(&component).to_string();
+        assert!(
+            !msg.contains("did you mean"),
+            "a snake_case component must not be reported as a misspelt tag — \
+             it sends the reader after a typo that is not there: {msg}"
+        );
+    }
+
+    /// The other half: real tags must still generate elements. Without this,
+    /// rejecting *everything* would pass the tests above.
+    #[test]
+    fn known_tags_still_generate_elements() {
+        for tag in ["div", "span", "input", "svg", "path", "textarea", "video"] {
+            let out = codegen(&format!("{tag} {{}}"));
+            assert!(
+                out.contains("create_element") && !out.contains("compile_error"),
+                "`{tag}` must still be markup: {out}"
+            );
+        }
+    }
+
+    /// And PascalCase components are untouched by the new check.
+    #[test]
+    fn pascal_case_components_are_unaffected() {
+        let out = codegen("Button {}");
+        assert!(!out.contains("compile_error"), "{out}");
+    }
 
     #[test]
     fn test_is_likely_reactive_method_call() {

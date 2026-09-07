@@ -122,7 +122,7 @@ pub fn TodoItem(
 }
 
 #[component]
-pub fn todo_input() -> NodeHandle {
+pub fn TodoInput() -> NodeHandle {
     let store = use_store::<TodoStore>();
 
     rsx! {
@@ -144,7 +144,7 @@ pub fn todo_input() -> NodeHandle {
 }
 
 #[component]
-pub fn filter_buttons() -> NodeHandle {
+pub fn FilterButtons() -> NodeHandle {
     let store = use_store::<TodoStore>();
 
     rsx! {
@@ -172,7 +172,7 @@ pub fn filter_buttons() -> NodeHandle {
 }
 
 #[component]
-pub fn todo_list() -> NodeHandle {
+pub fn TodoList() -> NodeHandle {
     let store = use_store::<TodoStore>();
 
     rsx! {
@@ -212,9 +212,9 @@ fn app() -> NodeHandle {
                     )}
                 }
 
-                todo_input {}
-                filter_buttons {}
-                todo_list {}
+                TodoInput {}
+                FilterButtons {}
+                TodoList {}
 
                 if store.todos.get().iter().any(|t| t.completed) {
                     Button {

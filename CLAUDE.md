@@ -383,6 +383,16 @@ fn card(title: &str) -> NodeHandle {
 
 Both patterns are supported -- `#[component]` is preferred for new code, and the manual `__scope` parameter continues to work.
 
+**A lowercase `#[component]` is a plain function, and `rsx!` cannot invoke it as
+an element.** `rsx!` decides component-or-tag from the *case* of the name, so
+only PascalCase reaches a component; a lowercase name is looked up as an HTML or
+SVG tag. Write `{ card(__scope) }` to call one inline, or name it `Card` and
+invoke it as `Card { … }`. Getting this wrong used to compile and render an
+empty `<card>` element with the function never called — silent, and it looked
+like a CSS bug (issue #528). It is now a compile error naming both fixes, and an
+unknown *tag* gets a "did you mean" suggestion (`crates/rinch-macros/src/tags.rs`
+holds the accepted set).
+
 ### PascalCase Components (Component Generation)
 
 When a `#[component]` function uses a PascalCase name, the macro generates a struct and `Component` trait implementation:
