@@ -29,6 +29,7 @@ import android.view.inputmethod.InputMethodManager;
 
 import java.io.ByteArrayOutputStream;
 import java.io.InputStream;
+import java.io.OutputStream;
 import java.util.HashMap;
 
 import android.media.ExifInterface;
@@ -653,21 +654,71 @@ public class RinchActivity extends NativeActivity {
 
     // ── Content URI Reader ──────────────────────────────────────────────
 
+    // try-with-resources, matching the writer below: the bare `is.close()`
+    // this used to end with does not run when `read` throws, leaking the
+    // provider's file descriptor for the life of the process.
     public byte[] readContentUri(String uriString) {
         try {
             Uri uri = Uri.parse(uriString);
-            InputStream is = getContentResolver().openInputStream(uri);
-            if (is == null) return null;
-            ByteArrayOutputStream baos = new ByteArrayOutputStream();
-            byte[] buffer = new byte[8192];
-            int len;
-            while ((len = is.read(buffer)) != -1) {
-                baos.write(buffer, 0, len);
+            try (InputStream is = getContentResolver().openInputStream(uri)) {
+                if (is == null) return null;
+                ByteArrayOutputStream baos = new ByteArrayOutputStream();
+                byte[] buffer = new byte[8192];
+                int len;
+                while ((len = is.read(buffer)) != -1) {
+                    baos.write(buffer, 0, len);
+                }
+                return baos.toByteArray();
             }
-            is.close();
-            return baos.toByteArray();
         } catch (Exception e) {
+            android.util.Log.w("rinch", "readContentUri failed: " + uriString, e);
             return null;
+        }
+    }
+
+    // ── Content URI Writer ───────────────────────────────────────────────
+
+    // The other half of the reader above. `shareImage` also writes through a
+    // content URI, but only to a MediaStore JPEG it created itself; this one
+    // takes whatever URI `saveFilePicker`'s ACTION_CREATE_DOCUMENT handed
+    // back, which can be any document provider on the device. It reports
+    // success rather than swallowing the exception, because a failed save has
+    // a caller waiting on it where a failed share does not.
+    //
+    // Mode "wt", NOT the "w" that the one-argument openOutputStream(uri)
+    // defaults to. Truncation under "w" is explicitly undefined — the platform
+    // javadoc for this call says "the exact implementation of these may differ
+    // for each Provider implementation - for example, 'w' may or may not
+    // truncate" — and the framework's own helper leaves it off:
+    // FileUtils.translateModeStringToPosix maps a mode starting with "w" to
+    // O_WRONLY | O_CREAT and adds O_TRUNC only when the string contains 't'.
+    // So on any provider using it, writing 6KB over an existing 10KB document
+    // leaves the last 4KB of the old file in place and still reports success:
+    // silent corruption in the save path, with the caller told it worked.
+    // "wt" asks for truncation explicitly and is in this call's documented
+    // mode set ("r", "w", "wt", "wa", "rw", "rwt").
+    //
+    // This is not only about re-saving to a URI the app kept. A provider is
+    // free to return an existing document when the user picks a name already
+    // taken, and write_content_uri is public API that a caller may point at
+    // any content URI it holds — so "ACTION_CREATE_DOCUMENT made it, therefore
+    // it is empty" is not an assumption this can rest on.
+    //
+    // try-with-resources, so a throwing write still closes the stream. An
+    // OutputStream left open holds buffered bytes that never reach the
+    // document and can leave the provider's file locked or half-written.
+    public boolean writeContentUri(String uriString, byte[] bytes) {
+        try {
+            Uri uri = Uri.parse(uriString);
+            try (OutputStream os = getContentResolver().openOutputStream(uri, "wt")) {
+                if (os == null) return false;
+                os.write(bytes);
+                os.flush();
+                return true;
+            }
+        } catch (Exception e) {
+            android.util.Log.w("rinch", "writeContentUri failed: " + uriString, e);
+            return false;
         }
     }
 }

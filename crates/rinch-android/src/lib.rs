@@ -38,6 +38,15 @@
 //! structure — a refcounted guard rather than a registry — so its edges are
 //! host-tested too. Nothing in this repository builds an APK in CI, so logic
 //! left behind the `cfg` is logic nothing checks (issue #183 PR5).
+//!
+//! `RinchActivity.java` is worse off still: no build in this repository
+//! compiles it, so a syntax error there passes every check we have (issue
+//! #516). `tests/java_contract_tests.rs` is the narrow answer — host-compiled
+//! assertions about that file's *source text*, for the few details whose loss
+//! is silent at every other layer. It cannot tell you the Java works; it can
+//! tell you that, say, the content-URI writer still opens a truncating stream.
+//! Add to it sparingly, and only where a compile error and a device would both
+//! stay quiet.
 
 #[cfg(target_os = "android")]
 mod bridge;

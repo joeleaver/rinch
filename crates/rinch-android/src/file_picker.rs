@@ -1,8 +1,9 @@
 //! Android SAF (Storage Access Framework) file picker.
 //!
 //! Provides `pick_file` and `save_file` using ACTION_OPEN_DOCUMENT /
-//! ACTION_CREATE_DOCUMENT intents, plus `read_content_uri` to read
-//! bytes from a `content://` URI via ContentResolver.
+//! ACTION_CREATE_DOCUMENT intents, plus `read_content_uri` and
+//! `write_content_uri` to move bytes across a `content://` URI via
+//! ContentResolver.
 
 use jni::objects::JValue;
 
@@ -92,5 +93,54 @@ pub fn read_content_uri(uri: &str) -> Result<Vec<u8>, String> {
         // Convert i8 array to u8 array (safe reinterpret)
         let bytes: Vec<u8> = buf.into_iter().map(|b| b as u8).collect();
         Ok(bytes)
+    })
+}
+
+/// Write bytes to a `content://` URI via the Java ContentResolver — the other
+/// half of [`read_content_uri`], and the piece [`save_file`] needs to be useful
+/// on its own: `save_file`'s callback hands back a URI, and this is what puts
+/// the caller's bytes into it. Returns an error description on failure, since a
+/// failed save is a failure a caller has to be able to show.
+///
+/// **Replaces the document's contents.** The write opens the URI in mode `"wt"`
+/// — truncating — so a shorter write does not leave the tail of whatever was
+/// there before. That is not the platform default: `openOutputStream(uri)` uses
+/// `"w"`, whose truncation the Android javadoc explicitly leaves to each
+/// provider ("`w` may or may not truncate"), and the framework's own
+/// `translateModeStringToPosix` maps it to `O_WRONLY | O_CREAT` with no
+/// `O_TRUNC`. Saving 6KB over an existing 10KB document would keep the last 4KB
+/// and still report success.
+///
+/// Do not assume the target starts empty just because `ACTION_CREATE_DOCUMENT`
+/// produced it: a provider may return an existing document when the user picks
+/// a name that is already taken, an app may keep the URI and save to it again,
+/// and this function accepts any `content://` URI the caller holds.
+///
+/// There is no partial-write contract. On `Err` the document may hold anything
+/// from its previous contents to a truncated prefix — the underlying stream is
+/// closed either way, but how much reached the provider is not knowable from
+/// here.
+pub fn write_content_uri(uri: &str, bytes: &[u8]) -> Result<(), String> {
+    bridge::with_activity(|env, activity| {
+        let juri = env.new_string(uri).map_err(|e| e.to_string())?;
+        let jbytes = env
+            .byte_array_from_slice(bytes)
+            .map_err(|e| e.to_string())?;
+        let ok = env
+            .call_method(
+                activity,
+                "writeContentUri",
+                "(Ljava/lang/String;[B)Z",
+                &[JValue::Object(&juri), JValue::Object(&jbytes)],
+            )
+            .map_err(|e| format!("writeContentUri JNI call failed: {e}"))?
+            .z()
+            .map_err(|e| format!("writeContentUri return type error: {e}"))?;
+
+        if ok {
+            Ok(())
+        } else {
+            Err("writeContentUri returned false (IO error or invalid URI)".into())
+        }
     })
 }
