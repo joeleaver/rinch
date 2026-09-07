@@ -391,13 +391,15 @@ impl Component for BorderlessWindow {
             let menu_layer =
                 rinch_macros::rsx! { div { class: "rinch-app-menu-bar__inline-layer" } };
 
-            // Overlay first in DOM (hit-tested last within layer)
+            // Overlay first, matching its lower `z-index` — within one
+            // stacking context DOM order only breaks ties at the same level,
+            // so the `199`/`201` pair is what actually orders these two.
             if let Some(ref overlay_renderer) = menu_ctx.overlay_renderer {
                 let overlay = overlay_renderer(__scope);
                 menu_layer.append_child(&overlay);
             }
 
-            // Items-row last in DOM (hit-tested first within layer)
+            // Items-row last, at the higher `z-index`.
             let items_row = rinch_macros::rsx! { div { class: "rinch-app-menu-bar__inline-row" } };
             // Render left_section into the items-row (hamburger button)
             if let Some(ref render_left) = self.left_section {

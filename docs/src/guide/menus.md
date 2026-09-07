@@ -219,6 +219,20 @@ div { style: "position: fixed; top: var(--rinch-window-top-inset, 0px); bottom: 
 `Drawer`, `Modal`, and top-anchored `Notification`s already handle this. See
 [Theming → Window Chrome Inset](./theming.md#window-chrome-inset).
 
+The bar behaves like a native one: click a top-level label to open its menu,
+then move across the bar to switch between menus without clicking again. Hover
+or click a submenu row to open its flyout, click an item to run it, and click
+anywhere else in the window to dismiss.
+
+That last one is a full-window overlay rinch renders under the open menu, at
+`z-index: 199` against the bar's `201`. It is `position: absolute`, not
+`fixed` — a fixed box is hoisted to the viewport's stacking context, and two
+`z-index`es in different stacking contexts are never compared, so a fixed
+overlay would cover the very menu it sits beneath (issue #527). An overlay of
+your own that must sit *above* the menu bar therefore needs a `z-index` above
+`201` **and** to be in the same stacking context as the bar, which for anything
+rendered at the document root it is.
+
 ## Context Menus
 
 ### Rendered Context Menu

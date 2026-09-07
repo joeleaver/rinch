@@ -411,8 +411,8 @@ fn run_desktop_linux<F>(
     }
 
     // Borderless: set MenuBarContext — BorderlessWindow renders the bar
-    // internally. The bar uses absolute positioning and must be the LAST child
-    // for correct hit testing. BorderlessWindow handles this ordering.
+    // internally, as an absolutely positioned layer carrying its own `z-index`
+    // and appended last. BorderlessWindow handles that ordering.
     const TITLEBAR_HEIGHT: u32 = 36;
     let menu_in_titlebar = props.menu_in_titlebar;
     let wrapped = move |scope: &mut RenderScope| {

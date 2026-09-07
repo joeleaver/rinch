@@ -109,9 +109,19 @@ pub fn styles() -> String {
     margin: 4px 0;
 }
 
-/* Click-outside overlay */
+/* Click-outside overlay.
+
+   `absolute`, deliberately not `fixed`: this box is authored to sit *below* the
+   menu row (199 against its 201), and `z-index` only orders boxes inside one
+   stacking context. `fixed` hoists it out to the viewport's context, where its
+   199 no longer means anything relative to a row nested inside the window
+   container — which BorderlessWindow makes a stacking context via
+   `overflow: hidden`. The overlay then covered its own menus and swallowed
+   every entry click (#527). Its containing block is the menu layer, pinned at
+   the window's top-left; the below-titlebar layout passes an inline `top` to
+   climb back up to it. */
 .rinch-app-menu-bar__overlay {
-    position: fixed;
+    position: absolute;
     top: 0;
     left: 0;
     width: 100vw;
