@@ -119,7 +119,11 @@ pub fn styles() -> String {
    `overflow: hidden`. The overlay then covered its own menus and swallowed
    every entry click (#527). Its containing block is the menu layer, pinned at
    the window's top-left; the below-titlebar layout passes an inline `top` to
-   climb back up to it. */
+   climb back up to it.
+
+   A workaround, not the fix: `overflow` forming a stacking context is issue
+   #324, and this is the second site to paper over it after the
+   DropdownMenu/Select backdrops. Revert to `fixed` when #324 lands. */
 .rinch-app-menu-bar__overlay {
     position: absolute;
     top: 0;

@@ -228,10 +228,10 @@ That last one is a full-window overlay rinch renders under the open menu, at
 `z-index: 199` against the bar's `201`. It is `position: absolute`, not
 `fixed` — a fixed box is hoisted to the viewport's stacking context, and two
 `z-index`es in different stacking contexts are never compared, so a fixed
-overlay would cover the very menu it sits beneath (issue #527). An overlay of
-your own that must sit *above* the menu bar therefore needs a `z-index` above
-`201` **and** to be in the same stacking context as the bar, which for anything
-rendered at the document root it is.
+overlay would cover the very menu it sits beneath (issue #527, a consequence of
+issue #324). An overlay of your own that must sit *above* the menu bar
+therefore needs a `z-index` above `201` **and** to be in the same stacking
+context as the bar, which for anything rendered at the document root it is.
 
 ## Context Menus
 

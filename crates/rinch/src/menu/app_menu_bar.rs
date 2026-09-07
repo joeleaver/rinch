@@ -237,8 +237,18 @@ pub(crate) fn render_inline_overlay(
 /// hit the overlay and merely dismissed the menu (#527).
 ///
 /// Keeping the overlay in the menus' own stacking context makes the ordering
-/// hold under either rule, which is also what `DropdownMenu` and `Select` do
-/// with their backdrops.
+/// hold under either rule.
+///
+/// **This is a workaround, not the fix.** That `overflow` forms a stacking
+/// context at all is issue #324 — CSS says it does not, and rinch does it only
+/// because its overflow clip is applied per stacking context. `DropdownMenu`
+/// and `Select` had the identical bug and took the identical `absolute`
+/// workaround (PR #317); this is the second site. The cost here is
+/// `render_menu_bar_standalone`'s `top: -top_offset`, which exists purely to
+/// undo the containing-block change this workaround forces. When #324 lands,
+/// all three overlays should go back to `position: fixed` and that
+/// compensation should be deleted — the tests below cover all three layouts
+/// and should stay green across that revert.
 fn build_overlay(
     scope: &mut RenderScope,
     active_menu: Signal<i32>,
@@ -877,6 +887,85 @@ mod tests {
             Some(overlay_rid.as_str()),
             "a click at the bottom of the window must dismiss the open menu"
         );
+
+        let (x, y) = center(&d, entry_id);
+        assert_eq!(
+            rid_under(&d, x, y).as_deref(),
+            Some(rid_of(&d, entry_id).as_str()),
+            "…and a click on the entry must still run the entry"
+        );
+    }
+
+    /// The third layout: a *non*-borderless window, where `render_with_menu_bar`
+    /// wraps the app's content itself and there is no `BorderlessWindow`
+    /// container. Menu 0 open. Returns the overlay's and the entry's ids.
+    fn open_wrapped_menu() -> (Rc<RefCell<RinchDocument>>, usize, usize) {
+        let doc = Rc::new(RefCell::new(RinchDocument::new()));
+        let body = doc.borrow().body();
+        load_stylesheets(&doc, body);
+
+        let doc_as_dom: Rc<RefCell<dyn DomDocument>> = doc.clone();
+        let mut scope = RenderScope::new(doc_as_dom, body);
+
+        let content = scope.create_element("div");
+        let filler = scope.create_text("app content");
+        content.append_child(&filler);
+
+        let theme_menu = Menu::new().item(
+            MenuItem::new("Toggle Dark Mode")
+                .shortcut("Ctrl+D")
+                .on_click(|| {}),
+        );
+        let menus: Vec<(&str, &Menu)> = vec![("Theme", &theme_menu)];
+        let wrapper = super::render_with_menu_bar(&mut scope, &menus, content, 0);
+        doc.borrow_mut().append_child(body, wrapper.node_id());
+
+        let label = nodes_with_class(&doc.borrow(), "rinch-app-menu-item__label")[0];
+        run_rid_handler(&doc, label);
+        doc.borrow_mut().resolve_layout(VIEWPORT_W, VIEWPORT_H);
+
+        let (overlay_id, entry_id) = {
+            let d = doc.borrow();
+            (
+                nodes_with_class(&d, "rinch-app-menu-bar__overlay")[0],
+                nodes_with_class(&d, "rinch-app-menu-entry")[0],
+            )
+        };
+        (doc, overlay_id, entry_id)
+    }
+
+    /// The third layout's containing block is different again — the overlay's
+    /// parent is the full-viewport wrapper rather than a bar container — so its
+    /// coverage is pinned separately rather than inferred from the other two.
+    ///
+    /// This layout was **not** broken by #527: its wrapper carries no
+    /// `overflow`, so nothing between the bar and the body formed a stacking
+    /// context and the overlay's `199` was always compared against the bar's
+    /// `201` in one sequence. The assertions are here to keep the move from
+    /// `fixed` to `absolute` from regressing a layout that already worked.
+    #[test]
+    fn the_wrapped_layout_overlay_covers_the_whole_window() {
+        let (doc, overlay_id, entry_id) = open_wrapped_menu();
+        let d = doc.borrow();
+        let overlay_rid = rid_of(&d, overlay_id);
+
+        // The four corners of the area *below* the bar. The top two pixels of
+        // the window are the bar itself in this layout (`top_offset` is 0), and
+        // the bar is above the overlay by its `z-index` — a click there
+        // correctly reaches no handler at all rather than dismissing.
+        let below_bar = MENU_BAR_HEIGHT as f32 + 2.0;
+        for (x, y) in [
+            (2.0, below_bar),
+            (VIEWPORT_W - 2.0, below_bar),
+            (2.0, VIEWPORT_H - 2.0),
+            (VIEWPORT_W - 2.0, VIEWPORT_H - 2.0),
+        ] {
+            assert_eq!(
+                rid_under(&d, x, y).as_deref(),
+                Some(overlay_rid.as_str()),
+                "a click at ({x}, {y}) must dismiss the open menu"
+            );
+        }
 
         let (x, y) = center(&d, entry_id);
         assert_eq!(

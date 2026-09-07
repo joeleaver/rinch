@@ -786,11 +786,23 @@ and `z-index` orders boxes only *within* one stacking context. It used to be
 `position: fixed`, which hoists a box out to the viewport's context — fine while
 nothing between it and the body formed one, but `BorderlessWindow`'s container
 carries `overflow: hidden`, and in Rinch that **does** form a stacking context
-(`Node::creates_stacking_context`; in a browser it does not). The menus stayed
-trapped inside it at that container's own `z == 0` while the overlay escaped to
-`199` above them, so it covered its own menus and every item click merely
-dismissed the menu. It is now `position: absolute`, a sibling of the bar inside
-the menu layer, which orders correctly under either rule.
+(`Node::creates_stacking_context`; in a browser it does not — that deviation is
+issue **#324**). The menus stayed trapped inside it at that container's own
+`z == 0` while the overlay escaped to `199` above them, so it covered its own
+menus and every item click merely dismissed the menu — and every *hover* with
+it, so hover-to-switch and submenu flyouts were dead too. It is now
+`position: absolute`, a sibling of the bar inside the menu layer, which orders
+correctly under either rule.
+
+That is the **same workaround** `DropdownMenu` and `Select` already take for
+their backdrops (PR #317), now at a second site, and it is a workaround rather
+than a fix: `render_menu_bar_standalone` has to pass `top: -top_offset` purely
+to undo the containing-block change it forces. **When #324 lands, revert all
+three menu-bar overlays to `position: fixed` and delete that compensation**;
+`menu::app_menu_bar`'s tests cover all three layouts and should stay green
+across the revert. The non-borderless layout (`render_with_menu_bar`) was never
+broken — its wrapper carries no `overflow`, so nothing between the bar and the
+body formed a context.
 
 The registry also shrinks now. It used to only ever grow: building a new native
 menu bar releases the previous bar's ids, and dropping a `TrayIcon` releases that
