@@ -119,41 +119,42 @@ pub fn styles() -> String {
 }
 
 /* Backdrop — the invisible overlay that catches outside clicks when
-   close_on_click_outside is true. Its z-index sits below the dropdown panel's
-   (100) so that a click on an item still lands on the item.
+   close_on_click_outside is true. It covers the viewport, and its z-index sits
+   below the dropdown panel's (100) so that a click on an item still lands on
+   the item.
 
-   It is `position: absolute`, and it used to have to be. A `position: fixed`
-   box is viewport-level content in Rinch: it is hoisted out of every ancestor
-   clip, and — because Rinch made an overflow clip a stacking context — out of
-   every ancestor stacking context along with it. A fixed backdrop was therefore
-   above everything that is not itself fixed, whatever the z-indexes said,
-   because the 99 and the 100 were being compared across two stacking contexts,
-   which is to say not compared at all. Behind any `overflow` ancestor — every
-   scroll container, and most app roots — a fixed backdrop covered the panel and
-   swallowed every tap on the menu: the menu closed and the item never ran.
+   `fixed` is what makes "outside" mean the whole window rather than whatever
+   clips the panel. A dismiss region has to be at least as large as the region
+   the user thinks of as outside the menu, and inside a sidebar, a table cell or
+   any panel narrower than the window an absolutely positioned backdrop is not:
+   an absolute box IS clipped by an `overflow` ancestor in its containing-block
+   chain, which is CSS and not a rinch quirk, so the popup and its dismiss
+   region would share one clip. It also puts the backdrop above the app's own
+   fixed chrome (a hand-rolled titlebar has no z-index, so it enters the body's
+   sequence at 0), which is why clicking the titlebar dismisses.
 
-   Absolute puts the backdrop in the panel's own stacking context, where the two
-   z-indexes are comparable and the panel wins. The insets are what a
-   viewport-covering box costs once it can no longer be viewport-positioned:
-   100vw/100vh in each direction from a root that is on screen by construction
-   (the menu is open, so its target is visible) covers the viewport at any
-   scroll position. The price is that the backdrop is clipped by whatever clips
-   the panel, so a click beyond *that* box does not dismiss — the popup and its
-   dismiss region share one clip.
+   It was `position: absolute; top: -100vh; right: -100vw; bottom: -100vh;
+   left: -100vw` between PR #317 and #324's stage C, and that is worth knowing
+   because the reason was not geometry. Rinch used to make an overflow clip a
+   stacking context, and a fixed box is hoisted out of every ancestor clip *and*
+   every ancestor stacking context with it — so behind any `overflow` ancestor
+   the 99 and the 100 were compared across two contexts, which is to say not
+   compared at all, and the backdrop covered the panel and swallowed every tap
+   on the menu. #324 stage B took `overflow` out of
+   `Node::creates_stacking_context` and gave each hoisted box its own clip
+   chain, so the two numbers now meet in one sequence and 100 wins.
 
-   That price is now optional. #324 stage B took `overflow` out of
-   `Node::creates_stacking_context` and gave each hoisted box its own clip chain,
-   so the 99 and the 100 meet in one sequence and `fixed` orders correctly —
-   `popup_backdrop_hit_tests::a_fixed_backdrop_no_longer_swallows_the_item_it_sits_under`
-   in `rinch/src/app/mod.rs` is the pin. Going back to `fixed` (and dropping the
-   100vw/100vh insets with it) is #324's stage C, and it buys back
-   whole-viewport outside-click dismissal. */
+   Pinned in `rinch/src/app/mod.rs`'s `popup_backdrop_hit_tests`, which mounts
+   this stylesheet: a tap on an item runs the item, a tap outside the clipping
+   shell dismisses, and a tap on the app's own fixed chrome dismisses. The last
+   two fail against the `absolute` spelling — they are the measurement of what
+   it cost, not a memory of it. */
 .rinch-dropdown-menu__backdrop {
-    position: absolute;
-    top: -100vh;
-    right: -100vw;
-    bottom: -100vh;
-    left: -100vw;
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
     z-index: 99;
     display: none;
 }

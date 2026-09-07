@@ -225,14 +225,16 @@ or click a submenu row to open its flyout, click an item to run it, and click
 anywhere else in the window to dismiss.
 
 That last one is a full-window overlay rinch renders under the open menu, at
-`z-index: 199` against the bar's `201`. It is `position: absolute`, a sibling of
-the bar. It had to be, until #324: a fixed box is hoisted to the viewport's
-stacking context, two `z-index`es in different stacking contexts are never
-compared, and `BorderlessWindow`'s container was a stacking context purely
-because of its `overflow: hidden` — so a fixed overlay covered the very menu it
-sits beneath (issue #527). `overflow` no longer creates a stacking context, so
-both spellings order correctly now; the `absolute` one simply has not been
-reverted yet.
+`z-index: 199` against the bar's `201`. It is `position: fixed`, so it covers
+the window whichever of the three menu-bar layouts built it — including the
+title bar, so clicking there dismisses too.
+
+It was `position: absolute` between issues #527 and #324: a fixed box is hoisted
+to the viewport's stacking context, two `z-index`es in different stacking
+contexts are never compared, and `BorderlessWindow`'s container was a stacking
+context purely because of its `overflow: hidden` — so a fixed overlay covered
+the very menu it sits beneath. `overflow` no longer creates a stacking context,
+so the `199` and the `201` meet in one sequence again.
 
 **To put an overlay of your own above the menu bar, render it with a `z-index`
 above `201`.** Since #324 that is the whole rule, in either window type: the

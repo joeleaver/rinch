@@ -73,9 +73,9 @@ pub(crate) fn render_with_menu_bar(
     content_wrapper.append_child(&content);
     wrapper.append_child(&content_wrapper);
 
-    // Click-outside overlay. The wrapper is the viewport's top-left, so the
-    // overlay needs no offset of its own.
-    let overlay = build_overlay(scope, active_menu, "");
+    // Click-outside overlay. Fixed, so it covers the window from wherever this
+    // wrapper happens to sit — see [`build_overlay`].
+    let overlay = build_overlay(scope, active_menu);
     wrapper.append_child(&overlay);
 
     // Menu bar row, above the overlay by its `z-index` (DOM order only breaks
@@ -142,11 +142,11 @@ pub(crate) fn render_menu_bar_standalone(
         ),
     );
 
-    // Click-outside overlay. This container is the overlay's containing block
-    // and sits `top_offset` down the window, so the overlay climbs back up by
-    // the same amount: `top: -top_offset` puts its top edge at the window's,
-    // and the stylesheet's `100vh` then reaches exactly the window's bottom.
-    let overlay = build_overlay(scope, active_menu, &format!("top: -{top_offset}px;"));
+    // Click-outside overlay. This container sits `top_offset` down the window,
+    // but the overlay is `position: fixed` and so is measured from the viewport
+    // rather than from it — no compensating offset, and it must not gain one
+    // back. See [`build_overlay`].
+    let overlay = build_overlay(scope, active_menu);
     container.append_child(&overlay);
 
     // Menu bar, above the overlay by its `z-index`.
@@ -211,63 +211,49 @@ pub(crate) fn render_inline_overlay(
     scope: &mut RenderScope,
     active_menu: Signal<i32>,
 ) -> NodeHandle {
-    // The inline layer is pinned to the window's top-left, so no offset.
-    build_overlay(scope, active_menu, "")
+    build_overlay(scope, active_menu)
 }
 
 /// The click-outside overlay each menu-bar layout puts *under* its menus.
 ///
-/// `base_style` is prepended to whatever the visibility effect writes, for the
-/// layout whose overlay is not already anchored at the window's top-left.
+/// # Why this takes no offset
 ///
-/// # Why this is `position: absolute` and not `fixed`
+/// The overlay is `position: fixed` (`.rinch-app-menu-bar__overlay`), so its
+/// box is the viewport whichever of the three layouts built it. That is the
+/// point: the three put it in three different containing blocks — the wrapper
+/// at the window's top-left, the inline menu layer at the same place, and
+/// `render_menu_bar_standalone`'s container `top_offset` px down the window —
+/// and only the last would need an offset to reach the window's top edge.
+/// Giving it one **breaks** it now rather than fixing it: an offset applied to
+/// a viewport-anchored box lands it off the top of the window, which is what
+/// `the_below_titlebar_overlay_covers_the_whole_window` fails on.
+///
+/// # Why the `199` and the `201` are comparable
 ///
 /// `z-index` orders boxes within one stacking context and says nothing across
-/// two, and a `position: fixed` box is hoisted out of every ancestor context to
-/// the viewport's. This overlay is authored to sit *below* the menu row
-/// (`z-index: 199` against the row's `201`), so the two have to be siblings in
-/// the same context or the numbers are not compared at all.
+/// two. This overlay is authored to sit *below* the menu row (`199` against the
+/// row's `201`), so those two have to land in one sequence.
 ///
-/// Fixed used to be close enough, because the window container was not a
-/// stacking context and both boxes surfaced at the viewport. `BorderlessWindow`
-/// gives that container `overflow: hidden`, and rinch used to make a stacking
+/// They did not, between PR #534 and #324's stage C. `BorderlessWindow`'s
+/// container carries `overflow: hidden`, and rinch used to make a stacking
 /// context of every clipping box — so the menus stayed trapped inside it at the
-/// container's own `z == 0` while the overlay escaped to the viewport at `199`
-/// and covered them. Every entry click hit the overlay and merely dismissed the
-/// menu (#527).
-///
-/// **The deviation that caused it is gone.** #324 stage B took `overflow` out
-/// of [`rinch_dom::node::Node::creates_stacking_context`] and gave each hoisted
-/// box its own clip chain instead, so the `199` and the `201` now meet in one
-/// sequence and `fixed` would order correctly. `absolute` is kept for the
-/// moment because it also works and the revert is #324's stage C, along with
-/// `DropdownMenu`/`Select`'s backdrops (PR #317, the same workaround at the
-/// first site).
-///
-/// **The revert is two edits, and they must land together.** The overlay's
-/// `position` in `rinch-components`' `app_menu_bar` stylesheet, *and*
-/// `render_menu_bar_standalone`'s `top: -top_offset`, which exists purely to
-/// undo the containing-block change `absolute` forces. Measured while landing
-/// stage B: changing only the `position` leaves the compensation shifting a
-/// now-viewport-anchored overlay 36px off the top of the window and
-/// `the_below_titlebar_overlay_covers_the_whole_window` fails; changing both
-/// leaves all seven tests below green.
-fn build_overlay(
-    scope: &mut RenderScope,
-    active_menu: Signal<i32>,
-    base_style: &str,
-) -> NodeHandle {
+/// container's own `z == 0` while a fixed overlay escaped to the viewport at
+/// `199` and covered them. Every entry click hit the overlay and merely
+/// dismissed the menu (#527), hover with it. #534 worked around that by
+/// respelling the overlay `absolute`, which is where the offset came from.
+/// #324 stage B removed the cause: [`rinch_dom::node::Node::creates_stacking_context`]
+/// no longer answers to `overflow`, and a hoisted box carries its own clip
+/// chain instead, so the `199` and the `201` meet in one sequence again.
+fn build_overlay(scope: &mut RenderScope, active_menu: Signal<i32>) -> NodeHandle {
     let overlay = scope.create_element("div");
     overlay.set_attribute("class", "rinch-app-menu-bar__overlay");
     {
         let overlay_handle = overlay.clone();
-        let shown = base_style.to_string();
-        let hidden = format!("{base_style}display: none;");
         Effect::new(move || {
             let style = if active_menu.get() >= 0 {
-                &shown
+                ""
             } else {
-                &hidden
+                "display: none;"
             };
             overlay_handle.set_attribute("style", style);
         });
@@ -777,13 +763,14 @@ mod tests {
         (doc, overlay.node_id().0, entry_id, other_label_id)
     }
 
-    /// The open dropdown sits *inside* the window container, whose
-    /// `overflow: hidden` used to make it a stacking context (#324 stage B
-    /// stopped); the dismiss overlay used to be `position: fixed`, which hoists
-    /// it out to the viewport's stacking context instead. Its `z-index: 199`
-    /// and the menu row's `201` were then being compared across two different
-    /// stacking contexts — which `z-index` does not do — so the overlay covered
-    /// the menu and every entry click merely dismissed it (#527).
+    /// The open dropdown sits *inside* the window container, and the dismiss
+    /// overlay is `position: fixed`, which hoists it out to the viewport's
+    /// stacking context. That was #527: the container's `overflow: hidden` used
+    /// to make it a stacking context too, so the overlay's `z-index: 199` and
+    /// the menu row's `201` were compared across two different contexts — which
+    /// `z-index` does not do — and the overlay covered the menu, so every entry
+    /// click merely dismissed it. #324 stage B stopped `overflow` creating a
+    /// context, which is what lets the overlay be `fixed` again.
     #[test]
     fn a_click_inside_an_open_dropdown_runs_the_entry_not_the_dismiss_overlay() {
         let (doc, overlay_id, entry_id, _) = open_inline_menu();
@@ -919,13 +906,14 @@ mod tests {
         (doc, overlay_id, entry_id)
     }
 
-    /// The below-titlebar layout has the same defect and the same cure, but its
-    /// overlay's containing block starts `TITLEBAR_HEIGHT` down the window — so
-    /// the overlay has to climb back up over the title bar, and grow to match,
-    /// or a click at either end of the window stops dismissing the menu.
-    /// Sampled at both ends, where the offset is the only thing that can put the
-    /// overlay there; the middle of the window is covered either way and would
-    /// prove nothing.
+    /// The below-titlebar layout had the same defect and the same cure, and it
+    /// is the one whose overlay is not laid out where it has to cover: its
+    /// *parent* starts `TITLEBAR_HEIGHT` down the window. `position: fixed`
+    /// makes that irrelevant, which is the whole reason the overlay is fixed —
+    /// so this test is what catches an offset creeping back in, in either
+    /// direction. Sampled at **both ends** of the window, where an overlay
+    /// shifted by `±TITLEBAR_HEIGHT` stops answering; the middle is covered
+    /// however the box is placed and would prove nothing.
     #[test]
     fn the_below_titlebar_overlay_covers_the_whole_window() {
         let (doc, overlay_id, entry_id) = open_below_titlebar_menu();
@@ -996,8 +984,9 @@ mod tests {
     /// This layout was **not** broken by #527: its wrapper carries no
     /// `overflow`, so nothing between the bar and the body formed a stacking
     /// context and the overlay's `199` was always compared against the bar's
-    /// `201` in one sequence. The assertions are here to keep the move from
-    /// `fixed` to `absolute` from regressing a layout that already worked.
+    /// `201` in one sequence. The assertions are here to keep a layout that
+    /// already worked from regressing as the overlay's `position` moved under
+    /// it — `fixed` to `absolute` for #534, and back for #324's stage C.
     #[test]
     fn the_wrapped_layout_overlay_covers_the_whole_window() {
         let (doc, overlay_id, entry_id) = open_wrapped_menu();
