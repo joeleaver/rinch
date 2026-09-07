@@ -188,15 +188,10 @@ fn hit_test_node(
 
     let point_in_bounds = x >= nx && x <= nx + nw && y >= ny && y <= ny + nh;
 
-    // Nodes with overflow clipping must restrict child hit testing to within bounds
-    let clips_overflow = !matches!(
-        node.computed_style.overflow_x,
-        rinch_dom::computed_style::OverflowValue::Visible
-    ) || !matches!(
-        node.computed_style.overflow_y,
-        rinch_dom::computed_style::OverflowValue::Visible
-    );
-    let check_children = !clips_overflow || point_in_bounds;
+    // Nodes with overflow clipping must restrict child hit testing to within
+    // bounds — the same predicate paint clips pixels with (#324), so a box
+    // cannot be drawn somewhere it cannot be tapped.
+    let check_children = !node.clips_overflow() || point_in_bounds;
 
     let sx = node.scroll_offset.0 as f32;
     let sy = node.scroll_offset.1 as f32;

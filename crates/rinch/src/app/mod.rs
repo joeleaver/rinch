@@ -2853,8 +2853,6 @@ impl RinchApp {
     /// from the nearest ancestor with overflow clipping + border-radius.
     /// Returns `(rect, [tl, tr, br, bl])` where radii are in logical pixels.
     pub fn viewport_rect_with_radius(&self, name: &str) -> Option<(ViewportRect, [f32; 4])> {
-        use rinch_dom::computed_style::values::OverflowValue;
-
         let doc = self.doc.as_ref()?;
         let d = doc.borrow();
         for (node_id, node) in &d.tree.nodes {
@@ -2874,17 +2872,13 @@ impl RinchApp {
                 let mut current = Some(node_id);
                 while let Some(id) = current {
                     if let Some(n) = d.tree.get(id) {
-                        // Check for overflow clipping ancestor with border-radius
+                        // Check for overflow clipping ancestor with border-radius.
+                        // `clips_overflow` is the shared predicate (#324) — this
+                        // site used to read `overflow_y` alone, so a hole under
+                        // an `overflow-x: clip` ancestor came back square.
                         if clip_radii == [0.0; 4] {
                             let cs = &n.computed_style;
-                            let clips = matches!(
-                                cs.overflow_y,
-                                OverflowValue::Hidden
-                                    | OverflowValue::Scroll
-                                    | OverflowValue::Auto
-                                    | OverflowValue::Clip
-                            );
-                            if clips {
+                            if n.clips_overflow() {
                                 let resolve_size = n.layout.width.min(n.layout.height);
                                 let tl = cs.border_radius_top_left.resolve(resolve_size);
                                 let tr = cs.border_radius_top_right.resolve(resolve_size);
@@ -3005,8 +2999,6 @@ impl RinchApp {
     /// every ancestor with `overflow: hidden/scroll/auto/clip`. Returns `None`
     /// if there are no clipping ancestors.
     pub fn viewport_clip_rect(&self, name: &str) -> Option<ViewportRect> {
-        use rinch_dom::computed_style::values::OverflowValue;
-
         let doc = self.doc.as_ref()?;
         let d = doc.borrow();
         for (_node_id, node) in &d.tree.nodes {
@@ -3030,21 +3022,11 @@ impl RinchApp {
             let mut current = node.parent;
             while let Some(id) = current {
                 let Some(n) = d.tree.get(id) else { break };
-                let cs = &n.computed_style;
-                let clips = matches!(
-                    cs.overflow_x,
-                    OverflowValue::Hidden
-                        | OverflowValue::Scroll
-                        | OverflowValue::Auto
-                        | OverflowValue::Clip
-                ) || matches!(
-                    cs.overflow_y,
-                    OverflowValue::Hidden
-                        | OverflowValue::Scroll
-                        | OverflowValue::Auto
-                        | OverflowValue::Clip
-                );
-                if clips {
+                // The shared clip predicate (#324): this walk and the paint
+                // bracket it is standing in for must agree about which
+                // ancestors clip, or a viewport hole is cut to a rect the
+                // painter never clipped to.
+                if n.clips_overflow() {
                     let (ax, ay) = abs_pos(id);
                     let x1 = ax;
                     let y1 = ay;

@@ -1316,7 +1316,48 @@ transition frame. **A component whose overlay must cover its parent (e.g.
 `LoadingOverlay`) needs that parent to declare `position: relative`** — without
 it the overlay now covers the window, as it always has on the web.
 
+**Overflow clipping.** One predicate — `Node::clips_overflow()`, "either axis is
+not `visible`" — and one shape, `paint::clip_shape` (the rounded border box).
+Everything that needs either asks those: paint's clip bracket, its dirty-region
+subtree prune, the layer-bounds walk, `creates_stacking_context`, hit testing's
+`check_children` gate, and `RinchApp`'s two viewport clip walks. Those seven
+sites held **four** different predicates before #324 stage A, and the
+disagreement was real rather than cosmetic: paint, `layer_bounds` and
+`creates_stacking_context` matched `overflow_y` against `Hidden | Scroll | Auto`
+and so **missed `overflow: clip` entirely**, while hit testing clipped it —
+content drawn and not clickable.
+
+`clip` is the only value that ever reached that gap, and that is measured rather
+than reasoned: css-overflow-3 §3 makes a `visible` compute to `auto` when the
+other axis is neither `visible` nor `clip`, Stylo's style adjuster implements
+it, so `overflow-x: hidden; overflow-y: visible` is **unreachable** — pinned in
+`crates/rinch-dom/tests/clip_predicate_tests.rs`, which is also what fails if a
+Stylo bump ever changes that. `clip` beside `visible` is the pair the spec
+allows, so it stays asymmetric.
+
+Three deviations from CSS remain **in the predicate and the shape** — this is
+not an inventory of everything rinch gets wrong about `overflow`, which also
+covers scrolling, `text-overflow` and scrollbars. Clipping forms a stacking
+context, which CSS does not do — the clip is a paint-time bracket around one
+sequence, so a hoisted box would otherwise escape it; removing that means giving
+a hoisted entry its own clip chain, which is #324's stage B. **When stage B
+drops that arm, `overflow: clip` must go on clipping through the chain** —
+`clip` only started forming a stacking context in stage A, and dropping the arm
+without a chain silently un-fixes it. rinch clips both
+axes with one rect, so `overflow-x: clip; overflow-y: visible` clips vertically
+too (#535). And the rect is the **border** box where CSS clips to the padding
+box, so a clipping container with a non-zero `border-width` lets its content
+paint over its own border (#536); with no border the two coincide, which is
+every clipping box in the component library.
+
+Anything new that asks "does this clip" must call the predicate, not re-derive
+it. Code looking for the nearest *scroll* container (sticky positioning, wheel
+routing, the scrollbar overlays) wants a different question and must not borrow
+this one: `visible` and `clip` are the two non-scrollable values and only one of
+them clips.
+
 **Key files:**
+- `crates/rinch-dom/src/paint/clip.rs` — the clip predicate and shape
 - `crates/rinch-dom/src/paint/painter.rs` — Abstract `Painter` trait
 - `crates/rinch-dom/src/paint/vello_painter.rs` — GPU backend
 - `crates/rinch-dom/src/paint/skia_painter.rs` — Software backend
@@ -1350,7 +1391,10 @@ rinch:       NetworkImageLoader (ureq, gated behind image-network feature)
 
 **Network loading:** Enable `features = ["image-network"]` for HTTP(S) URL support via `ureq`.
 
-**Overflow clipping:** The overflow clip layer uses `RoundedRect` when `border-radius > 0`, enabling circular avatar clipping.
+**Circular avatars:** a clipping ancestor with `border-radius` clips to a
+`RoundedRect` rather than a plain rect, which is what crops an `<img>` to a
+circle. The shape comes from `paint::clip_shape` — see **Overflow clipping**
+under Rendering Backends for the predicate and its deviations.
 
 ### DevTools Panel
 
