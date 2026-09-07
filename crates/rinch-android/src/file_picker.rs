@@ -97,16 +97,35 @@ pub fn read_content_uri(uri: &str) -> Result<Vec<u8>, String> {
 }
 
 /// Write bytes to a `content://` URI via the Java ContentResolver — the other
-/// half of `read_content_uri`, and the piece `save_file` above needs to be
-/// useful on its own: `save_file`'s callback only ever hands back the URI of a
-/// document `ACTION_CREATE_DOCUMENT` created empty, and this is what puts the
-/// caller's bytes into it. Returns an error description on failure rather than
-/// nothing to write to, since a failed save is a failure a caller has to be
-/// able to show.
+/// half of [`read_content_uri`], and the piece [`save_file`] needs to be useful
+/// on its own: `save_file`'s callback hands back a URI, and this is what puts
+/// the caller's bytes into it. Returns an error description on failure, since a
+/// failed save is a failure a caller has to be able to show.
+///
+/// **Replaces the document's contents.** The write opens the URI in mode `"wt"`
+/// — truncating — so a shorter write does not leave the tail of whatever was
+/// there before. That is not the platform default: `openOutputStream(uri)` uses
+/// `"w"`, whose truncation the Android javadoc explicitly leaves to each
+/// provider ("`w` may or may not truncate"), and the framework's own
+/// `translateModeStringToPosix` maps it to `O_WRONLY | O_CREAT` with no
+/// `O_TRUNC`. Saving 6KB over an existing 10KB document would keep the last 4KB
+/// and still report success.
+///
+/// Do not assume the target starts empty just because `ACTION_CREATE_DOCUMENT`
+/// produced it: a provider may return an existing document when the user picks
+/// a name that is already taken, an app may keep the URI and save to it again,
+/// and this function accepts any `content://` URI the caller holds.
+///
+/// There is no partial-write contract. On `Err` the document may hold anything
+/// from its previous contents to a truncated prefix — the underlying stream is
+/// closed either way, but how much reached the provider is not knowable from
+/// here.
 pub fn write_content_uri(uri: &str, bytes: &[u8]) -> Result<(), String> {
     bridge::with_activity(|env, activity| {
         let juri = env.new_string(uri).map_err(|e| e.to_string())?;
-        let jbytes = env.byte_array_from_slice(bytes).map_err(|e| e.to_string())?;
+        let jbytes = env
+            .byte_array_from_slice(bytes)
+            .map_err(|e| e.to_string())?;
         let ok = env
             .call_method(
                 activity,
