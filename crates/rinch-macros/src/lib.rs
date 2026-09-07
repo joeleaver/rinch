@@ -12,6 +12,7 @@ mod element;
 mod helpers;
 mod node;
 mod prop;
+mod tags;
 
 use proc_macro::TokenStream;
 
