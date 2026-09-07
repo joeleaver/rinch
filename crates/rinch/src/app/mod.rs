@@ -4830,7 +4830,7 @@ mod popup_backdrop_hit_tests {
         x >= b.0 && x < b.2 && y >= b.1 && y < b.3
     }
 
-    /// The one node carrying the backdrop's class. The component appends it
+    /// The one node carrying `class`. The components append their backdrop
     /// last, but finding it by class says what is meant rather than relying on
     /// that.
     ///
@@ -4838,19 +4838,19 @@ mod popup_backdrop_hit_tests {
     /// its *occupied* count, not one past its highest index, so the moment
     /// anything in the tree is freed the backdrop can live past the end of
     /// that range and this would fail blaming the component.
-    fn find_backdrop(app: &RinchApp) -> usize {
+    fn find_by_class(app: &RinchApp, class: &str) -> usize {
         let doc = app.doc.as_ref().unwrap();
         let d = doc.borrow();
         d.tree
             .nodes
             .iter()
-            .find(|(_, n)| {
-                n.attributes
-                    .get("class")
-                    .is_some_and(|c| c.contains("rinch-dropdown-menu__backdrop"))
-            })
+            .find(|(_, n)| n.attributes.get("class").is_some_and(|c| c.contains(class)))
             .map(|(id, _)| id)
-            .expect("the menu renders a backdrop when close_on_click_outside is on")
+            .unwrap_or_else(|| panic!("no node carries the class {class}"))
+    }
+
+    fn find_backdrop(app: &RinchApp) -> usize {
+        find_by_class(app, "rinch-dropdown-menu__backdrop")
     }
 
     fn centre(app: &RinchApp, node_id: usize) -> (f32, f32) {
@@ -5119,6 +5119,104 @@ mod popup_backdrop_hit_tests {
             menu.closes.get(),
             0,
             "…and the menu stayed open. That is the cost stage C undoes"
+        );
+    }
+
+    // ── The second copy of the same backdrop ─────────────────────────────
+
+    /// Mount a `Select` inside a clipping shell and open it the way a user
+    /// does — by tapping its trigger, so the component's own `opened` signal
+    /// (which is internal, not a prop) is driven through the real click path.
+    ///
+    /// Returns the app and the shell's id.
+    fn mount_select(shell_style: &'static str) -> (RinchApp, usize) {
+        use rinch_components::{Select, SelectOption};
+
+        let shell_id: Rc<Cell<Option<usize>>> = Rc::new(Cell::new(None));
+        let shell_id_in = shell_id.clone();
+
+        let mut app = RinchApp::new(move |scope: &mut RenderScope| {
+            let shell = scope.create_element("div");
+            shell.set_attribute("style", shell_style);
+            shell_id_in.set(Some(shell.node_id().0));
+
+            let select = Select {
+                placeholder: "Pick one".into(),
+                data: vec![
+                    SelectOption::new("a", "Alpha"),
+                    SelectOption::new("b", "Beta"),
+                ],
+                ..Default::default()
+            }
+            .render(scope, &[]);
+            shell.append_child(&select);
+            shell
+        });
+
+        app.mount_component(VIEWPORT.0, VIEWPORT.1);
+        {
+            let doc = app.doc.as_ref().unwrap();
+            let mut d = doc.borrow_mut();
+            d.load_css(&rinch_components::generate_component_css());
+            d.recompute_all_styles_full();
+        }
+        app.resolve_and_repaint(VIEWPORT.0, VIEWPORT.1);
+
+        let shell = shell_id.get().expect("the shell's node id");
+        (app, shell)
+    }
+
+    /// `aria-expanded` on the trigger, which the component keeps in step with
+    /// its `opened` signal — the observable the option list's visibility and
+    /// the backdrop's both derive from.
+    fn select_is_open(app: &RinchApp) -> bool {
+        let trigger = find_by_class(app, "rinch-select__input");
+        let doc = app.doc.as_ref().unwrap();
+        let d = doc.borrow();
+        d.tree
+            .get(trigger)
+            .and_then(|n| n.attributes.get("aria-expanded"))
+            .map(|v| v == "true")
+            .expect("the trigger carries aria-expanded")
+    }
+
+    /// `Select` renders a **second copy** of the same backdrop — its own
+    /// stylesheet rule, at `z-index: 299` under the option list's `300` — and
+    /// carried no hit-test coverage at all until stage C, so a regression in it
+    /// was silent. Same measurement as the dropdown's: opened, then tapped
+    /// beyond the shell that clips it.
+    #[test]
+    fn a_select_dismisses_from_outside_its_clipping_shell() {
+        let (mut app, shell) = mount_select(SHELL_SMALL);
+
+        let trigger = find_by_class(&app, "rinch-select__input");
+        let (tx, ty) = centre(&app, trigger);
+        tap(&mut app, tx, ty);
+        app.resolve_and_repaint(VIEWPORT.0, VIEWPORT.1);
+        assert!(select_is_open(&app), "the tap on the trigger opened it");
+
+        let (x, y) = OUTSIDE_SHELL;
+        assert!(
+            !covers(box_of(&app, shell), x, y),
+            "({x}, {y}) must be outside the shell that clips the option list, \
+             or the two spellings agree there and this proves nothing"
+        );
+        assert!(
+            covers(
+                box_of(&app, find_by_class(&app, "rinch-select__backdrop")),
+                x,
+                y
+            ),
+            "…and inside the backdrop's own box, so what decides the tap is the \
+             clip chain and not the geometry"
+        );
+
+        tap(&mut app, x, y);
+        app.resolve_and_repaint(VIEWPORT.0, VIEWPORT.1);
+
+        assert!(
+            !select_is_open(&app),
+            "a tap beyond the option list's clipping ancestor must close it"
         );
     }
 }
