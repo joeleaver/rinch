@@ -2894,3 +2894,108 @@ fn test_removing_display_contents_wrapper_frees_its_childs_taffy_slot() {
          nobody could remove"
     );
 }
+
+/// The other half, and the reason `remove_node` removes the flattened set
+/// **and** the node's own id rather than choosing between them.
+///
+/// The sibling test above only proves the *contents* case. Written as an
+/// either/or — flattened set when the node computes `Contents`, own id
+/// otherwise — the fix passes that test with `is_contents` hard-coded `true`,
+/// because nothing in the suite removed a plain node through `remove_node` and
+/// then asked what happened to its siblings. That mutant survived all 618
+/// rinch-dom tests. This is the test that kills it: identical to the sibling
+/// above with the `display: contents` wrapper taken out, so the two together
+/// pin both legs.
+#[test]
+fn test_removing_a_plain_node_frees_its_own_taffy_slot() {
+    let mut doc = RinchDocument::new();
+    let body = doc.body();
+
+    let column = doc.create_element("div");
+    doc.set_attribute(
+        column,
+        "style",
+        "display: flex; flex-direction: column; height: 200px;",
+    );
+    doc.append_child(body, column);
+
+    // No wrapper this time: `a` is an ordinary child holding its own Taffy id.
+    let a = doc.create_element("div");
+    doc.set_attribute(a, "style", "flex: 1;");
+    doc.append_child(column, a);
+
+    let b = doc.create_element("div");
+    doc.set_attribute(b, "style", "flex: 1;");
+    doc.append_child(column, b);
+
+    doc.resolve_layout(800.0, 600.0);
+    assert_eq!(
+        doc.tree.get(a.0).unwrap().layout.height,
+        100.0,
+        "sanity: even split before removal"
+    );
+
+    doc.remove_node(a);
+    doc.resolve_layout(800.0, 600.0);
+
+    assert_eq!(
+        doc.tree.get(b.0).unwrap().layout.height,
+        200.0,
+        "a plain node's own Taffy id must be freed too — 100.0 here means \
+         `remove_node` skipped it and `a` is still a phantom flex child"
+    );
+}
+
+/// A wrapper inside a wrapper: the flattening has to recurse, or the inner
+/// wrapper's child stays behind.
+///
+/// `sync_display_contents` splices through *both* levels — the grandchild's
+/// Taffy id ends up a direct child of the column — so removing the outer
+/// wrapper has to reach it. A one-level flatten frees nothing at all here
+/// (the outer wrapper's only child is the inner wrapper, whose own Taffy node
+/// is itself detached), which is the same phantom as the un-fixed bug.
+#[test]
+fn test_removing_nested_display_contents_wrappers_frees_the_grandchilds_slot() {
+    let mut doc = RinchDocument::new();
+    let body = doc.body();
+
+    let column = doc.create_element("div");
+    doc.set_attribute(
+        column,
+        "style",
+        "display: flex; flex-direction: column; height: 200px;",
+    );
+    doc.append_child(body, column);
+
+    let outer = doc.create_element("div");
+    doc.set_attribute(outer, "style", "display: contents");
+    doc.append_child(column, outer);
+
+    let inner = doc.create_element("div");
+    doc.set_attribute(inner, "style", "display: contents");
+    doc.append_child(outer, inner);
+
+    let a = doc.create_element("div");
+    doc.set_attribute(a, "style", "flex: 1;");
+    doc.append_child(inner, a);
+
+    let b = doc.create_element("div");
+    doc.set_attribute(b, "style", "flex: 1;");
+    doc.append_child(column, b);
+
+    doc.resolve_layout(800.0, 600.0);
+    assert_eq!(
+        doc.tree.get(a.0).unwrap().layout.height,
+        100.0,
+        "sanity: the doubly-wrapped child is spliced into the column"
+    );
+
+    doc.remove_node(outer);
+    doc.resolve_layout(800.0, 600.0);
+
+    assert_eq!(
+        doc.tree.get(b.0).unwrap().layout.height,
+        200.0,
+        "flattening must recurse through the inner wrapper to reach `a`"
+    );
+}
