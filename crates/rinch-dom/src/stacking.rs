@@ -59,8 +59,11 @@
 //! A clip is recorded at the clipping node's own **pre-scroll** painted origin.
 //! A container's box does not move when its content scrolls, and taking the
 //! chain rect from the walk's accumulated (scrolled) offset is invisible at
-//! scroll offset 0 — `clip_predicate_tests::a_scrolled_container_clips_at_its_own_box`
-//! is the pin.
+//! scroll offset 0. Pinned by
+//! `clip_chain_tests::a_scrolled_container_clips_a_hoisted_box_at_its_own_box`,
+//! which probes both sides of the difference — the same shape
+//! `clip_predicate_tests::a_scrolled_container_clips_at_its_own_box` pins for
+//! the bracket.
 //!
 //! The **collecting root's own** clip is deliberately not in any chain. Paint
 //! opens that bracket before it walks the sequence and hit testing gates the
