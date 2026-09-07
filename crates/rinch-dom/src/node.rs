@@ -651,10 +651,19 @@ impl Node {
     ///   `position: static` (css-flexbox-1 §5.4, css-grid-1 §6). Both the
     ///   `z_index` and the parent's `display` are already here.
     ///
-    /// Neither is a regression — both predate #324 — and neither is folded in
-    /// here, because adding a stacking-context creator changes paint order for
-    /// existing markup and wants its own change. Tracked separately, with
-    /// #415.
+    /// Neither is folded in here, because adding a creator changes which boxes
+    /// hoist — the very axis stage B is re-founding — and landing both at once
+    /// would make a regression impossible to attribute. **Tracked as #542.**
+    /// The six properties `ComputedStyle` does not carry at all (and `blur()`,
+    /// which really is unexpressed) need per-property style plumbing and are a
+    /// separate piece of work again.
+    ///
+    /// One honest consequence of stage B: a box declaring **both** a filter and
+    /// a clipping `overflow` used to get a stacking context by accident, via
+    /// the `overflow` arm this function no longer has. Its clipping survives —
+    /// the chain carries that — but its ordering does not, so stage B slightly
+    /// widens #542's exposure rather than leaving it untouched. A filter box
+    /// without an `overflow` was already wrong before.
     ///
     /// **`overflow` is not on the list.** It used to be, so that a hoisted
     /// descendant stayed inside the clip bracket paint opened around one

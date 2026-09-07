@@ -1376,9 +1376,17 @@ today and simply missing** (measured, not argued):
   `position: static` (css-flexbox-1 §5.4, css-grid-1 §6) — both the `z_index`
   and the parent's `display` are already in `ComputedStyle`.
 
-Neither is a regression; both predate #324, and neither was folded into stage B,
-because adding a creator changes paint order for existing markup. Tracked with
-#415.
+Neither was folded into stage B, because adding a creator changes which boxes
+hoist — the axis stage B is re-founding — and landing both at once would make a
+regression impossible to attribute. **Tracked as #542**; the six properties
+`ComputedStyle` does not carry at all (plus `blur()`, which really is
+unexpressed) need per-property plumbing and are separate work again.
+
+Stage B slightly **widens** that exposure rather than leaving it untouched: a box
+declaring **both** a filter and a clipping `overflow` used to get a stacking
+context by accident through the `overflow` arm, and no longer does. Its clipping
+survives — the chain carries that — its ordering does not. A filter box with no
+`overflow` was already wrong before.
 
 **`overflow` is not on that list** (#324 stage B). It used to be, so that a
 descendant hoisted to an ancestor's paint sequence stayed inside the bracket
@@ -1447,9 +1455,18 @@ positioned rows is **one** push, not 200. Measured at 1200x800, software
 painter, best of 40: 200 positioned rows in one scroller 1.82 → 1.90ms (+4.5%);
 an adversarial 50 scrollers x 4 rows — one push per scroller, so **50**, since
 each scroller's own entry carries no chain and interrupts the run — 2.73 →
-3.08ms (+13%). Building the body's sequence went 1 → 3us. Both counts are pinned
-by `clip_chain_tests::consecutive_entries_that_share_a_chain_share_one_clip_push`
-rather than left as an annotation on a deleted benchmark. The
+3.08ms (+13%). Building the body's sequence went 1 → 3us.
+
+`clip_chain_tests::consecutive_entries_that_share_a_chain_share_one_clip_push`
+is the pin, and **the 50-scroller assertion is the load-bearing half of it**.
+The headline "200 rows = 1 push" is a *fixed point*: one scroller means the clip
+table only ever holds one chain, so a collector that reused far less still
+answers 1. Reusing the table's head instead of its tail leaves every pixel and
+every tap identical — pushing the same geometry twice is idempotent — and takes
+the 50-scroller case to **197** pushes and a 197-entry table. Do not simplify
+that fixture down to one scroller: the reuse would then have no test at all, and
+a refactor could quietly 4x the mask cost in the exact workload benchmarked
+above. The
 containment skip the scoping proposed (don't push a clip the entry is entirely
 inside) is **not** implemented: a sound version needs a subtree extent per entry,
 which is a new per-frame walk for every positioned box, and the run reuse already
