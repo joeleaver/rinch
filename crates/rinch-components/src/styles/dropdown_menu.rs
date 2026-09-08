@@ -128,21 +128,27 @@ pub fn styles() -> String {
    the user thinks of as outside the menu, and inside a sidebar, a table cell or
    any panel narrower than the window an absolutely positioned backdrop is not:
    an absolute box IS clipped by an `overflow` ancestor in its containing-block
-   chain, which is CSS and not a rinch quirk, so the popup and its dismiss
-   region would share one clip. It also puts the backdrop above the app's own
-   fixed chrome (a hand-rolled titlebar has no z-index, so it enters the body's
-   sequence at 0), which is why clicking the titlebar dismisses.
+   chain — CSS, not a rinch quirk, and measured here, where the `absolute`
+   backdrop's entry carries exactly one clip and it is the shell's box — so the
+   popup and its dismiss region would share one clip. A fixed box's chain is
+   empty instead. It also puts the backdrop above the app's own fixed chrome (a
+   hand-rolled titlebar has no z-index, so it enters at 0), which is why
+   clicking the titlebar dismisses.
 
    It was `position: absolute; top: -100vh; right: -100vw; bottom: -100vh;
    left: -100vw` between PR #317 and #324's stage C, and that is worth knowing
    because the reason was not geometry. Rinch used to make an overflow clip a
-   stacking context, and a fixed box is hoisted out of every ancestor clip *and*
-   every ancestor stacking context with it — so behind any `overflow` ancestor
-   the 99 and the 100 were compared across two contexts, which is to say not
-   compared at all, and the backdrop covered the panel and swallowed every tap
-   on the menu. #324 stage B took `overflow` out of
-   `Node::creates_stacking_context` and gave each hoisted box its own clip
-   chain, so the two numbers now meet in one sequence and 100 wins.
+   stacking context, and used to hoist a fixed box out of every ancestor clip
+   *and*, with it, every ancestor stacking context — so behind any `overflow`
+   ancestor the 99 and the 100 were compared across two contexts, which is to
+   say not compared at all, and the backdrop covered the panel and swallowed
+   every tap on the menu. Two fixes undid that, not one: #324 stage B took
+   `overflow` out of `Node::creates_stacking_context` and gave each hoisted box
+   its own clip chain, and **#545** stopped the hoist at the nearest ancestor
+   stacking context instead of the body. Stage B alone is enough for a plain
+   `overflow: hidden` shell; #545 is what makes it hold under a *real* stacking
+   context, which is the shape of every `Modal` (201), `Drawer` (201) and
+   `Notification` (300) a popup might be opened inside.
 
    Pinned in `rinch/src/app/mod.rs`'s `popup_backdrop_hit_tests`, which mounts
    this stylesheet: a tap on an item runs the item, a tap outside the clipping

@@ -229,12 +229,14 @@ That last one is a full-window overlay rinch renders under the open menu, at
 the window whichever of the three menu-bar layouts built it — including the
 title bar, so clicking there dismisses too.
 
-It was `position: absolute` between issues #527 and #324: a fixed box is hoisted
-to the viewport's stacking context, two `z-index`es in different stacking
-contexts are never compared, and `BorderlessWindow`'s container was a stacking
-context purely because of its `overflow: hidden` — so a fixed overlay covered
-the very menu it sits beneath. `overflow` no longer creates a stacking context,
-so the `199` and the `201` meet in one sequence again.
+It was `position: absolute` between issues #527 and #324. Two `z-index`es in
+different stacking contexts are never compared; `BorderlessWindow`'s container
+was a stacking context purely because of its `overflow: hidden`; and a fixed box
+was hoisted clear out to the body, past everything between. So the overlay's
+`199` and the menu's `201` were never compared with each other, and the overlay
+covered the very menu it sits beneath. Both halves are fixed: `overflow` no
+longer creates a stacking context, and a fixed box now stops at its nearest
+ancestor stacking context — so the `199` and the `201` meet in one sequence.
 
 **To put an overlay of your own above the menu bar, render it with a `z-index`
 above `201`.** Since #324 that is the whole rule, in either window type: the

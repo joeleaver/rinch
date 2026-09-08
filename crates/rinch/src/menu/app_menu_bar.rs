@@ -241,9 +241,21 @@ pub(crate) fn render_inline_overlay(
 /// `199` and covered them. Every entry click hit the overlay and merely
 /// dismissed the menu (#527), hover with it. #534 worked around that by
 /// respelling the overlay `absolute`, which is where the offset came from.
-/// #324 stage B removed the cause: [`rinch_dom::node::Node::creates_stacking_context`]
-/// no longer answers to `overflow`, and a hoisted box carries its own clip
-/// chain instead, so the `199` and the `201` meet in one sequence again.
+///
+/// **Two fixes were needed, not one.** #324 stage B removed the first cause:
+/// [`rinch_dom::node::Node::creates_stacking_context`] no longer answers to
+/// `overflow`, and a hoisted box carries its own clip chain instead. That alone
+/// still would not have made these two numbers comparable in the inline layout,
+/// where the overlay's parent `.rinch-app-menu-bar__inline-layer` is
+/// `position: absolute; z-index: 200` — a stacking context in its own right. A
+/// fixed box used to be hoisted past it to the **body**, leaving `199` in the
+/// body's sequence and `201` inside the layer. #545 stops a fixed box at its
+/// nearest ancestor stacking context, so the overlay lands in the layer beside
+/// the row and the `199` and the `201` meet in one sequence for real.
+///
+/// The distinction is not academic, but it *was* invisible: hoisted to the body
+/// the overlay's `199` would have been compared against the layer's `200`,
+/// which orders the same way. Every test below passed either way.
 fn build_overlay(scope: &mut RenderScope, active_menu: Signal<i32>) -> NodeHandle {
     let overlay = scope.create_element("div");
     overlay.set_attribute("class", "rinch-app-menu-bar__overlay");
@@ -764,13 +776,16 @@ mod tests {
     }
 
     /// The open dropdown sits *inside* the window container, and the dismiss
-    /// overlay is `position: fixed`, which hoists it out to the viewport's
-    /// stacking context. That was #527: the container's `overflow: hidden` used
-    /// to make it a stacking context too, so the overlay's `z-index: 199` and
-    /// the menu row's `201` were compared across two different contexts — which
+    /// overlay is `position: fixed`, which hoists it to its nearest ancestor
+    /// stacking context — here `.rinch-app-menu-bar__inline-layer`, the row's
+    /// own parent (#545). That is the point: it used to be hoisted out to the
+    /// **body** instead, and the container's `overflow: hidden` used to make
+    /// *that* a stacking context too, so the overlay's `z-index: 199` and the
+    /// menu row's `201` were compared across two different contexts — which
     /// `z-index` does not do — and the overlay covered the menu, so every entry
-    /// click merely dismissed it. #324 stage B stopped `overflow` creating a
-    /// context, which is what lets the overlay be `fixed` again.
+    /// click merely dismissed it (#527). Stage B stopped `overflow` creating a
+    /// context and #545 stopped the hoist to the body; both were needed before
+    /// the overlay could be `fixed` again. See [`super::build_overlay`].
     #[test]
     fn a_click_inside_an_open_dropdown_runs_the_entry_not_the_dismiss_overlay() {
         let (doc, overlay_id, entry_id, _) = open_inline_menu();

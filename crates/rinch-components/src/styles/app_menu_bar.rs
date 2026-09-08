@@ -127,8 +127,15 @@ pub fn styles() -> String {
    `BorderlessWindow`'s `overflow: hidden` container trapped the menus at its
    own `z == 0` while a fixed overlay escaped to the viewport at 199 and covered
    them — every entry click and every hover merely dismissed the menu (#527).
-   #324 stage B took `overflow` out of `Node::creates_stacking_context`, so the
-   199 and the 201 meet in one sequence again.
+
+   Two fixes were needed to undo that, not one. #324 stage B took `overflow` out
+   of `Node::creates_stacking_context`; #545 then stopped a fixed box being
+   hoisted past its nearest ancestor stacking context out to the body, which is
+   what the inline layout needs — its `.rinch-app-menu-bar__inline-layer` parent
+   is `position: absolute; z-index: 200`, a stacking context of its own, so a
+   body-hoisted overlay's 199 would never have met the row's 201. It is not
+   arithmetic that changed: 199 against the layer's own 200 orders the same way,
+   which is why the tests were green throughout.
 
    `menu::app_menu_bar`'s tests cover all three layouts against this
    stylesheet. */

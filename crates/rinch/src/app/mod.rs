@@ -4685,6 +4685,19 @@ mod popup_backdrop_hit_tests {
     /// `backdrop_override` is an inline `style` written onto the backdrop after
     /// the component has built it, so one test can put the old
     /// `position: fixed` spelling back and show what it did.
+    ///
+    /// **One item, deliberately, and a second would not buy what it looks like
+    /// it buys.** The usual cardinality-1 worry — that "ran the item under the
+    /// pointer" and "ran the panel's first child" are the same sentence — does
+    /// not apply, because no test here names item *indexing*; they name which
+    /// of the backdrop, the panel and the chrome answers a tap. Adding a decoy
+    /// item was tried and reverted: measured, the panel comes out
+    /// `display: block` with **zero height** and lays both children at the same
+    /// origin, so their boxes nest (`(0,36,90,58)` inside `(0,36,149,58)`) and
+    /// a "the decoy must not run" assertion would hold by geometry whatever the
+    /// dispatcher did. Give the items disjoint boxes first if you ever want
+    /// that assertion. (The panel losing its stylesheet `display: flex` is the
+    /// same whole-`style`-attribute rewrite #543 is filed for.)
     fn mount(backdrop_override: Option<&'static str>) -> Menu {
         mount_fixture(Fixture {
             backdrop: backdrop_override,
@@ -5062,10 +5075,21 @@ mod popup_backdrop_hit_tests {
     /// **Bought back, half two:** a tap on the app's own `position: fixed`
     /// chrome dismisses.
     ///
-    /// #324 names this as the second thing #317 gave up. A hand-rolled titlebar
-    /// is a fixed box with no `z-index`, so it enters the body's sequence at
-    /// `z == 0`; the backdrop's `99` beats it there, and did not use to be in
-    /// that sequence at all.
+    /// #324 names this as the second thing #317 gave up.
+    ///
+    /// **What separates the two spellings here is the clip chain, not the
+    /// order** — measured, because the plausible story is the other one. Both
+    /// backdrops are entries of the *same* sequence and above the chrome in it:
+    /// a hand-rolled titlebar is a fixed box with no `z-index`, so it enters at
+    /// `z == 0`, and either backdrop enters at `99`. The `absolute` one carries
+    /// one clip — the shell's box, retained because the shell is in its
+    /// containing-block chain — and the chrome strip lies above the shell's
+    /// origin, so the chain rejects the probe. The `fixed` one carries an empty
+    /// chain and covers the viewport.
+    ///
+    /// So this pair does **not** pin `z-index` arithmetic, and a chrome at a
+    /// `z` above `99` would take the tap under either spelling. That is correct
+    /// CSS and deliberately not tested here.
     #[test]
     fn a_tap_on_the_apps_own_fixed_chrome_dismisses() {
         let mut menu = mount_fixture(Fixture {
@@ -5100,8 +5124,9 @@ mod popup_backdrop_hit_tests {
     /// The other side again: with #317's spelling the chrome took that tap and
     /// the menu stayed open.
     ///
-    /// `chrome_clicks` is what makes this an ordering result rather than a
-    /// coverage one — the tap did reach a handler, just the wrong one.
+    /// `chrome_clicks` is what separates "the chrome took the tap" from "the
+    /// tap reached nothing at all", which `closes == 0` alone cannot: the tap
+    /// did reach a handler, just the wrong one.
     #[test]
     fn the_absolute_spelling_let_the_chrome_take_that_tap() {
         let mut menu = mount_fixture(Fixture {
