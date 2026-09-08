@@ -169,18 +169,65 @@ const SAMPLE_WINDOW: usize = 8;
 /// digitiser, coast distance before against after:
 ///
 /// ```text
-///   constant speed, no jitter            657px -> 657px     +0.0%
-///   constant speed, jittered sampling    625px -> 657px     +5.1%
-///   decelerating into the lift           356px -> 457px    +28%
-///   accelerating into the lift           953px -> 856px    -10%
+///   constant speed, no jitter            657px -> 657px     +0.0%  (exact)
+///   decelerating 3000 -> 1000px/s        356px -> 457px    +28.4%
+///   accelerating 1000 -> 3000px/s        954px -> 856px    -10.2%
 /// ```
 ///
-/// Intended, on the ground that the deceleration row *is* the fix: a windowed
-/// estimate is what makes "a finger that stopped does not fling" fall out for
-/// free, and there is no way to have that property while also reading the speed
-/// off the final sample pair — the final pair is exactly what a stopped finger
-/// has no information in. The old average could not tell a flick from a finger
-/// that had been resting for half a second.
+/// The two shape rows use `v(u) = 2000 * (1 - shape * (u/0.25 - 0.5))` over a
+/// 250ms drag; the magnitude is a function of that ramp, so read the sign and
+/// the order of magnitude rather than the digits.
+///
+/// **Jittered sampling is deliberately not a row in that table**, because it is
+/// not a shift — it is noise, and quoting a single draw of it as a percentage
+/// would misdescribe it. Over 300 seeds at a 60Hz digitiser with each sample
+/// displaced by up to a quarter of an interval:
+///
+/// ```text
+///   old (per-event average)    mean 654px   sd 102px   range -27% .. +58%
+///   new (chord over the window) mean 657px   sd   0px
+/// ```
+///
+/// The signed difference straddles zero — the new estimate is the *larger* one
+/// in 52% of seeds — so the honest statement is not "jitter makes flicks 5%
+/// longer" but the stronger one: **the old estimate carried ±100px of coast
+/// that was purely an artefact of when the digitiser happened to sample, and
+/// this one carries none.** That is the same property as the noise-rejection
+/// argument below, measured a second way.
+///
+/// Intended, and the reason is **noise rejection** — which is worth stating
+/// carefully, because the obvious-sounding reason is false.
+///
+/// It is tempting to credit the window with "a finger that stopped does not
+/// fling". It does not own that property: [`Self::sample_velocity`]'s staleness
+/// guard does, and the guard is in front of the window and independent of its
+/// width. Measured — a finger at 2000px/s that stops dead, then the same
+/// estimator narrowed to the newest *pair*:
+///
+/// ```text
+///                                       window       newest pair
+///   digitiser goes silent, 17ms         2000px/s        2000px/s
+///   digitiser goes silent, 150ms           0px/s           0px/s
+///   still reporting, 17ms of stillness  1667px/s           0px/s
+///   still reporting, 50ms of stillness  1000px/s           0px/s
+/// ```
+///
+/// The pair is *identical* when the digitiser falls silent — both are the
+/// guard — and strictly **better** when it keeps reporting a stationary finger,
+/// where the window is still averaging in motion that has stopped. So the
+/// narrow estimator has the stopped-finger property too, and has it sooner.
+///
+/// What the window actually buys is immunity to sampling noise, which is large
+/// and is the honest justification. One 6px blip on the final report costs a
+/// 2000px/s estimate 5% across eight samples and **36%** across the newest pair
+/// (`one_noisy_sample_cannot_own_the_launch_speed`), and over 300 jittered
+/// seeds the old per-event average carries a standard deviation of 102px of
+/// coast where this carries **zero** (see the table above). A flick should not
+/// depend on which microsecond the digitiser happened to sample.
+///
+/// The old average failed for a different reason again: it had no time in it at
+/// all, so it held the speed of a gesture that had been over for the better
+/// part of a second.
 ///
 /// **Where this does disagree with `VelocityTracker`**, since the horizon is
 /// borrowed from it: AOSP fits a curve across the horizon to estimate the
@@ -239,8 +286,14 @@ const MAX_EVENT_AGE: Duration = Duration::from_millis(500);
 /// per-event distance and could never exceed a screen's width, whereas this one
 /// is as large as the span is small. `MotionEvent::event_time()` is documented
 /// as `java.lang.System.nanoTime()` nanoseconds and the `ndk` crate says so
-/// too, so on a conforming device the span is tens of milliseconds and this
-/// clamp never engages — no flick anyone can perform reaches 8000dp/s. It is
+/// too, so on a conforming device the span is tens of milliseconds and the
+/// estimate stays in the low thousands of dp/s.
+///
+/// It is **not** claimed that no one can flick this fast — AOSP picked 8000
+/// precisely because people can, and a hard flick on a large screen is exactly
+/// the gesture that gets there. A flick at or past the ceiling is clamped to it
+/// on Android too, which is the behaviour being matched rather than a corner
+/// being written off. The clamp is
 /// here because the cost of being wrong about a platform contract should be a
 /// fast fling rather than the list teleporting to its end, and because
 /// [`MOMENTUM_MAX_STEPS`] already spends four lines making exactly that
