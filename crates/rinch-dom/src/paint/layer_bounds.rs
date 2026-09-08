@@ -35,10 +35,37 @@
 //!
 //! **A rect that is too large costs a little GPU fill. A rect that is too small
 //! is the bug this module exists to fix.** Every judgement below is therefore
-//! made in the direction of a larger rect, and anything this walk cannot answer
-//! with certainty answers [`Extent::Unknown`], which surfaces as [`UNBOUNDED`]
-//! — the same ±1e7 rect the zero-area path has always used. It is never a
-//! guess: it is either mirrored from what `paint_node` does, or it is unknown.
+//! made in the direction of a larger rect, and never a guess: an answer is
+//! either mirrored from what `paint_node` does, or it says which kind of
+//! not-knowing it is.
+//!
+//! **That last distinction is the rule, and getting it wrong is what this
+//! module's bugs are made of.** "Cannot answer with certainty" is not one state
+//! but two, and they surface differently:
+//!
+//! - [`Extent::Unknown`] — *the walk looked and could not place the box.* It is
+//!   still bounded by an ancestor that clips it, so [`Extent::clipped_to`]
+//!   narrows it to that clip. Exactly one thing produces it: `position: sticky`.
+//! - [`Extent::Escapes`] — *no clip inside this layer may be **assumed** to
+//!   bound it.* Nothing narrows it, and it surfaces as [`UNBOUNDED`], the same
+//!   ±1e7 rect the zero-area path has always used. Produced by a `position:
+//!   fixed` descendant, and by **either give-up guard** — the visit budget and
+//!   `MAX_DEPTH` — because a walk that stopped early cannot claim anything about
+//!   what it did not visit.
+//!
+//! This paragraph used to say that anything uncertain answers `Unknown` and that
+//! `Unknown` surfaces as `UNBOUNDED`. Both halves were false once a box could
+//! escape an intervening clip, and **the second was the belief that produced
+//! three separate bugs in one review** (#547 F2, F5, F7): each was a place where
+//! a value that *can* be narrowed was returned for a box that must not be, and
+//! each was fixed while this summary went on asserting the thing that made them
+//! look correct. The specification is the first place to fix and the last place
+//! anyone looks — so if a future change adds a third kind of not-knowing, add it
+//! here first.
+//!
+//! The direction of the error still matters more than its presence: too large
+//! costs fill, too small loses content on the GPU path only, where no
+//! software-rasterized test can see it.
 //!
 //! A useful safety property falls out of that, and it is worth stating with its
 //! exception rather than without, because the exception is where the next bug
@@ -136,13 +163,16 @@ use crate::node::{DisplayMode, Node, NodeKind, NodeTree, RawNodeId};
 /// A rect no clip can cut anything out of, at any scale a real window reaches.
 ///
 /// This is the value `paint/mod.rs` has been passing for the zero-area layer
-/// case since long before this module existed, and it stays the answer whenever
-/// the walk below is not certain. tiny-skia ignores layer bounds entirely;
-/// Vello clips to them, and clipping to this is clipping to nothing.
+/// case since long before this module existed, and it is what any not-knowing
+/// that reaches the top surfaces as. Note *reaches the top*: an
+/// `Extent::Unknown` can be narrowed to a clip on the way up and never get
+/// here, which is correct for the one thing that produces it and was the bug
+/// for everything else (see **The one rule**). tiny-skia ignores layer bounds
+/// entirely; Vello clips to them, and clipping to this is clipping to nothing.
 pub const UNBOUNDED: Rect = Rect::new(-1e7, -1e7, 1e7, 1e7);
 
 /// How many nodes the walk will look at before it gives up and says
-/// [`Extent::Unknown`].
+/// [`Extent::Escapes`].
 ///
 /// This runs once per frame per translucent element, on a phone, in a frame
 /// budget of 8.3ms — cards K42 and K43 spent a lot of effort getting this app
@@ -264,9 +294,22 @@ impl Extent {
     /// What is left of this extent once it is clipped to `clip`.
     ///
     /// The `Unknown` arm is the interesting one and the reason this type has
-    /// three cases: content whose extent could not be worked out is still
-    /// bounded by an ancestor that clips it, so an `overflow: hidden` box
+    /// more than two cases: content whose extent could not be worked out is
+    /// still bounded by an ancestor that clips it, so an `overflow: hidden` box
     /// containing something unanalysable contributes the box, not the plane.
+    ///
+    /// **That is only sound because `position: sticky` is now `Unknown`'s sole
+    /// producer** (one site; `Escapes` has three). A sticky box really is
+    /// clipped by its scroll ancestor, so narrowing it is right. Every other
+    /// not-knowing this module had — a fixed descendant, the visit budget,
+    /// `MAX_DEPTH` — was moved to `Escapes` precisely because this arm narrowed
+    /// it and should not have.
+    ///
+    /// So: **if you are about to return `Unknown` from a new site, the question
+    /// to answer first is whether an ancestor clip really does bound what you
+    /// could not measure.** If the honest answer is "I did not look", it is
+    /// `Escapes`. That single question is the generalisation of #547's three
+    /// findings, and asking it is what stops a fourth.
     fn clipped_to(self, clip: Rect) -> Extent {
         match self {
             Extent::Nothing => Extent::Nothing,
@@ -299,9 +342,12 @@ impl Extent {
 /// the `Rect::new(x, y, x + w, y + h)` that used to be passed.
 ///
 /// The result contains the node's own border box in every case, and contains
-/// every descendant this walk is certain about. When it is not certain it
-/// returns [`UNBOUNDED`], which is what every one of these layers effectively
-/// had before — a bounds that clips nothing.
+/// every descendant this walk placed. Where it could not place one it returns
+/// [`UNBOUNDED`] — what every one of these layers effectively had before, a
+/// bounds that clips nothing — *unless* a clipping ancestor genuinely bounds
+/// what could not be placed, which is the single case `Extent::Unknown`
+/// exists for. **The one rule** above is the distinction, and is the thing to
+/// read before adding a return to `Walk::node`.
 pub fn opacity_layer_bounds(
     tree: &NodeTree,
     node_id: RawNodeId,
@@ -387,6 +433,14 @@ impl Walk<'_> {
         // ("past it the answer is `UNBOUNDED` … so the fallback costs a
         // full-target clip and never a wrong picture") — that was simply untrue
         // whenever a clipping ancestor sat between here and the layer root.
+        //
+        // Worth keeping the shape of that in mind, because it generalises: the
+        // promise was not deleted as over-claiming, it was **made true**, and
+        // the history stayed here at the guard that fixed it rather than in the
+        // promise. A doc comment that says something false is usually saying
+        // what the code was meant to do, and the cheaper repair — softening the
+        // claim — throws away the specification and leaves the defect. Check
+        // which of the two is wrong before assuming it is the prose.
         //
         // It is also what lets [`Extent::is_final`] be the simple predicate it
         // is: this guard runs *before* every other arm, so once the budget is

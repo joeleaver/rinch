@@ -106,10 +106,12 @@
 //!
 //! A fixed box is viewport-**positioned**, not viewport-**stacked**. Its
 //! `layout.x`/`layout.y` are already viewport coordinates, so its entry takes
-//! zeroed offsets and (per the rule above) an empty clip chain — but it is
-//! hoisted only as far as its **nearest ancestor stacking context**, exactly
-//! like any other box that creates one, because that is what CSS 2.1 Appendix E
-//! says and what a browser does.
+//! zeroed offsets and (per the rule above) an empty clip chain — which is **not**
+//! the same as escaping every clip, and the difference is #549; the third
+//! consequence below is the whole of it, so read that before relying on this
+//! sentence. It is hoisted only as far as its **nearest ancestor stacking
+//! context**, exactly like any other box that creates one, because that is what
+//! CSS 2.1 Appendix E says and what a browser does.
 //!
 //! It used to be pulled out to the body's sequence whatever lay between (#545).
 //! That compared `z-index` values across two stacking contexts — the same fault
@@ -154,9 +156,12 @@
 //! **tree**, not this sequence, so it sees clipping ancestors that a fixed
 //! descendant's entry escapes; narrowing to one of those returns a layer smaller
 //! than its own content, which tiny-skia ignores and Vello enforces. Its
-//! `Extent::Escapes` case exists for exactly that. The two are one question —
-//! *which clips actually apply to a hoisted fixed box* — answered in three
-//! places, and it is worth checking all three before assuming a fix is local.
+//! `Extent::Escapes` case exists for exactly that — and, since #547, for either
+//! of its give-up guards too, on the same principle: a walk that stopped early
+//! cannot claim a clip bounds what it did not visit. The two modules are one
+//! question — *which clips actually apply to a hoisted fixed box* — answered in
+//! three places, and it is worth checking all three before assuming a fix is
+//! local.
 
 use std::ops::Deref;
 
