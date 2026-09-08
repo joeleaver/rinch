@@ -3007,6 +3007,86 @@ mod opacity_layer_bounds {
         assert_ne!(bounds_of(&doc, subject), UNBOUNDED);
     }
 
+    /// The layer must not be narrowed by a clipper the fixed box **escapes**.
+    ///
+    /// This is the one assertion in this file that a pixel oracle structurally
+    /// cannot make. tiny-skia's `push_layer` names its bounds parameter
+    /// `_bounds` and never reads it, so the software painter draws the box
+    /// wherever paint puts it and every rasterized assertion in this repo passes
+    /// either way. Vello passes the same rect to `vello::Scene::push_layer`,
+    /// which *clips* — so a bounds that excludes the box means **software draws
+    /// it and the GPU throws it away**, which is the single failure
+    /// `layer_bounds` was written to end. The only oracle that sees it is the
+    /// rect itself.
+    ///
+    /// Before the `Extent::Escapes` case existed, the fixed child's `Unknown`
+    /// was narrowed to the intervening `overflow: hidden` box by
+    /// `Extent::clipped_to` on the way back up, and the whole layer came back as
+    /// the root's own 100x100 — while paint drew the box at (600, 400).
+    #[test]
+    fn a_fixed_descendant_is_not_narrowed_by_a_clipper_it_escapes() {
+        let mut doc = RinchDocument::new();
+        let body = doc.body();
+
+        let layer = doc.create_element("div");
+        doc.set_attribute(
+            layer,
+            "style",
+            "position: relative; opacity: 0.5; width: 100px; height: 100px",
+        );
+        doc.append_child(body, layer);
+
+        // Between the layer and the fixed box, and clipping — but not the fixed
+        // box, whose containing block is the viewport. Deliberately smaller than
+        // the layer root, so narrowing to it would be visible as a *smaller*
+        // rect rather than the same one.
+        let clipper = doc.create_element("div");
+        doc.set_attribute(
+            clipper,
+            "style",
+            "overflow: hidden; width: 50px; height: 50px",
+        );
+        doc.append_child(layer, clipper);
+
+        let fixed = doc.create_element("div");
+        doc.set_attribute(
+            fixed,
+            "style",
+            "position: fixed; left: 600px; top: 400px; width: 40px; height: 40px",
+        );
+        doc.append_child(clipper, fixed);
+
+        doc.resolve_layout(800.0, 600.0);
+
+        let bounds = bounds_of(&doc, layer.0);
+        assert_eq!(
+            bounds, UNBOUNDED,
+            "the layer paints a box at (600, 400) that no clip inside it bounds, \
+             so its bounds must not be narrowed to anything"
+        );
+        assert!(
+            contains(bounds, box_of(&doc, fixed.0)),
+            "…which is the property that matters: the bounds handed to \
+             `push_layer` must contain what the layer paints"
+        );
+
+        // Not vacuous, and this is the half that fails if `Escapes` is dropped
+        // back to `Unknown`: with the fixed box gone the same shape measures
+        // normally, so what widens the layer is the `position`, not the clipper.
+        let mut doc = doc;
+        doc.set_attribute(
+            fixed,
+            "style",
+            "position: absolute; left: 600px; top: 400px; width: 40px; height: 40px",
+        );
+        doc.resolve_layout(800.0, 600.0);
+        assert_ne!(
+            bounds_of(&doc, layer.0),
+            UNBOUNDED,
+            "an absolute in the same place IS clipped by that box, so it narrows"
+        );
+    }
+
     /// `position: sticky` is painted at a position `paint_node` derives by
     /// walking up to the nearest scroll ancestor, which can be above the
     /// element the layer belongs to. The subtree does not contain the answer,

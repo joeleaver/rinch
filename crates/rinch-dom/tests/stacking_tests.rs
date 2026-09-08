@@ -477,7 +477,7 @@ mod painted {
         );
     }
 
-    fn pixel_at(painter: &TinySkiaPainter, x: u32, y: u32) -> [u8; 4] {
+    pub(super) fn pixel_at(painter: &TinySkiaPainter, x: u32, y: u32) -> [u8; 4] {
         let idx = ((y * painter.width() + x) * 4) as usize;
         let d = painter.pixels();
         [d[idx], d[idx + 1], d[idx + 2], d[idx + 3]]
@@ -873,7 +873,7 @@ mod painted_fixed {
     const MODAL: [u8; 4] = [0, 200, 0, 255];
     const AFTER: [u8; 4] = [255, 0, 255, 255];
 
-    fn paint(doc: &mut RinchDocument) -> TinySkiaPainter {
+    pub(super) fn paint(doc: &mut RinchDocument) -> TinySkiaPainter {
         let mut painter = TinySkiaPainter::new(800, 600);
         let mut layout_cx: parley::LayoutContext<Brush> = parley::LayoutContext::new();
         rinch_dom::paint::paint_document(
@@ -1057,6 +1057,92 @@ mod painted_fixed {
             pixel_at(&painter, 520, 490),
             MODAL,
             "…which is that translated position, and must be empty"
+        );
+    }
+
+    /// **Known deviation (#549), pinned so it is a decision and not a surprise:**
+    /// a fixed box escapes the clip of the stacking context that owns it, but
+    /// **not** the clips that context was itself hoisted past.
+    ///
+    /// `plain clipper > SC > fixed`. The fixed box is hoisted to the SC and its
+    /// own entry chain is empty — but the *SC's* entry carries the clipper as a
+    /// chain link, and paint pushes that chain around the SC's whole subtree.
+    /// The lift in `paint_children_with_stacking` removes one clip, the
+    /// collecting root's own bracket, and nothing above it; unwinding the rest
+    /// would mean tracking every open layer up to the body, which paint does not
+    /// do.
+    ///
+    /// So the box is drawn nowhere and tapped nowhere. **Chromium paints it**
+    /// (measured), and so did rinch before #545 — a fixed box that reached the
+    /// body escaped every clip on the way. Paint and hit testing agree here, so
+    /// this is a consistent deviation and not the drift #324 exists to end, and
+    /// nothing in-tree has the shape. It is still a regression, and the fix is
+    /// architectural: tracked in #549 with #386 and #415.
+    ///
+    /// If this test starts failing because the box is painted, that is #549
+    /// being fixed — invert it, do not delete it.
+    #[test]
+    fn a_fixed_box_does_not_escape_clips_above_the_context_that_owns_it() {
+        let mut doc = RinchDocument::new();
+        let body = doc.body();
+
+        // Not a stacking context: `overflow` stopped creating one in stage B.
+        let clipper = doc.create_element("div");
+        doc.set_attribute(
+            clipper,
+            "style",
+            "overflow: hidden; width: 200px; height: 200px",
+        );
+        doc.append_child(body, clipper);
+
+        // …but this is, so it is what owns the fixed box.
+        let owner = doc.create_element("div");
+        doc.set_attribute(
+            owner,
+            "style",
+            "position: relative; z-index: 1; width: 50px; height: 50px",
+        );
+        doc.append_child(clipper, owner);
+
+        let modal = doc.create_element("div");
+        doc.set_attribute(
+            modal,
+            "style",
+            "position: fixed; left: 300px; top: 300px; width: 200px; height: 200px; \
+             background-color: rgb(0, 200, 0)",
+        );
+        doc.append_child(owner, modal);
+
+        doc.resolve_layout(800.0, 600.0);
+
+        // The owner is hoisted to the body carrying the clipper in its chain,
+        // which is the mechanism — stated as an assertion so a change in it
+        // fails here rather than only in the pixels below.
+        let owner_entry = body_order(&doc)
+            .iter()
+            .find(|e| e.node_id == raw(owner))
+            .copied()
+            .expect("the owner is an entry of the body's sequence");
+        assert_eq!(
+            owner_entry.clips.len(),
+            1,
+            "the owner was hoisted past the clipper, so its entry carries it"
+        );
+        assert_eq!(
+            stacking_paint_order(&doc.tree, raw(owner), 1.0, 0.0, 0.0)
+                .iter()
+                .map(|e| (e.node_id, e.clips.len()))
+                .collect::<Vec<_>>(),
+            vec![(raw(modal), 0)],
+            "…while the fixed box's own chain is empty, which is why the doc's \
+             \"empty clip chain\" must not be read as \"escapes every clip\""
+        );
+
+        assert_eq!(
+            painted_fixed::pixel_at(&painted_fixed::paint(&mut doc), 400, 400),
+            [0, 0, 0, 0],
+            "today the clipper the owner was hoisted past still cuts the box \
+             away — Chromium paints it here (#549)"
         );
     }
 }

@@ -83,7 +83,15 @@
 //! an inline-block positioned by an inline formatting context — the walk
 //! reproduces the unusual thing rather than the tidy one, and where it cannot
 //! (a `position: fixed` descendant, whose coordinates are the viewport's and not
-//! this layer's) it answers [`Extent::Unknown`] rather than a tidy wrong number.
+//! this layer's) it answers [`Extent::Escapes`] rather than a tidy wrong number.
+//!
+//! That case is the one place the mirror is not a tree walk at all. A fixed box
+//! is hoisted out to a stacking-context ancestor's paint sequence with an empty
+//! clip chain, so a clipping box *between* it and this layer root — which this
+//! walk descends straight through — does not clip it. `Escapes` is what carries
+//! that fact back up past [`Extent::clipped_to`]; `Unknown` would be narrowed to
+//! the very clip paint ignores, and hand Vello a layer smaller than its own
+//! content. #545, #547.
 
 use peniko::kurbo::{Affine, Rect, Vec2};
 
@@ -129,12 +137,26 @@ const MAX_DEPTH: u32 = 32;
 
 /// What a subtree paints, as far as this walk can tell.
 ///
-/// The three cases are distinct on purpose. `Nothing` is not `Within` a
+/// The four cases are distinct on purpose. `Nothing` is not `Within` a
 /// zero-area rect: unioning a rect with a degenerate rect at the origin would
 /// drag the result all the way to (0, 0), which is how a "conservative" bounds
 /// function quietly becomes a full-screen one. And `Unknown` is not `Within`
 /// [`UNBOUNDED`] either, because a `Unknown` subtree under an `overflow: hidden`
 /// ancestor is still bounded by that ancestor's clip — see [`Extent::clipped_to`].
+///
+/// `Escapes` is `Unknown` **plus** the one thing that reasoning does not hold
+/// for: a clip inside this layer does not bound it. Only a `position: fixed`
+/// descendant answers it, and it exists because collapsing that case to
+/// `Unknown` is a silent GPU-only bug, not a conservative approximation —
+/// `clipped_to` would narrow it to a clip paint does not apply, and the layer
+/// would come back *smaller* than what it paints. tiny-skia ignores layer
+/// bounds and would draw the box anyway; Vello clips to them and would throw it
+/// away. See the note on `Fixed` in [`Walk::node`].
+///
+/// It is a claim about what this walk can *bound*, not a proof that nothing
+/// clips the box: a clip the fixed box's owning stacking context was itself
+/// hoisted past does still reach it (#549), so `Escapes` can be more generous
+/// than the truth. That is the direction this module errs in on purpose.
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum Extent {
     /// Provably nothing is drawn.
@@ -143,15 +165,26 @@ enum Extent {
     Within(Rect),
     /// Not known. Treat as covering the plane.
     Unknown,
+    /// Not known, **and** not bounded by any clip inside this layer.
+    Escapes,
 }
 
 impl Extent {
     fn union(self, other: Extent) -> Extent {
         match (self, other) {
+            // `Escapes` outranks `Unknown`: a union containing something no clip
+            // in this layer bounds is itself unbounded by those clips, and
+            // widening is always the safe direction here.
+            (Extent::Escapes, _) | (_, Extent::Escapes) => Extent::Escapes,
             (Extent::Unknown, _) | (_, Extent::Unknown) => Extent::Unknown,
             (Extent::Nothing, e) | (e, Extent::Nothing) => e,
             (Extent::Within(a), Extent::Within(b)) => Extent::Within(a.union(b)),
         }
+    }
+
+    /// Whether nothing found below can narrow this answer, so the walk may stop.
+    fn is_final(self) -> bool {
+        matches!(self, Extent::Unknown | Extent::Escapes)
     }
 
     /// What is left of this extent once it is clipped to `clip`.
@@ -163,6 +196,10 @@ impl Extent {
     fn clipped_to(self, clip: Rect) -> Extent {
         match self {
             Extent::Nothing => Extent::Nothing,
+            // The whole point of the fourth case: this clip is one paint does
+            // not apply to what is inside, so narrowing to it would return a
+            // layer smaller than its own content.
+            Extent::Escapes => Extent::Escapes,
             Extent::Unknown => Extent::Within(clip),
             Extent::Within(r) => {
                 let hit = r.intersect(clip);
@@ -312,8 +349,22 @@ impl Walk<'_> {
             // It used to answer `Nothing` for a non-body root, on the grounds
             // that the body reached past every intervening context and painted
             // the box outside this layer. That stopped being true with #545.
+            //
+            // [`Extent::Escapes`] and not [`Extent::Unknown`], and the
+            // difference is not cosmetic: an `Unknown` is narrowed by the first
+            // clipping ancestor on the way back up, and a clipping ancestor
+            // *inside* this layer does not clip a fixed box — its entry carries
+            // an empty clip chain and paint lifts the collecting root's own
+            // bracket around it. Collapsing to `Unknown` therefore returned a
+            // layer smaller than what it paints, which tiny-skia ignores (it
+            // never reads layer bounds) and Vello enforces (it clips
+            // `push_layer` to them). That is a **backend divergence**, the
+            // single failure this module exists to end, and no pixel assertion
+            // against the software painter can see it — so
+            // `a_fixed_descendant_is_not_narrowed_by_a_clipper_it_escapes`
+            // asserts on the bounds themselves.
             if cs.position == PositionValue::Fixed {
-                return Extent::Unknown;
+                return Extent::Escapes;
             }
             // `position: sticky` is painted at a position `paint_node` derives
             // by walking *up* to the nearest scroll ancestor — which may well be
@@ -504,10 +555,11 @@ impl Walk<'_> {
                 continue;
             }
             acc = acc.union(self.node(child_id, offset_x, offset_y, transform, false, depth + 1));
-            if acc == Extent::Unknown {
+            if acc.is_final() {
                 // Nothing below can make the answer narrower again — a caller
-                // that clips will still clip it, and one that does not will get
-                // `UNBOUNDED` whatever else is found.
+                // that clips will still clip it (or, for `Escapes`, will not),
+                // and either way the result is `UNBOUNDED` whatever else is
+                // found.
                 return acc;
             }
         }
@@ -555,7 +607,7 @@ impl Walk<'_> {
                         false,
                         depth + 1,
                     ));
-                    if acc == Extent::Unknown {
+                    if acc.is_final() {
                         return acc;
                     }
                 }

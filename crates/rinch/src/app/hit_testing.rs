@@ -84,9 +84,10 @@ struct Frame {
 ///
 /// Four adjustments, in paint's order:
 ///
-/// - a `position: fixed` box is viewport-relative, because paint hoists it to
-///   the body level with zeroed offsets — so the probe resumes from `vx`/`vy`
-///   and the node's own `layout.x`/`layout.y` alone;
+/// - a `position: fixed` box is viewport-relative, because paint gives its entry
+///   zeroed offsets and the body's transform wherever it is hoisted to (#545) —
+///   so the probe resumes from `vx`/`vy` and the node's own
+///   `layout.x`/`layout.y` alone;
 /// - an inline-block an IFC positions stores `layout.x`/`layout.y` against the
 ///   IFC root's *content* box while the offsets accumulated here are border-box
 ///   origins, so [`rinch_dom::paint::ifc_content_box_offset`] bridges the two
@@ -202,6 +203,15 @@ fn hit_test_node(
     // `position: fixed` entry of this root's sequence is not clipped by this
     // root (#545), so it must be probed even when the point is outside these
     // bounds. It is applied per entry below instead.
+    //
+    // The cost was weighed rather than overlooked: a stacking-context root now
+    // builds its `stacking_paint_order` and walks it even when the probe misses
+    // its box, skipping every non-fixed entry. That is real work per probe on a
+    // tree with many out-of-bounds clipping stacking contexts, and probes run
+    // per pointer move. Nothing cheaper is correct — knowing whether a subtree
+    // holds a fixed box is what building the sequence answers — and if it ever
+    // shows up in a profile the fix is a per-node "has a fixed descendant" bit
+    // maintained at style time, not moving this gate back.
     {
         // An IFC text node's layout is stretched to the whole container
         // (write_inline_positions, for scroll-height) — those artificial bounds

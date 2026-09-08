@@ -4598,12 +4598,13 @@ mod popup_backdrop_hit_tests {
     //! resolves to is decided by [`rinch_dom::stacking`], and the panel is only
     //! above the backdrop while the two are in the *same* stacking context.
     //!
-    //! They used not to be. Rinch hoists a `position: fixed` box to the body so
-    //! it escapes every ancestor clip, and an overflow clip *was* a stacking
-    //! context here, so it escaped every ancestor stacking context with it: a
-    //! fixed backdrop then outranked every non-fixed box on the page whatever
-    //! the z-indexes said, panel included. That is why #317 respelled the
-    //! backdrop `absolute`.
+    //! They used not to be. Rinch **used to hoist** a `position: fixed` box all
+    //! the way to the body so it escaped every ancestor clip, and an overflow
+    //! clip *was* a stacking context here, so it escaped every ancestor stacking
+    //! context with it: a fixed backdrop then outranked every non-fixed box on
+    //! the page whatever the z-indexes said, panel included. That is why #317
+    //! respelled the backdrop `absolute`. (#545 ended the hoist-to-body half
+    //! too: a fixed box now stops at its nearest ancestor stacking context.)
     //!
     //! **#324 stage B ended that.** `overflow` creates no stacking context, so
     //! the backdrop's `99` and the panel's `100` meet in one sequence and `100`

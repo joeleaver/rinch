@@ -119,7 +119,7 @@
 //! outermost stacking context, and a fixed box with no nearer one lands there
 //! by the ordinary walk.
 //!
-//! Two consequences its consumers must honour, because a fixed entry can now
+//! Three consequences its consumers must honour, because a fixed entry can now
 //! appear under a root that clips or transforms:
 //!
 //! - **The collecting root's own clip does not apply to it.** The root is not
@@ -128,6 +128,18 @@
 //!   inside an `overflow: hidden; z-index: 1` panel would be clipped away, which
 //!   [is not what a browser does](https://drafts.csswg.org/css-position/#fixed-pos).
 //!   That is #324 stage B's documented "Known gap", which this made live.
+//! - **Clips *above* the collecting root still do apply — #549.** This is the
+//!   limit of the bullet above and the thing not to misread: "a fixed entry
+//!   takes an empty clip chain" is **not** "a fixed box escapes every clip". Its
+//!   own chain is empty, but the chain on the *root's* entry, in whatever
+//!   sequence hoisted the root, is pushed around the root's whole subtree — the
+//!   fixed box with it. So under `plain clipper > stacking context > fixed` the
+//!   box is clipped away, where a browser paints it and where rinch itself did
+//!   before #545. Paint and hit testing agree on it, so it is a consistent
+//!   deviation rather than drift, and the honest fix is architectural: the
+//!   collecting root's clip has to move off the paint-time bracket and into
+//!   every entry's chain. Pinned by
+//!   `stacking_tests::a_fixed_box_does_not_escape_clips_above_the_context_that_owns_it`.
 //! - **The collecting root's own transform does not apply to it either.** A
 //!   fixed entry is painted under the *body's* transform, which is where its
 //!   coordinates live and what `paint::compute_absolute_position_and_transform`
@@ -136,6 +148,15 @@
 //!   `out_of_flow.rs` answers "the viewport" for every fixed box. Keeping the
 //!   body's transform here leaves that case exactly as wrong as it already was,
 //!   rather than letting paint and hit testing disagree about it.)
+//!
+//! A fourth consumer has to know the same thing from the other side.
+//! [`crate::paint::layer_bounds`] measures a translucent layer by walking the
+//! **tree**, not this sequence, so it sees clipping ancestors that a fixed
+//! descendant's entry escapes; narrowing to one of those returns a layer smaller
+//! than its own content, which tiny-skia ignores and Vello enforces. Its
+//! `Extent::Escapes` case exists for exactly that. The two are one question —
+//! *which clips actually apply to a hoisted fixed box* — answered in three
+//! places, and it is worth checking all three before assuming a fix is local.
 
 use std::ops::Deref;
 

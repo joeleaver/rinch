@@ -1433,6 +1433,17 @@ correct, and each has a fixture in
   contain: paint lifts the bracket for the length of that entry and puts the very
   same shape back, and hit testing exempts it from the bounds gate per entry.
   That was stage B's documented "Known gap", and #545 is what made it live.
+  **Only that one clip is lifted (#549).** The chain on the *root's own* entry,
+  in whatever sequence hoisted the root, is still pushed around the root's whole
+  subtree — so under `plain clipper > stacking context > fixed` the fixed box is
+  clipped away, where a browser paints it. Paint and hit testing agree on it, so
+  it is a consistent deviation and not drift; the honest fix moves the collecting
+  root's clip off the bracket and into every entry's chain, which would close
+  #386's shape too. A third consumer has to know the same thing from the other
+  side: `paint::layer_bounds` walks the tree rather than the sequence, so it sees
+  clippers a fixed descendant escapes, and its `Extent::Escapes` case stops one
+  narrowing a translucent layer to less than it paints — which tiny-skia ignores
+  and Vello enforces, i.e. a software/GPU divergence no pixel test can see.
 - **No transform composition is needed.** A transform creates a stacking
   context, so `descend` never crosses one and every link lives in the collecting
   root's own untransformed space — the same space the entries' offsets are in.
@@ -1490,7 +1501,8 @@ took the realistic case.
 **A `position: fixed` box is hoisted to its NEAREST ancestor stacking context**,
 not to the body (#545). It is viewport-*positioned*, not viewport-*stacked*: its
 entry keeps zeroed offsets, an empty clip chain and the body's transform, but it
-is entered in the sequence CSS says owns it. It used to be pulled out to the body
+is entered in the sequence CSS says owns it. **"Empty clip chain" is not "escapes
+every clip"** — see the paragraph on #549 below. It used to be pulled out to the body
 whatever lay between, which compared two `z-index` values across two stacking
 contexts — the same fault `overflow` caused before stage B. A `z-index: 99`
 dismiss backdrop escaped a wrapper its `z-index: 100` panel could not and covered
