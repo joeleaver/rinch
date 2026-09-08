@@ -1156,11 +1156,17 @@ fn paint_node(
             // `overflow_y` against `Hidden | Scroll | Auto` — one of the four
             // spellings stage A deleted, and the one that misses
             // `overflow: clip`. The radii come back and are dropped rather
-            // than pushed as a `RoundedRect`, and that is provable rather than
-            // merely reasonable: [`clip::border_radii`] resolves every corner
-            // against `min(width, height)`, which is `0` for every box that
-            // reaches this branch, so a collapsed box's radii are all zero by
-            // construction and the `RoundedRect` would be the same rect.
+            // than pushed as a `RoundedRect`, and the reason is the *clamp*,
+            // not the resolution. Measured, because the obvious argument is
+            // false: [`clip::border_radii`] resolves against
+            // `min(width, height)`, which is `0` here, so a **percentage**
+            // radius does come back as `0` — but `LengthPercentageValue::resolve`
+            // ignores the basis for a `Length`, so `border-radius: 10px` on a
+            // `height: 0` box hands back `{10, 10, 10, 10}`. What makes the two
+            // shapes identical anyway is kurbo: `Rect::to_rounded_rect` clamps
+            // every corner to half the shorter side, which is `0` for a
+            // zero-area rect, so both spellings arrive at square corners.
+            // Checked against `10px` and `50%`, not reasoned from the type.
             //
             // #536 (paint clips to the border box where CSS clips to the
             // padding box) cannot interact here either: `layout.height` *is*

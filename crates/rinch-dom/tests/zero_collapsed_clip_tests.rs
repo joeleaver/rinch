@@ -15,34 +15,53 @@
 //! # Pinning the seam, not only the symptom
 //!
 //! Those two tests state the bug. They do **not** state the contract the fix
-//! rests on, and four separate mutants of the new clip site survived them *and*
-//! the rest of this crate's suite when the fix-up was reviewed: passing `None`
-//! for `root_clip`, never popping the bracket, spelling the predicate the
-//! pre-#324 `overflow_y` way, and pushing the clip without asking `overflow` at
-//! all. Each test below exists because a specific mutant lived through the two
-//! above it, and each was proved red against that mutant before being kept.
+//! rests on. Measured against the 701 tests this crate already had, **four**
+//! mutations of the new clip site survive both of them and all 701: passing
+//! `None` for `root_clip`, never popping the bracket, popping it
+//! unconditionally, and spelling the predicate the pre-#324 `overflow_y` way.
+//! Each test below exists because one of those lived, and each was proved red
+//! against its own mutant before being kept.
 //!
-//! A fifth candidate — deriving the clip at the *scrolled* origin rather than at
-//! the box — turned out to be an **equivalent** mutation on this branch, and is
-//! written up on the test that would have pinned it rather than left for the
-//! next person to rediscover.
+//! Two candidates were dropped after measuring rather than kept on the strength
+//! of the argument for them, and both are recorded so the next person does not
+//! re-derive them:
+//!
+//! - **pushing the clip without asking `overflow`** is already killed by two
+//!   pre-existing #142 tests (`test_zero_height_container_applies_transform`
+//!   and `_applies_opacity`), so the test for it here is belt-and-braces at a
+//!   different altitude — a pixel assertion rather than a transform one — not
+//!   the only thing standing between that mutant and green;
+//! - **deriving the clip at the *scrolled* origin** is an **equivalent**
+//!   mutation on this branch. It is written up on the test that would have
+//!   pinned it.
 //!
 //! They also deliberately step off the values a mutant can hide on
 //! (`reference_test_fixed_point_blindness`): the pair above sample **scroll
-//! offset 0**, **`scale = 1.0`**, and **one** child under **one** clipper, so
-//! the ones below carry a non-zero scroll offset, a scale of `2.0`, and a
-//! second sibling. Radius is the one trap that cannot be stepped off and does
-//! not need to be: `clip::border_radii` resolves against `min(width, height)`,
-//! which is `0` for every box that reaches this branch, so a collapsed box's
-//! corners are all square by construction.
+//! offset 0**, **`scale = 1.0`**, **one** child under **one** clipper, and — the
+//! one that is a whole axis rather than a value — a collapsed **height** every
+//! time, never a collapsed width. The tests below carry a non-zero scroll
+//! offset, a scale of `2.0`, a second sibling, and a `width: 0` box.
+//!
+//! Radius is the trap that cannot be stepped off, and the obvious argument for
+//! why that is safe is **false**: `clip::border_radii` resolves against
+//! `min(width, height)`, which is `0` here, so a *percentage* radius does come
+//! back as `0` — but `LengthPercentageValue::resolve` ignores the basis for a
+//! `Length`, and `border-radius: 10px` on a `height: 0` box hands back
+//! `{10, 10, 10, 10}`. What makes a `RoundedRect` and a plain `Rect` identical
+//! anyway is kurbo's clamp: `Rect::to_rounded_rect` caps every corner at half
+//! the shorter side, which is `0`. Measured with `10px` and `50%`.
 //!
 //! **What none of this can see:** every assertion here reads the tiny-skia
-//! pixmap. The DOM-side fix is renderer-agnostic and pushes the same clip on
-//! the Vello path, but whether Vello honours a zero-area clip is *not*
-//! exercised by anything in this file, and `TinySkiaPainter::push_layer` takes
-//! its `_bounds` and never reads them — so a GPU-only divergence of the #550
-//! shape would pass every test here. The painter test below is a statement
-//! about `TinySkiaPainter` alone and says so.
+//! pixmap. The DOM-side fix is renderer-agnostic and pushes the same clip on the
+//! Vello path, and to be precise about what that means — `paint_tests.rs` drives
+//! `VelloPainter` with no GPU, so a *structural* assertion that the clip reaches
+//! the scene at all was writable and is simply not written here. What no
+//! CPU-side test can answer is the question that actually matters: whether Vello
+//! **honours** a zero-area clip once it rasterizes. `TinySkiaPainter::push_layer`
+//! takes its `_bounds` and never reads them, which is how #550's GPU-only
+//! divergence passed every software assertion, so a difference of that shape
+//! would pass everything here too. The painter test below is a statement about
+//! `TinySkiaPainter` alone and says so.
 
 #![cfg(feature = "software-renderer")]
 
@@ -426,5 +445,86 @@ fn a_degenerate_clip_does_not_take_the_enclosing_clip_with_it() {
         [outside[0], outside[1], outside[2]],
         [255, 0, 0],
         "the enclosing clip was restored too wide"
+    );
+}
+
+/// The other axis. Every other fixture in this file collapses the **height**,
+/// which leaves the whole `(width == 0) != (height == 0)` branch sampled on one
+/// side of its own XOR — a mutation that read `layout.height` where it means
+/// "the collapsed axis" would be invisible to all of them.
+///
+/// A `width: 0` clipper is not a hypothetical shape either: it is what a
+/// horizontally collapsed pane or a `flex-basis: 0` sidebar leaves behind.
+#[test]
+fn a_zero_width_overflow_hidden_wrapper_clips_its_in_flow_child() {
+    let mut doc = RinchDocument::new();
+    let body = doc.body();
+
+    let wrapper = div(&mut doc, body, "overflow: hidden; width: 0; height: 100px");
+    div(
+        &mut doc,
+        wrapper,
+        "width: 200px; height: 100px; background-color: rgb(255, 0, 0)",
+    );
+
+    doc.resolve_layout(VW, VH);
+    let mut painter = TinySkiaPainter::new(VW as u32, VH as u32);
+    paint(&mut doc, &mut painter);
+
+    for (x, y) in [(10, 10), (100, 40), (150, 80)] {
+        let px = pixel_at(&painter, x, y);
+        assert_ne!(
+            [px[0], px[1], px[2]],
+            [255, 0, 0],
+            "a child inside a wrapper collapsed to `width: 0` with \
+             `overflow: hidden` painted at ({x}, {y}); the collapsed axis is not \
+             always the height"
+        );
+    }
+}
+
+/// The bracket has to balance in **both** directions, and this is the half the
+/// leak test above cannot see. A collapsed box that does *not* clip pushes
+/// nothing, so a `pop_layer` that runs unconditionally pops whatever was below —
+/// an ancestor's clip — and everything painted afterwards escapes it.
+///
+/// Found by measuring rather than by reading: dropping the `root_clip.is_some()`
+/// guard around the pop survives #540's two tests, all 701 pre-existing ones,
+/// *and* every other test in this file. It is the mirror image of
+/// `the_collapsed_clippers_bracket_does_not_leak_onto_a_later_sibling` — one
+/// pins the push without a pop, this one the pop without a push.
+#[test]
+fn a_collapsed_box_that_pushes_no_bracket_pops_none_either() {
+    let mut doc = RinchDocument::new();
+    let body = doc.body();
+
+    // The ancestor clip that must survive the collapsed box below it.
+    let clipper = div(
+        &mut doc,
+        body,
+        "overflow: hidden; width: 60px; height: 60px",
+    );
+
+    // Collapsed on one axis, `overflow: visible`: it pushes no bracket at all.
+    div(&mut doc, clipper, "width: 200px; height: 0");
+
+    // Painted after it, and far outside the 60x60 clipper.
+    div(
+        &mut doc,
+        clipper,
+        "width: 200px; height: 200px; background-color: rgb(255, 0, 0)",
+    );
+
+    doc.resolve_layout(VW, VH);
+    let mut painter = TinySkiaPainter::new(VW as u32, VH as u32);
+    paint(&mut doc, &mut painter);
+
+    let px = pixel_at(&painter, 150, 150);
+    assert_ne!(
+        [px[0], px[1], px[2]],
+        [255, 0, 0],
+        "content escaped a 60x60 `overflow: hidden` ancestor: a collapsed box \
+         that pushed no bracket popped one anyway, and took the ancestor's clip \
+         off the stack with it"
     );
 }
