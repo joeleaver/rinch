@@ -2800,6 +2800,7 @@ mod opacity_overflow {
 mod opacity_layer_bounds {
     use super::*;
     use peniko::kurbo::Rect;
+    use rinch_core::dom::NodeId;
     use rinch_dom::paint::{UNBOUNDED, compute_absolute_position, opacity_layer_bounds};
 
     /// `<body><div id=subject style=...>{children}</div></body>`, laid out.
@@ -3058,17 +3059,59 @@ mod opacity_layer_bounds {
                  handed to `push_layer` must contain what the layer paints"
             );
         }
+    }
 
-        // And the route with no `sticky` in the document at all: past the visit
-        // budget every remaining sibling answers `Unknown` too, so stopping
-        // early there is lossless — but the fixed box must still be found when
-        // it comes before the budget runs out.
-        let (doc, layer, fixed) = layer_over_clipper_wide(600);
+    /// Giving up must not narrow either. **The walk did not look, so it cannot
+    /// claim the clipper bounds what it did not see** — and an `Unknown` there
+    /// is narrowed by that clipper exactly as in the test above, reaching the
+    /// same defect by a second route with no `sticky` box in the document at
+    /// all (#547 F7).
+    ///
+    /// Each route puts the fixed box **last**, behind whatever exhausts the
+    /// walk. With it first the answer is `Escapes` on iteration one and the
+    /// guard is never reached, so the fixture would *assert* the route without
+    /// exercising it — which is precisely how the earlier version of this file
+    /// asserted the budget route and saw nothing. Subject last, cardinality at
+    /// least two.
+    ///
+    /// Separate tests per route because they are separate guards: the budget is
+    /// also charged by the inline-lines loop, and depth is not charged at all.
+    #[test]
+    fn a_fixed_box_past_the_visit_budget_is_not_narrowed() {
+        let (doc, layer, fixed) = clipper_over_fillers_then_fixed(600);
         assert_eq!(
             bounds_of(&doc, layer),
             UNBOUNDED,
-            "a fixed child ahead of a budget-exhausting run of siblings is still \
-             found"
+            "past the visit budget the walk has not looked, so it may not claim \
+             the clipper bounds what it did not see"
+        );
+        assert!(contains(bounds_of(&doc, layer), box_of(&doc, fixed)));
+    }
+
+    /// The depth route: no wide node and no `sticky` box anywhere, so the only
+    /// thing that can produce the give-up is `MAX_DEPTH`.
+    #[test]
+    fn a_fixed_box_deeper_than_max_depth_is_not_narrowed() {
+        let (doc, layer, fixed) = clipper_over_deep_nest_then_fixed(40);
+        assert_eq!(bounds_of(&doc, layer), UNBOUNDED);
+        assert!(contains(bounds_of(&doc, layer), box_of(&doc, fixed)));
+    }
+
+    /// The third give-up guard: the inline-lines loop.
+    ///
+    /// It was found by enumerating every `return Extent::` rather than by
+    /// testing, so this exists to show it is a real route and not a phantom. A
+    /// `position: fixed` box is never itself an inline item — Stylo blockifies
+    /// an out-of-flow box — so the route is one level down: an **inline-block**
+    /// on a line the budget never reaches, holding a fixed descendant.
+    #[test]
+    fn an_unvisited_inline_line_may_hide_a_fixed_box() {
+        let (doc, layer, fixed) = clipper_over_long_text_then_inline_fixed(900);
+        assert_eq!(
+            bounds_of(&doc, layer),
+            UNBOUNDED,
+            "the lines past the budget were not looked at, and one of them holds \
+             an inline-block with a fixed box inside it"
         );
         assert!(contains(bounds_of(&doc, layer), box_of(&doc, fixed)));
     }
@@ -3149,9 +3192,9 @@ mod opacity_layer_bounds {
         (doc, layer.0, subject.expect("one fixed or absolute child"))
     }
 
-    /// The same, with the fixed box followed by `n` plain siblings — enough to
-    /// exhaust `MAX_VISITS`, which is the other way an `Unknown` arrives.
-    fn layer_over_clipper_wide(n: usize) -> (RinchDocument, usize, usize) {
+    /// `layer > clipper > [n plain fillers…, fixed]` — the fixed box **last**,
+    /// behind enough siblings to exhaust `MAX_VISITS`.
+    fn clipper_over_fillers_then_fixed(n: usize) -> (RinchDocument, usize, usize) {
         let mut doc = RinchDocument::new();
         let body = doc.body();
 
@@ -3171,6 +3214,12 @@ mod opacity_layer_bounds {
         );
         doc.append_child(layer, clipper);
 
+        for _ in 0..n {
+            let filler = doc.create_element("div");
+            doc.set_attribute(filler, "style", "width: 1px; height: 1px");
+            doc.append_child(clipper, filler);
+        }
+
         let fixed = doc.create_element("div");
         doc.set_attribute(
             fixed,
@@ -3179,14 +3228,84 @@ mod opacity_layer_bounds {
         );
         doc.append_child(clipper, fixed);
 
-        for _ in 0..n {
-            let filler = doc.create_element("div");
-            doc.set_attribute(filler, "style", "width: 1px; height: 1px");
-            doc.append_child(clipper, filler);
+        doc.resolve_layout(800.0, 600.0);
+        (doc, layer.0, fixed.0)
+    }
+
+    /// `layer > clipper > (depth nested divs) > fixed` — deeper than
+    /// `MAX_DEPTH`, so the walk gives up on depth rather than on the budget.
+    /// No wide node anywhere, which is what makes this a separate route.
+    fn clipper_over_deep_nest_then_fixed(depth: usize) -> (RinchDocument, usize, usize) {
+        let (mut doc, layer, clipper) = layer_and_clipper();
+        let mut cursor = clipper;
+        for _ in 0..depth {
+            let nested = doc.create_element("div");
+            doc.set_attribute(nested, "style", "width: 40px; height: 40px");
+            doc.append_child(cursor, nested);
+            cursor = nested;
         }
+        let fixed = doc.create_element("div");
+        doc.set_attribute(
+            fixed,
+            "style",
+            "position: fixed; left: 600px; top: 400px; width: 40px; height: 40px",
+        );
+        doc.append_child(cursor, fixed);
+        doc.resolve_layout(800.0, 600.0);
+        (doc, layer.0, fixed.0)
+    }
+
+    /// `layer > clipper > p(lots of text, then an inline-block > fixed)` — the
+    /// inline-block is on a line the line budget never reaches.
+    fn clipper_over_long_text_then_inline_fixed(words: usize) -> (RinchDocument, usize, usize) {
+        let (mut doc, layer, clipper) = layer_and_clipper();
+        let para = doc.create_element("p");
+        doc.set_attribute(para, "style", "width: 40px; font-size: 12px");
+        doc.append_child(clipper, para);
+
+        let text = doc.create_text(&"wrapping ".repeat(words));
+        doc.append_child(para, text);
+
+        let inline_block = doc.create_element("span");
+        doc.set_attribute(
+            inline_block,
+            "style",
+            "display: inline-block; width: 20px; height: 20px",
+        );
+        doc.append_child(para, inline_block);
+
+        let fixed = doc.create_element("div");
+        doc.set_attribute(
+            fixed,
+            "style",
+            "position: fixed; left: 600px; top: 400px; width: 40px; height: 40px",
+        );
+        doc.append_child(inline_block, fixed);
 
         doc.resolve_layout(800.0, 600.0);
         (doc, layer.0, fixed.0)
+    }
+
+    /// The `layer(opacity) > clipper(overflow: hidden)` prefix every fixture
+    /// above shares.
+    fn layer_and_clipper() -> (RinchDocument, NodeId, NodeId) {
+        let mut doc = RinchDocument::new();
+        let body = doc.body();
+        let layer = doc.create_element("div");
+        doc.set_attribute(
+            layer,
+            "style",
+            "position: relative; opacity: 0.5; width: 100px; height: 100px",
+        );
+        doc.append_child(body, layer);
+        let clipper = doc.create_element("div");
+        doc.set_attribute(
+            clipper,
+            "style",
+            "overflow: hidden; width: 50px; height: 50px",
+        );
+        doc.append_child(layer, clipper);
+        (doc, layer, clipper)
     }
 
     /// `position: sticky` is painted at a position `paint_node` derives by
