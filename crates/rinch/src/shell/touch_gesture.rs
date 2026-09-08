@@ -157,9 +157,43 @@ const SAMPLE_WINDOW: usize = 8;
 /// `a_press_that_became_a_scroll_never_becomes_a_context_menu` is where that is
 /// pinned.
 ///
-/// It changes what a flick does on any digitiser not reporting at 60Hz, and it
-/// is supposed to. [`MOMENTUM_FRICTION`] is the knob if the corrected flings
-/// overshoot.
+/// **This replaced the estimator, not only its unit, and that is a change of
+/// feel at 60Hz too.** Worth stating flatly, because the rest of this comment
+/// is about a unit conversion and it would be easy to read the whole change as
+/// one. The old `(x - last_x) * 0.8 + velocity * 0.2` weights its samples
+/// 0.8 / 0.16 / 0.032 — effectively the last three, dominated by the final one —
+/// where this takes a plain chord across the whole window. For a finger moving
+/// at a *constant* speed the two agree exactly, which is why the reference
+/// configuration is untouched; for any finger whose speed varies they do not,
+/// at 60Hz as much as anywhere. Measured on the host at a 60Hz panel and a 60Hz
+/// digitiser, coast distance before against after:
+///
+/// ```text
+///   constant speed, no jitter            657px -> 657px     +0.0%
+///   constant speed, jittered sampling    625px -> 657px     +5.1%
+///   decelerating into the lift           356px -> 457px    +28%
+///   accelerating into the lift           953px -> 856px    -10%
+/// ```
+///
+/// Intended, on the ground that the deceleration row *is* the fix: a windowed
+/// estimate is what makes "a finger that stopped does not fling" fall out for
+/// free, and there is no way to have that property while also reading the speed
+/// off the final sample pair — the final pair is exactly what a stopped finger
+/// has no information in. The old average could not tell a flick from a finger
+/// that had been resting for half a second.
+///
+/// **Where this does disagree with `VelocityTracker`**, since the horizon is
+/// borrowed from it: AOSP fits a curve across the horizon to estimate the
+/// velocity *at the last sample*, where this takes a first-to-last chord, which
+/// is the window's *mean*. So a finger decelerating into the lift launches at
+/// more than the speed it was actually going — measured, 397px of coast where
+/// its terminal 933px/s warrants about 311px. That is a knowingly cruder
+/// estimator, not an oversight; a least-squares fit is a change of its own
+/// shape and would re-tune the feel a second time in the same PR.
+///
+/// It changes what a flick does on any digitiser not reporting at 60Hz as well,
+/// and it is supposed to. [`MOMENTUM_FRICTION`] is the knob if the corrected
+/// flings overshoot.
 const VELOCITY_WINDOW: Duration = Duration::from_millis(100);
 
 /// How long a still finger must stay down to mean "context menu".
@@ -169,13 +203,50 @@ const VELOCITY_WINDOW: Duration = Duration::from_millis(100);
 /// been taught. Shortening it would steal presses from taps that happen to
 /// linger; lengthening it would make the menu feel unreachable.
 const LONG_PRESS_TIMEOUT: Duration = Duration::from_millis(500);
-/// How old a `MotionEvent`'s own timestamp may be before [`EventClock`] stops
-/// believing it describes the same clock the loop is reading.
+/// How old an event may map before [`EventClock`] stops believing its anchor.
 ///
-/// Half a second is far longer than any plausible input latency and far shorter
-/// than the difference two *different* clock bases would show, which is what
-/// this is really testing for. See [`EventClock`].
+/// Half a second is far longer than any plausible input latency, so an event
+/// that maps further back than this says the *anchor* has stopped describing
+/// the offset between the two clocks — the loop was away (the app was
+/// backgrounded mid-gesture), or the device's clock jumped. Re-anchoring is the
+/// answer to both, and it is the only thing this constant does.
+///
+/// **It does not detect a wrong unit, and no threshold could.** [`EventClock`]
+/// uses only *differences* between event timestamps — that is the whole of why
+/// it is safe without asserting what base the device counts in — so the
+/// absolute epoch is invisible to it by construction, and a coarser unit
+/// (milliseconds read as nanoseconds) makes those differences 10⁶ times
+/// *smaller*, not larger. There is no unit mismatch that dates two samples
+/// further apart than they really are.
+///
+/// What a coarser unit actually does is collapse the span the launch speed
+/// divides by, which is why [`MAX_FLING_VELOCITY`] exists: measured, a 64ms
+/// flick whose timestamps are milliseconds read as nanoseconds asked for a
+/// single 41,666,668px frame before that clamp was added. See
+/// `a_clock_running_in_the_wrong_unit_cannot_teleport_the_list`.
 const MAX_EVENT_AGE: Duration = Duration::from_millis(500);
+
+/// The fastest a fling may leave the finger, in pixels per second.
+///
+/// `ViewConfiguration.getScaledMaximumFlingVelocity()` — 8000dp/s, the number
+/// Android has clamped its own flings to since API 1. Coordinates reach this
+/// module already divided by the display's scale factor, so 8000 here is 8000
+/// *dp* and the two agree.
+///
+/// **Defence in depth, not a live bug.** The launch speed is now a distance
+/// divided by a measured duration ([`VELOCITY_WINDOW`]), and a quotient is
+/// unbounded when its denominator is wrong: on `main` the estimate was a
+/// per-event distance and could never exceed a screen's width, whereas this one
+/// is as large as the span is small. `MotionEvent::event_time()` is documented
+/// as `java.lang.System.nanoTime()` nanoseconds and the `ndk` crate says so
+/// too, so on a conforming device the span is tens of milliseconds and this
+/// clamp never engages — no flick anyone can perform reaches 8000dp/s. It is
+/// here because the cost of being wrong about a platform contract should be a
+/// fast fling rather than the list teleporting to its end, and because
+/// [`MOMENTUM_MAX_STEPS`] already spends four lines making exactly that
+/// argument about a stalled frame. A clamp that is never reached costs one
+/// comparison per lift.
+const MAX_FLING_VELOCITY: f32 = 8000.0;
 
 /// Puts `MotionEvent::event_time()` onto the loop's own clock, without assuming
 /// the two are the same clock.
@@ -650,9 +721,14 @@ impl TouchGesture {
         // A distance over a duration, said in the per-tick unit the fling is
         // tuned in — which is the whole correction. See [`VELOCITY_WINDOW`].
         let per_tick = MOMENTUM_TICK.as_secs_f32() / span;
+        // Clamped, because a quotient is only as bounded as its denominator and
+        // `span` comes from the device's own clock. See [`MAX_FLING_VELOCITY`]:
+        // on a conforming device this never engages. Per axis, as Android's own
+        // `computeCurrentVelocity(units, maxVelocity)` does.
+        let ceiling = MAX_FLING_VELOCITY * MOMENTUM_TICK.as_secs_f32();
         (
-            (newest_x - oldest_x) * per_tick,
-            (newest_y - oldest_y) * per_tick,
+            ((newest_x - oldest_x) * per_tick).clamp(-ceiling, ceiling),
+            ((newest_y - oldest_y) * per_tick).clamp(-ceiling, ceiling),
         )
     }
 
@@ -704,11 +780,24 @@ impl TouchGesture {
     ///
     /// So the step is now `elapsed / MOMENTUM_TICK` rather than 1, the friction
     /// is raised to that power, and the wheel delta is multiplied by it. At
-    /// 60Hz that is exactly the arithmetic this replaced — one step, one
-    /// multiplication by 0.95 — so the curve the constants describe is
-    /// unchanged and only its independence from the frame rate is new. At 120Hz
-    /// it is two half-steps per 60Hz frame, which travel the same distance and
-    /// take the same time, but do it with twice as many pictures.
+    /// exactly the reference tick that is exactly the arithmetic this replaced
+    /// — one step, one multiplication by 0.95 — so the curve the constants
+    /// describe is unchanged and only its independence from the frame rate is
+    /// new. At 120Hz it is two half-steps per 60Hz frame, which take the same
+    /// time and travel within about 1% of the same distance, but do it with
+    /// twice as many pictures.
+    ///
+    /// **About 1%, not exactly.** The scheme emits `v * steps` and decays
+    /// *after*, which is a left Riemann sum, so a finer sampling of the same
+    /// curve integrates slightly under it: measured on the host, one flick
+    /// coasts 656.7px at 60Hz, 648.8px at 120Hz and 643.0px at 480Hz — a 1.2%
+    /// shortfall at 120Hz converging on 2.2%. The *duration* is unaffected,
+    /// because the stopping condition counts decay steps and `steps` sums to
+    /// the same total either way. Both are far inside the factor of two this
+    /// replaces, and pinned at a 5% tolerance in
+    /// `the_same_fling_lasts_the_same_time_at_any_refresh_rate`; the reason to
+    /// write the number down rather than say "the same" is that a later reader
+    /// measuring 648.8 against 656.7 should find it already accounted for.
     pub(crate) fn tick_momentum(&mut self, now: Instant, events: &mut Vec<PlatformEvent>) -> bool {
         if matches!(self.state, TouchState::Scrolling) {
             // Still touching — don't apply momentum
@@ -1430,18 +1519,25 @@ mod tests {
         assert_eq!(now.duration_since(third), Duration::from_millis(5));
     }
 
-    /// A timestamp that is not in the base we assumed must not be believed, and
-    /// the fallback is exactly the behaviour this type replaced: the instant the
-    /// loop read the event.
+    /// An anchor that has stopped describing the offset between the two clocks
+    /// must be abandoned, and the fallback is exactly the behaviour this type
+    /// replaced: the instant the loop read the event.
     ///
-    /// This is the guard that makes it safe to read `MotionEvent::event_time()`
-    /// at all without asserting what clock a given handset counts in. A device
-    /// answering in, say, milliseconds-since-boot rather than nanoseconds would
-    /// otherwise date every sample days apart, and a launch speed divided by
-    /// days is a list that never flings; here it degrades to the frame-stamped
-    /// behaviour of before card K40, which is merely less good.
+    /// This is what makes a *stale* anchor self-healing — the app backgrounded
+    /// mid-gesture, or the device's clock jumped — rather than poisoning the
+    /// rest of the session.
+    ///
+    /// **It was called `..._refuses_a_timestamp_from_another_base`, and it never
+    /// tested one.** What it drives is a backwards jump of a second within the
+    /// *same* base, which is a different thing and the thing the code actually
+    /// handles. A wrong *unit* cannot be detected here at all: [`EventClock`]
+    /// compares only differences, so the epoch is invisible to it, and a
+    /// coarser unit shrinks those differences rather than enlarging them. That
+    /// case is real, it is not caught by any threshold, and it is pinned in
+    /// `a_clock_running_in_the_wrong_unit_cannot_teleport_the_list` against the
+    /// clamp that does bound it.
     #[test]
-    fn the_event_clock_refuses_a_timestamp_from_another_base() {
+    fn the_event_clock_re_anchors_after_a_backwards_jump() {
         let mut clock = EventClock::new();
         let t0 = Instant::now();
         let base = 40_000_000_000i64;
@@ -1460,5 +1556,217 @@ mod tests {
             base - 1_000_000_000 + 8_000_000,
         );
         assert_eq!(back.duration_since(now), Duration::from_millis(4));
+    }
+
+    // ── What the launch speed is measured across ─────────────────────────────
+    //
+    // The three tests above drive a finger at a *constant* speed, and that is a
+    // fixed point: a first-to-last chord over a constant-velocity finger returns
+    // the exact true speed for **any** choice of samples, however many and
+    // however timed. It is what makes them good tests of the *unit* — they are
+    // immune to the report rate and to jitter by construction, which is the
+    // property under test — and it is also why they say nothing at all about
+    // which samples the chord is taken across. Shrinking `VELOCITY_WINDOW` to
+    // 20ms, cutting `SAMPLE_WINDOW` to 2, or dropping the horizon trim
+    // altogether each leaves every one of them passing with the identical
+    // number to four significant figures.
+    //
+    // So the two below move off that fixed point. Both take their expected
+    // value from the finger rather than from the estimator: the speed asserted
+    // is one the test *scripted*, not one the implementation reported.
+
+    /// The launch speed is read across the window, so one bad sample cannot own
+    /// it.
+    ///
+    /// [`SAMPLE_WINDOW`]'s doc argues that the window "does have to be more than
+    /// two", because a speed read off the newest pair alone spans a single
+    /// reporting interval and "that little travel is mostly the digitiser's own
+    /// quantisation rather than the flick". That was an argument with nothing
+    /// behind it — `SAMPLE_WINDOW = 2` passed the whole suite.
+    ///
+    /// Here it is as a measurement. A finger travelling at a known 2000px/s,
+    /// reported at 120Hz, whose **last sample only** is displaced 6px by the
+    /// digitiser. The true speed is 2000px/s because the test drove it there;
+    /// how close the estimate lands is then a fact about the window:
+    ///
+    /// ```text
+    ///   across 8 samples (58ms)     2103px/s     5% high   <- as shipped
+    ///   across a 20ms window        2360px/s    18% high
+    ///   across the newest pair      2720px/s    36% high
+    /// ```
+    #[test]
+    fn one_noisy_sample_cannot_own_the_launch_speed() {
+        const TRUE_SPEED: f32 = 2000.0;
+        const REPORT: f64 = 1.0 / 120.0;
+        let t0 = Instant::now();
+        let at = |secs: f64| t0 + Duration::from_nanos((secs * 1e9) as u64);
+
+        let mut g = TouchGesture::new();
+        let mut ev = Vec::new();
+        g.process(TouchAction::Down, 300.0, 1000.0, at(0.0), &mut ev);
+        for k in 1..=8 {
+            let t = k as f64 * REPORT;
+            let mut y = 1000.0 - TRUE_SPEED * t as f32;
+            if k == 8 {
+                // The digitiser's own quantisation on the final report — the
+                // one sample a two-sample estimate has no way to outvote.
+                y -= 6.0;
+            }
+            g.process(TouchAction::Move, 300.0, y, at(t), &mut ev);
+        }
+        let lift = 8.0 * REPORT;
+        g.process(
+            TouchAction::Up,
+            300.0,
+            1000.0 - TRUE_SPEED * lift as f32 - 6.0,
+            at(lift),
+            &mut ev,
+        );
+
+        // The first momentum tick is charged exactly one step, so its wheel
+        // delta *is* the launch speed in pixels per MOMENTUM_TICK.
+        ev.clear();
+        g.tick_momentum(at(lift + REPORT), &mut ev);
+        let PlatformEvent::MouseWheel { delta_y, .. } = ev[0] else {
+            panic!("the lift owes a fling");
+        };
+        let launched = delta_y.abs() as f32 / MOMENTUM_TICK.as_secs_f32();
+        let error = (launched - TRUE_SPEED).abs() / TRUE_SPEED;
+        assert!(
+            error < 0.10,
+            "a finger scripted at {TRUE_SPEED}px/s with one 6px blip on its last \
+             report launched at {launched:.0}px/s ({:.0}% out). Read across the \
+             newest pair alone that blip is a third of the answer; the window is \
+             what outvotes it.",
+            error * 100.0
+        );
+    }
+
+    /// A burst of speed older than [`VELOCITY_WINDOW`] is not part of the flick.
+    ///
+    /// The horizon exists to bound how far back the chord reaches, and nothing
+    /// exercised it: at the 120Hz the handset reports at, eight samples span
+    /// 58ms and the 100ms horizon never trims anything, so `find(…)` and "the
+    /// oldest stored sample" are the same sample. It only bites at a report rate
+    /// slow enough for the ring to outrun the horizon.
+    ///
+    /// So: a 60Hz digitiser, where eight samples span 117ms. The finger jerks
+    /// 100px in one interval and then travels at a steady 500px/s for the whole
+    /// 100ms before it lifts. The jerk is outside the horizon, so the flick is a
+    /// 500px/s flick. Reaching past the horizon instead reads 1286px/s and
+    /// throws the list two and a half times as far.
+    #[test]
+    fn a_burst_older_than_the_horizon_is_not_part_of_the_flick() {
+        const SETTLED_SPEED: f32 = 500.0;
+        const REPORT: f64 = 1.0 / 60.0;
+        let t0 = Instant::now();
+        let at = |secs: f64| t0 + Duration::from_nanos((secs * 1e9) as u64);
+
+        let mut g = TouchGesture::new();
+        let mut ev = Vec::new();
+        g.process(TouchAction::Down, 300.0, 1000.0, at(0.0), &mut ev);
+
+        // k=1 crosses the slop and starts the drag; k=1 -> k=2 is the burst;
+        // everything after it is the steady speed the flick is actually made of.
+        let mut y = 990.0f32;
+        g.process(TouchAction::Move, 300.0, y, at(REPORT), &mut ev);
+        y -= 100.0;
+        g.process(TouchAction::Move, 300.0, y, at(2.0 * REPORT), &mut ev);
+        for k in 3..=8 {
+            y -= SETTLED_SPEED * REPORT as f32;
+            g.process(TouchAction::Move, 300.0, y, at(k as f64 * REPORT), &mut ev);
+        }
+
+        let lift = 8.0 * REPORT;
+        g.process(TouchAction::Up, 300.0, y, at(lift), &mut ev);
+        ev.clear();
+        g.tick_momentum(at(lift + REPORT), &mut ev);
+        let PlatformEvent::MouseWheel { delta_y, .. } = ev[0] else {
+            panic!("the lift owes a fling");
+        };
+        let launched = delta_y.abs() as f32 / MOMENTUM_TICK.as_secs_f32();
+        let error = (launched - SETTLED_SPEED).abs() / SETTLED_SPEED;
+        assert!(
+            error < 0.20,
+            "the finger's speed for the whole {:?} before the lift was \
+             {SETTLED_SPEED}px/s, and the 100px jerk before that is older than \
+             the horizon — but it launched at {launched:.0}px/s.",
+            VELOCITY_WINDOW
+        );
+    }
+
+    /// A clock counting in the wrong unit costs a fast fling, not the whole list.
+    ///
+    /// The failure mode [`MAX_EVENT_AGE`] used to claim it caught. It does not
+    /// catch it and no threshold could: [`EventClock`] compares only
+    /// *differences*, so the epoch cannot reach it, and a coarser unit —
+    /// milliseconds read as nanoseconds — makes those differences 10⁶ times
+    /// smaller rather than larger. Every sample then lands within nanoseconds of
+    /// its neighbour, the span the launch speed divides by collapses, and the
+    /// quotient goes up by the same factor.
+    ///
+    /// Measured before [`MAX_FLING_VELOCITY`] was added, this exact gesture —
+    /// 160px of finger over 64ms, which is a perfectly ordinary flick — asked
+    /// for a single wheel event of **41,666,668px** and 823 million pixels of
+    /// coast. The clamp is what turns "the list teleports to its end" into "the
+    /// list flings fast", which is the same trade [`MOMENTUM_MAX_STEPS`] makes
+    /// for a stalled frame.
+    ///
+    /// It is a guard against being wrong about a platform contract, not against
+    /// anything observed: `MotionEvent::event_time()` is documented as
+    /// `java.lang.System.nanoTime()` nanoseconds. Hence the deliberately loose
+    /// bound — the assertion is "bounded at all", not a number to tune.
+    #[test]
+    fn a_clock_running_in_the_wrong_unit_cannot_teleport_the_list() {
+        let mut clock = EventClock::new();
+        let t0 = Instant::now();
+        // The device counts in milliseconds since boot; we read it as nanoseconds.
+        let ms_base = 40_000_000i64;
+        let mut g = TouchGesture::new();
+        let mut ev = Vec::new();
+        for k in 0..=8u64 {
+            let real_ms = k * 8;
+            let sampled_at = clock.instant_for(
+                t0 + Duration::from_millis(real_ms),
+                ms_base + real_ms as i64,
+            );
+            let action = if k == 0 {
+                TouchAction::Down
+            } else {
+                TouchAction::Move
+            };
+            g.process(action, 300.0, 1000.0 - 20.0 * k as f32, sampled_at, &mut ev);
+        }
+        let lift_at = clock.instant_for(t0 + Duration::from_millis(64), ms_base + 64);
+        g.process(TouchAction::Up, 300.0, 840.0, lift_at, &mut ev);
+
+        let ceiling = (MAX_FLING_VELOCITY * MOMENTUM_TICK.as_secs_f32()) as f64
+            * f64::from(MOMENTUM_MAX_STEPS);
+        ev.clear();
+        let mut coast = 0.0f64;
+        let mut t = 64u64;
+        for _ in 0..5_000 {
+            t += 8;
+            g.tick_momentum(t0 + Duration::from_millis(t), &mut ev);
+            for e in ev.drain(..) {
+                if let PlatformEvent::MouseWheel { delta_y, .. } = e {
+                    assert!(
+                        delta_y.abs() <= ceiling + 1.0,
+                        "one frame moved the list {:.0}px, past the {ceiling:.0}px \
+                         that {MAX_FLING_VELOCITY}px/s of fling is worth. Before \
+                         the clamp this gesture asked for 41,666,668px.",
+                        delta_y.abs()
+                    );
+                    coast += delta_y.abs();
+                }
+            }
+            if !g.has_momentum() {
+                break;
+            }
+        }
+        assert!(
+            coast < 4_000.0,
+            "the whole coast was {coast:.0}px — bounded per frame but not overall"
+        );
     }
 }
