@@ -3033,6 +3033,76 @@ mod opacity_layer_bounds {
     /// neighbours would silently stop testing anything.
     #[test]
     fn a_fixed_descendant_is_not_narrowed_by_a_clipper_it_escapes() {
+        // The fixed box is the clipper's LAST child, behind a `sticky` sibling
+        // whose extent is `Unknown`. That ordering is the test, not decoration:
+        // with the fixed box as an only child — the shape this test was first
+        // written with — the sibling loop reaches it before anything can stop
+        // early, and a walk that short-circuits on the sticky child's `Unknown`
+        // passes anyway. It is the fixed point of the whole `Escapes`
+        // mechanism, and it hid the half of the bug `is_final` owns (#547 F5).
+        for (label, order) in [
+            ("fixed only", &["fixed"][..]),
+            ("fixed then sticky", &["fixed", "sticky"][..]),
+            ("sticky then fixed", &["sticky", "fixed"][..]),
+        ] {
+            let (doc, layer, fixed) = layer_over_clipper(order);
+            let bounds = bounds_of(&doc, layer);
+            assert_eq!(
+                bounds, UNBOUNDED,
+                "[{label}] the layer paints a box at (600, 400) that no clip \
+                 inside it bounds, so its bounds must not be narrowed"
+            );
+            assert!(
+                contains(bounds, box_of(&doc, fixed)),
+                "[{label}] …which is the property that matters: the bounds \
+                 handed to `push_layer` must contain what the layer paints"
+            );
+        }
+
+        // And the route with no `sticky` in the document at all: past the visit
+        // budget every remaining sibling answers `Unknown` too, so stopping
+        // early there is lossless — but the fixed box must still be found when
+        // it comes before the budget runs out.
+        let (doc, layer, fixed) = layer_over_clipper_wide(600);
+        assert_eq!(
+            bounds_of(&doc, layer),
+            UNBOUNDED,
+            "a fixed child ahead of a budget-exhausting run of siblings is still \
+             found"
+        );
+        assert!(contains(bounds_of(&doc, layer), box_of(&doc, fixed)));
+    }
+
+    /// The same shape with the fixed box swapped for an ordinary `absolute`,
+    /// which is what makes the assertion above about the `position` and not
+    /// about the arrangement.
+    ///
+    /// **Why the answer changes is not what it looks like.** The tempting
+    /// explanation — "an absolute in the same place *is* clipped by that box" —
+    /// is false, and stating it would ship a correct test with a wrong
+    /// mechanism. `stacking::Collector::span` truncates an absolute's clip chain
+    /// at its containing block, so paint does **not** clip this absolute by the
+    /// intervening `overflow: hidden` either; the layer root is `position:
+    /// relative`, so the absolute resolves against *it* and escapes the clipper
+    /// exactly as the fixed box does. What actually differs is only that
+    /// `Walk::node` has no `Absolute` arm — it descends through the clipper and
+    /// narrows — so this asserts today's answer, not a correct one. That gap is
+    /// **#550**; when it is fixed this assertion inverts to `UNBOUNDED`.
+    #[test]
+    fn an_absolute_descendant_is_still_narrowed_today_hash_550() {
+        let (doc, layer, _) = layer_over_clipper(&["absolute"]);
+        assert_ne!(
+            bounds_of(&doc, layer),
+            UNBOUNDED,
+            "today the walk narrows an absolute at the clipper, so the fixed \
+             case above is discriminated by its `position` — but see #550: paint \
+             does not clip this absolute either, so this is a pin on a gap"
+        );
+    }
+
+    /// `layer(opacity) > clipper(overflow: hidden) > [children…]`, one child per
+    /// name. Returns `(doc, layer, the fixed child if any)`.
+    fn layer_over_clipper(children: &[&str]) -> (RinchDocument, usize, usize) {
         let mut doc = RinchDocument::new();
         let body = doc.body();
 
@@ -3044,10 +3114,55 @@ mod opacity_layer_bounds {
         );
         doc.append_child(body, layer);
 
-        // Between the layer and the fixed box, and clipping — but not the fixed
-        // box, whose containing block is the viewport. Deliberately smaller than
-        // the layer root, so narrowing to it would be visible as a *smaller*
-        // rect rather than the same one.
+        // Between the layer and the boxes below, and clipping — deliberately
+        // smaller than the layer root, so narrowing to it shows up as a
+        // *smaller* rect and not the same one.
+        let clipper = doc.create_element("div");
+        doc.set_attribute(
+            clipper,
+            "style",
+            "overflow: hidden; width: 50px; height: 50px",
+        );
+        doc.append_child(layer, clipper);
+
+        let mut subject = None;
+        for name in children {
+            let style = match *name {
+                // Answers `Unknown` — its paint position comes from a walk up to
+                // its scroll ancestor, which the subtree does not contain.
+                "sticky" => "position: sticky; top: 0px; width: 10px; height: 10px",
+                "fixed" => "position: fixed; left: 600px; top: 400px; width: 40px; height: 40px",
+                "absolute" => {
+                    "position: absolute; left: 600px; top: 400px; width: 40px; height: 40px"
+                }
+                other => panic!("unknown child kind {other}"),
+            };
+            let child = doc.create_element("div");
+            doc.set_attribute(child, "style", style);
+            doc.append_child(clipper, child);
+            if matches!(*name, "fixed" | "absolute") {
+                subject = Some(child.0);
+            }
+        }
+
+        doc.resolve_layout(800.0, 600.0);
+        (doc, layer.0, subject.expect("one fixed or absolute child"))
+    }
+
+    /// The same, with the fixed box followed by `n` plain siblings — enough to
+    /// exhaust `MAX_VISITS`, which is the other way an `Unknown` arrives.
+    fn layer_over_clipper_wide(n: usize) -> (RinchDocument, usize, usize) {
+        let mut doc = RinchDocument::new();
+        let body = doc.body();
+
+        let layer = doc.create_element("div");
+        doc.set_attribute(
+            layer,
+            "style",
+            "position: relative; opacity: 0.5; width: 100px; height: 100px",
+        );
+        doc.append_child(body, layer);
+
         let clipper = doc.create_element("div");
         doc.set_attribute(
             clipper,
@@ -3064,35 +3179,14 @@ mod opacity_layer_bounds {
         );
         doc.append_child(clipper, fixed);
 
-        doc.resolve_layout(800.0, 600.0);
+        for _ in 0..n {
+            let filler = doc.create_element("div");
+            doc.set_attribute(filler, "style", "width: 1px; height: 1px");
+            doc.append_child(clipper, filler);
+        }
 
-        let bounds = bounds_of(&doc, layer.0);
-        assert_eq!(
-            bounds, UNBOUNDED,
-            "the layer paints a box at (600, 400) that no clip inside it bounds, \
-             so its bounds must not be narrowed to anything"
-        );
-        assert!(
-            contains(bounds, box_of(&doc, fixed.0)),
-            "…which is the property that matters: the bounds handed to \
-             `push_layer` must contain what the layer paints"
-        );
-
-        // Not vacuous, and this is the half that fails if `Escapes` is dropped
-        // back to `Unknown`: with the fixed box gone the same shape measures
-        // normally, so what widens the layer is the `position`, not the clipper.
-        let mut doc = doc;
-        doc.set_attribute(
-            fixed,
-            "style",
-            "position: absolute; left: 600px; top: 400px; width: 40px; height: 40px",
-        );
         doc.resolve_layout(800.0, 600.0);
-        assert_ne!(
-            bounds_of(&doc, layer.0),
-            UNBOUNDED,
-            "an absolute in the same place IS clipped by that box, so it narrows"
-        );
+        (doc, layer.0, fixed.0)
     }
 
     /// `position: sticky` is painted at a position `paint_node` derives by

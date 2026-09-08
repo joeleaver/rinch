@@ -477,7 +477,7 @@ mod painted {
         );
     }
 
-    pub(super) fn pixel_at(painter: &TinySkiaPainter, x: u32, y: u32) -> [u8; 4] {
+    fn pixel_at(painter: &TinySkiaPainter, x: u32, y: u32) -> [u8; 4] {
         let idx = ((y * painter.width() + x) * 4) as usize;
         let d = painter.pixels();
         [d[idx], d[idx + 1], d[idx + 2], d[idx + 3]]
@@ -873,7 +873,7 @@ mod painted_fixed {
     const MODAL: [u8; 4] = [0, 200, 0, 255];
     const AFTER: [u8; 4] = [255, 0, 255, 255];
 
-    pub(super) fn paint(doc: &mut RinchDocument) -> TinySkiaPainter {
+    fn paint(doc: &mut RinchDocument) -> TinySkiaPainter {
         let mut painter = TinySkiaPainter::new(800, 600);
         let mut layout_cx: parley::LayoutContext<Brush> = parley::LayoutContext::new();
         rinch_dom::paint::paint_document(

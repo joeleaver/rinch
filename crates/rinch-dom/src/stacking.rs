@@ -150,7 +150,7 @@
 //!   rather than letting paint and hit testing disagree about it.)
 //!
 //! A fourth consumer has to know the same thing from the other side.
-//! [`crate::paint::layer_bounds`] measures a translucent layer by walking the
+//! `paint::layer_bounds` measures a translucent layer by walking the
 //! **tree**, not this sequence, so it sees clipping ancestors that a fixed
 //! descendant's entry escapes; narrowing to one of those returns a layer smaller
 //! than its own content, which tiny-skia ignores and Vello enforces. Its

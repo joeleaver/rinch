@@ -85,13 +85,47 @@
 //! (a `position: fixed` descendant, whose coordinates are the viewport's and not
 //! this layer's) it answers [`Extent::Escapes`] rather than a tidy wrong number.
 //!
-//! That case is the one place the mirror is not a tree walk at all. A fixed box
-//! is hoisted out to a stacking-context ancestor's paint sequence with an empty
-//! clip chain, so a clipping box *between* it and this layer root — which this
-//! walk descends straight through — does not clip it. `Escapes` is what carries
-//! that fact back up past [`Extent::clipped_to`]; `Unknown` would be narrowed to
-//! the very clip paint ignores, and hand Vello a layer smaller than its own
-//! content. #545, #547.
+//! # The mirror has a hole, and this is its shape
+//!
+//! "Mirror what `paint_node` does" is the contract above, and for **hoisted**
+//! boxes this walk cannot honour it. Paint places those from the **stacking
+//! sequence** — [`crate::stacking::PaintEntry`], with a clip chain computed for
+//! each entry — while this is a **tree** walk that descends straight through the
+//! very boxes the chain leaves out. Three bugs came out of that hole in one
+//! review, and they are one under-specified invariant rather than three
+//! mistakes, so it is written here:
+//!
+//! > **For any node whose paint position or clipping comes from a `PaintEntry`
+//! > rather than from this walk's own descent, answer with something no ancestor
+//! > clip can narrow — and keep looking until every such node in the subtree has
+//! > been found.**
+//!
+//! Both halves earn their place. The first is [`Extent::Escapes`] surviving
+//! [`Extent::clipped_to`]: a fixed box hoisted to a stacking-context ancestor
+//! takes an empty chain, so a clipping box *between* it and this layer root does
+//! not clip it, and answering `Unknown` would let the first such clipper narrow
+//! the layer to less than it paints — invisible to tiny-skia, enforced by Vello.
+//! The second is [`Extent::is_final`]'s `exhausted` condition: stopping the
+//! sibling loop early on some *other* child's `Unknown` skips the fixed box
+//! entirely, and the same narrowing follows with nothing in its own subtree
+//! wrong.
+//!
+//! **`stacking::Collector::span` is the authority on which nodes those
+//! are**, and it names exactly two — do not guess from the tree:
+//!
+//! - **`position: fixed`** — chain truncated to nothing. Handled, by `Escapes`.
+//! - **`position: absolute`** — chain truncated at its containing block, so it
+//!   escapes any clipper *below* that block while remaining clipped by the ones
+//!   above. **Not handled**: this walk still narrows an absolute at every
+//!   clipping ancestor, so a layer holding one can come back too small in the
+//!   same way. It is pre-existing rather than new, it needs a *partial* escape
+//!   that `Escapes` cannot express, and it is filed as **#550** — named here so
+//!   the gap is visible instead of latent.
+//! - **`position: sticky`** takes the **full** chain and is correctly not one of
+//!   them; its `Unknown` is about coordinates, not clipping, and narrowing it is
+//!   right.
+//!
+//! #545, #547, #550.
 
 use peniko::kurbo::{Affine, Rect, Vec2};
 
@@ -182,9 +216,38 @@ impl Extent {
         }
     }
 
-    /// Whether nothing found below can narrow this answer, so the walk may stop.
-    fn is_final(self) -> bool {
-        matches!(self, Extent::Unknown | Extent::Escapes)
+    /// Whether the sibling loop may stop here, because nothing still to be
+    /// visited can change the answer.
+    ///
+    /// `exhausted` says every remaining sibling is *guaranteed* to answer
+    /// `Unknown` — the visit budget is gone, or one more level would exceed
+    /// [`MAX_DEPTH`], so `Walk::node` returns at its first line whatever it is
+    /// handed.
+    ///
+    /// `Escapes` may always stop: nothing narrows it and nothing outranks it.
+    /// **`Unknown` may stop only when `exhausted`**, and that condition is
+    /// load-bearing rather than defensive. While the walk can still see, a later
+    /// sibling may be a `position: fixed` box and answer `Escapes` — returning
+    /// early on an earlier sibling's `Unknown` loses it, and the first clipping
+    /// ancestor then narrows the lot. That is the whole `Escapes` bug back, with
+    /// nothing in the fixed box's own subtree wrong; `[sticky, fixed]` under a
+    /// clipper is the shortest form, and `budget == 0` reaches it with no sticky
+    /// box in the document at all.
+    ///
+    /// The condition is not just a correctness dodge either — dropping the
+    /// `Unknown` short-circuit outright is a real cost regression, because
+    /// [`MAX_VISITS`] bounds the nodes *measured* and not the loop *iterations*:
+    /// past the budget `Walk::node` returns immediately but `Walk::children`
+    /// still calls it for every remaining sibling. Measured in release, per
+    /// call, on a 20,000-child subtree: 10.9µs here, 59.7µs with `Unknown`
+    /// never stopping — five times this module's own stated ceiling, once per
+    /// frame per translucent element. With `exhausted` it is flat again.
+    fn is_final(self, exhausted: bool) -> bool {
+        match self {
+            Extent::Escapes => true,
+            Extent::Unknown => exhausted,
+            _ => false,
+        }
     }
 
     /// What is left of this extent once it is clipped to `clip`.
@@ -555,11 +618,10 @@ impl Walk<'_> {
                 continue;
             }
             acc = acc.union(self.node(child_id, offset_x, offset_y, transform, false, depth + 1));
-            if acc.is_final() {
-                // Nothing below can make the answer narrower again — a caller
-                // that clips will still clip it (or, for `Escapes`, will not),
-                // and either way the result is `UNBOUNDED` whatever else is
-                // found.
+            // Only when nothing still to be visited can change the answer — see
+            // [`Extent::is_final`], where the `exhausted` half is what keeps a
+            // later `position: fixed` sibling from being skipped.
+            if acc.is_final(self.budget == 0 || depth + 1 > MAX_DEPTH) {
                 return acc;
             }
         }
@@ -607,7 +669,7 @@ impl Walk<'_> {
                         false,
                         depth + 1,
                     ));
-                    if acc.is_final() {
+                    if acc.is_final(self.budget == 0 || depth + 1 > MAX_DEPTH) {
                         return acc;
                     }
                 }

@@ -6777,8 +6777,8 @@ mod click_context_bounds_tests {
     }
 
     /// The `Fixed` exception this site never had. A `position: fixed` box is
-    /// viewport-relative — paint hoists it to the body level with its
-    /// ancestors' offsets zeroed — but the walk summed those offsets anyway, so
+    /// viewport-relative — paint gives its entry zeroed offsets wherever it is
+    /// hoisted to (#545) — but the walk summed those offsets anyway, so
     /// a fixed overlay inside any offset container reported a box displaced by
     /// the container's position (and, in a scroller, one that drifted as the
     /// container scrolled).
