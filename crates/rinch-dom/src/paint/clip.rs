@@ -22,6 +22,30 @@
 //! `overflow: clip` box **clipped clicks and painted unclipped** — content
 //! drawn and not clickable.
 //!
+//! ## "Does it clip" is not "is the layer worth pushing"
+//!
+//! A third question sits on top of these two and is answered somewhere else:
+//! whether the clip this module describes is worth handing to the painter at
+//! all. A clip whose rect contains the whole render target, or one nothing
+//! inside reaches past, removes no pixel anybody sees, and a clip layer is not
+//! free — Vello implements each as a blend-stack layer, two extra passes over
+//! the clipped area, paid whether or not it cuts anything. `paint_node` may
+//! therefore decline to push a bracket for a box that answers `clips_overflow`,
+//! using `layer_bounds::clip_cuts_nothing` and the render target (card K43).
+//!
+//! **That does not weaken any of the answers here, and consumers must not
+//! assume it does.** The predicate and the shape are unchanged; the elision is
+//! a fact about one bracket on one painter's stack. Everything that reasons
+//! about *where content ends up* — the hoisted entry's clip chain, hit testing,
+//! `layer_bounds`' own intersection — keeps applying this clip, because the
+//! elision only ever drops a restriction that was already vacuous. What it does
+//! break is the reverse inference: "this node clips, therefore a bracket is
+//! open" is no longer true, which is why
+//! `paint_children_with_stacking` is *told* whether one is rather than deducing
+//! it. Both cases require square corners: a rounded clip cuts the corners of
+//! its own box, so a subtree fitting the box does not mean the shape cuts
+//! nothing.
+//!
 //! ## Why both axes, and why `clip` is the case that reaches it
 //!
 //! CSS forces a `visible` to compute to `auto` when the other axis is neither

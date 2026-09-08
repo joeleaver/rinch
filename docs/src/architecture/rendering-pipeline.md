@@ -135,7 +135,7 @@ A CPU-based rasterizer (the default when `gpu` is not enabled):
 - Direct pixel rendering to an RGBA buffer
 - Presented via softbuffer (no GPU required)
 - Dirty region caching — only changed areas are repainted
-- Subtree pruning — nodes outside the dirty region are skipped
+- Subtree pruning — nodes outside the dirty region, or outside the window, are skipped
 - Works in headless environments, CI, containers, SSH sessions
 
 ## Rendering Backends
@@ -243,8 +243,23 @@ Current and planned improvements to the rendering pipeline:
 
 - **Dirty region caching** (software) - Only repaint the rectangular area covering changed nodes
 - **Subtree pruning** (software) - Skip paint traversal for nodes outside the dirty region
+- **Viewport culling** (both backends) - Skip nodes that fall outside the window. This is the
+  dirty-region test against a second region that is always present, so it applies to a full
+  repaint too. It matters most on the GPU: Vello discards invisible paths in its coarse stage,
+  but only after flattening every one of them.
+- **Clip elision** (both backends) - A clip layer that provably removes no drawn pixel is not
+  pushed. Two cases qualify: a clip whose rect contains the whole render target (it can only
+  remove pixels that are discarded anyway) and a clip nothing inside reaches past. Both require
+  square corners — a rounded clip cuts the corners of its own box, so "nothing overflows" does
+  not mean "nothing is cut".
 - **Sensitivity flags** - Hover/active/focus only trigger repaints for nodes with matching CSS selectors
 - **Batched redraws** - Multiple state changes are batched into a single repaint via the frame clock (`AboutToWait`, above)
 - **Layer compositing** - GPU layers for transformed content (planned)
 - **Text caching** - Glyph atlas for repeated text (planned)
-- **Viewport culling** - Skip off-screen content (planned)
+
+Two things the first two do **not** do, because both would be visible bugs rather than
+optimisations. Neither culling nor elision applies to a `position: fixed` box: it is painted in
+viewport space from its nearest stacking-context ancestor's sequence, so that ancestor's own box
+says nothing about whether it is on screen. And the cull tests a box's layout rect against the
+window grown by a margin, not against the window itself, because a `box-shadow`, an `outline` or
+a text run wider than its own box all put ink outside the rect being tested.

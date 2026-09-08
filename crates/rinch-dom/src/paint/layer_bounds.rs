@@ -1,4 +1,13 @@
-//! How large a layer has to be so that it does not cut off what it composites.
+//! How far a subtree reaches, for the two questions that need to know.
+//!
+//! [`opacity_layer_bounds`] is the original one — how large a layer has to be
+//! so that it does not cut off what it composites — and everything below is
+//! written in its terms. [`clip_cuts_nothing`] is the second (card K43): a clip
+//! bracket that provably removes no drawn pixel is not worth pushing, and
+//! deciding that is the same walk asked to stop one intersection short. It is
+//! here rather than in `paint/mod.rs` for the reason **Mirroring, not
+//! re-deriving** gives below, and because the version that lived there got the
+//! IFC content origin wrong — see that function's own doc.
 //!
 //! An element with `opacity < 1` is composited through a group layer, and every
 //! `push_layer` in this crate is handed a *bounds* shape along with the opacity.
@@ -370,6 +379,7 @@ pub fn opacity_layer_bounds(
         tree,
         scale,
         budget: MAX_VISITS,
+        skip_root_clip: false,
     };
     match walk.node(node_id, offset_x, offset_y, Affine::IDENTITY, true, 0) {
         // A zero-area answer is not worth trusting even when it is arrived at
@@ -380,6 +390,88 @@ pub fn opacity_layer_bounds(
         // exactly what that branch passed before this function existed.
         Extent::Within(r) if r.width() > 0.0 && r.height() > 0.0 => r,
         _ => UNBOUNDED,
+    }
+}
+
+/// Would `node_id`'s clip bracket cut anything that is actually drawn?
+///
+/// `false` means "it might, or I could not tell", and is the answer this
+/// returns for every kind of not-knowing — which is what makes it safe to elide
+/// a clip on a `true`: a wrong `true` is a rendering bug, a wrong `false` costs
+/// one clip layer that was already being pushed. Card K43.
+///
+/// `rect` is the clip's own rect in the same space [`opacity_layer_bounds`]
+/// answers in — physical pixels, before the node's CSS transform, i.e. exactly
+/// the `Rect` `clip_shape` handed the caller.
+///
+/// # Why this is a walk and not four lines of arithmetic
+///
+/// "Does anything inside reach past the box" is the question this module
+/// already answers, and answering it again separately is how the two drift.
+/// The first draft of this optimisation did re-derive it, and got the one thing
+/// wrong that a re-derivation always gets wrong: it compared an IFC root's text
+/// against the **border-box** origin, while `paint_node` draws that text at the
+/// **content** origin (`ifc_root_content_origin`, padding + border). Measured,
+/// on a `width: 40px; padding-left: 100px; overflow: hidden` box holding a 75px
+/// run: the clip was elided as having nothing to cut, and 268 ink pixels landed
+/// outside it. The walk gets that right at both places it matters — the root's
+/// own text and an inline-block an IFC positions — because it mirrors paint
+/// rather than paraphrasing it, and it also brings the visit budget,
+/// `MAX_DEPTH`, and the [`Extent::Escapes`] discipline for free.
+///
+/// # The trap, which is that this looks right and is vacuous without it
+///
+/// [`Walk::node`] narrows a clipping node's children by that node's own clip.
+/// Asking [`opacity_layer_bounds`] about a clipping box therefore returns that
+/// box — every time, whatever is inside it — so the obvious spelling,
+/// `opacity_layer_bounds(...) ⊆ rect`, is **true for every clipping box in the
+/// document** and elides all of them. `skip_root_clip` is what suspends that
+/// one intersection for the root, and only for the root. If this function ever
+/// starts eliding everything, that flag is the first thing to check.
+///
+/// A sticky descendant's [`Extent::Unknown`] rides on the same point: it is
+/// unnarrowed here on purpose, so it reaches the top as a not-knowing and
+/// answers `false`, rather than being narrowed to the clip that is under
+/// question and answering `true`.
+pub(super) fn clip_cuts_nothing(
+    tree: &NodeTree,
+    node_id: RawNodeId,
+    scale: f64,
+    x: f64,
+    y: f64,
+    rect: Rect,
+) -> bool {
+    let Some(node) = tree.get(node_id) else {
+        return false;
+    };
+    let offset_x = x - node.layout.x as f64 * scale;
+    let offset_y = y - node.layout.y as f64 * scale;
+
+    let mut walk = Walk {
+        tree,
+        scale,
+        budget: MAX_VISITS,
+        skip_root_clip: true,
+    };
+    match walk.node(node_id, offset_x, offset_y, Affine::IDENTITY, true, 0) {
+        // Half a device pixel of slack, matching the tolerance every other
+        // geometric comparison in paint carries: a box whose right edge is its
+        // container's right edge must read as fitting, and layout arithmetic
+        // does not land on the exact same float twice.
+        Extent::Within(r) => {
+            r.x0 >= rect.x0 - 0.5
+                && r.y0 >= rect.y0 - 0.5
+                && r.x1 <= rect.x1 + 0.5
+                && r.y1 <= rect.y1 + 0.5
+        }
+        // Paint draws nothing at all in here, so there is nothing for the clip
+        // to cut. Note this is *not* the same as `Within` of a zero-area rect,
+        // which is why the enum has both.
+        Extent::Nothing => true,
+        // `Unknown` (a sticky descendant) and `Escapes` (a fixed one, the visit
+        // budget, `MAX_DEPTH`) are both "I could not place it", and a clip is
+        // never elided on a not-knowing.
+        Extent::Unknown | Extent::Escapes => false,
     }
 }
 
@@ -401,6 +493,12 @@ struct Walk<'a> {
     /// walk, not per level, so the cost of one call is bounded whatever shape
     /// the subtree has.
     budget: u32,
+    /// Do not narrow the **root's** children by the root's own clip.
+    ///
+    /// Only [`clip_cuts_nothing`] sets this, and it is the difference between
+    /// that function working and being vacuous. See its doc comment.
+    /// Descendants' clips always apply, in both callers.
+    skip_root_clip: bool,
 }
 
 impl Walk<'_> {
@@ -692,7 +790,12 @@ impl Walk<'_> {
         // reaches past). Intersecting anyway stays correct in both of those
         // cases — the first only drops content that is off-window, the second
         // drops nothing at all.
-        if node.clips_overflow() {
+        //
+        // `skip_root_clip` is the one exception, and it applies to the **root
+        // only**: [`clip_cuts_nothing`] asks what the root's clip would have to
+        // cut, so narrowing by that very clip first would answer "nothing" for
+        // every clipping box in the document.
+        if node.clips_overflow() && !(is_root && self.skip_root_clip) {
             children = children.clipped_to(transform.transform_rect_bbox(rect));
         }
 
