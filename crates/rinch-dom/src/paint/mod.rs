@@ -444,10 +444,16 @@ fn compose_transform_step(
 /// The transform every hoisted `position: fixed` box paints under.
 ///
 /// `paint_document` enters at the body with zero offsets and the identity
-/// transform, and `paint_children_with_stacking` hands the body's own composed
-/// transform to each entry of its stacking sequence — the hoisted fixed boxes
-/// included. So viewport space, for a fixed box, is the body's *post*-transform
-/// space, which is what `hit_test_node` re-seeds `vx`/`vy` from.
+/// transform, so the body's own composed transform is viewport space — which is
+/// what `hit_test_node` re-seeds `vx`/`vy` from.
+///
+/// A fixed box is hoisted only to its nearest ancestor stacking context (#545),
+/// which need not be the body, so `paint_children_with_stacking` asks for this
+/// explicitly for a fixed entry rather than handing on the collecting root's
+/// transform. Same value as before for the common case, and the reason it is a
+/// function rather than an argument: the entry has to end up in the same space
+/// [`compute_absolute_position_and_transform`] reports it in, whichever root
+/// happens to own it.
 fn body_paint_transform(tree: &NodeTree, scale: f64) -> Affine {
     let Some(body) = tree.get(tree.body_id) else {
         return Affine::IDENTITY;
@@ -495,9 +501,9 @@ fn painted_origin_step(
 /// made here too:
 ///
 /// - the chain stops at a `position: fixed` node, whose box is viewport-relative
-///   because `collect_stacking_contexts_root` hoists it to the body level with
-///   zeroed offsets — **and resumes from the body's own transform**, which is
-///   what paint hands those hoisted entries;
+///   because `stacking::Collector` gives its entry zeroed offsets — **and
+///   resumes from the body's own transform**, which is what paint hands a fixed
+///   entry whichever stacking context it was hoisted to (#545);
 /// - a `display: contents` node contributes no transform (see
 ///   [`compose_transform_step`]);
 /// - an inline-block an IFC positions gets [`ifc_content_box_offset`] added,
@@ -869,6 +875,7 @@ fn paint_children_with_stacking(
     font_cx: &mut parley::FontContext,
     layout_cx: &mut parley::LayoutContext<Brush>,
     node_transform: Affine,
+    root_clip: Option<&PaintShape>,
 ) {
     let Some(node) = tree.get(node_id) else {
         return;
@@ -878,12 +885,12 @@ fn paint_children_with_stacking(
     // painting it again as a box would double it. See `drawn_by_its_ifc`.
     let already_drawn_inline = |child: &Node, _kind: PaintKind| drawn_by_its_ifc(tree, child);
 
-    let is_body = node_id == tree.body_id;
-    if is_body || node.creates_stacking_context() {
-        let order = stacking_paint_order(tree, node_id, is_body, scale, offset_x, offset_y);
+    if node_id == tree.body_id || node.creates_stacking_context() {
+        let order = stacking_paint_order(tree, node_id, scale, offset_x, offset_y);
         let mut open = ClipSpan::EMPTY;
         for entry in order.iter() {
-            if let Some(child) = tree.get(entry.node_id)
+            let child = tree.get(entry.node_id);
+            if let Some(child) = child
                 && already_drawn_inline(child, entry.kind)
             {
                 continue;
@@ -906,6 +913,36 @@ fn paint_children_with_stacking(
                     painter.push_clip(Fill::NonZero, node_transform, &shape);
                 }
             }
+
+            // A `position: fixed` entry is hoisted no further than this root
+            // (#545), but this root is not its containing block: neither the
+            // bracket `paint_node` opened around this sequence nor this root's
+            // transform applies to it. Lift the bracket for the length of the
+            // entry and put back the very same shape; and paint it under the
+            // body's transform, which is the space its `layout` coordinates and
+            // `compute_absolute_position_and_transform` both already use.
+            //
+            // `open` is necessarily `EMPTY` here — a fixed entry's own chain is
+            // empty (`Collector::span`), so the branch above has just popped
+            // whatever the previous entry left open — which is what makes the
+            // root's bracket the top of the clip stack and safe to pop.
+            let escapes_root =
+                child.is_some_and(|c| c.computed_style.position == PositionValue::Fixed);
+            let (entry_transform, lifted) = if escapes_root {
+                debug_assert!(
+                    open.is_empty(),
+                    "a fixed entry's clip chain is empty, so nothing may be open over the root's bracket"
+                );
+                if let Some(shape) = root_clip {
+                    painter.pop_layer();
+                    (body_paint_transform(tree, scale), Some(shape))
+                } else {
+                    (body_paint_transform(tree, scale), None)
+                }
+            } else {
+                (node_transform, None)
+            };
+
             paint_node(
                 tree,
                 entry.node_id,
@@ -915,8 +952,12 @@ fn paint_children_with_stacking(
                 entry.offset_y,
                 font_cx,
                 layout_cx,
-                node_transform,
+                entry_transform,
             );
+
+            if let Some(shape) = lifted {
+                painter.push_clip(Fill::NonZero, node_transform, shape);
+            }
         }
         for _ in 0..open.len() {
             painter.pop_layer();
@@ -1037,6 +1078,9 @@ fn paint_node(
                 font_cx,
                 layout_cx,
                 parent_transform,
+                // No bracket is open: this branch returns before the node's own
+                // clip is pushed.
+                None,
             );
         } else if (layout.width == 0.0) != (layout.height == 0.0) {
             // A real box collapsed to zero in one dimension (e.g. an
@@ -1074,6 +1118,8 @@ fn paint_node(
                 font_cx,
                 layout_cx,
                 node_transform,
+                // No bracket is open: this branch returns before the node's own clip is pushed.
+                None,
             );
 
             if has_opacity {
@@ -1165,6 +1211,8 @@ fn paint_node(
             font_cx,
             layout_cx,
             node_transform,
+            // Ditto: the skip-drawing branch returns before the clip push.
+            None,
         );
         return;
     }
@@ -1669,13 +1717,19 @@ fn paint_node(
                 }
             }
 
-            if let Some((clip_rect, clip_radii)) = clip {
+            // Built once and kept, because `paint_children_with_stacking` has
+            // to *lift* this exact bracket around a `position: fixed` entry
+            // (#545) and put it back afterwards. Re-deriving the shape there
+            // would be a second derivation to drift out of step with this one.
+            let root_clip: Option<PaintShape> = clip.map(|(clip_rect, clip_radii)| {
                 if radius > 0.0 {
-                    let clip_rrect = clip_rect.to_rounded_rect(clip_radii);
-                    painter.push_clip(Fill::NonZero, node_transform, &clip_rrect.into());
+                    clip_rect.to_rounded_rect(clip_radii).into()
                 } else {
-                    painter.push_clip(Fill::NonZero, node_transform, &clip_rect.into());
+                    clip_rect.into()
                 }
+            });
+            if let Some(shape) = &root_clip {
+                painter.push_clip(Fill::NonZero, node_transform, shape);
             }
 
             // Render read-only text selection highlight (user-select: text).
@@ -1758,6 +1812,7 @@ fn paint_node(
                     font_cx,
                     layout_cx,
                     node_transform,
+                    root_clip.as_ref(),
                 );
             } else {
                 // Normal paint path: recurse into all children
@@ -1773,6 +1828,7 @@ fn paint_node(
                     font_cx,
                     layout_cx,
                     node_transform,
+                    root_clip.as_ref(),
                 );
             }
 
@@ -2231,9 +2287,9 @@ mod tests {
     }
 
     /// Gap 2. A hoisted `position: fixed` box drops every ancestor transform
-    /// but keeps the body's: `paint_children_with_stacking` paints the body's
-    /// stacking sequence — the hoisted fixed entries included — under the
-    /// body's own composed transform. Hit testing already agrees
+    /// but keeps the body's: `paint_children_with_stacking` paints a fixed entry
+    /// under [`body_paint_transform`], whichever stacking context hoisted it
+    /// (#545). Hit testing already agrees
     /// (`body_transform_applies_to_a_hoisted_fixed_descendant`); this walk
     /// started from the identity, so the two disagreed.
     #[test]

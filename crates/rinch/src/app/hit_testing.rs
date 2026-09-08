@@ -95,7 +95,8 @@ struct Frame {
 /// - the node's CSS transform is inverted into the probe point ([`local_point`]),
 ///   so everything below works in the box's own space;
 /// - the body re-seeds viewport space from its own post-transform point, which
-///   is the space paint hands the hoisted fixed entries.
+///   is the space paint hands every fixed entry, whichever stacking context
+///   hoisted it (`body_paint_transform`, #545).
 ///
 /// `None` means nothing in this subtree can be under any point: the transform is
 /// not invertible, so the subtree paints to zero area.
@@ -145,8 +146,9 @@ fn descend(
 /// `x`/`y` is the probe point in the coordinate space `offset_x`/`offset_y` live
 /// in — i.e. the local (pre-transform) space of the nearest transformed ancestor,
 /// which is the same space paint accumulates its offsets in. `vx`/`vy` is the
-/// probe point in viewport space, kept for `position: fixed` subtrees which paint
-/// hoists out of every ancestor's offset *and* transform.
+/// probe point in viewport space, kept for `position: fixed` subtrees, which
+/// paint places with zeroed offsets and the body's transform however deep the
+/// stacking context that owns them (#545).
 #[allow(clippy::too_many_arguments)]
 fn hit_test_node(
     tree: &rinch_dom::NodeTree,
@@ -196,7 +198,11 @@ fn hit_test_node(
     let sx = node.scroll_offset.0 as f32;
     let sy = node.scroll_offset.1 as f32;
 
-    if check_children {
+    // `check_children` is deliberately not a gate around the whole block: a
+    // `position: fixed` entry of this root's sequence is not clipped by this
+    // root (#545), so it must be probed even when the point is outside these
+    // bounds. It is applied per entry below instead.
+    {
         // An IFC text node's layout is stretched to the whole container
         // (write_inline_positions, for scroll-height) — those artificial bounds
         // would shadow inline-block siblings laid out in the same text flow,
@@ -206,24 +212,28 @@ fn hit_test_node(
         let is_stretched_ifc_text =
             |child: &rinch_dom::Node| child.is_text() && child.ifc_root.is_some();
 
-        let is_body = node_id == tree.body_id;
-        if is_body || node.creates_stacking_context() {
+        if node_id == tree.body_id || node.creates_stacking_context() {
             // A stacking-context root probes exactly the sequence paint draws,
             // read backwards — the last box painted is the first one tapped.
             // Same function, same offsets, opposite direction: the two cannot
             // drift apart the way two hand-written phase walks did.
-            let order = stacking_paint_order(
-                tree,
-                node_id,
-                is_body,
-                1.0,
-                (nx - sx) as f64,
-                (ny - sy) as f64,
-            );
+            let order =
+                stacking_paint_order(tree, node_id, 1.0, (nx - sx) as f64, (ny - sy) as f64);
             for entry in order.iter().rev() {
                 let Some(child) = tree.get(entry.node_id) else {
                     continue;
                 };
+                // This root's own bounds gate. A `position: fixed` entry is
+                // exempt: this root is not its containing block, so its clip
+                // does not apply — paint lifts the same bracket around it
+                // (`paint_children_with_stacking`, #545). Without the exemption
+                // a fixed modal inside an `overflow: hidden; z-index: 1` panel
+                // would be painted and never tappable.
+                let escapes_root_clip = child.computed_style.position
+                    == rinch_dom::computed_style::PositionValue::Fixed;
+                if !check_children && !escapes_root_clip {
+                    continue;
+                }
                 if is_stretched_ifc_text(child) {
                     continue;
                 }
@@ -256,9 +266,13 @@ fn hit_test_node(
                     return Some(hit);
                 }
             }
-        } else {
+        } else if check_children {
             // Not a stacking-context root — test only the children that were
             // not hoisted to an ancestor's sequence, in reverse tree order.
+            // Nothing here can be a fixed box: one creates a stacking context
+            // unconditionally, so `paints_at_stacking_root` skips it and it is
+            // an entry of some ancestor's sequence instead. So this branch keeps
+            // the plain bounds gate.
             for &child_id in node.children.iter().rev() {
                 let Some(child) = tree.get(child_id) else {
                     continue;
@@ -1350,11 +1364,13 @@ mod tests {
     }
 
     /// `position: fixed` inside a transformed ancestor. Per CSS a transform
-    /// makes a containing block for fixed descendants, but rinch's paint path
-    /// hoists fixed SCs to the body level with zeroed offsets and the *body's*
-    /// transform (`collect_stacking_contexts_root`), so they render at their
-    /// viewport box with no ancestor transform. Hit testing mirrors paint —
-    /// consistency beats spec here, and diverging is the bug we are fixing.
+    /// makes a containing block for fixed descendants, but rinch models no
+    /// containment: `out_of_flow` answers "the viewport" for every fixed box and
+    /// `paint_children_with_stacking` paints a fixed entry with zeroed offsets
+    /// and the *body's* transform, whichever stacking context now owns it
+    /// (#545). So they render at their viewport box with no ancestor transform.
+    /// Hit testing mirrors paint — consistency beats spec here, and diverging is
+    /// the bug we are fixing. Containment is tracked with #386 and #415.
     #[test]
     fn fixed_in_transformed_ancestor_is_hit_where_paint_puts_it() {
         let mut doc = RinchDocument::new();
@@ -2247,6 +2263,131 @@ mod tests {
             Some(doc.tree.body_id),
             "one pixel past it is out, so the pair above is an edge and not just \
              a generous rect"
+        );
+    }
+
+    // ── #545: a fixed box belongs to its nearest ancestor stacking context ──
+    //
+    // The rinch-dom side of this rule is pinned in `stacking_tests.rs`, against
+    // a *reduced* copy of the walk below. These two exercise the production
+    // walk, because the exemption they turn on lives here and not in the shared
+    // sequence.
+
+    /// A `position: fixed` box is not clipped by the stacking context that owns
+    /// it — that context is not its containing block — so this root's bounds
+    /// gate must not apply to it.
+    ///
+    /// Before #545 a fixed box only ever landed in the body's sequence, whose
+    /// bounds are the viewport, so the gate could never wrongly exclude one.
+    /// Now that it can land under a clipper, the exemption is what keeps a fixed
+    /// modal inside an `overflow: hidden; z-index: 1` panel tappable. Chromium
+    /// answers the modal at this point (`elementFromPoint`, same CSS); without
+    /// the exemption rinch answered the body.
+    #[test]
+    fn a_fixed_box_escapes_the_bounds_gate_of_the_context_that_owns_it() {
+        let mut doc = RinchDocument::new();
+        let body = doc.body();
+
+        let clipper = doc.create_element("div");
+        doc.set_attribute(
+            clipper,
+            "style",
+            "position: relative; z-index: 1; overflow: hidden; width: 200px; height: 200px",
+        );
+        doc.append_child(body, clipper);
+
+        // Tall enough to scroll, and scrolled, so the fixture is not sitting on
+        // the scroll-0 fixed point where a clip taken at the wrong origin still
+        // lands in the right place.
+        let tall = doc.create_element("div");
+        doc.set_attribute(tall, "style", "width: 10px; height: 800px");
+        doc.append_child(clipper, tall);
+
+        let modal = doc.create_element("div");
+        doc.set_attribute(
+            modal,
+            "style",
+            "position: fixed; left: 300px; top: 300px; width: 200px; height: 200px",
+        );
+        doc.append_child(clipper, modal);
+
+        doc.resolve_layout(800.0, 600.0);
+        doc.tree.nodes[clipper.0].scroll_offset = (0.0, 50.0);
+
+        assert_eq!(
+            hit_test(&doc.tree, 400.0, 400.0),
+            Some(modal.0),
+            "a point on the modal and 100px clear of the clipper still reaches it"
+        );
+        // Not a walk that answers `modal` for everything: a point on neither
+        // resolves to the body.
+        assert_eq!(hit_test(&doc.tree, 600.0, 100.0), Some(doc.body().0));
+        // …and the clipper still clips its own content, so the exemption is for
+        // the fixed box alone and did not open the gate for the subtree.
+        assert_eq!(
+            hit_test(&doc.tree, 5.0, 250.0),
+            Some(doc.body().0),
+            "the 800px-tall child is still clipped to the 200px box"
+        );
+    }
+
+    /// The ordering half, through the production walk: a `z-index: 99` fixed
+    /// backdrop and the `z-index: 100` panel it sits under are comparable, even
+    /// with a stacking context between the two and the body.
+    ///
+    /// The wrapper's `z-index: 1` is deliberate — at `0` it would sort with the
+    /// body's own content and a backdrop that wrongly escaped would land above
+    /// it either way, so the sample could not tell the two apart.
+    #[test]
+    fn a_fixed_backdrop_and_its_panel_are_comparable_under_a_wrapper() {
+        let mut doc = RinchDocument::new();
+        let body = doc.body();
+
+        let wrapper = doc.create_element("div");
+        doc.set_attribute(
+            wrapper,
+            "style",
+            "position: relative; z-index: 1; overflow: hidden; width: 400px; height: 300px",
+        );
+        doc.append_child(body, wrapper);
+
+        let menu = doc.create_element("div");
+        doc.set_attribute(
+            menu,
+            "style",
+            "position: relative; width: 120px; height: 32px",
+        );
+        doc.append_child(wrapper, menu);
+
+        let backdrop = doc.create_element("div");
+        doc.set_attribute(
+            backdrop,
+            "style",
+            "position: fixed; top: 0; left: 0; right: 0; bottom: 0; z-index: 99",
+        );
+        doc.append_child(menu, backdrop);
+
+        let panel = doc.create_element("div");
+        doc.set_attribute(
+            panel,
+            "style",
+            "position: absolute; top: 32px; left: 0; width: 160px; height: 120px; z-index: 100",
+        );
+        doc.append_child(menu, panel);
+
+        doc.resolve_layout(800.0, 600.0);
+
+        assert_eq!(
+            hit_test(&doc.tree, 80.0, 80.0),
+            Some(panel.0),
+            "a tap on the panel runs the panel — the 99 and the 100 are in one \
+             sequence, so 100 wins"
+        );
+        assert_eq!(
+            hit_test(&doc.tree, 300.0, 250.0),
+            Some(backdrop.0),
+            "…and a tap inside the wrapper but clear of the panel still reaches \
+             the dismiss region, which is what a popup inside a Modal needs"
         );
     }
 }

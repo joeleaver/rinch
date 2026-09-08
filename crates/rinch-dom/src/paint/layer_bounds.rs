@@ -80,9 +80,10 @@
 //! deliberate. The question this module answers is not "where does CSS say this
 //! box is" but "where will *this painter* put it", and the only way to be sure
 //! of the second is to do the same sums. Where paint's placement is unusual —
-//! an inline-block positioned by an inline formatting context, a `position:
-//! fixed` box hoisted to the body — the walk reproduces the unusual thing
-//! rather than the tidy one.
+//! an inline-block positioned by an inline formatting context — the walk
+//! reproduces the unusual thing rather than the tidy one, and where it cannot
+//! (a `position: fixed` descendant, whose coordinates are the viewport's and not
+//! this layer's) it answers [`Extent::Unknown`] rather than a tidy wrong number.
 
 use peniko::kurbo::{Affine, Rect, Vec2};
 
@@ -212,7 +213,6 @@ pub fn opacity_layer_bounds(
         tree,
         scale,
         budget: MAX_VISITS,
-        root_is_body: node_id == tree.body_id,
     };
     match walk.node(node_id, offset_x, offset_y, Affine::IDENTITY, true, 0) {
         // A zero-area answer is not worth trusting even when it is arrived at
@@ -244,10 +244,6 @@ struct Walk<'a> {
     /// walk, not per level, so the cost of one call is bounded whatever shape
     /// the subtree has.
     budget: u32,
-    /// Whether the layer being measured belongs to the body. `position: fixed`
-    /// descendants are hoisted out of every other stacking context and painted
-    /// at the body, so only the body's own layer has to account for them.
-    root_is_body: bool,
 }
 
 impl Walk<'_> {
@@ -302,21 +298,22 @@ impl Walk<'_> {
         }
 
         if !is_root {
-            // A `position: fixed` box is viewport content that happens to live
-            // in this markup. `stacking::collect_hoisted` drops it from every
-            // sequence but the body's, and the body reaches past intervening
-            // stacking contexts to collect it, so it is painted *outside* this
-            // layer and must not widen it. The one layer that does own its
-            // fixed descendants is the body's own, and that case — a translucent
-            // `<body>` with fixed children — is rare enough to answer with
-            // `Unknown` rather than to reproduce the offset-zeroing the body's
-            // sequence does.
+            // A `position: fixed` box is painted *inside* this layer, so it does
+            // widen it — but at coordinates this walk cannot produce. Since #545
+            // a fixed box is hoisted only to its nearest ancestor stacking
+            // context, and every layer root is one (`opacity < 1` and a
+            // transform both create one), so a fixed descendant is an entry of
+            // this layer's own sequence or of one nested inside it. Its
+            // `layout.x`/`layout.y` are viewport coordinates, though, and this
+            // walk accumulates offsets from the layer root — so the subtree
+            // alone does not contain the answer and `Unknown` is the honest one,
+            // exactly as for `sticky` below.
+            //
+            // It used to answer `Nothing` for a non-body root, on the grounds
+            // that the body reached past every intervening context and painted
+            // the box outside this layer. That stopped being true with #545.
             if cs.position == PositionValue::Fixed {
-                return if self.root_is_body {
-                    Extent::Unknown
-                } else {
-                    Extent::Nothing
-                };
+                return Extent::Unknown;
             }
             // `position: sticky` is painted at a position `paint_node` derives
             // by walking *up* to the nearest scroll ancestor — which may well be

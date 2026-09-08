@@ -2971,23 +2971,40 @@ mod opacity_layer_bounds {
         );
     }
 
-    /// `position: fixed` is viewport content that happens to live in this
-    /// markup: `stacking::collect_hoisted` paints it at the body, outside this
-    /// layer, so it must not widen these bounds. This is the one case where a
-    /// descendant is deliberately left out of the union rather than included.
+    /// A `position: fixed` descendant *is* painted inside this layer, and at
+    /// coordinates this walk cannot produce — so it answers `UNBOUNDED`.
+    ///
+    /// This assertion is the inverse of the one it replaces. Until #545 a fixed
+    /// box was hoisted past every intervening stacking context out to the body,
+    /// so it was painted outside this layer and had to be left out of the union
+    /// — the one descendant that was. Now it is hoisted only as far as its
+    /// nearest ancestor stacking context, and every layer root is one
+    /// (`opacity < 1`, a transform), so the box belongs to this layer's own
+    /// sequence or to one nested inside it. Its `layout` coordinates are the
+    /// viewport's while this walk accumulates from the layer root, so the
+    /// subtree genuinely does not contain the answer, and the module's one rule
+    /// — err large, never small — makes `UNBOUNDED` the honest reply, exactly
+    /// as for `sticky` below.
     #[test]
-    fn a_fixed_descendant_is_painted_elsewhere_and_does_not_widen_the_bounds() {
+    fn a_fixed_descendant_cannot_be_measured_and_falls_back_to_unbounded() {
         let (doc, subject) = doc_with(
             "position: relative; width: 100px; height: 100px; opacity: 0.5",
             &["position: fixed; left: 600px; top: 400px; width: 40px; height: 40px"],
         );
-        let bounds = bounds_of(&doc, subject);
         assert_eq!(
-            bounds,
-            box_of(&doc, subject),
-            "a fixed descendant is hoisted to the body and painted outside this \
-             layer, so it must not appear in the layer's bounds"
+            bounds_of(&doc, subject),
+            UNBOUNDED,
+            "a fixed descendant is painted inside this layer at viewport \
+             coordinates the walk cannot reach, so it must not be measured"
         );
+
+        // Not vacuous: the same subtree without the fixed box measures normally,
+        // so what produces UNBOUNDED is the `position`, not the shape.
+        let (doc, subject) = doc_with(
+            "position: relative; width: 100px; height: 100px; opacity: 0.5",
+            &["position: absolute; left: 600px; top: 400px; width: 40px; height: 40px"],
+        );
+        assert_ne!(bounds_of(&doc, subject), UNBOUNDED);
     }
 
     /// `position: sticky` is painted at a position `paint_node` derives by

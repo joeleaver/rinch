@@ -104,10 +104,38 @@
 //!
 //! # `position: fixed`
 //!
-//! A fixed box is viewport-relative and must escape every ancestor clip, so at
-//! the body it is hoisted out of intermediate stacking contexts with its offsets
-//! zeroed (its `layout.x`/`layout.y` are already viewport coordinates), and at
-//! every deeper level it is left out entirely — the body already has it.
+//! A fixed box is viewport-**positioned**, not viewport-**stacked**. Its
+//! `layout.x`/`layout.y` are already viewport coordinates, so its entry takes
+//! zeroed offsets and (per the rule above) an empty clip chain — but it is
+//! hoisted only as far as its **nearest ancestor stacking context**, exactly
+//! like any other box that creates one, because that is what CSS 2.1 Appendix E
+//! says and what a browser does.
+//!
+//! It used to be pulled out to the body's sequence whatever lay between (#545).
+//! That compared `z-index` values across two stacking contexts — the same fault
+//! `overflow` caused before stage B — so a `z-index: 99` dismiss backdrop
+//! escaped a wrapper its `z-index: 100` panel could not, and covered it. There
+//! is no `is_body` special case in this module any more; the body is simply the
+//! outermost stacking context, and a fixed box with no nearer one lands there
+//! by the ordinary walk.
+//!
+//! Two consequences its consumers must honour, because a fixed entry can now
+//! appear under a root that clips or transforms:
+//!
+//! - **The collecting root's own clip does not apply to it.** The root is not
+//!   its containing block. Paint lifts its bracket around such an entry and hit
+//!   testing exempts it from the root's bounds gate; without that, a fixed modal
+//!   inside an `overflow: hidden; z-index: 1` panel would be clipped away, which
+//!   [is not what a browser does](https://drafts.csswg.org/css-position/#fixed-pos).
+//!   That is #324 stage B's documented "Known gap", which this made live.
+//! - **The collecting root's own transform does not apply to it either.** A
+//!   fixed entry is painted under the *body's* transform, which is where its
+//!   coordinates live and what `paint::compute_absolute_position_and_transform`
+//!   reports for it. (A transformed ancestor should really *contain* a fixed box
+//!   — position, clip and transform together — and rinch models none of that;
+//!   `out_of_flow.rs` answers "the viewport" for every fixed box. Keeping the
+//!   body's transform here leaves that case exactly as wrong as it already was,
+//!   rather than letting paint and hit testing disagree about it.)
 
 use std::ops::Deref;
 
@@ -265,12 +293,13 @@ pub fn paints_at_stacking_root(node: &Node) -> bool {
 /// and works in physical pixels, hit testing passes `1.0` and works in layout
 /// pixels.
 ///
-/// `is_body` selects the viewport-level variant, which hoists `position: fixed`
-/// boxes out of intermediate stacking contexts; pass `node_id == tree.body_id`.
+/// Every stacking-context root is collected the same way. There is deliberately
+/// no "is this the body" flag: a `position: fixed` box is hoisted to its nearest
+/// ancestor stacking context like any other, and reaches the body only when
+/// there is no nearer one (#545).
 pub fn stacking_paint_order(
     tree: &NodeTree,
     node_id: RawNodeId,
-    is_body: bool,
     scale: f64,
     offset_x: f64,
     offset_y: f64,
@@ -285,7 +314,6 @@ pub fn stacking_paint_order(
     let mut collector = Collector {
         tree,
         scale,
-        hoist_fixed: is_body,
         hoisted: Vec::new(),
         clips: Vec::new(),
         live: Vec::new(),
@@ -327,7 +355,6 @@ pub fn stacking_paint_order(
 struct Collector<'a> {
     tree: &'a NodeTree,
     scale: f64,
-    hoist_fixed: bool,
     /// Hoisted entries, paired with the tree-order index that breaks ties
     /// within a z level.
     hoisted: Vec<(usize, PaintEntry)>,
@@ -405,13 +432,6 @@ impl Collector<'_> {
                 continue;
             }
 
-            // A fixed box belongs to the viewport, i.e. to the body's sequence.
-            // Below the body it is left out; the body picks it up by walking
-            // into the stacking contexts that would otherwise have hidden it.
-            if is_fixed && !self.hoist_fixed {
-                continue;
-            }
-
             // Fixed boxes are viewport-relative: `layout.x`/`layout.y` are already
             // absolute, so the accumulated offset must not be added — to the entry,
             // or to anything hoisted out from under it.
@@ -455,15 +475,11 @@ impl Collector<'_> {
                 },
             ));
 
-            if is_sc {
-                // A stacking context owns its descendants — except the fixed ones,
-                // which the body reaches past it for.
-                if self.hoist_fixed {
-                    self.collect_fixed(&child.children);
-                }
-            } else {
+            if !is_sc {
                 // A positioned `z-index: auto` box is entered as an ordinary node,
                 // so its own hoisted descendants are this sequence's, not its.
+                // A stacking context, by contrast, owns its descendants outright
+                // — its fixed ones included, since #545.
                 self.descend(child, base_x, base_y);
             }
         }
@@ -505,48 +521,6 @@ impl Collector<'_> {
         self.cb_depth = outer_cb;
         if pushed {
             self.live.pop();
-        }
-    }
-
-    /// Walk into stacking contexts the body would otherwise not see past,
-    /// collecting the `position: fixed` boxes inside them.
-    ///
-    /// A fixed modal nested in an `overflow: auto` container is viewport-level
-    /// content that happens to live in the markup under a clip; without this it
-    /// would paint inside that clip, and be hit-tested inside it too. Its chain
-    /// is empty for the same reason.
-    fn collect_fixed(&mut self, children: &[RawNodeId]) {
-        for &child_id in children {
-            let Some(child) = self.tree.get(child_id) else {
-                continue;
-            };
-            let dom_order = self.order;
-            self.order += 1;
-
-            if child.computed_style.position == PositionValue::Fixed {
-                // A fixed box creates a stacking context unconditionally
-                // (#324), so this asks and gets `StackingContext` every time —
-                // but it keeps asking rather than hard-coding the answer,
-                // because the coupling is a fact about `creates_stacking_context`
-                // and not one this walk should re-state.
-                self.hoisted.push((
-                    dom_order,
-                    PaintEntry {
-                        node_id: child_id,
-                        kind: if child.creates_stacking_context() {
-                            PaintKind::StackingContext
-                        } else {
-                            PaintKind::PositionedAuto
-                        },
-                        offset_x: 0.0,
-                        offset_y: 0.0,
-                        z_index: child.computed_style.z_index.unwrap_or(0),
-                        clips: ClipSpan::EMPTY,
-                    },
-                ));
-            }
-
-            self.collect_fixed(&child.children);
         }
     }
 }

@@ -48,7 +48,7 @@ fn raw(id: rinch_core::dom::NodeId) -> RawNodeId {
 }
 
 fn body_order(doc: &RinchDocument) -> PaintOrder {
-    stacking_paint_order(&doc.tree, doc.tree.body_id, true, 1.0, 0.0, 0.0)
+    stacking_paint_order(&doc.tree, doc.tree.body_id, 1.0, 0.0, 0.0)
 }
 
 /// The chain recorded for `node`, in the body's sequence.
@@ -883,7 +883,7 @@ mod painted {
             "the fixture needs a real stacking-context root — z-index does it, \
              `overflow` deliberately no longer does"
         );
-        let inner = stacking_paint_order(&doc.tree, raw(root), false, 1.0, 0.0, 0.0);
+        let inner = stacking_paint_order(&doc.tree, raw(root), 1.0, 0.0, 0.0);
         assert_eq!(
             chain_of(&inner, raw(panel)),
             Vec::<(f64, f64, f64, f64)>::new(),
@@ -945,7 +945,7 @@ mod painted {
         doc.resolve_layout(800.0, 600.0);
         doc.tree.nodes[raw(clipbox)].scroll_offset = (0.0, 20.0);
 
-        let inner = stacking_paint_order(&doc.tree, raw(tx), false, 1.0, 0.0, 0.0);
+        let inner = stacking_paint_order(&doc.tree, raw(tx), 1.0, 0.0, 0.0);
         assert_eq!(
             chain_of(&inner, raw(panel)),
             vec![(0.0, 0.0, 100.0, 100.0)],
