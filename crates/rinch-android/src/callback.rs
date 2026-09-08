@@ -148,11 +148,6 @@ pub extern "C" fn Java_com_rinch_RinchActivity_nativeOnActivityResult(
         result_code,
         data_uri: uri,
     });
-    // The loop drains this queue once a frame and, since K37, only has frames
-    // when something is happening. Returning from the file picker is exactly
-    // the case where nothing is: the app has been sitting behind another
-    // activity, and this callback is the first news of it. See [`crate::wake`].
-    crate::wake::wake_main();
 }
 
 /// Queue an activity result for delivery by the next
@@ -160,6 +155,13 @@ pub extern "C" fn Java_com_rinch_RinchActivity_nativeOnActivityResult(
 #[cfg(any(target_os = "android", test))]
 fn queue_activity_result(result: ActivityResult) {
     ACTIVITY_RESULTS.lock().unwrap().push(result);
+    // The loop drains this queue once a frame and, since K37, only has frames
+    // when something is happening. Returning from the file picker is exactly
+    // the case where nothing is: the app has been sitting behind another
+    // activity, and this callback is the first news of it. In the host-compiled
+    // half rather than the JNI entry point above, so a test can see it —
+    // see [`crate::wake`].
+    crate::wake::wake_main();
 }
 
 #[cfg(target_os = "android")]
@@ -174,7 +176,6 @@ pub extern "C" fn Java_com_rinch_RinchActivity_nativeOnPermissionsResult(
         request_code,
         all_granted: all_granted != 0,
     });
-    crate::wake::wake_main();
 }
 
 /// Queue a permission result for delivery by the next
@@ -182,6 +183,7 @@ pub extern "C" fn Java_com_rinch_RinchActivity_nativeOnPermissionsResult(
 #[cfg(any(target_os = "android", test))]
 fn queue_permission_result(result: PermissionResult) {
     PERMISSION_RESULTS.lock().unwrap().push(result);
+    crate::wake::wake_main();
 }
 
 #[cfg(test)]
@@ -205,6 +207,40 @@ mod tests {
             request_code: code,
             all_granted: true,
         }
+    }
+
+    /// **Every producer the frame loop only *drains* has to wake it.**
+    ///
+    /// Since K37 the Android loop sleeps on the looper with no timeout, so a
+    /// queue it merely polls once a frame is a queue nobody looks at while the
+    /// screen is still. The 16ms timeout used to cover for that; nothing does
+    /// now except the explicit `wake_main` in this producer. Losing it is
+    /// silent everywhere else — it compiles, it queues, it drains correctly the
+    /// moment anything *else* wakes the loop — so the only thing that can catch
+    /// its removal is asserting the call happened.
+    #[test]
+    fn a_queued_result_wakes_the_frame_loop() {
+        let _serial = crate::test_serial();
+
+        let before = crate::wake::wake_count();
+        queue_activity_result(activity_result(1));
+        let after_activity = crate::wake::wake_count();
+        assert!(
+            after_activity > before,
+            "returning from a file picker is the case where nothing else is \
+             happening — the app has been behind another activity, and this is \
+             the first news of it"
+        );
+
+        queue_permission_result(permission_result(1));
+        assert!(
+            crate::wake::wake_count() > after_activity,
+            "a permission dialog is the same shape: the answer arrives on a \
+             still screen"
+        );
+
+        drain_activity_results();
+        drain_permission_results();
     }
 
     /// Removing on delivery bounds the *leak*; it does not scope the *lifetime*.

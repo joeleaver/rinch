@@ -18,7 +18,7 @@
 //! in their mutex until the user happened to touch the screen.
 //!
 //! So each of those producers now says so. `android-activity` hands out an
-//! [`AndroidAppWaker`] whose `wake()` is `ALooper_wake`, an increment of the
+//! `AndroidAppWaker` whose `wake()` is `ALooper_wake`, an increment of the
 //! looper's wake eventfd, safe to call from any thread. A `wake()` that lands
 //! *before* the loop calls `ALooper_pollAll` is not lost: an eventfd holds a
 //! count until somebody reads it, so the poll returns immediately rather than
@@ -39,14 +39,37 @@
 //! [`wake_main`] is for the JNI entry points, which run on whichever thread
 //! Android felt like calling them from.
 
+//! **Host-compiled on purpose.** Every producer that rings this waker also has
+//! a host-compiled half — `record_fix`, `record_reading`, `queue_activity_result`
+//! and `queue_permission_result` are all `cfg(any(target_os = "android", test))`
+//! precisely so the queue-then-drain path can be exercised with no device
+//! attached — so a waker that existed only on Android would take those halves
+//! back behind the `cfg` with it (issue #516). The looper is the only part that
+//! is Android-only; the *contract* — this producer wakes the loop — is not, and
+//! is pinned by tests in each of those modules.
+
+#[cfg(target_os = "android")]
 use std::sync::OnceLock;
 
+#[cfg(target_os = "android")]
 use android_activity::{AndroidApp, AndroidAppWaker};
 
+#[cfg(target_os = "android")]
 static WAKER: OnceLock<AndroidAppWaker> = OnceLock::new();
+
+/// How many times [`wake_main`] has been called in this process.
+///
+/// The seam the producer tests assert through: on the host there is no looper
+/// to observe, so the only thing that can distinguish "this producer rings the
+/// waker" from "this producer silently drops its news into a mutex" is the
+/// call itself. Process-global and never reset, so a test reads it either side
+/// of the producer and asserts the *delta*, under [`crate::test_serial`].
+#[cfg(test)]
+static WAKES: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
 /// Remember how to wake the frame loop. Called once by [`crate::init`], from
 /// `android_main`, before any JNI callback can have fired.
+#[cfg(target_os = "android")]
 pub(crate) fn install(android_app: &AndroidApp) {
     let _ = WAKER.set(android_app.create_waker());
 }
@@ -57,7 +80,17 @@ pub(crate) fn install(android_app: &AndroidApp) {
 /// both cases mean there is nothing blocked to wake, not that a wake was
 /// missed.
 pub fn wake_main() {
+    #[cfg(test)]
+    WAKES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+
+    #[cfg(target_os = "android")]
     if let Some(waker) = WAKER.get() {
         waker.wake();
     }
+}
+
+/// The current value of the [`WAKES`] counter.
+#[cfg(test)]
+pub(crate) fn wake_count() -> usize {
+    WAKES.load(std::sync::atomic::Ordering::Relaxed)
 }

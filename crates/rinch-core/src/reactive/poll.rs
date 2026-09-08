@@ -317,10 +317,32 @@ mod tests {
              interval, got {left:?}"
         );
 
+        // A *second* timed poll. **Do not simplify this back to one.**
+        // Everything above holds with a single entry, and with a single entry
+        // `min` and `max` are the same function — so nothing so far can tell
+        // "the soonest deadline", which is the word in this function's name,
+        // from "the latest one". Answering the latest is how a 50Hz bridge gets
+        // sampled at the rate of whatever slow poll happens to share the app
+        // with it: silent, and only on a still screen.
+        //
+        // This is the arity trap, and the fixture has to sit off it: a
+        // reduction over one element cannot distinguish which reduction it is,
+        // exactly as a `dt` at the nominal frame time cannot distinguish
+        // per-frame from per-second. Verified by mutation — `.min()` -> `.max()`
+        // survives the assertions above and dies against the one below.
+        let fast = poll_signal(|| 0i32, PollRate::Hz(50));
+        let soonest = next_poll_due().expect("two timed polls are still registered");
+        assert!(
+            soonest <= std::time::Duration::from_millis(20),
+            "the 50Hz poll is due within 20ms and the 500ms one is not due for \
+             most of half a second; the loop must sleep for the sooner, got \
+             {soonest:?}"
+        );
+
         // Keep both signals alive to here: `drain_polls` reaps an entry whose
         // signal has been freed, and a reaped entry would make the assertion
         // above pass for the wrong reason.
-        let _ = (every_frame, timed);
+        let _ = (every_frame, timed, fast);
     }
 
     #[test]

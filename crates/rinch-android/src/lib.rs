@@ -72,7 +72,6 @@ pub mod screen;
 pub mod sensors;
 #[cfg(target_os = "android")]
 pub mod share;
-#[cfg(target_os = "android")]
 pub mod wake;
 
 #[cfg(target_os = "android")]
