@@ -35,10 +35,37 @@
 //!
 //! **A rect that is too large costs a little GPU fill. A rect that is too small
 //! is the bug this module exists to fix.** Every judgement below is therefore
-//! made in the direction of a larger rect, and anything this walk cannot answer
-//! with certainty answers [`Extent::Unknown`], which surfaces as [`UNBOUNDED`]
-//! — the same ±1e7 rect the zero-area path has always used. It is never a
-//! guess: it is either mirrored from what `paint_node` does, or it is unknown.
+//! made in the direction of a larger rect, and never a guess: an answer is
+//! either mirrored from what `paint_node` does, or it says which kind of
+//! not-knowing it is.
+//!
+//! **That last distinction is the rule, and getting it wrong is what this
+//! module's bugs are made of.** "Cannot answer with certainty" is not one state
+//! but two, and they surface differently:
+//!
+//! - [`Extent::Unknown`] — *the walk looked and could not place the box.* It is
+//!   still bounded by an ancestor that clips it, so [`Extent::clipped_to`]
+//!   narrows it to that clip. Exactly one thing produces it: `position: sticky`.
+//! - [`Extent::Escapes`] — *no clip inside this layer may be **assumed** to
+//!   bound it.* Nothing narrows it, and it surfaces as [`UNBOUNDED`], the same
+//!   ±1e7 rect the zero-area path has always used. Produced by a `position:
+//!   fixed` descendant, and by **either give-up guard** — the visit budget and
+//!   `MAX_DEPTH` — because a walk that stopped early cannot claim anything about
+//!   what it did not visit.
+//!
+//! This paragraph used to say that anything uncertain answers `Unknown` and that
+//! `Unknown` surfaces as `UNBOUNDED`. Both halves were false once a box could
+//! escape an intervening clip, and **the second was the belief that produced
+//! three separate bugs in one review** (#547 F2, F5, F7): each was a place where
+//! a value that *can* be narrowed was returned for a box that must not be, and
+//! each was fixed while this summary went on asserting the thing that made them
+//! look correct. The specification is the first place to fix and the last place
+//! anyone looks — so if a future change adds a third kind of not-knowing, add it
+//! here first.
+//!
+//! The direction of the error still matters more than its presence: too large
+//! costs fill, too small loses content on the GPU path only, where no
+//! software-rasterized test can see it.
 //!
 //! A useful safety property falls out of that, and it is worth stating with its
 //! exception rather than without, because the exception is where the next bug
@@ -80,9 +107,52 @@
 //! deliberate. The question this module answers is not "where does CSS say this
 //! box is" but "where will *this painter* put it", and the only way to be sure
 //! of the second is to do the same sums. Where paint's placement is unusual —
-//! an inline-block positioned by an inline formatting context, a `position:
-//! fixed` box hoisted to the body — the walk reproduces the unusual thing
-//! rather than the tidy one.
+//! an inline-block positioned by an inline formatting context — the walk
+//! reproduces the unusual thing rather than the tidy one, and where it cannot
+//! (a `position: fixed` descendant, whose coordinates are the viewport's and not
+//! this layer's) it answers [`Extent::Escapes`] rather than a tidy wrong number.
+//!
+//! # The mirror has a hole, and this is its shape
+//!
+//! "Mirror what `paint_node` does" is the contract above, and for **hoisted**
+//! boxes this walk cannot honour it. Paint places those from the **stacking
+//! sequence** — [`crate::stacking::PaintEntry`], with a clip chain computed for
+//! each entry — while this is a **tree** walk that descends straight through the
+//! very boxes the chain leaves out. Three bugs came out of that hole in one
+//! review, and they are one under-specified invariant rather than three
+//! mistakes, so it is written here:
+//!
+//! > **For any node whose paint position or clipping comes from a `PaintEntry`
+//! > rather than from this walk's own descent, answer with something no ancestor
+//! > clip can narrow — and keep looking until every such node in the subtree has
+//! > been found.**
+//!
+//! Both halves earn their place. The first is [`Extent::Escapes`] surviving
+//! [`Extent::clipped_to`]: a fixed box hoisted to a stacking-context ancestor
+//! takes an empty chain, so a clipping box *between* it and this layer root does
+//! not clip it, and answering `Unknown` would let the first such clipper narrow
+//! the layer to less than it paints — invisible to tiny-skia, enforced by Vello.
+//! The second is [`Extent::is_final`]'s `exhausted` condition: stopping the
+//! sibling loop early on some *other* child's `Unknown` skips the fixed box
+//! entirely, and the same narrowing follows with nothing in its own subtree
+//! wrong.
+//!
+//! **`stacking::Collector::span` is the authority on which nodes those
+//! are**, and it names exactly two — do not guess from the tree:
+//!
+//! - **`position: fixed`** — chain truncated to nothing. Handled, by `Escapes`.
+//! - **`position: absolute`** — chain truncated at its containing block, so it
+//!   escapes any clipper *below* that block while remaining clipped by the ones
+//!   above. **Not handled**: this walk still narrows an absolute at every
+//!   clipping ancestor, so a layer holding one can come back too small in the
+//!   same way. It is pre-existing rather than new, it needs a *partial* escape
+//!   that `Escapes` cannot express, and it is filed as **#550** — named here so
+//!   the gap is visible instead of latent.
+//! - **`position: sticky`** takes the **full** chain and is correctly not one of
+//!   them; its `Unknown` is about coordinates, not clipping, and narrowing it is
+//!   right.
+//!
+//! #545, #547, #550.
 
 use peniko::kurbo::{Affine, Rect, Vec2};
 
@@ -93,13 +163,16 @@ use crate::node::{DisplayMode, Node, NodeKind, NodeTree, RawNodeId};
 /// A rect no clip can cut anything out of, at any scale a real window reaches.
 ///
 /// This is the value `paint/mod.rs` has been passing for the zero-area layer
-/// case since long before this module existed, and it stays the answer whenever
-/// the walk below is not certain. tiny-skia ignores layer bounds entirely;
-/// Vello clips to them, and clipping to this is clipping to nothing.
+/// case since long before this module existed, and it is what any not-knowing
+/// that reaches the top surfaces as. Note *reaches the top*: an
+/// `Extent::Unknown` can be narrowed to a clip on the way up and never get
+/// here, which is correct for the one thing that produces it and was the bug
+/// for everything else (see **The one rule**). tiny-skia ignores layer bounds
+/// entirely; Vello clips to them, and clipping to this is clipping to nothing.
 pub const UNBOUNDED: Rect = Rect::new(-1e7, -1e7, 1e7, 1e7);
 
 /// How many nodes the walk will look at before it gives up and says
-/// [`Extent::Unknown`].
+/// [`Extent::Escapes`].
 ///
 /// This runs once per frame per translucent element, on a phone, in a frame
 /// budget of 8.3ms — cards K42 and K43 spent a lot of effort getting this app
@@ -128,12 +201,32 @@ const MAX_DEPTH: u32 = 32;
 
 /// What a subtree paints, as far as this walk can tell.
 ///
-/// The three cases are distinct on purpose. `Nothing` is not `Within` a
+/// The four cases are distinct on purpose. `Nothing` is not `Within` a
 /// zero-area rect: unioning a rect with a degenerate rect at the origin would
 /// drag the result all the way to (0, 0), which is how a "conservative" bounds
 /// function quietly becomes a full-screen one. And `Unknown` is not `Within`
 /// [`UNBOUNDED`] either, because a `Unknown` subtree under an `overflow: hidden`
 /// ancestor is still bounded by that ancestor's clip — see [`Extent::clipped_to`].
+///
+/// `Escapes` is `Unknown` **plus** the one thing that reasoning does not hold
+/// for: no clip inside this layer may be *assumed* to bound it. Two producers,
+/// and the wording has to cover both — a `position: fixed` descendant, where the
+/// walk knows no clip bounds it, and either **give-up** guard (the budget or
+/// `MAX_DEPTH`, in `Walk::node` and in the inline-lines loop), where the walk
+/// did not look and so cannot claim anything about what is in there. "May not be
+/// assumed to bound it" is what both can honestly say, and it is the same
+/// operationally: neither may be narrowed. It exists because collapsing either
+/// case to
+/// `Unknown` is a silent GPU-only bug, not a conservative approximation —
+/// `clipped_to` would narrow it to a clip paint does not apply, and the layer
+/// would come back *smaller* than what it paints. tiny-skia ignores layer
+/// bounds and would draw the box anyway; Vello clips to them and would throw it
+/// away. See the note on `Fixed` in [`Walk::node`].
+///
+/// It is a claim about what this walk can *bound*, not a proof that nothing
+/// clips the box: a clip the fixed box's owning stacking context was itself
+/// hoisted past does still reach it (#549), so `Escapes` can be more generous
+/// than the truth. That is the direction this module errs in on purpose.
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum Extent {
     /// Provably nothing is drawn.
@@ -142,26 +235,88 @@ enum Extent {
     Within(Rect),
     /// Not known. Treat as covering the plane.
     Unknown,
+    /// Not known, **and** not bounded by any clip inside this layer.
+    Escapes,
 }
 
 impl Extent {
     fn union(self, other: Extent) -> Extent {
         match (self, other) {
+            // `Escapes` outranks `Unknown`: a union containing something no clip
+            // in this layer bounds is itself unbounded by those clips, and
+            // widening is always the safe direction here.
+            (Extent::Escapes, _) | (_, Extent::Escapes) => Extent::Escapes,
             (Extent::Unknown, _) | (_, Extent::Unknown) => Extent::Unknown,
             (Extent::Nothing, e) | (e, Extent::Nothing) => e,
             (Extent::Within(a), Extent::Within(b)) => Extent::Within(a.union(b)),
         }
     }
 
+    /// Whether the sibling loop may stop here, because nothing still to be
+    /// visited can change the answer.
+    ///
+    /// **`Escapes` stops; nothing else does.** The proof is short and it rests
+    /// on the give-up guard at the top of [`Walk::node`] answering `Escapes`:
+    ///
+    /// - `Escapes` is the top of the lattice — `union` lets it dominate and
+    ///   `clipped_to` cannot narrow it — so no later sibling can change it.
+    /// - `Unknown` must **not** stop, because a later sibling may be a
+    ///   `position: fixed` box and answer `Escapes`, which `clipped_to` must not
+    ///   narrow. Returning early on an earlier sibling's `Unknown` loses it and
+    ///   the first clipping ancestor then narrows the lot — the F2 defect with
+    ///   nothing in the fixed box's own subtree wrong (#547 F5). Since the
+    ///   give-up guard now answers `Escapes`, the only remaining producer of
+    ///   `Unknown` is `position: sticky`, which says nothing about later
+    ///   siblings at all.
+    /// - `Nothing` and `Within` are obviously not final.
+    ///
+    /// **The cost is bounded without a special case, which is why there is not
+    /// one.** An earlier revision stopped on `Unknown` when the budget was
+    /// exhausted, to keep a wide subtree from iterating its whole child list
+    /// past the budget — [`MAX_VISITS`] bounds the nodes *measured*, not the
+    /// loop *iterations*. That is no longer needed **and would now be wrong**:
+    /// once the budget is gone every remaining sibling answers `Escapes` at
+    /// `node`'s first line, so the loop stops on the very next one, and stopping
+    /// on an earlier `Unknown` instead would skip exactly those `Escapes`
+    /// answers.
+    ///
+    /// So the total work is bounded by `MAX_VISITS` measured nodes plus at most
+    /// one extra iteration per open sibling loop, i.e. `MAX_VISITS + MAX_DEPTH +
+    /// 1` calls into `node` — independent of how wide any node is. That bound is
+    /// the load-bearing half; the numbers that motivated it (a 20,000-child
+    /// subtree at 59.7µs when nothing stopped the loop, against a flat ~11.5µs
+    /// at both 5,000 and 20,000 children now) only cover the shapes someone
+    /// happened to build.
+    fn is_final(self) -> bool {
+        matches!(self, Extent::Escapes)
+    }
+
     /// What is left of this extent once it is clipped to `clip`.
     ///
     /// The `Unknown` arm is the interesting one and the reason this type has
-    /// three cases: content whose extent could not be worked out is still
-    /// bounded by an ancestor that clips it, so an `overflow: hidden` box
+    /// more than two cases: content whose extent could not be worked out is
+    /// still bounded by an ancestor that clips it, so an `overflow: hidden` box
     /// containing something unanalysable contributes the box, not the plane.
+    ///
+    /// **That is only sound because `position: sticky` is now `Unknown`'s sole
+    /// producer** (one site; `Escapes` has three). A sticky box really is
+    /// clipped by its scroll ancestor, so narrowing it is right. Every other
+    /// not-knowing this module had — a fixed descendant, the visit budget,
+    /// `MAX_DEPTH` — was moved to `Escapes` precisely because this arm narrowed
+    /// it and should not have.
+    ///
+    /// So: **if you are about to return `Unknown` from a new site, the question
+    /// to answer first is whether an ancestor clip really does bound what you
+    /// could not measure.** If the honest answer is "I did not look", it is
+    /// `Escapes`. That single question is the generalisation of #547's three
+    /// findings, and asking it is what stops a fourth.
     fn clipped_to(self, clip: Rect) -> Extent {
         match self {
             Extent::Nothing => Extent::Nothing,
+            // The whole point of the fourth case: this clip is one paint does
+            // not apply to what is inside, so narrowing to it would return a
+            // layer smaller than its own content.
+            Extent::Escapes => Extent::Escapes,
             Extent::Unknown => Extent::Within(clip),
             Extent::Within(r) => {
                 let hit = r.intersect(clip);
@@ -187,9 +342,12 @@ impl Extent {
 /// the `Rect::new(x, y, x + w, y + h)` that used to be passed.
 ///
 /// The result contains the node's own border box in every case, and contains
-/// every descendant this walk is certain about. When it is not certain it
-/// returns [`UNBOUNDED`], which is what every one of these layers effectively
-/// had before — a bounds that clips nothing.
+/// every descendant this walk placed. Where it could not place one it returns
+/// [`UNBOUNDED`] — what every one of these layers effectively had before, a
+/// bounds that clips nothing — *unless* a clipping ancestor genuinely bounds
+/// what could not be placed, which is the single case `Extent::Unknown`
+/// exists for. **The one rule** above is the distinction, and is the thing to
+/// read before adding a return to `Walk::node`.
 pub fn opacity_layer_bounds(
     tree: &NodeTree,
     node_id: RawNodeId,
@@ -212,7 +370,6 @@ pub fn opacity_layer_bounds(
         tree,
         scale,
         budget: MAX_VISITS,
-        root_is_body: node_id == tree.body_id,
     };
     match walk.node(node_id, offset_x, offset_y, Affine::IDENTITY, true, 0) {
         // A zero-area answer is not worth trusting even when it is arrived at
@@ -244,10 +401,6 @@ struct Walk<'a> {
     /// walk, not per level, so the cost of one call is bounded whatever shape
     /// the subtree has.
     budget: u32,
-    /// Whether the layer being measured belongs to the body. `position: fixed`
-    /// descendants are hoisted out of every other stacking context and painted
-    /// at the body, so only the body's own layer has to account for them.
-    root_is_body: bool,
 }
 
 impl Walk<'_> {
@@ -268,8 +421,33 @@ impl Walk<'_> {
         is_root: bool,
         depth: u32,
     ) -> Extent {
+        // Giving up answers [`Extent::Escapes`], not `Unknown`, and the
+        // distinction is the whole of #547 F7: "I did not look" includes "there
+        // may be a box in here that escapes your clip". An `Unknown` is narrowed
+        // by the first clipping ancestor on the way back up, so a fixed box past
+        // the budget — or deeper than `MAX_DEPTH` — inside a clipper produced a
+        // layer smaller than what paint draws, which is the F2 defect reached by
+        // a second route.
+        //
+        // This restores what [`MAX_VISITS`]'s own documentation already promises
+        // ("past it the answer is `UNBOUNDED` … so the fallback costs a
+        // full-target clip and never a wrong picture") — that was simply untrue
+        // whenever a clipping ancestor sat between here and the layer root.
+        //
+        // Worth keeping the shape of that in mind, because it generalises: the
+        // promise was not deleted as over-claiming, it was **made true**, and
+        // the history stayed here at the guard that fixed it rather than in the
+        // promise. A doc comment that says something false is usually saying
+        // what the code was meant to do, and the cheaper repair — softening the
+        // claim — throws away the specification and leaves the defect. Check
+        // which of the two is wrong before assuming it is the prose.
+        //
+        // It is also what lets [`Extent::is_final`] be the simple predicate it
+        // is: this guard runs *before* every other arm, so once the budget is
+        // gone every remaining sibling answers `Escapes` and the loop stops on
+        // the next one.
         if self.budget == 0 || depth > MAX_DEPTH {
-            return Extent::Unknown;
+            return Extent::Escapes;
         }
         self.budget -= 1;
 
@@ -282,6 +460,33 @@ impl Walk<'_> {
         // `opacity <= 0.0` one is worth more than it looks, because it is the
         // always-mounted scrim from card K24: a full-screen element that is not
         // there, whose subtree this walk would otherwise measure every frame.
+        //
+        // **Why `Nothing` is safe here and `Escapes` is not needed — and why two
+        // of these four are safe only by accident.** `Nothing` is the `union`
+        // identity, so a subtree that answers it vanishes silently rather than
+        // being narrowed: it is the *worse* failure of the two if it is ever
+        // wrong. Each refusal has to mean "paint draws nothing here, hoisted
+        // descendants included", and that is a stronger claim than "paint skips
+        // this node" — `stacking::Collector::collect_hoisted` reaches a hoisted
+        // entry directly, not through its parent, so a parent paint refuses does
+        // not refuse what was hoisted out of it.
+        //
+        // - `display: none` and `opacity <= 0.0` are safe **by construction**.
+        //   A `display: none` node is not in layout at all, so nothing under it
+        //   is hoisted anywhere. `opacity < 1` creates a stacking context, so a
+        //   fixed descendant is hoisted no further than this node (#545) and
+        //   paint refuses the node itself — nothing escapes. Note what that
+        //   rests on: if `Node::creates_stacking_context` ever stopped answering
+        //   to `opacity`, this exit would start losing boxes silently.
+        // - The tag list and `estimated_height` are the same asymmetry as F7 and
+        //   are **latent rather than safe**: neither has a matching guard in
+        //   `collect_hoisted`, so a hoisted descendant of one would be painted
+        //   while this walk answered `Nothing`. Neither is reachable today — the
+        //   tags get `display: none` from the UA stylesheet and would be caught
+        //   by the exit below anyway, and a `position: fixed` box inside a
+        //   virtualized editor block is not something the editor model can
+        //   produce. If either ever becomes reachable, the answer is `Escapes`,
+        //   for exactly the reason the give-up guard above returns it.
         if let NodeKind::Element(ref el) = node.kind
             && matches!(
                 el.tag.as_str(),
@@ -302,21 +507,36 @@ impl Walk<'_> {
         }
 
         if !is_root {
-            // A `position: fixed` box is viewport content that happens to live
-            // in this markup. `stacking::collect_hoisted` drops it from every
-            // sequence but the body's, and the body reaches past intervening
-            // stacking contexts to collect it, so it is painted *outside* this
-            // layer and must not widen it. The one layer that does own its
-            // fixed descendants is the body's own, and that case — a translucent
-            // `<body>` with fixed children — is rare enough to answer with
-            // `Unknown` rather than to reproduce the offset-zeroing the body's
-            // sequence does.
+            // A `position: fixed` box is painted *inside* this layer, so it does
+            // widen it — but at coordinates this walk cannot produce. Since #545
+            // a fixed box is hoisted only to its nearest ancestor stacking
+            // context, and every layer root is one (`opacity < 1` and a
+            // transform both create one), so a fixed descendant is an entry of
+            // this layer's own sequence or of one nested inside it. Its
+            // `layout.x`/`layout.y` are viewport coordinates, though, and this
+            // walk accumulates offsets from the layer root — so the subtree
+            // alone does not contain the answer and `Unknown` is the honest one,
+            // exactly as for `sticky` below.
+            //
+            // It used to answer `Nothing` for a non-body root, on the grounds
+            // that the body reached past every intervening context and painted
+            // the box outside this layer. That stopped being true with #545.
+            //
+            // [`Extent::Escapes`] and not [`Extent::Unknown`], and the
+            // difference is not cosmetic: an `Unknown` is narrowed by the first
+            // clipping ancestor on the way back up, and a clipping ancestor
+            // *inside* this layer does not clip a fixed box — its entry carries
+            // an empty clip chain and paint lifts the collecting root's own
+            // bracket around it. Collapsing to `Unknown` therefore returned a
+            // layer smaller than what it paints, which tiny-skia ignores (it
+            // never reads layer bounds) and Vello enforces (it clips
+            // `push_layer` to them). That is a **backend divergence**, the
+            // single failure this module exists to end, and no pixel assertion
+            // against the software painter can see it — so
+            // `a_fixed_descendant_is_not_narrowed_by_a_clipper_it_escapes`
+            // asserts on the bounds themselves.
             if cs.position == PositionValue::Fixed {
-                return if self.root_is_body {
-                    Extent::Unknown
-                } else {
-                    Extent::Nothing
-                };
+                return Extent::Escapes;
             }
             // `position: sticky` is painted at a position `paint_node` derives
             // by walking *up* to the nearest scroll ancestor — which may well be
@@ -507,10 +727,8 @@ impl Walk<'_> {
                 continue;
             }
             acc = acc.union(self.node(child_id, offset_x, offset_y, transform, false, depth + 1));
-            if acc == Extent::Unknown {
-                // Nothing below can make the answer narrower again — a caller
-                // that clips will still clip it, and one that does not will get
-                // `UNBOUNDED` whatever else is found.
+            // Only `Escapes` may stop the loop — see [`Extent::is_final`].
+            if acc.is_final() {
                 return acc;
             }
         }
@@ -542,8 +760,15 @@ impl Walk<'_> {
             for line in inline.layout.lines() {
                 // Lines are charged to the same budget as nodes: a very long
                 // article inside a translucent element is a walk like any other.
+                //
+                // `Escapes` for the same reason as the guard at the top of
+                // `node` — this is the same give-up, and the lines not looked at
+                // may hold an inline-block whose subtree holds a fixed box. (Not
+                // a fixed box *directly*: Stylo blockifies an out-of-flow box,
+                // so one is never an inline item. The route is one level down,
+                // and `an_unvisited_inline_line_may_hide_a_fixed_box` walks it.)
                 if self.budget == 0 {
-                    return Extent::Unknown;
+                    return Extent::Escapes;
                 }
                 self.budget -= 1;
                 for item in line.items() {
@@ -558,7 +783,7 @@ impl Walk<'_> {
                         false,
                         depth + 1,
                     ));
-                    if acc == Extent::Unknown {
+                    if acc.is_final() {
                         return acc;
                     }
                 }

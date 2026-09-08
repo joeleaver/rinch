@@ -793,12 +793,20 @@ them, so it covered its own menus and every item click merely dismissed the menu
 too.
 
 That deviation is **gone** (#324 stage B): `overflow` creates no stacking
-context, so the `199` and the `201` meet in one sequence and the `fixed`
-spelling would order correctly too. The `absolute` one is kept for now — it also
-works, and reverting it is #324's stage C, together with `DropdownMenu`/`Select`'s
-backdrops (PR #317) and the `top: -top_offset` compensation
-`render_menu_bar_standalone` passes purely to undo the containing-block change
-`absolute` forces. **Those two edits must land together** — measured while
+context. Two things had to be true for the `fixed` spelling to order correctly
+again, and stage B was only the first. The second is #545: the overlay is a
+child of `.rinch-app-menu-bar__inline-layer`, which is `position: absolute;
+z-index: 200` and therefore a stacking context of its own — so a `fixed` overlay
+hoisted all the way to the **body** would sit at 199 in the body's sequence while
+the row sat at 201 inside the layer, and the two still would not meet. (What
+would have ordered them is 199 against the *layer's* 200 — same outcome, so the
+mistake was invisible.) With #545 the overlay is hoisted no further than the
+layer, and 199 and 201 land in one sequence for real — measured, not reasoned.
+
+The `absolute` spelling is kept for now — it also works, and reverting it is
+#324's stage C, together with `DropdownMenu`/`Select`'s backdrops (PR #317) and
+the `top: -top_offset` compensation `render_menu_bar_standalone` passes purely to
+undo the containing-block change `absolute` forces. **Those two edits must land together** — measured while
 landing stage B, and spelled out under **Stacking contexts and the clip chain**
 below. `menu::app_menu_bar`'s tests cover all three layouts and are green both
 ways round.
@@ -1420,7 +1428,22 @@ correct, and each has a fixture in
   whole one — an in-flow or `relative` box is clipped by every clipping
   ancestor, containing block or not.
 - **The collecting root's own clip is in no chain.** Paint opens that bracket
-  before it walks the sequence, and hit testing gates the whole walk on it.
+  before it walks the sequence, and hit testing gates the whole walk on it —
+  **except around a `position: fixed` entry** (#545), which the root does not
+  contain: paint lifts the bracket for the length of that entry and puts the very
+  same shape back, and hit testing exempts it from the bounds gate per entry.
+  That was stage B's documented "Known gap", and #545 is what made it live.
+  **Only that one clip is lifted (#549).** The chain on the *root's own* entry,
+  in whatever sequence hoisted the root, is still pushed around the root's whole
+  subtree — so under `plain clipper > stacking context > fixed` the fixed box is
+  clipped away, where a browser paints it. Paint and hit testing agree on it, so
+  it is a consistent deviation and not drift; the honest fix moves the collecting
+  root's clip off the bracket and into every entry's chain, which would close
+  #386's shape too. A third consumer has to know the same thing from the other
+  side: `paint::layer_bounds` walks the tree rather than the sequence, so it sees
+  clippers a fixed descendant escapes, and its `Extent::Escapes` case stops one
+  narrowing a translucent layer to less than it paints — which tiny-skia ignores
+  and Vello enforces, i.e. a software/GPU divergence no pixel test can see.
 - **No transform composition is needed.** A transform creates a stacking
   context, so `descend` never crosses one and every link lives in the collecting
   root's own untransformed space — the same space the entries' offsets are in.
@@ -1475,13 +1498,37 @@ inside) is **not** implemented: a sound version needs a subtree extent per entry
 which is a new per-frame walk for every positioned box, and the run reuse already
 took the realistic case.
 
+**A `position: fixed` box is hoisted to its NEAREST ancestor stacking context**,
+not to the body (#545). It is viewport-*positioned*, not viewport-*stacked*: its
+entry keeps zeroed offsets, an empty clip chain and the body's transform, but it
+is entered in the sequence CSS says owns it. **"Empty clip chain" is not "escapes
+every clip"** — see the paragraph on #549 below. It used to be pulled out to the body
+whatever lay between, which compared two `z-index` values across two stacking
+contexts — the same fault `overflow` caused before stage B. A `z-index: 99`
+dismiss backdrop escaped a wrapper its `z-index: 100` panel could not and covered
+it; and under a wrapper whose own `z` was *above* 99 (`Modal` and `Drawer` at 201,
+`Notification` at 300) the backdrop sank beneath the whole wrapper, so a popup
+inside a modal could not be dismissed at all. Chromium does neither. There is no
+`is_body` flag in `stacking.rs` any more: the body is simply the outermost
+stacking context.
+
+rinch still models no **containment** — CSS makes a *transformed* ancestor the
+containing block of a fixed descendant (and an `opacity` one not), while
+`out_of_flow::out_of_flow_kind` answers "the viewport" for every fixed box. That
+was already wrong before #545 and is exactly as wrong after; what #545 preserves
+is that it is wrong *consistently*, since paint keeps handing a fixed entry the
+body's transform. Tracked with #386 and #415.
+
 **When #324's stage C reverts the two workarounds**, the overlay's `position` and
 its compensating offset must move **together**. Measured: flipping
 `.rinch-app-menu-bar__overlay` back to `fixed` while leaving
 `render_menu_bar_standalone`'s `top: -top_offset` in place fails
 `the_below_titlebar_overlay_covers_the_whole_window` — the compensation then
 shifts a viewport-anchored overlay off the top of the window. Change both and all
-seven `menu::app_menu_bar` tests are green.
+seven `menu::app_menu_bar` tests are green. With #545 in place that `fixed`
+overlay lands in `.rinch-app-menu-bar__inline-layer`'s own sequence at 199,
+beside the row's 201 — measured — so the "199 and 201 in one sequence" the menu
+bar's comments describe is then literally what happens.
 
 **Key files:**
 - `crates/rinch-dom/src/stacking.rs` — the paint sequence and the clip chain

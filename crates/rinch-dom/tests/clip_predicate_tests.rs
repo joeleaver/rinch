@@ -25,6 +25,7 @@
 use peniko::Brush;
 use rinch_core::dom::DomDocument;
 use rinch_dom::computed_style::OverflowValue;
+use rinch_dom::computed_style::PositionValue;
 use rinch_dom::node::{NodeTree, RawNodeId};
 use rinch_dom::stacking::{paints_at_stacking_root, stacking_paint_order};
 use rinch_dom::{RinchDocument, node::LayoutResult};
@@ -180,7 +181,9 @@ fn the_stacking_context_creators_are_the_css_ones() {
 
     assert!(
         sc("position: fixed"),
-        "a fixed box is viewport-level content: its descendants travel with it"
+        "a fixed box is viewport-positioned, so its descendants travel with it \
+         rather than being hoisted into a sequence it no longer shares a \
+         coordinate space with"
     );
     assert!(sc("position: sticky"));
 }
@@ -236,18 +239,27 @@ fn resolve(tree: &NodeTree, id: RawNodeId, ox: f32, oy: f32, x: f32, y: f32) -> 
     } = node.layout;
     let (nx, ny) = (ox + lx, oy + ly);
     let inside = x >= nx && x <= nx + width && y >= ny && y <= ny + height;
+    let check_children = !node.clips_overflow() || inside;
 
-    if !node.clips_overflow() || inside {
+    {
         let (sx, sy) = (node.scroll_offset.0 as f32, node.scroll_offset.1 as f32);
-        let is_body = id == tree.body_id;
-        if is_body || node.creates_stacking_context() {
-            let order =
-                stacking_paint_order(tree, id, is_body, 1.0, (nx - sx) as f64, (ny - sy) as f64);
+        if id == tree.body_id || node.creates_stacking_context() {
+            let order = stacking_paint_order(tree, id, 1.0, (nx - sx) as f64, (ny - sy) as f64);
             for entry in order.iter().rev() {
+                // This root's own bounds gate, per entry, and a `position: fixed`
+                // entry is exempt from it — this root is not its containing block
+                // (#545). Mirrors `hit_test_node`; that exemption is ordering, not
+                // coordinates, so it belongs in this reduced model even though the
+                // viewport re-seed does not.
+                let escapes_root_clip = tree
+                    .get(entry.node_id)
+                    .is_some_and(|c| c.computed_style.position == PositionValue::Fixed);
+                if !check_children && !escapes_root_clip {
+                    continue;
+                }
                 // The entry's clip chain: the clipping ancestors it was hoisted
-                // past, which `check_children` above never sees because
-                // `overflow` is not a stacking context (#324 stage B). Rect-only,
-                // like that gate.
+                // past, which the gate above never sees because `overflow` is not
+                // a stacking context (#324 stage B). Rect-only, like that gate.
                 if !order
                     .clips_for(entry)
                     .iter()
@@ -266,7 +278,7 @@ fn resolve(tree: &NodeTree, id: RawNodeId, ox: f32, oy: f32, x: f32, y: f32) -> 
                     return Some(hit);
                 }
             }
-        } else {
+        } else if check_children {
             for &child_id in node.children.iter().rev() {
                 let Some(child) = tree.get(child_id) else {
                     continue;
@@ -551,7 +563,7 @@ mod painted {
         doc.resolve_layout(800.0, 600.0);
 
         // ── The ordering assertion: inverted by stage B, chain and all ──
-        let body_order = stacking_paint_order(&doc.tree, doc.tree.body_id, true, 1.0, 0.0, 0.0);
+        let body_order = stacking_paint_order(&doc.tree, doc.tree.body_id, 1.0, 0.0, 0.0);
         let entry = body_order.iter().find(|e| e.node_id == raw(panel)).expect(
             "the panel is hoisted to the body now: an `overflow: clip` box \
                  is not a stacking context and does not stop the walk",

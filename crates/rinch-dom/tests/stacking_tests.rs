@@ -7,6 +7,7 @@
 
 use peniko::Brush;
 use rinch_core::dom::DomDocument;
+use rinch_dom::computed_style::PositionValue;
 use rinch_dom::node::{NodeTree, RawNodeId};
 use rinch_dom::stacking::{PaintEntry, PaintKind, paints_at_stacking_root, stacking_paint_order};
 use rinch_dom::{RinchDocument, node::LayoutResult};
@@ -14,7 +15,7 @@ use rinch_dom::{RinchDocument, node::LayoutResult};
 /// The body's paint sequence: what `paint_children_with_stacking` walks for the
 /// root, and what hit testing walks in reverse.
 fn body_order(doc: &RinchDocument) -> rinch_dom::stacking::PaintOrder {
-    stacking_paint_order(&doc.tree, doc.tree.body_id, true, 1.0, 0.0, 0.0)
+    stacking_paint_order(&doc.tree, doc.tree.body_id, 1.0, 0.0, 0.0)
 }
 
 fn ids(order: &[PaintEntry]) -> Vec<RawNodeId> {
@@ -40,18 +41,27 @@ fn resolve(tree: &NodeTree, id: RawNodeId, ox: f32, oy: f32, x: f32, y: f32) -> 
     } = node.layout;
     let (nx, ny) = (ox + lx, oy + ly);
     let inside = x >= nx && x <= nx + width && y >= ny && y <= ny + height;
+    let check_children = !node.clips_overflow() || inside;
 
-    if !node.clips_overflow() || inside {
+    {
         let (sx, sy) = (node.scroll_offset.0 as f32, node.scroll_offset.1 as f32);
-        let is_body = id == tree.body_id;
-        if is_body || node.creates_stacking_context() {
-            let order =
-                stacking_paint_order(tree, id, is_body, 1.0, (nx - sx) as f64, (ny - sy) as f64);
+        if id == tree.body_id || node.creates_stacking_context() {
+            let order = stacking_paint_order(tree, id, 1.0, (nx - sx) as f64, (ny - sy) as f64);
             for entry in order.iter().rev() {
+                // This root's own bounds gate, per entry, and a `position: fixed`
+                // entry is exempt from it — this root is not its containing block
+                // (#545). Mirrors `hit_test_node`; that exemption is ordering, not
+                // coordinates, so it belongs in this reduced model even though the
+                // viewport re-seed does not.
+                let escapes_root_clip = tree
+                    .get(entry.node_id)
+                    .is_some_and(|c| c.computed_style.position == PositionValue::Fixed);
+                if !check_children && !escapes_root_clip {
+                    continue;
+                }
                 // The entry's clip chain: the clipping ancestors it was hoisted
-                // past, which `check_children` above never sees because
-                // `overflow` is not a stacking context (#324 stage B). Rect-only,
-                // like that gate.
+                // past, which the gate above never sees because `overflow` is not
+                // a stacking context (#324 stage B). Rect-only, like that gate.
                 if !order
                     .clips_for(entry)
                     .iter()
@@ -70,7 +80,7 @@ fn resolve(tree: &NodeTree, id: RawNodeId, ox: f32, oy: f32, x: f32, y: f32) -> 
                     return Some(hit);
                 }
             }
-        } else {
+        } else if check_children {
             for &child_id in node.children.iter().rev() {
                 let Some(child) = tree.get(child_id) else {
                     continue;
@@ -231,7 +241,7 @@ fn a_positioned_z_auto_box_is_ordered_above_in_flow_content_written_after_it() {
     doc.append_child(body, block);
 
     doc.resolve_layout(800.0, 600.0);
-    let order = stacking_paint_order(&doc.tree, doc.tree.body_id, true, 1.0, 0.0, 0.0);
+    let order = stacking_paint_order(&doc.tree, doc.tree.body_id, 1.0, 0.0, 0.0);
 
     assert_eq!(
         ids(&order),
@@ -277,7 +287,6 @@ fn a_negative_z_index_context_stays_below_in_flow_content() {
         ids(&stacking_paint_order(
             &doc.tree,
             doc.tree.body_id,
-            true,
             1.0,
             0.0,
             0.0
@@ -327,7 +336,6 @@ fn a_stacking_context_under_a_positioned_z_auto_box_belongs_to_the_ancestor() {
         ids(&stacking_paint_order(
             &doc.tree,
             doc.tree.body_id,
-            true,
             1.0,
             0.0,
             0.0
@@ -363,7 +371,7 @@ fn a_fixed_box_inside_a_scroller_is_hoisted_to_the_viewport_with_no_offset() {
 
     doc.resolve_layout(800.0, 600.0);
 
-    let root = stacking_paint_order(&doc.tree, doc.tree.body_id, true, 1.0, 0.0, 0.0);
+    let root = stacking_paint_order(&doc.tree, doc.tree.body_id, 1.0, 0.0, 0.0);
     assert_eq!(ids(&root), vec![raw(spacer), raw(scroller), raw(modal)]);
     let entry = root.iter().find(|e| e.node_id == raw(modal)).unwrap();
     assert_eq!(
@@ -373,9 +381,38 @@ fn a_fixed_box_inside_a_scroller_is_hoisted_to_the_viewport_with_no_offset() {
          accumulated offset"
     );
 
-    // …and the scroller does not paint it a second time inside its own clip.
-    let inner = stacking_paint_order(&doc.tree, raw(scroller), false, 1.0, 0.0, 120.0);
-    assert!(inner.is_empty(), "the body already has it: {inner:?}");
+    // …and nothing paints it a second time.
+    //
+    // This used to be checked by asking the *scroller* for a sequence and
+    // requiring it to be empty, and that proved less than it looked. `overflow`
+    // is not a stacking context (#324 stage B), so paint never asks a plain
+    // scroller for a sequence at all — `paint_children_with_stacking` gates on
+    // `is_body || creates_stacking_context()` — and the assertion was about a
+    // call no consumer makes. It also only passed because of the very
+    // fixed-box special case #545 removed; `stacking_paint_order` has never
+    // filtered its answer by whether the caller *should* have asked, so the same
+    // question about a `z-index: 5` child would always have answered "yes".
+    //
+    // What actually keeps a box from being painted twice is that exactly one
+    // root paint asks claims it. So ask each candidate root the way paint
+    // decides to.
+    let claims_modal = |root: RawNodeId| {
+        let node = doc.tree.get(root).unwrap();
+        (root == doc.tree.body_id || node.creates_stacking_context())
+            && stacking_paint_order(&doc.tree, root, 1.0, 0.0, 0.0)
+                .iter()
+                .any(|e| e.node_id == raw(modal))
+    };
+    let claimed: Vec<RawNodeId> = [doc.tree.body_id, raw(scroller)]
+        .into_iter()
+        .filter(|&root| claims_modal(root))
+        .collect();
+    assert_eq!(
+        claimed,
+        vec![doc.tree.body_id],
+        "exactly one root paint asks owns the modal, and with no stacking \
+         context between it and the body that root is the body"
+    );
 }
 
 /// A text node is not a box, so it cannot be a positioned descendant, so it is
@@ -592,6 +629,520 @@ mod painted {
             0,
             "nothing is painted in the padding strip; ink here is the second, \
              un-transformed copy of the run, drawn at the border-box origin"
+        );
+    }
+}
+
+// ── #545: a fixed box is hoisted to its NEAREST ancestor stacking context ───
+//
+// A `position: fixed` box is viewport-*positioned*, not viewport-*stacked*. It
+// used to be pulled out to the body's sequence whatever lay between, so a
+// `z-index: 99` dismiss backdrop escaped a wrapper its `z-index: 100` panel
+// could not, and the two numbers were compared across stacking contexts — which
+// is what #324 exists to stop CSS never doing.
+//
+// Each fixture below is a popup under a wrapper, and the wrapper's style is the
+// only thing that varies. Two rules for choosing one, learned the hard way in
+// this repo: never give the wrapper `z-index: 0`, where the sort key decides
+// nothing and a broken hoist and a correct one agree; and for a dismissal
+// sample, never a point *inside* the popup's own panel, which both answers
+// cover.
+
+/// `body > wrapper > menu(position: relative) > { backdrop, panel > item }`.
+///
+/// The z-indexes are `DropdownMenu`'s own: the backdrop at 99 under the panel at
+/// 100, so a tap on an item runs the item and a tap anywhere else dismisses.
+/// Returns `(doc, wrapper, menu, backdrop, panel)`.
+fn popup_under(wrapper_style: &str) -> (RinchDocument, RawNodeId, RawNodeId, RawNodeId, RawNodeId) {
+    let mut doc = RinchDocument::new();
+    let body = doc.body();
+
+    let wrapper = doc.create_element("div");
+    doc.set_attribute(wrapper, "style", wrapper_style);
+    doc.append_child(body, wrapper);
+
+    let menu = doc.create_element("div");
+    doc.set_attribute(
+        menu,
+        "style",
+        "position: relative; width: 120px; height: 32px",
+    );
+    doc.append_child(wrapper, menu);
+
+    let backdrop = doc.create_element("div");
+    doc.set_attribute(
+        backdrop,
+        "style",
+        "position: fixed; top: 0; left: 0; right: 0; bottom: 0; z-index: 99",
+    );
+    doc.append_child(menu, backdrop);
+
+    let panel = doc.create_element("div");
+    doc.set_attribute(
+        panel,
+        "style",
+        "position: absolute; top: 32px; left: 0; width: 160px; height: 120px; z-index: 100",
+    );
+    doc.append_child(menu, panel);
+
+    doc.resolve_layout(800.0, 600.0);
+    (doc, raw(wrapper), raw(menu), raw(backdrop), raw(panel))
+}
+
+/// A point on the panel, which is at (0, 32) 160x120 inside the wrapper.
+const ON_PANEL: (f32, f32) = (80.0, 80.0);
+
+#[test]
+fn a_fixed_box_is_hoisted_no_further_than_its_nearest_stacking_context() {
+    let (doc, wrapper, menu, backdrop, panel) = popup_under(
+        "position: relative; opacity: 0.5; overflow: hidden; width: 400px; height: 300px",
+    );
+
+    assert_eq!(
+        ids(&body_order(&doc)),
+        vec![wrapper],
+        "the body's sequence holds the wrapper and nothing from inside it — the \
+         backdrop used to surface here, past a stacking context CSS says owns it"
+    );
+
+    let inner = stacking_paint_order(&doc.tree, wrapper, 1.0, 0.0, 0.0);
+    assert_eq!(
+        ids(&inner),
+        vec![menu, backdrop, panel],
+        "both boxes belong to the wrapper's sequence — the `position: relative` \
+         menu at z == 0, then backdrop (99) painted before panel (100), i.e. \
+         under it"
+    );
+}
+
+/// The consequence, read the other way: the tap that #317 lost.
+///
+/// This is the exact fault that made `position: fixed` unusable for a dismiss
+/// backdrop. Chromium answers the panel here (measured with `elementFromPoint`
+/// on the same CSS); before #545 rinch answered the backdrop, because the 99 had
+/// escaped to the body while the 100 stayed in the wrapper.
+#[test]
+fn a_tap_on_the_panel_beats_the_fixed_backdrop_under_an_opacity_wrapper() {
+    let (doc, _, _, _, panel) = popup_under(
+        "position: relative; opacity: 0.5; overflow: hidden; width: 400px; height: 300px",
+    );
+    let (x, y) = ON_PANEL;
+    assert_eq!(
+        resolve(&doc.tree, doc.tree.body_id, 0.0, 0.0, x, y),
+        Some(panel),
+    );
+}
+
+/// The same, with the wrapper's context spelled by an explicit `z-index`
+/// instead — and deliberately **not** `z-index: 0`, which is the fixed point
+/// here: at 0 the wrapper sorts identically to the body's other `z == 0` content
+/// and a backdrop that wrongly escaped would land at 99 above it either way, so
+/// the sample could not tell a fixed hoist from a correct one.
+#[test]
+fn a_tap_on_the_panel_beats_the_fixed_backdrop_under_a_z_index_wrapper() {
+    let (doc, _, _, _, panel) = popup_under(
+        "position: relative; z-index: 1; overflow: hidden; width: 400px; height: 300px",
+    );
+    let (x, y) = ON_PANEL;
+    assert_eq!(
+        resolve(&doc.tree, doc.tree.body_id, 0.0, 0.0, x, y),
+        Some(panel),
+    );
+}
+
+/// The other direction, and the one that hurts in practice: a wrapper whose own
+/// `z` is **above** the backdrop's 99 — `Modal` (`z-index: 201`), `Drawer`
+/// (201), `Notification` (300). A backdrop hoisted to the body at 99 sits
+/// *under* the whole wrapper, so a tap anywhere inside it — the ordinary "click
+/// somewhere else to dismiss" — reached nothing at all and the popup stayed open.
+///
+/// Sampled inside the wrapper and clear of the panel, which is where the two
+/// behaviours differ; a point on the panel is the fixed point both cover.
+#[test]
+fn a_tap_inside_a_high_z_wrapper_still_reaches_the_dismiss_backdrop() {
+    let (doc, _, _, backdrop, _) = popup_under(
+        "position: relative; z-index: 201; overflow-y: auto; width: 400px; height: 300px",
+    );
+    assert_eq!(
+        resolve(&doc.tree, doc.tree.body_id, 0.0, 0.0, 300.0, 250.0),
+        Some(backdrop),
+        "inside the wrapper and clear of the panel: the dismiss region must be \
+         reachable, or a popup inside a Modal can never be dismissed"
+    );
+}
+
+/// `body > clipper(overflow: hidden; z-index: 1) > modal(position: fixed)`,
+/// with the clipper scrolled so the test is not sitting on the scroll-0 fixed
+/// point. The modal is at (300, 300) 200x200 — entirely outside the clipper.
+fn fixed_inside_a_clipping_context() -> (RinchDocument, RawNodeId, RawNodeId, RawNodeId) {
+    let mut doc = RinchDocument::new();
+    let body = doc.body();
+
+    let clipper = doc.create_element("div");
+    doc.set_attribute(
+        clipper,
+        "style",
+        "position: relative; z-index: 1; overflow: hidden; width: 200px; height: 200px",
+    );
+    doc.append_child(body, clipper);
+
+    let tall = doc.create_element("div");
+    doc.set_attribute(
+        tall,
+        "style",
+        "width: 10px; height: 800px; background-color: rgb(0, 0, 255)",
+    );
+    doc.append_child(clipper, tall);
+
+    let modal = doc.create_element("div");
+    doc.set_attribute(
+        modal,
+        "style",
+        "position: fixed; left: 300px; top: 300px; width: 200px; height: 200px; \
+         background-color: rgb(0, 200, 0)",
+    );
+    doc.append_child(clipper, modal);
+
+    // Sorts *after* the fixed modal (z 5 against its z 0), so it is the entry
+    // that proves the lifted bracket was put back: it is an absolute whose chain
+    // is empty — the collecting root's own clip is never a chain link — so the
+    // bracket is the only thing that can clip it.
+    let after = doc.create_element("div");
+    doc.set_attribute(
+        after,
+        "style",
+        "position: absolute; left: 0; top: 100px; width: 600px; height: 20px; \
+         z-index: 5; background-color: rgb(255, 0, 255)",
+    );
+    doc.append_child(clipper, after);
+
+    doc.resolve_layout(800.0, 600.0);
+    doc.tree.nodes[raw(clipper)].scroll_offset = (0.0, 50.0);
+    (doc, raw(clipper), raw(tall), raw(modal))
+}
+
+/// A fixed box is not clipped by the stacking context that owns it — the
+/// context is not its containing block.
+///
+/// This is #324 stage B's documented "Known gap" becoming live: the collecting
+/// root's clip is a paint-time *bracket* around its whole sequence rather than
+/// part of each entry's chain, and a fixed entry only ever landed at the body,
+/// where its bracket is the viewport. Now that it can land under a clipper, the
+/// bracket has to be lifted for it. Chromium answers the modal here; with the
+/// gap open, rinch answered nothing at all.
+#[test]
+fn a_fixed_box_escapes_the_bounds_gate_of_the_context_that_owns_it() {
+    let (doc, clipper, tall, modal) = fixed_inside_a_clipping_context();
+    let after = doc.tree.get(clipper).unwrap().children[2];
+
+    assert_eq!(
+        stacking_paint_order(&doc.tree, clipper, 1.0, 0.0, 0.0)
+            .iter()
+            .map(|e| (e.node_id, e.clips.len()))
+            .collect::<Vec<_>>(),
+        vec![(tall, 0), (modal, 0), (after, 0)],
+        "the clipper owns the modal, and imposes no chain link on it — its own \
+         clip is the bracket paint opens, which is what has to be lifted"
+    );
+    assert_eq!(
+        resolve(&doc.tree, doc.tree.body_id, 0.0, 0.0, 400.0, 400.0),
+        Some(modal),
+        "a point on the modal and far outside the clipper still resolves to it"
+    );
+
+    // Not vacuous: a point on neither answers the body, so the assertion above
+    // is about this box and not about the walk answering `modal` for anything.
+    assert_eq!(
+        resolve(&doc.tree, doc.tree.body_id, 0.0, 0.0, 600.0, 100.0),
+        Some(doc.tree.body_id),
+    );
+}
+
+/// The forward reading of the same two rules: pixels.
+///
+/// The hit-test assertions above would all pass against a fix applied only to
+/// hit testing, which would be a box drawn somewhere the taps do not go — the
+/// exact drift #324 stages A and B existed to end. These are here so that
+/// cannot ship.
+mod painted_fixed {
+    use super::*;
+    use rinch_dom::paint::skia_painter::TinySkiaPainter;
+
+    const BACKDROP: [u8; 4] = [255, 0, 0, 255];
+    const PANEL: [u8; 4] = [0, 0, 255, 255];
+    const MODAL: [u8; 4] = [0, 200, 0, 255];
+    const AFTER: [u8; 4] = [255, 0, 255, 255];
+
+    fn paint(doc: &mut RinchDocument) -> TinySkiaPainter {
+        let mut painter = TinySkiaPainter::new(800, 600);
+        let mut layout_cx: parley::LayoutContext<Brush> = parley::LayoutContext::new();
+        rinch_dom::paint::paint_document(
+            &doc.tree,
+            &mut painter,
+            1.0,
+            (800.0, 600.0),
+            &mut doc.font_cx,
+            &mut layout_cx,
+        );
+        painter
+    }
+
+    fn pixel_at(painter: &TinySkiaPainter, x: u32, y: u32) -> [u8; 4] {
+        let idx = ((y * painter.width() + x) * 4) as usize;
+        let d = painter.pixels();
+        [d[idx], d[idx + 1], d[idx + 2], d[idx + 3]]
+    }
+
+    /// `body > wrapper(z-index: 1) > menu > { backdrop(fixed, 99), panel(100) }`,
+    /// with both overlays opaque so the comparison is exact — an `opacity`
+    /// wrapper would blend and make the assertion about arithmetic instead of
+    /// order.
+    fn opaque_popup() -> RinchDocument {
+        let mut doc = RinchDocument::new();
+        let body = doc.body();
+
+        let wrapper = doc.create_element("div");
+        doc.set_attribute(
+            wrapper,
+            "style",
+            "position: relative; z-index: 1; overflow: hidden; width: 400px; height: 300px",
+        );
+        doc.append_child(body, wrapper);
+
+        let menu = doc.create_element("div");
+        doc.set_attribute(
+            menu,
+            "style",
+            "position: relative; width: 120px; height: 32px",
+        );
+        doc.append_child(wrapper, menu);
+
+        let backdrop = doc.create_element("div");
+        doc.set_attribute(
+            backdrop,
+            "style",
+            "position: fixed; top: 0; left: 0; right: 0; bottom: 0; z-index: 99; \
+             background-color: rgb(255, 0, 0)",
+        );
+        doc.append_child(menu, backdrop);
+
+        let panel = doc.create_element("div");
+        doc.set_attribute(
+            panel,
+            "style",
+            "position: absolute; top: 32px; left: 0; width: 160px; height: 120px; \
+             z-index: 100; background-color: rgb(0, 0, 255)",
+        );
+        doc.append_child(menu, panel);
+
+        doc.resolve_layout(800.0, 600.0);
+        doc
+    }
+
+    /// The panel is drawn over the backdrop, because the `99` and the `100` are
+    /// in one sequence. Before #545 the backdrop escaped the wrapper to the body
+    /// and was painted over the panel — the menu was invisible as well as
+    /// untappable, the same pairing #324's own tests found.
+    #[test]
+    fn a_fixed_backdrop_is_drawn_under_the_panel_it_sits_with() {
+        let painter = paint(&mut opaque_popup());
+        assert_eq!(
+            pixel_at(&painter, 80, 80),
+            PANEL,
+            "a point on the panel shows the panel"
+        );
+        assert_eq!(
+            pixel_at(&painter, 300, 250),
+            BACKDROP,
+            "…and a point clear of it still shows the backdrop, so the panel is \
+             not simply covering everything"
+        );
+    }
+
+    /// A fixed box is painted outside the clip of the stacking context that owns
+    /// it. `paint_node` opens that clip as a bracket around the whole sequence,
+    /// so `paint_children_with_stacking` has to lift it for a fixed entry and put
+    /// the same shape back.
+    #[test]
+    fn a_fixed_box_is_drawn_outside_the_clip_of_the_context_that_owns_it() {
+        let (mut doc, ..) = fixed_inside_a_clipping_context();
+        let painter = paint(&mut doc);
+
+        assert_eq!(
+            pixel_at(&painter, 400, 400),
+            MODAL,
+            "the modal is drawn at its viewport position, 100px beyond the \
+             `overflow: hidden` box it lives in"
+        );
+        // The bracket is put back, not dropped. The `z-index: 5` box sorts
+        // after the modal, is 600px wide in a 200px-wide clipper, and has an
+        // empty clip chain — so the restored bracket is the only thing that can
+        // cut it off. Visible inside the clipper, gone outside it.
+        assert_eq!(
+            pixel_at(&painter, 100, 60),
+            AFTER,
+            "the later entry is drawn inside the clipper"
+        );
+        assert_ne!(
+            pixel_at(&painter, 400, 60),
+            AFTER,
+            "…and cut off at the clipper's edge, so the lifted bracket was \
+             restored before it painted"
+        );
+    }
+
+    /// A fixed box keeps the **body's** transform, not the transform of the
+    /// stacking context that now owns it.
+    ///
+    /// This is the coupling that makes the paint half more than a clip change.
+    /// `paint::compute_absolute_position_and_transform` — the shared answer to
+    /// "where is this box", behind `ClickContext`, the MCP `absolute` contract
+    /// and DevTools — deliberately drops every ancestor transform for a fixed
+    /// box and seeds only the body's. Before #545 the two agreed for free,
+    /// because a fixed box only ever painted in the body's sequence. Now that it
+    /// can paint under a transformed root, `paint_children_with_stacking` has to
+    /// keep handing it the body's transform or paint and every coordinate
+    /// consumer disagree about the same box.
+    ///
+    /// **This is not what a browser does.** Chromium *contains* a fixed box in a
+    /// transformed ancestor — position, clip and transform together — and
+    /// answers `BODY` for the point below (measured with `elementFromPoint`).
+    /// rinch models no containment at all: `out_of_flow::out_of_flow_kind`
+    /// answers "the viewport" for every fixed box, so it was already wrong here
+    /// before #545 and is exactly as wrong after. What this pins is that it is
+    /// wrong *consistently* — the alternative, letting paint follow the
+    /// transform while hit testing does not, is the drift #324 stages A and B
+    /// exist to prevent. Containment is tracked separately, with #386 and #415.
+    #[test]
+    fn a_fixed_box_under_a_transformed_context_is_painted_where_it_is_reported() {
+        let mut doc = RinchDocument::new();
+        let body = doc.body();
+
+        let moved = doc.create_element("div");
+        doc.set_attribute(
+            moved,
+            "style",
+            "position: relative; z-index: 1; transform: translate(120px, 90px); \
+             width: 200px; height: 200px",
+        );
+        doc.append_child(body, moved);
+
+        let modal = doc.create_element("div");
+        doc.set_attribute(
+            modal,
+            "style",
+            "position: fixed; left: 300px; top: 300px; width: 200px; height: 200px; \
+             background-color: rgb(0, 200, 0)",
+        );
+        doc.append_child(moved, modal);
+
+        doc.resolve_layout(800.0, 600.0);
+
+        let (rx, ry, _) =
+            rinch_dom::paint::compute_absolute_position_and_transform(&doc.tree, raw(modal), 1.0);
+        assert_eq!(
+            (rx, ry),
+            (300.0, 300.0),
+            "the shared position answer is the viewport one, transform dropped"
+        );
+
+        let painter = paint(&mut doc);
+        assert_eq!(
+            pixel_at(&painter, 400, 400),
+            MODAL,
+            "and paint puts it there too — not 120x90 further on, which is where \
+             the wrapper's transform would have carried it"
+        );
+        assert_ne!(
+            pixel_at(&painter, 520, 490),
+            MODAL,
+            "…which is that translated position, and must be empty"
+        );
+    }
+
+    /// **Known deviation (#549), pinned so it is a decision and not a surprise:**
+    /// a fixed box escapes the clip of the stacking context that owns it, but
+    /// **not** the clips that context was itself hoisted past.
+    ///
+    /// `plain clipper > SC > fixed`. The fixed box is hoisted to the SC and its
+    /// own entry chain is empty — but the *SC's* entry carries the clipper as a
+    /// chain link, and paint pushes that chain around the SC's whole subtree.
+    /// The lift in `paint_children_with_stacking` removes one clip, the
+    /// collecting root's own bracket, and nothing above it; unwinding the rest
+    /// would mean tracking every open layer up to the body, which paint does not
+    /// do.
+    ///
+    /// So the box is drawn nowhere and tapped nowhere. **Chromium paints it**
+    /// (measured), and so did rinch before #545 — a fixed box that reached the
+    /// body escaped every clip on the way. Paint and hit testing agree here, so
+    /// this is a consistent deviation and not the drift #324 exists to end, and
+    /// nothing in-tree has the shape. It is still a regression, and the fix is
+    /// architectural: tracked in #549 with #386 and #415.
+    ///
+    /// If this test starts failing because the box is painted, that is #549
+    /// being fixed — invert it, do not delete it.
+    #[test]
+    fn a_fixed_box_does_not_escape_clips_above_the_context_that_owns_it() {
+        let mut doc = RinchDocument::new();
+        let body = doc.body();
+
+        // Not a stacking context: `overflow` stopped creating one in stage B.
+        let clipper = doc.create_element("div");
+        doc.set_attribute(
+            clipper,
+            "style",
+            "overflow: hidden; width: 200px; height: 200px",
+        );
+        doc.append_child(body, clipper);
+
+        // …but this is, so it is what owns the fixed box.
+        let owner = doc.create_element("div");
+        doc.set_attribute(
+            owner,
+            "style",
+            "position: relative; z-index: 1; width: 50px; height: 50px",
+        );
+        doc.append_child(clipper, owner);
+
+        let modal = doc.create_element("div");
+        doc.set_attribute(
+            modal,
+            "style",
+            "position: fixed; left: 300px; top: 300px; width: 200px; height: 200px; \
+             background-color: rgb(0, 200, 0)",
+        );
+        doc.append_child(owner, modal);
+
+        doc.resolve_layout(800.0, 600.0);
+
+        // The owner is hoisted to the body carrying the clipper in its chain,
+        // which is the mechanism — stated as an assertion so a change in it
+        // fails here rather than only in the pixels below.
+        let owner_entry = body_order(&doc)
+            .iter()
+            .find(|e| e.node_id == raw(owner))
+            .copied()
+            .expect("the owner is an entry of the body's sequence");
+        assert_eq!(
+            owner_entry.clips.len(),
+            1,
+            "the owner was hoisted past the clipper, so its entry carries it"
+        );
+        assert_eq!(
+            stacking_paint_order(&doc.tree, raw(owner), 1.0, 0.0, 0.0)
+                .iter()
+                .map(|e| (e.node_id, e.clips.len()))
+                .collect::<Vec<_>>(),
+            vec![(raw(modal), 0)],
+            "…while the fixed box's own chain is empty, which is why the doc's \
+             \"empty clip chain\" must not be read as \"escapes every clip\""
+        );
+
+        assert_eq!(
+            painted_fixed::pixel_at(&painted_fixed::paint(&mut doc), 400, 400),
+            [0, 0, 0, 0],
+            "today the clipper the owner was hoisted past still cuts the box \
+             away — Chromium paints it here (#549)"
         );
     }
 }
