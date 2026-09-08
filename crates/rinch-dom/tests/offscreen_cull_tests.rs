@@ -354,3 +354,67 @@ fn a_padded_ifc_roots_text_does_not_escape_through_an_elided_clip() {
         "the text starts at the clip's right edge, so every pixel of it is cut"
     );
 }
+
+/// `paint_subtree` paints into a pixmap of its own, sized to one element, and
+/// never sets the render target. So `paint_document` has to **clear** it rather
+/// than leave it behind: otherwise the drag-ghost snapshot is culled against
+/// whatever window the previous frame happened to have.
+///
+/// The fixture is a subtree whose root sits at the origin — where
+/// `paint_subtree` puts it — with a descendant far enough below to be past the
+/// last frame's cull rect. Correct output paints it; a stale target does not.
+///
+/// Deleting the clear is otherwise **silent**: it kills nothing else in the
+/// crate, because `paint_document` re-sets the target on every call and
+/// `paint_subtree` is the only other entry point into `paint_node`.
+#[test]
+fn paint_subtree_does_not_cull_against_the_last_frames_window() {
+    let mut doc = RinchDocument::new();
+    let body = doc.body();
+
+    // In flow, both of them: an out-of-flow descendant would be hoisted into the
+    // body's stacking sequence and `paint_subtree` would not draw it at all,
+    // which would make this pass for the wrong reason.
+    let root = doc.create_element("div");
+    doc.set_attribute(root, "style", "width: 200px; height: 1000px");
+    doc.append_child(body, root);
+
+    // A spacer rather than a margin: the child's top margin would collapse into
+    // its parent's and move the parent instead, leaving the box at the top.
+    let spacer = doc.create_element("div");
+    doc.set_attribute(spacer, "style", "width: 100px; height: 900px");
+    doc.append_child(root, spacer);
+
+    let far = doc.create_element("div");
+    doc.set_attribute(
+        far,
+        "style",
+        "width: 100px; height: 40px; background-color: rgb(0, 0, 255)",
+    );
+    doc.append_child(root, far);
+
+    doc.resolve_layout(VW, VH);
+
+    // A full document paint first, exactly as a real frame would run — this is
+    // what leaves a 400x300 target behind if it is not cleared.
+    let mut frame = painter(1.0);
+    paint(&mut doc, &mut frame, 1.0);
+
+    // Then the snapshot, which has no window of its own.
+    let mut snapshot = TinySkiaPainter::new(200, 1000);
+    let mut layout_cx: parley::LayoutContext<Brush> = parley::LayoutContext::new();
+    rinch_dom::paint::paint_subtree(
+        &doc.tree,
+        &mut snapshot,
+        root.0,
+        1.0,
+        &mut doc.font_cx,
+        &mut layout_cx,
+    );
+
+    assert!(
+        ink(&snapshot, 10, 90, 905, 935) > 0,
+        "a subtree snapshot paints its whole subtree; the window the last frame \
+         used has nothing to do with the pixmap this one draws into"
+    );
+}

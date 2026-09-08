@@ -542,3 +542,42 @@ fn a_childs_shadow_reaching_past_the_box_keeps_the_clip() {
         "the child fits, its shadow does not, and the clip is what removes it"
     );
 }
+
+/// **Pinning a guard, not fixing a defect.** `clip_cuts_nothing` answers
+/// `false` for `Extent::Unknown` as well as for `Extent::Escapes`, and the two
+/// arms were pinned as one — a mutant flipping both is killed by its `Escapes`
+/// half alone, so nothing stood between the `Unknown` half and green.
+///
+/// `Unknown` has exactly one producer: a `position: sticky` descendant, whose
+/// painted position `paint_node` derives by walking *up* to the nearest scroll
+/// ancestor, so the subtree does not contain the answer. Here that descendant
+/// fits its container's box, so a fit test that read `Unknown` as "fits" would
+/// elide the clip.
+///
+/// **No pixel divergence has been constructed for that mutant, and this test
+/// does not claim one.** A sticky box creates a stacking context, so it is
+/// hoisted and carries its clipping ancestors in its own #324 clip chain — the
+/// chain re-applies the clip the bracket would have applied, which is very
+/// likely why the elision is invisible. Two answers to one question agreeing
+/// today is not a reason to let one of them drift: the guard says a
+/// not-knowing is never a fit, and this is what says so.
+#[test]
+fn a_sticky_descendant_keeps_the_clip() {
+    let c = count_doc(
+        |doc| {
+            let body = doc.body();
+            let clipper = div(doc, body, "width: 200px; height: 200px; overflow: hidden");
+            div(
+                doc,
+                clipper,
+                "position: sticky; top: 0px; width: 100px; height: 40px",
+            );
+        },
+        1.0,
+    );
+    assert_eq!(
+        c.clips, 2,
+        "the clipper's own bracket, plus the clip the hoisted sticky entry \
+         carries in its chain — a not-knowing is never a fit"
+    );
+}

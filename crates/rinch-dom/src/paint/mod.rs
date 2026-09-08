@@ -1422,6 +1422,17 @@ fn paint_node(
     // the cheaper skip-draw path, because that path pushes no clip: its
     // non-hoisted children would then paint *unclipped*, which trades a rare
     // missing box for a rare escaping one.
+    //
+    // **What that costs, since it is not free and the headline number does not
+    // show it.** Every off-window stacking context now paints in full. For a
+    // transformed or z-indexed one that is nearly free — tiny-skia discards
+    // fills that land off the surface — but an `opacity < 1` one allocates and
+    // composites a whole-surface pixmap. Measured on three full-screen
+    // `opacity: 0.5` sheets parked below the fold at 1080x2460: main 39.1ms,
+    // this 26.7ms, and 0.8ms if the guard is removed. The cull's win is largely
+    // handed back on exactly that shape. Narrowing the gate with a
+    // `clips_overflow()` term would recover the non-clipping half and is
+    // tracked separately rather than taken here.
     let may_own_hoisted_entries = !node.children.is_empty() && node.creates_stacking_context();
     if node_outside_dirty && !may_own_hoisted_entries {
         if node.clips_overflow() || node.children.is_empty() {

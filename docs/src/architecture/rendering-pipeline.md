@@ -258,8 +258,18 @@ Current and planned improvements to the rendering pipeline:
 - **Text caching** - Glyph atlas for repeated text (planned)
 
 Two things the first two do **not** do, because both would be visible bugs rather than
-optimisations. Neither culling nor elision applies to a `position: fixed` box: it is painted in
-viewport space from its nearest stacking-context ancestor's sequence, so that ancestor's own box
-says nothing about whether it is on screen. And the cull tests a box's layout rect against the
-window grown by a margin, not against the window itself, because a `box-shadow`, an `outline` or
-a text run wider than its own box all put ink outside the rect being tested.
+optimisations.
+
+**Neither an ancestor's culling nor its elision can remove a `position: fixed` descendant.** A
+fixed box is painted in viewport space, from the sequence of its nearest stacking-context
+ancestor, so *that ancestor's* box says nothing about whether the fixed box is on screen — an
+off-window clipping stacking context is therefore not pruned, and a clip whose subtree holds a
+fixed box is never elided. Note the shape of that claim: it is about what an ancestor may
+conclude, not about the fixed box itself. A fixed box is culled and elided on its own terms like
+any other — one covering the window has its own clip elided, one 600px below the window is
+culled — and both are correct, because in viewport space its own rect is the whole truth about
+where it lands.
+
+**And the cull tests a box's layout rect against the window grown by a margin**, not against the
+window itself, because a `box-shadow`, an `outline` or a text run wider than its own box all put
+ink outside the rect being tested.
