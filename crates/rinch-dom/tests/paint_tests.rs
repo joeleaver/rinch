@@ -3023,6 +3023,14 @@ mod opacity_layer_bounds {
     /// was narrowed to the intervening `overflow: hidden` box by
     /// `Extent::clipped_to` on the way back up, and the whole layer came back as
     /// the root's own 100x100 — while paint drew the box at (600, 400).
+    ///
+    /// **Do not "simplify" this to a pixel assertion.** That is not a stylistic
+    /// preference: a software/GPU divergence is *structurally* invisible to the
+    /// entire pixel-oracle toolkit in this repo, because every one of those
+    /// oracles rasterizes with `TinySkiaPainter` and `TinySkiaPainter` is the
+    /// backend that ignores the value under test. The rect is the only oracle
+    /// that can see this class of bug, and a test that looked more like its
+    /// neighbours would silently stop testing anything.
     #[test]
     fn a_fixed_descendant_is_not_narrowed_by_a_clipper_it_escapes() {
         let mut doc = RinchDocument::new();
