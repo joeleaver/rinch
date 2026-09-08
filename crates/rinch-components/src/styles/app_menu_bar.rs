@@ -111,30 +111,36 @@ pub fn styles() -> String {
 
 /* Click-outside overlay.
 
-   `absolute` rather than `fixed`: this box is authored to sit *below* the menu
-   row (199 against its 201), and `z-index` only orders boxes inside one
-   stacking context. `fixed` hoists it out to the viewport's context, where its
-   199 no longer meant anything relative to a row nested inside the window
-   container — which BorderlessWindow made a stacking context via
-   `overflow: hidden`. The overlay then covered its own menus and swallowed
-   every entry click (#527). Its containing block is the menu layer, pinned at
-   the window's top-left; the below-titlebar layout passes an inline `top` to
-   climb back up to it.
+   `fixed`, so it covers the window whatever its containing block happens to be
+   — and there are three of them, one per menu-bar layout. That is the whole
+   reason this is not `absolute`: an absolutely positioned overlay is measured
+   from a box that starts wherever its layout put it, so the below-titlebar one
+   had to be handed a `top: -TITLEBAR_HEIGHT` to climb back to the window's top
+   edge. `build_overlay` in `rinch/src/menu/app_menu_bar.rs` takes no such
+   offset now, and must not grow one back: a viewport-anchored box that is also
+   offset lands off the top of the window.
 
-   **That deviation is gone.** #324 stage B took `overflow` out of
-   `Node::creates_stacking_context`, so the 199 and the 201 meet in one sequence
-   and `fixed` orders correctly too. Reverting to it is #324's stage C, along
-   with the DropdownMenu/Select backdrops (#317, the first site).
+   It sits *below* the menu row (199 against its 201), which works because
+   `z-index` orders boxes within one stacking context and both are now in one.
+   Between PR #534 and #324's stage C it was `absolute` for exactly that
+   reason: rinch used to make a stacking context of every clipping box, so
+   `BorderlessWindow`'s `overflow: hidden` container trapped the menus at its
+   own `z == 0` while a fixed overlay escaped to the viewport at 199 and covered
+   them — every entry click and every hover merely dismissed the menu (#527).
 
-   **The revert is two edits and they must land together**: this `position`, AND
-   `render_menu_bar_standalone`'s `top: -{top_offset}px` in
-   `rinch/src/menu/app_menu_bar.rs`, which exists purely to undo the
-   containing-block change `absolute` forces. Measured while landing stage B:
-   change only this one and a viewport-anchored overlay is shifted 36px off the
-   top of the window, so `the_below_titlebar_overlay_covers_the_whole_window`
-   fails; change both and all seven `menu::app_menu_bar` tests pass. */
+   Two fixes were needed to undo that, not one. #324 stage B took `overflow` out
+   of `Node::creates_stacking_context`; #545 then stopped a fixed box being
+   hoisted past its nearest ancestor stacking context out to the body, which is
+   what the inline layout needs — its `.rinch-app-menu-bar__inline-layer` parent
+   is `position: absolute; z-index: 200`, a stacking context of its own, so a
+   body-hoisted overlay's 199 would never have met the row's 201. It is not
+   arithmetic that changed: 199 against the layer's own 200 orders the same way,
+   which is why the tests were green throughout.
+
+   `menu::app_menu_bar`'s tests cover all three layouts against this
+   stylesheet. */
 .rinch-app-menu-bar__overlay {
-    position: absolute;
+    position: fixed;
     top: 0;
     left: 0;
     width: 100vw;

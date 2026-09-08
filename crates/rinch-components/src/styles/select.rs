@@ -137,18 +137,20 @@ pub fn styles() -> String {
     font-weight: 500;
 }
 
-/* Backdrop — the invisible overlay that catches outside clicks. Absolute, not
-   fixed, and below the panel's z-index: 300 — see the long note on
-   `.rinch-dropdown-menu__backdrop`, which had the same fault. A fixed box is
-   viewport-level in Rinch and outranks every non-fixed box regardless of
-   z-index, so a fixed backdrop here covered the option list and ate every
-   click on it. */
+/* Backdrop — the invisible overlay that catches outside clicks. Fixed, so it
+   covers the window rather than whatever clips the option list, and below the
+   panel's z-index: 300 so a click on an option still lands on the option. Same
+   shape as `.rinch-dropdown-menu__backdrop` and the same history: it was
+   `absolute` with ±100vw/100vh insets between PR #317 and #324's stage C,
+   because rinch used to make an overflow clip a stacking context and a fixed
+   backdrop then outranked the very list it sits under. See the long note there
+   for the mechanism. */
 .rinch-select__backdrop {
-    position: absolute;
-    top: -100vh;
-    right: -100vw;
-    bottom: -100vh;
-    left: -100vw;
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
     z-index: 299;
     display: none;
 }

@@ -200,9 +200,9 @@ The `0px` fallback matters: on a plain window there is no chrome and the
 variable is never set, so the overlay stays flush with the top.
 
 `Drawer`, `Modal`, and the top-anchored `Notification` positions already do
-this. `DropdownMenu`'s and `Select`'s click-catching backdrops are not fixed at
-all — they are `position: absolute` inside the popup's own root, so they never
-needed the inset, and a click beyond whatever clips the popup does not dismiss it.
+this. `DropdownMenu`'s and `Select`'s click-catching backdrops are fixed and
+deliberately do **not** — a dismiss region has to cover the chrome, or clicking
+the title bar would leave the menu open.
 
 ## Using Theme Variables in Your Styles
 

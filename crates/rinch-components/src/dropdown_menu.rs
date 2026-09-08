@@ -140,13 +140,11 @@ pub struct DropdownMenu {
     /// close — the menu's open state is owned by the caller via `opened_fn`,
     /// and the backdrop fires `on_close` so the caller can flip their signal.
     ///
-    /// The backdrop is a `position: absolute` box in the dropdown panel's own
-    /// stacking context (see the note on `.rinch-dropdown-menu__backdrop` in
-    /// `styles::dropdown_menu`), so it is clipped by whatever clips the panel:
-    /// inside a scroll container, a click outside *the container* does not
-    /// dismiss. It cannot be `position: fixed` — a fixed box is viewport-level
-    /// content in Rinch and would sit above the panel it is meant to sit
-    /// under, swallowing every click on the menu.
+    /// The backdrop is a `position: fixed` box covering the viewport (see the
+    /// note on `.rinch-dropdown-menu__backdrop` in `styles::dropdown_menu`), so
+    /// "outside" means the whole window — including the app's own fixed chrome
+    /// — and not merely the panel's clipping ancestor. It was `absolute` and
+    /// clipped to that ancestor between PR #317 and #324's stage C.
     pub close_on_click_outside: bool,
     /// Whether clicking an item closes the menu. Requires `on_close`; when
     /// true, item clicks fire `on_close` automatically so the caller doesn't
@@ -393,11 +391,11 @@ impl Component for DropdownMenu {
 
         // close_on_click_outside: render an invisible backdrop that fires
         // on_close when clicked. Sibling of the dropdown content inside the
-        // position:relative root, `position: absolute` so it shares the
-        // panel's stacking context, and a z-index below the panel's so option
+        // position:relative root, `position: fixed` so it covers the window
+        // whatever clips that root, and a z-index below the panel's so option
         // clicks still hit the items. Mirrors the Select pattern.
         //
-        // Absolute rather than fixed is load-bearing, not incidental — the
+        // Fixed rather than absolute is load-bearing, not incidental — the
         // long note above `.rinch-dropdown-menu__backdrop` says why.
         if self.close_on_click_outside && self.on_close.is_some() {
             let backdrop = rinch_macros::rsx! { div { class: "rinch-dropdown-menu__backdrop" } };

@@ -780,17 +780,14 @@ falls through to the app rather than being swallowed, and every chord matching
 the key is tried in registration order — so a dead duplicate cannot shadow a live
 one.
 
-**The Linux in-app bar's dismiss overlay is `position: absolute`, a sibling of
-the bar inside the menu layer** (#527). It is a full-window box at
-`z-index: 199` under the bar's `201`, and `z-index` orders boxes only *within*
-one stacking context. It used to be `position: fixed`, which hoists a box out to
-the viewport's context — fine while nothing between it and the body formed one,
-but `BorderlessWindow`'s container carries `overflow: hidden`, and rinch used to
-make a stacking context of every clipping box. The menus stayed trapped inside
-it at that container's own `z == 0` while the overlay escaped to `199` above
-them, so it covered its own menus and every item click merely dismissed the menu
-— and every *hover* with it, so hover-to-switch and submenu flyouts were dead
-too.
+**The Linux in-app bar's dismiss overlay is `position: fixed`**, a full-window
+box at `z-index: 199` under the bar's `201`. Fixed is what makes it independent
+of its parent: the three menu-bar layouts put it in three different containing
+blocks, one of which (`render_menu_bar_standalone`'s container) starts
+`top_offset` px down the window. **`build_overlay` therefore takes no offset,
+and must not grow one back** — an offset on a viewport-anchored box lands it off
+the top of the window, which
+`the_below_titlebar_overlay_covers_the_whole_window` fails on.
 
 That deviation is **gone** (#324 stage B): `overflow` creates no stacking
 context. Two things had to be true for the `fixed` spelling to order correctly
@@ -803,13 +800,17 @@ would have ordered them is 199 against the *layer's* 200 — same outcome, so th
 mistake was invisible.) With #545 the overlay is hoisted no further than the
 layer, and 199 and 201 land in one sequence for real — measured, not reasoned.
 
-The `absolute` spelling is kept for now — it also works, and reverting it is
-#324's stage C, together with `DropdownMenu`/`Select`'s backdrops (PR #317) and
-the `top: -top_offset` compensation `render_menu_bar_standalone` passes purely to
-undo the containing-block change `absolute` forces. **Those two edits must land together** — measured while
-landing stage B, and spelled out under **Stacking contexts and the clip chain**
-below. `menu::app_menu_bar`'s tests cover all three layouts and are green both
-ways round.
+It was `position: absolute` between #527 and #324's stage C, which is worth
+knowing because the reason was not geometry: `z-index` orders boxes only
+*within* one stacking context, `BorderlessWindow`'s container carries
+`overflow: hidden`, and rinch used to make a stacking context of every clipping
+box. The menus stayed trapped inside it at that container's own `z == 0` while a
+fixed overlay escaped to `199` above them, so it covered its own menus and every
+item click merely dismissed the menu — and every *hover* with it, so
+hover-to-switch and submenu flyouts were dead too. Stage B removed the cause,
+#545 made the ordering mean what the comments say, and stage C took the
+workaround out; `menu::app_menu_bar`'s tests cover all three layouts and were
+green at every step — which is why the mistake #545 corrected could hide in them.
 
 The non-borderless layout (`render_with_menu_bar`) was never broken — its
 wrapper carries no `overflow`, so nothing between the bar and the body formed a
@@ -1405,8 +1406,8 @@ paint opened around it — clipping was made a stacking question because the cli
 was implemented as a per-sequence bracket. That cost the same user-visible bug
 twice, because it made rinch compare two `z-index` values from different
 stacking contexts, which CSS never does: #317's `DropdownMenu`/`Select`
-backdrops and #534's menu-bar overlay, each fixed by respelling a `fixed`
-overlay as `absolute`.
+backdrops and #534's menu-bar overlay, each worked around by respelling a
+`fixed` overlay as `absolute`, and each reverted in stage C.
 
 Clipping is decoupled from stacking now. Every hoisted
 `stacking::PaintEntry` carries a **clip chain** — the clipping ancestors between
@@ -1519,16 +1520,25 @@ was already wrong before #545 and is exactly as wrong after; what #545 preserves
 is that it is wrong *consistently*, since paint keeps handing a fixed entry the
 body's transform. Tracked with #386 and #415.
 
-**When #324's stage C reverts the two workarounds**, the overlay's `position` and
-its compensating offset must move **together**. Measured: flipping
-`.rinch-app-menu-bar__overlay` back to `fixed` while leaving
-`render_menu_bar_standalone`'s `top: -top_offset` in place fails
-`the_below_titlebar_overlay_covers_the_whole_window` — the compensation then
-shifts a viewport-anchored overlay off the top of the window. Change both and all
-seven `menu::app_menu_bar` tests are green. With #545 in place that `fixed`
-overlay lands in `.rinch-app-menu-bar__inline-layer`'s own sequence at 199,
-beside the row's 201 — measured — so the "199 and 201 in one sequence" the menu
-bar's comments describe is then literally what happens.
+**Stage C reverted both workarounds.** `.rinch-dropdown-menu__backdrop`,
+`.rinch-select__backdrop` and `.rinch-app-menu-bar__overlay` are `position:
+fixed` again, and `build_overlay`'s compensating offset is gone with them. That
+buys back two behaviours, each pinned by a pair of tests in
+`popup_backdrop_hit_tests` — one asserting the behaviour, one asserting the
+`absolute` spelling did not have it: a tap **outside the popup's clipping
+ancestor** dismisses, and a tap on the **app's own fixed chrome** dismisses
+rather than being taken by the chrome.
+
+The overlay's `position` and its offset had to move **together**, and the test
+that says so fails from *both* sides: flipping only the `position` fails
+`the_below_titlebar_overlay_covers_the_whole_window` at the window's bottom edge,
+flipping only the offset fails the same test at the title bar. Stage C also
+needed **#545** as much as stage B — the reverted overlay lands in
+`.rinch-app-menu-bar__inline-layer`'s own sequence at 199 beside the row's 201,
+measured, so the "199 and 201 in one sequence" its comments describe is literally
+what happens. Hoisted to the body it would have sat at 199 against the *layer's*
+200, which orders the same way: every test would have stayed green with the
+comments' mechanism wrong.
 
 **Key files:**
 - `crates/rinch-dom/src/stacking.rs` — the paint sequence and the clip chain
@@ -1833,14 +1843,12 @@ div { style: "position: fixed; top: var(--rinch-window-top-inset, 0px); bottom: 
 ```
 
 `Drawer`, `Modal`, and the top-anchored `Notification` positions already do this.
-`DropdownMenu`'s and `Select`'s click-catching backdrops are **not** fixed — they
-are `position: absolute` inside the popup's own root (see the note on
-`.rinch-dropdown-menu__backdrop`), so the inset never applied to them, and a
-click outside whatever clips the popup does not dismiss it. Do **not** "fix"
-this by insetting the fixed containing block — that would break CSS semantics
-and make desktop diverge from rinch-web. The Linux in-app menu bar's dismiss
-overlay (`.rinch-app-menu-bar__overlay`) is `position: absolute` for the same
-family of reasons — see **Native Menus** above.
+`DropdownMenu`'s and `Select`'s click-catching backdrops, and the Linux in-app
+menu bar's dismiss overlay (`.rinch-app-menu-bar__overlay`), are fixed at
+`top: 0` and deliberately do **not** take the inset: a dismiss region has to
+cover the chrome, or clicking the title bar leaves the menu open. Do **not**
+"fix" an overlay of your own by insetting the fixed containing block — that
+would break CSS semantics and make desktop diverge from rinch-web.
 
 ## Transparent Windows
 

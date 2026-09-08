@@ -4608,13 +4608,16 @@ mod popup_backdrop_hit_tests {
     //!
     //! **#324 stage B ended that.** `overflow` creates no stacking context, so
     //! the backdrop's `99` and the panel's `100` meet in one sequence and `100`
-    //! wins — which is why the test below is called
-    //! `a_fixed_backdrop_no_longer_swallows_the_item_it_sits_under` and asserts
-    //! the opposite of what it used to.
+    //! wins — under **either** spelling, which
+    //! `the_absolute_spelling_orders_correctly_too` is here to keep true. Stage
+    //! C then took the backdrop back to `fixed`, because ordering was never the
+    //! only thing at stake: an absolute backdrop is clipped by whatever clips
+    //! the panel, so "outside the menu" shrank to "inside the panel's scroll
+    //! container". The last four tests are that difference, measured.
     //!
     //! These tests mount the real component under its real stylesheet, behind
     //! an `overflow: hidden` root — the shape of every app that has a scroll
-    //! container or a fixed-height shell — and tap an item.
+    //! container or a fixed-height shell — and tap it.
 
     use super::*;
     use std::cell::Cell;
@@ -4630,11 +4633,45 @@ mod popup_backdrop_hit_tests {
         app: RinchApp,
         /// The first item's node id, so a tap can be aimed at where it is.
         item: usize,
+        /// The clipping shell's node id, so a test can prove a sample point is
+        /// outside it rather than assert it from the style string.
+        shell: usize,
+        /// The chrome bar's node id, when the fixture mounts one.
+        chrome: Option<usize>,
         /// How many times the item's own `onclick` ran.
         item_clicks: Rc<Cell<usize>>,
         /// How many times the menu asked to be closed — by the backdrop, or by
         /// the item through `close_on_item_click`.
         closes: Rc<Cell<usize>>,
+        /// How many times the app's own chrome took a click, when the fixture
+        /// mounts any. Distinguishes "the chrome won the hit test" from "the
+        /// tap reached no handler at all", which look the same from `closes`.
+        chrome_clicks: Rc<Cell<usize>>,
+    }
+
+    /// What to mount around the menu.
+    #[derive(Clone, Copy)]
+    struct Fixture {
+        /// The clipping ancestor's inline style.
+        shell: &'static str,
+        /// A bar the app draws over its own content — a custom titlebar — as a
+        /// sibling of the shell, carrying its own click handler. `None` for an
+        /// app with no chrome of its own.
+        chrome: Option<&'static str>,
+        /// An inline `style` written onto the backdrop after the component has
+        /// built it, so a test can spell the backdrop's `position` itself
+        /// instead of taking the stylesheet's.
+        backdrop: Option<&'static str>,
+    }
+
+    impl Default for Fixture {
+        fn default() -> Self {
+            Self {
+                shell: SHELL_FULL,
+                chrome: None,
+                backdrop: None,
+            }
+        }
     }
 
     /// Mount an open `DropdownMenu` inside an `overflow: hidden` root.
@@ -4648,23 +4685,70 @@ mod popup_backdrop_hit_tests {
     /// `backdrop_override` is an inline `style` written onto the backdrop after
     /// the component has built it, so one test can put the old
     /// `position: fixed` spelling back and show what it did.
+    ///
+    /// **One item, deliberately, and a second would not buy what it looks like
+    /// it buys.** The usual cardinality-1 worry — that "ran the item under the
+    /// pointer" and "ran the panel's first child" are the same sentence — does
+    /// not apply, because no test here names item *indexing*; they name which
+    /// of the backdrop, the panel and the chrome answers a tap. Adding a decoy
+    /// item was tried and reverted: measured, the panel comes out
+    /// `display: block` with **zero height** and lays both children at the same
+    /// origin, so their boxes nest (`(0,36,90,58)` inside `(0,36,149,58)`) and
+    /// a "the decoy must not run" assertion would hold by geometry whatever the
+    /// dispatcher did. Give the items disjoint boxes first if you ever want
+    /// that assertion. (The panel losing its stylesheet `display: flex` is the
+    /// same whole-`style`-attribute rewrite #543 is filed for.)
     fn mount(backdrop_override: Option<&'static str>) -> Menu {
+        mount_fixture(Fixture {
+            backdrop: backdrop_override,
+            ..Default::default()
+        })
+    }
+
+    /// A clipping shell that fills the viewport — the common case, and the one
+    /// where "outside the shell" is not a place a click can land.
+    const SHELL_FULL: &str = "position: relative; overflow: hidden; width: 800px; height: 600px";
+
+    /// A clipping shell that does **not** fill the viewport: a sidebar, a table
+    /// cell, a panel. Here "outside the popup's clipping ancestor" is somewhere
+    /// a real click goes, which is the whole of what #317 gave up.
+    const SHELL_SMALL: &str = "position: relative; overflow: hidden; width: 400px; height: 300px";
+
+    /// #317's spelling of the backdrop, written back over the shipped one.
+    const ABSOLUTE_BACKDROP: &str = "display: block; position: absolute; \
+         top: -100vh; right: -100vw; bottom: -100vh; left: -100vw; z-index: 99";
+
+    /// An app's own chrome: a `position: fixed` titlebar across the top, with
+    /// no `z-index` of its own — which is what a hand-rolled one usually has.
+    const CHROME_BAR: &str =
+        "position: fixed; top: 0; left: 0; right: 0; height: 36px; background: #222";
+
+    /// The content shell under that chrome. It starts below the bar, so the
+    /// bar's strip is somewhere a click can land that the shell does not cover.
+    const SHELL_BELOW_CHROME: &str =
+        "position: relative; overflow: hidden; margin-top: 36px; width: 800px; height: 564px";
+
+    fn mount_fixture(fixture: Fixture) -> Menu {
         let item_clicks: Rc<Cell<usize>> = Rc::new(Cell::new(0));
         let closes: Rc<Cell<usize>> = Rc::new(Cell::new(0));
+        let chrome_clicks: Rc<Cell<usize>> = Rc::new(Cell::new(0));
         let item_id: Rc<Cell<Option<usize>>> = Rc::new(Cell::new(None));
+        let shell_id: Rc<Cell<Option<usize>>> = Rc::new(Cell::new(None));
+        let chrome_id: Rc<Cell<Option<usize>>> = Rc::new(Cell::new(None));
 
         let clicks_in = item_clicks.clone();
         let closes_in = closes.clone();
+        let chrome_in = chrome_clicks.clone();
         let item_id_in = item_id.clone();
+        let shell_id_in = shell_id.clone();
+        let chrome_id_in = chrome_id.clone();
 
         let mut app = RinchApp::new(move |scope: &mut RenderScope| {
-            // The app shell: a stacking context between the menu and the body,
+            // The app shell: a clipping box between the menu and the body,
             // which is what every scroll container and most app roots are.
             let shell = scope.create_element("div");
-            shell.set_attribute(
-                "style",
-                "position: relative; overflow: hidden; width: 800px; height: 600px",
-            );
+            shell.set_attribute("style", fixture.shell);
+            shell_id_in.set(Some(shell.node_id().0));
 
             let closes_cb = closes_in.clone();
             let props = DropdownMenu {
@@ -4690,7 +4774,22 @@ mod popup_backdrop_hit_tests {
             let menu = props.render(scope, &[target, dropdown]);
 
             shell.append_child(&menu);
-            shell
+
+            let Some(chrome_style) = fixture.chrome else {
+                return shell;
+            };
+            // With chrome the app has a root of its own — a plain, static,
+            // non-clipping box — holding the bar and the shell.
+            let root = scope.create_element("div");
+            let bar = scope.create_element("div");
+            bar.set_attribute("style", chrome_style);
+            chrome_id_in.set(Some(bar.node_id().0));
+            let chrome_cb = chrome_in.clone();
+            let rid = scope.register_handler(move || chrome_cb.set(chrome_cb.get() + 1));
+            bar.set_attribute("data-rid", &rid.0.to_string());
+            root.append_child(&bar);
+            root.append_child(&shell);
+            root
         });
 
         app.mount_component(VIEWPORT.0, VIEWPORT.1);
@@ -4705,7 +4804,7 @@ mod popup_backdrop_hit_tests {
         }
         app.resolve_and_repaint(VIEWPORT.0, VIEWPORT.1);
 
-        if let Some(style) = backdrop_override {
+        if let Some(style) = fixture.backdrop {
             let backdrop = find_backdrop(&app);
             {
                 let doc = app.doc.as_ref().unwrap();
@@ -4720,13 +4819,31 @@ mod popup_backdrop_hit_tests {
             item: item_id
                 .get()
                 .expect("the item's node id, captured at mount"),
+            shell: shell_id
+                .get()
+                .expect("the shell's node id, captured at mount"),
+            chrome: chrome_id.get(),
             app,
             item_clicks,
             closes,
+            chrome_clicks,
         }
     }
 
-    /// The one node carrying the backdrop's class. The component appends it
+    /// A node's painted border box as `(x0, y0, x1, y1)`, in the same logical
+    /// pixels [`tap`] takes.
+    fn box_of(app: &RinchApp, node_id: usize) -> (f32, f32, f32, f32) {
+        let doc = app.doc.as_ref().unwrap();
+        let d = doc.borrow();
+        let (x, y, w, h) = painted_element_box(&d.tree, node_id);
+        (x, y, x + w, y + h)
+    }
+
+    fn covers(b: (f32, f32, f32, f32), x: f32, y: f32) -> bool {
+        x >= b.0 && x < b.2 && y >= b.1 && y < b.3
+    }
+
+    /// The one node carrying `class`. The components append their backdrop
     /// last, but finding it by class says what is meant rather than relying on
     /// that.
     ///
@@ -4734,19 +4851,19 @@ mod popup_backdrop_hit_tests {
     /// its *occupied* count, not one past its highest index, so the moment
     /// anything in the tree is freed the backdrop can live past the end of
     /// that range and this would fail blaming the component.
-    fn find_backdrop(app: &RinchApp) -> usize {
+    fn find_by_class(app: &RinchApp, class: &str) -> usize {
         let doc = app.doc.as_ref().unwrap();
         let d = doc.borrow();
         d.tree
             .nodes
             .iter()
-            .find(|(_, n)| {
-                n.attributes
-                    .get("class")
-                    .is_some_and(|c| c.contains("rinch-dropdown-menu__backdrop"))
-            })
+            .find(|(_, n)| n.attributes.get("class").is_some_and(|c| c.contains(class)))
             .map(|(id, _)| id)
-            .expect("the menu renders a backdrop when close_on_click_outside is on")
+            .unwrap_or_else(|| panic!("no node carries the class {class}"))
+    }
+
+    fn find_backdrop(app: &RinchApp) -> usize {
+        find_by_class(app, "rinch-dropdown-menu__backdrop")
     }
 
     fn centre(app: &RinchApp, node_id: usize) -> (f32, f32) {
@@ -4828,26 +4945,19 @@ mod popup_backdrop_hit_tests {
         assert_eq!(menu.closes.get(), 1, "the backdrop caught it");
     }
 
-    /// A `position: fixed` backdrop now loses to the panel it sits under, which
-    /// is what CSS says and what #324 was filed for.
+    /// #317's `absolute` spelling still orders correctly, which is the pin that
+    /// **stage B**, not stage C's stylesheet, is what fixed the fault above.
     ///
-    /// **This assertion is the inverse of the one it replaces.** Until #324
-    /// stage B it read `item_clicks == 0` and documented the breakage as a
-    /// reason the backdrop had to be `absolute`: an `overflow: hidden` shell was
-    /// a stacking context purely because of its overflow, so a fixed backdrop
-    /// hoisted to the body had its `z-index: 99` compared against the *shell's*
-    /// place there and never against the panel's `100`. The two numbers now meet
-    /// in one sequence — `overflow` creates no stacking context — and 100 beats
-    /// 99.
-    ///
-    /// So this is the pin for the fix rather than for the workaround, and it is
-    /// what makes stage C (#317's backdrops going back to `fixed`, restoring
-    /// whole-viewport outside-click dismissal) safe to attempt.
+    /// It is the inverse of the assertion this test was born with. Until stage
+    /// B it read `item_clicks == 0` against the *fixed* spelling and documented
+    /// that breakage as the reason the backdrop had to be `absolute`; stage B
+    /// inverted it; stage C shipped `fixed`, at which point overriding with
+    /// `fixed` would only re-test the stylesheet. Written the other way round
+    /// it says something the shipped spelling cannot: whichever of the two an
+    /// app writes, the `99` and the `100` are compared with each other.
     #[test]
-    fn a_fixed_backdrop_no_longer_swallows_the_item_it_sits_under() {
-        let mut menu = mount(Some(
-            "display: block; position: fixed; top: 0; left: 0; right: 0; bottom: 0; z-index: 99",
-        ));
+    fn the_absolute_spelling_orders_correctly_too() {
+        let mut menu = mount(Some(ABSOLUTE_BACKDROP));
         let (x, y) = centre(&menu.app, menu.item);
 
         tap(&mut menu.app, x, y);
@@ -4865,28 +4975,274 @@ mod popup_backdrop_hit_tests {
         );
     }
 
-    /// The other half, with the fixed spelling: a tap that misses the panel is
-    /// still caught.
-    ///
-    /// What #317 gave up was the dismissal's *reach* — an `absolute` backdrop
-    /// is clipped by whatever clips the panel and a fixed one is not — but this
-    /// fixture cannot show that, and the comment in the body says why: the
-    /// shell is the whole viewport here, so there is no "outside the shell" to
-    /// aim at.
-    #[test]
-    fn a_fixed_backdrop_dismisses_from_outside_the_clipping_shell() {
-        let mut menu = mount(Some(
-            "display: block; position: fixed; top: 0; left: 0; right: 0; bottom: 0; z-index: 99",
-        ));
+    // ── What stage C buys back ───────────────────────────────────────────
+    //
+    // #317 narrowed outside-click dismissal from the whole viewport to the
+    // popup's clipping ancestor, and stopped a click on the app's own chrome
+    // dismissing. Both are behaviours, not tidiness, so both get a fixture that
+    // fails against the spelling stage C replaces — `ABSOLUTE_BACKDROP` is that
+    // spelling, written back over the shipped stylesheet, so the paired tests
+    // below are the measurement rather than a memory of one.
+    //
+    // Neither sample point may sit where the two spellings agree. A point
+    // *inside* the clipping shell is exactly that fixed point: an absolute
+    // backdrop covers it and a fixed one covers it, and the existing
+    // `a_tap_outside_the_panel_still_dismisses_and_runs_no_item` already pins
+    // it. Each fixture asserts its point is outside the shell before it asserts
+    // anything about dismissal.
 
-        // The shell is 800x600 and the viewport is the same, so "outside the
-        // shell" is not available by geometry; aim well clear of the panel
-        // instead, which is what the dismissal has to catch either way.
-        let (ix, iy) = centre(&menu.app, menu.item);
-        tap(&mut menu.app, ix, iy + 400.0);
+    /// A point outside the 400x300 shell and inside the 800x600 viewport.
+    const OUTSIDE_SHELL: (f32, f32) = (600.0, 500.0);
+
+    /// A point on the chrome bar's strip, which the shell starts below.
+    const ON_CHROME: (f32, f32) = (400.0, 18.0);
+
+    /// Assert the sample point is somewhere the two spellings can disagree:
+    /// outside the shell that clips the panel, but inside the backdrop's own
+    /// box either way. What is left to decide the tap is the clip chain and the
+    /// paint order — which is the thing under test — and not geometry.
+    fn assert_discriminating(menu: &Menu, x: f32, y: f32) {
+        let shell = box_of(&menu.app, menu.shell);
+        assert!(
+            !covers(shell, x, y),
+            "({x}, {y}) must be outside the clipping shell {shell:?}, or an \
+             absolute backdrop reaches it too and the fixture proves nothing"
+        );
+        assert!(
+            x < VIEWPORT.0 && y < VIEWPORT.1,
+            "({x}, {y}) must be inside the viewport"
+        );
+        let backdrop = box_of(&menu.app, find_backdrop(&menu.app));
+        assert!(
+            covers(backdrop, x, y),
+            "({x}, {y}) must be inside the backdrop's own box {backdrop:?} — \
+             both spellings cover it, so what the tap turns on is the clip \
+             chain and the paint order, not the box"
+        );
+    }
+
+    /// **Bought back, half one:** a tap beyond the popup's clipping ancestor
+    /// dismisses.
+    ///
+    /// #317's `absolute` backdrop is positioned inside the popup's own root and
+    /// so is clipped by whatever clips the panel — which is CSS, not a rinch
+    /// quirk: a scroller in an absolute box's containing-block chain does clip
+    /// it. The ±100vw/100vh insets made the *box* cover the viewport, and the
+    /// clip then took it back. For a dropdown in a sidebar, a table cell or any
+    /// panel smaller than the window, a click in the main content area left the
+    /// menu open.
+    #[test]
+    fn a_tap_outside_the_clipping_shell_dismisses() {
+        let mut menu = mount_fixture(Fixture {
+            shell: SHELL_SMALL,
+            ..Default::default()
+        });
+        let (x, y) = OUTSIDE_SHELL;
+        assert_discriminating(&menu, x, y);
+
+        tap(&mut menu.app, x, y);
 
         assert_eq!(menu.item_clicks.get(), 0, "nothing was aimed at");
-        assert_eq!(menu.closes.get(), 1, "the fixed backdrop caught it");
+        assert_eq!(
+            menu.closes.get(),
+            1,
+            "a fixed backdrop is not clipped by the shell, so the tap dismisses"
+        );
+    }
+
+    /// The other side of that measurement: #317's spelling, and the click that
+    /// went nowhere.
+    #[test]
+    fn the_absolute_spelling_did_not_dismiss_from_outside_the_shell() {
+        let mut menu = mount_fixture(Fixture {
+            shell: SHELL_SMALL,
+            backdrop: Some(ABSOLUTE_BACKDROP),
+            ..Default::default()
+        });
+        let (x, y) = OUTSIDE_SHELL;
+        assert_discriminating(&menu, x, y);
+
+        tap(&mut menu.app, x, y);
+
+        assert_eq!(
+            menu.closes.get(),
+            0,
+            "the absolute backdrop is clipped to the shell: this tap reached \
+             nothing and the menu stayed open. That is the cost stage C undoes"
+        );
+    }
+
+    /// **Bought back, half two:** a tap on the app's own `position: fixed`
+    /// chrome dismisses.
+    ///
+    /// #324 names this as the second thing #317 gave up.
+    ///
+    /// **What separates the two spellings here is the clip chain, not the
+    /// order** — measured, because the plausible story is the other one. Both
+    /// backdrops are entries of the *same* sequence and above the chrome in it:
+    /// a hand-rolled titlebar is a fixed box with no `z-index`, so it enters at
+    /// `z == 0`, and either backdrop enters at `99`. The `absolute` one carries
+    /// one clip — the shell's box, retained because the shell is in its
+    /// containing-block chain — and the chrome strip lies above the shell's
+    /// origin, so the chain rejects the probe. The `fixed` one carries an empty
+    /// chain and covers the viewport.
+    ///
+    /// So this pair does **not** pin `z-index` arithmetic, and a chrome at a
+    /// `z` above `99` would take the tap under either spelling. That is correct
+    /// CSS and deliberately not tested here.
+    #[test]
+    fn a_tap_on_the_apps_own_fixed_chrome_dismisses() {
+        let mut menu = mount_fixture(Fixture {
+            shell: SHELL_BELOW_CHROME,
+            chrome: Some(CHROME_BAR),
+            ..Default::default()
+        });
+        let (x, y) = ON_CHROME;
+        assert_discriminating(&menu, x, y);
+        let chrome = box_of(&menu.app, menu.chrome.expect("this fixture mounts chrome"));
+        assert!(
+            covers(chrome, x, y),
+            "({x}, {y}) must be on the chrome bar {chrome:?}, or this is just \
+             another outside-the-shell sample"
+        );
+
+        tap(&mut menu.app, x, y);
+
+        assert_eq!(
+            menu.closes.get(),
+            1,
+            "the backdrop's z-index: 99 is above the chrome's z: auto in one \
+             sequence, so the tap dismisses"
+        );
+        assert_eq!(
+            menu.chrome_clicks.get(),
+            0,
+            "…and the chrome does not also run: one tap, one handler"
+        );
+    }
+
+    /// The other side again: with #317's spelling the chrome took that tap and
+    /// the menu stayed open.
+    ///
+    /// `chrome_clicks` is what separates "the chrome took the tap" from "the
+    /// tap reached nothing at all", which `closes == 0` alone cannot: the tap
+    /// did reach a handler, just the wrong one.
+    #[test]
+    fn the_absolute_spelling_let_the_chrome_take_that_tap() {
+        let mut menu = mount_fixture(Fixture {
+            shell: SHELL_BELOW_CHROME,
+            chrome: Some(CHROME_BAR),
+            backdrop: Some(ABSOLUTE_BACKDROP),
+        });
+        let (x, y) = ON_CHROME;
+        assert_discriminating(&menu, x, y);
+
+        tap(&mut menu.app, x, y);
+
+        assert_eq!(menu.chrome_clicks.get(), 1, "the chrome took the tap");
+        assert_eq!(
+            menu.closes.get(),
+            0,
+            "…and the menu stayed open. That is the cost stage C undoes"
+        );
+    }
+
+    // ── The second copy of the same backdrop ─────────────────────────────
+
+    /// Mount a `Select` inside a clipping shell and open it the way a user
+    /// does — by tapping its trigger, so the component's own `opened` signal
+    /// (which is internal, not a prop) is driven through the real click path.
+    ///
+    /// Returns the app and the shell's id.
+    fn mount_select(shell_style: &'static str) -> (RinchApp, usize) {
+        use rinch_components::{Select, SelectOption};
+
+        let shell_id: Rc<Cell<Option<usize>>> = Rc::new(Cell::new(None));
+        let shell_id_in = shell_id.clone();
+
+        let mut app = RinchApp::new(move |scope: &mut RenderScope| {
+            let shell = scope.create_element("div");
+            shell.set_attribute("style", shell_style);
+            shell_id_in.set(Some(shell.node_id().0));
+
+            let select = Select {
+                placeholder: "Pick one".into(),
+                data: vec![
+                    SelectOption::new("a", "Alpha"),
+                    SelectOption::new("b", "Beta"),
+                ],
+                ..Default::default()
+            }
+            .render(scope, &[]);
+            shell.append_child(&select);
+            shell
+        });
+
+        app.mount_component(VIEWPORT.0, VIEWPORT.1);
+        {
+            let doc = app.doc.as_ref().unwrap();
+            let mut d = doc.borrow_mut();
+            d.load_css(&rinch_components::generate_component_css());
+            d.recompute_all_styles_full();
+        }
+        app.resolve_and_repaint(VIEWPORT.0, VIEWPORT.1);
+
+        let shell = shell_id.get().expect("the shell's node id");
+        (app, shell)
+    }
+
+    /// `aria-expanded` on the trigger, which the component keeps in step with
+    /// its `opened` signal — the observable the option list's visibility and
+    /// the backdrop's both derive from.
+    fn select_is_open(app: &RinchApp) -> bool {
+        let trigger = find_by_class(app, "rinch-select__input");
+        let doc = app.doc.as_ref().unwrap();
+        let d = doc.borrow();
+        d.tree
+            .get(trigger)
+            .and_then(|n| n.attributes.get("aria-expanded"))
+            .map(|v| v == "true")
+            .expect("the trigger carries aria-expanded")
+    }
+
+    /// `Select` renders a **second copy** of the same backdrop — its own
+    /// stylesheet rule, at `z-index: 299` under the option list's `300` — and
+    /// carried no hit-test coverage at all until stage C, so a regression in it
+    /// was silent. Same measurement as the dropdown's: opened, then tapped
+    /// beyond the shell that clips it.
+    #[test]
+    fn a_select_dismisses_from_outside_its_clipping_shell() {
+        let (mut app, shell) = mount_select(SHELL_SMALL);
+
+        let trigger = find_by_class(&app, "rinch-select__input");
+        let (tx, ty) = centre(&app, trigger);
+        tap(&mut app, tx, ty);
+        app.resolve_and_repaint(VIEWPORT.0, VIEWPORT.1);
+        assert!(select_is_open(&app), "the tap on the trigger opened it");
+
+        let (x, y) = OUTSIDE_SHELL;
+        assert!(
+            !covers(box_of(&app, shell), x, y),
+            "({x}, {y}) must be outside the shell that clips the option list, \
+             or the two spellings agree there and this proves nothing"
+        );
+        assert!(
+            covers(
+                box_of(&app, find_by_class(&app, "rinch-select__backdrop")),
+                x,
+                y
+            ),
+            "…and inside the backdrop's own box, so what decides the tap is the \
+             clip chain and not the geometry"
+        );
+
+        tap(&mut app, x, y);
+        app.resolve_and_repaint(VIEWPORT.0, VIEWPORT.1);
+
+        assert!(
+            !select_is_open(&app),
+            "a tap beyond the option list's clipping ancestor must close it"
+        );
     }
 }
 
