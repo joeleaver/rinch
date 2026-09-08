@@ -881,6 +881,30 @@ fn paint_children_with_stacking(
         return;
     };
 
+    // `root_clip` is a *declaration*, not a hint, and this is what makes a wrong
+    // one loud. Getting it wrong is silent otherwise: a `None` passed while a
+    // bracket is open reads exactly like a `None` passed with none open, the
+    // fixed-entry lift below simply does not happen, and the only symptom is a
+    // `position: fixed` box that stops being drawn. #540 arrived at that state
+    // by *clean* three-way merge — it was written before #545 added this
+    // parameter, `git` auto-merged its new bracket beside the `None` that used
+    // to be true, and nothing in a 620-test suite noticed.
+    //
+    // A node that clips has a bracket on the painter's stack: both arms of
+    // `paint_node` that push one derive it from the same `clip_shape` call this
+    // predicate asks about. `display: contents` is the exception rather than a
+    // counter-example — it generates no box, so there is nothing to clip and no
+    // bracket is pushed for it however its `overflow` computes.
+    debug_assert!(
+        root_clip.is_some()
+            || !node.clips_overflow()
+            || node.computed_style.display == DisplayValue::Contents,
+        "`root_clip` must name the bracket `paint_node` opened around this \
+         sequence: this node clips, so a bracket is on the painter's stack, and \
+         a `position: fixed` entry hoisted to this root would be swallowed by it \
+         instead of lifted out of it (#545)"
+    );
+
     // Content already drawn as inline boxes, via `paint_inline_layout`:
     // painting it again as a box would double it. See `drawn_by_its_ifc`.
     let already_drawn_inline = |child: &Node, _kind: PaintKind| drawn_by_its_ifc(tree, child);
@@ -1132,12 +1156,30 @@ fn paint_node(
             // `overflow_y` against `Hidden | Scroll | Auto` — one of the four
             // spellings stage A deleted, and the one that misses
             // `overflow: clip`. The radii come back and are dropped rather
-            // than pushed as a `RoundedRect`: this box is zero-area by the
-            // definition of the branch it sits in, and a rect enclosing
-            // nothing encloses nothing rounded either.
-            let clip = clip_shape(node, scale, x, y);
-            if let Some((clip_rect, _radii)) = clip {
-                painter.push_clip(Fill::NonZero, node_transform, &clip_rect.into());
+            // than pushed as a `RoundedRect`, and that is provable rather than
+            // merely reasonable: [`clip::border_radii`] resolves every corner
+            // against `min(width, height)`, which is `0` for every box that
+            // reaches this branch, so a collapsed box's radii are all zero by
+            // construction and the `RoundedRect` would be the same rect.
+            //
+            // #536 (paint clips to the border box where CSS clips to the
+            // padding box) cannot interact here either: `layout.height` *is*
+            // the border box, so a collapsed box carrying a `border-width`
+            // never reaches this branch at all.
+            //
+            // Built once and handed down, exactly like the full-size bracket's
+            // `root_clip` below, because opening a bracket and telling
+            // `paint_children_with_stacking` that none is open are the same
+            // mistake spelled two ways: it *pops* this bracket around a
+            // `position: fixed` entry and puts it back (#545), so a `None` here
+            // means the pop never happens and every fixed box hoisted to this
+            // root is swallowed by a clip that is not its containing block's.
+            // The `debug_assert!` at the top of that function is what makes the
+            // omission loud rather than a wrong render.
+            let root_clip: Option<PaintShape> =
+                clip_shape(node, scale, x, y).map(|(clip_rect, _radii)| clip_rect.into());
+            if let Some(shape) = &root_clip {
+                painter.push_clip(Fill::NonZero, node_transform, shape);
             }
 
             let scroll_x = node.scroll_offset.0 * scale;
@@ -1152,11 +1194,10 @@ fn paint_node(
                 font_cx,
                 layout_cx,
                 node_transform,
-                // No bracket is open: this branch returns before the node's own clip is pushed.
-                None,
+                root_clip.as_ref(),
             );
 
-            if clip.is_some() {
+            if root_clip.is_some() {
                 painter.pop_layer();
             }
 

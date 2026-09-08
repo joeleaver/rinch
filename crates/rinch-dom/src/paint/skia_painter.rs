@@ -635,27 +635,53 @@ impl Painter for TinySkiaPainter {
     fn push_clip(&mut self, fill: Fill, transform: Affine, shape: &PaintShape) {
         let previous_mask = self.clip_mask.take();
 
+        // Both give-up branches below share one rule, and it is the rule the old
+        // code broke twice: **whatever happens, this must not end up weaker than
+        // the clip that was already in force.** `.take()` above left
+        // `self.clip_mask` at `None`, which is not "no new clip" but "no clip at
+        // all", so a give-up did not merely fail to add a clip — it dropped the
+        // *enclosing* one for the whole subtree, and content painted straight
+        // through an ancestor's `overflow: hidden`. Measured, in review of #540,
+        // and worth stating because that is strictly worse than the symptom the
+        // bug was reported for: in a real software frame the outermost clip is
+        // the dirty-region clip (`RinchApp::build_pixels`), so `previous_mask`
+        // is `Some(..)` for every DOM clip in a partial repaint.
         let Some(path) = shape_to_path(shape) else {
-            // Can't create path — push a no-op layer so pop_layer still works
+            // Hardening, not a fix for anything reachable — say so rather than
+            // let it read as a closed defect. No `push_clip` call site in the
+            // workspace can produce a shape `shape_to_path` refuses: every one
+            // passes a `Rect` or a `RoundedRect`, `clip_shape` builds its rect
+            // from non-negative layout dimensions so it is never inverted, and
+            // `select.rs` clamps its own with `.max(text_x)`. Reaching here needs
+            // a geometrically inverted or non-finite rect. Degenerate rects,
+            // zero-radius circles and single-segment paths all *build* fine and
+            // land in the branch below instead — checked, not assumed.
+            //
+            // Keeping the enclosing mask is the answer that is right whatever
+            // the unbuildable shape meant. Blanking would be a guess about a
+            // shape we could not read, and this is the file where a guess about
+            // an unmappable region is already called out as the one way to get
+            // clipping wrong (see the intersect note below).
+            self.clip_mask = previous_mask.clone();
             self.layer_stack.push(LayerState::Clip { previous_mask });
             return;
         };
 
         let bounds = path.bounds();
         if bounds.width() < 0.001 || bounds.height() < 0.001 {
-            // Card K51: a degenerate clip path is not the same thing as no
-            // clip at all, and treating them alike is what let a `height: 0`
-            // `overflow: hidden` box (card J1's collapsed group) go on
-            // painting its rows at full size, in their old position, forever
-            // — the `previous_mask` restored here on `pop_layer` was `None`
-            // for that box (nothing above it was clipping), so this branch
-            // used to leave `self.clip_mask` at the `None` `.take()` set it
-            // to and paint every descendant unclipped. A path whose bounds
-            // round to nothing is the *strictest* clip there is, not the
-            // absence of one: nothing behind it should show, and `Mask::new`
-            // already hands back exactly that — a mask of zeroes — so
-            // installing it costs nothing an ordinary clip wasn't already
+            // Card K51: a degenerate clip path is not the same thing as no clip
+            // at all, and treating them alike is what let a `height: 0`
+            // `overflow: hidden` box (card J1's collapsed group) go on painting
+            // its rows at full size, in their old position, forever. A path
+            // whose bounds round to nothing is the *strictest* clip there is,
+            // not the absence of one: nothing behind it should show, and
+            // `Mask::new` already hands back exactly that — a mask of zeroes —
+            // so installing it costs nothing an ordinary clip wasn't already
             // going to pay a few lines below.
+            //
+            // This is also the branch that used to leak the enclosing clip, per
+            // the rule above; the all-zero mask is stricter than `previous_mask`
+            // by construction, so it settles both halves at once.
             let w = self.pixmap.width();
             let h = self.pixmap.height();
             let mask = Mask::new(w, h).expect("failed to create clip mask");
