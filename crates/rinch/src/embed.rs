@@ -270,7 +270,19 @@ impl RinchContext {
     /// The returned scene contains the full rinch UI and can be rendered
     /// to a texture via [`RinchOverlayRenderer`] or your own Vello setup.
     pub fn scene(&mut self) -> &Scene {
-        self.app.build_scene(self.scale_factor, self.size)
+        // `build_scene`'s size reaches `paint_document` as its `viewport`, which
+        // is in **logical** pixels — the unit every other caller passes, and the
+        // unit it had to settle on once card K43 gave the parameter a job. This
+        // one passed `self.size`, which is physical. That failed safe (an
+        // already-physical size multiplied by the scale is a rect at least as
+        // large as the real target, so the off-window cull and the
+        // covers-the-window clip elision simply never fired) but it failed safe
+        // by never optimising an embedded view at all, and it left one parameter
+        // with two meanings. `logical_size` is the same conversion `update`
+        // already uses.
+        let (lw, lh) = self.logical_size();
+        self.app
+            .build_scene(self.scale_factor, (lw as u32, lh as u32))
     }
 
     /// Notify rinch the window was resized.

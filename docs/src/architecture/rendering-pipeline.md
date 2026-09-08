@@ -135,7 +135,7 @@ A CPU-based rasterizer (the default when `gpu` is not enabled):
 - Direct pixel rendering to an RGBA buffer
 - Presented via softbuffer (no GPU required)
 - Dirty region caching — only changed areas are repainted
-- Subtree pruning — nodes outside the dirty region are skipped
+- Subtree pruning — nodes outside the dirty region, or outside the window, are skipped
 - Works in headless environments, CI, containers, SSH sessions
 
 ## Rendering Backends
@@ -243,8 +243,33 @@ Current and planned improvements to the rendering pipeline:
 
 - **Dirty region caching** (software) - Only repaint the rectangular area covering changed nodes
 - **Subtree pruning** (software) - Skip paint traversal for nodes outside the dirty region
+- **Viewport culling** (both backends) - Skip nodes that fall outside the window. This is the
+  dirty-region test against a second region that is always present, so it applies to a full
+  repaint too. It matters most on the GPU: Vello discards invisible paths in its coarse stage,
+  but only after flattening every one of them.
+- **Clip elision** (both backends) - A clip layer that provably removes no drawn pixel is not
+  pushed. Two cases qualify: a clip whose rect contains the whole render target (it can only
+  remove pixels that are discarded anyway) and a clip nothing inside reaches past. Both require
+  square corners — a rounded clip cuts the corners of its own box, so "nothing overflows" does
+  not mean "nothing is cut".
 - **Sensitivity flags** - Hover/active/focus only trigger repaints for nodes with matching CSS selectors
 - **Batched redraws** - Multiple state changes are batched into a single repaint via the frame clock (`AboutToWait`, above)
 - **Layer compositing** - GPU layers for transformed content (planned)
 - **Text caching** - Glyph atlas for repeated text (planned)
-- **Viewport culling** - Skip off-screen content (planned)
+
+Two things the first two do **not** do, because both would be visible bugs rather than
+optimisations.
+
+**Neither an ancestor's culling nor its elision can remove a `position: fixed` descendant.** A
+fixed box is painted in viewport space, from the sequence of its nearest stacking-context
+ancestor, so *that ancestor's* box says nothing about whether the fixed box is on screen — an
+off-window clipping stacking context is therefore not pruned, and a clip whose subtree holds a
+fixed box is never elided. Note the shape of that claim: it is about what an ancestor may
+conclude, not about the fixed box itself. A fixed box is culled and elided on its own terms like
+any other — one covering the window has its own clip elided, one 600px below the window is
+culled — and both are correct, because in viewport space its own rect is the whole truth about
+where it lands.
+
+**And the cull tests a box's layout rect against the window grown by a margin**, not against the
+window itself, because a `box-shadow`, an `outline` or a text run wider than its own box all put
+ink outside the rect being tested.
