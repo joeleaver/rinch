@@ -286,6 +286,21 @@ impl RinchDocument {
         if !self.tree.transitions_enabled {
             self.tree.transitions_enabled = true;
         }
+
+        // `RINCH_TREE_CHECK=1` prints every Taffy-tree inconsistency and every
+        // orphaned box after each layout (#476), so the invariant can be swept
+        // across a whole suite rather than only asserted where a fixture thought
+        // to ask. Debug builds only, and the env read is cached — release
+        // compiles the whole thing out.
+        #[cfg(debug_assertions)]
+        {
+            static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+            if *ENABLED.get_or_init(|| std::env::var("RINCH_TREE_CHECK").is_ok()) {
+                for line in self.taffy_tree_violations() {
+                    eprintln!("TREECHECK {line}");
+                }
+            }
+        }
     }
 
     /// Run the root Taffy compute with the Parley measure function.
@@ -1255,28 +1270,135 @@ impl RinchDocument {
         }
     }
 
-    /// Recursively collect the effective Taffy children for a node,
-    /// flattening any `display:contents` children so their grandchildren
-    /// appear directly in the parent's child list.
+    /// **THE** answer to "which Taffy nodes are this DOM node's Taffy
+    /// children" — the effective list, in DOM order, with every
+    /// `display: contents` child replaced by the boxes it flattens (#476).
     ///
-    fn collect_effective_taffy_children(
+    /// A `display: contents` element generates no box, so its own `taffy_id`
+    /// is never in the list and its grandchildren appear directly in the
+    /// ancestor's; the recursion handles wrappers nested to any depth. The
+    /// flattening key is `computed_style.display == Contents`, which selects
+    /// the same nodes [`crate::node::Node::inline_flow_role`] answers
+    /// `Contents` for — display before position, always (#366) — so for every
+    /// node that can carry a box the flattening and every IFC decision agree.
+    /// (`inline_flow_role` short-circuits on `is_comment()` *before* the
+    /// display match, so a comment declaring `display: contents` would be the
+    /// one node they classify differently. It cannot occur: a comment never
+    /// goes through style resolution, so its `computed_style.display` keeps
+    /// the default and its `taffy_id` is `None`.)
+    ///
+    /// **Every whole-list rebuild must derive its order from here.** There
+    /// are four, and they run in this order inside `resolve_layout`'s
+    /// `ifc_dirty` block:
+    ///
+    /// 1. [`Self::sync_display_contents`] — departed wrappers
+    /// 2. [`Self::sync_display_contents`] — affected parents
+    /// 3. `cleanup_anonymous_block_boxes` (`ifc.rs`) — parents that held an
+    ///    anonymous box last pass
+    /// 4. `create_anonymous_block_boxes` (`ifc.rs`) — mixed-content block
+    ///    containers, and the anonymous boxes it mints
+    ///
+    /// 3 and 4 used to rebuild from **raw `nodes[parent].children`**, which
+    /// cannot see the flattening, so they ran right after 1/2 and undid it:
+    /// they re-added the wrapper's own boxless Taffy node and dropped the
+    /// grandchildren it stands for. Because a flattened grandchild is not a
+    /// DOM child of the parent, nothing re-added it anywhere — it was left
+    /// **orphaned** in Taffy, laid out `0x0` and painted not at all, stably,
+    /// on every subsequent pass (#476). What was spared is exactly what
+    /// `create_anonymous_block_boxes` skips — `DisplayMode::Flex` — which is
+    /// why the whole `display: contents` test suite, written over flex
+    /// containers, stayed green. That is narrower than "only plain blocks":
+    /// `display: grid` maps to `DisplayMode::Block` (`style_resolution`), so
+    /// grid containers were affected too.
+    ///
+    /// The IFC **measure-leaf canonicalization** (`ifc.rs`, #466 PR2) is a
+    /// deliberate exception and not a fifth *caller*: it is selecting the
+    /// *out-of-flow* children of one IFC root, which is a different question,
+    /// and it reads the DOM rather than the attachment on purpose (#477). It
+    /// does its own contents flattening through `collect_contents_out_of_flow`.
+    ///
+    /// It **is** a fifth whole-list `set_children`, and #477 counts it as one:
+    /// it is the pass that heals a late-inserted out-of-flow child, which is
+    /// why that issue's forecast about #466 PR2 came out inverted. "Four" here
+    /// means four rebuilds that must take their **order** from this function —
+    /// not four places that replace a Taffy child list.
+    pub(crate) fn collect_effective_taffy_children(
         nodes: &slab::Slab<crate::node::Node>,
         node_id: usize,
     ) -> Vec<taffy::NodeId> {
         use crate::computed_style::values::DisplayValue;
 
         let mut result = Vec::new();
-        for &child_id in &nodes[node_id].children {
-            let is_contents = nodes[child_id].computed_style.display == DisplayValue::Contents;
-
-            if is_contents {
+        let Some(node) = nodes.get(node_id) else {
+            return result;
+        };
+        // `get`, not indexing, on both hops. The anonymous-box rebuilds this
+        // replaced skipped an id missing from the slab (`nodes.get(child_id)`),
+        // and routing them here must not turn that into a panic — a DOM
+        // `children` list holding a freed id is a bug, but a wrong picture beats
+        // a crash and this function is not where it should be discovered.
+        for &child_id in &node.children {
+            let Some(child) = nodes.get(child_id) else {
+                continue;
+            };
+            if child.computed_style.display == DisplayValue::Contents {
                 // Recursively flatten: add grandchildren directly
                 result.extend(Self::collect_effective_taffy_children(nodes, child_id));
-            } else if let Some(child_taffy) = nodes[child_id].taffy_id {
+            } else if let Some(child_taffy) = child.taffy_id {
                 result.push(child_taffy);
             }
         }
         result
+    }
+
+    /// Every node whose Taffy child list has to be rebuilt when `node_id`'s
+    /// **DOM** children change: `node_id` itself, then — if it is a
+    /// `display: contents` element, which generates no box — each contents
+    /// ancestor in turn and finally the nearest non-contents one, which is
+    /// where [`Self::collect_effective_taffy_children`] actually puts those
+    /// boxes.
+    ///
+    /// Returned **bottom-up**, and it must be consumed in that order: Taffy's
+    /// `set_children` removes each adopted child from its previous parent's
+    /// list, so rebuilding the deepest owner first and the flattening one last
+    /// leaves the boxes where the flattening says they belong.
+    ///
+    /// `create_anonymous_block_boxes` needs this because a contents wrapper is
+    /// `DisplayMode::Block` (`style_resolution`), so a wrapper holding
+    /// `text + block` is itself classified as mixed content and mints the
+    /// anonymous box — inside a boxless element. The net Taffy structure is
+    /// right, because the flattening lifts the anonymous box's contribution
+    /// into the ancestor's list; what is wrong is that `sync_display_contents`
+    /// built that ancestor's list *before* the anonymous box existed and
+    /// nothing re-runs it. Rebuilding only the wrapper then strands the
+    /// ancestor with an empty list and collapses it to `h = 0`.
+    ///
+    /// An anonymous box minted inside such a wrapper is itself `Contents`, on
+    /// purpose — `ComputedStyle::for_anonymous_box` propagates it (#319) — so
+    /// it too generates no box and this walk covers it by the same rule. That
+    /// leaves its inline run laid out as bare Taffy children rather than as one
+    /// IFC line, which is what happens today and what happened before #476:
+    /// two text nodes in such a wrapper stack as two blocks, measured
+    /// identically either side of that fix.
+    pub(crate) fn taffy_child_list_owners(
+        nodes: &slab::Slab<crate::node::Node>,
+        node_id: usize,
+    ) -> Vec<usize> {
+        use crate::computed_style::values::DisplayValue;
+
+        let mut owners = vec![node_id];
+        let mut current = node_id;
+        while nodes
+            .get(current)
+            .is_some_and(|n| n.computed_style.display == DisplayValue::Contents)
+        {
+            let Some(parent) = nodes[current].parent else {
+                break;
+            };
+            owners.push(parent);
+            current = parent;
+        }
+        owners
     }
 
     /// Invalidate the IFC that owns a node (if any).

@@ -566,19 +566,30 @@ impl RinchDocument {
             self.tree.nodes.remove(anon_id);
         }
 
-        // Rebuild Taffy children for all affected parents from DOM order
+        // Rebuild each affected parent's Taffy children through the one
+        // authority for that list — `collect_effective_taffy_children`, which
+        // flattens `display: contents` children (#476). Rebuilding from raw
+        // `nodes[parent].children` re-added a boxless wrapper's own Taffy node
+        // and dropped the grandchildren it stands for, orphaning them: they are
+        // not DOM children of this parent, so nothing put them back.
         for parent_id in parents_affected {
-            if let Some(parent_taffy) = self.tree.nodes.get(parent_id).and_then(|n| n.taffy_id) {
-                let dom_children: Vec<usize> = self.tree.nodes[parent_id].children.clone();
-                let _ = self.tree.taffy.set_children(parent_taffy, &[]);
-                for &child_id in &dom_children {
-                    if let Some(child_taffy) =
-                        self.tree.nodes.get(child_id).and_then(|n| n.taffy_id)
-                    {
-                        let _ = self.tree.taffy.add_child(parent_taffy, child_taffy);
-                    }
-                }
-            }
+            self.rebuild_effective_taffy_children(parent_id);
+        }
+    }
+
+    /// Rebuild `node_id`'s Taffy child list — and, when it is a boxless
+    /// `display: contents` element, the list of whatever actually holds its
+    /// boxes — from the one authority for that list (#476).
+    ///
+    /// See [`Self::collect_effective_taffy_children`] (the order) and
+    /// [`Self::taffy_child_list_owners`] (whose list, and why bottom-up).
+    fn rebuild_effective_taffy_children(&mut self, node_id: usize) {
+        for owner in Self::taffy_child_list_owners(&self.tree.nodes, node_id) {
+            let Some(owner_taffy) = self.tree.nodes.get(owner).and_then(|n| n.taffy_id) else {
+                continue;
+            };
+            let children = Self::collect_effective_taffy_children(&self.tree.nodes, owner);
+            let _ = self.tree.taffy.set_children(owner_taffy, &children);
         }
     }
 
@@ -828,39 +839,69 @@ impl RinchDocument {
                 self.tree.anonymous_block_boxes.push(anon_id);
             }
 
-            // Rebuild Taffy children for the parent and its anonymous boxes
-            // from DOM order. This avoids remove_child panics when Taffy
-            // children are out of sync with DOM (e.g., after IFC detached text nodes).
-            if let Some(parent_taffy) = self.tree.nodes.get(parent_id).and_then(|n| n.taffy_id) {
-                let _ = self.tree.taffy.set_children(parent_taffy, &[]);
-                let dom_children: Vec<usize> = self.tree.nodes[parent_id].children.clone();
-                for &child_id in &dom_children {
-                    if let Some(child_taffy) =
-                        self.tree.nodes.get(child_id).and_then(|n| n.taffy_id)
-                    {
-                        let _ = self.tree.taffy.add_child(parent_taffy, child_taffy);
-                    }
-                    // For anonymous boxes, also rebuild their Taffy children
-                    if self
-                        .tree
+            // Rebuild the parent's Taffy children, and each anonymous box's
+            // own, through the one authority for that list —
+            // `collect_effective_taffy_children`, which flattens
+            // `display: contents` children (#476). Deriving the order from raw
+            // `nodes[parent].children` instead put the wrapper's own boxless
+            // Taffy node in the list and left the grandchildren it stands for
+            // **orphaned** — not a DOM child of anything in this rebuild, so
+            // nothing re-attached them, on this pass or any later one. Using
+            // `set_children` rather than clear-and-append also avoids the
+            // `remove_child` panics that come of Taffy children being out of
+            // sync with the DOM (the IFC detaches inline ones).
+            //
+            // An anonymous box's own list goes through the same call. That
+            // call is **inert** today, not merely a no-op flatten: a run holds
+            // only `InlineFlowRole::Inline` children (and every box in
+            // `anon_ids` was minted moments ago by this very pass, since
+            // `cleanup_anonymous_block_boxes` dissolved the previous ones), so
+            // there is no contents wrapper to flatten — and
+            // `mark_inline_descendants` detaches every `Inline` child of an IFC
+            // root a few lines later, so the anonymous box ends with an empty
+            // Taffy child list either way. Deleting the loop entirely leaves
+            // the suite green; measured. It is kept for the single-rule
+            // property — one authority answers "what are this node's Taffy
+            // children", with no exception carved out for anonymous boxes —
+            // not because it attaches anything.
+            //
+            // Anonymous boxes first, `parent_id` last, so the flattening owner
+            // claims last — `set_children` steals each adopted child from its
+            // previous parent.
+            //
+            // **Either order converges today, and that is measured**: inverting
+            // these two loops leaves the whole suite green. When the anonymous
+            // box is not `Contents` the two child sets are disjoint, so nothing
+            // is stolen either way; when it is, both rebuilds walk to the same
+            // top non-contents owner and end with the identical
+            // `set_children(top, collect(top))`, and
+            // `collect_effective_taffy_children` is a pure function of a DOM
+            // neither call mutates. So this is defence, not a requirement — it
+            // is what keeps the outcome independent of
+            // `taffy_child_list_owners`' internals, and the comment must not
+            // claim more than that.
+            //
+            // `parent_id` may itself be a boxless contents wrapper — a wrapper
+            // around `text + block` is `DisplayMode::Block` and so is mixed
+            // content in its own right, and the box it mints inherits
+            // `Contents` too (#319) — which is why the rebuild walks up to
+            // whoever actually holds those boxes; see `taffy_child_list_owners`.
+            let anon_ids: Vec<usize> = self.tree.nodes[parent_id]
+                .children
+                .iter()
+                .copied()
+                .filter(|&c| {
+                    self.tree
                         .nodes
-                        .get(child_id)
+                        .get(c)
                         .map(|n| n.is_anonymous_block_box)
                         .unwrap_or(false)
-                        && let Some(anon_taffy) =
-                            self.tree.nodes.get(child_id).and_then(|n| n.taffy_id)
-                    {
-                        let anon_children: Vec<usize> = self.tree.nodes[child_id].children.clone();
-                        for &anon_child_id in &anon_children {
-                            if let Some(anon_child_taffy) =
-                                self.tree.nodes.get(anon_child_id).and_then(|n| n.taffy_id)
-                            {
-                                let _ = self.tree.taffy.add_child(anon_taffy, anon_child_taffy);
-                            }
-                        }
-                    }
-                }
+                })
+                .collect();
+            for anon_id in anon_ids {
+                self.rebuild_effective_taffy_children(anon_id);
             }
+            self.rebuild_effective_taffy_children(parent_id);
         }
     }
 
@@ -1224,6 +1265,131 @@ impl RinchDocument {
             }
         }
         violations
+    }
+
+    /// Every way the Taffy tree disagrees with itself or loses a box (#476),
+    /// as human-readable lines. Empty is the invariant.
+    ///
+    /// Three properties, and each one caught a real defect on the tree this
+    /// landed against:
+    ///
+    /// - **A** no Taffy node appears in two parents' `children()` lists. Taffy's
+    ///   `add_child` writes `parents[child]` and pushes **without** removing the
+    ///   child from a previous parent's vector, so a clear-and-`add_child`
+    ///   rebuild could leave one node in two lists — and the container would lay
+    ///   out from whichever copy it happened to hold. `set_children` scrubs, so
+    ///   the fix that routes both anonymous-box rebuilds through it is what
+    ///   makes A hold.
+    /// - **B** `taffy.parent(c)` names the parent whose list actually holds `c`.
+    ///   The other half of the same inconsistency; a violation means layout and
+    ///   any parent-walking consumer disagree about the tree.
+    /// - **C** no **orphan**: every DOM node that generates a box and is not
+    ///   claimed by an IFC has a Taffy parent. This is #476 stated directly —
+    ///   an orphan is laid out by nothing and painted by nothing, and no other
+    ///   assertion in the crate notices, because the `debug_assert` on
+    ///   [`Self::ifc_leaf_invariant_violations`] only inspects carriers of
+    ///   `InlineRoot` *that have children*.
+    ///
+    /// Deliberately **not** a `debug_assert` in `resolve_layout`: C is a claim
+    /// about author markup as much as about the engine, and a fixture that
+    /// legitimately holds a detached subtree should not panic. Call it from a
+    /// test, or set `RINCH_TREE_CHECK=1` to have `resolve_layout` print every
+    /// violation (debug builds only) and sweep it across a whole suite.
+    pub fn taffy_tree_violations(&self) -> Vec<String> {
+        use crate::computed_style::values::DisplayValue;
+        use std::collections::HashMap;
+
+        let mut out = Vec::new();
+
+        // Every Taffy node we could ask about, DOM-owned or a measure leaf.
+        let mut parents: Vec<taffy::NodeId> = self
+            .tree
+            .nodes
+            .iter()
+            .filter_map(|(_, n)| n.taffy_id)
+            .collect();
+        parents.extend(self.tree.ifc_measure_leaves.values().copied());
+        parents.sort_by_key(|t| usize::from(*t));
+        parents.dedup();
+
+        let mut claims: HashMap<taffy::NodeId, Vec<taffy::NodeId>> = HashMap::new();
+        for &p in &parents {
+            if let Ok(kids) = self.tree.taffy.children(p) {
+                for k in kids {
+                    claims.entry(k).or_default().push(p);
+                }
+            }
+        }
+        // Sorted so the output is stable enough to diff between runs.
+        let mut claimed: Vec<_> = claims.into_iter().collect();
+        claimed.sort_by_key(|(c, _)| usize::from(*c));
+        for (child, holders) in claimed {
+            let dom = |t: &taffy::NodeId| self.tree.taffy_map.get(t).copied();
+            if holders.len() > 1 {
+                out.push(format!(
+                    "A double-claim: taffy {} (dom={:?}) is in the child list of {:?}",
+                    usize::from(child),
+                    dom(&child),
+                    holders
+                        .iter()
+                        .map(|p| (usize::from(*p), dom(p)))
+                        .collect::<Vec<_>>()
+                ));
+            }
+            let reported = self.tree.taffy.parent(child);
+            if reported != Some(holders[0]) || holders.len() > 1 {
+                out.push(format!(
+                    "B parent disagreement: taffy {} is held by {:?} but parent() says {:?}",
+                    usize::from(child),
+                    holders.iter().map(|p| usize::from(*p)).collect::<Vec<_>>(),
+                    reported.map(usize::from)
+                ));
+            }
+        }
+
+        // C: walk the DOM, skipping what legitimately generates no box.
+        let mut stack = vec![(self.tree.root_id, false)];
+        while let Some((id, hidden)) = stack.pop() {
+            let Some(node) = self.tree.nodes.get(id) else {
+                continue;
+            };
+            let display = node.computed_style.display;
+            let hidden_here = hidden || display == DisplayValue::None;
+            for &c in &node.children {
+                stack.push((c, hidden_here));
+            }
+            if hidden || id == self.tree.root_id {
+                continue;
+            }
+            // No box of its own: `none` generates nothing, `contents` is
+            // flattened into an ancestor's list by design.
+            if matches!(display, DisplayValue::None | DisplayValue::Contents) {
+                continue;
+            }
+            // Inline content is detached from Taffy on purpose — Parley lays
+            // it out and the IFC root draws it.
+            if node.ifc_root.is_some() {
+                continue;
+            }
+            let Some(taffy_id) = node.taffy_id else {
+                continue;
+            };
+            if self.tree.taffy.parent(taffy_id).is_none() {
+                out.push(format!(
+                    "C orphan: dom {id} <{}> display={display:?} mode={:?} layout={:?}",
+                    node.tag().unwrap_or("#text"),
+                    node.display_mode,
+                    (
+                        node.layout.x,
+                        node.layout.y,
+                        node.layout.width,
+                        node.layout.height
+                    )
+                ));
+            }
+        }
+
+        out
     }
 
     /// Whether `root_id`'s only inline-level content lives behind one or more
