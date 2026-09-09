@@ -166,35 +166,44 @@ public class RinchActivity extends NativeActivity {
      * The size of the window this activity draws into, in physical pixels, as
      * {@code { width, height }}.
      *
-     * This is the hole {@link #getSafeAreaInsets()} left. An app can already
-     * ask how much of the screen it is not allowed to draw in, what the panel's
-     * refresh rate is and how dense its pixels are — but not how big it is. So
-     * every rinch app that needs a pixel width for something it rasterises has
-     * had to use the width it asked for at startup, which Android ignores: the
-     * shell lays out against whatever the {@code ANativeWindow} turned out to
-     * be. SetListArray's card K31 is what found it. That app hands the shell a
-     * 393-wide window because 393 is the canvas its designs were drawn on, and
-     * on a moto g stylus 5G — 1080 physical pixels at density 400, so 432
-     * logical — every page it rasterised came out 393 wide with a strip of
-     * backdrop down each side. Nothing was broken; it was simply not the
-     * full-bleed the design asked for, and it was wrong by a different amount
-     * on every handset.
+     * This is the hole {@link #getSafeAreaInsets()} left. An app can already ask
+     * how much of the screen it is not allowed to draw in, what the panel's
+     * refresh rate is and how dense its pixels are — but not how big it is.
      *
-     * Physical pixels, like {@link #getSafeAreaInsets()}, because that is what
-     * Android measures in and the caller already has to divide by the density
-     * to get anywhere. Divide by {@code densityDpi / 160} — the same scale
-     * factor the shell derives at {@code InitWindow} — to get the logical
+     * <p>To be clear about what this is <em>not</em>: it is not a repair to the
+     * shell's layout. The native side has always laid out against the real
+     * window — it reads {@code ANativeWindow_getWidth}/{@code Height} at
+     * {@code InitWindow} and {@code WindowResized} — so anything the DOM lays
+     * out is already the right size. What was missing is that <em>app</em> code
+     * had no way to ask. A page the app rasterises itself, at a pixel width, and
+     * hands back as an image is not laid out by the DOM and gets none of that
+     * for free. SetListArray's card K31 is what found it: it renders its pages
+     * at the 393-pixel canvas its designs were drawn on, and on a moto g stylus
+     * 5G — 1080 physical pixels at density 400, so 432 logical — every page came
+     * out 393 wide with a strip of backdrop down each side. Nothing was broken;
+     * the app had no way to find out it was drawing at the wrong size, and it
+     * was wrong by a different amount on every handset.
+     *
+     * <p>Physical pixels, like {@link #getSafeAreaInsets()}, because that is
+     * what Android measures in and the caller already has to divide by the
+     * density to get anywhere. Divide by {@code densityDpi / 160} — the same
+     * scale factor the shell derives at {@code InitWindow} — to get the logical
      * pixels a stylesheet is written in.
      *
-     * Two paths. From API 30 the window's own metrics are the answer:
+     * <p>Two paths. From API 30 the window's own metrics are the answer:
      * {@code getCurrentWindowMetrics().getBounds()} is the bounds of *this
      * window*, system bars included, which is what a full-screen activity
-     * actually occupies. Below that the call does not exist, so it falls back
-     * to the display metrics the resources carry, which are the app-usable
-     * display size — very slightly shorter than the window on a device with
-     * decorations, and identical in width, which is the dimension a
-     * portrait-locked app is asking about. Both agree on the number that
-     * matters and neither invents one.
+     * actually occupies and what the {@code ANativeWindow} is. Below that the
+     * call does not exist, so it falls back to the display metrics the resources
+     * carry, which are the app-usable <em>display</em> size — very slightly
+     * shorter than the window on a device with decorations, and identical in
+     * width <em>in a single-window session</em>.
+     *
+     * <p>That last qualifier is the assumption this method makes and cannot
+     * check: <strong>multi-window and split-screen are assumed away below API
+     * 30</strong>. A side-by-side split disagrees in width, not merely in
+     * height, so the fallback answers the wrong number there. Above API 30 there
+     * is no such gap — window metrics are window metrics.
      */
     public int[] getViewportSize() {
         if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.R) {
@@ -222,24 +231,37 @@ public class RinchActivity extends NativeActivity {
      * be asked at the expensive question's rate, or quietly make the safe area
      * change under a caller that was promised it would not.
      *
-     * Two paths again. From API 30 {@code WindowInsets.Type.ime()} is the
+     * <p>Two paths again. From API 30 {@code WindowInsets.Type.ime()} is the
      * framework's own answer and is reported whether or not the window fits
      * system windows itself. Below that there is no ime type at all, and the
      * keyboard arrives folded into the deprecated system-window insets: the
      * bottom system-window inset is the navigation bar plus the keyboard, and
      * the bottom *stable* inset is the navigation bar alone, so the difference
-     * is the keyboard. That legacy subtraction reads zero unless the window is
-     * being resized for the IME, which is the honest answer on a window that
-     * is not.
+     * is the keyboard.
      *
-     * This is a polled getter and not a callback, so a caller that wants to
-     * animate with the keyboard has to ask on each frame it cares about. The
-     * modern route — {@code setDecorFitsSystemWindows(false)} plus an
-     * {@code OnApplyWindowInsetsListener} — would push the value instead, and
-     * is left for whoever needs it: turning decor fitting off changes where
-     * the window lays out underneath the {@code ANativeWindow} the native
-     * shell is drawing into, which is a change to every rinch app's geometry
-     * rather than an addition to it.
+     * <p><strong>That legacy subtraction is very likely to report nothing on
+     * this shell, and has never been run.</strong> The difference is non-zero
+     * only while the window is <em>being resized for the IME</em>, and the
+     * manifest declares no {@code windowSoftInputMode}. So on API 28-29 the
+     * likely answer with the keyboard up is {@code 0} — which the Rust side
+     * decodes as "the keyboard is down", the instruction to put a footer back.
+     * The handset this was built against is a moto g stylus 5G on <em>SDK
+     * 33</em>, so only the API 30+ branch has ever executed: the preceding
+     * sentence is reasoning about the platform, not a measurement. Treat the
+     * inset as API 30+ until someone with an API 28-29 device says otherwise.
+     *
+     * <p>This is a polled getter and not a callback, so a caller that wants to
+     * animate with the keyboard has to ask on each frame it cares about — and
+     * since the Android loop learned to sleep when nothing moves, it has to
+     * arrange for those frames to exist (see {@code display::ime_inset} on the
+     * Rust side, which names the mechanism). The Java-side push route —
+     * {@code setDecorFitsSystemWindows(false)} plus an
+     * {@code OnApplyWindowInsetsListener} — is left for whoever needs it:
+     * turning decor fitting off changes where the window lays out underneath
+     * the {@code ANativeWindow} the native shell is drawing into, which is a
+     * change to every rinch app's geometry rather than an addition to it. It is
+     * not the only push route, though; {@code MainEvent.ContentRectChanged}
+     * already reaches the native loop and nothing handles it yet.
      */
     public int getImeInset() {
         android.view.WindowInsets insets = getWindow().getDecorView().getRootWindowInsets();

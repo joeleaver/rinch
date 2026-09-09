@@ -128,7 +128,8 @@ fn ime_inset_reports_no_insets_yet_as_a_sentinel_and_not_as_zero() {
     );
 }
 
-/// Both display-metrics methods must keep their `SDK_INT` guard.
+/// Both display-metrics methods must keep their `SDK_INT` guard **and keep the
+/// API 30 call behind it**.
 ///
 /// `WindowInsets.Type.ime()` and `getCurrentWindowMetrics()` are both API 30.
 /// This crate's consumers build with `--min-api 28`, and that is the whole
@@ -137,15 +138,50 @@ fn ime_inset_reports_no_insets_yet_as_a_sentinel_and_not_as_zero() {
 /// on an API 28 handset, and throws `NoSuchMethodError` the first time the
 /// screen it is on opens. The guard is the only thing standing between that
 /// and a crash nobody can reproduce on a modern phone.
+///
+/// **The ordering assertion is the load-bearing half, and its absence was a
+/// real hole.** An earlier version of this test asserted only that the guard's
+/// text appeared somewhere in the body. Hoisting the API 30 call *above* a
+/// guard that is still there — a plausible refactor, since the value is wanted
+/// in both branches often enough — left that test green while restoring the
+/// exact `NoSuchMethodError` this docstring is about. Checked by doing it: the
+/// mutant passed. Pinning presence pins nothing; the guard has to come first.
 #[test]
 fn the_api_30_display_calls_stay_behind_a_version_guard() {
-    for method in ["getViewportSize", "getImeInset"] {
+    const GUARD: &str = "Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.R";
+
+    for (method, api_30_call) in [
+        ("getViewportSize", "getCurrentWindowMetrics("),
+        ("getImeInset", "android.view.WindowInsets.Type.ime()"),
+    ] {
         let body = method_body(method);
+
+        let guard = body.find(GUARD).unwrap_or_else(|| {
+            panic!(
+                "{method} calls an API 30 method and must keep its SDK_INT guard — \
+                 without it this throws on any API 28-29 device, and nothing in \
+                 this repository would catch it; body was:\n{body}"
+            )
+        });
+
+        // Every occurrence, not the first: a second, unguarded call site is the
+        // same crash as a hoisted one.
+        let sites: Vec<usize> = body.match_indices(api_30_call).map(|(at, _)| at).collect();
         assert!(
-            body.contains("Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.R"),
-            "{method} calls an API 30 method and must keep its SDK_INT guard — \
-             without it this throws on any API 28-29 device, and nothing in \
-             this repository would catch it; body was:\n{body}"
+            !sites.is_empty(),
+            "{method} is supposed to call `{api_30_call}` on API 30+, and no \
+             longer does — this test is now pinning nothing, so either restore \
+             the call or retire the entry; body was:\n{body}"
         );
+        for at in sites {
+            assert!(
+                at > guard,
+                "{method} reaches `{api_30_call}` at byte {at}, before its \
+                 SDK_INT guard at byte {guard}. The guard is present but the \
+                 API 30 call runs whatever the version is, which is a \
+                 `NoSuchMethodError` on an API 28-29 handset and green \
+                 everywhere in this repository; body was:\n{body}"
+            );
+        }
     }
 }
