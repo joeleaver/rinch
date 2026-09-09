@@ -493,6 +493,17 @@ impl RinchDocument {
     /// `ifc_dirty` pass regardless (`ifc.rs`), and every mutation entry point
     /// sets that flag. Ordering against the leaf is therefore transient in a
     /// way that attachment is not.
+    ///
+    /// The **nearest** attached preceding sibling decides, not the furthest —
+    /// i.e. this stops at the first hit rather than taking the maximum over
+    /// every preceding sibling. The two agree whenever the Taffy list is in
+    /// (flattened) DOM order, which every rebuild pass puts it in. They differ
+    /// only on a list already out of order, where the maximum would land after
+    /// *all* preceding siblings and this can land between two of them —
+    /// neither is right, and the next rebuild overwrites both. Taking the
+    /// maximum would cost a full scan of the preceding siblings on every
+    /// insert, including the common append-to-a-long-list, so the cheap rule
+    /// wins a choice between two guesses.
     pub(crate) fn compute_taffy_child_index(&self, parent_id: usize, dom_index: usize) -> usize {
         let Some(parent_taffy) = self.tree.nodes[parent_id].taffy_id else {
             return 0;
