@@ -80,6 +80,34 @@ fn assert_no_attach_faults(doc: &RinchDocument) {
     );
 }
 
+/// #476's tree validator, applied at **this** PR's seam: no Taffy node claimed
+/// by two parents, `taffy.parent` agreeing with the list that holds it, and no
+/// box-generating DOM node orphaned.
+///
+/// **It binds exactly half of this issue, and only that half is worth saying.**
+/// The `C orphan` arm is #477's dropped-child failure stated structurally, and
+/// it does fire on the unfixed tree at the seam — measured, on the shape below:
+/// `C orphan: dom 6 <div> display=Block mode=Block layout=(0,0,0x0)`. It is
+/// therefore an *independent* second opinion on the five fixtures whose old
+/// behaviour was "attached nowhere", reached without knowing what index the
+/// code computed.
+///
+/// It says **nothing** about the other half — an index that is in range but
+/// wrong. A misplaced node is attached, singly parented and not an orphan, so
+/// every arm passes; measured on the contents-wrapper and plain-container
+/// shapes, which fail their index assertions and satisfy this. Those tests
+/// deliberately do not call it, rather than carry an assertion that cannot
+/// distinguish them.
+fn assert_taffy_tree_intact(doc: &RinchDocument) {
+    let v = doc.taffy_tree_violations();
+    assert!(
+        v.is_empty(),
+        "#476's tree validator must be clean at the insert seam — an \
+         out-of-range index that attaches the child nowhere shows up here as \
+         `C orphan`: {v:?}"
+    );
+}
+
 /// The layout of `node` after a pass, `(x, y, w, h)`.
 fn layout_of(doc: &RinchDocument, node: NodeId) -> (f32, f32, f32, f32) {
     let l = doc.tree.nodes[node.0].layout;
@@ -248,6 +276,7 @@ fn a_block_inserted_before_the_second_of_two_detached_texts_is_attached() {
          and the error went nowhere"
     );
     assert_no_attach_faults(&doc);
+    assert_taffy_tree_intact(&doc);
 }
 
 /// The **append** leg of `insert_child`, which has no `add_child` fallback at
@@ -290,6 +319,7 @@ fn insert_child_appending_past_the_end_of_an_all_inline_container_attaches() {
          fallback"
     );
     assert_no_attach_faults(&doc);
+    assert_taffy_tree_intact(&doc);
 }
 
 /// `replace_node` in a three-text IFC root. The middle text is replaced by a
@@ -330,6 +360,7 @@ fn replace_node_in_an_all_inline_container_attaches_the_replacement() {
          failed silently"
     );
     assert_no_attach_faults(&doc);
+    assert_taffy_tree_intact(&doc);
 }
 
 /// The same gap with an **out-of-flow** child, which is the shape #477
@@ -374,6 +405,7 @@ fn an_absolute_child_inserted_between_detached_texts_is_attached() {
         "the absolute child must be attached at index 0"
     );
     assert_no_attach_faults(&doc);
+    assert_taffy_tree_intact(&doc);
 }
 
 // ---------------------------------------------------------------------------
@@ -493,6 +525,7 @@ fn an_insert_before_a_block_past_two_empty_contents_wrappers_is_attached() {
          out-of-range insert failed silently"
     );
     assert_no_attach_faults(&doc);
+    assert_taffy_tree_intact(&doc);
 }
 
 /// A wrapper restyled **away** from `display: contents` between layout passes

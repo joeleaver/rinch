@@ -540,57 +540,6 @@ impl RinchDocument {
         0
     }
 
-    /// Every Taffy id `node_id` may occupy in its **parent's** Taffy child
-    /// list: its own, plus — when it is or was spliced away by
-    /// `sync_display_contents` — its flattened descendants' (#477).
-    ///
-    /// The gate mirrors `taffy_detach_contribution`'s (#517/#520): computed
-    /// `display: contents` **or** [`crate::node::Node::contents_spliced`].
-    ///
-    /// **Only the `contents_spliced` half is load-bearing here**, and that is
-    /// measured: dropping it is killed by
-    /// `an_insert_after_a_wrapper_restyled_off_contents_still_clears_its_slots`,
-    /// while dropping the `Contents` half survives the whole workspace. The
-    /// reason is that `sync_display_contents` sets the flag for *every*
-    /// `Contents` node at the end of every pass, so a wrapper that computes
-    /// `Contents` without yet being spliced still has its **own** id in the
-    /// parent's list — and `out.push(taffy_id)` is unconditional, so the
-    /// sibling is found without the recursion. The `Contents` half is kept as
-    /// belt-and-braces symmetry with the detach gate, not because a case here
-    /// is known to need it.
-    ///
-    /// Erring wide is free — an id that is not actually attached contributes no
-    /// position and is skipped, so a wide gate can only *miss* an absent id,
-    /// never pick a wrong slot — while erring narrow silently loses the sibling
-    /// and sends the search one step further back than it should go.
-    ///
-    /// Distinct from `LayoutEngine`'s `collect_effective_taffy_children`, which
-    /// is the authority for a whole-list **rebuild** and gates on `Contents`
-    /// alone. That is right for a rebuild, which runs inside
-    /// `sync_display_contents`' own pass; it is wrong *here*, which runs at
-    /// mutation time between syncs, where a restyled-off-contents wrapper's
-    /// slots are still its children's. The two are not interchangeable and the
-    /// gate difference is the reason.
-    fn collect_taffy_contribution(
-        nodes: &slab::Slab<crate::node::Node>,
-        node_id: usize,
-        out: &mut Vec<taffy::NodeId>,
-    ) {
-        use crate::computed_style::values::DisplayValue;
-
-        let Some(node) = nodes.get(node_id) else {
-            return;
-        };
-        if let Some(taffy_id) = node.taffy_id {
-            out.push(taffy_id);
-        }
-        if node.computed_style.display == DisplayValue::Contents || node.contents_spliced {
-            for &child_id in &node.children {
-                Self::collect_taffy_contribution(nodes, child_id, out);
-            }
-        }
-    }
-
     /// Apply Stylo computed styles to Taffy layout nodes.
     ///
     /// This reads from each element's `stylo_element_data` and sets the corresponding
