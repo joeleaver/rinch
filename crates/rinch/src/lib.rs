@@ -158,6 +158,15 @@ pub mod prelude {
     // logic can see content copied outside the app, because the browser's `paste`
     // event carries it and arrives *after* the Ctrl+V keydown.
     pub use rinch_core::{PasteEventData, clear_paste_interceptor, set_paste_interceptor};
+    // The platform saying that something the app read at mount is now stale —
+    // dark mode, the accent colour, the font scale, the insets. Deliberately
+    // *not* behind a `#[cfg]`: the Android shell is the only thing that
+    // dispatches it today, and the point of exporting it unconditionally is
+    // that an app registers its handler in one place, with no platform
+    // spelling, and a desktop build simply never has one delivered. See
+    // `rinch_core::events::set_configuration_change_handler` for why the slot
+    // lives in core rather than in `rinch-android`.
+    pub use rinch_core::{clear_configuration_change_handler, set_configuration_change_handler};
     pub use rinch_macros::{component, rsx};
     // Window control functions
     #[cfg(feature = "desktop")]
