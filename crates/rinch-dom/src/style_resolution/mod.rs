@@ -446,17 +446,98 @@ impl RinchDocument {
         );
     }
 
-    /// Compute the taffy child index for a DOM child at the given position.
-    /// This counts only children that have taffy IDs (skipping comments).
+    /// Where in `parent_id`'s **Taffy** child list a DOM child that now sits at
+    /// DOM index `dom_index` belongs.
+    ///
+    /// This used to count preceding DOM siblings that merely *have* a
+    /// `taffy_id`, which rests on a premise that is false three separate ways
+    /// (#477): *a node's Taffy child list ≡ its DOM children that have a
+    /// `taffy_id`, in DOM order*.
+    ///
+    /// 1. **The IFC detach.** `mark_inline_descendants` removes every inline
+    ///    child of an IFC root from the root's Taffy list — and every
+    ///    `display: none` child (#487) — but leaves their `taffy_id` set. An
+    ///    all-inline container has DOM children with `taffy_id`s and an
+    ///    **empty** Taffy list, so the old count overshot and Taffy refused the
+    ///    insert outright.
+    /// 2. **`display: contents` flattening.** `sync_display_contents` splices a
+    ///    wrapper's grandchildren into the parent's list in the wrapper's own
+    ///    place, so **one** DOM sibling contributes **zero or N** slots. The
+    ///    old count was wrong in *both* directions here, and in the "N" one it
+    ///    stayed in range — a silently misplaced box, not a refused insert, so
+    ///    clamping alone would not have caught it.
+    /// 3. **The #466 measure leaf.** A Taffy child of an IFC root with no DOM
+    ///    identity at all, deliberately at index 0. Any DOM-derived count is
+    ///    off by one against such a parent.
+    ///
+    /// So ask the truth instead. Walk the preceding DOM siblings backwards;
+    /// the first one that has **anything attached** decides — the answer is one
+    /// past the last slot that sibling occupies. A sibling's occupancy is its
+    /// *contribution* ([`Self::collect_taffy_contribution`]), not its own id,
+    /// because a spliced wrapper's slots are its descendants'. This is correct
+    /// under all three gap sources without enumerating them: a detached sibling
+    /// is simply absent from the list, a wrapper answers with its real ids, and
+    /// the measure leaf — matching no DOM node's contribution — is skipped
+    /// rather than miscounted.
+    ///
+    /// The result is **always in range**: it is either `0` or `pos + 1` for a
+    /// `pos` that indexes the live list. Callers clamp anyway
+    /// ([`RinchDocument::attach_taffy_child_at`]) so that the property is local
+    /// rather than remote.
+    ///
+    /// One imprecision is deliberate, and it is about the measure leaf. When no
+    /// preceding sibling is attached the answer is `0`, which puts the new box
+    /// *ahead* of a leaf sitting in slot 0. The leaf stands in for inline
+    /// content scattered through DOM order, so no single slot for it is right;
+    /// the IFC canonicalization rebuilds the whole list leaf-first on the next
+    /// `ifc_dirty` pass regardless (`ifc.rs`), and every mutation entry point
+    /// sets that flag. Ordering against the leaf is therefore transient in a
+    /// way that attachment is not.
+    ///
+    /// The **nearest** attached preceding sibling decides, not the furthest —
+    /// i.e. this stops at the first hit rather than taking the maximum over
+    /// every preceding sibling. The two agree whenever the Taffy list is in
+    /// (flattened) DOM order, which every rebuild pass puts it in. They differ
+    /// only on a list already out of order, where the maximum would land after
+    /// *all* preceding siblings and this can land between two of them —
+    /// neither is right, and the next rebuild overwrites both. Taking the
+    /// maximum would cost a full scan of the preceding siblings on every
+    /// insert, including the common append-to-a-long-list, so the cheap rule
+    /// wins a choice between two guesses.
     pub(crate) fn compute_taffy_child_index(&self, parent_id: usize, dom_index: usize) -> usize {
+        let Some(parent_taffy) = self.tree.nodes[parent_id].taffy_id else {
+            return 0;
+        };
+        let Ok(attached) = self.tree.taffy.children(parent_taffy) else {
+            return 0;
+        };
+        // An empty list has exactly one valid index, and this is the common
+        // case — every all-inline IFC root is here after the detach pass.
+        if attached.is_empty() {
+            return 0;
+        }
         let children = &self.tree.nodes[parent_id].children;
-        let mut taffy_idx = 0;
-        for i in 0..dom_index {
-            if i < children.len() && self.tree.nodes[children[i]].taffy_id.is_some() {
-                taffy_idx += 1;
+        let mut contribution: Vec<taffy::NodeId> = Vec::new();
+        for i in (0..dom_index.min(children.len())).rev() {
+            contribution.clear();
+            Self::collect_taffy_contribution(&self.tree.nodes, children[i], &mut contribution);
+            // The *last* slot this sibling occupies. `max` rather than "the
+            // position of the last contributed id" is **defensive, not
+            // demonstrated**: the contribution is collected in DOM pre-order,
+            // so the two agree unless the parent's attached list is itself out
+            // of contribution order, and every rebuild pass writes flattened
+            // DOM order. Swapping this for `.last()` survives the suite. Kept
+            // because it costs nothing and is right under a list this function
+            // did not produce.
+            let last = contribution
+                .iter()
+                .filter_map(|id| attached.iter().position(|a| a == id))
+                .max();
+            if let Some(pos) = last {
+                return pos + 1;
             }
         }
-        taffy_idx
+        0
     }
 
     /// Apply Stylo computed styles to Taffy layout nodes.

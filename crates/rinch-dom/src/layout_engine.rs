@@ -1322,6 +1322,18 @@ impl RinchDocument {
     /// why that issue's forecast about #466 PR2 came out inverted. "Four" here
     /// means four rebuilds that must take their **order** from this function —
     /// not four places that replace a Taffy child list.
+    ///
+    /// **"THE answer" is scoped to rebuilds, and one neighbour is deliberately
+    /// outside that scope**: [`Self::collect_taffy_contribution`], immediately
+    /// below, walks the same flattening with a **wider gate** (`Contents` **or**
+    /// `contents_spliced`). It is not a rival authority and not a bug — it
+    /// answers a different question, *"which ids might this node be occupying
+    /// right now"*, for the incremental insert index at **mutation time**
+    /// (#477), where this function's `Contents`-only gate is momentarily wrong:
+    /// a wrapper restyled away from `contents` between syncs still has its
+    /// children in the parent's list, and asking here would answer with the
+    /// wrapper's own detached id instead. Read the two together before changing
+    /// either gate.
     pub(crate) fn collect_effective_taffy_children(
         nodes: &slab::Slab<crate::node::Node>,
         node_id: usize,
@@ -1349,6 +1361,69 @@ impl RinchDocument {
             }
         }
         result
+    }
+
+    /// Every Taffy id `node_id` may occupy in its **parent's** Taffy child
+    /// list: its own, plus — when it is or was spliced away by
+    /// `sync_display_contents` — its flattened descendants' (#477).
+    ///
+    /// **This is not a competing answer to
+    /// [`Self::collect_effective_taffy_children`]'s question; it is a different
+    /// question**, and the two live side by side so nobody reads one as a bug.
+    /// That function answers *"which boxes belong in this node's child list"* —
+    /// the authority for a whole-list **rebuild**, which runs inside
+    /// `resolve_layout`'s `ifc_dirty` block. This one answers *"which Taffy ids
+    /// might this node currently be occupying in its parent's list"*, at
+    /// **mutation time**, between passes, for the incremental insert index
+    /// ([`crate::RinchDocument::compute_taffy_child_index`]). A rebuild replaces
+    /// the list, so it wants the exact set; an index searches the live list, so
+    /// it wants a superset.
+    ///
+    /// **The gates differ, and the difference is load-bearing.**
+    /// `collect_effective_taffy_children` gates on computed `display: contents`
+    /// alone, which is right for a rebuild running inside the sync that
+    /// maintains it. Here the gate is `Contents` **or**
+    /// [`crate::node::Node::contents_spliced`], mirroring
+    /// [`Self::taffy_detach_contribution`]'s (#517/#520) — because between
+    /// syncs a wrapper restyled *away* from `contents` still has its children
+    /// sitting in the parent's list, and the `Contents`-only gate would answer
+    /// with the wrapper's own already-detached id and lose the sibling
+    /// entirely. Pinned by
+    /// `an_insert_after_a_wrapper_restyled_off_contents_still_clears_its_slots`
+    /// (dropping the flag half is killed by it) — so the two are **not**
+    /// interchangeable in this direction.
+    ///
+    /// The other half of the gate is not load-bearing here, measured: dropping
+    /// the `Contents` test survives the whole workspace, because
+    /// `sync_display_contents` sets the flag for *every* `Contents` node at the
+    /// end of every pass, and a wrapper that computes `Contents` without yet
+    /// being spliced still has its **own** id in the parent's list — which
+    /// `out.push(taffy_id)` adds unconditionally, so the sibling is found
+    /// without the recursion. Kept as belt-and-braces symmetry with the detach
+    /// gate, not because a case here is known to need it.
+    ///
+    /// Erring wide is free — an id that is not actually attached contributes no
+    /// position and is skipped, so a wide gate can only *miss* an absent id,
+    /// never pick a wrong slot — while erring narrow silently loses the sibling
+    /// and sends the search one step further back than it should go.
+    pub(crate) fn collect_taffy_contribution(
+        nodes: &slab::Slab<crate::node::Node>,
+        node_id: usize,
+        out: &mut Vec<taffy::NodeId>,
+    ) {
+        use crate::computed_style::values::DisplayValue;
+
+        let Some(node) = nodes.get(node_id) else {
+            return;
+        };
+        if let Some(taffy_id) = node.taffy_id {
+            out.push(taffy_id);
+        }
+        if node.computed_style.display == DisplayValue::Contents || node.contents_spliced {
+            for &child_id in &node.children {
+                Self::collect_taffy_contribution(nodes, child_id, out);
+            }
+        }
     }
 
     /// Every node whose Taffy child list has to be rebuilt when `node_id`'s
