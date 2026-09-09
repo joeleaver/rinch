@@ -963,6 +963,20 @@ pub struct NodeTree {
     /// Scale factor for text rendering (1.0 on desktop, >1.0 on HiDPI/mobile).
     /// Applied to Parley font sizes so glyphs rasterize at physical pixel resolution.
     pub text_scale: f32,
+    /// How many times a Taffy attachment has had to be repaired since this
+    /// tree was created (#477): an insertion index clamped into range, or an
+    /// insert Taffy refused. Monotonic, never reset.
+    ///
+    /// A non-zero value means the DOM and the Taffy tree disagreed about a
+    /// shape one of them had already accepted, which is never benign — the
+    /// affected node is attached in the wrong place (or, if the fallback
+    /// failed too, nowhere at all, and so laid out and painted nowhere). Every
+    /// increment is also `tracing::warn!`-logged with both node ids; this
+    /// counter exists so a test or a devtools surface can assert on the
+    /// *absence* of divergence without scraping logs.
+    ///
+    /// See [`crate::RinchDocument::attach_taffy_child_at`].
+    pub taffy_attach_faults: usize,
 }
 
 impl Default for NodeTree {
@@ -1076,6 +1090,7 @@ impl NodeTree {
             scroll_into_view_requests: Vec::new(),
             pending_scroll_clamps: Vec::new(),
             text_scale: 1.0,
+            taffy_attach_faults: 0,
         }
     }
 

@@ -617,17 +617,25 @@ fn a_text_edit_updates_a_measure_child_container_height() {
 }
 
 /// An absolute child inserted between frames is attached by the
-/// canonicalization, even when the DOM-index → Taffy-index computation
-/// misfires: `compute_taffy_child_index` counts detached (inline) siblings
-/// that still have a `taffy_id`, overshoots, and Taffy's out-of-range error is
-/// swallowed — the child is silently attached nowhere (#477). The next setup
-/// pass rebuilds the container's Taffy children from the DOM.
+/// canonicalization, whatever the DOM-index → Taffy-index computation made of
+/// it. The next setup pass rebuilds the container's Taffy children from the
+/// DOM, so the raw insert's answer does not survive to matter.
+///
+/// **The premise moved under this test (#477), and the test did not.** It was
+/// written when `compute_taffy_child_index` counted detached (inline) siblings
+/// that merely held a `taffy_id`: three of them overshot the two attached
+/// children, Taffy refused the insert out of range, the error was swallowed and
+/// the child really was attached nowhere until the rebuild. That is fixed — the
+/// index is derived from the parent's attached list now, so the raw insert
+/// succeeds. It still does not put the box where the canonicalization does:
+/// with every text sibling detached the search finds nothing attached before
+/// the new box and answers 0, which is *ahead* of the measure leaf, and the
+/// rebuild is what restores the deliberate leaf-first order. So this test
+/// still pins the rebuild — it no longer pins it against a failed insert.
 ///
 /// Kills: omitting the canonicalization, or deciding the leaf branch from the
 /// current Taffy attachment instead of the DOM — either leaves the new box
-/// unattached, never laid out, layout stuck at zero. (Three detached text
-/// siblings make the computed index overshoot the two attached children, so
-/// the raw insert really does fail first.)
+/// mis-ordered or unattached, and an unattached one is never laid out at all.
 #[test]
 fn a_late_inserted_absolute_child_is_attached_by_canonicalization() {
     let mut doc = RinchDocument::new();

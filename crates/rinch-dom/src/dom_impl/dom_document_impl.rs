@@ -199,12 +199,10 @@ impl DomDocument for RinchDocument {
             (self.tree.nodes[p].taffy_id, self.tree.nodes[c].taffy_id)
         {
             if let Some(pos) = insert_pos {
-                // Count taffy children before this position to find taffy index
+                // Where this DOM position lands in the parent's *attached*
+                // Taffy children (#477) — not a count of DOM siblings.
                 let taffy_idx = self.compute_taffy_child_index(p, pos);
-                let _ = self
-                    .tree
-                    .taffy
-                    .insert_child_at_index(parent_taffy, taffy_idx, child_taffy);
+                self.attach_taffy_child_at(parent_taffy, taffy_idx, child_taffy, p, c);
             } else {
                 let _ = self.tree.taffy.add_child(parent_taffy, child_taffy);
             }
@@ -262,10 +260,12 @@ impl DomDocument for RinchDocument {
                     self.taffy_detach_contribution(parent_taffy, old.0);
                     if let Some(new_taffy) = self.tree.nodes[new.0].taffy_id {
                         let taffy_idx = self.compute_taffy_child_index(parent_id, pos);
-                        let _ = self.tree.taffy.insert_child_at_index(
+                        self.attach_taffy_child_at(
                             parent_taffy,
                             taffy_idx,
                             new_taffy,
+                            parent_id,
+                            new.0,
                         );
                     }
                 }
@@ -632,11 +632,11 @@ impl DomDocument for RinchDocument {
         if let (Some(parent_taffy), Some(child_taffy)) =
             (self.tree.nodes[p].taffy_id, self.tree.nodes[c].taffy_id)
         {
+            // Including the append leg (`actual_index == len`), which has no
+            // separate `add_child` path — an out-of-range index used to lose
+            // the child here with nothing to catch it (#477).
             let taffy_idx = self.compute_taffy_child_index(p, actual_index);
-            let _ = self
-                .tree
-                .taffy
-                .insert_child_at_index(parent_taffy, taffy_idx, child_taffy);
+            self.attach_taffy_child_at(parent_taffy, taffy_idx, child_taffy, p, c);
         }
         self.invalidate_parent_ifc(p);
         self.tree.layout_dirty = true; // Structural change needs full layout
@@ -955,6 +955,98 @@ fn plain_inset(
 }
 
 impl RinchDocument {
+    /// Attach `child_taffy` at `index` in `parent_taffy`'s Taffy child list,
+    /// **reporting** a structural failure instead of swallowing it (#477).
+    ///
+    /// All three DOM mutations that place a child at a position — `insert_before`,
+    /// `insert_child` and `replace_node` — used to spell this
+    /// `let _ = taffy.insert_child_at_index(..)`. Taffy rejects an index past
+    /// the end (`ChildIndexOutOfBounds`), and discarding that turned a
+    /// DOM↔Taffy structural divergence into an invisible one: the child was
+    /// **never attached**, so it was never laid out and never painted, with no
+    /// error anywhere. `insert_child` was the worst of the three — it had no
+    /// `add_child` fallback at all, so even a plain append failed that way.
+    ///
+    /// A Taffy structural error is never benign: it means the two trees
+    /// disagree about a shape one of them has already accepted. Three things
+    /// happen here instead of nothing. The index is **clamped** into range, so
+    /// a wrong index can misplace a node but can never fail to attach it; a
+    /// clamp, or a refusal that survives the clamp, is `warn!`-logged naming
+    /// both nodes; and [`crate::node::NodeTree::taffy_attach_faults`] counts
+    /// it, so the divergence is observable to a test or a devtools surface
+    /// without scraping logs. The fallback to `add_child` is the last resort —
+    /// attached in the wrong place beats attached nowhere, because "nowhere" is
+    /// the state that paints no pixels and reports nothing.
+    ///
+    /// With [`Self::compute_taffy_child_index`] deriving the index from the
+    /// parent's actual child list, the callers here cannot produce an
+    /// out-of-range index any more — so in a healthy tree this reports nothing
+    /// and the counter stays at zero. That is the point: it is the tripwire for
+    /// the next regression of this class, and for the Taffy errors this crate
+    /// does not otherwise cause (an insert under a parent Taffy no longer knows
+    /// about).
+    pub(crate) fn attach_taffy_child_at(
+        &mut self,
+        parent_taffy: taffy::NodeId,
+        index: usize,
+        child_taffy: taffy::NodeId,
+        parent_id: usize,
+        child_id: usize,
+    ) {
+        let len = self
+            .tree
+            .taffy
+            .children(parent_taffy)
+            .map(|c| c.len())
+            .unwrap_or(0);
+        let index = if index > len {
+            tracing::warn!(
+                "rinch-dom: Taffy child index {index} is out of range for parent \
+                 node {parent_id} <{parent_tag}>, whose Taffy child list holds \
+                 {len}; clamped to {len} while attaching node {child_id} \
+                 <{child_tag}>. The DOM and the Taffy tree have diverged (#477).",
+                // `get`, not index: a diagnostic must not be the thing that
+                // panics, and a text node has no tag at all.
+                parent_tag = self
+                    .tree
+                    .nodes
+                    .get(parent_id)
+                    .and_then(|n| n.tag())
+                    .unwrap_or("?"),
+                child_tag = self
+                    .tree
+                    .nodes
+                    .get(child_id)
+                    .and_then(|n| n.tag())
+                    .unwrap_or("?"),
+            );
+            self.tree.taffy_attach_faults += 1;
+            len
+        } else {
+            index
+        };
+        if let Err(err) = self
+            .tree
+            .taffy
+            .insert_child_at_index(parent_taffy, index, child_taffy)
+        {
+            tracing::warn!(
+                "rinch-dom: Taffy refused to attach node {child_id} at index \
+                 {index} under parent node {parent_id}: {err:?}. Falling back to \
+                 append — the child is attached in the wrong place rather than \
+                 not at all (#477).",
+            );
+            self.tree.taffy_attach_faults += 1;
+            if let Err(err) = self.tree.taffy.add_child(parent_taffy, child_taffy) {
+                tracing::warn!(
+                    "rinch-dom: the append fallback for node {child_id} under \
+                     parent node {parent_id} failed too: {err:?}. The node is \
+                     attached nowhere and will not be laid out or painted (#477).",
+                );
+            }
+        }
+    }
+
     /// The node's inline `style` attribute with `properties` merged in — a
     /// later declaration of a property replaces the earlier one **in place**,
     /// keeping every other declaration where the author wrote it.
@@ -1130,5 +1222,113 @@ impl RinchDocument {
         // Dirty-region paint cannot see an out-of-flow move before layout has
         // run; rebuild the whole scene.
         self.tree.full_repaint_needed = true;
+    }
+}
+
+#[cfg(test)]
+mod attach_taffy_child_tests {
+    use super::*;
+
+    /// The clamp-and-report path (#477): an index past the end of the parent's
+    /// Taffy child list attaches the child at the end, counts a fault and logs
+    /// it — rather than dropping the child on the floor, which is what
+    /// `let _ = taffy.insert_child_at_index(..)` did at all three call sites.
+    ///
+    /// The helper is exercised directly because the callers can no longer
+    /// reach this branch: [`RinchDocument::compute_taffy_child_index`] now
+    /// derives the index from the parent's live child list, so it is in range
+    /// by construction. Unreachable-from-there is the *state* the tripwire
+    /// exists for, not a reason to leave it untested.
+    ///
+    /// Kills: counting nothing, i.e. returning to a silent structural failure;
+    /// and dropping the clamp **and** the `add_child` fallback together, which
+    /// loses the child. Measured, not assumed: dropping *either one alone*
+    /// leaves this test green, because for an out-of-range index they are
+    /// observationally the same repair — clamping to `len` **is** appending, so
+    /// with the clamp Taffy accepts the insert and with only the fallback it
+    /// refuses and the append happens anyway. They are not redundant in
+    /// general: the fallback also catches the errors a clamp cannot fix (a
+    /// parent Taffy no longer holds), and the clamp is what makes "this call
+    /// cannot fail out of range" a structural property rather than a recovered
+    /// one. Nothing here can distinguish those, so nothing here claims to.
+    #[test]
+    fn an_out_of_range_attach_is_clamped_reported_and_still_attached() {
+        let mut doc = RinchDocument::new();
+        let body = doc.body();
+        let first = doc.create_element("div");
+        doc.append_child(body, first);
+        let stray = doc.create_element("div");
+
+        let parent_taffy = doc.tree.nodes[body.0].taffy_id.unwrap();
+        let first_taffy = doc.tree.nodes[first.0].taffy_id.unwrap();
+        let stray_taffy = doc.tree.nodes[stray.0].taffy_id.unwrap();
+        assert_eq!(
+            doc.tree.taffy.children(parent_taffy).unwrap().len(),
+            1,
+            "precondition: one attached child, so index 99 is out of range"
+        );
+        assert_eq!(
+            doc.tree.taffy_attach_faults, 0,
+            "precondition: no faults yet"
+        );
+
+        doc.attach_taffy_child_at(parent_taffy, 99, stray_taffy, body.0, stray.0);
+
+        assert_eq!(
+            doc.tree.taffy_attach_faults, 1,
+            "an out-of-range index is a DOM↔Taffy divergence and must be \
+             reported, not swallowed"
+        );
+        assert_eq!(
+            doc.tree.taffy.children(parent_taffy).unwrap(),
+            vec![first_taffy, stray_taffy],
+            "and the child must be attached anyway, at the clamped position — \
+             attached in the wrong place beats attached nowhere"
+        );
+    }
+
+    /// The ordinary leg is exact and silent: the child lands at the index it
+    /// was given, and nothing is reported.
+    ///
+    /// Kills: a clamp that fires one slot early (`index >= len` rather than
+    /// `index > len`), which would turn every legitimate append into a
+    /// reported fault and make the counter useless as a divergence signal.
+    #[test]
+    fn an_in_range_attach_is_exact_and_silent() {
+        let mut doc = RinchDocument::new();
+        let body = doc.body();
+        let a = doc.create_element("div");
+        doc.append_child(body, a);
+        let b = doc.create_element("div");
+        doc.append_child(body, b);
+        let mid = doc.create_element("div");
+
+        let parent_taffy = doc.tree.nodes[body.0].taffy_id.unwrap();
+        let a_taffy = doc.tree.nodes[a.0].taffy_id.unwrap();
+        let b_taffy = doc.tree.nodes[b.0].taffy_id.unwrap();
+        let mid_taffy = doc.tree.nodes[mid.0].taffy_id.unwrap();
+
+        // Index 1 of a two-element list: strictly interior, so neither
+        // endpoint can stand in for it.
+        doc.attach_taffy_child_at(parent_taffy, 1, mid_taffy, body.0, mid.0);
+
+        assert_eq!(
+            doc.tree.taffy.children(parent_taffy).unwrap(),
+            vec![a_taffy, mid_taffy, b_taffy]
+        );
+        assert_eq!(
+            doc.tree.taffy_attach_faults, 0,
+            "an in-range insert is not a divergence and must report nothing"
+        );
+
+        // And `index == len` is the last legal index, not the first illegal one.
+        let tail = doc.create_element("div");
+        let tail_taffy = doc.tree.nodes[tail.0].taffy_id.unwrap();
+        doc.attach_taffy_child_at(parent_taffy, 3, tail_taffy, body.0, tail.0);
+        assert_eq!(
+            doc.tree.taffy.children(parent_taffy).unwrap(),
+            vec![a_taffy, mid_taffy, b_taffy, tail_taffy]
+        );
+        assert_eq!(doc.tree.taffy_attach_faults, 0);
     }
 }
