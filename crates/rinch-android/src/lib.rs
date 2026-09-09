@@ -66,6 +66,12 @@ pub mod display_decode;
 pub mod file_picker;
 #[cfg(target_os = "android")]
 pub mod ime;
+// Not gated on Android, unlike everything else here. The queue, the filter and
+// the handler registry in this module are ordinary Rust with no JNI in them —
+// only the entry point Java calls is Android-only — and compiling them
+// everywhere is what lets `cargo test -p rinch-android` exercise the real code
+// on a laptop rather than a copy of it written out again for the test.
+pub mod intent;
 pub mod lifecycle;
 pub mod location;
 #[cfg(target_os = "android")]

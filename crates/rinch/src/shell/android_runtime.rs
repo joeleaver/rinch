@@ -617,6 +617,12 @@ fn run_loop(android_app: AndroidApp, mut app: RinchApp) {
             events::dispatch_configuration_change();
         }
 
+        // And intents the app was handed from outside: a share, a deep link.
+        // Unlike the drains above this one keeps what it cannot deliver, so an
+        // app that registers its handler a frame or two into startup still
+        // receives the share that launched it. See `rinch_android::intent`.
+        rinch_android::intent::drain_incoming_intents();
+
         // Drain cross-thread callbacks
         rinch_core::drain_main_callbacks();
         rinch_core::reactive::drain_polls();

@@ -133,13 +133,33 @@ pub fn init(android_app: &AndroidApp) {
                     fn_ptr: crate::location::Java_com_rinch_RinchActivity_nativeOnLocationChanged
                         as *mut std::ffi::c_void,
                 },
+                jni::NativeMethod {
+                    name: "nativeOnIncomingIntent".into(),
+                    sig: INCOMING_INTENT_SIG.into(),
+                    fn_ptr: crate::intent::Java_com_rinch_RinchActivity_nativeOnIncomingIntent
+                        as *mut std::ffi::c_void,
+                },
             ],
         )
         .expect("failed to register RinchActivity native methods");
 
         log::info!("RinchActivity native methods registered");
     });
+
+    // Last, and only here. `RinchActivity.onCreate` has by now stored the
+    // intent the app was launched with — a share, a deep link — without
+    // ever calling a native, because a native called from a lifecycle override
+    // races this function and loses on a cold start. This is the far side of
+    // that handshake: everything above is registered, so Java may hand over
+    // what it has been holding, and anything arriving after this goes straight
+    // through. See [`crate::intent`].
+    crate::intent::flush_pending_java_intents();
 }
+
+/// `nativeOnIncomingIntent`'s JNI descriptor, named rather than written inline
+/// only because it is too long to sit on one line in the array above, and a
+/// wrapped type descriptor is a descriptor with a typo waiting in it.
+const INCOMING_INTENT_SIG: &str = "(Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;[Ljava/lang/String;Ljava/lang/String;)V";
 
 fn bridge() -> &'static Bridge {
     BRIDGE
