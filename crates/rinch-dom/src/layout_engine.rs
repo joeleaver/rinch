@@ -1290,10 +1290,16 @@ impl RinchDocument {
     /// flex containers, stayed green.
     ///
     /// The IFC **measure-leaf canonicalization** (`ifc.rs`, #466 PR2) is a
-    /// deliberate exception and not a fifth caller: it is selecting the
+    /// deliberate exception and not a fifth *caller*: it is selecting the
     /// *out-of-flow* children of one IFC root, which is a different question,
     /// and it reads the DOM rather than the attachment on purpose (#477). It
     /// does its own contents flattening through `collect_contents_out_of_flow`.
+    ///
+    /// It **is** a fifth whole-list `set_children`, and #477 counts it as one:
+    /// it is the pass that heals a late-inserted out-of-flow child, which is
+    /// why that issue's forecast about #466 PR2 came out inverted. "Four" here
+    /// means four rebuilds that must take their **order** from this function —
+    /// not four places that replace a Taffy child list.
     pub(crate) fn collect_effective_taffy_children(
         nodes: &slab::Slab<crate::node::Node>,
         node_id: usize,
