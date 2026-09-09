@@ -72,6 +72,7 @@ pub mod screen;
 pub mod sensors;
 #[cfg(target_os = "android")]
 pub mod share;
+pub mod wake;
 
 #[cfg(target_os = "android")]
 pub use bridge::init;

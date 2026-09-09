@@ -16,6 +16,15 @@ struct Bridge {
 static BRIDGE: OnceLock<Bridge> = OnceLock::new();
 
 pub fn init(android_app: &AndroidApp) {
+    // Before the JNI methods below are registered, because registering them is
+    // what makes it possible for a Java thread to call into this crate at all,
+    // and every one of those entry points wakes the frame loop (see
+    // [`crate::wake`]). A waker installed afterwards would leave a window in
+    // which a callback could enqueue work into a loop with no way to hear
+    // about it — small, but the kind of window that only ever fires on
+    // somebody else's phone.
+    crate::wake::install(android_app);
+
     let vm_ptr = android_app.vm_as_ptr() as *mut jni::sys::JavaVM;
     let activity_ptr = android_app.activity_as_ptr() as jni::sys::jobject;
 

@@ -213,6 +213,10 @@ pub extern "C" fn Java_com_rinch_RinchActivity_nativeOnLocationChanged(
 fn record_fix(data: LocationData) {
     *LOCATION.lock().unwrap() = Some(data);
     LOCATION_CHANGED.store(true, Ordering::Relaxed);
+    // Same reason as the sensor callback: a fix arrives on the location
+    // thread, and since K37 the frame loop is asleep until something says
+    // otherwise. See [`crate::wake`].
+    crate::wake::wake_main();
 }
 
 #[cfg(test)]
@@ -234,6 +238,29 @@ mod tests {
             timestamp_ms: 0,
             provider: "test".into(),
         }
+    }
+
+    /// **Every producer the frame loop only *drains* has to wake it.**
+    ///
+    /// Since K37 the Android loop sleeps on the looper with no timeout, so a
+    /// queue it merely polls once a frame is a queue nobody looks at while the
+    /// screen is still. The 16ms timeout used to cover for that; nothing does
+    /// now except the explicit `wake_main` in this producer. Losing it is
+    /// silent everywhere else — it compiles, it queues, it drains correctly the
+    /// moment anything *else* wakes the loop — so the only thing that can catch
+    /// its removal is asserting the call happened.
+    #[test]
+    fn a_recorded_fix_wakes_the_frame_loop() {
+        let _serial = crate::test_serial();
+
+        let before = crate::wake::wake_count();
+        record_fix(fix(1.0));
+        assert!(
+            crate::wake::wake_count() > before,
+            "a location fix that does not ring the waker sits in its mutex \
+             until the user happens to touch the screen"
+        );
+        drain_location();
     }
 
     /// A callback registered while a component was rendering must not run once
