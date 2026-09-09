@@ -31,6 +31,15 @@ jobs:
 
       - name: Install system dependencies
         run: |
+          # The runner image ships a Google Chrome apt source no rinch build
+          # uses. Its CDN intermittently serves a `Packages.gz` whose hash does
+          # not match the index it advertises, and `apt-get update` treats one
+          # bad repo as a fatal error — so the step fails, every step after it
+          # is **skipped**, and the job reports a red `clippy`/`test`/`build`
+          # that never ran a line of Rust. Three re-runs did not clear it.
+          # Drop the source rather than make a Rust build depend on Google's CDN.
+          sudo rm -f /etc/apt/sources.list.d/google-chrome*.list \
+                     /etc/apt/sources.list.d/google-chrome*.sources
           sudo apt-get update
           sudo apt-get install -y libgtk-3-dev libglib2.0-dev libatk1.0-dev libcairo2-dev libpango1.0-dev libgdk-pixbuf2.0-dev libasound2-dev libxdo-dev libmpv-dev
 
