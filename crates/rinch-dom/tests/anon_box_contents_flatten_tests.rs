@@ -486,8 +486,10 @@ mod painted {
         );
         painter
             .pixels()
-            .chunks_exact(4)
-            .filter(|p| p[0] == 255 && p[1] == 0 && p[2] == 0 && p[3] == 255)
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .filter(|p| **p == [255, 0, 0, 255])
             .count()
     }
 
