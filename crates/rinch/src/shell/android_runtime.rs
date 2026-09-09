@@ -212,6 +212,12 @@ fn run_loop(android_app: AndroidApp, mut app: RinchApp) {
         // it after that swap — a cross-thread callback, an effect that ran
         // during the paint — would otherwise wait for an unrelated event.
         let timeout = android_frame::poll_timeout(
+            // Without one the bail below `continue`s past every drain and past
+            // the frame clock, so this iteration will do nothing — and the
+            // `REDRAW_PENDING` swap that would clear the flag read on the next
+            // line is itself below that bail, so a redraw requested while the
+            // surface is gone can never clear. See `poll_timeout`.
+            surface.is_some(),
             presented,
             REDRAW_PENDING.load(Ordering::Acquire),
             frame_start.elapsed(),

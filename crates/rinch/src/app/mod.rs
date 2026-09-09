@@ -6525,6 +6525,41 @@ mod android_frame_clock_tests {
         );
     }
 
+    /// **The redraw that latches**, and the proof it is reachable rather than
+    /// theoretical.
+    ///
+    /// `run_loop` dispatches a pending `WindowFocus` from the block
+    /// *immediately above* its `surface.is_none()` bail — deliberately, so a
+    /// blur is not deferred past the regain that follows it — and
+    /// `MainEvent::LostFocus` arrives in the same `poll_events` as the
+    /// `TerminateWindow` that drops the surface. So whatever this dispatch
+    /// returns is applied on the very iteration that then bails, and
+    /// `AppAction::RequestRedraw` sets a `REDRAW_PENDING` whose only clear is
+    /// the `swap(false)` *below* that bail.
+    ///
+    /// That is the whole reachability argument for the surfaceless spin, and
+    /// this is the one link in it that a host test can hold: does losing
+    /// window focus actually ask for a redraw? It does, and it must keep
+    /// doing so — the blurred widget has a caret to hide. So the flag is not
+    /// the thing to fix; the loop pacing itself on a flag it cannot clear is.
+    /// See `android_frame::poll_timeout`'s `has_surface` gate.
+    #[test]
+    fn losing_window_focus_asks_for_a_redraw() {
+        let mut sheet = mount();
+        // Focused is the starting state, so this is a real change.
+        let actions = sheet
+            .app
+            .handle_event(PlatformEvent::WindowFocus(false), PHYSICAL, SCALE);
+        assert!(
+            actions
+                .iter()
+                .any(|a| matches!(a, AppAction::RequestRedraw)),
+            "a blur repaints — and on Android it does so from above the \
+             no-surface bail, on the iteration the surface goes away, which \
+             is how the redraw flag latches with nothing able to clear it"
+        );
+    }
+
     /// **Which state decides how long the loop sleeps**, tested in both
     /// directions on one slide.
     ///
@@ -6568,7 +6603,8 @@ mod android_frame_clock_tests {
             // `spent` is zero and `wake_pending` false so that the assertion
             // is about the *decision*, not about arithmetic already covered by
             // `android_frame::pacing_tests`.
-            let wait = android_frame::poll_timeout(presented, false, Duration::ZERO, FRAME, None);
+            let wait =
+                android_frame::poll_timeout(true, presented, false, Duration::ZERO, FRAME, None);
 
             if presented {
                 assert!(

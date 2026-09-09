@@ -320,12 +320,42 @@ pub(crate) fn pump_frame(app: &mut RinchApp, window_size: (u32, u32), scale_fact
 /// frames of running flat out, and the deadline alone would not notice a panel
 /// that changed mode after `InitWindow` read its rate.
 pub(crate) fn poll_timeout(
+    has_surface: bool,
     presented: bool,
     wake_pending: bool,
     spent: Duration,
     frame_interval: Duration,
     polls_due: Option<Duration>,
 ) -> Option<Duration> {
+    // Nothing this loop can do without a surface, so nothing to come back for.
+    // The `surface.is_none()` bail in `run_loop` `continue`s before the input
+    // drain, before all six queue drains, before `drain_main_callbacks`,
+    // before `drain_polls`, and before the frame clock — so an iteration with
+    // no surface performs *no work at all*, and any deadline set here buys a
+    // wake-up that accomplishes nothing.
+    //
+    // It is not merely wasteful, it is unclearable, which is the shape this
+    // repository keeps getting bitten by. `REDRAW_PENDING`'s only clear is the
+    // `swap(false)` below that bail, so a redraw requested while the surface
+    // is gone latches — and `WindowFocus(false)` requests one
+    // (`event_dispatch.rs`, `AppAction::RequestRedraw`) from the block
+    // immediately *above* the bail, on the very iteration the activity
+    // backgrounds, because `LostFocus` and the `TerminateWindow` that drops
+    // the surface arrive together. Read as `wake_pending`, that latch would
+    // pace every subsequent iteration at a full frame interval with `spent`
+    // near zero: a background spin for as long as the app is away, at the
+    // panel's rate rather than the old timeout's.
+    //
+    // `polls_due` is gated for the same reason and is the worse of the two:
+    // `drain_polls` is below the bail too, so a timed `poll_signal` never
+    // advances its `last_fired`, `next_poll_due` saturates to
+    // `Duration::ZERO`, and the loop stops blocking entirely. Nothing is lost
+    // by sleeping instead — the work could not have been done — and
+    // `InitWindow` arrives through the looper, so the wake-up is guaranteed.
+    if !has_surface {
+        return None;
+    }
+
     let paced = if presented || wake_pending {
         Some(frame_interval.saturating_sub(spent))
     } else {
@@ -350,7 +380,7 @@ mod pacing_tests {
     /// deadline — not 16ms after this one finished.
     #[test]
     fn a_presented_frame_waits_only_for_the_rest_of_the_frame() {
-        let left = poll_timeout(true, false, Duration::from_millis(4), FRAME, None)
+        let left = poll_timeout(true, true, false, Duration::from_millis(4), FRAME, None)
             .expect("an animating loop does not sleep until an event");
         assert!(
             left < Duration::from_millis(13) && left > Duration::from_millis(12),
@@ -364,7 +394,7 @@ mod pacing_tests {
     #[test]
     fn a_frame_that_overran_its_deadline_does_not_sleep_at_all() {
         assert_eq!(
-            poll_timeout(true, false, Duration::from_millis(40), FRAME, None),
+            poll_timeout(true, true, false, Duration::from_millis(40), FRAME, None),
             Some(Duration::ZERO),
             "a frame that is already late must not be made later by its own \
              pacing"
@@ -377,7 +407,7 @@ mod pacing_tests {
     #[test]
     fn a_still_screen_waits_for_an_event_rather_than_a_deadline() {
         assert_eq!(
-            poll_timeout(false, false, Duration::from_micros(80), FRAME, None),
+            poll_timeout(true, false, false, Duration::from_micros(80), FRAME, None),
             None,
             "an idle loop must have no timeout at all — a short one is a \
              wake-up counter, and every wake-up on a still screen is battery \
@@ -390,7 +420,7 @@ mod pacing_tests {
     #[test]
     fn a_wake_that_landed_after_the_swap_still_gets_its_frame() {
         assert_eq!(
-            poll_timeout(false, true, FRAME, FRAME, None),
+            poll_timeout(true, false, true, FRAME, FRAME, None),
             Some(Duration::ZERO),
             "the work is already queued; the next iteration is due now"
         );
@@ -408,6 +438,7 @@ mod pacing_tests {
     fn a_still_screen_still_wakes_for_a_timed_poll() {
         assert_eq!(
             poll_timeout(
+                true,
                 false,
                 false,
                 Duration::ZERO,
@@ -420,12 +451,109 @@ mod pacing_tests {
         );
     }
 
+    /// ...and it must be able to *shorten* one, which is not the same
+    /// assertion and is not implied by the one above.
+    ///
+    /// **The `(Some, Some)` arm was sampled only where `paced` was already the
+    /// smaller of the two**, so `a.min(b)` and plain `a` agreed and the
+    /// mutation that drops `polls_due` entirely from the animating case
+    /// survived a green suite. Sample it from the other side: the direction a
+    /// comparison chooses is invisible from whichever side happens to win.
+    #[test]
+    fn a_poll_due_sooner_than_the_frame_wins() {
+        assert_eq!(
+            poll_timeout(
+                true,
+                true,
+                false,
+                Duration::ZERO,
+                FRAME,
+                Some(Duration::from_millis(2)),
+            ),
+            Some(Duration::from_millis(2)),
+            "an animating screen still owes a 2ms bridge its sample; the \
+             sooner of the two deadlines wins in *both* directions"
+        );
+    }
+
+    /// Both reasons to pace at once is a state the loop reaches constantly —
+    /// a frame presented while a cross-thread callback landed during the paint
+    /// — and nothing sampled it, so `||` and `^` agreed everywhere the fixture
+    /// looked. An exclusive-or here would send the busiest possible iteration
+    /// to sleep until an unrelated event.
+    #[test]
+    fn a_presented_frame_with_a_wake_already_pending_still_paces() {
+        assert_eq!(
+            poll_timeout(true, true, true, Duration::ZERO, FRAME, None),
+            Some(FRAME),
+            "presenting and having work queued are two reasons to come back, \
+             not two halves of one"
+        );
+    }
+
+    /// **No surface, no work, no reason to wake** — and the flag that says
+    /// otherwise cannot clear itself.
+    ///
+    /// `run_loop`'s `surface.is_none()` bail `continue`s above every drain and
+    /// above the frame clock, so `REDRAW_PENDING`'s only clear — the
+    /// `swap(false)` below it — is unreachable while the surface is gone. A
+    /// redraw requested in that window latches for as long as the app is
+    /// backgrounded, and `WindowFocus(false)` requests one from the block
+    /// immediately above the bail, on the very iteration the surface is
+    /// dropped (`LostFocus` and `TerminateWindow` arrive together).
+    ///
+    /// Paced on that latch, with `spent` near zero because the iteration does
+    /// nothing, every one of those iterations would ask for a whole frame
+    /// interval — a background spin at the panel's rate. This is the
+    /// "armed by one event, cleared only by a second that may never arrive"
+    /// shape, and the second clearing condition is simply that a loop which
+    /// can do no work does not schedule itself to try.
+    #[test]
+    fn a_loop_with_no_surface_sleeps_however_much_work_is_queued() {
+        assert_eq!(
+            poll_timeout(false, false, true, Duration::ZERO, FRAME, None),
+            None,
+            "a redraw queued while the surface is gone cannot be served and \
+             cannot be cleared; pacing on it is a spin that lasts as long as \
+             the app is in the background"
+        );
+        assert_eq!(
+            poll_timeout(false, true, false, Duration::ZERO, FRAME, None),
+            None,
+            "and a frame that reached the glass before the surface went away \
+             is not a reason to come back to a loop that has none"
+        );
+    }
+
+    /// The same hole, through the argument added for `poll_signal`, where it
+    /// is worse: `drain_polls` is below the bail too, so a timed poll never
+    /// advances its `last_fired` and `next_poll_due` saturates to zero. A
+    /// zero-length timeout is a non-blocking poll, so this one does not spin
+    /// at the refresh rate — it spins as fast as the CPU allows.
+    #[test]
+    fn a_loop_with_no_surface_sleeps_through_an_overdue_poll() {
+        assert_eq!(
+            poll_timeout(
+                false,
+                false,
+                false,
+                Duration::ZERO,
+                FRAME,
+                Some(Duration::ZERO)
+            ),
+            None,
+            "the sample cannot be taken without a surface, so waking to take \
+             it is a busy-wait with nothing at the end of it"
+        );
+    }
+
     /// ...and the poll must never *lengthen* a sleep. A one-second poll on a
     /// screen that is mid-animation is not a reason to wait a second.
     #[test]
     fn a_slow_poll_does_not_delay_an_animating_frame() {
         assert_eq!(
             poll_timeout(
+                true,
                 true,
                 false,
                 Duration::ZERO,
