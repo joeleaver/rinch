@@ -342,8 +342,8 @@ fn an_insert_before_a_block_past_two_empty_contents_wrappers_is_attached() {
         "div",
         "display: flex; flex-direction: column",
     );
-    let w1 = child_of(&mut doc, container, "div", "display: contents");
-    let w2 = child_of(&mut doc, container, "div", "display: contents");
+    child_of(&mut doc, container, "div", "display: contents");
+    child_of(&mut doc, container, "div", "display: contents");
     let blk = child_of(&mut doc, container, "div", "height: 10px");
     doc.resolve_layout(VW, VH);
 
@@ -358,7 +358,6 @@ fn an_insert_before_a_block_past_two_empty_contents_wrappers_is_attached() {
         "precondition: the old rule counts both wrappers, giving index 2 into \
          a one-element list"
     );
-    let _ = (w1, w2);
 
     let block = doc.create_element("div");
     doc.set_attribute(block, "style", "height: 10px");
