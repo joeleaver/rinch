@@ -80,6 +80,129 @@ fn assert_no_attach_faults(doc: &RinchDocument) {
     );
 }
 
+/// The layout of `node` after a pass, `(x, y, w, h)`.
+fn layout_of(doc: &RinchDocument, node: NodeId) -> (f32, f32, f32, f32) {
+    let l = doc.tree.nodes[node.0].layout;
+    (l.x, l.y, l.width, l.height)
+}
+
+// ---------------------------------------------------------------------------
+// The ordinary path: a plain block container, nothing exotic
+// ---------------------------------------------------------------------------
+//
+// Everything below this block is a gap-source fixture, and every one of them
+// has **at most one attached preceding sibling** — which is a fixed point: a
+// walk that goes forward over the preceding siblings and one that goes
+// backward return the same answer whenever there is only one of them to find.
+// So the whole exotic suite is blind to the direction of the search, and the
+// direction is what decides the answer on the path this code actually spends
+// its life on: an ordinary block container, no IFC detach, no `display:
+// contents`, no measure leaf — every `insert_before` a keyed `for` reconcile
+// emits.
+//
+// It also does not heal. Nothing rebuilds a plain container's Taffy child
+// list; that is the same fact that makes the real #477 defect latent, and here
+// it works the other way, so a wrong index in this shape is a permanent,
+// visible, wrong-order layout. These two tests are the ones that would have
+// caught it.
+
+/// A middle insert into a plain 3-child block container: the new box goes after
+/// **two** attached preceding siblings, which is the smallest fixture where a
+/// forward walk and a backward one disagree.
+///
+/// `[b1 10px, b2 20px, b3 30px]`, insert `X 40px` before `b3` → Taffy index
+/// **2**, `y = 30`. A forward walk stops at the *first* attached preceding
+/// sibling instead of the last and answers index **1**, `y = 10`, shoving `b2`
+/// down to 50 — and no rebuild ever corrects it.
+///
+/// Three children rather than two: with two, the interesting insert position
+/// and `len` coincide, so an "always append" answer would pass.
+///
+/// Kills: walking the preceding siblings forwards (dropping `.rev()`);
+/// returning `pos` instead of `pos + 1`; appending unconditionally.
+#[test]
+fn a_middle_insert_into_a_plain_block_container_follows_all_its_preceding_siblings() {
+    let mut doc = RinchDocument::new();
+    let body = doc.body();
+    let container = child_of(&mut doc, body, "div", "width: 400px");
+    let b1 = child_of(&mut doc, container, "div", "height: 10px");
+    let b2 = child_of(&mut doc, container, "div", "height: 20px");
+    let b3 = child_of(&mut doc, container, "div", "height: 30px");
+    doc.resolve_layout(VW, VH);
+
+    assert_eq!(
+        attached(&doc, container),
+        vec![taffy_of(&doc, b1), taffy_of(&doc, b2), taffy_of(&doc, b3)],
+        "precondition: a plain container keeps all three children attached, in \
+         DOM order — two of them precede the insertion point"
+    );
+
+    let x = doc.create_element("div");
+    doc.set_attribute(x, "style", "height: 40px");
+    doc.insert_before(container, x, b3);
+
+    assert_eq!(
+        taffy_index_of(&doc, container, x),
+        Some(2),
+        "the new box follows b1 AND b2; index 1 is what a forward walk answers, \
+         having stopped at the first attached preceding sibling"
+    );
+    assert_no_attach_faults(&doc);
+
+    doc.resolve_layout(VW, VH);
+    let (_, y, _, h) = layout_of(&doc, x);
+    assert!(
+        (y - 30.0).abs() < 0.5 && (h - 40.0).abs() < 0.5,
+        "and it stacks after 10px + 20px, so y = 30 (got y={y}, h={h}); y = 10 \
+         is the forward-walk order, and nothing rebuilds a plain container, so \
+         it would stay wrong for the life of the document"
+    );
+    let (_, y3, ..) = layout_of(&doc, b3);
+    assert!(
+        (y3 - 70.0).abs() < 0.5,
+        "b3 follows the new box at 30 + 40 = 70, got {y3}"
+    );
+}
+
+/// The **append** leg of the same shape, which routes through
+/// `insert_child`'s only Taffy path.
+///
+/// `[b1 10px, b2 20px, b3 30px]`, `insert_child(X 40px, 3)` → Taffy index
+/// **3**, `y = 60`. A forward walk answers index **1** and `y = 10` here too —
+/// same defect, and this leg has no `add_child` fallback to mask it.
+///
+/// Kills: the same three as above, on the entry point that lacks a fallback.
+#[test]
+fn an_append_to_a_plain_block_container_lands_last() {
+    let mut doc = RinchDocument::new();
+    let body = doc.body();
+    let container = child_of(&mut doc, body, "div", "width: 400px");
+    let b1 = child_of(&mut doc, container, "div", "height: 10px");
+    let b2 = child_of(&mut doc, container, "div", "height: 20px");
+    let b3 = child_of(&mut doc, container, "div", "height: 30px");
+    doc.resolve_layout(VW, VH);
+    assert_eq!(attached(&doc, container).len(), 3, "precondition");
+
+    let x = doc.create_element("div");
+    doc.set_attribute(x, "style", "height: 40px");
+    doc.insert_child(container, x, 3);
+
+    assert_eq!(
+        taffy_index_of(&doc, container, x),
+        Some(3),
+        "an append lands last; index 1 is the forward-walk answer"
+    );
+    assert_no_attach_faults(&doc);
+
+    doc.resolve_layout(VW, VH);
+    let (_, y, ..) = layout_of(&doc, x);
+    assert!(
+        (y - 60.0).abs() < 0.5,
+        "and it stacks after 10 + 20 + 30, so y = 60, got {y}"
+    );
+    let _ = (b1, b2, b3);
+}
+
 // ---------------------------------------------------------------------------
 // Gap source 1: the IFC detach
 // ---------------------------------------------------------------------------

@@ -521,10 +521,14 @@ impl RinchDocument {
         for i in (0..dom_index.min(children.len())).rev() {
             contribution.clear();
             Self::collect_taffy_contribution(&self.tree.nodes, children[i], &mut contribution);
-            // The *last* slot this sibling occupies. A spliced wrapper holds a
-            // run of them, and a run can be interrupted (a middle grandchild
-            // detached into an IFC), so take the maximum position rather than
-            // the position of the last contributed id.
+            // The *last* slot this sibling occupies. `max` rather than "the
+            // position of the last contributed id" is **defensive, not
+            // demonstrated**: the contribution is collected in DOM pre-order,
+            // so the two agree unless the parent's attached list is itself out
+            // of contribution order, and every rebuild pass writes flattened
+            // DOM order. Swapping this for `.last()` survives the suite. Kept
+            // because it costs nothing and is right under a list this function
+            // did not produce.
             let last = contribution
                 .iter()
                 .filter_map(|id| attached.iter().position(|a| a == id))
@@ -542,18 +546,31 @@ impl RinchDocument {
     ///
     /// The gate mirrors `taffy_detach_contribution`'s (#517/#520): computed
     /// `display: contents` **or** [`crate::node::Node::contents_spliced`].
-    /// Display alone describes the node *now*, while the flag records what a
-    /// past sync pass did — a wrapper restyled away from `contents` but not yet
-    /// re-synced still has its children sitting in the parent's list. Both ids
-    /// are collected unconditionally rather than either/or, for the same reason
-    /// that detach does: the two windows (spliced-but-computing-a-box, and
-    /// computing-`contents`-but-not-yet-spliced) both exist, and only a
-    /// superset covers both.
     ///
-    /// Erring wide is free here for the same reason it is there — an id that is
-    /// not actually attached contributes no position and is skipped — while
-    /// erring narrow silently loses the sibling and sends the search one step
-    /// further back than it should go.
+    /// **Only the `contents_spliced` half is load-bearing here**, and that is
+    /// measured: dropping it is killed by
+    /// `an_insert_after_a_wrapper_restyled_off_contents_still_clears_its_slots`,
+    /// while dropping the `Contents` half survives the whole workspace. The
+    /// reason is that `sync_display_contents` sets the flag for *every*
+    /// `Contents` node at the end of every pass, so a wrapper that computes
+    /// `Contents` without yet being spliced still has its **own** id in the
+    /// parent's list — and `out.push(taffy_id)` is unconditional, so the
+    /// sibling is found without the recursion. The `Contents` half is kept as
+    /// belt-and-braces symmetry with the detach gate, not because a case here
+    /// is known to need it.
+    ///
+    /// Erring wide is free — an id that is not actually attached contributes no
+    /// position and is skipped, so a wide gate can only *miss* an absent id,
+    /// never pick a wrong slot — while erring narrow silently loses the sibling
+    /// and sends the search one step further back than it should go.
+    ///
+    /// Distinct from `LayoutEngine`'s `collect_effective_taffy_children`, which
+    /// is the authority for a whole-list **rebuild** and gates on `Contents`
+    /// alone. That is right for a rebuild, which runs inside
+    /// `sync_display_contents`' own pass; it is wrong *here*, which runs at
+    /// mutation time between syncs, where a restyled-off-contents wrapper's
+    /// slots are still its children's. The two are not interchangeable and the
+    /// gate difference is the reason.
     fn collect_taffy_contribution(
         nodes: &slab::Slab<crate::node::Node>,
         node_id: usize,

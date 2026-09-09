@@ -974,17 +974,28 @@ impl RinchDocument {
     /// clamp, or a refusal that survives the clamp, is `warn!`-logged naming
     /// both nodes; and [`crate::node::NodeTree::taffy_attach_faults`] counts
     /// it, so the divergence is observable to a test or a devtools surface
-    /// without scraping logs. The fallback to `add_child` is the last resort —
-    /// attached in the wrong place beats attached nowhere, because "nowhere" is
-    /// the state that paints no pixels and reports nothing.
+    /// without scraping logs.
     ///
-    /// With [`Self::compute_taffy_child_index`] deriving the index from the
-    /// parent's actual child list, the callers here cannot produce an
-    /// out-of-range index any more — so in a healthy tree this reports nothing
-    /// and the counter stays at zero. That is the point: it is the tripwire for
-    /// the next regression of this class, and for the Taffy errors this crate
-    /// does not otherwise cause (an insert under a parent Taffy no longer knows
-    /// about).
+    /// **What the clamp is worth, measured against taffy 0.12.2 rather than
+    /// assumed.** `insert_child_at_index` returns `Err` for exactly one reason,
+    /// `ChildIndexOutOfBounds`; its only other fallible call is `mark_dirty`,
+    /// which always answers `Ok`. So the clamp does not merely *usually* avoid
+    /// the error — it makes this call **total**, and with
+    /// [`Self::compute_taffy_child_index`] deriving an in-range index by
+    /// construction, `taffy_attach_faults` is *provably* zero in shipped code
+    /// rather than hopefully zero. That is the intended tripwire semantics: a
+    /// non-zero count means a regression of this class has been reintroduced.
+    ///
+    /// **The `add_child` fallback is therefore unreachable today, and it does
+    /// not do what an earlier draft of this comment claimed.** It does *not*
+    /// rescue "a parent Taffy no longer holds": that input does not produce an
+    /// error at all, it **panics** inside Taffy (`invalid SlotMap key used`),
+    /// and `add_child` panics identically on it, since both index the same slot
+    /// maps. It is kept as defence in depth against one thing only — a future
+    /// Taffy growing a second error variant here, which the clamp would not
+    /// cover — and on that day "attached in the wrong place" still beats
+    /// "attached nowhere", which is the state that paints no pixels and reports
+    /// nothing. Do not read it as covering anything else.
     pub(crate) fn attach_taffy_child_at(
         &mut self,
         parent_taffy: taffy::NodeId,
@@ -1246,11 +1257,11 @@ mod attach_taffy_child_tests {
     /// leaves this test green, because for an out-of-range index they are
     /// observationally the same repair — clamping to `len` **is** appending, so
     /// with the clamp Taffy accepts the insert and with only the fallback it
-    /// refuses and the append happens anyway. They are not redundant in
-    /// general: the fallback also catches the errors a clamp cannot fix (a
-    /// parent Taffy no longer holds), and the clamp is what makes "this call
-    /// cannot fail out of range" a structural property rather than a recovered
-    /// one. Nothing here can distinguish those, so nothing here claims to.
+    /// refuses and the append happens anyway. Nothing here can distinguish
+    /// them, and nothing here claims to. They are not interchangeable, but the
+    /// asymmetry runs the *other* way from what an earlier draft said: the
+    /// clamp is what makes the call total (`ChildIndexOutOfBounds` is the only
+    /// error Taffy can return here), and the fallback is the unreachable one.
     #[test]
     fn an_out_of_range_attach_is_clamped_reported_and_still_attached() {
         let mut doc = RinchDocument::new();

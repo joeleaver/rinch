@@ -969,13 +969,28 @@ pub struct NodeTree {
     ///
     /// A non-zero value means the DOM and the Taffy tree disagreed about a
     /// shape one of them had already accepted, which is never benign — the
-    /// affected node is attached in the wrong place (or, if the fallback
-    /// failed too, nowhere at all, and so laid out and painted nowhere). Every
-    /// increment is also `tracing::warn!`-logged with both node ids; this
-    /// counter exists so a test or a devtools surface can assert on the
-    /// *absence* of divergence without scraping logs.
+    /// affected node is attached in the wrong place. Every increment is also
+    /// `tracing::warn!`-logged with both node ids; this counter exists so a
+    /// test or a devtools surface can assert on the *absence* of divergence
+    /// without scraping logs.
+    ///
+    /// **In shipped code this is provably zero**, not hopefully zero:
+    /// `compute_taffy_child_index` returns an in-range index by construction,
+    /// and the clamp makes `insert_child_at_index` total (`taffy 0.12.2` can
+    /// only fail it with `ChildIndexOutOfBounds`). So a non-zero value is not a
+    /// tolerable condition to be handled — it is evidence that a regression of
+    /// the #477 class has been reintroduced.
+    ///
+    /// **Monotonic, never reset.** It answers *"has this tree ever diverged"*,
+    /// not *"did it diverge this frame"* — a per-frame question would need a
+    /// snapshot-and-compare at the call site, which nothing needs yet.
     ///
     /// See [`crate::RinchDocument::attach_taffy_child_at`].
+    //
+    // Note for a future field: `NodeTree` is `pub` with all-`pub` fields and is
+    // not `#[non_exhaustive]`, so adding one is strictly breaking for any
+    // downstream struct literal. Nothing in-tree constructs it that way
+    // (`NodeTree::new` is the constructor), which is why this was acceptable.
     pub taffy_attach_faults: usize,
 }
 

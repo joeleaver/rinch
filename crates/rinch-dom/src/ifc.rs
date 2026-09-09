@@ -1067,13 +1067,26 @@ impl RinchDocument {
             // counted DOM siblings blind to attachment and Taffy's
             // out-of-range error was swallowed, so an out-of-flow child
             // inserted between frames could be attached **nowhere** (#477).
-            // That half is fixed — the index comes from the parent's attached
-            // list now, and a refused insert reports — but reading the DOM
-            // stays right for a reason the fix does not remove: with every
-            // inline sibling detached, a late insert finds nothing attached
-            // before it and lands at slot 0, *ahead* of the measure leaf. So
-            // attachment still says nothing about the order the
-            // canonicalization below is about to impose, and the DOM does.
+            // That is fixed — the index comes from the parent's attached list
+            // now, and a refused insert reports.
+            //
+            // Reading the DOM stays right for a reason the fix does not touch,
+            // and it is about **membership, not order**: what this loop needs
+            // to know is *which* of the root's children are out-of-flow, which
+            // is a fact about each child's computed style
+            // (`inline_flow_role`) and not about where Taffy currently holds
+            // it. The attached list cannot answer it — the measure leaf in it
+            // has no DOM identity at all, and a stale splice can leave ids in
+            // it that name no current child. So the DOM is the only thing that
+            // can be asked.
+            //
+            // (Do not restate this as "a late insert lands ahead of the
+            // measure leaf": that is true only when the new box has no
+            // attached preceding sibling. With two out-of-flow children
+            // already present the insert lands *after* the leaf and in the
+            // very order this canonicalization is about to impose — measured,
+            // and it is what `taffy_child_index_tests`'
+            // `an_insert_into_a_container_with_a_measure_leaf_...` builds.)
             let mut out_of_flow_children: Vec<taffy::NodeId> = Vec::new();
             let mut in_flow_stays_attached = false;
             for &child_id in &self.tree.nodes[root_id].children {
