@@ -1063,12 +1063,17 @@ impl RinchDocument {
             // layout (containing block, inset resolution, static position).
             //
             // The decision reads the **DOM**, not the current Taffy
-            // attachment: `compute_taffy_child_index` counts DOM siblings
-            // that merely *have* a `taffy_id`, blind to attachment, and
-            // Taffy's out-of-range error is swallowed — so an out-of-flow
-            // child inserted between frames may be attached nowhere (#477).
-            // Deciding from attachment would silently drop that child;
-            // deciding from the DOM lets the canonicalization below heal it.
+            // attachment. It was written because `compute_taffy_child_index`
+            // counted DOM siblings blind to attachment and Taffy's
+            // out-of-range error was swallowed, so an out-of-flow child
+            // inserted between frames could be attached **nowhere** (#477).
+            // That half is fixed — the index comes from the parent's attached
+            // list now, and a refused insert reports — but reading the DOM
+            // stays right for a reason the fix does not remove: with every
+            // inline sibling detached, a late insert finds nothing attached
+            // before it and lands at slot 0, *ahead* of the measure leaf. So
+            // attachment still says nothing about the order the
+            // canonicalization below is about to impose, and the DOM does.
             let mut out_of_flow_children: Vec<taffy::NodeId> = Vec::new();
             let mut in_flow_stays_attached = false;
             for &child_id in &self.tree.nodes[root_id].children {
