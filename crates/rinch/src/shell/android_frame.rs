@@ -331,8 +331,16 @@ pub(crate) fn poll_timeout(
     // The `surface.is_none()` bail in `run_loop` `continue`s before the input
     // drain, before all six queue drains, before `drain_main_callbacks`,
     // before `drain_polls`, and before the frame clock — so an iteration with
-    // no surface performs *no work at all*, and any deadline set here buys a
-    // wake-up that accomplishes nothing.
+    // no surface does **no work that a later wake could do**, and any deadline
+    // set here buys a wake-up that accomplishes nothing.
+    //
+    // Not *no work*: two things do run above the bail, the pending
+    // `window_focus_change` dispatch and the `backgrounded` composition flush.
+    // Neither is a reason to come back later, because both latches are set only
+    // inside the `poll_events` closure — so the iteration the looper delivers
+    // the event on is the iteration that consumes it, nothing accumulates, and
+    // nothing falls due in between. That is the whole of what a self-scheduled
+    // wake could serve here, and it is empty.
     //
     // It is not merely wasteful, it is unclearable, which is the shape this
     // repository keeps getting bitten by. `REDRAW_PENDING`'s only clear is the
