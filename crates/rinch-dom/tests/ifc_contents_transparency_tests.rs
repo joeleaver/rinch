@@ -91,7 +91,19 @@ fn an_absolute_under_a_transparent_wrapper_beside_text_is_laid_out() {
 /// of an absolute: that is real in-flow block content, the container *is*
 /// mixed, and the text must go into an anonymous block box.
 ///
-/// Kills: dropping the `Contents` arm from `has_block` altogether.
+/// The block itself must also still be laid out. This test asserted only the
+/// text half for a year and stayed green while the block half was **broken**:
+/// this is #476's markup verbatim, and minting the anonymous box was exactly
+/// what orphaned the block — the rebuild that follows re-derived the
+/// container's Taffy children from raw DOM order, which cannot see the
+/// flattening, so the wrapper's own boxless node went back in and the block it
+/// stands for went nowhere. `0x0`, painted not at all, stably. The geometry
+/// assertion is what a green board was missing; `anon_box_contents_flatten_tests`
+/// owns the rest of that story.
+///
+/// Kills: dropping the `Contents` arm from `has_block` altogether (the text
+/// assertion), and rebuilding the container's Taffy children from raw
+/// `nodes[parent].children` after minting the box (the geometry one).
 #[test]
 fn a_block_under_an_opaque_wrapper_beside_text_still_mints_an_anonymous_box() {
     let mut doc = RinchDocument::new();
@@ -100,7 +112,7 @@ fn a_block_under_an_opaque_wrapper_beside_text_still_mints_an_anonymous_box() {
     let t = doc.create_text("text");
     doc.append_child(container, t);
     let wrapper = child_of(&mut doc, container, "span", "display: contents");
-    child_of(&mut doc, wrapper, "div", "width: 40px; height: 20px");
+    let block = child_of(&mut doc, wrapper, "div", "width: 40px; height: 20px");
 
     doc.resolve_layout(VW, VH);
 
@@ -108,6 +120,20 @@ fn a_block_under_an_opaque_wrapper_beside_text_still_mints_an_anonymous_box() {
         is_in_anonymous_root(&doc, t),
         "an opaque wrapper holds real block content, so the text beside it \
          must be wrapped in an anonymous block box"
+    );
+
+    let l = doc.tree.get(block.0).unwrap().layout;
+    assert_eq!(
+        (l.width, l.height),
+        (40.0, 20.0),
+        "and the block the wrapper holds keeps its box: 0x0 means minting the \
+         anonymous box orphaned it (#476)"
+    );
+    assert!(
+        l.y > 0.0,
+        "sitting below the anonymous box's line rather than at the origin, \
+         where a laid-out box and an orphan agree: got y={}",
+        l.y
     );
 }
 

@@ -566,19 +566,30 @@ impl RinchDocument {
             self.tree.nodes.remove(anon_id);
         }
 
-        // Rebuild Taffy children for all affected parents from DOM order
+        // Rebuild each affected parent's Taffy children through the one
+        // authority for that list — `collect_effective_taffy_children`, which
+        // flattens `display: contents` children (#476). Rebuilding from raw
+        // `nodes[parent].children` re-added a boxless wrapper's own Taffy node
+        // and dropped the grandchildren it stands for, orphaning them: they are
+        // not DOM children of this parent, so nothing put them back.
         for parent_id in parents_affected {
-            if let Some(parent_taffy) = self.tree.nodes.get(parent_id).and_then(|n| n.taffy_id) {
-                let dom_children: Vec<usize> = self.tree.nodes[parent_id].children.clone();
-                let _ = self.tree.taffy.set_children(parent_taffy, &[]);
-                for &child_id in &dom_children {
-                    if let Some(child_taffy) =
-                        self.tree.nodes.get(child_id).and_then(|n| n.taffy_id)
-                    {
-                        let _ = self.tree.taffy.add_child(parent_taffy, child_taffy);
-                    }
-                }
-            }
+            self.rebuild_effective_taffy_children(parent_id);
+        }
+    }
+
+    /// Rebuild `node_id`'s Taffy child list — and, when it is a boxless
+    /// `display: contents` element, the list of whatever actually holds its
+    /// boxes — from the one authority for that list (#476).
+    ///
+    /// See [`Self::collect_effective_taffy_children`] (the order) and
+    /// [`Self::taffy_child_list_owners`] (whose list, and why bottom-up).
+    fn rebuild_effective_taffy_children(&mut self, node_id: usize) {
+        for owner in Self::taffy_child_list_owners(&self.tree.nodes, node_id) {
+            let Some(owner_taffy) = self.tree.nodes.get(owner).and_then(|n| n.taffy_id) else {
+                continue;
+            };
+            let children = Self::collect_effective_taffy_children(&self.tree.nodes, owner);
+            let _ = self.tree.taffy.set_children(owner_taffy, &children);
         }
     }
 
@@ -828,39 +839,48 @@ impl RinchDocument {
                 self.tree.anonymous_block_boxes.push(anon_id);
             }
 
-            // Rebuild Taffy children for the parent and its anonymous boxes
-            // from DOM order. This avoids remove_child panics when Taffy
-            // children are out of sync with DOM (e.g., after IFC detached text nodes).
-            if let Some(parent_taffy) = self.tree.nodes.get(parent_id).and_then(|n| n.taffy_id) {
-                let _ = self.tree.taffy.set_children(parent_taffy, &[]);
-                let dom_children: Vec<usize> = self.tree.nodes[parent_id].children.clone();
-                for &child_id in &dom_children {
-                    if let Some(child_taffy) =
-                        self.tree.nodes.get(child_id).and_then(|n| n.taffy_id)
-                    {
-                        let _ = self.tree.taffy.add_child(parent_taffy, child_taffy);
-                    }
-                    // For anonymous boxes, also rebuild their Taffy children
-                    if self
-                        .tree
+            // Rebuild the parent's Taffy children, and each anonymous box's
+            // own, through the one authority for that list —
+            // `collect_effective_taffy_children`, which flattens
+            // `display: contents` children (#476). Deriving the order from raw
+            // `nodes[parent].children` instead put the wrapper's own boxless
+            // Taffy node in the list and left the grandchildren it stands for
+            // **orphaned** — not a DOM child of anything in this rebuild, so
+            // nothing re-attached them, on this pass or any later one. Using
+            // `set_children` rather than clear-and-append also avoids the
+            // `remove_child` panics that come of Taffy children being out of
+            // sync with the DOM (the IFC detaches inline ones).
+            //
+            // An anonymous box's own list goes through the same call. A run
+            // holds only `InlineFlowRole::Inline` children today, so it can
+            // hold no contents wrapper and the flattening is a no-op there —
+            // routing it through the authority anyway is what keeps that a
+            // fact about the run grouping rather than a second rule.
+            //
+            // Anonymous boxes first, `parent_id` last: `set_children` steals
+            // each adopted child from its previous parent, so the parent's
+            // rebuild must be the one that runs after everything below it.
+            // `parent_id` may itself be a boxless contents wrapper — a wrapper
+            // around `text + block` is `DisplayMode::Block` and so is mixed
+            // content in its own right, and the box it mints inherits
+            // `Contents` too (#319) — which is why the rebuild walks up to
+            // whoever actually holds those boxes; see `taffy_child_list_owners`.
+            let anon_ids: Vec<usize> = self.tree.nodes[parent_id]
+                .children
+                .iter()
+                .copied()
+                .filter(|&c| {
+                    self.tree
                         .nodes
-                        .get(child_id)
+                        .get(c)
                         .map(|n| n.is_anonymous_block_box)
                         .unwrap_or(false)
-                        && let Some(anon_taffy) =
-                            self.tree.nodes.get(child_id).and_then(|n| n.taffy_id)
-                    {
-                        let anon_children: Vec<usize> = self.tree.nodes[child_id].children.clone();
-                        for &anon_child_id in &anon_children {
-                            if let Some(anon_child_taffy) =
-                                self.tree.nodes.get(anon_child_id).and_then(|n| n.taffy_id)
-                            {
-                                let _ = self.tree.taffy.add_child(anon_taffy, anon_child_taffy);
-                            }
-                        }
-                    }
-                }
+                })
+                .collect();
+            for anon_id in anon_ids {
+                self.rebuild_effective_taffy_children(anon_id);
             }
+            self.rebuild_effective_taffy_children(parent_id);
         }
     }
 
