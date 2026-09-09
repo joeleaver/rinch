@@ -36,8 +36,12 @@
 //! half of each operation sits behind the `cfg`, as a small private function
 //! that is a no-op off-device. [`screen`] takes the same split for a different
 //! structure — a refcounted guard rather than a registry — so its edges are
-//! host-tested too. Nothing in this repository builds an APK in CI, so logic
-//! left behind the `cfg` is logic nothing checks (issue #183 PR5).
+//! host-tested too. [`display_decode`] takes it for a third: not a registry or
+//! a guard but a *contract*, the arithmetic that says what each of `display`'s
+//! JNI getters returns, lifted out so the rule is checked on the side that
+//! implements it and not only on the side that states it. Nothing in this
+//! repository builds an APK in CI, so logic left behind the `cfg` is logic
+//! nothing checks (issue #183 PR5).
 //!
 //! `RinchActivity.java` is worse off still: no build in this repository
 //! compiles it, so a syntax error there passes every check we have (issue
@@ -57,6 +61,7 @@ pub mod camera;
 pub mod clipboard;
 #[cfg(target_os = "android")]
 pub mod display;
+pub mod display_decode;
 #[cfg(target_os = "android")]
 pub mod file_picker;
 #[cfg(target_os = "android")]

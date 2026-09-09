@@ -102,6 +102,160 @@ pub fn refresh_rate_hz() -> Option<f32> {
     })
 }
 
+/// The size of the window this activity draws into, in physical pixels, as
+/// `(width, height)`.
+///
+/// **What this is for, and what it is not.** It is not a repair to rinch's own
+/// layout: the shell has always laid out against the real window. It reads
+/// `native_window.width()` / `height()` at both `MainEvent::InitWindow` and
+/// `MainEvent::WindowResized` (`shell::android_runtime`), mounts at
+/// `rinch_platform::to_logical` of that, and `App::size()` is documented inert
+/// on Android for exactly this reason. Anything the DOM lays out — `100vw`, a
+/// flex row, a full-bleed background — is already the right width today.
+///
+/// What was missing is that **app code has no way to ask**. A page the app
+/// *rasterises itself* — a PDF page to a bitmap, a tile it generates at a pixel
+/// width and hands back as an image — is not laid out by the DOM and so gets
+/// none of that for free; it needs a number, and until now the only number
+/// available was one the app chose. SetListArray's card K31 is where that bit:
+/// it renders its pages at the 393-pixel canvas its designs were drawn on, and
+/// on a moto g stylus 5G — 1080 physical at density 400, so 432 logical — every
+/// page came out 393 wide with a strip of backdrop down each side. Nothing in
+/// rinch was wrong; the app had no way to find out it was drawing at the wrong
+/// size, and it was wrong by a different amount on every handset.
+///
+/// **This is a second answer to a question the shell already answers**, and the
+/// two can disagree. The `ANativeWindow` is what rinch draws into and is
+/// therefore authoritative; this asks Android independently. On API 30+ the two
+/// agree — `getCurrentWindowMetrics().getBounds()` is that window's bounds. On
+/// API 28-29 the fallback is `getResources().getDisplayMetrics()`, which is the
+/// app-usable *display* size, and that equals the window only in a single-window
+/// session. **Multi-window and split-screen are assumed away below API 30**: a
+/// side-by-side split disagrees in width, not merely in height. Prefer the
+/// layout you were given wherever you have one; reach for this when you are
+/// generating pixels the layout never sees.
+///
+/// Physical pixels, matching [`safe_area_insets`], because that is the unit
+/// Android measures in. To reach the logical pixels a stylesheet is written in,
+/// divide by `density_dpi() / 160` — deliberately *not* wrapped in a helper
+/// here, because `rinch_platform::to_logical` is the conversion the shell
+/// itself uses and a second one in this crate would be the same rule written
+/// twice.
+///
+/// `None` if the JNI call chain fails or the platform reports a non-positive
+/// size, which leaves the caller to pick its own fallback rather than have one
+/// invented here — the same contract [`density_dpi`] keeps. The decode is
+/// [`crate::display_decode::decode_viewport_size`], which is host-tested; see
+/// that module for why it is not written inline.
+pub fn viewport_size() -> Option<(u32, u32)> {
+    bridge::with_activity(|env, activity| {
+        let obj = env
+            .call_method(activity, "getViewportSize", "()[I", &[])
+            .ok()?
+            .l()
+            .ok()?;
+        if obj.is_null() {
+            return None;
+        }
+        let arr: jni::objects::JIntArray = obj.into();
+        let mut buf = [0i32; 2];
+        env.get_int_array_region(&arr, 0, &mut buf).ok()?;
+        crate::display_decode::decode_viewport_size(buf)
+    })
+}
+
+/// How much of the bottom edge the soft keyboard is covering right now, in
+/// physical pixels. Zero when it is down.
+///
+/// Kept apart from [`safe_area_insets`] on purpose, and the split is the whole
+/// point rather than tidiness. The safe area is hardware: the gesture bar and
+/// the cutout are where they are for the life of the process, so a caller
+/// reads it once at mount and is entitled to assume it will not move. The
+/// keyboard moves several times a minute. Folding the two together would
+/// either make every safe-area reader poll at the keyboard's rate, or make the
+/// number it cached at mount silently wrong the first time someone typed.
+///
+/// # Driving it: there are no frames unless you ask for them
+///
+/// This is a poll, not a subscription, and since #564 the Android loop **sleeps
+/// with no timeout when nothing is moving** — measured at zero iterations in
+/// sixty seconds on a still screen. The soft keyboard appearing raises no rinch
+/// event on this shell, so "read it once per frame" has no frames to read on: an
+/// effect that calls this at mount is called exactly once, ever.
+///
+/// The in-tree mechanism that does work is
+/// [`rinch_core::reactive::poll_signal`], which
+/// `shell::android_frame::poll_timeout` takes `next_poll_due()` for precisely so
+/// that a polled bridge keeps the loop awake:
+///
+/// ```ignore
+/// use rinch_core::reactive::{PollRate, poll_signal};
+///
+/// // Wakes the loop at 60Hz while this signal is alive, and only then.
+/// let ime = poll_signal(
+///     || rinch_android::display::ime_inset().unwrap_or(0),
+///     PollRate::Hz(60),
+/// );
+/// ```
+///
+/// No convenience wrapper is offered for that: `poll_signal` *is* the wiring,
+/// it is one call, and a wrapper could only hard-code a rate the caller is
+/// better placed to choose.
+///
+/// # What it does not do
+///
+/// **It reports the settled inset, not the animation.** `getRootWindowInsets()`
+/// answers where the keyboard has got to, so a per-frame poll during the
+/// show/hide animation gives a step, not a ramp. Animate the layout yourself
+/// (a CSS transition on the value this feeds) if you want a ramp.
+///
+/// **API 28-29 is unverified and probably reports nothing.** Below API 30 there
+/// is no `Type.ime()`, so the Java side subtracts the stable bottom inset from
+/// the system-window bottom inset — the nav bar plus the keyboard, less the nav
+/// bar. That difference is non-zero only while the window is *being resized for
+/// the IME*, and this shell's window declares no `windowSoftInputMode`. So on
+/// 28-29 the likely answer with the keyboard up is `Some(0)`, which this API
+/// defines as "the keyboard is down" — the instruction to put a footer back.
+/// The device this was built against was a moto g stylus 5G on **SDK 33**, so
+/// only the API 30+ branch has ever run: the sentence above is reasoning about
+/// the platform, not a measurement, and nobody here has an API 28-29 handset to
+/// settle it. Treat the inset as API 30+ until someone does.
+///
+/// # Why polled at all
+///
+/// The push route on the Java side — `setDecorFitsSystemWindows(false)` plus an
+/// `OnApplyWindowInsetsListener` — is deliberately not wired, because turning
+/// decor fitting off changes where the window lays out underneath the
+/// `ANativeWindow` the shell draws into, and that is a change to every rinch
+/// app's geometry rather than an addition to it.
+///
+/// That is not the only push route, though, and the choice should not be read as
+/// poll-or-nothing. `MainEvent::ContentRectChanged` is delivered by the
+/// `native-activity` backend this crate builds against, and android-activity's
+/// own documentation names "the soft input window being shown or hidden" as a
+/// cause of it; `shell::android_runtime` handles neither it nor anything like
+/// it today. Whether it actually fires for the IME under a manifest with no
+/// `windowSoftInputMode` is device-dependent and untested here. (`InsetsChanged`
+/// is *not* an alternative — android-activity emits it only from the
+/// `game_activity` backend.) Wiring that event and reading this getter from it
+/// would be strictly better than polling, and is a follow-up rather than a
+/// reason to hold this.
+///
+/// `None` when the window has no insets to report yet, which happens before the
+/// first layout pass and is **not** the same answer as "the keyboard is down".
+/// The decode is [`crate::display_decode::decode_ime_inset`], which is
+/// host-tested; see that module for why it is not written inline.
+pub fn ime_inset() -> Option<u32> {
+    bridge::with_activity(|env, activity| {
+        let px = env
+            .call_method(activity, "getImeInset", "()I", &[])
+            .ok()?
+            .i()
+            .ok()?;
+        crate::display_decode::decode_ime_inset(px)
+    })
+}
+
 pub fn density_dpi() -> Option<i32> {
     bridge::with_activity(|env, activity| {
         // getResources().getDisplayMetrics().densityDpi
