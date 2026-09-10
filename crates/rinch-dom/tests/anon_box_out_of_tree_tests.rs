@@ -636,6 +636,19 @@ fn the_dom_tree_invariant_catches_a_broken_run_link_and_a_stale_flag() {
     );
     doc.tree.nodes[member].run_box = Some(box_id);
 
+    // D, the other direction. The corruption above is caught by the pass that
+    // walks `run_members`; this one is only visible to the pass that walks
+    // `run_box`, and without it half of D is unpinned — a mutant that deletes
+    // that half survives a suite that looks like it covers D.
+    doc.tree.nodes[box_id].run_members.clear();
+    let v = doc.dom_tree_violations();
+    assert!(
+        v.iter()
+            .any(|s| s.starts_with("D one-way run") && s.contains("members do not contain it")),
+        "a member naming a box that has forgotten it must be reported, got {v:?}"
+    );
+    doc.tree.nodes[box_id].run_members.push(member);
+
     // E: the flag outlives the run it describes, which is exactly what a
     // cleanup that forgot to clear it would leave behind. Note the container
     // is otherwise untouched and every pixel would be identical.
@@ -645,5 +658,47 @@ fn the_dom_tree_invariant_catches_a_broken_run_link_and_a_stale_flag() {
     assert!(
         v.iter().any(|s| s.starts_with("E stale run flag")),
         "a flag with no run behind it must be reported, got {v:?}"
+    );
+}
+
+/// The stale flag, reached the way the code would actually reach it (#566).
+///
+/// `the_dom_tree_invariant_catches_a_broken_run_link_and_a_stale_flag` proves E
+/// *can* fire, by writing the corrupt state directly. It does not prove the
+/// clearing in `cleanup_anonymous_block_boxes` is load-bearing: found by
+/// mutation, a build that never clears the flag passes that fixture and the
+/// whole suite besides. Nothing drove the one sequence that distinguishes them
+/// — a container that **had** a run and then stops having one.
+///
+/// It stops having one here by losing its inline content, so the container is
+/// no longer mixed and no box is minted on the second pass. Every pixel is the
+/// same either way, which is the point: this is a correctness-of-bookkeeping
+/// test, and the geometry cannot see it.
+#[test]
+fn a_container_that_stops_having_a_run_stops_claiming_one() {
+    let mut doc = RinchDocument::new();
+    let body = doc.body();
+    let c = el(&mut doc, body, "div", "width: 400px; font-size: 16px");
+    let t = txt(&mut doc, c, "text ");
+    el(&mut doc, c, "div", "height: 10px");
+    doc.resolve_layout(VW, VH);
+    assert!(
+        doc.tree.nodes[c.0].has_inline_runs,
+        "the fixture must start with a real run, or it pins nothing"
+    );
+
+    // The text goes; the block stays. A container of one block child is not
+    // mixed content, so the next pass mints no box for it.
+    doc.remove_child(c, t);
+    doc.resolve_layout(VW, VH);
+
+    assert!(
+        !doc.tree.nodes[c.0].has_inline_runs,
+        "the container still claims a run after its last inline child left"
+    );
+    assert_eq!(
+        doc.dom_tree_violations(),
+        Vec::<String>::new(),
+        "the run bookkeeping must be clean once the run is gone"
     );
 }
