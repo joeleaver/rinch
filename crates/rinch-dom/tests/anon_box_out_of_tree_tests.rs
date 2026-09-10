@@ -592,3 +592,58 @@ fn a_run_members_absolute_position_composes_through_its_box_under_a_transform() 
          box={box_y}, member={member_y}, got {abs_y}"
     );
 }
+
+/// **D** and **E** must be able to fail (#578).
+///
+/// An invariant with no fixture that provokes it is a comment. A is proven
+/// above; these two arrived with the O(1) fast path and get the same treatment,
+/// each corruption being the one its own mechanism would produce.
+///
+/// E is the load-bearing half. `has_inline_runs` is a cache of "does any child
+/// carry a `run_box`", and a cache that is only ever *set* correctly is
+/// indistinguishable from a correct one until something stops clearing it —
+/// at which point every behavioural test still passes, because taking the
+/// substituting path with nothing to substitute returns the same list. E is
+/// the only thing in the suite that can see that.
+#[test]
+fn the_dom_tree_invariant_catches_a_broken_run_link_and_a_stale_flag() {
+    let mut doc = RinchDocument::new();
+    let body = doc.body();
+    let c = el(&mut doc, body, "div", "width: 400px; font-size: 16px");
+    txt(&mut doc, c, "text ");
+    el(&mut doc, c, "div", "height: 10px");
+    doc.resolve_layout(VW, VH);
+    assert_eq!(
+        doc.dom_tree_violations(),
+        Vec::<String>::new(),
+        "clean first"
+    );
+
+    let box_id = *doc
+        .tree
+        .anonymous_block_boxes
+        .first()
+        .expect("the fixture must actually mint a box");
+    let member = doc.tree.nodes[box_id].run_members[0];
+
+    // D: the member stops naming the box that still lists it — the run-relation
+    // twin of the one-way DOM link above.
+    doc.tree.nodes[member].run_box = None;
+    let v = doc.dom_tree_violations();
+    assert!(
+        v.iter().any(|s| s.starts_with("D one-way run")),
+        "a one-way run link must be reported, got {v:?}"
+    );
+    doc.tree.nodes[member].run_box = Some(box_id);
+
+    // E: the flag outlives the run it describes, which is exactly what a
+    // cleanup that forgot to clear it would leave behind. Note the container
+    // is otherwise untouched and every pixel would be identical.
+    doc.tree.nodes[member].run_box = None;
+    doc.tree.nodes[box_id].run_members.clear();
+    let v = doc.dom_tree_violations();
+    assert!(
+        v.iter().any(|s| s.starts_with("E stale run flag")),
+        "a flag with no run behind it must be reported, got {v:?}"
+    );
+}
