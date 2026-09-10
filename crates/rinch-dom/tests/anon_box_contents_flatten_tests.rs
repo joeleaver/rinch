@@ -386,23 +386,23 @@ fn an_absolute_under_a_transparent_wrapper_in_a_mixed_container_is_laid_out() {
 /// independently-mixed container. The wrapper's `<span>` was orphaned and its
 /// text vanished; it must be reachable.
 ///
-/// Deliberately weak about *where*, and about geometry: the run grouping
-/// declines to put a transparent wrapper in the inline run, so today the span
-/// is laid out by Taffy as its own box on its own **second line** — after the
-/// text that follows it in the DOM — and the container is 20px taller than a
-/// browser makes it. #568 will move that wrapper into the anonymous box's
-/// inline run, at which point the span and its text become IFC-owned and their
-/// `layout` collapses to `(0, 0, 0x0)`, which is what an IFC-owned box looks
-/// like in this engine. So every assertion here has to hold under **both**
-/// regimes: reachability does, a `w > 0 && h > 0` on the text would not. An
-/// earlier draft asserted exactly that, and it would have had to be rewritten
-/// by the fix it claims not to obstruct.
+/// Deliberately weak about *where*, and about geometry — and **#568 is why
+/// that was the right call**. When this was written the run grouping declined
+/// to put a transparent wrapper in the inline run, so the span was laid out by
+/// Taffy as its own box on its own second line and the container was 20px
+/// taller than a browser makes it; the prediction recorded here was that #568
+/// would pull that content into the anonymous box's run, at which point the
+/// span and its text become IFC-owned and their `layout` collapses to
+/// `(0, 0, 0x0)`, which is what an IFC-owned box looks like in this engine.
+/// That is what happened, and this fixture needed no edit: reachability holds
+/// under both regimes, a `w > 0 && h > 0` on the text would not have.
+/// `anon_box_flattened_classification_tests` owns the geometry now.
 ///
-/// Honest about which half is evidence: the assertion on `span` fails on
-/// `main` (it is the orphan), and so does the consistency check. The one on
-/// `inner` passes on `main` — the text is a child of the *orphaned* span, so it
-/// has a Taffy parent — and is a guard against a future drop, not fail-first
-/// evidence.
+/// Honest about which half is evidence: the assertion on `span` failed on
+/// `main` before #476 (it was the orphan), and so did the consistency check.
+/// The one on `inner` passed there — the text is a child of the *orphaned*
+/// span, so it has a Taffy parent — and is a guard against a future drop, not
+/// fail-first evidence.
 ///
 /// Kills: a fix that flattens only the roles the run loop happens to look at.
 #[test]
@@ -491,9 +491,12 @@ fn the_cleanup_rebuild_uses_the_same_authority() {
 
 // ── Whose list, not just what is in it ─────────────────────────────────────
 
-/// A `display: contents` wrapper computes `DisplayMode::Block`, so a wrapper
-/// holding `text + block` is itself classified as mixed content and mints the
-/// anonymous box **inside a boxless element**. The net structure is still
+/// An anonymous box can be **stored inside a boxless element**. Since #568 the
+/// *container* classifies its flattened children and mints the box, and the box
+/// takes the slot its run's head vacated — which is inside the wrapper whenever
+/// the run starts there. (Before #568 the wrapper itself was classified as
+/// mixed content and minted the box; the box ended up in the same list either
+/// way, which is why this fixture reads the same.) The net structure is still
 /// right, because the flattening lifts that anonymous box into the ancestor's
 /// list — but only if the ancestor's list is rebuilt after the box exists.
 /// `sync_display_contents` built it before, and nothing re-runs it.

@@ -809,7 +809,7 @@ fn a_box_hangs_off_the_container_its_run_came_from() {
     );
     let v = doc.run_bookkeeping_violations();
     assert!(
-        v.iter().any(|s| s.starts_with("R wrong container")),
+        v.iter().any(|s| s.starts_with("R not a unit")),
         "a box hung off the wrong container must be reported, got {v:?}"
     );
 }
@@ -852,7 +852,7 @@ fn moving_a_run_member_between_passes_is_legal_and_r_is_not_an_any_time_rule() {
     assert!(
         doc.run_bookkeeping_violations()
             .iter()
-            .any(|s| s.starts_with("R wrong container")),
+            .any(|s| s.starts_with("R not a unit")),
         "the mid-mutation window must be real, or this fixture pins nothing"
     );
 
