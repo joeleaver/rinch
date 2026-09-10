@@ -574,14 +574,14 @@ fn a_nested_wrapper_chain_is_adopted_at_its_outermost_level() {
     assert_consistent(&doc, "nested chain adopted whole");
 }
 
-/// The chain that is a whole run **inside** and only part of one **outside**:
-/// `w1` holds `w2` *and a block*, so `w1` is broken up and `w2` — which is a
-/// whole run — is what the run takes.
+/// A two-deep chain whose outer wrapper also holds a block: **every level
+/// flattens**, and the layout is the same as the un-wrapped shape.
 ///
-/// This is the level-boundary case: the keep-whole test passes at `w2` and
-/// fails at `w1`, in one chain. A rule that decided per chain rather than per
-/// level gets one of the two wrong, and which one depends on whether it looks
-/// top-down or bottom-up.
+/// This was the level-boundary case for the keep-whole rule — the test passed
+/// at `w2` and failed at `w1`, in one chain — and it is kept because the
+/// geometry half outlived the rule. Wrapper depth must make no difference to
+/// where anything lands, which is the claim worth pinning whether or not a rule
+/// decides levels differently.
 #[test]
 fn a_nested_wrapper_chain_flattens_at_every_level_and_lays_out_the_same() {
     let mut doc = RinchDocument::new();

@@ -765,14 +765,15 @@ impl RinchDocument {
             // lines browsers render as one.
             //
             // The `display: contents` carve-out this test used to need (#518 —
-            // count a wrapper only when it is **opaque**) is gone: a wrapper
-            // that holds a block, or an out-of-flow box, is broken into units
-            // by `collect_run_units`, so `effective` carries the block itself
-            // and the question needs no special case. A wrapper that survives
-            // as one unit contributed neither — that is the condition it was
-            // kept whole under — so it is never `InFlowBlock` here. `has_block`
-            // and the run grouping read the same list, which is what #518 asked
-            // for and could then only approximate.
+            // count a wrapper only when it is **opaque**) is gone: every
+            // wrapper is broken into units by `collect_run_units`, so
+            // `effective` carries the block itself and the question needs no
+            // special case. No wrapper survives into this list at all — the
+            // collector recurses into one and never pushes it — so nothing here
+            // can be `Contents`, let alone a wrapper masquerading as an
+            // `InFlowBlock`. `has_block` and the run grouping read the same
+            // list, which is what #518 asked for and could then only
+            // approximate.
             //
             // The display-first precedence — `display: contents; position:
             // absolute` is `Contents`, never `OutOfFlow`, because Stylo does
@@ -959,16 +960,23 @@ impl RinchDocument {
                 .collect();
             for anon_id in new_boxes {
                 // Through the **one** rebuild authority (#476), not a
-                // hand-rolled member → `taffy_id` map. A run member can be a
-                // `display: contents` wrapper kept whole (#568), and such a
-                // wrapper generates no box: mapping members to their own
-                // `taffy_id` handed the box the *wrapper's* Taffy node, which
-                // `mark_inline_descendants` then never detached — it detaches
-                // the wrapper's `Inline` descendants, not the wrapper — so the
-                // box stayed an IFC root with a Taffy child and tripped #466's
-                // leaf invariant. `collect_effective_taffy_children` already
-                // flattens the wrapper to what it stands for, which is the
-                // node marking does detach.
+                // hand-rolled member → `taffy_id` map.
+                //
+                // The hand-rolled map was wrong while a member could be a
+                // `display: contents` wrapper — briefly true on this branch,
+                // under a keep-whole rule since deleted. Such a wrapper
+                // generates no box, so mapping members to their own `taffy_id`
+                // handed the box the *wrapper's* Taffy node, which
+                // `mark_inline_descendants` never detached: it detaches the
+                // wrapper's `Inline` descendants, not the wrapper. The box
+                // stayed an IFC root with a Taffy child and tripped #466's
+                // leaf invariant.
+                //
+                // **A member cannot be a wrapper today** — `collect_run_units`
+                // recurses into every `Contents` child and never pushes one, so
+                // no input produces such a unit. The two spellings therefore
+                // agree on everything now, and this one is kept because one
+                // rebuild authority beats two that happen to agree (#476).
                 self.rebuild_effective_taffy_children(anon_id);
             }
             self.rebuild_effective_taffy_children(parent_id);
@@ -1109,20 +1117,6 @@ impl RinchDocument {
                 }
                 match child.inline_flow_role() {
                     InlineFlowRole::Comment => continue,
-                    // A `Contents` **unit** is inline content, and counts as
-                    // such here exactly as it does in the classification
-                    // (#568). `collect_run_units` keeps a wrapper whole only
-                    // when an inline run would take all of it, so a wrapper
-                    // that survives into this list stands for an entire run and
-                    // nothing else — the opaque case was already broken into
-                    // its parts and never reaches here as one unit.
-                    //
-                    // Without this arm a box whose whole run is one kept-whole
-                    // wrapper is never discovered as an IFC root, so its run is
-                    // never flowed: the two text nodes inside the wrapper lay
-                    // out as two blocks where a browser puts them on one line.
-                    // That is #568's own widening, failing in the one shape
-                    // that most needed it.
                     // As above: units carry no wrapper, so `Contents` rides
                     // with the non-inline arm rather than claiming to be a case.
                     InlineFlowRole::Inline => {
