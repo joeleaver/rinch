@@ -593,20 +593,21 @@ fn a_run_members_absolute_position_composes_through_its_box_under_a_transform() 
     );
 }
 
-/// **D** and **E** must be able to fail (#578).
+/// **A, B, C and D must all be able to fail on the box (#578).**
 ///
-/// An invariant with no fixture that provokes it is a comment. A is proven
-/// above; these two arrived with the O(1) fast path and get the same treatment,
-/// each corruption being the one its own mechanism would produce.
+/// An invariant with no fixture that provokes it is a comment. This is the pin
+/// for the *totalised* form: since `run_boxes` records the box's downward edge,
+/// A says one sentence about every node in the slab —
 ///
-/// E is the load-bearing half. `has_inline_runs` is a cache of "does any child
-/// carry a `run_box`", and a cache that is only ever *set* correctly is
-/// indistinguishable from a correct one until something stops clearing it —
-/// at which point every behavioural test still passes, because taking the
-/// substituting path with nothing to substitute returns the same list. E is
-/// the only thing in the suite that can see that.
+/// > `n.parent == Some(p)` ⟺ `n` is in **exactly one** of `p.children` or
+/// > `p.run_boxes`
+///
+/// — with **no exemption for the anonymous box**, which is the whole reason the
+/// field exists. Each corruption below is the one its own mechanism would
+/// actually produce, and each is checked on the box rather than on an ordinary
+/// node, because the box is where a carve-out would have hidden.
 #[test]
-fn the_dom_tree_invariant_catches_a_broken_run_link_and_a_stale_flag() {
+fn the_dom_tree_invariants_all_fail_on_a_corrupt_box() {
     let mut doc = RinchDocument::new();
     let body = doc.body();
     let c = el(&mut doc, body, "div", "width: 400px; font-size: 16px");
@@ -625,9 +626,65 @@ fn the_dom_tree_invariant_catches_a_broken_run_link_and_a_stale_flag() {
         .first()
         .expect("the fixture must actually mint a box");
     let member = doc.tree.nodes[box_id].run_members[0];
+    assert_eq!(
+        doc.tree.nodes[c.0].run_boxes,
+        vec![box_id],
+        "the container must record its box, or nothing below is being tested"
+    );
 
-    // D: the member stops naming the box that still lists it — the run-relation
-    // twin of the one-way DOM link above.
+    // A, backward — the corruption the carve-out used to hide. The box keeps
+    // its parent and the container stops listing it, which is *exactly* the
+    // state the superseded `parent: None` design made permanent and legal.
+    let saved = std::mem::take(&mut doc.tree.nodes[c.0].run_boxes);
+    let v = doc.dom_tree_violations();
+    assert!(
+        v.iter()
+            .any(|s| s.starts_with("A one-way") && s.contains("run_boxes")),
+        "a box its container has stopped listing must be reported, got {v:?}"
+    );
+    doc.tree.nodes[c.0].run_boxes = saved;
+
+    // A, exclusivity — one list, never both. This is what stops the old shape
+    // (the box in `children`) from being reintroduced *alongside* the new one
+    // and passing every check.
+    doc.tree.nodes[c.0].children.push(box_id);
+    let v = doc.dom_tree_violations();
+    assert!(
+        v.iter().any(|s| s.starts_with("A both lists")),
+        "a box in both lists must be reported, got {v:?}"
+    );
+    doc.tree.nodes[c.0].children.retain(|&x| x != box_id);
+
+    // C — `run_boxes` must name live slab entries, the same as `children`. This
+    // is what catches a cleanup that removes the boxes and forgets the list.
+    doc.tree.nodes[c.0].run_boxes.push(usize::MAX);
+    let v = doc.dom_tree_violations();
+    assert!(
+        v.iter().any(|s| s.starts_with("C freed run box")),
+        "a freed run-box entry must be reported, got {v:?}"
+    );
+    doc.tree.nodes[c.0].run_boxes.retain(|&x| x != usize::MAX);
+
+    // B — one parent per node, counted across both lists.
+    doc.tree.nodes[body.0].run_boxes.push(box_id);
+    let v = doc.dom_tree_violations();
+    assert!(
+        v.iter().any(|s| s.starts_with("B double-parent")),
+        "a box claimed by two containers must be reported, got {v:?}"
+    );
+    doc.tree.nodes[body.0].run_boxes.clear();
+
+    // Only an anonymous box may sit in `run_boxes`; nothing else may hold a
+    // parent that does not list it in `children`.
+    doc.tree.nodes[c.0].run_boxes.push(member);
+    let v = doc.dom_tree_violations();
+    assert!(
+        v.iter().any(|s| s.starts_with("A not a box")),
+        "an ordinary node in run_boxes must be reported, got {v:?}"
+    );
+    doc.tree.nodes[c.0].run_boxes.retain(|&x| x != member);
+
+    // D: the run relation is bidirectional, in both directions.
     doc.tree.nodes[member].run_box = None;
     let v = doc.dom_tree_violations();
     assert!(
@@ -636,10 +693,6 @@ fn the_dom_tree_invariant_catches_a_broken_run_link_and_a_stale_flag() {
     );
     doc.tree.nodes[member].run_box = Some(box_id);
 
-    // D, the other direction. The corruption above is caught by the pass that
-    // walks `run_members`; this one is only visible to the pass that walks
-    // `run_box`, and without it half of D is unpinned — a mutant that deletes
-    // that half survives a suite that looks like it covers D.
     doc.tree.nodes[box_id].run_members.clear();
     let v = doc.dom_tree_violations();
     assert!(
@@ -649,24 +702,20 @@ fn the_dom_tree_invariant_catches_a_broken_run_link_and_a_stale_flag() {
     );
     doc.tree.nodes[box_id].run_members.push(member);
 
-    // E: the flag outlives the run it describes, which is exactly what a
-    // cleanup that forgot to clear it would leave behind. Note the container
-    // is otherwise untouched and every pixel would be identical.
-    doc.tree.nodes[member].run_box = None;
-    doc.tree.nodes[box_id].run_members.clear();
-    let v = doc.dom_tree_violations();
-    assert!(
-        v.iter().any(|s| s.starts_with("E stale run flag")),
-        "a flag with no run behind it must be reported, got {v:?}"
+    assert_eq!(
+        doc.dom_tree_violations(),
+        Vec::<String>::new(),
+        "every corruption must have been restored"
     );
 }
 
-/// The stale flag, reached the way the code would actually reach it (#566).
+/// The stale container list, reached the way the code would actually reach it
+/// (#566).
 ///
-/// `the_dom_tree_invariant_catches_a_broken_run_link_and_a_stale_flag` proves E
+/// `the_dom_tree_invariants_all_fail_on_a_corrupt_box` proves the checks
 /// *can* fire, by writing the corrupt state directly. It does not prove the
 /// clearing in `cleanup_anonymous_block_boxes` is load-bearing: found by
-/// mutation, a build that never clears the flag passes that fixture and the
+/// mutation, a build that never clears the list passed that fixture and the
 /// whole suite besides. Nothing drove the one sequence that distinguishes them
 /// — a container that **had** a run and then stops having one.
 ///
@@ -683,7 +732,7 @@ fn a_container_that_stops_having_a_run_stops_claiming_one() {
     el(&mut doc, c, "div", "height: 10px");
     doc.resolve_layout(VW, VH);
     assert!(
-        doc.tree.nodes[c.0].has_inline_runs,
+        !doc.tree.nodes[c.0].run_boxes.is_empty(),
         "the fixture must start with a real run, or it pins nothing"
     );
 
@@ -693,7 +742,7 @@ fn a_container_that_stops_having_a_run_stops_claiming_one() {
     doc.resolve_layout(VW, VH);
 
     assert!(
-        !doc.tree.nodes[c.0].has_inline_runs,
+        doc.tree.nodes[c.0].run_boxes.is_empty(),
         "the container still claims a run after its last inline child left"
     );
     assert_eq!(

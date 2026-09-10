@@ -1504,9 +1504,9 @@ impl RinchDocument {
         // containers are a small minority of nodes. The allocation this avoids
         // is the part that matters; the *scan* it also avoids — an earlier form
         // asked every child whether it carried a `run_box` — measured as
-        // nothing, so `has_inline_runs` is a structural bound rather than a
-        // speedup (see its own doc).
-        if !node.has_inline_runs {
+        // nothing, so `run_boxes.is_empty()` is a structural bound rather than
+        // a speedup. That field is here for invariant A (see its own doc).
+        if node.run_boxes.is_empty() {
             return Cow::Borrowed(&node.children);
         }
         let mut out: Vec<usize> = Vec::with_capacity(node.children.len());

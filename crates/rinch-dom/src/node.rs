@@ -374,37 +374,37 @@ pub struct Node {
     /// goes through [`crate::RinchDocument::box_tree_children`], which is the
     /// one place those two trees are reconciled.
     pub run_members: Vec<RawNodeId>,
-    /// Whether any of this node's children belongs to an inline run — i.e.
-    /// whether [`crate::RinchDocument::box_tree_children`] has anything to
-    /// substitute here (#566).
+    /// The anonymous block boxes this node is the container of (#566).
     ///
-    /// **This exists to make the common case O(1) — as a structural
-    /// guarantee, not a measured win.** That function is called from seventeen
-    /// sites per frame and the overwhelming majority of nodes have no run among
-    /// their children; deriving the answer means scanning every child with a
-    /// slab lookup each, on the path almost every node takes.
+    /// The **downward** half of a box's edge, and the reason invariant A in
+    /// [`crate::RinchDocument::dom_tree_violations`] is total rather than
+    /// exempted. A box has `parent = Some(container)` and is deliberately
+    /// absent from `children`, which is exactly the state A forbids for an
+    /// ordinary node — so without this list the box could only be *carved out*
+    /// of the check that exists to catch its own historical defect class. With
+    /// it, A says the same thing about every node in the slab:
     ///
-    /// **Measured, and the measurement did not support the worry.** A
-    /// 2,000-child container with no run anywhere — the worst case, since
-    /// `.any()` short-circuits on the first child of a container that *does*
-    /// have a run — is 0.05-0.06ms painted and 0.44-0.46ms laid out, and the
-    /// scan and the flag are indistinguishable across three rounds of both.
-    /// So this is not the #574 shape after all: there, an unconditional
-    /// per-frame walk that looked free measured **+22%**, and here the walk it
-    /// replaces measures nothing at all. It is kept because O(1) beside O(n)
-    /// costs nothing to maintain — the container is written in
-    /// `create_anonymous_block_boxes` alongside the members' back-pointers —
-    /// and because a bound that holds by construction does not have to be
-    /// re-measured when a future call site multiplies the frequency. Do not
-    /// cite it as a speedup.
+    /// > `n.parent == Some(p)` ⟺ `n` appears in **exactly one** of
+    /// > `p.children` or `p.run_boxes`.
     ///
-    /// A `bool` rather than the design's `run_boxes: Vec<RawNodeId>` because
-    /// **nothing needs the list**: the substitution is driven by each child's
-    /// own [`Self::run_box`], and `tree.anonymous_block_boxes` is already the
-    /// authoritative registry for cleanup and layout read-back. An unused
-    /// `Vec` on every node is weight and a second thing to keep in sync; one
-    /// unused helper was already deleted from this change for the same reason.
-    pub has_inline_runs: bool,
+    /// Boxes stay out of `children` because `children` is the **author's**
+    /// tree — what `remove_child`, `insert_before`, `next_sibling` and every
+    /// selector index read. A second list keeps the box-tree edge recorded
+    /// without putting it anywhere those look.
+    ///
+    /// It also makes [`crate::RinchDocument::box_tree_children`]'s common case
+    /// O(1) (`run_boxes.is_empty()`) rather than a per-child slab scan. That
+    /// was the original motivation and it did **not** survive measurement — the
+    /// scan it replaces is indistinguishable from this on a 2,000-child
+    /// container with no run, in both the paint and layout paths. Treat the
+    /// bound as structural insurance, not a speedup; the invariant is what
+    /// earns the field.
+    ///
+    /// **This does not replace [`Self::run_box`]**, which answers a different
+    /// question. This one is *membership* — has this container any runs at all.
+    /// That one is *ordering* — which child the box stands at, so a run that is
+    /// non-contiguous in `children` still emits its box exactly once.
+    pub run_boxes: Vec<RawNodeId>,
     /// The anonymous block box whose run this node belongs to, if any (#566).
     ///
     /// The inverse of [`Self::run_members`], and the thing that lets
@@ -523,7 +523,7 @@ impl Node {
             is_anonymous_block_box: false,
             run_members: Vec::new(),
             run_box: None,
-            has_inline_runs: false,
+            run_boxes: Vec::new(),
             is_pseudo_element: false,
             computed_style: ComputedStyle::default(),
             transition_specs: Vec::new(),
@@ -572,7 +572,7 @@ impl Node {
             is_anonymous_block_box: false,
             run_members: Vec::new(),
             run_box: None,
-            has_inline_runs: false,
+            run_boxes: Vec::new(),
             is_pseudo_element: false,
             computed_style: ComputedStyle::default(),
             transition_specs: Vec::new(),
@@ -620,7 +620,7 @@ impl Node {
             is_anonymous_block_box: false,
             run_members: Vec::new(),
             run_box: None,
-            has_inline_runs: false,
+            run_boxes: Vec::new(),
             is_pseudo_element: false,
             computed_style: ComputedStyle::default(),
             transition_specs: Vec::new(),
@@ -666,7 +666,7 @@ impl Node {
             is_anonymous_block_box: false,
             run_members: Vec::new(),
             run_box: None,
-            has_inline_runs: false,
+            run_boxes: Vec::new(),
             is_pseudo_element: false,
             computed_style: ComputedStyle::default(),
             transition_specs: Vec::new(),

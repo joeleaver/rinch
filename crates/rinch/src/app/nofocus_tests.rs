@@ -303,3 +303,99 @@ fn the_press_resolution_reports_preserve() {
         "a field is the text engine's, claimed on the click path"
     );
 }
+
+// ── 8. the box tree, on the input axis (#566) ───────────────────────────────
+
+/// A `data-nofocus` toolbar whose content is **mixed**, so the run that holds
+/// its inline children sits behind an anonymous block box.
+///
+/// Its own mount rather than `mount_fixture`'s: adding inline content to that
+/// toolbar would make it mixed and move every button the other ten tests
+/// measure.
+fn mount_mixed_toolbar() -> (RinchApp, usize, usize) {
+    let ids: Rc<Cell<Option<(usize, usize)>>> = Rc::new(Cell::new(None));
+    let ids_in = ids.clone();
+    let mut app = RinchApp::new(move |scope: &mut RenderScope| {
+        let root = scope.create_element("div");
+
+        let toolbar = scope.create_element("div");
+        toolbar.set_attribute("style", "width: 400px; font-size: 16px");
+        toolbar.set_attribute("data-nofocus", "");
+
+        // Inline content, then a focusable inline-block, then a block that ends
+        // the run — the CSS 2.1 §9.2.1.1 shape that mints the box.
+        let label = scope.create_text("tools ");
+        let swatch = scope.create_element("span");
+        // **No `data-rid`, and no `data-nofocus` of its own.** Either would make
+        // the walk report `preserves` at the very first node and the fixture
+        // would pass without ever climbing through the box.
+        swatch.set_attribute("style", "display: inline-block; width: 60px; height: 30px");
+        swatch.set_attribute("tabindex", "0");
+        let rule = scope.create_element("div");
+        rule.set_attribute("style", "height: 20px");
+        toolbar.append_child(&label);
+        toolbar.append_child(&swatch);
+        toolbar.append_child(&rule);
+
+        let (editor_container, handle) = crate::editor::mount_editor(scope);
+        handle.load_html("<p>hello world</p>");
+        editor_container.set_attribute("style", "width: 400px; height: 100px");
+
+        root.append_child(&toolbar);
+        root.append_child(&editor_container);
+        ids_in.set(Some((swatch.node_id().0, editor_container.node_id().0)));
+        root
+    });
+    app.mount_component(800.0, 600.0);
+    app.resolve_and_repaint(800.0, 600.0);
+    let (swatch, editor) = ids.get().expect("node ids captured at mount");
+    (app, swatch, editor)
+}
+
+/// The **input** witness for `box_tree_parent` (#566).
+///
+/// Everything else that walks up the box tree is paint asking where a box is on
+/// screen, and every fixture for it is a coordinate sum. This one is a
+/// behaviour: press a focusable that happens to be inside a run, and the
+/// `data-nofocus` on the toolbar **above the box** must still be found. It is
+/// also the shape the defect was reported as — a toolbar press blurring the
+/// editor it was meant to act on.
+///
+/// It kills `box_tree_parent` answering `None` for a box: the ancestor walk
+/// terminates at the box and never reaches the toolbar, so the press claims the
+/// keyboard and the editor loses it.
+///
+/// It does **not** kill a `box_tree_parent` that ignores `run_box`, and that is
+/// worth stating rather than discovering later. A member keeps its real
+/// `parent`, so skipping the box still lands on the toolbar and still finds the
+/// attribute — only the box's own *geometry* distinguishes that mutant, which
+/// is why the paint-side fixtures remain its only witnesses.
+#[test]
+fn a_nofocus_toolbar_is_found_through_an_anonymous_box() {
+    let (mut app, swatch, editor) = mount_mixed_toolbar();
+
+    // The fixture is only meaningful if the press really is inside a run.
+    {
+        let d = app.doc.as_ref().unwrap().borrow();
+        assert!(
+            d.tree.get(swatch).unwrap().run_box.is_some(),
+            "the swatch must be a run member, or the walk never enters a box"
+        );
+    }
+
+    press(&mut app, editor);
+    assert_eq!(
+        app.focus_target,
+        FocusTarget::Editor(editor),
+        "the fixture's editor must actually take focus from a press"
+    );
+
+    press(&mut app, swatch);
+
+    assert_eq!(
+        app.focus_target,
+        FocusTarget::Editor(editor),
+        "the toolbar's data-nofocus sits above an anonymous block box; a walk \
+         that stops at the box never sees it and blurs the editor"
+    );
+}

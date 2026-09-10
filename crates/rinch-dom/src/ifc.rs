@@ -559,14 +559,13 @@ impl RinchDocument {
         // authority for that list — `collect_effective_taffy_children` (#476,
         // #566).
         for parent_id in parents_affected {
-            // Cleared with the boxes it described: every box is gone by now, so
-            // no container has a run until `create_anonymous_block_boxes` mints
-            // one again. Left set, it would send `box_tree_children` down the
-            // substituting path for a container with nothing to substitute —
-            // harmless in result, wrong as a claim, and a lie the next reader
-            // would have to re-derive.
+            // Cleared with the boxes it listed: every one of them has just
+            // been removed from the slab, so leaving the list populated would
+            // point invariant C at freed indices — and send
+            // `box_tree_children` down the substituting path for a container
+            // with nothing to substitute.
             if let Some(p) = self.tree.nodes.get_mut(parent_id) {
-                p.has_inline_runs = false;
+                p.run_boxes.clear();
             }
             self.rebuild_effective_taffy_children(parent_id);
         }
@@ -863,10 +862,12 @@ impl RinchDocument {
                     }
                 }
 
-                // The container's O(1) answer to "is there anything here for
-                // `box_tree_children` to substitute". Set here, beside the
-                // members' back-pointers, so the two cannot drift.
-                self.tree.nodes[parent_id].has_inline_runs = true;
+                // The downward half of the box's edge. Recorded here, beside
+                // the upward `parent` and the members' back-pointers, so all
+                // three are written in one place and cannot drift — and so
+                // invariant A can be stated for every node without exempting
+                // this one.
+                self.tree.nodes[parent_id].run_boxes.push(anon_id);
 
                 // Track for cleanup on next layout pass
                 self.tree.anonymous_block_boxes.push(anon_id);
@@ -1400,6 +1401,52 @@ impl RinchDocument {
                         self.tree.nodes[c].parent
                     ));
                 }
+                // A, exclusivity: exactly one list, never both.
+                if node.run_boxes.contains(&c) {
+                    out.push(format!(
+                        "A both lists: {c} is in {id}'s children AND its run_boxes"
+                    ));
+                }
+            }
+
+            // The same three checks over the box list. A box is a child of the
+            // box tree, not of the author's tree, so it lives here instead of
+            // in `children` — but it is otherwise an ordinary node and A, B and
+            // C say exactly the same things about it. Folding `run_boxes` into
+            // all three is what makes A total; folding it into A alone would
+            // leave B and C blind to the new list, which is the very shape
+            // (a check weakest where it must hold) this validator exists to
+            // avoid.
+            for &b in &node.run_boxes {
+                // C: box entries must name live slab entries.
+                let Some(boxx) = self.tree.nodes.get(b) else {
+                    out.push(format!(
+                        "C freed run box: {id} lists {b}, which is not in the slab"
+                    ));
+                    continue;
+                };
+                // B: one parent per node, across both lists.
+                if let Some(&other) = seen_child.get(&b) {
+                    out.push(format!(
+                        "B double-parent: {b} is listed by both {other} and {id}"
+                    ));
+                } else {
+                    seen_child.insert(b, id);
+                }
+                // A, forward.
+                if boxx.parent != Some(id) {
+                    out.push(format!(
+                        "A one-way: {id} lists {b} as a run box, but {b}.parent is {:?}",
+                        boxx.parent
+                    ));
+                }
+                // Only an anonymous box belongs in this list. Nothing else may
+                // acquire a parent that does not list it in `children`.
+                if !boxx.is_anonymous_block_box {
+                    out.push(format!(
+                        "A not a box: {id} lists {b} as a run box, but it is not an anonymous block box"
+                    ));
+                }
             }
             // C: a parent must name a live slab entry.
             if let Some(p) = node.parent
@@ -1411,30 +1458,38 @@ impl RinchDocument {
             }
         }
 
-        // A, backward: a node claiming a parent must be in that parent's list.
+        // A, backward: a node claiming a parent must appear in **exactly one**
+        // of that parent's two lists.
         //
-        // An anonymous block box is the one node this cannot hold for: it
-        // carries an upward edge to its container and appears in nobody's
-        // `children` (#566). **The exemption is a cost of the design, not a
-        // free choice**, and it is stated rather than hidden — an invariant
-        // introduced to catch DOM corruption should carry as few carve-outs as
-        // possible, and this one is for the very construct whose old shape
-        // produced the class. It is narrow: only A's *backward* direction is
-        // waived. A-forward holds vacuously (nothing lists the box as a child),
-        // B with it (nothing can list it twice), and C is checked for its
-        // `parent` above like any other node's.
+        // **There is no exemption, and that is the point.** The anonymous block
+        // box used to need one: it carries `parent = Some(container)` and is
+        // deliberately absent from `children`, which is the state A forbids for
+        // an ordinary node. An invariant introduced to catch DOM corruption
+        // would then have carried a carve-out for the exact construct whose old
+        // shape produced the corruption — weakest precisely where it must hold.
+        // Recording the downward edge in `run_boxes` removes the need: the box
+        // is in one list, every other node is in the other, and A is a single
+        // sentence true of every node in the slab.
+        //
+        // Note this direction is what would have caught §11 by itself. The
+        // superseded `parent: None` build asserted the opposite — that a box
+        // has no parent at all — so giving the box its parent back turned that
+        // assertion from silent to firing on every box, every frame.
         for (id, node) in &self.tree.nodes {
-            if node.is_anonymous_block_box {
-                continue;
-            }
-            if let Some(p) = node.parent
-                && let Some(parent) = self.tree.nodes.get(p)
-                && !parent.children.contains(&id)
-            {
+            let Some(p) = node.parent else { continue };
+            let Some(parent) = self.tree.nodes.get(p) else {
+                continue; // reported as "C freed parent" above
+            };
+            let in_children = parent.children.contains(&id);
+            let in_run_boxes = parent.run_boxes.contains(&id);
+            if !in_children && !in_run_boxes {
                 out.push(format!(
-                    "A one-way: {id}.parent is {p}, but {p}'s children do not contain it"
+                    "A one-way: {id}.parent is {p}, but neither {p}'s children nor its run_boxes contain it"
                 ));
             }
+            // The "exactly one" half is reported from the forward pass, which
+            // sees both lists of the same node together.
+            let _ = in_run_boxes;
         }
 
         // D: the run relation is bidirectional, like A is for the DOM edge.
@@ -1467,28 +1522,6 @@ impl RinchDocument {
                         self.tree.nodes[m].run_box
                     ));
                 }
-            }
-        }
-
-        // E: `has_inline_runs` is **derived** state — it exists only so
-        // `box_tree_children` can answer the common case in O(1) rather than
-        // scanning. Redundant state earns its keep by being checkable, so the
-        // definition it is a cache of is written out here and compared. A run
-        // is grouped from the container's own `children` (see
-        // `create_anonymous_block_boxes`), never from a flattened list, which
-        // is what makes a *direct-child* scan the right definition; were that
-        // ever to change, this fires rather than the fast path silently
-        // skipping a substitution.
-        for (id, node) in &self.tree.nodes {
-            let derived = node
-                .children
-                .iter()
-                .any(|&c| self.tree.nodes.get(c).is_some_and(|c| c.run_box.is_some()));
-            if node.has_inline_runs != derived {
-                out.push(format!(
-                    "E stale run flag: {id}.has_inline_runs is {}, but scanning its children says {derived}",
-                    node.has_inline_runs
-                ));
             }
         }
 
