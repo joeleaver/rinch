@@ -1261,7 +1261,7 @@ The software renderer includes **dirty region caching**: when only a few nodes c
 **Scrollbars.** A scroll container paints an overlay thumb on each axis that is scrollable (`overflow-{x,y}: scroll | auto`) *and* overflowing — 6px thick, 2px margin, 20px minimum thumb, fully rounded, and a neutral 40% that follows the container's palette (see **Styling the bar** below). Both bars are hit-tested over a wider 16px strip along their edge and can be dragged (issue #178). Where both are present each track gives up the other bar's footprint at its far end, so the bottom-right **corner belongs to neither**: nothing paints there and clicking it falls through to the container. Desktop only — on the web the browser draws its own.
 
 That geometry lives in **one place**, `crates/rinch-dom/src/paint/scrollbar.rs`
-(`scrollbars(tree, node_id, scale)` → a `ScrollbarTrack` per axis): paint draws
+(`scrollbars(tree, node_id, scale)` → a `Scrollbars` holding an `Option<ScrollbarTrack>` per axis — `None` where that axis has no bar): paint draws
 the thumb from it, and `find_scrollbar_hit` plus the `MouseDown`/`MouseMove`
 arms in `crates/rinch/src/app/` press and drag it by it. They used to derive it
 separately and had drifted (#400) — paint measured the track across the
@@ -1339,6 +1339,13 @@ not `visible`" — and one shape, `paint::clip_shape` (the rounded border box).
 Everything that needs either asks those: paint's clip bracket, its dirty-region
 subtree prune, the layer-bounds walk, a hoisted entry's clip chain, hit
 testing's `check_children` gate, and `RinchApp`'s two viewport clip walks.
+(`creates_stacking_context` was on that list until stage B and is deliberately
+not any more — see **Stacking contexts and the clip chain** below.) Those seven
+sites held **four** different predicates before #324 stage A, and the
+disagreement was real rather than cosmetic: paint, `layer_bounds` and
+`creates_stacking_context` matched `overflow_y` against `Hidden | Scroll | Auto`
+and so **missed `overflow: clip` entirely**, while hit testing clipped it —
+content drawn and not clickable.
 
 **But "this node clips, therefore a bracket is open" is no longer true** (card
 K43). A Vello clip layer is two extra passes over the clipped area, paid whether
@@ -1356,13 +1363,6 @@ was already vacuous. What it breaks is the **reverse inference**, which is why
 `paint_children_with_stacking` is *told* whether a bracket is open
 (`clip_elided`) rather than deducing it. Anything new that needs to know must be
 told too, not infer it from the predicate.
-(`creates_stacking_context` was on that list until stage B and is deliberately
-not any more — see **Stacking contexts and the clip chain** below.) Those seven
-sites held **four** different predicates before #324 stage A, and the
-disagreement was real rather than cosmetic: paint, `layer_bounds` and
-`creates_stacking_context` matched `overflow_y` against `Hidden | Scroll | Auto`
-and so **missed `overflow: clip` entirely**, while hit testing clipped it —
-content drawn and not clickable.
 
 `clip` is the only value that ever reached that gap, and that is measured rather
 than reasoned: css-overflow-3 §3 makes a `visible` compute to `auto` when the
@@ -1468,10 +1468,17 @@ correct, and each has a fixture in
   clippers a fixed descendant escapes, and its `Extent::Escapes` case stops one
   narrowing a translucent layer to less than it paints — which tiny-skia ignores
   and Vello enforces, i.e. a software/GPU divergence no pixel test can see.
-  **`position: absolute` has the same hole and it is NOT handled** (#550): an
-  absolute that escapes its clipping ancestor — which #204's initial-containing-
-  block correction makes reachable — narrows the layer the same way, with the
-  same GPU-only symptom. Only the `fixed` case is covered.
+  **`position: absolute` has the same hole and it is NOT handled** (#550), but
+  it is a *different shape*. `Collector::span` truncates an absolute's chain at
+  its containing block (`Absolute => self.cb_depth`, set at **any**
+  `establishes_abs_containing_block()` ancestor — any non-`static` position or a
+  transform), so it escapes the clippers *below* that block while staying
+  clipped by the ones above. `layer_bounds` narrows it at **every** clipping
+  ancestor regardless, so a layer holding one can come back too small with the
+  same GPU-only symptom. It needs a **partial** escape, which `Escapes` cannot
+  express — that is why only the `fixed` case is covered, and it is pre-existing
+  rather than something #204 introduced. `layer_bounds.rs`'s module doc names
+  both cases explicitly; read it before touching this.
 - **No transform composition is needed.** A transform creates a stacking
   context, so `descend` never crosses one and every link lives in the collecting
   root's own untransformed space — the same space the entries' offsets are in.
@@ -1584,7 +1591,7 @@ Images render on **both** desktop backends — GPU (Vello, `scene.draw_image`) a
 ```
 rinch-core:  ImageLoader trait + ImageLoadResult enum (no deps)
 rinch-dom:   ImageCache + FileImageLoader + decode pipeline (image crate)
-rinch:       NetworkImageLoader (ureq, gated behind image-network feature)
+rinch:       NetworkImageLoader (rinch-http, gated behind image-network feature)
 ```
 
 **Key files:**
@@ -1601,7 +1608,7 @@ rinch:       NetworkImageLoader (ureq, gated behind image-network feature)
 5. `drain_pending_images()` at the start of layout picks up decoded images, updates Taffy intrinsic dims
 6. `paint_image()` renders via `scene.draw_image()` with proper affine transforms
 
-**Network loading:** Enable `features = ["image-network"]` for HTTP(S) URL support via `ureq`.
+**Network loading:** Enable `features = ["image-network"]` for HTTP(S) URL support. It goes through `rinch_http::fetch_blocking`, **not** a private `ureq` call, so image loads share the app's one HTTP agent — its cookie jar, proxy and TLS config (`image-network = ["dep:rinch-http"]`).
 
 **Circular avatars:** a clipping ancestor with `border-radius` clips to a
 `RoundedRect` rather than a plain rect, which is what crops an `<img>` to a
@@ -1613,7 +1620,6 @@ under Rendering Backends for the predicate and its deviations.
 Press F12 to toggle the DevTools panel which shows:
 - **Performance**: FPS, frame time, and render time
 - **Elements**: DOM tree inspection
-- **Styles**: Computed styles for selected elements (enable inspect mode with Alt+I)
 - **Styles**: Computed styles for selected elements (enable inspect mode with Alt+I)
 
 ### Debug & MCP Server (optional)
@@ -1682,7 +1688,7 @@ Build first with `cargo build -p rinch-mcp-server`. Using `cargo run` instead wo
 | `scroll` | Scroll a container at (x, y) |
 | `key_press` | Press a single key (with modifiers), as distinct from `type_text`'s literal text |
 | `get_caret_position` | The text caret's rect — note it mixes logical and physical px at scale != 1 (#421) |
-| `get_glyph_bounds` | Per-glyph boxes for a text node — same #421 caveat |
+| `get_glyph_bounds` | The box of the **one** glyph cluster at a given `byte_offset` in a text node — not every glyph; same #421 caveat |
 | `disconnect` | Disconnect from the app without closing it |
 | `launch_app` | Launch a rinch app via `cargo run -p <package>`, wait for debug registration, auto-connect |
 
