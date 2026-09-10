@@ -1703,23 +1703,45 @@ impl RinchDocument {
     /// list, so rebuilding the deepest owner first and the flattening one last
     /// leaves the boxes where the flattening says they belong.
     ///
-    /// `create_anonymous_block_boxes` needs this because a contents wrapper is
-    /// `DisplayMode::Block` (`style_resolution`), so a wrapper holding
-    /// `text + block` is itself classified as mixed content and mints the
-    /// anonymous box — inside a boxless element. The net Taffy structure is
-    /// right, because the flattening lifts the anonymous box's contribution
-    /// into the ancestor's list; what is wrong is that `sync_display_contents`
-    /// built that ancestor's list *before* the anonymous box existed and
-    /// nothing re-runs it. Rebuilding only the wrapper then strands the
-    /// ancestor with an empty list and collapses it to `h = 0`.
+    /// **What reaches the walk, since #568: only
+    /// `cleanup_anonymous_block_boxes`** (#585). It takes each affected parent
+    /// from the anonymous box's `parent`, recorded on the pass that *minted*
+    /// the box, while #568's phase-1 guard applies at classification time on
+    /// the current pass. So a container that was `display: block` when it
+    /// minted a box and has since been restyled to `display: contents` — by an
+    /// inline `style` write or through the cascade, both measured — arrives
+    /// here as a `Contents` node and the walk runs.
+    /// `create_anonymous_block_boxes`' two call sites cannot reach it: its
+    /// `parent_id` passed that guard, and a box it mints is always `Block`,
+    /// because `ComputedStyle::for_anonymous_box` copies `Contents` only from a
+    /// `Contents` parent.
     ///
-    /// An anonymous box minted inside such a wrapper is itself `Contents`, on
-    /// purpose — `ComputedStyle::for_anonymous_box` propagates it (#319) — so
-    /// it too generates no box and this walk covers it by the same rule. That
-    /// leaves its inline run laid out as bare Taffy children rather than as one
-    /// IFC line, which is what happens today and what happened before #476:
-    /// two text nodes in such a wrapper stack as two blocks, measured
-    /// identically either side of that fix.
+    /// Without the walk that restyle strands the container's boxes. Rebuilding
+    /// only the now-boxless container hands them to a Taffy node nothing lays
+    /// out, and `set_children` steals them out of the list that should hold
+    /// them on the way. It shows only where the flattening ancestor is one
+    /// phase 1 skips — `Inline`, `InlineBlock` or `Flex`; the flex column is
+    /// the one measured. Against a **block** ancestor the flattened
+    /// `text + block` makes that ancestor mixed content in its own right, so
+    /// phase 2 rebuilds its list anyway, and the walk changes nothing (also
+    /// measured, as this section's control).
+    /// `anon_box_contents_flatten_tests`' "owners walk, after #568" section is
+    /// the witness, on a flex column, with a chain of two so it discriminates
+    /// the loop and not merely the walk.
+    ///
+    /// **What used to reach it, and no longer can.** #567 wrote this for a
+    /// wrapper classified as mixed content in its own right: `display: contents`
+    /// computes to `DisplayMode::Block` (`style_resolution`), so a wrapper
+    /// holding `text + block` minted the anonymous box inside a boxless
+    /// element, and the ancestor's list — built by `sync_display_contents`
+    /// before that box existed — had to be rebuilt after it. #568's guard
+    /// removed that shape and with it every fixture that discriminated this
+    /// function at all: on `4fe65ed` both `owners = vec![node_id]` and a
+    /// loop-free single step survived `cargo test -p rinch-dom -p rinch`
+    /// (41 binaries) with nothing failing. They all still pass. That is #585.
+    /// `ComputedStyle::for_anonymous_box`'s `Contents` branch (#319) went with
+    /// it — a minted box could be `Contents` only inside such a wrapper — so
+    /// this walk no longer covers an anonymous box of its own.
     pub(crate) fn taffy_child_list_owners(
         nodes: &slab::Slab<crate::node::Node>,
         node_id: usize,

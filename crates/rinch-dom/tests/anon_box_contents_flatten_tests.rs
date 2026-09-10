@@ -27,10 +27,18 @@
 //! off-by-one from a drop, so there is a block-first fixture; `y == 0` is where
 //! a laid-out box and an orphan agree, so the text sibling above gives every
 //! other fixture a non-zero expected offset; and a contents chain of **length
-//! one** is where the owners *loop* and a single step up agree, so two fixtures
-//! nest wrappers two and three deep. That last one was missed on the first pass
-//! and found by mutation — the file already claimed to have stepped off the
-//! fixed points while sitting on this one.
+//! one** is where the owners *loop* and a single step up agree, so the fixtures
+//! that exercise the walk nest two deep. That last one was missed on the first
+//! pass and found by mutation — the file already claimed to have stepped off
+//! the fixed points while sitting on this one.
+//!
+//! **Which fixtures those are moved with #568.** The two nested-wrapper
+//! fixtures below were written for it and no longer reach the walk at all: a
+//! `display: contents` element is skipped as a container now, so nothing hands
+//! `taffy_child_list_owners` a `Contents` node from that shape. The "owners
+//! walk, after #568" section near the end is where the walk — loop included —
+//! is witnessed today, and it is the one place in this file whose fixtures fail
+//! against a walk mutant (#585).
 
 use rinch_core::dom::{DomDocument, NodeId};
 use rinch_dom::RinchDocument;
@@ -501,10 +509,15 @@ fn the_cleanup_rebuild_uses_the_same_authority() {
 /// list — but only if the ancestor's list is rebuilt after the box exists.
 /// `sync_display_contents` built it before, and nothing re-runs it.
 ///
-/// Kills: rebuilding only the anonymous box's own DOM parent. Taffy's
-/// `set_children` steals each adopted child from its previous parent, so
-/// rebuilding just the wrapper empties the container's list and collapses it to
-/// `h = 0` with its content laid out nowhere.
+/// Killed, until #568: rebuilding only the anonymous box's own recorded
+/// parent. That parent was the wrapper while the wrapper was the node
+/// classified as mixed content, and Taffy's `set_children` steals each adopted
+/// child from its previous parent, so rebuilding just the wrapper emptied the
+/// container's list and collapsed it to `h = 0`. Since #568 the box's parent
+/// **is** the container, so "rebuild only the box's own parent" is no longer a
+/// mutant at all — it is the correct code, and this fixture reads the same
+/// either way (#585). What it still asserts is the flattening result itself:
+/// the box ends up in the container's list and the container measures it.
 #[test]
 fn an_anonymous_box_minted_inside_a_wrapper_does_not_strand_the_ancestor() {
     let mut doc = RinchDocument::new();
@@ -550,9 +563,16 @@ fn an_anonymous_box_minted_inside_a_wrapper_does_not_strand_the_ancestor() {
 /// trap the file header claims to have stepped off, surviving in the one
 /// parameter nothing varied.
 ///
-/// Kills: `taffy_child_list_owners` without its loop. That walk stops on `w1`,
-/// which generates no box, so the container's list is never rebuilt after the
-/// anonymous box exists and it collapses to `h = 0`.
+/// **That is history now, and this fixture no longer kills it (#585).** It
+/// killed the loop's removal because the *wrapper* was the node classified as
+/// mixed content, so the box's recorded parent was a `display: contents` node
+/// and the owners walk ran. #568 skips a `display: contents` element as a
+/// container, so the box is minted by `container` and the walk is never
+/// entered from this shape — measured with a probe inside the loop, which
+/// fires zero times across this suite. Both walk mutants survive it. What it
+/// still asserts is that a box minted for a run two contents levels down lands
+/// in the container's list; the walk's own witness is the "owners walk, after
+/// #568" section.
 #[test]
 fn an_anonymous_box_two_contents_levels_down_does_not_strand_the_ancestor() {
     let mut doc = RinchDocument::new();
@@ -588,8 +608,11 @@ fn an_anonymous_box_two_contents_levels_down_does_not_strand_the_ancestor() {
 /// mixed as well — the mutant has to survive a container being rebuilt for its
 /// *own* reasons, not only as somebody's ancestor.
 ///
-/// This one **fails on `main`** as well as against the truncated walk, so it is
-/// fail-first evidence for the fix and a mutation guard at the same time.
+/// This one **failed on pre-#476 `main`** as well as against the truncated
+/// walk, so it was fail-first evidence for that fix and a mutation guard at the
+/// same time. The mutation-guard half went with #568, for the reason the
+/// two-level fixture above gives: nothing here reaches the owners walk any more
+/// (#585). The fail-first half stands.
 #[test]
 fn three_contents_levels_down_with_an_independently_mixed_container() {
     let mut doc = RinchDocument::new();
@@ -625,6 +648,209 @@ fn three_contents_levels_down_with_an_independently_mixed_container() {
          sibling (7), got {container_height}"
     );
     assert_consistent(&doc, "three contents levels");
+}
+
+// ── The owners walk, after #568 ────────────────────────────────────────────
+
+/// Whether a node's box hangs off the **document root**, not merely off some
+/// Taffy parent.
+///
+/// `attached_to_taffy` cannot tell the difference and neither can the
+/// validators: a subtree detached at a `display: contents` node keeps every
+/// edge inside it, so each member still reports a parent, and invariant C's
+/// orphan rule skips `Contents` nodes by design. Measured against the
+/// walk-removed mutant on the fixture below — `attached_to_taffy` answers
+/// `true`, `taffy_tree_violations` and `dom_tree_violations` both answer `[]`,
+/// and the flex column measures `0`. A whole branch laid out nowhere with
+/// nothing anywhere looking locally wrong, which is also why the
+/// `RINCH_TREE_CHECK=1` sweep cannot find this class.
+fn reachable_from_taffy_root(doc: &RinchDocument, id: NodeId) -> bool {
+    let root = doc.tree.nodes[doc.tree.root_id].taffy_id;
+    let mut cur = doc.tree.get(id.0).and_then(|n| n.taffy_id);
+    while let Some(t) = cur {
+        if Some(t) == root {
+            return true;
+        }
+        cur = doc.tree.taffy.parent(t);
+    }
+    false
+}
+
+/// `<div style="display: flex; flex-direction: column">` around a plain block
+/// holding `text + block`, then that block restyled to `display: contents`.
+///
+/// **This is the route into `taffy_child_list_owners`' contents walk that #568
+/// leaves open, and #585 is that nothing was taking it.** Every fixture above
+/// hands that function a node whose computed display is not `Contents`, so the
+/// walk does not run — measured directly with a probe inside the loop, which
+/// fires zero times across `cargo test -p rinch-dom -p rinch` (41 binaries) on
+/// `4fe65ed`. Both halves of the walk survived that same suite as mutants:
+/// `owners = vec![node_id]` (no walk at all) and a loop-free single step. So it
+/// is not only the loop that had lost its witnesses; it was the whole walk.
+///
+/// The shape #567 built it for is the one #568 removed: a wrapper classified as
+/// mixed content in its own right, minting a box inside a boxless element.
+/// Phase 1 of `create_anonymous_block_boxes` now skips a `display: contents`
+/// element, and `ComputedStyle::for_anonymous_box` copies `Contents` only from
+/// a `Contents` parent — which a container reaching phase 2 never is — so a
+/// minted box is always `Block` (measured, not read off the guard). Neither
+/// creation call site can reach the walk any more.
+///
+/// The **cleanup** site can. `cleanup_anonymous_block_boxes` takes each
+/// affected parent from `anon.parent`, recorded on the pass that *minted* the
+/// box; #568's guard applies at classification time, on this pass. A container
+/// that was `display: block` when it minted a box and has since been restyled
+/// to `display: contents` therefore arrives as a `Contents` node and the walk
+/// runs. An inline `style` write and a class change through a stylesheet both
+/// reach it — the cascade route is measured, not assumed.
+///
+/// That is the state the walk needs, not the only way of entering it, and the
+/// distinction is worth keeping: what has to be true is that `anon.parent`
+/// names a node whose computed display is `Contents` **now**. Restyling that
+/// container is the way found; an ancestor's restyle and a reparenting do not
+/// change the container's own display and so are not routes, and a slab index
+/// recycled from a removed container into a fresh `display: contents` element
+/// would be one but was not reproduced. If another appears it belongs here.
+///
+/// The ancestor must be one phase 1 skips — `DisplayMode::Flex`,
+/// `Inline` or `InlineBlock` — and a flex column is the everyday one, since the
+/// component library lays out with `Stack` and `Group`. Against a **block**
+/// ancestor the walk is redundant: flattening a mixed container into a block
+/// makes that block mixed in its own right, so phase 2 rebuilds its list for
+/// its own reasons. The control below is exactly that case and it discriminates
+/// nothing, which is why these two fixtures are built on flex.
+///
+/// Kills: `taffy_child_list_owners` reduced to `vec![node_id]`. The cleanup
+/// rebuild then stops at the restyled container, whose own Taffy node generates
+/// no box, and `set_children` steals the content out of the flex column's list
+/// on the way — the column collapses to `h = 0` with its whole subtree laid out
+/// nowhere.
+#[test]
+fn a_container_restyled_to_contents_rebuilds_the_ancestor_that_now_holds_its_boxes() {
+    let mut doc = RinchDocument::new();
+    let body = doc.body();
+    let col = child_of(
+        &mut doc,
+        body,
+        "div",
+        "display: flex; flex-direction: column; width: 400px",
+    );
+    let inner = child_of(&mut doc, col, "div", "font-size: 16px; line-height: 20px");
+    text_in(&mut doc, inner, "label");
+    let blk = child_of(&mut doc, inner, "div", "height: 30px; background: red");
+    doc.resolve_layout(VW, VH);
+    assert_eq!(
+        height_of(&doc, col),
+        50.0,
+        "precondition: the text line (20) plus the block (30), with the \
+         anonymous box minted by `inner` while it is still a block"
+    );
+
+    // `inner` keeps its mixed content and stops generating a box. Its
+    // anonymous box's recorded parent is now a `display: contents` node.
+    doc.set_attribute(
+        inner,
+        "style",
+        "display: contents; font-size: 16px; line-height: 20px",
+    );
+    doc.resolve_layout(VW, VH);
+
+    assert!(
+        reachable_from_taffy_root(&doc, blk),
+        "the block is laid out inside a subtree hanging off nothing"
+    );
+    assert_eq!(rect(&doc, blk).3, 30.0, "the block keeps its height");
+    assert_eq!(
+        height_of(&doc, col),
+        50.0,
+        "the flex column still measures the text line plus the block, not 0"
+    );
+    assert_consistent(&doc, "container restyled to contents, flex ancestor");
+}
+
+/// The same, with **two** contents levels between the restyled container and
+/// the flex column that ends up holding its boxes.
+///
+/// A chain of length one is the arity fixed point of the *loop*: there, "walk
+/// up while the node is `contents`" and "take a single step up" are the same
+/// walk, so the fixture above cannot tell them apart. This is the same fixed
+/// point #567 sat on until mutation found it, restated for the route that
+/// still reaches the walk.
+///
+/// Kills: the loop replaced by a single step (as well as the walk's total
+/// removal). The single step stops on `w1`, which generates no box, so the flex
+/// column's list is never rebuilt after the anonymous box is dropped and it
+/// collapses to `h = 0`.
+#[test]
+fn a_container_restyled_to_contents_two_levels_down_walks_the_whole_chain() {
+    let mut doc = RinchDocument::new();
+    let body = doc.body();
+    let col = child_of(
+        &mut doc,
+        body,
+        "div",
+        "display: flex; flex-direction: column; width: 400px",
+    );
+    let w1 = child_of(&mut doc, col, "div", "display: contents");
+    let inner = child_of(&mut doc, w1, "div", "font-size: 16px; line-height: 20px");
+    text_in(&mut doc, inner, "label");
+    let blk = child_of(&mut doc, inner, "div", "height: 30px; background: red");
+    doc.resolve_layout(VW, VH);
+    assert_eq!(height_of(&doc, col), 50.0, "precondition");
+
+    doc.set_attribute(
+        inner,
+        "style",
+        "display: contents; font-size: 16px; line-height: 20px",
+    );
+    doc.resolve_layout(VW, VH);
+
+    assert!(
+        reachable_from_taffy_root(&doc, blk),
+        "the block is laid out inside a subtree hanging off nothing"
+    );
+    assert_eq!(rect(&doc, blk).3, 30.0, "the block keeps its height");
+    assert_eq!(
+        height_of(&doc, col),
+        50.0,
+        "the flex column two levels up still measures the text line plus the \
+         block, not 0"
+    );
+    assert_consistent(&doc, "two contents levels, flex ancestor");
+}
+
+/// The control that names the culprit: the identical restyle under a **block**
+/// ancestor, which repairs itself.
+///
+/// It must stay green, and it must stay green against both walk mutants —
+/// measured, and stated here so nobody reads it as a second witness. Flattening
+/// `text + block` into a block ancestor makes that ancestor mixed content in
+/// its own right, so `create_anonymous_block_boxes` mints a box for it and
+/// rebuilds its Taffy list at the end of the same pass, whatever the cleanup
+/// walk did or did not do. That is why the two fixtures above need a container
+/// display phase 1 skips.
+#[test]
+fn the_same_restyle_under_a_block_ancestor_repairs_itself() {
+    let mut doc = RinchDocument::new();
+    let body = doc.body();
+    let outer = child_of(&mut doc, body, "div", "width: 400px");
+    let inner = child_of(&mut doc, outer, "div", "font-size: 16px; line-height: 20px");
+    text_in(&mut doc, inner, "label");
+    let blk = child_of(&mut doc, inner, "div", "height: 30px; background: red");
+    doc.resolve_layout(VW, VH);
+    assert_eq!(height_of(&doc, outer), 50.0, "precondition");
+
+    doc.set_attribute(
+        inner,
+        "style",
+        "display: contents; font-size: 16px; line-height: 20px",
+    );
+    doc.resolve_layout(VW, VH);
+
+    assert!(reachable_from_taffy_root(&doc, blk));
+    assert_eq!(rect(&doc, blk).3, 30.0);
+    assert_eq!(height_of(&doc, outer), 50.0);
+    assert_consistent(&doc, "block ancestor control");
 }
 
 // ── The local pixel oracle ─────────────────────────────────────────────────
