@@ -1232,12 +1232,21 @@ impl RinchDocument {
             // `affected_parents`.
             //
             // **Defence, not a fix, and that is measured**: the mutant that
-            // deletes it survives the entire workspace. A box reaches the
-            // `is_contents` arm only when it inherited `display: contents` from
-            // a boxless container, and in that state nothing consults its Taffy
-            // node — the collector flattens it to its run — so both effects are
-            // inert. I predicted the opposite in the design audit ("a real
-            // regression if left alone") and was wrong.
+            // deletes it survives the entire workspace. I predicted the
+            // opposite in the design audit ("a real regression if left alone")
+            // and was wrong.
+            //
+            // Read that survival precisely, because it is weaker than it
+            // looks. What is established is the **absence of a distinguishing
+            // fixture**, not a demonstration that the guard is inert. The
+            // account I have for why — a box reaches the `is_contents` arm
+            // only by inheriting `display: contents` from a boxless container,
+            // and in that state the collector flattens it to its run so
+            // nothing consults its Taffy node — is an argument, and the
+            // suite's silence is consistent with it being wrong in a shape
+            // nobody has written down. The guard stays because it is cheap and
+            // because that argument is the only thing standing between the
+            // double-add and a `parents_affected` list with a duplicate in it.
             if node.is_anonymous_block_box {
                 continue;
             }
