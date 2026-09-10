@@ -1501,11 +1501,11 @@ impl RinchDocument {
         // **Borrow unless a run is actually present, and decide that in O(1).**
         // These walks run per node per frame — paint's descent, the stacking
         // sequence, `layer_bounds`, every Taffy rebuild — and mixed-content
-        // containers are a small minority of nodes. Both halves matter: the
-        // allocation this avoids, and the *scan* it avoids, which an earlier
-        // form of this function paid by asking every child whether it carried a
-        // `run_box`. That was O(children) with a slab lookup each, on the path
-        // almost every node takes.
+        // containers are a small minority of nodes. The allocation this avoids
+        // is the part that matters; the *scan* it also avoids — an earlier form
+        // asked every child whether it carried a `run_box` — measured as
+        // nothing, so `has_inline_runs` is a structural bound rather than a
+        // speedup (see its own doc).
         if !node.has_inline_runs {
             return Cow::Borrowed(&node.children);
         }

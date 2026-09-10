@@ -378,16 +378,25 @@ pub struct Node {
     /// whether [`crate::RinchDocument::box_tree_children`] has anything to
     /// substitute here (#566).
     ///
-    /// **This exists to make the common case O(1).** That function is called
-    /// from seventeen sites per frame — the Taffy rebuilds, paint's descent,
-    /// the viewport holes, the stacking sequence, `layer_bounds`, hit testing —
-    /// and the overwhelming majority of nodes have no run among their children.
-    /// Deriving the answer instead means scanning every child and doing a slab
-    /// lookup per child, on the path taken by almost every node: ~34,000 slab
-    /// lookups a frame on a 2,000-child container, purely to discover there is
-    /// nothing to do. That is the #574 shape exactly — an unconditional
-    /// per-frame cost that looked free and measured **+22%** — and the cure is
-    /// the same: let the code answer cheaply rather than recompute.
+    /// **This exists to make the common case O(1) — as a structural
+    /// guarantee, not a measured win.** That function is called from seventeen
+    /// sites per frame and the overwhelming majority of nodes have no run among
+    /// their children; deriving the answer means scanning every child with a
+    /// slab lookup each, on the path almost every node takes.
+    ///
+    /// **Measured, and the measurement did not support the worry.** A
+    /// 2,000-child container with no run anywhere — the worst case, since
+    /// `.any()` short-circuits on the first child of a container that *does*
+    /// have a run — is 0.05-0.06ms painted and 0.44-0.46ms laid out, and the
+    /// scan and the flag are indistinguishable across three rounds of both.
+    /// So this is not the #574 shape after all: there, an unconditional
+    /// per-frame walk that looked free measured **+22%**, and here the walk it
+    /// replaces measures nothing at all. It is kept because O(1) beside O(n)
+    /// costs nothing to maintain — the container is written in
+    /// `create_anonymous_block_boxes` alongside the members' back-pointers —
+    /// and because a bound that holds by construction does not have to be
+    /// re-measured when a future call site multiplies the frequency. Do not
+    /// cite it as a speedup.
     ///
     /// A `bool` rather than the design's `run_boxes: Vec<RawNodeId>` because
     /// **nothing needs the list**: the substitution is driven by each child's
