@@ -1541,45 +1541,47 @@ impl RinchDocument {
         if node.run_boxes.is_empty() {
             return Cow::Borrowed(&node.children);
         }
-        // **A run member is a direct child of this container**, which is what
-        // makes the loop below able to find it at all. True on this base
-        // because `create_anonymous_block_boxes` groups runs from
-        // `node.children` and nothing else. **#568 changes that**: under a
-        // flattened classification a member behind a `display: contents`
-        // wrapper is a grandchild, this loop would never see it, and the box
-        // would silently vanish from its container's box-tree children. That is
-        // one of exactly two things #568 must update in the same commit; the
-        // other is `RinchDocument::run_bookkeeping_violations`, whose rule
-        // becomes false by design for the same reason. Neither fails quietly —
-        // see that function's doc.
-        let mut out: Vec<usize> = Vec::with_capacity(node.children.len());
+
+        // **The units, not the children** (#568). A run is grouped over the
+        // container's *flattened* child list, so a member may live behind a
+        // `display: contents` wrapper and not appear in `children` at all —
+        // iterating `children` would then find no member, emit no box, and drop
+        // a whole run out of the box tree.
+        //
+        // **Three sites read this list and all three call the same function.**
+        // `create_anonymous_block_boxes` groups runs out of it, this emits the
+        // boxes into it, and `RinchDocument::run_bookkeeping_violations` checks
+        // that every member is still a unit of it. They are one authority
+        // rather than three spellings kept in step, because #518, #476 and #568
+        // were each *two sites asking one question two ways*. If you change what
+        // a unit is, those are the two that move with this one — and the third
+        // is the one that fails loudly if they drift, which is why it asks
+        // membership of this very list rather than some property a member
+        // happens to have.
+        //
+        // A wrapper that survives as one unit is a run member itself and is
+        // replaced by its box like any other; a wrapper that was broken up
+        // vanishes here exactly as it does from the Taffy child list, since it
+        // generates no box (CSS 2.1 §9.2.1.1) — its units stand in its place.
+        let mut units: Vec<usize> = Vec::new();
+        Self::collect_run_units(nodes, node_id, &mut units);
+
+        let mut out: Vec<usize> = Vec::with_capacity(units.len());
+        // A run is **not** contiguous in this list either: a comment or a
+        // `display: none` child sits between two members of one run, so the box
+        // must be emitted once for the whole run rather than once per
+        // maximal stretch. Resetting on a non-member emits it twice and Taffy
+        // panics on the duplicate in `set_children`.
         let mut last_box: Option<usize> = None;
-        for &child_id in &node.children {
-            match nodes.get(child_id).and_then(|c| c.run_box) {
+        for unit in units {
+            match nodes.get(unit).and_then(|c| c.run_box) {
                 Some(b) => {
-                    // Only the run's first member yields the box.
-                    //
-                    // `last_box` is **not** reset by the non-member arm below,
-                    // and that is the whole subtlety: a run is not a contiguous
-                    // slice of `children`. A comment, an out-of-flow box or a
-                    // `display: none` child sits *inside* a run without joining
-                    // it (#406, #366, #490), so `text <!--c--> span` is one run
-                    // with a non-member between two of its members. Resetting
-                    // there emits the box twice, and `set_children` panics
-                    // inside Taffy on the duplicate — which is how this was
-                    // found.
-                    //
-                    // Not resetting is correct because runs are **maximal and
-                    // in document order**: two members of different boxes are
-                    // separated by an in-flow block-level child, which ended the
-                    // first run, so a box id can never recur after a different
-                    // one has been seen.
                     if last_box != Some(b) {
                         out.push(b);
                         last_box = Some(b);
                     }
                 }
-                None => out.push(child_id),
+                None => out.push(unit),
             }
         }
         Cow::Owned(out)

@@ -627,6 +627,76 @@ impl RinchDocument {
         }
     }
 
+    /// Collect `node_id`'s children as **run units**: the boxes it actually
+    /// holds, with every `display: contents` child replaced by what it stands
+    /// for, recursively.
+    ///
+    /// This is [`crate::RinchDocument::collect_effective_taffy_children`]'s
+    /// question asked in DOM ids, and — since #568 landed on #566's redesign —
+    /// asked the *same way*. That function attaches boxes and flattens
+    /// unconditionally; so does this one.
+    ///
+    /// **A unit is therefore never a `Contents` node**, by construction: a
+    /// wrapper is recursed into, never pushed. Consumers rely on that rather
+    /// than re-testing for it.
+    ///
+    /// # It used to keep a wrapper whole, and that rule is gone
+    ///
+    /// A wrapper an inline run would have taken *all* of used to be pushed
+    /// whole rather than flattened, so a run moved "the shallowest node
+    /// standing for exactly its content, and no deeper". **That was #566's
+    /// ground**: grouping ended in reparenting the DOM, so flattening every
+    /// wrapper would have adopted content out of a node the author wrote, one
+    /// level further from anything they could see, and `insert_before(wrapper,
+    /// new, adopted)` could not then find its reference node.
+    ///
+    /// Since #566 a run is *recorded*, never reparented, and the rule went on
+    /// three independent grounds rather than one:
+    ///
+    ///  1. **Its measurement no longer reproduces.** The number that justified
+    ///     it — insert a block into a wrapper before its text, one pass later —
+    ///     was `y = 7` kept whole against `y = 27` flattened. It is now `y = 7`
+    ///     **either way**, because the adoption that produced the divergence is
+    ///     gone.
+    ///  2. **CSS points the other way.** A `display: contents` element
+    ///     generates no box (CSS 2.1 §9.2.1.1), so the inline-level boxes in a
+    ///     run *are* the wrapper's children. Flattening is the faithful
+    ///     spelling; keeping whole was the workaround.
+    ///  3. **Nothing else could observe it.** With the rule disabled the whole
+    ///     suite passed except the single test written to watch it, and the
+    ///     acceptance matrix stayed at 13/13.
+    ///
+    /// It cost ~60 lines of three-condition logic carrying a warning about not
+    /// adding a fourth. Two of those conditions had already lost their only
+    /// witnesses to #566, because the witnesses asserted DOM parentage and
+    /// nothing is reparented any more.
+    ///
+    /// **This list has three readers and they are one authority.** The
+    /// classification below groups runs out of it,
+    /// [`crate::RinchDocument::box_tree_children`] emits the boxes into it, and
+    /// [`crate::RinchDocument::run_bookkeeping_violations`] checks that every
+    /// member is still a unit of it. Change what a unit is and all three move
+    /// together — the third exists to say so out loud if they ever do not.
+    pub(crate) fn collect_run_units(
+        nodes: &slab::Slab<Node>,
+        node_id: usize,
+        out: &mut Vec<usize>,
+    ) {
+        let Some(node) = nodes.get(node_id) else {
+            return;
+        };
+        for &child_id in &node.children {
+            let Some(child) = nodes.get(child_id) else {
+                continue;
+            };
+            if child.inline_flow_role() == InlineFlowRole::Contents {
+                Self::collect_run_units(nodes, child_id, out);
+            } else {
+                out.push(child_id);
+            }
+        }
+    }
+
     /// Create anonymous block boxes for block containers with mixed content.
     ///
     /// Per CSS spec, when a block container has both inline-level and block-level
@@ -635,6 +705,8 @@ impl RinchDocument {
     fn create_anonymous_block_boxes(&mut self) {
         // Phase 1: Detect mixed-content block containers
         let mut containers: Vec<(usize, Vec<Vec<usize>>)> = Vec::new();
+        // Reused across containers so the per-node walk allocates once.
+        let mut effective: Vec<usize> = Vec::new();
 
         for (id, node) in &self.tree.nodes {
             if !node.is_element() || node.is_anonymous_block_box {
@@ -648,13 +720,36 @@ impl RinchDocument {
                 continue;
             }
 
-            let has_inline = node.children.iter().any(|&c| {
+            // A `display: contents` element generates no box, so it can never
+            // be the box that holds anonymous children — its content belongs to
+            // the nearest ancestor that does generate one, and the flattened
+            // scan below reaches it from there (#568). `display: contents` maps
+            // to `DisplayMode::Block` (`style_resolution`), so without this the
+            // wrapper is classified as a container in its own right and mints a
+            // box inside a boxless element. `setup_inline_formatting_contexts`
+            // has carried the same guard, spelled the same way, since #61; this
+            // site asking the question differently was the asymmetry.
+            if node.computed_style.display == crate::computed_style::values::DisplayValue::Contents
+            {
+                continue;
+            }
+
+            effective.clear();
+            Self::collect_run_units(&self.tree.nodes, id, &mut effective);
+
+            let role_of = |c: usize| {
                 self.tree
                     .nodes
                     .get(c)
-                    .map(|n| n.inline_flow_role() == InlineFlowRole::Inline)
-                    .unwrap_or(false)
-            });
+                    .map(|n| n.inline_flow_role())
+                    .unwrap_or(InlineFlowRole::NoBox)
+            };
+
+            // No `Contents` case: a unit is never a wrapper (see
+            // `collect_run_units`), so there is nothing here to test for.
+            let has_inline = effective
+                .iter()
+                .any(|&c| role_of(c) == InlineFlowRole::Inline);
             // An out-of-flow child is not block *content* (#406): per CSS 2.1
             // §9.2.1.1 an absolutely positioned box is out of flow and does not
             // force anonymous block box generation, so a container whose only
@@ -669,43 +764,26 @@ impl RinchDocument {
             // grouping below ending the run on it — split `a<none/>b` onto two
             // lines browsers render as one.
             //
-            // A `display: contents` child counts only when it is **opaque** —
-            // when it actually wraps in-flow block-level content. CSS 2.1
-            // §9.2.1.1 generates an anonymous block box for a block container
-            // holding both inline and block-level in-flow children, and a
-            // transparent wrapper contributes no such child: it wraps inline
-            // content, nothing, or only out-of-flow boxes, all of which are
-            // exactly what #406 and #366 already established do not force one.
-            //
-            // Counting it unconditionally was #518. `text` beside a
-            // `display: contents` wrapper whose only child is absolutely
-            // positioned minted an anonymous box, which left the wrapper's own
-            // `display: none` Taffy node attached with the absolute trapped
-            // beneath it — laid out 0x0, never positioned, never painted.
-            // The IFC scan had already classified that wrapper as transparent
-            // (#289/#502), so the two sites disagreed about the same node, and
-            // the absolute fell through the gap. That is the defect family the
-            // whole #466 sequence was about, surviving in the one site that
-            // still asked the question its own way.
+            // The `display: contents` carve-out this test used to need (#518 —
+            // count a wrapper only when it is **opaque**) is gone: every
+            // wrapper is broken into units by `collect_run_units`, so
+            // `effective` carries the block itself and the question needs no
+            // special case. No wrapper survives into this list at all — the
+            // collector recurses into one and never pushes it — so nothing here
+            // can be `Contents`, let alone a wrapper masquerading as an
+            // `InFlowBlock`. `has_block` and the run grouping read the same
+            // list, which is what #518 asked for and could then only
+            // approximate.
             //
             // The display-first precedence — `display: contents; position:
             // absolute` is `Contents`, never `OutOfFlow`, because Stylo does
             // not blockify contents and a boxless element has no box to take
-            // out of flow — is [`Node::inline_flow_role`]'s contract now
-            // (#366); this site used to carry its own carve-out for it.
-            let has_block = node.children.iter().any(|&c| {
-                self.tree
-                    .nodes
-                    .get(c)
-                    .map(|n| match n.inline_flow_role() {
-                        InlineFlowRole::InFlowBlock => true,
-                        InlineFlowRole::Contents => {
-                            !Self::contents_is_inline_transparent(&self.tree.nodes, c)
-                        }
-                        _ => false,
-                    })
-                    .unwrap_or(false)
-            });
+            // out of flow — is [`Node::inline_flow_role`]'s contract (#366),
+            // and is what sends such a wrapper into the unit collector rather
+            // than past this scan as one out-of-flow box.
+            let has_block = effective
+                .iter()
+                .any(|&c| role_of(c) == InlineFlowRole::InFlowBlock);
 
             if !(has_inline && has_block) {
                 continue;
@@ -715,11 +793,8 @@ impl RinchDocument {
             let mut runs: Vec<Vec<usize>> = Vec::new();
             let mut current_run: Vec<usize> = Vec::new();
 
-            for &child_id in &node.children {
-                let Some(role) = self.tree.nodes.get(child_id).map(|c| c.inline_flow_role()) else {
-                    continue;
-                };
-                match role {
+            for &child_id in &effective {
+                match role_of(child_id) {
                     // A comment has no Taffy node and no box. An out-of-flow
                     // box neither joins a run nor ends one (#406): ending the
                     // current run on it made `a<abs/>b` two runs, two
@@ -730,29 +805,13 @@ impl RinchDocument {
                     InlineFlowRole::Comment | InlineFlowRole::NoBox | InlineFlowRole::OutOfFlow => {
                         continue;
                     }
+                    // A wrapper never reaches here: `collect_run_units`
+                    // flattens every one, so a unit is always a real box.
+                    InlineFlowRole::Contents => {}
                     InlineFlowRole::Inline => current_run.push(child_id),
-                    // An in-flow block ends the run; so does an **opaque**
-                    // `display: contents` wrapper, matching `has_block` above
-                    // — the two must agree about the same node or a container
-                    // is classified as mixed and then grouped as if it were
-                    // not (#518). A transparent wrapper contributes no
-                    // block-level box, so it no more ends a run than a
-                    // `display: none` child does: ending it there would split
-                    // the text on either side into two anonymous boxes, and
-                    // two lines, where browsers render one.
-                    //
-                    // Display-first (#366): a `contents; position: absolute`
-                    // wrapper lands here, not in the out-of-flow skip — this
-                    // loop used to test `position` first and skip it, leaving
-                    // its wrapped block painted after text that follows it in
-                    // the DOM.
-                    InlineFlowRole::Contents => {
-                        if !Self::contents_is_inline_transparent(&self.tree.nodes, child_id)
-                            && !current_run.is_empty()
-                        {
-                            runs.push(std::mem::take(&mut current_run));
-                        }
-                    }
+                    // Only an in-flow block-level box ends a run, and it is the
+                    // same list `has_block` just read, so the two cannot
+                    // disagree about a node (#518).
                     InlineFlowRole::InFlowBlock => {
                         if !current_run.is_empty() {
                             runs.push(std::mem::take(&mut current_run));
@@ -900,14 +959,25 @@ impl RinchDocument {
                 })
                 .collect();
             for anon_id in new_boxes {
-                let members: Vec<taffy::NodeId> = self.tree.nodes[anon_id]
-                    .run_members
-                    .iter()
-                    .filter_map(|&m| self.tree.nodes.get(m).and_then(|n| n.taffy_id))
-                    .collect();
-                if let Some(anon_taffy) = self.tree.nodes[anon_id].taffy_id {
-                    let _ = self.tree.taffy.set_children(anon_taffy, &members);
-                }
+                // Through the **one** rebuild authority (#476), not a
+                // hand-rolled member → `taffy_id` map.
+                //
+                // The hand-rolled map was wrong while a member could be a
+                // `display: contents` wrapper — briefly true on this branch,
+                // under a keep-whole rule since deleted. Such a wrapper
+                // generates no box, so mapping members to their own `taffy_id`
+                // handed the box the *wrapper's* Taffy node, which
+                // `mark_inline_descendants` never detached: it detaches the
+                // wrapper's `Inline` descendants, not the wrapper. The box
+                // stayed an IFC root with a Taffy child and tripped #466's
+                // leaf invariant.
+                //
+                // **A member cannot be a wrapper today** — `collect_run_units`
+                // recurses into every `Contents` child and never pushes one, so
+                // no input produces such a unit. The two spellings therefore
+                // agree on everything now, and this one is kept because one
+                // rebuild authority beats two that happen to agree (#476).
+                self.rebuild_effective_taffy_children(anon_id);
             }
             self.rebuild_effective_taffy_children(parent_id);
         }
@@ -1015,7 +1085,26 @@ impl RinchDocument {
             // `children`, which are empty — it is not in the element tree
             // (#566). Without this it is never discovered as a root at all and
             // its whole run goes unlaid-out.
-            let own_children = node.ifc_children();
+            // **Units, not children** (#568), for the same reason
+            // `box_tree_children` reads them: a run is grouped over the
+            // flattened list, so a wrapper whose inline content has been taken
+            // into a run must not offer that content here a second time. Left
+            // as `children`, the wrapper reaches the `Contents` arm below, the
+            // container is judged to hold inline content it no longer owns, and
+            // it becomes an IFC root *while also* parenting a box — which is
+            // the #466 leaf invariant violated, measured, by
+            // `a_transparent_wrappers_inline_content_stays_reachable`.
+            //
+            // An anonymous box still classifies over its **run**: its
+            // `children` are empty because it is not in the element tree
+            // (#566), and its units would be empty for the same reason.
+            let mut unit_buf: Vec<usize> = Vec::new();
+            let own_children: &[usize] = if node.is_anonymous_block_box {
+                &node.run_members
+            } else {
+                Self::collect_run_units(&self.tree.nodes, id, &mut unit_buf);
+                &unit_buf
+            };
             let mut has_non_comment_inline = false;
             let mut all_children_are_comments = !own_children.is_empty();
             for &child_id in own_children {
@@ -1028,6 +1117,8 @@ impl RinchDocument {
                 }
                 match child.inline_flow_role() {
                     InlineFlowRole::Comment => continue,
+                    // As above: units carry no wrapper, so `Contents` rides
+                    // with the non-inline arm rather than claiming to be a case.
                     InlineFlowRole::Inline => {
                         all_children_are_comments = false;
                         has_non_comment_inline = true;
@@ -1567,15 +1658,27 @@ impl RinchDocument {
     /// from passing trivially if that ever changes, which is exactly how the
     /// first draft of this assertion would have gone quietly vacuous.
     ///
-    /// # This assertion is #568-hostile
+    /// # The three sites that must agree, and how a drift is caught
     ///
-    /// Under #568's flattened classification a run genuinely spans a parent
-    /// boundary: a member behind a `display: contents` wrapper is a child of
-    /// the *wrapper*, not of the container the box hangs off. The rule then
-    /// becomes false **by design rather than by corruption**, and the honest
-    /// successor compares against the flattening ancestor instead of `parent`.
-    /// Together with `box_tree_children`'s direct-child assumption, that is the
-    /// second of two things #568 must update in the same commit.
+    /// The classification, [`crate::RinchDocument::box_tree_children`] and this
+    /// check are three readings of one list, so all three call
+    /// **`collect_run_units`** rather than keeping parallel spellings in step.
+    /// That is deliberate: #518, #476 and #568 were each *two sites asking one
+    /// question two ways*, and construction beats discipline.
+    ///
+    /// This check is the one that fails loudly if they ever drift, which is why
+    /// it asks the strongest form — **membership of the container's unit list**
+    /// rather than a property a member merely happens to have. A member that is
+    /// no longer a unit of the container its box hangs off means the
+    /// classification and the box disagree about the same run, and that is
+    /// reported here whatever the reason.
+    ///
+    /// **This used to be `#568-hostile` and no longer is** — the exception is
+    /// deleted rather than annotated. The old rule compared a member's
+    /// `parent`, which is false by design once a run may span a
+    /// `display: contents` wrapper: a member behind a broken-up wrapper is a
+    /// child of the wrapper. Asking the unit list instead holds in the whole
+    /// case and the split case alike, so there is nothing left to carve out.
     pub fn run_bookkeeping_violations(&self) -> Vec<String> {
         let mut out = Vec::new();
         for (id, node) in &self.tree.nodes {
@@ -1585,14 +1688,20 @@ impl RinchDocument {
             if node.run_members.is_empty() {
                 out.push(format!("R memberless box: {id} lays out nothing"));
             }
+            // The container's unit list, from the very function the
+            // classification grouped this run out of.
+            let mut units: Vec<usize> = Vec::new();
+            if let Some(container) = node.parent {
+                Self::collect_run_units(&self.tree.nodes, container, &mut units);
+            }
             for &m in &node.run_members {
-                let Some(member) = self.tree.nodes.get(m) else {
+                if self.tree.nodes.get(m).is_none() {
                     continue; // reported as "D freed member"
-                };
-                if member.parent != node.parent {
+                }
+                if !units.contains(&m) {
                     out.push(format!(
-                        "R wrong container: box {id} hangs off {:?}, but its member {m} is a child of {:?}",
-                        node.parent, member.parent
+                        "R not a unit: box {id} hangs off {:?}, but its member {m} is not a run unit of that container",
+                        node.parent
                     ));
                 }
             }
@@ -2601,6 +2710,47 @@ impl RinchDocument {
             // `<br>`, inline element, inline-block); the remaining arms map
             // one role each.
             let role = child.inline_flow_role();
+            // **A member of an anonymous box did not inherit from that box.**
+            // A run is grouped over the *flattened* child list (#568), so a
+            // member can sit behind a `display: contents` wrapper that the run
+            // took only part of — and a broken-up wrapper is never walked, so
+            // the style its children inherited from it would simply be lost.
+            // This is #574's rule ("a boxless element is still in the
+            // inheritance chain") applied to the case where the wrapper does
+            // not survive to push its own span.
+            //
+            // Text only, and that is not arbitrary: an element member pushes
+            // its own span from its own computed style, which already carries
+            // the inheritance. A text node has no arm that pushes one — it
+            // takes whatever span encloses it — so it is the only member that
+            // can lose it. Pushed only when it actually differs, for the same
+            // reason #574 tests before pushing.
+            //
+            // The style comes from the member's **DOM parent**, not from the
+            // text node itself: a text node renders with the style of the
+            // element containing it, which is the wrapper here.
+            let bridged_style = if nodes[parent_id].is_anonymous_block_box
+                && matches!(child.kind, NodeKind::Text(_))
+            {
+                child
+                    .parent
+                    .filter(|&dom_parent| dom_parent != parent_id)
+                    .and_then(|dom_parent| nodes.get(dom_parent))
+                    .filter(|owner| {
+                        !Self::same_inline_text_style(
+                            &owner.computed_style,
+                            &nodes[parent_id].computed_style,
+                        )
+                    })
+                    .map(|owner| &owner.computed_style)
+            } else {
+                None
+            };
+            let bridged = bridged_style.is_some();
+            if let Some(owner_style) = bridged_style {
+                let props = Self::inline_style_props(owner_style, scale);
+                builder.push_style_modification_span(props.iter());
+            }
             match &child.kind {
                 NodeKind::Text(text_data) => {
                     if !text_data.content.is_empty() {
@@ -2807,6 +2957,9 @@ impl RinchDocument {
                     // `mark_inline_descendants` stops marking (#366).
                     break;
                 }
+            }
+            if bridged {
+                builder.pop_style_span();
             }
         }
     }

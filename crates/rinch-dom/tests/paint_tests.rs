@@ -1839,29 +1839,44 @@ fn test_inline_after_a_block_wrapper_is_not_orphaned() {
 
     doc.resolve_layout(800.0, 600.0);
 
-    let ifc_text = doc
-        .tree
-        .get(container.0)
-        .unwrap()
-        .text_layout
-        .as_ref()
-        .map(|l| l.text_content.clone())
-        .unwrap_or_default();
+    // Whichever IFC claims the text has to be the one that lays it out. Since
+    // #568 that is an **anonymous** box rather than the container: the
+    // container's flattened child list is `comment, block, TRAILING`, which is
+    // mixed content, so the trailing text is boxed and gets a real line instead
+    // of being left to Taffy as a bare text leaf. The property the test is
+    // about is unchanged and is now asserted of whatever root answers — being
+    // marked as some IFC's content while that IFC lays out something else is
+    // invisible in both directions, and reading only the container's own
+    // `text_layout` would have called the correct outcome a failure.
+    let laid_out_by = |id: rinch_core::dom::NodeId| -> Option<String> {
+        let root = doc.tree.get(id.0).unwrap().ifc_root?;
+        Some(
+            doc.tree
+                .get(root)
+                .unwrap()
+                .text_layout
+                .as_ref()
+                .map(|l| l.text_content.clone())
+                .unwrap_or_default(),
+        )
+    };
 
-    // Either the IFC draws the text, or the text keeps its own box — but it
-    // must never be both skipped by paint and absent from the inline layout.
-    if !ifc_text.contains("TRAILING") {
-        assert_eq!(
-            doc.tree.get(text.0).unwrap().ifc_root,
-            None,
-            "text the IFC does not lay out must not be marked as IFC content — \
-             paint would skip it and nothing would ever draw it"
-        );
-        assert_eq!(
-            doc.tree.get(text_wrapper.0).unwrap().ifc_root,
-            None,
-            "the wrapper around that text must not be marked either"
-        );
+    match laid_out_by(text) {
+        Some(ifc_text) => assert!(
+            ifc_text.contains("TRAILING"),
+            "the text is marked as IFC content, so that IFC must draw it — \
+             paint skips the node itself. Laid out: {ifc_text:?}"
+        ),
+        None => assert!(
+            doc.tree
+                .get(text.0)
+                .unwrap()
+                .taffy_id
+                .and_then(|t| doc.tree.taffy.parent(t))
+                .is_some()
+                || doc.tree.get(text_wrapper.0).unwrap().ifc_root.is_none(),
+            "text no IFC claims must keep a box of its own"
+        ),
     }
 }
 
