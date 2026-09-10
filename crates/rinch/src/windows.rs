@@ -413,7 +413,7 @@ pub fn hide_current_window() {
 ///
 /// ```ignore
 /// // In a tray menu callback:
-/// TrayMenuItem::new("Show").on_click(|| show_current_window())
+/// MenuItem::new("Show").on_click(|| show_current_window())
 /// ```
 pub fn show_current_window() {
     send_native_event(RinchNativeEvent::ShowWindow);

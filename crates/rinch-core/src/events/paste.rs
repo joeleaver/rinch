@@ -75,8 +75,11 @@ thread_local! {
 /// earlier component unmounting. Registering outside any render — from `main`,
 /// a timer, a detached callback — has no owner and so lives for the life of the
 /// app, as before. That discipline lives in
-/// [`install_scoped_slot`](crate::reactive::install_scoped_slot), shared with
-/// the keyboard and selection registries.
+/// [`install_doc_scoped_slot`](crate::reactive::install_doc_scoped_slot),
+/// shared with the keyboard and selection registries. Note it is the
+/// **doc-scoped** helper, not `install_scoped_slot`: one slot per document plus
+/// a thread-global fallback, so two `RinchContext`s on one thread do not share
+/// a single interceptor (#134).
 pub fn set_paste_interceptor<F>(cb: F)
 where
     F: Fn(&PasteEventData) -> bool + 'static,
