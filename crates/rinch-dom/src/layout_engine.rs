@@ -299,16 +299,48 @@ impl RinchDocument {
             self.tree.transitions_enabled = true;
         }
 
-        // `RINCH_TREE_CHECK=1` prints every Taffy-tree inconsistency and every
-        // orphaned box after each layout (#476), so the invariant can be swept
-        // across a whole suite rather than only asserted where a fixture thought
-        // to ask. Debug builds only, and the env read is cached — release
-        // compiles the whole thing out.
+        // `RINCH_TREE_CHECK=1` prints every Taffy-tree inconsistency, every
+        // orphaned box (#476) and every DOM-tree inconsistency (#578) after each
+        // layout, so the invariant can be swept across a whole suite rather than
+        // only asserted where a fixture thought to ask. Debug builds only, and
+        // the env read is cached — release compiles the whole thing out.
+        //
+        // **It must be run as `RINCH_TREE_CHECK=1 cargo test … -- --nocapture`.**
+        // These are `eprintln!`s, and the test harness captures stderr for every
+        // test that *passes* — which is all of them, since a violation printed
+        // here fails nothing. Without `--nocapture` the sweep runs, finds
+        // whatever is there, and prints none of it: the output of a check that
+        // found nothing is identical to the output of a check nobody read.
+        // Measured while wiring #578 — a deliberately injected violation printed
+        // 149 times with the flag and 0 times without it.
+        //
+        // `dom_tree_violations` is here because the sentence above was, until
+        // #578, false of the one invariant that most needed it. The Taffy check
+        // compares the Taffy tree against itself, so it is structurally blind to
+        // DOM corruption — both of #566's reconciler failures had a *consistent*
+        // Taffy tree over a broken DOM and this hook reported all-clear through
+        // every one of them. The check added because no fixture thought to ask
+        // was the check no sweep was asking.
+        //
+        // **`run_bookkeeping_violations` (R) is deliberately not here.** It is
+        // the one of the three that is not any-time-true: it describes the run
+        // bookkeeping, which `create_anonymous_block_boxes` rebuilds, so it only
+        // means anything after a pass that actually ran that rebuild. This hook
+        // sits at the end of `resolve_layout`, which looks like such a point and
+        // is not always one — the IFC passes above are skipped whenever
+        // `ifc_dirty` is false, so a text-only pass reaches here having re-minted
+        // nothing. Sweeping R would put a check that can report correct state as
+        // a violation into the one place whose value depends on a clean run
+        // meaning something. That is what invariant E was deleted for; do not
+        // "finish the job" by adding the third.
         #[cfg(debug_assertions)]
         {
             static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
             if *ENABLED.get_or_init(|| std::env::var("RINCH_TREE_CHECK").is_ok()) {
                 for line in self.taffy_tree_violations() {
+                    eprintln!("TREECHECK {line}");
+                }
+                for line in self.dom_tree_violations() {
                     eprintln!("TREECHECK {line}");
                 }
             }
