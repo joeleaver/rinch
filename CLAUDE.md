@@ -148,7 +148,7 @@ The `tabler_icon!` macro is a shorter equivalent when the icon is a literal vari
 For size, stroke width, or a CSS class, use `render_tabler_icon_with_options(__scope, icon, TablerIconOptions { style, class, size, stroke_width })` — all fields but `style` are `Option`, so `..Default::default()` covers the rest.
 
 **Features:**
-- **4,983 icons** (`ICON_COUNT`; iterate `ALL_ICONS`), every one available in Outline
+- **4,985 icons** (`ICON_COUNT`; iterate `ALL_ICONS`), every one available in Outline
 - **Filled is a subset** — about 1,000 icons have real filled artwork. Asking for `TablerIconStyle::Filled` on any other icon silently falls back to its outline paths, so a glyph that still looks like an outline is expected, not a bug
 - **Type-safe** - Use enum variants instead of strings
 - **Scales with font size** - Icons carry a `0 0 24 24` viewBox and are sized `1em` unless you pass an explicit `size`, so they track the parent's `font-size`
@@ -873,7 +873,7 @@ what makes the asynchronous Ctrl+V (#149) land in the right place — desktop's
 `dispatch_editor_paste` anchors, reads the clipboard off-thread, then inserts at the
 anchor.
 
-`on_change` fires only for **local, document-changing** edits: `update` (which typing, paste and IME commit all funnel through), `command`, and `insert_image`. It deliberately does **not** fire for selection-only changes, for `load_doc`/`load_html` (a programmatic load isn't a user edit — firing would make an autosave consumer immediately re-save what it just loaded), or for `collab_receive` (already in the shared CRDT). The callback runs with no internal borrow held, so it may re-enter the handle freely — e.g. call `doc()` to serialize for the save.
+`on_change` fires only for **local, document-changing** edits: `update` (which typing, paste and IME commit all funnel through), `command`, `insert_image`, and `toggle_link`. Those are the four `notify_change()` call sites in `rinch-editor-view/src/handle.rs`; if you add a fifth mutation path, it needs one too. It deliberately does **not** fire for selection-only changes, for `load_doc`/`load_html` (a programmatic load isn't a user edit — firing would make an autosave consumer immediately re-save what it just loaded), or for `collab_receive` (already in the shared CRDT). The callback runs with no internal borrow held, so it may re-enter the handle freely — e.g. call `doc()` to serialize for the save.
 
 Command names (dispatch by string): `toggleBold/Italic/Underline/Strike/Code/Highlight/Subscript/Superscript`, `setParagraph`, `setHeading1..6`, `setCodeBlock`, `setTextAlign{Left,Center,Right,Justify}`, `toggleBulletList`, `toggleOrderedList`, `toggleTaskList`, `wrapInBlockquote`, `sinkListItem`/`liftListItem` (indent/outdent), `insertHorizontalRule`, `insertHardBreak`, `insertTable`, `addRow{After,Before}`, `addColumn{After,Before}`, `deleteRow`/`deleteColumn`/`deleteTable`, `mergeCells`/`splitCell`, `removeLink`, `undo`/`redo`. (Adding a link needs an `href` arg, so it is **not** a string command — use `handle.toggle_link(href)`.)
 
@@ -1011,9 +1011,9 @@ Set these attributes on elements to participate in element-to-element drag-and-d
 | `data-ondrop` | Target | Drop on target |
 | `data-ondragend` | Source | Drag finishes |
 
-**Input & activation (mouse, touch, pen).** This suite is driven by Pointer Events on both backends, so it works with a mouse, a finger, or a pen. Activation differs by input so touch doesn't hijack scrolling:
-- **Mouse:** activates as soon as the pointer moves past ~5px — snappy, unchanged.
-- **Touch / pen:** activates on a short **long-press** hold (~350ms) while the contact stays roughly stationary. Moving before the hold completes is treated as a scroll/pan and the drag is abandoned (the page scrolls normally). This is the standard mobile reorder gesture.
+**Input & activation — and the two backends do NOT agree.**
+- **rinch-web** drives this suite from Pointer Events and branches on the pointer kind, so activation differs by input and touch does not hijack scrolling. **Mouse:** past `WEB_DRAG_THRESHOLD`, 5 CSS px. **Touch / pen:** a short **long-press** hold, `TOUCH_LONG_PRESS_MS` = 350ms, while the contact stays within `TOUCH_MOVE_SLOP`; moving before the hold completes is a scroll/pan and the drag is abandoned. That is the standard mobile reorder gesture, and it lives in `rinch-web/src/event_delegation.rs`.
+- **Desktop has no such branch.** `event_dispatch.rs` applies one flat `DRAG_THRESHOLD` (5px, `app/mod.rs`) to every pointer alike — the shell folds touch into a plain left-click and discards winit's device kind. Desktop's own touch translation is a *different* machine (`shell/touch_gesture.rs`): a finger that moves past `SCROLL_THRESHOLD` becomes a **scroll** and emits `PointerCancel` first, a finger that lifts while still is a **tap**, and one held past `LONG_PRESS_TIMEOUT` (**500ms**, not 350) becomes a **context menu** — a right-button press/release. So the mobile reorder gesture described above is a web behaviour; do not assume a touch drag of this suite behaves the same way on desktop, and treat its reachability there as unestablished rather than as working.
 
 Because there's no built-in drag ghost (the app renders its own from `data-ondragmove`), **set `pointer-events: none` on your ghost element** — on touch the drop target is resolved via `elementFromPoint`, so a ghost under the finger would otherwise intercept the hit and drops would silently fail.
 
@@ -1195,8 +1195,14 @@ register_focus_target(
   keeps app lifetime, and an earlier unmount never clobbers a later
   registration. Same for `set_paste_interceptor`, `set_selection_callback` and
   `set_selection_sync_callback`; the discipline is
-  `rinch_core::reactive::install_scoped_slot` / `install_scoped_entry`, and any
-  new global callback registry should go through it rather than paraphrase it.
+  `rinch_core::reactive::install_doc_scoped_slot` / `clear_doc_scoped_slot`, and
+  any new **document-level** callback registry should go through those rather
+  than paraphrase them — all four of the callbacks named above do. The
+  thread-scoped pair `install_scoped_slot` / `clear_scoped_slot` is the same
+  discipline over a plain `RefCell<Option<Rc<T>>>`, for a registry that is
+  genuinely per-thread rather than per-document; reaching for it when you wanted
+  the doc-scoped one gives two `RinchContext`s on one thread a single shared
+  slot, last-registration-wins for both, which is the #134 class of bug.
   A registry written *repeatedly* from a live component (or one that wants the
   callback attributed to its component when it runs) takes the other template
   instead — owner beside the callback, `is_alive()` at dispatch, invoked inside
@@ -1333,6 +1339,23 @@ not `visible`" — and one shape, `paint::clip_shape` (the rounded border box).
 Everything that needs either asks those: paint's clip bracket, its dirty-region
 subtree prune, the layer-bounds walk, a hoisted entry's clip chain, hit
 testing's `check_children` gate, and `RinchApp`'s two viewport clip walks.
+
+**But "this node clips, therefore a bracket is open" is no longer true** (card
+K43). A Vello clip layer is two extra passes over the clipped area, paid whether
+or not it removes a pixel, so `paint_node` may *decline* to push one for a box
+that answers `clips_overflow` — when the clip covers the render target, or when
+`layer_bounds::clip_cuts_nothing` says nothing inside reaches past it. Both cases
+require **square corners**: a rounded clip cuts the corners of its own box, so a
+subtree fitting the box does not mean the shape cuts nothing.
+
+This weakens no answer above, and consumers must not assume it does — the
+predicate and the shape are unchanged, and everything reasoning about *where
+content ends up* (the clip chain, hit testing, `layer_bounds`' own intersection)
+still applies the clip, because the elision only ever drops a restriction that
+was already vacuous. What it breaks is the **reverse inference**, which is why
+`paint_children_with_stacking` is *told* whether a bracket is open
+(`clip_elided`) rather than deducing it. Anything new that needs to know must be
+told too, not infer it from the predicate.
 (`creates_stacking_context` was on that list until stage B and is deliberately
 not any more — see **Stacking contexts and the clip chain** below.) Those seven
 sites held **four** different predicates before #324 stage A, and the
@@ -1445,6 +1468,10 @@ correct, and each has a fixture in
   clippers a fixed descendant escapes, and its `Extent::Escapes` case stops one
   narrowing a translucent layer to less than it paints — which tiny-skia ignores
   and Vello enforces, i.e. a software/GPU divergence no pixel test can see.
+  **`position: absolute` has the same hole and it is NOT handled** (#550): an
+  absolute that escapes its clipping ancestor — which #204's initial-containing-
+  block correction makes reachable — narrows the layer the same way, with the
+  same GPU-only symptom. Only the `fixed` case is covered.
 - **No transform composition is needed.** A transform creates a stacking
   context, so `descend` never crosses one and every link lives in the collecting
   root's own untransformed space — the same space the entries' offsets are in.
@@ -1563,7 +1590,7 @@ rinch:       NetworkImageLoader (ureq, gated behind image-network feature)
 **Key files:**
 - `crates/rinch-core/src/image.rs` — `ImageLoader` trait, `ImageLoadResult` enum
 - `crates/rinch-dom/src/image_cache.rs` — `ImageCache`, `DecodedImage`, `FileImageLoader`, async load
-- `crates/rinch-dom/src/paint/image.rs` — `paint_image()` with object-fit support (fill/contain/cover)
+- `crates/rinch-dom/src/paint/image.rs` — `paint_image()` with object-fit support: all five of `fill`/`contain`/`cover`/`none`/`scale-down` (`ObjectFitValue`, `computed_style/values.rs`)
 - `crates/rinch/src/image_loader.rs` — `NetworkImageLoader` (feature-gated)
 
 **How it works:**
@@ -1650,6 +1677,12 @@ Build first with `cargo build -p rinch-mcp-server`. Using `cargo run` instead wo
 | `type_text` | Simulate keyboard text input |
 | `wait_frame` | Wait for the next render frame |
 | `close_app` | Close the connected app gracefully |
+| `right_click` | Simulate a right-click at (x, y) |
+| `mouse_down` / `mouse_move` / `mouse_up` | The pointer primitives. **This trio is the only way to drive a drag** — `click` cannot, so any test of the DnD suite or a scrollbar thumb needs these |
+| `scroll` | Scroll a container at (x, y) |
+| `key_press` | Press a single key (with modifiers), as distinct from `type_text`'s literal text |
+| `get_caret_position` | The text caret's rect — note it mixes logical and physical px at scale != 1 (#421) |
+| `get_glyph_bounds` | Per-glyph boxes for a text node — same #421 caveat |
 | `disconnect` | Disconnect from the app without closing it |
 | `launch_app` | Launch a rinch app via `cargo run -p <package>`, wait for debug registration, auto-connect |
 
@@ -1661,7 +1694,7 @@ Build first with `cargo build -p rinch-mcp-server`. Using `cargo run` instead wo
 - `crates/rinch-debug/src/server.rs` - TCP listener (blocking I/O, no tokio dependency)
 - `crates/rinch-debug/src/protocol.rs` - Wire protocol types and framing
 - `crates/rinch-mcp-server/src/mcp_server.rs` - MCP tool implementations
-- `crates/rinch/src/shell/rinch_runtime.rs` - Runtime integration (`execute_debug_command()`)
+- `crates/rinch/src/app/debug_commands.rs` - `execute_debug_command()`, the debug-command dispatch; `shell/rinch_runtime.rs` only calls it
 
 ### File Dialogs (optional)
 
@@ -1966,8 +1999,8 @@ fn app() -> NodeHandle {
 **Props:**
 | Prop | Type | Description |
 |------|------|-------------|
-| `title` | `Option<String>` | Window title displayed in titlebar |
-| `radius` | `Option<String>` | Corner radius: none, xs, sm, md, lg, xl |
+| `title` | `String` | Window title displayed in titlebar (empty = not set) |
+| `radius` | `String` | Corner radius: none, xs, sm, md, lg, xl (empty = default `md`) |
 | `show_minimize` | `bool` | Show minimize button (default: true) |
 | `show_maximize` | `bool` | Show maximize button (default: true) |
 | `show_close` | `bool` | Show close button (default: true) |
@@ -1992,7 +2025,7 @@ button { onclick: || close_current_window(), "×" }
 // Window visibility (for minimize-to-tray):
 button { onclick: || hide_current_window(), "Hide to Tray" }
 // From a tray menu callback:
-TrayMenuItem::new("Show").on_click(|| show_current_window())
+MenuItem::new("Show").on_click(|| show_current_window())
 ```
 
 These functions are available in the prelude and work from onclick handlers.
@@ -2019,10 +2052,11 @@ Transparent windows require a patched wgpu to enable Rgba8Unorm storage textures
 - **Branch**: `rinch-patch`
 - **Upstream PR**: https://github.com/gfx-rs/wgpu/pull/8908
 
-The patches:
-1. `instance.rs` - Force storage capabilities for Rgba8Unorm/Bgra8Unorm
-2. `device/resource.rs` - Use hardware format features instead of WebGPU defaults
-3. `present.rs` - Use adapter format features for surface textures
+**The patch is one commit touching one file**: `wgpu-core/src/instance.rs`, forcing storage
+capabilities for Rgba8Unorm/Bgra8Unorm (16 added lines). Checked against the revision `Cargo.lock`
+actually pins — `54b7ce083ac9575b27884054ae74eb652cb541b3` — and against upstream PR #8908, which
+carries the same single file. This list used to name `device/resource.rs` and `present.rs` too;
+**neither is patched, in this fork or upstream**, so do not add them back.
 
 **Downstream projects** must copy the `[patch.crates-io]` section from the workspace `Cargo.toml` into their own `Cargo.toml` for transparent windows to work on Windows. This is required because Cargo patches are not transitive — they only apply to the workspace that declares them.
 
@@ -2090,6 +2124,13 @@ Construct `wgpu` types from **`rinch::wgpu`** (rinch pins a patched fork — a s
 
 Your game owns the window and wgpu device. Rinch runs headless — you feed it events, it produces a Vello scene.
 
+**Enable it — the module is feature-gated and the gate is not `desktop`.** `rinch::embed` is
+`#[cfg(any(feature = "gpu", feature = "embed"))]` (`crates/rinch/src/lib.rs`), so on default
+features every type below is a compile error rather than the documented behaviour. Use
+`features = ["embed"]` for the headless case this section describes — it pulls in `rinch-dom`,
+`parley`, `peniko`, `vello` and `wgpu` without the desktop shell — or nothing extra if you already
+build with `"gpu"`.
+
 **Key types** (all in `rinch::embed`, re-exported in prelude):
 
 | Type | Purpose |
@@ -2115,7 +2156,7 @@ loop {
 
 **Source files:**
 - `crates/rinch/src/embed.rs` — `RinchContext`, `RinchOverlayRenderer`, `GameViewport`
-- `crates/rinch/src/app/mod.rs` — `viewport_rect()`, `has_focused_input()`, `has_focused_contenteditable()`
+- `crates/rinch/src/app/mod.rs` — `viewport_rect()`; `app/focus.rs` — `has_focused_input()`, `has_focused_contenteditable()`
 
 **Documentation:** `docs/src/guide/game-engine.md`
 
@@ -2135,9 +2176,9 @@ Signal.set() → Effect runs → NodeHandle.set_text() → Minimal re-layout
 
 | Component | Location | Purpose |
 |-----------|----------|---------|
-| `NodeHandle` | `rinch-core/src/dom.rs` | Stable reference to a DOM node for surgical updates |
-| `RenderScope` | `rinch-core/src/dom.rs` | Context for building DOM trees with effect tracking |
-| `DomDocument` | `rinch-core/src/dom.rs` | Trait abstracting DOM mutation operations |
+| `NodeHandle` | `rinch-core/src/dom/` | Stable reference to a DOM node for surgical updates |
+| `RenderScope` | `rinch-core/src/dom/` | Context for building DOM trees with effect tracking |
+| `DomDocument` | `rinch-core/src/dom/` | Trait abstracting DOM mutation operations |
 | `RinchDocument` | `rinch-dom/src/lib.rs` | DOM implementation using Taffy + Parley + Vello |
 | `rsx!` | `rinch-macros/src/lib.rs` | Macro generating DOM construction code |
 
@@ -2587,9 +2628,9 @@ Architecture documentation:
 - `docs/src/architecture/render-scope.md` - RenderScope and NodeHandle API
 
 Source code documentation:
-- `crates/rinch-core/src/dom.rs` - NodeHandle, RenderScope, DomDocument trait
+- `crates/rinch-core/src/dom/` - NodeHandle, RenderScope, DomDocument trait
 - `crates/rinch-dom/src/lib.rs` - RinchDocument implementation (Taffy + Parley + Vello)
-- `crates/rinch-macros/src/dom_codegen.rs` - rsx! macro DOM code generation
+- `crates/rinch-macros/src/dom_codegen/` - rsx! macro DOM code generation
 
 ## Visual Audit Workflow
 
@@ -2610,9 +2651,9 @@ close_app()                         # Done
 
 | Issue | Check | Fix Location |
 |-------|-------|--------------|
-| Borders appearing unexpectedly | `border_*_width` should be 0 for `border: none` | `computed_style.rs` - check `border-style` |
+| Borders appearing unexpectedly | `border_*_width` should be 0 for `border: none` | `computed_style/` - check `border-style` |
 | SVG icons 0x0 | Missing inline width/height styles | Add `style="width: Xpx; height: Xpx"` |
-| SVG `fill`/`stroke` attribute not painting | Must be a CSS `<color>` (stylo parses it via `layout::parse_color`); `none`/`currentcolor` are case-insensitive; an absent `fill` is black | `paint/svg.rs` `resolve_svg_color` |
-| currentColor not resolving | Check `is_currentcolor()` handling | `computed_style.rs` |
+| SVG `fill`/`stroke` attribute not painting | Must be a CSS `<color>` (parsed by `layout::parse_color_with_current`); `none`/`currentcolor` are case-insensitive; an absent `fill` is black | `paint/svg.rs` `parse_svg_paint` / `SvgPaint` (#464 replaced the old `resolve_svg_color`) |
+| currentColor not resolving | Check how `currentcolor` is threaded through `parse_color_with_current` | `computed_style/`, `paint/svg.rs` |
 | Reactive state not updating | Need `{|| expr}` closure syntax | Component render method |
 | Menu active state stale | Missing reactive effect | Add `create_effect()` for class updates |
