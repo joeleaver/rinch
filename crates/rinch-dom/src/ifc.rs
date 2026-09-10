@@ -2182,6 +2182,105 @@ impl RinchDocument {
         }
     }
 
+    /// Whether two computed styles agree on every property
+    /// [`Self::inline_style_props`] reads.
+    ///
+    /// Inheritance means a child that declares none of them agrees with its
+    /// parent on all of them, so this answers "did this element change the text
+    /// style at all" — and a span that changes nothing need not be built or
+    /// pushed. That matters because rsx emits a `display: contents` wrapper for
+    /// every `if` / `match` / `for` and every reactive component, and virtually
+    /// none of them declares anything: measured on 1000 undeclared wrappers,
+    /// pushing a span for each cost **+8%** of the whole layout pass, and
+    /// **+21%** with them nested three deep. With this test the same shapes are
+    /// back at parity.
+    ///
+    /// Hand-written rather than `PartialEq`, because
+    /// [`crate::computed_style::values::LineHeightValue`] does not derive it
+    /// and giving an f32-carrying enum a derived equality is a worse trade than
+    /// spelling out the eight fields that matter here. **If
+    /// `inline_style_props` gains a property, it must gain one here too** —
+    /// they are one list, and a field present there and missing here is a
+    /// declaration that silently stops applying. Every one of the eight has a
+    /// fixture in `contents_wrapper_inherited_style_tests` that dies when its
+    /// line is deleted, except the one below.
+    ///
+    /// **`text_underline_offset` is dead plumbing and its clause is provably
+    /// inert.** The field is assigned in exactly three places
+    /// (`computed_style/from_stylo`, `Default`, and the anonymous-box
+    /// constructor) and all three assign `None`; no CSS can make it `Some`. So
+    /// the comparison is always `None == None`, the `if let Some(offset)` arm in
+    /// `inline_style_props` is unreachable, and a fixture for it cannot be
+    /// written. Kept for the one-list rule: whoever plumbs the property through
+    /// `from_stylo` gets the skip predicate already correct rather than
+    /// discovering a year later that their declaration is dropped.
+    fn same_inline_text_style(
+        a: &crate::computed_style::ComputedStyle,
+        b: &crate::computed_style::ComputedStyle,
+    ) -> bool {
+        use crate::computed_style::values::LineHeightValue;
+        let same_line_height = match (a.line_height, b.line_height) {
+            (LineHeightValue::Normal, LineHeightValue::Normal) => true,
+            (LineHeightValue::Absolute(x), LineHeightValue::Absolute(y)) => x == y,
+            (LineHeightValue::Relative(x), LineHeightValue::Relative(y)) => x == y,
+            _ => false,
+        };
+        a.font_size == b.font_size
+            && a.font_weight == b.font_weight
+            && a.font_style == b.font_style
+            && a.color == b.color
+            && a.text_decoration.underline == b.text_decoration.underline
+            && a.text_decoration.strikethrough == b.text_decoration.strikethrough
+            && a.text_underline_offset == b.text_underline_offset
+            && same_line_height
+    }
+
+    /// The Parley style span an element contributes to the inline formatting
+    /// context it flows into — the inherited text properties, scaled.
+    ///
+    /// Shared by the `display: inline` arm and the `display: contents` arm of
+    /// [`Self::walk_inline_children`] (#574). A boxless element generates no
+    /// box but is still in the inheritance chain, so the two arms owe their
+    /// children the same properties; only the *box*-shaped work (the background
+    /// span) is the inline element's alone.
+    fn inline_style_props<'a>(
+        computed: &'a crate::computed_style::ComputedStyle,
+        scale: f32,
+    ) -> Vec<parley::style::StyleProperty<'a, Brush>> {
+        let mut props: Vec<parley::style::StyleProperty<'a, Brush>> = Vec::new();
+        props.push(parley::style::StyleProperty::FontSize(
+            computed.font_size * scale,
+        ));
+        props.push(parley::style::StyleProperty::FontWeight(
+            parley::style::FontWeight::new(computed.font_weight),
+        ));
+        props.push(parley::style::StyleProperty::FontStyle(
+            computed.font_style.to_parley(),
+        ));
+        if let Some(color) = computed.color {
+            props.push(parley::style::StyleProperty::Brush(Brush::Solid(color)));
+        }
+        if computed.text_decoration.underline {
+            props.push(parley::style::StyleProperty::Underline(true));
+        }
+        if computed.text_decoration.strikethrough {
+            props.push(parley::style::StyleProperty::Strikethrough(true));
+        }
+        if let Some(offset) = computed.text_underline_offset {
+            props.push(parley::style::StyleProperty::UnderlineOffset(Some(offset)));
+        }
+        if let Some(lh) = computed.line_height.to_parley() {
+            let scaled_lh = match lh {
+                parley::style::LineHeight::Absolute(v) => {
+                    parley::style::LineHeight::Absolute(v * scale)
+                }
+                other => other,
+            };
+            props.push(parley::style::StyleProperty::LineHeight(scaled_lh));
+        }
+        props
+    }
+
     /// Recursively walk inline children, pushing text and style spans into the TreeBuilder.
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn walk_inline_children(
@@ -2278,51 +2377,7 @@ impl RinchDocument {
                 {
                     // Push style span for inline element using typed ComputedStyle
                     let child_computed = &child.computed_style;
-                    let mut props: Vec<parley::style::StyleProperty<'_, Brush>> = Vec::new();
-
-                    // Font size (always apply scaled)
-                    props.push(parley::style::StyleProperty::FontSize(
-                        child_computed.font_size * scale,
-                    ));
-
-                    // Font weight
-                    props.push(parley::style::StyleProperty::FontWeight(
-                        parley::style::FontWeight::new(child_computed.font_weight),
-                    ));
-
-                    // Font style
-                    props.push(parley::style::StyleProperty::FontStyle(
-                        child_computed.font_style.to_parley(),
-                    ));
-
-                    // Color
-                    if let Some(color) = child_computed.color {
-                        props.push(parley::style::StyleProperty::Brush(Brush::Solid(color)));
-                    }
-
-                    // Text decoration
-                    if child_computed.text_decoration.underline {
-                        props.push(parley::style::StyleProperty::Underline(true));
-                    }
-                    if child_computed.text_decoration.strikethrough {
-                        props.push(parley::style::StyleProperty::Strikethrough(true));
-                    }
-                    // Underline offset
-                    if let Some(offset) = child_computed.text_underline_offset {
-                        props.push(parley::style::StyleProperty::UnderlineOffset(Some(offset)));
-                    }
-
-                    // Line height
-                    if let Some(lh) = child_computed.line_height.to_parley() {
-                        // Scale absolute line heights
-                        let scaled_lh = match lh {
-                            parley::style::LineHeight::Absolute(v) => {
-                                parley::style::LineHeight::Absolute(v * scale)
-                            }
-                            other => other,
-                        };
-                        props.push(parley::style::StyleProperty::LineHeight(scaled_lh));
-                    }
+                    let props = Self::inline_style_props(child_computed, scale);
 
                     // Record background span start position
                     let bg_start = *flat_pos;
@@ -2389,6 +2444,20 @@ impl RinchDocument {
                     // to the IFC: it falls through to the `_` arm below and
                     // breaks the inline flow, exactly as the block it wraps
                     // would if it were a direct child.
+                    // A boxless element is still in the inheritance chain, so
+                    // its children owe it the same text style a `display:
+                    // inline` box's children owe theirs (#574) — pushed only
+                    // when it actually changes something, since the wrapper's
+                    // values are its parent's unless it declared otherwise and
+                    // rsx emits one of these for every `if`/`match`/`for`.
+                    let styled = !Self::same_inline_text_style(
+                        &child.computed_style,
+                        &nodes[parent_id].computed_style,
+                    );
+                    if styled {
+                        let props = Self::inline_style_props(&child.computed_style, scale);
+                        builder.push_style_modification_span(props.iter());
+                    }
                     Self::walk_inline_children(
                         nodes,
                         child_id,
@@ -2400,6 +2469,9 @@ impl RinchDocument {
                         scale,
                         collapse,
                     );
+                    if styled {
+                        builder.pop_style_span();
+                    }
                 }
                 NodeKind::Element(_)
                     if matches!(role, InlineFlowRole::OutOfFlow | InlineFlowRole::NoBox) =>
