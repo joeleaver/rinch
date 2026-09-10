@@ -330,7 +330,7 @@ pub fn stacking_paint_order(
     offset_x: f64,
     offset_y: f64,
 ) -> PaintOrder {
-    let Some(node) = tree.get(node_id) else {
+    let Some(_node) = tree.get(node_id) else {
         return PaintOrder::default();
     };
 
@@ -346,7 +346,9 @@ pub fn stacking_paint_order(
         cb_depth: 0,
         order: 0,
     };
-    collector.collect_hoisted(&node.children, offset_x, offset_y);
+    // The box tree, not the element tree (#566).
+    let box_children = crate::RinchDocument::box_tree_children(&tree.nodes, node_id);
+    collector.collect_hoisted(&box_children, offset_x, offset_y);
 
     let Collector {
         mut hoisted, clips, ..
@@ -354,13 +356,13 @@ pub fn stacking_paint_order(
     hoisted.sort_by_key(|(dom_order, e)| (e.z_index, *dom_order));
 
     let split = hoisted.partition_point(|(_, e)| e.z_index < 0);
-    let mut entries: Vec<PaintEntry> = Vec::with_capacity(hoisted.len() + node.children.len());
+    let mut entries: Vec<PaintEntry> = Vec::with_capacity(hoisted.len() + box_children.len());
     entries.extend(hoisted[..split].iter().map(|(_, e)| *e));
 
     // Step 2: the root's own in-flow, non-positioned children, in tree order.
     // Nothing was hoisted past anything to reach here, so the chain is empty by
     // construction — the root's own bracket is all that applies.
-    entries.extend(node.children.iter().filter_map(|&child_id| {
+    entries.extend(box_children.iter().filter_map(|&child_id| {
         let child = tree.get(child_id)?;
         (!paints_at_stacking_root(child)).then_some(PaintEntry {
             node_id: child_id,
@@ -542,7 +544,11 @@ impl Collector<'_> {
             self.cb_depth = self.live.len();
         }
 
-        self.collect_hoisted(&child.children, x, y);
+        self.collect_hoisted(
+            &crate::RinchDocument::box_tree_children(&self.tree.nodes, child.id),
+            x,
+            y,
+        );
 
         self.cb_depth = outer_cb;
         if pushed {

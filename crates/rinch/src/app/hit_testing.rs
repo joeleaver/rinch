@@ -283,7 +283,10 @@ fn hit_test_node(
             // unconditionally, so `paints_at_stacking_root` skips it and it is
             // an entry of some ancestor's sequence instead. So this branch keeps
             // the plain bounds gate.
-            for &child_id in node.children.iter().rev() {
+            for &child_id in rinch_dom::RinchDocument::box_tree_children(&tree.nodes, node.id)
+                .iter()
+                .rev()
+            {
                 let Some(child) = tree.get(child_id) else {
                     continue;
                 };
@@ -653,7 +656,10 @@ fn find_scroll_container_at_point_recursive(
     let sy = node.scroll_offset.1 as f32;
 
     // Check children first (deepest match wins)
-    for &child_id in node.children.iter().rev() {
+    for &child_id in rinch_dom::RinchDocument::box_tree_children(&tree.nodes, node.id)
+        .iter()
+        .rev()
+    {
         if let Some(found) =
             find_scroll_container_at_point_recursive(tree, child_id, nx - sx, ny - sy, x, y, vx, vy)
         {
@@ -718,7 +724,10 @@ fn find_hscroll_container_at_point_recursive(
     let sx = node.scroll_offset.0 as f32;
     let sy = node.scroll_offset.1 as f32;
 
-    for &child_id in node.children.iter().rev() {
+    for &child_id in rinch_dom::RinchDocument::box_tree_children(&tree.nodes, node.id)
+        .iter()
+        .rev()
+    {
         if let Some(found) = find_hscroll_container_at_point_recursive(
             tree,
             child_id,
@@ -840,7 +849,8 @@ fn find_scrollbar_hit_node(
 
     let sx = node.scroll_offset.0 as f32;
     let sy = node.scroll_offset.1 as f32;
-    let children: Vec<_> = node.children.clone();
+    let children: Vec<_> =
+        rinch_dom::RinchDocument::box_tree_children(&tree.nodes, node.id).into_owned();
     for &child_id in children.iter().rev() {
         if let Some(hit) = find_scrollbar_hit_node(tree, child_id, nx - sx, ny - sy, x, y, vx, vy) {
             return Some(hit);

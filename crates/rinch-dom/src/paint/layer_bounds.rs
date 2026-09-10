@@ -822,7 +822,8 @@ impl Walk<'_> {
         // all — the span itself is skipped as already drawn.
         let ifc_root = node.text_layout.is_some();
 
-        for &child_id in &node.children {
+        // The box tree, not the element tree (#566).
+        for &child_id in crate::RinchDocument::box_tree_children(&self.tree.nodes, node.id).iter() {
             let Some(child) = self.tree.get(child_id) else {
                 continue;
             };

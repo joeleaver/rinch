@@ -92,7 +92,9 @@ impl RinchDocument {
             ) {
                 continue;
             }
-            let is_ifc = node.children.iter().any(|&child_id| {
+            // `ifc_children`, not `children`: an anonymous block box holds its
+            // run in `run_members` and has no children at all (#566).
+            let is_ifc = node.ifc_children().iter().any(|&child_id| {
                 self.tree
                     .nodes
                     .get(child_id)
@@ -504,55 +506,42 @@ impl RinchDocument {
         }
     }
 
-    /// Clean up anonymous block boxes from the previous layout pass.
+    /// Drop the previous layout pass's anonymous block boxes.
     ///
-    /// Anonymous block boxes wrap runs of inline children in mixed-content
-    /// block containers (CSS spec: "anonymous block boxes"). They are
-    /// recreated each layout pass to ensure correctness after DOM mutations.
+    /// Since #566 this is a **drop**, not a dissolve: the boxes were never in
+    /// the DOM tree and nothing was ever reparented, so there is nothing to put
+    /// back. What used to live here — finding the box in its parent's
+    /// `children`, removing it, re-inserting its adopted children at recorded
+    /// slots, and the `AdoptedChild { child, origin, prev, index }` record that
+    /// made those slots survive a document mutated between passes — existed
+    /// only to undo a move that no longer happens.
+    ///
+    /// It is now the same shape as [`Self::cleanup_ifc_measure_leaves`]: forget
+    /// the Taffy node, forget the slab entry, and rebuild whatever list held it.
     fn cleanup_anonymous_block_boxes(&mut self) {
         let anon_ids = std::mem::take(&mut self.tree.anonymous_block_boxes);
         if anon_ids.is_empty() {
             return;
         }
 
-        // Track which parents need Taffy child rebuild
+        // The containers whose Taffy child lists held these boxes — read from
+        // the box's own `parent`, which it keeps (see
+        // `create_anonymous_block_boxes`).
         let mut parents_affected: Vec<usize> = Vec::new();
-
         for &anon_id in &anon_ids {
-            let (parent_id, children) = {
-                let node = match self.tree.nodes.get(anon_id) {
-                    Some(n) => n,
-                    None => continue,
-                };
-                let parent_id = match node.parent {
-                    Some(p) => p,
-                    None => continue,
-                };
-                (parent_id, node.children.clone())
+            let Some(anon) = self.tree.nodes.get(anon_id) else {
+                continue;
             };
-
-            if !parents_affected.contains(&parent_id) {
-                parents_affected.push(parent_id);
+            let members = anon.run_members.clone();
+            if let Some(p) = anon.parent
+                && !parents_affected.contains(&p)
+            {
+                parents_affected.push(p);
             }
-
-            // Find position of anonymous box in parent's DOM children
-            let pos = self.tree.nodes[parent_id]
-                .children
-                .iter()
-                .position(|&c| c == anon_id)
-                .unwrap_or(0);
-
-            // Remove anonymous box from parent's DOM children
-            self.tree.nodes[parent_id].children.remove(pos);
-
-            // Insert anonymous box's children back into parent at the same position
-            for (i, &child_id) in children.iter().enumerate() {
-                self.tree.nodes[parent_id]
-                    .children
-                    .insert(pos + i, child_id);
-                if let Some(child) = self.tree.nodes.get_mut(child_id) {
-                    child.parent = Some(parent_id);
-                    child.ifc_root = None;
+            for m in members {
+                if let Some(member) = self.tree.nodes.get_mut(m) {
+                    member.run_box = None;
+                    member.ifc_root = None;
                 }
             }
 
@@ -567,12 +556,17 @@ impl RinchDocument {
         }
 
         // Rebuild each affected parent's Taffy children through the one
-        // authority for that list — `collect_effective_taffy_children`, which
-        // flattens `display: contents` children (#476). Rebuilding from raw
-        // `nodes[parent].children` re-added a boxless wrapper's own Taffy node
-        // and dropped the grandchildren it stands for, orphaning them: they are
-        // not DOM children of this parent, so nothing put them back.
+        // authority for that list — `collect_effective_taffy_children` (#476,
+        // #566).
         for parent_id in parents_affected {
+            // Cleared with the boxes it listed: every one of them has just
+            // been removed from the slab, so leaving the list populated would
+            // point invariant C at freed indices — and send
+            // `box_tree_children` down the substituting path for a container
+            // with nothing to substitute.
+            if let Some(p) = self.tree.nodes.get_mut(parent_id) {
+                p.run_boxes.clear();
+            }
             self.rebuild_effective_taffy_children(parent_id);
         }
     }
@@ -775,31 +769,71 @@ impl RinchDocument {
             }
         }
 
-        // Phase 2: Create anonymous boxes and reparent inline children
+        // Phase 2: mint a box per run and **record** it — nothing is reparented
+        //
+        // The box is deliberately outside the DOM tree (#566): in no node's
+        // `children`, holding its run in `run_members` while each member points
+        // back through `run_box`. It keeps a real `parent` — the edge is
+        // one-way, upward only, which is the half no reader of the author's
+        // tree ever follows. An anonymous box is a box-tree
+        // construct (CSS 2.1 §9.2.1.1) and the DOM is the element tree; making
+        // it a DOM node made it lie to every single-level read of that tree —
+        // `remove_child`'s `retain`, `insert_before`'s `position()`,
+        // `next_sibling`, `:nth-child`, and `find_parent_computed_style`.
+        //
+        // What used to be here — reparenting the run, rewriting the container's
+        // `children`, and a restore path to undo both — is gone. That deletion
+        // *is* the fix.
         for (parent_id, runs) in containers {
             let guard = self.tree.guard.clone();
 
             for run in runs {
-                let first_child = run[0];
-                // Look up position in CURRENT children list (handles multiple runs correctly)
-                let first_pos = self.tree.nodes[parent_id]
-                    .children
-                    .iter()
-                    .position(|&c| c == first_child)
-                    .unwrap();
-
                 // Create anonymous block box DOM node
                 let anon_id = self.tree.nodes.vacant_key();
                 let mut anon_node = Node::element(anon_id, "div", guard.clone());
                 anon_node.is_anonymous_block_box = true;
                 anon_node.display_mode = DisplayMode::Block;
+                // **A parent, but not a child.** The box keeps an upward edge
+                // to its container and appears in nobody's `children`; its run
+                // lives in `run_members` and is never reparented.
+                //
+                // Exactly two edges caused #566, #579 and the inheritance
+                // defect, and the box's own `parent` is neither: the box
+                // appearing in `container.children` shifted every following
+                // sibling's index, and members' `parent` pointing at the box
+                // broke `remove_child`, `insert_before`, `next_sibling` and the
+                // cascade. Cutting those two is the whole fix.
+                //
+                // Keeping the upward edge is not incidental. `parent: None` was
+                // tried and is **wrong**:
+                // `compute_absolute_position_and_transform` walks up via
+                // `node.parent` twice and both loops end on `None`, so a
+                // parentless box is summed **as if it were the root** — its
+                // line painted at the viewport origin instead of inside its
+                // container. Silent: no panic, no wrong number, just a box in
+                // the wrong place.
+                //
+                // And this is what makes the safety a proof rather than a
+                // survey. The line that used to follow — `child.parent =
+                // Some(anon_id)` — was the **only** site in the codebase that
+                // made anything a child of the box. With it gone, no node has
+                // the box as its parent, so the box is a **leaf of the parent
+                // relation**: reachable upward from itself, never traversed
+                // *through*. Every ancestor walk in the engine is unaffected by
+                // construction rather than by enumeration.
                 anon_node.parent = Some(parent_id);
-                anon_node.children = run.clone();
+                anon_node.run_members = run.clone();
                 // Inherited properties only (CSS 2.1 §9.2.1.1). Cloning the
                 // parent's whole style gave the anonymous box a box model its
                 // Taffy style (below) does not have, and paint double-counted
                 // the parent's padding+border for everything this IFC draws
                 // (#319) — see [`ComputedStyle::for_anonymous_box`].
+                //
+                // The style parent is passed explicitly now that the box has no
+                // DOM parent to read it from. It must be the parent the **run**
+                // has, which on this base is the container: a box that inherits
+                // from the wrong node draws its text in the wrong colour and at
+                // the wrong size, and nothing else in the suite sees it.
                 anon_node.computed_style = crate::computed_style::ComputedStyle::for_anonymous_box(
                     &self.tree.nodes[parent_id].computed_style,
                 );
@@ -819,87 +853,61 @@ impl RinchDocument {
                 // Insert anonymous node into slab
                 self.tree.nodes.insert(anon_node);
 
-                // Update children's parent references
+                // Point every member at its box. This is what
+                // `box_tree_children` reads, and it must be set before the
+                // Taffy rebuild below, which consults it.
                 for &child_id in &run {
                     if let Some(child) = self.tree.nodes.get_mut(child_id) {
-                        child.parent = Some(anon_id);
+                        child.run_box = Some(anon_id);
                     }
                 }
 
-                // Replace inline children in parent's DOM children with anonymous box
-                self.tree.nodes[parent_id]
-                    .children
-                    .retain(|c| !run.contains(c));
-                let insert_pos = first_pos.min(self.tree.nodes[parent_id].children.len());
-                self.tree.nodes[parent_id]
-                    .children
-                    .insert(insert_pos, anon_id);
+                // The downward half of the box's edge. Recorded here, beside
+                // the upward `parent` and the members' back-pointers, so all
+                // three are written in one place and cannot drift — and so
+                // invariant A can be stated for every node without exempting
+                // this one.
+                self.tree.nodes[parent_id].run_boxes.push(anon_id);
 
                 // Track for cleanup on next layout pass
                 self.tree.anonymous_block_boxes.push(anon_id);
             }
 
-            // Rebuild the parent's Taffy children, and each anonymous box's
-            // own, through the one authority for that list —
+            // Rebuild the container's Taffy children — and each new box's own —
+            // through the one authority for that list,
             // `collect_effective_taffy_children`, which flattens
-            // `display: contents` children (#476). Deriving the order from raw
-            // `nodes[parent].children` instead put the wrapper's own boxless
-            // Taffy node in the list and left the grandchildren it stands for
-            // **orphaned** — not a DOM child of anything in this rebuild, so
-            // nothing re-attached them, on this pass or any later one. Using
-            // `set_children` rather than clear-and-append also avoids the
-            // `remove_child` panics that come of Taffy children being out of
-            // sync with the DOM (the IFC detaches inline ones).
+            // `display: contents` children (#476) and now also substitutes a
+            // run's box for its members (#566).
             //
-            // An anonymous box's own list goes through the same call. That
-            // call is **inert** today, not merely a no-op flatten: a run holds
-            // only `InlineFlowRole::Inline` children (and every box in
-            // `anon_ids` was minted moments ago by this very pass, since
-            // `cleanup_anonymous_block_boxes` dissolved the previous ones), so
-            // there is no contents wrapper to flatten — and
-            // `mark_inline_descendants` detaches every `Inline` child of an IFC
-            // root a few lines later, so the anonymous box ends with an empty
-            // Taffy child list either way. Deleting the loop entirely leaves
-            // the suite green; measured. It is kept for the single-rule
-            // property — one authority answers "what are this node's Taffy
-            // children", with no exception carved out for anonymous boxes —
-            // not because it attaches anything.
-            //
-            // Anonymous boxes first, `parent_id` last, so the flattening owner
-            // claims last — `set_children` steals each adopted child from its
-            // previous parent.
-            //
-            // **Either order converges today, and that is measured**: inverting
-            // these two loops leaves the whole suite green. When the anonymous
-            // box is not `Contents` the two child sets are disjoint, so nothing
-            // is stolen either way; when it is, both rebuilds walk to the same
-            // top non-contents owner and end with the identical
-            // `set_children(top, collect(top))`, and
-            // `collect_effective_taffy_children` is a pure function of a DOM
-            // neither call mutates. So this is defence, not a requirement — it
-            // is what keeps the outcome independent of
-            // `taffy_child_list_owners`' internals, and the comment must not
-            // claim more than that.
-            //
-            // `parent_id` may itself be a boxless contents wrapper — a wrapper
-            // around `text + block` is `DisplayMode::Block` and so is mixed
-            // content in its own right, and the box it mints inherits
-            // `Contents` too (#319) — which is why the rebuild walks up to
-            // whoever actually holds those boxes; see `taffy_child_list_owners`.
-            let anon_ids: Vec<usize> = self.tree.nodes[parent_id]
-                .children
+            // A box's own list is built from `run_members` rather than from
+            // `children`, which is empty. `mark_inline_descendants` detaches
+            // those members again a few lines later — this attaches them only
+            // so that the detach has something to detach *from*, which is what
+            // keeps a member's Taffy node from being left parented to the
+            // container.
+            let new_boxes: Vec<usize> = self
+                .tree
+                .anonymous_block_boxes
                 .iter()
                 .copied()
-                .filter(|&c| {
-                    self.tree
-                        .nodes
-                        .get(c)
-                        .map(|n| n.is_anonymous_block_box)
-                        .unwrap_or(false)
+                .filter(|&b| {
+                    self.tree.nodes[b]
+                        .run_members
+                        .first()
+                        .and_then(|&m| self.tree.nodes.get(m))
+                        .and_then(|m| m.parent)
+                        == Some(parent_id)
                 })
                 .collect();
-            for anon_id in anon_ids {
-                self.rebuild_effective_taffy_children(anon_id);
+            for anon_id in new_boxes {
+                let members: Vec<taffy::NodeId> = self.tree.nodes[anon_id]
+                    .run_members
+                    .iter()
+                    .filter_map(|&m| self.tree.nodes.get(m).and_then(|n| n.taffy_id))
+                    .collect();
+                if let Some(anon_taffy) = self.tree.nodes[anon_id].taffy_id {
+                    let _ = self.tree.taffy.set_children(anon_taffy, &members);
+                }
             }
             self.rebuild_effective_taffy_children(parent_id);
         }
@@ -991,12 +999,33 @@ impl RinchDocument {
             // — `style_adjuster.rs`, `blockify_if!(is_absolutely_positioned)`
             // — but the reliance is now stated once, in the classifier, not
             // leaned on silently per site; #406.)
+            //
+            // A child already claimed by an anonymous block box is **not this
+            // node's inline content** — it is the box's, and the box is the
+            // root that lays it out (#566). Before the box left the DOM tree
+            // that was automatic, because the run had been reparented out of
+            // `children`; now `children` still holds it and the classification
+            // has to say so itself. Missing this makes a mixed container an IFC
+            // root *as well as* its boxes, which trips the #466 leaf invariant
+            // immediately: the container keeps the block's Taffy child, so its
+            // `InlineRoot` context sits on a non-leaf and its measure is
+            // structurally unreachable.
+            //
+            // An anonymous block box classifies over its **run**, not its
+            // `children`, which are empty — it is not in the element tree
+            // (#566). Without this it is never discovered as a root at all and
+            // its whole run goes unlaid-out.
+            let own_children = node.ifc_children();
             let mut has_non_comment_inline = false;
-            let mut all_children_are_comments = !node.children.is_empty();
-            for &child_id in &node.children {
+            let mut all_children_are_comments = !own_children.is_empty();
+            for &child_id in own_children {
                 let Some(child) = self.tree.nodes.get(child_id) else {
                     continue;
                 };
+                if child.run_box.is_some() && !node.is_anonymous_block_box {
+                    all_children_are_comments = false;
+                    continue;
+                }
                 match child.inline_flow_role() {
                     InlineFlowRole::Comment => continue,
                     InlineFlowRole::Inline => {
@@ -1026,7 +1055,7 @@ impl RinchDocument {
                 || Self::contents_wraps_only_inline(&self.tree.nodes, id)
             {
                 ifc_roots.push(id);
-            } else if node.children.is_empty() {
+            } else if own_children.is_empty() {
                 // Always call set_style for consistent Taffy invalidation, even
                 // when the floor does not apply.
                 if let Some(taffy_id) = node.taffy_id
@@ -1313,6 +1342,264 @@ impl RinchDocument {
     /// legitimately holds a detached subtree should not panic. Call it from a
     /// test, or set `RINCH_TREE_CHECK=1` to have `resolve_layout` print every
     /// violation (debug builds only) and sweep it across a whole suite.
+    /// Violations of the **DOM** tree's own invariants — the check
+    /// `taffy_tree_violations` structurally could not make (#578).
+    ///
+    /// That validator compares the Taffy tree against itself, which is why it
+    /// answered `[]` for both #566 reconciler failures: a deleted row still
+    /// painted and an inserted row never laid out were **DOM** corruption with
+    /// a perfectly consistent Taffy tree underneath. It was not blind by
+    /// accident; it validates a different thing.
+    ///
+    /// Three invariants, and the first is the one that catches that class:
+    ///
+    /// - **A** bidirectional: `nodes[n].parent == Some(p)` **iff**
+    ///   `nodes[p].children` contains `n`.
+    /// - **B** no node appears in two parents' `children`.
+    /// - **C** no `parent` or `children` entry names a freed slab index.
+    ///
+    /// **A was not expressible before #566**, and that is the point worth
+    /// keeping: the anonymous block box used to violate it deliberately — it
+    /// reparented a run, so a member's `parent` disagreed with the author's
+    /// tree on purpose and a check like this would have fired on legitimate
+    /// state. Nothing is reparented now, so the invariant is true of every node
+    /// and can be asserted. The redesign is what made the validator possible,
+    /// which is why it lands with it rather than before it.
+    ///
+    /// The anonymous box itself is exempt from **A's backward direction** by
+    /// construction: it names a `parent` and appears in nobody's `children`,
+    /// which is exactly the state A forbids for an ordinary node. Only that
+    /// direction is waived — see the comment on the backward pass. That
+    /// exemption is the one place this check has to know the design exists,
+    /// and it is stated rather than silently skipped.
+    pub fn dom_tree_violations(&self) -> Vec<String> {
+        let mut out = Vec::new();
+        let mut seen_child: std::collections::HashMap<usize, usize> =
+            std::collections::HashMap::new();
+
+        for (id, node) in &self.tree.nodes {
+            // C: children must name live slab entries.
+            for &c in &node.children {
+                if self.tree.nodes.get(c).is_none() {
+                    out.push(format!(
+                        "C freed child: {id} lists {c}, which is not in the slab"
+                    ));
+                    continue;
+                }
+                // B: one parent per node.
+                if let Some(&other) = seen_child.get(&c) {
+                    out.push(format!(
+                        "B double-parent: {c} is a child of both {other} and {id}"
+                    ));
+                } else {
+                    seen_child.insert(c, id);
+                }
+                // A, forward: a child must point back.
+                if self.tree.nodes[c].parent != Some(id) {
+                    out.push(format!(
+                        "A one-way: {id} lists {c} as a child, but {c}.parent is {:?}",
+                        self.tree.nodes[c].parent
+                    ));
+                }
+                // A, exclusivity: exactly one list, never both.
+                if node.run_boxes.contains(&c) {
+                    out.push(format!(
+                        "A both lists: {c} is in {id}'s children AND its run_boxes"
+                    ));
+                }
+            }
+
+            // The same three checks over the box list. A box is a child of the
+            // box tree, not of the author's tree, so it lives here instead of
+            // in `children` — but it is otherwise an ordinary node and A, B and
+            // C say exactly the same things about it. Folding `run_boxes` into
+            // all three is what makes A total; folding it into A alone would
+            // leave B and C blind to the new list, which is the very shape
+            // (a check weakest where it must hold) this validator exists to
+            // avoid.
+            for &b in &node.run_boxes {
+                // C: box entries must name live slab entries.
+                let Some(boxx) = self.tree.nodes.get(b) else {
+                    out.push(format!(
+                        "C freed run box: {id} lists {b}, which is not in the slab"
+                    ));
+                    continue;
+                };
+                // B: one parent per node, across both lists.
+                if let Some(&other) = seen_child.get(&b) {
+                    out.push(format!(
+                        "B double-parent: {b} is listed by both {other} and {id}"
+                    ));
+                } else {
+                    seen_child.insert(b, id);
+                }
+                // A, forward.
+                if boxx.parent != Some(id) {
+                    out.push(format!(
+                        "A one-way: {id} lists {b} as a run box, but {b}.parent is {:?}",
+                        boxx.parent
+                    ));
+                }
+                // Only an anonymous box belongs in this list. Nothing else may
+                // acquire a parent that does not list it in `children`.
+                if !boxx.is_anonymous_block_box {
+                    out.push(format!(
+                        "A not a box: {id} lists {b} as a run box, but it is not an anonymous block box"
+                    ));
+                }
+            }
+            // C: a parent must name a live slab entry.
+            if let Some(p) = node.parent
+                && self.tree.nodes.get(p).is_none()
+            {
+                out.push(format!(
+                    "C freed parent: {id}.parent is {p}, which is not in the slab"
+                ));
+            }
+        }
+
+        // A, backward: a node claiming a parent must appear in **exactly one**
+        // of that parent's two lists.
+        //
+        // **There is no exemption, and that is the point.** The anonymous block
+        // box used to need one: it carries `parent = Some(container)` and is
+        // deliberately absent from `children`, which is the state A forbids for
+        // an ordinary node. An invariant introduced to catch DOM corruption
+        // would then have carried a carve-out for the exact construct whose old
+        // shape produced the corruption — weakest precisely where it must hold.
+        // Recording the downward edge in `run_boxes` removes the need: the box
+        // is in one list, every other node is in the other, and A is a single
+        // sentence true of every node in the slab.
+        //
+        // Note this direction is what would have caught §11 by itself. The
+        // superseded `parent: None` build asserted the opposite — that a box
+        // has no parent at all — so giving the box its parent back turned that
+        // assertion from silent to firing on every box, every frame.
+        for (id, node) in &self.tree.nodes {
+            let Some(p) = node.parent else { continue };
+            let Some(parent) = self.tree.nodes.get(p) else {
+                continue; // reported as "C freed parent" above
+            };
+            let in_children = parent.children.contains(&id);
+            let in_run_boxes = parent.run_boxes.contains(&id);
+            if !in_children && !in_run_boxes {
+                out.push(format!(
+                    "A one-way: {id}.parent is {p}, but neither {p}'s children nor its run_boxes contain it"
+                ));
+            }
+            // The "exactly one" half is reported from the forward pass, which
+            // sees both lists of the same node together.
+            let _ = in_run_boxes;
+        }
+
+        // D: the run relation is bidirectional, like A is for the DOM edge.
+        // A member names its box and the box names it back, or one of the two
+        // is stale — which is the corruption shape #566's own construct could
+        // introduce, so it is checked rather than trusted.
+        for (id, node) in &self.tree.nodes {
+            if let Some(b) = node.run_box {
+                match self.tree.nodes.get(b) {
+                    None => out.push(format!(
+                        "D freed run box: {id}.run_box is {b}, which is not in the slab"
+                    )),
+                    Some(boxx) if !boxx.is_anonymous_block_box => out.push(format!(
+                        "D not a box: {id}.run_box is {b}, which is not an anonymous block box"
+                    )),
+                    Some(boxx) if !boxx.run_members.contains(&id) => out.push(format!(
+                        "D one-way run: {id}.run_box is {b}, but {b}'s members do not contain it"
+                    )),
+                    Some(_) => {}
+                }
+            }
+            for &m in &node.run_members {
+                if self.tree.nodes.get(m).is_none() {
+                    out.push(format!(
+                        "D freed member: {id} lists member {m}, which is not in the slab"
+                    ));
+                } else if self.tree.nodes[m].run_box != Some(id) {
+                    out.push(format!(
+                        "D one-way run: {id} lists {m} as a member, but {m}.run_box is {:?}",
+                        self.tree.nodes[m].run_box
+                    ));
+                }
+            }
+        }
+
+        out
+    }
+
+    /// The box hangs off the container its run actually came from (#566, #578).
+    ///
+    /// **Separate from [`Self::dom_tree_violations`] on purpose, and the
+    /// separation is the whole point.** That one holds at *any* moment — it is
+    /// about the DOM tree, which every mutation keeps consistent. This one is
+    /// about the **run bookkeeping**, which is rebuilt by
+    /// `create_anonymous_block_boxes` and is therefore only meaningful
+    /// immediately after a layout pass. Folding it into the any-time validator
+    /// would make a clean run mean *less*, because a clean run would then
+    /// depend on when you asked.
+    ///
+    /// The rule:
+    ///
+    /// > for an anonymous box `b` with `parent = Some(p)`, every `m` in
+    /// > `b.run_members` has `m.parent == Some(p)`, and `run_members` is
+    /// > non-empty.
+    ///
+    /// It closes the one direction the design's upward edge depends on and
+    /// nothing else checks. Invariant A pins a box's `parent` to the container
+    /// that *lists* it in `run_boxes`; it says nothing about whether that
+    /// container is the one whose children the run was grouped from. A box
+    /// could hang off `C` while its members are children of `D` and every check
+    /// in `dom_tree_violations` would pass — measured, not argued.
+    ///
+    /// **Why it cannot be an any-time invariant**, also measured: ordinary DOM
+    /// mutation desynchronises the two legitimately. `remove_child(c, m)`
+    /// followed by `append_child(d, m)` between layout passes leaves `m.parent
+    /// == d` while its box still hangs off `c` and still lists it — correct
+    /// state, since the run is rebuilt on the next pass, and an any-time form
+    /// of this rule would fire on it. That is the cry-wolf failure an invariant
+    /// must not have.
+    ///
+    /// The non-empty half is not vacuous filler: a memberless box is
+    /// **unreachable** at validator time — `create_anonymous_block_boxes` mints
+    /// a box only from a non-empty run, and nothing empties `run_members`
+    /// afterwards (`remove_child` does not touch it). Stating it keeps the rule
+    /// from passing trivially if that ever changes, which is exactly how the
+    /// first draft of this assertion would have gone quietly vacuous.
+    ///
+    /// # This assertion is #568-hostile
+    ///
+    /// Under #568's flattened classification a run genuinely spans a parent
+    /// boundary: a member behind a `display: contents` wrapper is a child of
+    /// the *wrapper*, not of the container the box hangs off. The rule then
+    /// becomes false **by design rather than by corruption**, and the honest
+    /// successor compares against the flattening ancestor instead of `parent`.
+    /// Together with `box_tree_children`'s direct-child assumption, that is the
+    /// second of two things #568 must update in the same commit.
+    pub fn run_bookkeeping_violations(&self) -> Vec<String> {
+        let mut out = Vec::new();
+        for (id, node) in &self.tree.nodes {
+            if !node.is_anonymous_block_box {
+                continue;
+            }
+            if node.run_members.is_empty() {
+                out.push(format!("R memberless box: {id} lays out nothing"));
+            }
+            for &m in &node.run_members {
+                let Some(member) = self.tree.nodes.get(m) else {
+                    continue; // reported as "D freed member"
+                };
+                if member.parent != node.parent {
+                    out.push(format!(
+                        "R wrong container: box {id} hangs off {:?}, but its member {m} is a child of {:?}",
+                        node.parent, member.parent
+                    ));
+                }
+            }
+        }
+        out
+    }
+
     pub fn taffy_tree_violations(&self) -> Vec<String> {
         use crate::computed_style::values::DisplayValue;
         use std::collections::HashMap;
@@ -1580,7 +1867,10 @@ impl RinchDocument {
         // so asking per child cloned the whole list on every iteration — and the
         // recursion below multiplies that by the number of inline descendants.
         let root_taffy_children = self.tree.taffy.children(root_taffy).unwrap_or_default();
-        let children: Vec<usize> = self.tree.nodes[node_id].children.clone();
+        // An anonymous block box reaches its run through `run_members`, not
+        // `children` — it has none, and is not in the element tree at all
+        // (#566). Every other node walks its children as before.
+        let children: Vec<usize> = self.tree.nodes[node_id].ifc_children().to_vec();
         for child_id in children {
             let (role, is_inline_element, child_taffy) = match self.tree.nodes.get(child_id) {
                 Some(c) => (
@@ -2294,7 +2584,11 @@ impl RinchDocument {
         scale: f32,
         collapse: parley::style::WhiteSpaceCollapse,
     ) {
-        let children: Vec<usize> = nodes[parent_id].children.clone();
+        // As in `mark_inline_descendants`: an anonymous box's content is its
+        // recorded run, not its (empty) `children` (#566). The two must walk
+        // exactly the same set — that is [`Node::inline_flow_role`]'s contract
+        // (#366) and it now includes where the set comes from.
+        let children: Vec<usize> = nodes[parent_id].ifc_children().to_vec();
         for child_id in children {
             let child = match nodes.get(child_id) {
                 Some(c) => c,

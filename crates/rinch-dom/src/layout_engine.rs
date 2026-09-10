@@ -238,6 +238,18 @@ impl RinchDocument {
         // Read layout results back into nodes
         let t = web_time::Instant::now();
         self.read_layout_results(self.tree.root_id);
+        // The walk above is over the **element** tree, and an anonymous block
+        // box is not in it (#566) — so nothing above visits one, and its
+        // `layout` would stay at the origin while its line is measured and
+        // painted from it. Read them back here rather than teaching the
+        // recursion a second child list: the recursion must keep visiting the
+        // run's *members* (their IFC-assigned position is preserved inside it),
+        // so a box tree walk that replaced them would lose that, and a walk
+        // that unioned them would cost every node a merge for the sake of a
+        // handful of boxes. This is O(boxes) and off the per-node path.
+        for anon_id in self.tree.anonymous_block_boxes.clone() {
+            self.read_layout_results_for_box(anon_id);
+        }
         if perf {
             eprintln!(
                 "  [PERF] read_layout: {:.2}ms",
@@ -869,6 +881,34 @@ impl RinchDocument {
     }
 
     /// Recursively read Taffy layout results into node LayoutResult fields.
+    /// Read one anonymous block box's Taffy layout back into its `layout`.
+    ///
+    /// The box is outside the element tree (#566), so
+    /// [`Self::read_layout_results`]'s recursion never reaches it — but it has
+    /// a `taffy_id` and a real box, and paint draws its line at that rect.
+    /// Its run's members are reached by the ordinary walk, through their real
+    /// parent, so this deliberately does **not** recurse.
+    fn read_layout_results_for_box(&mut self, anon_id: usize) {
+        let Some(taffy_id) = self.tree.nodes.get(anon_id).and_then(|n| n.taffy_id) else {
+            return;
+        };
+        let Ok(taffy_layout) = self.tree.taffy.layout(taffy_id) else {
+            return;
+        };
+        let new_layout = LayoutResult {
+            x: taffy_layout.location.x,
+            y: taffy_layout.location.y,
+            width: taffy_layout.size.width,
+            height: taffy_layout.size.height,
+        };
+        let node = &mut self.tree.nodes[anon_id];
+        node.prev_layout = node.layout;
+        if node.layout != new_layout {
+            node.layout = new_layout;
+            self.tree.paint_dirty_nodes.push(anon_id);
+        }
+    }
+
     pub(crate) fn read_layout_results(&mut self, node_id: usize) {
         let children: Vec<usize> = self.tree.nodes[node_id].children.clone();
 
@@ -1176,6 +1216,40 @@ impl RinchDocument {
         let mut departed_nodes: Vec<usize> = Vec::new();
 
         for (id, node) in &self.tree.nodes {
+            // This pass maintains the DOM flattening of **author** wrappers,
+            // and asking an anonymous block box which wrapper holds it is not
+            // an unanswerable question — it is the wrong one (#566). Its Taffy
+            // attachment is `create_anonymous_block_boxes`' own job, rebuilt
+            // explicitly there. Same guard, same reason, as the one in that
+            // function's own scan.
+            //
+            // The guard holds for **both** shapes this design has had, by two
+            // different mechanisms, which is why it keys on
+            // `is_anonymous_block_box` and not on either of them: with an
+            // earlier `parent: None` the walk terminated immediately and
+            // recorded nothing; with `parent = Some(container)`, which is what
+            // it does now, the walk *succeeds* and double-adds the container to
+            // `affected_parents`.
+            //
+            // **Defence, not a fix, and that is measured**: the mutant that
+            // deletes it survives the entire workspace. I predicted the
+            // opposite in the design audit ("a real regression if left alone")
+            // and was wrong.
+            //
+            // Read that survival precisely, because it is weaker than it
+            // looks. What is established is the **absence of a distinguishing
+            // fixture**, not a demonstration that the guard is inert. The
+            // account I have for why — a box reaches the `is_contents` arm
+            // only by inheriting `display: contents` from a boxless container,
+            // and in that state the collector flattens it to its run so
+            // nothing consults its Taffy node — is an argument, and the
+            // suite's silence is consistent with it being wrong in a shape
+            // nobody has written down. The guard stays because it is cheap and
+            // because that argument is the only thing standing between the
+            // double-add and a `parents_affected` list with a duplicate in it.
+            if node.is_anonymous_block_box {
+                continue;
+            }
             let is_contents = node.computed_style.display == DisplayValue::Contents;
             if is_contents {
                 all_contents_nodes.push(id);
@@ -1334,6 +1408,151 @@ impl RinchDocument {
     /// children in the parent's list, and asking here would answer with the
     /// wrapper's own detached id instead. Read the two together before changing
     /// either gate.
+    /// `node_id`'s children as the **box tree** sees them: its DOM children,
+    /// with each inline run replaced — at the position of its first member — by
+    /// the anonymous block box that stands for it (#566).
+    ///
+    /// # Why this exists
+    ///
+    /// There are two trees here and they are not the same tree. The **element**
+    /// tree is the author's: it is what `parent`/`children` hold, what CSS
+    /// inheritance and selector matching walk, and what `insert_before` and
+    /// `next_sibling` answer from. The **box** tree is what gets laid out and
+    /// painted, and it contains anonymous block boxes, which are not elements
+    /// (CSS 2.1 §9.2.1.1).
+    ///
+    /// This engine used to conflate them by putting the box *in* `children` and
+    /// reparenting the run into it. That is #566, #579 and the inheritance
+    /// defect, all three: every single-level read of the element tree got the
+    /// box where the container should be. The box is now outside the element
+    /// tree entirely, and **this function is the only place the two trees are
+    /// reconciled**.
+    ///
+    /// # Everything that walks boxes must come through here
+    ///
+    /// Paint's descent, hit testing, the stacking sequence, `layer_bounds`, the
+    /// viewport-hole walk and [`Self::collect_effective_taffy_children`] all
+    /// used to walk `node.children` directly and get the box for free. They no
+    /// longer can. Routing them through one function rather than open-coding
+    /// the interleave six times is deliberate: four sites disagreeing about
+    /// "does this node clip" produced #324, and four disagreeing about "what
+    /// are this node's Taffy children" produced #476. **A new question with six
+    /// consumers gets one answer, not six.**
+    ///
+    /// # The rule, and why a run is not a contiguous range
+    ///
+    /// A member carries [`crate::node::Node::run_box`]. The first member of a
+    /// run yields its box; later members of the *same* box yield nothing. It is
+    /// written that way rather than as "replace a contiguous slice" because a
+    /// run is **not** contiguous in `children`: an out-of-flow or `display:
+    /// none` child sits inside one without joining it (#406, #366), so
+    /// `text <abs/> text` is one run with a non-member between its members.
+    ///
+    /// **Borrows** for the overwhelmingly common case of a node with no run
+    /// among its children, so the per-frame walks that call it pay nothing.
+    /// `node_id`'s parent as the **box tree** sees it — the companion to
+    /// [`Self::box_tree_children`], and required by exactly the same rule
+    /// (#566).
+    ///
+    /// A run's member has the anonymous box as its box-tree parent even though
+    /// its DOM parent is the container. The box's own parent needs no
+    /// correction — it keeps a real upward edge to its container and is merely
+    /// absent from that container's `children`.
+    ///
+    /// **Every coordinate accumulation that walks upward must use this.** A
+    /// member's `layout` is positioned by the IFC *relative to the box*, so a
+    /// parent-chain sum that steps straight to the container drops the box's
+    /// own offset — the run lands at the container's origin instead of the
+    /// run's. That is invisible for a document's first run, whose box is at
+    /// `y = 0`, and wrong for every one after it: it was found by a focus test
+    /// clicking a toolbar `<input>` and hitting the node above it.
+    pub fn box_tree_parent(nodes: &slab::Slab<crate::node::Node>, node_id: usize) -> Option<usize> {
+        let node = nodes.get(node_id)?;
+        if let Some(b) = node.run_box {
+            return Some(b);
+        }
+        // A box needs no arm of its own: it keeps a real `parent` edge to its
+        // container (it is simply absent from that container's `children`), so
+        // the ordinary answer is already right.
+        node.parent
+    }
+
+    pub fn box_tree_children(
+        nodes: &slab::Slab<crate::node::Node>,
+        node_id: usize,
+    ) -> std::borrow::Cow<'_, [usize]> {
+        use std::borrow::Cow;
+        let Some(node) = nodes.get(node_id) else {
+            return Cow::Borrowed(&[]);
+        };
+        // An anonymous box's box-tree children **are** its run, verbatim — no
+        // substitution, or every member would be replaced by the box that owns
+        // it and the walk would name itself.
+        //
+        // This is reached wherever something descends into a box: the collector
+        // does when the box computes `display: contents` (which it inherits
+        // from a boxless container, and which this design deliberately does not
+        // change — that is #568's business, not #566's), and paint does on the
+        // same path. Returning `children` there — empty, since the run is not
+        // adopted — would drop the whole run from layout and from paint.
+        if node.is_anonymous_block_box {
+            return Cow::Borrowed(&node.run_members);
+        }
+        // **Borrow unless a run is actually present, and decide that in O(1).**
+        // These walks run per node per frame — paint's descent, the stacking
+        // sequence, `layer_bounds`, every Taffy rebuild — and mixed-content
+        // containers are a small minority of nodes. The allocation this avoids
+        // is the part that matters; the *scan* it also avoids — an earlier form
+        // asked every child whether it carried a `run_box` — measured as
+        // nothing, so `run_boxes.is_empty()` is a structural bound rather than
+        // a speedup. That field is here for invariant A (see its own doc).
+        if node.run_boxes.is_empty() {
+            return Cow::Borrowed(&node.children);
+        }
+        // **A run member is a direct child of this container**, which is what
+        // makes the loop below able to find it at all. True on this base
+        // because `create_anonymous_block_boxes` groups runs from
+        // `node.children` and nothing else. **#568 changes that**: under a
+        // flattened classification a member behind a `display: contents`
+        // wrapper is a grandchild, this loop would never see it, and the box
+        // would silently vanish from its container's box-tree children. That is
+        // one of exactly two things #568 must update in the same commit; the
+        // other is `RinchDocument::run_bookkeeping_violations`, whose rule
+        // becomes false by design for the same reason. Neither fails quietly —
+        // see that function's doc.
+        let mut out: Vec<usize> = Vec::with_capacity(node.children.len());
+        let mut last_box: Option<usize> = None;
+        for &child_id in &node.children {
+            match nodes.get(child_id).and_then(|c| c.run_box) {
+                Some(b) => {
+                    // Only the run's first member yields the box.
+                    //
+                    // `last_box` is **not** reset by the non-member arm below,
+                    // and that is the whole subtlety: a run is not a contiguous
+                    // slice of `children`. A comment, an out-of-flow box or a
+                    // `display: none` child sits *inside* a run without joining
+                    // it (#406, #366, #490), so `text <!--c--> span` is one run
+                    // with a non-member between two of its members. Resetting
+                    // there emits the box twice, and `set_children` panics
+                    // inside Taffy on the duplicate — which is how this was
+                    // found.
+                    //
+                    // Not resetting is correct because runs are **maximal and
+                    // in document order**: two members of different boxes are
+                    // separated by an in-flow block-level child, which ended the
+                    // first run, so a box id can never recur after a different
+                    // one has been seen.
+                    if last_box != Some(b) {
+                        out.push(b);
+                        last_box = Some(b);
+                    }
+                }
+                None => out.push(child_id),
+            }
+        }
+        Cow::Owned(out)
+    }
+
     pub(crate) fn collect_effective_taffy_children(
         nodes: &slab::Slab<crate::node::Node>,
         node_id: usize,
@@ -1341,15 +1560,27 @@ impl RinchDocument {
         use crate::computed_style::values::DisplayValue;
 
         let mut result = Vec::new();
-        let Some(node) = nodes.get(node_id) else {
+        if nodes.get(node_id).is_none() {
             return result;
-        };
+        }
+        // The **box** tree, not the element tree (#566): an inline run is
+        // represented by the anonymous box that lays it out, at the position of
+        // its first member, and the members themselves contribute nothing.
+        //
+        // Taking `children` here instead would emit both. The members keep a
+        // `taffy_id` — `mark_inline_descendants` detaches them from their Taffy
+        // *parent* and never clears the id — so `set_children` would re-attach
+        // every one of them beside the box, and the detach a few lines later
+        // would miss them (it only removes from the box's own Taffy children,
+        // where they are not). The run would be laid out twice: once as Taffy
+        // blocks and once as an IFC line.
+        //
         // `get`, not indexing, on both hops. The anonymous-box rebuilds this
         // replaced skipped an id missing from the slab (`nodes.get(child_id)`),
         // and routing them here must not turn that into a panic — a DOM
         // `children` list holding a freed id is a bug, but a wrong picture beats
         // a crash and this function is not where it should be discovered.
-        for &child_id in &node.children {
+        for &child_id in Self::box_tree_children(nodes, node_id).iter() {
             let Some(child) = nodes.get(child_id) else {
                 continue;
             };
