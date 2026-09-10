@@ -559,6 +559,15 @@ impl RinchDocument {
         // authority for that list — `collect_effective_taffy_children` (#476,
         // #566).
         for parent_id in parents_affected {
+            // Cleared with the boxes it described: every box is gone by now, so
+            // no container has a run until `create_anonymous_block_boxes` mints
+            // one again. Left set, it would send `box_tree_children` down the
+            // substituting path for a container with nothing to substitute —
+            // harmless in result, wrong as a claim, and a lie the next reader
+            // would have to re-derive.
+            if let Some(p) = self.tree.nodes.get_mut(parent_id) {
+                p.has_inline_runs = false;
+            }
             self.rebuild_effective_taffy_children(parent_id);
         }
     }
@@ -763,9 +772,11 @@ impl RinchDocument {
 
         // Phase 2: mint a box per run and **record** it — nothing is reparented
         //
-        // The box is deliberately outside the DOM tree (#566): `parent: None`,
-        // in no node's `children`, holding its run in `run_members` while each
-        // member points back through `run_box`. An anonymous box is a box-tree
+        // The box is deliberately outside the DOM tree (#566): in no node's
+        // `children`, holding its run in `run_members` while each member points
+        // back through `run_box`. It keeps a real `parent` — the edge is
+        // one-way, upward only, which is the half no reader of the author's
+        // tree ever follows. An anonymous box is a box-tree
         // construct (CSS 2.1 §9.2.1.1) and the DOM is the element tree; making
         // it a DOM node made it lie to every single-level read of that tree —
         // `remove_child`'s `retain`, `insert_before`'s `position()`,
@@ -851,6 +862,11 @@ impl RinchDocument {
                         child.run_box = Some(anon_id);
                     }
                 }
+
+                // The container's O(1) answer to "is there anything here for
+                // `box_tree_children` to substitute". Set here, beside the
+                // members' back-pointers, so the two cannot drift.
+                self.tree.nodes[parent_id].has_inline_runs = true;
 
                 // Track for cleanup on next layout pass
                 self.tree.anonymous_block_boxes.push(anon_id);
@@ -1349,11 +1365,12 @@ impl RinchDocument {
     /// and can be asserted. The redesign is what made the validator possible,
     /// which is why it lands with it rather than before it.
     ///
-    /// The anonymous box itself is exempt from **A** by construction: it has
-    /// `parent: None` and is in nobody's `children`, which is exactly the state
-    /// A forbids for an ordinary node. That exemption is the one place this
-    /// check has to know the design exists — stated here rather than silently
-    /// skipped.
+    /// The anonymous box itself is exempt from **A's backward direction** by
+    /// construction: it names a `parent` and appears in nobody's `children`,
+    /// which is exactly the state A forbids for an ordinary node. Only that
+    /// direction is waived — see the comment on the backward pass. That
+    /// exemption is the one place this check has to know the design exists,
+    /// and it is stated rather than silently skipped.
     pub fn dom_tree_violations(&self) -> Vec<String> {
         let mut out = Vec::new();
         let mut seen_child: std::collections::HashMap<usize, usize> =
@@ -1416,6 +1433,61 @@ impl RinchDocument {
             {
                 out.push(format!(
                     "A one-way: {id}.parent is {p}, but {p}'s children do not contain it"
+                ));
+            }
+        }
+
+        // D: the run relation is bidirectional, like A is for the DOM edge.
+        // A member names its box and the box names it back, or one of the two
+        // is stale — which is the corruption shape #566's own construct could
+        // introduce, so it is checked rather than trusted.
+        for (id, node) in &self.tree.nodes {
+            if let Some(b) = node.run_box {
+                match self.tree.nodes.get(b) {
+                    None => out.push(format!(
+                        "D freed run box: {id}.run_box is {b}, which is not in the slab"
+                    )),
+                    Some(boxx) if !boxx.is_anonymous_block_box => out.push(format!(
+                        "D not a box: {id}.run_box is {b}, which is not an anonymous block box"
+                    )),
+                    Some(boxx) if !boxx.run_members.contains(&id) => out.push(format!(
+                        "D one-way run: {id}.run_box is {b}, but {b}'s members do not contain it"
+                    )),
+                    Some(_) => {}
+                }
+            }
+            for &m in &node.run_members {
+                if self.tree.nodes.get(m).is_none() {
+                    out.push(format!(
+                        "D freed member: {id} lists member {m}, which is not in the slab"
+                    ));
+                } else if self.tree.nodes[m].run_box != Some(id) {
+                    out.push(format!(
+                        "D one-way run: {id} lists {m} as a member, but {m}.run_box is {:?}",
+                        self.tree.nodes[m].run_box
+                    ));
+                }
+            }
+        }
+
+        // E: `has_inline_runs` is **derived** state — it exists only so
+        // `box_tree_children` can answer the common case in O(1) rather than
+        // scanning. Redundant state earns its keep by being checkable, so the
+        // definition it is a cache of is written out here and compared. A run
+        // is grouped from the container's own `children` (see
+        // `create_anonymous_block_boxes`), never from a flattened list, which
+        // is what makes a *direct-child* scan the right definition; were that
+        // ever to change, this fires rather than the fast path silently
+        // skipping a substitution.
+        for (id, node) in &self.tree.nodes {
+            let derived = node
+                .children
+                .iter()
+                .any(|&c| self.tree.nodes.get(c).is_some_and(|c| c.run_box.is_some()));
+            if node.has_inline_runs != derived {
+                out.push(format!(
+                    "E stale run flag: {id}.has_inline_runs is {}, but scanning its children says {derived}",
+                    node.has_inline_runs
                 ));
             }
         }

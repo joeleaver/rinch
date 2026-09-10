@@ -24,9 +24,13 @@
 //! re-reads the tree — `set_attribute` (any name), `set_style`, or a **window
 //! resize**. And then it never heals.
 //!
-//! The box now has `parent: None`, sits in no `children` list, and the run's
-//! members are never reparented; the box records `run_members` and each member
-//! records its `run_box`.
+//! The box now sits in **no `children` list** and the run's members are never
+//! reparented; the box records `run_members` and each member records its
+//! `run_box`. It does keep a real `parent` — a box has a container, and
+//! cleanup, `parents_affected` and the paint walks all need to name it — so
+//! the edge is deliberately one-way: reachable upward, invisible downward.
+//! That is the whole of the fix, because every defect above came from the
+//! *downward* edge, the one the author's tree is read through.
 
 use rinch_core::dom::{DomDocument, NodeId};
 use rinch_dom::RinchDocument;
@@ -517,5 +521,74 @@ fn dropping_a_box_clears_its_members_back_pointers() {
         20.0,
         "and its line must still be laid out — a stale pointer names a freed \
          slab index and drops the member from the container's box tree"
+    );
+}
+
+/// The **second** witness for `box_tree_parent`, on a different path through
+/// `compute_absolute_position_and_transform` (#566).
+///
+/// `a_run_members_absolute_position_includes_its_box` returns at the
+/// `!any_transform` early exit and so exercises exactly one of that function's
+/// three upward walks. Put a transform anywhere on the chain and the other two
+/// run instead: the cheap "does anything transform" probe, and the collect-then-
+/// compose walk that replaces the bottom-up sum. Both step with
+/// `box_tree_parent`, and neither was covered — one fixture for a function with
+/// four call sites is one refactor away from no fixture at all.
+///
+/// A translate rather than a scale on purpose: `transform-origin` defaults to
+/// the box's centre, so a scale's arithmetic depends on the container's own
+/// size and the assertion stops being about the walk. A translation composes by
+/// addition whatever the origin.
+///
+/// Kills both mutants the other fixture kills, by different arithmetic:
+/// - `box_tree_parent` ignoring `run_box` drops the box from the chain, so the
+///   second run's offset is missing from the sum.
+/// - `box_tree_parent` answering `None` for a box truncates the chain at the
+///   box, which loses the container's translate entirely — and, in the probe,
+///   makes the function take the untransformed branch in the first place.
+#[test]
+fn a_run_members_absolute_position_composes_through_its_box_under_a_transform() {
+    let mut doc = RinchDocument::new();
+    let body = doc.body();
+    // Off the origin, for the same reason as the other fixture.
+    el(&mut doc, body, "div", "height: 25px");
+    let c = el(
+        &mut doc,
+        body,
+        "div",
+        "width: 400px; line-height: 20px; font-size: 16px; transform: translateY(50px)",
+    );
+    txt(&mut doc, c, "first ");
+    el(&mut doc, c, "div", "height: 30px");
+    let btn = el(&mut doc, c, "button", "width: 40px; height: 12px");
+    doc.resolve_layout(VW, VH);
+
+    let member = doc.tree.get(btn.0).unwrap();
+    let box_id = member.run_box.expect("the inline-block is in a run");
+    let box_y = doc.tree.get(box_id).unwrap().layout.y as f64;
+    let container_y = doc.tree.get(c.0).unwrap().layout.y as f64;
+    let member_y = member.layout.y as f64;
+    assert!(
+        box_y > 40.0 && container_y > 0.0,
+        "both offsets must be non-zero or the walk is on a fixed point: \
+         box_y={box_y}, container_y={container_y}"
+    );
+
+    let (_, abs_y, affine) =
+        rinch_dom::paint::compute_absolute_position_and_transform(&doc.tree, btn.0, 1.0);
+    // Proves the *transformed* branch ran. Without this the fixture could pass
+    // through the same early return the other one takes and pin nothing new.
+    // Spelled as coefficients rather than against `Affine::IDENTITY` so the
+    // fixture needs no peniko dependency of its own.
+    assert_ne!(
+        affine.as_coeffs(),
+        [1.0, 0.0, 0.0, 1.0, 0.0, 0.0],
+        "the fixture must reach the transform-composing walk, not the early return"
+    );
+    assert_eq!(
+        abs_y,
+        container_y + box_y + member_y,
+        "the composed offset must pass through the box: container={container_y}, \
+         box={box_y}, member={member_y}, got {abs_y}"
     );
 }

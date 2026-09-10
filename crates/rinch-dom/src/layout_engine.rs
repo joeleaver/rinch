@@ -1489,17 +1489,15 @@ impl RinchDocument {
         if node.is_anonymous_block_box {
             return Cow::Borrowed(&node.run_members);
         }
-        // **Borrow unless a run is actually present.** These walks run per
-        // node per frame — paint's descent, the stacking sequence,
-        // `layer_bounds`, every Taffy rebuild — and mixed-content containers
-        // are a small minority of nodes. Allocating a substituted list for
-        // every node in the document to serve that minority is the kind of
-        // per-frame cost #561 was about.
-        if !node
-            .children
-            .iter()
-            .any(|&c| nodes.get(c).is_some_and(|c| c.run_box.is_some()))
-        {
+        // **Borrow unless a run is actually present, and decide that in O(1).**
+        // These walks run per node per frame — paint's descent, the stacking
+        // sequence, `layer_bounds`, every Taffy rebuild — and mixed-content
+        // containers are a small minority of nodes. Both halves matter: the
+        // allocation this avoids, and the *scan* it avoids, which an earlier
+        // form of this function paid by asking every child whether it carried a
+        // `run_box`. That was O(children) with a slab lookup each, on the path
+        // almost every node takes.
+        if !node.has_inline_runs {
             return Cow::Borrowed(&node.children);
         }
         let mut out: Vec<usize> = Vec::with_capacity(node.children.len());

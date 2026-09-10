@@ -374,6 +374,28 @@ pub struct Node {
     /// goes through [`crate::RinchDocument::box_tree_children`], which is the
     /// one place those two trees are reconciled.
     pub run_members: Vec<RawNodeId>,
+    /// Whether any of this node's children belongs to an inline run — i.e.
+    /// whether [`crate::RinchDocument::box_tree_children`] has anything to
+    /// substitute here (#566).
+    ///
+    /// **This exists to make the common case O(1).** That function is called
+    /// from seventeen sites per frame — the Taffy rebuilds, paint's descent,
+    /// the viewport holes, the stacking sequence, `layer_bounds`, hit testing —
+    /// and the overwhelming majority of nodes have no run among their children.
+    /// Deriving the answer instead means scanning every child and doing a slab
+    /// lookup per child, on the path taken by almost every node: ~34,000 slab
+    /// lookups a frame on a 2,000-child container, purely to discover there is
+    /// nothing to do. That is the #574 shape exactly — an unconditional
+    /// per-frame cost that looked free and measured **+22%** — and the cure is
+    /// the same: let the code answer cheaply rather than recompute.
+    ///
+    /// A `bool` rather than the design's `run_boxes: Vec<RawNodeId>` because
+    /// **nothing needs the list**: the substitution is driven by each child's
+    /// own [`Self::run_box`], and `tree.anonymous_block_boxes` is already the
+    /// authoritative registry for cleanup and layout read-back. An unused
+    /// `Vec` on every node is weight and a second thing to keep in sync; one
+    /// unused helper was already deleted from this change for the same reason.
+    pub has_inline_runs: bool,
     /// The anonymous block box whose run this node belongs to, if any (#566).
     ///
     /// The inverse of [`Self::run_members`], and the thing that lets
@@ -492,6 +514,7 @@ impl Node {
             is_anonymous_block_box: false,
             run_members: Vec::new(),
             run_box: None,
+            has_inline_runs: false,
             is_pseudo_element: false,
             computed_style: ComputedStyle::default(),
             transition_specs: Vec::new(),
@@ -540,6 +563,7 @@ impl Node {
             is_anonymous_block_box: false,
             run_members: Vec::new(),
             run_box: None,
+            has_inline_runs: false,
             is_pseudo_element: false,
             computed_style: ComputedStyle::default(),
             transition_specs: Vec::new(),
@@ -587,6 +611,7 @@ impl Node {
             is_anonymous_block_box: false,
             run_members: Vec::new(),
             run_box: None,
+            has_inline_runs: false,
             is_pseudo_element: false,
             computed_style: ComputedStyle::default(),
             transition_specs: Vec::new(),
@@ -632,6 +657,7 @@ impl Node {
             is_anonymous_block_box: false,
             run_members: Vec::new(),
             run_box: None,
+            has_inline_runs: false,
             is_pseudo_element: false,
             computed_style: ComputedStyle::default(),
             transition_specs: Vec::new(),
