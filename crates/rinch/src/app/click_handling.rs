@@ -142,7 +142,13 @@ impl RinchApp {
                             preserves = true;
                             break;
                         }
-                        walk = node.parent;
+                        // The **box** tree (#566). An anonymous block box is
+                        // not in the element tree and has no `parent`, so a
+                        // walk that hit one — the blank area of a mixed-content
+                        // toolbar is exactly that — would terminate here and
+                        // report no `data-nofocus` region above it, blurring
+                        // the editor a press was supposed to protect.
+                        walk = rinch_dom::RinchDocument::box_tree_parent(&d.tree.nodes, nid);
                     } else {
                         break;
                     }

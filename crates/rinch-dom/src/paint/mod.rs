@@ -606,7 +606,7 @@ pub fn compute_absolute_position_and_transform(
         if id == tree.body_id {
             break;
         }
-        current = node.parent;
+        current = crate::RinchDocument::box_tree_parent(&tree.nodes, id);
     }
     // A hoisted fixed box drops its ancestors' transforms but not the body's.
     if hoisted_fixed && let Some(body) = tree.get(tree.body_id) {
@@ -626,11 +626,16 @@ pub fn compute_absolute_position_and_transform(
             if node.computed_style.position == PositionValue::Fixed || id == tree.body_id {
                 break;
             }
-            if let Some(parent) = node.parent.and_then(|pid| tree.get(pid)) {
+            // The **box** tree (#566): a run's member is positioned by the
+            // anonymous box that lays it out, so the box's own offset is part
+            // of this sum. Stepping to `parent` here lands every run after the
+            // first at its container's origin.
+            let up = crate::RinchDocument::box_tree_parent(&tree.nodes, id);
+            if let Some(parent) = up.and_then(|pid| tree.get(pid)) {
                 x -= parent.scroll_offset.0 * scale;
                 y -= parent.scroll_offset.1 * scale;
             }
-            current = node.parent;
+            current = up;
         }
         return (x, y, Affine::IDENTITY);
     }
@@ -646,7 +651,7 @@ pub fn compute_absolute_position_and_transform(
         if node.computed_style.position == PositionValue::Fixed || id == tree.body_id {
             break;
         }
-        current = node.parent;
+        current = crate::RinchDocument::box_tree_parent(&tree.nodes, id);
     }
 
     let mut off_x = 0.0_f64;
@@ -807,7 +812,9 @@ fn find_viewport_rects(
     // Account for scroll offset when recursing into children
     let sx = node.scroll_offset.0 * scale;
     let sy = node.scroll_offset.1 * scale;
-    for &child_id in &node.children {
+    // The box tree, not the element tree (#566) — see `box_tree_children`. A
+    // viewport hole inside an inline run would otherwise be unreachable.
+    for &child_id in crate::RinchDocument::box_tree_children(&tree.nodes, node_id).iter() {
         find_viewport_rects(tree, child_id, scale, nx - sx, ny - sy, result);
     }
 }
@@ -1109,7 +1116,11 @@ fn paint_children_with_stacking(
             painter.pop_layer();
         }
     } else {
-        for &child_id in &node.children {
+        // The **box** tree, not the element tree (#566): an inline run is drawn
+        // by the anonymous block box that lays it out, and that box is not in
+        // `children`. Walking `children` here paints nothing for the run at all
+        // — the line is drawn from `text_layout` on the box itself.
+        for &child_id in crate::RinchDocument::box_tree_children(&tree.nodes, node_id).iter() {
             let Some(child) = tree.get(child_id) else {
                 continue;
             };

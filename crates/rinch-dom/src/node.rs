@@ -350,7 +350,42 @@ pub struct Node {
     /// Whether this is an anonymous block box created by the layout engine.
     /// These wrap runs of inline children in mixed-content block containers
     /// (CSS "anonymous block boxes"). Transparent to editing operations.
+    ///
+    /// **Such a box is deliberately not in the DOM tree** (#566): its `parent`
+    /// is `None`, no node's `children` holds it, and it reaches its run through
+    /// [`Self::run_members`] instead. See that field.
     pub is_anonymous_block_box: bool,
+    /// The inline run an anonymous block box stands for, in document order —
+    /// empty on every other node (#566).
+    ///
+    /// An anonymous box is a **box-tree** construct (CSS 2.1 §9.2.1.1), and
+    /// CSS inheritance and selector matching both operate on the **element**
+    /// tree. Putting the box in `children` and reparenting its run into it —
+    /// which is what this engine used to do — therefore made the box lie about
+    /// the author's tree to everything that reads `parent` or `children`:
+    /// `remove_child`'s `retain` became a no-op, `insert_before`'s `position()`
+    /// failed and fell through to `push`, `next_sibling` answered with the box,
+    /// `:nth-child` counted it, and a re-cascaded descendant inherited from it.
+    ///
+    /// So the run is recorded here rather than adopted. Members keep their real
+    /// parent and their real slot; each one points back through
+    /// [`Self::run_box`]. Everything that walks the *box* tree rather than the
+    /// element tree — paint, hit testing, stacking, the Taffy child lists —
+    /// goes through [`crate::RinchDocument::box_tree_children`], which is the
+    /// one place those two trees are reconciled.
+    pub run_members: Vec<RawNodeId>,
+    /// The anonymous block box whose run this node belongs to, if any (#566).
+    ///
+    /// The inverse of [`Self::run_members`], and the thing that lets
+    /// [`crate::RinchDocument::box_tree_children`] answer without a search: a
+    /// child carrying `Some(b)` is drawn by `b`'s inline formatting context, so
+    /// the box tree shows `b` in its place.
+    ///
+    /// **Not `ifc_root`**, which looks like it would serve and does not:
+    /// `setup_inline_formatting_contexts` resets every `ifc_root` to `None`
+    /// *after* `create_anonymous_block_boxes` has run, so at the moment the
+    /// Taffy child lists are rebuilt it still holds the previous pass's value.
+    pub run_box: Option<RawNodeId>,
     /// Whether this node is a CSS pseudo-element (::before or ::after).
     /// Pseudo-element nodes are synthetic children created during style resolution
     /// and are cleaned up before re-resolution to avoid duplicates.
@@ -455,6 +490,8 @@ impl Node {
             is_focus_visible: false,
             is_active: false,
             is_anonymous_block_box: false,
+            run_members: Vec::new(),
+            run_box: None,
             is_pseudo_element: false,
             computed_style: ComputedStyle::default(),
             transition_specs: Vec::new(),
@@ -501,6 +538,8 @@ impl Node {
             is_focus_visible: false,
             is_active: false,
             is_anonymous_block_box: false,
+            run_members: Vec::new(),
+            run_box: None,
             is_pseudo_element: false,
             computed_style: ComputedStyle::default(),
             transition_specs: Vec::new(),
@@ -546,6 +585,8 @@ impl Node {
             is_focus_visible: false,
             is_active: false,
             is_anonymous_block_box: false,
+            run_members: Vec::new(),
+            run_box: None,
             is_pseudo_element: false,
             computed_style: ComputedStyle::default(),
             transition_specs: Vec::new(),
@@ -589,6 +630,8 @@ impl Node {
             is_focus_visible: false,
             is_active: false,
             is_anonymous_block_box: false,
+            run_members: Vec::new(),
+            run_box: None,
             is_pseudo_element: false,
             computed_style: ComputedStyle::default(),
             transition_specs: Vec::new(),
@@ -789,6 +832,27 @@ impl Node {
                 DisplayMode::Inline | DisplayMode::InlineBlock
             ),
             _ => false,
+        }
+    }
+
+    /// The children an inline formatting context should walk for this node.
+    ///
+    /// [`Self::children`] for every ordinary node, and [`Self::run_members`]
+    /// for an anonymous block box — which has no `children`, because it is not
+    /// in the element tree (#566).
+    ///
+    /// **Every IFC site asks this, and there are four**: root discovery in
+    /// `build_ifc_layouts` and in `setup_inline_formatting_contexts`, the
+    /// marking pass, and the inline walk. They must agree about which nodes an
+    /// IFC owns — that is [`Self::inline_flow_role`]'s contract (#366), and it
+    /// now includes *where the list comes from*. Three of the four answering
+    /// this from `children` and one from `run_members` is the same shape of
+    /// defect as #518 and #476: one question, several sites, different answers.
+    pub fn ifc_children(&self) -> &[RawNodeId] {
+        if self.is_anonymous_block_box {
+            &self.run_members
+        } else {
+            &self.children
         }
     }
 
