@@ -227,6 +227,12 @@ fn a_wrappers_font_weight_reaches_its_text() {
 fn a_wrappers_text_decoration_reaches_its_text() {
     assert_matches_the_span("text-decoration: underline", false, ink);
     assert_matches_the_span_nested("text-decoration: underline", ink);
+    // `line-through` is a **separate field** on `TextDecoration`, reachable
+    // from CSS independently of `underline` (`from_stylo/typography.rs`), and
+    // `inline_style_props` pushes it from its own `if`. Testing only
+    // `underline` leaves that second push unpinned: deleting it survives the
+    // whole workspace suite. Measured, not supposed.
+    assert_matches_the_span("text-decoration: line-through", false, ink);
 }
 
 /// `font-style: italic` — a different glyph set, so a different ink coverage.
