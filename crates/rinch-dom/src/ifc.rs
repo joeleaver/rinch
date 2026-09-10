@@ -628,76 +628,55 @@ impl RinchDocument {
     }
 
     /// Collect `node_id`'s children as **run units**: the boxes it actually
-    /// holds, with a `display: contents` child replaced by what it stands for
-    /// — *unless* the wrapper stands for an entire inline run on its own, in
-    /// which case it stays whole.
+    /// holds, with every `display: contents` child replaced by what it stands
+    /// for, recursively.
     ///
     /// This is [`crate::RinchDocument::collect_effective_taffy_children`]'s
-    /// question asked in DOM ids, with one deliberate difference. That function
-    /// attaches boxes, so it flattens unconditionally; this one *groups* them,
-    /// and grouping ends in `create_anonymous_block_boxes` **reparenting the
-    /// DOM** — so it moves the shallowest node that stands for exactly the
-    /// run's content, and no deeper.
+    /// question asked in DOM ids, and — since #568 landed on #566's redesign —
+    /// asked the *same way*. That function attaches boxes and flattens
+    /// unconditionally; so does this one.
     ///
-    /// **That is #566's ground, and the reason for the exception.** An
-    /// anonymous box adopts its run out of the author's tree until the next
-    /// pass dissolves it, so `insert_before(parent, new, adopted)` cannot find
-    /// its reference and silently appends. Flattening every wrapper would
-    /// extend that from a container's own children to content the author put
-    /// *inside a wrapper*, one level further from anything they can see.
-    /// Measured on `C { block(7) <w>"two"</w> }`, inserting a 40px block into
-    /// the wrapper before its text after one layout pass: `y = 7` with the
-    /// wrapper kept whole (and on `main`, which never boxed that text at all),
-    /// `y = 27` with it flattened.
+    /// **A unit is therefore never a `Contents` node**, by construction: a
+    /// wrapper is recursed into, never pushed. Consumers rely on that rather
+    /// than re-testing for it.
     ///
-    /// # The invariant
+    /// # It used to keep a wrapper whole, and that rule is gone
     ///
-    /// > **A run moves the shallowest node that stands for exactly its
-    /// > content.**
+    /// A wrapper an inline run would have taken *all* of used to be pushed
+    /// whole rather than flattened, so a run moved "the shallowest node
+    /// standing for exactly its content, and no deeper". **That was #566's
+    /// ground**: grouping ended in reparenting the DOM, so flattening every
+    /// wrapper would have adopted content out of a node the author wrote, one
+    /// level further from anything they could see, and `insert_before(wrapper,
+    /// new, adopted)` could not then find its reference node.
     ///
-    /// **This list has three readers and they are one authority, not three
-    /// spellings.** The classification below groups runs out of it;
-    /// [`crate::RinchDocument::box_tree_children`] emits the boxes into it; and
+    /// Since #566 a run is *recorded*, never reparented, and the rule went on
+    /// three independent grounds rather than one:
+    ///
+    ///  1. **Its measurement no longer reproduces.** The number that justified
+    ///     it — insert a block into a wrapper before its text, one pass later —
+    ///     was `y = 7` kept whole against `y = 27` flattened. It is now `y = 7`
+    ///     **either way**, because the adoption that produced the divergence is
+    ///     gone.
+    ///  2. **CSS points the other way.** A `display: contents` element
+    ///     generates no box (CSS 2.1 §9.2.1.1), so the inline-level boxes in a
+    ///     run *are* the wrapper's children. Flattening is the faithful
+    ///     spelling; keeping whole was the workaround.
+    ///  3. **Nothing else could observe it.** With the rule disabled the whole
+    ///     suite passed except the single test written to watch it, and the
+    ///     acceptance matrix stayed at 13/13.
+    ///
+    /// It cost ~60 lines of three-condition logic carrying a warning about not
+    /// adding a fourth. Two of those conditions had already lost their only
+    /// witnesses to #566, because the witnesses asserted DOM parentage and
+    /// nothing is reparented any more.
+    ///
+    /// **This list has three readers and they are one authority.** The
+    /// classification below groups runs out of it,
+    /// [`crate::RinchDocument::box_tree_children`] emits the boxes into it, and
     /// [`crate::RinchDocument::run_bookkeeping_violations`] checks that every
     /// member is still a unit of it. Change what a unit is and all three move
     /// together — the third exists to say so out loud if they ever do not.
-    ///
-    /// Everything below is a *spelling* of that one sentence, not a list of
-    /// conditions with lives of their own. A wrapper is kept whole when the run
-    /// would take all of it — then the wrapper *is* the run, and it is the
-    /// shallowest node that says so. A wrapper the run would take only part of
-    /// is not, so it is broken up and the run takes the units it wanted.
-    ///
-    /// "Would the run take all of it" is answered from the units the wrapper
-    /// just contributed, and the three tests in the loop are the three ways the
-    /// answer can be no. **If you add a fourth, it must be a fourth way for a
-    /// run not to take all of a wrapper** — this region's recurring defect is
-    /// two sites asking one question two ways (#518, #476, #568), and a
-    /// condition that drifts from the sentence above is that defect in
-    /// miniature.
-    ///
-    ///  1. An **in-flow block** in the contribution: the run stops there, so it
-    ///     takes only the part before it.
-    ///  2. An **out-of-flow box**: the run never takes one at all (#406), so it
-    ///     is not taking all of the wrapper — and flattening keeps that box's
-    ///     Taffy parent, and therefore its static position, exactly where it is
-    ///     without the wrapper (measured; mutant `K3`).
-    ///  3. **No inline content**: there is no run to take it, so "the whole of
-    ///     it" is nothing. An empty wrapper, or one holding only comments and
-    ///     `display: none`, contributes no unit at all.
-    ///
-    /// The classification the caller runs on this list is exact either way. A
-    /// kept-whole unit contributes no `InFlowBlock`, so `has_block` is the same
-    /// question asked of a shorter list; and it holds at least one `Inline` or
-    /// kept-whole `Contents` unit by construction, so counting it as inline
-    /// content is exact rather than a heuristic. That is what lets `has_inline`,
-    /// `has_block` and the run grouping read **one** list, which is the whole of
-    /// #518's invariant.
-    ///
-    /// The gate is [`Node::inline_flow_role`] rather than the computed display,
-    /// so that `display: none` (boxless, and boxless all the way down) and a
-    /// comment are read the same way here as everywhere else in this module
-    /// (#366).
     pub(crate) fn collect_run_units(
         nodes: &slab::Slab<Node>,
         node_id: usize,
@@ -710,60 +689,9 @@ impl RinchDocument {
             let Some(child) = nodes.get(child_id) else {
                 continue;
             };
-            if child.inline_flow_role() != InlineFlowRole::Contents {
-                out.push(child_id);
-                continue;
-            }
-            let start = out.len();
-            Self::collect_run_units(nodes, child_id, out);
-            // Would a run take all of this wrapper? Asked of what it actually
-            // contributed, so a nested chain answers by induction and no
-            // subtree is walked twice.
-            let mut holds_inline_content = false;
-            let mut a_run_would_take_all_of_it = true;
-            for &unit in &out[start..] {
-                match nodes
-                    .get(unit)
-                    .map(|n| n.inline_flow_role())
-                    .unwrap_or(InlineFlowRole::NoBox)
-                {
-                    // Inline content is what a run is made of. A nested wrapper
-                    // only reaches here kept whole, which is to say it is a run
-                    // itself — so it counts as inline content by the same
-                    // induction, and the outer wrapper stays whole around it.
-                    //
-                    // **This arm is load-bearing, unlike the `break` below.**
-                    // Dropping `Contents` here makes a two-deep chain flatten
-                    // at the outer level and adopt the *inner* wrapper instead
-                    // of the outer one: same line, same pixels, one more DOM
-                    // edge broken than necessary — invisible to every geometry
-                    // and pixel oracle, and caught only by
-                    // `a_nested_wrapper_chain_is_adopted_at_its_outermost_level`,
-                    // which asserts DOM parentage directly.
-                    InlineFlowRole::Inline | InlineFlowRole::Contents => {
-                        holds_inline_content = true
-                    }
-                    // Reason 1 and reason 2: a run stops at an in-flow block and
-                    // never takes an out-of-flow box, so either one means it
-                    // would take only part of this wrapper.
-                    //
-                    // The `break` is a **pure optimisation and its mutant is
-                    // expected to survive** — a later unit could still set
-                    // `holds_inline_content`, but the conjunction below is
-                    // already false, so continuing changes no answer. Recorded
-                    // because the obvious reading is that it guards something.
-                    InlineFlowRole::InFlowBlock | InlineFlowRole::OutOfFlow => {
-                        a_run_would_take_all_of_it = false;
-                        break;
-                    }
-                    // Boxless: neither content for a run nor an obstacle to one.
-                    InlineFlowRole::Comment | InlineFlowRole::NoBox => {}
-                }
-            }
-            // Reason 3 is `!holds_inline_content`: with no run to take it,
-            // there is no "all of it" to take.
-            if a_run_would_take_all_of_it && holds_inline_content {
-                out.truncate(start);
+            if child.inline_flow_role() == InlineFlowRole::Contents {
+                Self::collect_run_units(nodes, child_id, out);
+            } else {
                 out.push(child_id);
             }
         }
@@ -817,12 +745,11 @@ impl RinchDocument {
                     .unwrap_or(InlineFlowRole::NoBox)
             };
 
-            let has_inline = effective.iter().any(|&c| {
-                matches!(
-                    role_of(c),
-                    InlineFlowRole::Inline | InlineFlowRole::Contents
-                )
-            });
+            // No `Contents` case: a unit is never a wrapper (see
+            // `collect_run_units`), so there is nothing here to test for.
+            let has_inline = effective
+                .iter()
+                .any(|&c| role_of(c) == InlineFlowRole::Inline);
             // An out-of-flow child is not block *content* (#406): per CSS 2.1
             // §9.2.1.1 an absolutely positioned box is out of flow and does not
             // force anonymous block box generation, so a container whose only
@@ -877,13 +804,10 @@ impl RinchDocument {
                     InlineFlowRole::Comment | InlineFlowRole::NoBox | InlineFlowRole::OutOfFlow => {
                         continue;
                     }
-                    // A `Contents` unit is one `collect_run_units` kept
-                    // whole, which it does only for a wrapper that stands for
-                    // an entire inline run — so it joins one, and its own
-                    // children stay where the author put them (#566).
-                    // `mark_inline_descendants` and `walk_inline_children` both
-                    // recurse through it for the same reason.
-                    InlineFlowRole::Inline | InlineFlowRole::Contents => current_run.push(child_id),
+                    // A wrapper never reaches here: `collect_run_units`
+                    // flattens every one, so a unit is always a real box.
+                    InlineFlowRole::Contents => {}
+                    InlineFlowRole::Inline => current_run.push(child_id),
                     // Only an in-flow block-level box ends a run, and it is the
                     // same list `has_block` just read, so the two cannot
                     // disagree about a node (#518).
@@ -1199,7 +1123,9 @@ impl RinchDocument {
                     // out as two blocks where a browser puts them on one line.
                     // That is #568's own widening, failing in the one shape
                     // that most needed it.
-                    InlineFlowRole::Inline | InlineFlowRole::Contents => {
+                    // As above: units carry no wrapper, so `Contents` rides
+                    // with the non-inline arm rather than claiming to be a case.
+                    InlineFlowRole::Inline => {
                         all_children_are_comments = false;
                         has_non_comment_inline = true;
                     }

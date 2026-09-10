@@ -583,7 +583,7 @@ fn a_nested_wrapper_chain_is_adopted_at_its_outermost_level() {
 /// level gets one of the two wrong, and which one depends on whether it looks
 /// top-down or bottom-up.
 #[test]
-fn a_chain_whole_inside_and_partial_outside_is_split_at_the_right_level() {
+fn a_nested_wrapper_chain_flattens_at_every_level_and_lays_out_the_same() {
     let mut doc = RinchDocument::new();
     let body = doc.body();
     let c = el(&mut doc, body, "div", CONTAINER);
@@ -595,31 +595,42 @@ fn a_chain_whole_inside_and_partial_outside_is_split_at_the_right_level() {
     txt(&mut doc, c, " after");
     doc.resolve_layout(VW, VH);
 
-    // **Which level is kept whole**, asked of the run bookkeeping rather than
-    // of the DOM. The old form read this off the wrapper's `children`, which
-    // only worked while a run was adopted *out* of them; since #566 nothing is
-    // adopted, so both wrappers keep the author's list either way and that
-    // reading can no longer distinguish the two cases. The fact itself is
-    // unchanged and is exactly what `collect_run_units` decides.
+    // **Every wrapper is flattened, at every level.** The keep-whole rule this
+    // fixture used to pin is gone: a run takes the boxes a wrapper stands for,
+    // never the wrapper, because a `display: contents` element generates none
+    // (CSS 2.1 §9.2.1.1). So the run's member here is the *text*, and neither
+    // wrapper is a unit at all.
+    //
+    // Nothing is taken from anybody either way — that is #566 — so both
+    // wrappers keep the author's list, and the run bookkeeping is where the
+    // question is now asked.
     assert_eq!(
         dom_children(&doc, w2),
         vec!["MIDDLE".to_string()],
-        "nothing is taken from anybody now"
+        "the inner wrapper keeps its text"
     );
     assert_eq!(
         dom_children(&doc, w1),
         vec!["<span>".to_string(), "<div>".to_string()],
-        "including the outer wrapper, which keeps both its children"
+        "and the outer keeps both its children"
     );
     assert!(
-        doc.tree.get(w2.0).unwrap().run_box.is_some(),
-        "the inner wrapper is a whole run, so it joins one as a single unit"
+        doc.tree.get(mid.0).unwrap().run_box.is_some(),
+        "the flattened text itself is the run member"
+    );
+    assert_eq!(
+        doc.tree.get(w2.0).unwrap().run_box,
+        None,
+        "not the inner wrapper — it generates no box to put in a run"
     );
     assert_eq!(
         doc.tree.get(w1.0).unwrap().run_box,
         None,
-        "the outer one is only partly taken, so it is broken up and is no unit"
+        "and not the outer one"
     );
+    // The geometry is the half of this fixture that outlived the rule, and it
+    // is the load-bearing half: flattening at *any* depth must lay the chain
+    // out exactly as the un-wrapped shape does.
     // "before MIDDLE" / block / " after" — the block splits the two runs.
     assert_eq!(height_of(&doc, c), LINE + 30.0 + LINE);
     let (y_first, y_blk) = (
