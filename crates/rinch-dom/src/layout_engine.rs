@@ -1509,6 +1509,17 @@ impl RinchDocument {
         if node.run_boxes.is_empty() {
             return Cow::Borrowed(&node.children);
         }
+        // **A run member is a direct child of this container**, which is what
+        // makes the loop below able to find it at all. True on this base
+        // because `create_anonymous_block_boxes` groups runs from
+        // `node.children` and nothing else. **#568 changes that**: under a
+        // flattened classification a member behind a `display: contents`
+        // wrapper is a grandchild, this loop would never see it, and the box
+        // would silently vanish from its container's box-tree children. That is
+        // one of exactly two things #568 must update in the same commit; the
+        // other is `RinchDocument::run_bookkeeping_violations`, whose rule
+        // becomes false by design for the same reason. Neither fails quietly —
+        // see that function's doc.
         let mut out: Vec<usize> = Vec::with_capacity(node.children.len());
         let mut last_box: Option<usize> = None;
         for &child_id in &node.children {

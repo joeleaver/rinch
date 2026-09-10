@@ -1528,6 +1528,78 @@ impl RinchDocument {
         out
     }
 
+    /// The box hangs off the container its run actually came from (#566, #578).
+    ///
+    /// **Separate from [`Self::dom_tree_violations`] on purpose, and the
+    /// separation is the whole point.** That one holds at *any* moment — it is
+    /// about the DOM tree, which every mutation keeps consistent. This one is
+    /// about the **run bookkeeping**, which is rebuilt by
+    /// `create_anonymous_block_boxes` and is therefore only meaningful
+    /// immediately after a layout pass. Folding it into the any-time validator
+    /// would make a clean run mean *less*, because a clean run would then
+    /// depend on when you asked.
+    ///
+    /// The rule:
+    ///
+    /// > for an anonymous box `b` with `parent = Some(p)`, every `m` in
+    /// > `b.run_members` has `m.parent == Some(p)`, and `run_members` is
+    /// > non-empty.
+    ///
+    /// It closes the one direction the design's upward edge depends on and
+    /// nothing else checks. Invariant A pins a box's `parent` to the container
+    /// that *lists* it in `run_boxes`; it says nothing about whether that
+    /// container is the one whose children the run was grouped from. A box
+    /// could hang off `C` while its members are children of `D` and every check
+    /// in `dom_tree_violations` would pass — measured, not argued.
+    ///
+    /// **Why it cannot be an any-time invariant**, also measured: ordinary DOM
+    /// mutation desynchronises the two legitimately. `remove_child(c, m)`
+    /// followed by `append_child(d, m)` between layout passes leaves `m.parent
+    /// == d` while its box still hangs off `c` and still lists it — correct
+    /// state, since the run is rebuilt on the next pass, and an any-time form
+    /// of this rule would fire on it. That is the cry-wolf failure an invariant
+    /// must not have.
+    ///
+    /// The non-empty half is not vacuous filler: a memberless box is
+    /// **unreachable** at validator time — `create_anonymous_block_boxes` mints
+    /// a box only from a non-empty run, and nothing empties `run_members`
+    /// afterwards (`remove_child` does not touch it). Stating it keeps the rule
+    /// from passing trivially if that ever changes, which is exactly how the
+    /// first draft of this assertion would have gone quietly vacuous.
+    ///
+    /// # This assertion is #568-hostile
+    ///
+    /// Under #568's flattened classification a run genuinely spans a parent
+    /// boundary: a member behind a `display: contents` wrapper is a child of
+    /// the *wrapper*, not of the container the box hangs off. The rule then
+    /// becomes false **by design rather than by corruption**, and the honest
+    /// successor compares against the flattening ancestor instead of `parent`.
+    /// Together with `box_tree_children`'s direct-child assumption, that is the
+    /// second of two things #568 must update in the same commit.
+    pub fn run_bookkeeping_violations(&self) -> Vec<String> {
+        let mut out = Vec::new();
+        for (id, node) in &self.tree.nodes {
+            if !node.is_anonymous_block_box {
+                continue;
+            }
+            if node.run_members.is_empty() {
+                out.push(format!("R memberless box: {id} lays out nothing"));
+            }
+            for &m in &node.run_members {
+                let Some(member) = self.tree.nodes.get(m) else {
+                    continue; // reported as "D freed member"
+                };
+                if member.parent != node.parent {
+                    out.push(format!(
+                        "R wrong container: box {id} hangs off {:?}, but its member {m} is a child of {:?}",
+                        node.parent, member.parent
+                    ));
+                }
+            }
+        }
+        out
+    }
+
     pub fn taffy_tree_violations(&self) -> Vec<String> {
         use crate::computed_style::values::DisplayValue;
         use std::collections::HashMap;

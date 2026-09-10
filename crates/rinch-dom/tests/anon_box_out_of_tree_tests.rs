@@ -376,12 +376,26 @@ fn the_dom_tree_invariant_holds_across_run_shapes() {
             Vec::<String>::new(),
             "{name}: the DOM tree must be self-consistent after a layout pass"
         );
+        // R holds too, on every shape — checked here rather than only on the
+        // one fixture that provokes it, since this is the family that covers
+        // non-contiguous runs, several runs in one container, and nested
+        // containers, and R is a claim about *which* container a box hangs off.
+        assert_eq!(
+            doc.run_bookkeeping_violations(),
+            Vec::<String>::new(),
+            "{name}: every box must hang off the container its run came from"
+        );
         // And across a second pass, which dissolves and re-mints the boxes.
         doc.resolve_layout(VW, VH);
         assert_eq!(
             doc.dom_tree_violations(),
             Vec::<String>::new(),
             "{name}: and after the boxes have been dropped and re-minted"
+        );
+        assert_eq!(
+            doc.run_bookkeeping_violations(),
+            Vec::<String>::new(),
+            "{name}: and R after the re-mint"
         );
     }
 }
@@ -750,4 +764,104 @@ fn a_container_that_stops_having_a_run_stops_claiming_one() {
         Vec::<String>::new(),
         "the run bookkeeping must be clean once the run is gone"
     );
+}
+
+/// The box hangs off the container its run came from (#566, #578).
+///
+/// This is the one direction `dom_tree_violations` cannot reach. A pins a box's
+/// `parent` to whichever container lists it in `run_boxes`; nothing pins that
+/// container to the one whose children the run was grouped from. The first
+/// assertion below is the *proof* of that gap, not decoration: it corrupts the
+/// correspondence and shows the any-time validator still answering clean.
+#[test]
+fn a_box_hangs_off_the_container_its_run_came_from() {
+    let mut doc = RinchDocument::new();
+    let body = doc.body();
+    let c = el(&mut doc, body, "div", "width: 400px; font-size: 16px");
+    txt(&mut doc, c, "text ");
+    el(&mut doc, c, "div", "height: 10px");
+    let other = el(&mut doc, body, "div", "width: 400px; font-size: 16px");
+    txt(&mut doc, other, "other ");
+    el(&mut doc, other, "div", "height: 10px");
+    doc.resolve_layout(VW, VH);
+    assert_eq!(
+        doc.run_bookkeeping_violations(),
+        Vec::<String>::new(),
+        "clean after a layout pass"
+    );
+
+    let box_id = doc.tree.nodes[c.0].run_boxes[0];
+
+    // The corruption: the box is re-hung on a container whose children its run
+    // did not come from. Both containers are real and both have runs, so this
+    // is not a freed or absurd index.
+    doc.tree.nodes[c.0].run_boxes.retain(|&x| x != box_id);
+    doc.tree.nodes[other.0].run_boxes.push(box_id);
+    doc.tree.nodes[box_id].parent = Some(other.0);
+
+    // **The gap, demonstrated.** Every any-time invariant still passes: the box
+    // names a parent that lists it, exactly one list holds it, nothing is
+    // freed, and the run relation is intact in both directions.
+    assert_eq!(
+        doc.dom_tree_violations(),
+        Vec::<String>::new(),
+        "A/B/C/D cannot see this, which is why R exists"
+    );
+    let v = doc.run_bookkeeping_violations();
+    assert!(
+        v.iter().any(|s| s.starts_with("R wrong container")),
+        "a box hung off the wrong container must be reported, got {v:?}"
+    );
+}
+
+/// **R is a post-layout rule, and this pins the reason** (#566).
+///
+/// Ordinary DOM mutation desynchronises a member from its box legitimately: the
+/// run is rebuilt by `create_anonymous_block_boxes`, not by `append_child`. So
+/// there is a real window in which a member has moved and its box has not
+/// followed, and R fires on it — correctly as a statement about the moment, and
+/// wrongly as a statement about correctness.
+///
+/// The fixture exists so that anyone tempted to fold R into
+/// `dom_tree_violations` — where it would look like it belongs — finds out here
+/// rather than from a red build weeks later. `dom_tree_violations` must stay
+/// true at *any* moment; R is only meaningful after a pass.
+#[test]
+fn moving_a_run_member_between_passes_is_legal_and_r_is_not_an_any_time_rule() {
+    let mut doc = RinchDocument::new();
+    let body = doc.body();
+    let c = el(&mut doc, body, "div", "width: 400px; font-size: 16px");
+    let t = txt(&mut doc, c, "text ");
+    el(&mut doc, c, "div", "height: 10px");
+    let other = el(&mut doc, body, "div", "width: 400px; font-size: 16px");
+    doc.resolve_layout(VW, VH);
+
+    // Move the member to another container, the way a reconciler would.
+    doc.remove_child(c, t);
+    doc.append_child(other, t);
+
+    // The any-time validator is clean, because nothing about the DOM tree is
+    // wrong — the node moved and both ends agree about it.
+    assert_eq!(
+        doc.dom_tree_violations(),
+        Vec::<String>::new(),
+        "moving a node between containers is ordinary, not corruption"
+    );
+    // R, asked at this moment, reports the stale run — which is why it is not
+    // asked at this moment.
+    assert!(
+        doc.run_bookkeeping_violations()
+            .iter()
+            .any(|s| s.starts_with("R wrong container")),
+        "the mid-mutation window must be real, or this fixture pins nothing"
+    );
+
+    // And the next pass makes it true again, with no intervention.
+    doc.resolve_layout(VW, VH);
+    assert_eq!(
+        doc.run_bookkeeping_violations(),
+        Vec::<String>::new(),
+        "a layout pass rebuilds the run bookkeeping"
+    );
+    assert_eq!(doc.dom_tree_violations(), Vec::<String>::new());
 }
