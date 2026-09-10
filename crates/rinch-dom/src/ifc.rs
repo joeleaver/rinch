@@ -1137,14 +1137,16 @@ impl RinchDocument {
             // this shape) — the comment rule above only withholds roothood
             // when a non-inline child would stay attached.
             //
-            // `contents_wraps_only_inline` also activates the IFC when the only
-            // inline content lives *behind* `display:contents` wrapper(s) — as
-            // rsx `if`/`match` emit — so a block parent flows that wrapped text
-            // itself instead of leaving it stranded on the phantom wrapper (#61).
-            if has_non_comment_inline
-                || all_children_are_comments
-                || Self::contents_wraps_only_inline(&self.tree.nodes, id)
-            {
+            // #61's case — the only inline content lives *behind*
+            // `display: contents` wrapper(s), as rsx `if`/`match` emit — needs
+            // no separate test any more. It is answered by
+            // `has_non_comment_inline` directly, because the scan above reads
+            // the container's **units** and the collector has already flattened
+            // those wrappers (#568). `contents_wraps_only_inline` supplied it
+            // until #586 and is deleted; the measurement is in that issue, and
+            // the short form is that it never once decided this condition
+            // across the whole suite.
+            if has_non_comment_inline || all_children_are_comments {
                 ifc_roots.push(id);
             } else if own_children.is_empty() {
                 // Always call set_style for consistent Taffy invalidation, even
@@ -1806,23 +1808,6 @@ impl RinchDocument {
         out
     }
 
-    /// Whether `root_id`'s only inline-level content lives behind one or more
-    /// `display:contents` wrappers (with no block-level content mixed in).
-    ///
-    /// `display:contents` is transparent, so a block container whose children
-    /// are contents wrappers full of inline text must establish the IFC itself
-    /// (issue #61). This is only consulted when `root_id` has no *direct* inline
-    /// children. Returns false when any **in-flow** block-level element is found
-    /// among the flattened content — mixed inline+block behind `display:contents`
-    /// is out of scope here (it needs anonymous-block-box handling) and is left
-    /// untouched rather than regressed. An out-of-flow box does not count as
-    /// block content (#289): it neither breaks the inline flow nor belongs to it.
-    fn contents_wraps_only_inline(nodes: &slab::Slab<Node>, root_id: usize) -> bool {
-        let mut found_contents_inline = false;
-        Self::scan_contents_children(nodes, root_id, &mut found_contents_inline)
-            && found_contents_inline
-    }
-
     /// Whether a `display:contents` node is *transparent to the surrounding
     /// inline formatting context* — i.e. it wraps no block-level box, so every
     /// box it flattens into the ancestor belongs to that ancestor's IFC.
@@ -1836,10 +1821,12 @@ impl RinchDocument {
     /// regression `a433811` introduced: rows kept their layout boxes but were
     /// never drawn).
     ///
-    /// Unlike [`Self::contents_wraps_only_inline`] this does not require that
-    /// inline content actually be found: an empty or comment-only wrapper has
-    /// nothing to paint either way, and treating it as transparent keeps
-    /// document order intact for the inline content around it.
+    /// It does **not** require that inline content actually be found: an empty
+    /// or comment-only wrapper has nothing to paint either way, and treating it
+    /// as transparent keeps document order intact for the inline content around
+    /// it. (A sibling predicate that *did* require it,
+    /// `contents_wraps_only_inline`, was deleted in #586 once the IFC-root scan
+    /// began reading units and answered its question directly.)
     fn contents_is_inline_transparent(nodes: &slab::Slab<Node>, node_id: usize) -> bool {
         Self::scan_contents_children(nodes, node_id, &mut false)
     }
