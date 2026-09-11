@@ -2031,7 +2031,9 @@ impl RinchDocument {
             match node.inline_flow_role() {
                 // Still detachable, or (for `Contents`) not restorable by a
                 // list rebuild — keep the record and leave it alone.
-                InlineFlowRole::Inline | InlineFlowRole::Comment | InlineFlowRole::NoBox => continue,
+                InlineFlowRole::Inline | InlineFlowRole::Comment | InlineFlowRole::NoBox => {
+                    continue;
+                }
                 InlineFlowRole::Contents => continue,
                 InlineFlowRole::InFlowBlock | InlineFlowRole::OutOfFlow => {}
             }
