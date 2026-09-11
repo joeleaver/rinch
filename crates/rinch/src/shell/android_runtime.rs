@@ -205,6 +205,11 @@ fn run_loop(android_app: AndroidApp, mut app: RinchApp) {
     // why it is the right predicate and why it is deliberately the *narrow*
     // one.
     let mut presented = false;
+    // Whether Android told us, during the poll below, that the device
+    // configuration moved under the app. Set in the `ConfigChanged` arm and
+    // acted on further down, beside the other drains — see there for why it is
+    // deferred rather than dispatched where it arrives.
+    let mut config_changed = false;
 
     while running {
         // Read `REDRAW_PENDING` here, at the last possible instant before the
@@ -359,6 +364,51 @@ fn run_loop(android_app: AndroidApp, mut app: RinchApp) {
 
                         REDRAW_PENDING.store(true, Ordering::Release);
                     }
+                }
+                MainEvent::ConfigChanged { .. } => {
+                    // Everything a rinch app reads about the device — the
+                    // night-mode flag, the accent colour off the wallpaper,
+                    // the safe-area insets, the font scale, the display
+                    // density — it reads once, at mount, because until this
+                    // arm existed there was no moment at which it could
+                    // sensibly be re-read. So an app's idea of the platform
+                    // was fixed at the instant it started and every one of
+                    // those readings quietly rotted: flip the system theme
+                    // with the app in the foreground and it stayed light.
+                    //
+                    // Deferred rather than dispatched here, and the reason is
+                    // the same one `MainEvent::Pause` defers through
+                    // `lifecycle::notify_paused`. This closure is running
+                    // inside `poll_events`, which `android-activity` invokes
+                    // with the Java thread that raised the event *blocked*
+                    // waiting for it to return, and the handler on the other
+                    // end of this is arbitrary app code: it will write
+                    // `Signal`s, it may kick off a re-render, and card K32's
+                    // keyboard work is a standing reminder that app code
+                    // reached from a platform callback likes to call back
+                    // into the platform. Holding a Java thread hostage for
+                    // that is a deadlock waiting for the one app that does it.
+                    //
+                    // Deferring also coalesces, and the `bool` rather than a
+                    // counter is the point: a handler's job is to re-read the
+                    // platform, and re-reading it twice for two events that
+                    // arrived in the same poll gets the same answer for a
+                    // second round of JNI calls. Measured on the moto g stylus
+                    // 5G, one `cmd uimode night yes` raises this exactly once,
+                    // so today the coalescing costs nothing and buys nothing —
+                    // but a rotation or a font-scale change is a configuration
+                    // change *and* a resize, and a handset that decides to
+                    // split one of those in two is not something this file
+                    // gets to assume it will never meet.
+                    config_changed = true;
+                    // The whole point of the event is that what should be on
+                    // the glass has changed, so ask for a frame. The handler's
+                    // signal writes would normally schedule this themselves;
+                    // asking here means an app that re-reads the platform
+                    // *without* writing a signal — one that only calls
+                    // `set_light_system_bars`, say — still repaints against
+                    // the new configuration.
+                    REDRAW_PENDING.store(true, Ordering::Release);
                 }
                 MainEvent::Resume { .. } => {
                     rinch_android::lifecycle::notify_resumed();
@@ -556,6 +606,16 @@ fn run_loop(android_app: AndroidApp, mut app: RinchApp) {
         rinch_android::sensors::drain_sensor_events();
         rinch_android::location::drain_location();
         rinch_android::lifecycle::drain_lifecycle();
+
+        // And tell the app if the device configuration moved. On the main
+        // thread by construction — this is the loop body, which is the thread
+        // that owns the signal store — which is the whole requirement, because
+        // the handler's job is to write `Signal`s and `Signal::set` panics off
+        // the main thread. `std::mem::take` so a handler that somehow causes
+        // another `ConfigChanged` to be delivered cannot spin here.
+        if std::mem::take(&mut config_changed) {
+            events::dispatch_configuration_change();
+        }
 
         // Drain cross-thread callbacks
         rinch_core::drain_main_callbacks();
