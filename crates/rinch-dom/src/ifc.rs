@@ -997,6 +997,13 @@ impl RinchDocument {
         self.cleanup_anonymous_block_boxes();
         self.create_anonymous_block_boxes();
 
+        // Put back every box a past marking pass took out and that is no longer
+        // the IFC's to hold (#597). Before the marking pass below, so that a
+        // rebuilt list is re-detached by it: the rebuild restores the owner's
+        // *whole* effective child list, inline children included, and the pass
+        // that follows removes exactly the ones that are still inline content.
+        self.reattach_departed_ifc_children();
+
         // `ifc_root` is *derived* state — "this node's boxes are drawn by that
         // IFC, so the paint tree-walk must skip it" — and the marking pass below
         // only ever *sets* it. Nothing clears it when a node stops being inline
@@ -1929,6 +1936,149 @@ impl RinchDocument {
         }
     }
 
+    /// Restore every box a previous [`Self::mark_inline_descendants`] pass
+    /// detached and that is no longer inline content (#597).
+    ///
+    /// # The shape of the bug
+    ///
+    /// The detach is correct and the *re*-attach did not exist. Inline content
+    /// is laid out by Parley and drawn by its IFC root, so the marking pass
+    /// removes it from the root's Taffy child list. Nothing ever put a box back
+    /// when the reason for removing it went away, so an element restyled from
+    /// inline-level to block-level at runtime — a bare `<button>` handed
+    /// `display: flex`, a `<span>` whose parent became a flex container and
+    /// blockified it — ended with **no Taffy parent at all**, its parent's child
+    /// list empty, and the box it happened to have while it was inline: a stale
+    /// one, or `0x0` where it had never been laid out as a box. Laid out by
+    /// nobody, and drawn by nobody either once its `ifc_root` cleared.
+    ///
+    /// This is [`crate::node::Node::contents_spliced`]'s shape exactly (#520),
+    /// one pass along: a departure the tree records so a later pass can undo it.
+    ///
+    /// # The gate is the node's **current** role, not the arm that removed it
+    ///
+    /// [`Self::mark_inline_descendants`] detaches in two arms — inline content,
+    /// and a `display: none` child whose attached Taffy node would make its
+    /// root's measure structurally unreachable (#466, #487) — and both record
+    /// the departure. What decides a heal is not which arm ran but whether the
+    /// marking pass would detach the node **again**, and that is a property of
+    /// its role today: only `Inline`, `Comment` and `NoBox` are ever detached,
+    /// so a departed node whose role is now `InFlowBlock` or `OutOfFlow` is one
+    /// no IFC will take back. A child that is still hidden keeps its record and
+    /// stays out.
+    ///
+    /// **What the gate is measured to do, and what it is not.** Its first job is
+    /// that the steady state costs nothing. Its second is that it does not
+    /// rebuild lists it has no business rebuilding: the mutant that removes it
+    /// entirely is killed across `-p rinch-dom -p rinch` by exactly one fixture,
+    /// `ifc_leaf_invariant_tests`'
+    /// `the_validator_fires_inside_setup_on_a_marked_root_that_kept_a_child`,
+    /// whose deliberately doctored extra Taffy child an ungated heal silently
+    /// removes before the leaf-invariant validator can see it.
+    ///
+    /// The `NoBox` arm specifically is **not** distinguished by anything in that
+    /// scope — a mutant that heals hidden children survives it. That is because
+    /// the placement below makes it harmless rather than because it is
+    /// pointless: the heal runs before the marking pass, whose `NoBox` arm
+    /// detaches such a child again on the same pass. It is written this way
+    /// because the question the gate asks is "will the marking pass take this
+    /// back", and for a hidden child the answer is yes; do not read the mutant's
+    /// survival as licence to widen it.
+    ///
+    /// `Contents` is deliberately not healed here even though it is not
+    /// detachable either: a boxless wrapper has no id in any effective child
+    /// list, so the rebuild below could not restore it, and
+    /// [`Self::sync_display_contents`]'s own departed-wrapper pass owns that
+    /// case. Its record is **kept**, so the heal still fires if it later becomes
+    /// a box again.
+    ///
+    /// # Whole-list rebuild, before the marking pass
+    ///
+    /// The restore rebuilds the departed node's **effective Taffy parent's**
+    /// entire child list from
+    /// [`Self::collect_effective_taffy_children`] — the authority for that
+    /// order, and the only thing that knows about anonymous block boxes and
+    /// `display: contents` flattening — rather than inserting one id at a
+    /// guessed index. That list also contains the owner's *inline* children, so
+    /// this must run **before** the marking pass and not after it: the pass
+    /// removes them again.
+    ///
+    /// That ordering is measured, not argued, and the shape it shows up in is
+    /// narrower than "an IFC's content would stay attached" — which is why it
+    /// took a fixture of its own to see. The owner of a healed node is almost
+    /// never a live IFC root: a container holding a block-level child alongside
+    /// inline content is mixed content, so `create_anonymous_block_boxes` boxes
+    /// the run and the container is not discovered as a root at all. The
+    /// exception is `text + absolute`, which mints no anonymous box (#406) — so
+    /// the container stays a root, and a root whose only attached child is
+    /// out-of-flow is given a Taffy-only measure leaf (#466). Healing after the
+    /// root loop rebuilds that root's list from the DOM and throws the leaf
+    /// away with it, along with the detach of its text.
+    /// `a_healed_out_of_flow_child_leaves_its_roots_measure_leaf_alone` is the
+    /// pin; before it was written, the mutant that moves this call after the
+    /// loop survived all twelve other fixtures.
+    ///
+    /// In the steady state it does nothing at all: a node that is still inline
+    /// content fails the gate, so no list is rebuilt and no Taffy node is
+    /// dirtied on a pass where nothing crossed.
+    fn reattach_departed_ifc_children(&mut self) {
+        let mut departed: Vec<usize> = Vec::new();
+        let mut owners: Vec<usize> = Vec::new();
+        for (id, node) in &self.tree.nodes {
+            if !node.ifc_detached {
+                continue;
+            }
+            match node.inline_flow_role() {
+                // Still detachable, or (for `Contents`) not restorable by a
+                // list rebuild — keep the record and leave it alone.
+                InlineFlowRole::Inline | InlineFlowRole::Comment | InlineFlowRole::NoBox => {
+                    continue;
+                }
+                InlineFlowRole::Contents => continue,
+                InlineFlowRole::InFlowBlock | InlineFlowRole::OutOfFlow => {}
+            }
+            departed.push(id);
+            if let Some(owner) = Self::effective_taffy_owner(&self.tree.nodes, id)
+                && !owners.contains(&owner)
+            {
+                owners.push(owner);
+            }
+        }
+        if departed.is_empty() {
+            return;
+        }
+
+        for owner in owners {
+            let Some(owner_taffy) = self.tree.nodes.get(owner).and_then(|n| n.taffy_id) else {
+                continue;
+            };
+            let children = Self::collect_effective_taffy_children(&self.tree.nodes, owner);
+            let _ = self.tree.taffy.set_children(owner_taffy, &children);
+            // As in `sync_display_contents`: a reparented child may carry cache
+            // entries from its old position, and Taffy's dirty propagation stops
+            // at an already-empty ancestor. Belt and braces, and said so
+            // honestly — the mutant that deletes both calls survives
+            // `-p rinch-dom -p rinch`, so no fixture here is known to need them.
+            for &child_taffy in &children {
+                let _ = self.tree.taffy.mark_dirty(child_taffy);
+            }
+            let _ = self.tree.taffy.mark_dirty(owner_taffy);
+        }
+
+        // Re-derive the record from what actually happened rather than assuming
+        // the rebuild reached every node: an owner with no `taffy_id`, or a node
+        // whose owner's list legitimately does not name it, keeps its record and
+        // is tried again next pass. Cheap accuracy rather than a fix — leaving
+        // the record set forever costs a redundant rebuild per pass and nothing
+        // else, and the mutant that does exactly that survives the suite.
+        for id in departed {
+            let still_out = self.tree.nodes[id]
+                .taffy_id
+                .is_none_or(|t| self.tree.taffy.parent(t).is_none());
+            self.tree.nodes[id].ifc_detached = still_out;
+        }
+    }
+
     /// Detach the inline descendants of an IFC root from Taffy and mark their
     /// `ifc_root`, flattening through `display:contents` wrappers.
     ///
@@ -2008,6 +2158,12 @@ impl RinchDocument {
                         && root_taffy_children.contains(&child_taffy)
                     {
                         let _ = self.tree.taffy.remove_child(root_taffy, child_taffy);
+                        // Record the departure (#597). Only where the removal
+                        // actually happened: a node this root never held is not
+                        // this root's to claim.
+                        if let Some(c) = self.tree.nodes.get_mut(child_id) {
+                            c.ifc_detached = true;
+                        }
                     }
                     if let Some(c) = self.tree.nodes.get_mut(child_id) {
                         c.ifc_root = Some(root_id);
@@ -2071,6 +2227,14 @@ impl RinchDocument {
                         && root_taffy_children.contains(&child_taffy)
                     {
                         let _ = self.tree.taffy.remove_child(root_taffy, child_taffy);
+                        // Recorded like the inline detach (#597) — *departed*,
+                        // not *inline*. The heal gate reads the node's current
+                        // role, not the arm that removed it, so a child that is
+                        // still `display: none` is skipped and one that has
+                        // become block-level is restored.
+                        if let Some(c) = self.tree.nodes.get_mut(child_id) {
+                            c.ifc_detached = true;
+                        }
                     }
                 }
                 InlineFlowRole::OutOfFlow => {

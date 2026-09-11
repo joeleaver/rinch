@@ -826,7 +826,32 @@ impl RinchDocument {
                 crate::computed_style::DisplayValue::None => DisplayMode::Block,
                 crate::computed_style::DisplayValue::Contents => DisplayMode::Block,
             };
-            self.tree.nodes[node_id].display_mode = display_mode;
+            let old_display_mode =
+                std::mem::replace(&mut self.tree.nodes[node_id].display_mode, display_mode);
+
+            // A node crossing between **inline-level** and **block-level**
+            // changes which boxes the IFC owns — `mark_inline_descendants`
+            // detaches the one and leaves the other attached — and the Taffy
+            // comparison below cannot be trusted to notice, for exactly the
+            // reason the `contents` crossing below it cannot (#597).
+            // `DisplayValue::to_taffy` is not injective: `inline` and `block`
+            // both map to `taffy::Display::Block`, and `inline-block`, `flex`,
+            // `inline-flex` and `contents` all map to `taffy::Display::Flex`.
+            // So `inline-block → flex` — a bare `<button>` handed
+            // `display: flex` by a reactive `style:` closure, which is the
+            // issue's own repro — compared **equal** on every Taffy field and
+            // never re-ran the IFC pass at all: the button stayed detached,
+            // kept its inline-block box, and kept a stale `ifc_root` that made
+            // `taffy_tree_violations`' invariant `C` exempt it.
+            //
+            // Set the flag on the crossing itself, like the `contents` one, and
+            // ask [`DisplayMode::is_inline_level`] rather than re-spelling the
+            // predicate here — `Node::is_inline` reads the same function, so
+            // the marking pass and this trigger cannot drift apart.
+            if old_display_mode.is_inline_level() != display_mode.is_inline_level() {
+                self.tree.ifc_dirty = true;
+                self.tree.layout_dirty = true;
+            }
 
             // A node crossing into or out of `display: contents` changes the
             // *tree* — `sync_display_contents` must splice or heal — which the
