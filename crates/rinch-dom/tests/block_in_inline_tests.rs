@@ -377,6 +377,70 @@ fn an_inline_block_with_mixed_content_stacks_like_a_block_container() {
     assert_consistent(&doc, "inline-block with mixed content");
 }
 
+/// `display: inline-flex` is an **inline-level** box — it takes part in the
+/// line around it exactly as `inline-block` does, and only its *inside* is a
+/// flex container. Chrome renders `before <x>mid</x> after <blk>` identically
+/// for `x = inline-flex` and `x = inline-block`: H=50, all three text runs on
+/// one line, the block below.
+///
+/// rinch loses the distinction **before any of the four sites can see it**:
+/// `DisplayValue::InlineFlex` maps to `DisplayMode::Flex`
+/// (`style_resolution/mod.rs`), which is the same value plain `display: flex`
+/// gets, so `is_inline()` answers `false` and `inline_flow_role()` answers
+/// `InFlowBlock`. The box therefore *ends the inline run* it should have
+/// joined: `before` and `after` land in two anonymous boxes on two different
+/// lines, and the container is 90px where its `inline-block` twin is 52.
+///
+/// The oracle is the pair, not a number: the twin differs only in the
+/// wrapper's `display`, and Chrome makes them equal, so neither candidate
+/// implementation controls the comparison. (The absolute numbers are not
+/// asserted — rinch gives the `inline-block` twin 52px rather than 50 because
+/// of that box's own line height, which is a separate question.)
+///
+/// Same root cause as `inline-grid`, which Stylo folds into
+/// `DisplayValue::Grid` and `style_resolution` maps to `DisplayMode::Block`:
+/// a second inline-level value that arrives at the four sites as block-level.
+#[test]
+#[ignore = "#595: inline-flex reaches the IFC as DisplayMode::Flex and ends an inline run that Chrome keeps whole"]
+fn an_inline_flex_box_joins_the_line_exactly_as_an_inline_block_does() {
+    fn build_with(display: &str) -> (RinchDocument, NodeId) {
+        let mut doc = RinchDocument::new();
+        let body = doc.body();
+        let c = el(&mut doc, body, "div", CONTAINER);
+        txt(&mut doc, c, "before");
+        let w = el(&mut doc, c, "span", &format!("display: {display}"));
+        txt(&mut doc, w, "mid");
+        txt(&mut doc, c, "after");
+        let b = el(&mut doc, c, "div", BLK);
+        txt(&mut doc, b, "block");
+        doc.resolve_layout(VW, VH);
+        (doc, c)
+    }
+
+    let (fdoc, fc) = build_with("inline-flex");
+    let (bdoc, bc) = build_with("inline-block");
+
+    // Off the fixed point: the control must be the one-line-plus-block shape,
+    // or "both are three lines" would pass.
+    assert!(
+        height_of(&bdoc, bc) < LINE + LINE + BLK_H,
+        "control (inline-block): the three text runs share one line, so the \
+         container is one line plus the block, not two lines plus the block \
+         (got {})",
+        height_of(&bdoc, bc),
+    );
+    assert_eq!(
+        height_of(&fdoc, fc),
+        height_of(&bdoc, bc),
+        "an inline-flex box must sit in the line exactly as an inline-block \
+         does — Chrome renders these two identically. inline-flex={} \
+         inline-block={}",
+        height_of(&fdoc, fc),
+        height_of(&bdoc, bc),
+    );
+    assert_consistent(&fdoc, "inline-flex in a run");
+}
+
 // ── Guard rails: correct today, and a fix must keep them correct ──────────
 
 /// The unwrapped shape — a plain block container with mixed content — is what
