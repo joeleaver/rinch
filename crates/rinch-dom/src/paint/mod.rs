@@ -1158,7 +1158,37 @@ fn paint_node(
         return;
     };
 
-    // Skip hidden elements (display: none, style/script tags)
+    // Skip elements that generate no box at all.
+    //
+    // **`display: none` is tested here because nothing else was testing it**
+    // (#543). The comment that used to sit on this block claimed it did while
+    // the code below checked only the tag, and the sole `DisplayValue::None`
+    // test anywhere under `paint/` was in `layer_bounds.rs`. It was harmless for
+    // as long as a hidden box was laid out `0x0` and so drew nothing — which is
+    // what Taffy gives every hidden node that is *in* the Taffy tree. It stopped
+    // being harmless once one was taken out of it: `mark_inline_descendants`
+    // detaches a hidden child of an IFC root, Taffy keeps serving a detached
+    // node its last computed layout, and `read_layout_results` wrote that stale
+    // box back onto the node — which this function then drew. A closed menu that
+    // stayed on screen indefinitely.
+    //
+    // **That is repaired where the box is written** (`read_layout_results`
+    // zeroes a hidden subtree), and that repair, not this one, is what fixes the
+    // reported bug — measured: with the zeroing in place and this test removed,
+    // every producer-level fixture still passes. This test is for the *class*,
+    // and the two are independent: zeroing keeps boxes honest for every reader,
+    // hit testing included, which paint cannot help with; the test here makes
+    // paint correct for any node that computes `none` however its box arose.
+    // Its only witness is a checker test that corrupts `layout` by hand
+    // (`display_none_ghost_tests::painted::paint_refuses_a_hidden_node_that_still_carries_a_box`),
+    // which says so in its own doc — do not read it as a producer pin.
+    //
+    // `Contents` must NOT be skipped: a `display: contents` element generates no
+    // box of its own but its children must still be drawn, and returning here
+    // would take the whole subtree with it.
+    if node.computed_style.display == crate::computed_style::values::DisplayValue::None {
+        return;
+    }
     if let NodeKind::Element(ref el) = node.kind
         && matches!(
             el.tag.as_str(),

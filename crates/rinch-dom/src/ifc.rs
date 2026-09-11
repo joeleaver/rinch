@@ -2044,13 +2044,29 @@ impl RinchDocument {
                     // root's measure structurally unreachable (the leaf invariant
                     // on [`NodeContext::InlineRoot`]): the container collapsed to
                     // `h = 0` with its visible text laid out but never given a
-                    // box. Detach it like the inline children. It takes no space
-                    // under any algorithm, so the only geometry this changes is
-                    // the collapse itself; when it becomes visible again, the
-                    // display change sets `ifc_dirty` and
+                    // box. Detach it like the inline children. When it becomes
+                    // visible again, the display change sets `ifc_dirty` and
                     // `sync_display_contents`'s rebuild re-attaches it from DOM
                     // order. Not marked with `ifc_root` — it is not this IFC's
                     // content, it is nobody's content.
+                    //
+                    // **This comment used to claim the detach was free (#543)**
+                    // — "it takes no space under any algorithm, so the only
+                    // geometry this changes is the collapse itself". False.
+                    // `read_layout_results` reads `taffy.layout()` per DOM node,
+                    // and Taffy keeps serving a **detached** node the layout it
+                    // last computed, so the box survived the detach and was
+                    // written straight back onto the node every pass. A closed
+                    // overlay stayed drawn, and — because `hit_test_node` reads
+                    // `layout` and tests `visibility`, not `display` — stayed
+                    // clickable.
+                    //
+                    // Nothing is zeroed *here*: the repair belongs where the box
+                    // is written, beside the `Contents` branch of
+                    // `read_layout_results` that already exists for exactly this
+                    // hazard. Zeroing here as well would be a second authority
+                    // for the same fact, and this pass does not run on every
+                    // frame (`ifc_dirty` gates it) while that one does.
                     if let Some(child_taffy) = child_taffy
                         && root_taffy_children.contains(&child_taffy)
                     {
