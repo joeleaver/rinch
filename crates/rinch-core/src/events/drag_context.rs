@@ -102,9 +102,6 @@ thread_local! {
     /// When false, the framework's built-in drag ghost (element snapshot) is hidden.
     /// Drop targets and surfaces can suppress the ghost when they provide their own
     /// visual feedback (e.g., a 3D preview in a game viewport).
-    // Already const-initialized; see #598 for why clippy's
-    // `missing_const_for_thread_local` still fires on the Android target.
-    #[allow(clippy::missing_const_for_thread_local)]
     static DRAG_GHOST_VISIBLE: Cell<bool> = const { Cell::new(true) };
 }
 

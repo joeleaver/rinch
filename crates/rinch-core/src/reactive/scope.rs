@@ -386,9 +386,6 @@ thread_local! {
     ///
     /// `Some` also *means* "a fixpoint is already draining above me", which is
     /// how [`ScopeInner::dispose`] tells an outermost call from a nested one.
-    // Already const-initialized; see #598 for why clippy's
-    // `missing_const_for_thread_local` still fires on the Android target.
-    #[allow(clippy::missing_const_for_thread_local)]
     static DISPOSE_CTX: RefCell<Option<DisposeCtx>> = const { RefCell::new(None) };
 }
 

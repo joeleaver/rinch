@@ -48,9 +48,18 @@ pub fn init(android_app: &AndroidApp) {
             .new_global_ref(class)
             .expect("failed to create Activity class global ref");
 
-        // Drop env (AttachGuard) before forgetting vm
-        drop(env);
-        std::mem::forget(vm);
+        // Drop env (AttachGuard) before forgetting vm. `jni::JavaVM` (pinned
+        // at 0.21.1) is a bare pointer newtype with no `Drop` impl, so this
+        // `forget` is a genuine no-op today — dropping `vm` normally would do
+        // exactly the same nothing, and Rust's own reverse-declaration drop
+        // order already runs `env` before `vm` even without either call.
+        // Kept anyway, explicit rather than implicit, as insurance against a
+        // future `jni` upgrade giving `JavaVM` a real destructor.
+        #[allow(clippy::forget_non_drop)]
+        {
+            drop(env);
+            std::mem::forget(vm);
+        }
 
         (activity, activity_class)
     };

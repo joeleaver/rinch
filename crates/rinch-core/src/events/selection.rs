@@ -49,16 +49,11 @@ thread_local! {
     /// One callback slot **per document**, plus the ownerless `None` entry —
     /// keyed exactly like the keyboard interceptor (issues #340, #478), so two
     /// documents on one thread keep their own selection delegation.
-    // Already const-initialized; see #598 for why clippy's
-    // `missing_const_for_thread_local` still fires on the Android target.
-    #[allow(clippy::missing_const_for_thread_local)]
     static SELECTION_CALLBACK: RefCell<SelectionSlots> =
         const { RefCell::new(SelectionSlots::new()) };
     /// The saved snapshot, **per document** on the same key (issue #478): one
     /// document's PointerDown saving its selection must not clobber the
     /// snapshot another document's toolbar command is about to fall back to.
-    // Already const-initialized; see the #598 note on `SELECTION_CALLBACK` above.
-    #[allow(clippy::missing_const_for_thread_local)]
     static SAVED_SELECTION: RefCell<SnapshotMap> = const { RefCell::new(SnapshotMap::new()) };
 }
 
@@ -209,9 +204,6 @@ thread_local! {
     /// `(doc_key, node_id)` — the document key scopes the request so a runtime
     /// driving one document never consumes (and misapplies) a focus request
     /// posted by another document on the same thread (issue #134).
-    // Already const-initialized; see #598 for why clippy's
-    // `missing_const_for_thread_local` still fires on the Android target.
-    #[allow(clippy::missing_const_for_thread_local)]
     static PENDING_FOCUS_REQUEST: Cell<Option<(u64, usize)>> = const { Cell::new(None) };
 }
 

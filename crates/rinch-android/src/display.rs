@@ -17,18 +17,17 @@ pub fn safe_area_insets() -> SafeAreaInsets {
     bridge::with_activity(|env, activity| {
         let mut insets = SafeAreaInsets::default();
         let result = env.call_method(activity, "getSafeAreaInsets", "()[I", &[]);
-        if let Ok(val) = result {
-            if let Ok(obj) = val.l() {
-                if !obj.is_null() {
-                    let arr: jni::objects::JIntArray = obj.into();
-                    let mut buf = [0i32; 4];
-                    if env.get_int_array_region(&arr, 0, &mut buf).is_ok() {
-                        insets.top = buf[0];
-                        insets.bottom = buf[1];
-                        insets.left = buf[2];
-                        insets.right = buf[3];
-                    }
-                }
+        if let Ok(val) = result
+            && let Ok(obj) = val.l()
+            && !obj.is_null()
+        {
+            let arr: jni::objects::JIntArray = obj.into();
+            let mut buf = [0i32; 4];
+            if env.get_int_array_region(&arr, 0, &mut buf).is_ok() {
+                insets.top = buf[0];
+                insets.bottom = buf[1];
+                insets.left = buf[2];
+                insets.right = buf[3];
             }
         }
         insets

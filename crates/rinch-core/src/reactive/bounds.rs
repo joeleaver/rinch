@@ -38,10 +38,7 @@ struct BoundsEntry {
     signal: Signal<ElementBounds>,
 }
 
-// Already const-initialized; see #598 for why clippy's
-// `missing_const_for_thread_local` still fires on the Android target.
 thread_local! {
-    #[allow(clippy::missing_const_for_thread_local)]
     static BOUNDS_REGISTRY: RefCell<Vec<BoundsEntry>> = const { RefCell::new(Vec::new()) };
 }
 

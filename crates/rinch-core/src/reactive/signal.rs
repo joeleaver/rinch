@@ -85,14 +85,11 @@ fn warn_write_to_freed(called: &str, loc: &'static Location<'static>) {
     );
 }
 
-// Already const-initialized; see #598 for why clippy's
-// `missing_const_for_thread_local` still fires on the Android target.
 #[cfg(test)]
 thread_local! {
     /// Number of warnings [`warn_write_to_freed`] actually emitted, i.e. the
     /// number of *distinct call sites* it saw. Lets the dedup be asserted
     /// without installing a `tracing` subscriber.
-    #[allow(clippy::missing_const_for_thread_local)]
     static WARN_COUNT: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
 }
 

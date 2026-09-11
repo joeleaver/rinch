@@ -86,17 +86,10 @@ use std::rc::{Rc, Weak};
 // Thread-Local Render Scope Context
 // ============================================================================
 
-// Both statics below are already const-initialized. clippy's
-// `missing_const_for_thread_local` still fires for them on Android: that
-// target has no native `#[thread_local]` support, so std falls back to an
-// OS-key-based thread-local implementation that erases the const/non-const
-// distinction the lint is checking for — see #598.
 thread_local! {
     /// The current render scope, set by the runtime during rendering.
-    #[allow(clippy::missing_const_for_thread_local)]
     static RENDER_SCOPE: RefCell<Option<Rc<RefCell<RenderScope>>>> = const { RefCell::new(None) };
     /// Counter for generating unique reactive IDs across all RenderScopes.
-    #[allow(clippy::missing_const_for_thread_local)]
     static NEXT_REACTIVE_ID: RefCell<usize> = const { RefCell::new(1) };
 }
 

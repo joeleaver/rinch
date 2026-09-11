@@ -11,9 +11,6 @@ thread_local! {
     /// Storage for all effects, needed because effects reference themselves: an
     /// effect is queued and run by *id*, so its closure has to live somewhere
     /// other than the [`Effect`] handle, which the caller is free to drop.
-    // Already const-initialized; see #598 for why clippy's
-    // `missing_const_for_thread_local` still fires on the Android target.
-    #[allow(clippy::missing_const_for_thread_local)]
     pub(super) static EFFECTS: RefCell<EffectRegistry> =
         const { RefCell::new(HashMap::with_hasher(BuildHasherDefault::new())) };
 }

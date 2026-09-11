@@ -55,26 +55,19 @@ struct ContextEntry {
 // Thread-local context store for sharing state across components, keyed by
 // (root, TypeId) — each mounted root gets its own namespace (issue #136).
 thread_local! {
-    // `HashMap::new()` needs `RandomState`, which is not const-evaluable — see #598.
-    #[allow(clippy::missing_const_for_thread_local)]
+    // Not const-evaluable: `HashMap::new()` needs the default `RandomState`,
+    // which has no `const fn` constructor.
     static CONTEXT_STORE: RefCell<HashMap<(u64, TypeId), ContextEntry>> =
         RefCell::new(HashMap::new());
     /// The root whose namespace create/use_context resolve right now.
-    // Already const; Android's target has no fast-path thread-local storage
-    // for clippy to recognize that against — see #598.
-    #[allow(clippy::missing_const_for_thread_local)]
     static CURRENT_ROOT: Cell<u64> = const { Cell::new(GLOBAL_ROOT) };
     /// The document whose event stream is being dispatched right now, if any
     /// (issue #139). Deliberately separate from `CURRENT_ROOT`: that is a store
     /// *namespace*, and desktop shells leave it at the thread-global `0`.
-    // Already const; see the #598 note on `CURRENT_ROOT` above.
-    #[allow(clippy::missing_const_for_thread_local)]
     static DISPATCHING_DOC: Cell<Option<u64>> = const { Cell::new(None) };
     /// Monotonic insertion counter. Never reused, and deliberately **not** reset
     /// by `clear_context`/`clear_context_for_root` — resetting it would recreate
     /// the exact ABA the epoch exists to prevent.
-    // Already const; see the #598 note on `CURRENT_ROOT` above.
-    #[allow(clippy::missing_const_for_thread_local)]
     static NEXT_EPOCH: Cell<u64> = const { Cell::new(1) };
 }
 
