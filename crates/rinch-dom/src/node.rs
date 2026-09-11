@@ -184,6 +184,24 @@ pub enum DisplayMode {
     InlineBlock,
 }
 
+impl DisplayMode {
+    /// Whether a box in this mode is **inline-level** — content an inline
+    /// formatting context lays out, rather than a box its container's block
+    /// formatting context does.
+    ///
+    /// The one authority for that question. [`Node::is_inline`] answers it for
+    /// a node (adding the text/comment cases), and `apply_to_taffy` compares it
+    /// across a restyle to decide whether the IFC pass has to run again — a
+    /// crossing the Taffy style cannot be asked about, because
+    /// [`crate::computed_style::values::DisplayValue::to_taffy`] is not
+    /// injective: `inline` and `block` both map to `taffy::Display::Block`, and
+    /// `inline-block`, `flex`, `inline-flex` and `contents` all map to
+    /// `taffy::Display::Flex` (#597).
+    pub fn is_inline_level(self) -> bool {
+        matches!(self, DisplayMode::Inline | DisplayMode::InlineBlock)
+    }
+}
+
 /// How a box participates in its parent's inline formatting context.
 ///
 /// Returned by [`Node::inline_flow_role`], the one classifier every IFC
@@ -326,6 +344,24 @@ pub struct Node {
     /// If this node is an inline child, which IFC root owns it.
     /// Derived cache — cleared on any structural mutation.
     pub ifc_root: Option<RawNodeId>,
+    /// A past `mark_inline_descendants` pass removed this node's Taffy node
+    /// from the list that should hold it — the **departure record** for the IFC
+    /// detach (#597), and the exact counterpart of [`Self::contents_spliced`]
+    /// for the `display: contents` splice (#520).
+    ///
+    /// The detach itself is correct: inline content is laid out by Parley and
+    /// drawn by its IFC root, so it must not also be a Taffy child. What was
+    /// missing is the other direction. Nothing put a box back when the reason
+    /// for taking it out went away, so an element restyled from inline-level to
+    /// block-level at runtime ended with no Taffy parent, its parent's child
+    /// list empty, and whatever box it had while it was inline — laid out by
+    /// nobody, and (its `ifc_root` having been cleared) drawn by nobody either.
+    ///
+    /// Read by `reattach_departed_ifc_children`, which rebuilds the departed
+    /// node's effective Taffy parent's child list. Set only where a
+    /// `remove_child` actually happened, so a node this pass never held is not
+    /// claimed as departed.
+    pub ifc_detached: bool,
     /// Cached Parley inline layout (only set on IFC root nodes).
     /// Derived cache — cleared on any mutation to inline children.
     pub text_layout: Option<Box<InlineLayout>>,
@@ -541,6 +577,7 @@ impl Node {
             focus_sensitive: Cell::new(false),
             estimated_height: None,
             contents_spliced: false,
+            ifc_detached: false,
         }
     }
 
@@ -590,6 +627,7 @@ impl Node {
             focus_sensitive: Cell::new(false),
             estimated_height: None,
             contents_spliced: false,
+            ifc_detached: false,
         }
     }
 
@@ -638,6 +676,7 @@ impl Node {
             focus_sensitive: Cell::new(false),
             estimated_height: None,
             contents_spliced: false,
+            ifc_detached: false,
         }
     }
 
@@ -684,6 +723,7 @@ impl Node {
             focus_sensitive: Cell::new(false),
             estimated_height: None,
             contents_spliced: false,
+            ifc_detached: false,
         }
     }
 
@@ -862,10 +902,7 @@ impl Node {
         match &self.kind {
             NodeKind::Text(_) => true,
             NodeKind::Comment(_) => true, // comments are invisible but inline
-            NodeKind::Element(_) => matches!(
-                self.display_mode,
-                DisplayMode::Inline | DisplayMode::InlineBlock
-            ),
+            NodeKind::Element(_) => self.display_mode.is_inline_level(),
             _ => false,
         }
     }

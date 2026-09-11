@@ -1691,6 +1691,37 @@ impl RinchDocument {
         result
     }
 
+    /// The node whose effective Taffy child list holds `node_id`'s box — the
+    /// **inverse** of [`Self::collect_effective_taffy_children`], and required
+    /// to agree with it: `collect_effective_taffy_children(owner)` names
+    /// `node_id`'s Taffy id exactly when this answers `owner` (#597).
+    ///
+    /// Two hops, for the two ways a node's box-tree parent is not its DOM
+    /// parent. [`Self::box_tree_parent`] handles the first — a run member's box
+    /// is held by the anonymous block box that lays the run out, not by the
+    /// container (#566). The loop handles the second — a `display: contents`
+    /// element generates no box, so it holds none of its children's either and
+    /// they belong to the nearest ancestor that does, however many wrappers deep
+    /// (#476).
+    ///
+    /// Returns `None` for a node with no such ancestor: the document root, and
+    /// anything in a subtree that is not attached to it.
+    pub(crate) fn effective_taffy_owner(
+        nodes: &slab::Slab<crate::node::Node>,
+        node_id: usize,
+    ) -> Option<usize> {
+        use crate::computed_style::values::DisplayValue;
+
+        let mut ancestor = Self::box_tree_parent(nodes, node_id)?;
+        loop {
+            let node = nodes.get(ancestor)?;
+            if node.computed_style.display != DisplayValue::Contents {
+                return Some(ancestor);
+            }
+            ancestor = Self::box_tree_parent(nodes, ancestor)?;
+        }
+    }
+
     /// Every Taffy id `node_id` may occupy in its **parent's** Taffy child
     /// list: its own, plus — when it is or was spliced away by
     /// `sync_display_contents` — its flattened descendants' (#477).
