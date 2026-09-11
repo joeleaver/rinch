@@ -1706,6 +1706,14 @@ impl RinchDocument {
     ///
     /// Returns `None` for a node with no such ancestor: the document root, and
     /// anything in a subtree that is not attached to it.
+    ///
+    /// **The first hop is currently defence, and that is measured**: replacing
+    /// it with a plain `parent` walk survives `-p rinch-dom -p rinch`. Its only
+    /// caller heals nodes that are no longer inline-level, and a run member is
+    /// inline content by construction, so none of them carries a `run_box`.
+    /// It is written as the general inverse rather than to that caller's shape,
+    /// because a caller that asks about a run member would otherwise be handed
+    /// the container — whose list names the anonymous box, not the member.
     pub(crate) fn effective_taffy_owner(
         nodes: &slab::Slab<crate::node::Node>,
         node_id: usize,

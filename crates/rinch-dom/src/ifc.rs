@@ -1936,30 +1936,6 @@ impl RinchDocument {
         }
     }
 
-    /// Detach the inline descendants of an IFC root from Taffy and mark their
-    /// `ifc_root`, flattening through `display:contents` wrappers.
-    ///
-    /// Direct inline children are removed from the root's Taffy node (so Parley
-    /// lays them out) and get `ifc_root` set. A `display:contents` wrapper
-    /// generates no box, so it is transparent *when it wraps no block-level
-    /// box*: it is then marked with this root's id (so IFC discovery finds this
-    /// container and paint skips the wrapper in the normal tree walk) and
-    /// recursed into, so its inline grandchildren — which
-    /// `sync_display_contents` reparented into `root_taffy` — are detached and
-    /// joined to this IFC too (issue #61). A wrapper that *does* hold a block box
-    /// is left unmarked and ends the marking pass, mirroring
-    /// [`Self::walk_inline_children`], which stops building the line there.
-    ///
-    /// The set of nodes marked here must be *exactly* the set
-    /// [`Self::walk_inline_children`] flows into this IFC, so both consume
-    /// [`Node::inline_flow_role`] and act on it the same way (#366): inline
-    /// content joins, an out-of-flow or boxless child is walked past, an
-    /// in-flow block-level child (or the opaque contents wrapper standing for
-    /// one) **stops** the pass. The recursion follows the walk's rule too:
-    /// down through `display: inline` elements and transparent
-    /// `display:contents` wrappers, and **not** into an `inline-block`, which
-    /// is a box the IFC only measures and places — its interior is laid out
-    /// and painted by Taffy, on its own.
     /// Restore every box a previous [`Self::mark_inline_descendants`] pass
     /// detached and that is no longer inline content (#597).
     ///
@@ -1991,6 +1967,24 @@ impl RinchDocument {
     /// no IFC will take back. A child that is still hidden keeps its record and
     /// stays out.
     ///
+    /// **What the gate is measured to do, and what it is not.** Its first job is
+    /// that the steady state costs nothing. Its second is that it does not
+    /// rebuild lists it has no business rebuilding: the mutant that removes it
+    /// entirely is killed across `-p rinch-dom -p rinch` by exactly one fixture,
+    /// `ifc_leaf_invariant_tests`'
+    /// `the_validator_fires_inside_setup_on_a_marked_root_that_kept_a_child`,
+    /// whose deliberately doctored extra Taffy child an ungated heal silently
+    /// removes before the leaf-invariant validator can see it.
+    ///
+    /// The `NoBox` arm specifically is **not** distinguished by anything in that
+    /// scope — a mutant that heals hidden children survives it. That is because
+    /// the placement below makes it harmless rather than because it is
+    /// pointless: the heal runs before the marking pass, whose `NoBox` arm
+    /// detaches such a child again on the same pass. It is written this way
+    /// because the question the gate asks is "will the marking pass take this
+    /// back", and for a hidden child the answer is yes; do not read the mutant's
+    /// survival as licence to widen it.
+    ///
     /// `Contents` is deliberately not healed here even though it is not
     /// detachable either: a boxless wrapper has no id in any effective child
     /// list, so the rebuild below could not restore it, and
@@ -2007,8 +2001,22 @@ impl RinchDocument {
     /// `display: contents` flattening — rather than inserting one id at a
     /// guessed index. That list also contains the owner's *inline* children, so
     /// this must run **before** the marking pass and not after it: the pass
-    /// removes them again. Healing afterwards would re-attach a whole IFC's
-    /// content and leave it attached.
+    /// removes them again.
+    ///
+    /// That ordering is measured, not argued, and the shape it shows up in is
+    /// narrower than "an IFC's content would stay attached" — which is why it
+    /// took a fixture of its own to see. The owner of a healed node is almost
+    /// never a live IFC root: a container holding a block-level child alongside
+    /// inline content is mixed content, so `create_anonymous_block_boxes` boxes
+    /// the run and the container is not discovered as a root at all. The
+    /// exception is `text + absolute`, which mints no anonymous box (#406) — so
+    /// the container stays a root, and a root whose only attached child is
+    /// out-of-flow is given a Taffy-only measure leaf (#466). Healing after the
+    /// root loop rebuilds that root's list from the DOM and throws the leaf
+    /// away with it, along with the detach of its text.
+    /// `a_healed_out_of_flow_child_leaves_its_roots_measure_leaf_alone` is the
+    /// pin; before it was written, the mutant that moves this call after the
+    /// loop survived all twelve other fixtures.
     ///
     /// In the steady state it does nothing at all: a node that is still inline
     /// content fails the gate, so no list is rebuilt and no Taffy node is
@@ -2046,7 +2054,9 @@ impl RinchDocument {
             let _ = self.tree.taffy.set_children(owner_taffy, &children);
             // As in `sync_display_contents`: a reparented child may carry cache
             // entries from its old position, and Taffy's dirty propagation stops
-            // at an already-empty ancestor.
+            // at an already-empty ancestor. Belt and braces, and said so
+            // honestly — the mutant that deletes both calls survives
+            // `-p rinch-dom -p rinch`, so no fixture here is known to need them.
             for &child_taffy in &children {
                 let _ = self.tree.taffy.mark_dirty(child_taffy);
             }
@@ -2056,7 +2066,9 @@ impl RinchDocument {
         // Re-derive the record from what actually happened rather than assuming
         // the rebuild reached every node: an owner with no `taffy_id`, or a node
         // whose owner's list legitimately does not name it, keeps its record and
-        // is tried again next pass.
+        // is tried again next pass. Cheap accuracy rather than a fix — leaving
+        // the record set forever costs a redundant rebuild per pass and nothing
+        // else, and the mutant that does exactly that survives the suite.
         for id in departed {
             let still_out = self.tree.nodes[id]
                 .taffy_id
@@ -2065,6 +2077,30 @@ impl RinchDocument {
         }
     }
 
+    /// Detach the inline descendants of an IFC root from Taffy and mark their
+    /// `ifc_root`, flattening through `display:contents` wrappers.
+    ///
+    /// Direct inline children are removed from the root's Taffy node (so Parley
+    /// lays them out) and get `ifc_root` set. A `display:contents` wrapper
+    /// generates no box, so it is transparent *when it wraps no block-level
+    /// box*: it is then marked with this root's id (so IFC discovery finds this
+    /// container and paint skips the wrapper in the normal tree walk) and
+    /// recursed into, so its inline grandchildren — which
+    /// `sync_display_contents` reparented into `root_taffy` — are detached and
+    /// joined to this IFC too (issue #61). A wrapper that *does* hold a block box
+    /// is left unmarked and ends the marking pass, mirroring
+    /// [`Self::walk_inline_children`], which stops building the line there.
+    ///
+    /// The set of nodes marked here must be *exactly* the set
+    /// [`Self::walk_inline_children`] flows into this IFC, so both consume
+    /// [`Node::inline_flow_role`] and act on it the same way (#366): inline
+    /// content joins, an out-of-flow or boxless child is walked past, an
+    /// in-flow block-level child (or the opaque contents wrapper standing for
+    /// one) **stops** the pass. The recursion follows the walk's rule too:
+    /// down through `display: inline` elements and transparent
+    /// `display:contents` wrappers, and **not** into an `inline-block`, which
+    /// is a box the IFC only measures and places — its interior is laid out
+    /// and painted by Taffy, on its own.
     fn mark_inline_descendants(
         &mut self,
         root_id: usize,
