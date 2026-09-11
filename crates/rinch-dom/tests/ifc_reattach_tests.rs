@@ -116,7 +116,12 @@ fn geom(doc: &RinchDocument, id: NodeId) -> (f32, f32, f32, f32) {
 fn taffy_index(doc: &RinchDocument, id: NodeId) -> Option<usize> {
     let t = doc.tree.get(id.0).and_then(|n| n.taffy_id)?;
     let p = doc.tree.taffy.parent(t)?;
-    doc.tree.taffy.children(p).ok()?.iter().position(|c| *c == t)
+    doc.tree
+        .taffy
+        .children(p)
+        .ok()?
+        .iter()
+        .position(|c| *c == t)
 }
 
 fn assert_clean(doc: &RinchDocument, what: &str) {
@@ -134,7 +139,9 @@ fn assert_clean(doc: &RinchDocument, what: &str) {
 /// `shape` is called with a flag saying which document it is building; every
 /// fixture uses it to decide whether to declare the final style up front or
 /// apply it after the first `resolve_layout`.
-fn twins(shape: impl Fn(&mut RinchDocument, bool) -> Vec<NodeId>) -> (RinchDocument, RinchDocument) {
+fn twins(
+    shape: impl Fn(&mut RinchDocument, bool) -> Vec<NodeId>,
+) -> (RinchDocument, RinchDocument) {
     let mut restyled = RinchDocument::new();
     shape(&mut restyled, true);
     let mut declared = RinchDocument::new();
@@ -226,7 +233,7 @@ fn three_restyled_buttons_come_back_in_document_order() {
         }
         if restyle {
             doc.resolve_layout(VW, VH);
-            for b in out[1..].to_vec() {
+            for b in out[1..].iter().copied() {
                 doc.set_attribute(b, "style", BTN);
             }
         }
@@ -273,7 +280,12 @@ fn the_span_and_svg_route_a_parent_that_becomes_a_flex_container() {
     const FLEX: &str = "width: 160px; display: flex";
     let (r, d) = twins(|doc, restyle| {
         let body = doc.body();
-        let wrap = el(doc, body, "div", if restyle { "width: 160px" } else { FLEX });
+        let wrap = el(
+            doc,
+            body,
+            "div",
+            if restyle { "width: 160px" } else { FLEX },
+        );
         let sp = el(doc, wrap, "span", "height: 12px");
         txt(doc, sp, "Choose");
         let svg = el(doc, wrap, "svg", "width: 16px; height: 16px");
@@ -286,8 +298,14 @@ fn the_span_and_svg_route_a_parent_that_becomes_a_flex_container() {
     });
     let (wrap, sp, svg) = (NodeId(3), NodeId(4), NodeId(6));
 
-    assert!(attached(&r, sp), "the blockified <span> has no Taffy parent");
-    assert!(attached(&r, svg), "the blockified <svg> has no Taffy parent");
+    assert!(
+        attached(&r, sp),
+        "the blockified <span> has no Taffy parent"
+    );
+    assert!(
+        attached(&r, svg),
+        "the blockified <svg> has no Taffy parent"
+    );
     assert_eq!(
         geom(&r, wrap).3,
         16.0,
@@ -344,7 +362,11 @@ fn a_button_behind_a_display_contents_wrapper_rejoins() {
             doc,
             wrap,
             "button",
-            if restyle { "" } else { "display: flex; height: 18px" },
+            if restyle {
+                ""
+            } else {
+                "display: flex; height: 18px"
+            },
         );
         txt(doc, btn, "Edit");
         if restyle {
