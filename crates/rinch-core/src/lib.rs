@@ -1,5 +1,26 @@
 //! Core types and traits for rinch.
 
+// Android's target spec carries no `has-thread-local` (only `tls-model:
+// emulated`), so `std::sys::thread_local` routes every `thread_local!` in
+// this crate through its OS-key-based `os` backend instead of the host's
+// `native` one. The `native` backend's `thread_local_inner!` macro has two
+// arms — `const $init` builds a real eager `#[thread_local]` static, plain
+// `$init` builds a lazy one — so whether a static is already `const {}` is
+// structurally visible to clippy there. The `os` backend has only one arm:
+// a `const {}` initializer and a plain one both end up in the identical
+// `fn() -> T { .. }` thunk registered with an OS TLS key, so that
+// distinction is erased before `missing_const_for_thread_local` ever runs.
+// The lint then fires on every thread_local in this crate regardless of
+// whether it is already const — and even suggests wrapping ones that
+// cannot compile as const at all (e.g. a `HashMap::new()` initializer,
+// whose `RandomState` is not const-evaluable; the suggested fix produces
+// E0015 if actually applied on this target). It therefore carries zero
+// signal on Android specifically, by construction — not merely noise —
+// while remaining a real, correctly-firing lint on every other target
+// (including this crate's own `wasm32-unknown-unknown` clippy gate), where
+// it is left enabled. See #598.
+#![cfg_attr(target_os = "android", allow(clippy::missing_const_for_thread_local))]
+
 pub mod component_prop;
 pub mod context;
 pub mod dom;

@@ -260,10 +260,14 @@ pub fn has_file_drop_handler(id: EventHandlerId) -> bool {
 
 // Thread-local event handler registry.
 thread_local! {
+    // None of the four registries below are const-evaluable: each `::new()`
+    // builds a `HashMap` with the default `RandomState`, which has no
+    // `const fn` constructor.
     static EVENT_REGISTRY: RefCell<EventRegistry> = RefCell::new(EventRegistry::new());
     static INPUT_REGISTRY: RefCell<InputRegistry> = RefCell::new(InputRegistry::new());
     static FILE_DROP_REGISTRY: RefCell<FileDropRegistry> = RefCell::new(FileDropRegistry::new());
     static SCROLL_REGISTRY: RefCell<ScrollRegistry> = RefCell::new(ScrollRegistry::new());
+    // Not const-evaluable: goes through the non-const `Default` trait method.
     static INPUT_CONTEXT: RefCell<InputContext> = RefCell::new(InputContext::default());
     /// Flag to signal that an input event was handled and a re-render may be needed.
     static INPUT_EVENT_HANDLED: RefCell<bool> = const { RefCell::new(false) };

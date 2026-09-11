@@ -52,6 +52,14 @@
 //! Add to it sparingly, and only where a compile error and a device would both
 //! stay quiet.
 
+// See the identical attribute (and its rationale) in `rinch-core/src/lib.rs`
+// (#598): Android's target spec has no native ELF thread-local support, so
+// `std::sys::thread_local` erases the const/non-const distinction
+// `missing_const_for_thread_local` checks for before the lint ever runs,
+// making it fire unconditionally on this target and nowhere else — including
+// on `screen::HOLDERS`, which is already `const`.
+#![cfg_attr(target_os = "android", allow(clippy::missing_const_for_thread_local))]
+
 #[cfg(target_os = "android")]
 mod bridge;
 pub mod callback;

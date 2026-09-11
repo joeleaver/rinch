@@ -204,6 +204,86 @@ jobs:
             echo "::endgroup::"
           done
 
+  # Lint the Android target too (#598). `clippy --workspace` above only ever
+  # sees the native host cfg — this was the first gate that ever ran clippy
+  # against `cfg(target_os = "android")` code at all, and it was red the whole
+  # time: `rinch-core` alone carried up to 22 `missing_const_for_thread_local`
+  # errors depending on target/feature scope, and `rinch-android` carried a
+  # handful more (below).
+  #
+  # Root cause of the `rinch-core` errors (see `#![cfg_attr(...)]` at the top
+  # of `rinch-core/src/lib.rs` and `rinch-android/src/lib.rs` for the full
+  # writeup): Android's target spec has no native ELF thread-local support
+  # (`tls-model: emulated`, not `has-thread-local`), so `std::sys::thread_local`
+  # routes every `thread_local!` through the OS-key `os` module instead of the
+  # host's `native` module — the only one of the two with a real
+  # `EagerStorage`/`LazyStorage` split keyed on whether the user wrote
+  # `const { .. }`. On `os` that distinction is erased before clippy's lint
+  # ever sees it, so the lint fires unconditionally: on statics that are
+  # already `const` (confirmed via raw compiler JSON), and even on ones that
+  # cannot compile as const at all (a `HashMap::new()` initializer, whose
+  # `RandomState` is not const-evaluable — the suggested fix produces E0015 if
+  # actually applied). It carries zero signal on this target, by construction,
+  # so both crates suppress it there specifically and leave it enabled
+  # everywhere else clippy runs, including each crate's own host and wasm32
+  # gates.
+  #
+  # `rinch-android` also had `forget_non_drop` (`bridge.rs` — a genuine no-op
+  # today since `jni::JavaVM` 0.21.1 has no `Drop` impl, kept and explained at
+  # the site rather than removed, as insurance against a future `jni` upgrade)
+  # and four `collapsible_if`s (`camera.rs`, `display.rs`) — both fixed
+  # outright, not suppressed.
+  #
+  # Scoped to `rinch-core` (`--all-targets --all-features`, the crate's full
+  # surface) and `rinch-android` (`--lib` only, no `--all-features`: the crate
+  # has none): `muda` (native menus) fails to even compile for
+  # `aarch64-linux-android` (`unresolved import self::platform`), which takes
+  # the whole workspace graph down under cargo's feature unification, so this
+  # cannot be `--workspace`. `rinch-android --all-targets` additionally hits a
+  # pre-existing, unrelated compile break in its *test* code (`location.rs`,
+  # `sensors.rs`): a host-only mock module (`disarm_log`, itself correctly
+  # gated `cfg(not(target_os = "android"))`) is called from `#[test]` fns gated
+  # only `cfg(test)`, so those tests don't exist on this target's test binary
+  # but still reference a module that doesn't — E0433, not a lint, and not
+  # touched here. `--lib` sidesteps it; fixing it is real, separate work
+  # (giving those tests the same `not(target_os = "android")` gate, or an
+  # android-side stub) reported but out of #598's scope.
+  clippy-android:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+          targets: aarch64-linux-android
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-clippy-android-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-clippy-android-
+
+      # clippy does not link, so no NDK / cargo-ndk linker setup is needed here
+      # (unlike `cargo test --target aarch64-linux-android`, which does).
+      - name: Run clippy (aarch64-linux-android)
+        run: |
+          echo "::group::clippy rinch-core (aarch64-linux-android)"
+          cargo clippy -p rinch-core --target aarch64-linux-android \
+            --all-targets --all-features -- -D warnings
+          echo "::endgroup::"
+
+          echo "::group::clippy rinch-android (aarch64-linux-android)"
+          cargo clippy -p rinch-android --target aarch64-linux-android \
+            --lib -- -D warnings
+          echo "::endgroup::"
+
   # Run the browser-backed wasm tests. `IdbStore` talks to a real IndexedDB, so it
   # cannot be exercised by a native `cargo test` — it needs an actual browser.
   # Shipping it unverified is how the crate arrived: the first run of these tests

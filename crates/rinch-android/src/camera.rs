@@ -14,12 +14,12 @@ const RESULT_OK: i32 = -1;
 pub fn pick_image(cb: impl FnOnce(Option<Vec<u8>>) + 'static) {
     let code = callback::next_request_code();
     callback::register_activity_callback(code, move |result| {
-        if result.result_code == RESULT_OK {
-            if let Some(uri) = result.data_uri {
-                match read_image_uri(&uri) {
-                    Ok(bytes) => return cb(Some(bytes)),
-                    Err(e) => log::warn!("pick_image: read_content_uri failed: {e}"),
-                }
+        if result.result_code == RESULT_OK
+            && let Some(uri) = result.data_uri
+        {
+            match read_image_uri(&uri) {
+                Ok(bytes) => return cb(Some(bytes)),
+                Err(e) => log::warn!("pick_image: read_content_uri failed: {e}"),
             }
         }
         cb(None)
@@ -50,12 +50,12 @@ pub fn take_photo(cb: impl FnOnce(Option<Vec<u8>>) + 'static) {
 fn take_photo_inner(cb: impl FnOnce(Option<Vec<u8>>) + 'static) {
     let code = callback::next_request_code();
     callback::register_activity_callback(code, move |result| {
-        if result.result_code == RESULT_OK {
-            if let Some(uri) = result.data_uri {
-                match read_image_uri(&uri) {
-                    Ok(bytes) => return cb(Some(bytes)),
-                    Err(e) => log::warn!("take_photo: read_content_uri failed: {e}"),
-                }
+        if result.result_code == RESULT_OK
+            && let Some(uri) = result.data_uri
+        {
+            match read_image_uri(&uri) {
+                Ok(bytes) => return cb(Some(bytes)),
+                Err(e) => log::warn!("take_photo: read_content_uri failed: {e}"),
             }
         }
         cb(None)

@@ -55,6 +55,8 @@ struct ContextEntry {
 // Thread-local context store for sharing state across components, keyed by
 // (root, TypeId) — each mounted root gets its own namespace (issue #136).
 thread_local! {
+    // Not const-evaluable: `HashMap::new()` needs the default `RandomState`,
+    // which has no `const fn` constructor.
     static CONTEXT_STORE: RefCell<HashMap<(u64, TypeId), ContextEntry>> =
         RefCell::new(HashMap::new());
     /// The root whose namespace create/use_context resolve right now.
