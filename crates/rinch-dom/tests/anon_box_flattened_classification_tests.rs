@@ -68,13 +68,14 @@
 //! on one thread otherwise restores one document's ids into the other and
 //! panics inside Taffy instead of producing the divergence.)
 //!
-//! Measured at `db9c64f`, wide scope — `cargo test --no-fail-fast -p rinch-dom
-//! -p rinch`, **43 test executables, 1257 tests**; the narrow `-p rinch-dom` is
-//! 35 at that base and reports false survivors. (Both counts move: the wide
-//! scope was 41 / the narrow 33 at `e8fb6e8`, seven commits earlier. A count
-//! quoted without its base goes stale silently, so quote the base.) `adoption` has 68 killers, and each of
-//! the three fails on the assertion that **distinguishes its two arms**, its
-//! control arm still passing.
+//! Measured at `1a60722`, wide scope — `cargo test --no-fail-fast -p rinch-dom
+//! -p rinch`, **44 test executables, 1270 tests**; the narrow `-p rinch-dom` is
+//! **36** at that base and reports false survivors. (Both counts move — they
+//! were 41 / 33 at `e8fb6e8` and 43 / 35 at `db9c64f`. A count quoted without
+//! its base goes stale silently, so quote the base, and never a distance from
+//! one: the next merge invalidates that too.) `adoption` has **70** killers,
+//! and each of the three fails on the assertion that **distinguishes its two
+//! arms**, its control arm still passing.
 //!
 //! **That last clause is the point, and it is why these three sat out the sweep
 //! that repaired this file's hollow assertions.** All three are also killed by
