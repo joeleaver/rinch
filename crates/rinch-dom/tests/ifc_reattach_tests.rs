@@ -541,6 +541,52 @@ fn the_block_to_inline_path_now_agrees_with_the_static_twin() {
     assert_clean(&d, "declared");
 }
 
+/// The shape that says **where** the heal has to run: the owner of a healed
+/// node is a live IFC root, carrying an `InlineRoot` measure leaf.
+///
+/// `text + absolute` mints no anonymous block box (#406), so the container is
+/// still an IFC root after the button goes out of flow — and a root whose only
+/// attached child is out-of-flow gets a Taffy-only measure leaf at index 0,
+/// because Taffy consults a measure function on a childless node only (#466).
+/// Running the heal **after** the marking loop rebuilds that root's list from
+/// the DOM, which puts the detached text back and throws the measure leaf away;
+/// running it before leaves both passes to do their own work in order.
+///
+/// Kills: moving `reattach_departed_ifc_children` after the root loop.
+#[test]
+fn a_healed_out_of_flow_child_leaves_its_roots_measure_leaf_alone() {
+    const ABS: &str = "position: absolute; left: 5px; top: 6px; width: 30px; height: 40px";
+    let (r, d) = twins(|doc, restyle| {
+        let body = doc.body();
+        let panel = el(
+            doc,
+            body,
+            "div",
+            "position: relative; width: 160px; line-height: 20px",
+        );
+        txt(doc, panel, "hello");
+        let btn = el(doc, panel, "button", if restyle { "" } else { ABS });
+        txt(doc, btn, "Edit");
+        if restyle {
+            doc.resolve_layout(VW, VH);
+            doc.set_attribute(btn, "style", ABS);
+        }
+        doc.resolve_layout(VW, VH);
+        vec![panel, btn]
+    });
+    let (panel, text, btn) = (NodeId(3), NodeId(4), NodeId(5));
+
+    assert!(
+        r.tree.ifc_measure_leaves.contains_key(&panel.0),
+        "the root lost its measure leaf, so its inline content is measured by nobody"
+    );
+    assert!(
+        !attached(&r, text),
+        "the root's inline text was re-attached as a Taffy child"
+    );
+    assert_paths_agree(&r, &d, &[("panel", panel), ("text", text), ("btn", btn)]);
+}
+
 // ---------------------------------------------------------------------------
 // Guard rails. These pass before and after; they are here so an over-reaching
 // repair is caught, not as coverage of the defect.
