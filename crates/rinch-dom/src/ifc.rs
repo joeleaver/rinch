@@ -1497,12 +1497,19 @@ impl RinchDocument {
     /// only safe once the seed set is right, which is why neither refinement
     /// is optional and why they are not independent.
     ///
-    /// **Cost.** One BFS over the `taffy.children()` reads A and B already make
-    /// — kept rather than re-read — plus one set-membership test per DOM node.
-    /// The same `O(nodes)` C already paid, and it runs only from a test or
-    /// under `RINCH_TREE_CHECK=1`. Measured on a 2203-node document, debug
-    /// build, 200 iterations: **2.90ms** per call against **2.61ms** with D
-    /// removed.
+    /// **Cost, measured rather than asserted.** One BFS over the
+    /// `taffy.children()` reads A and B already make — kept rather than
+    /// re-read — plus one membership test per DOM node. Same `O(nodes)` C
+    /// already paid, and it runs only from a test or under
+    /// `RINCH_TREE_CHECK=1`.
+    ///
+    /// The constant is **not** free, though, and the first draft of this got it
+    /// badly wrong. On a 2203-node document, debug build, 200 iterations, best
+    /// of 3: the whole validator is **1.40ms** with D and E against **1.03ms**
+    /// without them. Spelling the same two structures as a `HashMap` and a
+    /// `HashSet` cost **2.72ms** — `SipHash` in a debug build, ~6600 probes,
+    /// which is more than the rest of the check put together. Hence the
+    /// `binary_search` on `parents`; do not "simplify" it back.
     ///
     /// # E, and what it is for (#543)
     ///
@@ -1839,22 +1846,45 @@ impl RinchDocument {
 
         let mut claims: HashMap<taffy::NodeId, Vec<taffy::NodeId>> = HashMap::new();
         // The downward edges, kept from the very same read A and B are built
-        // from, so D's reachability cannot disagree with them about the tree.
-        let mut kids_of: HashMap<taffy::NodeId, Vec<taffy::NodeId>> = HashMap::new();
+        // from — so D's reachability below costs no extra `children()` call,
+        // and cannot disagree with A and B about the tree. Parallel to
+        // `parents` (an `Err` pushes an empty list) so it is indexed by
+        // position, not hashed: see `slot_of`.
+        let mut kids_of: Vec<Vec<taffy::NodeId>> = Vec::with_capacity(parents.len());
         for &p in &parents {
-            if let Ok(kids) = self.tree.taffy.children(p) {
-                for &k in &kids {
-                    claims.entry(k).or_default().push(p);
+            match self.tree.taffy.children(p) {
+                Ok(kids) => {
+                    for &k in &kids {
+                        claims.entry(k).or_default().push(p);
+                    }
+                    kids_of.push(kids);
                 }
-                kids_of.insert(p, kids);
+                Err(_) => kids_of.push(Vec::new()),
             }
         }
+
+        // A Taffy node's position in `parents`, which is sorted and deduped
+        // above.
+        //
+        // **Deliberately a binary search rather than a `HashSet`/`HashMap`.**
+        // This check only ever runs in a debug build, where `SipHash` is
+        // several hundred ns a probe, and D needs one membership test per DOM
+        // node on top of A and B's existing work. Measured on a 2203-node
+        // document, best of 3: the hashed spelling took the whole validator
+        // from 1.03ms to 2.72ms, and this one takes it to 1.40ms. Indexing a
+        // bitmap by `usize::from(id)` directly is not available — Taffy's
+        // `NodeId` packs a slotmap version into the high bits, so the values
+        // are around 2^32 rather than dense.
+        let slot_of = |t: taffy::NodeId| -> Option<usize> {
+            parents
+                .binary_search_by_key(&usize::from(t), |p| usize::from(*p))
+                .ok()
+        };
 
         // D: everything a compute pass can actually reach. One BFS from the
         // roots layout computes from — the document root, plus every
         // inline-block measured standalone.
-        let mut reachable: std::collections::HashSet<taffy::NodeId> =
-            std::collections::HashSet::new();
+        let mut reachable = vec![false; parents.len()];
         {
             let mut frontier: Vec<taffy::NodeId> = self.inline_block_measure_roots();
             if let Some(root_taffy) = self
@@ -1866,12 +1896,13 @@ impl RinchDocument {
                 frontier.push(root_taffy);
             }
             while let Some(t) = frontier.pop() {
-                if !reachable.insert(t) {
+                // A node outside `parents` has no DOM identity and is never
+                // asked about below, so there is nothing to mark.
+                let Some(slot) = slot_of(t) else { continue };
+                if std::mem::replace(&mut reachable[slot], true) {
                     continue;
                 }
-                if let Some(kids) = kids_of.get(&t) {
-                    frontier.extend(kids.iter().copied());
-                }
+                frontier.extend(kids_of[slot].iter().copied());
             }
         }
         // Sorted so the output is stable enough to diff between runs.
@@ -1953,7 +1984,7 @@ impl RinchDocument {
                 if self.tree.taffy.parent(taffy_id).is_none() {
                     out.push(describe("C orphan"));
                     true
-                } else if !reachable.contains(&taffy_id) {
+                } else if slot_of(taffy_id).is_some_and(|slot| !reachable[slot]) {
                     // Every edge above it is intact and it is still laid out
                     // by nobody — the chain terminates somewhere that is not a
                     // root any compute pass runs on (#589).
