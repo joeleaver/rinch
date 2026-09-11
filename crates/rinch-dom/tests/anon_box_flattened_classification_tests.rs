@@ -33,15 +33,24 @@
 //!  - **Run cardinality.** One run per container is where "place the box at the
 //!    head's slot" and "place it at the container's slot" agree, so there is a
 //!    two-runs-in-one-wrapper fixture — and it is also the only shape in which
-//!    dissolving the boxes forwards instead of backwards is observable.
+//!    minting the boxes in reverse run order is observable, since a single-run
+//!    `run_boxes` reads the same either way.
 //!  - **Text-node cardinality.** One text node in a wrapper is where "one IFC
 //!    line" and "one bare Taffy block" agree (both 1 line tall), so the
 //!    symptom-2 fixture has two.
 //!  - **Wrapper cardinality.** An empty wrapper is arity 0 for the flatten
 //!    recursion and has its own fixture.
-//!  - **Cross-parent runs.** A run whose members all share one parent is where
-//!    "restore into the origin" and "restore into the box's parent" agree, so
-//!    the round-trip fixtures all span a wrapper boundary.
+//!  - **Run-head depth.** A run whose head is a direct child of the container is
+//!    where "the box hangs off the container" and "the box hangs off the head's
+//!    own parent" agree, so the wrapper fixtures come in pairs: one with the
+//!    head in the container, one with it behind the wrapper.
+//!
+//! **Nothing is reparented** (#566): an anonymous block box is not a DOM node,
+//! and a run is *recorded* — `run_members` on the box, `run_box` on each member,
+//! `run_boxes` on the container. So an assertion about a container's or a
+//! wrapper's `children` is true whatever the classification decides, and cannot
+//! stand in for a claim about the run. The fixtures that used to make their
+//! claims that way now make them of the three fields above.
 
 use rinch_core::dom::{DomDocument, NodeId};
 use rinch_dom::RinchDocument;
@@ -104,6 +113,48 @@ fn dom_children(doc: &RinchDocument, id: NodeId) -> Vec<String> {
         .collect()
 }
 
+// ── The run bookkeeping, which is where the question moved ────────────────
+//
+// Since #566 nothing is reparented: an anonymous box is not a DOM node, so a
+// container's and a wrapper's `children` are the author's list whatever the
+// classification decides, and `dom_children` cannot tell an adopted run from a
+// recorded one. The three fields below are what a run *is* now, so they are
+// what the fixtures that used to read DOM parentage ask instead.
+
+/// The anonymous box a node is a run member of — the member's own back-pointer.
+fn run_box(doc: &RinchDocument, id: NodeId) -> Option<usize> {
+    doc.tree.get(id.0).unwrap().run_box
+}
+
+/// A box's run, in the order the box recorded it.
+fn run_members(doc: &RinchDocument, bx: usize) -> Vec<usize> {
+    doc.tree.get(bx).unwrap().run_members.clone()
+}
+
+/// The boxes a container records — invariant A's downward half, and what
+/// `box_tree_children` decides on in O(1).
+fn run_boxes(doc: &RinchDocument, id: NodeId) -> Vec<usize> {
+    doc.tree.get(id.0).unwrap().run_boxes.clone()
+}
+
+/// The container an anonymous box hangs off.
+fn box_parent(doc: &RinchDocument, bx: usize) -> Option<usize> {
+    doc.tree.get(bx).unwrap().parent
+}
+
+/// R: every member of a box is still a run unit of the container the box hangs
+/// off. Asserted beside the fixtures' own claims rather than folded into
+/// [`assert_consistent`], so a mutant's kill is attributable to one fixture's
+/// own assertion rather than to a helper every test in the file calls.
+fn assert_bookkeeping(doc: &RinchDocument, what: &str) {
+    let v = doc.run_bookkeeping_violations();
+    assert!(
+        v.is_empty(),
+        "{what}: run bookkeeping is inconsistent:\n  {}",
+        v.join("\n  ")
+    );
+}
+
 fn assert_consistent(doc: &RinchDocument, what: &str) {
     let v = doc.taffy_tree_violations();
     assert!(
@@ -122,8 +173,10 @@ fn assert_consistent(doc: &RinchDocument, what: &str) {
 /// wrapper changed nothing", not a font measurement.
 ///
 /// Kills: reading `has_inline` / the run grouping from raw `node.children`
-/// (the wrapper's span becomes its own block on a second line, +20px), and
-/// dropping the adoption of a run member that lives behind a wrapper.
+/// (the wrapper's span becomes its own block on a second line, +20px), and a
+/// `collect_run_units` that does not reach a run member living behind a
+/// wrapper — measured, both still kill it. (It used to say "dropping the
+/// *adoption* of" that member; nothing is adopted since #566.)
 #[test]
 fn a_transparent_wrapper_between_two_runs_of_text_is_one_line() {
     fn build(wrapped: bool) -> (RinchDocument, NodeId, NodeId) {
@@ -423,7 +476,7 @@ fn inline_content_on_both_sides_of_a_split_wrapper_pairs_up_correctly() {
     assert_consistent(&doc, "split wrapper with text on both sides");
 }
 
-// ── The round trip: dissolving the boxes must restore the author's DOM ────
+// ── The run is recorded, not moved — and dissolving takes the record away ──
 
 /// A grandchild in a run **never leaves its wrapper** (#568, #566).
 ///
@@ -483,85 +536,145 @@ fn a_grandchild_in_a_run_never_leaves_its_wrapper() {
     assert_consistent(&doc, "after the dissolving pass");
 }
 
-/// A wrapper that stands for an **entire** inline run is adopted whole: the
-/// box takes the wrapper, and the wrapper keeps its own children.
+/// A wrapper that stands for an **entire** inline run contributes its *text* to
+/// that run, never itself.
 ///
-/// This is what keeps #568 from deepening #566. An anonymous box adopts its run
-/// out of the author's tree until the next pass dissolves it, and
-/// `insert_before(parent, new, adopted)` cannot then find its reference — so
-/// the run moves the **shallowest** node that stands for exactly its content.
-/// Flattening the wrapper away would move content the author put *inside* it,
-/// one level further from anything they can address.
+/// The keep-whole rule this fixture was written for is deleted (#573): a
+/// `display: contents` element generates no box (CSS 2.1 §9.2.1.1), so
+/// `collect_run_units` recurses into every one of them and never pushes one. A
+/// run therefore takes the flattened boxes, and a wrapper is not a run unit **by
+/// construction** — which is the fact this now pins.
 ///
-/// Kills: flattening a contents wrapper unconditionally in `collect_run_units`.
+/// It used to assert that in DOM parentage: `dom_children(w) == ["MIDDLE"]` and
+/// `mid.parent == Some(w)`. Since #566 nothing is reparented under *any* rule,
+/// so both were true whatever the classification decided — they could no longer
+/// tell an adopted run from a recorded one. This is one of the fixtures whose
+/// DOM-parentage half stopped witnessing the keep-whole mutants (`K10`/`K12`)
+/// without anybody editing it.
+///
+/// Kills: `collect_run_units` pushing a `Contents` child instead of recursing
+/// into it, in both its naive form (the wrapper becomes a unit the
+/// classification counts as nothing, so the text joins no run at all) and its
+/// faithful one (the wrapper becomes the run member in the text's place). The
+/// faithful form is the interesting number: measured on `49e33ba` at
+/// `-p rinch-dom -p rinch`, it went from 11 killers to 13, and this fixture and
+/// the chain below are the two that were added — the fixture that used to be
+/// here, and was written for exactly this rule, survived it. (A mutation count
+/// is only evidence with its base named: #587 moved this one from 4 → 6 on
+/// `4fe65ed` by deleting a redundant IFC-root path.)
+///
+/// **Its run head is a direct child of the container, which is a fixed point
+/// for "whose box is it".** A mutant hanging the box off the head's own DOM
+/// parent lands on `c` here and cannot be seen; the fixture below, whose head
+/// is two levels down, is the one that samples off that point.
 #[test]
-fn a_wrapper_that_is_a_whole_run_is_adopted_whole() {
+fn a_wrapper_that_is_a_whole_run_contributes_its_text_not_itself() {
     let mut doc = RinchDocument::new();
     let body = doc.body();
     let c = el(&mut doc, body, "div", CONTAINER);
-    txt(&mut doc, c, "before ");
+    let before = txt(&mut doc, c, "before ");
     let w = el(&mut doc, c, "span", "display: contents");
     let mid = txt(&mut doc, w, "MIDDLE");
-    txt(&mut doc, c, " after");
+    let after = txt(&mut doc, c, " after");
     el(&mut doc, c, "div", "height: 30px");
     doc.resolve_layout(VW, VH);
 
+    let bx = run_box(&doc, mid).expect("the wrapper's text is in the run");
     assert_eq!(
-        dom_children(&doc, w),
-        vec!["MIDDLE".to_string()],
-        "the wrapper's own child must not be taken out of it"
+        run_box(&doc, w),
+        None,
+        "and the wrapper is in no run — it generates no box to put in one"
     );
     assert_eq!(
-        doc.tree.get(mid.0).unwrap().parent,
-        Some(w.0),
-        "and it is still the wrapper's child, not the box's"
+        run_members(&doc, bx),
+        vec![before.0, mid.0, after.0],
+        "one run across the wrapper, and its middle member is the text itself"
     );
-    // The wrapper itself is what moved, and it is still on the same line.
+    assert_eq!(
+        box_parent(&doc, bx),
+        Some(c.0),
+        "the box hangs off the container whose flattened list was classified, \
+         not off the wrapper the member happens to live in"
+    );
+    assert_eq!(run_boxes(&doc, c), vec![bx], "and the container records it");
+    assert!(
+        run_boxes(&doc, w).is_empty(),
+        "the boxless wrapper records none"
+    );
+
+    // The geometry half, which never went hollow: one line, then the block.
     assert_eq!(height_of(&doc, c), LINE + 30.0);
     assert!(
         is_in_anonymous_root(&doc, mid),
         "its text still flows into the run"
     );
-    assert_consistent(&doc, "wrapper adopted whole");
+    assert_bookkeeping(&doc, "wrapper flattened into the run");
+    assert_consistent(&doc, "wrapper flattened into the run");
 }
 
-/// A **nested** wrapper chain is adopted at its **outermost** level: the run
-/// takes `w1`, and `w2` stays inside it.
+/// A **nested** wrapper chain flattens all the way to the text at its bottom:
+/// the run takes neither wrapper, and the box still hangs off the container two
+/// levels above.
 ///
-/// One wrapper is the arity fixed point of the keep-whole test — with a chain
-/// of length 1 there is no "outermost" to get wrong. With two, a rule that
-/// counted only leaf inline content would find `w1`'s contribution to be a
-/// single `Contents` unit, judge it to hold no inline content, flatten it, and
-/// adopt `w2` out of `w1` instead. Same line, same pixels, and one more DOM
-/// edge broken than necessary — invisible to every geometry assertion in this
-/// file.
+/// One wrapper is the arity fixed point for "how far down does the chain
+/// flatten" — with a chain of length 1, "recurse" and "take the child's own
+/// children" agree. With two, a collector that descends a single level would
+/// find `w2` in the unit list, and `w2` is a `Contents` unit the classification
+/// counts as nothing: the text would join no run, while the container's height
+/// and every `ifc_root` in this file stayed exactly as they are.
 ///
-/// Kills: dropping the nested-`Contents` case from the inline-content test in
-/// `collect_run_units` (the induction that makes a chain answer as one).
+/// **The chain is written first on purpose**, so the run's head is the text two
+/// levels down rather than a direct child of the container. That is the sample
+/// off the fixed point the fixture above sits on: a mutant that hangs the box
+/// off the run head's own DOM parent produces the container either way when the
+/// head is a direct child, and produces `w2` here.
+///
+/// It used to say the opposite, and said it in an assertion that could no
+/// longer be wrong. `dom_children(w1) == ["<span>"]` carried the message *"the
+/// run should have taken `w1`, not reached past it for `w2`"* — the deleted
+/// keep-whole rule. The run takes **neither** wrapper now; and since #566
+/// nothing is reparented under any rule, so `w1` kept its child either way and
+/// the assertion passed while its message was false. This was mutant `K10`'s
+/// documented witness.
+///
+/// Kills: the deleted keep-whole rule in both forms (it makes `w1` the member);
+/// a `collect_run_units` that recurses one level and then pushes; recording the
+/// run backwards; hanging the box off the head's own parent; and grouping the
+/// run out of `c.children`, where the chain is one `Contents` node and the text
+/// is nowhere.
 #[test]
-fn a_nested_wrapper_chain_is_adopted_at_its_outermost_level() {
+fn a_nested_wrapper_chain_flattens_to_the_text_at_its_bottom() {
     let mut doc = RinchDocument::new();
     let body = doc.body();
     let c = el(&mut doc, body, "div", CONTAINER);
-    txt(&mut doc, c, "before ");
     let w1 = el(&mut doc, c, "span", "display: contents");
     let w2 = el(&mut doc, w1, "span", "display: contents");
     let mid = txt(&mut doc, w2, "MIDDLE");
-    txt(&mut doc, c, " after");
+    let after = txt(&mut doc, c, " after");
     el(&mut doc, c, "div", "height: 30px");
     doc.resolve_layout(VW, VH);
 
+    let bx = run_box(&doc, mid).expect("the text at the bottom of the chain is the run member");
+    assert_eq!(run_box(&doc, w1), None, "not the outer wrapper");
+    assert_eq!(run_box(&doc, w2), None, "and not the inner one either");
     assert_eq!(
-        dom_children(&doc, w1),
-        vec!["<span>".to_string()],
-        "the inner wrapper must still be inside the outer one — the run should \
-         have taken `w1`, not reached past it for `w2`"
+        run_members(&doc, bx),
+        vec![mid.0, after.0],
+        "one run, in document order, starting two levels down and coming back \
+         out to the container's own text"
     );
     assert_eq!(
-        dom_children(&doc, w2),
-        vec!["MIDDLE".to_string()],
-        "and the text must still be inside the inner wrapper"
+        box_parent(&doc, bx),
+        Some(c.0),
+        "the box hangs off the container that was classified — two levels above \
+         its own head, which is the wrapper's child"
     );
+    assert_eq!(run_boxes(&doc, c), vec![bx]);
+    assert!(
+        run_boxes(&doc, w1).is_empty() && run_boxes(&doc, w2).is_empty(),
+        "and no wrapper in the chain records a box of its own"
+    );
+
     assert_eq!(
         height_of(&doc, c),
         LINE + 30.0,
@@ -571,7 +684,8 @@ fn a_nested_wrapper_chain_is_adopted_at_its_outermost_level() {
         is_in_anonymous_root(&doc, mid),
         "and the text flows into the run"
     );
-    assert_consistent(&doc, "nested chain adopted whole");
+    assert_bookkeeping(&doc, "nested chain flattened to the bottom");
+    assert_consistent(&doc, "nested chain flattened to the bottom");
 }
 
 /// A two-deep chain whose outer wrapper also holds a block: **every level
@@ -751,101 +865,221 @@ fn a_run_that_spans_the_container_and_a_wrapper_disturbs_neither() {
     assert_consistent(&doc, "after the dissolving pass");
 }
 
-/// Two runs inside one wrapper are restored **in document order**, with the
-/// block that split them back between them.
+/// Two runs inside one wrapper mint two boxes, and both hang off the
+/// **container** — in run order, and cleared together when the split heals.
 ///
-/// **Honest about what this does and does not catch.** It is a round-trip
-/// guard for the two-box shape, and it is *not* what pins the order the boxes
-/// are dissolved in: reversing that loop leaves this — and the whole workspace
-/// — green, measured, because every head is restored at the slot its own box
-/// is holding *at the moment it is dissolved*, which no other box's dissolution
-/// can move. The `.rev()` is kept as the exact inverse of creation and for the
-/// index fallback, not because a case here needs it.
+/// "Restored in document order" was the old claim, and it described a round
+/// trip that no longer happens: the boxes were never in `w.children`, nothing
+/// was removed from that list, and the order of a list nothing removes from
+/// cannot change. So `dom_children(w)` was true whatever the classification
+/// decided.
+///
+/// What the round trip was standing in for is the two-box correspondence, and
+/// that is asked of the bookkeeping instead: which boxes exist, whose they are,
+/// which member is in which, and that dissolving takes all of it away. The
+/// container is `c` and not `w` even though every member is `w`'s child —
+/// `w` generates no box, so it can hold none.
+///
+/// Kills: hanging a box off the run head's own DOM parent (both boxes would be
+/// the wrapper's); minting the boxes in reverse run order; a dissolving pass
+/// that leaves `c.run_boxes` naming freed slab entries; one that leaves a
+/// member's `run_box` naming a box that no longer exists; and dropping the
+/// block-boundary flush, which makes this one run and one box rather than two.
 #[test]
-fn two_runs_inside_one_wrapper_are_restored_in_document_order() {
+fn two_runs_inside_one_wrapper_are_two_boxes_on_the_container() {
     let mut doc = RinchDocument::new();
     let body = doc.body();
     let c = el(&mut doc, body, "div", CONTAINER);
     let w = el(&mut doc, c, "span", "display: contents");
-    txt(&mut doc, w, "a ");
+    let a = txt(&mut doc, w, "a ");
     let blk = el(&mut doc, w, "div", "height: 30px");
-    txt(&mut doc, w, "b ");
+    let b = txt(&mut doc, w, "b ");
     doc.resolve_layout(VW, VH);
 
+    let b1 = run_box(&doc, a).expect("`a ` is in a run");
+    let b2 = run_box(&doc, b).expect("`b ` is in a run");
+    assert_ne!(b1, b2, "the block between them splits the runs");
+    assert_eq!(run_members(&doc, b1), vec![a.0]);
+    assert_eq!(run_members(&doc, b2), vec![b.0]);
+    assert_eq!(
+        (box_parent(&doc, b1), box_parent(&doc, b2)),
+        (Some(c.0), Some(c.0)),
+        "both boxes hang off the container — the wrapper generates no box, so \
+         it can hold none"
+    );
+    assert_eq!(
+        run_boxes(&doc, c),
+        vec![b1, b2],
+        "and the container records both, in run order"
+    );
+    assert!(run_boxes(&doc, w).is_empty(), "the wrapper records neither");
+    assert_eq!(
+        height_of(&doc, c),
+        LINE + 30.0 + LINE,
+        "line, block, line — the shape the two boxes stand for"
+    );
+    assert_bookkeeping(&doc, "two runs inside one wrapper");
+
+    // Heal the split: with the block gone the container is no longer mixed, so
+    // this pass dissolves both boxes and mints none.
     doc.set_attribute(blk, "style", "display: none");
     doc.resolve_layout(VW, VH);
 
-    assert_eq!(
-        dom_children(&doc, w),
-        vec!["a ".to_string(), "<div>".to_string(), "b ".to_string()],
-        "the wrapper's children must come back in the order the author wrote"
+    assert_eq!(run_box(&doc, a), None, "the run is gone");
+    assert_eq!(run_box(&doc, b), None, "and so is the second");
+    assert!(
+        run_boxes(&doc, c).is_empty(),
+        "and the container records no box — a list left naming freed slab \
+         entries is what invariant C fires on, and what sends \
+         `box_tree_children` down the substituting path with nothing to \
+         substitute"
     );
-    assert_consistent(&doc, "two runs restored");
+    assert_eq!(
+        height_of(&doc, c),
+        LINE,
+        "`a b` is one line once nothing splits it"
+    );
+    assert_bookkeeping(&doc, "after the dissolving pass");
+    assert_consistent(&doc, "after the dissolving pass");
 }
 
-/// Two **adjacent** members of one run come back in the order they were
-/// written.
+/// Two **adjacent** members of a run the *block boundary* flushes are recorded
+/// in the order they were written.
 ///
-/// This is where the sibling anchors have to be read *before* the run is
-/// detached. Reading them while detaching gives the second member the same
-/// surviving predecessor as the first — both "after the block", or both
-/// "at the front" — and the restore puts them back reversed. The line then
-/// reads `two one` on the next pass, which is a silent text scramble no
-/// geometry assertion can see.
+/// This used to be about sibling anchors: the run was adopted out of the
+/// container, and the anchors had to be read *before* the detach or the two
+/// members came back reversed and the line read `two one`. Since #566 nothing
+/// is detached, so `dom_children(c)` after the dissolving pass was the author's
+/// list whatever anything did — the order of a list nothing removes from cannot
+/// change. The ordering claim is real, but it now lives in `run_members`, which
+/// is the only place a run has an order at all.
 ///
-/// One member per run is the cardinality fixed point here: with one, "the
-/// anchor before detaching" and "the anchor while detaching" are the same node.
+/// This is the un-wrapped, run-at-the-head sample: two adjacent text nodes and
+/// nothing between them and the start of the container.
 ///
-/// Kills: collecting the anchors inside the removal loop.
+/// One member per run is still the cardinality fixed point — with one member,
+/// forwards and backwards are the same list.
+///
+/// Kills: recording the run backwards, and both halves of the dissolving pass —
+/// a cleanup that leaves `c.run_boxes` naming a freed box, and one that leaves a
+/// member's `run_box` naming it.
+///
+/// **What it cannot see, stated rather than implied.** Its container holds
+/// exactly one run, so *both* flush sites produce it: deleting the
+/// `InFlowBlock` arm's flush leaves `one two` as a trailing run, and deleting
+/// the trailing flush leaves it as a block-flushed one. Measured, both mutants
+/// survive this fixture and are killed by its pair below, whose container has a
+/// run at each site. Its kill set is therefore a **subset** of that pair's; it
+/// is kept as the second sample rather than deleted, and this paragraph is here
+/// so nobody reads it as independent coverage.
 #[test]
-fn two_adjacent_members_of_one_run_come_back_in_order() {
+fn two_adjacent_members_of_one_run_are_recorded_in_order() {
     let mut doc = RinchDocument::new();
     let body = doc.body();
     let c = el(&mut doc, body, "div", CONTAINER);
-    txt(&mut doc, c, "one ");
-    txt(&mut doc, c, "two");
+    let one = txt(&mut doc, c, "one ");
+    let two = txt(&mut doc, c, "two");
     let blk = el(&mut doc, c, "div", "height: 7px");
     doc.resolve_layout(VW, VH);
+
+    let bx = run_box(&doc, one).expect("`one ` is in a run");
+    assert_eq!(
+        run_box(&doc, two),
+        Some(bx),
+        "adjacent inline siblings share one box"
+    );
+    assert_eq!(
+        run_members(&doc, bx),
+        vec![one.0, two.0],
+        "and the box records them in the order they were written"
+    );
+    assert_eq!(box_parent(&doc, bx), Some(c.0));
+    assert_eq!(
+        run_boxes(&doc, c),
+        vec![bx],
+        "one run, flushed by the block after it, so exactly one box"
+    );
+    assert_eq!(height_of(&doc, c), LINE + 7.0, "one line, then the block");
+    assert_bookkeeping(&doc, "a run flushed by a block");
 
     // The container stops being mixed, so this pass dissolves and mints
-    // nothing — the restore is the only thing that decides the order.
+    // nothing.
     doc.set_attribute(blk, "style", "display: none");
     doc.resolve_layout(VW, VH);
 
-    assert_eq!(
-        dom_children(&doc, c),
-        vec!["one ".to_string(), "two".to_string(), "<div>".to_string()],
-        "the two text nodes must come back in the order they were written"
-    );
+    assert_eq!(run_box(&doc, one), None, "the run is gone");
+    assert_eq!(run_box(&doc, two), None);
+    assert!(run_boxes(&doc, c).is_empty());
+    assert_eq!(height_of(&doc, c), LINE, "and `one two` is the whole box");
+    assert_bookkeeping(&doc, "after the dissolving pass");
+    assert_consistent(&doc, "after the dissolving pass");
 }
 
-/// The same, for a run that follows a block — so the anchor is a real
-/// preceding sibling rather than "the front of the list", and a mutant that
-/// gets the head right by luck still has the second member to answer for.
+/// The same two members, in the run the **trailing** flush produces — the run
+/// that ends because the child list does, with a block ahead of it rather than
+/// behind it.
+///
+/// The two flush sites are separately deletable, and one run per container
+/// cannot tell them apart — which is the whole reason this fixture has two.
+/// Dropping the `if !current_run.is_empty()` after the grouping loop mints no
+/// box at all for `one two`; dropping the `InFlowBlock` arm's flush merges
+/// `head one two` into a single run across the block. Both are measured, and
+/// both survive the fixture above, whose one run either site would produce.
+///
+/// Kills: dropping the trailing flush; dropping the block flush; recording a
+/// run backwards; minting the boxes in reverse run order (`c.run_boxes` names
+/// the second run's box first); and both halves of the dissolving pass.
+///
+/// The reverse-mint-order one is worth a number, because it is a claim about
+/// the whole workspace rather than about this file: measured on `e8fb6e8` at
+/// `-p rinch-dom -p rinch` (41 executables, 1247 tests), that mutant has
+/// **zero** killers with this fixture and its sibling reverted, and exactly
+/// those two with them. It changes no pixel and no geometry —
+/// `box_tree_children` emits each box at its first member, so the Taffy order
+/// is unaffected — and `run_boxes` is the only thing that reads differently.
 #[test]
-fn two_adjacent_members_of_a_later_run_come_back_in_order() {
+fn two_adjacent_members_of_a_later_run_are_recorded_in_order() {
     let mut doc = RinchDocument::new();
     let body = doc.body();
     let c = el(&mut doc, body, "div", CONTAINER);
-    txt(&mut doc, c, "head ");
+    let head = txt(&mut doc, c, "head ");
     let blk = el(&mut doc, c, "div", "height: 7px");
-    txt(&mut doc, c, "one ");
-    txt(&mut doc, c, "two");
+    let one = txt(&mut doc, c, "one ");
+    let two = txt(&mut doc, c, "two");
     doc.resolve_layout(VW, VH);
+
+    let first = run_box(&doc, head).expect("`head ` is in a run");
+    let second = run_box(&doc, one).expect("`one ` is in a run");
+    assert_ne!(first, second, "the block between them splits the runs");
+    assert_eq!(run_members(&doc, first), vec![head.0]);
+    assert_eq!(
+        run_members(&doc, second),
+        vec![one.0, two.0],
+        "the trailing run records both its members, in document order"
+    );
+    assert_eq!(run_box(&doc, two), Some(second));
+    assert_eq!(
+        run_boxes(&doc, c),
+        vec![first, second],
+        "two runs, one per flush site, recorded in run order"
+    );
+    assert_eq!(
+        height_of(&doc, c),
+        LINE + 7.0 + LINE,
+        "line, block, line — the trailing run has a box of its own"
+    );
+    assert_bookkeeping(&doc, "a run flushed by the end of the list");
 
     doc.set_attribute(blk, "style", "display: none");
     doc.resolve_layout(VW, VH);
 
-    assert_eq!(
-        dom_children(&doc, c),
-        vec![
-            "head ".to_string(),
-            "<div>".to_string(),
-            "one ".to_string(),
-            "two".to_string()
-        ],
-        "the second run's members must come back in document order too"
-    );
+    assert_eq!(run_box(&doc, head), None, "both runs are gone");
+    assert_eq!(run_box(&doc, one), None);
+    assert_eq!(run_box(&doc, two), None);
+    assert!(run_boxes(&doc, c).is_empty());
+    assert_eq!(height_of(&doc, c), LINE, "and the three join one line");
+    assert_bookkeeping(&doc, "after the dissolving pass");
+    assert_consistent(&doc, "after the dissolving pass");
 }
 
 /// Two adjacent members behind a wrapper **keep their slots** (#568, #566).
@@ -958,9 +1192,23 @@ fn a_node_inserted_before_a_box_does_not_reorder_the_restored_run() {
 /// content is still inline content" produces an anonymous box around nothing —
 /// and an extra line of height where a browser renders none.
 ///
-/// Kills: dropping the inline-content requirement from `collect_run_units`'s
-/// keep-whole test, which lets an empty wrapper survive as a `Contents` unit
-/// and be counted by `has_inline`.
+/// **The mechanism that decides it today**, since the keep-whole test the old
+/// `Kills:` line named no longer exists: `collect_run_units` recurses into the
+/// wrapper and it contributes **zero** units, so the container's unit list is
+/// just the block, `has_inline` is false, and `!(has_inline && has_block)`
+/// skips the container before any run is grouped.
+///
+/// Kills: reviving the keep-whole rule *without* its inline-content
+/// requirement — push a wrapper whole when everything it stands for is inline,
+/// which an empty wrapper satisfies vacuously, then count a `Contents` unit in
+/// `has_inline` and let it join a run. That mints a box around nothing.
+///
+/// **Its own hollow half is repaired here too.** It asserted no box by looking
+/// for `"ANON"` in `dom_children`, and since #566 a box is not in anybody's
+/// `children` — so that read could not find one however many were minted.
+/// Measured: with the box minted around an empty wrapper, the height oracle
+/// above cannot see it either (an IFC over no content measures 0), so
+/// `run_boxes` is the only thing in this fixture that can.
 #[test]
 fn an_empty_wrapper_alone_with_a_block_mints_no_box() {
     fn build(with_wrapper: bool) -> (RinchDocument, NodeId) {
@@ -989,10 +1237,12 @@ fn an_empty_wrapper_alone_with_a_block_mints_no_box() {
          content would add a line"
     );
     assert!(
-        !dom_children(&wdoc, wc).contains(&"ANON".to_string()),
-        "and no box may be minted at all: {:?}",
-        dom_children(&wdoc, wc)
+        run_boxes(&wdoc, wc).is_empty(),
+        "and no box may be minted at all — an empty wrapper contributes no \
+         unit, so the container is not mixed content: {:?}",
+        run_boxes(&wdoc, wc)
     );
+    assert_bookkeeping(&wdoc, "empty wrapper alone with a block");
     assert_consistent(&wdoc, "empty wrapper alone with a block");
 }
 
