@@ -51,6 +51,50 @@
 //! wrapper's `children` is true whatever the classification decides, and cannot
 //! stand in for a claim about the run. The fixtures that used to make their
 //! claims that way now make them of the three fields above.
+//!
+//! # `adoption`, the mutant three fixtures below share
+//!
+//! Three fixtures mutate the DOM *between* two layout passes and check that the
+//! mutation lands where the author aimed it. What they pin is the invariant
+//! above, end to end — and the mutant of it is not a one-line edit, so it is
+//! named once here and referred to by name in their `Kills:` lines.
+//!
+//! **`adoption` re-instates the two halves #566 deleted.** Minting takes every
+//! run member out of its DOM parent's `children`, recording `(origin, index,
+//! child)`; `cleanup_anonymous_block_boxes` re-inserts each at that recorded
+//! index on the next pass. The window between the two is exactly where an app
+//! mutates the DOM, which is what all three fixtures build. (Hold the records
+//! on the tree, not in a `thread_local` — a fixture that builds two documents
+//! on one thread otherwise restores one document's ids into the other and
+//! panics inside Taffy instead of producing the divergence.)
+//!
+//! Measured at `19bbde8`, wide scope — `cargo test --no-fail-fast -p rinch-dom
+//! -p rinch`, **45 test executables, 1277 tests**; the narrow `-p rinch-dom` is
+//! **37** at that base and reports false survivors. (Both counts move — they
+//! were 41 / 33 at `e8fb6e8`, 43 / 35 at `db9c64f`, 44 / 36 at `1a60722`. A
+//! count quoted without its base goes stale silently, so quote the base, and
+//! never a distance from one: the next merge invalidates that too.) `adoption`
+//! has **70** killers, and each of the three fails on the assertion that
+//! **distinguishes its two arms**, its control arm still passing.
+//!
+//! **Each `Kills:` line below names both a mutant and the assertion it fires,
+//! and the second half is the perishable one.** These fixtures call
+//! `assert_consistent`, which runs `taffy_tree_violations` — so a validator
+//! rule added later can fire *before* the geometry assertion a doc quotes,
+//! leaving the fixture red, the mutant "killed", and the doc quietly wrong
+//! about why. Re-measured against #602's two new rules (`D detached`,
+//! `E ghost box`): every failure below is still the quoted assertion, and none
+//! moved into the validator. Re-check that specifically whenever a rule is
+//! added, not just the pass/fail.
+//!
+//! **That last clause is the point, and it is why these three sat out the sweep
+//! that repaired this file's hollow assertions.** All three are also killed by
+//! deleting the trailing run flush — but through the **#466 leaf-invariant
+//! production `assert!`**, not through anything they assert. Two of them are
+//! killed by emitting every run box at the container's head instead of at its
+//! own run head's slot — but on their **control** arm, which has no insertion
+//! in it at all. A kill is not automatically evidence for the half of a fixture
+//! you are reading; only `adoption` exercises the insert.
 
 use rinch_core::dom::{DomDocument, NodeId};
 use rinch_dom::RinchDocument;
@@ -760,13 +804,30 @@ fn a_nested_wrapper_chain_flattens_at_every_level_and_lays_out_the_same() {
 /// appending.
 ///
 /// `C { block(7) <w>"two"</w> }` — a container that is mixed only because the
-/// flattened scan can see the wrapper's text (#568), so on `main` no box was
-/// minted here at all. Correct is `y = 7`: the new block goes above the text.
-/// With the wrapper flattened into the run its text is adopted into a box, the
-/// `position()` lookup in `insert_before` fails, the block is appended, and
-/// `y = 27`.
+/// flattened scan can see the wrapper's text (#568). Correct is `y = 7`: the
+/// new block goes above the text, exactly as the control arm gets by writing it
+/// there in the first place.
 ///
-/// Kills: flattening a contents wrapper unconditionally in `collect_run_units`.
+/// **`y = 27` is a mutant's number, not a shipped one.** The doc that stood
+/// here read it as what *flattening the wrapper* produces and the `Kills:` line
+/// named that flattening — which is the shipped behaviour, so it named no
+/// mutant at all. Nothing is adopted out of a wrapper on `main` — that is what
+/// makes `adoption` a mutant rather than a spelling of the shipped code — and
+/// #573 measured `y = 7` both with the keep-whole rule and without it,
+/// which is one of the three grounds on which that rule was deleted.
+///
+/// What does produce 27 is `adoption` (module header): take `"two"` out of
+/// `w.children` when its box is minted and `insert_before`'s `position()`
+/// lookup fails one pass later, so the block is appended and the line it should
+/// sit above ends up above it. The panic message below is therefore an accurate
+/// diagnosis and is kept — measured, `adoption` is the only mutant of the
+/// thirteen tried that reaches that assertion at all.
+///
+/// Kills: `adoption`. Fails at `left: 27.0, right: 7.0`, the control arm still
+/// reading 7. Deleting the trailing run flush and classifying `children`
+/// instead of the units fail it too, but both through the #466 production
+/// `assert!`; emitting every box at the container's head fails its **control**
+/// arm, which contains no insertion.
 #[test]
 fn an_insert_before_a_wrapped_text_node_still_inserts() {
     fn build(mutate: bool) -> (RinchDocument, NodeId) {
@@ -1139,12 +1200,33 @@ fn two_adjacent_members_behind_a_wrapper_keep_their_slots() {
 /// A node inserted **before** an anonymous box, between two layout passes,
 /// stays before the run that box stood for.
 ///
-/// The restore is therefore anchored on siblings, not on the indices recorded
-/// when the box was minted: an insertion anywhere ahead of a recorded slot
-/// makes that index mean a different position, and the children come back
-/// re-ordered — which then merges two runs into one and loses a line.
+/// **There is no restore path to anchor on anything.** The doc that stood here
+/// described one anchored on siblings rather than on recorded indices; nothing
+/// is moved (#566), so nothing comes back, and the old `Kills:` line —
+/// "restoring an adopted child at its recorded index" — named a mechanism this
+/// crate does not have. What the fixture pins is the invariant that makes the
+/// restore unnecessary: the box minted for `"one "` is in nobody's `children`,
+/// so `children[0]` is still the author's own text and an insert ahead of it
+/// lands where the author aimed.
 ///
-/// Kills: restoring an adopted child at its recorded index.
+/// That recorded-index restore is now the **mutant** instead of the code. Under
+/// `adoption` (module header) both runs are re-inserted at the indices they
+/// held when they were taken — which the insert has since made mean something
+/// else. Probed rather than reasoned: `c.children` reads `[x, "one ", block,
+/// "two"]` unmutated and `[x, block]` under the mutant at the same point, the
+/// two texts having been restored as `["one ", "two", x, block]` at the top of
+/// the pass and adopted straight back out. They come back **adjacent**, the
+/// block no longer separates them, the two runs merge into one, and the
+/// container loses a line.
+///
+/// Kills: `adoption`. Fails at the post-insert assertion, `left: 27.0, right:
+/// 47.0`, with the precondition still passing.
+///
+/// **What its kill list does not establish.** Deleting the run flush at a block
+/// boundary fails this fixture at its *precondition* — before the insert has
+/// happened — and deleting the trailing flush fails it through the #466
+/// production `assert!`. Neither is evidence for the half this fixture exists
+/// for; `adoption` is the one that reaches it.
 #[test]
 fn a_node_inserted_before_a_box_does_not_reorder_the_restored_run() {
     let mut doc = RinchDocument::new();
@@ -1246,19 +1328,30 @@ fn an_empty_wrapper_alone_with_a_block_mints_no_box() {
     assert_consistent(&wdoc, "empty wrapper alone with a block");
 }
 
-/// The run's **head** is restored at the slot its own box is holding, not at the
-/// slot the head's recorded sibling implies.
+/// The run's **head** stays where the author left it, so a block inserted
+/// immediately before it still takes the top of the container.
 ///
-/// The two agree until something is inserted *between* them, which is what this
-/// builds: a **block** inserted immediately before the first anonymous box. If
-/// the head is restored by its `prev` anchor (`None` — it was first) it goes to
-/// index 0 and the inserted block ends up *after* the first line instead of
-/// above it. The container's height is identical either way, which is why
-/// `a_node_inserted_before_a_box_does_not_reorder_the_restored_run` — whose
-/// inserted node is out-of-flow — cannot see it: only the **order** changes.
+/// **The machinery the old doc described is gone.** It weighed restoring the
+/// head "at the slot its own box is holding" against "the slot its recorded
+/// sibling implies", and `Kills:` named an `i == 0 && adopted.origin ==
+/// parent_id` head branch in `cleanup_anonymous_block_boxes`. All of it went
+/// with `AdoptedChild`: no restore, no recorded slot, no such branch, and no
+/// `prev` anchor to be wrong about.
 ///
-/// Kills: removing the `i == 0 && adopted.origin == parent_id` head branch from
-/// `cleanup_anonymous_block_boxes`.
+/// The *shape* survives and still discriminates, because `adoption` (module
+/// header) puts a restore back. The head is re-inserted at the index it held
+/// before the insert, lands ahead of the newly inserted block, and the block
+/// drops below the first line. Its `y` is the whole test: the container's
+/// height is the same either way, so only the **order** moves — which is why
+/// this is a separate fixture from
+/// `a_node_inserted_before_a_box_does_not_reorder_the_restored_run`, whose
+/// out-of-flow insert makes its signal a height instead.
+///
+/// Kills: `adoption`. Fails at the mutate arm's assertion, `y = 20` where 0 is
+/// correct, with the control arm still reading 0. Deleting the trailing run
+/// flush fails it through the #466 production `assert!`, and emitting every box
+/// at the container's head fails its **control** arm; neither reaches the
+/// insert.
 #[test]
 fn a_block_inserted_before_the_first_box_stays_above_the_line() {
     fn build(mutate: bool) -> (RinchDocument, NodeId) {
@@ -1452,9 +1545,25 @@ fn a_hidden_child_behind_a_wrapper_neither_mixes_nor_splits() {
     assert_consistent(&doc, "hidden child behind a wrapper");
 }
 
-/// Repeated passes are stable — the boxes are dissolved and re-minted every
-/// `ifc_dirty` pass, so a restore that drifts by one shows up here and nowhere
-/// else.
+/// Repeated passes are stable — the boxes are dropped and re-minted every
+/// `ifc_dirty` pass, so a classification that is not a function of the DOM alone
+/// shows up here.
+///
+/// **Not "a restore that drifts by one shows up here and nowhere else"**, which
+/// is what this doc used to say. Nothing is restored (#566), and the drift it
+/// named needs a DOM mutated *between* passes — which this fixture never does.
+/// Measured: of the four fixtures whose docs this pass repaired, this is the
+/// only one `adoption` (module header) does **not** kill, precisely because it
+/// gives a restore nothing to drift against. "Nowhere else" was false twice
+/// over: the mutants it does catch are caught by other fixtures too.
+///
+/// Kills: deleting the run flush in the `InFlowBlock` arm — the two runs merge
+/// and all four passes read a stable, wrong `50` where the container is `LINE +
+/// 30 + LINE`; and `box_tree_children` reading `children` instead of
+/// `collect_run_units`' output, which reads `110` for all four. Deleting the
+/// trailing flush, classifying `children` in the *grouping*, and never recursing
+/// in `collect_run_units` fail it too, but all three through the #466 production
+/// `assert!` rather than through anything it asserts.
 #[test]
 fn the_flattened_classification_is_stable_across_repeated_passes() {
     let mut doc = RinchDocument::new();
