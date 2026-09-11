@@ -22,13 +22,29 @@
 /// error rather than a skipped test.
 const ACTIVITY_JAVA: &str = include_str!("../java/com/rinch/RinchActivity.java");
 
-/// Extract the body of a method by name, from its signature to the first line
-/// that closes it at method indentation.
+/// Extract the body of a method by name, from its **declaration** to the first
+/// line that closes it at method indentation.
+///
+/// The first ` name(` in the file is not necessarily the declaration, and
+/// taking it anyway is a silent way to test the wrong text: `queueIntent` is
+/// called from `onCreate` some six hundred lines above the `private void` that
+/// declares it, so a plain `find` returns a slice of *onCreate* and every
+/// assertion about `queueIntent` then passes or fails for unrelated reasons.
+/// The declaration is the first occurrence whose own line begins with an access
+/// modifier.
 fn method_body(name: &str) -> String {
     let sig = format!(" {name}(");
     let start = ACTIVITY_JAVA
-        .find(&sig)
-        .unwrap_or_else(|| panic!("no method named `{name}` in RinchActivity.java"));
+        .match_indices(&sig)
+        .map(|(at, _)| at)
+        .find(|&at| {
+            let line_start = ACTIVITY_JAVA[..at].rfind('\n').map_or(0, |i| i + 1);
+            let before = ACTIVITY_JAVA[line_start..at].trim_start();
+            before.starts_with("private")
+                || before.starts_with("public")
+                || before.starts_with("protected")
+        })
+        .unwrap_or_else(|| panic!("no method *declared* `{name}` in RinchActivity.java"));
     let rest = &ACTIVITY_JAVA[start..];
     let end = rest
         .find("\n    }\n")
@@ -184,4 +200,313 @@ fn the_api_30_display_calls_stay_behind_a_version_guard() {
             );
         }
     }
+}
+
+// ── Incoming intents (#575) ──────────────────────────────────────────────
+//
+// Four invariants that exist today only as prose in the Java. Each is stated in
+// its own comment there, each is silent at every other layer — no compile
+// error, no test failure, and for two of them no crash on a device that is
+// already warm — and prose is the thing that rots.
+
+/// Every `native` method the activity declares, by name.
+///
+/// Derived rather than listed, so a native added later is covered without
+/// anyone remembering to come back here.
+fn declared_native_methods() -> Vec<String> {
+    ACTIVITY_JAVA
+        .lines()
+        .filter(|l| {
+            l.trim_start()
+                .starts_with(|c: char| c.is_ascii_alphabetic())
+        })
+        .filter(|l| l.contains(" native "))
+        .filter_map(|l| {
+            let open = l.find('(')?;
+            let name = l[..open].rsplit(|c: char| c.is_whitespace()).next()?;
+            (!name.is_empty()).then(|| name.to_string())
+        })
+        .collect()
+}
+
+/// Rewrite `src` with every comment and string literal blanked to spaces,
+/// **preserving byte offsets** so positions found in the result are positions
+/// in the original.
+///
+/// Needed because the assertions below are about where an identifier *is*, and
+/// a javadoc that names it, or a string literal that happens to contain a
+/// brace, would otherwise be indistinguishable from code.
+fn code_only(src: &str) -> String {
+    let b = src.as_bytes();
+    let mut out = vec![b' '; b.len()];
+    let (mut i, mut state) = (0usize, 0u8); // 0 code, 1 line, 2 block, 3 string, 4 char
+    while i < b.len() {
+        let two = if i + 1 < b.len() {
+            &b[i..i + 2]
+        } else {
+            &b[i..]
+        };
+        match state {
+            0 => {
+                if two == b"//" {
+                    state = 1;
+                } else if two == b"/*" {
+                    state = 2;
+                } else {
+                    if b[i] == b'"' {
+                        state = 3;
+                    } else if b[i] == b'\'' {
+                        state = 4;
+                    }
+                    out[i] = b[i];
+                }
+            }
+            1 => {
+                if b[i] == b'\n' {
+                    state = 0;
+                    out[i] = b[i];
+                }
+            }
+            2 => {
+                if two == b"*/" {
+                    out[i] = b' ';
+                    i += 1;
+                    state = 0;
+                } else if b[i] == b'\n' {
+                    out[i] = b[i];
+                }
+            }
+            3 | 4 => {
+                let quote = if state == 3 { b'"' } else { b'\'' };
+                if b[i] == b'\\' {
+                    i += 1;
+                } else if b[i] == quote {
+                    state = 0;
+                    out[i] = b[i];
+                }
+            }
+            _ => unreachable!(),
+        }
+        i += 1;
+    }
+    String::from_utf8(out).expect("blanking preserves ASCII structure")
+}
+
+/// Byte ranges covered by `synchronized (monitor) { … }` blocks, brace-matched.
+fn synchronized_spans(code: &str, monitor: &str) -> Vec<(usize, usize)> {
+    let needle = format!("synchronized ({monitor})");
+    let bytes = code.as_bytes();
+    let mut spans = Vec::new();
+    for (at, _) in code.match_indices(&needle) {
+        let Some(rel) = code[at..].find('{') else {
+            continue;
+        };
+        let open = at + rel;
+        let (mut depth, mut j) = (0i32, open);
+        while j < bytes.len() {
+            match bytes[j] {
+                b'{' => depth += 1,
+                b'}' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        spans.push((open, j));
+                        break;
+                    }
+                }
+                _ => {}
+            }
+            j += 1;
+        }
+    }
+    spans
+}
+
+/// `onCreate` must hand nothing to a native.
+///
+/// On a cold start the native thread may not have reached `RegisterNatives`
+/// when `onCreate` runs on the UI thread, and a native that is not registered
+/// yet is an `UnsatisfiedLinkError` thrown out of a lifecycle override — which
+/// force-finishes the activity. The app dies on launch; on a cold start; and
+/// only on the machines where the race goes the wrong way.
+///
+/// **This is the entire reason the intent path is a queue rather than a call**,
+/// and "store, do not deliver" is a rule no compiler enforces. Replacing
+/// `queueIntent(getIntent(), …)` with a direct `nativeOnIncomingIntent(…)` is a
+/// one-line simplification that reads better, compiles, passes every check in
+/// this repository, and works on every *warm* start.
+#[test]
+fn on_create_hands_nothing_to_a_native() {
+    let natives = declared_native_methods();
+    // Anti-vacuity: if the extractor stops finding natives this test goes
+    // quietly green while pinning nothing, which is the failure mode this
+    // module is least able to notice.
+    assert!(
+        natives.len() >= 4,
+        "expected the activity to declare several natives; the extractor found \
+         {natives:?}, so this test is no longer checking anything"
+    );
+
+    let body = code_only(&method_body("onCreate"));
+    for name in &natives {
+        assert!(
+            !body.contains(&format!("{name}(")),
+            "onCreate calls `{name}(…)`. A native invoked from a lifecycle \
+             override before `RegisterNatives` has run is an \
+             UnsatisfiedLinkError that force-finishes the activity on a cold \
+             start — store the work and let the native side flush it instead; \
+             body was:\n{body}"
+        );
+    }
+}
+
+/// `onNewIntent` must call `setIntent(intent)` **before** it queues.
+///
+/// `getIntent()` answers with the intent the activity was *started* with until
+/// `setIntent` says otherwise; the framework does not do it for you. Two things
+/// then read the wrong object: anything that later calls `getIntent()`,
+/// including a recreation of this activity, and — worse — the consumed marker,
+/// which `queueIntent` puts on the intent it was handed. Mark the new intent
+/// but leave `getIntent()` pointing at the old one and the stale-redelivery
+/// guard is attached to the copy nobody asks about.
+///
+/// **An ordering invariant, and the same species as the SDK_INT one above**,
+/// whose docstring records that pinning presence and not order was a real hole:
+/// both calls being present is not the property, the order is.
+#[test]
+fn on_new_intent_adopts_the_intent_before_queueing_it() {
+    let body = code_only(&method_body("onNewIntent"));
+
+    let set = body.find("setIntent(").unwrap_or_else(|| {
+        panic!(
+            "onNewIntent must call setIntent(intent), or getIntent() keeps \
+             answering with the launching intent; body was:\n{body}"
+        )
+    });
+    let queue = body
+        .find("queueIntent(")
+        .unwrap_or_else(|| panic!("onNewIntent no longer queues the intent; body was:\n{body}"));
+
+    assert!(
+        set < queue,
+        "onNewIntent queues at byte {queue} but adopts the intent at byte \
+         {set}. The consumed marker is put on whatever queueIntent is handed, \
+         so queueing first attaches it to an object getIntent() will not \
+         return; body was:\n{body}"
+    );
+}
+
+/// The consumed marker must be **read before it is written**.
+///
+/// `queueIntent` both tests `EXTRA_RINCH_CONSUMED` and sets it, and the order
+/// is the whole mechanism rather than a style choice: setting first makes the
+/// test that follows see this method's own mark, so the early return fires for
+/// every intent and nothing is ever delivered. A share target that silently
+/// receives nothing, on a path that compiles and runs.
+///
+/// The `recreated` flag is checked in the same breath and pinned with it — it
+/// is the half that survives process death, where the marker does not.
+#[test]
+fn the_consumed_marker_is_read_before_it_is_written() {
+    let body = code_only(&method_body("queueIntent"));
+
+    let read = body
+        .find("getBooleanExtra(EXTRA_RINCH_CONSUMED")
+        .unwrap_or_else(|| {
+            panic!(
+                "queueIntent must test EXTRA_RINCH_CONSUMED, or an intent Android \
+             hands back a second time inside one process is delivered twice — \
+             for a share target, a duplicate import with no undo; body \
+             was:\n{body}"
+            )
+        });
+    let write = body
+        .find("putExtra(EXTRA_RINCH_CONSUMED")
+        .unwrap_or_else(|| {
+            panic!(
+                "queueIntent tests EXTRA_RINCH_CONSUMED but never sets it, so the \
+             test can never be true; body was:\n{body}"
+            )
+        });
+    assert!(
+        read < write,
+        "queueIntent sets the consumed marker at byte {write}, before it tests \
+         it at byte {read}. Then every intent tests as already-consumed and \
+         nothing is ever delivered; body was:\n{body}"
+    );
+
+    // **Past the signature.** `recreated` is also the parameter's name, so
+    // searching the whole body finds the declaration and the assertion holds
+    // whether or not anything consults it — measured: with the `recreated ||`
+    // guard deleted, that version of this test stayed green.
+    let after_signature = body.find('\n').map_or(0, |i| i + 1);
+    let recreated = body[after_signature..]
+        .find("recreated")
+        .map(|i| i + after_signature)
+        .unwrap_or_else(|| {
+            panic!(
+                "queueIntent takes `recreated` and never consults it. That is \
+                 the only guard that survives process death — the extra goes on \
+                 this process's copy and the system re-supplies its own after a \
+                 restore, so without it a share is re-imported on every \
+                 rotation; body was:\n{body}"
+            )
+        });
+    assert!(
+        recreated < write,
+        "queueIntent marks the intent consumed before checking `recreated`; \
+         body was:\n{body}"
+    );
+}
+
+/// `nativeIntentsReady` must only be touched under `synchronized (pendingIntents)`.
+///
+/// The Java says so — *"Guarded by pendingIntents, because onNewIntent reads it
+/// on the UI thread while flushPendingIntents writes it on the native thread"*
+/// — and a stated lock with nothing checking it is exactly the shape that goes
+/// stale. Drop either `synchronized` and the compiler is silent, both threads
+/// keep working, and the cost is a torn read on a cold start: Java publishes the
+/// write with no happens-before edge, the UI thread reads the stale `false`, and
+/// the launch intent sits in the queue until some *later* intent arrives to
+/// flush it. The share that started the app is simply never delivered, and only
+/// sometimes.
+///
+/// Asserted positionally against brace-matched spans rather than by asking
+/// whether the method "contains a synchronized" — which a block placed beside
+/// the access, rather than around it, would satisfy.
+#[test]
+fn the_ready_flag_is_only_touched_under_the_queue_lock() {
+    let code = code_only(ACTIVITY_JAVA);
+    let spans = synchronized_spans(&code, "pendingIntents");
+    assert!(
+        spans.len() >= 2,
+        "expected at least the read in queueIntent and the write in \
+         flushPendingIntents to be synchronized on pendingIntents; found \
+         {} such block(s)",
+        spans.len()
+    );
+
+    let mut checked = 0;
+    for (at, _) in code.match_indices("nativeIntentsReady") {
+        let line_start = code[..at].rfind('\n').map_or(0, |i| i + 1);
+        // The field's own declaration is not an access.
+        if code[line_start..at].contains("boolean") {
+            continue;
+        }
+        checked += 1;
+        assert!(
+            spans.iter().any(|&(open, close)| at > open && at < close),
+            "nativeIntentsReady is touched at byte {at}, outside every \
+             `synchronized (pendingIntents)` block. onNewIntent reads it on the \
+             UI thread and flushPendingIntents writes it on the native thread, \
+             so an unsynchronised read can see a stale `false` and strand the \
+             launch intent in the queue"
+        );
+    }
+    // Anti-vacuity again: a rename would otherwise leave this loop with nothing
+    // to iterate and the test green.
+    assert!(
+        checked >= 2,
+        "expected at least two accesses to nativeIntentsReady (the read in \
+         queueIntent, the write in flushPendingIntents); found {checked}"
+    );
 }

@@ -30,6 +30,7 @@ import android.view.inputmethod.InputMethodManager;
 import java.io.ByteArrayOutputStream;
 import java.io.InputStream;
 import java.io.OutputStream;
+import java.util.ArrayList;
 import java.util.HashMap;
 
 import android.media.ExifInterface;
@@ -72,6 +73,14 @@ public class RinchActivity extends NativeActivity {
         inputView = new RinchInputView(this);
         ViewGroup.LayoutParams lp = new ViewGroup.LayoutParams(1, 1);
         addContentView(inputView, lp);
+
+        // The intent that started us — a share, a deep link, a shortcut. Stored
+        // rather than delivered: at this point in a cold start the native
+        // thread may not have registered nativeOnIncomingIntent yet. See the
+        // Incoming Intents section below. A non-null savedInstanceState says
+        // this is a rebuild rather than a launch, which is what makes the
+        // difference between the launch intent and a stale copy of one.
+        queueIntent(getIntent(), savedInstanceState != null);
     }
 
     // ── Window-state replay across recreation (issue #475) ──────────────
@@ -655,6 +664,228 @@ public class RinchActivity extends NativeActivity {
             // sharing failed silently
         }
     }
+
+    // ── Incoming Intents ─────────────────────────────────────────────────
+    //
+    // The other half of Share above. An app whose manifest declares an
+    // <intent-filter> for ACTION_SEND is a share target from the moment it is
+    // installed: it appears in every chooser, the user picks it, and Android
+    // launches it with the payload attached. Nothing here ever read that
+    // payload, so being launched and being told why were two different things
+    // and only the first one worked.
+    //
+    // Nothing in this section calls a native from a lifecycle override. That is
+    // the same rule the pause/resume comment further up states, and it is the
+    // whole reason this is a queue rather than a straight call: onCreate runs
+    // on the UI thread at a moment when the native thread may not have reached
+    // RegisterNatives, and a native that is not registered yet is an
+    // UnsatisfiedLinkError that force-finishes the activity on cold start. So
+    // onCreate only stores, and Rust calls flushPendingIntents() at the end of
+    // its own init to say the far side is ready. After that the queue is a
+    // formality and onNewIntent goes straight through.
+
+    /** Intents seen before the native side said it was ready to be called. */
+    private final ArrayList<Intent> pendingIntents = new ArrayList<>();
+
+    /**
+     * Whether Rust has called {@link #flushPendingIntents()}. Guarded by
+     * {@link #pendingIntents}, because onNewIntent reads it on the UI thread
+     * while flushPendingIntents writes it on the native thread.
+     */
+    private boolean nativeIntentsReady = false;
+
+    /** Marks an Intent this activity has already handed over. See {@link #queueIntent}. */
+    private static final String EXTRA_RINCH_CONSUMED = "com.rinch.intentConsumed";
+
+    @Override
+    protected void onNewIntent(Intent intent) {
+        super.onNewIntent(intent);
+        // getIntent() answers with the *starting* intent until you say
+        // otherwise; the framework does not do this for you. Anything that
+        // later reads getIntent() — including a recreation of this activity —
+        // should see what actually arrived, and the consumed marker below is
+        // only useful if it is attached to the copy that gets remembered.
+        setIntent(intent);
+        queueIntent(intent, false);
+    }
+
+    /**
+     * Take an intent for delivery to Rust, or decide it is not worth one.
+     *
+     * <p><b>The stale re-delivery guard.</b> {@code getIntent()} does not mean
+     * "the intent that just arrived", it means "the intent this activity was
+     * last started with", and Android hands the same one back more than once:
+     *
+     * <ul>
+     *   <li>Rotate the screen, or let the system reclaim the process and then
+     *       restore the task from Recents, and the activity is destroyed and
+     *       built again <em>with the original intent</em>. A share consumed
+     *       before the rotation arrives a second time after it.
+     *   <li>With {@code launchMode="singleTask"} the task is reused rather than
+     *       rebuilt, so one Intent object can outlive several trips through the
+     *       launcher inside a single process.
+     * </ul>
+     *
+     * <p>Either way the user made one share and the app acts on it twice, which
+     * for a share target is a duplicate import with no undo — and it is easy to
+     * miss, because the happy path (launch, share, done) never shows it. Two
+     * guards, because neither one covers the other's case:
+     *
+     * <ul>
+     *   <li>{@code recreated} is {@code savedInstanceState != null} in
+     *       onCreate. A non-null bundle means an earlier incarnation of this
+     *       activity ran, and whatever {@code getIntent()} is about to return
+     *       was already offered to it. This is the one that catches rotation
+     *       and a process the system killed and restored. "Offered" and not
+     *       "acted on": an app killed in the half-second between the share
+     *       arriving and the frame loop draining it loses that share. That is
+     *       the deliberate half of the trade — a share silently dropped once in
+     *       a blue moon is recoverable by sharing again, and a share silently
+     *       imported twice on every rotation is not.
+     *   <li>{@link #EXTRA_RINCH_CONSUMED} is put on the Intent itself, so the
+     *       same object handed back a second time within one process is
+     *       recognisable. It does not survive process death — the marker goes
+     *       on this process's copy and the system re-supplies its own — which
+     *       is exactly the gap the bundle check fills.
+     * </ul>
+     *
+     * @param intent    the intent to consider; null is tolerated
+     * @param recreated whether this activity is being rebuilt rather than launched
+     */
+    private void queueIntent(Intent intent, boolean recreated) {
+        if (intent == null) {
+            return;
+        }
+        try {
+            if (recreated || intent.getBooleanExtra(EXTRA_RINCH_CONSUMED, false)) {
+                return;
+            }
+            // The launcher's own intent: ACTION_MAIN with nothing attached.
+            // Every cold start produces one and there is nothing in it to
+            // deliver. The payload check is what keeps an app shortcut — also
+            // ACTION_MAIN, but carrying a data URI saying which shortcut — from
+            // being swallowed with it. Rust filters again on the way into its
+            // queue and that copy is the authoritative one (it has the tests);
+            // this exists so a launcher tap does not grow the list below on an
+            // app that has not finished starting yet.
+            String action = intent.getAction();
+            boolean bareLaunch = !carriesPayload(intent)
+                && (action == null || action.isEmpty() || Intent.ACTION_MAIN.equals(action));
+            if (bareLaunch) {
+                return;
+            }
+            intent.putExtra(EXTRA_RINCH_CONSUMED, true);
+        } catch (Exception e) {
+            // Reading extras unparcels data written by whichever app sent the
+            // share, so a malformed or unresolvable Parcelable throws here
+            // rather than anywhere useful. An intent we cannot even inspect is
+            // not one we can deliver.
+            return;
+        }
+
+        boolean deliverNow;
+        synchronized (pendingIntents) {
+            pendingIntents.add(intent);
+            deliverNow = nativeIntentsReady;
+        }
+        if (deliverNow) {
+            deliverPendingIntents();
+        }
+    }
+
+    /**
+     * Whether an intent carries anything beyond its action. Mirrors
+     * {@code IncomingIntent::has_payload} on the Rust side.
+     */
+    private static boolean carriesPayload(Intent intent) {
+        return intent.getType() != null
+            || intent.getCharSequenceExtra(Intent.EXTRA_TEXT) != null
+            || intent.hasExtra(Intent.EXTRA_STREAM)
+            || intent.getData() != null;
+    }
+
+    /**
+     * Rust says its natives are registered; deliver everything held back and
+     * stop holding anything back.
+     *
+     * <p>Called from the native thread at the end of {@code rinch_android::init}
+     * — never from Java — which is the handshake that makes the whole queue
+     * safe. Java never calls a native until Rust has said so.
+     */
+    public void flushPendingIntents() {
+        synchronized (pendingIntents) {
+            nativeIntentsReady = true;
+        }
+        deliverPendingIntents();
+    }
+
+    /** Push whatever is queued through the native, oldest first. */
+    private void deliverPendingIntents() {
+        ArrayList<Intent> batch;
+        synchronized (pendingIntents) {
+            if (pendingIntents.isEmpty()) {
+                return;
+            }
+            batch = new ArrayList<>(pendingIntents);
+            pendingIntents.clear();
+        }
+        // Outside the lock. The native side takes a lock of its own and this
+        // one is also taken from the UI thread by onNewIntent; holding both at
+        // once, in an order nobody controls, is how a share freezes an app.
+        for (int i = 0; i < batch.size(); i++) {
+            pushIntent(batch.get(i));
+        }
+    }
+
+    /** Flatten one intent and hand it to Rust. */
+    private void pushIntent(Intent intent) {
+        try {
+            String action = intent.getAction();
+
+            // getCharSequenceExtra, not getStringExtra: EXTRA_TEXT is declared
+            // as a CharSequence, and a share from a rich-text field really does
+            // arrive as a Spanned — on which getStringExtra returns null rather
+            // than the text, so the share looks empty for no visible reason.
+            CharSequence text = intent.getCharSequenceExtra(Intent.EXTRA_TEXT);
+
+            ArrayList<String> streams = new ArrayList<>();
+            if (Intent.ACTION_SEND_MULTIPLE.equals(action)) {
+                ArrayList<Uri> uris = intent.getParcelableArrayListExtra(Intent.EXTRA_STREAM);
+                if (uris != null) {
+                    for (Uri uri : uris) {
+                        if (uri != null) {
+                            streams.add(uri.toString());
+                        }
+                    }
+                }
+            } else {
+                Uri uri = intent.getParcelableExtra(Intent.EXTRA_STREAM);
+                if (uri != null) {
+                    streams.add(uri.toString());
+                }
+            }
+
+            Uri data = intent.getData();
+            nativeOnIncomingIntent(
+                action,
+                intent.getType(),
+                text == null ? null : text.toString(),
+                streams.toArray(new String[0]),
+                data == null ? null : data.toString());
+        } catch (Exception e) {
+            // Same reasoning as queueIntent: the contents came from another
+            // app. Losing one malformed share is better than taking the
+            // process down on the native thread.
+        }
+    }
+
+    /**
+     * Safe from any thread: the Rust side of this only pushes onto a mutex-held
+     * queue and wakes the frame loop, and the handler runs later, on the main
+     * thread, out of the loop's own drain.
+     */
+    private native void nativeOnIncomingIntent(
+        String action, String mimeType, String text, String[] streamUris, String dataUri);
 
     // ── Sensors ─────────────────────────────────────────────────────────
 
