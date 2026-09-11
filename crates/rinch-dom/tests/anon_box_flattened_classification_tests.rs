@@ -68,14 +68,24 @@
 //! on one thread otherwise restores one document's ids into the other and
 //! panics inside Taffy instead of producing the divergence.)
 //!
-//! Measured at `1a60722`, wide scope — `cargo test --no-fail-fast -p rinch-dom
-//! -p rinch`, **44 test executables, 1270 tests**; the narrow `-p rinch-dom` is
-//! **36** at that base and reports false survivors. (Both counts move — they
-//! were 41 / 33 at `e8fb6e8` and 43 / 35 at `db9c64f`. A count quoted without
-//! its base goes stale silently, so quote the base, and never a distance from
-//! one: the next merge invalidates that too.) `adoption` has **70** killers,
-//! and each of the three fails on the assertion that **distinguishes its two
-//! arms**, its control arm still passing.
+//! Measured at `19bbde8`, wide scope — `cargo test --no-fail-fast -p rinch-dom
+//! -p rinch`, **45 test executables, 1277 tests**; the narrow `-p rinch-dom` is
+//! **37** at that base and reports false survivors. (Both counts move — they
+//! were 41 / 33 at `e8fb6e8`, 43 / 35 at `db9c64f`, 44 / 36 at `1a60722`. A
+//! count quoted without its base goes stale silently, so quote the base, and
+//! never a distance from one: the next merge invalidates that too.) `adoption`
+//! has **70** killers, and each of the three fails on the assertion that
+//! **distinguishes its two arms**, its control arm still passing.
+//!
+//! **Each `Kills:` line below names both a mutant and the assertion it fires,
+//! and the second half is the perishable one.** These fixtures call
+//! `assert_consistent`, which runs `taffy_tree_violations` — so a validator
+//! rule added later can fire *before* the geometry assertion a doc quotes,
+//! leaving the fixture red, the mutant "killed", and the doc quietly wrong
+//! about why. Re-measured against #602's two new rules (`D detached`,
+//! `E ghost box`): every failure below is still the quoted assertion, and none
+//! moved into the validator. Re-check that specifically whenever a rule is
+//! added, not just the pass/fail.
 //!
 //! **That last clause is the point, and it is why these three sat out the sweep
 //! that repaired this file's hollow assertions.** All three are also killed by
