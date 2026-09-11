@@ -800,8 +800,9 @@ fn a_nested_wrapper_chain_flattens_at_every_level_and_lays_out_the_same() {
 /// **`y = 27` is a mutant's number, not a shipped one.** The doc that stood
 /// here read it as what *flattening the wrapper* produces and the `Kills:` line
 /// named that flattening — which is the shipped behaviour, so it named no
-/// mutant at all. Nothing is adopted out of a wrapper on any build in this
-/// repo; #573 measured `y = 7` both with the keep-whole rule and without it,
+/// mutant at all. Nothing is adopted out of a wrapper on `main` — that is what
+/// makes `adoption` a mutant rather than a spelling of the shipped code — and
+/// #573 measured `y = 7` both with the keep-whole rule and without it,
 /// which is one of the three grounds on which that rule was deleted.
 ///
 /// What does produce 27 is `adoption` (module header): take `"two"` out of
@@ -1540,7 +1541,7 @@ fn a_hidden_child_behind_a_wrapper_neither_mixes_nor_splits() {
 /// **Not "a restore that drifts by one shows up here and nowhere else"**, which
 /// is what this doc used to say. Nothing is restored (#566), and the drift it
 /// named needs a DOM mutated *between* passes — which this fixture never does.
-/// Measured: of the four fixtures whose docs this commit repairs, this is the
+/// Measured: of the four fixtures whose docs this pass repaired, this is the
 /// only one `adoption` (module header) does **not** kill, precisely because it
 /// gives a restore nothing to drift against. "Nowhere else" was false twice
 /// over: the mutants it does catch are caught by other fixtures too.
