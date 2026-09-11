@@ -202,7 +202,10 @@ fn heal_released_drag() -> bool {
     true
 }
 
+// Already const-initialized; see #598 for why clippy's
+// `missing_const_for_thread_local` still fires on the Android target.
 thread_local! {
+    #[allow(clippy::missing_const_for_thread_local)]
     static ACTIVE_DRAG: RefCell<Option<ActiveDrag>> = const { RefCell::new(None) };
 }
 

@@ -2,7 +2,10 @@
 
 use std::cell::RefCell;
 
+// Already const-initialized; see #598 for why clippy's
+// `missing_const_for_thread_local` still fires on the Android target.
 thread_local! {
+    #[allow(clippy::missing_const_for_thread_local)]
     static MODIFIER_STATE: RefCell<ModifierState> = const { RefCell::new(ModifierState {
         shift: false,
         ctrl: false,

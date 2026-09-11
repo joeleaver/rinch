@@ -260,12 +260,27 @@ pub fn has_file_drop_handler(id: EventHandlerId) -> bool {
 
 // Thread-local event handler registry.
 thread_local! {
+    // `EventRegistry::new()` builds a `HashMap` with the default `RandomState`,
+    // which is not const-evaluable — see #598.
+    #[allow(clippy::missing_const_for_thread_local)]
     static EVENT_REGISTRY: RefCell<EventRegistry> = RefCell::new(EventRegistry::new());
+    // Not const-evaluable; see the #598 note on `EVENT_REGISTRY` above.
+    #[allow(clippy::missing_const_for_thread_local)]
     static INPUT_REGISTRY: RefCell<InputRegistry> = RefCell::new(InputRegistry::new());
+    // Not const-evaluable; see the #598 note on `EVENT_REGISTRY` above.
+    #[allow(clippy::missing_const_for_thread_local)]
     static FILE_DROP_REGISTRY: RefCell<FileDropRegistry> = RefCell::new(FileDropRegistry::new());
+    // Not const-evaluable; see the #598 note on `EVENT_REGISTRY` above.
+    #[allow(clippy::missing_const_for_thread_local)]
     static SCROLL_REGISTRY: RefCell<ScrollRegistry> = RefCell::new(ScrollRegistry::new());
+    // `InputContext::default()` goes through the non-const `Default` trait
+    // method — not const-evaluable; see #598.
+    #[allow(clippy::missing_const_for_thread_local)]
     static INPUT_CONTEXT: RefCell<InputContext> = RefCell::new(InputContext::default());
     /// Flag to signal that an input event was handled and a re-render may be needed.
+    // Already const-initialized; see #598 for why clippy's
+    // `missing_const_for_thread_local` still fires on the Android target.
+    #[allow(clippy::missing_const_for_thread_local)]
     static INPUT_EVENT_HANDLED: RefCell<bool> = const { RefCell::new(false) };
 }
 

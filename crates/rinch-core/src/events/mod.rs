@@ -166,7 +166,10 @@ impl AncestorBounds {
 
 // Thread-local storage for the ancestor chain of the current click target.
 // Kept separate from `CLICK_CONTEXT` so that struct can stay `Copy`.
+// Already const-initialized; see #598 for why clippy's
+// `missing_const_for_thread_local` still fires on the Android target.
 thread_local! {
+    #[allow(clippy::missing_const_for_thread_local)]
     pub(crate) static CLICK_ANCESTORS: RefCell<Vec<AncestorBounds>> =
         const { RefCell::new(Vec::new()) };
 }

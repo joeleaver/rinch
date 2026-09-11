@@ -197,7 +197,10 @@ mod tests {
         set_timer_backend(manual);
     }
 
+    // Already const-initialized; see #598 for why clippy's
+    // `missing_const_for_thread_local` still fires on the Android target.
     thread_local! {
+        #[allow(clippy::missing_const_for_thread_local)]
         static SCHEDULED: std::cell::RefCell<Vec<u64>> = const { std::cell::RefCell::new(Vec::new()) };
     }
 

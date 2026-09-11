@@ -247,6 +247,9 @@ thread_local! {
     /// [`clear_on_signal_change`] API, preserving its historical
     /// single-occupancy (last-write-wins) semantics for the *legacy slot only* —
     /// guard-based [`subscribe_signal_change`] subscribers are unaffected.
+    // Already const-initialized; see #598 for why clippy's
+    // `missing_const_for_thread_local` still fires on the Android target.
+    #[allow(clippy::missing_const_for_thread_local)]
     static LEGACY_SIGNAL_CHANGE_SUB: RefCell<Option<SignalChangeSubscription>> =
         const { RefCell::new(None) };
 }

@@ -413,8 +413,12 @@ mod tests {
     /// the registry. Dropping it inside the `borrow_mut` would panic.
     #[test]
     fn the_displaced_value_is_dropped_after_the_slots_borrow_ends() {
+        // Already const-initialized; see #598 for why clippy's
+        // `missing_const_for_thread_local` still fires on the Android target.
         thread_local! {
+            #[allow(clippy::missing_const_for_thread_local)]
             static SLOT: RefCell<Option<Probe>> = const { RefCell::new(None) };
+            #[allow(clippy::missing_const_for_thread_local)]
             static DROPPED: Cell<bool> = const { Cell::new(false) };
         }
 
@@ -447,8 +451,12 @@ mod tests {
     /// under the slot's `borrow_mut`.
     #[test]
     fn clear_scoped_slot_drops_the_value_after_the_borrow_ends() {
+        // Already const-initialized; see #598 for why clippy's
+        // `missing_const_for_thread_local` still fires on the Android target.
         thread_local! {
+            #[allow(clippy::missing_const_for_thread_local)]
             static SLOT: RefCell<Option<Probe>> = const { RefCell::new(None) };
+            #[allow(clippy::missing_const_for_thread_local)]
             static REINSTALLED: Cell<bool> = const { Cell::new(false) };
         }
 
@@ -567,9 +575,13 @@ mod tests {
     /// re-enter the map and must run after the `borrow_mut` ends.
     #[test]
     fn the_doc_keyed_displaced_value_is_dropped_after_the_maps_borrow_ends() {
+        // Already const-initialized; see #598 for why clippy's
+        // `missing_const_for_thread_local` still fires on the Android target.
         thread_local! {
+            #[allow(clippy::missing_const_for_thread_local)]
             static SLOT: RefCell<DocScopedSlotMap<dyn Fn() -> u32>> =
                 const { RefCell::new(DocScopedSlotMap::new()) };
+            #[allow(clippy::missing_const_for_thread_local)]
             static DROPPED: Cell<bool> = const { Cell::new(false) };
         }
 

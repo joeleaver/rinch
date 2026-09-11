@@ -204,6 +204,60 @@ jobs:
             echo "::endgroup::"
           done
 
+  # Lint the Android target too (#598). `clippy --workspace` above only ever
+  # sees the native host cfg. Android has no native ELF thread-local support
+  # (its target spec carries `tls-model: emulated`, not `has-thread-local`), so
+  # `std::sys::thread_local` routes every `thread_local!` through the OS-key
+  # `os` module instead of the host's `native` module — the only one of the two
+  # with a real `EagerStorage`/`LazyStorage` split keyed on whether the user
+  # wrote `const { .. }`. On `os`, that distinction is erased before clippy's
+  # `missing_const_for_thread_local` lint ever sees it, so the lint fires on
+  # thread_locals whether or not they are already const (measured: 17 errors in
+  # `rinch-core` alone, all but one on statics that were already `const`) and
+  # even suggests wrapping ones that cannot compile as const at all (a
+  # `HashMap::new()` initializer, whose `RandomState` is not const-evaluable).
+  # This was red on `main` with no gate ever having run it.
+  #
+  # Scoped to `rinch-core`, not `--workspace`: `muda` (native menus) fails to
+  # even compile for `aarch64-linux-android` (`unresolved import
+  # self::platform`), which takes the whole workspace graph down under cargo's
+  # feature unification, and `rinch-android` carries its own, unrelated red
+  # clippy lints (`forget_non_drop`, four `collapsible_if`s, and one more
+  # `missing_const_for_thread_local` in `screen.rs`) that are out of scope for
+  # #598. Widening this list past `rinch-core` is future work.
+  clippy-android:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+          targets: aarch64-linux-android
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-clippy-android-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-clippy-android-
+
+      # clippy does not link, so no NDK / cargo-ndk linker setup is needed here
+      # (unlike `cargo test --target aarch64-linux-android`, which does).
+      - name: Run clippy (aarch64-linux-android)
+        run: |
+          for crate in rinch-core; do
+            echo "::group::clippy $crate (aarch64-linux-android)"
+            cargo clippy -p "$crate" --target aarch64-linux-android \
+              --all-targets --all-features -- -D warnings
+            echo "::endgroup::"
+          done
+
   # Run the browser-backed wasm tests. `IdbStore` talks to a real IndexedDB, so it
   # cannot be exercised by a native `cargo test` — it needs an actual browser.
   # Shipping it unverified is how the crate arrived: the first run of these tests

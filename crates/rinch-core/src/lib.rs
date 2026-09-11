@@ -118,8 +118,11 @@ struct StoredEffect {
     effect: Effect,
 }
 
+// Already const-initialized; see #598 for why clippy's
+// `missing_const_for_thread_local` still fires on the Android target.
 thread_local! {
     /// Effects stored globally - kept alive for the app lifetime.
+    #[allow(clippy::missing_const_for_thread_local)]
     static STORED_EFFECTS: RefCell<Vec<StoredEffect>> = const { RefCell::new(Vec::new()) };
 }
 
@@ -147,8 +150,11 @@ pub fn stored_effect_count() -> usize {
 }
 
 // Thread-local storage for the current theme CSS (for snapshot creation)
+// Already const-initialized; see #598 for why clippy's
+// `missing_const_for_thread_local` still fires on the Android target.
 #[cfg(feature = "theme")]
 thread_local! {
+    #[allow(clippy::missing_const_for_thread_local)]
     static CURRENT_THEME_CSS: RefCell<Option<String>> = const { RefCell::new(None) };
 }
 
