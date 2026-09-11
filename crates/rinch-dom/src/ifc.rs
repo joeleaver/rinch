@@ -1500,15 +1500,31 @@ impl RinchDocument {
     /// directly and which the suite last exhibited on `db9c64f` (36 lines
     /// against 26 there).
     ///
-    /// **They are ordered, not independent, and the witness is historical.**
-    /// On `db9c64f` the root-only-plus-suppression cell reported **6**
-    /// `C orphan` lines where every other cell reported 16: suppression hid ten
-    /// *true* reports behind D lines their ancestors had only earned because
-    /// the seed set was wrong. #603 removed all sixteen of those orphans, so
-    /// that cell now reads 0 like the rest and the demonstration is no longer
-    /// reproducible here — but the mechanism is untouched. A refinement that
-    /// suppresses from a false positive loses true ones; do not add the second
-    /// without the first.
+    /// **D is not merely a #513 detector, which today's 15 lines would
+    /// suggest.** Disable #603's inline-level crossing trigger (leaving its
+    /// heal in place) and the sweep reports **18** `D detached` lines and still
+    /// **zero** `C orphan`: five of them are #597's own damage in
+    /// `ifc_reattach_tests`, a defect class C is completely blind to. Two of
+    /// today's 15 are the reverse — created by that trigger, in the
+    /// `block → inline` path #603 documented as *converging on #513*.
+    ///
+    /// **They are ordered, not independent, and the witness is a fixture rather
+    /// than a number.** Suppression applied over a wrong seed set does not
+    /// merely fail to help — it **loses true positives**, because a node
+    /// reported only because reachability was seeded wrongly still suppresses
+    /// everything beneath it. On `db9c64f` the root-only-plus-suppression cell
+    /// reported **6** `C orphan` lines where every other cell reported 16;
+    /// #603 fixed all sixteen of those orphans and that demonstration
+    /// evaporated within one session.
+    ///
+    /// Which is the general lesson, and the reason it is now built by hand in
+    /// `taffy_reachability_tests::a_true_orphan_survives_under_a_legitimately_unreachable_ancestor`:
+    /// **a validator's design property must not be evidenced by whichever bugs
+    /// happen to exist at one commit.** That fixture puts a real orphan under an
+    /// inline-block's subtree, so seeded correctly the orphan is the one line
+    /// reported and seeded from the root alone it disappears behind its
+    /// ancestor. It depends on no open defect and still says this after #513
+    /// lands.
     ///
     /// **Cost, measured rather than asserted.** One BFS over the
     /// `taffy.children()` reads A and B already make — kept rather than
