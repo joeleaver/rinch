@@ -4590,6 +4590,150 @@ mod tab_focus_tests {
 }
 
 #[cfg(test)]
+mod hidden_box_hit_tests {
+    //! #543 — a closed overlay must not answer clicks.
+    //!
+    //! The visible half of #543 is a menu that stays drawn. The half its own
+    //! text denies — *"the closed menu takes no clicks"* — is that the ghost is
+    //! **interactive**. Measured in `ui-zoo-desktop`: close the Dropdown Menu by
+    //! picking *Edit*, then click where *Duplicate* was, and the app's selection
+    //! changes to *Duplicate*. A `display: none` menu dispatched a click.
+    //!
+    //! `hit_test_node` tests `visibility: hidden` and the node's
+    //! `layout.width`/`height`; it has no `display: none` test and does not need
+    //! one, because Taffy lays a hidden subtree out at `0x0` — every box in it
+    //! fails the point-in-bounds test. That stops being true when the subtree is
+    //! taken out of Taffy and keeps the boxes it had while visible.
+    //!
+    //! **The descendant is the case that bites**, and it is why zeroing the
+    //! hidden node alone is not enough: `check_children` is
+    //! `!clips_overflow() || point_in_bounds`, so a non-clipping panel with a
+    //! zero box is still descended into, and a child that kept its box still
+    //! answers. The click that proved this ran an *item's* handler, not the
+    //! panel's.
+
+    use super::*;
+    use std::cell::Cell;
+
+    const VIEWPORT: (f32, f32) = (800.0, 600.0);
+
+    fn tap(app: &mut RinchApp, x: f32, y: f32) {
+        app.handle_event(
+            PlatformEvent::MouseDown {
+                x,
+                y,
+                button: MouseButton::Left,
+            },
+            (800, 600),
+            1.0,
+        );
+        app.handle_event(
+            PlatformEvent::MouseUp {
+                x,
+                y,
+                button: MouseButton::Left,
+            },
+            (800, 600),
+            1.0,
+        );
+    }
+
+    /// A click inside a hidden overlay's former box runs nothing.
+    #[test]
+    fn a_hidden_overlays_former_box_takes_no_clicks() {
+        let clicks: Rc<Cell<usize>> = Rc::new(Cell::new(0));
+        let panel_id: Rc<Cell<Option<usize>>> = Rc::new(Cell::new(None));
+        let item_id: Rc<Cell<Option<usize>>> = Rc::new(Cell::new(None));
+
+        let clicks_in = clicks.clone();
+        let panel_in = panel_id.clone();
+        let item_in = item_id.clone();
+
+        let mut app = RinchApp::new(move |scope: &mut RenderScope| {
+            let root = scope.create_element("div");
+            // The line box is declared, not inherited from whatever fonts the
+            // machine has. Nothing here asserts a `y` — the tap point is derived
+            // from `painted_element_box` — so this cannot fail the way
+            // `display_none_ghost_tests` did on CI; it is declared anyway so the
+            // two halves of this fixture are the same shape, and so that a later
+            // assertion added here starts on solid ground.
+            root.set_attribute(
+                "style",
+                "position: relative; font-size: 16px; line-height: 20px;",
+            );
+
+            // The inline sibling is the whole axis: it makes `root` an IFC root,
+            // which is what detaches the hidden panel from Taffy. Without it the
+            // panel stays attached and Taffy zeroes it, and none of this happens
+            // — see `display_none_ghost_tests`' control.
+            let sp = scope.create_element("span");
+            let t = scope.create_text("x");
+            sp.append_child(&t);
+            root.append_child(&sp);
+
+            let panel = scope.create_element("div");
+            panel.set_attribute(
+                "style",
+                "position: absolute; top: 100%; left: 0; width: 160px; display: block;",
+            );
+            panel_in.set(Some(panel.node_id().0));
+
+            let item = scope.create_element("div");
+            item.set_attribute("style", "height: 42px;");
+            let cb = clicks_in.clone();
+            let rid = scope.register_handler(move || cb.set(cb.get() + 1));
+            item.set_attribute("data-rid", &rid.0.to_string());
+            item_in.set(Some(item.node_id().0));
+
+            panel.append_child(&item);
+            root.append_child(&panel);
+            root
+        });
+        app.mount_component(VIEWPORT.0, VIEWPORT.1);
+        app.resolve_and_repaint(VIEWPORT.0, VIEWPORT.1);
+
+        let panel = panel_id.get().expect("panel id");
+        let item = item_id.get().expect("item id");
+
+        let (ix, iy, iw, ih) = {
+            let doc = app.doc.as_ref().unwrap();
+            let d = doc.borrow();
+            painted_element_box(&d.tree, item)
+        };
+        assert!(
+            iw > 0.0 && ih > 0.0,
+            "precondition: the item has a box to aim at, got {iw}x{ih}"
+        );
+        let (x, y) = (ix + iw / 2.0, iy + ih / 2.0);
+
+        tap(&mut app, x, y);
+        assert_eq!(
+            clicks.get(),
+            1,
+            "precondition: while the overlay is open the click runs its handler"
+        );
+
+        // Close it — the write the component makes.
+        {
+            let doc = app.doc.as_ref().unwrap();
+            let mut d = doc.borrow_mut();
+            d.set_style(rinch_core::dom::NodeId(panel), "display", "none");
+        }
+        app.resolve_and_repaint(VIEWPORT.0, VIEWPORT.1);
+        app.resolve_and_repaint(VIEWPORT.0, VIEWPORT.1);
+
+        tap(&mut app, x, y);
+        assert_eq!(
+            clicks.get(),
+            1,
+            "a `display: none` overlay generates no box, so the same click must \
+             now run nothing — a second count is the ghost answering, which is \
+             what `ui-zoo-desktop` does today (#543)"
+        );
+    }
+}
+
+#[cfg(test)]
 mod popup_backdrop_hit_tests {
     //! A dropdown menu's items answer the tap that lands on them.
     //!

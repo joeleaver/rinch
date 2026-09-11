@@ -941,6 +941,32 @@ impl RinchDocument {
         }
     }
 
+    /// Clear the laid-out box of `node_id` and every node beneath it.
+    ///
+    /// For a subtree that generates no boxes at all — a `display: none` element
+    /// and its descendants (#543). Keeps [`Self::read_layout_results`]'s
+    /// bookkeeping: `prev_layout` is carried and a node whose box actually
+    /// changed is pushed to `paint_dirty_nodes`, so the frame that hides
+    /// something repaints where it used to be.
+    ///
+    /// Iterative: a hidden subtree is arbitrary author markup and may be deep.
+    fn zero_subtree_layout(&mut self, node_id: usize) {
+        let zero = LayoutResult::default();
+        let mut stack = vec![node_id];
+        while let Some(id) = stack.pop() {
+            let Some(node) = self.tree.nodes.get_mut(id) else {
+                continue;
+            };
+            if node.layout != zero {
+                node.prev_layout = node.layout;
+                node.layout = zero;
+                self.tree.paint_dirty_nodes.push(id);
+            }
+            let children = &self.tree.nodes[id].children;
+            stack.extend_from_slice(children);
+        }
+    }
+
     pub(crate) fn read_layout_results(&mut self, node_id: usize) {
         let children: Vec<usize> = self.tree.nodes[node_id].children.clone();
 
@@ -965,6 +991,43 @@ impl RinchDocument {
             for child_id in children {
                 self.read_layout_results(child_id);
             }
+            return;
+        }
+
+        // A `display: none` element generates no box, and neither does anything
+        // inside it (CSS 2.1 §9.2.4) — so the whole subtree's `layout` is zero,
+        // and this is the place that has to say so (#543).
+        //
+        // Taffy normally says it for us: a hidden node that is still a Taffy
+        // child is laid out `0x0` and the read below picks that up. But a hidden
+        // child of an IFC root is **detached** from Taffy on purpose
+        // (`mark_inline_descendants`' `NoBox` arm, for #466's leaf invariant),
+        // and `taffy.layout()` keeps serving a detached node the layout it last
+        // computed. This walk is over the **DOM**, so it reaches the node anyway
+        // and wrote that stale box straight back onto it, every pass, for as long
+        // as the element stayed hidden. A closed `DropdownMenu` therefore stayed
+        // on screen indefinitely — and, since `hit_test_node` reads `layout` and
+        // tests `visibility` rather than `display`, stayed clickable: a click in
+        // the ghost ran a menu item's handler.
+        //
+        // The subtree, not the node. `check_children` is
+        // `!clips_overflow() || point_in_bounds`, so a non-clipping box with a
+        // zero rect is still descended into and a descendant that kept its own
+        // box still answers. Recursing with the zero applied at every level is
+        // what makes the whole thing gone rather than just its root.
+        //
+        // It returns rather than recursing, unlike the `Contents` branch above,
+        // and that is safe for the one reason the other branch could not use:
+        // every node below a hidden one gets the *same* answer, zero, so there
+        // is nothing further down for the normal path to compute. A
+        // `display: contents` node inside the hidden subtree is zeroed by the
+        // helper exactly as that branch would zero it. The helper carries this
+        // function's bookkeeping (`prev_layout`, `paint_dirty_nodes`) so the
+        // frame that hides something still repaints where it used to be.
+        if self.tree.nodes[node_id].computed_style.display
+            == crate::computed_style::DisplayValue::None
+        {
+            self.zero_subtree_layout(node_id);
             return;
         }
 
