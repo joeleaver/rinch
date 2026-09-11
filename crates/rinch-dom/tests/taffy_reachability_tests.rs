@@ -18,7 +18,7 @@
 //!
 //! # Checker fixtures are labelled as such
 //!
-//! Five of the seven fixtures below corrupt the tree **by hand** — they move a
+//! Six of the eight fixtures below corrupt the tree **by hand** — they move a
 //! Taffy edge or write a `layout` field — because the states they pin are ones
 //! the producer no longer reaches: #589's needs #585's mutant and #543's needs
 //! #594 reverted.
@@ -263,6 +263,92 @@ fn an_inline_block_measured_as_its_own_root_is_not_reported() {
         "an inline-block is computed as a root of its own, so its subtree is \
          laid out by a real pass and must not be reported:\n  {}",
         lines(&doc)
+    );
+}
+
+/// **Checker, and the one fixture that exists because a design property must not
+/// be evidenced by whichever bugs happen to exist at one commit.**
+///
+/// The two refinements are *ordered*, not independent: suppression applied over
+/// a wrong seed set does not merely fail to help, it **loses true positives** —
+/// a node reported only because reachability was seeded wrongly still suppresses
+/// everything beneath it, including a real orphan.
+///
+/// That was measured on `db9c64f`, where the root-only-plus-suppression cell of
+/// the matrix reported **6** `C orphan` lines against 16 in every other cell.
+/// #603 then fixed all sixteen of those orphans, and the demonstration
+/// evaporated inside one session — which is exactly why it is built here by hand
+/// instead. The shape is small and it does not depend on any open defect, so it
+/// still says this after #513 lands too.
+///
+/// ```text
+/// p  (IFC root)
+///   "before"
+///   ib  display: inline-block   ← exempt from C/D, and a legitimate seed
+///     a  <div>                  ← reachable ONLY through `ib`
+///       x  <div>                ← detached by hand: a real orphan
+/// ```
+///
+/// Seeded correctly, `a` is reachable and the single reported line is `x`'s
+/// `C orphan`. Seeded from the document root alone, `a` is reported — wrongly —
+/// and suppression then swallows `x` entirely, so the one true violation in the
+/// document is the one that disappears.
+///
+/// Kills `no-ib-seeds`. It passes under `no-suppress`, deliberately: the claim
+/// is about the *interaction*, and a fixture that failed under both would not
+/// say which.
+#[test]
+fn a_true_orphan_survives_under_a_legitimately_unreachable_ancestor() {
+    let mut doc = RinchDocument::new();
+    let body = doc.body();
+    let p = el(
+        &mut doc,
+        body,
+        "p",
+        "width: 400px; font-size: 16px; line-height: 20px",
+    );
+    txt(&mut doc, p, "before ");
+    let ib = el(&mut doc, p, "span", "display: inline-block");
+    let a = el(&mut doc, ib, "div", "width: 30px; height: 30px");
+    let x = el(&mut doc, a, "div", "width: 10px; height: 10px");
+    doc.resolve_layout(VW, VH);
+    assert!(
+        doc.taffy_tree_violations().is_empty(),
+        "precondition: clean before the orphan is made:\n  {}",
+        lines(&doc)
+    );
+    // The preconditions the whole fixture rests on, asserted rather than
+    // assumed: `ib` is a seed, and `a` hangs off it rather than off the root.
+    let ib_node = doc.tree.get(ib.0).unwrap();
+    assert!(
+        ib_node.ifc_root.is_some()
+            && ib_node.display_mode == rinch_dom::node::DisplayMode::InlineBlock,
+        "precondition: `ib` is an inline-block measured as its own Taffy root"
+    );
+    assert_eq!(
+        doc.tree.taffy.parent(taffy_id(&doc, a)),
+        Some(taffy_id(&doc, ib)),
+        "precondition: `a` is reachable only through `ib`"
+    );
+
+    // A real orphan, two levels under a legitimately unreachable ancestor.
+    let t = taffy_id(&doc, x);
+    let holder = doc.tree.taffy.parent(t).expect("attached");
+    doc.tree.taffy.remove_child(holder, t).unwrap();
+
+    let v = doc.taffy_tree_violations();
+    assert_eq!(
+        v.len(),
+        1,
+        "exactly one thing is wrong with this document:\n  {}",
+        v.join("\n  ")
+    );
+    assert!(
+        v[0].starts_with("C orphan") && v[0].contains(&format!("dom {}", x.0)),
+        "and it is the orphan, not its ancestor — seeded from the document root \
+         alone, `a` is reported instead and suppression loses this line \
+         entirely: {}",
+        v[0]
     );
 }
 
