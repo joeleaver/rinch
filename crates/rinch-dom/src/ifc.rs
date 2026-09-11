@@ -1436,6 +1436,141 @@ impl RinchDocument {
     ///   assertion in the crate notices, because the `debug_assert` on
     ///   [`Self::ifc_leaf_invariant_violations`] only inspects carriers of
     ///   `InlineRoot` *that have children*.
+    /// - **D** no **detached** subtree: the same node is *reachable* from a
+    ///   Taffy node a compute pass actually runs on. C is the local
+    ///   approximation of this and D is the property itself — see below.
+    /// - **E** no **ghost box**: a node C and D exempt *because it generates no
+    ///   box* carries no box. See below.
+    ///
+    /// # D, and why C is not enough (#589)
+    ///
+    /// C asks *"does this node have a Taffy parent?"*, which is **local**. The
+    /// property layout actually depends on is **global**: reachable from a
+    /// root Taffy computes from. A chain of perfectly valid edges hanging off
+    /// nothing satisfies C at every link.
+    ///
+    /// That is not hypothetical. Detach a subtree at a `display: contents`
+    /// node — the one node in the chain with no Taffy parent, and the one C
+    /// exempts by design — and every node below it still reports a parent. A,
+    /// B and `dom_tree_violations` all compare a tree against itself and the
+    /// detached subtree is internally perfect. Measured (#589, #585's mutant):
+    /// every validator in the crate answered `[]` while a flex column measured
+    /// `0` and its whole branch was laid out nowhere.
+    ///
+    /// So D replaces C's final test with set membership, and C survives only
+    /// as the **trivial case** of it — a node with no Taffy parent at all.
+    /// Two messages rather than one because they point at different bugs (and
+    /// `C orphan` is already referenced by #584), not because they are two
+    /// rules.
+    ///
+    /// **Reachable from *which* roots.** Not the document root alone.
+    /// [`Self::inline_block_measure_roots`] is a second, legitimate category:
+    /// an inline-block inside an IFC is detached from its parent's tree on
+    /// purpose and `measure_inline_blocks` computes it as a Taffy **root**, so
+    /// its subtree is laid out correctly while being unreachable from the
+    /// document root. Seeding from it is what separates "computed by a pass of
+    /// its own" from "computed by nobody".
+    ///
+    /// Seed from **what runs a compute pass**, never from the exemption list.
+    /// Nothing computes from a `display: contents` node, so seeding one would
+    /// re-admit the exact subtree #589 is about.
+    ///
+    /// **Only the topmost detached node in a DOM subtree is named.** A node
+    /// whose DOM ancestor was already reported is suppressed: one defect
+    /// strands a whole branch, and naming every node in it buries the one that
+    /// needs fixing. The cost is that a second, independent detachment
+    /// *inside* an already reported subtree is not separately named.
+    ///
+    /// Measured over `RINCH_TREE_CHECK=1 cargo test -p rinch-dom -p rinch --
+    /// --nocapture` on `1a60722` — where, since #603, **C alone prints
+    /// nothing at all**:
+    ///
+    /// | seeds | suppression | `C orphan` | `D detached` | total |
+    /// |---|---|---|---|---|
+    /// | root only | off | 0 | 116 | 116 |
+    /// | root only | on | 0 | 77 | 77 |
+    /// | root + inline-block | off | 0 | 15 | 15 |
+    /// | root + inline-block | on | 0 | 15 | **15** |
+    ///
+    /// **Seeding is what earns its keep; suppression currently changes
+    /// nothing** — 15 either way — and saying so is the point. Every one of
+    /// today's 15 lines is a #513 shape whose stranded nodes are siblings, so
+    /// there is no ancestor to suppress from. Suppression is kept for the
+    /// *nested* case, which `only_the_topmost_detached_node_is_named` pins
+    /// directly and which the suite last exhibited on `db9c64f` (36 lines
+    /// against 26 there).
+    ///
+    /// **They are ordered, not independent, and the witness is historical.**
+    /// On `db9c64f` the root-only-plus-suppression cell reported **6**
+    /// `C orphan` lines where every other cell reported 16: suppression hid ten
+    /// *true* reports behind D lines their ancestors had only earned because
+    /// the seed set was wrong. #603 removed all sixteen of those orphans, so
+    /// that cell now reads 0 like the rest and the demonstration is no longer
+    /// reproducible here — but the mechanism is untouched. A refinement that
+    /// suppresses from a false positive loses true ones; do not add the second
+    /// without the first.
+    ///
+    /// **Cost, measured rather than asserted.** One BFS over the
+    /// `taffy.children()` reads A and B already make — kept rather than
+    /// re-read — plus one membership test per DOM node. Same `O(nodes)` C
+    /// already paid, and it runs only from a test or under
+    /// `RINCH_TREE_CHECK=1`.
+    ///
+    /// The constant is **not** free, though, and the first draft of this got it
+    /// badly wrong by comparing against a mutant that still paid for the BFS.
+    /// On a 2203-node document, debug build, 200 iterations, best of 3 in one
+    /// quiet session: the whole validator is **1.40ms** with D and E against
+    /// **1.03ms** without them. Spelling the same two structures as a
+    /// `HashMap` and a `HashSet` cost **2.72ms** — `SipHash` in a debug build,
+    /// ~6600 probes, which is more than the rest of the check put together.
+    /// Hence the `binary_search` on `parents`; do not "simplify" it back.
+    /// (Re-measured after the #603 rebase at 1.41 / 1.16 on a loaded machine:
+    /// the absolute figures move with load, the hashing penalty did not.)
+    ///
+    /// # E, and what it is for (#543)
+    ///
+    /// C and D exempt three kinds of node, and for two of them the exemption
+    /// is *"this element generates no box"* — `display: none` and
+    /// `display: contents`. That is a claim with a testable consequence, so E
+    /// tests it: such a node's `layout` must be zero.
+    ///
+    /// A closed `DropdownMenu` that kept a `160x168` box, stayed painted and
+    /// stayed clickable (#543) is exactly this shape, and it shipped with every
+    /// validator here answering `[]` — because the node was exempt from the
+    /// only rule that looked at it.
+    ///
+    /// # What C, D and E do **not** guarantee
+    ///
+    /// Stated because an invariant read as stronger than it is, is worse than
+    /// no invariant:
+    ///
+    /// - **The `ifc_root` exemption is unconditional, and nothing here can see
+    ///   past it.** Inline content legitimately carries a real box — the IFC
+    ///   assigns it (`write_inline_positions`), not Taffy — so E cannot ask the
+    ///   box question of an `ifc_root` node, and C and D exempt it outright.
+    ///   Measured directly: strand a node the #589 way and D reports it; set
+    ///   `ifc_root = Some(..)` on that same tree and the report goes to `[]`.
+    ///   A node carrying a mark no IFC honours would therefore be invisible to
+    ///   all three rules.
+    ///
+    ///   **This was written as "blind to #597's intermediate state", and #603
+    ///   voided that.** Measured on `1a60722`, both of #597's routes — a bare
+    ///   `<button>` restyled to `display: flex`, and a `<span>`/`<svg>` pair
+    ///   blockified by their parent becoming flex — reach `ifc_root = None`
+    ///   with a real Taffy parent on the **first** pass after the restyle.
+    ///   There is no intermediate state left to be blind to. The stale mark
+    ///   existed because the marking pass never ran, not because it ran and
+    ///   left something behind, and #603's crossing trigger makes it run.
+    ///   No other producer for the shape was found on this base — *not found*,
+    ///   which is not the same as *does not exist*.
+    /// - **Anonymous block boxes are not visited.** The walk is over
+    ///   `node.children`, and a box lives in its container's `run_boxes`. A
+    ///   detached box is reported only through its members, which are ordinary
+    ///   DOM nodes and are walked.
+    /// - **E says nothing about the root**, which carries the viewport box, and
+    ///   nothing about nodes *inside* a `display: none` subtree — the walk
+    ///   stops reporting at the subtree's top node, which is where the repair
+    ///   goes.
     ///
     /// Deliberately **not** a `debug_assert` in `resolve_layout`: C is a claim
     /// about author markup as much as about the engine, and a fixture that
@@ -1736,11 +1871,65 @@ impl RinchDocument {
         parents.dedup();
 
         let mut claims: HashMap<taffy::NodeId, Vec<taffy::NodeId>> = HashMap::new();
+        // The downward edges, kept from the very same read A and B are built
+        // from — so D's reachability below costs no extra `children()` call,
+        // and cannot disagree with A and B about the tree. Parallel to
+        // `parents` (an `Err` pushes an empty list) so it is indexed by
+        // position, not hashed: see `slot_of`.
+        let mut kids_of: Vec<Vec<taffy::NodeId>> = Vec::with_capacity(parents.len());
         for &p in &parents {
-            if let Ok(kids) = self.tree.taffy.children(p) {
-                for k in kids {
-                    claims.entry(k).or_default().push(p);
+            match self.tree.taffy.children(p) {
+                Ok(kids) => {
+                    for &k in &kids {
+                        claims.entry(k).or_default().push(p);
+                    }
+                    kids_of.push(kids);
                 }
+                Err(_) => kids_of.push(Vec::new()),
+            }
+        }
+
+        // A Taffy node's position in `parents`, which is sorted and deduped
+        // above.
+        //
+        // **Deliberately a binary search rather than a `HashSet`/`HashMap`.**
+        // This check only ever runs in a debug build, where `SipHash` is
+        // several hundred ns a probe, and D needs one membership test per DOM
+        // node on top of A and B's existing work. Measured on a 2203-node
+        // document, best of 3 in one quiet session: the hashed spelling took
+        // the whole validator from 1.03ms to 2.72ms, this one to 1.40ms.
+        // Indexing a
+        // bitmap by `usize::from(id)` directly is not available — Taffy's
+        // `NodeId` packs a slotmap version into the high bits, so the values
+        // are around 2^32 rather than dense.
+        let slot_of = |t: taffy::NodeId| -> Option<usize> {
+            parents
+                .binary_search_by_key(&usize::from(t), |p| usize::from(*p))
+                .ok()
+        };
+
+        // D: everything a compute pass can actually reach. One BFS from the
+        // roots layout computes from — the document root, plus every
+        // inline-block measured standalone.
+        let mut reachable = vec![false; parents.len()];
+        {
+            let mut frontier: Vec<taffy::NodeId> = self.inline_block_measure_roots();
+            if let Some(root_taffy) = self
+                .tree
+                .nodes
+                .get(self.tree.root_id)
+                .and_then(|n| n.taffy_id)
+            {
+                frontier.push(root_taffy);
+            }
+            while let Some(t) = frontier.pop() {
+                // A node outside `parents` has no DOM identity and is never
+                // asked about below, so there is nothing to mark.
+                let Some(slot) = slot_of(t) else { continue };
+                if std::mem::replace(&mut reachable[slot], true) {
+                    continue;
+                }
+                frontier.extend(kids_of[slot].iter().copied());
             }
         }
         // Sorted so the output is stable enough to diff between runs.
@@ -1770,45 +1959,73 @@ impl RinchDocument {
             }
         }
 
-        // C: walk the DOM, skipping what legitimately generates no box.
-        let mut stack = vec![(self.tree.root_id, false)];
-        while let Some((id, hidden)) = stack.pop() {
+        // C, D and E: walk the DOM, skipping what legitimately generates no box.
+        //
+        // `suppressed` is set for every node under one already reported: a
+        // single detachment strands a whole branch, and the topmost node is
+        // the one the repair goes to.
+        let mut stack = vec![(self.tree.root_id, false, false)];
+        while let Some((id, hidden, suppressed)) = stack.pop() {
             let Some(node) = self.tree.nodes.get(id) else {
                 continue;
             };
             let display = node.computed_style.display;
             let hidden_here = hidden || display == DisplayValue::None;
-            for &c in &node.children {
-                stack.push((c, hidden_here));
-            }
-            if hidden || id == self.tree.root_id {
-                continue;
-            }
-            // No box of its own: `none` generates nothing, `contents` is
-            // flattened into an ancestor's list by design.
-            if matches!(display, DisplayValue::None | DisplayValue::Contents) {
-                continue;
-            }
-            // Inline content is detached from Taffy on purpose — Parley lays
-            // it out and the IFC root draws it.
-            if node.ifc_root.is_some() {
-                continue;
-            }
-            let Some(taffy_id) = node.taffy_id else {
-                continue;
-            };
-            if self.tree.taffy.parent(taffy_id).is_none() {
-                out.push(format!(
-                    "C orphan: dom {id} <{}> display={display:?} mode={:?} layout={:?}",
+            let boxless = matches!(display, DisplayValue::None | DisplayValue::Contents);
+            let rect = (
+                node.layout.x,
+                node.layout.y,
+                node.layout.width,
+                node.layout.height,
+            );
+            let describe = |what: &str| {
+                format!(
+                    "{what}: dom {id} <{}> display={display:?} mode={:?} layout={rect:?}",
                     node.tag().unwrap_or("#text"),
                     node.display_mode,
-                    (
-                        node.layout.x,
-                        node.layout.y,
-                        node.layout.width,
-                        node.layout.height
-                    )
-                ));
+                )
+            };
+
+            // `detached` drives suppression; `E` does not set it. Suppression
+            // is D's mechanism — a stranded ancestor explains a stranded
+            // descendant — and a `display: contents` wrapper holding a stale
+            // origin explains nothing about whether its children are attached.
+            // (For `display: none` the question does not arise: `hidden` skips
+            // the whole subtree either way.)
+            let detached = if suppressed || hidden || id == self.tree.root_id {
+                false
+            } else if boxless {
+                // No box of its own: `none` generates nothing, `contents` is
+                // flattened into an ancestor's list by design. E: an element
+                // that generates no box must not be carrying one (#543).
+                if rect != (0.0, 0.0, 0.0, 0.0) {
+                    out.push(describe("E ghost box"));
+                }
+                false
+            } else if node.ifc_root.is_some() {
+                // Inline content is detached from Taffy on purpose — Parley
+                // lays it out and the IFC root draws it. It carries a real
+                // box, so E has nothing to ask here.
+                false
+            } else if let Some(taffy_id) = node.taffy_id {
+                if self.tree.taffy.parent(taffy_id).is_none() {
+                    out.push(describe("C orphan"));
+                    true
+                } else if slot_of(taffy_id).is_some_and(|slot| !reachable[slot]) {
+                    // Every edge above it is intact and it is still laid out
+                    // by nobody — the chain terminates somewhere that is not a
+                    // root any compute pass runs on (#589).
+                    out.push(describe("D detached"));
+                    true
+                } else {
+                    false
+                }
+            } else {
+                false
+            };
+
+            for &c in &node.children {
+                stack.push((c, hidden_here, suppressed || detached));
             }
         }
 
@@ -2265,22 +2482,56 @@ impl RinchDocument {
         }
     }
 
+    /// The Taffy nodes a layout pass computes from **besides the document
+    /// root** — every inline-block that belongs to an IFC.
+    ///
+    /// Such a node is detached from its parent's Taffy tree (the parent
+    /// measures through `InlineRoot` instead) and
+    /// [`Self::measure_inline_blocks`] computes it as a **root** of its own, so
+    /// its whole subtree is laid out by a real compute pass while being
+    /// unreachable from the document root's Taffy node.
+    ///
+    /// It is a function rather than a repeated `if` because two callers need
+    /// the same answer and a drift between them would be invisible:
+    /// `compute_inline_block_layouts` uses it to decide what to measure, and
+    /// `taffy_tree_violations`' reachability rule uses it to decide which
+    /// unreachable subtrees are legitimate. If they disagreed, the validator
+    /// would either exempt a subtree nothing computes (blind) or report one
+    /// that is computed correctly (noise) — the two failure modes the rule
+    /// exists to avoid. Same list, one definition.
+    ///
+    /// Note what it reads: `ifc_root` and [`crate::node::DisplayMode`], the
+    /// same two fields the measure pass reads. **Not**
+    /// `DisplayValue::to_taffy`, which is not injective — `inline`/`block`
+    /// both give `taffy::Display::Block`, and `inline-block`/`flex`/
+    /// `inline-flex`/`contents` all give `Flex`. That aliasing is the whole of
+    /// #597's second mechanism, and it is the classic way an exemption ends up
+    /// wider than its author believes. This seed set cannot acquire it,
+    /// because there is nothing to keep in step: one expression, two readers.
+    pub(crate) fn inline_block_measure_roots(&self) -> Vec<taffy::NodeId> {
+        let mut out = Vec::new();
+        for (_id, node) in &self.tree.nodes {
+            if node.ifc_root.is_some()
+                && node.display_mode == DisplayMode::InlineBlock
+                && let Some(taffy_id) = node.taffy_id
+            {
+                out.push(taffy_id);
+            }
+        }
+        out
+    }
+
     /// Pre-compute layout for inline-block children that were detached from Taffy.
     ///
     /// Inline-block children are removed from their parent's Taffy tree (so the parent
     /// uses InlineRoot measurement), but they still need their own subtree computed
     /// so `walk_inline_children` can read their width/height for Parley InlineBox.
     pub(crate) fn compute_inline_block_layouts(&mut self) {
-        // Collect inline-block children that belong to an IFC
-        let mut ib_taffy_ids: Vec<(taffy::NodeId, Option<f32>)> = Vec::new();
-        for (_id, node) in &self.tree.nodes {
-            if node.ifc_root.is_some()
-                && node.display_mode == DisplayMode::InlineBlock
-                && let Some(taffy_id) = node.taffy_id
-            {
-                ib_taffy_ids.push((taffy_id, None));
-            }
-        }
+        let ib_taffy_ids: Vec<(taffy::NodeId, Option<f32>)> = self
+            .inline_block_measure_roots()
+            .into_iter()
+            .map(|t| (t, None))
+            .collect();
         self.measure_inline_blocks(&ib_taffy_ids);
     }
 

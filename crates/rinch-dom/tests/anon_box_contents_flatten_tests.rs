@@ -68,10 +68,17 @@ fn height_of(doc: &RinchDocument, id: NodeId) -> f32 {
     doc.tree.get(id.0).unwrap().layout.height
 }
 
-/// Whether a node's box is reachable from the Taffy root at all. An orphan —
-/// a node with a `taffy_id` that no parent's child list holds — answers
-/// `false`, which is the #476 symptom stated structurally rather than through
-/// the geometry it produces.
+/// Whether a node's box has a Taffy parent. An orphan — a node with a
+/// `taffy_id` that no parent's child list holds — answers `false`, which is the
+/// #476 symptom stated structurally rather than through the geometry it
+/// produces.
+///
+/// **Local, and deliberately named for what it asks.** It said "reachable from
+/// the Taffy root" until #589, which is a different and stronger property: a
+/// chain of valid edges hanging off nothing answers `true` here at every link.
+/// The stronger question belongs to `taffy_tree_violations`' `D` rule, which
+/// [`assert_consistent`] below asks of the whole document, so a fixture wanting
+/// it should call that rather than reach for this.
 fn attached_to_taffy(doc: &RinchDocument, id: NodeId) -> bool {
     doc.tree
         .get(id.0)
@@ -81,7 +88,8 @@ fn attached_to_taffy(doc: &RinchDocument, id: NodeId) -> bool {
 }
 
 /// No node claimed by two parents, no `parent()`/`children()` disagreement, no
-/// orphan — `RinchDocument::taffy_tree_violations`.
+/// orphan, **no subtree laid out by nobody** —
+/// `RinchDocument::taffy_tree_violations`.
 ///
 /// Called from every fixture below rather than pinned once, because the
 /// property is cross-cutting: on `main` it catches the raw-DOM rebuild in four
@@ -89,6 +97,18 @@ fn attached_to_taffy(doc: &RinchDocument, id: NodeId) -> bool {
 /// a non-recursive `collect_effective_taffy_children`), and it caught `main`
 /// reaching the right *height* through a tree where one Taffy node sat in two
 /// parents' child lists — which no geometry assertion can see.
+///
+/// The three `*_restyled_to_contents_*` fixtures at the bottom of this file
+/// used to need a private `reachable_from_taffy_root` helper beside it, because
+/// the validator could not make their claim: a subtree detached at a
+/// `display: contents` node keeps every edge inside it, so every member reports
+/// a Taffy parent and invariant `C` skips the one node that does not. The
+/// helper is gone — #589 put root reachability into the validator as `D`, so
+/// this call now *is* the assertion those fixtures were making by hand, and it
+/// makes it of every node in the document rather than of the one the fixture
+/// thought to name. Verified fail-first against #585's mutant
+/// (`taffy_child_list_owners` reduced to `vec![node_id]`): both witnesses fail
+/// here, through this function, with the helper deleted.
 fn assert_consistent(doc: &RinchDocument, what: &str) {
     let v = doc.taffy_tree_violations();
     assert!(
@@ -652,30 +672,6 @@ fn three_contents_levels_down_with_an_independently_mixed_container() {
 
 // ── The owners walk, after #568 ────────────────────────────────────────────
 
-/// Whether a node's box hangs off the **document root**, not merely off some
-/// Taffy parent.
-///
-/// `attached_to_taffy` cannot tell the difference and neither can the
-/// validators: a subtree detached at a `display: contents` node keeps every
-/// edge inside it, so each member still reports a parent, and invariant C's
-/// orphan rule skips `Contents` nodes by design. Measured against the
-/// walk-removed mutant on the fixture below — `attached_to_taffy` answers
-/// `true`, `taffy_tree_violations` and `dom_tree_violations` both answer `[]`,
-/// and the flex column measures `0`. A whole branch laid out nowhere with
-/// nothing anywhere looking locally wrong, which is also why the
-/// `RINCH_TREE_CHECK=1` sweep cannot find this class.
-fn reachable_from_taffy_root(doc: &RinchDocument, id: NodeId) -> bool {
-    let root = doc.tree.nodes[doc.tree.root_id].taffy_id;
-    let mut cur = doc.tree.get(id.0).and_then(|n| n.taffy_id);
-    while let Some(t) = cur {
-        if Some(t) == root {
-            return true;
-        }
-        cur = doc.tree.taffy.parent(t);
-    }
-    false
-}
-
 /// `<div style="display: flex; flex-direction: column">` around a plain block
 /// holding `text + block`, then that block restyled to `display: contents`.
 ///
@@ -755,10 +751,6 @@ fn a_container_restyled_to_contents_rebuilds_the_ancestor_that_now_holds_its_box
     );
     doc.resolve_layout(VW, VH);
 
-    assert!(
-        reachable_from_taffy_root(&doc, blk),
-        "the block is laid out inside a subtree hanging off nothing"
-    );
     assert_eq!(rect(&doc, blk).3, 30.0, "the block keeps its height");
     assert_eq!(
         height_of(&doc, col),
@@ -805,10 +797,6 @@ fn a_container_restyled_to_contents_two_levels_down_walks_the_whole_chain() {
     );
     doc.resolve_layout(VW, VH);
 
-    assert!(
-        reachable_from_taffy_root(&doc, blk),
-        "the block is laid out inside a subtree hanging off nothing"
-    );
     assert_eq!(rect(&doc, blk).3, 30.0, "the block keeps its height");
     assert_eq!(
         height_of(&doc, col),
@@ -847,7 +835,6 @@ fn the_same_restyle_under_a_block_ancestor_repairs_itself() {
     );
     doc.resolve_layout(VW, VH);
 
-    assert!(reachable_from_taffy_root(&doc, blk));
     assert_eq!(rect(&doc, blk).3, 30.0);
     assert_eq!(height_of(&doc, outer), 50.0);
     assert_consistent(&doc, "block ancestor control");

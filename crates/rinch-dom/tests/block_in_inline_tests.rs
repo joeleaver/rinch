@@ -124,6 +124,47 @@ fn assert_consistent(doc: &RinchDocument, what: &str) {
     );
 }
 
+/// The same, for a fixture that is **live against a defect that is still
+/// open** — #513's own subject, seen from the validator side.
+///
+/// `taffy_tree_violations`' `D` rule (#589) reports a subtree that is laid out
+/// by no compute pass. A block-level child of a bare inline is exactly that:
+/// the inline's Taffy node is detached into the IFC, its block child stays in
+/// that node's child list, and the whole branch — the block, and under #366 the
+/// text after it — is laid out nowhere. Two fixtures below say so already, in
+/// prose: *"the floated child, and `tail` after it, are drawn nowhere at all"*
+/// and *"this height is right and the pixels are not"*. `D` is the first thing
+/// in the repo that says it in an assertion.
+///
+/// So those two assert **which** violations they expect rather than waiving the
+/// check, and the non-empty assertion is the half that matters: when #513 is
+/// fixed this fails, names itself, and the fixture goes back to
+/// [`assert_consistent`]. A waiver would simply go quiet and stale.
+fn assert_only_known_513_detachment(doc: &RinchDocument, what: &str) {
+    let t = doc.taffy_tree_violations();
+    let unexpected: Vec<&String> = t.iter().filter(|l| !l.starts_with("D detached")).collect();
+    assert!(
+        unexpected.is_empty(),
+        "{what}: Taffy tree inconsistent beyond #513's detachment:\n  {}",
+        unexpected
+            .iter()
+            .map(|s| s.as_str())
+            .collect::<Vec<_>>()
+            .join("\n  ")
+    );
+    assert!(
+        !t.is_empty(),
+        "{what}: nothing is detached any more — #513 appears to be fixed. \
+         Replace this call with `assert_consistent`.",
+    );
+    let r = doc.run_bookkeeping_violations();
+    assert!(
+        r.is_empty(),
+        "{what}: run bookkeeping inconsistent:\n  {}",
+        r.join("\n  ")
+    );
+}
+
 /// Build one shape twice: `wrapped` puts the whole content inside a bare inline
 /// element, `!wrapped` puts it straight in the container. Returns the container
 /// and every block child, in document order.
@@ -490,7 +531,7 @@ fn an_absolutely_positioned_child_does_not_split_an_inline() {
         LINE,
         "an absolute child inside an inline must not make the container three bands tall",
     );
-    assert_consistent(&w.doc, "absolute inside an inline");
+    assert_only_known_513_detachment(&w.doc, "absolute inside an inline");
 }
 
 /// rinch implements **no floats** (there is no `float` handling anywhere in
@@ -518,7 +559,7 @@ fn a_floated_child_of_an_inline_does_not_add_lines_to_its_container() {
          the inline around it would give {}",
         LINE + BLK_H + LINE,
     );
-    assert_consistent(&w.doc, "float inside an inline");
+    assert_only_known_513_detachment(&w.doc, "float inside an inline");
 }
 
 // ── The local pixel oracle ───────────────────────────────────────────────
