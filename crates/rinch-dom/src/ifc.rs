@@ -1481,21 +1481,34 @@ impl RinchDocument {
     /// needs fixing. The cost is that a second, independent detachment
     /// *inside* an already reported subtree is not separately named.
     ///
-    /// Both refinements are load-bearing, measured over
-    /// `RINCH_TREE_CHECK=1 cargo test -p rinch-dom -p rinch -- --nocapture`
-    /// on `db9c64f`, where C alone prints 16 lines:
+    /// Measured over `RINCH_TREE_CHECK=1 cargo test -p rinch-dom -p rinch --
+    /// --nocapture` on `1a60722` — where, since #603, **C alone prints
+    /// nothing at all**:
     ///
     /// | seeds | suppression | `C orphan` | `D detached` | total |
     /// |---|---|---|---|---|
-    /// | root only | off | 16 | 88 | 104 |
-    /// | root only | on | **6** | 60 | 66 |
-    /// | root + inline-block | off | 16 | 20 | 36 |
-    /// | root + inline-block | on | 16 | 10 | **26** |
+    /// | root only | off | 0 | 116 | 116 |
+    /// | root only | on | 0 | 77 | 77 |
+    /// | root + inline-block | off | 0 | 15 | 15 |
+    /// | root + inline-block | on | 0 | 15 | **15** |
     ///
-    /// Read the bold `6`: with the seeds wrong, suppression *hides 10 real
-    /// `C orphan`s* behind a D line their ancestor never earned. Suppression is
-    /// only safe once the seed set is right, which is why neither refinement
-    /// is optional and why they are not independent.
+    /// **Seeding is what earns its keep; suppression currently changes
+    /// nothing** — 15 either way — and saying so is the point. Every one of
+    /// today's 15 lines is a #513 shape whose stranded nodes are siblings, so
+    /// there is no ancestor to suppress from. Suppression is kept for the
+    /// *nested* case, which `only_the_topmost_detached_node_is_named` pins
+    /// directly and which the suite last exhibited on `db9c64f` (36 lines
+    /// against 26 there).
+    ///
+    /// **They are ordered, not independent, and the witness is historical.**
+    /// On `db9c64f` the root-only-plus-suppression cell reported **6**
+    /// `C orphan` lines where every other cell reported 16: suppression hid ten
+    /// *true* reports behind D lines their ancestors had only earned because
+    /// the seed set was wrong. #603 removed all sixteen of those orphans, so
+    /// that cell now reads 0 like the rest and the demonstration is no longer
+    /// reproducible here — but the mechanism is untouched. A refinement that
+    /// suppresses from a false positive loses true ones; do not add the second
+    /// without the first.
     ///
     /// **Cost, measured rather than asserted.** One BFS over the
     /// `taffy.children()` reads A and B already make — kept rather than
@@ -1504,12 +1517,15 @@ impl RinchDocument {
     /// `RINCH_TREE_CHECK=1`.
     ///
     /// The constant is **not** free, though, and the first draft of this got it
-    /// badly wrong. On a 2203-node document, debug build, 200 iterations, best
-    /// of 3: the whole validator is **1.40ms** with D and E against **1.03ms**
-    /// without them. Spelling the same two structures as a `HashMap` and a
-    /// `HashSet` cost **2.72ms** — `SipHash` in a debug build, ~6600 probes,
-    /// which is more than the rest of the check put together. Hence the
-    /// `binary_search` on `parents`; do not "simplify" it back.
+    /// badly wrong by comparing against a mutant that still paid for the BFS.
+    /// On a 2203-node document, debug build, 200 iterations, best of 3 in one
+    /// quiet session: the whole validator is **1.40ms** with D and E against
+    /// **1.03ms** without them. Spelling the same two structures as a
+    /// `HashMap` and a `HashSet` cost **2.72ms** — `SipHash` in a debug build,
+    /// ~6600 probes, which is more than the rest of the check put together.
+    /// Hence the `binary_search` on `parents`; do not "simplify" it back.
+    /// (Re-measured after the #603 rebase at 1.41 / 1.16 on a loaded machine:
+    /// the absolute figures move with load, the hashing penalty did not.)
     ///
     /// # E, and what it is for (#543)
     ///
@@ -1528,15 +1544,25 @@ impl RinchDocument {
     /// Stated because an invariant read as stronger than it is, is worse than
     /// no invariant:
     ///
-    /// - **The `ifc_root` exemption is not covered by E, and cannot be.**
-    ///   Inline content legitimately carries a real box — the IFC assigns it
-    ///   (`write_inline_positions`), not Taffy. So a node whose `ifc_root` is
-    ///   **stale** is invisible to all three rules: it is exempt from C and D,
-    ///   and E cannot ask the question that would catch it. That is #597's
-    ///   *intermediate* state — an element restyled from inline-level to
-    ///   block-level keeps `ifc_root` until something else rebuilds its parent
-    ///   — and it is precisely the state that is worse than the one #584
-    ///   reports. Do not read a clean sweep as evidence against it.
+    /// - **The `ifc_root` exemption is unconditional, and nothing here can see
+    ///   past it.** Inline content legitimately carries a real box — the IFC
+    ///   assigns it (`write_inline_positions`), not Taffy — so E cannot ask the
+    ///   box question of an `ifc_root` node, and C and D exempt it outright.
+    ///   Measured directly: strand a node the #589 way and D reports it; set
+    ///   `ifc_root = Some(..)` on that same tree and the report goes to `[]`.
+    ///   A node carrying a mark no IFC honours would therefore be invisible to
+    ///   all three rules.
+    ///
+    ///   **This was written as "blind to #597's intermediate state", and #603
+    ///   voided that.** Measured on `1a60722`, both of #597's routes — a bare
+    ///   `<button>` restyled to `display: flex`, and a `<span>`/`<svg>` pair
+    ///   blockified by their parent becoming flex — reach `ifc_root = None`
+    ///   with a real Taffy parent on the **first** pass after the restyle.
+    ///   There is no intermediate state left to be blind to. The stale mark
+    ///   existed because the marking pass never ran, not because it ran and
+    ///   left something behind, and #603's crossing trigger makes it run.
+    ///   No other producer for the shape was found on this base — *not found*,
+    ///   which is not the same as *does not exist*.
     /// - **Anonymous block boxes are not visited.** The walk is over
     ///   `node.children`, and a box lives in its container's `run_boxes`. A
     ///   detached box is reported only through its members, which are ordinary
@@ -1870,8 +1896,9 @@ impl RinchDocument {
         // This check only ever runs in a debug build, where `SipHash` is
         // several hundred ns a probe, and D needs one membership test per DOM
         // node on top of A and B's existing work. Measured on a 2203-node
-        // document, best of 3: the hashed spelling took the whole validator
-        // from 1.03ms to 2.72ms, and this one takes it to 1.40ms. Indexing a
+        // document, best of 3 in one quiet session: the hashed spelling took
+        // the whole validator from 1.03ms to 2.72ms, this one to 1.40ms.
+        // Indexing a
         // bitmap by `usize::from(id)` directly is not available — Taffy's
         // `NodeId` packs a slotmap version into the high bits, so the values
         // are around 2^32 rather than dense.
@@ -2472,6 +2499,15 @@ impl RinchDocument {
     /// would either exempt a subtree nothing computes (blind) or report one
     /// that is computed correctly (noise) — the two failure modes the rule
     /// exists to avoid. Same list, one definition.
+    ///
+    /// Note what it reads: `ifc_root` and [`crate::node::DisplayMode`], the
+    /// same two fields the measure pass reads. **Not**
+    /// `DisplayValue::to_taffy`, which is not injective — `inline`/`block`
+    /// both give `taffy::Display::Block`, and `inline-block`/`flex`/
+    /// `inline-flex`/`contents` all give `Flex`. That aliasing is the whole of
+    /// #597's second mechanism, and it is the classic way an exemption ends up
+    /// wider than its author believes. This seed set cannot acquire it,
+    /// because there is nothing to keep in step: one expression, two readers.
     pub(crate) fn inline_block_measure_roots(&self) -> Vec<taffy::NodeId> {
         let mut out = Vec::new();
         for (_id, node) in &self.tree.nodes {

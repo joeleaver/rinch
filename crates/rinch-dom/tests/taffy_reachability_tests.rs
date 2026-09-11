@@ -25,8 +25,8 @@
 //! They test the *validator*, not the engine, and each says so in its own doc so
 //! a later mutation campaign cannot mistake one for a producer pin. The producer
 //! witnesses are named in each: the walk-removal mutant on
-//! `anon_box_contents_flatten_tests`, and the ten live `D detached` lines #513
-//! prints across this suite.
+//! `anon_box_contents_flatten_tests`, and the fifteen live `D detached` lines
+//! #513 prints across this suite.
 //!
 //! Two fixtures are **not** checkers and are the more important half:
 //! `an_inline_block_measured_as_its_own_root_is_not_reported` and
@@ -164,10 +164,15 @@ fn a_node_with_no_taffy_parent_is_still_reported_as_an_orphan() {
 /// **Checker.** One defect strands a branch; the report names the top of it once.
 ///
 /// Without suppression this prints a line for the block *and* one for its child.
-/// On the whole suite that difference is 36 lines against 26 as shipped, and 104
-/// against 66 with the seed set wrong — noise that buries the node the repair
-/// goes to. The cost is stated in the validator's doc: a second, independent
-/// detachment inside an already-reported subtree is not separately named.
+///
+/// **This fixture is currently suppression's only witness, and that is why it is
+/// written by hand.** On `1a60722` the whole-suite count is 15 either way: every
+/// live `D detached` line is a #513 shape whose stranded nodes are siblings, so
+/// there is no ancestor to suppress from. The suite last showed the difference
+/// on `db9c64f` (36 lines against 26, and 104 against 66 with the seed set
+/// wrong). Losing the fixture would leave the refinement with no test at all.
+/// The cost is stated in the validator's doc: a second, independent detachment
+/// inside an already-reported subtree is not separately named.
 #[test]
 fn only_the_topmost_detached_node_is_named() {
     let mut doc = RinchDocument::new();
@@ -213,11 +218,12 @@ fn only_the_topmost_detached_node_is_named() {
 /// category of unreachable node beside `display: none` and `display: contents`.
 ///
 /// Seeding reachability only from the document root reports this document.
-/// Across `-p rinch-dom -p rinch` it takes the sweep from 26 lines to 66 —
-/// and, worse, *masks* 10 real `C orphan`s behind D lines their ancestors never
-/// earned, because suppression then has a false ancestor to suppress from.
-/// Nothing is corrupted here; it is an ordinary paragraph with a
-/// button-shaped thing in it.
+/// Across `-p rinch-dom -p rinch` on `1a60722` it takes the sweep from 15 lines
+/// to 77, every one of them this shape. On `db9c64f` it did something worse as
+/// well, which is the reason the two refinements are ordered rather than
+/// independent: it *masked* 10 real `C orphan`s behind D lines their ancestors
+/// had only earned because the seeding was wrong. Nothing is corrupted here; it
+/// is an ordinary paragraph with a button-shaped thing in it.
 #[test]
 fn an_inline_block_measured_as_its_own_root_is_not_reported() {
     let mut doc = RinchDocument::new();

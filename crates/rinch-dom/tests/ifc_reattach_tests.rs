@@ -70,9 +70,11 @@
 //! The **mirror** case — a block-level child stranded when its *wrapper* is
 //! restyled `flex → inline` — is a different defect (it is #513's static
 //! block-in-inline defect reached by a transition) and is not fixed by this
-//! work. `the_mirror_case_gains_no_new_taffy_violation` is a guard rail only:
-//! it passes before and after, and is here so an over-reaching fix is caught,
-//! not as coverage of the mirror case.
+//! work. `the_mirror_case_is_still_stranded_and_nothing_else_breaks` is a guard
+//! rail only: it is here so an over-reaching fix is caught, not as coverage of
+//! the mirror case. (It was `…_gains_no_new_taffy_violation` until #589 gave
+//! `taffy_tree_violations` a root-reachability rule, which *can* see the mirror
+//! case — the old name described the validator's reach, not the tree.)
 
 use rinch_core::dom::{DomDocument, NodeId};
 use rinch_dom::RinchDocument;
@@ -130,6 +132,39 @@ fn assert_clean(doc: &RinchDocument, what: &str) {
         v.is_empty(),
         "{what}: Taffy tree inconsistent:\n  {}",
         v.join("\n  ")
+    );
+}
+
+/// The same, for a document that is **supposed** to be stranded because #513 is
+/// still open.
+///
+/// `taffy_tree_violations` grew a root-reachability rule (#589): a subtree laid
+/// out by no compute pass is reported as `D detached`, where the old orphan rule
+/// could not see it — every edge inside such a subtree is intact and only the
+/// node at the top has no Taffy parent. Block-level content inside an inline
+/// element is exactly that, so the two fixtures here whose own docs say *"both
+/// now hit #513"* and *"#513's static block-in-inline defect, reached by a
+/// transition"* report it.
+///
+/// They assert **which** violations they expect rather than waiving the check,
+/// and the non-empty half is the one that matters: when #513 is fixed this fails
+/// and names the repair. A waiver would go quiet and stale.
+fn assert_only_known_513_detachment(doc: &RinchDocument, what: &str) {
+    let v = doc.taffy_tree_violations();
+    let unexpected: Vec<&str> = v
+        .iter()
+        .filter(|l| !l.starts_with("D detached"))
+        .map(|s| s.as_str())
+        .collect();
+    assert!(
+        unexpected.is_empty(),
+        "{what}: Taffy tree inconsistent beyond #513's detachment:\n  {}",
+        unexpected.join("\n  ")
+    );
+    assert!(
+        !v.is_empty(),
+        "{what}: nothing is detached any more — #513 appears to be fixed. \
+         Replace this call with `assert_clean`.",
     );
 }
 
@@ -559,8 +594,8 @@ fn the_block_to_inline_path_now_agrees_with_the_static_twin() {
         geom(&d, c).3,
         "the container's height still depends on the path"
     );
-    assert_clean(&r, "restyled");
-    assert_clean(&d, "declared");
+    assert_only_known_513_detachment(&r, "restyled");
+    assert_only_known_513_detachment(&d, "declared");
 }
 
 /// The shape that says **where** the heal has to run: the owner of a healed
@@ -666,13 +701,20 @@ fn a_hidden_child_of_an_ifc_root_stays_detached() {
     assert_clean(&doc, "after a sibling restyle");
 }
 
-/// The **mirror** case, which this work does not fix: a wrapper restyled
+/// The **mirror** case, which #603 does not fix: a wrapper restyled
 /// `flex → inline` strands its block child (#513's static block-in-inline
-/// defect, reached by a transition). Guard rail only — it passes before and
-/// after, and exists so a repair that reaches into the mirror direction is
-/// caught rather than shipped unmeasured.
+/// defect, reached by a transition). Guard rail — it exists so a repair that
+/// reaches into the mirror direction is caught rather than shipped unmeasured.
+///
+/// **It was `the_mirror_case_gains_no_new_taffy_violation` until #589**, and the
+/// rename is the point rather than tidying: the case gains a violation now. It
+/// always had the defect — #603's own doc says so — and the old name recorded
+/// how far the validator could see, not what the tree was doing. Root
+/// reachability (`D detached`) sees it, so the assertion becomes "exactly the
+/// known detachment and nothing else", which still catches an over-reaching
+/// repair *and* now fails when #513 is fixed.
 #[test]
-fn the_mirror_case_gains_no_new_taffy_violation() {
+fn the_mirror_case_is_still_stranded_and_nothing_else_breaks() {
     let mut doc = RinchDocument::new();
     let body = doc.body();
     let wrap = el(&mut doc, body, "div", "display: flex; width: 160px;");
@@ -682,7 +724,7 @@ fn the_mirror_case_gains_no_new_taffy_violation() {
 
     doc.set_attribute(wrap, "style", "display: inline; width: 160px;");
     doc.resolve_layout(VW, VH);
-    assert_clean(&doc, "mirror case");
+    assert_only_known_513_detachment(&doc, "mirror case");
 }
 
 /// The DOM node whose Taffy node holds `id`'s Taffy node.
