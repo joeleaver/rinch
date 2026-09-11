@@ -347,24 +347,24 @@ fn set_bar_appearance(method: &str, light: bool) {
 /// in the foreground, and this answers what was true when it was asked. An app
 /// that wants to follow the system rather than sample it once should re-read
 /// this from `rinch_core::events::set_configuration_change_handler`, which is
-/// where the shell reports that a configuration changed under it. There is a
-/// trap on the other side of that: an activity whose manifest
-/// `android:configChanges` does not list `uiMode` is **destroyed and
-/// recreated** on a night-mode flip rather than reconfigured, so the handler
-/// never runs, the process restarts, and this function is only ever read at a
-/// fresh mount. That is a one-word edit in the app's manifest and it is
-/// invisible until someone flips the switch with the app open.
+/// where the shell reports that a configuration changed under it.
+///
+/// Register that handler wherever the signals it writes live — inside a
+/// component is the natural place, and is safe: the handler is released when
+/// that component unmounts, so it cannot outlive the signals it captured.
+///
+/// **The trap on the other side of it is worse than "you get a fresh mount".**
+/// An activity whose manifest `android:configChanges` does not list `uiMode` is
+/// **destroyed and recreated** on a night-mode flip rather than reconfigured,
+/// so the handler never runs — and the relaunch lands in the **same process**,
+/// where `bridge::init` calls `BRIDGE.set(..).ok().expect("rinch-android
+/// already initialized")` (in `bridge::init`) and panics. The pid does not change,
+/// so nothing looks like a crash; what is left is a live process with a dead
+/// main loop. So the manifest entry is not a nicety that costs you a re-read,
+/// it is load-bearing, and it is invisible until someone flips the switch with
+/// the app open. Making `init` idempotent is not sufficient on its own — the
+/// cached activity `GlobalRef` would be stale — so that is its own change.
 pub fn night_mode() -> Option<bool> {
-    // android.content.res.Configuration's constants. Named here rather than
-    // fetched as static fields over JNI because they are `public static final
-    // int` in the platform API — the compiler inlines them into every app that
-    // has ever been built against Android, so they cannot change without
-    // breaking the world, and three extra JNI round-trips to look up numbers
-    // that are frozen by ABI is a cost with nothing to buy.
-    const UI_MODE_NIGHT_MASK: i32 = 0x30;
-    const UI_MODE_NIGHT_NO: i32 = 0x10;
-    const UI_MODE_NIGHT_YES: i32 = 0x20;
-
     let ui_mode = bridge::with_activity(|env, activity| -> jni::errors::Result<i32> {
         // getResources().getConfiguration().uiMode
         let resources = env
@@ -386,20 +386,15 @@ pub fn night_mode() -> Option<bool> {
         env.get_field(&config, "uiMode", "I")?.i()
     });
 
-    let ui_mode = match ui_mode {
-        Ok(bits) => bits,
+    match ui_mode {
+        // The mask, the constants and the undecided case all live in
+        // `display_decode`, which is host-compiled and host-tested (#516). This
+        // function is now only the call.
+        Ok(bits) => crate::display_decode::decode_night_mode(bits),
         Err(e) => {
             log::warn!("night_mode: reading Configuration.uiMode failed: {e}");
-            return None;
+            None
         }
-    };
-
-    match ui_mode & UI_MODE_NIGHT_MASK {
-        UI_MODE_NIGHT_YES => Some(true),
-        UI_MODE_NIGHT_NO => Some(false),
-        // UI_MODE_NIGHT_UNDEFINED, or a value from a future mask this build
-        // has never heard of. Both mean "the platform did not answer".
-        _ => None,
     }
 }
 
@@ -473,7 +468,12 @@ pub fn wallpaper_primary() -> Option<(u8, u8, u8)> {
             return Ok(None);
         }
         let color = env
-            .call_method(&colors, "getPrimaryColor", "()Landroid/graphics/Color;", &[])?
+            .call_method(
+                &colors,
+                "getPrimaryColor",
+                "()Landroid/graphics/Color;",
+                &[],
+            )?
             .l()?;
         if color.is_null() {
             return Ok(None);
@@ -487,11 +487,10 @@ pub fn wallpaper_primary() -> Option<(u8, u8, u8)> {
     });
 
     match argb {
-        Ok(Some(argb)) => Some((
-            ((argb >> 16) & 0xff) as u8,
-            ((argb >> 8) & 0xff) as u8,
-            (argb & 0xff) as u8,
-        )),
+        // One spelling of the unpack, shared with `system_accent` and tested on
+        // the host (#516). Two sites doing this arithmetic separately is the
+        // shape `rinch-dom` paid for three times (#476, #518, #568).
+        Ok(Some(argb)) => Some(crate::display_decode::decode_argb(argb)),
         Ok(None) => None,
         Err(e) => {
             // Unlike everywhere else in this module, the exception is cleared
@@ -557,17 +556,14 @@ pub fn wallpaper_primary() -> Option<(u8, u8, u8)> {
 /// wallpaper or picks a different preset, and the activity is told about it as
 /// a configuration change. Re-read from
 /// `rinch_core::events::set_configuration_change_handler` rather than caching
-/// the answer at mount.
+/// the answer at mount — including the manifest caveat [`night_mode`] spells
+/// out, which applies to this reading identically.
 pub fn system_accent(tone: u16) -> Option<(u8, u8, u8)> {
-    // The published tones, in the order the resource table lists them. Named
-    // here rather than fetched, for the same reason `night_mode`'s uiMode
-    // constants are: this is a frozen part of the platform's public resource
-    // surface, and a tone that is not on this list is not a resource that has
-    // ever existed on any device.
-    const TONES: [u16; 13] = [0, 10, 50, 100, 200, 300, 400, 500, 600, 700, 800, 900, 1000];
-    if !TONES.contains(&tone) {
-        return None;
-    }
+    // The published tone set and the resource-name format live in
+    // `display_decode`, host-compiled and host-tested (#516). Rejecting an
+    // unpublished tone here rather than letting `getIdentifier` answer `0`
+    // keeps two different failures apart — see that function's doc.
+    let resource_name = crate::display_decode::system_accent_resource_name(tone)?;
 
     let argb = bridge::with_activity(|env, activity| -> jni::errors::Result<Option<i32>> {
         let resources = env
@@ -584,7 +580,7 @@ pub fn system_accent(tone: u16) -> Option<(u8, u8, u8)> {
         // against — `android.R.color.system_accent1_500` is API 31 and rinch
         // builds for lower, so the id has to be looked up by name at runtime
         // on whatever platform the app actually landed on.
-        let name = env.new_string(format!("system_accent1_{tone}"))?;
+        let name = env.new_string(&resource_name)?;
         let kind = env.new_string("color")?;
         let package = env.new_string("android")?;
         let id = env
@@ -630,11 +626,8 @@ pub fn system_accent(tone: u16) -> Option<(u8, u8, u8)> {
     });
 
     match argb {
-        Ok(Some(argb)) => Some((
-            ((argb >> 16) & 0xff) as u8,
-            ((argb >> 8) & 0xff) as u8,
-            (argb & 0xff) as u8,
-        )),
+        // The same one spelling of the unpack as `wallpaper_primary`.
+        Ok(Some(argb)) => Some(crate::display_decode::decode_argb(argb)),
         Ok(None) => None,
         Err(e) => {
             // **Yes, the discipline `wallpaper_primary` documents applies
