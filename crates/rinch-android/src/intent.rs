@@ -40,9 +40,10 @@
 //! cost is that an app which never registers a handler accumulates them, which
 //! `MAX_PENDING` bounds.
 
-use std::cell::RefCell;
 use std::rc::Rc;
 use std::sync::Mutex;
+
+use crate::scoped::ScopedList;
 
 /// `Intent.ACTION_MAIN` — what the launcher sends, and the one thing worth
 /// filtering out. Spelled here rather than imported from anywhere because the
@@ -133,13 +134,31 @@ static INCOMING: Mutex<Vec<IncomingIntent>> = Mutex::new(Vec::new());
 // code is entitled to call `on_incoming_intent` from inside a delivery — a
 // screen that opens in response to a share and wants the next one too.
 // Iterating the registry in place while that happens is a `RefCell`
-// double-borrow panic, on a path nobody exercises until a user finds it, so
-// `drain_incoming_intents` clones the list out from under the borrow first, and
-// `Rc` is what makes that clone cheap.
-type IntentHandler = Rc<dyn Fn(IncomingIntent)>;
-
+// double-borrow panic, on a path nobody exercises until a user finds it, so the
+// live entries are cloned out from under the borrow before any of them runs,
+// and `Rc` is what makes that clone cheap. That clone-out now happens inside
+// `ScopedList::dispatch` rather than here — this comment described the loop in
+// this file until the registry grew a lifetime (#599).
 thread_local! {
-    static HANDLERS: RefCell<Vec<IntentHandler>> = const { RefCell::new(Vec::new()) };
+    /// The registered handlers, each tied to the component that registered it.
+    ///
+    /// A [`ScopedList`] rather than a bare `Vec`, and the reason is #183 rather
+    /// than tidiness: a handler written inside a `#[component]` captures that
+    /// component's `Signal`s, disposing the component frees them, and a read of
+    /// a freed signal **panics**. An incoming intent arrives long after mount by
+    /// nature — a share, a deep link, a shortcut — so "the component that
+    /// registered has unmounted since" is the ordinary case here.
+    ///
+    /// **Why the list and not one of this crate's two older templates** is
+    /// argued where the template lives ([`ScopedList`]), because it is a fact
+    /// about the shapes rather than about this module: a [`ScopedSlot`] would
+    /// make the second registrant silently disable the first, which is the
+    /// opposite of what `on_incoming_intent` promises, and a
+    /// [`ScopedMap`](crate::scoped::ScopedMap) needs a key that nothing here
+    /// would ever use to address an entry. This registry is the third in three
+    /// pull requests to ask the question and the first for which neither answer
+    /// fitted (issue #599).
+    static HANDLERS: ScopedList<dyn Fn(IncomingIntent)> = const { ScopedList::new() };
 }
 
 /// Register a handler for intents that arrive after launch *and* at launch.
@@ -156,7 +175,7 @@ thread_local! {
 /// The launch intent is *not* lost by registering late. Intents queued before
 /// the first handler exists stay queued; see the module docs.
 pub fn on_incoming_intent(cb: impl Fn(IncomingIntent) + 'static) {
-    HANDLERS.with(|handlers| handlers.borrow_mut().push(Rc::new(cb)));
+    HANDLERS.with(|handlers| handlers.install(Rc::new(cb)));
 }
 
 /// Queue an intent for delivery on the next drain. Returns whether it was kept.
@@ -195,22 +214,32 @@ fn enqueue(intent: IncomingIntent) -> bool {
 /// A no-op — and specifically a *non-destructive* no-op — while no handler is
 /// registered.
 pub fn drain_incoming_intents() {
-    let has_handler = HANDLERS.with(|handlers| !handlers.borrow().is_empty());
-    if !has_handler {
+    // Sweep first, every frame. `dispatch` prunes the entries it visits, but an
+    // intent that never arrives prunes nothing — and this registry has no
+    // removal API — so a handler whose component unmounted before any share
+    // came would otherwise be held, with everything it captured, for the life
+    // of the process. A `Weak` upgrade and a flag read per handler, on a list
+    // that has one or two entries.
+    HANDLERS.with(|handlers| handlers.release_dead());
+
+    // **Live**, not merely present. A handler whose component is gone is not a
+    // listener, and counting it as one would take the queue below and deliver
+    // it to nobody — turning this deliberate, non-destructive no-op into a
+    // silent drop of the very share that launched the app.
+    if !HANDLERS.with(|handlers| handlers.has_live()) {
         return;
     }
 
     let intents: Vec<IncomingIntent> =
         std::mem::take(&mut *INCOMING.lock().unwrap_or_else(|e| e.into_inner()));
     for intent in intents {
-        // Snapshot per intent, not once for the loop: a handler that registers
+        // Dispatched per intent, not once for the loop: a handler that registers
         // another handler means the next intent in this same drain has one more
         // listener than the last did, which is the behaviour a reader expects
-        // from a registry that is read at the point of use.
-        let handlers: Vec<IntentHandler> = HANDLERS.with(|handlers| handlers.borrow().clone());
-        for handler in handlers {
-            handler(intent.clone());
-        }
+        // from a registry that is read at the point of use. `ScopedList` takes
+        // its snapshot inside each call, so that property is this loop's to
+        // keep.
+        HANDLERS.with(|handlers| handlers.dispatch(|cb| cb(intent.clone())));
     }
 }
 
@@ -308,6 +337,8 @@ pub extern "C" fn Java_com_rinch_RinchActivity_nativeOnIncomingIntent(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rinch_core::Signal;
+    use rinch_core::reactive::Scope;
     use std::cell::RefCell;
     use std::rc::Rc;
     use std::sync::Mutex as StdMutex;
@@ -463,6 +494,173 @@ mod tests {
 
         assert_eq!(*first.borrow(), vec!["shared"]);
         assert_eq!(*second.borrow(), vec!["shared"]);
+    }
+
+    // ── Handler lifetime (#183, #599) ────────────────────────────────────
+
+    /// **The defect this registry had**: a handler outliving the component that
+    /// registered it.
+    ///
+    /// A handler written inside a `#[component]` captures that component's
+    /// `Signal`s; since #141 PR4 disposing the component frees them, and a read
+    /// of a freed signal **panics**. An incoming intent arrives long after
+    /// mount by nature — a share, a deep link, a shortcut — so the window is the
+    /// whole life of the app rather than the tail of one event.
+    #[test]
+    fn a_handler_stops_firing_once_its_component_unmounts() {
+        let _g = setup();
+        let seen = Rc::new(RefCell::new(Vec::new()));
+
+        let scope = Scope::new();
+        let sink = seen.clone();
+        scope.run(|| {
+            on_incoming_intent(move |intent| {
+                sink.borrow_mut().push(intent.text.unwrap_or_default());
+            })
+        });
+
+        // Fail-first inside the fixture: prove it fires while mounted, so "it
+        // did not fire" below cannot pass for the wrong reason.
+        enqueue(send("while mounted"));
+        drain_incoming_intents();
+        assert_eq!(
+            seen.borrow().len(),
+            1,
+            "precondition: it runs while mounted"
+        );
+
+        scope.dispose();
+        enqueue(send("after unmount"));
+        drain_incoming_intents();
+        assert_eq!(
+            seen.borrow().len(),
+            1,
+            "and never again once its component is gone"
+        );
+    }
+
+    /// The same defect where it actually bites: the handler reads a `Signal`
+    /// its own component owned. This fixture fails by **panicking** in
+    /// `Signal::get`'s freed-read path, which is the crash a user would see.
+    #[test]
+    fn an_unmounted_handler_never_reads_the_signal_its_component_owned() {
+        let _g = setup();
+
+        let scope = Scope::new();
+        scope.run(|| {
+            let count = Signal::new(0u32);
+            on_incoming_intent(move |_| {
+                // Reaching this line after `dispose` is the bug: reading a freed
+                // signal panics rather than merely answering something stale.
+                let _ = count.get();
+            })
+        });
+
+        scope.dispose();
+        enqueue(send("after unmount"));
+        drain_incoming_intents();
+    }
+
+    /// **A dead handler must not swallow the queue**, which is the half of this
+    /// a use-after-free test cannot see.
+    ///
+    /// `drain_incoming_intents` deliberately does nothing while nobody is
+    /// listening, so that the share an app was launched with survives until it
+    /// registers. If "listening" means "the list is non-empty" rather than "some
+    /// entry is alive", an unmounted handler takes the queue and delivers it to
+    /// nobody — and that share is gone, silently, on the one path the whole
+    /// queue exists to protect.
+    #[test]
+    fn a_dead_handler_does_not_swallow_the_queue() {
+        let _g = setup();
+
+        let scope = Scope::new();
+        scope.run(|| on_incoming_intent(|_| {}));
+        scope.dispose();
+
+        enqueue(send("the launch share"));
+        drain_incoming_intents();
+
+        let seen = recording_handler();
+        drain_incoming_intents();
+        assert_eq!(
+            seen.borrow().as_slice(),
+            ["the launch share"],
+            "the share must still have been queued when a real listener arrived"
+        );
+    }
+
+    /// The growth half, which no dispatch can reach: an app whose handler's
+    /// component unmounts and to which **no intent ever arrives**. Nothing
+    /// prunes on that path, and this registry has no removal API at all, so
+    /// without the per-frame sweep the callback and everything it captured are
+    /// held for the life of the process.
+    #[test]
+    fn an_unmounted_handler_is_released_even_if_no_intent_ever_arrives() {
+        let _g = setup();
+
+        let scope = Scope::new();
+        scope.run(|| on_incoming_intent(|_| {}));
+        assert_eq!(HANDLERS.with(|h| h.len()), 1, "precondition: it is held");
+
+        scope.dispose();
+        // No intent enqueued at all — the drain is the only thing that runs.
+        drain_incoming_intents();
+        assert_eq!(
+            HANDLERS.with(|h| h.len()),
+            0,
+            "a drain with nothing to deliver must still let go of a dead handler"
+        );
+    }
+
+    /// **Rule 1: registration outside any component keeps app lifetime.** An app
+    /// that registers from `android_main`, before there is a tree at all, must
+    /// not have its handler collected because some unrelated component
+    /// unmounted. This is the assertion that stops the fix overshooting.
+    #[test]
+    fn a_handler_registered_outside_any_component_keeps_app_lifetime() {
+        let _g = setup();
+        let seen = recording_handler();
+
+        let unrelated = Scope::new();
+        unrelated.run(|| {});
+        unrelated.dispose();
+
+        enqueue(send("still listening"));
+        drain_incoming_intents();
+        assert_eq!(seen.borrow().as_slice(), ["still listening"]);
+    }
+
+    /// Delivery order is registration order, **and survives a prune**.
+    ///
+    /// With every handler alive this holds for any implementation that iterates
+    /// the list, which is the fixed point: the cheap prune is a swap-removal,
+    /// and a swap only reorders when something is actually removed. So the dead
+    /// handler is registered *between* the two live ones.
+    #[test]
+    fn registration_order_survives_a_prune() {
+        let _g = setup();
+        let log = Rc::new(RefCell::new(Vec::new()));
+
+        for name in ["first", "third"] {
+            let sink = log.clone();
+            if name == "third" {
+                let scope = Scope::new();
+                let dead = log.clone();
+                scope.run(|| on_incoming_intent(move |_| dead.borrow_mut().push("second")));
+                scope.dispose();
+            }
+            on_incoming_intent(move |_| sink.borrow_mut().push(name));
+        }
+
+        enqueue(send("x"));
+        drain_incoming_intents();
+        assert_eq!(
+            log.borrow().as_slice(),
+            ["first", "third"],
+            "the middle registrant was dead, and removing it must not reorder \
+             the two that survive"
+        );
     }
 
     #[test]
