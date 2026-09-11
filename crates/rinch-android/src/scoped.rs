@@ -227,6 +227,178 @@ impl<F: ?Sized> ScopedSlot<F> {
     }
 }
 
+// ── Additive registries ─────────────────────────────────────────────────────
+
+/// A registry where **every** entry hears every event, each released once the
+/// component that registered it is gone. Neither keyed nor last-wins.
+///
+/// # Why a third shape, rather than one of the two it sits between
+///
+/// [`ScopedSlot`] is last-wins, and a caller that wants several listeners is not
+/// asking for a slot in a form it can afford: `intent::on_incoming_intent`'s
+/// contract is that *"two independent parts of an app can each care about being
+/// shared to without having to know about each other, and neither can silently
+/// disable the other by registering second"*. A slot inverts that by
+/// construction — the second registrant disables the first, silently, which is
+/// exactly the thing the contract rules out.
+///
+/// [`ScopedMap`] is many, but its key is how a caller **addresses** an entry:
+/// install at a key, remove at a key, dispatch *to* a key. Nothing here
+/// addresses an entry — every registrant hears every event, and none is ever
+/// removed by name. A key would be write-only, minted to satisfy the helper
+/// rather than because the API has one, and
+/// [`release_dead`](ScopedMap::release_dead)'s report — whose whole purpose in
+/// the keyed twin is to tell the caller which sensor to power down — would hand
+/// back identifiers that mean nothing to anybody.
+///
+/// So what this adds is the one axis the other two cannot express between them:
+/// **many entries with no identity.** That it took three registries in three
+/// pull requests to need it is the reason it is being written now rather than
+/// guessed at earlier (issue #599).
+///
+/// # What it keeps from them, and the one thing it deliberately does not
+///
+/// The module's rules all apply unchanged: ownerless registration keeps app
+/// lifetime, the callback runs inside its registrant's [`Owner`], no borrow is
+/// held across user code, and a dispatch reads and prunes under one borrow.
+///
+/// **`release_dead` does not re-read after the drops, and the siblings do.**
+/// Theirs must: their caller's response to the report is to power hardware down,
+/// and a released callback whose `Drop` re-registers at that very key has
+/// claimed it before the caller can act. Here the report is a *count*, with no
+/// key attached and nothing to disarm — "this many entries were removed" stays
+/// true whatever a `Drop` did afterwards, so the re-read would be ceremony
+/// copied from a sibling rather than a rule.
+pub struct ScopedList<F: ?Sized> {
+    entries: RefCell<Vec<Entry<Rc<F>>>>,
+}
+
+impl<F: ?Sized> Default for ScopedList<F> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl<F: ?Sized> ScopedList<F> {
+    /// An empty registry. `const` so it can initialise a `thread_local!`
+    /// directly.
+    pub const fn new() -> Self {
+        Self {
+            entries: RefCell::new(Vec::new()),
+        }
+    }
+
+    /// Add `cb`, recording the scope that is currently rendering.
+    ///
+    /// Appends rather than replaces — that is the whole point of this shape —
+    /// so **delivery order is registration order**, and it stays that way
+    /// across a prune (see [`dispatch`](Self::dispatch)).
+    pub fn install(&self, cb: Rc<F>) {
+        // Built before the borrow: `Registrant::current` reads the reactive
+        // runtime, which must not happen under this `RefCell`.
+        let entry = Entry {
+            registrant: Registrant::current(),
+            cb,
+        };
+        self.entries.borrow_mut().push(entry);
+    }
+
+    /// Whether any entry's component is still alive.
+    ///
+    /// Distinct from "is the list non-empty", and the distinction is
+    /// load-bearing for any caller that treats "nobody is listening" as a reason
+    /// to hold an event back: a list of nothing but dead entries would otherwise
+    /// read as a listener, and the event would be delivered to no one and lost.
+    pub fn has_live(&self) -> bool {
+        self.entries
+            .borrow()
+            .iter()
+            .any(|entry| !entry.registrant.is_dead())
+    }
+
+    /// How many entries are held, live or not.
+    #[cfg(test)]
+    pub fn len(&self) -> usize {
+        self.entries.borrow().len()
+    }
+
+    /// Empty the registry. Test-only: this shape has no removal API by design,
+    /// and the fixtures share one `thread_local!`.
+    #[cfg(test)]
+    pub fn clear_for_test(&self) {
+        let _displaced = std::mem::take(&mut *self.entries.borrow_mut());
+    }
+
+    /// Invoke every live entry, oldest registration first, with no borrow held
+    /// — so a callback may register another from inside its own dispatch.
+    ///
+    /// Returns how many ran. Entries whose component is gone are **pruned**
+    /// rather than called, exactly as [`ScopedSlot::dispatch`] prunes its one:
+    /// leaving them would re-check them on every later event and keep alive
+    /// everything they captured.
+    ///
+    /// A callback registered *during* this dispatch does not receive this
+    /// event. The snapshot is taken before any user code runs, which is what
+    /// makes the delivery well-defined; a caller that wants a new registrant to
+    /// see the *next* event in the same batch gets that by calling this once per
+    /// event rather than once per batch.
+    pub fn dispatch(&self, call: impl Fn(&F)) -> usize {
+        // One borrow decides both: live entries are cloned out so they run with
+        // no borrow held, dead ones are taken out so they drop — after the
+        // borrow ends, since their `Drop` is user code that may re-enter here.
+        let (live, _dead) = {
+            let mut entries = self.entries.borrow_mut();
+            let mut live: Vec<Entry<Rc<F>>> = Vec::with_capacity(entries.len());
+            let mut dead: Vec<Entry<Rc<F>>> = Vec::new();
+            // Drained and rebuilt in order rather than `retain`ed, so the
+            // survivors keep their registration order across a prune. A swap
+            // removal would be cheaper and would silently reorder delivery.
+            for entry in std::mem::take(&mut *entries) {
+                if entry.registrant.is_dead() {
+                    dead.push(entry);
+                } else {
+                    live.push(entry.clone());
+                    entries.push(entry);
+                }
+            }
+            (live, dead)
+        };
+        for entry in &live {
+            entry.registrant.run(|| call(&entry.cb));
+        }
+        live.len()
+    }
+
+    /// Release every entry whose component is gone, whether or not an event
+    /// ever arrives for it, and report how many went.
+    ///
+    /// [`dispatch`](Self::dispatch) prunes what it visits, but an event that
+    /// never comes prunes nothing — and this registry has no removal API at all,
+    /// so without a sweep a callback registered by a component that has since
+    /// unmounted is held, with everything it captured, for the life of the
+    /// process. Cheap enough to run from a per-frame drain: a `Weak` upgrade and
+    /// a flag read per entry.
+    pub fn release_dead(&self) -> usize {
+        let released = {
+            let mut entries = self.entries.borrow_mut();
+            let mut dead: Vec<Entry<Rc<F>>> = Vec::new();
+            for entry in std::mem::take(&mut *entries) {
+                if entry.registrant.is_dead() {
+                    dead.push(entry);
+                } else {
+                    entries.push(entry);
+                }
+            }
+            dead
+        };
+        let released_count = released.len();
+        // Explicitly, and outside the borrow above: this is user code whose
+        // `Drop` may re-enter the registry.
+        drop(released);
+        released_count
+    }
+}
+
 // ── Keyed registries ────────────────────────────────────────────────────────
 
 /// A keyed registry of repeat-firing callbacks, each released once the component
@@ -428,6 +600,7 @@ mod tests {
 
     thread_local! {
         static SLOT: ScopedSlot<dyn Fn()> = const { ScopedSlot::new() };
+        static LIST: ScopedList<dyn Fn()> = const { ScopedList::new() };
         static MAP: ScopedMap<u8, dyn Fn()> = ScopedMap::new();
         static ONCE: ScopedOnceMap<u8, u32> = ScopedOnceMap::new();
     }
@@ -660,5 +833,181 @@ mod tests {
 
         assert_eq!(ONCE.with(|map| map.deliver(&21, 1)), Delivery::Dropped);
         assert_eq!(ONCE.with(|map| map.deliver(&21, 1)), Delivery::Unregistered);
+    }
+
+    // ── ScopedList (#599) ────────────────────────────────────────────────
+    //
+    // **These test `dispatch` directly, and they have to.** `intent.rs` sweeps
+    // with `release_dead` at the top of every drain, so by the time its
+    // `dispatch` runs there is nothing dead left to prune — measured: three
+    // separate mutants of `dispatch` (keep-and-call the dead, `has_live` as
+    // `is_empty`, swap-removal) all survived the intent-level suite, because
+    // the sweep had already removed the entry each of them needed to see.
+    // A consumer's convenience is not a reason for the template's own
+    // behaviour to go unpinned.
+
+    fn record(log: &Rc<RefCell<Vec<&'static str>>>, name: &'static str) -> Rc<dyn Fn()> {
+        let sink = log.clone();
+        Rc::new(move || sink.borrow_mut().push(name))
+    }
+
+    /// An entry stops firing once the component that registered it is gone,
+    /// and the others carry on.
+    #[test]
+    fn a_list_entry_stops_firing_once_its_scope_is_disposed() {
+        let log: Rc<RefCell<Vec<&'static str>>> = Rc::new(RefCell::new(Vec::new()));
+        LIST.with(|list| list.install(record(&log, "live")));
+
+        let scope = Scope::new();
+        scope.run(|| LIST.with(|list| list.install(record(&log, "doomed"))));
+
+        // Fail-first: prove the doomed one fires while its scope is alive.
+        LIST.with(|list| list.dispatch(|cb| cb()));
+        assert_eq!(log.borrow().as_slice(), ["live", "doomed"]);
+
+        log.borrow_mut().clear();
+        scope.dispose();
+        LIST.with(|list| list.dispatch(|cb| cb()));
+        assert_eq!(log.borrow().as_slice(), ["live"]);
+        LIST.with(|list| list.clear_for_test());
+    }
+
+    /// A dispatch **removes** what it skips rather than merely stepping over
+    /// it. Leaving it would re-check it on every later event and keep alive
+    /// everything it captured — and nothing else in this registry would ever
+    /// let go of it.
+    #[test]
+    fn a_dispatch_prunes_the_entry_it_skips() {
+        let log: Rc<RefCell<Vec<&'static str>>> = Rc::new(RefCell::new(Vec::new()));
+        let scope = Scope::new();
+        scope.run(|| LIST.with(|list| list.install(record(&log, "doomed"))));
+        LIST.with(|list| list.install(record(&log, "live")));
+        scope.dispose();
+
+        assert_eq!(LIST.with(|list| list.len()), 2, "precondition: both held");
+        LIST.with(|list| list.dispatch(|cb| cb()));
+        assert_eq!(
+            LIST.with(|list| list.len()),
+            1,
+            "the dead entry must be gone after a dispatch, not merely skipped"
+        );
+        LIST.with(|list| list.clear_for_test());
+    }
+
+    /// `has_live` is about liveness, not emptiness — the distinction a caller
+    /// that holds events back while nobody is listening depends on entirely.
+    #[test]
+    fn has_live_is_about_liveness_and_not_emptiness() {
+        let log: Rc<RefCell<Vec<&'static str>>> = Rc::new(RefCell::new(Vec::new()));
+        let scope = Scope::new();
+        scope.run(|| LIST.with(|list| list.install(record(&log, "doomed"))));
+        assert!(LIST.with(|list| list.has_live()), "precondition");
+
+        scope.dispose();
+        assert_eq!(
+            LIST.with(|list| list.len()),
+            1,
+            "precondition: the dead entry is still held, so `is_empty` is false"
+        );
+        assert!(
+            !LIST.with(|list| list.has_live()),
+            "a list of nothing but dead entries is not a listener"
+        );
+        LIST.with(|list| list.clear_for_test());
+    }
+
+    /// Pruning must not reorder the survivors.
+    ///
+    /// **Four entries, with the dead one second — and three is the fixed
+    /// point.** The cheap prune is a swap-removal, which moves the *last*
+    /// element into the hole; with `[live, dead, live]` the last element is
+    /// already the one that belongs in the hole, so the swap and an
+    /// order-preserving removal agree and the mutant survives. Measured: the
+    /// three-entry version of this fixture passed against a `swap_remove`
+    /// prune. With a fourth, the swap answers `first, fourth, third`.
+    #[test]
+    fn a_prune_during_dispatch_preserves_registration_order() {
+        let log: Rc<RefCell<Vec<&'static str>>> = Rc::new(RefCell::new(Vec::new()));
+        LIST.with(|list| list.install(record(&log, "first")));
+
+        let scope = Scope::new();
+        scope.run(|| LIST.with(|list| list.install(record(&log, "second"))));
+        LIST.with(|list| list.install(record(&log, "third")));
+        LIST.with(|list| list.install(record(&log, "fourth")));
+        scope.dispose();
+
+        LIST.with(|list| list.dispatch(|cb| cb()));
+        assert_eq!(
+            log.borrow().as_slice(),
+            ["first", "third", "fourth"],
+            "removing the second entry must not bring the last one forward"
+        );
+        LIST.with(|list| list.clear_for_test());
+    }
+
+    /// What a list callback allocates belongs to the component that registered
+    /// it, not to whatever scope the dispatch is nested inside — the asymmetry
+    /// issue #183 records, and the reason `dispatch` runs each entry inside its
+    /// own `Registrant`.
+    #[test]
+    fn a_list_callback_is_attributed_to_its_registering_scope() {
+        let registrar = Scope::new();
+        registrar.run(|| LIST.with(|list| list.install(allocate_a_signal())));
+
+        let dispatcher = Scope::new();
+        let registrar_before = registrar.owned_counts().signals;
+        let dispatcher_before = dispatcher.owned_counts().signals;
+        dispatcher.run(|| {
+            LIST.with(|list| list.dispatch(|cb| cb()));
+        });
+
+        assert_eq!(
+            registrar.owned_counts().signals,
+            registrar_before + 1,
+            "the signal belongs to the component that registered the callback"
+        );
+        assert_eq!(
+            dispatcher.owned_counts().signals,
+            dispatcher_before,
+            "and not to the one that happened to be ambient at dispatch"
+        );
+        registrar.dispose();
+        dispatcher.dispose();
+        LIST.with(|list| list.clear_for_test());
+    }
+
+    /// An ownerless registration keeps app lifetime — the rule that stops the
+    /// prune overshooting into every handler registered from `android_main`.
+    #[test]
+    fn an_ownerless_list_entry_keeps_app_lifetime() {
+        let log: Rc<RefCell<Vec<&'static str>>> = Rc::new(RefCell::new(Vec::new()));
+        // Deliberately not inside a `Scope::run`.
+        LIST.with(|list| list.install(record(&log, "app lifetime")));
+
+        let unrelated = Scope::new();
+        unrelated.run(|| {});
+        unrelated.dispose();
+
+        assert_eq!(LIST.with(|list| list.release_dead()), 0);
+        LIST.with(|list| list.dispatch(|cb| cb()));
+        assert_eq!(log.borrow().as_slice(), ["app lifetime"]);
+        LIST.with(|list| list.clear_for_test());
+    }
+
+    /// The sweep frees the dead and leaves the living, for the case where no
+    /// event ever arrives to prune anything.
+    #[test]
+    fn releasing_dead_list_entries_leaves_live_siblings_alone() {
+        let log: Rc<RefCell<Vec<&'static str>>> = Rc::new(RefCell::new(Vec::new()));
+        LIST.with(|list| list.install(record(&log, "live")));
+        let scope = Scope::new();
+        scope.run(|| LIST.with(|list| list.install(record(&log, "doomed"))));
+        scope.dispose();
+
+        assert_eq!(LIST.with(|list| list.release_dead()), 1, "one freed");
+        assert_eq!(LIST.with(|list| list.len()), 1, "and one kept");
+        LIST.with(|list| list.dispatch(|cb| cb()));
+        assert_eq!(log.borrow().as_slice(), ["live"]);
+        LIST.with(|list| list.clear_for_test());
     }
 }
