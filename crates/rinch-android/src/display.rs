@@ -318,3 +318,350 @@ fn set_bar_appearance(method: &str, light: bool) {
         }
     });
 }
+
+/// Whether the system is in night mode right now: `Some(true)` for "dark",
+/// `Some(false)` for "light", `None` when the platform declines to say.
+///
+/// This is `Configuration.uiMode & UI_MODE_NIGHT_MASK`, which is the same
+/// answer `AppCompatDelegate` and `isSystemInDarkTheme()` are built on, read
+/// through the activity's own `Resources` rather than the application's. That
+/// distinction is not pedantry: an activity's configuration is the one Android
+/// has already overridden per-activity — `setLocalNightMode`, a
+/// `ContextThemeWrapper`, a display with its own configuration — so the
+/// activity's resources answer the question the app is actually asking, which
+/// is "what should the thing I am about to paint look like", not "what is the
+/// device set to somewhere".
+///
+/// **`None` is a real third answer, not a failure code.**
+/// `UI_MODE_NIGHT_UNDEFINED` is what the mask holds when nothing has decided —
+/// it is what a `Configuration` carries before it is applied, and some OEM
+/// skins and TV/automotive UI modes leave it that way for the life of the
+/// process. An app that treats `None` as "light" has hard-coded a preference
+/// where the platform explicitly said it had none; the honest thing is to hand
+/// the undecided case back and let the app fall through to its own default.
+/// The JNI call chain failing produces the same `None` for the same reason,
+/// with a `log::warn!` so the two can be told apart in logcat.
+///
+/// **A reading with a shelf life**, like [`refresh_rate_hz`] and unlike
+/// [`safe_area_insets`]. The user can flip the system theme while the app is
+/// in the foreground, and this answers what was true when it was asked. An app
+/// that wants to follow the system rather than sample it once should re-read
+/// this from `rinch_core::events::set_configuration_change_handler`, which is
+/// where the shell reports that a configuration changed under it.
+///
+/// Register that handler wherever the signals it writes live — inside a
+/// component is the natural place, and is safe: the handler is released when
+/// that component unmounts, so it cannot outlive the signals it captured.
+///
+/// **The trap on the other side of it is worse than "you get a fresh mount".**
+/// An activity whose manifest `android:configChanges` does not list `uiMode` is
+/// **destroyed and recreated** on a night-mode flip rather than reconfigured,
+/// so the handler never runs — and the relaunch lands in the **same process**,
+/// where `bridge::init` calls `BRIDGE.set(..).ok().expect("rinch-android
+/// already initialized")` (in `bridge::init`) and panics. The pid does not change,
+/// so nothing looks like a crash; what is left is a live process with a dead
+/// main loop. So the manifest entry is not a nicety that costs you a re-read,
+/// it is load-bearing, and it is invisible until someone flips the switch with
+/// the app open. Making `init` idempotent is not sufficient on its own — the
+/// cached activity `GlobalRef` would be stale — so that is its own change.
+pub fn night_mode() -> Option<bool> {
+    let ui_mode = bridge::with_activity(|env, activity| -> jni::errors::Result<i32> {
+        // getResources().getConfiguration().uiMode
+        let resources = env
+            .call_method(
+                activity,
+                "getResources",
+                "()Landroid/content/res/Resources;",
+                &[],
+            )?
+            .l()?;
+        let config = env
+            .call_method(
+                &resources,
+                "getConfiguration",
+                "()Landroid/content/res/Configuration;",
+                &[],
+            )?
+            .l()?;
+        env.get_field(&config, "uiMode", "I")?.i()
+    });
+
+    match ui_mode {
+        // The mask, the constants and the undecided case all live in
+        // `display_decode`, which is host-compiled and host-tested (#516). This
+        // function is now only the call.
+        Ok(bits) => crate::display_decode::decode_night_mode(bits),
+        Err(e) => {
+            log::warn!("night_mode: reading Configuration.uiMode failed: {e}");
+            None
+        }
+    }
+}
+
+/// The dominant colour of the user's wallpaper, as sRGB `(r, g, b)` — the seed
+/// Material You builds a device's accent palette from.
+///
+/// `WallpaperManager.getWallpaperColors(FLAG_SYSTEM).getPrimaryColor()`, and
+/// deliberately nothing more. The primary colour is the wallpaper's, which
+/// means it can be anything a photograph can be: near-black, near-white, or a
+/// saturated yellow that vanishes on any pale surface. Every app that uses this
+/// has to do something about that, and what it has to do depends entirely on
+/// what it is painting the colour *onto* — a contrast ratio is a fact about a
+/// pair of colours, and this function only knows one of them. So the darkening,
+/// the desaturating, the 4.5:1 clamp and the decision to give up and use the
+/// app's own accent all belong to the caller, and returning the raw triple is
+/// what makes those possible rather than second-guessed. A framework that
+/// helpfully returned a "safe" colour would be a framework that had silently
+/// picked a background.
+///
+/// **`None` is ordinary.** `getWallpaperColors` returns null more often than
+/// its signature suggests: no wallpaper has been set, or the wallpaper is a
+/// live wallpaper whose service does not publish colours (most of them do not),
+/// or the device is showing a lock-screen-only image, or the OEM has replaced
+/// the wallpaper stack with its own — Samsung and Xiaomi both have form here.
+/// None of those is an error and none of them will ever fix itself, so a caller
+/// should treat `None` as "this device has no accent to offer" and fall back
+/// once, not retry.
+///
+/// The API is 27+ and every rinch Android build has a higher minimum than that,
+/// so there is no version guard here; what there is instead is the same
+/// `None`-on-anything-unexpected contract the rest of this module keeps.
+pub fn wallpaper_primary() -> Option<(u8, u8, u8)> {
+    // WallpaperManager.FLAG_SYSTEM — the home-screen wallpaper, as opposed to
+    // FLAG_LOCK (2). Frozen by ABI, so a constant rather than a static-field
+    // lookup, for the reason `night_mode` above spells out.
+    const FLAG_SYSTEM: i32 = 1;
+
+    let argb = bridge::with_activity(|env, activity| -> jni::errors::Result<Option<i32>> {
+        // `find_class` on a framework class is safe from this thread, which is
+        // the reason this module can reach WallpaperManager at all without a
+        // Java-side helper the way `getSafeAreaInsets` needs one. A native
+        // thread's `FindClass` resolves against the *system* class loader, so
+        // it cannot see `com.rinch.*` (see `bridge::init`, which goes the long
+        // way round through the activity's own loader for exactly that reason)
+        // — but `android.app.WallpaperManager` is in the boot classpath, which
+        // is the one thing the system loader can always find.
+        let class = env.find_class("android/app/WallpaperManager")?;
+        let manager = env
+            .call_static_method(
+                &class,
+                "getInstance",
+                "(Landroid/content/Context;)Landroid/app/WallpaperManager;",
+                &[jni::objects::JValue::Object(activity)],
+            )?
+            .l()?;
+        let colors = env
+            .call_method(
+                &manager,
+                "getWallpaperColors",
+                "(I)Landroid/app/WallpaperColors;",
+                &[jni::objects::JValue::Int(FLAG_SYSTEM)],
+            )?
+            .l()?;
+        // The null the doc comment above is about. It arrives as an ordinary
+        // object reference that happens to be null rather than as an
+        // exception, so it has to be checked before it is called through —
+        // `getPrimaryColor` on a null receiver is a NullPointerException
+        // thrown into Java and a `JavaException` back here, which would be a
+        // warn in logcat for something that is not a fault.
+        if colors.is_null() {
+            return Ok(None);
+        }
+        let color = env
+            .call_method(
+                &colors,
+                "getPrimaryColor",
+                "()Landroid/graphics/Color;",
+                &[],
+            )?
+            .l()?;
+        if color.is_null() {
+            return Ok(None);
+        }
+        // `Color.toArgb()` rather than reading a field: `Color` has been a real
+        // object with a colour space since API 26, and its packed `int` form is
+        // what `toArgb` exists to produce. Anything wide-gamut is converted to
+        // sRGB on the way out, which is what a caller comparing this against
+        // CSS colours wants.
+        env.call_method(&color, "toArgb", "()I", &[])?.i().map(Some)
+    });
+
+    match argb {
+        // One spelling of the unpack, shared with `system_accent` and tested on
+        // the host (#516). Two sites doing this arithmetic separately is the
+        // shape `rinch-dom` paid for three times (#476, #518, #568).
+        Ok(Some(argb)) => Some(crate::display_decode::decode_argb(argb)),
+        Ok(None) => None,
+        Err(e) => {
+            // Unlike everywhere else in this module, the exception is cleared
+            // rather than merely reported. `jni` 0.21 turns a pending Java
+            // exception into `Err(JavaException)` and leaves it pending, and a
+            // pending exception makes the *next* JNI call on this thread abort
+            // the process — so a SecurityException from an OEM wallpaper
+            // service, thrown here, would be paid for by whichever unrelated
+            // call `with_activity` made next. The rest of the module gets away
+            // without this because its calls (`getResources`, `getRefreshRate`)
+            // are documented not to throw; a wallpaper service is third-party
+            // code and this one genuinely can.
+            let _ = env_clear_exception();
+            log::warn!("wallpaper_primary: WallpaperColors lookup failed: {e}");
+            None
+        }
+    }
+}
+
+/// One tone off the palette **the system itself is themed with**, as sRGB
+/// `(r, g, b)` — `android.R.color.system_accent1_<tone>`, read through the
+/// activity's own `Resources`.
+///
+/// **Why this exists next to [`wallpaper_primary`], which already returns a
+/// seed.** Android 12 (API 31) publishes the finished Material You palette as
+/// ordinary framework colour resources: three accent ramps and two neutral
+/// ones, thirteen tones each, regenerated by the system every time the user
+/// changes their theme. That is not merely a more convenient form of the same
+/// answer — it is a *different* answer, and on one common configuration the
+/// wallpaper's is the wrong one. `settings get secure
+/// theme_customization_overlay_packages` carries a
+/// `"android.theme.customization.color_source"` key, and it reads
+/// `"home_wallpaper"` only while the user is letting the wallpaper drive the
+/// theme. Pick one of the basic colours in Wallpaper & style instead and it
+/// reads `"preset"` — at which point the wallpaper still has a primary colour,
+/// `getWallpaperColors` still returns it confidently, and it is precisely the
+/// colour the user went into the settings app to *override*. A wrong answer
+/// delivered with no error is worse than a missing one, so an app that wants
+/// "the colour this device is themed in" should ask here first and fall back to
+/// the wallpaper only for the API levels that have no palette to publish.
+///
+/// **The tones are a fixed, published set** — `0, 10, 50, 100, 200, 300 … 900,
+/// 1000` — and this rejects anything else before it touches JNI. Dumping
+/// `/system/framework/framework-res.apk` on a moto g stylus 5G (SDK 33) with
+/// `aapt2` lists exactly those thirteen for each of `system_accent1`,
+/// `system_accent2`, `system_accent3` and the two neutral ramps, and nothing
+/// in between: there is no `system_accent1_550`. Checking here rather than
+/// letting `getIdentifier` say `0` is not an optimisation, it is the
+/// difference between two failures that deserve different treatment — a tone
+/// nobody ever published is a caller's mistake, and a tone that is published
+/// but absent is a device below API 31.
+///
+/// **`None` is ordinary, and covers both of those.** `getIdentifier` returns
+/// `0` for a name the resource table does not have, which is what *every*
+/// device below API 31 answers for every tone, and it is a documented return
+/// value rather than a fault — so it produces a plain `None` with nothing in
+/// logcat. A caller should treat `None` the way [`wallpaper_primary`]'s `None`
+/// is treated: this device has no palette to offer, fall back once, do not
+/// retry.
+///
+/// **A reading with a shelf life**, like [`night_mode`] and for the same
+/// reason: the system regenerates these resources when the user changes their
+/// wallpaper or picks a different preset, and the activity is told about it as
+/// a configuration change. Re-read from
+/// `rinch_core::events::set_configuration_change_handler` rather than caching
+/// the answer at mount — including the manifest caveat [`night_mode`] spells
+/// out, which applies to this reading identically.
+pub fn system_accent(tone: u16) -> Option<(u8, u8, u8)> {
+    // The published tone set and the resource-name format live in
+    // `display_decode`, host-compiled and host-tested (#516). Rejecting an
+    // unpublished tone here rather than letting `getIdentifier` answer `0`
+    // keeps two different failures apart — see that function's doc.
+    let resource_name = crate::display_decode::system_accent_resource_name(tone)?;
+
+    let argb = bridge::with_activity(|env, activity| -> jni::errors::Result<Option<i32>> {
+        let resources = env
+            .call_method(
+                activity,
+                "getResources",
+                "()Landroid/content/res/Resources;",
+                &[],
+            )?
+            .l()?;
+
+        // `getIdentifier(name, "color", "android")`, which is the only way to
+        // reach a resource whose `R` constant this crate cannot be compiled
+        // against — `android.R.color.system_accent1_500` is API 31 and rinch
+        // builds for lower, so the id has to be looked up by name at runtime
+        // on whatever platform the app actually landed on.
+        let name = env.new_string(&resource_name)?;
+        let kind = env.new_string("color")?;
+        let package = env.new_string("android")?;
+        let id = env
+            .call_method(
+                &resources,
+                "getIdentifier",
+                "(Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;)I",
+                &[
+                    jni::objects::JValue::Object(&name),
+                    jni::objects::JValue::Object(&kind),
+                    jni::objects::JValue::Object(&package),
+                ],
+            )?
+            .i()?;
+        // Zero is "no such resource", and on everything below API 31 that is
+        // the answer for all thirteen tones. An ordinary `None`, not a fault:
+        // see the doc comment above.
+        if id == 0 {
+            return Ok(None);
+        }
+
+        // `getColor(int, Resources.Theme)` with a null theme, rather than the
+        // one-argument `getColor(int)` it replaced in API 23. The deprecated
+        // form resolves against no theme at all and is deprecated for exactly
+        // that reason; the two-argument form resolves theme attributes against
+        // the theme it is handed, and null means "resolve nothing" — which is
+        // the honest request here, because the system palette entries are
+        // literal colours and there is no theme whose attributes we would want
+        // consulted. Passing the activity's theme would invite an OEM overlay
+        // to answer a question about the *system's* palette.
+        let null_theme = jni::objects::JObject::null();
+        env.call_method(
+            &resources,
+            "getColor",
+            "(ILandroid/content/res/Resources$Theme;)I",
+            &[
+                jni::objects::JValue::Int(id),
+                jni::objects::JValue::Object(&null_theme),
+            ],
+        )?
+        .i()
+        .map(Some)
+    });
+
+    match argb {
+        // The same one spelling of the unpack as `wallpaper_primary`.
+        Ok(Some(argb)) => Some(crate::display_decode::decode_argb(argb)),
+        Ok(None) => None,
+        Err(e) => {
+            // **Yes, the discipline `wallpaper_primary` documents applies
+            // here too**, and it is worth saying why rather than copying the
+            // line. Its argument was that a wallpaper service is third-party
+            // code that genuinely throws, unlike `getResources` and
+            // `getRefreshRate`, which are documented not to. `Resources` is
+            // not third-party — but `getColor` is documented to throw
+            // `NotFoundException`, which is one more than `getResources`
+            // throws, and `getIdentifier` allocates three Java strings on the
+            // way in, which is one more chance at an `OutOfMemoryError` than
+            // a no-argument call has. Neither is likely: the id was non-zero a
+            // line earlier, so the resource is there. But "unlikely" is the
+            // wrong bar, because the cost of being wrong is not paid here. A
+            // pending exception makes the *next* JNI call on this thread abort
+            // the process, and the next JNI call belongs to somebody else —
+            // the frame loop, an input event — who will be blamed for it. One
+            // `exception_clear` on a path that should never run is cheaper
+            // than a crash report pointing at innocent code.
+            let _ = env_clear_exception();
+            log::warn!("system_accent: reading system_accent1_{tone} failed: {e}");
+            None
+        }
+    }
+}
+
+/// Clear any Java exception left pending on this thread. See the error arm of
+/// [`wallpaper_primary`] for why that matters more than it looks.
+fn env_clear_exception() -> jni::errors::Result<()> {
+    bridge::with_jni_env(|env| {
+        if env.exception_check()? {
+            env.exception_describe()?;
+            env.exception_clear()?;
+        }
+        Ok(())
+    })
+}
