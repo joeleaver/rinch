@@ -3121,12 +3121,34 @@ mod opacity_layer_bounds {
     /// on a line the budget never reaches, holding a fixed descendant.
     #[test]
     fn an_unvisited_inline_line_may_hide_a_fixed_box() {
-        let (doc, layer, fixed) = clipper_over_long_text_then_inline_fixed(900);
+        let (doc, layer, fixed) = clipper_over_long_text_then_inline_fixed(900, "inline-block");
         assert_eq!(
             bounds_of(&doc, layer),
             UNBOUNDED,
             "the lines past the budget were not looked at, and one of them holds \
              an inline-block with a fixed box inside it"
+        );
+        assert!(contains(bounds_of(&doc, layer), box_of(&doc, fixed)));
+    }
+
+    /// The same route with the atomic inline spelled `inline-flex` (#595).
+    ///
+    /// The cheap gate that decides whether to walk the Parley lines at all asks
+    /// whether any inline item is an **atomic inline**, and it used to ask
+    /// `display_mode == InlineBlock`. An `inline-flex` box answered `false`, so
+    /// the lines were never walked, the give-up was never reached, and the layer
+    /// came back narrowed to the clipper with a fixed box outside it — which
+    /// tiny-skia ignores and Vello enforces, i.e. a GPU-only divergence no pixel
+    /// test can see. Not a fixed point: the `inline-block` twin above passed
+    /// throughout.
+    #[test]
+    fn an_unvisited_inline_line_may_hide_a_fixed_box_behind_an_inline_flex() {
+        let (doc, layer, fixed) = clipper_over_long_text_then_inline_fixed(900, "inline-flex");
+        assert_eq!(
+            bounds_of(&doc, layer),
+            UNBOUNDED,
+            "an inline-flex box is an atomic inline like an inline-block, so the \
+             unwalked lines may hide a fixed box behind it too"
         );
         assert!(contains(bounds_of(&doc, layer), box_of(&doc, fixed)));
     }
@@ -3272,7 +3294,10 @@ mod opacity_layer_bounds {
 
     /// `layer > clipper > p(lots of text, then an inline-block > fixed)` — the
     /// inline-block is on a line the line budget never reaches.
-    fn clipper_over_long_text_then_inline_fixed(words: usize) -> (RinchDocument, usize, usize) {
+    fn clipper_over_long_text_then_inline_fixed(
+        words: usize,
+        display: &str,
+    ) -> (RinchDocument, usize, usize) {
         let (mut doc, layer, clipper) = layer_and_clipper();
         let para = doc.create_element("p");
         doc.set_attribute(para, "style", "width: 40px; font-size: 12px");
@@ -3285,7 +3310,7 @@ mod opacity_layer_bounds {
         doc.set_attribute(
             inline_block,
             "style",
-            "display: inline-block; width: 20px; height: 20px",
+            &format!("display: {display}; width: 20px; height: 20px"),
         );
         doc.append_child(para, inline_block);
 

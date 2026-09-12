@@ -783,7 +783,7 @@ pub fn parse_display_mode(style_str: &str) -> Option<crate::node::DisplayMode> {
     match props.get("display")?.as_str() {
         "inline" => Some(DisplayMode::Inline),
         "inline-block" => Some(DisplayMode::InlineBlock),
-        "inline-flex" => Some(DisplayMode::Flex),
+        "inline-flex" => Some(DisplayMode::InlineFlex),
         "block" => Some(DisplayMode::Block),
         "flex" => Some(DisplayMode::Flex),
         _ => None,

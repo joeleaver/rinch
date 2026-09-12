@@ -424,13 +424,15 @@ fn an_inline_block_with_mixed_content_stacks_like_a_block_container() {
 /// for `x = inline-flex` and `x = inline-block`: H=50, all three text runs on
 /// one line, the block below.
 ///
-/// rinch loses the distinction **before any of the four sites can see it**:
-/// `DisplayValue::InlineFlex` maps to `DisplayMode::Flex`
+/// rinch used to lose the distinction **before any of the four sites could see
+/// it**: `DisplayValue::InlineFlex` mapped to `DisplayMode::Flex`
 /// (`style_resolution/mod.rs`), which is the same value plain `display: flex`
-/// gets, so `is_inline()` answers `false` and `inline_flow_role()` answers
-/// `InFlowBlock`. The box therefore *ends the inline run* it should have
-/// joined: `before` and `after` land in two anonymous boxes on two different
-/// lines, and the container is 90px where its `inline-block` twin is 52.
+/// gets, so `is_inline()` answered `false` and `inline_flow_role()` answered
+/// `InFlowBlock`. The box therefore *ended the inline run* it should have
+/// joined: `before` and `after` landed in two anonymous boxes on two different
+/// lines, and the container was 90px where its `inline-block` twin is 52. Fixed
+/// by giving `DisplayMode` an `InlineFlex` variant that answers
+/// `is_inline_level` and `is_atomic_inline`.
 ///
 /// The oracle is the pair, not a number: the twin differs only in the
 /// wrapper's `display`, and Chrome makes them equal, so neither candidate
@@ -438,11 +440,12 @@ fn an_inline_block_with_mixed_content_stacks_like_a_block_container() {
 /// asserted — rinch gives the `inline-block` twin 52px rather than 50 because
 /// of that box's own line height, which is a separate question.)
 ///
-/// Same root cause as `inline-grid`, which Stylo folds into
-/// `DisplayValue::Grid` and `style_resolution` maps to `DisplayMode::Block`:
-/// a second inline-level value that arrives at the four sites as block-level.
+/// `inline-grid` is the **same defect and is not fixed** (#607): Stylo folds it
+/// into `DisplayValue::Grid`, which `style_resolution` maps to
+/// `DisplayMode::Block`, so there is no value left to classify. Measured on
+/// this very shape: Chrome gives `inline-grid` the same 50 as the two above,
+/// and rinch still gives it 90.
 #[test]
-#[ignore = "#595: inline-flex reaches the IFC as DisplayMode::Flex and ends an inline run that Chrome keeps whole"]
 fn an_inline_flex_box_joins_the_line_exactly_as_an_inline_block_does() {
     fn build_with(display: &str) -> (RinchDocument, NodeId) {
         let mut doc = RinchDocument::new();
