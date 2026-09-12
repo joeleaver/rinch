@@ -9,6 +9,38 @@ use crate::RinchDocument;
 use crate::layout;
 use crate::node::{LayoutResult, NodeContext, NodeKind};
 
+/// How `RINCH_TREE_CHECK` makes the post-layout sweep behave (#584).
+///
+/// The sweep is a debug-build invariant check, so `Off` is the whole cost in a
+/// release build: the `cfg(debug_assertions)` block around its only reader is
+/// compiled out.
+#[cfg(debug_assertions)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TreeCheckMode {
+    /// Unset. The sweep does not run.
+    Off,
+    /// `RINCH_TREE_CHECK=warn` — print violations and carry on, which is what
+    /// the flag did for its whole life before #584. Kept for driving a real app
+    /// under the flag: a window that keeps running and complains is more use
+    /// there than a panic inside a frame.
+    Warn,
+    /// Any other value, `1` included. A violation the #513 waiver does not
+    /// cover **fails the layout pass**, which fails the test it happened in
+    /// without anybody having to pass `--nocapture`.
+    Fail,
+}
+
+#[cfg(debug_assertions)]
+impl TreeCheckMode {
+    fn from_env() -> Self {
+        match std::env::var("RINCH_TREE_CHECK") {
+            Err(_) => Self::Off,
+            Ok(v) if v.eq_ignore_ascii_case("warn") => Self::Warn,
+            Ok(_) => Self::Fail,
+        }
+    }
+}
+
 impl RinchDocument {
     /// Resolve layout using Taffy.
     ///
@@ -299,28 +331,46 @@ impl RinchDocument {
             self.tree.transitions_enabled = true;
         }
 
-        // `RINCH_TREE_CHECK=1` prints every Taffy-tree inconsistency, every
-        // orphaned box (#476) and every DOM-tree inconsistency (#578) after each
-        // layout, so the invariant can be swept across a whole suite rather than
-        // only asserted where a fixture thought to ask. Debug builds only, and
-        // the env read is cached — release compiles the whole thing out.
+        // `RINCH_TREE_CHECK=1` sweeps every Taffy-tree inconsistency, every
+        // orphaned box (#476), every unreachable subtree (#589) and every
+        // DOM-tree inconsistency (#578) after each layout, so the invariant can
+        // be checked across a whole suite rather than only where a fixture
+        // thought to ask. Debug builds only, and the env read is cached —
+        // release compiles the whole thing out.
         //
-        // **It must be run as `RINCH_TREE_CHECK=1 cargo test … -- --nocapture`.**
-        // These are `eprintln!`s, and the test harness captures stderr for every
-        // test that *passes* — which is all of them, since a violation printed
-        // here fails nothing. Without `--nocapture` the sweep runs, finds
-        // whatever is there, and prints none of it: the output of a check that
-        // found nothing is identical to the output of a check nobody read.
-        // Measured while wiring #578 — a deliberately injected violation printed
-        // 149 times with the flag and 0 times without it.
+        // **A violation FAILS (#584).** It used to be an `eprintln!` beside an
+        // assertion that never ran, and `cargo test` captures stderr for every
+        // test that *passes* — which was all of them. So the sweep ran, found
+        // whatever was there, and printed none of it unless someone remembered
+        // `-- --nocapture`: for the whole life of the flag, including the
+        // #476/#477 work it was built for, and including the 16 lines #597's
+        // defect was hiding inside. Measured while wiring #578 — a deliberately
+        // injected violation printed 149 times with `--nocapture` and **0**
+        // times without it.
         //
-        // `dom_tree_violations` is here because the sentence above was, until
-        // #578, false of the one invariant that most needed it. The Taffy check
-        // compares the Taffy tree against itself, so it is structurally blind to
-        // DOM corruption — both of #566's reconciler failures had a *consistent*
-        // Taffy tree over a broken DOM and this hook reported all-clear through
-        // every one of them. The check added because no fixture thought to ask
-        // was the check no sweep was asking.
+        // Failing is what removes the thing you have to remember: libtest prints
+        // a *failing* test's captured output in its summary, so the reason
+        // arrives with the failure and `--nocapture` becomes unnecessary rather
+        // than merely advisable. Two things could still absorb it, and neither
+        // does today (checked, not assumed): a `catch_unwind` that swallows
+        // rather than re-propagates — the four in `crates/rinch/tests` all
+        // re-propagate, by design and by their own docs — and a `#[should_panic]`
+        // around a layout pass, of which the two crates have exactly one
+        // (`ifc_leaf_invariant_tests`), pinned to a different message, so this
+        // panic fails it rather than satisfying it.
+        //
+        // `tree_check_verdict` decides what may fail; its docs carry the #513
+        // waiver and both directions it fails in. `RINCH_TREE_CHECK=warn` keeps
+        // the old print-only behaviour, for driving a real app under the flag
+        // where a panic mid-frame is less use than a running window.
+        //
+        // `dom_tree_violations` is in the sweep because the paragraph above was,
+        // until #578, false of the one invariant that most needed it. The Taffy
+        // check compares the Taffy tree against itself, so it is structurally
+        // blind to DOM corruption — both of #566's reconciler failures had a
+        // *consistent* Taffy tree over a broken DOM and this hook reported
+        // all-clear through every one of them. The check added because no
+        // fixture thought to ask was the check no sweep was asking.
         //
         // **`run_bookkeeping_violations` (R) is deliberately not here.** It is
         // the one of the three that is not any-time-true: it describes the run
@@ -335,13 +385,36 @@ impl RinchDocument {
         // "finish the job" by adding the third.
         #[cfg(debug_assertions)]
         {
-            static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-            if *ENABLED.get_or_init(|| std::env::var("RINCH_TREE_CHECK").is_ok()) {
-                for line in self.taffy_tree_violations() {
-                    eprintln!("TREECHECK {line}");
+            static MODE: std::sync::OnceLock<TreeCheckMode> = std::sync::OnceLock::new();
+            match *MODE.get_or_init(TreeCheckMode::from_env) {
+                TreeCheckMode::Off => {}
+                TreeCheckMode::Warn => {
+                    for line in self.taffy_tree_violations() {
+                        eprintln!("TREECHECK {line}");
+                    }
+                    for line in self.dom_tree_violations() {
+                        eprintln!("TREECHECK {line}");
+                    }
                 }
-                for line in self.dom_tree_violations() {
-                    eprintln!("TREECHECK {line}");
+                TreeCheckMode::Fail => {
+                    let verdict = self.tree_check_verdict();
+                    for line in &verdict.waived {
+                        eprintln!("TREECHECK waived (#513) {line}");
+                    }
+                    assert!(
+                        verdict.fatal.is_empty(),
+                        "RINCH_TREE_CHECK: resolve_layout left {} layout-tree \
+                         violation(s):\n  {}\n\nThese are invariant failures, not \
+                         test expectations — a box no compute pass can reach, a \
+                         double-claimed Taffy edge, an element that generates no \
+                         box while carrying one, or a DOM/box-tree disagreement. \
+                         See RinchDocument::tree_check_verdict for what is waived \
+                         and why ({} known #513 detachment(s) were, above). \
+                         RINCH_TREE_CHECK=warn downgrades this to a print.",
+                        verdict.fatal.len(),
+                        verdict.fatal.join("\n  "),
+                        verdict.waived.len(),
+                    );
                 }
             }
         }
