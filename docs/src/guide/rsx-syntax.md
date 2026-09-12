@@ -71,6 +71,53 @@ rsx! {
 }
 ```
 
+### Boolean attributes
+
+A handful of HTML attributes carry no useful string: their **presence** is their
+value. `disabled`, `checked`, `readonly`, `required`, `multiple`, `hidden`,
+`selected`, `open`, `autofocus` and the rest of the HTML boolean set are all of
+this kind, and so are rinch's own `data-disabled` and `data-nofocus`.
+
+Write them as a `bool` — static or reactive — and `rsx!` renders the right
+*shape* rather than the string:
+
+```rust
+let busy = Signal::new(false);
+
+rsx! {
+    // true  → `disabled` (present, no value)
+    // false → the attribute is removed
+    button { disabled: {move || busy.get()}, "Rename" }
+}
+```
+
+This matters because HTML has no falsey spelling: a present `disabled` attribute
+disables the control *whatever* it holds, so `disabled="false"` is still
+disabled. Writing the string would make the binding a one-way latch — the
+control could turn off and never back on (issue #551).
+
+**The rule is keyed on the attribute's name, not on the value's type**, because
+several attributes that take a `bool`-looking value need the literal `"false"`
+kept:
+
+```rust
+rsx! {
+    // `draggable` is an *enumerated* attribute: "true" / "false" are both
+    // values, and removing it means `auto`. It keeps the string.
+    div { draggable: {move || on.get()} }
+    // So do the ARIA states, and rinch's own `data-viewport-ready` — an
+    // opt-out whose *absence* means ready.
+    div { aria-expanded: {move || open.get()} }
+}
+```
+
+A closure that yields a *string* into a boolean attribute follows the same
+truthiness rule the runtime's own readers use: everything is on except `"false"`
+(any case) and `"0"`, so the bare `""` that components write stays on.
+
+Component props are unaffected — a component's `disabled: bool` is an ordinary
+typed field, and the component decides how to render it.
+
 ## Event Handlers
 
 Event handlers are `on*` attributes on HTML elements. Pointer/click handlers are
