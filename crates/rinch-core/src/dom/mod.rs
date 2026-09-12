@@ -69,6 +69,9 @@
 //! }
 //! ```
 
+/// The HTML boolean-attribute set and the truthiness rule for it (issue #551).
+mod bool_attr;
+
 /// A headless [`DomDocument`](traits::DomDocument) implementation for tests.
 /// Available to downstream test code via the `test-util` feature.
 #[cfg(any(test, feature = "test-util"))]
@@ -76,6 +79,7 @@ pub mod mock;
 mod render_scope;
 pub mod traits;
 
+pub use bool_attr::{attr_is_truthy, is_boolean_attribute};
 pub use render_scope::*;
 pub use traits::*;
 
@@ -270,6 +274,38 @@ impl NodeHandle {
     pub fn set_attribute(&self, name: &str, value: &str) {
         if let Some(doc) = self.doc.upgrade() {
             doc.borrow_mut().set_attribute(self.node_id, name, value);
+        }
+    }
+
+    /// Write an attribute the way markup means it — the entry point `rsx!`
+    /// generates, for both a literal and a reactive binding.
+    ///
+    /// For an **HTML boolean attribute** ([`is_boolean_attribute`]) the value is
+    /// a *shape*, not a string: a truthy value writes the bare presence form and
+    /// a falsey one removes the attribute. Writing the string `"false"` there
+    /// would leave the attribute *present*, which HTML reads as true — a
+    /// reactive `disabled`/`checked`/`readonly` that could only ever turn on
+    /// (issue #551). Every other attribute is written verbatim.
+    ///
+    /// [`Self::set_attribute`] stays the literal primitive: it writes exactly
+    /// what it is given, and the fixtures that probe the `"false"` escape
+    /// (`node_is_disabled`, `data-nofocus`) depend on that. Reach for this one
+    /// from anything that renders a *value* into an attribute; reach for
+    /// `set_attribute` when you have already decided the markup.
+    pub fn write_attribute(&self, name: &str, value: &str) {
+        if !is_boolean_attribute(name) {
+            self.set_attribute(name, value);
+            return;
+        }
+        if attr_is_truthy(value) {
+            // The presence form, not the incoming string: `checked="true"` and
+            // `checked=""` must be one state, or `[checked]`-style selectors and
+            // a browser's attribute/property mirroring disagree with each other.
+            self.set_attribute(name, "");
+        } else if self.get_attribute(name).is_some() {
+            // Guarded so the overwhelmingly common case — a static `false`, or an
+            // effect re-firing while already off — costs no style invalidation.
+            self.remove_attribute(name);
         }
     }
 

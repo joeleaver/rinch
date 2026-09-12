@@ -63,7 +63,17 @@ pub fn element_to_dom_html(element: &RsxElement, ctx: &mut DomCodegenContext) ->
         }
     }
 
-    // Generate attribute setting code
+    // Generate attribute setting code.
+    //
+    // Every path here goes through `NodeHandle::write_attribute`, not
+    // `set_attribute`: an HTML boolean attribute's value is a *shape* and not a
+    // string, so a rendered `false` has to remove the attribute rather than
+    // write `disabled="false"` — which HTML reads as *present*, and therefore
+    // true (issue #551). The list of such attributes lives in `rinch-core`; the
+    // macro deliberately does not carry a copy, and deliberately keys on the
+    // attribute **name** rather than the value's type, because `draggable`,
+    // `aria-*` and rinch's own `data-viewport-ready` all take a meaningful
+    // `"false"`.
     let attr_code: Vec<TokenStream2> = attr_props
         .iter()
         .map(|prop| {
@@ -74,7 +84,7 @@ pub fn element_to_dom_html(element: &RsxElement, ctx: &mut DomCodegenContext) ->
                 // Static attribute - set once
                 let value_str = crate::helpers::expr_to_string(value);
                 quote! {
-                    #elem_var.set_attribute(#name, #value_str);
+                    #elem_var.write_attribute(#name, #value_str);
                 }
             } else if let Some(closure) = get_closure_expr(value) {
                 // Closure expression - call it and use result
@@ -86,7 +96,7 @@ pub fn element_to_dom_html(element: &RsxElement, ctx: &mut DomCodegenContext) ->
                         #site
                         __scope.create_effect(move || {
                             #fire
-                            #handle_var.set_attribute(#name, &::std::string::ToString::to_string(&(#closure)()));
+                            #handle_var.write_attribute(#name, &::std::string::ToString::to_string(&(#closure)()));
                         });
                     }
                 }
@@ -99,7 +109,7 @@ pub fn element_to_dom_html(element: &RsxElement, ctx: &mut DomCodegenContext) ->
                         let #handle_var = #elem_var.clone();
                         #site
                         __scope.create_effect(move || {
-                            #handle_var.set_attribute(#name, &::std::string::ToString::to_string(&#value));
+                            #handle_var.write_attribute(#name, &::std::string::ToString::to_string(&#value));
                         });
                     }
                 }

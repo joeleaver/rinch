@@ -11,7 +11,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use crate::event_delegation::{
     FOCUS_VALUE_PROP, get_expando_string, set_expando, utf16_offset_to_utf8_bytes,
 };
-use rinch_core::dom::{DomDocument, GlyphBounds, NodeId};
+use rinch_core::dom::{DomDocument, GlyphBounds, NodeId, attr_is_truthy};
 use rinch_editable::RewriteDiff;
 use wasm_bindgen::JsCast;
 use wasm_bindgen::prelude::*;
@@ -552,16 +552,11 @@ fn is_active_element(el: &web_sys::Element) -> bool {
         .is_some_and(|active| active.is_same_node(Some(el)))
 }
 
-/// Truthiness for HTML boolean-ish attributes as rinch emits them.
-///
-/// rinch writes these via two conventions: the `rsx!` macro stringifies a `bool`
-/// closure to `"true"`/`"false"`, while components set the bare presence form
-/// (`""`, matching HTML where a present boolean attribute is true regardless of
-/// value). Treat everything as "on" except the explicit falsey strings so both
-/// conventions round-trip — in particular an empty string means *present* (true).
-fn attr_is_truthy(value: &str) -> bool {
-    !matches!(value, "false" | "0")
-}
+// Truthiness for HTML boolean-ish attributes as rinch emits them
+// (`""`/`"true"` are on, `"false"`/`"0"` are off) now lives in `rinch-core`,
+// beside the boolean-attribute set and `NodeHandle::write_attribute` — the
+// writer `rsx!` generates. A second hand-rolled copy here is how the writer and
+// this reader come to disagree about `checked=""` (issue #551).
 
 /// Get the `__nid` JS property from a browser node.
 pub(crate) fn get_nid(node: &web_sys::Node) -> Option<NodeId> {
