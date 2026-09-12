@@ -2594,6 +2594,7 @@ Make changes, rebuild, launch again. The full cycle:
 
 - **Text wrapping/clipping**: Check that layout measurement and paint use the same font stack
 - **Elements stacking wrong**: Check the `display` property. `div` and other block elements default to `display: block` (per the UA stylesheet in `crates/rinch-dom/src/dom_impl/mod.rs`), so flex properties like `align-items` and `justify-content` do nothing until you set `display: flex` explicitly
+- **Components sitting side by side where you expected a column**: `display: inline-flex` is **inline-level** (#595) — an *atomic inline*, like `inline-block`: it joins the line around it and shrink-wraps, and only its inside is a flex container. `Button`, `Badge`, `Checkbox`, `Switch`, `Avatar`, `ActionIcon`, `CloseButton`, `Loader`, `Pagination` and `Center` all declare it, so two of them in a plain `<div>` share a line, exactly as in a browser and as on rinch-web. Put them in a `Stack` (or any `display: flex` parent) to stack them — CSS blockifies a flex item, so the `inline-flex` is `flex` there and nothing about this applies. `display: inline-grid` is **not** yet inline-level (#607)
 - **Text not updating**: Verify signal/effect wiring in the component
 - **No display (headless)**: Use Xvfb with `DISPLAY=:99` when running without a monitor
 - **MCP tools not available**: Ensure `rinch-mcp-server` is built (`cargo build -p rinch-mcp-server`) and `.mcp.json` points to the binary
