@@ -15,6 +15,27 @@ env:
   # info is the bulk of that and is useless in CI, where nothing runs a debugger.
   CARGO_PROFILE_DEV_DEBUG: "0"
   CARGO_PROFILE_TEST_DEBUG: "0"
+  # Sweep the layout-tree invariants after every `resolve_layout` in every test
+  # (#584). Debug builds only, and every `cargo test` here is one.
+  #
+  # This flag existed from #476 and **had never run in CI at all** — nothing in
+  # this file set it — on top of the two silences #584 records: a violation was
+  # an `eprintln!` that failed nothing, and `cargo test` captures stderr for
+  # every test that passes, which was all of them. Three ways for the same check
+  # to report nothing and mean nothing. It fails now, on
+  # `RinchDocument::tree_check_verdict`'s partition, so a violation cannot reach
+  # `main` unseen; #513's known block-in-inline detachment is waived by shape
+  # (15 lines on `fdc01d5`) and reported rather than failed.
+  #
+  # Setting it at the workflow level covers the `test` job's `cargo test
+  # --workspace` and its feature-gated runs. Measured on `fdc01d5` with the
+  # failing hook: 163 targets, 2604 tests, 0 failures. The `clippy`/`check` jobs
+  # run no tests, so it is inert there.
+  #
+  # `RINCH_TREE_CHECK=warn` is the print-only mode, for driving a real app under
+  # the flag. Do not use it here: a warn is exactly what this change exists to
+  # stop relying on.
+  RINCH_TREE_CHECK: "1"
 
 jobs:
   test:
