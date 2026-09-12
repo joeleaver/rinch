@@ -339,6 +339,59 @@ fn the_ifc_content_box_bridge_covers_an_inline_flex_box() {
     assert_consistent(&fd, "bridged inline-flex");
 }
 
+/// An atomic inline keeps the position the **IFC** gave it across a
+/// re-layout that does not rebuild the IFC.
+///
+/// It is detached from its parent's Taffy tree and measured standalone, so
+/// Taffy reports it at `(0, 0)`; `read_layout_results` takes only the *size*
+/// from that measure and keeps the IFC's x/y. Without that, a non-structural
+/// re-layout snaps every atomic inline back to the line origin — "collapsing a
+/// row of buttons into a pile", as the comment there says.
+///
+/// **The second `resolve_layout` is the whole fixture, and finding a trigger
+/// took a probe.** A repeat call at the same viewport early-returns, and a
+/// restyle that dirties styles rebuilds the IFC, so neither reaches the code
+/// this pins; a **viewport change** re-reads Taffy without an IFC rebuild and
+/// does. Two boxes, not one: a lone box sits at `x = 0` whether its position
+/// was kept or lost, so the discriminator is the *second* box's x. The
+/// container is a fixed 400px, so the viewport change is required to move
+/// nothing at all — and the `inline-block` twin is the control that says so.
+#[test]
+fn an_atomic_inline_keeps_its_ifc_position_across_a_non_structural_relayout() {
+    fn build(display: &str) -> (RinchDocument, NodeId, NodeId) {
+        let mut doc = RinchDocument::new();
+        let body = doc.body();
+        let c = el(&mut doc, body, "div", CONTAINER);
+        let b1 = el(&mut doc, c, "button", &format!("display: {display}"));
+        txt(&mut doc, b1, "one");
+        let b2 = el(&mut doc, c, "button", &format!("display: {display}"));
+        txt(&mut doc, b2, "two");
+        doc.resolve_layout(VW, VH);
+        (doc, b1, b2)
+    }
+    for display in ["inline-block", "inline-flex"] {
+        let (mut doc, b1, b2) = build(display);
+        let before = (lay(&doc, b1), lay(&doc, b2));
+        assert!(
+            before.1.0 > 0.0,
+            "{display}: the second box must start off the line origin or this \
+             fixture cannot tell a kept position from a lost one (got {before:?})",
+        );
+
+        // A wider viewport: nothing in the document depends on it (the container
+        // is 400px), so every box must be exactly where it was.
+        doc.resolve_layout(VW + 100.0, VH);
+
+        assert_eq!(
+            (lay(&doc, b1), lay(&doc, b2)),
+            before,
+            "{display}: a re-layout that does not rebuild the IFC must not move \
+             an atomic inline back to the line origin",
+        );
+        assert_consistent(&doc, display);
+    }
+}
+
 /// A `display: flex` container is **block-level** and must keep ending the run
 /// — the guard rail for the whole change. If `Flex` were folded into the atomic
 /// inlines, this is what would catch it.
