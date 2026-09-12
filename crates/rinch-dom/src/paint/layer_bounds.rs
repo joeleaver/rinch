@@ -167,7 +167,7 @@ use peniko::kurbo::{Affine, Rect, Vec2};
 
 use super::{compose_node_transform, painter::PaintShape};
 use crate::computed_style::{DisplayValue, PositionValue};
-use crate::node::{DisplayMode, Node, NodeKind, NodeTree, RawNodeId};
+use crate::node::{Node, NodeKind, NodeTree, RawNodeId};
 
 /// A rect no clip can cut anything out of, at any scale a real window reaches.
 ///
@@ -845,16 +845,18 @@ impl Walk<'_> {
         // two-line label, doing it unconditionally was four fifths of the whole
         // walk (16.6us against 3.9us) to find no inline boxes at all. So ask
         // the cheap question first. `ifc.rs` pushes an inline box in exactly
-        // one place, for a child whose `display_mode` is `InlineBlock`, and it
+        // one place, for a child that is an **atomic inline**
+        // (`DisplayMode::is_atomic_inline` — `inline-block` or `inline-flex`,
+        // #595), and it
         // records every inline child it was told about in `child_positions` —
         // text runs and `<span>`s included. Scanning that list for an
-        // inline-block is a handful of slab lookups, and it is `false` for
+        // atomic inline is a handful of slab lookups, and it is `false` for
         // every IFC that is only text.
         let has_inline_boxes = |inline: &crate::node::InlineLayout| {
             inline.child_positions.iter().any(|(id, _)| {
                 self.tree
                     .get(*id)
-                    .is_none_or(|n| n.display_mode == DisplayMode::InlineBlock)
+                    .is_none_or(|n| n.display_mode.is_atomic_inline())
             })
         };
         if let Some(inline) = node.text_layout.as_ref().filter(|l| has_inline_boxes(l)) {

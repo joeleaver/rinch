@@ -170,18 +170,47 @@ pub struct LayoutResult {
     pub height: f32,
 }
 
-/// CSS display mode for inline layout detection.
+/// How a box participates in the formatting context around it — a
+/// **coarsening** of `display`, not a copy of it.
+///
+/// [`crate::computed_style::ComputedStyle::display`] is the authority on the
+/// declared value; this enum answers the two questions the layout passes
+/// actually ask (`is_inline_level`, `is_block_container`), and it answers them
+/// for several `DisplayValue`s at once. `none`, `contents` and `grid` all
+/// arrive here as [`DisplayMode::Block`], so a site that needs to tell those
+/// apart reads `computed_style.display` instead — `ifc.rs` has several such
+/// guards for `Contents`, spelled that way for exactly this reason.
+///
+/// **Every variant is distinguished only where a layout pass branches on it.**
+/// Adding one is therefore a change to the three predicates below and nothing
+/// else — none of the `matches!`/`==` sites in the crate is exhaustive, so the
+/// compiler will not find them for you; they all read a predicate.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum DisplayMode {
-    /// Block-level element (div, p, etc.) — default for elements.
+    /// Block-level element (div, p, etc.) — default for elements. Also where
+    /// `display: grid`, `contents` and `none` land (see the type's doc).
     #[default]
     Block,
-    /// Flex container.
+    /// Block-level flex container (`display: flex`).
     Flex,
     /// Inline element (span, em, strong, etc.) — participates in IFC.
     Inline,
-    /// Inline-block element — inline positioning but block-level content.
+    /// Inline-block element — inline-level, with a block container inside.
     InlineBlock,
+    /// `display: inline-flex` — inline-level, with a flex container inside
+    /// (#595).
+    ///
+    /// Told apart from [`DisplayMode::Flex`] because the *outside* differs:
+    /// an `inline-flex` box joins the line around it instead of ending it, and
+    /// shrink-wraps rather than filling its container. Told apart from
+    /// [`DisplayMode::InlineBlock`] for no reason this enum serves — the two
+    /// answer every predicate below identically, and their *insides* are
+    /// distinguished by `DisplayValue::to_taffy`, which is what builds the
+    /// Taffy style. Kept distinct so `display_mode` does not report
+    /// `InlineBlock` for a box whose `display` is `inline-flex` (it is dumped
+    /// to the MCP `dom_tree`), and so a future consumer that does care has
+    /// something to read.
+    InlineFlex,
 }
 
 impl DisplayMode {
@@ -198,7 +227,44 @@ impl DisplayMode {
     /// `inline-block`, `flex`, `inline-flex` and `contents` all map to
     /// `taffy::Display::Flex` (#597).
     pub fn is_inline_level(self) -> bool {
-        matches!(self, DisplayMode::Inline | DisplayMode::InlineBlock)
+        matches!(self, DisplayMode::Inline) || self.is_atomic_inline()
+    }
+
+    /// Whether this is an **atomic inline-level box** (css-display-3 §2.6): a
+    /// box the surrounding IFC only *measures and places*, whose interior is an
+    /// independent formatting context laid out and painted by Taffy.
+    ///
+    /// `inline-block` and `inline-flex`. The one authority for the question
+    /// five passes ask of a node they found in an IFC — "is this a box I should
+    /// measure standalone, keep the IFC's position for, and bridge from the
+    /// root's content box?": `inline_block_measure_roots`,
+    /// `resolve_percentage_inline_blocks`, `read_layout_results`,
+    /// [`crate::paint::ifc_content_box_offset`] and `layer_bounds`' inline-box
+    /// gate. They spelled it `== InlineBlock`, which is how `inline-flex`
+    /// managed to be inline-level in one pass and not in the next.
+    ///
+    /// **Not** the same question as [`Self::is_inline_level`]: a
+    /// `display: inline` box is inline-level and *not* atomic — the IFC walks
+    /// into it and lays its text out as part of the same line.
+    pub fn is_atomic_inline(self) -> bool {
+        matches!(self, DisplayMode::InlineBlock | DisplayMode::InlineFlex)
+    }
+
+    /// Whether a box in this mode lays its children out as a **block
+    /// container** — so it can establish an inline formatting context of its
+    /// own and mint anonymous block boxes around runs of inline children.
+    ///
+    /// The complement of "inline-level or a flex container", which is how the
+    /// four IFC sites that ask it used to spell it.
+    ///
+    /// It answers from this enum alone, so it inherits the coarsening in the
+    /// type's doc: `display: grid` arrives as [`DisplayMode::Block`] and gets
+    /// `true` here, which is wrong about grid and has been since before #595
+    /// (`layout_engine.rs` names it twice); `display: contents` and
+    /// `display: none` get `true` too, and every caller guards those from
+    /// `computed_style.display` separately.
+    pub fn is_block_container(self) -> bool {
+        matches!(self, DisplayMode::Block)
     }
 }
 
@@ -230,7 +296,7 @@ pub enum InlineFlowRole {
     /// above.
     Contents,
     /// Inline-level content: a text node, or an element with display
-    /// `inline` / `inline-block`.
+    /// `inline` / `inline-block` / `inline-flex`.
     Inline,
     /// An out-of-flow box — `position: absolute`/`fixed` (CSS 2.1 §9.3).
     /// Not inline content, yet it neither forces anonymous boxes (§9.2.1.1)

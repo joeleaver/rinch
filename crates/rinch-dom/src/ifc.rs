@@ -44,10 +44,8 @@ pub(crate) fn apply_empty_block_line_floor(node: &Node, style: &mut taffy::Style
     }
     // Only block containers establish an IFC; a `display: contents` node
     // generates no box at all.
-    if matches!(
-        node.display_mode,
-        DisplayMode::Inline | DisplayMode::InlineBlock | DisplayMode::Flex
-    ) || node.computed_style.display == DisplayValue::Contents
+    if !node.display_mode.is_block_container()
+        || node.computed_style.display == DisplayValue::Contents
     {
         return;
     }
@@ -86,10 +84,7 @@ impl RinchDocument {
             if !node.is_element() {
                 continue;
             }
-            if matches!(
-                node.display_mode,
-                DisplayMode::Inline | DisplayMode::InlineBlock | DisplayMode::Flex
-            ) {
+            if !node.display_mode.is_block_container() {
                 continue;
             }
             // `ifc_children`, not `children`: an anonymous block box holds its
@@ -713,10 +708,7 @@ impl RinchDocument {
                 continue;
             }
             // Only block containers can have anonymous boxes
-            if matches!(
-                node.display_mode,
-                DisplayMode::Inline | DisplayMode::InlineBlock | DisplayMode::Flex
-            ) {
+            if !node.display_mode.is_block_container() {
                 continue;
             }
 
@@ -1025,11 +1017,8 @@ impl RinchDocument {
             if !node.is_element() {
                 continue;
             }
-            // Only block containers can be IFC roots — skip inline, inline-block, and flex
-            if matches!(
-                node.display_mode,
-                DisplayMode::Inline | DisplayMode::InlineBlock | DisplayMode::Flex
-            ) {
+            // Only block containers can be IFC roots
+            if !node.display_mode.is_block_container() {
                 continue;
             }
             // A `display: contents` element generates no box, so it can never
@@ -1465,7 +1454,7 @@ impl RinchDocument {
     ///
     /// **Reachable from *which* roots.** Not the document root alone.
     /// [`Self::inline_block_measure_roots`] is a second, legitimate category:
-    /// an inline-block inside an IFC is detached from its parent's tree on
+    /// an atomic inline inside an IFC is detached from its parent's tree on
     /// purpose and `measure_inline_blocks` computes it as a Taffy **root**, so
     /// its subtree is laid out correctly while being unreachable from the
     /// document root. Seeding from it is what separates "computed by a pass of
@@ -2333,9 +2322,9 @@ impl RinchDocument {
     /// in-flow block-level child (or the opaque contents wrapper standing for
     /// one) **stops** the pass. The recursion follows the walk's rule too:
     /// down through `display: inline` elements and transparent
-    /// `display:contents` wrappers, and **not** into an `inline-block`, which
-    /// is a box the IFC only measures and places — its interior is laid out
-    /// and painted by Taffy, on its own.
+    /// `display:contents` wrappers, and **not** into an **atomic inline**
+    /// (`inline-block` or `inline-flex`), which is a box the IFC only measures
+    /// and places — its interior is laid out and painted by Taffy, on its own.
     fn mark_inline_descendants(
         &mut self,
         root_id: usize,
@@ -2499,7 +2488,8 @@ impl RinchDocument {
     }
 
     /// The Taffy nodes a layout pass computes from **besides the document
-    /// root** — every inline-block that belongs to an IFC.
+    /// root** — every **atomic inline** that belongs to an IFC
+    /// ([`DisplayMode::is_atomic_inline`]: `inline-block` and `inline-flex`).
     ///
     /// Such a node is detached from its parent's Taffy tree (the parent
     /// measures through `InlineRoot` instead) and
@@ -2528,7 +2518,7 @@ impl RinchDocument {
         let mut out = Vec::new();
         for (_id, node) in &self.tree.nodes {
             if node.ifc_root.is_some()
-                && node.display_mode == DisplayMode::InlineBlock
+                && node.display_mode.is_atomic_inline()
                 && let Some(taffy_id) = node.taffy_id
             {
                 out.push(taffy_id);
@@ -2719,13 +2709,14 @@ impl RinchDocument {
             let (Some(root_id), Some(taffy_id)) = (node.ifc_root, node.taffy_id) else {
                 continue;
             };
-            if node.display_mode != DisplayMode::InlineBlock
+            if !node.display_mode.is_atomic_inline()
                 || !Self::has_percentage_inline_size(&node.computed_style)
             {
                 continue;
             }
-            // The IFC root is this inline-block's containing block by
-            // construction: IFC roots are never inline, inline-block or flex.
+            // The IFC root is this box's containing block by construction:
+            // an IFC root is a block container, which no inline-level box and
+            // no flex container is.
             let Some(cb_taffy) = self.tree.nodes[root_id].taffy_id else {
                 continue;
             };
@@ -3141,7 +3132,7 @@ impl RinchDocument {
             // classifier `mark_inline_descendants` consumes, which is what
             // keeps "mark exactly what this walk flows" a single rule (#366).
             // The first four arms are the dispatch *within* `Inline` (text,
-            // `<br>`, inline element, inline-block); the remaining arms map
+            // `<br>`, inline element, atomic inline); the remaining arms map
             // one role each.
             let role = child.inline_flow_role();
             // **A member of an anonymous box did not inherit from that box.**
@@ -3298,8 +3289,10 @@ impl RinchDocument {
                     }
                 }
                 NodeKind::Element(_) if role == InlineFlowRole::Inline => {
-                    // Inline-block (the only remaining `Inline`-role element):
-                    // measure via Taffy first, then embed as InlineBox
+                    // An **atomic inline** — `inline-block` or `inline-flex`,
+                    // the two remaining `Inline`-role elements
+                    // ([`DisplayMode::is_atomic_inline`]): measure via Taffy
+                    // first, then embed as an InlineBox.
                     let child_layout = &child.layout;
                     builder.push_inline_box(parley::InlineBox {
                         id: child_id as u64,

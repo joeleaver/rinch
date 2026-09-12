@@ -1180,7 +1180,7 @@ impl RinchDocument {
                 }
             }
 
-            // An inline-block child of an IFC has its *position* assigned by the IFC
+            // An atomic inline child of an IFC has its *position* assigned by the IFC
             // (`write_inline_positions`), not Taffy: it is detached from its parent's
             // Taffy tree and measured standalone (Taffy location 0,0). Keep the IFC's
             // x/y here — only the size comes from the standalone measure. Without
@@ -1189,9 +1189,7 @@ impl RinchDocument {
             // inline-block buttons into a pile.
             {
                 let node = &self.tree.nodes[node_id];
-                if node.display_mode == crate::node::DisplayMode::InlineBlock
-                    && node.ifc_root.is_some()
-                {
+                if node.display_mode.is_atomic_inline() && node.ifc_root.is_some() {
                     new_layout.x = node.layout.x;
                     new_layout.y = node.layout.y;
                 }
@@ -1822,7 +1820,8 @@ impl RinchDocument {
     /// only the now-boxless container hands them to a Taffy node nothing lays
     /// out, and `set_children` steals them out of the list that should hold
     /// them on the way. It shows only where the flattening ancestor is one
-    /// phase 1 skips — `Inline`, `InlineBlock` or `Flex`; the flex column is
+    /// phase 1 skips — anything that is not a block container, i.e. `Inline`,
+    /// `InlineBlock`, `InlineFlex` or `Flex`; the flex column is
     /// the one measured. Against a **block** ancestor the flattened
     /// `text + block` makes that ancestor mixed content in its own right, so
     /// phase 2 rebuilds its list anyway, and the walk changes nothing (also

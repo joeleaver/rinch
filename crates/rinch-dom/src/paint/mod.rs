@@ -331,7 +331,8 @@ pub fn compute_absolute_position(tree: &NodeTree, node_id: RawNodeId, scale: f64
 /// The offset from a node's summed layout origin to the origin it is *painted*
 /// at, for a box an IFC positions.
 ///
-/// An inline-block laid out by an inline formatting context stores its
+/// An atomic inline (`inline-block` or `inline-flex`) laid out by an inline
+/// formatting context stores its
 /// `layout.x`/`layout.y` relative to the IFC root's **content** box, while a
 /// parent-chain sum like [`compute_absolute_position`] adds up **border**-box
 /// origins. Paint bridges the two: it hands `paint_inline_layout` the root's
@@ -344,7 +345,7 @@ pub fn compute_absolute_position(tree: &NodeTree, node_id: RawNodeId, scale: f64
 /// of them outside a text flow — and for a box an **anonymous** IFC root
 /// positions, whose content-box origin *is* its layout origin (#319).
 pub fn ifc_content_box_offset(tree: &NodeTree, node: &Node) -> (f32, f32) {
-    if node.display_mode != crate::DisplayMode::InlineBlock {
+    if !node.display_mode.is_atomic_inline() {
         return (0.0, 0.0);
     }
     let Some(root) = node.ifc_root.and_then(|id| tree.get(id)) else {
@@ -538,8 +539,8 @@ fn body_paint_transform(tree: &NodeTree, scale: f64) -> Affine {
 ///
 /// `hit_test_node` additionally exempts a `position: fixed` box from the IFC
 /// offset. That exemption is not repeated here because it cannot fire: Stylo
-/// blockifies an out-of-flow box, so a fixed one never keeps
-/// `display_mode == InlineBlock` and [`ifc_content_box_offset`] already answers
+/// blockifies an out-of-flow box, so a fixed one is never an atomic inline
+/// ([`crate::DisplayMode::is_atomic_inline`]) and [`ifc_content_box_offset`] already answers
 /// `(0, 0)` for it. `a_fixed_inline_block_keeps_its_viewport_origin` pins the
 /// outcome, so if that ever stops being true the exemption gets added here
 /// rather than discovered in the wild.

@@ -353,11 +353,10 @@ impl RinchDocument {
 
     /// Get the default display type for a node based on its tag.
     pub(crate) fn default_display_for_node(&self, node_id: usize) -> layout::DefaultDisplay {
-        match self.tree.nodes[node_id].display_mode {
-            crate::node::DisplayMode::Inline | crate::node::DisplayMode::InlineBlock => {
-                layout::DefaultDisplay::Inline
-            }
-            _ => layout::DefaultDisplay::Block,
+        if self.tree.nodes[node_id].display_mode.is_inline_level() {
+            layout::DefaultDisplay::Inline
+        } else {
+            layout::DefaultDisplay::Block
         }
     }
 
@@ -819,7 +818,7 @@ impl RinchDocument {
             let display_mode = match new_style.display {
                 crate::computed_style::DisplayValue::Inline => DisplayMode::Inline,
                 crate::computed_style::DisplayValue::InlineBlock => DisplayMode::InlineBlock,
-                crate::computed_style::DisplayValue::InlineFlex => DisplayMode::Flex,
+                crate::computed_style::DisplayValue::InlineFlex => DisplayMode::InlineFlex,
                 crate::computed_style::DisplayValue::Block => DisplayMode::Block,
                 crate::computed_style::DisplayValue::Flex => DisplayMode::Flex,
                 crate::computed_style::DisplayValue::Grid => DisplayMode::Block,
