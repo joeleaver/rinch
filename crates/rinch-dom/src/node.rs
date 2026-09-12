@@ -520,6 +520,53 @@ pub struct Node {
     /// *after* `create_anonymous_block_boxes` has run, so at the moment the
     /// Taffy child lists are rebuilt it still holds the previous pass's value.
     pub run_box: Option<RawNodeId>,
+    /// Whether the boxes this node contributes to its parent's flow include an
+    /// **in-flow block-level** one — recursing through the two kinds of node
+    /// that contribute their children's boxes rather than one of their own
+    /// (#513).
+    ///
+    /// Total over the slab, and derived state: recomputed from scratch at the
+    /// top of every `ifc_dirty` pass by
+    /// `RinchDocument::recompute_contributes_in_flow_block`, exactly as
+    /// `ifc_root` is. Never invalidated per mutation site — creating or
+    /// destroying an in-flow block-level box takes a structural change or a
+    /// `display`/`position` change, and every one of those sets `ifc_dirty`.
+    ///
+    /// The rule, in one place:
+    ///
+    /// ```text
+    /// contributes_in_flow_block(n) =
+    ///     role(n) == InFlowBlock
+    ///  || (role(n) == Contents             && any child contributes)
+    ///  || (n is a `display: inline` element && any child contributes)
+    /// ```
+    ///
+    /// where `role` is [`Self::inline_flow_role`]. The recursion **stops at an
+    /// atomic inline** — an `inline-block` or `inline-flex` is a block
+    /// container in its own right, so a block inside one is that box's business
+    /// and not its parent's (#592) — and `OutOfFlow`, `NoBox` and `Comment`
+    /// contribute nothing, which is the same three-way rule every other IFC
+    /// decision consumes.
+    ///
+    /// # What it is for
+    ///
+    /// Two questions, one answer, and they were two recursive scans before:
+    ///
+    /// * [`Self::is_split_inline`] — whether a `display: inline` element is
+    ///   **broken around** block-level content (CSS 2.1 §9.2.1.1), which is
+    ///   #513's subject; and
+    /// * whether a `display: contents` wrapper is *transparent* to the
+    ///   surrounding inline formatting context, which `ifc.rs`'
+    ///   `contents_is_inline_transparent` answers by a per-call subtree walk —
+    ///   so a chain of nested wrappers is rescanned once per ancestor.
+    ///
+    /// The second is deliberately **not** switched over to this field yet. The
+    /// two answers differ, measured rather than reasoned: this field recurses
+    /// through a `display: inline` element and that scan does not, so a wrapper
+    /// holding `<a>x<div/>y</a>` is opaque here and transparent there. Until
+    /// the split lands, that difference is observable — see
+    /// `split_inline_predicate_tests`.
+    pub contributes_in_flow_block: bool,
     /// Whether this node is a CSS pseudo-element (::before or ::after).
     /// Pseudo-element nodes are synthetic children created during style resolution
     /// and are cleaned up before re-resolution to avoid duplicates.
@@ -627,6 +674,7 @@ impl Node {
             run_members: Vec::new(),
             run_box: None,
             run_boxes: Vec::new(),
+            contributes_in_flow_block: false,
             is_pseudo_element: false,
             computed_style: ComputedStyle::default(),
             transition_specs: Vec::new(),
@@ -677,6 +725,7 @@ impl Node {
             run_members: Vec::new(),
             run_box: None,
             run_boxes: Vec::new(),
+            contributes_in_flow_block: false,
             is_pseudo_element: false,
             computed_style: ComputedStyle::default(),
             transition_specs: Vec::new(),
@@ -726,6 +775,7 @@ impl Node {
             run_members: Vec::new(),
             run_box: None,
             run_boxes: Vec::new(),
+            contributes_in_flow_block: false,
             is_pseudo_element: false,
             computed_style: ComputedStyle::default(),
             transition_specs: Vec::new(),
@@ -773,6 +823,7 @@ impl Node {
             run_members: Vec::new(),
             run_box: None,
             run_boxes: Vec::new(),
+            contributes_in_flow_block: false,
             is_pseudo_element: false,
             computed_style: ComputedStyle::default(),
             transition_specs: Vec::new(),
@@ -1058,6 +1109,32 @@ impl Node {
             return InlineFlowRole::OutOfFlow;
         }
         InlineFlowRole::InFlowBlock
+    }
+
+    /// Whether this is a `display: inline` element **broken around** in-flow
+    /// block-level content — CSS 2.1 §9.2.1.1's block-in-inline, #513.
+    ///
+    /// A named predicate rather than a fourth inline `matches!` on
+    /// [`DisplayMode`], per #595: no site that asks this enum a question is
+    /// exhaustive, so a new variant gets no compiler help and a spelled-out
+    /// test is how `inline-flex` managed to be inline-level in one pass and not
+    /// in the next.
+    ///
+    /// Three conditions, and each excludes a case that looks like this one:
+    ///
+    /// * **an element** — a text node's `computed_style` never goes through
+    ///   Stylo, so it keeps the default `display` (the #342 hazard noted on
+    ///   [`Self::is_out_of_flow`]);
+    /// * **`DisplayMode::Inline` exactly**, not [`DisplayMode::is_inline_level`]
+    ///   — an atomic inline (`inline-block`, `inline-flex`) is a block
+    ///   container that does its own anonymous-box generation *inside itself*
+    ///   and is never split (#592 is that shape, and is a different defect);
+    /// * **[`Self::contributes_in_flow_block`]**, which is where the recursion
+    ///   and the memoization live.
+    pub fn is_split_inline(&self) -> bool {
+        self.is_element()
+            && self.display_mode == DisplayMode::Inline
+            && self.contributes_in_flow_block
     }
 }
 
