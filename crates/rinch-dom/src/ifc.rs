@@ -75,6 +75,21 @@ pub(crate) fn apply_empty_block_line_floor(node: &Node, style: &mut taffy::Style
     // gets the floor.
 }
 
+/// What the post-layout tree-check sweep may fail on, and what it may not.
+///
+/// See [`RinchDocument::tree_check_verdict`], which is the only thing that
+/// builds one.
+#[derive(Debug, Default, Clone)]
+pub struct TreeCheckVerdict {
+    /// Violations the sweep fails on. Every class except #513's known
+    /// block-in-inline detachment, plus every DOM-tree line.
+    pub fatal: Vec<String>,
+    /// `D detached` lines whose detachment is #513's open defect. Reported, not
+    /// failed — see `tree_check_verdict`'s docs for why the waiver is a shape
+    /// and not a count, and for the fixture that retires it.
+    pub waived: Vec<String>,
+}
+
 impl RinchDocument {
     /// Build inline layouts for all IFC roots after Taffy layout.
     ///
@@ -1588,11 +1603,30 @@ impl RinchDocument {
     ///   stops reporting at the subtree's top node, which is where the repair
     ///   goes.
     ///
-    /// Deliberately **not** a `debug_assert` in `resolve_layout`: C is a claim
-    /// about author markup as much as about the engine, and a fixture that
-    /// legitimately holds a detached subtree should not panic. Call it from a
-    /// test, or set `RINCH_TREE_CHECK=1` to have `resolve_layout` print every
-    /// violation (debug builds only) and sweep it across a whole suite.
+    /// Deliberately **not** a bare `debug_assert` in `resolve_layout`, and
+    /// #584 did not make it one: C is a claim about author markup as much as
+    /// about the engine, and a document that legitimately holds a detached
+    /// subtree should not panic. `RINCH_TREE_CHECK=1` sweeps it across a whole
+    /// suite and **fails** on what it finds (debug builds only), but it fails on
+    /// [`Self::tree_check_verdict`]'s partition rather than on this list, which
+    /// is what lets #513's open block-in-inline detachment be reported without
+    /// turning the suite red. `RINCH_TREE_CHECK=warn` prints instead, which is
+    /// what the flag did for its whole life before #584 — and printed to a
+    /// stderr `cargo test` captures, so it showed nobody anything.
+    ///
+    /// ---
+    ///
+    /// **Everything above this line describes
+    /// [`Self::taffy_tree_violations`], not the function it is attached to.**
+    /// There is no separator between the two doc blocks and no item between
+    /// them, so rustdoc hands the whole `A`/`B`/`C`/`D`/`E` writeup to
+    /// `dom_tree_violations` and leaves `taffy_tree_violations` — the function
+    /// the sweep now fails on — with no documentation at all. Pre-existing, and
+    /// noted rather than repaired here: separating them means moving ~150 lines
+    /// of prose, which does not belong in #584's diff.
+    ///
+    /// ---
+    ///
     /// Violations of the **DOM** tree's own invariants — the check
     /// `taffy_tree_violations` structurally could not make (#578).
     ///
@@ -1869,6 +1903,170 @@ impl RinchDocument {
         out
     }
 
+    /// Both any-time validators, partitioned into the violations that are a
+    /// **failure** and the ones that are a **known open defect** (#584).
+    ///
+    /// This exists because [`crate::RinchDocument::taffy_tree_violations`] and
+    /// [`Self::dom_tree_violations`] answer *"what is wrong"* and the
+    /// post-layout sweep in `resolve_layout` needs *"may I fail"*. Until #584
+    /// the sweep answered the second question with an `eprintln!` — which the
+    /// test harness swallows for every passing test, and every test passes when
+    /// nothing asserts. A violation was reported 149 times under `--nocapture`
+    /// and 0 times without it, for the whole life of the flag.
+    ///
+    /// It cannot simply fail on everything: #513 is open, and block-level
+    /// content inside an inline element is laid out by nobody, so 15 `D
+    /// detached` lines are live across `-p rinch-dom -p rinch` (measured on
+    /// `fdc01d5`). `waived` holds exactly those; `fatal` holds everything else,
+    /// and the sweep fails on it.
+    ///
+    /// # What the waiver waives, and why it is a shape rather than a count
+    ///
+    /// A count (*"15 lines are expected"*) would move with every fixture added
+    /// or removed, and would pass a brand-new detachment in for free the moment
+    /// an unrelated fixture stopped reporting one. The waiver is
+    /// [`Self::block_in_inline_detachments`] instead: a `D detached` node whose
+    /// Taffy chain terminates at one of **its own DOM ancestors** that the
+    /// inline formatting context detached on purpose. That is #513's mechanism
+    /// stated structurally, so a new `D` anywhere else — a `display: contents`
+    /// wrapper's stranded chain, a moved Taffy edge, a subtree hanging off a
+    /// freed node — is `fatal`, and so is every `A`, `B`, `C`, `E` and DOM-tree
+    /// line whatever its shape.
+    ///
+    /// It fails in **both** directions, which is the whole requirement:
+    ///
+    /// * a new violation of any class is `fatal` and the sweep panics;
+    /// * when #513 is fixed the waiver has nothing left to waive, and
+    ///   `tree_check_hook_tests::the_block_in_inline_waiver_still_waives_something`
+    ///   fails and names the deletion. That fixture is the waiver's only
+    ///   witness — a waiver whose retirement nothing asserts goes quiet and
+    ///   stale, which is the failure #584 is about.
+    ///
+    /// `run_bookkeeping_violations` is deliberately absent, for the reason
+    /// given at the sweep's call site: it is not any-time-true.
+    pub fn tree_check_verdict(&self) -> TreeCheckVerdict {
+        let mut verdict = TreeCheckVerdict::default();
+        let taffy = self.taffy_tree_violations();
+        // The prefixes a waivable node's line begins with, built rather than
+        // parsed — `describe` formats `"D detached: dom {id} <tag>…"`, so the
+        // trailing space is what keeps `dom 6` from matching `dom 60`.
+        //
+        // Computed only when there is a `D` line to classify. The walk is one
+        // Taffy parent chain per node; on a 3204-node document in a debug build
+        // it took the whole verdict from 4.39ms to 5.13ms, best of 40 — a sixth
+        // of a check that is itself about 8% of the 55-75ms layout pass it hangs
+        // off. Cheap, but paid for nothing on every clean pass, and there is no
+        // `D` line in the overwhelming majority of them.
+        let waivable: Vec<String> = if taffy.iter().any(|l| l.starts_with("D detached")) {
+            self.block_in_inline_detachments()
+                .into_iter()
+                .map(|id| format!("D detached: dom {id} "))
+                .collect()
+        } else {
+            Vec::new()
+        };
+        for line in taffy {
+            if waivable.iter().any(|p| line.starts_with(p.as_str())) {
+                verdict.waived.push(line);
+            } else {
+                verdict.fatal.push(line);
+            }
+        }
+        // Nothing in the DOM-tree validator has a known open defect behind it —
+        // it has reported 0 workspace-wide since #578 — so every line is fatal.
+        verdict.fatal.extend(self.dom_tree_violations());
+        verdict
+    }
+
+    /// Every node whose Taffy detachment is explained by #513: block-level
+    /// content inside an inline element.
+    ///
+    /// The mechanism, measured on `fdc01d5` over all 15 live `D detached` lines
+    /// in `-p rinch-dom -p rinch` — each one's Taffy parent chain terminates at
+    /// an `<a>`, `<span>` or `<div>` with `display: Inline`, `mode: Inline` and
+    /// `ifc_root: Some(..)`. `mark_inline_descendants` detaches an inline
+    /// element's Taffy node because Parley lays that content out instead, and a
+    /// block-level child left in its child list goes with it: every edge above
+    /// the child is intact, nothing computes any of them, and `D` is the rule
+    /// that sees it (#589).
+    ///
+    /// Two conditions, not one. The terminus must be
+    ///
+    /// 1. **IFC-detached inline content** (`ifc_root.is_some()`) — which the
+    ///    `<div display: Contents>` terminus of
+    ///    `taffy_reachability_tests::a_chain_hanging_off_a_contents_node_is_reported_as_detached`
+    ///    is not, so that shape stays `fatal`; and
+    /// 2. **a DOM ancestor of the reported node** — so a Taffy edge *moved* to
+    ///    an unrelated inline is not waived either. That is exactly
+    ///    `taffy_reachability_tests`' `reparent_taffy` shape, which #589 added
+    ///    the `D` rule for.
+    ///
+    /// Both walks are bounded by the node count and **fail closed**: an
+    /// unterminated chain waives nothing, so a cycle reports rather than hangs.
+    fn block_in_inline_detachments(&self) -> Vec<usize> {
+        let cap = self.tree.nodes.len() + 1;
+        let mut out = Vec::new();
+        for (id, node) in &self.tree.nodes {
+            let Some(taffy_id) = node.taffy_id else {
+                continue;
+            };
+            // The top of this node's Taffy parent chain.
+            let mut terminus = taffy_id;
+            let mut hops = 0;
+            while let Some(p) = self.tree.taffy.parent(terminus) {
+                terminus = p;
+                hops += 1;
+                if hops > cap {
+                    break;
+                }
+            }
+            if hops > cap {
+                continue;
+            }
+            let Some(&terminus_dom) = self.tree.taffy_map.get(&terminus) else {
+                continue;
+            };
+            if terminus_dom == id {
+                continue;
+            }
+            if self
+                .tree
+                .nodes
+                .get(terminus_dom)
+                .is_none_or(|t| t.ifc_root.is_none())
+            {
+                continue;
+            }
+            // …and the terminus is this node's own DOM ancestor.
+            let mut anc = node.parent;
+            let mut steps = 0;
+            while let Some(a) = anc {
+                if a == terminus_dom {
+                    out.push(id);
+                    break;
+                }
+                steps += 1;
+                if steps > cap {
+                    break;
+                }
+                anc = self.tree.nodes.get(a).and_then(|n| n.parent);
+            }
+        }
+        out
+    }
+
+    /// Violations of the **Taffy** tree's own invariants: `A` double-claim, `B`
+    /// parent disagreement, `C` orphan, `D` detached (#589) and `E` ghost box
+    /// (#543).
+    ///
+    /// The rules, their exemptions, what each exemption costs and the measured
+    /// tables behind them are written up at length — but that writeup is
+    /// attached to [`Self::dom_tree_violations`] by a missing doc separator (see
+    /// the note partway down that item). Read it there.
+    ///
+    /// [`Self::tree_check_verdict`] is what the `RINCH_TREE_CHECK` sweep
+    /// actually fails on: this list, minus #513's known block-in-inline
+    /// detachment.
     pub fn taffy_tree_violations(&self) -> Vec<String> {
         use crate::computed_style::values::DisplayValue;
         use std::collections::HashMap;

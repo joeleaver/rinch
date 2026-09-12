@@ -24,6 +24,10 @@ cargo build -p ui-zoo-desktop       # Build the editor example
 cargo run -p ui-zoo-desktop         # Run the rich-text editor
 cargo clippy                   # Lint
 cargo fmt                      # Format
+
+# Sweep the layout-tree invariants after every layout in every test (#584).
+# Debug builds only; a violation FAILS the test it happened in. CI sets this.
+RINCH_TREE_CHECK=1 cargo test --workspace
 ```
 
 ## Architecture
