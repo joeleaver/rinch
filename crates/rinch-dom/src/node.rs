@@ -260,7 +260,8 @@ impl DisplayMode {
     /// It answers from this enum alone, so it inherits the coarsening in the
     /// type's doc: `display: grid` arrives as [`DisplayMode::Block`] and gets
     /// `true` here, which is wrong about grid and has been since before #595
-    /// (`layout_engine.rs` names it twice); `display: contents` and
+    /// (`layout_engine.rs:1478` is the one other place that says so);
+    /// `display: contents` and
     /// `display: none` get `true` too, and every caller guards those from
     /// `computed_style.display` separately.
     pub fn is_block_container(self) -> bool {
