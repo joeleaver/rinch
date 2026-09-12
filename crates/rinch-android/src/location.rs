@@ -378,6 +378,11 @@ mod tests {
     /// half, and after the release **nothing can ever stop it** — the component
     /// that would have called `stop()` is disposed. So the release must power it
     /// down itself, on a battery-powered device.
+    ///
+    /// Host-only (issue #604): this asserts against `disarm_log`, the host
+    /// twin's own recording, which has no Android counterpart — on-device the
+    /// JNI call has no observable side effect without a real device attached.
+    #[cfg(not(target_os = "android"))]
     #[test]
     fn releasing_a_dead_location_callback_powers_the_gps_down() {
         let _serial = crate::test_serial();
@@ -404,6 +409,9 @@ mod tests {
     /// updates, so the sweep must report a release only when the slot is still
     /// empty. The keyed twin of
     /// `sensors::releasing_a_dead_sensor_a_live_registration_reclaimed_does_not_disarm_it`.
+    ///
+    /// Host-only (issue #604): same `disarm_log` reasoning as the test above.
+    #[cfg(not(target_os = "android"))]
     #[test]
     fn releasing_a_dead_location_callback_a_live_one_replaced_does_not_disarm_it() {
         struct Restart;

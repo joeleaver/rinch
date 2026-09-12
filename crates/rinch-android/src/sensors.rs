@@ -439,6 +439,11 @@ mod tests {
     /// `stop()` takes the `SensorType`, and the component that knew it is
     /// disposed. So the release must power it down itself, or the Java side
     /// keeps delivering at `DELAY_UI` for the life of the process.
+    ///
+    /// Host-only (issue #604): this asserts against `disarm_log`, the host
+    /// twin's own recording, which has no Android counterpart — on-device the
+    /// JNI call has no observable side effect without a real device attached.
+    #[cfg(not(target_os = "android"))]
     #[test]
     fn releasing_a_dead_sensor_callback_powers_that_sensor_down() {
         let _serial = crate::test_serial();
@@ -462,6 +467,9 @@ mod tests {
     /// The sweep powers down exactly what it released. Another component's
     /// sensor is a separate entry and must stay armed — the per-callback
     /// granularity that makes these registries safe to share.
+    ///
+    /// Host-only (issue #604): same `disarm_log` reasoning as the test above.
+    #[cfg(not(target_os = "android"))]
     #[test]
     fn releasing_a_dead_sensor_leaves_a_live_siblings_sensor_armed() {
         let _serial = crate::test_serial();
@@ -500,6 +508,9 @@ mod tests {
     /// live registration before the disarm decision is taken. Powering it down
     /// then would stop a live component's sensor. The sweep must therefore
     /// report only keys nothing live holds.
+    ///
+    /// Host-only (issue #604): same `disarm_log` reasoning as the test above.
+    #[cfg(not(target_os = "android"))]
     #[test]
     fn releasing_a_dead_sensor_a_live_registration_reclaimed_does_not_disarm_it() {
         struct Rearm;

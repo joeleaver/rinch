@@ -235,19 +235,21 @@ jobs:
   # outright, not suppressed.
   #
   # Scoped to `rinch-core` (`--all-targets --all-features`, the crate's full
-  # surface) and `rinch-android` (`--lib` only, no `--all-features`: the crate
-  # has none): `muda` (native menus) fails to even compile for
+  # surface) and `rinch-android` (`--all-targets`, no `--all-features`: the
+  # crate has none): `muda` (native menus) fails to even compile for
   # `aarch64-linux-android` (`unresolved import self::platform`), which takes
   # the whole workspace graph down under cargo's feature unification, so this
-  # cannot be `--workspace`. `rinch-android --all-targets` additionally hits a
-  # pre-existing, unrelated compile break in its *test* code (`location.rs`,
-  # `sensors.rs`): a host-only mock module (`disarm_log`, itself correctly
-  # gated `cfg(not(target_os = "android"))`) is called from `#[test]` fns gated
-  # only `cfg(test)`, so those tests don't exist on this target's test binary
-  # but still reference a module that doesn't — E0433, not a lint, and not
-  # touched here. `--lib` sidesteps it; fixing it is real, separate work
-  # (giving those tests the same `not(target_os = "android")` gate, or an
-  # android-side stub) reported but out of #598's scope.
+  # cannot be `--workspace`.
+  #
+  # `rinch-android --all-targets` used to hit a further, pre-existing compile
+  # break in its *test* code (`location.rs`, `sensors.rs`): a host-only mock
+  # module (`disarm_log`, itself correctly gated `cfg(not(target_os =
+  # "android"))`) was called from `#[test]` fns gated only `cfg(test)`, so
+  # those tests didn't exist on this target's test binary but still referenced
+  # a module that didn't — E0433, not a lint. Fixed by #604: those five tests
+  # assert only against the host mock's own recording, which has no on-device
+  # equivalent, so they're now gated `cfg(not(target_os = "android"))` too,
+  # matching `disarm_log` itself — and this job runs `--all-targets` for real.
   clippy-android:
     runs-on: ubuntu-latest
     steps:
@@ -281,7 +283,7 @@ jobs:
 
           echo "::group::clippy rinch-android (aarch64-linux-android)"
           cargo clippy -p rinch-android --target aarch64-linux-android \
-            --lib -- -D warnings
+            --all-targets -- -D warnings
           echo "::endgroup::"
 
   # Run the browser-backed wasm tests. `IdbStore` talks to a real IndexedDB, so it
