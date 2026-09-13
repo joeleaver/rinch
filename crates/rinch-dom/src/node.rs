@@ -211,8 +211,10 @@ pub enum DisplayMode {
     /// distinguished by `DisplayValue::to_taffy`, which is what builds the
     /// Taffy style. Kept distinct so `display_mode` does not report
     /// `InlineBlock` for a box whose `display` is `inline-flex` (it is dumped
-    /// to the MCP `dom_tree`), and so a future consumer that does care has
-    /// something to read.
+    /// to the MCP **`get_node`** tool — `testing::get_node_detail` is the one
+    /// place `display_mode` is serialized; `dom_tree` goes through
+    /// `serialize_tree_full` and carries `computed_styles` only), and so a
+    /// future consumer that does care has something to read.
     InlineFlex,
     /// `display: inline-grid` — inline-level, with a grid container inside
     /// (#607).
@@ -229,8 +231,9 @@ pub enum DisplayMode {
     /// and [`DisplayMode::InlineBlock`] do; the *inside* that tells the three
     /// apart comes from `DisplayValue::to_taffy`. Kept distinct for the same
     /// reason `InlineFlex` is: `display_mode` is dumped verbatim to the MCP
-    /// `dom_tree` (`testing.rs`), so folding it into another variant would
-    /// make that surface report a `display` the node does not have.
+    /// **`get_node`** tool (`testing::get_node_detail`), so folding it into
+    /// another variant would make that surface report a `display` the node does
+    /// not have.
     InlineGrid,
 }
 
@@ -267,9 +270,16 @@ impl DisplayMode {
     /// gate. They spelled it `== InlineBlock`, which is how `inline-flex`
     /// managed to be inline-level in one pass and not in the next.
     ///
-    /// Adding `inline-grid` here (#607) is the whole of its flow fix: every one
-    /// of those five passes, and the anonymous-box generation that decides
-    /// whether the box ends a run, reads this predicate rather than a variant.
+    /// Adding `inline-grid` here (#607) is **half** of its flow fix — the half
+    /// those five passes read. The other half is that `DisplayMode::InlineGrid`
+    /// is not `Block`, so [`Self::is_block_container`] answers `false` and the
+    /// anonymous-box generation — that predicate's only four readers, all in
+    /// `ifc.rs`; grep it — stops treating the box as a container. The two
+    /// predicates are **independently** load-bearing: a mutant that admits
+    /// `InlineGrid` into `is_block_container` while leaving this function alone
+    /// still breaks
+    /// `an_inline_grid_box_joins_the_line_exactly_as_an_inline_block_does`, so
+    /// neither line can be described as the whole fix.
     ///
     /// **Not** the same question as [`Self::is_inline_level`]: a
     /// `display: inline` box is inline-level and *not* atomic — the IFC walks
@@ -578,10 +588,9 @@ pub struct Node {
     /// where `role` is [`Self::inline_flow_role`]. The recursion **stops at an
     /// atomic inline** — an `inline-block`, `inline-flex` or `inline-grid` is
     /// a formatting context in its own right, so a block inside one is that
-    /// box's business and not its parent's (#592) — and `OutOfFlow`, `NoBox` and
-    /// `Comment`
-    /// contribute nothing, which is the same three-way rule every other IFC
-    /// decision consumes.
+    /// box's business and not its parent's (#592) — and `OutOfFlow`, `NoBox`
+    /// and `Comment` contribute nothing, which is the same three-way rule every
+    /// other IFC decision consumes.
     ///
     /// # What it is for
     ///

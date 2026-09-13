@@ -626,20 +626,27 @@ fn two_inline_grid_boxes_share_a_line_where_two_grid_containers_stack() {
         doc.resolve_layout(VW, VH);
         (doc, c, w1, w2)
     }
-    let (xd, xc, _, x2) = build("grid");
-    let (gd, gc, g1, g2) = build("inline-grid");
+    let (xd, _, _, x2) = build("grid");
+    let (gd, _, g1, g2) = build("inline-grid");
 
     assert_eq!(
         lay(&xd, x2).0,
         0.0,
         "control (grid): a block-level grid container starts its own band"
     );
-    assert!(
-        lay(&xd, xc).3 > lay(&gd, gc).3,
-        "control (grid): stacking is taller than sharing a line ({} vs {})",
-        lay(&xd, xc).3,
-        lay(&gd, gc).3,
-    );
+    // **No container-height assertion here, deliberately.** "Stacking is taller
+    // than sharing a line" is the obvious second control and it is *not*
+    // Chrome-correct for these boxes: Chrome gives both containers 20 — the
+    // `grid` one as two stacked 10px rows, the `inline-grid` one as a single
+    // line box with a 20px strut. rinch answers 20 against 10 only because a
+    // line box holding nothing but an atomic inline gets no strut (#624), so
+    // asserting the inequality would pin a known defect as if it were the
+    // point. The x assertions below carry the whole statement and agree with
+    // Chrome.
+    //
+    // `two_atomic_inlines_share_a_line_where_two_flex_containers_stack` does
+    // make that height assertion and is fine: its boxes hold text, so the line
+    // box has a strut either way and Chrome agrees (20 against 40).
     assert_eq!(lay(&gd, g1).0, 0.0, "the first box opens the line");
     assert_eq!(
         lay(&gd, g2).0,
@@ -716,9 +723,11 @@ fn the_ifc_content_box_bridge_covers_an_inline_grid_box() {
 /// file would pass with `inline-grid` folded into either of the other two atomic
 /// inlines: the flow and the bridge read `is_atomic_inline`, which all three
 /// answer, and the interior reads `DisplayValue::to_taffy`, which is untouched
-/// by the fold. `dom_tree` is what would start lying — it dumps `display_mode`
-/// verbatim (`rinch_dom::testing::get_node_detail`), and a debug surface that
-/// names the wrong `display` costs an afternoon.
+/// by the fold. The MCP **`get_node`** tool is what would start lying — it is
+/// backed by `rinch_dom::testing::get_node_detail`, the one place `display_mode`
+/// is serialized, and a debug surface that names the wrong `display` costs an
+/// afternoon. (Not `dom_tree`: that goes through `serialize_tree_full` and
+/// carries `computed_styles` only.)
 ///
 /// The three spellings together, so "it always says InlineGrid" cannot pass.
 #[test]

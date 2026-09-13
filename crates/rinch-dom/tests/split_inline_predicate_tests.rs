@@ -507,7 +507,10 @@ fn the_field_is_recomputed_in_both_directions() {
 
     // The wrapper's own display crossing — the one #597 had to make re-run the
     // IFC pass at all, because `DisplayValue::to_taffy` is not injective and
-    // `inline` <-> `block` changes no Taffy field.
+    // `inline` <-> `block` changes no Taffy field. (`grid` <-> `inline-grid` is
+    // the newest aliasing pair, #607. It is not a problem for the same reason:
+    // it crosses `is_inline_level`, which is the condition #597 added at
+    // `style_resolution/mod.rs`'s `ifc_dirty` trigger.)
     doc.set_attribute(a, "style", "display: block");
     doc.resolve_layout(VW - 4.0, VH);
     assert_eq!(

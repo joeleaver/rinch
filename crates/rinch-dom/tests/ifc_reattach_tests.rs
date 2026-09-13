@@ -38,10 +38,11 @@
 //! 1. **Nothing re-attaches.** `mark_inline_descendants` keeps no departure
 //!    record, so no later pass knows a box is missing from a list.
 //! 2. **Nothing notices.** `DisplayValue::to_taffy` is not injective:
-//!    `inline`/`block` both map to `taffy::Display::Block`, and
+//!    `inline`/`block` both map to `taffy::Display::Block`,
 //!    `inline-block`/`flex`/`inline-flex`/`contents` all map to
-//!    `taffy::Display::Flex`. `apply_to_taffy` only sets `ifc_dirty` when the
-//!    **Taffy** display changes, so `inline-block → flex` — the issue's own
+//!    `taffy::Display::Flex`, and `grid`/`inline-grid` both map to
+//!    `taffy::Display::Grid` (#607). `apply_to_taffy` only sets `ifc_dirty` when
+//!    the **Taffy** display changes, so `inline-block → flex` — the issue's own
 //!    repro — never re-ran the IFC pass at all. (`contents` was already
 //!    special-cased on the computed-display crossing itself, #520; the
 //!    inline-level crossing is the same shape and was not.)

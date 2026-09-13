@@ -55,10 +55,10 @@ pub(crate) mod color_serde {
 ///
 /// The **authority on the declared value**, as against
 /// [`crate::node::DisplayMode`], which coarsens several of these into one
-/// answer for the layout passes. Two variants are told apart here and nowhere
-/// else: `inline-flex`/`inline-grid` carry their inline-level *outside* into
-/// `DisplayMode`, while their *inside* — the formatting context their children
-/// get — is carried only by [`Self::to_taffy`].
+/// answer for the layout passes. Their **insides** are told apart here and
+/// nowhere else: `inline-flex` and `inline-grid` both carry an inline-level
+/// *outside* into `DisplayMode`, while which formatting context their children
+/// get is carried only by [`Self::to_taffy`].
 #[derive(Debug, Clone, Copy, Default, PartialEq, Serialize)]
 pub enum DisplayValue {
     #[default]
@@ -73,9 +73,10 @@ pub enum DisplayValue {
     /// `display: inline-grid` — inline-level outside, grid container inside
     /// (#607).
     ///
-    /// Folded into [`Self::Grid`] until #607, which made `(Inline, Grid)` and
-    /// `(Block, Grid)` arrive at `style_resolution` as the same value, so an
-    /// `inline-grid` box was classified block-level and ended the inline run it
+    /// A variant only since #607. Before it, `display_from_stylo` folded this
+    /// value into [`Self::Grid`], so `(Inline, Grid)` and `(Block, Grid)`
+    /// arrived at `style_resolution` as the same value — and an `inline-grid`
+    /// box was therefore classified block-level and ended the inline run it
     /// should have joined.
     InlineGrid,
 }
