@@ -3450,7 +3450,13 @@ impl RinchDocument {
         root_text_style.has_underline = root_computed.text_decoration.underline;
         root_text_style.has_strikethrough = root_computed.text_decoration.strikethrough;
 
-        // Apply text-underline-offset from computed style
+        // Apply text-underline-offset from computed style.
+        //
+        // Always `None` today — no CSS reaches this field (#580) — and the value
+        // it carries is parley's absolute underline offset, **up** from the
+        // baseline, not CSS's delta away from the text. Both facts are recorded
+        // on the field itself; `crates/rinch-dom/tests/underline_offset_tests.rs`
+        // is what keeps this line from being an equivalent mutant.
         if let Some(offset) = root_computed.text_underline_offset {
             root_text_style.underline_offset = Some(offset);
         }
@@ -3658,19 +3664,31 @@ impl RinchDocument {
     /// spelling out the eight fields that matter here. **If
     /// `inline_style_props` gains a property, it must gain one here too** —
     /// they are one list, and a field present there and missing here is a
-    /// declaration that silently stops applying. Every one of the eight has a
-    /// fixture in `contents_wrapper_inherited_style_tests` that dies when its
-    /// line is deleted, except the one below.
+    /// declaration that silently stops applying. Seven of the eight have a
+    /// fixture in `contents_wrapper_inherited_style_tests` that dies when their
+    /// line is deleted; the eighth is covered elsewhere, as below.
     ///
-    /// **`text_underline_offset` is dead plumbing and its clause is provably
-    /// inert.** The field is assigned in exactly three places
-    /// (`computed_style/from_stylo`, `Default`, and the anonymous-box
-    /// constructor) and all three assign `None`; no CSS can make it `Some`. So
-    /// the comparison is always `None == None`, the `if let Some(offset)` arm in
-    /// `inline_style_props` is unreachable, and a fixture for it cannot be
-    /// written. Kept for the one-list rule: whoever plumbs the property through
-    /// `from_stylo` gets the skip predicate already correct rather than
-    /// discovering a year later that their declaration is dropped.
+    /// **`text_underline_offset` is inert but not untested** (#580). No CSS can
+    /// make it `Some` — the property is gecko-only in this Stylo build, so the
+    /// declaration is discarded before `ComputedStyle::from_stylo` runs and the
+    /// only site that writes the field from CSS writes `None`. So in production
+    /// this comparison is always `None == None`, and the `if let Some(offset)`
+    /// arm in [`Self::inline_style_props`] never fires.
+    ///
+    /// That made a mutant deleting either one look equivalent by construction,
+    /// which it is not: `crates/rinch-dom/tests/underline_offset_tests.rs` sets
+    /// the field directly and kills all three — this clause, that arm, and the
+    /// `root_text_style` assignment in [`Self::build_inline_layout`]. The
+    /// clause's own witness is
+    /// `a_contents_wrapper_is_not_skipped_when_only_its_offset_differs`, where
+    /// the wrapper's offset is the only thing that differs from its parent's
+    /// style, so dropping this line skips the wrapper and loses it.
+    ///
+    /// Kept for the one-list rule: whoever plumbs the property through gets the
+    /// skip predicate already correct rather than discovering a year later that
+    /// their declaration is dropped. They also owe paint a CSS *delta* — the
+    /// value here is parley's absolute offset up from the baseline, which is not
+    /// what `text-underline-offset` means. See the field's own doc.
     fn same_inline_text_style(
         a: &crate::computed_style::ComputedStyle,
         b: &crate::computed_style::ComputedStyle,
@@ -3723,6 +3741,8 @@ impl RinchDocument {
         if computed.text_decoration.strikethrough {
             props.push(parley::style::StyleProperty::Strikethrough(true));
         }
+        // Always `None` today; see the field's doc for why, and for why a CSS
+        // `text-underline-offset` cannot simply be assigned to it (#580).
         if let Some(offset) = computed.text_underline_offset {
             props.push(parley::style::StyleProperty::UnderlineOffset(Some(offset)));
         }
