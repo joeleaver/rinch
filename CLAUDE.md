@@ -1125,13 +1125,35 @@ the browser rule (issue #252). Focusable by tag: `<button>`, `<select>`,
 backdrop carries one). `tabindex="-1"` is focusable by click and
 programmatically but not tabbable;
 `disabled` and `data-disabled` are both honoured (issue #315) as **boolean
-attributes** (present = disabled unless the value is `"false"`), take no focus
-by any route, and are re-checked at edit time: a field that goes disabled
-*while focused* stops accepting keys **and releases the keyboard** — with its
-`data-onchange` commit suppressed, since going disabled is not the user
-committing an edit (`release_focus_for_disabled`, the only transition that
-suppresses it). `readonly` focuses and selects but
-refuses every text-changing command. A disabled `<fieldset>` disables its
+attributes**, take no focus by any route, and are re-checked at edit time: a
+field that goes disabled *while focused* stops accepting keys **and releases the
+keyboard** — with its `data-onchange` commit suppressed, since going disabled is
+not the user committing an edit (`release_focus_for_disabled`, the only
+transition that suppresses it). `readonly` focuses and selects but refuses every
+text-changing command, on a `<textarea>` as well as an `<input>`.
+
+**Presence is the whole value, and `"false"` is not an escape for the HTML
+pair** (issue #612). `disabled` and `readonly` are read by presence alone, the
+way a browser reads them — `<button disabled="false">` is disabled and
+`<input readonly="false">` is read-only, measured in Chrome 150 as both the IDL
+property and a `:disabled` / `:read-only` match — so **the value rule** is now
+one rule across desktop and `rinch-web`. Only that clause: desktop is still
+broader than a browser elsewhere in the family (`node_is_disabled` is
+tag-agnostic where HTML ignores `disabled` on a `<div>`, and rinch has no
+`:read-only` pseudo-class at all). Desktop used to honour a `"false"` escape the
+browser has no notion of, which meant one markup and opposite behaviour. To say
+*enabled*, **remove** the attribute, which is what a falsey reactive `bool` does
+for you (`NodeHandle::write_attribute`, #551).
+rinch's **own** `data-disabled` and `data-nofocus` keep the escape, and are the
+only two that have it — a rinch convention rather than a desktop quirk, which
+`data-nofocus` is what shows: the web reads it the same way, through
+`[data-nofocus]:not([data-nofocus="false" i])`. (`data-disabled` has no web
+reader; the browser does not know the attribute.) The rules are one function
+each — `rinch_core::dom::data_attr_is_on` for the `data-` pair, a bare
+`contains_key` for the HTML pair — and `"0"` is the only value that can tell
+which one a reader uses, so both readers pin it.
+
+A disabled `<fieldset>` disables its
 subtree (except its first `<legend>`); every other tag's `disabled` removes
 only the node from the Tab order, not its subtree. A **mouse press claims
 the nearest focusable ancestor** of the hit node, browser-style, so a clicked
@@ -1151,9 +1173,11 @@ order (issue #435), and a Modal/Drawer backdrop does not contain Tab.
 **`data-nofocus` takes the click without the keyboard** (issue #312) — the
 `preventDefault()`-on-mousedown mechanism browsers converged on, which an editor
 toolbar needs so Bold does not blur the editor it acts on. Same boolean rule as
-`data-disabled`, read **anywhere on the pressed node's ancestor chain** so a
-toolbar carries it once; it protects whatever holds the keyboard (editor, input,
-surface, node), the `data-rid` click still fires, and a text field *inside* the
+`data-disabled` — including the `"false"` escape, which these two rinch-owned
+attributes keep and the HTML pair does not — read **anywhere on the pressed
+node's ancestor chain** so a toolbar carries it once; it protects whatever holds
+the keyboard (editor, input, surface, node), the `data-rid` click still fires,
+and a text field *inside* the
 region still focuses normally. Both backends — on web it becomes
 `preventDefault()` on the `pointerdown`.
 
@@ -2463,7 +2487,7 @@ Button { variant: "filled" }
 
 **Component Props vs HTML Attributes:**
 
-- **HTML elements** (`div`, `span`, `p`, etc.) accept any attribute as a string: `style:`, `class:`, `id:`, custom `data-*`, etc. They also support reactive closures `{|| expr}` on any attribute. An **HTML boolean attribute** is the exception to "as a string": its *presence* is its value, so `rsx!` writes the bare presence form for a truthy value and **removes** the attribute for a falsey one, through `NodeHandle::write_attribute` rather than `set_attribute` (issue #551). Writing `disabled="false"` would leave the attribute present, which HTML — and therefore the browser, measured — reads as *disabled*; a reactive `disabled: {|| busy.get()}` was disabled from the first render and never recovered, on **both** backends. The set is `rinch_core::dom::is_boolean_attribute`: the 30 rows the WHATWG attributes index marks "Boolean attribute", plus `hidden` (enumerated, but its invalid-value default is the hidden state, so `hidden="false"` hides) and rinch's own `data-disabled` / `data-nofocus`. **The rule keys on the attribute name, not the value's type**, and that is load-bearing: `draggable` is enumerated (`"true"`/`"false"`, invalid → `auto`) and desktop's drag dispatch matches the literal `"true"`, the ARIA states are tri-valued, and `data-viewport-ready`'s *absence* means ready — presence-mapping any of them loses or inverts it. A *string* yielded into a boolean attribute follows `attr_is_truthy` (on unless `"false"` in any case, or `"0"`), which is the same rule `node_is_disabled` and the web backend's `[data-nofocus="false" i]` read by. Desktop's `"false"` escape covers only the disabled family (`node_is_disabled`, `node_is_readonly`, `node_is_nofocus`) — `:checked`, `<option selected>` and `<option disabled>` are presence-only, correctly (a browser matches `:checked` on `checked="false"` too), which is why #551 reproduced on desktop and why the cure is a writer that removes rather than a reader that learns a falsey string. **`oninput` and `onchange` on `<input>`/`<textarea>` elements** receive the input value as a `String` — use `Fn(String)` closures, not `Fn()`. They are **not aliases** (issue #226): `oninput` fires per keystroke with the live value; `onchange` fires once at the commit boundary — focus leaves the control after a modification, Enter (single-line inputs only; a `<textarea>` commits at blur), or a `<select>` pick — and only if the value actually changed since focus. On Enter, `onchange` fires before `onsubmit`:
+- **HTML elements** (`div`, `span`, `p`, etc.) accept any attribute as a string: `style:`, `class:`, `id:`, custom `data-*`, etc. They also support reactive closures `{|| expr}` on any attribute. An **HTML boolean attribute** is the exception to "as a string": its *presence* is its value, so `rsx!` writes the bare presence form for a truthy value and **removes** the attribute for a falsey one, through `NodeHandle::write_attribute` rather than `set_attribute` (issue #551). Writing `disabled="false"` would leave the attribute present, which HTML — and therefore the browser, measured — reads as *disabled*; a reactive `disabled: {|| busy.get()}` was disabled from the first render and never recovered, on **both** backends. The set is `rinch_core::dom::is_boolean_attribute`: the 30 rows the WHATWG attributes index marks "Boolean attribute", plus `hidden` (enumerated, but its invalid-value default is the hidden state, so `hidden="false"` hides) and rinch's own `data-disabled` / `data-nofocus`. **The rule keys on the attribute name, not the value's type**, and that is load-bearing: `draggable` is enumerated (`"true"`/`"false"`, invalid → `auto`) and desktop's drag dispatch matches the literal `"true"`, the ARIA states are tri-valued, and `data-viewport-ready`'s *absence* means ready — presence-mapping any of them loses or inverts it. A *string* yielded into a boolean attribute follows `attr_is_truthy` (on unless `"false"` in any case, or `"0"`), which is the **writer's** rule and nobody's reader: every desktop reader of the HTML set is presence-only, correctly, because a browser is (`:checked` matches on `checked="false"`, `:disabled` on `disabled="false"`, both measured) — which is why #551 reproduced on desktop and why the cure is a writer that removes rather than a reader that learns a falsey string. A `"false"` escape survives for exactly two attributes, rinch's own `data-disabled` / `data-nofocus`, spelled once as `rinch_core::dom::data_attr_is_on`; issue #612 retired it from `disabled` / `readonly`, where it had been desktop-only and so a pure divergence. It is a deliberate convention rather than a leftover, and `data-nofocus` is what shows that — the web reads it the same way, through `[data-nofocus]:not([data-nofocus="false" i])`, while `data-disabled` has no web reader at all. Note `data_attr_is_on` is deliberately *narrower* than `attr_is_truthy`: `"0"` is on, matching that selector, and `"0"` is therefore the only value that distinguishes the two rules — which is why both desktop readers pin it (`computed_style_tests::the_data_escape_excuses_only_false_at_the_reader`, `nofocus_tests::only_false_opts_out_not_zero`). **`oninput` and `onchange` on `<input>`/`<textarea>` elements** receive the input value as a `String` — use `Fn(String)` closures, not `Fn()`. They are **not aliases** (issue #226): `oninput` fires per keystroke with the live value; `onchange` fires once at the commit boundary — focus leaves the control after a modification, Enter (single-line inputs only; a `<textarea>` commits at blur), or a `<select>` pick — and only if the value actually changed since focus. On Enter, `onchange` fires before `onsubmit`:
   ```rust
   input {
       oninput: move |value: String| name_signal.set(value),

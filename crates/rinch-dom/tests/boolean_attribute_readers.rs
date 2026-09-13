@@ -20,13 +20,18 @@
 //! exist so that a later "tolerate `false` here too" cannot be mistaken for the
 //! fix.
 //!
-//! This is also the measurement that corrects the issue's own framing. #551 was
+//! This is also the measurement that corrected the issue's own framing. #551 was
 //! read off the code and filed as web-only, on the strength of desktop reading
-//! `disabled` with a `"false"` escape. That escape is real — see
+//! `disabled` with a `"false"` escape. That escape was real but **local to the
+//! disabled family** — it never reached `:checked` or the `<select>` model, so
+//! #551 reproduced on the desktop backend too.
+//!
+//! It has since been retired from the HTML attributes altogether (issue #612):
+//! `disabled` and `readonly` are read by presence alone, so the readers below are
+//! no longer the odd ones out — they are the rule, and
 //! `computed_style_tests::the_disabled_selector_follows_the_boolean_attribute_rule`
-//! — but it is **local to the disabled family** (`rinch_dom::node_is_disabled`,
-//! `node_is_readonly`, `node_is_nofocus`). It never reached `:checked` or the
-//! `<select>` model, so #551 reproduced on the desktop backend too.
+//! is where `:disabled` says the same. Only rinch's own `data-disabled` /
+//! `data-nofocus` keep an escape, because both backends implement it on purpose.
 //!
 //! Each test asserts *both* directions on purpose: at scroll-offset-zero-style
 //! fixed points a broken and a fixed reader agree, and "present means on" is only
@@ -116,8 +121,9 @@ fn an_option_is_selected_by_the_presence_of_the_attribute() {
     );
 }
 
-/// And an `<option>`'s `disabled` — the `node_is_disabled` escape does not reach
-/// here, because `collect_options` reads the attribute itself.
+/// And an `<option>`'s `disabled`. `collect_options` reads the attribute itself
+/// rather than going through `node_is_disabled`, and since #612 the two agree:
+/// presence alone, whatever the string.
 #[test]
 fn an_option_is_disabled_by_the_presence_of_the_attribute() {
     let (doc, sel) = select_with_options(&[("v0", Some(("disabled", "false"))), ("v1", None)]);
@@ -125,8 +131,8 @@ fn an_option_is_disabled_by_the_presence_of_the_attribute() {
     assert_eq!(
         model.selected_index,
         Some(1),
-        "`disabled=\"false\"` skips the first option — the disabled-family \
-         `\"false\"` escape is not consulted by the <select> model"
+        "`disabled=\"false\"` skips the first option: presence is the whole \
+         value, here and in `node_is_disabled` (#612)"
     );
 
     let (mut doc, sel) = select_with_options(&[("v0", Some(("disabled", "false"))), ("v1", None)]);

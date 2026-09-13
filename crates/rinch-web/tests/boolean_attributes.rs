@@ -104,6 +104,11 @@ impl Fixture {
 /// `crates/rinch-dom/tests/boolean_attribute_readers.rs` is allowed to pin
 /// desktop's presence-only `:checked` and `<option selected>` as *correct*
 /// rather than fixing them: a browser answers the same way.
+///
+/// It is also the oracle for **#612**, which retired desktop's `"false"` escape
+/// on `disabled` / `readonly` so that the two backends answer this markup the
+/// same way. That is what the two `:disabled` / `:read-only` assertions below are
+/// for: the IDL property alone would leave open whether the *styling* followed.
 #[wasm_bindgen_test]
 fn html_reads_a_present_boolean_attribute_as_true_whatever_its_value() {
     let host = document().create_element("div").unwrap();
@@ -123,19 +128,34 @@ fn html_reads_a_present_boolean_attribute_as_true_whatever_its_value() {
             .unwrap_or_else(|| panic!("#{id} has no boolean `{key}`"))
     };
 
+    let matches = |id: &str, sel: &str| -> bool {
+        document()
+            .get_element_by_id(id)
+            .unwrap()
+            .matches(sel)
+            .unwrap()
+    };
+
     assert!(prop("raw-btn", "disabled"), "disabled=\"false\" disables");
+    // And it *styles* as disabled, which is the half desktop's `:disabled`
+    // matcher mirrors since issue #612 retired its `"false"` escape.
+    assert!(
+        matches("raw-btn", ":disabled"),
+        "disabled=\"false\" matches :disabled"
+    );
     assert!(prop("raw-chk", "checked"), "checked=\"false\" is checked");
     assert!(
-        document()
-            .get_element_by_id("raw-chk")
-            .unwrap()
-            .matches(":checked")
-            .unwrap(),
+        matches("raw-chk", ":checked"),
         "and it matches :checked, which is what desktop's matcher mirrors"
     );
     assert!(
         prop("raw-ro", "readOnly"),
         "readonly=\"false\" is read-only"
+    );
+    assert!(
+        matches("raw-ro", ":read-only"),
+        "readonly=\"false\" matches :read-only — the oracle for desktop's \
+         `node_is_readonly` (#612)"
     );
     // `hidden` is enumerated rather than boolean, but its invalid-value default
     // is the hidden state, so it fails in exactly the same direction.

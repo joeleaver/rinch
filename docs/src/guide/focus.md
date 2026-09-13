@@ -44,9 +44,29 @@ rows and list items; none of those should be Tab stops.
 |---|---|
 | `tabindex="0"` | Reachable by Tab, focusable by click and by `NodeHandle::focus()`. Needed on anything that is not focusable by tag — a `div` you are driving yourself |
 | `tabindex="-1"` | **Not** in the Tab order, but still focusable by click and programmatically — the standard "focus this dialog when it opens" idiom, and the way to take a `<button>` *out* of the Tab order |
-| `disabled` / `data-disabled` | Takes no focus at all, and accepts no keyboard edit. Both spellings count — the component library writes the HTML one, the runtime's own widgets write the `data-` one. A boolean attribute: present means disabled whatever the value; only the explicit `"false"` opts out |
-| `readonly` | Focuses, moves its caret, selects and copies like any other field — and refuses every command that would change its text (typing, delete, cut, paste, undo/redo). Same boolean rule |
-| `data-nofocus` | A press here takes the **click** but not the keyboard: whatever is focused stays focused. Same boolean rule. Read anywhere on the pressed element's ancestor chain, so a toolbar carries it once |
+| `disabled` / `data-disabled` | Takes no focus at all, and accepts no keyboard edit. Both spellings count — the component library writes the HTML one, the runtime's own widgets write the `data-` one |
+| `readonly` | Focuses, moves its caret, selects and copies like any other field — and refuses every command that would change its text (typing, delete, cut, paste, undo/redo) |
+| `data-nofocus` | A press here takes the **click** but not the keyboard: whatever is focused stays focused. Read anywhere on the pressed element's ancestor chain, so a toolbar carries it once |
+
+All four are **boolean attributes**: their presence is their value, so
+`disabled`, `disabled=""` and `disabled="disabled"` say the same thing. To say
+*enabled*, remove the attribute — a `bool` in `rsx!` does that for you
+(`button { disabled: {move || busy.get()} }`).
+
+The two HTML attributes, `disabled` and `readonly`, are read by **presence
+alone**, exactly as a browser reads them: `disabled="false"` disables and
+`readonly="false"` is read-only, on desktop and on the web alike (issue #612).
+That applies to every tag the attribute reaches, so a `<textarea readonly="false">`
+is read-only too.
+
+rinch's **own** `data-disabled` and `data-nofocus` are the exception, and the only
+one: there the literal `"false"` turns the attribute off. `data-nofocus` is read
+that way on both backends; `data-disabled` is a desktop attribute with no web
+reader, because the browser does not know it. Only `"false"` is excused — `"0"` is
+on, matching the web's `[data-nofocus="false" i]` selector. Reach for the escape
+when you are writing the attribute **by hand with `set_attribute`** and would
+otherwise have to branch between writing and removing it; a `bool` in `rsx!`
+already removes it for you.
 
 A **disabled `<fieldset>`** disables every control below it, which is what the
 element is for. HTML's carve-out is honoured: controls inside the fieldset's
@@ -148,7 +168,8 @@ The rules:
   link-URL field in a toolbar has to be usable, so the field's own claim wins
   over the region's opt-out.
 - Boolean attribute, same rule as `data-disabled`: present means on whatever
-  the value, only the explicit `"false"` opts out.
+  the value, and the explicit `"false"` opts out — one of rinch's own two
+  attributes where that escape exists.
 - It works on **both backends**. On the web it becomes `preventDefault()` on
   the `pointerdown`.
 

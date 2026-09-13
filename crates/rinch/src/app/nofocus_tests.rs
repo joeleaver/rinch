@@ -202,8 +202,14 @@ fn the_attribute_works_on_the_button_itself() {
     assert_eq!(*log.borrow(), vec!["self".to_string()]);
 }
 
-/// Boolean-attribute rule, same as `disabled`: only the explicit `"false"`
-/// opts out.
+/// rinch's own `data-` escape, which issue #612 kept while retiring the HTML
+/// pair's: the explicit `"false"` opts out, and `rinch-web` implements the same
+/// escape through its `[data-nofocus]:not([data-nofocus="false" i])` selector.
+///
+/// The sibling half of the pair lives in
+/// `disabled_input_tests::the_data_escape_survives_on_rinchs_own_attribute`;
+/// together they are what makes "the escape is rinch-specific, not retired"
+/// a tested claim rather than a comment.
 #[test]
 fn the_false_value_opts_out() {
     let (mut app, ids, _log) = mount_fixture();
@@ -212,6 +218,38 @@ fn the_false_value_opts_out() {
     press(&mut app, ids.opted_out_btn);
 
     assert_eq!(app.focus_target, FocusTarget::Node(ids.opted_out_btn));
+}
+
+/// `"false"` is the **only** string the escape excuses: `"0"` is on.
+///
+/// That is the single value where rinch's `data-` rule and the writer's
+/// `attr_is_truthy` disagree, so it is the only one that can tell which of them
+/// `node_is_nofocus` is using. Measured: without this assertion the reader can be
+/// pointed back at `attr_is_truthy` and `cargo test -p rinch --lib` stays green
+/// at 419 passed. Its `data-disabled` twin is
+/// `rinch-dom/tests/computed_style_tests.rs::the_data_escape_excuses_only_false_at_the_reader`.
+#[test]
+fn only_false_opts_out_not_zero() {
+    let (mut app, ids, _log) = mount_fixture();
+    {
+        let doc = app.doc.as_ref().unwrap();
+        let mut d = doc.borrow_mut();
+        d.tree
+            .get_mut(ids.opted_out_btn)
+            .expect("node is live")
+            .attributes
+            .insert("data-nofocus".to_string(), "0".to_string());
+    }
+    focus_editor(&mut app, ids);
+
+    press(&mut app, ids.opted_out_btn);
+
+    assert_eq!(
+        app.focus_target,
+        FocusTarget::Editor(ids.editor),
+        "`data-nofocus=\"0\"` is ON: rinch's escape excuses only `\"false\"`, \
+         matching the web's `[data-nofocus=\"false\" i]` selector (#612)"
+    );
 }
 
 /// The toolbar's blank chrome — between and around the buttons — must not blur

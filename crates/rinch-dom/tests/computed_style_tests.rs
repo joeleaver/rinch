@@ -1387,8 +1387,16 @@ fn a_disabled_rule_matches_a_disabled_control() {
 }
 
 /// The boolean-attribute rule `:disabled` shares with the focus machinery:
-/// presence is enough whatever the value, `data-disabled` is the second
-/// accepted spelling, and only the explicit `"false"` opts out.
+/// presence is enough whatever the value, including the literal `"false"`
+/// (issue #612), and `data-disabled` is the second accepted spelling — with
+/// rinch's own `"false"` escape, which that issue kept.
+///
+/// Both halves matter, and they are opposite answers to the same string, which
+/// is why they are in one test: `disabled="false"` matches `:disabled` because a
+/// browser matches it (Chrome 150, `<button disabled="false">` → `.disabled ===
+/// true` and `el.matches(":disabled") === true`), while
+/// `data-disabled="false"` does not, because rinch's own attribute has an escape
+/// HTML never gave it and both backends implement that escape on purpose.
 ///
 /// Kills a matcher that demands the literal `"true"` — no in-tree writer
 /// produces it, every one writes `disabled=""`. Applied, this test stops on
@@ -1411,8 +1419,10 @@ fn the_disabled_selector_follows_the_boolean_attribute_rule() {
     let empty = mk(&mut doc, Some(("disabled", "")));
     let arbitrary = mk(&mut doc, Some(("disabled", "disabled")));
     let data = mk(&mut doc, Some(("data-disabled", "")));
-    let opted_out = mk(&mut doc, Some(("disabled", "false")));
-    let opted_out_mixed_case = mk(&mut doc, Some(("disabled", "FALSE")));
+    let html_false = mk(&mut doc, Some(("disabled", "false")));
+    let html_false_mixed_case = mk(&mut doc, Some(("disabled", "FALSE")));
+    let data_false = mk(&mut doc, Some(("data-disabled", "false")));
+    let data_false_mixed_case = mk(&mut doc, Some(("data-disabled", "FALSE")));
     let plain = mk(&mut doc, None);
     // A second tag from the disableable set. `.rinch-textarea__input:disabled`
     // is a shipped rule, so dropping `textarea` from `tag_is_disableable`
@@ -1443,14 +1453,28 @@ fn the_disabled_selector_follows_the_boolean_attribute_rule() {
         r#"data-disabled="" is the second spelling"#
     );
     assert_eq!(
-        opacity(&doc, opted_out),
-        1.0,
-        r#"disabled="false" is the documented opt-out"#
+        opacity(&doc, html_false),
+        0.5,
+        "disabled=\"false\" disables: presence is the whole value in HTML, and \
+         Chrome matches :disabled on it (#612)"
     );
     assert_eq!(
-        opacity(&doc, opted_out_mixed_case),
+        opacity(&doc, html_false_mixed_case),
+        0.5,
+        "no string spelling of false reaches the HTML attribute — removing it is \
+         how markup says enabled"
+    );
+    assert_eq!(
+        opacity(&doc, data_false),
         1.0,
-        "the opt-out is case-insensitive"
+        "data-disabled=\"false\" still opts out: rinch's own attribute keeps the \
+         escape both backends implement (#612)"
+    );
+    assert_eq!(
+        opacity(&doc, data_false_mixed_case),
+        1.0,
+        "and that escape is ASCII-case-insensitive, matching the web selector's \
+         `\"false\" i`"
     );
     assert_eq!(opacity(&doc, plain), 1.0, "no attribute is enabled");
     assert_eq!(
@@ -1624,5 +1648,85 @@ fn a_disabled_div_is_not_a_disabled_control() {
         opacity(&doc, div),
         1.0,
         "a <div disabled> is not a disabled control"
+    );
+}
+
+/// `"0"` is the one string where rinch's `data-` escape and the *writer's*
+/// `attr_is_truthy` disagree, so it is the only value that can tell which rule a
+/// reader is actually using.
+///
+/// This is the fixed-point trap this repo keeps hitting, measured rather than
+/// guessed: every other fixture samples `data-disabled` at `""`, `"false"`,
+/// `"FALSE"`, `"true"` or `"no"`, and the two rules answer all five identically.
+/// With only those, pointing `data_disabled_attribute_is_on` back at
+/// `attr_is_truthy` passes `-p rinch-dom -p rinch -p rinch-core` entire. The
+/// unit test `bool_attr::tests::the_data_escape_is_false_only` cannot catch it —
+/// it pins the function, not which function the reader calls.
+///
+/// `nofocus_tests::only_false_opts_out_not_zero` is the same assertion on the
+/// other `data-` reader.
+#[test]
+fn the_data_escape_excuses_only_false_at_the_reader() {
+    let mut doc = RinchDocument::new();
+    doc.load_css("input:disabled { opacity: 0.5 }");
+    let body = doc.body();
+    let zero = doc.create_element("input");
+    doc.set_attribute(zero, "data-disabled", "0");
+    doc.append_child(body, zero);
+    doc.resolve_layout(800.0, 600.0);
+    assert_eq!(
+        doc.tree.get(zero.0).unwrap().computed_style.opacity,
+        0.5,
+        "`data-disabled=\"0\"` is ON: rinch's escape excuses only `\"false\"`, \
+         matching the web's `[data-nofocus=\"false\" i]` selector (#612)"
+    );
+}
+
+/// The styling half of the fieldset rule at the `"false"` spelling:
+/// `<fieldset disabled="false">` disables its subtree, and the first `<legend>`
+/// still escapes (issue #612).
+///
+/// Measured in Chrome 150, and the measurement is the subtle one: a child of
+/// `<fieldset disabled="false">` answers `.disabled === false` — the IDL property
+/// reflects only its own content attribute — while `matches(":disabled")` is
+/// **true**, because it is *actually disabled*. Desktop has only the selector, so
+/// the selector is what this pins. Every other fieldset fixture writes the bare
+/// presence form, which is the spelling where the old escape and the new rule
+/// agreed.
+#[test]
+fn a_fieldset_disabled_false_styles_its_subtree_except_the_legend() {
+    let mut doc = RinchDocument::new();
+    doc.load_css("input:disabled { opacity: 0.5 }");
+    let body = doc.body();
+    let fieldset = doc.create_element("fieldset");
+    doc.append_child(body, fieldset);
+    let legend = doc.create_element("legend");
+    doc.append_child(fieldset, legend);
+    let in_legend = doc.create_element("input");
+    doc.append_child(legend, in_legend);
+    let wrapper = doc.create_element("div");
+    doc.append_child(fieldset, wrapper);
+    let nested = doc.create_element("input");
+    doc.append_child(wrapper, nested);
+
+    doc.resolve_layout(800.0, 600.0);
+    let opacity = |doc: &RinchDocument, id: rinch_core::dom::NodeId| {
+        doc.tree.get(id.0).unwrap().computed_style.opacity
+    };
+    assert_eq!(opacity(&doc, nested), 1.0, "baseline: enabled fieldset");
+
+    doc.set_attribute(fieldset, "disabled", "false");
+    doc.resolve_layout(800.0, 600.0);
+
+    assert_eq!(
+        opacity(&doc, nested),
+        0.5,
+        "`<fieldset disabled=\"false\">` disables its subtree: presence is the \
+         whole value, and Chrome matches :disabled on the child (#612)"
+    );
+    assert_eq!(
+        opacity(&doc, in_legend),
+        1.0,
+        "and the first <legend>'s carve-out survives the \"false\" spelling"
     );
 }
