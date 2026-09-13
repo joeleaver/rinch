@@ -451,8 +451,8 @@ impl RinchDocument {
                         parley::style::FontWeight::new(font_weight),
                     ));
                 }
-                builder.push_default(parley::style::StyleProperty::FontStack(
-                    parley::style::FontStack::Source(std::borrow::Cow::Owned(font_family.clone())),
+                builder.push_default(parley::style::StyleProperty::FontFamily(
+                    parley::style::FontFamily::Source(std::borrow::Cow::Owned(font_family.clone())),
                 ));
                 let mut layout = builder.build(ellipsis);
                 layout.break_all_lines(None);
@@ -467,8 +467,8 @@ impl RinchDocument {
                         .ranged_builder(&mut self.font_cx, ellipsis, 1.0, true);
                 builder.push_default(parley::style::StyleProperty::FontSize(font_size));
                 builder.push_default(parley::style::StyleProperty::Brush(Brush::Solid(color)));
-                builder.push_default(parley::style::StyleProperty::FontStack(
-                    parley::style::FontStack::Source(std::borrow::Cow::Owned(font_family)),
+                builder.push_default(parley::style::StyleProperty::FontFamily(
+                    parley::style::FontFamily::Source(std::borrow::Cow::Owned(font_family)),
                 ));
                 if (font_weight - 400.0).abs() > 1.0 {
                     builder.push_default(parley::style::StyleProperty::FontWeight(
@@ -507,8 +507,8 @@ impl RinchDocument {
                         parley::style::FontWeight::new(font_weight),
                     ));
                 }
-                builder.push_default(parley::style::StyleProperty::FontStack(
-                    parley::style::FontStack::Source(std::borrow::Cow::Owned(font_family.clone())),
+                builder.push_default(parley::style::StyleProperty::FontFamily(
+                    parley::style::FontFamily::Source(std::borrow::Cow::Owned(font_family.clone())),
                 ));
                 let mut layout = builder.build(&prefix);
                 layout.break_all_lines(None);
@@ -536,8 +536,8 @@ impl RinchDocument {
                     .ranged_builder(&mut self.font_cx, &truncated, 1.0, true);
             builder.push_default(parley::style::StyleProperty::FontSize(font_size));
             builder.push_default(parley::style::StyleProperty::Brush(Brush::Solid(color)));
-            builder.push_default(parley::style::StyleProperty::FontStack(
-                parley::style::FontStack::Source(std::borrow::Cow::Owned(font_family)),
+            builder.push_default(parley::style::StyleProperty::FontFamily(
+                parley::style::FontFamily::Source(std::borrow::Cow::Owned(font_family)),
             ));
             if (font_weight - 400.0).abs() > 1.0 {
                 builder.push_default(parley::style::StyleProperty::FontWeight(
@@ -3337,8 +3337,8 @@ impl RinchDocument {
                             } else {
                                 std::borrow::Cow::Borrowed("sans-serif")
                             };
-                            builder.push_default(parley::style::StyleProperty::FontStack(
-                                parley::style::FontStack::Source(font_stack),
+                            builder.push_default(parley::style::StyleProperty::FontFamily(
+                                parley::style::FontFamily::Source(font_stack),
                             ));
                             // Apply overflow-wrap for emergency line-breaking
                             builder.push_default(parley::style::StyleProperty::OverflowWrap(
@@ -3520,7 +3520,7 @@ impl RinchDocument {
         let mut root_text_style = parley::style::TextStyle {
             font_size: root_font_size,
             brush: Brush::Solid(root_color),
-            font_stack: parley::style::FontStack::Source(font_family),
+            font_family: parley::style::FontFamily::Source(font_family),
             ..Default::default()
         };
 
@@ -3668,8 +3668,8 @@ impl RinchDocument {
             let mut b = layout_cx.ranged_builder(font_cx, ellipsis, scale, true);
             b.push_default(parley::style::StyleProperty::FontSize(font_size));
             b.push_default(parley::style::StyleProperty::FontWeight(font_weight));
-            b.push_default(parley::style::StyleProperty::FontStack(
-                parley::style::FontStack::Source(font_family.clone()),
+            b.push_default(parley::style::StyleProperty::FontFamily(
+                parley::style::FontFamily::Source(font_family.clone()),
             ));
             let mut l = b.build(ellipsis);
             l.break_all_lines(None);
@@ -3693,8 +3693,8 @@ impl RinchDocument {
                 let mut b = layout_cx.ranged_builder(font_cx, &prefix, scale, true);
                 b.push_default(parley::style::StyleProperty::FontSize(font_size));
                 b.push_default(parley::style::StyleProperty::FontWeight(font_weight));
-                b.push_default(parley::style::StyleProperty::FontStack(
-                    parley::style::FontStack::Source(font_family.clone()),
+                b.push_default(parley::style::StyleProperty::FontFamily(
+                    parley::style::FontFamily::Source(font_family.clone()),
                 ));
                 let mut l = b.build(&prefix);
                 l.break_all_lines(None);
@@ -3722,8 +3722,8 @@ impl RinchDocument {
         b.push_default(parley::style::StyleProperty::FontSize(font_size));
         b.push_default(parley::style::StyleProperty::Brush(Brush::Solid(color)));
         b.push_default(parley::style::StyleProperty::FontWeight(font_weight));
-        b.push_default(parley::style::StyleProperty::FontStack(
-            parley::style::FontStack::Source(font_family),
+        b.push_default(parley::style::StyleProperty::FontFamily(
+            parley::style::FontFamily::Source(font_family),
         ));
         if let Some(lh) = line_height {
             b.push_default(parley::style::StyleProperty::LineHeight(lh));

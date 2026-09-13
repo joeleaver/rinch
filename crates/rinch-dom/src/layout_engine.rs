@@ -493,8 +493,8 @@ impl RinchDocument {
                             } else {
                                 std::borrow::Cow::Borrowed("sans-serif")
                             };
-                            builder.push_default(parley::style::StyleProperty::FontStack(
-                                parley::style::FontStack::Source(font_stack),
+                            builder.push_default(parley::style::StyleProperty::FontFamily(
+                                parley::style::FontFamily::Source(font_stack),
                             ));
                             // Add brush so the cached layout can be rendered with color
                             builder.push_default(parley::style::StyleProperty::Brush(

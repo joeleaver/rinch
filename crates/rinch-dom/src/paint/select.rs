@@ -79,8 +79,8 @@ pub(super) fn paint_select_value(
     builder.push_default(parley::style::StyleProperty::Brush(Brush::Solid(
         base_color,
     )));
-    builder.push_default(parley::style::StyleProperty::FontStack(
-        parley::style::FontStack::Source(std::borrow::Cow::Owned(font_family)),
+    builder.push_default(parley::style::StyleProperty::FontFamily(
+        parley::style::FontFamily::Source(std::borrow::Cow::Owned(font_family)),
     ));
     if (font_weight - 400.0).abs() > 1.0 {
         builder.push_default(parley::style::StyleProperty::FontWeight(

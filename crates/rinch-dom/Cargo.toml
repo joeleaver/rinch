@@ -22,7 +22,6 @@ atomic_refcell = "0.1"
 euclid = "0.22"
 app_units = "0.7"
 url = "2"
-read-fonts = "0.37"  # Temporary for debug logging
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp"] }
 base64 = "0.22"
 

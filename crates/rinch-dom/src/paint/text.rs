@@ -185,7 +185,7 @@ pub(super) fn render_text(
                 .glyphs()
                 .map(|glyph| {
                     let px = gx + glyph.x * sf;
-                    let py = gy - glyph.y * sf;
+                    let py = gy + glyph.y * sf;
                     gx += glyph.advance * sf;
                     PaintGlyph {
                         id: glyph.id,
@@ -276,7 +276,7 @@ pub(super) fn render_text_shadow_pass(
                 .glyphs()
                 .map(|glyph| {
                     let px = gx + glyph.x;
-                    let py = gy - glyph.y;
+                    let py = gy + glyph.y;
                     gx += glyph.advance;
                     PaintGlyph {
                         id: glyph.id,

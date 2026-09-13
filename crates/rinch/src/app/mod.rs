@@ -590,7 +590,7 @@ impl RinchApp {
 
     /// Register one font on one `FontContext` (internal helper).
     fn register_font_on_context(font_cx: &mut parley::FontContext, font: AppFont) {
-        use parley::fontique::{Blob, FallbackKey, Script};
+        use parley::fontique::{Blob, FallbackKey, Script, ScriptExt};
         use std::sync::Arc;
 
         let blob = Blob::new(Arc::new(font.data));
@@ -632,8 +632,8 @@ impl RinchApp {
             let text = "Test";
             let mut builder = layout_cx.ranged_builder(&mut d.font_cx, text, 1.0, true);
             builder.push_default(parley::style::StyleProperty::FontSize(16.0));
-            builder.push_default(parley::style::StyleProperty::FontStack(
-                parley::style::FontStack::Source(std::borrow::Cow::Owned(font_stack.to_string())),
+            builder.push_default(parley::style::StyleProperty::FontFamily(
+                parley::style::FontFamily::Source(std::borrow::Cow::Owned(font_stack.to_string())),
             ));
             let mut layout = builder.build(text);
             layout.break_all_lines(None);
@@ -6290,8 +6290,8 @@ mod input_caret_hit_tests {
         let mut layout_cx: parley::LayoutContext<peniko::Brush> = parley::LayoutContext::new();
         let mut builder = layout_cx.ranged_builder(&mut d.font_cx, VALUE, 1.0, true);
         builder.push_default(parley::style::StyleProperty::FontSize(style.font_size));
-        builder.push_default(parley::style::StyleProperty::FontStack(
-            parley::style::FontStack::Source(std::borrow::Cow::Owned(style.font_family.clone())),
+        builder.push_default(parley::style::StyleProperty::FontFamily(
+            parley::style::FontFamily::Source(std::borrow::Cow::Owned(style.font_family.clone())),
         ));
         let mut layout = builder.build(VALUE);
         layout.break_all_lines(Some(width - pad_l * 2.0));

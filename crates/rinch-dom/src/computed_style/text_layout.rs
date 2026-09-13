@@ -23,7 +23,7 @@ impl ComputedStyle {
         layout_cx: &mut parley::LayoutContext<peniko::Brush>,
         max_width: Option<f32>,
     ) -> parley::layout::Layout<peniko::Brush> {
-        use parley::style::{FontStack, FontWeight as ParleyFontWeight, StyleProperty};
+        use parley::style::{FontFamily, FontWeight as ParleyFontWeight, StyleProperty};
         use std::borrow::Cow;
 
         let scaled_font_size = self.font_size * scale;
@@ -39,7 +39,7 @@ impl ComputedStyle {
         } else {
             &self.font_family
         };
-        builder.push_default(StyleProperty::FontStack(FontStack::Source(Cow::Owned(
+        builder.push_default(StyleProperty::FontFamily(FontFamily::Source(Cow::Owned(
             font_family.to_string(),
         ))));
 

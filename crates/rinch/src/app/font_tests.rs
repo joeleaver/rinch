@@ -87,8 +87,8 @@ fn resolve_with<T>(
     let mut layout_cx: parley::LayoutContext<peniko::Brush> = parley::LayoutContext::new();
     let mut builder = layout_cx.ranged_builder(font_cx, text, 1.0, true);
     builder.push_default(parley::style::StyleProperty::FontSize(16.0));
-    builder.push_default(parley::style::StyleProperty::FontStack(
-        parley::style::FontStack::Source(std::borrow::Cow::Owned(stack.to_string())),
+    builder.push_default(parley::style::StyleProperty::FontFamily(
+        parley::style::FontFamily::Source(std::borrow::Cow::Owned(stack.to_string())),
     ));
     let mut layout = builder.build(text);
     layout.break_all_lines(None);
@@ -443,8 +443,8 @@ fn han_run_via_bundled_face(app: &RinchApp) -> Vec<(usize, Vec<u32>)> {
     let mut layout_cx: parley::LayoutContext<peniko::Brush> = parley::LayoutContext::new();
     let mut builder = layout_cx.ranged_builder(&mut d.font_cx, HAN, 1.0, true);
     builder.push_default(parley::style::StyleProperty::FontSize(16.0));
-    builder.push_default(parley::style::StyleProperty::FontStack(
-        parley::style::FontStack::Source(std::borrow::Cow::Borrowed("Inter")),
+    builder.push_default(parley::style::StyleProperty::FontFamily(
+        parley::style::FontFamily::Source(std::borrow::Cow::Borrowed("Inter")),
     ));
     let mut layout = builder.build(HAN);
     layout.break_all_lines(None);
@@ -473,7 +473,7 @@ fn bundled_face_is_a_han_fallback(app: &RinchApp) -> bool {
     };
     d.font_cx
         .collection
-        .fallback_families(FallbackKey::new(Script(*b"Hani"), None))
+        .fallback_families(FallbackKey::new(Script::from_bytes(*b"Hani"), None))
         .any(|id| id == inter)
 }
 
