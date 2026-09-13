@@ -784,6 +784,7 @@ pub fn parse_display_mode(style_str: &str) -> Option<crate::node::DisplayMode> {
         "inline" => Some(DisplayMode::Inline),
         "inline-block" => Some(DisplayMode::InlineBlock),
         "inline-flex" => Some(DisplayMode::InlineFlex),
+        "inline-grid" => Some(DisplayMode::InlineGrid),
         "block" => Some(DisplayMode::Block),
         "flex" => Some(DisplayMode::Flex),
         _ => None,

@@ -822,6 +822,7 @@ impl RinchDocument {
                 crate::computed_style::DisplayValue::Block => DisplayMode::Block,
                 crate::computed_style::DisplayValue::Flex => DisplayMode::Flex,
                 crate::computed_style::DisplayValue::Grid => DisplayMode::Block,
+                crate::computed_style::DisplayValue::InlineGrid => DisplayMode::InlineGrid,
                 crate::computed_style::DisplayValue::None => DisplayMode::Block,
                 crate::computed_style::DisplayValue::Contents => DisplayMode::Block,
             };
@@ -834,9 +835,10 @@ impl RinchDocument {
             // comparison below cannot be trusted to notice, for exactly the
             // reason the `contents` crossing below it cannot (#597).
             // `DisplayValue::to_taffy` is not injective: `inline` and `block`
-            // both map to `taffy::Display::Block`, and `inline-block`, `flex`,
-            // `inline-flex` and `contents` all map to `taffy::Display::Flex`.
-            // So `inline-block → flex` — a bare `<button>` handed
+            // both map to `taffy::Display::Block`, `inline-block`, `flex`,
+            // `inline-flex` and `contents` all map to `taffy::Display::Flex`,
+            // and `grid` and `inline-grid` both map to `taffy::Display::Grid`
+            // (#607). So `inline-block → flex` — a bare `<button>` handed
             // `display: flex` by a reactive `style:` closure, which is the
             // issue's own repro — compared **equal** on every Taffy field and
             // never re-ran the IFC pass at all: the button stayed detached,

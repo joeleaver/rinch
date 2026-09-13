@@ -1966,7 +1966,7 @@ impl RinchDocument {
     /// out, and `set_children` steals them out of the list that should hold
     /// them on the way. It shows only where the flattening ancestor is one
     /// phase 1 skips — anything that is not a block container, i.e. `Inline`,
-    /// `InlineBlock`, `InlineFlex` or `Flex`; the flex column is
+    /// `InlineBlock`, `InlineFlex`, `InlineGrid` or `Flex`; the flex column is
     /// the one measured. Against a **block** ancestor the flattened
     /// `text + block` makes that ancestor mixed content in its own right, so
     /// phase 2 rebuilds its list anyway, and the walk changes nothing (also

@@ -846,8 +846,8 @@ impl Walk<'_> {
         // walk (16.6us against 3.9us) to find no inline boxes at all. So ask
         // the cheap question first. `ifc.rs` pushes an inline box in exactly
         // one place, for a child that is an **atomic inline**
-        // (`DisplayMode::is_atomic_inline` — `inline-block` or `inline-flex`,
-        // #595), and it
+        // (`DisplayMode::is_atomic_inline` — `inline-block`, `inline-flex` or
+        // `inline-grid`; #595, #607), and it
         // records every inline child it was told about in `child_positions` —
         // text runs and `<span>`s included. Scanning that list for an
         // atomic inline is a handful of slab lookups, and it is `false` for

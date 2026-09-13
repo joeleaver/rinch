@@ -548,11 +548,14 @@ fn an_inline_block_with_mixed_content_stacks_like_a_block_container() {
 /// asserted — rinch gives the `inline-block` twin 52px rather than 50 because
 /// of that box's own line height, which is a separate question.)
 ///
-/// `inline-grid` is the **same defect and is not fixed** (#607): Stylo folds it
-/// into `DisplayValue::Grid`, which `style_resolution` maps to
-/// `DisplayMode::Block`, so there is no value left to classify. Measured on
-/// this very shape: Chrome gives `inline-grid` the same 50 as the two above,
-/// and rinch still gives it 90.
+/// `inline-grid` was the **same symptom through a different mechanism**, fixed
+/// separately in #607: Stylo folded it into `DisplayValue::Grid`, which
+/// `style_resolution` mapped to `DisplayMode::Block`, so there was no value left
+/// to classify and no `DisplayMode` arm that could have helped. Measured on this
+/// very shape: Chrome gives `inline-grid` the same 50 as the two above, and
+/// rinch gave 90 until `DisplayValue` grew an `InlineGrid` of its own. The
+/// `inline-grid` fixtures live in `atomic_inline_tests.rs` beside
+/// `inline-flex`'s.
 #[test]
 fn an_inline_flex_box_joins_the_line_exactly_as_an_inline_block_does() {
     fn build_with(display: &str) -> (RinchDocument, NodeId) {
