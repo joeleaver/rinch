@@ -611,6 +611,38 @@ pub struct Node {
     /// the split lands, that difference is observable — see
     /// `split_inline_predicate_tests`.
     pub contributes_in_flow_block: bool,
+    /// The block container whose **box-tree and Taffy child lists hold this
+    /// out-of-flow box**, when that is not its DOM parent (#591).
+    ///
+    /// `Some(host)` exactly when this node is an out-of-flow box
+    /// ([`InlineFlowRole::OutOfFlow`]) and at least one non-atomic
+    /// `display: inline` element stands between it and `host` — the nearest
+    /// ancestor that is neither such an inline element nor a `display:
+    /// contents` wrapper. Such an inline is detached into its IFC whole, so a
+    /// box left in its Taffy child list is laid out by nobody; CSS 2.1 §9.4.2
+    /// says the box does not split the inline either, so no anonymous box
+    /// takes it. It is therefore made a **unit of the host** — `collect_run_units`
+    /// emits it right after the inline element it sits in, `box_tree_children`
+    /// of the inline omits it, and [`crate::RinchDocument::box_tree_parent`]
+    /// answers the host — which is what gives it the host's Taffy list (its
+    /// containing block in CSS, or the ICB through #204), the host's paint
+    /// sequence, and the host's `layer_bounds`.
+    ///
+    /// Recomputed from scratch every `ifc_dirty` pass by
+    /// `RinchDocument::recompute_contributes_in_flow_block`, which reports every
+    /// box whose value changed; `RinchDocument::rehome_hoisted_out_of_flow` then
+    /// rebuilds the Taffy lists of the old and new host — a span restyled to
+    /// `inline-block` un-hoists its box, a span restyled back re-hoists it. An atomic inline (`inline-block`, `inline-flex`,
+    /// `inline-grid`) resets the walk: a box inside one belongs to it, as the
+    /// `DropdownMenu` root's panels do.
+    pub hoisted_out_of_flow_to: Option<RawNodeId>,
+    /// Whether a descendant reached through non-atomic inline elements and
+    /// `display: contents` wrappers carries [`Self::hoisted_out_of_flow_to`]
+    /// (#591). `true` on the host and on every transparent node between it and
+    /// the box; `false` above the host. It is the O(1) gate that sends
+    /// `box_tree_children` down its unit-collecting path for exactly the
+    /// containers and inlines that need it, and nothing else.
+    pub hosts_hoisted_out_of_flow: bool,
     /// Whether this node is a CSS pseudo-element (::before or ::after).
     /// Pseudo-element nodes are synthetic children created during style resolution
     /// and are cleaned up before re-resolution to avoid duplicates.
@@ -719,6 +751,8 @@ impl Node {
             run_box: None,
             run_boxes: Vec::new(),
             contributes_in_flow_block: false,
+            hoisted_out_of_flow_to: None,
+            hosts_hoisted_out_of_flow: false,
             is_pseudo_element: false,
             computed_style: ComputedStyle::default(),
             transition_specs: Vec::new(),
@@ -770,6 +804,8 @@ impl Node {
             run_box: None,
             run_boxes: Vec::new(),
             contributes_in_flow_block: false,
+            hoisted_out_of_flow_to: None,
+            hosts_hoisted_out_of_flow: false,
             is_pseudo_element: false,
             computed_style: ComputedStyle::default(),
             transition_specs: Vec::new(),
@@ -820,6 +856,8 @@ impl Node {
             run_box: None,
             run_boxes: Vec::new(),
             contributes_in_flow_block: false,
+            hoisted_out_of_flow_to: None,
+            hosts_hoisted_out_of_flow: false,
             is_pseudo_element: false,
             computed_style: ComputedStyle::default(),
             transition_specs: Vec::new(),
@@ -868,6 +906,8 @@ impl Node {
             run_box: None,
             run_boxes: Vec::new(),
             contributes_in_flow_block: false,
+            hoisted_out_of_flow_to: None,
+            hosts_hoisted_out_of_flow: false,
             is_pseudo_element: false,
             computed_style: ComputedStyle::default(),
             transition_specs: Vec::new(),

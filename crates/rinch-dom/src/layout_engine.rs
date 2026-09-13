@@ -24,9 +24,9 @@ enum TreeCheckMode {
     /// under the flag: a window that keeps running and complains is more use
     /// there than a panic inside a frame.
     Warn,
-    /// Any other value, `1` included. A violation the #591 waiver does not
-    /// cover **fails the layout pass**, which fails the test it happened in
-    /// without anybody having to pass `--nocapture`.
+    /// Any other value, `1` included. A violation **fails the layout pass**,
+    /// which fails the test it happened in without anybody having to pass
+    /// `--nocapture`.
     Fail,
 }
 
@@ -359,8 +359,8 @@ impl RinchDocument {
         // (`ifc_leaf_invariant_tests`), pinned to a different message, so this
         // panic fails it rather than satisfying it.
         //
-        // `tree_check_verdict` decides what may fail; its docs carry the #591
-        // waiver and both directions it fails in. `RINCH_TREE_CHECK=warn` keeps
+        // `tree_check_verdict` is what fails; its docs keep the history of the
+        // waived arm it had while #513 and then #591 were open. `RINCH_TREE_CHECK=warn` keeps
         // the old print-only behaviour, for driving a real app under the flag
         // where a panic mid-frame is less use than a running window.
         //
@@ -398,9 +398,6 @@ impl RinchDocument {
                 }
                 TreeCheckMode::Fail => {
                     let verdict = self.tree_check_verdict();
-                    for line in &verdict.waived {
-                        eprintln!("TREECHECK waived (#591) {line}");
-                    }
                     assert!(
                         verdict.fatal.is_empty(),
                         "RINCH_TREE_CHECK: resolve_layout left {} layout-tree \
@@ -408,12 +405,10 @@ impl RinchDocument {
                          test expectations — a box no compute pass can reach, a \
                          double-claimed Taffy edge, an element that generates no \
                          box while carrying one, or a DOM/box-tree disagreement. \
-                         See RinchDocument::tree_check_verdict for what is waived \
-                         and why ({} known #591 detachment(s) were, above). \
+                         Nothing is waived (see RinchDocument::tree_check_verdict). \
                          RINCH_TREE_CHECK=warn downgrades this to a print.",
                         verdict.fatal.len(),
                         verdict.fatal.join("\n  "),
-                        verdict.waived.len(),
                     );
                 }
             }
@@ -1280,15 +1275,19 @@ impl RinchDocument {
                 {
                     let vw = self.tree.viewport.width;
                     let vh = self.tree.viewport.height;
-                    let (parent_abs, parent_scroll) = match node.parent {
-                        Some(parent_id) => {
-                            let (px, py) =
-                                crate::paint::compute_absolute_position(&self.tree, parent_id, 1.0);
-                            let scroll = self.tree.nodes[parent_id].scroll_offset;
-                            ((px as f32, py as f32), (scroll.0 as f32, scroll.1 as f32))
-                        }
-                        None => ((0.0, 0.0), (0.0, 0.0)),
-                    };
+                    // The **box-tree** parent (#591): a hoisted out-of-flow box's
+                    // `layout` is relative to its host, not its DOM parent.
+                    let (parent_abs, parent_scroll) =
+                        match Self::box_tree_parent(&self.tree.nodes, node_id) {
+                            Some(parent_id) => {
+                                let (px, py) = crate::paint::compute_absolute_position(
+                                    &self.tree, parent_id, 1.0,
+                                );
+                                let scroll = self.tree.nodes[parent_id].scroll_offset;
+                                ((px as f32, py as f32), (scroll.0 as f32, scroll.1 as f32))
+                            }
+                            None => ((0.0, 0.0), (0.0, 0.0)),
+                        };
 
                     let style = &node.computed_style;
                     let left = style.left.resolve(vw);
@@ -1707,6 +1706,12 @@ impl RinchDocument {
     /// clicking a toolbar `<input>` and hitting the node above it.
     pub fn box_tree_parent(nodes: &slab::Slab<crate::node::Node>, node_id: usize) -> Option<usize> {
         let node = nodes.get(node_id)?;
+        // A hoisted out-of-flow box is held by its host's lists, not its DOM
+        // parent's (#591): its `layout` is relative to the host, so every
+        // coordinate sum steps there. `Node::hoisted_out_of_flow_to`.
+        if let Some(host) = node.hoisted_out_of_flow_to {
+            return Some(host);
+        }
         if let Some(b) = node.run_box {
             return Some(b);
         }
@@ -1754,11 +1759,20 @@ impl RinchDocument {
         // and leave the block inside it exactly as orphaned as before the fix.
         // So the borrow is conditional on both, and the extra test is the same
         // per-child scan the comment above records as measuring at nothing.
+        //
+        // **And whenever a hoisted out-of-flow box is involved** (#591): a child
+        // that hosts one (`hosts_hoisted_out_of_flow`) must have the box emitted
+        // after it, and a child that *is* one (`hoisted_out_of_flow_to`) must be
+        // omitted — this node is the inline element or wrapper the box sits in,
+        // and the box is its host's. Both are one bit per child.
         if node.run_boxes.is_empty()
-            && !node
-                .children
-                .iter()
-                .any(|&c| nodes.get(c).is_some_and(|child| child.is_split_inline()))
+            && !node.children.iter().any(|&c| {
+                nodes.get(c).is_some_and(|child| {
+                    child.is_split_inline()
+                        || child.hosts_hoisted_out_of_flow
+                        || child.hoisted_out_of_flow_to.is_some()
+                })
+            })
         {
             return Cow::Borrowed(&node.children);
         }
@@ -1873,6 +1887,14 @@ impl RinchDocument {
     /// because a caller that asks about a run member would otherwise be handed
     /// the container — whose list names the anonymous box, not the member.
     ///
+    /// **A hoisted out-of-flow box (#591) needs no hop at all**: its box-tree
+    /// parent *is* its host — `box_tree_parent` answers
+    /// `Node::hoisted_out_of_flow_to` first — and `collect_effective_taffy_children(host)`
+    /// names it, because `collect_run_units` makes it a unit of the host. So the
+    /// "exactly when" above holds for it in both directions, which it did not
+    /// while the hoist was a canonicalization over this authority's answer
+    /// (the review of PR 2 measured both directions broken).
+    ///
     /// **The split-inline hop is defence too, measured the same way**, and it is
     /// kept for a reason the `Contents` hop does not need: after #513,
     /// `collect_effective_taffy_children` of a **split inline** still names its
@@ -1966,6 +1988,27 @@ impl RinchDocument {
         if node.computed_style.display == DisplayValue::Contents || node.contents_spliced {
             for &child_id in &node.children {
                 Self::collect_taffy_contribution(nodes, child_id, out);
+            }
+        }
+        // A non-atomic inline element that hosts hoisted out-of-flow boxes
+        // (#591) occupies its parent's list through *them*: its own node is
+        // detached into the IFC, the boxes sit in the parent's list right after
+        // where it would be. Erring wide is free here (see above), so every
+        // hoisted descendant is offered, whatever its host.
+        if node.hosts_hoisted_out_of_flow {
+            let mut stack: Vec<usize> = node.children.clone();
+            while let Some(id) = stack.pop() {
+                let Some(n) = nodes.get(id) else {
+                    continue;
+                };
+                if n.hoisted_out_of_flow_to.is_some()
+                    && let Some(t) = n.taffy_id
+                {
+                    out.push(t);
+                }
+                if n.hosts_hoisted_out_of_flow {
+                    stack.extend(n.children.iter().copied());
+                }
             }
         }
     }
@@ -2114,6 +2157,30 @@ impl RinchDocument {
         }
     }
 
+    /// Append `child_taffy` under `parent_taffy`, asserting in debug builds that
+    /// no Taffy list still holds it.
+    ///
+    /// Taffy's `add_child` does not remove a child from a previous parent (only
+    /// `set_children` does), so attaching a node that some list still names
+    /// makes two lists claim one node — `A double-claim`, which the next
+    /// canonicalization may or may not happen to collapse. Since #591 and #513 a
+    /// node's Taffy parent is not always its DOM parent's Taffy node, which is
+    /// exactly how a DOM move could arrive here with an edge still standing; the
+    /// mutation-time detach (`taffy_detach_contribution`) is what keeps this
+    /// quiet, and this is what says so if it ever stops.
+    pub(crate) fn taffy_add_child_checked(
+        &mut self,
+        parent_taffy: taffy::NodeId,
+        child_taffy: taffy::NodeId,
+    ) {
+        debug_assert!(
+            self.tree.taffy.parent(child_taffy).is_none(),
+            "rinch-dom: attaching a Taffy node while another list still holds it — \
+             detach from `taffy.parent()` first, or the tree carries a double-claim (#591)"
+        );
+        let _ = self.tree.taffy.add_child(parent_taffy, child_taffy);
+    }
+
     /// Safely remove a child from a Taffy parent, checking membership first.
     /// Taffy's `remove_child` panics if the child isn't actually a child of the parent,
     /// which can happen when inline children were detached by `setup_inline_formatting_contexts`.
@@ -2177,6 +2244,10 @@ impl RinchDocument {
     /// invisible: forcing its `is_contents` true — so a *plain* node's own id
     /// is never removed — passed the entire rinch-dom suite. Removing both
     /// sets unconditionally cannot express that bug.
+    ///
+    /// And the node's own id is removed from **whichever Taffy list holds it**,
+    /// which since #591 and #513 is not always `parent_taffy` — see the comment
+    /// at the bottom.
     pub(crate) fn taffy_detach_contribution(
         &mut self,
         parent_taffy: taffy::NodeId,
@@ -2194,6 +2265,55 @@ impl RinchDocument {
         }
         if let Some(node_taffy) = self.tree.nodes[node_id].taffy_id {
             self.taffy_remove_child_safe(parent_taffy, node_taffy);
+            // **And from the list that actually holds it** (#591). The DOM
+            // parent's Taffy node is not always the node's Taffy parent: an
+            // out-of-flow box beneath an inline element is a Taffy child of the
+            // IFC root that lays the line out (`setup_inline_formatting_contexts`'
+            // canonicalization), and a block inside a split inline is a child of
+            // its block container (#513). Detaching from the DOM parent alone was
+            // a silent no-op for those — `taffy_remove_child_safe` swallows a
+            // non-member — and left the removed node's Taffy id in a list the
+            // next pass then found one child too long. Measured for the
+            // out-of-flow case: the root had no out-of-flow DOM child left to
+            // canonicalize, carried `InlineRoot` on a non-leaf, and the #466 leaf
+            // invariant fired
+            // (`out_of_flow_in_inline_tests::removing_the_hoisted_absolute_leaves_a_clean_tree`).
+            // Taffy knows the answer, so it is asked rather than re-derived.
+            if let Some(actual) = self.tree.taffy.parent(node_taffy) {
+                self.taffy_remove_child_safe(actual, node_taffy);
+            }
+        }
+        // **And every edge that leaves the subtree** (#591). A hoisted
+        // out-of-flow box beneath this node — or a block inside a split inline
+        // (#513) — is a Taffy child of a list *outside* the subtree being
+        // removed or moved, so detaching the node's own edge leaves that list
+        // one stale id long. Measured by the review of PR 2: removing the span
+        // while its container kept other inline text made the container a
+        // non-leaf `InlineRoot` carrier and the #466 leaf invariant panicked;
+        // removing it as the only child left the box silently reachable. Walk
+        // the subtree, and cut every edge whose Taffy parent is not a subtree
+        // member. O(subtree), like the `ifc_root` clear the same DOM ops run.
+        let mut subtree: Vec<usize> = vec![node_id];
+        let mut i = 0;
+        while i < subtree.len() {
+            if let Some(n) = self.tree.nodes.get(subtree[i]) {
+                subtree.extend(n.children.iter().copied());
+            }
+            i += 1;
+        }
+        let members: std::collections::HashSet<taffy::NodeId> = subtree
+            .iter()
+            .filter_map(|&id| self.tree.nodes.get(id).and_then(|n| n.taffy_id))
+            .collect();
+        for &id in &subtree[1..] {
+            let Some(t) = self.tree.nodes.get(id).and_then(|n| n.taffy_id) else {
+                continue;
+            };
+            if let Some(p) = self.tree.taffy.parent(t)
+                && !members.contains(&p)
+            {
+                self.taffy_remove_child_safe(p, t);
+            }
         }
     }
 

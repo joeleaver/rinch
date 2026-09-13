@@ -433,14 +433,21 @@ pub(crate) fn ifc_root_content_origin(root: &Node) -> (f32, f32) {
 /// not read "block-in-inline splitting landed" as "rinch has inline fragments" —
 /// it does not, and anything that needs per-fragment boxes is unbuilt.
 ///
-/// **Residual (#591).** An **out-of-flow** child of an inline element is a
-/// different shape and is still lost: CSS 2.1 §9.4.2 says an out-of-flow box
-/// neither breaks an inline formatting context nor forces anonymous-box
-/// generation, so such an element is *not* split, is still detached whole, and
-/// this predicate still skips it — taking its absolutely positioned child with
-/// it. If a box vanishes and its markup matches
-/// `<a>text<div style="position:absolute"/>tail</a>`, that is #591, not a new
-/// miss here.
+/// **#591 is fixed too, and this predicate was never the reason.** An
+/// **out-of-flow** child of an inline element is not split around (CSS 2.1
+/// §9.4.2), so the element is still detached whole and this predicate still
+/// skips it in the tree-order walk — but the child is *positioned*, so it was
+/// never reached through that walk in the first place: the stacking collector
+/// descends through the inline (it consults no `ifc_root`) and hoists the box
+/// to its stacking root, and `paint_children_with_stacking` paints the entry
+/// because the child's own `ifc_root` is `None`. It vanished because it was
+/// `0x0` — its Taffy node left the tree with the inline's. It is now a **unit
+/// of its host** (`Node::hoisted_out_of_flow_to`, `collect_run_units`): a
+/// box-tree child of the block container, so the host's Taffy list, paint
+/// sequence, hit-test sequence and — the consumer this predicate's skip used
+/// to hide it from — `layer_bounds` all see it directly, and the inline is never
+/// descended through to find it. If such a box vanishes now, look at the unit
+/// collection and the Taffy edge it produces, not here.
 pub(crate) fn drawn_by_its_ifc(tree: &NodeTree, child: &Node) -> bool {
     child
         .ifc_root
