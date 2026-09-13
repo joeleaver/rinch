@@ -19,44 +19,56 @@
 //!
 //! # The plumbing is live the moment the field is not `None`
 //!
-//! The two pixel fixtures set `ComputedStyle::text_underline_offset` directly —
-//! the only way to reach the consumer while no CSS can — and show the underline
-//! move. They exist because the field's two `if let Some(offset)` consumers had
-//! been called "dead plumbing" whose fixture "cannot be written", and a mutant
-//! deleting either of them survived the whole suite as equivalent by
-//! construction. They are not equivalent; they were only unreachable.
+//! The three pixel fixtures set `ComputedStyle::text_underline_offset`
+//! directly — the only way to reach the consumers while no CSS can — and show
+//! the underline move. They exist because those consumers had been called "dead
+//! plumbing" whose fixture "cannot be written", and a mutant deleting any of
+//! them survived the whole suite as equivalent by construction. They are not
+//! equivalent; they were only unreachable.
 //!
-//! # The value is PARLEY's offset, not CSS's
+//! # The field is CSS-signed; parley's offset is not
 //!
-//! Measured at `font-size: 20px`, `line-height: 40px`, the top row of the
-//! underline stroke:
+//! css-text-decor-4 §2.3: `text-underline-offset` "sets the offset of underlines
+//! from their zero position. Positive offsets represent distances outward from
+//! the text; negative offsets inward", and for the default
+//! `text-underline-position: auto` in horizontal writing that zero position is
+//! **the alphabetic baseline**. A length therefore *replaces* the font's own
+//! underline metric rather than adding to it.
 //!
-//! | `text_underline_offset` | top row |
+//! Measured in **Chrome 150**, standards mode, with an `inline-block`'s bottom
+//! edge marking the baseline (it lands at y=37 in every row, so the rows are
+//! directly comparable), top row of the underline stroke:
+//!
+//! | declaration | underline top, relative to the baseline |
 //! |---|---|
-//! | `None` (the font's own metric) | 28 |
-//! | `Some(0.0)` | 26 |
-//! | `Some(6.0)` | 20 |
-//! | `Some(12.0)` | 14 |
-//! | `Some(-6.0)` | 32 |
+//! | `auto` | +1 (below) |
+//! | `0px` | **0 — the baseline itself** |
+//! | `12px` | +12 (below) |
+//! | `-6px` | −6 (above) |
 //!
-//! `Some(0.0)` is the baseline and a **positive value moves the line UP**,
-//! because the field becomes `parley::style::StyleProperty::UnderlineOffset`,
-//! which *replaces* the font's underline position, and `paint/text.rs` draws it
-//! at `gy - offset` from a font metric that is negative below the baseline.
+//! `0px` is one pixel *above* `auto`, which is what says a length replaces the
+//! metric rather than adding to it — if it added, `0px` and `auto` would
+//! coincide.
 //!
-//! CSS `text-underline-offset: 6px` means the opposite: the *auto* position,
-//! pushed 6px further **from** the text. Feeding the CSS pixels into this field
-//! would draw the underline 6px above the baseline, through the glyphs (glyph
-//! ink occupies rows 13..=26 in the table above). So whoever plumbs the
-//! declaration through owes paint a CSS *delta* applied against
-//! `run_metrics.underline_offset`, which is per-font and per-size and therefore
-//! is not knowable where the style is built. That is why this file pins the
-//! consumer's actual behaviour rather than a CSS expectation it does not meet.
+//! **parley's `underline_offset` is the same quantity with the opposite sign.**
+//! `RunMetrics::underline_offset` is "the offset of the top of underline
+//! decoration from the baseline" and `paint/text.rs` draws the line at
+//! `gy - offset`, so positive is baseline-*up*. The two `ifc.rs` consumers
+//! therefore **negate**, and that sign is the entire conversion: both spellings
+//! replace the font metric, so nothing per-font enters into it.
+//!
+//! An earlier revision of this file claimed the opposite — that expressing the
+//! CSS property needs a delta applied against `run_metrics.underline_offset` in
+//! paint, "which is per-font and therefore not knowable where the style is
+//! built". That was wrong, and wrong in the direction that costs work: it had
+//! read CSS's zero position as the *auto* position instead of the baseline. The
+//! spec quote and the Chrome table above are what settled it.
 //!
 //! Only the **differences** between two offsets are asserted, never an absolute
 //! row: the absolute row is a pin on the local font set, the difference is the
-//! declaration.
-
+//! declaration. One assertion per fixture carries both facts, since a difference
+//! of `+12` is false if the sign is inverted as well as if the magnitude is.
+//!
 use rinch_core::dom::{DomDocument, NodeId};
 use rinch_dom::RinchDocument;
 
@@ -223,15 +235,17 @@ mod painted {
     // 2. What the plumbing does once the field is non-`None`.
     // ---------------------------------------------------------------------------
 
-    /// The IFC root's own offset reaches parley through `root_text_style`, and the
-    /// underline moves **up** by exactly the difference between two offsets.
+    /// The IFC root's own offset reaches parley through `root_text_style`, and a
+    /// larger CSS offset moves the underline **down** — away from the text — by
+    /// exactly the difference between the two.
     ///
     /// Off the fixed point deliberately: `Some(0.0)` is where "the offset is
-    /// honoured" and "the offset is ignored" very nearly agree (the font's own
-    /// metric is only ~2px from the baseline), so the pair measured is 0 against 12
-    /// and the assertion is on the 12px difference, which no font can change.
-    /// A mutant deleting the `UnderlineOffset` assignment renders both at the
-    /// font's metric, making the difference 0.
+    /// honoured" and "the offset is ignored" very nearly agree, since the font's
+    /// own metric is only a pixel or two from the baseline. So the pair measured
+    /// is 0 against 12, and the assertion is the signed 12px difference, which no
+    /// font can change and which is false for a sign flip as well as for a wrong
+    /// magnitude. A mutant deleting the assignment renders both at the font's
+    /// metric, making the difference 0; one dropping the negation makes it −12.
     #[test]
     fn the_ifc_roots_offset_moves_its_underline_by_exactly_that_much() {
         fn build(underline: bool, offset: f32) -> (RinchDocument, NodeId) {
@@ -254,10 +268,10 @@ mod painted {
         let at_12 = underline_top_row(build, 12.0);
 
         assert_eq!(
-            at_0 as i64 - at_12 as i64,
+            at_12 as i64 - at_0 as i64,
             12,
-            "a 12px larger offset must lift the underline exactly 12px \
-             (rows: offset 0 -> {at_0}, offset 12 -> {at_12})"
+            "a 12px larger CSS offset must push the underline exactly 12px further \
+             from the text (rows: offset 0 -> {at_0}, offset 12 -> {at_12})"
         );
     }
 
@@ -290,10 +304,10 @@ mod painted {
         let at_12 = underline_top_row(build, 12.0);
 
         assert_eq!(
-            at_0 as i64 - at_12 as i64,
+            at_12 as i64 - at_0 as i64,
             12,
-            "an inline element's own offset must lift its underline exactly 12px \
-             (rows: offset 0 -> {at_0}, offset 12 -> {at_12})"
+            "an inline element's own offset must push its underline exactly 12px \
+             further from the text (rows: offset 0 -> {at_0}, offset 12 -> {at_12})"
         );
     }
 
@@ -347,11 +361,12 @@ mod painted {
         let differs = underline_top_row(build, 12.0);
 
         assert_eq!(
-            same_as_parent as i64 - differs as i64,
+            differs as i64 - same_as_parent as i64,
             12,
             "a `display: contents` wrapper whose only difference from its parent is \
              `text_underline_offset` must still get its own style span \
-             (rows: wrapper at parent's offset -> {same_as_parent}, wrapper 12px higher -> {differs})"
+             (rows: wrapper at parent's offset -> {same_as_parent}, wrapper 12px \
+             further from the text -> {differs})"
         );
     }
 }

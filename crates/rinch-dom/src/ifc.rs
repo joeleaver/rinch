@@ -3452,13 +3452,21 @@ impl RinchDocument {
 
         // Apply text-underline-offset from computed style.
         //
-        // Always `None` today — no CSS reaches this field (#580) — and the value
-        // it carries is parley's absolute underline offset, **up** from the
-        // baseline, not CSS's delta away from the text. Both facts are recorded
-        // on the field itself; `crates/rinch-dom/tests/underline_offset_tests.rs`
-        // is what keeps this line from being an equivalent mutant.
-        if let Some(offset) = root_computed.text_underline_offset {
-            root_text_style.underline_offset = Some(offset);
+        // **Negated, and that is the whole of the conversion.** The field holds
+        // CSS pixels with CSS's sign — positive is *away from* the text, i.e.
+        // below the baseline for horizontal text — while parley's
+        // `underline_offset` is measured **up** from the baseline, which is how
+        // `paint/text.rs` draws it (`gy - offset`). Both spellings replace the
+        // font's own metric rather than adding to it, so nothing per-font is
+        // needed here and the two agree up to this sign. See
+        // [`crate::computed_style::ComputedStyle::text_underline_offset`].
+        //
+        // Always `None` today — no CSS reaches the field (#580) — so this line
+        // and its sign exist only because
+        // `crates/rinch-dom/tests/underline_offset_tests.rs` sets the field
+        // directly. Without those fixtures both are equivalent mutants.
+        if let Some(css_offset) = root_computed.text_underline_offset {
+            root_text_style.underline_offset = Some(-css_offset);
         }
 
         // Apply overflow-wrap from computed style
@@ -3670,10 +3678,15 @@ impl RinchDocument {
     ///
     /// **`text_underline_offset` is inert but not untested** (#580). No CSS can
     /// make it `Some` — the property is gecko-only in this Stylo build, so the
-    /// declaration is discarded before `ComputedStyle::from_stylo` runs and the
-    /// only site that writes the field from CSS writes `None`. So in production
-    /// this comparison is always `None == None`, and the `if let Some(offset)`
-    /// arm in [`Self::inline_style_props`] never fires.
+    /// declaration is discarded before `ComputedStyle::from_stylo` runs, and
+    /// that one line is the only place CSS could reach the field. It writes
+    /// `None` unconditionally. (The field has two other writers and neither is a
+    /// CSS path: `Default` holds `None`, and
+    /// [`crate::computed_style::ComputedStyle::for_anonymous_box`] copies
+    /// `parent.text_underline_offset` — the property inherits, so an anonymous
+    /// box gets whatever its parent had, which today is `None` because the root
+    /// had `None`.) So in production this comparison is always `None == None`,
+    /// and the `if let Some(..)` arm in [`Self::inline_style_props`] never fires.
     ///
     /// That made a mutant deleting either one look equivalent by construction,
     /// which it is not: `crates/rinch-dom/tests/underline_offset_tests.rs` sets
@@ -3686,9 +3699,9 @@ impl RinchDocument {
     ///
     /// Kept for the one-list rule: whoever plumbs the property through gets the
     /// skip predicate already correct rather than discovering a year later that
-    /// their declaration is dropped. They also owe paint a CSS *delta* — the
-    /// value here is parley's absolute offset up from the baseline, which is not
-    /// what `text-underline-offset` means. See the field's own doc.
+    /// their declaration is dropped. The sign is already correct too — both
+    /// consumers negate, because the field is CSS-signed and parley's offset is
+    /// baseline-up. See the field's own doc.
     fn same_inline_text_style(
         a: &crate::computed_style::ComputedStyle,
         b: &crate::computed_style::ComputedStyle,
@@ -3741,10 +3754,23 @@ impl RinchDocument {
         if computed.text_decoration.strikethrough {
             props.push(parley::style::StyleProperty::Strikethrough(true));
         }
-        // Always `None` today; see the field's doc for why, and for why a CSS
-        // `text-underline-offset` cannot simply be assigned to it (#580).
-        if let Some(offset) = computed.text_underline_offset {
-            props.push(parley::style::StyleProperty::UnderlineOffset(Some(offset)));
+        // Negated on the way out, for the reason spelled out at the sibling push
+        // in [`Self::build_inline_layout`]: the field is CSS-signed (positive is
+        // away from the text), parley's is baseline-up.
+        //
+        // **Always `None` in production, because no CSS path sets the field
+        // today.** `text-underline-offset` is declared `engines="gecko"` at
+        // `stylo-0.11.0/properties/longhands/inherited_text.mako.rs:330`, and
+        // stylo's `build.rs` generates exactly one engine's property set — so
+        // the servo build emits no parser entry and Stylo discards the
+        // declaration as unknown. Measured in a generated `properties.rs`:
+        // `text_underline_offset` 0 hits, the documented gecko-only
+        // `scrollbar_color` 0 hits, and `text_decoration_line` 52 hits as the
+        // positive control that the grep fires at all (#580).
+        if let Some(css_offset) = computed.text_underline_offset {
+            props.push(parley::style::StyleProperty::UnderlineOffset(Some(
+                -css_offset,
+            )));
         }
         if let Some(lh) = computed.line_height.to_parley() {
             let scaled_lh = match lh {
