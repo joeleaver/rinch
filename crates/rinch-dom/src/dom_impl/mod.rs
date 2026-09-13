@@ -246,7 +246,19 @@ impl RinchDocument {
                 text-decoration-line: line-through;
             }
 
-            img, input, button, select, textarea {
+            /* `svg` is here for the same reason `img` is: in a browser it is an
+               inline **replaced** element — an atomic inline — and `inline-block`
+               is the model rinch already uses for one. Stylo gives an unknown
+               element `display: inline`, and a `display: inline` element that is
+               IFC content owns no box at all (`is_flowed_inline_element`, #635),
+               so a bare `<svg>` measured 0x0 and painted nothing wherever it was
+               flowed: `<div>Save<svg/></div>` was already blank before #592.
+               #592 widened that to every `inline-block` — a `<button>` with an
+               icon, an icon-only Tooltip/Popover/HoverCard/DropdownMenu target —
+               because an inline-block's interior stopped being a Taffy flex
+               container, which had been blockifying the svg into a flex item and
+               sizing it from its declared width/height by accident. */
+            img, input, button, select, textarea, svg {
                 display: inline-block;
             }
 

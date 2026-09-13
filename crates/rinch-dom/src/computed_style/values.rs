@@ -54,9 +54,16 @@ pub(crate) mod color_serde {
 /// The **authority on the declared value**, as against
 /// [`crate::node::DisplayMode`], which coarsens several of these into one
 /// answer for the layout passes. Their **insides** are told apart here and
-/// nowhere else: `inline-flex` and `inline-grid` both carry an inline-level
-/// *outside* into `DisplayMode`, while which formatting context their children
-/// get is carried only by [`Self::to_taffy`].
+/// almost nowhere else: `inline-block`, `inline-flex` and `inline-grid` all
+/// carry an inline-level *outside* into `DisplayMode`, while which formatting
+/// context their children get is carried by [`Self::to_taffy`].
+///
+/// "Almost", because of one exception, and it is the only place `DisplayMode`
+/// answers about an inside: [`crate::node::DisplayMode::is_block_container`],
+/// which admits `inline-block` since #592. It can, because the three atomic
+/// inlines are three distinct `DisplayMode` variants; the coarsening that keeps
+/// this type the authority is over the *block-level* values, where `grid`,
+/// `contents` and `none` all arrive as `DisplayMode::Block`.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Serialize)]
 pub enum DisplayValue {
     #[default]
@@ -80,7 +87,18 @@ pub enum DisplayValue {
 }
 
 impl DisplayValue {
-    /// Convert to Taffy Display.
+    /// Convert to Taffy Display — the **inside** of the display value, i.e.
+    /// which formatting context this box's children get.
+    ///
+    /// Each `inline-*` value answers exactly what its block-level partner does,
+    /// because that pair differs only in its outside: `inline-block` → `Block`
+    /// (#592), `inline-flex` → `Flex`, `inline-grid` → `Grid` (#607).
+    ///
+    /// **Not injective**, and several passes turn on that. `inline`, `block` and
+    /// `inline-block` all give `Block`; `flex`, `inline-flex` and `contents` all
+    /// give `Flex`; `grid` and `inline-grid` both give `Grid`. So a Taffy-style
+    /// comparison cannot detect a display change — see the `ifc_dirty` trigger
+    /// in `style_resolution`, which asks [`crate::node::DisplayMode`] instead.
     pub fn to_taffy(&self) -> taffy::Display {
         match self {
             Self::Flex | Self::InlineFlex => taffy::Display::Flex,
@@ -89,7 +107,8 @@ impl DisplayValue {
             Self::None => taffy::Display::None,
             Self::Contents => taffy::Display::Flex, // transparent container
             Self::Inline => taffy::Display::Block,  // inline handled by IFC
-            Self::InlineBlock => taffy::Display::Flex,
+            // #592: a block container on the inside, like its `block` partner.
+            Self::InlineBlock => taffy::Display::Block,
         }
     }
 }

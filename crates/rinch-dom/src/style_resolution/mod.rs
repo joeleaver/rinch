@@ -829,27 +829,41 @@ impl RinchDocument {
             let old_display_mode =
                 std::mem::replace(&mut self.tree.nodes[node_id].display_mode, display_mode);
 
-            // A node crossing between **inline-level** and **block-level**
-            // changes which boxes the IFC owns — `mark_inline_descendants`
-            // detaches the one and leaves the other attached — and the Taffy
-            // comparison below cannot be trusted to notice, for exactly the
-            // reason the `contents` crossing below it cannot (#597).
-            // `DisplayValue::to_taffy` is not injective: `inline` and `block`
-            // both map to `taffy::Display::Block`, `inline-block`, `flex`,
-            // `inline-flex` and `contents` all map to `taffy::Display::Flex`,
-            // and `grid` and `inline-grid` both map to `taffy::Display::Grid`
-            // (#607). So `inline-block → flex` — a bare `<button>` handed
-            // `display: flex` by a reactive `style:` closure, which is the
-            // issue's own repro — compared **equal** on every Taffy field and
-            // never re-ran the IFC pass at all: the button stayed detached,
-            // kept its inline-block box, and kept a stale `ifc_root` that made
-            // `taffy_tree_violations`' invariant `C` exempt it.
+            // **Any** change of [`DisplayMode`] re-runs the IFC pass, because
+            // that enum is exactly "how the inline formatting machinery
+            // classifies this box" — and the Taffy comparison below cannot be
+            // trusted to notice one, for exactly the reason the `contents`
+            // crossing below it cannot (#597).
+            // `DisplayValue::to_taffy` is not injective: `inline`, `block` and
+            // — since #592 — `inline-block` all map to `taffy::Display::Block`,
+            // `flex`, `inline-flex` and `contents` all map to
+            // `taffy::Display::Flex`, and `grid` and `inline-grid` both map to
+            // `taffy::Display::Grid` (#607). So `inline-block → flex` — a bare
+            // `<button>` handed `display: flex` by a reactive `style:` closure,
+            // which is #597's own repro — compared **equal** on every Taffy
+            // field and never re-ran the IFC pass at all: the button stayed
+            // detached, kept its inline-block box, and kept a stale `ifc_root`
+            // that made `taffy_tree_violations`' invariant `C` exempt it.
             //
-            // Set the flag on the crossing itself, like the `contents` one, and
-            // ask [`DisplayMode::is_inline_level`] rather than re-spelling the
-            // predicate here — `Node::is_inline` reads the same function, so
-            // the marking pass and this trigger cannot drift apart.
-            if old_display_mode.is_inline_level() != display_mode.is_inline_level() {
+            // This used to ask only whether [`DisplayMode::is_inline_level`]
+            // **crossed**, which was enough while every same-side pair differed
+            // in its Taffy display. #592 broke that: `inline-block` maps to
+            // `taffy::Display::Block` now, so `inline ↔ inline-block` is
+            // inline-level on both sides *and* equal on every Taffy field —
+            // two passes' worth of work skipped on a crossing that changes
+            // whether the element is split (#513) and whether it is an IFC root
+            // of its own. Measured, both directions: `inline → inline-block`
+            // left the element with the split's parentless Taffy node and no
+            // `ifc_root` (`C orphan`), and `inline-block → inline` left its
+            // block child held by a node that is itself detached
+            // (`D detached`). Both are clean under the declared twin, which is
+            // what says the fault was the trigger and not the passes.
+            //
+            // Asking about the mode rather than re-spelling a predicate keeps
+            // this and the marking pass on one authority — `Node::is_inline`
+            // reads the same enum — and makes a mode added later trigger by
+            // default rather than by remembering to widen a `matches!`.
+            if old_display_mode != display_mode {
                 self.tree.ifc_dirty = true;
                 self.tree.layout_dirty = true;
             }

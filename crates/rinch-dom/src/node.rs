@@ -206,10 +206,13 @@ pub enum DisplayMode {
     /// Told apart from [`DisplayMode::Flex`] because the *outside* differs:
     /// an `inline-flex` box joins the line around it instead of ending it, and
     /// shrink-wraps rather than filling its container. Told apart from
-    /// [`DisplayMode::InlineBlock`] for no reason this enum serves — the two
-    /// answer every predicate below identically, and their *insides* are
-    /// distinguished by `DisplayValue::to_taffy`, which is what builds the
-    /// Taffy style. Kept distinct so `display_mode` does not report
+    /// [`DisplayMode::InlineBlock`] by exactly **one** predicate below —
+    /// [`Self::is_block_container`], which admits `inline-block` and not this,
+    /// because an `inline-block`'s inside is a block container and an
+    /// `inline-flex`'s is a flex container (#592). That was no predicate at all
+    /// until #592: the two used to answer everything here identically and their
+    /// insides were distinguished only by `DisplayValue::to_taffy`, which is
+    /// what builds the Taffy style. Kept distinct also so `display_mode` does not report
     /// `InlineBlock` for a box whose `display` is `inline-flex` (it is dumped
     /// to the MCP **`get_node`** tool — `testing::get_node_detail` is the one
     /// place `display_mode` is serialized; `dom_tree` goes through
@@ -247,12 +250,17 @@ impl DisplayMode {
     /// across a restyle to decide whether the IFC pass has to run again — a
     /// crossing the Taffy style cannot be asked about, because
     /// [`crate::computed_style::values::DisplayValue::to_taffy`] is not
-    /// injective: `inline` and `block` both map to `taffy::Display::Block`,
-    /// `inline-block`, `flex`, `inline-flex` and `contents` all map to
-    /// `taffy::Display::Flex` (#597), and `grid` and `inline-grid` both map to
-    /// `taffy::Display::Grid` (#607) — the newest pair, and the one that makes
-    /// the point again: the two differ only in their *outside*, which is the
-    /// half this enum carries and the Taffy style does not.
+    /// injective: `inline`, `block` and — since #592 — `inline-block` all map
+    /// to `taffy::Display::Block`, `flex`, `inline-flex` and `contents` all map
+    /// to `taffy::Display::Flex` (#597), and `grid` and `inline-grid` both map
+    /// to `taffy::Display::Grid` (#607) — each pair differing only in its
+    /// *outside*, which is the half this enum carries and the Taffy style does
+    /// not.
+    ///
+    /// **This predicate is no longer what the `ifc_dirty` trigger asks**, and
+    /// #592 is why: `inline ↔ inline-block` is inline-level on both sides *and*
+    /// equal on every Taffy field, so neither test could see it. That trigger
+    /// compares the whole `DisplayMode` now.
     pub fn is_inline_level(self) -> bool {
         matches!(self, DisplayMode::Inline) || self.is_atomic_inline()
     }
@@ -284,6 +292,14 @@ impl DisplayMode {
     /// **Not** the same question as [`Self::is_inline_level`]: a
     /// `display: inline` box is inline-level and *not* atomic — the IFC walks
     /// into it and lays its text out as part of the same line.
+    ///
+    /// **Nor the complement of [`Self::is_block_container`] any more** (#592).
+    /// `inline-block` answers `true` to both: atomic on the outside, a block
+    /// container on the inside. The two predicates ask about opposite halves of
+    /// the box and the intersection is exactly that one variant, which is why
+    /// `apply_empty_block_line_floor` — the one caller that means "block-level
+    /// block container" — has to say `is_block_container() && !is_atomic_inline()`
+    /// rather than either alone.
     pub fn is_atomic_inline(self) -> bool {
         matches!(
             self,
@@ -295,8 +311,27 @@ impl DisplayMode {
     /// container** — so it can establish an inline formatting context of its
     /// own and mint anonymous block boxes around runs of inline children.
     ///
-    /// The complement of "inline-level or a flex container", which is how the
-    /// four IFC sites that ask it used to spell it.
+    /// **The one predicate here that asks about the box's INSIDE**, where the
+    /// rest of this enum answers about its outside. That is why
+    /// [`DisplayMode::InlineBlock`] is in the set (#592) and
+    /// [`DisplayMode::InlineFlex`] / [`DisplayMode::InlineGrid`] are not: all
+    /// three are inline-level boxes, and only the first is a block container
+    /// inside (css-display-3 §2.5). It used to be spelled as the complement of
+    /// "inline-level or a flex container" at the four IFC sites that ask it,
+    /// which is how `inline-block` came to be excluded: an
+    /// `inline-block` with mixed content laid its children out in a row and
+    /// generated no anonymous boxes at all, and — because it was therefore
+    /// never an IFC root — measured its own box with the *ancestor* IFC's text
+    /// style (#625) and left its inner `display: inline` element unmarked
+    /// (#630).
+    ///
+    /// **`is_block_container` and [`Self::is_atomic_inline`] are not
+    /// complements.** They intersect at `inline-block`. A caller that means
+    /// "block-level block container" — `apply_empty_block_line_floor`, the one
+    /// site of the four that is a rinch divergence rather than a CSS rule —
+    /// must say `is_block_container() && !is_atomic_inline()`; the floor
+    /// applied to a childless `inline-block` made every source-less `<img>` one
+    /// line tall, `<img>` being an `inline-block` in the UA sheet.
     ///
     /// It answers from this enum alone, so it inherits the coarsening in the
     /// type's doc: block-level `display: grid` arrives as
@@ -309,7 +344,7 @@ impl DisplayMode {
     /// `computed_style.display` separately. `inline-grid` is **not** among them
     /// since #607 — it is [`DisplayMode::InlineGrid`] and answers `false`.
     pub fn is_block_container(self) -> bool {
-        matches!(self, DisplayMode::Block)
+        matches!(self, DisplayMode::Block | DisplayMode::InlineBlock)
     }
 }
 
@@ -1060,11 +1095,20 @@ impl Node {
     /// **This guard is deliberately wider than the boxless set.** It keys on
     /// "non-atomic inline element", not on [`Self::is_flowed_inline_element`]:
     /// a split inline (#513, `ifc_root` unset) and an *unmarked* inline element
-    /// — the inner `<span>` of a re-measured `inline-block`, which is never
-    /// marked and which Taffy gives a real block box — are inline boxes too, and
-    /// `overflow` applies to neither. Narrowing the guard to the flowed
-    /// predicate reads like a tidy unification and silently restores the clip
-    /// on both; `clip_predicate_tests` pins each. Guarded in the predicate rather
+    /// — one no IFC has claimed, which therefore keeps a real Taffy box — are
+    /// inline boxes too, and `overflow` applies to neither. Narrowing the guard
+    /// to the flowed predicate reads like a tidy unification and silently
+    /// restores the clip on both; `clip_predicate_tests` pins each.
+    ///
+    /// The unmarked case used to have a natural producer and no longer does:
+    /// the inner `<span>` of a re-measured `inline-block` was never marked,
+    /// which was #630, and since #592 an `inline-block` is a block container
+    /// whose inner inline **is** its IFC content (`ifc_root == Some(the
+    /// inline-block)`, box `0x0` — measured). Keep the width anyway: the guard
+    /// is about what `overflow` means on an inline box, not about which shapes
+    /// happen to reach it today, and
+    /// `taffy_reachability_tests::an_inline_inside_an_inline_block_is_ifc_content_and_an_unmarked_one_keeps_its_box`
+    /// constructs the unmarked state rather than relying on one. Guarded in the predicate rather
     /// than in `clip_shape`, because everything that asks "does this clip" is
     /// required to ask here (`paint::clip`'s module doc), and a guard one layer
     /// down would leave hit testing's `check_children` gate and the dirty-region
@@ -1288,14 +1332,19 @@ impl Node {
     ///   `inline-flex`) is measured by Taffy and positioned by the IFC and
     ///   carries a real box (`taffy_reachability_tests::inline_content_keeps_a_real_box_and_is_not_a_ghost`);
     /// * **`ifc_root` is set** — an **unmarked** `display: inline` element
-    ///   carries a real box: the inner `<span>` of a re-measured `inline-block`
-    ///   is never marked (`ifc_root == None`), Taffy lays it out as a block
-    ///   child of the inline-block, and every descendant's painted position is
-    ///   summed through that box — measured `(13, 11, 50x50)` under
-    ///   `padding: 11px 13px`
-    ///   (`taffy_reachability_tests::an_unmarked_inline_inside_an_inline_block_keeps_its_real_box`).
-    ///   A split inline is never marked either (#513) and has its own zeroing
-    ///   branch. (A `display: inline` element blockified into a flex or grid
+    ///   carries a real box, which Taffy laid out and through which every
+    ///   descendant's painted position is summed, so zeroing it would move that
+    ///   whole subtree. Its one natural producer was the inner `<span>` of a
+    ///   re-measured `inline-block` — never marked, `(13, 11, 50x50)` under
+    ///   `padding: 11px 13px` — and **#592 removed it**: an `inline-block` is a
+    ///   block container now, so that span is its IFC content
+    ///   (`ifc_root == Some(the inline-block)`, box `0x0`). Four other routes
+    ///   were tried and every one blockifies the element instead, so the
+    ///   condition is pinned by a *constructed* state in
+    ///   `taffy_reachability_tests::an_inline_inside_an_inline_block_is_ifc_content_and_an_unmarked_one_keeps_its_box`,
+    ///   which is the only thing in `-p rinch-dom -p rinch` that kills the
+    ///   mutant dropping it. A split inline is never marked either (#513) and
+    ///   has its own zeroing branch. (A `display: inline` element blockified into a flex or grid
     ///   item, or by `position: absolute`, is excluded by the *second*
     ///   condition, not this one: Stylo's blockification reaches
     ///   `computed_style.display`, which `style_resolution` syncs into

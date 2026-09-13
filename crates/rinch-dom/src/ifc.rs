@@ -57,7 +57,9 @@ use crate::node::{
 ///
 /// Keep the test regardless: a `min-height` on an inline-level box is wrong
 /// whether or not anything can see it, and the four sites asking this question
-/// are one authority (#614).
+/// are one authority (#614) — with the one qualification #592 added below, that
+/// this site alone excludes an **atomic inline**, because the floor is a rinch
+/// divergence for form controls and not a CSS rule the other three share.
 pub(crate) fn apply_empty_block_line_floor(node: &Node, style: &mut taffy::Style) {
     use crate::computed_style::values::DisplayValue;
 
@@ -66,7 +68,21 @@ pub(crate) fn apply_empty_block_line_floor(node: &Node, style: &mut taffy::Style
     }
     // Only block containers establish an IFC; a `display: contents` node
     // generates no box at all.
+    //
+    // **And not an atomic inline**, which is the one place the four sites
+    // deliberately diverge (#592). `is_block_container` admits `inline-block`
+    // since #592 — its *inside* is a block container, which is what the other
+    // three sites ask about — but this floor is a rinch divergence invented for
+    // blockified form controls, and CSS is unambiguous that an **empty**
+    // `inline-block` is 0 tall: measured in Chrome 150, `<span
+    // style="display:inline-block"></span>` in a `line-height: 20px` container
+    // is `0x0`, not `0x20`. Applying the floor here made every childless
+    // atomic inline one line tall, `<img>` included (it is `inline-block` in the
+    // UA sheet), so an image with no `src` got a 19px box and a 3x2 data URI
+    // got a 3x19 one — `pending_image_tests`' two failures, which is how this
+    // was found rather than argued.
     if !node.display_mode.is_block_container()
+        || node.display_mode.is_atomic_inline()
         || node.computed_style.display == DisplayValue::Contents
     {
         return;
@@ -165,7 +181,9 @@ impl RinchDocument {
             // Kept rather than deleted: the four sites asking this question are
             // one authority since #614, and a redundant fourth agreement costs a
             // `matches!` while a site that has stopped asking is how #518, #476
-            // and #568 happened.
+            // and #568 happened. (Three of the four ask it bare; the fourth,
+            // `apply_empty_block_line_floor`, subtracts the atomic inlines —
+            // #592, and stated at that site.)
             //
             // **"Redundant" means something different at each of the other three,
             // and lumping them together was this comment's own error.** Two are
@@ -2829,6 +2847,26 @@ impl RinchDocument {
         }
     }
 
+    /// Whether `owner` could be discovered as an IFC root by
+    /// [`Self::setup_inline_formatting_contexts`]' root scan — the half of that
+    /// scan that reads the node alone, without asking whether it currently
+    /// holds any inline content.
+    ///
+    /// Deliberately the *looser* half. A caller wanting "will the marking pass
+    /// detach my child again" gets `true` from this for a container that has
+    /// since lost all its inline content, and heals a node the pass then leaves
+    /// attached — which is correct, because such a container is not an IFC root
+    /// and the box belongs in its list. The converse mistake, answering `true`
+    /// for a node that cannot be a root at all, is the one that strands a box,
+    /// so the two clauses here must stay exactly the root scan's two.
+    fn can_establish_ifc(nodes: &slab::Slab<Node>, owner: usize) -> bool {
+        nodes.get(owner).is_some_and(|n| {
+            n.is_element()
+                && n.display_mode.is_block_container()
+                && n.computed_style.display != crate::computed_style::values::DisplayValue::Contents
+        })
+    }
+
     /// Restore every box a previous [`Self::mark_inline_descendants`] pass
     /// detached and that is no longer inline content (#597).
     ///
@@ -2848,17 +2886,38 @@ impl RinchDocument {
     /// This is [`crate::node::Node::contents_spliced`]'s shape exactly (#520),
     /// one pass along: a departure the tree records so a later pass can undo it.
     ///
-    /// # The gate is the node's **current** role, not the arm that removed it
+    /// # The gate is "will the marking pass take this back", asked of both ends
     ///
     /// [`Self::mark_inline_descendants`] detaches in two arms — inline content,
     /// and a `display: none` child whose attached Taffy node would make its
     /// root's measure structurally unreachable (#466, #487) — and both record
     /// the departure. What decides a heal is not which arm ran but whether the
-    /// marking pass would detach the node **again**, and that is a property of
-    /// its role today: only `Inline`, `Comment` and `NoBox` are ever detached,
-    /// so a departed node whose role is now `InFlowBlock` or `OutOfFlow` is one
-    /// no IFC will take back. A child that is still hidden keeps its record and
-    /// stays out.
+    /// marking pass would detach the node **again**, and that takes **two**
+    /// facts, not one:
+    ///
+    /// - the node's own role today. Only `Inline`, `Comment` and `NoBox` are
+    ///   ever detached, so a departed node whose role is now `InFlowBlock` or
+    ///   `OutOfFlow` is one no IFC will take back.
+    /// - whether its owner can still *be* an IFC root
+    ///   ([`Self::can_establish_ifc`]). The role half alone leaves a text node
+    ///   stranded for ever when the **container** stops being a block container:
+    ///   a text node's role is `Inline` whatever happens to it, so the gate
+    ///   skipped it, while no marking pass runs for a root that is no longer
+    ///   one. `<div>text</div>` restyled to `display: flex` left the text with
+    ///   no Taffy parent and `ifc_root = None` — a `C orphan`, reproduced on
+    ///   `main` before #592 went anywhere near it — and #592 widened the shape
+    ///   to every `inline-block`, a bare `<button>` included, because an
+    ///   `inline-block` is a block container now and so detaches its own text.
+    ///
+    /// A child that is still hidden under an owner that is still a root keeps
+    /// its record and stays out.
+    ///
+    /// The owner half is only ever *permissive*: it heals a node the marking
+    /// pass is about to re-detach at worst, which is the direction this whole
+    /// function is safe in (see the ordering section below). It is not free —
+    /// the steady state now walks to each departed node's owner rather than
+    /// stopping at its role — but that walk already ran for every node the gate
+    /// let through, and only on an `ifc_dirty` pass.
     ///
     /// **What the gate is measured to do, and what it is not.** Its first job is
     /// that the steady state costs nothing. Its second is that it does not
@@ -2921,17 +2980,23 @@ impl RinchDocument {
             if !node.ifc_detached {
                 continue;
             }
+            let owner = Self::effective_taffy_owner(&self.tree.nodes, id);
             match node.inline_flow_role() {
-                // Still detachable, or (for `Contents`) not restorable by a
-                // list rebuild — keep the record and leave it alone.
-                InlineFlowRole::Inline | InlineFlowRole::Comment | InlineFlowRole::NoBox => {
+                // Not restorable by a list rebuild whatever the owner is: a
+                // boxless wrapper has no id in any effective child list.
+                InlineFlowRole::Contents => continue,
+                // Still detachable — but only while something is there to
+                // detach it. Keep the record and leave it alone; otherwise fall
+                // through and heal.
+                InlineFlowRole::Inline | InlineFlowRole::Comment | InlineFlowRole::NoBox
+                    if owner.is_some_and(|o| Self::can_establish_ifc(&self.tree.nodes, o)) =>
+                {
                     continue;
                 }
-                InlineFlowRole::Contents => continue,
-                InlineFlowRole::InFlowBlock | InlineFlowRole::OutOfFlow => {}
+                _ => {}
             }
             departed.push(id);
-            if let Some(owner) = Self::effective_taffy_owner(&self.tree.nodes, id)
+            if let Some(owner) = owner
                 && !owners.contains(&owner)
             {
                 owners.push(owner);
@@ -3229,24 +3294,44 @@ impl RinchDocument {
     ///
     /// Note what it reads: `ifc_root` and [`crate::node::DisplayMode`], the
     /// same two fields the measure pass reads. **Not**
-    /// `DisplayValue::to_taffy`, which is not injective — `inline`/`block`
-    /// both give `taffy::Display::Block`, `inline-block`/`flex`/
-    /// `inline-flex`/`contents` all give `Flex`, and `grid`/`inline-grid` both
-    /// give `Grid` (#607). That aliasing is the whole of
+    /// `DisplayValue::to_taffy`, which is not injective —
+    /// `inline`/`block`/`inline-block` all give `taffy::Display::Block` (#592),
+    /// `flex`/`inline-flex`/`contents` all give `Flex`, and `grid`/`inline-grid`
+    /// both give `Grid` (#607). That aliasing is the whole of
     /// #597's second mechanism, and it is the classic way an exemption ends up
     /// wider than its author believes. This seed set cannot acquire it,
     /// because there is nothing to keep in step: one expression, two readers.
     pub(crate) fn inline_block_measure_roots(&self) -> Vec<taffy::NodeId> {
-        let mut out = Vec::new();
+        let mut out: Vec<(usize, taffy::NodeId)> = Vec::new();
         for (_id, node) in &self.tree.nodes {
             if node.ifc_root.is_some()
                 && node.display_mode.is_atomic_inline()
                 && let Some(taffy_id) = node.taffy_id
             {
-                out.push(taffy_id);
+                let mut depth = 0usize;
+                let mut cur = node.parent;
+                while let Some(p) = cur {
+                    depth += 1;
+                    cur = self.tree.nodes.get(p).and_then(|n| n.parent);
+                }
+                out.push((depth, taffy_id));
             }
         }
-        out
+        // **Deepest first**, and that is a correctness order rather than a
+        // preference (#592). An atomic inline nested inside another is measured
+        // as a root of its own, and the outer one's Parley layout sizes the
+        // `InlineBox` it pushes for it from `Node::layout` — which is whatever
+        // the last pass left there, `0x0` on a first layout. Slab order is
+        // creation order, so `<span ib><i ib></i></span>` from one
+        // `set_inner_html` measured the outer box first and gave it its padding
+        // and nothing else: 14x14 where Chrome says 54x34.
+        //
+        // Sorting rather than recursing keeps the one-expression/two-readers
+        // property below: `taffy_tree_violations` consumes this list as a *set*
+        // and does not care about the order, so the two callers still cannot
+        // drift.
+        out.sort_by_key(|a| std::cmp::Reverse(a.0));
+        out.into_iter().map(|(_, t)| t).collect()
     }
 
     /// Pre-compute layout for inline-block children that were detached from Taffy.
@@ -3263,125 +3348,242 @@ impl RinchDocument {
         self.measure_inline_blocks(&ib_taffy_ids);
     }
 
-    /// Measure a set of detached inline-blocks.
+    /// One compute of a detached atomic-inline root, with the Parley measure
+    /// function these roots need (#120, #592).
     ///
-    /// `available_width` is the definite inner width of the inline-block's
-    /// containing block, where it is known. Taffy resolves a *root* node's
-    /// percentage sizes against its available space — `compute_root_layout` turns
-    /// `AvailableSpace` into the `parent_size` basis — so passing `Some(w)` is what
-    /// lets a `width: 50%` inline-block resolve at all. `None` measures at
-    /// max-content, which is right for auto and definite sizes but leaves a
-    /// percentage with no basis, collapsing it to min-content (issue #120).
-    fn measure_inline_blocks(&mut self, targets: &[(taffy::NodeId, Option<f32>)]) {
-        let font_cx = &mut self.font_cx;
-        let layout_cx = &mut self.layout_cx;
+    /// Split out of [`Self::measure_inline_blocks`] only so that function can run
+    /// it more than once for the same node — see its doc for why a single pass
+    /// cannot answer both "how wide is this box" and "lay its interior out at
+    /// that width".
+    fn compute_atomic_inline_root(
+        tree: &mut crate::node::NodeTree,
+        font_cx: &mut parley::FontContext,
+        layout_cx: &mut parley::LayoutContext<Brush>,
+        taffy_id: taffy::NodeId,
+        avail: taffy::Size<taffy::AvailableSpace>,
+    ) {
+        // Split-borrow so the closure captures only `tree.nodes`, leaving
+        // `tree.nodes.get_mut` free after the call returns.
+        let nodes = &tree.nodes;
+        let _ = tree.taffy.compute_layout_with_measure(
+            taffy_id,
+            avail,
+            |known_dims, avail_space, _node_id, context, _style| {
+                let max_width = match avail_space.width {
+                    taffy::AvailableSpace::Definite(w) => Some(w),
+                    taffy::AvailableSpace::MaxContent => None,
+                    taffy::AvailableSpace::MinContent => Some(0.0),
+                };
+                match context {
+                    Some(NodeContext::InlineRoot(root_id)) => {
+                        let root_id = *root_id;
+                        if let Some(est_h) = nodes[root_id].estimated_height {
+                            return taffy::Size {
+                                width: known_dims.width.unwrap_or(0.0),
+                                height: known_dims.height.unwrap_or(est_h),
+                            };
+                        }
+                        let inline_layout = Self::build_inline_layout(
+                            nodes, root_id, max_width, 1.0, font_cx, layout_cx,
+                        );
+                        taffy::Size {
+                            width: known_dims.width.unwrap_or(inline_layout.layout.width()),
+                            height: known_dims.height.unwrap_or(inline_layout.layout.height()),
+                        }
+                    }
+                    Some(NodeContext::Text(text)) => {
+                        if text.content.is_empty() {
+                            return taffy::Size::ZERO;
+                        }
+                        let mut builder =
+                            layout_cx.ranged_builder(font_cx, &text.content, 1.0, true);
+                        builder
+                            .push_default(parley::style::StyleProperty::FontSize(text.font_size));
+                        if (text.font_weight - 400.0).abs() > 1.0 {
+                            builder.push_default(parley::style::StyleProperty::FontWeight(
+                                parley::style::FontWeight::new(text.font_weight),
+                            ));
+                        }
+                        if let Some(lh) = layout::css_line_height_to_parley(&text.line_height_css) {
+                            builder.push_default(parley::style::StyleProperty::LineHeight(lh));
+                        }
+                        let font_stack = if !text.font_family.is_empty() {
+                            std::borrow::Cow::Owned(text.font_family.clone())
+                        } else {
+                            std::borrow::Cow::Borrowed("sans-serif")
+                        };
+                        builder.push_default(parley::style::StyleProperty::FontFamily(
+                            parley::style::FontFamily::Source(font_stack),
+                        ));
+                        // Apply overflow-wrap for emergency line-breaking
+                        builder.push_default(parley::style::StyleProperty::OverflowWrap(
+                            text.overflow_wrap.to_parley(),
+                        ));
+                        let mut layout = builder.build(&text.content);
+                        // If no_wrap is set (white-space: nowrap), don't constrain width
+                        let wrap_width = if text.no_wrap {
+                            None
+                        } else {
+                            known_dims.width.or(max_width)
+                        };
+                        layout.break_all_lines(wrap_width);
+                        taffy::Size {
+                            width: known_dims.width.unwrap_or(layout.width()),
+                            height: known_dims.height.unwrap_or(layout.height()),
+                        }
+                    }
+                    Some(NodeContext::Image { width, height, .. }) => {
+                        let iw = *width as f32;
+                        let ih = *height as f32;
+                        if iw == 0.0 || ih == 0.0 {
+                            return taffy::Size::ZERO;
+                        }
+                        taffy::Size {
+                            width: known_dims.width.unwrap_or(iw),
+                            height: known_dims.height.unwrap_or_else(|| {
+                                if let Some(kw) = known_dims.width {
+                                    ih * (kw / iw)
+                                } else {
+                                    ih
+                                }
+                            }),
+                        }
+                    }
+                    _ => taffy::Size::ZERO,
+                }
+            },
+        );
+    }
 
+    /// Measure a set of detached atomic inlines (`inline-block`, `inline-flex`,
+    /// `inline-grid`) as Taffy compute roots.
+    ///
+    /// `available_width` is the definite inner width of the box's containing
+    /// block, where it is known. Taffy resolves a *root* node's percentage sizes
+    /// against its available space — `compute_root_layout` turns `AvailableSpace`
+    /// into the `parent_size` basis — so passing `Some(w)` is what lets a
+    /// `width: 50%` inline-block resolve at all. `None` measures at max-content,
+    /// which is right for auto and definite sizes but leaves a percentage with no
+    /// basis, collapsing it to min-content (issue #120).
+    ///
+    /// # Why a block-mapped root needs more than one pass (#592)
+    ///
+    /// Since #592 an `inline-block` maps to `taffy::Display::Block`, and Taffy's
+    /// root path treats a block root differently from a flex or grid one in two
+    /// ways that both fight what an atomic inline is:
+    ///
+    /// - **A definite available space means "stretch".**
+    ///   `compute_root_layout`'s block branch folds `available_space` into
+    ///   `known_dimensions` (`available_space_based_size`), so `Definite(700)` —
+    ///   which is only there to give percentages a basis — also makes an
+    ///   auto-width box 700 wide. An atomic inline is shrink-to-fit
+    ///   (CSS 2.1 §10.3.5). Measured: `min-width: 50%` of a 700px cell with the
+    ///   text `"hi"` came out **700** where it must be 350.
+    ///   The repair is to measure the content's own width at max-content first
+    ///   and **pin** it as `size.width` for the definite pass, because
+    ///   `clamped_style_size` is `.or`'d ahead of `available_space_based_size`
+    ///   while percentage `min-`/`max-width` still resolve against the
+    ///   containing block. Only for an auto-width box: an explicit `width` is
+    ///   already the answer that branch reaches for.
+    /// - **A leaf's min/max clamp is applied *after* its measure ran.** So a
+    ///   `max-width` that bites leaves the box narrow with an interior laid out
+    ///   wide — measured: `max-width: 175px` over a sentence gave a 175px box
+    ///   **one line tall**, the text unwrapped at its 400px max-content width.
+    ///   The repair is a second compute pinned to the width the box actually
+    ///   has. Flex and grid roots do not need it: their own algorithms
+    ///   re-measure an item against the resolved container size, which is what
+    ///   made this case work while `inline-block` mapped to `Display::Flex`.
+    ///
+    /// Both extra passes are **gated on the style that can trigger them**, so the
+    /// overwhelmingly common atomic inline — a `<button>` with no `width` and no
+    /// `max-width`, measured at max-content — still costs exactly one compute.
+    /// The pin is written into the Taffy style and taken out again before this
+    /// returns, so nothing outside this function ever sees it; the node's
+    /// computed style, which is what the next pass re-derives from, is untouched.
+    fn measure_inline_blocks(&mut self, targets: &[(taffy::NodeId, Option<f32>)]) {
         for &(taffy_id, available_width) in targets {
-            let avail = taffy::Size {
-                width: match available_width {
-                    Some(w) => taffy::AvailableSpace::Definite(w),
-                    None => taffy::AvailableSpace::MaxContent,
-                },
+            let definite = |w: f32| taffy::Size {
+                width: taffy::AvailableSpace::Definite(w),
                 height: taffy::AvailableSpace::MaxContent,
             };
-            // Split-borrow so the closure captures only `self.tree.nodes`,
-            // leaving `self.tree.nodes.get_mut` free after the call returns.
-            let nodes = &self.tree.nodes;
-            let _ = self.tree.taffy.compute_layout_with_measure(
+            let max_content = taffy::Size {
+                width: taffy::AvailableSpace::MaxContent,
+                height: taffy::AvailableSpace::MaxContent,
+            };
+
+            let Ok(original) = self.tree.taffy.style(taffy_id).cloned() else {
+                continue;
+            };
+            let block_root = original.display == taffy::Display::Block;
+            let auto_width = original.size.width.is_auto();
+            let clampable = !original.max_size.width.is_auto();
+            let mut pinned = false;
+
+            // Pass A — the content's own width, so the definite pass below can
+            // be given a basis without being given a stretch.
+            if block_root && auto_width && available_width.is_some() {
+                Self::compute_atomic_inline_root(
+                    &mut self.tree,
+                    &mut self.font_cx,
+                    &mut self.layout_cx,
+                    taffy_id,
+                    max_content,
+                );
+                // **`unrounded_layout`, not `layout`.** Taffy rounds a final
+                // layout to whole pixels, and pinning the *rounded* width is
+                // pinning a width the content does not fit in: a 580.37px
+                // max-content line pinned at 580 re-broke into two lines, so
+                // the box came out 580 wide with an interior laid out for 400.
+                // Measured — this is the difference between `(580, 20)` and
+                // `(580, 40)` on `min-width: 10%` in a 400px cell.
+                let natural = self.tree.taffy.unrounded_layout(taffy_id).size.width;
+                let mut style = original.clone();
+                style.size.width = taffy::Dimension::length(natural);
+                let _ = self.tree.taffy.set_style(taffy_id, style);
+                pinned = true;
+            }
+
+            // Pass B — the measure the caller asked for.
+            let avail = match available_width {
+                Some(w) => definite(w),
+                None => max_content,
+            };
+            Self::compute_atomic_inline_root(
+                &mut self.tree,
+                &mut self.font_cx,
+                &mut self.layout_cx,
                 taffy_id,
                 avail,
-                |known_dims, avail_space, _node_id, context, _style| {
-                    let max_width = match avail_space.width {
-                        taffy::AvailableSpace::Definite(w) => Some(w),
-                        taffy::AvailableSpace::MaxContent => None,
-                        taffy::AvailableSpace::MinContent => Some(0.0),
-                    };
-                    match context {
-                        Some(NodeContext::InlineRoot(root_id)) => {
-                            let root_id = *root_id;
-                            if let Some(est_h) = nodes[root_id].estimated_height {
-                                return taffy::Size {
-                                    width: known_dims.width.unwrap_or(0.0),
-                                    height: known_dims.height.unwrap_or(est_h),
-                                };
-                            }
-                            let inline_layout = Self::build_inline_layout(
-                                nodes, root_id, max_width, 1.0, font_cx, layout_cx,
-                            );
-                            taffy::Size {
-                                width: known_dims.width.unwrap_or(inline_layout.layout.width()),
-                                height: known_dims.height.unwrap_or(inline_layout.layout.height()),
-                            }
-                        }
-                        Some(NodeContext::Text(text)) => {
-                            if text.content.is_empty() {
-                                return taffy::Size::ZERO;
-                            }
-                            let mut builder =
-                                layout_cx.ranged_builder(font_cx, &text.content, 1.0, true);
-                            builder.push_default(parley::style::StyleProperty::FontSize(
-                                text.font_size,
-                            ));
-                            if (text.font_weight - 400.0).abs() > 1.0 {
-                                builder.push_default(parley::style::StyleProperty::FontWeight(
-                                    parley::style::FontWeight::new(text.font_weight),
-                                ));
-                            }
-                            if let Some(lh) =
-                                layout::css_line_height_to_parley(&text.line_height_css)
-                            {
-                                builder.push_default(parley::style::StyleProperty::LineHeight(lh));
-                            }
-                            let font_stack = if !text.font_family.is_empty() {
-                                std::borrow::Cow::Owned(text.font_family.clone())
-                            } else {
-                                std::borrow::Cow::Borrowed("sans-serif")
-                            };
-                            builder.push_default(parley::style::StyleProperty::FontFamily(
-                                parley::style::FontFamily::Source(font_stack),
-                            ));
-                            // Apply overflow-wrap for emergency line-breaking
-                            builder.push_default(parley::style::StyleProperty::OverflowWrap(
-                                text.overflow_wrap.to_parley(),
-                            ));
-                            let mut layout = builder.build(&text.content);
-                            // If no_wrap is set (white-space: nowrap), don't constrain width
-                            let wrap_width = if text.no_wrap {
-                                None
-                            } else {
-                                known_dims.width.or(max_width)
-                            };
-                            layout.break_all_lines(wrap_width);
-                            taffy::Size {
-                                width: known_dims.width.unwrap_or(layout.width()),
-                                height: known_dims.height.unwrap_or(layout.height()),
-                            }
-                        }
-                        Some(NodeContext::Image { width, height, .. }) => {
-                            let iw = *width as f32;
-                            let ih = *height as f32;
-                            if iw == 0.0 || ih == 0.0 {
-                                return taffy::Size::ZERO;
-                            }
-                            taffy::Size {
-                                width: known_dims.width.unwrap_or(iw),
-                                height: known_dims.height.unwrap_or_else(|| {
-                                    if let Some(kw) = known_dims.width {
-                                        ih * (kw / iw)
-                                    } else {
-                                        ih
-                                    }
-                                }),
-                            }
-                        }
-                        _ => taffy::Size::ZERO,
-                    }
-                },
             );
 
-            // Read the computed layout back into the node.
-            // Re-borrow `self.tree` now that the closure (and its borrow of
-            // `self.tree.nodes` / `self.tree.taffy`) has been dropped.
+            // Pass C — lay the interior out at the width the box actually has.
+            //
+            // Only a `max-width` can leave the box narrower than the width its
+            // interior was measured at, so that is the gate. Widening it to
+            // `clampable || pinned` was tried and **dropped**: it was written
+            // for a symptom the unrounded pin above turns out to be the real
+            // cure for, and with that pin in place the wider gate is killed by
+            // nothing across `-p rinch-dom -p rinch` — a whole extra compute per
+            // percentage-sized atomic inline, buying nothing any test can see.
+            if block_root && clampable {
+                // Unrounded, for the reason pass A gives.
+                let used = self.tree.taffy.unrounded_layout(taffy_id).size.width;
+                let mut style = original.clone();
+                style.size.width = taffy::Dimension::length(used);
+                let _ = self.tree.taffy.set_style(taffy_id, style);
+                pinned = true;
+                Self::compute_atomic_inline_root(
+                    &mut self.tree,
+                    &mut self.font_cx,
+                    &mut self.layout_cx,
+                    taffy_id,
+                    definite(used),
+                );
+            }
+
+            // Read the computed layout back into the node, before the pin comes
+            // out: `set_style` only invalidates Taffy's *cache*, but reading
+            // first keeps the order obvious.
             if let Ok(taffy_layout) = self.tree.taffy.layout(taffy_id) {
                 let layout_size = taffy_layout.size;
                 let node_id = self.tree.taffy_map.get(&taffy_id).copied();
@@ -3391,6 +3593,10 @@ impl RinchDocument {
                     node.layout.width = layout_size.width;
                     node.layout.height = layout_size.height;
                 }
+            }
+
+            if pinned {
+                let _ = self.tree.taffy.set_style(taffy_id, original);
             }
         }
     }

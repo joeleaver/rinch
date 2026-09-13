@@ -508,27 +508,47 @@ fn a_flowed_inline_element_that_kept_its_box_is_reported_as_a_ghost() {
     );
 }
 
-/// **Producer, and the third condition's reason to exist.** An **unmarked**
-/// `display: inline` element carries a real box, and `E` must leave it alone.
+/// **The third condition's reason to exist, now constructed.** A `display:
+/// inline` element that no IFC has claimed carries a real box, and `E` must
+/// leave it alone.
 ///
-/// Inside a re-measured `inline-block` the inner `<span>` is never marked IFC
-/// content (`ifc_root == None`) — #630 is that shape — and Taffy lays it out as
-/// a block child of the inline-block: under `padding: 11px 13px` its box is
-/// `(13, 11, 50x50)`, and every descendant's painted position is summed through
-/// that origin. `is_flowed_inline_element` requires `ifc_root.is_some()` exactly
-/// so that this node is **not** zeroed; the mutant that drops the condition
-/// zeroes it, moves the child by `(13, 11)`, and survived the whole suite until
-/// this fixture existed (review of PR 1, mutant g). The shape is off the origin
-/// on purpose: at the inline-block's own origin the zeroed and the real box
-/// agree about everything a consumer reads.
+/// # This fixture's natural producer is gone, and that is why the state is built
+///
+/// It used to be the inside of a re-measured `inline-block`: the inner `<span>`
+/// was never marked IFC content (`ifc_root == None`) and Taffy laid it out as a
+/// block child, so under `padding: 11px 13px` its box was `(13, 11, 50x50)`.
+/// **#630 fixed exactly that** — an `inline-block` is a block container now, so
+/// the inner span is its IFC content like any other flowed inline — and the
+/// shape below no longer produces an unmarked one. Every other route was tried
+/// and none does either: a `display: inline` child of a flex, grid,
+/// `inline-flex` or `inline-grid` container is *blockified* by Stylo and so is
+/// not an inline element at all (measured, all four), and a block container that
+/// holds an inline element is an IFC root by construction. So the second half
+/// of this fixture **doctors** the state rather than reaching it, exactly as
+/// `a_flowed_inline_element_that_kept_its_box_is_reported_as_a_ghost` above
+/// doctors the box it needs.
+///
+/// The point of that half is unchanged: `is_flowed_inline_element` requires
+/// `ifc_root.is_some()` so an unmarked inline element is **not** zeroed and not
+/// reported. The mutant that drops the condition zeroed the old shape's span and
+/// moved its child by `(13, 11)` (review of PR 1, mutant g). **Re-measured at
+/// #592 across `-p rinch-dom -p rinch`: that mutant is killed by this fixture
+/// and by nothing else** — the doctored half below is now its only witness in
+/// the workspace, which is exactly why it is here rather than deleted with its
+/// producer.
+///
+/// The first half pins what the same DOM does today, which is #630's fix: the
+/// inner span is the inline-block's IFC content, owns no box, and its child is
+/// still painted through the inline-block's padding origin. That last part is
+/// what mutant g was really about, and it survives the producer's extinction.
 ///
 /// It also pins the other side of the same hole (mutant h): `clips_overflow`'s
 /// guard is "non-atomic inline element", deliberately wider than the flowed
-/// predicate, so this unmarked span does not clip either — narrowing the guard
-/// to `is_flowed_inline_element` would restore a 50x50 clip here (measured by
-/// the reviewer: 40000 → 1400 red pixels).
+/// predicate, so this span does not clip — narrowing the guard to
+/// `is_flowed_inline_element` would restore a 50x50 clip here (measured by the
+/// reviewer: 40000 → 1400 red pixels).
 #[test]
-fn an_unmarked_inline_inside_an_inline_block_keeps_its_real_box() {
+fn an_inline_inside_an_inline_block_is_ifc_content_and_an_unmarked_one_keeps_its_box() {
     let mut doc = RinchDocument::new();
     let body = doc.body();
     let p = el(
@@ -568,25 +588,18 @@ fn an_unmarked_inline_inside_an_inline_block_keeps_its_real_box() {
         "precondition: the inner span is a non-atomic inline element"
     );
     assert_eq!(
-        n.ifc_root, None,
-        "precondition: it is unmarked — the IFC inside a re-measured inline-block does not claim it (#630)"
+        n.ifc_root,
+        Some(ib.0),
+        "the inline-block is a block container, so its inner inline is its IFC \
+         content (#630/#592)"
     );
     assert!(
         !n.is_split_inline(),
-        "precondition: an inline-block child does not split it — this is the unmarked, not the split, kind"
-    );
-    assert!(
-        !n.is_flowed_inline_element(),
-        "an unmarked inline element is not a flowed one — the `ifc_root` condition is what says so"
-    );
-    assert!(
-        n.layout.x == 13.0 && n.layout.y == 11.0 && n.layout.width > 0.0 && n.layout.height > 0.0,
-        "it keeps the real box Taffy gave it, inside the inline-block's padding, got {:?}",
-        n.layout
+        "precondition: an inline-block child does not split it — this is the flowed, not the split, kind"
     );
     assert!(
         !n.clips_overflow(),
-        "…and being an inline element it does not clip, real box or not"
+        "…and being an inline element it does not clip, box or no box"
     );
 
     let (ibx, iby, _) =
@@ -602,5 +615,38 @@ fn an_unmarked_inline_inside_an_inline_block_keeps_its_real_box() {
         doc.taffy_tree_violations().is_empty(),
         "and nothing reports a legitimate box:\n  {}",
         lines(&doc)
+    );
+
+    // The constructed half. Take the mark away and give the span a box — the
+    // state the inside of an `inline-block` used to reach on its own — and `E`
+    // must stay quiet about it. Doctored rather than built, because #592 left
+    // no shape that produces it (see this fixture's doc). Other invariants do
+    // fire on the doctored tree (the span is detached from Taffy and nothing
+    // claims it any more), so this asks about `E` alone.
+    doc.tree.nodes[inner.0].ifc_root = None;
+    doc.tree.nodes[inner.0].layout.width = 50.0;
+    doc.tree.nodes[inner.0].layout.height = 50.0;
+    assert!(
+        !doc.tree.nodes[inner.0].is_flowed_inline_element(),
+        "an unmarked inline element is not a flowed one — the `ifc_root` \
+         condition is what says so"
+    );
+    let v = doc.taffy_tree_violations();
+    assert!(
+        !v.iter().any(|l| l.starts_with("E ghost box")),
+        "an unmarked inline element's box is legitimate, so E must not report \
+         it:\n  {}",
+        v.join("\n  ")
+    );
+
+    // The control, so the assertion above is not vacuous: put the mark back and
+    // the very same box **is** the ghost.
+    doc.tree.nodes[inner.0].ifc_root = Some(ib.0);
+    let v = doc.taffy_tree_violations();
+    assert!(
+        v.iter().any(|l| l.starts_with("E ghost box")),
+        "…and with the mark back, the same box is a ghost — otherwise the \
+         assertion above tests nothing:\n  {}",
+        v.join("\n  ")
     );
 }

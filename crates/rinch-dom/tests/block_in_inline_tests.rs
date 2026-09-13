@@ -22,12 +22,13 @@
 //! fragment, and keeps no box for the element itself. Do not read "block-in-inline
 //! splitting landed" as "rinch has inline fragments".
 //!
-//! One fixture stays `#[ignore]`d, and it is not #513: **#592** (an
-//! `inline-block` with mixed content must generate anonymous boxes *inside*
-//! itself, which is a different mechanism). The other one that used to — #591,
-//! an out-of-flow child of an inline, orphaned the same way but never split
-//! around — is fixed by the IFC root collecting the box, and runs live; its own
-//! suite is `out_of_flow_in_inline_tests`.
+//! Nothing here is `#[ignore]`d any more. Two fixtures used to be, and neither
+//! was #513: **#591** (an out-of-flow child of an inline, orphaned the same way
+//! but never split around), fixed by the IFC root collecting the box — its own
+//! suite is `out_of_flow_in_inline_tests`; and **#592** (an `inline-block` with
+//! mixed content must generate anonymous boxes *inside* itself), fixed by
+//! making `inline-block` a block container on the inside — its own suite is
+//! `inline_block_block_container_tests`.
 //!
 //! # The oracle: delete the wrapper
 //!
@@ -454,13 +455,14 @@ fn two_blocks_inside_one_inline_make_three_runs() {
 /// — it generates anonymous block boxes inside itself, exactly like a `<div>`
 /// would. Chrome: the inline-block is 40x70 and its three pieces stack.
 ///
-/// Separate from the shapes above on purpose: the four sites skip
-/// `InlineBlock` by the same predicate they skip `Inline` by, so a fix that
-/// drops only `Inline` leaves this one standing. rinch today lays the three
-/// pieces out in a **row** (H=30).
+/// Separate from the shapes above on purpose, and it stayed red through #513's
+/// whole fix: the four sites skipped `InlineBlock` by the same predicate they
+/// skipped `Inline` by, so dropping only `Inline` left this one standing, and a
+/// second cause (`DisplayValue::to_taffy` giving `inline-block` a Taffy **flex**
+/// container) was untouched by that repair either way. Both are #592, whose own
+/// suite is `inline_block_block_container_tests`; this fixture stays here as
+/// the #513 family's guard that the two fixes agree.
 #[test]
-#[ignore = "#592: an inline-block with mixed content does not generate anonymous \
-           block boxes inside itself — a sibling defect, not #513"]
 fn an_inline_block_with_mixed_content_stacks_like_a_block_container() {
     let mut doc = RinchDocument::new();
     let body = doc.body();

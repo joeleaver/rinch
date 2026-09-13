@@ -86,9 +86,12 @@
 //! whose containing block is the span itself — not one truncated at a
 //! containing block above the span, and not a `fixed` box). The guard is
 //! deliberately **wider** than that boxless set: a split inline and an unmarked
-//! inline element (the inner `<span>` of a re-measured `inline-block`, which
-//! carries a real Taffy box) are inline boxes too, and `overflow` applies to
-//! neither.
+//! inline element — one no IFC has claimed, which therefore keeps a real Taffy
+//! box — are inline boxes too, and `overflow` applies to neither. (The unmarked
+//! case had one natural producer, the inner `<span>` of a re-measured
+//! `inline-block`; #592 made an `inline-block` a block container, so that span
+//! is now its IFC content and owns no box. The guard stays wide regardless —
+//! see [`crate::node::Node::clips_overflow`].)
 //!
 //! ## The deviation this does not fix
 //!

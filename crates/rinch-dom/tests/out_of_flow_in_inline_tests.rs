@@ -60,7 +60,9 @@
 //!
 //! Vello: the pixel oracle is tiny-skia. Floats: rinch has none. The inside of a
 //! re-measured `inline-block` (`<span style="display:inline-block"><span>text<abs/></span></span>`)
-//! — a different mechanism, filed as #630.
+//! was a different mechanism, filed as #630 and **since fixed by #592** — an
+//! `inline-block` is a block container inside, so that inner span is its IFC
+//! content; the shape is pinned in `inline_block_block_container_tests`.
 
 use rinch_core::dom::{DomDocument, NodeId};
 use rinch_dom::RinchDocument;
