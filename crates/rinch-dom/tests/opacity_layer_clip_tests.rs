@@ -39,8 +39,9 @@
 //!   `opacity < 1.0`) and `0.5` takes the ordinary path, so both clip correctly
 //!   with the bug in place. `0.99999994` is the single `f32` below `1.0` that is
 //!   within `f32::EPSILON` of it, and it is the only *opacity* that reaches the
-//!   branch at all. Both other values are asserted here, so the fixture cannot
-//!   quietly become a test of nothing.
+//!   branch at all. Both other values are asserted here — but see each of their
+//!   doc comments for what that does and does not catch, because the two are not
+//!   equally load-bearing and one of them was documented as a pin it is not.
 //! - The declaration that gets there. `opacity` is not the only caller, and it
 //!   is the exotic one: `paint_node`'s `filter: grayscale(...)` arm pushes a
 //!   `BlendMode::Saturation` layer at the filter's own amount, so
@@ -207,19 +208,50 @@ fn a_near_opaque_layer_keeps_the_collecting_roots_own_bracket() {
 /// The ordinary path, `opacity: 0.5`, saves the mask in `LayerState::Opacity`
 /// and restores it. This is a control — it clips with the bug in place — and it
 /// is also the pin on that path: mutating `parent_mask` to `None` there breaks
-/// this and nothing else in the suite.
+/// this and the `grayscale(0.5)` control below, and nothing else in the crate.
+/// (It broke *only* this one when the claim was first written, against a
+/// seven-test file; the second commit of the same PR added the other and made
+/// the exclusive form false. A count is the part of a doc that goes stale.)
+///
+/// The alpha assertion is what makes this a control at all. Without it the test
+/// cannot tell the ordinary path from the fast one — widening the near-opaque
+/// threshold so that `0.5` takes the fast path leaves the victim clipped either
+/// way, and the only thing in the crate that notices is a #142 fixture in
+/// `paint_tests`. Measured: `[128, 0, 0, 128]` on the ordinary path,
+/// `[255, 0, 0, 255]` on the fast one.
 #[test]
 fn an_ordinary_opacity_layer_keeps_the_clip_its_later_sibling_shares() {
     for sc in [false, true] {
         let painter = document("0.5", sc);
         assert_victim_is_clipped(&painter, "opacity: 0.5 subject");
+        assert_eq!(
+            pixel_at(&painter, 30, 20),
+            [128, 0, 0, 128],
+            "the subject is not being composited through a real layer, so this \
+             fixture is no longer a control for the ordinary path"
+        );
     }
 }
 
 /// `opacity: 1` never reaches `push_layer` at all — `paint_node` guards on
-/// `opacity < 1.0`. Asserted so that a change which stops the near-opaque value
-/// from parsing, or moves the caller's guard, shows up as this pair going
-/// identical rather than as the subject tests quietly testing nothing.
+/// `opacity < 1.0` — and it clips. That is the whole of what this pins, and it
+/// is a baseline rather than a discriminator.
+///
+/// **It does not pin the guard's position, and no pixel read here could.**
+/// Measured: relaxing both `has_opacity = opacity < 1.0` in `paint/mod.rs` to
+/// `<= 1.0` leaves all nine tests in this file green. With #560 fixed, an
+/// `opacity: 1` layer takes the near-opaque branch, pushes a `LayerState::Noop`
+/// and pops it, and changes no pixel — so on `TinySkiaPainter` that mutation is
+/// *equivalent*, not merely unpinned. The doc that used to sit here predicted
+/// "this pair going identical"; they were already identical, which is the point.
+///
+/// The guard is pinned, and on the other painter, by
+/// `paint_tests::opacity_overflow::vello_painter_clips_an_opacity_layer_to_bounds_that_contain_the_child`
+/// — the sole failure in the crate under that mutation. `VelloPainter` *clips*
+/// a layer to the bounds it is handed, so a layer opened where none was wanted
+/// is not free there (card K36). Which is the same asymmetry the module doc
+/// above describes from the other side: tiny-skia binds its `bounds` and never
+/// reads them.
 #[test]
 fn a_fully_opaque_sibling_pushes_no_layer_and_keeps_the_clip() {
     for sc in [false, true] {
