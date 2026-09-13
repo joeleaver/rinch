@@ -2,8 +2,6 @@
 
 use serde::Serialize;
 
-use crate::layout::Viewport;
-
 /// Custom serialization for Option<peniko::Color> as hex string
 pub(crate) mod color_serde {
     use peniko::Color;
@@ -82,22 +80,6 @@ pub enum DisplayValue {
 }
 
 impl DisplayValue {
-    /// Parse from CSS string value.
-    pub fn parse(value: &str) -> Self {
-        match value.trim() {
-            "flex" => Self::Flex,
-            "block" => Self::Block,
-            "grid" => Self::Grid,
-            "none" => Self::None,
-            "contents" => Self::Contents,
-            "inline" => Self::Inline,
-            "inline-block" => Self::InlineBlock,
-            "inline-flex" => Self::InlineFlex,
-            "inline-grid" => Self::InlineGrid,
-            _ => Self::default(),
-        }
-    }
-
     /// Convert to Taffy Display.
     pub fn to_taffy(&self) -> taffy::Display {
         match self {
@@ -162,17 +144,6 @@ pub enum PositionValue {
 }
 
 impl PositionValue {
-    /// Parse from CSS string value.
-    pub fn parse(value: &str) -> Self {
-        match value.trim() {
-            "absolute" => Self::Absolute,
-            "fixed" => Self::Fixed,
-            "static" => Self::Static,
-            "sticky" => Self::Sticky,
-            _ => Self::Relative,
-        }
-    }
-
     /// Convert to Taffy Position.
     pub fn to_taffy(&self) -> taffy::Position {
         match self {
@@ -200,48 +171,6 @@ pub enum DimensionValue {
 }
 
 impl DimensionValue {
-    /// Parse from CSS string value with viewport support.
-    pub fn parse(value: &str, viewport: &Viewport) -> Self {
-        let value = value.trim();
-        if value == "auto" {
-            return Self::Auto;
-        }
-        // Viewport units
-        if let Some(num_str) = value.strip_suffix("vh")
-            && let Ok(v) = num_str.trim().parse::<f32>()
-        {
-            return Self::Length(v * viewport.height / 100.0);
-        }
-        if let Some(num_str) = value.strip_suffix("vw")
-            && let Ok(v) = num_str.trim().parse::<f32>()
-        {
-            return Self::Length(v * viewport.width / 100.0);
-        }
-        // Percentage
-        if let Some(pct) = value.strip_suffix('%')
-            && let Ok(v) = pct.trim().parse::<f32>()
-        {
-            return Self::Percent(v / 100.0);
-        }
-        // Pixels
-        if let Some(px) = value.strip_suffix("px")
-            && let Ok(v) = px.trim().parse::<f32>()
-        {
-            return Self::Length(v);
-        }
-        // Rem
-        if let Some(rem_str) = value.strip_suffix("rem")
-            && let Ok(v) = rem_str.trim().parse::<f32>()
-        {
-            return Self::Length(v * 16.0);
-        }
-        // Plain number
-        if let Ok(v) = value.parse::<f32>() {
-            return Self::Length(v);
-        }
-        Self::Auto
-    }
-
     /// Convert to Taffy Dimension.
     ///
     /// A `Calc` cannot be represented in a Taffy value — Taffy 0.12's calc
@@ -298,45 +227,6 @@ pub enum LengthPercentageValue {
 }
 
 impl LengthPercentageValue {
-    /// Parse from CSS string value with viewport support.
-    pub fn parse(value: &str, viewport: &Viewport) -> Self {
-        let value = value.trim();
-        // Viewport units
-        if let Some(num_str) = value.strip_suffix("vh")
-            && let Ok(v) = num_str.trim().parse::<f32>()
-        {
-            return Self::Length(v * viewport.height / 100.0);
-        }
-        if let Some(num_str) = value.strip_suffix("vw")
-            && let Ok(v) = num_str.trim().parse::<f32>()
-        {
-            return Self::Length(v * viewport.width / 100.0);
-        }
-        // Percentage
-        if let Some(pct) = value.strip_suffix('%')
-            && let Ok(v) = pct.trim().parse::<f32>()
-        {
-            return Self::Percent(v / 100.0);
-        }
-        // Pixels
-        if let Some(px) = value.strip_suffix("px")
-            && let Ok(v) = px.trim().parse::<f32>()
-        {
-            return Self::Length(v);
-        }
-        // Rem
-        if let Some(rem_str) = value.strip_suffix("rem")
-            && let Ok(v) = rem_str.trim().parse::<f32>()
-        {
-            return Self::Length(v * 16.0);
-        }
-        // Plain number
-        if let Ok(v) = value.parse::<f32>() {
-            return Self::Length(v);
-        }
-        Self::Zero
-    }
-
     /// Convert to Taffy LengthPercentage.
     ///
     /// A `Calc` cannot be represented in a Taffy value (see
@@ -397,48 +287,6 @@ pub enum LengthPercentageAutoValue {
 }
 
 impl LengthPercentageAutoValue {
-    /// Parse from CSS string value with viewport support.
-    pub fn parse(value: &str, viewport: &Viewport) -> Self {
-        let value = value.trim();
-        if value == "auto" {
-            return Self::Auto;
-        }
-        // Viewport units
-        if let Some(num_str) = value.strip_suffix("vh")
-            && let Ok(v) = num_str.trim().parse::<f32>()
-        {
-            return Self::Length(v * viewport.height / 100.0);
-        }
-        if let Some(num_str) = value.strip_suffix("vw")
-            && let Ok(v) = num_str.trim().parse::<f32>()
-        {
-            return Self::Length(v * viewport.width / 100.0);
-        }
-        // Percentage
-        if let Some(pct) = value.strip_suffix('%')
-            && let Ok(v) = pct.trim().parse::<f32>()
-        {
-            return Self::Percent(v / 100.0);
-        }
-        // Pixels
-        if let Some(px) = value.strip_suffix("px")
-            && let Ok(v) = px.trim().parse::<f32>()
-        {
-            return Self::Length(v);
-        }
-        // Rem
-        if let Some(rem_str) = value.strip_suffix("rem")
-            && let Ok(v) = rem_str.trim().parse::<f32>()
-        {
-            return Self::Length(v * 16.0);
-        }
-        // Plain number
-        if let Ok(v) = value.parse::<f32>() {
-            return Self::Length(v);
-        }
-        Self::Auto
-    }
-
     /// Convert to Taffy LengthPercentageAuto.
     ///
     /// A `Calc` cannot be represented in a Taffy value (see
@@ -487,16 +335,6 @@ pub enum FlexDirectionValue {
 }
 
 impl FlexDirectionValue {
-    /// Parse from CSS string value.
-    pub fn parse(value: &str) -> Self {
-        match value.trim() {
-            "column" => Self::Column,
-            "row-reverse" => Self::RowReverse,
-            "column-reverse" => Self::ColumnReverse,
-            _ => Self::Row,
-        }
-    }
-
     /// Convert to Taffy FlexDirection.
     pub fn to_taffy(&self) -> taffy::FlexDirection {
         match self {
@@ -518,15 +356,6 @@ pub enum FlexWrapValue {
 }
 
 impl FlexWrapValue {
-    /// Parse from CSS string value.
-    pub fn parse(value: &str) -> Self {
-        match value.trim() {
-            "wrap" => Self::Wrap,
-            "wrap-reverse" => Self::WrapReverse,
-            _ => Self::NoWrap,
-        }
-    }
-
     /// Convert to Taffy FlexWrap.
     pub fn to_taffy(&self) -> taffy::FlexWrap {
         match self {
@@ -548,18 +377,6 @@ pub enum AlignItemsValue {
 }
 
 impl AlignItemsValue {
-    /// Parse from CSS string value.
-    pub fn parse(value: &str) -> Option<Self> {
-        Some(match value.trim() {
-            "flex-start" | "start" => Self::FlexStart,
-            "flex-end" | "end" => Self::FlexEnd,
-            "center" => Self::Center,
-            "baseline" => Self::Baseline,
-            "stretch" => Self::Stretch,
-            _ => return None,
-        })
-    }
-
     /// Convert to Taffy AlignItems.
     pub fn to_taffy(&self) -> taffy::AlignItems {
         match self {
@@ -583,18 +400,6 @@ pub enum AlignSelfValue {
 }
 
 impl AlignSelfValue {
-    /// Parse from CSS string value.
-    pub fn parse(value: &str) -> Option<Self> {
-        Some(match value.trim() {
-            "flex-start" | "start" => Self::FlexStart,
-            "flex-end" | "end" => Self::FlexEnd,
-            "center" => Self::Center,
-            "baseline" => Self::Baseline,
-            "stretch" => Self::Stretch,
-            _ => return None,
-        })
-    }
-
     /// Convert to Taffy AlignSelf.
     pub fn to_taffy(&self) -> taffy::AlignSelf {
         match self {
@@ -619,19 +424,6 @@ pub enum JustifyContentValue {
 }
 
 impl JustifyContentValue {
-    /// Parse from CSS string value.
-    pub fn parse(value: &str) -> Option<Self> {
-        Some(match value.trim() {
-            "flex-start" | "start" => Self::FlexStart,
-            "flex-end" | "end" => Self::FlexEnd,
-            "center" => Self::Center,
-            "space-between" => Self::SpaceBetween,
-            "space-around" => Self::SpaceAround,
-            "space-evenly" => Self::SpaceEvenly,
-            _ => return None,
-        })
-    }
-
     /// Convert to Taffy JustifyContent.
     pub fn to_taffy(&self) -> taffy::JustifyContent {
         match self {
@@ -657,17 +449,6 @@ pub enum OverflowValue {
 }
 
 impl OverflowValue {
-    /// Parse from CSS string value.
-    pub fn parse(value: &str) -> Self {
-        match value.trim() {
-            "hidden" => Self::Hidden,
-            "scroll" => Self::Scroll,
-            "clip" => Self::Clip,
-            "auto" => Self::Auto,
-            _ => Self::Visible,
-        }
-    }
-
     /// Convert to Taffy Overflow.
     pub fn to_taffy(&self) -> taffy::Overflow {
         match self {
@@ -790,16 +571,6 @@ pub enum TextOverflowValue {
     Ellipsis,
 }
 
-impl TextOverflowValue {
-    /// Parse from CSS string value.
-    pub fn parse(value: &str) -> Self {
-        match value.trim() {
-            "ellipsis" => Self::Ellipsis,
-            _ => Self::Clip,
-        }
-    }
-}
-
 /// CSS font-style property values.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Serialize)]
 pub enum FontStyleValue {
@@ -810,15 +581,6 @@ pub enum FontStyleValue {
 }
 
 impl FontStyleValue {
-    /// Parse from CSS string value.
-    pub fn parse(value: &str) -> Self {
-        match value.trim() {
-            "italic" => Self::Italic,
-            "oblique" => Self::Oblique,
-            _ => Self::Normal,
-        }
-    }
-
     /// Convert to Parley FontStyle.
     pub fn to_parley(&self) -> parley::style::FontStyle {
         match self {
@@ -841,24 +603,6 @@ pub enum LineHeightValue {
 }
 
 impl LineHeightValue {
-    /// Parse from CSS string value.
-    pub fn parse(value: &str) -> Self {
-        let value = value.trim();
-        if value == "normal" || value.is_empty() {
-            return Self::Normal;
-        }
-        if let Some(px) = value.strip_suffix("px")
-            && let Ok(v) = px.trim().parse::<f32>()
-        {
-            return Self::Absolute(v);
-        }
-        // Unitless = relative multiplier
-        if let Ok(v) = value.parse::<f32>() {
-            return Self::Relative(v);
-        }
-        Self::Normal
-    }
-
     /// Convert to Parley LineHeight.
     pub fn to_parley(&self) -> Option<parley::style::LineHeight> {
         match self {
@@ -880,16 +624,6 @@ pub enum TextAlignValue {
 }
 
 impl TextAlignValue {
-    /// Parse from CSS string value.
-    pub fn parse(value: &str) -> Self {
-        match value.trim() {
-            "center" => Self::Center,
-            "right" | "end" => Self::End,
-            "justify" => Self::Justify,
-            _ => Self::Start,
-        }
-    }
-
     /// Convert to Parley Alignment.
     pub fn to_parley(&self) -> parley::layout::Alignment {
         match self {
@@ -906,17 +640,6 @@ impl TextAlignValue {
 pub struct TextDecorationValue {
     pub underline: bool,
     pub strikethrough: bool,
-}
-
-impl TextDecorationValue {
-    /// Parse from CSS string value.
-    pub fn parse(value: &str) -> Self {
-        let value = value.trim().to_lowercase();
-        Self {
-            underline: value.contains("underline"),
-            strikethrough: value.contains("line-through"),
-        }
-    }
 }
 
 /// CSS text-transform property values.
@@ -969,19 +692,6 @@ pub enum WhiteSpaceValue {
     PreLine,
 }
 
-impl WhiteSpaceValue {
-    /// Parse from CSS string value.
-    pub fn parse(value: &str) -> Self {
-        match value.trim() {
-            "nowrap" => Self::NoWrap,
-            "pre" => Self::Pre,
-            "pre-wrap" => Self::PreWrap,
-            "pre-line" => Self::PreLine,
-            _ => Self::Normal,
-        }
-    }
-}
-
 /// CSS overflow-wrap (word-wrap) property values.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Serialize)]
 pub enum OverflowWrapValue {
@@ -992,15 +702,6 @@ pub enum OverflowWrapValue {
 }
 
 impl OverflowWrapValue {
-    /// Parse from CSS string value.
-    pub fn parse(value: &str) -> Self {
-        match value.trim() {
-            "break-word" => Self::BreakWord,
-            "anywhere" => Self::Anywhere,
-            _ => Self::Normal,
-        }
-    }
-
     /// Convert to Parley's OverflowWrap type.
     pub fn to_parley(self) -> parley::style::OverflowWrap {
         match self {
@@ -1148,16 +849,6 @@ pub enum ObjectFitValue {
 }
 
 impl ObjectFitValue {
-    pub fn parse(s: &str) -> Self {
-        match s.trim() {
-            "contain" => Self::Contain,
-            "cover" => Self::Cover,
-            "none" => Self::None,
-            "scale-down" => Self::ScaleDown,
-            _ => Self::Fill,
-        }
-    }
-
     pub fn as_str(&self) -> &'static str {
         match self {
             Self::Fill => "fill",

@@ -458,10 +458,12 @@ fn a_block_level_flex_container_still_ends_the_inline_run() {
 /// converts to `DisplayValue::InlineGrid`, which `style_resolution` maps to
 /// `DisplayMode::InlineGrid`, which answers `is_atomic_inline`.
 ///
-/// A third spelling was differently wrong and is fixed with it:
+/// A third spelling was differently wrong and was fixed with it:
 /// `DisplayValue::parse` — the non-Stylo path in `computed_style/values.rs` —
 /// had no `inline-grid` arm at all, so it fell through to `Self::default()`,
-/// which is `Flex`. `computed_style/tests.rs` pins the arm and the fallback.
+/// which is `Flex`. That path was dead apart from its own test, and #458
+/// removed it with the rest of the pre-stylo string-parsing engine; what this
+/// fixture drives is the Stylo one.
 ///
 /// This fixture is the **flow** half and deliberately says nothing about the
 /// box's interior: `an_inline_grid_box_lays_its_interior_out_as_a_grid` is what
