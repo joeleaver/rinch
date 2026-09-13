@@ -859,6 +859,14 @@ impl RinchDocument {
                 let mut anon_node = Node::element(anon_id, "div", guard.clone());
                 anon_node.is_anonymous_block_box = true;
                 anon_node.display_mode = DisplayMode::Block;
+                // An anonymous block box is an in-flow block-level box, so the
+                // rule on [`Node::contributes_in_flow_block`] answers `true`
+                // for it. Set here rather than in the recompute pass because a
+                // box is not in anybody's `children` and that pass walks
+                // `children`. Nothing reads it today — a box is never a unit of
+                // its container — and it is set anyway so the field stays total
+                // over the slab and the differential fixture can say so.
+                anon_node.contributes_in_flow_block = true;
                 // **A parent, but not a child.** The box keeps an upward edge
                 // to its container and appears in nobody's `children`; its run
                 // lives in `run_members` and is never reparented.
@@ -990,6 +998,94 @@ impl RinchDocument {
         }
     }
 
+    /// Recompute [`Node::contributes_in_flow_block`] for every node, bottom-up
+    /// in one pass (#513).
+    ///
+    /// The field's own doc carries the rule; this is where it is applied. Three
+    /// things about the shape of the pass:
+    ///
+    /// **It runs first, before every other pass in the `ifc_dirty` block.** The
+    /// field is read by `collect_run_units` and therefore by
+    /// `box_tree_children` and `collect_effective_taffy_children` — which
+    /// `sync_display_contents` and `cleanup_anonymous_block_boxes` both call. A
+    /// pass reading a *previous* pass's value would rebuild a Taffy child list
+    /// from a classification the rest of this pass is about to contradict, and
+    /// the list nothing rebuilds again is how #476 stayed invisible.
+    ///
+    /// **It is a whole-tree recompute, not an invalidation**, for
+    /// `setup_inline_formatting_contexts`' own stated reason about `ifc_root`:
+    /// derived state that only ever gets *set* goes stale in the direction
+    /// nobody notices. Cost is one DFS over the DOM, replacing a per-call
+    /// subtree walk at four classification sites.
+    ///
+    /// **A node unreachable from the document root keeps `false`.** That is the
+    /// conservative direction: `false` means "not split", which means the node
+    /// stays a unit of its parent, which is the behaviour a detached subtree had
+    /// before this field existed. Anonymous block boxes are not in `children`
+    /// and so are not reached by this walk at all — `create_anonymous_block_boxes`
+    /// sets theirs when it mints them, because by the rule above an anonymous
+    /// block box (an in-flow `Block`) contributes `true`.
+    fn recompute_contributes_in_flow_block(&mut self) {
+        // **The clear is defence, not a fix, and that is measured**: the mutant
+        // that deletes these three lines survives `-p rinch-dom -p rinch` (51
+        // targets), including the transition fixture written to catch exactly
+        // this — derived state that is only ever set. The reason is that the
+        // fold below *writes* every node the walk reaches, `false` included, so
+        // the clear can only matter for the two classes it does not reach: an
+        // anonymous block box, which is minted fresh with its value every pass,
+        // and a node detached from the document root, which nothing reads while
+        // it is detached and which the walk reaches again the moment it is
+        // re-attached (a structural change sets `ifc_dirty`).
+        //
+        // It is kept because "nothing reads it while detached" is an argument
+        // about every current reader, and the direction it fails in is the bad
+        // one: a node that carried `true` and left the tree would keep it, so a
+        // list rebuilt for a detached container — `cleanup_anonymous_block_boxes`
+        // takes its parents from boxes minted on the *previous* pass and can
+        // reach one — would flatten a split inline that no longer is one.
+        // `false` is the pre-field behaviour, and one pass over a slab this
+        // function already walks is not a cost worth arguing about.
+        for (_id, node) in self.tree.nodes.iter_mut() {
+            node.contributes_in_flow_block = false;
+        }
+
+        // Post-order DFS. The `bool` is "children already pushed", so a node is
+        // visited twice: once to queue its children, once to fold their answers.
+        // Iterative because this is arbitrary author markup and may be deep.
+        let mut stack: Vec<(usize, bool)> = vec![(self.tree.root_id, false)];
+        while let Some((id, folded)) = stack.pop() {
+            if !folded {
+                stack.push((id, true));
+                if let Some(node) = self.tree.nodes.get(id) {
+                    for &child_id in &node.children {
+                        stack.push((child_id, false));
+                    }
+                }
+                continue;
+            }
+            let Some(node) = self.tree.nodes.get(id) else {
+                continue;
+            };
+            let role = node.inline_flow_role();
+            // `DisplayMode::Inline` exactly — see `Node::is_split_inline` for
+            // why an atomic inline stops the recursion rather than continuing
+            // it.
+            let descends = role == InlineFlowRole::Contents
+                || (role == InlineFlowRole::Inline
+                    && node.is_element()
+                    && node.display_mode == DisplayMode::Inline);
+            let value = role == InlineFlowRole::InFlowBlock
+                || (descends
+                    && node.children.iter().any(|&c| {
+                        self.tree
+                            .nodes
+                            .get(c)
+                            .is_some_and(|child| child.contributes_in_flow_block)
+                    }));
+            self.tree.nodes[id].contributes_in_flow_block = value;
+        }
+    }
+
     /// Detect IFC roots and mark inline children.
     ///
     /// An element is an IFC root if it's a block container that has any
@@ -998,6 +1094,17 @@ impl RinchDocument {
     /// paths (standalone Taffy vs IFC) and the sync bugs that arise when
     /// elements transition between them during editing.
     pub(crate) fn setup_inline_formatting_contexts(&mut self) {
+        // Before everything else: the classification the passes below consume.
+        //
+        // **Nothing in this pass reads it yet** (#513 PR A) — the consumers land
+        // with the split. So the ordering is, today, unwitnessed: the mutant that
+        // moves this call after `create_anonymous_block_boxes` is killed only
+        // because the clear then wipes a freshly-minted anonymous box's value,
+        // which is a coincidence and not the reason the order matters. The reason
+        // is on `recompute_contributes_in_flow_block` itself; do not read that
+        // kill as cover for it.
+        self.recompute_contributes_in_flow_block();
+
         // Clean up the previous pass's measure leaves and anonymous block
         // boxes, then recreate both for the current DOM state.
         self.cleanup_ifc_measure_leaves();
