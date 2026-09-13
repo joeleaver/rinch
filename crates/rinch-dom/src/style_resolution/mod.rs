@@ -607,26 +607,26 @@ impl RinchDocument {
             // Convert Stylo ComputedValues to our ComputedStyle
             let mut new_style = ComputedStyle::from_stylo(&computed_values);
 
-            // Apply HTML presentational defaults that Stylo doesn't handle.
-            // Stylo (servo build) doesn't always apply UA stylesheet defaults
-            // for font-weight, font-style, and text-decoration on semantic HTML
-            // elements. Apply them based on tag name as browsers do.
-            match node.tag() {
-                Some("strong" | "b") if new_style.font_weight == 400.0 => {
-                    new_style.font_weight = 700.0;
-                }
-                Some("em" | "i")
-                    if new_style.font_style
-                        == crate::computed_style::values::FontStyleValue::Normal =>
-                {
-                    new_style.font_style = crate::computed_style::values::FontStyleValue::Italic;
-                }
-                Some("u" | "ins") => new_style.text_decoration.underline = true,
-                Some("s" | "strike" | "del") => new_style.text_decoration.strikethrough = true,
-                Some("code" | "pre" | "kbd" | "samp") => {
-                    new_style.user_select = crate::computed_style::UserSelectValue::Text;
-                }
-                _ => {}
+            // `user-select` has no UA rule and this Stylo build does not parse
+            // the property at all (which is also why the inline `style`
+            // attribute is re-read for it further down), so the presentational
+            // default for the code-ish elements has to be applied by tag here.
+            //
+            // The other HTML presentational defaults — `font-weight: bold` on
+            // `<b>`/`<strong>`, `font-style: italic` on `<em>`/`<i>`, the
+            // `text-decoration-line` on `<u>`/`<ins>`/`<s>`/`<strike>`/`<del>`
+            // — are UA *rules* in `load_ua_stylesheet` and must stay there.
+            // They used to be patched onto `new_style` here as well, and a
+            // post-cascade patch gets two things wrong (issue #616). It cannot
+            // tell "the author declared nothing" from "the author declared the
+            // initial value", so `font-weight: normal` on a `<b>` lost to the
+            // patch and computed 700 while `300` and `bold` worked. And it
+            // cannot inherit, because inheritance happens inside the cascade —
+            // so a descendant block of that `<b>` read the cascaded 400 while
+            // the `<b>` itself read the patched 700, one cause presenting as
+            // two consumers disagreeing.
+            if matches!(node.tag(), Some("code" | "pre" | "kbd" | "samp")) {
+                new_style.user_select = crate::computed_style::UserSelectValue::Text;
             }
 
             // `<textarea rows=N>` maps to an intrinsic height of N lines, as
