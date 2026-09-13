@@ -94,29 +94,35 @@ impl std::fmt::Debug for CloseButton {
 }
 
 impl CloseButton {
+    /// The size step this button renders at — the default when `size` is unset
+    /// or names nothing.
+    fn resolved_size(&self) -> CloseButtonSize {
+        if self.size.is_empty() {
+            CloseButtonSize::default()
+        } else {
+            self.size.parse().unwrap_or_default()
+        }
+    }
+
+    /// The glyph's edge length in px: `icon_size` when the caller gave one,
+    /// otherwise the size step's own (#474).
+    fn resolved_icon_size(&self) -> String {
+        match self.icon_size {
+            Some(px) => px.to_string(),
+            None => self.resolved_size().icon_size().to_string(),
+        }
+    }
+
     /// Generate the CSS class string for this close button.
     pub fn class_string(&self) -> String {
         let mut classes = vec!["rinch-close-button"];
 
         // Size class
-        let size: CloseButtonSize = if self.size.is_empty() {
-            CloseButtonSize::default()
-        } else {
-            self.size.parse().unwrap_or_default()
-        };
-        classes.push(size.class_name());
+        classes.push(self.resolved_size().class_name());
 
         // Radius class
-        if !self.radius.is_empty() {
-            match self.radius.as_str() {
-                "xs" => classes.push("rinch-close-button--radius-xs"),
-                "sm" => classes.push("rinch-close-button--radius-sm"),
-                "md" => classes.push("rinch-close-button--radius-md"),
-                "lg" => classes.push("rinch-close-button--radius-lg"),
-                "xl" => classes.push("rinch-close-button--radius-xl"),
-                _ => {}
-            }
-        }
+        let radius_cls = crate::class_utils::radius_class("rinch-close-button", &self.radius);
+        classes.extend(radius_cls.as_deref());
 
         if self.disabled {
             classes.push("rinch-close-button--disabled");
@@ -128,7 +134,20 @@ impl CloseButton {
 
 impl Component for CloseButton {
     fn render(&self, __scope: &mut RenderScope, _children: &[NodeHandle]) -> NodeHandle {
-        let icon_span = rinch_macros::rsx! { span { class: "rinch-icon rinch-icon--close" } };
+        // The X itself, sized by `icon_size` or by the size step (#474). What
+        // this replaces was an empty `<span class="rinch-icon
+        // rinch-icon--close">` — and no rule anywhere in the workspace matches
+        // that class, so the button drew no glyph at all. The class stays on the
+        // svg as a styling hook; the size is written as both attributes (via
+        // `close_icon_dom`) and an inline style, which is what
+        // `render_tabler_icon_with_options` does.
+        let icon_px = self.resolved_icon_size();
+        let icon_span = crate::icons::close_icon_dom(__scope, &icon_px);
+        icon_span.set_attribute("class", "rinch-icon rinch-icon--close");
+        icon_span.set_attribute(
+            "style",
+            &format!("width: {icon_px}px; height: {icon_px}px; flex-shrink: 0;"),
+        );
         let container = rinch_macros::rsx! {
             button { class: "rinch-close-button", r#type: "button" }
         };

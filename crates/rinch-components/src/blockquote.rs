@@ -37,16 +37,8 @@ impl Blockquote {
             classes.push("rinch-blockquote--with-icon");
         }
 
-        if !self.radius.is_empty() {
-            classes.push(match self.radius.as_str() {
-                "xs" => "rinch-blockquote--radius-xs",
-                "sm" => "rinch-blockquote--radius-sm",
-                "md" => "rinch-blockquote--radius-md",
-                "lg" => "rinch-blockquote--radius-lg",
-                "xl" => "rinch-blockquote--radius-xl",
-                _ => "",
-            });
-        }
+        let radius_cls = crate::class_utils::radius_class("rinch-blockquote", &self.radius);
+        classes.extend(radius_cls.as_deref());
 
         classes.join(" ")
     }

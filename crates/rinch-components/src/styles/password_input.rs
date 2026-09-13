@@ -114,6 +114,14 @@ pub fn styles() -> String {
     background-color: var(--rinch-color-filled);
     cursor: not-allowed;
 }
+
+/* PasswordInput radius (#474) — the wrapper is the bordered box; the toggle
+   button inside keeps its own small radius, like a badge's dot. */
+.rinch-password-input--radius-xs .rinch-password-input__wrapper { border-radius: var(--rinch-radius-xs); }
+.rinch-password-input--radius-sm .rinch-password-input__wrapper { border-radius: var(--rinch-radius-sm); }
+.rinch-password-input--radius-md .rinch-password-input__wrapper { border-radius: var(--rinch-radius-md); }
+.rinch-password-input--radius-lg .rinch-password-input__wrapper { border-radius: var(--rinch-radius-lg); }
+.rinch-password-input--radius-xl .rinch-password-input__wrapper { border-radius: var(--rinch-radius-xl); }
 "#
     .to_string()
 }

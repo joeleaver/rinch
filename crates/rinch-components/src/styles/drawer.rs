@@ -12,7 +12,9 @@ pub fn styles() -> String {
     left: 0;
     right: 0;
     bottom: 0;
-    z-index: 200;
+    /* #474: see the note in `styles::modal` — `z_index` publishes
+       --rinch-drawer-z-index here and the panel follows one above. */
+    z-index: var(--rinch-drawer-z-index, 200);
 }
 
 /* Hidden state - use class instead of inline style for reliability */
@@ -37,7 +39,7 @@ pub fn styles() -> String {
     box-shadow: var(--rinch-shadow-xl);
     display: flex;
     flex-direction: column;
-    z-index: 201;
+    z-index: calc(var(--rinch-drawer-z-index, 200) + 1);
     transition: transform 300ms ease;
     overflow: hidden;
     /* Use absolute within the fixed root */

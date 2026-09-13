@@ -148,5 +148,12 @@ pub fn styles() -> String {
 .rinch-badge--dot[data-color="lime"]::before { background-color: var(--rinch-color-lime-6); }
 .rinch-badge--dot[data-color="yellow"]::before { background-color: var(--rinch-color-yellow-6); }
 .rinch-badge--dot[data-color="orange"]::before { background-color: var(--rinch-color-orange-6); }
+
+/* Badge radius (#474) — overrides the pill base above, so it comes after it. */
+.rinch-badge--radius-xs { border-radius: var(--rinch-radius-xs); }
+.rinch-badge--radius-sm { border-radius: var(--rinch-radius-sm); }
+.rinch-badge--radius-md { border-radius: var(--rinch-radius-md); }
+.rinch-badge--radius-lg { border-radius: var(--rinch-radius-lg); }
+.rinch-badge--radius-xl { border-radius: var(--rinch-radius-xl); }
 "#.to_string()
 }

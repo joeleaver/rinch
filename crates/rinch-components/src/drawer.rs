@@ -274,6 +274,13 @@ impl Component for Drawer {
         let root = rinch_macros::rsx! { div { class: "rinch-drawer__root" } };
         root.set_attribute("class", &root_class);
 
+        // z_index (#474): one custom property on the root, read by both layers,
+        // keeping the panel one above the root as 200/201 did. See the note in
+        // `modal.rs` — the two components share this shape.
+        if let Some(z) = self.z_index {
+            root.set_attribute("style", &format!("--rinch-drawer-z-index: {}", z));
+        }
+
         // Build the overlay
         if self.with_overlay {
             let overlay = rinch_macros::rsx! { div { class: "rinch-drawer__overlay" } };

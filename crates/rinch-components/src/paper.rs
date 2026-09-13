@@ -114,16 +114,8 @@ impl Paper {
         }
 
         // Radius class
-        if !self.radius.is_empty() {
-            match self.radius.as_str() {
-                "xs" => classes.push("rinch-paper--radius-xs"),
-                "sm" => classes.push("rinch-paper--radius-sm"),
-                "md" => classes.push("rinch-paper--radius-md"),
-                "lg" => classes.push("rinch-paper--radius-lg"),
-                "xl" => classes.push("rinch-paper--radius-xl"),
-                _ => {}
-            }
-        }
+        let radius_cls = crate::class_utils::radius_class("rinch-paper", &self.radius);
+        classes.extend(radius_cls.as_deref());
 
         // Border
         if self.with_border {

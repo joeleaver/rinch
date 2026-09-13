@@ -78,6 +78,14 @@ pub fn styles() -> String {
 .rinch-text-input--error .rinch-text-input__input {
     border-color: var(--rinch-color-red-6);
 }
+
+/* TextInput radius (#457) — the class is on the wrapper, the border is on the
+   field, so the rule reaches down one level. */
+.rinch-text-input--radius-xs .rinch-text-input__input { border-radius: var(--rinch-radius-xs); }
+.rinch-text-input--radius-sm .rinch-text-input__input { border-radius: var(--rinch-radius-sm); }
+.rinch-text-input--radius-md .rinch-text-input__input { border-radius: var(--rinch-radius-md); }
+.rinch-text-input--radius-lg .rinch-text-input__input { border-radius: var(--rinch-radius-lg); }
+.rinch-text-input--radius-xl .rinch-text-input__input { border-radius: var(--rinch-radius-xl); }
 "#
     .to_string()
 }

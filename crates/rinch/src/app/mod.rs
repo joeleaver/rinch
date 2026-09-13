@@ -36,6 +36,8 @@ mod key_event_data_tests;
 mod node_ime_tests;
 #[cfg(all(test, feature = "desktop"))]
 mod nofocus_tests;
+#[cfg(test)]
+mod overlay_z_index_tests;
 mod select_widget;
 mod text_selection;
 #[cfg(test)]

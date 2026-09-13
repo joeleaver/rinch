@@ -41,7 +41,9 @@ use std::path::Path;
 
 /// Props that are declared, documented, and still not wired — the debt #474
 /// catalogued, with the sub-cluster each belongs to. Every entry must name a
-/// live reason: this list may only shrink.
+/// live reason: this list may only shrink. It started at 31 and is 20; the
+/// eleven that left were #474's whole `z_index` sub-cluster, its five dead
+/// `radius` props and `CloseButton::icon_size`.
 ///
 /// The overlay-behaviour cluster (#474 category A) is deliberately not wired:
 /// `close_on_escape`, `trap_focus` and `lock_scroll` are new interaction work
@@ -50,19 +52,6 @@ use std::path::Path;
 /// `overlay_opacity` needs a `Drawer` overlay to apply it to, and `auto_close`
 /// is a timer.
 const ALLOWLIST: &[(&str, &str)] = &[
-    // #474 sub-cluster A.z_index — each overlay hard-codes its z-index in CSS.
-    ("Modal::z_index", "#474 A: inline z-index override"),
-    ("Drawer::z_index", "#474 A: inline z-index override"),
-    ("Popover::z_index", "#474 A: inline z-index override"),
-    ("DropdownMenu::z_index", "#474 A: inline z-index override"),
-    ("Notification::z_index", "#474 A: inline z-index override"),
-    // #474 category B — styling with an established class idiom.
-    ("Badge::radius", "#474 B: radius class + CSS"),
-    ("NumberInput::radius", "#474 B: radius class + CSS"),
-    ("PasswordInput::radius", "#474 B: radius class + CSS"),
-    ("Tabs::radius", "#474 B: radius class + CSS"),
-    ("TextInput::radius", "#457 / #474 B: radius class + CSS"),
-    ("CloseButton::icon_size", "#474 B: icon sizing"),
     // #474 category A — overlay behaviour that does not exist yet.
     ("Modal::close_on_escape", "#474 A: focus/key behaviour"),
     ("Modal::lock_scroll", "#474 A: scroll locking"),

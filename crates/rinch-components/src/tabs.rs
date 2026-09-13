@@ -169,6 +169,11 @@ impl Tabs {
             classes.push("rinch-tabs--grow");
         }
 
+        // Radius class (#474): rounds the tab buttons, which is the only thing
+        // with corners here. `outline` keeps its top-only shape.
+        let radius_cls = crate::class_utils::radius_class("rinch-tabs", &self.radius);
+        classes.extend(radius_cls.as_deref());
+
         classes.join(" ")
     }
 }

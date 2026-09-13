@@ -90,16 +90,8 @@ impl Card {
         };
         classes.push(padding.class_name());
 
-        if !self.radius.is_empty() {
-            classes.push(match self.radius.as_str() {
-                "xs" => "rinch-card--radius-xs",
-                "sm" => "rinch-card--radius-sm",
-                "md" => "rinch-card--radius-md",
-                "lg" => "rinch-card--radius-lg",
-                "xl" => "rinch-card--radius-xl",
-                _ => "",
-            });
-        }
+        let radius_cls = crate::class_utils::radius_class("rinch-card", &self.radius);
+        classes.extend(radius_cls.as_deref());
 
         if self.with_border {
             classes.push("rinch-card--with-border");

@@ -169,6 +169,20 @@ pub fn styles() -> String {
 .rinch-tabs--grow .rinch-tabs__tab {
     flex: 1;
 }
+
+/* Tabs radius (#474) — the tab buttons are what has corners. `outline` tabs sit
+   on the panel's top edge and keep their bottom corners square; that rule
+   carries three classes to the plain one's two, so it wins whatever the order. */
+.rinch-tabs--radius-xs .rinch-tabs__tab { border-radius: var(--rinch-radius-xs); }
+.rinch-tabs--radius-sm .rinch-tabs__tab { border-radius: var(--rinch-radius-sm); }
+.rinch-tabs--radius-md .rinch-tabs__tab { border-radius: var(--rinch-radius-md); }
+.rinch-tabs--radius-lg .rinch-tabs__tab { border-radius: var(--rinch-radius-lg); }
+.rinch-tabs--radius-xl .rinch-tabs__tab { border-radius: var(--rinch-radius-xl); }
+.rinch-tabs--outline.rinch-tabs--radius-xs .rinch-tabs__tab { border-radius: var(--rinch-radius-xs) var(--rinch-radius-xs) 0 0; }
+.rinch-tabs--outline.rinch-tabs--radius-sm .rinch-tabs__tab { border-radius: var(--rinch-radius-sm) var(--rinch-radius-sm) 0 0; }
+.rinch-tabs--outline.rinch-tabs--radius-md .rinch-tabs__tab { border-radius: var(--rinch-radius-md) var(--rinch-radius-md) 0 0; }
+.rinch-tabs--outline.rinch-tabs--radius-lg .rinch-tabs__tab { border-radius: var(--rinch-radius-lg) var(--rinch-radius-lg) 0 0; }
+.rinch-tabs--outline.rinch-tabs--radius-xl .rinch-tabs__tab { border-radius: var(--rinch-radius-xl) var(--rinch-radius-xl) 0 0; }
 "#
     .to_string()
 }

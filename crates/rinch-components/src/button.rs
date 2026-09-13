@@ -151,16 +151,8 @@ impl Button {
         }
 
         // Custom radius
-        if !self.radius.is_empty() {
-            match self.radius.as_str() {
-                "xs" => classes.push("rinch-button--radius-xs"),
-                "sm" => classes.push("rinch-button--radius-sm"),
-                "md" => classes.push("rinch-button--radius-md"),
-                "lg" => classes.push("rinch-button--radius-lg"),
-                "xl" => classes.push("rinch-button--radius-xl"),
-                _ => {}
-            }
-        }
+        let radius_cls = crate::class_utils::radius_class("rinch-button", &self.radius);
+        classes.extend(radius_cls.as_deref());
 
         classes.join(" ")
     }

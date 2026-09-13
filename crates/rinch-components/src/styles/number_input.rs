@@ -135,5 +135,17 @@ pub fn styles() -> String {
 .rinch-number-input--lg .rinch-number-input__controls { width: 2rem; }
 .rinch-number-input--xl .rinch-number-input__input { height: 3.75rem; font-size: var(--rinch-font-size-lg); }
 .rinch-number-input--xl .rinch-number-input__controls { width: 2.25rem; }
+
+/* NumberInput radius (#474). The field, a prefix, a suffix and both stepper
+   buttons each derive their corners from --rinch-radius-default — including two
+   `calc(... - 1px)` insets — so rebinding that one variable on the container
+   moves all five together and keeps every corner relationship intact. The
+   component owns its whole subtree (it renders no children), so nothing of the
+   caller's inherits the rebinding. */
+.rinch-number-input--radius-xs { --rinch-radius-default: var(--rinch-radius-xs); }
+.rinch-number-input--radius-sm { --rinch-radius-default: var(--rinch-radius-sm); }
+.rinch-number-input--radius-md { --rinch-radius-default: var(--rinch-radius-md); }
+.rinch-number-input--radius-lg { --rinch-radius-default: var(--rinch-radius-lg); }
+.rinch-number-input--radius-xl { --rinch-radius-default: var(--rinch-radius-xl); }
 "#.to_string()
 }
