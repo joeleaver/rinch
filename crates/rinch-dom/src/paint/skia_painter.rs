@@ -799,12 +799,24 @@ impl Painter for TinySkiaPainter {
             // mask, so the clip it inherited is still in force for everything
             // drawn inside the layer, and then `pop_layer` installs the `None`
             // over it. Everything painted after the pop, until something else
-            // pushes or pops a clip, is unclipped. Measured from CSS, not
-            // inferred: `opacity: 0.99999994` (the one f32 below `1.0` inside
-            // `f32::EPSILON` of it) on the first of two stacking-context
-            // children of a `50x50` `overflow: hidden` box lets the *second*
-            // one paint at full size outside it, while `opacity: 1` and
-            // `opacity: 0.5` both clip — `opacity_layer_clip_tests`.
+            // pushes or pops a clip, is unclipped — and in a partial repaint
+            // that includes the dirty-region clip, which `RinchApp::build_pixels`
+            // pushes around the whole of `paint_document`.
+            //
+            // Measured from CSS, not inferred: `opacity: 0.99999994` (the one
+            // f32 below `1.0` inside `f32::EPSILON` of it) on the first of two
+            // stacking-context children of a `50x50` `overflow: hidden` box lets
+            // the *second* one paint at full size outside it, while `opacity: 1`
+            // and `opacity: 0.5` both clip.
+            //
+            // **`opacity` is the exotic way in and not the one to fix this for.**
+            // `paint_node`'s `filter: grayscale(...)` arm opens a
+            // `BlendMode::Saturation` layer at the filter's own amount, so
+            // `filter: grayscale(1)` arrives here at exactly `1.0`. That needs
+            // no unusual float and no stacking context: two plain in-flow
+            // siblings of one `overflow: hidden` box, the first greyed, and the
+            // second painted a hundred pixels outside it. Both are in
+            // `opacity_layer_clip_tests`.
             //
             // Saving the mask instead, the way [`Self::push_clip`]'s give-up
             // branches do, would also be correct and is the wrong trade here:

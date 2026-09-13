@@ -38,9 +38,17 @@
 //! - `opacity` itself. `1.0` never reaches `push_layer` (the caller guards on
 //!   `opacity < 1.0`) and `0.5` takes the ordinary path, so both clip correctly
 //!   with the bug in place. `0.99999994` is the single `f32` below `1.0` that is
-//!   within `f32::EPSILON` of it, and it is the only value that reaches the
+//!   within `f32::EPSILON` of it, and it is the only *opacity* that reaches the
 //!   branch at all. Both other values are asserted here, so the fixture cannot
 //!   quietly become a test of nothing.
+//! - The declaration that gets there. `opacity` is not the only caller, and it
+//!   is the exotic one: `paint_node`'s `filter: grayscale(...)` arm pushes a
+//!   `BlendMode::Saturation` layer at the filter's own amount, so
+//!   **`filter: grayscale(1)` hits the same branch at exactly `1.0`** — an
+//!   ordinary declaration, no unusual float needed. Measured, and the last two
+//!   tests here are the ones to read first: two plain in-flow siblings of one
+//!   `overflow: hidden` box, no stacking context anywhere, and the second one
+//!   paints outside the box because the first is greyed.
 //! - The subject's own pixels, which are clipped either way. Asserted anyway,
 //!   with a comment, because "the red escapes" is the natural reading and it is
 //!   wrong.
@@ -237,6 +245,68 @@ fn the_near_opaque_box_itself_was_never_the_one_that_escaped() {
             "the near-opaque box itself painted outside its container at \
              {SUBJECT_OUTSIDE:?}"
         );
+    }
+}
+
+/// The same clipping container, with the subject greyed rather than faded, and
+/// nothing in the document that is a stacking context: two plain in-flow
+/// children, painted one after the other by the ordinary child walk.
+///
+/// This is the *reachable* form of #560. `filter: grayscale(1)` is a normal
+/// thing to write, it resolves to exactly `1.0`, and `paint_node` hands that
+/// straight to `push_layer` as the amount of a `BlendMode::Saturation` layer —
+/// so the near-opaque branch fires on a declaration nobody would think of as a
+/// near-opaque anything. Measured against the unfixed painter: the green box
+/// paints at (150, 150), a hundred pixels outside the 50x50 box it lives in.
+fn greyed_document(filter: &str) -> TinySkiaPainter {
+    let mut doc = RinchDocument::new();
+    let body = doc.body();
+
+    let container = doc.create_element("div");
+    doc.set_attribute(
+        container,
+        "style",
+        "width: 50px; height: 50px; overflow: hidden; margin: 10px 0 0 20px",
+    );
+    doc.append_child(body, container);
+
+    let subject = doc.create_element("div");
+    doc.set_attribute(
+        subject,
+        "style",
+        &format!("width: 200px; height: 20px; background-color: rgb(255, 0, 0); filter: {filter}"),
+    );
+    doc.append_child(container, subject);
+
+    let victim = doc.create_element("div");
+    doc.set_attribute(
+        victim,
+        "style",
+        "width: 200px; height: 200px; background-color: rgb(0, 255, 0)",
+    );
+    doc.append_child(container, victim);
+
+    doc.resolve_layout(VW, VH);
+    let mut painter = TinySkiaPainter::new(VW as u32, VH as u32);
+    paint(&mut doc, &mut painter);
+    painter
+}
+
+#[test]
+fn a_full_grayscale_filter_keeps_the_clip_its_next_sibling_is_in() {
+    let painter = greyed_document("grayscale(1)");
+    assert_victim_is_clipped(&painter, "filter: grayscale(1) subject");
+}
+
+/// The controls for the pair above, and the second one is not decoration:
+/// `grayscale(0.5)` takes the ordinary path and `none` pushes no layer at all,
+/// so if either ever starts failing, the two-value spread that makes the test
+/// above mean something has gone.
+#[test]
+fn a_partial_or_absent_filter_keeps_it_too() {
+    for filter in ["none", "grayscale(0.5)"] {
+        let painter = greyed_document(filter);
+        assert_victim_is_clipped(&painter, &format!("filter: {filter} subject"));
     }
 }
 
