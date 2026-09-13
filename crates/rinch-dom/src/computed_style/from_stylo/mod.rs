@@ -243,16 +243,24 @@ impl ComputedStyle {
                 &cv.get_text().clone_text_decoration_line(),
             ),
             text_transform: text_transform_from_stylo(&text.text_transform),
-            // `text-underline-offset` is declared `engines="gecko"` in stylo's
-            // `properties/longhands/inherited_text.mako.rs`, and `build.rs`
-            // generates exactly one engine's property set — so the servo build
-            // emits no parser entry for it and Stylo discards the declaration as
-            // unknown before this function runs. There is nothing here to read
-            // it from, and **nothing anywhere else parses it either**: this line
-            // is the only thing that ever writes the field from CSS, and it
-            // writes `None` unconditionally (#580). The witness is
-            // `crates/rinch-dom/tests/underline_offset_tests.rs`, whose header records
-            // what the consumers do once the field is made non-`None` by hand.
+            // `text-underline-offset` is declared `engines="gecko"` at
+            // `stylo-0.11.0/properties/longhands/inherited_text.mako.rs:330`, and
+            // `build.rs` generates exactly one engine's property set — so the
+            // servo build emits no parser entry for it and Stylo discards the
+            // declaration as unknown before this function runs. Measured in a
+            // generated `properties.rs`: `text_underline_offset` 0 hits, the
+            // documented gecko-only `scrollbar_color` 0 hits, and
+            // `text_decoration_line` 52 hits as the positive control that the
+            // grep fires at all.
+            //
+            // There is nothing here to read it from, and **nothing anywhere else
+            // parses it either**: this line is the only place CSS could reach the
+            // field, and it writes `None` unconditionally (#580). The other two
+            // writers are not CSS paths — `Default`, and `for_anonymous_box`,
+            // which copies the parent's value because the property inherits.
+            // The witness is `crates/rinch-dom/tests/underline_offset_tests.rs`,
+            // whose header records what the consumers do once the field is made
+            // non-`None` by hand.
             text_underline_offset: None,
             white_space: white_space_from_stylo(&text.white_space_collapse, &text.text_wrap_mode),
             overflow_wrap: overflow_wrap_from_stylo(&text.overflow_wrap),

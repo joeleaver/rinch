@@ -158,26 +158,34 @@ pub struct ComputedStyle {
     pub text_align: TextAlignValue,
     pub text_decoration: TextDecorationValue,
     pub text_transform: TextTransformValue,
-    /// Where the underline sits, in **parley's** terms, not CSS's — and
-    /// **nothing sets it from CSS** (#580).
+    /// `text-underline-offset` in CSS pixels, with **CSS's sign** — and
+    /// **nothing sets it from CSS today** (#580).
     ///
-    /// `None` means "the font's own underline metric", which is what every node
-    /// gets: `text-underline-offset` is gecko-only in this Stylo build, so the
-    /// declaration never reaches `from_stylo`. The field and its two consumers
-    /// in `ifc.rs` are kept, tested and inert, waiting for a parse route.
+    /// `None` is `auto`: the font's own underline metric, which is what every
+    /// node gets, because `text-underline-offset` is gecko-only in this Stylo
+    /// build and the declaration is discarded before `from_stylo` runs. The
+    /// field and its two consumers in `ifc.rs` are kept, tested and inert,
+    /// waiting for a parse route.
     ///
-    /// `Some(px)` becomes `parley::style::StyleProperty::UnderlineOffset`, which
-    /// **replaces** the font's metric and is measured **up from the baseline**
-    /// (paint draws the line at `gy - offset`). So larger is higher, and
-    /// `Some(0.0)` is the baseline itself — measured in
-    /// `crates/rinch-dom/tests/underline_offset_tests.rs`.
+    /// `Some(px)` is measured from the **alphabetic baseline** — the zero
+    /// position css-text-decor-4 §2.3 gives for the default
+    /// `text-underline-position: auto` in horizontal writing — and **positive is
+    /// away from the text**, i.e. downwards. A length *replaces* the font's
+    /// metric rather than adding to it. Measured in Chrome 150, with an
+    /// inline-block's bottom edge marking the baseline: `auto` puts the stroke
+    /// 1px below the baseline, `0px` exactly on it, `12px` 12px below, `-6px`
+    /// 6px above.
     ///
-    /// CSS `text-underline-offset` means the opposite: the *auto* position
-    /// pushed further **away from** the text. Assigning the CSS pixel value here
-    /// would draw the underline that far above the baseline, through the glyphs.
-    /// Expressing the CSS property needs a delta applied against
-    /// `run_metrics.underline_offset` in paint, where the font is known — not a
-    /// value substituted where the style is built.
+    /// **parley's `underline_offset` is the same quantity with the opposite
+    /// sign** — baseline-*up*, since `paint/text.rs` draws the line at
+    /// `gy - offset`. So the two `ifc.rs` consumers negate on the way out, and
+    /// that sign is the entire conversion: both spellings replace the font
+    /// metric, so nothing per-font is involved. The fixtures in
+    /// `crates/rinch-dom/tests/underline_offset_tests.rs` pin the direction and
+    /// the magnitude together.
+    ///
+    /// A CSS `<percentage>` resolves against `1em`; that is a parse-route
+    /// concern, since nothing here can receive one yet.
     pub text_underline_offset: Option<f32>,
     pub white_space: WhiteSpaceValue,
     pub overflow_wrap: OverflowWrapValue,
