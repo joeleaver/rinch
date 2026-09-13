@@ -8,6 +8,28 @@ Rinch is a lightweight cross-platform GUI library for Rust, built on rinch-dom, 
 
 **Key dependencies:**
 - **rinch-dom** - HTML/CSS DOM implementation (Taffy for layout, Parley for text, Painter trait for rendering). Taffy is pinned at **0.12** in two places — `crates/rinch-dom/Cargo.toml` and the vendored `crates/stylo-taffy/Cargo.toml` — which must move together. 0.9 could not resolve a percentage `min-height`/`max-height` against a block containing block (its block algorithm hard-coded that basis as indefinite), so `min-height: 100%` silently collapsed to the content height.
+- **parley** - Text shaping and line breaking, at the **published `0.11.1`**. It was a git `rev`
+  on an unmerged 22-commit "Floats WIP" branch off `v0.7.0` until #659; upstream landed that work
+  in 0.9.0, so nothing was lost by moving to the release line. Two things about the dependency line
+  are load-bearing and neither is enforced by the compiler:
+  - **`features = ["complex-scripts"]` is on, and must stay on.** It is not in parley's `default`.
+    Without it icu4x has no Thai/Lao/Khmer/Burmese segmentation dictionary and a Thai paragraph
+    finds **no** line-break opportunity at all — measured, 4 lines become 1 and the text runs off
+    the container — plus an `ICU4X data error: No segmentation model for language: th` on stderr
+    **twice per layout**. CJK is *not* affected (its breaking comes from Unicode line-break
+    classes), so a CJK fixture cannot stand in for a Thai one.
+    `crates/rinch-dom/tests/complex_scripts_tests.rs` is the pin.
+    It is not free: the dictionaries cost about **+3.80 MB of stripped release binary**
+    (measured on this host by #659's review, on a one-crate probe differing only in the parley
+    dependency line — no `icu_*` crate is *added*, they were already in stylo's graph). It stays
+    on by default because CJK and Thai line breaking should be correct out of the box; **#660**
+    is where exposing it as a rinch cargo feature for size-sensitive embed/wasm builds is being
+    considered.
+  - **`parley::Glyph::y` is Y-down** since parley #528 (0.8.0). The struct did not change, only the
+    sign of what parley puts in it, so a consumer that subtracts it still compiles and still looks
+    right in English: `y` is 0 for ordinary Latin shaping and non-zero only for mark positioning.
+    `crates/rinch-dom/src/paint/text.rs` **adds** it, in the main pass and the shadow pass alike;
+    `crates/rinch-dom/tests/glyph_y_ydown_tests.rs` is the pin, one fixture per site.
 - **vello** - 2D GPU rendering via wgpu (GPU mode, enabled with `features = ["gpu"]`)
 - **tiny-skia** - 2D software rendering (default mode, no GPU required)
 - **softbuffer** - Software window presentation (default mode)
