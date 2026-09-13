@@ -1106,6 +1106,40 @@ impl RinchDocument {
             return;
         }
 
+        // A **flowed inline element** — a `<span>` whose content an IFC lays out
+        // — owns no box either (#591, [`crate::node::Node::is_flowed_inline_element`]).
+        // Same hazard as the two branches above, same cure: the marking pass
+        // detached its Taffy node, Taffy keeps serving a detached node the
+        // layout it last computed, and nothing ever writes this element's
+        // `layout` on purpose. So `<span style="display: block">` restyled to
+        // `inline` read back its block pass's `400x20` every pass (measured),
+        // and under a padded container that stale `(17,13)` origin is added to
+        // every descendant's painted position — measured on the base with an
+        // `inline-block` child: it lands at `(92,23)` where the declared twin's
+        // lands at `(75,10)`, a clean `(17,13)` double-count
+        // (`ifc_reattach_tests::a_wrapper_restyled_to_inline_drops_the_box_its_block_pass_left`).
+        // The same sum is what #591's absolutely positioned child reaches the
+        // stacking root through once PR 2 hoists it: with the hoist spiked and
+        // this zeroing absent it landed at `(34,46)` against Chrome's `(17,33)`.
+        // `E ghost box` enforces the zero.
+        //
+        // Recurses: an atomic inline inside the span carries a real IFC-assigned
+        // box and a direct text child of the root is stretched, and both of those
+        // reads happen below for the descendants.
+        if self.tree.nodes[node_id].is_flowed_inline_element() {
+            let node = &mut self.tree.nodes[node_id];
+            let zero = LayoutResult::default();
+            if node.layout != zero {
+                node.prev_layout = node.layout;
+                node.layout = zero;
+                self.tree.paint_dirty_nodes.push(node_id);
+            }
+            for child_id in children {
+                self.read_layout_results(child_id);
+            }
+            return;
+        }
+
         // A `display: none` element generates no box, and neither does anything
         // inside it (CSS 2.1 §9.2.4) — so the whole subtree's `layout` is zero,
         // and this is the place that has to say so (#543).

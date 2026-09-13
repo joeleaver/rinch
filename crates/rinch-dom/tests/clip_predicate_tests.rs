@@ -804,3 +804,182 @@ mod painted {
         );
     }
 }
+
+// ── What never clips: a non-atomic inline element (#591 PR 1) ───────────────
+
+/// `overflow` applies to block, flex and grid containers (css-overflow-3 §3).
+/// An inline *box* is none of those and a browser ignores `overflow: hidden` on
+/// a `<span>`; an `inline-block` is a block container and still clips. The
+/// precondition asserts the declaration reached the computed style, so what the
+/// test pins is the predicate ignoring it, not the cascade dropping it.
+#[test]
+fn an_inline_element_never_clips_but_an_inline_block_does() {
+    let mut doc = RinchDocument::new();
+    let body = doc.body();
+    let p = doc.create_element("div");
+    doc.set_attribute(
+        p,
+        "style",
+        "width: 400px; line-height: 20px; font-size: 16px",
+    );
+    doc.append_child(body, p);
+    let span = doc.create_element("span");
+    doc.set_attribute(span, "style", "overflow: hidden");
+    doc.append_child(p, span);
+    let t = doc.create_text("inline");
+    doc.append_child(span, t);
+    let ib = doc.create_element("span");
+    doc.set_attribute(
+        ib,
+        "style",
+        "display: inline-block; overflow: hidden; width: 40px; height: 20px",
+    );
+    doc.append_child(p, ib);
+    doc.resolve_layout(800.0, 600.0);
+
+    let s = doc.tree.get(span.0).unwrap();
+    assert_eq!(
+        s.computed_style.overflow_x,
+        OverflowValue::Hidden,
+        "precondition: the declaration reached the computed style"
+    );
+    assert!(!s.clips_overflow(), "an inline element never clips");
+    assert!(
+        rinch_dom::paint::clip_shape(s, 1.0, 0.0, 0.0).is_none(),
+        "and so has no clip shape"
+    );
+    let b = doc.tree.get(ib.0).unwrap();
+    assert!(
+        b.clips_overflow(),
+        "an inline-block is a block container and clips"
+    );
+}
+
+/// What the guard buys in the chain. A flowed inline element owns no box, so
+/// the clip `clip_shape` derived from it was a `0x0` rect at its parent's origin
+/// — and `stacking::Collector::descend` pushed it onto the chain of every
+/// positioned box hoisted out from under the span. Here that box is a
+/// `position: relative` inline-block: its entry in the body's sequence carried
+/// the span's clip, and the reduced hit-test model could not reach it at its own
+/// centre. The container is left **unpositioned** on purpose: a `relative` entry
+/// takes the whole live chain, so this is the shape where the span's clip is in
+/// it either way, and the real walk is pinned in
+/// `rinch`'s `hit_testing.rs::a_button_inside_an_overflow_hidden_span_is_still_tapped`.
+#[test]
+fn a_positioned_inline_block_under_an_overflow_hidden_span_carries_no_clip_from_it() {
+    let mut doc = RinchDocument::new();
+    let body = doc.body();
+    let p = doc.create_element("div");
+    doc.set_attribute(
+        p,
+        "style",
+        "width: 400px; line-height: 20px; font-size: 16px",
+    );
+    doc.append_child(body, p);
+    let span = doc.create_element("span");
+    doc.set_attribute(span, "style", "overflow: hidden");
+    doc.append_child(p, span);
+    let t = doc.create_text("text ");
+    doc.append_child(span, t);
+    let ib = doc.create_element("span");
+    doc.set_attribute(
+        ib,
+        "style",
+        "display: inline-block; position: relative; width: 40px; height: 20px",
+    );
+    doc.append_child(span, ib);
+    doc.resolve_layout(800.0, 600.0);
+
+    let body_node = doc.tree.get(doc.tree.body_id).unwrap();
+    let order = stacking_paint_order(
+        &doc.tree,
+        doc.tree.body_id,
+        1.0,
+        body_node.layout.x as f64,
+        body_node.layout.y as f64,
+    );
+    let entry = order
+        .iter()
+        .find(|e| e.node_id == ib.0)
+        .expect("the positioned inline-block is hoisted to the body's sequence");
+    assert!(
+        order.clips_for(entry).is_empty(),
+        "no clipping ancestor between the body and the inline-block: the span does not clip, got {:?}",
+        order.clips_for(entry)
+    );
+
+    let (px, py, _) =
+        rinch_dom::paint::compute_absolute_position_and_transform(&doc.tree, ib.0, 1.0);
+    let b = doc.tree.get(ib.0).unwrap();
+    assert!(
+        b.layout.width > 0.0,
+        "precondition: the inline-block has a box"
+    );
+    let (cx, cy) = (
+        px as f32 + b.layout.width / 2.0,
+        py as f32 + b.layout.height / 2.0,
+    );
+    assert_eq!(
+        resolve(&doc.tree, doc.tree.root_id, 0.0, 0.0, cx, cy),
+        Some(ib.0),
+        "the model taps the inline-block at its painted centre"
+    );
+}
+
+/// A **split inline** (#513) never clips either — the guard is on "non-atomic
+/// inline element", deliberately wider than `is_flowed_inline_element`.
+///
+/// A split inline has `display_mode == Inline` and `ifc_root == None` (it is
+/// flattened out of the box tree and never marked), so a guard narrowed to the
+/// flowed predicate — the tidy-looking unification — would let it clip again.
+/// Its `layout` is zeroed by #617's own branch, so the shape it would produce is
+/// a `0x0` rect and paint never opens a bracket for it; nothing turns red when
+/// the predicate flips, which is why this pin exists (review of PR 1, mutant h,
+/// measured surviving the suite). `overflow` does not apply to an inline box,
+/// split or not (css-overflow-3 §3).
+#[test]
+fn a_split_inline_never_clips_either() {
+    let mut doc = RinchDocument::new();
+    let body = doc.body();
+    let p = doc.create_element("div");
+    doc.set_attribute(
+        p,
+        "style",
+        "width: 400px; line-height: 20px; font-size: 16px",
+    );
+    doc.append_child(body, p);
+    let a = doc.create_element("a");
+    doc.set_attribute(a, "style", "overflow: hidden");
+    doc.append_child(p, a);
+    let t = doc.create_text("text");
+    doc.append_child(a, t);
+    let blk = doc.create_element("div");
+    doc.set_attribute(blk, "style", "width: 40px; height: 30px");
+    doc.append_child(a, blk);
+    let tail = doc.create_text("tail");
+    doc.append_child(a, tail);
+    doc.resolve_layout(800.0, 600.0);
+
+    let n = doc.tree.get(a.0).unwrap();
+    assert!(
+        n.is_split_inline(),
+        "precondition: the <a> is split around the block"
+    );
+    assert_eq!(
+        n.ifc_root, None,
+        "precondition: a split inline is never marked"
+    );
+    assert_eq!(
+        n.computed_style.overflow_x,
+        OverflowValue::Hidden,
+        "precondition: the declaration reached the computed style"
+    );
+    assert!(
+        !n.clips_overflow(),
+        "a split inline is an inline box and never clips"
+    );
+    assert!(
+        rinch_dom::paint::clip_shape(n, 1.0, 0.0, 0.0).is_none(),
+        "and so has no clip shape"
+    );
+}

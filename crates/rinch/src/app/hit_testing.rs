@@ -2410,4 +2410,58 @@ mod tests {
              the dismiss region, which is what a popup inside a Modal needs"
         );
     }
+
+    /// #591 PR 1: `overflow: hidden` on a `<span>` must not make a positioned
+    /// inline-block inside it untappable.
+    ///
+    /// A flowed inline element owns no box, so the clip `clip_shape` used to
+    /// derive from it was a `0x0` rect at its parent's origin, and the stacking
+    /// collector pushed that onto the chain of a positioned box hoisted out from
+    /// under the span whose entry carries the live chain — this `relative`
+    /// button included (an `absolute` truncated at a containing block above the
+    /// span never carried it). `hit_test_node` rejects an
+    /// entry whose chain does not contain the probe point, so the button could be
+    /// painted (its IFC draws it, and paint never consults the chain for it) and
+    /// never tapped. `overflow` does not apply to an inline box (css-overflow-3
+    /// §3), and `Node::clips_overflow` now says so; this is the real walk's pin
+    /// for it, beside `clip_predicate_tests`' reduced model.
+    #[test]
+    fn a_button_inside_an_overflow_hidden_span_is_still_tapped() {
+        let mut doc = RinchDocument::new();
+        let body = doc.body();
+        let container = doc.create_element("div");
+        doc.set_attribute(
+            container,
+            "style",
+            "width: 400px; font-size: 16px; line-height: 20px",
+        );
+        doc.append_child(body, container);
+        let span = doc.create_element("span");
+        doc.set_attribute(span, "style", "overflow: hidden");
+        doc.append_child(container, span);
+        let t = doc.create_text("Press ");
+        doc.append_child(span, t);
+        let button = doc.create_element("button");
+        doc.set_attribute(
+            button,
+            "style",
+            "position: relative; width: 60px; height: 24px",
+        );
+        doc.append_child(span, button);
+        doc.resolve_layout(800.0, 600.0);
+
+        let (px, py, _) =
+            rinch_dom::paint::compute_absolute_position_and_transform(&doc.tree, button.0, 1.0);
+        let b = doc.tree.get(button.0).unwrap();
+        assert!(b.layout.width > 0.0, "precondition: the button has a box");
+        let (cx, cy) = (
+            px as f32 + b.layout.width / 2.0,
+            py as f32 + b.layout.height / 2.0,
+        );
+        assert_eq!(
+            hit_test(&doc.tree, cx, cy),
+            Some(button.0),
+            "the button is tapped at its painted centre even though its span declares overflow: hidden"
+        );
+    }
 }

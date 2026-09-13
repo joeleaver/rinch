@@ -68,6 +68,28 @@
 //! `Clip`/`Clip` and `Clip`/`Visible` — and never beside `Hidden`, `Scroll` or
 //! `Auto` at all.
 //!
+//! ## What never clips at all
+//!
+//! A non-atomic `display: inline` element answers `false` to the predicate
+//! whatever its `overflow` computes to (#591 PR 1). `overflow` applies to block,
+//! flex and grid containers (css-overflow-3 §3); an inline *box* is none of
+//! those, while an `inline-block` is a block container and still clips. The
+//! guard lives in [`Node::clips_overflow`](crate::node::Node::clips_overflow)
+//! rather than in [`clip_shape`] for the reason this module exists: every site
+//! that asks "does this clip" asks the predicate, and a guard on the shape alone
+//! would leave hit testing's gate and the dirty-region prune disagreeing with
+//! the chain. A *flowed* inline element also owns no box — its `layout` is
+//! zeroed, see `Node::is_flowed_inline_element` — so the rect the shape derived
+//! from it was a `0x0` at its parent's origin, which `stacking::Collector::descend`
+//! pushed onto the chain of a positioned box hoisted out from under it whenever
+//! that box's entry carries the live chain (a `relative` box; an `absolute`
+//! whose containing block is the span itself — not one truncated at a
+//! containing block above the span, and not a `fixed` box). The guard is
+//! deliberately **wider** than that boxless set: a split inline and an unmarked
+//! inline element (the inner `<span>` of a re-measured `inline-block`, which
+//! carries a real Taffy box) are inline boxes too, and `overflow` applies to
+//! neither.
+//!
 //! ## The deviation this does not fix
 //!
 //! CSS clips per axis; rinch clips both axes with one rect. So an

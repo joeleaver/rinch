@@ -1504,8 +1504,14 @@ fn paint_node(
         // trap rather than a live bug, because a node only carries a scroll
         // offset if it scrolls and a node that scrolls answers
         // `clips_overflow`, so the guard one line up already returned. Both
-        // halves of that argument now read the same predicate, but correctness
-        // here should not depend on a guard above it at all.
+        // halves of that argument read the same predicate, except in one place
+        // since #591 PR 1: a non-atomic inline element never clips, while the
+        // scroll-container walks (`find_scroll_container_at_point_recursive`,
+        // `clamp_scroll_offsets`, the scrollbar geometry) read `overflow`
+        // against `Scroll | Auto` directly, so a `<span style="overflow: auto">`
+        // can carry a scroll offset and not clip. Its box is `0x0`, so no ink is
+        // at stake — and correctness here should not depend on a guard above it
+        // at all.
         let scroll_x = node.scroll_offset.0 * scale;
         let scroll_y = node.scroll_offset.1 * scale;
         paint_children_with_stacking(
