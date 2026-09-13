@@ -86,7 +86,12 @@ pub fn is_boolean_attribute(name: &str) -> bool {
     )
 }
 
-/// Truthiness for a value rinch writes into a boolean attribute.
+/// Truthiness for a value **being written into** a boolean attribute.
+///
+/// This is the *writer's* rule, and it is the only thing it is for: deciding
+/// which of the two shapes — presence or absence — a value asks for. Callers
+/// are [`super::NodeHandle::write_attribute`] and the web backend's
+/// property-mirroring arm for `checked` / `selected` / `indeterminate`.
 ///
 /// rinch writes these two ways: `rsx!` renders a `bool` through `Display`, so
 /// it arrives as `"true"` / `"false"`, while components set the bare presence
@@ -95,13 +100,37 @@ pub fn is_boolean_attribute(name: &str) -> bool {
 /// conventions round-trip — in particular an empty string means *present*, and
 /// so true.
 ///
-/// Strict HTML has no falsey string at all. Treating `"false"` as off is the
-/// escape rinch has documented for `data-disabled` since it was written, and
-/// `rinch_dom::node_is_disabled` / the web backend's `data-nofocus` reader both
-/// honour it — ASCII-case-insensitively, which is why this does too; one rule
-/// everywhere beats two.
+/// **It is not a reader's rule.** Strict HTML has no falsey string at all: a
+/// present `disabled` / `readonly` disables whatever it holds, `"false"`
+/// included, measured in Chrome 150 both as the IDL property and as a
+/// `:disabled` / `:read-only` match. Desktop's readers say the same since issue
+/// #612 — see [`data_attr_is_on`] for the one family that keeps an escape, and
+/// note that this function is *wider* than that escape anyway (it also treats
+/// `"0"` as off, which no reader does).
 pub fn attr_is_truthy(value: &str) -> bool {
     !(value.eq_ignore_ascii_case("false") || value == "0")
+}
+
+/// Whether one of **rinch's own** `data-` boolean attributes is on.
+///
+/// `data-disabled` and `data-nofocus` are rinch inventions, not HTML, and rinch
+/// gives them an escape HTML has no equivalent of: present means on *unless* the
+/// value is the literal `false`, ASCII-case-insensitively. Both backends
+/// implement it on purpose — desktop through this function, the web through
+/// `event_delegation.rs`'s `[data-nofocus]:not([data-nofocus="false" i])` — so
+/// it is a two-backend rinch convention rather than a desktop quirk.
+///
+/// The plain HTML `disabled` / `readonly` deliberately do **not** go through
+/// here: they are read by presence alone, the way a browser reads them (issue
+/// #612). Spelling the two rules as two functions is what stops the next reader
+/// from picking the wrong one by copying its neighbour, which is how the
+/// divergence #612 closed came to exist.
+///
+/// Note the deliberate narrowness against [`attr_is_truthy`]: `"0"` is **on**
+/// here, because the web selector matches only `"false"` and one rule across
+/// backends beats a tidier one on either.
+pub fn data_attr_is_on(value: &str) -> bool {
+    !value.eq_ignore_ascii_case("false")
 }
 
 #[cfg(test)]
@@ -208,9 +237,22 @@ mod tests {
         assert!(attr_is_truthy(""));
         assert!(attr_is_truthy("disabled"));
         assert!(!attr_is_truthy("0"));
-        // Case-folded, matching every reader of the escape
-        // (`rinch_dom::node_is_disabled`, `node_is_readonly`, `node_is_nofocus`,
-        // and the web backend's `[data-nofocus="false" i]` selector).
+        // Case-folded, like the `data-` escape beside it and the web backend's
+        // `[data-nofocus="false" i]` selector.
         assert!(!attr_is_truthy("FALSE"));
+    }
+
+    /// The rinch-only escape, and the one value where it deliberately parts
+    /// company with the writer's rule above.
+    #[test]
+    fn the_data_escape_is_false_only() {
+        assert!(data_attr_is_on(""), "presence is on");
+        assert!(data_attr_is_on("true"));
+        assert!(!data_attr_is_on("false"));
+        assert!(!data_attr_is_on("FALSE"), "ASCII-case-insensitive");
+        // Narrower than `attr_is_truthy` on purpose: the web selector matches
+        // only `"false"`, so `"0"` must stay on for the two backends to agree.
+        assert!(data_attr_is_on("0"));
+        assert!(!attr_is_truthy("0"));
     }
 }

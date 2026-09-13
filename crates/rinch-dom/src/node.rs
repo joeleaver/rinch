@@ -1456,32 +1456,70 @@ impl NodeTree {
 
 // ── The `disabled` rule ─────────────────────────────────────────────────────
 //
-// One rule, two consumers that must not drift: the desktop focus machinery in
-// `rinch` (Tab order, the mousedown claim, the edit gate — issue #315) and CSS
+// Two consumers that must not drift: the desktop focus machinery in `rinch`
+// (Tab order, the mousedown claim, the edit gate — issue #315) and CSS
 // `:disabled`/`:enabled` matching in `stylo_impl` (issue #429). It lives here,
 // below both, because a second hand-rolled copy is exactly how a control comes
 // to refuse input while still *styling* itself as enabled.
+//
+// Two *spellings*, though, with one rule each (issue #612): HTML `disabled` by
+// presence, like a browser; rinch's `data-disabled` with rinch's `"false"`
+// escape. Both entry points below are private — everything outside asks
+// `node_is_disabled`, which is their union.
 
-/// Whether a node carries a **disabled** marker.
+/// Whether a node carries a **disabled** marker, in either spelling.
 ///
-/// Two spellings count. `data-disabled` is what rinch's own widgets write
-/// (`select_widget.rs`, for a disabled `<option>`); the plain HTML `disabled`
-/// is what the component library writes — `Button`, `ActionIcon`,
-/// `CloseButton`, `TextInput`, `Textarea`, `NumberInput`, `PasswordInput`,
-/// `Checkbox`, `Radio`, `Switch`, `NavLink`, `Pagination`, `Tabs`,
-/// `Accordion`, `DropdownMenu`, `Fieldset`.
+/// `data-disabled` is what rinch's own widgets write (`select_widget.rs`, for a
+/// disabled `<option>`); the plain HTML `disabled` is what the component library
+/// writes — `Button`, `ActionIcon`, `CloseButton`, `TextInput`, `Textarea`,
+/// `NumberInput`, `PasswordInput`, `Checkbox`, `Radio`, `Switch`, `NavLink`,
+/// `Pagination`, `Tabs`, `Accordion`, `DropdownMenu`, `Fieldset`.
 ///
-/// Either is a **boolean attribute**: present means disabled whatever the
-/// value, and only the explicit `"false"` opts out. (Strict HTML has no
-/// opt-out at all — `disabled="false"` disables — but rinch has documented the
-/// `"false"` escape for `data-disabled` since it was written, and one rule for
-/// both spellings beats two.)
+/// **The two spellings are read by two different rules**, each spelled once
+/// below, because they answer to two different authorities:
+///
+/// - HTML `disabled` is read by **presence alone**, the way a browser reads it.
+/// - `data-disabled` is rinch's own, and keeps rinch's `"false"` escape.
+///
+/// They used to share the escape, which made `disabled="false"` *enable* a
+/// control on desktop and disable it in a browser — the same markup, opposite
+/// behaviour, and the whole of issue #612.
 pub fn node_is_disabled(node: &Node) -> bool {
-    ["disabled", "data-disabled"].iter().any(|attr| {
-        node.attributes
-            .get(*attr)
-            .is_some_and(|v| !v.eq_ignore_ascii_case("false"))
-    })
+    html_disabled_attribute_is_set(node) || data_disabled_attribute_is_on(node)
+}
+
+/// HTML's `disabled`, read by **presence alone**.
+///
+/// HTML gives a boolean attribute no falsey spelling: a present `disabled`
+/// disables whatever string it holds, so `disabled="false"` is disabled.
+/// Measured in Chrome 150 rather than recalled — `<button disabled="false">`
+/// answers `.disabled === true` and matches `:disabled`
+/// (`crates/rinch-web/tests/boolean_attributes.rs::html_reads_a_present_boolean_attribute_as_true_whatever_its_value`).
+/// `rinch-web` inherits that for free by handing the attribute to the browser,
+/// so reading it any other way here is a pure desktop/web divergence (#612).
+///
+/// There is therefore nothing to "opt out" with: removing the attribute is how
+/// markup says *enabled*, which is what [`NodeHandle::write_attribute`] does for
+/// a falsey reactive binding (#551).
+///
+/// [`NodeHandle::write_attribute`]: rinch_core::dom::NodeHandle::write_attribute
+fn html_disabled_attribute_is_set(node: &Node) -> bool {
+    node.attributes.contains_key("disabled")
+}
+
+/// rinch's own `data-disabled`, which **keeps** the `"false"` escape.
+///
+/// Not an HTML attribute, so the browser rule above has no jurisdiction: this is
+/// rinch's convention, documented as "present unless the value is `false`" since
+/// it was written, and implemented on both backends on purpose — the web's
+/// sibling `data-nofocus` selector is
+/// `[data-nofocus]:not([data-nofocus="false" i])`. The rule itself is
+/// [`rinch_core::dom::data_attr_is_on`], shared with `RinchApp::node_is_nofocus`
+/// so the family cannot drift.
+fn data_disabled_attribute_is_on(node: &Node) -> bool {
+    node.attributes
+        .get("data-disabled")
+        .is_some_and(|v| rinch_core::dom::data_attr_is_on(v))
 }
 
 /// [`node_is_disabled`] for the node itself, **or** an enclosing

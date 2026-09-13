@@ -23,7 +23,12 @@ struct Ids {
     disabled: usize,
     readonly: usize,
     data_disabled: usize,
+    /// `disabled="false"` — **disabled**, like a browser (issue #612).
     disabled_false: usize,
+    /// `readonly="false"` — **read-only**, for the same reason.
+    readonly_false: usize,
+    /// `data-disabled="false"` — rinch's own attribute, which keeps the escape.
+    data_disabled_false: usize,
     in_fieldset: usize,
     in_legend: usize,
     select: usize,
@@ -33,8 +38,11 @@ struct Ids {
 
 /// One document holding every case: an ordinary `<input>`, a `disabled` one, a
 /// `readonly` one, a `data-disabled` one (the old spelling, which must keep
-/// working), a `disabled="false"` one (the documented opt-out), and a
-/// `<fieldset disabled>` wrapping one control in its `<legend>` and one below.
+/// working), the three `"false"` spellings — `disabled="false"` and
+/// `readonly="false"`, which are **on** because HTML reads presence alone, and
+/// `data-disabled="false"`, which is **off** because rinch's own attribute keeps
+/// its escape (issue #612) — and a `<fieldset disabled>` wrapping one control in
+/// its `<legend>` and one below.
 fn mount_fixture() -> (RinchApp, Ids, Rc<RefCell<Vec<String>>>) {
     let log: Rc<RefCell<Vec<String>>> = Rc::new(RefCell::new(Vec::new()));
     let record = |tag: &'static str| {
@@ -56,6 +64,8 @@ fn mount_fixture() -> (RinchApp, Ids, Rc<RefCell<Vec<String>>>) {
         record("readonly"),
         record("data-disabled"),
         record("disabled-false"),
+        record("readonly-false"),
+        record("data-disabled-false"),
         record("in-fieldset"),
         record("in-legend"),
         record("select-input"),
@@ -84,14 +94,18 @@ fn mount_fixture() -> (RinchApp, Ids, Rc<RefCell<Vec<String>>>) {
         data_disabled.set_attribute("data-disabled", "");
         let disabled_false = field(scope, handlers[4].0);
         disabled_false.set_attribute("disabled", "false");
+        let readonly_false = field(scope, handlers[5].0);
+        readonly_false.set_attribute("readonly", "false");
+        let data_disabled_false = field(scope, handlers[6].0);
+        data_disabled_false.set_attribute("data-disabled", "false");
 
         // A `<select>` with the handlers any app with a change listener writes.
         // Starts **enabled** so a test can measure where its popup's options
         // land, then disable it and click the same place.
         let select = scope.create_element("select");
         select.set_attribute("style", "display: block; width: 200px; height: 30px");
-        select.set_attribute("data-oninput", &handlers[7].0.to_string());
-        select.set_attribute("data-onchange", &handlers[8].0.to_string());
+        select.set_attribute("data-oninput", &handlers[9].0.to_string());
+        select.set_attribute("data-onchange", &handlers[10].0.to_string());
         for (value, label) in [("a", "Alpha"), ("b", "Bravo")] {
             let opt = scope.create_element("option");
             opt.set_attribute("value", value);
@@ -105,13 +119,13 @@ fn mount_fixture() -> (RinchApp, Ids, Rc<RefCell<Vec<String>>>) {
         fieldset.set_attribute("disabled", "");
         let legend = scope.create_element("legend");
         legend.set_attribute("style", "width: 300px; height: 40px");
-        let in_legend = field(scope, handlers[6].0);
+        let in_legend = field(scope, handlers[8].0);
         legend.append_child(&in_legend);
         // A wrapper, so the inherited disable is tested through a level of
         // nesting rather than only parent-to-child.
         let wrapper = scope.create_element("div");
         wrapper.set_attribute("style", "width: 300px; height: 120px");
-        let in_fieldset = field(scope, handlers[5].0);
+        let in_fieldset = field(scope, handlers[7].0);
         wrapper.append_child(&in_fieldset);
         // A `<select>` nested below the disabled fieldset — the guard asks
         // `node_is_disabled_in_tree`, not just the control's own attribute.
@@ -132,6 +146,8 @@ fn mount_fixture() -> (RinchApp, Ids, Rc<RefCell<Vec<String>>>) {
             &readonly,
             &data_disabled,
             &disabled_false,
+            &readonly_false,
+            &data_disabled_false,
             &select,
         ] {
             root.append_child(n);
@@ -144,6 +160,8 @@ fn mount_fixture() -> (RinchApp, Ids, Rc<RefCell<Vec<String>>>) {
             readonly: readonly.node_id().0,
             data_disabled: data_disabled.node_id().0,
             disabled_false: disabled_false.node_id().0,
+            readonly_false: readonly_false.node_id().0,
+            data_disabled_false: data_disabled_false.node_id().0,
             in_fieldset: in_fieldset.node_id().0,
             in_legend: in_legend.node_id().0,
             select: select.node_id().0,
@@ -298,8 +316,12 @@ fn disabled_fields_are_not_tab_stops() {
         "read-only is not disabled — it stays reachable"
     );
     assert!(
-        order.contains(&ids.disabled_false),
-        "`disabled=\"false\"` is the documented opt-out"
+        order.contains(&ids.readonly_false),
+        "read-only of any spelling stays reachable"
+    );
+    assert!(
+        order.contains(&ids.data_disabled_false),
+        "`data-disabled=\"false\"` is rinch's own escape and still opts out"
     );
     assert!(
         !order.contains(&ids.disabled),
@@ -308,6 +330,11 @@ fn disabled_fields_are_not_tab_stops() {
     assert!(
         !order.contains(&ids.data_disabled),
         "the old spelling still excludes: {order:?}"
+    );
+    assert!(
+        !order.contains(&ids.disabled_false),
+        "`disabled=\"false\"` is disabled — HTML has no falsey spelling, and a \
+         browser agrees (#612): {order:?}"
     );
 }
 
@@ -613,20 +640,81 @@ fn the_first_legend_escapes_a_disabled_fieldset() {
 
 // ── 6. the boolean-attribute rule ───────────────────────────────────────────
 
-/// Presence is what disables; the explicit `"false"` is the only opt-out, and
-/// it holds for both spellings.
+/// Presence is the whole value of the HTML attribute — `"false"` included, the
+/// way a browser reads it (issue #612).
+///
+/// Measured rather than recalled, and measured outside rinch: Chrome 150 answers
+/// `.disabled === true` and `el.matches(":disabled") === true` for
+/// `<button disabled="false">`, and `.readOnly === true` for
+/// `<input readonly="false">`. Desktop used to answer the opposite for the same
+/// markup while `rinch-web` handed the attribute straight to the browser, so the
+/// escape was a pure divergence.
 #[test]
-fn the_boolean_rule_is_presence_with_a_false_opt_out() {
+fn the_html_attribute_is_presence_only_whatever_its_value() {
     let (mut app, ids, _log) = mount_fixture();
 
-    // `disabled="false"` opts out — it focuses and types.
+    // `disabled="false"` takes no claim, exactly like `disabled=""`.
+    click_center(&mut app, ids.disabled_false);
+    assert_eq!(
+        app.focused_input_node_id, None,
+        "`disabled=\"false\"` is disabled, so the press claims nothing"
+    );
+    assert_eq!(app.focus_target, FocusTarget::None);
+
+    // Removing the attribute is how markup says *enabled* — and the only way.
+    set_attr(&mut app, ids.disabled_false, "disabled", None);
     click_center(&mut app, ids.disabled_false);
     assert_eq!(app.focused_input_node_id, Some(ids.disabled_false));
+    type_str(&mut app, "ok");
+    assert_eq!(focused_text(&app), "ok");
 
-    // Any other value disables, whatever it says.
-    set_attr(&mut app, ids.disabled_false, "disabled", Some("no"));
+    // `readonly="false"` is read-only the same way: it focuses, and refuses text.
+    click_center(&mut app, ids.readonly_false);
+    assert_eq!(app.focused_input_node_id, Some(ids.readonly_false));
     type_str(&mut app, "z");
-    assert_eq!(focused_text(&app), "");
+    assert_eq!(
+        focused_text(&app),
+        "",
+        "`readonly=\"false\"` is read-only (#612)"
+    );
+}
+
+/// The other half of #612: rinch's **own** `data-disabled` keeps the `"false"`
+/// escape, so the change is a split of one rule into two rather than a removal.
+///
+/// `rinch-web` implements the sibling escape for `data-nofocus` deliberately
+/// (`[data-nofocus]:not([data-nofocus="false" i])`), which is what makes this a
+/// two-backend convention rather than the desktop quirk the HTML pair's escape
+/// was. Its web twin is `rinch-web/tests/nofocus.rs::the_false_value_opts_out`.
+#[test]
+fn the_data_escape_survives_on_rinchs_own_attribute() {
+    let (mut app, ids, _log) = mount_fixture();
+
+    click_center(&mut app, ids.data_disabled_false);
+    assert_eq!(app.focused_input_node_id, Some(ids.data_disabled_false));
+    type_str(&mut app, "ok");
+    assert_eq!(focused_text(&app), "ok");
+
+    // Any other value disables, whatever it says — presence is still the rule,
+    // `"false"` is merely the one string excused from it. The claim is released
+    // when that happens, so the surviving text is read from the DOM rather than
+    // from `focused_input_state` (which is gone by then, not empty).
+    set_attr(
+        &mut app,
+        ids.data_disabled_false,
+        "data-disabled",
+        Some("no"),
+    );
+    type_str(&mut app, "z");
+    assert_eq!(
+        dom_value(&app, ids.data_disabled_false),
+        "ok",
+        "a disabled field accepts no edit"
+    );
+    assert_eq!(
+        app.focused_input_node_id, None,
+        "and it releases the keyboard, like any field that goes disabled"
+    );
 }
 
 // ── 7. the sixth route: a <select> popup is a whole interaction ─────────────

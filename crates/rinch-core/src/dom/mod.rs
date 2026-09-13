@@ -79,7 +79,7 @@ pub mod mock;
 mod render_scope;
 pub mod traits;
 
-pub use bool_attr::{attr_is_truthy, is_boolean_attribute};
+pub use bool_attr::{attr_is_truthy, data_attr_is_on, is_boolean_attribute};
 pub use render_scope::*;
 pub use traits::*;
 

@@ -2112,12 +2112,14 @@ impl RinchApp {
     /// first left every one of those tabbable, and a disabled `<input>` fully
     /// typable, which is issue #315.
     ///
-    /// Either is a **boolean attribute**: present means disabled whatever the
-    /// value, and only the explicit `"false"` opts out. (Strict HTML has no
-    /// opt-out at all — `disabled="false"` disables — but rinch has documented
-    /// the `"false"` escape for `data-disabled` since it was written, and one
-    /// rule for both spellings beats two.) The probe this rule replaced
-    /// demanded the literal `"true"`, which no in-tree writer produces.
+    /// Both are **boolean attributes** — present means disabled whatever the
+    /// value — but by two rules, because they answer to two authorities
+    /// (issue #612). HTML `disabled` is read by **presence alone**, the way a
+    /// browser reads it: `disabled="false"` disables, measured. rinch's own
+    /// `data-disabled` keeps rinch's documented `"false"` escape, which the web
+    /// backend implements for its sibling `data-nofocus` too. The probe this
+    /// rule replaced demanded the literal `"true"`, which no in-tree writer
+    /// produces.
     ///
     /// The rule itself lives in `rinch-dom` ([`rinch_dom::node_is_disabled`]),
     /// below both of its consumers: this focus machinery and CSS
@@ -2137,11 +2139,15 @@ impl RinchApp {
     /// A weaker thing than [`Self::node_is_disabled`], and the distinction is
     /// the point — `ColorInput` in a non-free-form format is the one in-tree
     /// writer, and it wants the field reachable and copyable while the swatch
-    /// owns the value. Same boolean-attribute rule.
+    /// owns the value.
+    ///
+    /// An HTML boolean attribute, so **presence alone**, like `disabled` and
+    /// like a browser: `<input readonly="false">` answers `.readOnly === true`
+    /// and matches `:read-only` in Chrome 150 (issue #612). To say *writable*,
+    /// remove the attribute — which is what a falsey reactive binding does
+    /// (`NodeHandle::write_attribute`, #551).
     pub(crate) fn node_is_readonly(node: &rinch_dom::Node) -> bool {
-        node.attributes
-            .get("readonly")
-            .is_some_and(|v| !v.eq_ignore_ascii_case("false"))
+        node.attributes.contains_key("readonly")
     }
 
     /// [`Self::node_is_disabled`] for the node itself, **or** an enclosing
@@ -2321,13 +2327,17 @@ impl RinchApp {
     /// Whether a node declines to take focus from a pointer press
     /// (`data-nofocus`, issue #312).
     ///
-    /// A boolean attribute, read by the same rule as
-    /// [`Self::node_is_disabled`]: present means on whatever the value, and
-    /// only the explicit `"false"` opts out.
+    /// One of rinch's **own** boolean attributes, so it keeps rinch's `"false"`
+    /// escape: present means on whatever the value, and only the explicit
+    /// `"false"` opts out. `rinch-web` implements the same escape deliberately
+    /// (`[data-nofocus]:not([data-nofocus="false" i])`), which is why this is a
+    /// convention rather than the desktop quirk the HTML attributes' escape was
+    /// (issue #612). The rule is [`rinch_core::dom::data_attr_is_on`], shared
+    /// with `data-disabled`'s reader.
     pub(crate) fn node_is_nofocus(node: &rinch_dom::Node) -> bool {
         node.attributes
             .get("data-nofocus")
-            .is_some_and(|v| !v.eq_ignore_ascii_case("false"))
+            .is_some_and(|v| rinch_core::dom::data_attr_is_on(v))
     }
 
     /// Collect all focusable node IDs in DOM pre-order (natural tab order).

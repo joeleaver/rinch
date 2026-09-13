@@ -1387,8 +1387,16 @@ fn a_disabled_rule_matches_a_disabled_control() {
 }
 
 /// The boolean-attribute rule `:disabled` shares with the focus machinery:
-/// presence is enough whatever the value, `data-disabled` is the second
-/// accepted spelling, and only the explicit `"false"` opts out.
+/// presence is enough whatever the value, including the literal `"false"`
+/// (issue #612), and `data-disabled` is the second accepted spelling — with
+/// rinch's own `"false"` escape, which that issue kept.
+///
+/// Both halves matter, and they are opposite answers to the same string, which
+/// is why they are in one test: `disabled="false"` matches `:disabled` because a
+/// browser matches it (Chrome 150, `<button disabled="false">` → `.disabled ===
+/// true` and `el.matches(":disabled") === true`), while
+/// `data-disabled="false"` does not, because rinch's own attribute has an escape
+/// HTML never gave it and both backends implement that escape on purpose.
 ///
 /// Kills a matcher that demands the literal `"true"` — no in-tree writer
 /// produces it, every one writes `disabled=""`. Applied, this test stops on
@@ -1411,8 +1419,10 @@ fn the_disabled_selector_follows_the_boolean_attribute_rule() {
     let empty = mk(&mut doc, Some(("disabled", "")));
     let arbitrary = mk(&mut doc, Some(("disabled", "disabled")));
     let data = mk(&mut doc, Some(("data-disabled", "")));
-    let opted_out = mk(&mut doc, Some(("disabled", "false")));
-    let opted_out_mixed_case = mk(&mut doc, Some(("disabled", "FALSE")));
+    let html_false = mk(&mut doc, Some(("disabled", "false")));
+    let html_false_mixed_case = mk(&mut doc, Some(("disabled", "FALSE")));
+    let data_false = mk(&mut doc, Some(("data-disabled", "false")));
+    let data_false_mixed_case = mk(&mut doc, Some(("data-disabled", "FALSE")));
     let plain = mk(&mut doc, None);
     // A second tag from the disableable set. `.rinch-textarea__input:disabled`
     // is a shipped rule, so dropping `textarea` from `tag_is_disableable`
@@ -1443,14 +1453,28 @@ fn the_disabled_selector_follows_the_boolean_attribute_rule() {
         r#"data-disabled="" is the second spelling"#
     );
     assert_eq!(
-        opacity(&doc, opted_out),
-        1.0,
-        r#"disabled="false" is the documented opt-out"#
+        opacity(&doc, html_false),
+        0.5,
+        "disabled=\"false\" disables: presence is the whole value in HTML, and \
+         Chrome matches :disabled on it (#612)"
     );
     assert_eq!(
-        opacity(&doc, opted_out_mixed_case),
+        opacity(&doc, html_false_mixed_case),
+        0.5,
+        "no string spelling of false reaches the HTML attribute — removing it is \
+         how markup says enabled"
+    );
+    assert_eq!(
+        opacity(&doc, data_false),
         1.0,
-        "the opt-out is case-insensitive"
+        "data-disabled=\"false\" still opts out: rinch's own attribute keeps the \
+         escape both backends implement (#612)"
+    );
+    assert_eq!(
+        opacity(&doc, data_false_mixed_case),
+        1.0,
+        "and that escape is ASCII-case-insensitive, matching the web selector's \
+         `\"false\" i`"
     );
     assert_eq!(opacity(&doc, plain), 1.0, "no attribute is enabled");
     assert_eq!(

@@ -202,8 +202,14 @@ fn the_attribute_works_on_the_button_itself() {
     assert_eq!(*log.borrow(), vec!["self".to_string()]);
 }
 
-/// Boolean-attribute rule, same as `disabled`: only the explicit `"false"`
-/// opts out.
+/// rinch's own `data-` escape, which issue #612 kept while retiring the HTML
+/// pair's: the explicit `"false"` opts out, and `rinch-web` implements the same
+/// escape through its `[data-nofocus]:not([data-nofocus="false" i])` selector.
+///
+/// The sibling half of the pair lives in
+/// `disabled_input_tests::the_data_escape_survives_on_rinchs_own_attribute`;
+/// together they are what makes "the escape is rinch-specific, not retired"
+/// a tested claim rather than a comment.
 #[test]
 fn the_false_value_opts_out() {
     let (mut app, ids, _log) = mount_fixture();
