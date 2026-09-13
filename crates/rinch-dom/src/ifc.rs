@@ -126,11 +126,14 @@ impl RinchDocument {
             // Only block containers can be IFC roots — and **this gate is
             // redundant *here*** (#593), which is why removing `Inline` from it
             // killed no test and moved no pixel while the same mutation at
-            // `create_anonymous_block_boxes` fails 8 tests and at
-            // `setup_inline_formatting_contexts` fails 6 — both re-measured on
-            // *this* tree, because #593's own 3 and 9 were taken before #513 and a
-            // count quoted across a tree change is how evidence goes stale without
-            // telling anyone. A node this gate skips
+            // `create_anonymous_block_boxes` fails 9 tests and at
+            // `setup_inline_formatting_contexts` fails 7. **Six and four of those
+            // pre-date this change**, so neither site owes its witnesses to the
+            // fixtures added with this comment. Both re-measured on *this* tree,
+            // because #593's own 3 and 9 were taken before #513 — and they had
+            // already drifted to 8 and 6 two rebases ago, which is how fast a
+            // count quoted across a tree change goes stale without telling
+            // anyone. A node this gate skips
             // cannot pass the `is_ifc` test below, so the test already is the
             // gate.
             //
@@ -170,9 +173,10 @@ impl RinchDocument {
             //
             // **"Redundant" means something different at each of the other three,
             // and lumping them together was this comment's own error.** Two are
-            // load-bearing with witnesses: the same mutation fails 8 tests at
-            // `create_anonymous_block_boxes`' phase-1 scan and 6 at
-            // `setup_inline_formatting_contexts`' root scan. The third,
+            // load-bearing with witnesses: the same mutation fails 9 tests at
+            // `create_anonymous_block_boxes`' phase-1 scan and 7 at
+            // `setup_inline_formatting_contexts`' root scan, six and four of them
+            // pre-dating this change. The third,
             // `apply_empty_block_line_floor`, is a *third* category rather than a
             // second redundancy — its mutant is green like this one's, but for an
             // unrelated reason: its arm is **reached constantly** and what is
