@@ -2157,6 +2157,30 @@ impl RinchDocument {
         }
     }
 
+    /// Append `child_taffy` under `parent_taffy`, asserting in debug builds that
+    /// no Taffy list still holds it.
+    ///
+    /// Taffy's `add_child` does not remove a child from a previous parent (only
+    /// `set_children` does), so attaching a node that some list still names
+    /// makes two lists claim one node — `A double-claim`, which the next
+    /// canonicalization may or may not happen to collapse. Since #591 and #513 a
+    /// node's Taffy parent is not always its DOM parent's Taffy node, which is
+    /// exactly how a DOM move could arrive here with an edge still standing; the
+    /// mutation-time detach (`taffy_detach_contribution`) is what keeps this
+    /// quiet, and this is what says so if it ever stops.
+    pub(crate) fn taffy_add_child_checked(
+        &mut self,
+        parent_taffy: taffy::NodeId,
+        child_taffy: taffy::NodeId,
+    ) {
+        debug_assert!(
+            self.tree.taffy.parent(child_taffy).is_none(),
+            "rinch-dom: attaching a Taffy node while another list still holds it — \
+             detach from `taffy.parent()` first, or the tree carries a double-claim (#591)"
+        );
+        let _ = self.tree.taffy.add_child(parent_taffy, child_taffy);
+    }
+
     /// Safely remove a child from a Taffy parent, checking membership first.
     /// Taffy's `remove_child` panics if the child isn't actually a child of the parent,
     /// which can happen when inline children were detached by `setup_inline_formatting_contexts`.
@@ -2220,6 +2244,10 @@ impl RinchDocument {
     /// invisible: forcing its `is_contents` true — so a *plain* node's own id
     /// is never removed — passed the entire rinch-dom suite. Removing both
     /// sets unconditionally cannot express that bug.
+    ///
+    /// And the node's own id is removed from **whichever Taffy list holds it**,
+    /// which since #591 and #513 is not always `parent_taffy` — see the comment
+    /// at the bottom.
     pub(crate) fn taffy_detach_contribution(
         &mut self,
         parent_taffy: taffy::NodeId,
@@ -2237,6 +2265,55 @@ impl RinchDocument {
         }
         if let Some(node_taffy) = self.tree.nodes[node_id].taffy_id {
             self.taffy_remove_child_safe(parent_taffy, node_taffy);
+            // **And from the list that actually holds it** (#591). The DOM
+            // parent's Taffy node is not always the node's Taffy parent: an
+            // out-of-flow box beneath an inline element is a Taffy child of the
+            // IFC root that lays the line out (`setup_inline_formatting_contexts`'
+            // canonicalization), and a block inside a split inline is a child of
+            // its block container (#513). Detaching from the DOM parent alone was
+            // a silent no-op for those — `taffy_remove_child_safe` swallows a
+            // non-member — and left the removed node's Taffy id in a list the
+            // next pass then found one child too long. Measured for the
+            // out-of-flow case: the root had no out-of-flow DOM child left to
+            // canonicalize, carried `InlineRoot` on a non-leaf, and the #466 leaf
+            // invariant fired
+            // (`out_of_flow_in_inline_tests::removing_the_hoisted_absolute_leaves_a_clean_tree`).
+            // Taffy knows the answer, so it is asked rather than re-derived.
+            if let Some(actual) = self.tree.taffy.parent(node_taffy) {
+                self.taffy_remove_child_safe(actual, node_taffy);
+            }
+        }
+        // **And every edge that leaves the subtree** (#591). A hoisted
+        // out-of-flow box beneath this node — or a block inside a split inline
+        // (#513) — is a Taffy child of a list *outside* the subtree being
+        // removed or moved, so detaching the node's own edge leaves that list
+        // one stale id long. Measured by the review of PR 2: removing the span
+        // while its container kept other inline text made the container a
+        // non-leaf `InlineRoot` carrier and the #466 leaf invariant panicked;
+        // removing it as the only child left the box silently reachable. Walk
+        // the subtree, and cut every edge whose Taffy parent is not a subtree
+        // member. O(subtree), like the `ifc_root` clear the same DOM ops run.
+        let mut subtree: Vec<usize> = vec![node_id];
+        let mut i = 0;
+        while i < subtree.len() {
+            if let Some(n) = self.tree.nodes.get(subtree[i]) {
+                subtree.extend(n.children.iter().copied());
+            }
+            i += 1;
+        }
+        let members: std::collections::HashSet<taffy::NodeId> = subtree
+            .iter()
+            .filter_map(|&id| self.tree.nodes.get(id).and_then(|n| n.taffy_id))
+            .collect();
+        for &id in &subtree[1..] {
+            let Some(t) = self.tree.nodes.get(id).and_then(|n| n.taffy_id) else {
+                continue;
+            };
+            if let Some(p) = self.tree.taffy.parent(t)
+                && !members.contains(&p)
+            {
+                self.taffy_remove_child_safe(p, t);
+            }
         }
     }
 

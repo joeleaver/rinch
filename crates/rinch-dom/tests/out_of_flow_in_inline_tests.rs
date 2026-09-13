@@ -765,6 +765,68 @@ fn an_absolute_restyled_static_and_back_follows_its_container() {
     assert_consistent(&b.doc, "after padding");
 }
 
+/// Remove the absolute from the inline after it has been hoisted.
+///
+/// The hoist makes the box's Taffy parent the IFC root while its DOM parent is
+/// still the `<span>`. A `remove_child` that detached only from the DOM parent's
+/// Taffy list left the node in the root's, and the next pass — with no
+/// out-of-flow DOM child left to canonicalize — made the root carry
+/// `InlineRoot` on a non-leaf: the #466 leaf invariant, a debug panic, and in
+/// release a container collapsing to `0`. `taffy_detach_contribution` now
+/// removes a node from the Taffy list that actually holds it.
+///
+/// **Fail-first is against the hoist commit of this PR**, not against `main`: on
+/// `main` the box was never hoisted, so removing it from the `<span>` was
+/// already right.
+#[test]
+fn removing_the_hoisted_absolute_leaves_a_clean_tree() {
+    let mut b = build("middle", true, "span");
+    assert!(reachable(&b.doc, b.abs), "precondition: hoisted");
+    b.doc.remove_child(b.wrapper.unwrap(), b.abs);
+    b.doc.resolve_layout(VW + 1.0, VH);
+    assert_eq!(height_of(&b.doc, b.container), LINE);
+    assert_consistent(&b.doc, "after remove");
+    let root_taffy = b.doc.tree.get(b.container.0).unwrap().taffy_id.unwrap();
+    assert!(
+        b.doc.tree.taffy.children(root_taffy).unwrap().is_empty(),
+        "the root's Taffy list no longer names the removed box"
+    );
+}
+
+/// Move the hoisted absolute from the inline to the container (a DOM
+/// `remove_child` + `append_child`). The detach must come off the list that
+/// holds it, or the append adds a second edge to the same Taffy node — an
+/// `A double-claim` until a canonicalization happens to collapse it.
+#[test]
+fn moving_the_hoisted_absolute_out_of_the_inline_leaves_one_edge() {
+    let mut b = build("middle", true, "span");
+    b.doc.remove_child(b.wrapper.unwrap(), b.abs);
+    b.doc.append_child(b.container, b.abs);
+    // Before the next layout pass: exactly one Taffy parent edge.
+    let t = b.doc.tree.get(b.abs.0).unwrap().taffy_id.unwrap();
+    let root_taffy = b.doc.tree.get(b.container.0).unwrap().taffy_id.unwrap();
+    let count = b
+        .doc
+        .tree
+        .taffy
+        .children(root_taffy)
+        .unwrap()
+        .iter()
+        .filter(|&&c| c == t)
+        .count();
+    assert_eq!(
+        count, 1,
+        "the moved box is in the container's list exactly once"
+    );
+    b.doc.resolve_layout(VW + 1.0, VH);
+    let twin = build("middle", false, "span");
+    assert_eq!(
+        painted_at(&b.doc, b.abs, b.container),
+        painted_at(&twin.doc, twin.abs, twin.container)
+    );
+    assert_consistent(&b.doc, "after move");
+}
+
 /// The wrapper crosses `block → inline → block` under container padding
 /// `13/17`. After the first crossing the wrapper is a flowed inline element
 /// and its block pass's `(17, 13, …)` box must add nothing to the absolute's
@@ -863,6 +925,64 @@ fn lifecycle_doc(lead: bool) -> (RinchDocument, NodeId, NodeId, NodeId) {
     (doc, c, span, abs)
 }
 
+/// T8 of the review: remove the span while the container keeps other inline
+/// text. The container stays an IFC root, finds no out-of-flow box, and its
+/// Taffy node must be a leaf — with the stale edge it was not, and setup
+/// panicked.
+#[test]
+fn removing_the_inline_while_the_container_keeps_text_leaves_a_clean_tree() {
+    let (mut doc, c, span, abs) = lifecycle_doc(true);
+    doc.remove_child(c, span);
+    doc.resolve_layout(VW + 1.0, VH);
+    assert_eq!(
+        height_of(&doc, c),
+        3.0 + 7.0 + LINE + 7.0 + 3.0,
+        "one line of `lead`"
+    );
+    assert!(
+        !reachable(&doc, abs),
+        "the removed subtree's box is laid out by nobody, rightly"
+    );
+    let root_taffy = doc.tree.get(c.0).unwrap().taffy_id.unwrap();
+    assert!(
+        doc.tree.taffy.children(root_taffy).unwrap().is_empty(),
+        "the container's Taffy list no longer names the removed box"
+    );
+    assert_consistent(&doc, "span removed, lead kept");
+}
+
+/// T9 of the review: remove the span that was the container's only child. The
+/// box must leave the container's Taffy list — before the fix it stayed
+/// reachable with every validator silent, and became T8 the moment the container
+/// got inline content again.
+#[test]
+fn removing_the_inline_that_was_the_only_child_takes_its_box_with_it() {
+    let (mut doc, c, span, abs) = lifecycle_doc(false);
+    doc.remove_child(c, span);
+    // Before the next pass: the edge is already cut at mutation time. (The
+    // root's measure leaf is still in the list — it is Taffy-only and the next
+    // pass recreates it — so the assertion is about the box's id, not emptiness.)
+    let root_taffy = doc.tree.get(c.0).unwrap().taffy_id.unwrap();
+    let abs_taffy = doc.tree.get(abs.0).unwrap().taffy_id.unwrap();
+    assert!(
+        !doc.tree
+            .taffy
+            .children(root_taffy)
+            .unwrap()
+            .contains(&abs_taffy),
+        "the container's Taffy list no longer names the removed box, before any pass"
+    );
+    doc.resolve_layout(VW + 1.0, VH);
+    assert!(!reachable(&doc, abs));
+    assert_consistent(&doc, "only child removed");
+    // …and the container takes text again without incident (this is what T9
+    // would have turned into).
+    txt(&mut doc, c, "again");
+    doc.resolve_layout(VW + 2.0, VH);
+    assert_eq!(height_of(&doc, c), 3.0 + 7.0 + LINE + 7.0 + 3.0);
+    assert_consistent(&doc, "text after removal");
+}
+
 /// T12 / T18 of the review and their `inline-grid` sibling: the span becomes an
 /// **atomic** inline. Its interior is a Taffy root of its own now, so the box
 /// belongs to it — the host change must move the edge from the container to the
@@ -930,6 +1050,60 @@ fn the_inline_going_display_none_beside_text_stays_clean() {
     doc.resolve_layout(VW + 2.0, VH);
     assert_eq!(taffy_parent_dom(&doc, abs), Some(c.0));
     assert_consistent(&doc, "none -> inline");
+}
+
+/// P14e of the re-review — the **two-departures** shape §3.2′ had only
+/// forecast: the span leaves the inline flow (`display: block`) **and** its
+/// hoisted box is removed, in one frame, in both orders; then the box is
+/// re-added and the span returns to `inline`, again in one frame. The end state
+/// must be the twin's `(14,30)`, and every intermediate tree clean. Each leg
+/// crosses two of the three locks at once (the subtree-edge detach, the rehome
+/// pass, the block/inline crossing's own rebuild), which is where an
+/// order-dependent interaction between them would show.
+#[test]
+fn two_departures_in_one_frame_in_either_order_end_where_the_twin_does() {
+    for abs_first in [false, true] {
+        let (mut doc, c, span, abs) = lifecycle_doc(false);
+        let label = if abs_first {
+            "abs removed, then span -> block"
+        } else {
+            "span -> block, then abs removed"
+        };
+        if abs_first {
+            doc.remove_child(span, abs);
+            doc.set_attribute(span, "style", "display: block");
+        } else {
+            doc.set_attribute(span, "style", "display: block");
+            doc.remove_child(span, abs);
+        }
+        doc.resolve_layout(VW + 1.0, VH);
+        assert!(
+            !reachable(&doc, abs),
+            "{label}: the removed box is laid out by nobody"
+        );
+        assert_eq!(
+            height_of(&doc, c),
+            3.0 + 7.0 + LINE + 7.0 + 3.0,
+            "{label}: one line of text in a block span"
+        );
+        assert_consistent(&doc, label);
+
+        // The way back, also two departures in one frame.
+        doc.append_child(span, abs);
+        doc.set_attribute(span, "style", "");
+        doc.resolve_layout(VW + 2.0, VH);
+        assert_eq!(
+            taffy_parent_dom(&doc, abs),
+            Some(c.0),
+            "{label}: re-added and re-hoisted to the container"
+        );
+        assert_eq!(
+            painted_at(&doc, abs, c),
+            (14.0, 30.0),
+            "{label}: the end state is the twin's (Chrome 14,30)"
+        );
+        assert_consistent(&doc, &format!("{label}, then back"));
+    }
 }
 
 // ── The atomic-inline boundary (review mutant c) ─────────────────────────────

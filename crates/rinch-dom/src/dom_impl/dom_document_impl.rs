@@ -126,7 +126,7 @@ impl DomDocument for RinchDocument {
         if let (Some(parent_taffy), Some(child_taffy)) =
             (self.tree.nodes[p].taffy_id, self.tree.nodes[c].taffy_id)
         {
-            let _ = self.tree.taffy.add_child(parent_taffy, child_taffy);
+            self.taffy_add_child_checked(parent_taffy, child_taffy);
             // Mark child as dirty so it gets measured during next layout pass
             let _ = self.tree.taffy.mark_dirty(child_taffy);
         }
@@ -204,7 +204,7 @@ impl DomDocument for RinchDocument {
                 let taffy_idx = self.compute_taffy_child_index(p, pos);
                 self.attach_taffy_child_at(parent_taffy, taffy_idx, child_taffy, p, c);
             } else {
-                let _ = self.tree.taffy.add_child(parent_taffy, child_taffy);
+                self.taffy_add_child_checked(parent_taffy, child_taffy);
             }
         }
         self.invalidate_parent_ifc(p);
@@ -433,7 +433,7 @@ impl DomDocument for RinchDocument {
                 self.tree.nodes[n].children.push(text_id);
                 // Add to taffy parent
                 if let Some(parent_taffy) = self.tree.nodes[n].taffy_id {
-                    let _ = self.tree.taffy.add_child(parent_taffy, taffy_id);
+                    self.taffy_add_child_checked(parent_taffy, taffy_id);
                 }
                 self.tree.ifc_dirty = true; // Structural change (children replaced)
             }
@@ -1004,6 +1004,12 @@ impl RinchDocument {
         parent_id: usize,
         child_id: usize,
     ) {
+        debug_assert!(
+            self.tree.taffy.parent(child_taffy).is_none(),
+            "rinch-dom: attaching node {child_id} under node {parent_id} while another \
+             Taffy list still holds it — detach from `taffy.parent()` first, or the \
+             tree carries a double-claim (#591)"
+        );
         let len = self
             .tree
             .taffy
