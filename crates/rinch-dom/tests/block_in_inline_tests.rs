@@ -22,11 +22,12 @@
 //! fragment, and keeps no box for the element itself. Do not read "block-in-inline
 //! splitting landed" as "rinch has inline fragments".
 //!
-//! Two fixtures stay `#[ignore]`d, and neither is #513: **#591** (an out-of-flow
-//! child of an inline is orphaned the same way, and CSS forbids splitting around
-//! one, so the fix deliberately leaves the shape alone) and **#592** (an
+//! One fixture stays `#[ignore]`d, and it is not #513: **#592** (an
 //! `inline-block` with mixed content must generate anonymous boxes *inside*
-//! itself, which is a different mechanism).
+//! itself, which is a different mechanism). The other one that used to — #591,
+//! an out-of-flow child of an inline, orphaned the same way but never split
+//! around — is fixed by the IFC root collecting the box, and runs live; its own
+//! suite is `out_of_flow_in_inline_tests`.
 //!
 //! # The oracle: delete the wrapper
 //!
@@ -77,7 +78,8 @@
 //! Chrome: `<a>text<abs>tail</a>` is one 20px line with `tail` beside `text`.
 //! That fixture is **not** `#[ignore]`d — it passed before the fix and still
 //! passes, which is what says the fix did not widen its own predicate into a
-//! shape CSS excludes. Its *pixels* are a different matter and are #591.
+//! shape CSS excludes. Its *pixels* were a different matter — #591 — and are
+//! pinned too now.
 //!
 //! # The three twins
 //!
@@ -141,49 +143,6 @@ fn assert_consistent(doc: &RinchDocument, what: &str) {
         t.is_empty(),
         "{what}: Taffy tree inconsistent:\n  {}",
         t.join("\n  ")
-    );
-    let r = doc.run_bookkeeping_violations();
-    assert!(
-        r.is_empty(),
-        "{what}: run bookkeeping inconsistent:\n  {}",
-        r.join("\n  ")
-    );
-}
-
-/// The same, for a fixture that is **live against a defect that is still
-/// open** — now **#591**, seen from the validator side.
-///
-/// `taffy_tree_violations`' `D` rule (#589) reports a subtree that is laid out by
-/// no compute pass. An **out-of-flow** child of a bare inline is exactly that: CSS
-/// 2.1 §9.4.2 does not split an inline around one, so the element is detached into
-/// the IFC whole, the absolute stays in its Taffy child list and goes with it, and
-/// nothing lays it out.
-///
-/// It asserts **which** violations it expects rather than waiving the check, and
-/// the non-empty assertion is the half that matters: when #591 is fixed this fails,
-/// names itself, and the fixture goes back to [`assert_consistent`]. A waiver would
-/// simply go quiet and stale.
-///
-/// **It has already done that once.** This helper had two callers whose subject was
-/// the *block* case; #513's fix made both clean and the non-empty assertion failed
-/// at exactly that moment, which is the only evidence a construct like this can
-/// ever give that it bites rather than decorates.
-fn assert_only_known_591_detachment(doc: &RinchDocument, what: &str) {
-    let t = doc.taffy_tree_violations();
-    let unexpected: Vec<&String> = t.iter().filter(|l| !l.starts_with("D detached")).collect();
-    assert!(
-        unexpected.is_empty(),
-        "{what}: Taffy tree inconsistent beyond #591's detachment:\n  {}",
-        unexpected
-            .iter()
-            .map(|s| s.as_str())
-            .collect::<Vec<_>>()
-            .join("\n  ")
-    );
-    assert!(
-        !t.is_empty(),
-        "{what}: nothing is detached any more — #591 appears to be fixed. \
-         Replace this call with `assert_consistent`.",
     );
     let r = doc.run_bookkeeping_violations();
     assert!(
@@ -626,11 +585,14 @@ fn the_oracle_shape_itself_is_correct_today() {
 /// absolutely positioned `<div>` inside an `<a>` *looks* exactly like the
 /// canonical case one field away.
 ///
-/// **This height is right and the pixels are not** — see
-/// `painted::an_inline_wrapper_around_an_out_of_flow_child_changes_no_pixel`.
-/// 20px is a fixed point: "the absolute adds no height" and "the absolute is
-/// lost entirely" agree on it. What this fixture pins is only that a fix must
-/// not turn 20 into 70; it is no evidence that the shape renders correctly.
+/// **This height was right while the pixels were not** (#591): 20px is a fixed
+/// point where "the absolute adds no height" and "the absolute is lost entirely"
+/// agree, so this fixture pins only that a fix must not turn 20 into 70. The
+/// rendering is pinned in
+/// `painted::an_inline_wrapper_around_an_out_of_flow_child_changes_no_pixel` and,
+/// in full, in `out_of_flow_in_inline_tests`. The tree is clean now — this helper
+/// used to be `assert_only_known_591_detachment`, whose non-empty half failed the
+/// moment #591 was fixed, exactly as it was built to.
 #[test]
 fn an_absolutely_positioned_child_does_not_split_an_inline() {
     let w = build("abs", true, "a");
@@ -645,7 +607,7 @@ fn an_absolutely_positioned_child_does_not_split_an_inline() {
         LINE,
         "an absolute child inside an inline must not make the container three bands tall",
     );
-    assert_only_known_591_detachment(&w.doc, "absolute inside an inline");
+    assert_consistent(&w.doc, "absolute inside an inline");
 }
 
 /// rinch implements **no floats** (there is no `float` handling anywhere in
@@ -1123,19 +1085,15 @@ mod painted {
     /// around an in-flow block, and §9.4.2 says an out-of-flow box neither
     /// breaks an inline formatting context nor forces anonymous-box generation.
     /// Splitting around one would encode a rule that is simply wrong. Measured
-    /// after the fix: this shape's `<a>` reports `is_split_inline() == false` and
-    /// the profile is still `[348, 0, 0, 0, 0, 0]`.
+    /// after #513's fix: this shape's `<a>` reported `is_split_inline() == false`
+    /// and the profile was still `[348, 0, 0, 0, 0, 0]` against the twin's
+    /// `[348, 805, 400, 0, 0, 0]` — the absolute's 40x30 simply gone.
     ///
-    /// (An out-of-flow child of an inline that *also* holds an in-flow block is
-    /// a different story and does now get laid out, because the split makes it a
-    /// unit of the container —
-    /// `ifc_classifier_tests::mark_and_walk_agree_on_all_three_cases_of_the_rule`
-    /// measures that. It does not generalise to this shape and is not claimed
-    /// to.)
+    /// #591's fix gives the box geometry without splitting anything: the IFC
+    /// root loop collects an out-of-flow box beneath a detached inline into the
+    /// root's own Taffy list. This fixture was `#[ignore]`d carrying that
+    /// profile until it did; `out_of_flow_in_inline_tests` is the full suite.
     #[test]
-    #[ignore = "#591: an out-of-flow child of an inline is orphaned from Taffy and \
-           drawn nowhere — CSS does not split an inline around one, so #513\x27s \
-           fix deliberately leaves this shape alone"]
     fn an_inline_wrapper_around_an_out_of_flow_child_changes_no_pixel() {
         assert_wrapper_changes_no_pixel("abs", "span");
     }

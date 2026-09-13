@@ -2464,4 +2464,66 @@ mod tests {
             "the button is tapped at its painted centre even though its span declares overflow: hidden"
         );
     }
+
+    /// #591: an absolutely positioned child of a `<span>` is tapped where it
+    /// paints. The box is hoisted to the body's sequence through the inline
+    /// element (the stacking collector descends through it), and `hit_test_node`
+    /// probes that sequence backwards — so once the IFC root lays the box out,
+    /// the tap reaches it with no hit-testing change. Under a padded container,
+    /// and with the absolute's position read from paint's own sum, so a stale
+    /// wrapper box (PR 1) or a wrong hoist offset would both show.
+    #[test]
+    fn an_absolute_inside_an_inline_is_tapped_where_it_paints() {
+        let mut doc = RinchDocument::new();
+        let body = doc.body();
+        let container = doc.create_element("div");
+        doc.set_attribute(
+            container,
+            "style",
+            "position: relative; width: 400px; font-size: 16px; line-height: 20px; \
+             padding: 7px 11px; border: 3px solid rgb(0, 0, 0)",
+        );
+        doc.append_child(body, container);
+        let span = doc.create_element("span");
+        doc.append_child(container, span);
+        let t = doc.create_text("text");
+        doc.append_child(span, t);
+        let abs = doc.create_element("div");
+        doc.set_attribute(
+            abs,
+            "style",
+            "position: absolute; width: 40px; height: 30px; background: rgb(255, 0, 255)",
+        );
+        doc.append_child(span, abs);
+        let label = doc.create_text("block");
+        doc.append_child(abs, label);
+        let tail = doc.create_text("tail");
+        doc.append_child(span, tail);
+        doc.resolve_layout(800.0, 600.0);
+
+        let (px, py, _) =
+            rinch_dom::paint::compute_absolute_position_and_transform(&doc.tree, abs.0, 1.0);
+        let a = doc.tree.get(abs.0).unwrap();
+        assert_eq!(
+            (a.layout.width, a.layout.height),
+            (40.0, 30.0),
+            "precondition: the absolute is laid out (#591)"
+        );
+        let (cx, cy) = (
+            px as f32 + a.layout.width / 2.0,
+            py as f32 + a.layout.height / 2.0,
+        );
+        let hit = hit_test(&doc.tree, cx, cy);
+        assert!(
+            hit == Some(abs.0) || hit == Some(label.0),
+            "the absolute (or its own label) is tapped at its painted centre, got {hit:?}"
+        );
+        // And nothing else is: one padding+border up-left, the ghost position a
+        // border-box chain would give, must not tap it.
+        let off = hit_test(&doc.tree, cx - 14.0 - 40.0, cy - 10.0 - 30.0);
+        assert!(
+            off != Some(abs.0) && off != Some(label.0),
+            "a point outside the box does not tap it, got {off:?}"
+        );
+    }
 }

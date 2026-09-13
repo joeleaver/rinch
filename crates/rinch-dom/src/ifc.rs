@@ -101,15 +101,11 @@ pub(crate) fn apply_empty_block_line_floor(node: &Node, style: &mut taffy::Style
 /// builds one.
 #[derive(Debug, Default, Clone)]
 pub struct TreeCheckVerdict {
-    /// Violations the sweep fails on. Every class except a node stranded under
-    /// an inline element the IFC detached (#591), plus every DOM-tree line.
+    /// Violations the sweep fails on: every Taffy-tree line and every DOM-tree
+    /// line. There is no waived arm any more — see `tree_check_verdict` for the
+    /// one it had while #513 and then #591 were open, and for how to bring one
+    /// back if a future open defect needs it.
     pub fatal: Vec<String>,
-    /// `D detached` lines whose detachment is #591's open defect — an out-of-flow
-    /// child of an inline element, which CSS does not split (CSS 2.1 §9.4.2), so
-    /// the element is detached whole and the child is laid out by nobody.
-    /// Reported, not failed — see `tree_check_verdict`'s docs for why the waiver
-    /// is a shape and not a count, and for the fixture that retires it.
-    pub waived: Vec<String>,
 }
 
 impl RinchDocument {
@@ -776,6 +772,20 @@ impl RinchDocument {
         node_id: usize,
         out: &mut Vec<usize>,
     ) {
+        Self::collect_run_units_for(nodes, node_id, node_id, out);
+    }
+
+    /// [`Self::collect_run_units`] with the **owner** threaded through the
+    /// recursion: the container whose list is being built, which a recursion
+    /// into a `display: contents` wrapper or a split inline must not lose sight
+    /// of, because a hoisted out-of-flow box (#591) is a unit of exactly one
+    /// owner and is recognised by comparing `hoisted_out_of_flow_to` with it.
+    fn collect_run_units_for(
+        nodes: &slab::Slab<Node>,
+        node_id: usize,
+        owner: usize,
+        out: &mut Vec<usize>,
+    ) {
         let Some(node) = nodes.get(node_id) else {
             return;
         };
@@ -783,6 +793,17 @@ impl RinchDocument {
             let Some(child) = nodes.get(child_id) else {
                 continue;
             };
+            // A hoisted out-of-flow box is a unit of its **host** and of nothing
+            // else (#591): when this walk is building some other node's list —
+            // the inline element the box sits in, or a wrapper under it — the
+            // box is not this node's child in the box tree. Its host's walk
+            // picks it up below, right after the inline element.
+            if child
+                .hoisted_out_of_flow_to
+                .is_some_and(|host| host != owner)
+            {
+                continue;
+            }
             // Two kinds of child contribute their children's boxes rather than
             // one of their own, and both are recursed into rather than pushed:
             //
@@ -796,9 +817,53 @@ impl RinchDocument {
             // **A unit is therefore never either of those**, by construction,
             // and the consumers below rely on that rather than re-testing.
             if child.inline_flow_role() == InlineFlowRole::Contents || child.is_split_inline() {
-                Self::collect_run_units(nodes, child_id, out);
+                Self::collect_run_units_for(nodes, child_id, owner, out);
             } else {
                 out.push(child_id);
+                // A third kind contributes **one** box of its own plus some of
+                // its descendants' (#591): a non-atomic `display: inline`
+                // element holding an out-of-flow box. CSS 2.1 §9.4.2 says the
+                // box neither breaks the inline formatting context nor splits
+                // the inline — so the inline stays one unit, flowed whole by
+                // the IFC — and the box, which the IFC does not lay out and
+                // which would otherwise leave the Taffy tree with the detached
+                // inline, is a unit of this owner in its own right, emitted
+                // right after the inline it sits in. It joins no run and ends
+                // none (#406), so the run grouping is untouched.
+                if child.hosts_hoisted_out_of_flow
+                    && child.is_element()
+                    && child.display_mode == DisplayMode::Inline
+                {
+                    Self::collect_hoisted_out_of_flow(nodes, child_id, owner, out);
+                }
+            }
+        }
+    }
+
+    /// The out-of-flow boxes beneath the non-atomic inline element `inline_id`
+    /// that are hoisted to `owner` (#591), in DOM order — walking through
+    /// nested non-atomic inlines and `display: contents` wrappers, and only
+    /// where `hosts_hoisted_out_of_flow` says there is something to find.
+    fn collect_hoisted_out_of_flow(
+        nodes: &slab::Slab<Node>,
+        inline_id: usize,
+        owner: usize,
+        out: &mut Vec<usize>,
+    ) {
+        let Some(node) = nodes.get(inline_id) else {
+            return;
+        };
+        for &child_id in &node.children {
+            let Some(child) = nodes.get(child_id) else {
+                continue;
+            };
+            if child.hoisted_out_of_flow_to == Some(owner) {
+                out.push(child_id);
+            } else if child.hosts_hoisted_out_of_flow
+                && (child.inline_flow_role() == InlineFlowRole::Contents
+                    || (child.is_element() && child.display_mode == DisplayMode::Inline))
+            {
+                Self::collect_hoisted_out_of_flow(nodes, child_id, owner, out);
             }
         }
     }
@@ -1121,48 +1186,102 @@ impl RinchDocument {
     /// and so are not reached by this walk at all — `create_anonymous_block_boxes`
     /// sets theirs when it mints them, because by the rule above an anonymous
     /// block box (an in-flow `Block`) contributes `true`.
-    fn recompute_contributes_in_flow_block(&mut self) {
-        // **The clear is load-bearing, and this paragraph used to say the
-        // opposite.** Until #615 it read "defence, not a fix", on the strength of
-        // a mutant that deleted these three lines and survived, and of an
-        // argument that a detached node's field "is read by nothing while it is
-        // detached". Both statements are now false, and the same change falsified
-        // them: the IFC passes *do* read the field for a detached node —
-        // `collect_run_units` asks `Node::is_split_inline()`, which is a read of
-        // it — so without the clear a `<a>` that left the document keeps `true`,
-        // goes on being flattened, and the container never becomes an IFC root
-        // again. That is the whole of #615's witness route, so deleting the clear
-        // closes it.
+    fn recompute_contributes_in_flow_block(
+        &mut self,
+    ) -> Vec<(usize, Option<usize>, Option<usize>)> {
+        // **The clear is defence, not a fix, and that is measured**: the mutant
+        // that deletes these lines survives `-p rinch-dom -p rinch` (51
+        // targets), including the transition fixture written to catch exactly
+        // this — derived state that is only ever set. The reason is that the
+        // fold below *writes* every node the walk reaches, `false` included, so
+        // the clear can only matter for the two classes it does not reach: an
+        // anonymous block box, which is minted fresh with its value every pass,
+        // and a node detached from the document root, which nothing reads while
+        // it is detached and which the walk reaches again the moment it is
+        // re-attached (a structural change sets `ifc_dirty`).
         //
-        // Measured on this tree, not argued: the mutant that deletes these three
-        // lines is now **killed** by `ifc_classifier_tests`'
-        // `a_removed_subtree_still_stops_the_mark_and_the_walk_at_a_block` and
-        // `a_detached_contents_wrapper_answers_transparent_inside_a_detached_inline`,
-        // both at their *precondition* assertions — which is the right place, since
-        // what the mutant destroys is the shape rather than the answer.
+        // It is kept because "nothing reads it while detached" is an argument
+        // about every current reader, and the direction it fails in is the bad
+        // one: a node that carried `true` and left the tree would keep it, so a
+        // list rebuilt for a detached container — `cleanup_anonymous_block_boxes`
+        // takes its parents from boxes minted on the *previous* pass and can
+        // reach one — would flatten a split inline that no longer is one.
+        // `false` is the pre-field behaviour, and one pass over a slab this
+        // function already walks is not a cost worth arguing about.
         //
-        // The fold below still writes every node the walk reaches, `false`
-        // included, so the clear only ever decides the two classes it does not
-        // reach: an anonymous block box, minted fresh with its value every pass,
-        // and a node detached from the document root — which is the class that
-        // turned out to matter. `false` is the pre-field behaviour for it, and
-        // deliberately so (see the doc above), and one pass over a slab this
-        // function already walks was never a cost worth arguing about.
-        for (_id, node) in self.tree.nodes.iter_mut() {
+        // For `hoisted_out_of_flow_to` the clear is **load-bearing** (#591): a
+        // hoisted box whose inline element left the document is not reached by
+        // the walk, so the clear is what turns its `Some(host)` into `None`, and
+        // the change list below is what then takes it out of the host's Taffy
+        // list. Snapshot first so the change can be seen.
+        let mut previous: Vec<(usize, Option<usize>)> = Vec::new();
+        for (id, node) in self.tree.nodes.iter_mut() {
             node.contributes_in_flow_block = false;
+            if node.hoisted_out_of_flow_to.is_some() {
+                previous.push((id, node.hoisted_out_of_flow_to));
+            }
+            node.hoisted_out_of_flow_to = None;
+            node.hosts_hoisted_out_of_flow = false;
         }
 
         // Post-order DFS. The `bool` is "children already pushed", so a node is
         // visited twice: once to queue its children, once to fold their answers.
         // Iterative because this is arbitrary author markup and may be deep.
+        //
+        // The first visit also runs the **top-down** half (#591): every node
+        // carries, for its children, the nearest ancestor that owns a Taffy
+        // child list (`host`) and whether a non-atomic `display: inline`
+        // element has been crossed on the way down from it. An out-of-flow box
+        // met with `crossed == true` is hoisted to `host`. A `display: contents`
+        // wrapper passes both through unchanged; a non-atomic inline element
+        // sets `crossed`; anything else — a block container, an **atomic**
+        // inline (its interior is a Taffy root of its own, and a box inside it
+        // is its own, which is what keeps `DropdownMenu`'s panels under its
+        // `inline-block` root), an out-of-flow box, a text node — becomes the
+        // host for its own children with `crossed` reset.
+        //
+        // A split inline (#513) is treated as a plain inline here, deliberately
+        // and harmlessly: the box it would hoist is already a unit of the same
+        // container through `collect_run_units`' split recursion, and the
+        // `hoisted_out_of_flow_to` it gets names that same container, so
+        // `box_tree_parent` and the list owner agree. (`is_split_inline` cannot
+        // be consulted on the way down anyway — `contributes_in_flow_block` is
+        // folded on the way up.)
+        let mut ctx: std::collections::HashMap<usize, (Option<usize>, bool)> =
+            std::collections::HashMap::new();
+        ctx.insert(self.tree.root_id, (Some(self.tree.root_id), false));
         let mut stack: Vec<(usize, bool)> = vec![(self.tree.root_id, false)];
         while let Some((id, folded)) = stack.pop() {
             if !folded {
                 stack.push((id, true));
-                if let Some(node) = self.tree.nodes.get(id) {
-                    for &child_id in &node.children {
-                        stack.push((child_id, false));
-                    }
+                let Some(node) = self.tree.nodes.get(id) else {
+                    continue;
+                };
+                let (host, crossed) = node
+                    .parent
+                    .and_then(|p| ctx.get(&p).copied())
+                    .unwrap_or((Some(id), false));
+                let role = node.inline_flow_role();
+                let non_atomic_inline = role == InlineFlowRole::Inline
+                    && node.is_element()
+                    && node.display_mode == DisplayMode::Inline;
+                let hoisted_to = if role == InlineFlowRole::OutOfFlow && crossed {
+                    host
+                } else {
+                    None
+                };
+                let child_ctx = if role == InlineFlowRole::Contents {
+                    (host, crossed)
+                } else if non_atomic_inline {
+                    (host, true)
+                } else {
+                    (Some(id), false)
+                };
+                ctx.insert(id, child_ctx);
+                let children: Vec<usize> = node.children.clone();
+                self.tree.nodes[id].hoisted_out_of_flow_to = hoisted_to;
+                for &child_id in children.iter() {
+                    stack.push((child_id, false));
                 }
                 continue;
             }
@@ -1185,7 +1304,90 @@ impl RinchDocument {
                             .get(c)
                             .is_some_and(|child| child.contributes_in_flow_block)
                     }));
-            self.tree.nodes[id].contributes_in_flow_block = value;
+            // `hosts` propagates up through the transparent kinds only: the
+            // host itself is the last node to carry it, and its own parent does
+            // not, so the O(1) gate in `box_tree_children` fires for exactly
+            // the lists that must be rebuilt from units.
+            let hosts = node.children.iter().any(|&c| {
+                self.tree.nodes.get(c).is_some_and(|child| {
+                    child.hoisted_out_of_flow_to.is_some()
+                        || (child.hosts_hoisted_out_of_flow
+                            && (child.inline_flow_role() == InlineFlowRole::Contents
+                                || (child.is_element()
+                                    && child.display_mode == DisplayMode::Inline)))
+                })
+            });
+            let n = &mut self.tree.nodes[id];
+            n.contributes_in_flow_block = value;
+            n.hosts_hoisted_out_of_flow = hosts;
+        }
+
+        // The hosts that changed, for `rehome_hoisted_out_of_flow`: every box
+        // that was hoisted last pass and is hoisted elsewhere or not at all now,
+        // and every box hoisted for the first time.
+        let mut changes: Vec<(usize, Option<usize>, Option<usize>)> = Vec::new();
+        let mut seen: std::collections::HashSet<usize> = std::collections::HashSet::new();
+        for (id, old) in previous {
+            seen.insert(id);
+            let new = self
+                .tree
+                .nodes
+                .get(id)
+                .and_then(|n| n.hoisted_out_of_flow_to);
+            if new != old {
+                changes.push((id, old, new));
+            }
+        }
+        for (id, node) in &self.tree.nodes {
+            if node.hoisted_out_of_flow_to.is_some() && !seen.contains(&id) {
+                changes.push((id, None, node.hoisted_out_of_flow_to));
+            }
+        }
+        changes
+    }
+
+    /// Move the Taffy edge of every out-of-flow box whose host changed this
+    /// pass (#591) — the record-and-restore half of the hoist, and the sentence
+    /// in the design that was wrong ("no record/restore list is needed").
+    ///
+    /// A hoisted box's Taffy parent is its host, not its DOM parent, and the
+    /// one authority for a list ([`Self::collect_effective_taffy_children`])
+    /// now names it there. But an authority is consulted only when a list is
+    /// **rebuilt**, and the passes that rebuild lists are keyed to other
+    /// departures — an anonymous box dropped, a split undone, an inline that
+    /// became block-level. None of them fires when the *hoist condition* ends:
+    /// the span restyled to `inline-block` (an atomic inline is still
+    /// `InlineFlowRole::Inline`, so `reattach_departed_ifc_children` skips it),
+    /// or the span removed from the document outright. The stale edge then
+    /// made the IFC root a non-leaf carrier of `InlineRoot` and the #466 leaf
+    /// invariant panicked — measured by the review of PR 2 (T8, T12, T18), all
+    /// clean before the hoist existed.
+    ///
+    /// So: for each box whose `hoisted_out_of_flow_to` differs from last pass,
+    /// rebuild the old host's list (it stops naming the box), the new host's
+    /// (it starts to), and the list of whatever the box's box-tree parent now
+    /// is (for a box that is no longer hoisted, its DOM-side owner takes it
+    /// back). `set_children` steals, so the order is immaterial. A box whose
+    /// inline element left the document has no new host and no live owner; its
+    /// edge was already cut at mutation time by `taffy_detach_contribution`,
+    /// and the old host's rebuild here is the second lock on the same door.
+    fn rehome_hoisted_out_of_flow(&mut self, changes: Vec<(usize, Option<usize>, Option<usize>)>) {
+        let mut owners: Vec<usize> = Vec::new();
+        for (id, old, new) in changes {
+            for host in [old, new].into_iter().flatten() {
+                if self.tree.nodes.contains(host) && !owners.contains(&host) {
+                    owners.push(host);
+                }
+            }
+            if self.tree.nodes.contains(id)
+                && let Some(owner) = Self::effective_taffy_owner(&self.tree.nodes, id)
+                && !owners.contains(&owner)
+            {
+                owners.push(owner);
+            }
+        }
+        for owner in owners {
+            self.rebuild_effective_taffy_children(owner);
         }
     }
 
@@ -1306,7 +1508,7 @@ impl RinchDocument {
         // the rebuilds below all do. Reading a previous pass's value here would
         // rebuild a Taffy child list from a classification this pass is about to
         // contradict; see the function's own doc.
-        self.recompute_contributes_in_flow_block();
+        let hoist_changes = self.recompute_contributes_in_flow_block();
 
         // Clean up the previous pass's measure leaves, anonymous block boxes and
         // splits, then recreate all three for the current DOM state.
@@ -1314,6 +1516,10 @@ impl RinchDocument {
         let was_split = std::mem::take(&mut self.tree.split_inlines);
         self.cleanup_anonymous_block_boxes();
         self.restore_split_inlines(was_split);
+        // Before the boxes are minted, like the split restore, so a host's
+        // rebuilt list names members rather than boxes that are about to exist
+        // (#591).
+        self.rehome_hoisted_out_of_flow(hoist_changes);
         self.create_anonymous_block_boxes();
         // After the boxes exist, so the container's rebuilt list names them
         // rather than their members (#513).
@@ -1537,7 +1743,19 @@ impl RinchDocument {
             // `an_insert_into_a_container_with_a_measure_leaf_...` builds.)
             let mut out_of_flow_children: Vec<taffy::NodeId> = Vec::new();
             let mut in_flow_stays_attached = false;
-            for &child_id in &self.tree.nodes[root_id].children {
+            // **The root's box-tree children, not its DOM `children`** (#591).
+            // An out-of-flow box beneath a non-atomic inline element is a unit
+            // of its host container (`collect_run_units`), so it appears here
+            // as an `OutOfFlow` unit of the root that hosts it and is collected
+            // like a direct one — and is absent from a root that does not host
+            // it: under a mixed-content container the IFC root is an anonymous
+            // block box and the box's host is the *container*, whose Taffy list
+            // `collect_effective_taffy_children` names it in, which is what
+            // makes the container (the CSS containing block) rather than the
+            // anonymous box the Taffy parent it resolves its insets against.
+            // For an anonymous box root this is its run, verbatim (#566).
+            let root_scan: Vec<usize> = Self::box_tree_children(&self.tree.nodes, root_id).to_vec();
+            for &child_id in &root_scan {
                 let Some(child) = self.tree.nodes.get(child_id) else {
                     continue;
                 };
@@ -1545,7 +1763,12 @@ impl RinchDocument {
                     // A comment has no Taffy node at all; a `display: none`
                     // child generates no box and was detached by the marking
                     // pass (#487); inline content was detached into this IFC.
-                    InlineFlowRole::Comment | InlineFlowRole::NoBox | InlineFlowRole::Inline => {}
+                    InlineFlowRole::Comment | InlineFlowRole::NoBox => {}
+                    // Inline content was detached into this IFC. An out-of-flow
+                    // box beneath a non-atomic inline element is not reached
+                    // through it here — it is a unit of its host in its own
+                    // right and arrives through the `OutOfFlow` arm (#591).
+                    InlineFlowRole::Inline => {}
                     InlineFlowRole::Contents => {
                         if Self::contents_is_inline_transparent(&self.tree.nodes, child_id) {
                             // A transparent wrapper's flattened *in-flow*
@@ -2020,178 +2243,32 @@ impl RinchDocument {
     /// nothing asserts. A violation was reported 149 times under `--nocapture`
     /// and 0 times without it, for the whole life of the flag.
     ///
-    /// It cannot simply fail on everything: **#591** is open, and an out-of-flow
-    /// child of an inline element is laid out by nobody, so a `D detached` line
-    /// is live across `-p rinch-dom -p rinch`. `waived` holds exactly those;
-    /// `fatal` holds everything else, and the sweep fails on it.
-    ///
-    /// (It was **#513**'s waiver, and 15 lines, until that issue was fixed. The
-    /// fix removed the whole block-in-inline class and left one line standing —
-    /// the out-of-flow shape #513 deliberately does not touch, because CSS 2.1
-    /// §9.4.2 says an out-of-flow box does not break an inline formatting
-    /// context. See [`Self::strandings_under_a_detached_inline`]; the predicate
-    /// did not change, only what is left for it to find.)
-    ///
-    /// # What the waiver waives, and why it is a shape rather than a count
-    ///
-    /// A count (*"15 lines are expected"*) would move with every fixture added
-    /// or removed, and would pass a brand-new detachment in for free the moment
-    /// an unrelated fixture stopped reporting one. The waiver is
-    /// [`Self::strandings_under_a_detached_inline`] instead: a `D detached` node
-    /// whose Taffy chain terminates at one of **its own DOM ancestors** that the
-    /// inline formatting context detached on purpose. That is the mechanism
-    /// stated structurally, so a new `D` anywhere else — a `display: contents`
-    /// wrapper's stranded chain, a moved Taffy edge, a subtree hanging off a
-    /// freed node — is `fatal`, and so is every `A`, `B`, `C`, `E` and DOM-tree
-    /// line whatever its shape.
-    ///
-    /// Being structural is what let it survive #513's fix as a **rename**: the
-    /// class it was written for went away and the predicate needed no edit at
-    /// all. A waiver written as "these 15 lines" would have had to be rebuilt.
-    ///
-    /// It fails in **both** directions, which is the whole requirement:
-    ///
-    /// * a new violation of any class is `fatal` and the sweep panics;
-    /// * when #591 is fixed the waiver has nothing left to waive, and
-    ///   `tree_check_hook_tests::the_out_of_flow_in_inline_waiver_still_waives_something`
-    ///   fails and names the deletion. That fixture is the waiver's only
-    ///   witness — a waiver whose retirement nothing asserts goes quiet and
-    ///   stale, which is the failure #584 is about. It has already done that job
-    ///   once, for #513, which is the evidence that it bites.
+    /// **It fails on everything now.** For its first two days it could not:
+    /// **#513** was open, block-level content inside an inline element was laid
+    /// out by nobody, and 15 `D detached` lines were live across
+    /// `-p rinch-dom -p rinch`; #513's fix left one standing — **#591**'s
+    /// out-of-flow child of an inline — and #591's fix removed that. So the
+    /// verdict carried a `waived` arm for those lines, and the waiver was a
+    /// **shape**, not a count: a `D detached` node whose Taffy chain terminated
+    /// at one of its own DOM ancestors that the inline formatting context had
+    /// detached on purpose (`strandings_under_a_detached_inline`, deleted with
+    /// #591). A count ("15 lines are expected") would have moved with every
+    /// fixture and passed a brand-new detachment in for free; the shape survived
+    /// #513's fix as a rename and retired itself on #591's — each time because
+    /// `tree_check_hook_tests` carried a witness whose only job was to fail the
+    /// moment the waiver waived nothing, which it did, twice. That is the
+    /// pattern to reuse if a future open defect ever needs the arm back: a
+    /// structural predicate, plus a fixture that fails when the defect is fixed.
+    /// Never a count, never a blanket class exemption.
     ///
     /// `run_bookkeeping_violations` is deliberately absent, for the reason
     /// given at the sweep's call site: it is not any-time-true.
     pub fn tree_check_verdict(&self) -> TreeCheckVerdict {
-        let mut verdict = TreeCheckVerdict::default();
-        let taffy = self.taffy_tree_violations();
-        // The prefixes a waivable node's line begins with, built rather than
-        // parsed — `describe` formats `"D detached: dom {id} <tag>…"`, so the
-        // trailing space is what keeps `dom 6` from matching `dom 60`.
-        //
-        // Computed only when there is a `D` line to classify. The walk is one
-        // Taffy parent chain per node; on a 3204-node document in a debug build
-        // it took the whole verdict from 4.39ms to 5.13ms, best of 40 — a sixth
-        // of a check that is itself about 8% of the 55-75ms layout pass it hangs
-        // off. Cheap, but paid for nothing on every clean pass, and there is no
-        // `D` line in the overwhelming majority of them.
-        let waivable: Vec<String> = if taffy.iter().any(|l| l.starts_with("D detached")) {
-            self.strandings_under_a_detached_inline()
-                .into_iter()
-                .map(|id| format!("D detached: dom {id} "))
-                .collect()
-        } else {
-            Vec::new()
-        };
-        for line in taffy {
-            if waivable.iter().any(|p| line.starts_with(p.as_str())) {
-                verdict.waived.push(line);
-            } else {
-                verdict.fatal.push(line);
-            }
-        }
+        let mut fatal = self.taffy_tree_violations();
         // Nothing in the DOM-tree validator has a known open defect behind it —
         // it has reported 0 workspace-wide since #578 — so every line is fatal.
-        verdict.fatal.extend(self.dom_tree_violations());
-        verdict
-    }
-
-    /// Every node stranded in Taffy because an inline **ancestor** of it was
-    /// detached into an inline formatting context — today, #591.
-    ///
-    /// `mark_inline_descendants` removes an inline element's Taffy node because
-    /// Parley lays that content out instead, and anything left in that node's
-    /// child list goes with it: every edge above it is intact, nothing computes
-    /// any of them, and `D` is the rule that sees it (#589).
-    ///
-    /// # It was #513's waiver and is now #591's
-    ///
-    /// When this was written, all 15 live `D detached` lines in
-    /// `-p rinch-dom -p rinch` were block-level content inside an inline
-    /// element — #513 — and the function was named for it. #513's fix removed
-    /// that whole class: a `display: inline` element holding an in-flow
-    /// block-level box is now **split** around it
-    /// ([`crate::node::Node::is_split_inline`]), so its pieces are units of its
-    /// block container, the block is a Taffy child of that container, and nothing
-    /// is stranded.
-    ///
-    /// What survives is the shape #513 deliberately does **not** touch, because
-    /// CSS 2.1 §9.4.2 says an out-of-flow box neither breaks an inline formatting
-    /// context nor forces anonymous-box generation: an `absolute` or `fixed` child
-    /// of an inline element does not split it, so the element is still detached
-    /// whole and that child is still laid out by nobody. That is #591, and it is
-    /// the one line this waiver now waives.
-    ///
-    /// **The predicate itself is unchanged** — it was always structural rather
-    /// than a description of #513's markup, which is exactly why the retarget is a
-    /// rename and a doc rewrite rather than new logic.
-    ///
-    /// Two conditions, not one. The terminus must be
-    ///
-    /// 1. **IFC-detached inline content** (`ifc_root.is_some()`) — which the
-    ///    `<div display: Contents>` terminus of
-    ///    `taffy_reachability_tests::a_chain_hanging_off_a_contents_node_is_reported_as_detached`
-    ///    is not, so that shape stays `fatal`; and
-    /// 2. **a DOM ancestor of the reported node** — so a Taffy edge *moved* to
-    ///    an unrelated inline is not waived either. That is exactly
-    ///    `taffy_reachability_tests`' `reparent_taffy` shape, which #589 added
-    ///    the `D` rule for.
-    ///
-    /// Both conditions are what keep this narrow enough to be worth having: a
-    /// blanket `D` exemption would make the sweep useless, and
-    /// `tree_check_hook_tests` pins each condition on its own.
-    ///
-    /// Both walks are bounded by the node count and **fail closed**: an
-    /// unterminated chain waives nothing, so a cycle reports rather than hangs.
-    fn strandings_under_a_detached_inline(&self) -> Vec<usize> {
-        let cap = self.tree.nodes.len() + 1;
-        let mut out = Vec::new();
-        for (id, node) in &self.tree.nodes {
-            let Some(taffy_id) = node.taffy_id else {
-                continue;
-            };
-            // The top of this node's Taffy parent chain.
-            let mut terminus = taffy_id;
-            let mut hops = 0;
-            while let Some(p) = self.tree.taffy.parent(terminus) {
-                terminus = p;
-                hops += 1;
-                if hops > cap {
-                    break;
-                }
-            }
-            if hops > cap {
-                continue;
-            }
-            let Some(&terminus_dom) = self.tree.taffy_map.get(&terminus) else {
-                continue;
-            };
-            if terminus_dom == id {
-                continue;
-            }
-            if self
-                .tree
-                .nodes
-                .get(terminus_dom)
-                .is_none_or(|t| t.ifc_root.is_none())
-            {
-                continue;
-            }
-            // …and the terminus is this node's own DOM ancestor.
-            let mut anc = node.parent;
-            let mut steps = 0;
-            while let Some(a) = anc {
-                if a == terminus_dom {
-                    out.push(id);
-                    break;
-                }
-                steps += 1;
-                if steps > cap {
-                    break;
-                }
-                anc = self.tree.nodes.get(a).and_then(|n| n.parent);
-            }
-        }
-        out
+        fatal.extend(self.dom_tree_violations());
+        TreeCheckVerdict { fatal }
     }
 
     /// Every way the Taffy tree disagrees with itself or loses a box (#476),
@@ -2280,8 +2357,9 @@ impl RinchDocument {
     /// directly and which the suite last exhibited on `db9c64f` (36 lines
     /// against 26 there).
     ///
-    /// **The 15 are gone**: #513's fix removed that whole class, and the live
-    /// `D` count is now the #591 shape alone. The table above is kept as the
+    /// **The 15 are gone**, and so is the one line #513's fix left standing —
+    /// #591's out-of-flow child of an inline. The live `D` count across
+    /// `-p rinch-dom -p rinch` is zero. The table above is kept as the
     /// measurement it was, at the commit it was taken on, because what it
     /// establishes — seeding matters, suppression is insurance — does not depend
     /// on which defects happened to be open.
@@ -2381,9 +2459,9 @@ impl RinchDocument {
     /// about the engine, and a document that legitimately holds a detached
     /// subtree should not panic. `RINCH_TREE_CHECK=1` sweeps it across a whole
     /// suite and **fails** on what it finds (debug builds only), but it fails on
-    /// [`Self::tree_check_verdict`]'s partition rather than on this list, which
-    /// is what lets #591's open out-of-flow-in-inline detachment be reported
-    /// without turning the suite red. `RINCH_TREE_CHECK=warn` prints instead, which is
+    /// [`Self::tree_check_verdict`]'s list — this one plus the DOM-tree
+    /// validator's, and, while #513 and then #591 were open, minus a waived arm
+    /// whose history that function's docs keep. `RINCH_TREE_CHECK=warn` prints instead, which is
     /// what the flag did for its whole life before #584 — and printed to a
     /// stderr `cargo test` captures, so it showed nobody anything.
     pub fn taffy_tree_violations(&self) -> Vec<String> {
@@ -2739,8 +2817,10 @@ impl RinchDocument {
                     }
                 }
                 // Comments and `display: none` have no box; inline content
-                // was detached into the IFC by the marking pass; an in-flow
-                // block cannot occur (see above).
+                // was detached into the IFC by the marking pass — an out-of-flow
+                // box beneath an inline element is a unit of its host and is
+                // collected by the root loop from the units, not from here
+                // (#591); an in-flow block cannot occur (see above).
                 InlineFlowRole::Comment
                 | InlineFlowRole::NoBox
                 | InlineFlowRole::Inline
@@ -3055,13 +3135,22 @@ impl RinchDocument {
                 InlineFlowRole::OutOfFlow => {
                     // Left in place, unmarked, and walked past — deliberately:
                     // an absolute or fixed box keeps its Taffy node and an
-                    // `ifc_root` of `None`, which is exactly what lets it
-                    // paint from its stacking root rather than from this IFC
-                    // (#289), and `walk_inline_children` walks past it the
-                    // same way (#406). Any future change here that starts
-                    // marking block-level children must keep excluding
-                    // `OutOfFlow`, or the box loses its only route to the
-                    // screen.
+                    // `ifc_root` of `None`, which is what lets it paint from
+                    // its stacking root rather than from this IFC (#289), and
+                    // `walk_inline_children` walks past it the same way (#406).
+                    // Any future change here that starts marking block-level
+                    // children must keep excluding `OutOfFlow`, or the box
+                    // loses its only route to the screen.
+                    //
+                    // "Keeps its Taffy node" is worth something only when the
+                    // node it keeps it on is computed. For a direct child of the
+                    // root it is. For one nested inside an `Inline` element —
+                    // reached through the recursive call above — the parent it
+                    // keeps it on is the inline this very pass detached, so it
+                    // is **hoisted**: `Node::hoisted_out_of_flow_to` names its
+                    // host, it is a unit of that host (`collect_run_units`), the
+                    // host's Taffy list names it, and the root loop collects it
+                    // from the units (#591). Nothing to do here either way.
                 }
                 InlineFlowRole::InFlowBlock => {
                     // **Reachable, in a detached subtree — #615 is answered, and

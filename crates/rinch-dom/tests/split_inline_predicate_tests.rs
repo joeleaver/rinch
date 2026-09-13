@@ -317,7 +317,8 @@ fn the_recursion_crosses_display_contents_in_both_directions() {
 #[test]
 fn the_predicate_refuses_every_neighbouring_shape() {
     // An out-of-flow child does not split an inline (CSS 2.1 §9.4.2). This is
-    // #591's shape and the split must not claim it.
+    // #591's shape and the split must not claim it — that fix gives the box a
+    // Taffy parent without touching the classification.
     let (doc, _, ids) = shape("out-of-flow child", |d, c| {
         d.set_attribute(c, "style", &format!("{CONTAINER}; position: relative"));
         let a = el(d, c, "a", "");
@@ -330,8 +331,8 @@ fn the_predicate_refuses_every_neighbouring_shape() {
     assert_eq!(
         flags(&doc, ids[0]),
         NEITHER,
-        "an absolutely positioned child does not split its inline — #591 is a \
-         different defect and stays open"
+        "an absolutely positioned child does not split its inline — #591 was a \
+         different defect, fixed without splitting"
     );
     assert_eq!(
         flags(&doc, ids[1]),

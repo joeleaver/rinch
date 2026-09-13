@@ -24,9 +24,9 @@ enum TreeCheckMode {
     /// under the flag: a window that keeps running and complains is more use
     /// there than a panic inside a frame.
     Warn,
-    /// Any other value, `1` included. A violation the #591 waiver does not
-    /// cover **fails the layout pass**, which fails the test it happened in
-    /// without anybody having to pass `--nocapture`.
+    /// Any other value, `1` included. A violation **fails the layout pass**,
+    /// which fails the test it happened in without anybody having to pass
+    /// `--nocapture`.
     Fail,
 }
 
@@ -359,8 +359,8 @@ impl RinchDocument {
         // (`ifc_leaf_invariant_tests`), pinned to a different message, so this
         // panic fails it rather than satisfying it.
         //
-        // `tree_check_verdict` decides what may fail; its docs carry the #591
-        // waiver and both directions it fails in. `RINCH_TREE_CHECK=warn` keeps
+        // `tree_check_verdict` is what fails; its docs keep the history of the
+        // waived arm it had while #513 and then #591 were open. `RINCH_TREE_CHECK=warn` keeps
         // the old print-only behaviour, for driving a real app under the flag
         // where a panic mid-frame is less use than a running window.
         //
@@ -398,9 +398,6 @@ impl RinchDocument {
                 }
                 TreeCheckMode::Fail => {
                     let verdict = self.tree_check_verdict();
-                    for line in &verdict.waived {
-                        eprintln!("TREECHECK waived (#591) {line}");
-                    }
                     assert!(
                         verdict.fatal.is_empty(),
                         "RINCH_TREE_CHECK: resolve_layout left {} layout-tree \
@@ -408,12 +405,10 @@ impl RinchDocument {
                          test expectations — a box no compute pass can reach, a \
                          double-claimed Taffy edge, an element that generates no \
                          box while carrying one, or a DOM/box-tree disagreement. \
-                         See RinchDocument::tree_check_verdict for what is waived \
-                         and why ({} known #591 detachment(s) were, above). \
+                         Nothing is waived (see RinchDocument::tree_check_verdict). \
                          RINCH_TREE_CHECK=warn downgrades this to a print.",
                         verdict.fatal.len(),
                         verdict.fatal.join("\n  "),
-                        verdict.waived.len(),
                     );
                 }
             }
@@ -1280,15 +1275,19 @@ impl RinchDocument {
                 {
                     let vw = self.tree.viewport.width;
                     let vh = self.tree.viewport.height;
-                    let (parent_abs, parent_scroll) = match node.parent {
-                        Some(parent_id) => {
-                            let (px, py) =
-                                crate::paint::compute_absolute_position(&self.tree, parent_id, 1.0);
-                            let scroll = self.tree.nodes[parent_id].scroll_offset;
-                            ((px as f32, py as f32), (scroll.0 as f32, scroll.1 as f32))
-                        }
-                        None => ((0.0, 0.0), (0.0, 0.0)),
-                    };
+                    // The **box-tree** parent (#591): a hoisted out-of-flow box's
+                    // `layout` is relative to its host, not its DOM parent.
+                    let (parent_abs, parent_scroll) =
+                        match Self::box_tree_parent(&self.tree.nodes, node_id) {
+                            Some(parent_id) => {
+                                let (px, py) = crate::paint::compute_absolute_position(
+                                    &self.tree, parent_id, 1.0,
+                                );
+                                let scroll = self.tree.nodes[parent_id].scroll_offset;
+                                ((px as f32, py as f32), (scroll.0 as f32, scroll.1 as f32))
+                            }
+                            None => ((0.0, 0.0), (0.0, 0.0)),
+                        };
 
                     let style = &node.computed_style;
                     let left = style.left.resolve(vw);
@@ -1707,6 +1706,12 @@ impl RinchDocument {
     /// clicking a toolbar `<input>` and hitting the node above it.
     pub fn box_tree_parent(nodes: &slab::Slab<crate::node::Node>, node_id: usize) -> Option<usize> {
         let node = nodes.get(node_id)?;
+        // A hoisted out-of-flow box is held by its host's lists, not its DOM
+        // parent's (#591): its `layout` is relative to the host, so every
+        // coordinate sum steps there. `Node::hoisted_out_of_flow_to`.
+        if let Some(host) = node.hoisted_out_of_flow_to {
+            return Some(host);
+        }
         if let Some(b) = node.run_box {
             return Some(b);
         }
@@ -1754,11 +1759,20 @@ impl RinchDocument {
         // and leave the block inside it exactly as orphaned as before the fix.
         // So the borrow is conditional on both, and the extra test is the same
         // per-child scan the comment above records as measuring at nothing.
+        //
+        // **And whenever a hoisted out-of-flow box is involved** (#591): a child
+        // that hosts one (`hosts_hoisted_out_of_flow`) must have the box emitted
+        // after it, and a child that *is* one (`hoisted_out_of_flow_to`) must be
+        // omitted — this node is the inline element or wrapper the box sits in,
+        // and the box is its host's. Both are one bit per child.
         if node.run_boxes.is_empty()
-            && !node
-                .children
-                .iter()
-                .any(|&c| nodes.get(c).is_some_and(|child| child.is_split_inline()))
+            && !node.children.iter().any(|&c| {
+                nodes.get(c).is_some_and(|child| {
+                    child.is_split_inline()
+                        || child.hosts_hoisted_out_of_flow
+                        || child.hoisted_out_of_flow_to.is_some()
+                })
+            })
         {
             return Cow::Borrowed(&node.children);
         }
@@ -1873,6 +1887,14 @@ impl RinchDocument {
     /// because a caller that asks about a run member would otherwise be handed
     /// the container — whose list names the anonymous box, not the member.
     ///
+    /// **A hoisted out-of-flow box (#591) needs no hop at all**: its box-tree
+    /// parent *is* its host — `box_tree_parent` answers
+    /// `Node::hoisted_out_of_flow_to` first — and `collect_effective_taffy_children(host)`
+    /// names it, because `collect_run_units` makes it a unit of the host. So the
+    /// "exactly when" above holds for it in both directions, which it did not
+    /// while the hoist was a canonicalization over this authority's answer
+    /// (the review of PR 2 measured both directions broken).
+    ///
     /// **The split-inline hop is defence too, measured the same way**, and it is
     /// kept for a reason the `Contents` hop does not need: after #513,
     /// `collect_effective_taffy_children` of a **split inline** still names its
@@ -1966,6 +1988,27 @@ impl RinchDocument {
         if node.computed_style.display == DisplayValue::Contents || node.contents_spliced {
             for &child_id in &node.children {
                 Self::collect_taffy_contribution(nodes, child_id, out);
+            }
+        }
+        // A non-atomic inline element that hosts hoisted out-of-flow boxes
+        // (#591) occupies its parent's list through *them*: its own node is
+        // detached into the IFC, the boxes sit in the parent's list right after
+        // where it would be. Erring wide is free here (see above), so every
+        // hoisted descendant is offered, whatever its host.
+        if node.hosts_hoisted_out_of_flow {
+            let mut stack: Vec<usize> = node.children.clone();
+            while let Some(id) = stack.pop() {
+                let Some(n) = nodes.get(id) else {
+                    continue;
+                };
+                if n.hoisted_out_of_flow_to.is_some()
+                    && let Some(t) = n.taffy_id
+                {
+                    out.push(t);
+                }
+                if n.hosts_hoisted_out_of_flow {
+                    stack.extend(n.children.iter().copied());
+                }
             }
         }
     }

@@ -315,10 +315,11 @@ fn a_block_inside_an_inline_splits_it_rather_than_stopping_the_walk() {
 /// different lines, and *not* ending it at the block puts `t3` in with them.
 ///
 /// One measured side effect worth stating rather than claiming: the absolute is
-/// now a unit of the container, so it becomes a Taffy child of the container and
-/// **is laid out**. That does not close #591 — an out-of-flow child of an inline
-/// that holds *no* in-flow block still does not split it, and is still stranded —
-/// it only means this particular shape is no longer an instance of it.
+/// a unit of the container, so it becomes a Taffy child of the container and
+/// **is laid out**. That was not what closed #591 — an out-of-flow child of an
+/// inline that holds *no* in-flow block does not split it and was still
+/// stranded; the IFC root loop now collects that one into the root's own Taffy
+/// list (`out_of_flow_in_inline_tests`), so the two routes agree on the edge.
 #[test]
 fn mark_and_walk_agree_on_all_three_cases_of_the_rule() {
     let mut doc = RinchDocument::new();
@@ -367,7 +368,8 @@ fn mark_and_walk_agree_on_all_three_cases_of_the_rule() {
     );
     assert_eq!(ifc_root_of(&doc, block), None);
 
-    // The side effect, measured here rather than asserted about #591 in general.
+    // The side effect, measured here for the split shape; the non-split one is
+    // `out_of_flow_in_inline_tests`' subject.
     assert_eq!(
         doc.tree
             .taffy
