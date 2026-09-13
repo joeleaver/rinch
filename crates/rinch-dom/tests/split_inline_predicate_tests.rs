@@ -355,9 +355,13 @@ fn the_predicate_refuses_every_neighbouring_shape() {
     );
     assert_eq!(flags(&doc, ids[1]), NEITHER, "…nor does it contribute one");
 
-    // The recursion stops at an atomic inline: a block inside an
-    // `inline-block` or `inline-flex` is that box's own business (#592).
-    for display in ["inline-block", "inline-flex"] {
+    // The recursion stops at **every** atomic inline: a block inside an
+    // `inline-block`, `inline-flex` or `inline-grid` is that box's own business
+    // (#592). `inline-grid` joined the list in #607 and is here because #513's
+    // recursion reads `DisplayMode::Inline` exactly rather than
+    // `is_inline_level`, so a new inline-level variant is a case it has to be
+    // checked against rather than one it inherits.
+    for display in ["inline-block", "inline-flex", "inline-grid"] {
         let (doc, _, ids) = shape("block inside an atomic inline", |d, c| {
             let a = el(d, c, "a", "");
             txt(d, a, "text");

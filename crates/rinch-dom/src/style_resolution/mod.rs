@@ -822,6 +822,7 @@ impl RinchDocument {
                 crate::computed_style::DisplayValue::Block => DisplayMode::Block,
                 crate::computed_style::DisplayValue::Flex => DisplayMode::Flex,
                 crate::computed_style::DisplayValue::Grid => DisplayMode::Block,
+                crate::computed_style::DisplayValue::InlineGrid => DisplayMode::InlineGrid,
                 crate::computed_style::DisplayValue::None => DisplayMode::Block,
                 crate::computed_style::DisplayValue::Contents => DisplayMode::Block,
             };

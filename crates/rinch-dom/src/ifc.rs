@@ -2795,8 +2795,9 @@ impl RinchDocument {
     /// one) **stops** the pass. The recursion follows the walk's rule too:
     /// down through `display: inline` elements and transparent
     /// `display:contents` wrappers, and **not** into an **atomic inline**
-    /// (`inline-block` or `inline-flex`), which is a box the IFC only measures
-    /// and places — its interior is laid out and painted by Taffy, on its own.
+    /// ([`crate::node::DisplayMode::is_atomic_inline`]), which is a box the IFC
+    /// only measures and places — its interior is laid out and painted by
+    /// Taffy, on its own.
     fn mark_inline_descendants(
         &mut self,
         root_id: usize,
@@ -2984,7 +2985,8 @@ impl RinchDocument {
 
     /// The Taffy nodes a layout pass computes from **besides the document
     /// root** — every **atomic inline** that belongs to an IFC
-    /// ([`DisplayMode::is_atomic_inline`]: `inline-block` and `inline-flex`).
+    /// ([`DisplayMode::is_atomic_inline`]: `inline-block`, `inline-flex` and
+    /// `inline-grid`).
     ///
     /// Such a node is detached from its parent's Taffy tree (the parent
     /// measures through `InlineRoot` instead) and
@@ -3004,8 +3006,9 @@ impl RinchDocument {
     /// Note what it reads: `ifc_root` and [`crate::node::DisplayMode`], the
     /// same two fields the measure pass reads. **Not**
     /// `DisplayValue::to_taffy`, which is not injective — `inline`/`block`
-    /// both give `taffy::Display::Block`, and `inline-block`/`flex`/
-    /// `inline-flex`/`contents` all give `Flex`. That aliasing is the whole of
+    /// both give `taffy::Display::Block`, `inline-block`/`flex`/
+    /// `inline-flex`/`contents` all give `Flex`, and `grid`/`inline-grid` both
+    /// give `Grid` (#607). That aliasing is the whole of
     /// #597's second mechanism, and it is the classic way an exemption ends up
     /// wider than its author believes. This seed set cannot acquire it,
     /// because there is nothing to keep in step: one expression, two readers.
@@ -3882,10 +3885,12 @@ impl RinchDocument {
                     }
                 }
                 NodeKind::Element(_) if role == InlineFlowRole::Inline => {
-                    // An **atomic inline** — `inline-block` or `inline-flex`,
-                    // the two remaining `Inline`-role elements
-                    // ([`DisplayMode::is_atomic_inline`]): measure via Taffy
-                    // first, then embed as an InlineBox.
+                    // An **atomic inline** — every remaining `Inline`-role
+                    // element ([`DisplayMode::is_atomic_inline`]): measure via
+                    // Taffy first, then embed as an InlineBox. Which formatting
+                    // context its interior gets is `DisplayValue::to_taffy`'s
+                    // business, not this arm's, so `inline-grid` needed nothing
+                    // here (#607).
                     let child_layout = &child.layout;
                     builder.push_inline_box(parley::InlineBox {
                         id: child_id as u64,

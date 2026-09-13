@@ -1,12 +1,29 @@
-//! #595 — `display: inline-flex` is an **atomic inline**, not a block-level box.
+//! #595 and #607 — `display: inline-flex` and `display: inline-grid` are
+//! **atomic inlines**, not block-level boxes.
 //!
 //! An atomic inline (css-display-3 §2.6) is inline-level on the outside — it
 //! joins the line around it and shrink-wraps — while its inside is an
 //! independent formatting context the IFC only measures and places.
-//! `inline-block` and `inline-flex` are both one; rinch used to map
-//! `DisplayValue::InlineFlex` onto `DisplayMode::Flex`, the same value plain
-//! `display: flex` gets, so an `inline-flex` box **ended the run it should have
-//! joined** and filled its container instead of shrink-wrapping.
+//! `inline-block`, `inline-flex` and `inline-grid` are all three one. rinch used
+//! to map `DisplayValue::InlineFlex` onto `DisplayMode::Flex`, the same value
+//! plain `display: flex` gets, so an `inline-flex` box **ended the run it should
+//! have joined** and filled its container instead of shrink-wrapping (#595).
+//!
+//! `inline-grid` had the **same symptom through a different mechanism** (#607),
+//! which is why it needed a second fix and a second set of fixtures: the value
+//! did not reach `style_resolution` at all. `display_from_stylo` folded
+//! `(Inline, Grid)` into `DisplayValue::Grid`, so `inline-grid` and `grid`
+//! arrived as the same value and no `DisplayMode` arm could tell them apart.
+//! The cure was a `DisplayValue::InlineGrid` variant first, then a
+//! `DisplayMode::InlineGrid` that answers `is_atomic_inline`.
+//!
+//! **The two halves of an atomic inline come from different places, and the
+//! `inline-grid` fixtures are the ones that pin that.** The *outside* —
+//! inline-level, shrink-wrapping — is `DisplayMode`; the *inside* — which
+//! formatting context the children get — is `DisplayValue::to_taffy` alone. So
+//! routing `inline-grid` through the `inline-block` or `inline-flex` machinery
+//! gets the outside right and the inside wrong, and
+//! `an_inline_grid_box_lays_its_interior_out_as_a_grid` is what refuses it.
 //!
 //! # The oracle is the pair
 //!
@@ -23,6 +40,12 @@
 //! | two `<button>`s in a block box   | H=20, side by side at x=0 / 26.7 | **identical** | H=40, stacked |
 //! | `<w>` around two sized divs      | H=25, w=30 (block inside) | H=20, **w=50** (flex inside) | w=400 |
 //! | `<w style="width:50%">` on a line| H=20, w=200 | **identical** | — |
+//!
+//! `inline-grid`'s shapes are measured the same way, against the same Chrome
+//! build, and each fixture's own doc carries its table. The first row above is
+//! the one they share: Chrome gives `inline-grid` **H = 50** with the wrapper
+//! 25.78x20 at x = 45.38, i.e. byte-identical to both spellings in the table,
+//! and rinch gave H = 90 with a 400px wrapper until #607.
 //!
 //! The absolute numbers are Chrome's and are **not** asserted where they come
 //! from a text measurement: rinch gives the `inline-block` twin 52px where
@@ -422,25 +445,29 @@ fn a_block_level_flex_container_still_ends_the_inline_run() {
     assert_consistent(&doc, "block-level flex");
 }
 
-/// `display: inline-grid` is the **same defect and is not fixed** — measured,
-/// not assumed, in both directions.
+/// `display: inline-grid` joins the line too (#607) — measured, not assumed, in
+/// both directions.
 ///
 /// Chrome 150 on this exact shape: `inline-grid` gives **H = 50**, the same as
 /// `inline-block` and `inline-flex`, with the wrapper 25.78px wide at x = 45.38.
-/// rinch gives **H = 90** and a 400px wrapper, i.e. the issue's symptom
-/// unchanged by #595 — because the value does not survive as far as
-/// `DisplayMode`: `display_from_stylo` folds `(Inline, Grid)` into
-/// `DisplayValue::Grid` (`computed_style/from_stylo/layout.rs`, comment
-/// `// inline-grid`), so by the time `style_resolution` classifies it there is
-/// nothing left to tell it from `display: grid`. Fixing it needs a
-/// `DisplayValue::InlineGrid` variant first, which is #607's job, not this
-/// file's.
+/// rinch gave **H = 90** and a 400px wrapper, i.e. #595's symptom unchanged by
+/// #595's fix — because the value did not survive as far as `DisplayMode`:
+/// `display_from_stylo` folded `(Inline, Grid)` into `DisplayValue::Grid`
+/// (`computed_style/from_stylo/layout.rs`), so by the time `style_resolution`
+/// classified it there was nothing left to tell it from `display: grid`. It now
+/// converts to `DisplayValue::InlineGrid`, which `style_resolution` maps to
+/// `DisplayMode::InlineGrid`, which answers `is_atomic_inline`.
 ///
-/// A third spelling is differently wrong and is #607's too: `DisplayValue::parse`
-/// — the non-Stylo path in `computed_style/values.rs` — has no `inline-grid` arm
-/// at all, so it falls through to `Self::default()`, which is `Flex`.
+/// A third spelling was differently wrong and is fixed with it:
+/// `DisplayValue::parse` — the non-Stylo path in `computed_style/values.rs` —
+/// had no `inline-grid` arm at all, so it fell through to `Self::default()`,
+/// which is `Flex`. `computed_style/tests.rs` pins the arm and the fallback.
+///
+/// This fixture is the **flow** half and deliberately says nothing about the
+/// box's interior: `an_inline_grid_box_lays_its_interior_out_as_a_grid` is what
+/// keeps "inline-level" from being bought by turning the box into an
+/// inline-block.
 #[test]
-#[ignore = "#607: inline-grid is folded into DisplayValue::Grid before it can be classified"]
 fn an_inline_grid_box_joins_the_line_exactly_as_an_inline_block_does() {
     fn build(display: &str) -> (RinchDocument, NodeId) {
         let mut doc = RinchDocument::new();
@@ -472,4 +499,304 @@ fn an_inline_grid_box_joins_the_line_exactly_as_an_inline_block_does() {
         lay(&gd, gc).3,
         lay(&bd, bc).3,
     );
+}
+
+/// The **interior** half of #607: an `inline-grid` box is inline-level on the
+/// outside *and* a grid container on the inside, and the two halves come from
+/// different places — the outside from [`rinch_dom::node::DisplayMode`], the
+/// inside from `DisplayValue::to_taffy`.
+///
+/// This fixture exists because the cheapest wrong fix passes every other test
+/// in this file: route `inline-grid` into the machinery `inline-block` or
+/// `inline-flex` already has, and the box becomes inline-level — the run stays
+/// whole, the box shrink-wraps — while its children stop being laid out in grid
+/// tracks. Both of those spellings build a Taffy **flex** container, so two
+/// width-less children collapse to nothing.
+///
+/// Font-independent by construction: the wrapper holds no text, the tracks are
+/// declared, and the children are sized only in the axis the grid does not
+/// place them along.
+///
+/// Chrome 150, standards mode, served over HTTP, on this exact markup:
+///
+/// | wrapper `display` | wrapper | first child | second child |
+/// |---|---|---|---|
+/// | `inline-grid` | **100x10** | x=0, 40x10 | x=40, 60x10 |
+/// | `grid`        | 400x10     | x=0, 40x10 | x=40, 60x10 |
+/// | `inline-block`| 0x20       | x=0, 0x10  | x=0, 0x10   |
+/// | `inline-flex` | 0x10       | x=0, 0x10  | x=0, 0x10   |
+///
+/// rinch matches Chrome on every cell above except the two `0x20`/`0x10`
+/// wrapper heights, which this fixture does not assert. (The containing block's
+/// height is not asserted either: Chrome gives the `inline-grid` row 20px — its
+/// declared `line-height`, since an atomic inline sits on a line box with a
+/// strut — where rinch gives 10. That is the same line-box question #595
+/// excluded from its own comparison, it predates this change, and it is
+/// identical for the `inline-block` spelling, so it is not about `inline-grid`.)
+#[test]
+fn an_inline_grid_box_lays_its_interior_out_as_a_grid() {
+    fn build(display: &str) -> (RinchDocument, NodeId, NodeId, NodeId) {
+        let mut doc = RinchDocument::new();
+        let body = doc.body();
+        let c = el(&mut doc, body, "div", CONTAINER);
+        let w = el(
+            &mut doc,
+            c,
+            "span",
+            &format!("display: {display}; grid-template-columns: 40px 60px"),
+        );
+        // No width of their own: the tracks are the only thing that can size
+        // them, which is what makes a flex interior visible as a zero.
+        let k1 = el(&mut doc, w, "div", "height: 10px");
+        let k2 = el(&mut doc, w, "div", "height: 10px");
+        doc.resolve_layout(VW, VH);
+        (doc, w, k1, k2)
+    }
+
+    // Control 1: the same two children under a **block-level** grid really are
+    // placed in the declared tracks, so the assertions below are about the
+    // wrapper's outside and not about whether rinch supports the template at
+    // all. Its 400 is also what the fix had to change: `inline-grid` used to be
+    // this box.
+    let (xd, xw, xk1, xk2) = build("grid");
+    assert_eq!(lay(&xd, xw).2, 400.0, "control (grid): block-level, fills");
+    assert_eq!(
+        lay(&xd, xk1),
+        (0.0, 0.0, 40.0, 10.0),
+        "control: first track"
+    );
+    assert_eq!(
+        lay(&xd, xk2),
+        (40.0, 0.0, 60.0, 10.0),
+        "control: second track"
+    );
+
+    // Control 2: the two *flex*-interior atomic inlines collapse here, in rinch
+    // and in Chrome alike. This is the wrong fix, pinned: if `inline-grid` ever
+    // answers these numbers instead, it has been folded into one of them.
+    for flex_inside in ["inline-block", "inline-flex"] {
+        let (d, w, k1, _) = build(flex_inside);
+        assert_eq!(
+            (lay(&d, w).2, lay(&d, k1).2),
+            (0.0, 0.0),
+            "control ({flex_inside}): a flex interior collapses width-less \
+             children, so 100 is not what every atomic inline gives",
+        );
+    }
+
+    let (gd, gw, gk1, gk2) = build("inline-grid");
+    assert_eq!(
+        lay(&gd, gw).2,
+        100.0,
+        "an inline-grid box shrink-to-fits to its grid tracks (40 + 60), not to \
+         its container's 400 and not to a flex row's 0 — Chrome: 100x10 (got \
+         {:?})",
+        lay(&gd, gw),
+    );
+    assert_eq!(
+        lay(&gd, gk1),
+        (0.0, 0.0, 40.0, 10.0),
+        "first child fills the first declared track",
+    );
+    assert_eq!(
+        lay(&gd, gk2),
+        (40.0, 0.0, 60.0, 10.0),
+        "second child is placed in the second track, beside it",
+    );
+    assert_consistent(&gd, "inline-grid interior");
+}
+
+/// Two `inline-grid` boxes share a line, where two `grid` containers stack —
+/// the flow half of #607 in the shape #595 found the component library in.
+///
+/// Off the fixed point: one box alone is at `x = 0` however it was classified,
+/// so the discriminator is the **second** box's x. The `grid` control is what
+/// makes this a statement about inline-level-ness rather than about two boxes.
+#[test]
+fn two_inline_grid_boxes_share_a_line_where_two_grid_containers_stack() {
+    fn build(display: &str) -> (RinchDocument, NodeId, NodeId, NodeId) {
+        let mut doc = RinchDocument::new();
+        let body = doc.body();
+        let c = el(&mut doc, body, "div", CONTAINER);
+        let style = format!("display: {display}; grid-template-columns: 30px");
+        let w1 = el(&mut doc, c, "span", &style);
+        el(&mut doc, w1, "div", "height: 10px");
+        let w2 = el(&mut doc, c, "span", &style);
+        el(&mut doc, w2, "div", "height: 10px");
+        doc.resolve_layout(VW, VH);
+        (doc, c, w1, w2)
+    }
+    let (xd, xc, _, x2) = build("grid");
+    let (gd, gc, g1, g2) = build("inline-grid");
+
+    assert_eq!(
+        lay(&xd, x2).0,
+        0.0,
+        "control (grid): a block-level grid container starts its own band"
+    );
+    assert!(
+        lay(&xd, xc).3 > lay(&gd, gc).3,
+        "control (grid): stacking is taller than sharing a line ({} vs {})",
+        lay(&xd, xc).3,
+        lay(&gd, gc).3,
+    );
+    assert_eq!(lay(&gd, g1).0, 0.0, "the first box opens the line");
+    assert_eq!(
+        lay(&gd, g2).0,
+        30.0,
+        "the second inline-grid box sits after the first's 30px track, on the \
+         same line (got {:?} after {:?})",
+        lay(&gd, g2),
+        lay(&gd, g1),
+    );
+    assert_consistent(&gd, "two inline-grid boxes");
+}
+
+/// The **content-box bridge** reaches an `inline-grid` box too: a box the IFC
+/// places stores its `layout` relative to the root's *content* box, so paint,
+/// hit testing and caret placement add
+/// [`rinch_dom::paint::ifc_content_box_offset`].
+///
+/// The sibling of `the_ifc_content_box_bridge_covers_an_inline_flex_box`, and it
+/// pins a different statement: that one says `is_atomic_inline` is what the
+/// bridge reads, this one says `inline-grid` answers it. Asymmetric padding and
+/// border, so a swapped or dropped axis shows; a `grid` control pins that the
+/// offset is `(0, 0)` for the block-level spelling, without which "always the
+/// root's padding" would pass.
+#[test]
+fn the_ifc_content_box_bridge_covers_an_inline_grid_box() {
+    fn build(display: &str) -> (RinchDocument, NodeId) {
+        let mut doc = RinchDocument::new();
+        let body = doc.body();
+        let c = el(
+            &mut doc,
+            body,
+            "div",
+            "width: 400px; line-height: 20px; font-size: 16px; \
+             padding: 7px 11px 3px 13px; border: 5px solid black",
+        );
+        txt(&mut doc, c, "before");
+        let w = el(
+            &mut doc,
+            c,
+            "span",
+            &format!("display: {display}; width: 20px; height: 10px"),
+        );
+        doc.resolve_layout(VW, VH);
+        (doc, w)
+    }
+    fn offset(doc: &RinchDocument, id: NodeId) -> (f32, f32) {
+        let node = doc.tree.get(id.0).unwrap();
+        rinch_dom::paint::ifc_content_box_offset(&doc.tree, node)
+    }
+
+    let (xd, xw) = build("grid");
+    let (gd, gw) = build("inline-grid");
+
+    assert_eq!(
+        offset(&xd, xw),
+        (0.0, 0.0),
+        "control: a block-level grid container is placed by Taffy, so it is not \
+         bridged — the bridge is not simply 'the root's padding'"
+    );
+    // left border + left padding, top border + top padding.
+    assert_eq!(
+        offset(&gd, gw),
+        (18.0, 12.0),
+        "an inline-grid box is placed by the IFC, so paint owes it the same \
+         content-box offset as the other two atomic inlines",
+    );
+    assert_consistent(&gd, "bridged inline-grid");
+}
+
+/// The MCP debug surface reports the `display` the node actually has (#607).
+///
+/// This is the one test of the *reason* `DisplayMode::InlineGrid` is a separate
+/// variant rather than a reuse of `InlineBlock`. Every other fixture in this
+/// file would pass with `inline-grid` folded into either of the other two atomic
+/// inlines: the flow and the bridge read `is_atomic_inline`, which all three
+/// answer, and the interior reads `DisplayValue::to_taffy`, which is untouched
+/// by the fold. `dom_tree` is what would start lying — it dumps `display_mode`
+/// verbatim (`rinch_dom::testing::get_node_detail`), and a debug surface that
+/// names the wrong `display` costs an afternoon.
+///
+/// The three spellings together, so "it always says InlineGrid" cannot pass.
+#[test]
+fn the_debug_surface_reports_inline_grid_as_its_own_display_mode() {
+    for (display, expected) in [
+        ("inline-grid", "InlineGrid"),
+        ("inline-flex", "InlineFlex"),
+        ("inline-block", "InlineBlock"),
+        ("grid", "Block"),
+    ] {
+        let mut doc = RinchDocument::new();
+        let body = doc.body();
+        let c = el(&mut doc, body, "div", CONTAINER);
+        let w = el(&mut doc, c, "span", &format!("display: {display}"));
+        doc.resolve_layout(VW, VH);
+
+        let detail =
+            rinch_dom::testing::get_node_detail(&doc.tree, w.0).expect("the node is in the tree");
+        assert_eq!(
+            detail["display_mode"].as_str(),
+            Some(expected),
+            "display: {display} must be reported as {expected}",
+        );
+    }
+}
+
+/// An `inline-grid` **flex item** is blockified, so nothing in this file applies
+/// to it — the guard rail on the other side of #607.
+///
+/// CSS blockifies the `display` of a flex or grid item (css-display-3 §2.7), so
+/// `inline-grid` computes to `grid` there and the box is block-level again.
+/// Stylo does that for rinch, which is why the fix needed no flex-item case —
+/// but "Stylo does it" is the kind of claim that is worth a fixture rather than
+/// a sentence, and this is the fixture: **measured**, `computed_style.display`
+/// comes back `Grid` (not `InlineGrid`), `display_mode` comes back `Block`, and
+/// the box fills its 400px container instead of shrink-wrapping to its 40px
+/// track.
+///
+/// It is also the answer to the blast-radius question #595 raised for the
+/// component library: a component declaring `inline-grid` inside a `Stack`
+/// would keep stacking, because a flex item's `inline-grid` is not an atomic
+/// inline at all.
+#[test]
+fn an_inline_grid_flex_item_is_blockified_and_stays_block_level() {
+    let mut doc = RinchDocument::new();
+    let body = doc.body();
+    let c = el(
+        &mut doc,
+        body,
+        "div",
+        "display: flex; flex-direction: column; width: 400px",
+    );
+    let w = el(
+        &mut doc,
+        c,
+        "span",
+        "display: inline-grid; grid-template-columns: 40px",
+    );
+    el(&mut doc, w, "div", "height: 10px");
+    doc.resolve_layout(VW, VH);
+
+    let node = doc.tree.get(w.0).unwrap();
+    assert_eq!(
+        node.computed_style.display,
+        rinch_dom::computed_style::DisplayValue::Grid,
+        "Stylo blockifies a flex item, so `inline-grid` computes to `grid`",
+    );
+    assert!(
+        !node.display_mode.is_atomic_inline(),
+        "a blockified grid item is not an atomic inline (got {:?})",
+        node.display_mode,
+    );
+    assert_eq!(
+        lay(&doc, w).2,
+        400.0,
+        "so it fills its flex container rather than shrink-wrapping to its 40px \
+         track (got {:?})",
+        lay(&doc, w),
+    );
+    assert_consistent(&doc, "blockified inline-grid flex item");
 }

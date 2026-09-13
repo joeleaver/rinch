@@ -38,7 +38,7 @@ pub(super) fn display_from_stylo(display: &style::values::computed::Display) -> 
         (DisplayOutside::Block, DisplayInside::FlowRoot) => DisplayValue::Block,
         (DisplayOutside::Block, DisplayInside::Flex) => DisplayValue::Flex,
         (DisplayOutside::Block, DisplayInside::Grid) => DisplayValue::Grid,
-        (DisplayOutside::Inline, DisplayInside::Grid) => DisplayValue::Grid, // inline-grid
+        (DisplayOutside::Inline, DisplayInside::Grid) => DisplayValue::InlineGrid,
         _ => DisplayValue::Flex, // Default to flex for unknown
     }
 }

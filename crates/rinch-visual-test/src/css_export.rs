@@ -22,6 +22,7 @@ pub fn computed_style_to_css(styles: &Value) -> String {
             "Inline" => "inline",
             "InlineBlock" => "inline-block",
             "InlineFlex" => "inline-flex",
+            "InlineGrid" => "inline-grid",
             _ => "flex",
         };
         css.push_str(&format!("display: {}; ", css_val));
@@ -746,5 +747,41 @@ mod tests {
         assert!(css.contains("border-top-right-radius: 8px"));
         assert!(!css.contains("border-bottom-right-radius"));
         assert!(!css.contains("border-bottom-left-radius"));
+    }
+
+    /// Every `DisplayValue` variant rinch-dom can serialize must have an arm
+    /// here, because the fallback is `"flex"` rather than an error (#607).
+    ///
+    /// `inline-grid` is the variant that prompted this: a node whose `display`
+    /// is `InlineGrid` would otherwise have been exported to the browser
+    /// reference as `display: flex`, which is not merely a different value — it
+    /// is a different formatting context, so the reference render would have
+    /// disagreed with rinch by design and the comparison would have reported a
+    /// rinch bug that does not exist.
+    ///
+    /// The unknown-string case is the control: it is what the `"flex"` fallback
+    /// is for, and it is why a missing arm is silent.
+    #[test]
+    fn every_display_value_has_an_arm_rather_than_falling_back_to_flex() {
+        // The whole emitted string, not `contains`: "display: inline" is a
+        // prefix of "display: inline-grid", so a substring check would let
+        // `Inline` pass while emitting the wrong value.
+        let css_for = |v: &str| computed_style_to_css(&json!({"display": v}));
+        for (variant, css) in [
+            ("InlineGrid", "display: inline-grid;"),
+            ("Grid", "display: grid;"),
+            ("InlineFlex", "display: inline-flex;"),
+            ("InlineBlock", "display: inline-block;"),
+            ("Inline", "display: inline;"),
+            ("Block", "display: block;"),
+            ("Contents", "display: contents;"),
+            ("None", "display: none;"),
+            ("Flex", "display: flex;"),
+            // The control: this is what the fallback is for, and why a missing
+            // arm is silent rather than an error.
+            ("SomethingNew", "display: flex;"),
+        ] {
+            assert_eq!(css_for(variant), css, "DisplayValue::{variant}");
+        }
     }
 }

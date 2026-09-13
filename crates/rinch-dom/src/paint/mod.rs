@@ -331,8 +331,8 @@ pub fn compute_absolute_position(tree: &NodeTree, node_id: RawNodeId, scale: f64
 /// The offset from a node's summed layout origin to the origin it is *painted*
 /// at, for a box an IFC positions.
 ///
-/// An atomic inline (`inline-block` or `inline-flex`) laid out by an inline
-/// formatting context stores its
+/// An atomic inline ([`crate::DisplayMode::is_atomic_inline`]) laid out by an
+/// inline formatting context stores its
 /// `layout.x`/`layout.y` relative to the IFC root's **content** box, while a
 /// parent-chain sum like [`compute_absolute_position`] adds up **border**-box
 /// origins. Paint bridges the two: it hands `paint_inline_layout` the root's

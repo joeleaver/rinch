@@ -52,6 +52,13 @@ pub(crate) mod color_serde {
 // =============================================================================
 
 /// CSS display property values.
+///
+/// The **authority on the declared value**, as against
+/// [`crate::node::DisplayMode`], which coarsens several of these into one
+/// answer for the layout passes. Two variants are told apart here and nowhere
+/// else: `inline-flex`/`inline-grid` carry their inline-level *outside* into
+/// `DisplayMode`, while their *inside* — the formatting context their children
+/// get — is carried only by [`Self::to_taffy`].
 #[derive(Debug, Clone, Copy, Default, PartialEq, Serialize)]
 pub enum DisplayValue {
     #[default]
@@ -63,6 +70,14 @@ pub enum DisplayValue {
     Inline,
     InlineBlock,
     InlineFlex,
+    /// `display: inline-grid` — inline-level outside, grid container inside
+    /// (#607).
+    ///
+    /// Folded into [`Self::Grid`] until #607, which made `(Inline, Grid)` and
+    /// `(Block, Grid)` arrive at `style_resolution` as the same value, so an
+    /// `inline-grid` box was classified block-level and ended the inline run it
+    /// should have joined.
+    InlineGrid,
 }
 
 impl DisplayValue {
@@ -77,6 +92,7 @@ impl DisplayValue {
             "inline" => Self::Inline,
             "inline-block" => Self::InlineBlock,
             "inline-flex" => Self::InlineFlex,
+            "inline-grid" => Self::InlineGrid,
             _ => Self::default(),
         }
     }
@@ -86,7 +102,7 @@ impl DisplayValue {
         match self {
             Self::Flex | Self::InlineFlex => taffy::Display::Flex,
             Self::Block => taffy::Display::Block,
-            Self::Grid => taffy::Display::Grid,
+            Self::Grid | Self::InlineGrid => taffy::Display::Grid,
             Self::None => taffy::Display::None,
             Self::Contents => taffy::Display::Flex, // transparent container
             Self::Inline => taffy::Display::Block,  // inline handled by IFC

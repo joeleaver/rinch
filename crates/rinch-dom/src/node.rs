@@ -176,10 +176,11 @@ pub struct LayoutResult {
 /// [`crate::computed_style::ComputedStyle::display`] is the authority on the
 /// declared value; this enum answers the two questions the layout passes
 /// actually ask (`is_inline_level`, `is_block_container`), and it answers them
-/// for several `DisplayValue`s at once. `none`, `contents` and `grid` all
-/// arrive here as [`DisplayMode::Block`], so a site that needs to tell those
-/// apart reads `computed_style.display` instead — `ifc.rs` has several such
-/// guards for `Contents`, spelled that way for exactly this reason.
+/// for several `DisplayValue`s at once. `none`, `contents` and block-level
+/// `grid` all arrive here as [`DisplayMode::Block`], so a site that needs to
+/// tell those apart reads `computed_style.display` instead — `ifc.rs` has
+/// several such guards for `Contents`, spelled that way for exactly this
+/// reason.
 ///
 /// **Every variant is distinguished only where a layout pass branches on it.**
 /// Adding one is therefore a change to the three predicates below and nothing
@@ -188,7 +189,9 @@ pub struct LayoutResult {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum DisplayMode {
     /// Block-level element (div, p, etc.) — default for elements. Also where
-    /// `display: grid`, `contents` and `none` land (see the type's doc).
+    /// block-level `display: grid`, `contents` and `none` land (see the type's
+    /// doc). `inline-grid` does **not** land here — it is
+    /// [`DisplayMode::InlineGrid`] (#607).
     #[default]
     Block,
     /// Block-level flex container (`display: flex`).
@@ -211,6 +214,24 @@ pub enum DisplayMode {
     /// to the MCP `dom_tree`), and so a future consumer that does care has
     /// something to read.
     InlineFlex,
+    /// `display: inline-grid` — inline-level, with a grid container inside
+    /// (#607).
+    ///
+    /// The third atomic inline, and it reached this enum later than the other
+    /// two for a reason worth keeping: the value used to be folded into
+    /// [`crate::computed_style::values::DisplayValue::Grid`] by
+    /// `display_from_stylo`, so there was nothing left for
+    /// `style_resolution` to classify — `inline-grid` and `grid` arrived here
+    /// as the same `Block`, and a separate `DisplayMode` variant could not be
+    /// reached at all until `DisplayValue` grew an `InlineGrid` of its own.
+    ///
+    /// Answers every predicate below exactly as [`DisplayMode::InlineFlex`]
+    /// and [`DisplayMode::InlineBlock`] do; the *inside* that tells the three
+    /// apart comes from `DisplayValue::to_taffy`. Kept distinct for the same
+    /// reason `InlineFlex` is: `display_mode` is dumped verbatim to the MCP
+    /// `dom_tree` (`testing.rs`), so folding it into another variant would
+    /// make that surface report a `display` the node does not have.
+    InlineGrid,
 }
 
 impl DisplayMode {
@@ -223,9 +244,12 @@ impl DisplayMode {
     /// across a restyle to decide whether the IFC pass has to run again — a
     /// crossing the Taffy style cannot be asked about, because
     /// [`crate::computed_style::values::DisplayValue::to_taffy`] is not
-    /// injective: `inline` and `block` both map to `taffy::Display::Block`, and
+    /// injective: `inline` and `block` both map to `taffy::Display::Block`,
     /// `inline-block`, `flex`, `inline-flex` and `contents` all map to
-    /// `taffy::Display::Flex` (#597).
+    /// `taffy::Display::Flex` (#597), and `grid` and `inline-grid` both map to
+    /// `taffy::Display::Grid` (#607) — the newest pair, and the one that makes
+    /// the point again: the two differ only in their *outside*, which is the
+    /// half this enum carries and the Taffy style does not.
     pub fn is_inline_level(self) -> bool {
         matches!(self, DisplayMode::Inline) || self.is_atomic_inline()
     }
@@ -234,20 +258,27 @@ impl DisplayMode {
     /// box the surrounding IFC only *measures and places*, whose interior is an
     /// independent formatting context laid out and painted by Taffy.
     ///
-    /// `inline-block` and `inline-flex`. The one authority for the question
-    /// five passes ask of a node they found in an IFC — "is this a box I should
-    /// measure standalone, keep the IFC's position for, and bridge from the
-    /// root's content box?": `inline_block_measure_roots`,
+    /// `inline-block`, `inline-flex` and `inline-grid`. The one authority for
+    /// the question five passes ask of a node they found in an IFC — "is this a
+    /// box I should measure standalone, keep the IFC's position for, and bridge
+    /// from the root's content box?": `inline_block_measure_roots`,
     /// `resolve_percentage_inline_blocks`, `read_layout_results`,
     /// [`crate::paint::ifc_content_box_offset`] and `layer_bounds`' inline-box
     /// gate. They spelled it `== InlineBlock`, which is how `inline-flex`
     /// managed to be inline-level in one pass and not in the next.
     ///
+    /// Adding `inline-grid` here (#607) is the whole of its flow fix: every one
+    /// of those five passes, and the anonymous-box generation that decides
+    /// whether the box ends a run, reads this predicate rather than a variant.
+    ///
     /// **Not** the same question as [`Self::is_inline_level`]: a
     /// `display: inline` box is inline-level and *not* atomic — the IFC walks
     /// into it and lays its text out as part of the same line.
     pub fn is_atomic_inline(self) -> bool {
-        matches!(self, DisplayMode::InlineBlock | DisplayMode::InlineFlex)
+        matches!(
+            self,
+            DisplayMode::InlineBlock | DisplayMode::InlineFlex | DisplayMode::InlineGrid
+        )
     }
 
     /// Whether a box in this mode lays its children out as a **block
@@ -258,12 +289,15 @@ impl DisplayMode {
     /// four IFC sites that ask it used to spell it.
     ///
     /// It answers from this enum alone, so it inherits the coarsening in the
-    /// type's doc: `display: grid` arrives as [`DisplayMode::Block`] and gets
-    /// `true` here, which is wrong about grid and has been since before #595
-    /// (`layout_engine.rs:1478` is the one other place that says so);
+    /// type's doc: block-level `display: grid` arrives as
+    /// [`DisplayMode::Block`] and gets `true` here, which is wrong about grid
+    /// and has been since before #595 (one doc comment in `layout_engine.rs`
+    /// says so too — grep it for `display: grid` rather than trusting a line
+    /// number, which is how this pointer went stale once already);
     /// `display: contents` and
     /// `display: none` get `true` too, and every caller guards those from
-    /// `computed_style.display` separately.
+    /// `computed_style.display` separately. `inline-grid` is **not** among them
+    /// since #607 — it is [`DisplayMode::InlineGrid`] and answers `false`.
     pub fn is_block_container(self) -> bool {
         matches!(self, DisplayMode::Block)
     }
@@ -542,9 +576,10 @@ pub struct Node {
     /// ```
     ///
     /// where `role` is [`Self::inline_flow_role`]. The recursion **stops at an
-    /// atomic inline** — an `inline-block` or `inline-flex` is a block
-    /// container in its own right, so a block inside one is that box's business
-    /// and not its parent's (#592) — and `OutOfFlow`, `NoBox` and `Comment`
+    /// atomic inline** — an `inline-block`, `inline-flex` or `inline-grid` is
+    /// a formatting context in its own right, so a block inside one is that
+    /// box's business and not its parent's (#592) — and `OutOfFlow`, `NoBox` and
+    /// `Comment`
     /// contribute nothing, which is the same three-way rule every other IFC
     /// decision consumes.
     ///
@@ -1127,9 +1162,10 @@ impl Node {
     ///   Stylo, so it keeps the default `display` (the #342 hazard noted on
     ///   [`Self::is_out_of_flow`]);
     /// * **`DisplayMode::Inline` exactly**, not [`DisplayMode::is_inline_level`]
-    ///   — an atomic inline (`inline-block`, `inline-flex`) is a block
-    ///   container that does its own anonymous-box generation *inside itself*
-    ///   and is never split (#592 is that shape, and is a different defect);
+    ///   — an atomic inline ([`DisplayMode::is_atomic_inline`]) establishes a
+    ///   formatting context of its own, does any anonymous-box generation
+    ///   *inside itself*, and is never split (#592 is that shape, and is a
+    ///   different defect);
     /// * **[`Self::contributes_in_flow_block`]**, which is where the recursion
     ///   and the memoization live.
     pub fn is_split_inline(&self) -> bool {
