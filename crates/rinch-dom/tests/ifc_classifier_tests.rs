@@ -210,19 +210,32 @@ fn the_classifier_is_display_first() {
     );
 }
 
-// ── #366: mark breaks at an in-flow block, like walk ────────────────────────
+// ── #513: a block inside an inline splits it, so neither pass meets the block ─
 
-/// The issue's own markup: `<div><a>text<div>block</div>tail</a></div>`.
-/// Parley stops building the line at the inner block, so `tail` never reaches
-/// a line — and the marking pass used to keep going and stamp it anyway.
-/// `create_anonymous_block_boxes` skips `Inline` containers, so mixed content
-/// inside `<a>` is never normalized and the divergence was reachable.
+/// #513's own markup: `<div><a>text<div>block</div>tail</a></div>`.
 ///
-/// Kills: reverting `mark_inline_descendants`' `InFlowBlock` arm to fall
-/// through (`continue`) — `tail` comes back marked, failing both the direct
-/// assertion and the whole-tree oracle.
+/// **This fixture used to assert the opposite, and the change is the fix.** The
+/// `<a>` was inline content of the container's IFC, the marking pass and the walk
+/// both stopped at the inner block, and `tail` reached no line at all — which is
+/// what #366 made *consistent* (mark exactly what the walk flows) and what #513
+/// then made *correct*. The `<a>` is now a **split inline**: it is flattened into
+/// the container's units, an anonymous block box takes each inline run, and the
+/// block is their sibling.
+///
+/// So the rule this section is named for is still the subject — the marks must
+/// still describe exactly what some IFC lays out, which `assert_marks_match_flow`
+/// checks over the whole tree — but the *stopping* is gone from this shape,
+/// because there is no longer a pass that walks into the `<a>` at all.
+///
+/// **What that costs is recorded rather than hidden:** the
+/// `InFlowBlock => break` arm in `mark_inline_descendants` and the `_ => break`
+/// arm in `walk_inline_children` were reachable only through markup like this,
+/// and are now believed unreachable. Both are kept fail-closed with the argument
+/// at each arm, and the lost witnesses are filed in the #585/#593 family. This
+/// fixture is deliberately **not** written to reach them: a fixture that
+/// contrived a shape purely to keep an arm covered would be testing the contrivance.
 #[test]
-fn mark_stops_at_an_in_flow_block_exactly_where_walk_stops() {
+fn a_block_inside_an_inline_splits_it_rather_than_stopping_the_walk() {
     let mut doc = RinchDocument::new();
     let body = doc.body();
     let container = child_of(
@@ -237,50 +250,72 @@ fn mark_stops_at_an_in_flow_block_exactly_where_walk_stops() {
     let tail = text_in(&mut doc, link, "tail");
     doc.resolve_layout(VW, VH);
 
+    assert!(
+        doc.tree.get(link.0).unwrap().is_split_inline(),
+        "precondition: an inline holding an in-flow block is split (#513)"
+    );
     assert_eq!(
         ifc_root_of(&doc, link),
-        Some(container.0),
-        "precondition: the all-inline container establishes the IFC and the \
-         link joins it"
-    );
-    assert_eq!(
-        ifc_root_of(&doc, text),
-        Some(container.0),
-        "text before the block is this IFC's content"
+        None,
+        "a split inline is not inline *content* of anything — it generates no box \
+         of its own, and its pieces are the container's"
     );
     assert!(
-        flowed_by(&doc, container.0, text.0),
-        "…and the walk flows it"
+        doc.tree.get(container.0).unwrap().text_layout.is_none(),
+        "…and the container is no longer an IFC root: every inline unit it has \
+         now carries a `run_box`"
+    );
+
+    // Each side of the block is laid out by an anonymous block box, and they are
+    // *different* boxes — which is what makes them different line boxes.
+    let text_root = ifc_root_of(&doc, text).expect("`text` belongs to an IFC");
+    let tail_root = ifc_root_of(&doc, tail).expect("`tail` belongs to an IFC");
+    assert!(
+        doc.tree.get(text_root).unwrap().is_anonymous_block_box
+            && doc.tree.get(tail_root).unwrap().is_anonymous_block_box,
+        "both sides are laid out by anonymous block boxes"
+    );
+    assert_ne!(
+        text_root, tail_root,
+        "the two sides are different boxes — one line each, with the block \
+         between them. Same box would mean one line and a block drawn over it, \
+         which is #490's shape."
+    );
+    assert!(
+        flowed_by(&doc, text_root, text.0) && flowed_by(&doc, tail_root, tail.0),
+        "…and each box really flows its own side"
     );
     assert_eq!(
         ifc_root_of(&doc, block),
         None,
         "an in-flow block is never IFC content"
     );
-    assert_eq!(
-        ifc_root_of(&doc, tail),
-        None,
-        "the walk breaks at the block, so `tail` never reaches a line — \
-         marking it would hand every consumer of `ifc_root` a box no IFC \
-         draws (#366)"
-    );
-    assert!(
-        !flowed_by(&doc, container.0, tail.0),
-        "precondition for the assertion above: the walk really does not flow \
-         `tail`"
-    );
+
     assert_marks_match_flow(&doc);
     assert_eq!(doc.ifc_leaf_invariant_violations(), Vec::<usize>::new());
+    assert!(
+        doc.taffy_tree_violations().is_empty(),
+        "nothing is stranded any more: {:?}",
+        doc.taffy_tree_violations()
+    );
 }
 
 /// All three cases of the three-way rule in one markup, inside an inline
-/// element: `<a>t1<abs/>t2<div/>t3</a>`. Inline flows, out-of-flow is walked
-/// past (both sides), an in-flow block stops both sides.
+/// element: `<a>t1<abs/>t2<div/>t3</a>`.
 ///
-/// Kills: `mark`'s `OutOfFlow` arm turning into a `break` (t2 loses its
-/// mark); `walk`'s out-of-flow skip turning into a `break` (t2 is marked but
-/// not flowed — the whole-tree oracle); `mark`'s `InFlowBlock` arm turning
-/// back into a fall-through (t3 comes back marked).
+/// **The rule survives #513 intact and is now asserted where it actually
+/// lives** — in the run grouping rather than in the marking walk. An out-of-flow
+/// box neither joins a run nor ends one (#406), so `t1` and `t2` land in the
+/// **same** anonymous block box; the in-flow block ends that run, so `t3` lands
+/// in a different one. Flip either half of the rule and this fixture moves:
+/// ending the run at the absolute puts `t1` and `t2` in different boxes and on
+/// different lines, and *not* ending it at the block puts `t3` in with them.
+///
+/// One measured side effect worth stating rather than claiming: the absolute is
+/// now a unit of the container, so it becomes a Taffy child of the container and
+/// **is laid out**. That does not close #591 — an out-of-flow child of an inline
+/// that holds *no* in-flow block still does not split it, and is still stranded —
+/// it only means this particular shape is no longer an instance of it.
 #[test]
 fn mark_and_walk_agree_on_all_three_cases_of_the_rule() {
     let mut doc = RinchDocument::new();
@@ -304,32 +339,49 @@ fn mark_and_walk_agree_on_all_three_cases_of_the_rule() {
     let t3 = text_in(&mut doc, link, "three");
     doc.resolve_layout(VW, VH);
 
-    assert_eq!(ifc_root_of(&doc, t1), Some(container.0));
-    assert!(flowed_by(&doc, container.0, t1.0));
+    let r1 = ifc_root_of(&doc, t1).expect("t1 belongs to an IFC");
+    let r2 = ifc_root_of(&doc, t2).expect("t2 belongs to an IFC");
+    let r3 = ifc_root_of(&doc, t3).expect("t3 belongs to an IFC");
+    assert_eq!(
+        r1, r2,
+        "inline content carries on across an out-of-flow sibling (CSS 2.1 \
+         §9.4.2) — the same run, so the same anonymous box and the same line"
+    );
+    assert_ne!(
+        r2, r3,
+        "an in-flow block-level box ends the run (#366) — a different box, and \
+         the block between them"
+    );
+    assert!(
+        flowed_by(&doc, r1, t1.0) && flowed_by(&doc, r2, t2.0) && flowed_by(&doc, r3, t3.0),
+        "every one of the three is flowed by the box that claims it"
+    );
     assert_eq!(
         ifc_root_of(&doc, abs),
         None,
         "an out-of-flow box is never IFC content (#289) — unmarked, it paints \
          from its stacking root"
     );
-    assert_eq!(
-        ifc_root_of(&doc, t2),
-        Some(container.0),
-        "inline content carries on across an out-of-flow sibling (CSS 2.1 \
-         §9.4.2) — the mark must not stop at it"
-    );
-    assert!(
-        flowed_by(&doc, container.0, t2.0),
-        "…and the walk flows it, same rule, same classifier"
-    );
     assert_eq!(ifc_root_of(&doc, block), None);
+
+    // The side effect, measured here rather than asserted about #591 in general.
     assert_eq!(
-        ifc_root_of(&doc, t3),
-        None,
-        "after the in-flow block, both sides have stopped (#366)"
+        doc.tree
+            .taffy
+            .parent(doc.tree.get(abs.0).unwrap().taffy_id.unwrap())
+            .and_then(|t| doc.tree.taffy_map.get(&t).copied()),
+        Some(container.0),
+        "the absolute is a unit of the container now, so the container's Taffy \
+         node holds it and something lays it out"
     );
+
     assert_marks_match_flow(&doc);
     assert_eq!(doc.ifc_leaf_invariant_violations(), Vec::<usize>::new());
+    assert!(
+        doc.taffy_tree_violations().is_empty(),
+        "{:?}",
+        doc.taffy_tree_violations()
+    );
 }
 
 // ── display:none — the walk side, and the ink that proves it ────────────────
@@ -498,17 +550,28 @@ fn a_hidden_absolute_child_is_no_box_before_it_is_out_of_flow() {
     assert_eq!(doc.ifc_leaf_invariant_violations(), Vec::<usize>::new());
 }
 
-/// An *opaque* `display: contents` wrapper that also declares
-/// `position: absolute` is `Contents` before it is `OutOfFlow`: it stands
-/// for the block it wraps, so **both** the mark and the walk stop at it —
-/// walking past it while the mark broke (or vice versa) is the double-draw /
-/// silent-disappearance pair this classifier exists to kill.
+/// A `display: contents` wrapper that also declares `position: absolute` is
+/// `Contents` **before** it is `OutOfFlow` — display before position, always —
+/// and #513 moved where that precedence is observable without weakening it.
 ///
-/// Kills: flipping the classifier to position-first at mark or walk — the
-/// wrapper classifies `OutOfFlow`, both sides skip it, and `tail` comes back
+/// It used to be observable in the *stopping*: the wrapper stood for the block it
+/// wrapped, so both the mark and the walk stopped at it, and flipping the
+/// classifier to position-first made both skip it instead, bringing `tail` back
 /// marked and flowed.
+///
+/// Now it is observable in the *split*. `Contents` means the unit collector
+/// recurses into the wrapper, so the block it holds becomes a unit of the
+/// container, the `<a>` therefore contributes an in-flow block-level box and is
+/// split around it, and all three pieces render. Position-first would classify the
+/// wrapper `OutOfFlow`, push the **wrapper** as a unit, never reach the block, and
+/// leave the `<a>` unsplit — losing the block exactly as before #513, with the
+/// container back to one line.
+///
+/// Kills: flipping the classifier to position-first (the `<a>` stops being split
+/// and the container collapses to one line); and any change that stops the split
+/// recursion crossing a `Contents` wrapper.
 #[test]
-fn an_opaque_absolute_contents_wrapper_stops_mark_and_walk_together() {
+fn an_absolute_contents_wrapper_is_boxless_first_so_its_block_still_splits() {
     let mut doc = RinchDocument::new();
     let body = doc.body();
     let container = child_of(
@@ -529,20 +592,39 @@ fn an_opaque_absolute_contents_wrapper_stops_mark_and_walk_together() {
     let tail = text_in(&mut doc, link, "tail");
     doc.resolve_layout(VW, VH);
 
-    assert_eq!(ifc_root_of(&doc, text), Some(container.0));
-    assert!(flowed_by(&doc, container.0, text.0));
+    assert_eq!(
+        role_of(&doc, wrapper),
+        InlineFlowRole::Contents,
+        "display before position: the wrapper generates no box, so `position` \
+         has no box to take out of flow"
+    );
+    assert!(
+        doc.tree.get(link.0).unwrap().is_split_inline(),
+        "…so the block behind it is reached, and the <a> is split around it. \
+         Position-first would push the wrapper itself as a unit, never see the \
+         block, and leave this `false` — which is how the block used to vanish."
+    );
     assert_eq!(
         ifc_root_of(&doc, wrapper),
         None,
-        "an opaque wrapper is not IFC content — marking it would make paint \
-         skip the block it wraps"
+        "a boxless wrapper is not IFC content — marking it would make paint \
+         skip the block it stands for"
     );
+
+    let text_root = ifc_root_of(&doc, text).expect("`text` belongs to an IFC");
+    let tail_root = ifc_root_of(&doc, tail).expect("`tail` belongs to an IFC");
+    assert_ne!(
+        text_root, tail_root,
+        "both sides render, one line each, with the block between them"
+    );
+    assert!(flowed_by(&doc, text_root, text.0) && flowed_by(&doc, tail_root, tail.0));
+    let h = doc.tree.get(container.0).unwrap().layout.height;
     assert_eq!(
-        ifc_root_of(&doc, tail),
-        None,
-        "both sides stop at the wrapper, exactly as at the block it stands for"
+        h, 70.0,
+        "one 20px line, the 30px block, one 20px line. The block has no text \
+         child, so it contributes its declared height and no line box. Off the \
+         one-line fixed point (20), which is what position-first would give."
     );
-    assert!(!flowed_by(&doc, container.0, tail.0));
     assert_marks_match_flow(&doc);
     assert_eq!(doc.ifc_leaf_invariant_violations(), Vec::<usize>::new());
 }

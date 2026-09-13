@@ -32,9 +32,11 @@
 //! The remaining fixtures pin the **waiver** — see
 //! [`rinch_dom::RinchDocument::tree_check_verdict`]. The waiver's two directions
 //! are split across two of them:
-//! `the_block_in_inline_waiver_still_waives_something` is what fails when #513
-//! is fixed, and `a_detachment_that_is_not_block_in_inline_is_fatal` is what
-//! fails if the waiver is ever widened into a blanket `D` exemption.
+//! `the_out_of_flow_in_inline_waiver_still_waives_something` is what fails when
+//! #591 is fixed, and `a_detachment_under_a_contents_node_is_fatal` is what
+//! fails if the waiver is ever widened into a blanket `D` exemption. The first of
+//! those has already fired once, when #513's fix removed the class the waiver was
+//! originally written for.
 //!
 //! # Mutation-tested, and the two survivors are named
 //!
@@ -42,10 +44,10 @@
 //! The two survivors are recorded rather than left to be rediscovered:
 //!
 //! * **waiving `C` as well as `D` survives**, and is *equivalent*:
-//!   `block_in_inline_detachments` lists a node only when its Taffy chain
+//!   `strandings_under_a_detached_inline` lists a node only when its Taffy chain
 //!   terminates at a different node, i.e. when it has a Taffy parent, i.e. when
 //!   `C` did not report it. The two sets are disjoint by construction.
-//!   `the_block_in_inline_waiver_still_waives_something`'s `all("D detached")`
+//!   `the_out_of_flow_in_inline_waiver_still_waives_something`'s `all("D detached")`
 //!   line therefore cannot fail today, and says so.
 //! * **`true ||`-ing out `run_child`'s "the child ran a test" guard survives**,
 //!   because that guard catches a *bad filter*, and blanking the guard is not a
@@ -95,20 +97,47 @@ fn taffy_id(doc: &RinchDocument, id: NodeId) -> taffy::NodeId {
         .unwrap_or_else(|| panic!("node {id:?} has no Taffy node"))
 }
 
-/// `<div><a>text<div>block</div></a></div>` — #513's shape.
+/// `<div><a>text<div style="position:absolute">…</div></a></div>` — **#591's**
+/// shape, and the waiver's whole remaining subject.
 ///
 /// The `<a>` is inline, so the IFC detaches its Taffy node and Parley lays its
-/// content out; the block-level child stays in the `<a>`'s Taffy child list and
-/// goes with it. Every edge above the block is intact and nothing computes any
-/// of them, which is what `D` reports (#589) and what the waiver waives.
-fn block_in_inline() -> RinchDocument {
+/// content out; the out-of-flow child stays in the `<a>`'s Taffy child list and
+/// goes with it. Every edge above it is intact and nothing computes any of them,
+/// which is what `D` reports (#589) and what the waiver waives.
+///
+/// # It used to be `<div><a>text<div>block</div></a></div>` — #513's shape
+///
+/// That was the waiver's subject for its whole life, and #513's fix removed the
+/// class: a `display: inline` element holding an **in-flow** block-level box is
+/// now split around it, so its pieces are units of its block container and
+/// nothing is stranded. What is left is the shape CSS 2.1 §9.4.2 forbids splitting
+/// — an out-of-flow box neither breaks an inline formatting context nor forces
+/// anonymous-box generation — so such an element is still detached whole and its
+/// absolutely positioned child is still laid out by nobody.
+///
+/// **The predicate did not change.** It was always structural — a `D detached`
+/// node whose Taffy chain terminates at one of its own DOM ancestors that the IFC
+/// detached on purpose — which is why retargeting it was a rename and a doc
+/// rewrite rather than new logic. A waiver spelled as "these 15 lines" would have
+/// had to be rebuilt from scratch.
+fn out_of_flow_in_inline() -> RinchDocument {
     let mut doc = RinchDocument::new();
     let body = doc.body();
-    let container = el(&mut doc, body, "div", "width: 400px; line-height: 20px");
+    let container = el(
+        &mut doc,
+        body,
+        "div",
+        "position: relative; width: 400px; line-height: 20px",
+    );
     let inline = el(&mut doc, container, "a", "");
     txt(&mut doc, inline, "before");
-    let block = el(&mut doc, inline, "div", "display: block; height: 30px");
-    txt(&mut doc, block, "in a block");
+    let abs = el(
+        &mut doc,
+        inline,
+        "div",
+        "position: absolute; top: 0; left: 0; width: 30px; height: 30px",
+    );
+    txt(&mut doc, abs, "out of flow");
     doc.resolve_layout(VW, VH);
     doc
 }
@@ -117,19 +146,26 @@ fn block_in_inline() -> RinchDocument {
 // The waiver
 // ---------------------------------------------------------------------------
 
-/// **The waiver's retirement witness.** When #513 is fixed this fails and names
+/// **The waiver's retirement witness.** When #591 is fixed this fails and names
 /// the deletion.
+///
+/// It has already done that job once. It was
+/// `the_block_in_inline_waiver_still_waives_something` and it failed the moment
+/// #513's fix landed, which is the evidence that the non-empty half bites rather
+/// than decorates — the thing a waiver's witness can otherwise never demonstrate
+/// about itself.
 ///
 /// A waiver nothing asserts the liveness of is the failure #584 is about wearing
 /// different clothes: it would keep a fixed defect's exemption on the books
 /// forever, and the next `D detached` that happened to match its shape would be
 /// waived in for free. So the non-empty half is the load-bearing half here — the
-/// same shape as `ifc_reattach_tests::assert_only_known_513_detachment` and
-/// `block_in_inline_tests::assert_only_known_513_detachment`, which say the same
-/// thing about the fixtures rather than about the sweep.
+/// same shape as `block_in_inline_tests::assert_only_known_591_detachment`, which
+/// says the same thing about a fixture rather than about the sweep. (There were
+/// two; `ifc_reattach_tests`' copy is gone, because #513's fix left it nothing to
+/// assert — which is the retirement working as designed.)
 #[test]
-fn the_block_in_inline_waiver_still_waives_something() {
-    let doc = block_in_inline();
+fn the_out_of_flow_in_inline_waiver_still_waives_something() {
+    let doc = out_of_flow_in_inline();
     let verdict = doc.tree_check_verdict();
     assert!(
         verdict.fatal.is_empty(),
@@ -138,11 +174,11 @@ fn the_block_in_inline_waiver_still_waives_something() {
     );
     assert!(
         !verdict.waived.is_empty(),
-        "nothing is waived any more — #513 appears to be fixed. Delete \
-         `block_in_inline_detachments` and the `waived` arm of \
+        "nothing is waived any more — #591 appears to be fixed. Delete \
+         `strandings_under_a_detached_inline` and the `waived` arm of \
          `tree_check_verdict`, and delete this test with them.",
     );
-    // Belt only, and labelled as such: `block_in_inline_detachments` lists a
+    // Belt only, and labelled as such: `strandings_under_a_detached_inline` lists a
     // node only when its Taffy chain terminates at a *different* node, which
     // means the node has a Taffy parent, which means `C` never reported it. The
     // waivable set and the `C orphan` set are disjoint by construction, so this
@@ -208,7 +244,7 @@ fn a_dom_tree_violation_is_fatal() {
 /// computes the branch. The terminus is a `contents` node rather than IFC-inline
 /// content, so the waiver does not reach it.
 #[test]
-fn a_detachment_that_is_not_block_in_inline_is_fatal() {
+fn a_detachment_under_a_contents_node_is_fatal() {
     let mut doc = RinchDocument::new();
     let body = doc.body();
     let col = el(&mut doc, body, "div", "width: 400px");
@@ -246,7 +282,7 @@ fn a_detachment_that_is_not_block_in_inline_is_fatal() {
 /// **The waiver's second condition, on its own.** A Taffy edge *moved* to an
 /// unrelated inline is not waived.
 ///
-/// `block_in_inline_detachments` asks two things of the chain's terminus: that
+/// `strandings_under_a_detached_inline` asks two things of the chain's terminus: that
 /// it is IFC-detached inline content, *and* that it is the reported node's own
 /// DOM ancestor. This fixture satisfies the first and breaks the second, so it
 /// is what fails if the second is ever dropped as redundant. It is not: without
@@ -395,14 +431,14 @@ fn a_document_whose_taffy_tree_is_corrupt_on_purpose() {
     doc.resolve_layout(VW, VH);
 
     let mode = std::env::var("RINCH_TREE_CHECK_FIXTURE").unwrap_or_default();
-    if mode == "block_in_inline" {
+    if mode == "out_of_flow_in_inline" {
         // A shape the sweep must *report and not fail on*. The parent reads the
         // child's stderr for the waived line.
-        let mut d = block_in_inline();
+        let mut d = out_of_flow_in_inline();
         d.resolve_layout(VW + 100.0, VH);
         assert!(
             !d.tree_check_verdict().waived.is_empty(),
-            "the block-in-inline shape stopped being waivable"
+            "the out-of-flow-in-inline shape stopped being waivable"
         );
         return;
     }
@@ -544,7 +580,7 @@ fn an_unset_flag_leaves_the_sweep_off() {
 /// A **waived** violation is reported and does not fail — and the report reaches
 /// stderr, which is the half a `fatal.is_empty()` assertion says nothing about.
 ///
-/// #513's 15 lines are the sweep's whole reason for having a waiver, and their
+/// #591's line is the sweep's whole reason for having a waiver, and its
 /// only purpose is to be *read* during triage. Dropping the `eprintln!` would
 /// leave every other fixture in this file green while the sweep went quiet about
 /// them again — measured as mutant M9, which is why this exists. It is also the
@@ -554,7 +590,7 @@ fn a_waived_violation_is_reported_and_does_not_fail() {
     let out = run_child(
         &[
             ("RINCH_TREE_CHECK", Some("1")),
-            ("RINCH_TREE_CHECK_FIXTURE", Some("block_in_inline")),
+            ("RINCH_TREE_CHECK_FIXTURE", Some("out_of_flow_in_inline")),
         ],
         NOCAPTURE,
     );

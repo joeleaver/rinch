@@ -24,7 +24,7 @@ enum TreeCheckMode {
     /// under the flag: a window that keeps running and complains is more use
     /// there than a panic inside a frame.
     Warn,
-    /// Any other value, `1` included. A violation the #513 waiver does not
+    /// Any other value, `1` included. A violation the #591 waiver does not
     /// cover **fails the layout pass**, which fails the test it happened in
     /// without anybody having to pass `--nocapture`.
     Fail,
@@ -359,7 +359,7 @@ impl RinchDocument {
         // (`ifc_leaf_invariant_tests`), pinned to a different message, so this
         // panic fails it rather than satisfying it.
         //
-        // `tree_check_verdict` decides what may fail; its docs carry the #513
+        // `tree_check_verdict` decides what may fail; its docs carry the #591
         // waiver and both directions it fails in. `RINCH_TREE_CHECK=warn` keeps
         // the old print-only behaviour, for driving a real app under the flag
         // where a panic mid-frame is less use than a running window.
@@ -399,7 +399,7 @@ impl RinchDocument {
                 TreeCheckMode::Fail => {
                     let verdict = self.tree_check_verdict();
                     for line in &verdict.waived {
-                        eprintln!("TREECHECK waived (#513) {line}");
+                        eprintln!("TREECHECK waived (#591) {line}");
                     }
                     assert!(
                         verdict.fatal.is_empty(),
@@ -409,7 +409,7 @@ impl RinchDocument {
                          double-claimed Taffy edge, an element that generates no \
                          box while carrying one, or a DOM/box-tree disagreement. \
                          See RinchDocument::tree_check_verdict for what is waived \
-                         and why ({} known #513 detachment(s) were, above). \
+                         and why ({} known #591 detachment(s) were, above). \
                          RINCH_TREE_CHECK=warn downgrades this to a print.",
                         verdict.fatal.len(),
                         verdict.fatal.join("\n  "),
@@ -1067,6 +1067,45 @@ impl RinchDocument {
             return;
         }
 
+        // A **split inline** generates no box of its own either (#513). CSS 2.1
+        // §9.2.1.1 breaks it into one fragment per side of the block-level
+        // content; rinch models the fragments' *geometry*, through the anonymous
+        // block boxes that lay each run out, and does not model fragment
+        // identity — so there is no single rect this element could honestly
+        // carry, and it carries none.
+        //
+        // This has to be said here, and the reason is the reason `Contents`
+        // above needs the same line: the element's Taffy node is detached, and
+        // Taffy keeps serving a detached node the layout it last computed. On a
+        // `block → inline` restyle that stale box is real, and every upward
+        // coordinate sum goes through this node (`box_tree_parent` deliberately
+        // still steps through it, so a click or a `data-nofocus` region on the
+        // element is still found), so the stale rect would be added to every
+        // descendant's painted position. Zeroed, the sum is exact.
+        //
+        // `E ghost box` in `taffy_tree_violations` enforces it rather than
+        // trusting it — which is the point: "the element happens to be 0x0" is
+        // the fixed point mutants in this region hide on, and an assertion is
+        // not a fixed point.
+        //
+        // Recurses rather than returning, like `Contents` and unlike
+        // `display: none`: the boxes *inside* a split inline are real and are
+        // laid out by the container, so every descendant still needs its own
+        // read.
+        if self.tree.nodes[node_id].is_split_inline() {
+            let node = &mut self.tree.nodes[node_id];
+            let zero = LayoutResult::default();
+            if node.layout != zero {
+                node.prev_layout = node.layout;
+                node.layout = zero;
+                self.tree.paint_dirty_nodes.push(node_id);
+            }
+            for child_id in children {
+                self.read_layout_results(child_id);
+            }
+            return;
+        }
+
         // A `display: none` element generates no box, and neither does anything
         // inside it (CSS 2.1 §9.2.4) — so the whole subtree's `layout` is zero,
         // and this is the place that has to say so (#543).
@@ -1672,7 +1711,21 @@ impl RinchDocument {
         // asked every child whether it carried a `run_box` — measured as
         // nothing, so `run_boxes.is_empty()` is a structural bound rather than
         // a speedup. That field is here for invariant A (see its own doc).
-        if node.run_boxes.is_empty() {
+        //
+        // **A split inline has to be flattened whether or not a run exists**
+        // (#513). `<a><div>card</div></a>` — the commonest real shape, a block
+        // link — holds no inline content at all, so `has_inline` is false, no
+        // anonymous box is minted, and `run_boxes` stays empty. Returning
+        // `children` there would put the `<a>`'s own box back in the box tree
+        // and leave the block inside it exactly as orphaned as before the fix.
+        // So the borrow is conditional on both, and the extra test is the same
+        // per-child scan the comment above records as measuring at nothing.
+        if node.run_boxes.is_empty()
+            && !node
+                .children
+                .iter()
+                .any(|&c| nodes.get(c).is_some_and(|child| child.is_split_inline()))
+        {
             return Cow::Borrowed(&node.children);
         }
 
@@ -1785,6 +1838,17 @@ impl RinchDocument {
     /// It is written as the general inverse rather than to that caller's shape,
     /// because a caller that asks about a run member would otherwise be handed
     /// the container — whose list names the anonymous box, not the member.
+    ///
+    /// **The split-inline hop is defence too, measured the same way**, and it is
+    /// kept for a reason the `Contents` hop does not need: after #513,
+    /// `collect_effective_taffy_children` of a **split inline** still names its
+    /// own children's boxes, because `restore_split_inlines` reads it that way to
+    /// put them back — while the boxes are in fact held by that element's block
+    /// container. So two nodes' lists name them, and the "exactly when" above is
+    /// one-directional for that one node. This function answers about the *live*
+    /// tree, which is the container, and that is why the hop stays even though no
+    /// caller reaches it today: a caller that asks about a box inside a split
+    /// inline and is handed the element would rebuild a list nothing lays out.
     pub(crate) fn effective_taffy_owner(
         nodes: &slab::Slab<crate::node::Node>,
         node_id: usize,
@@ -1794,7 +1858,15 @@ impl RinchDocument {
         let mut ancestor = Self::box_tree_parent(nodes, node_id)?;
         loop {
             let node = nodes.get(ancestor)?;
-            if node.computed_style.display != DisplayValue::Contents {
+            // Two kinds of ancestor hold none of their children's boxes, so
+            // neither can be the answer: a `display: contents` element, which
+            // generates no box (#476), and a **split inline** (#513), whose
+            // pieces belong to the block container that minted the anonymous
+            // boxes around them. Both are the same fact — the node contributes
+            // its children's boxes rather than one of its own — which is why the
+            // walk tests for both and `box_tree_parent` (a different question:
+            // whose *coordinate space* is this box in) tests for neither.
+            if node.computed_style.display != DisplayValue::Contents && !node.is_split_inline() {
                 return Some(ancestor);
             }
             ancestor = Self::box_tree_parent(nodes, ancestor)?;
@@ -1916,6 +1988,18 @@ impl RinchDocument {
     /// `ComputedStyle::for_anonymous_box`'s `Contents` branch (#319) went with
     /// it — a minted box could be `Contents` only inside such a wrapper — so
     /// this walk no longer covers an anonymous box of its own.
+    ///
+    /// **A split inline (#513) is deliberately NOT in this walk**, even though it
+    /// holds none of its children's boxes either and so satisfies the same
+    /// description. It was, briefly, and the mutant that removed it survived the
+    /// suite — because the one caller that passes a split node,
+    /// `restore_split_inlines`, rebuilds the block container **explicitly** beside
+    /// it. Two mechanisms that happen to agree about one list is the shape #476
+    /// came from, so the explicit one is kept and this arm was taken out rather
+    /// than documented as defence. Anything new that calls
+    /// [`crate::RinchDocument::rebuild_effective_taffy_children`] with a split
+    /// inline must rebuild that element's container itself, as that function's one
+    /// such caller does.
     pub(crate) fn taffy_child_list_owners(
         nodes: &slab::Slab<crate::node::Node>,
         node_id: usize,

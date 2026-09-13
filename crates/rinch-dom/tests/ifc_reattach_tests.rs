@@ -135,39 +135,6 @@ fn assert_clean(doc: &RinchDocument, what: &str) {
     );
 }
 
-/// The same, for a document that is **supposed** to be stranded because #513 is
-/// still open.
-///
-/// `taffy_tree_violations` grew a root-reachability rule (#589): a subtree laid
-/// out by no compute pass is reported as `D detached`, where the old orphan rule
-/// could not see it — every edge inside such a subtree is intact and only the
-/// node at the top has no Taffy parent. Block-level content inside an inline
-/// element is exactly that, so the two fixtures here whose own docs say *"both
-/// now hit #513"* and *"#513's static block-in-inline defect, reached by a
-/// transition"* report it.
-///
-/// They assert **which** violations they expect rather than waiving the check,
-/// and the non-empty half is the one that matters: when #513 is fixed this fails
-/// and names the repair. A waiver would go quiet and stale.
-fn assert_only_known_513_detachment(doc: &RinchDocument, what: &str) {
-    let v = doc.taffy_tree_violations();
-    let unexpected: Vec<&str> = v
-        .iter()
-        .filter(|l| !l.starts_with("D detached"))
-        .map(|s| s.as_str())
-        .collect();
-    assert!(
-        unexpected.is_empty(),
-        "{what}: Taffy tree inconsistent beyond #513's detachment:\n  {}",
-        unexpected.join("\n  ")
-    );
-    assert!(
-        !v.is_empty(),
-        "{what}: nothing is detached any more — #513 appears to be fixed. \
-         Replace this call with `assert_clean`.",
-    );
-}
-
 /// Build `shape` twice and hand back both documents: `.0` reached the final
 /// state by a runtime restyle, `.1` declared it from the first layout.
 ///
@@ -548,12 +515,17 @@ fn an_absolutely_positioned_button_rejoins() {
 /// style. With the crossing trigger in place both paths reach the same IFC
 /// structure, which is what this fixture asserts.
 ///
-/// **It is not asserted that they render the same, because they do not.** Both
-/// now hit #513 — block-level content inside an inline element, and everything
-/// after it, is dropped — and the restyled twin additionally keeps the stale
-/// boxes its block layout left behind, which is why only the structural fields
-/// are compared here. Converging on #513 is a *behaviour change*: that shape
-/// used to render its block child by accident, and no longer does. See the PR.
+/// **It now asserts that they render the same, and that is the upgrade #513
+/// bought.** This fixture used to compare only the structural fields, because
+/// both twins hit #513 — block-level content inside an inline element, and
+/// everything after it, was dropped — and the restyled twin additionally kept the
+/// stale boxes its block layout left behind. Both halves are gone: the wrapper is
+/// a **split inline**, so all three pieces render, and `read_layout_results`
+/// zeroes the wrapper\'s box so the stale one cannot survive the crossing.
+///
+/// The path-independence #597 established is therefore now path-independence at
+/// the *right answer* rather than at the wrong one, which is what that issue said
+/// it wanted and could not have on its own.
 #[test]
 fn the_block_to_inline_path_now_agrees_with_the_static_twin() {
     let (r, d) = twins(|doc, restyle| {
@@ -594,8 +566,17 @@ fn the_block_to_inline_path_now_agrees_with_the_static_twin() {
         geom(&d, c).3,
         "the container's height still depends on the path"
     );
-    assert_only_known_513_detachment(&r, "restyled");
-    assert_only_known_513_detachment(&d, "declared");
+    assert_eq!(
+        geom(&d, c).3,
+        20.0 + 30.0 + 20.0,
+        "and the shared answer is the *right* one now: one line, the 30px block, \
+         one line. Before #513 both twins were 20 and the block rendered nowhere, \
+         so this equality held at the wrong number — which is precisely what \
+         made it worth asserting the number too."
+    );
+    assert_paths_agree(&r, &d, &[("container", c), ("wrapper", sp)]);
+    assert_clean(&r, "restyled");
+    assert_clean(&d, "declared");
 }
 
 /// The shape that says **where** the heal has to run: the owner of a healed
@@ -701,30 +682,64 @@ fn a_hidden_child_of_an_ifc_root_stays_detached() {
     assert_clean(&doc, "after a sibling restyle");
 }
 
-/// The **mirror** case, which #603 does not fix: a wrapper restyled
-/// `flex → inline` strands its block child (#513's static block-in-inline
-/// defect, reached by a transition). Guard rail — it exists so a repair that
-/// reaches into the mirror direction is caught rather than shipped unmeasured.
+/// The **mirror** case, and its third name: `flex → inline` on a wrapper holding
+/// a block child. **It is no longer stranded**, which is what #513's fix means
+/// reached by a transition.
 ///
-/// **It was `the_mirror_case_gains_no_new_taffy_violation` until #589**, and the
-/// rename is the point rather than tidying: the case gains a violation now. It
-/// always had the defect — #603's own doc says so — and the old name recorded
-/// how far the validator could see, not what the tree was doing. Root
-/// reachability (`D detached`) sees it, so the assertion becomes "exactly the
-/// known detachment and nothing else", which still catches an over-reaching
-/// repair *and* now fails when #513 is fixed.
+/// The rename history is the record of how far the instruments could see, and it
+/// is worth keeping. It was `the_mirror_case_gains_no_new_taffy_violation` while
+/// the validator was blind to the defect; `…_is_still_stranded_and_nothing_else_
+/// breaks` once root reachability (`D detached`, #589) could see it; and now this,
+/// because the wrapper is a **split inline** — its block child is a unit of the
+/// wrapper's own container, laid out there, and nothing is detached at all.
+///
+/// This is the transition half of #513's coverage: the same defect as the static
+/// `<a>text<div/>tail</a>` shape, arrived at by restyling, which is the failure
+/// mode this region has historically had. It is also the exact shape of the
+/// counterexample that falsified `layout == 0x0` as a reachability discriminator
+/// — a subtree laid out and *then* detached keeps its box — so the height
+/// assertion below is the one that would have caught it either way.
 #[test]
-fn the_mirror_case_is_still_stranded_and_nothing_else_breaks() {
+fn the_mirror_case_is_no_longer_stranded() {
     let mut doc = RinchDocument::new();
     let body = doc.body();
     let wrap = el(&mut doc, body, "div", "display: flex; width: 160px;");
     let kid = el(&mut doc, wrap, "div", "width: 40px; height: 30px");
     doc.resolve_layout(VW, VH);
     assert!(attached(&doc, kid));
+    assert_eq!(
+        geom(&doc, wrap).3,
+        30.0,
+        "precondition: the flex wrapper is 30px"
+    );
 
     doc.set_attribute(wrap, "style", "display: inline; width: 160px;");
     doc.resolve_layout(VW, VH);
-    assert_only_known_513_detachment(&doc, "mirror case");
+
+    assert!(
+        doc.tree.get(wrap.0).unwrap().is_split_inline(),
+        "an inline wrapper holding an in-flow block is split around it"
+    );
+    assert_eq!(
+        geom(&doc, wrap),
+        (0.0, 0.0, 0.0, 0.0),
+        "a split inline generates no box of its own, and the box Taffy last \
+         computed for it while it was a flex container must not survive — this \
+         is `E ghost box`'s subject, asserted here at the shape that produces it"
+    );
+    assert_eq!(
+        doc_taffy_parent_dom(&doc, kid),
+        Some(body.0),
+        "the block child is held by the wrapper's *container* now — the split \
+         made it a unit of that container. Before #513 its Taffy parent was the \
+         detached wrapper, so nothing laid it out at all."
+    );
+    assert_eq!(
+        geom(&doc, kid),
+        (0.0, 0.0, 40.0, 30.0),
+        "…and it keeps its own 40x30 box, at the container's origin"
+    );
+    assert_clean(&doc, "mirror case");
 }
 
 /// The DOM node whose Taffy node holds `id`'s Taffy node.

@@ -33,10 +33,12 @@
 //! `mark_inline_descendants` recurses into it and `walk_inline_children` flows
 //! the text after it; the field would call it opaque, and both would stop.
 //!
-//! [`the_transparency_scan_is_not_switched_over_yet`] is the pin. It asserts the
-//! *old* answer still governs, so this PR is provably inert at its own base —
-//! the reader moves to the field in the PR that implements the split, where a
-//! container shaped like that is no longer an IFC root and nothing asks.
+//! [`the_transparency_reader_now_uses_the_field_and_the_shape_still_renders`] is
+//! where that lives. It asserted the *old* answer while the classifier landed on
+//! its own — which is what kept that PR inert — and now asserts the new one,
+//! because the split makes such a container stop being an IFC root so the
+//! question is never asked. The fixture records both halves, because the reason
+//! the switch was unsafe is the reason it is now safe.
 
 use rinch_core::dom::{DomDocument, NodeId};
 use rinch_dom::{DisplayMode, InlineFlowRole, RinchDocument};
@@ -518,81 +520,103 @@ fn the_field_is_recomputed_in_both_directions() {
     assert_memo_matches_oracle(&doc, "wrapper restyled back to inline");
 }
 
-// ── The inertness pin ────────────────────────────────────────────────────────
+// ── The reader that moved ────────────────────────────────────────────────────
 
-/// **This PR adds the field and switches no reader over to it, and here is the
-/// construction that shows why that matters.**
+/// **`contents_is_inline_transparent` reads this field now, and this fixture is
+/// the construction that says why it could not before.**
 ///
-/// `ifc.rs`' `contents_is_inline_transparent` asks whether a boxless wrapper
-/// holds an in-flow block-level box, and descends **only** through nested
-/// `display: contents` wrappers. `contributes_in_flow_block` descends through a
-/// `display: inline` element as well. So for
+/// The two answers differ: the field recurses through a `display: inline`
+/// element and the old `scan_contents_children` did not. So for
 ///
 /// ```html
 /// <div>lead<span style="display: contents"><a>x<div/>y</a></span>tail</div>
 /// ```
 ///
-/// the scan says *transparent* — its walk reaches the `<a>`, records "inline
-/// content" and stops — while the field says *contributes*. At this base that
-/// difference is **observable**, because the container really is an IFC root
-/// here: nothing flattens the `<a>`, so every one of the container's units is
-/// inline-level and no anonymous box is minted.
+/// the scan said *transparent* — its walk reached the `<a>`, recorded "inline
+/// content" and stopped — and the field says *contributes*. When the classifier
+/// landed (one PR earlier) that difference was **observable and harmful**:
+/// nothing flattened the `<a>` yet, so every one of the container's units was
+/// inline-level, no anonymous box was minted, the container really was an IFC
+/// root, and calling the wrapper opaque would have stopped both the marking pass
+/// and the walk at it — dropping `tail` entirely. This fixture asserted the old
+/// answer, and that is what kept the reader where it was.
 ///
-/// Transparent, the marking pass recurses into the wrapper and carries on to
-/// `tail`. Opaque, both the marking pass and the walk stop at the wrapper and
-/// `tail` is neither marked nor flowed. So switching the reader over in *this*
-/// PR would silently drop `tail`.
-///
-/// It is safe in the PR that implements the split, for a reason that is false
-/// today: there, the `<a>` is flattened into the container's units, the
-/// container therefore holds an in-flow block-level unit, an anonymous box takes
-/// each inline run, and the container is not discovered as an IFC root at all —
-/// so the question is never asked. This fixture is what fails if the reader is
-/// moved before that is true.
+/// It is safe now, and for the reason that was false then: the `<a>` is a **split
+/// inline**, so it is flattened into the container's units, the container holds an
+/// in-flow block-level unit, an anonymous box takes each inline run, and the
+/// container is **not an IFC root at all** — so nothing asks the question. The
+/// assertions below are the new answer, and the last of them is the one that
+/// matters: the shape renders exactly like the same content with the wrapper
+/// chain deleted.
 #[test]
-fn the_transparency_scan_is_not_switched_over_yet() {
-    let mut doc = RinchDocument::new();
-    let body = doc.body();
-    let c = el(&mut doc, body, "div", CONTAINER);
-    txt(&mut doc, c, "lead");
-    let w = el(&mut doc, c, "span", "display: contents");
-    let a = el(&mut doc, w, "a", "");
-    txt(&mut doc, a, "x");
-    let blk = el(&mut doc, a, "div", BLK);
-    txt(&mut doc, blk, "block");
-    txt(&mut doc, a, "y");
-    let tail = txt(&mut doc, c, "tail");
-    doc.resolve_layout(VW, VH);
+fn the_transparency_reader_now_uses_the_field_and_the_shape_still_renders() {
+    fn build(wrapped: bool) -> (RinchDocument, NodeId, NodeId) {
+        let mut doc = RinchDocument::new();
+        let body = doc.body();
+        let c = el(&mut doc, body, "div", CONTAINER);
+        txt(&mut doc, c, "lead");
+        // Wrapped: `contents` wrapper -> `<a>` -> [x, block, y]. Unwrapped: the
+        // same five boxes straight in the container, which is the shape rinch
+        // has always rendered correctly.
+        let host = if wrapped {
+            let w = el(&mut doc, c, "span", "display: contents");
+            el(&mut doc, w, "a", "")
+        } else {
+            c
+        };
+        txt(&mut doc, host, "x");
+        let blk = el(&mut doc, host, "div", BLK);
+        txt(&mut doc, blk, "block");
+        txt(&mut doc, host, "y");
+        let tail = txt(&mut doc, c, "tail");
+        doc.resolve_layout(VW, VH);
+        (doc, c, tail)
+    }
 
-    // The two answers really do differ on this wrapper — otherwise the rest of
-    // this fixture is asserting nothing.
+    let (wdoc, wc, wtail) = build(true);
+    let (pdoc, pc, ptail) = build(false);
+
+    // The container is no longer a root, which is the whole reason the switch is
+    // safe — so the question the reader answers is never put to it.
     assert!(
-        doc.tree.get(w.0).unwrap().contributes_in_flow_block,
-        "precondition: the new field calls this wrapper a block contributor"
+        wdoc.tree.get(wc.0).unwrap().text_layout.is_none(),
+        "the container must not be an IFC root any more: its inline content \
+         belongs to the anonymous boxes minted around the split"
     );
-
-    // And the old answer is the one still governing: `tail` is marked into the
-    // container's IFC and flowed by it, which is only true if the wrapper was
-    // judged transparent.
-    assert_eq!(
-        doc.tree.get(tail.0).unwrap().ifc_root,
-        Some(c.0),
-        "`contents_is_inline_transparent` still governs: with the wrapper \
-         judged transparent, the marking pass carries on past it and claims \
-         `tail`. If this is `None`, the reader was switched to \
-         `contributes_in_flow_block` a PR early and `tail` renders nowhere."
-    );
-    let layout = doc
+    // `tail` is inline content of an anonymous box, not of the container.
+    let tail_root = wdoc
         .tree
-        .get(c.0)
+        .get(wtail.0)
         .unwrap()
-        .text_layout
-        .as_ref()
-        .expect("the container is an IFC root");
+        .ifc_root
+        .expect("tail has an IFC");
     assert!(
-        layout.text_ranges.iter().any(|r| r.node_id == tail.0),
-        "…and the walk really flows it, so the mark is honest (#366)"
+        wdoc.tree.get(tail_root).unwrap().is_anonymous_block_box,
+        "`tail` is laid out by an anonymous block box, not by the container"
+    );
+    assert_eq!(
+        wdoc.tree.get(ptail.0).unwrap().ifc_root.is_some(),
+        pdoc.tree.get(ptail.0).unwrap().ifc_root.is_some(),
+        "the twin agrees about whether `tail` belongs to an IFC"
     );
 
-    assert_memo_matches_oracle(&doc, "the disagreeing wrapper");
+    // And the answer that matters: the wrapper chain changes nothing.
+    let h = |d: &RinchDocument, id: NodeId| d.tree.get(id.0).unwrap().layout.height;
+    assert_eq!(
+        h(&pdoc, pc),
+        20.0 + 30.0 + 20.0,
+        "control: `lead x` / block / `y tail` is three bands tall"
+    );
+    assert_eq!(
+        h(&wdoc, wc),
+        h(&pdoc, pc),
+        "a `display: contents` wrapper around a split inline must change \
+         nothing — this is the assertion the reader switch had to earn"
+    );
+    assert!(
+        wdoc.taffy_tree_violations().is_empty(),
+        "{:?}",
+        wdoc.taffy_tree_violations()
+    );
+    assert_memo_matches_oracle(&wdoc, "the wrapper the two answers disagreed about");
 }

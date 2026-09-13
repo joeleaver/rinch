@@ -79,12 +79,14 @@ pub(crate) fn apply_empty_block_line_floor(node: &Node, style: &mut taffy::Style
 /// builds one.
 #[derive(Debug, Default, Clone)]
 pub struct TreeCheckVerdict {
-    /// Violations the sweep fails on. Every class except #513's known
-    /// block-in-inline detachment, plus every DOM-tree line.
+    /// Violations the sweep fails on. Every class except a node stranded under
+    /// an inline element the IFC detached (#591), plus every DOM-tree line.
     pub fatal: Vec<String>,
-    /// `D detached` lines whose detachment is #513's open defect. Reported, not
-    /// failed — see `tree_check_verdict`'s docs for why the waiver is a shape
-    /// and not a count, and for the fixture that retires it.
+    /// `D detached` lines whose detachment is #591's open defect — an out-of-flow
+    /// child of an inline element, which CSS does not split (CSS 2.1 §9.4.2), so
+    /// the element is detached whole and the child is laid out by nobody.
+    /// Reported, not failed — see `tree_check_verdict`'s docs for why the waiver
+    /// is a shape and not a count, and for the fixture that retires it.
     pub waived: Vec<String>,
 }
 
@@ -699,7 +701,19 @@ impl RinchDocument {
             let Some(child) = nodes.get(child_id) else {
                 continue;
             };
-            if child.inline_flow_role() == InlineFlowRole::Contents {
+            // Two kinds of child contribute their children's boxes rather than
+            // one of their own, and both are recursed into rather than pushed:
+            //
+            //  * a `display: contents` wrapper, which generates no box at all;
+            //  * a **split inline** (#513) — a `display: inline` element holding
+            //    an in-flow block-level box, which CSS 2.1 §9.2.1.1 breaks
+            //    around that box. Its pieces are this container's boxes, so the
+            //    anonymous block boxes are minted *here* and the block becomes
+            //    their sibling, which is the whole of #513's fix.
+            //
+            // **A unit is therefore never either of those**, by construction,
+            // and the consumers below rely on that rather than re-testing.
+            if child.inline_flow_role() == InlineFlowRole::Contents || child.is_split_inline() {
                 Self::collect_run_units(nodes, child_id, out);
             } else {
                 out.push(child_id);
@@ -1086,6 +1100,109 @@ impl RinchDocument {
         }
     }
 
+    /// Undo the previous pass's splits (#513), so this pass can decide them
+    /// again from scratch.
+    ///
+    /// Splitting moves an inline element's boxes out of its own Taffy child list
+    /// and into its block container's. Nothing else puts them back, so an
+    /// element that *stops* being split — its block child hidden, removed, or
+    /// restyled inline-level — would be left with a parentless, childless Taffy
+    /// node and a container whose list does not name it. That is the missing
+    /// direction #597 had to add for the marking pass and #520 for
+    /// `display: contents`, arrived at a third time.
+    ///
+    /// **Two rebuilds, and the second one is not optional.** The element's own
+    /// list has to come back — that is what `taffy_child_list_owners` walking
+    /// past a split inline gives, bottom-up — but the *container's* does too, and
+    /// nothing else provides it once the element stops being split: an element
+    /// that is no longer split is not in that walk, so the walk stops at the
+    /// element itself and the container is never visited.
+    ///
+    /// Skipping it is not a missing optimisation, it is a **`C orphan`**, and it
+    /// was measured rather than argued. `<div><a><div>card</div></a></div>`
+    /// restyled to `display: block`: the element's rebuild adopts the card back
+    /// out of the container (`set_children` steals), so the container's list ends
+    /// **empty**, the element's Taffy node is still parentless from the split, and
+    /// the container measures `h = 0` with the card laid out by an orphan. Neither
+    /// `cleanup_anonymous_block_boxes` nor `create_anonymous_block_boxes` covers
+    /// it, because a block-only split inline mints no run on either pass.
+    /// `a_block_only_split_inline_restyled_to_a_block_container_rejoins_its_parent`
+    /// is the pin, and the mutant that drops this whole function survived the
+    /// suite until it existed.
+    ///
+    /// Order matters and is the same rule as everywhere else here: the element
+    /// first, its owner second, because `set_children` removes an adopted child
+    /// from its previous parent. Called **before**
+    /// `create_anonymous_block_boxes`, so there are no anonymous boxes yet whose
+    /// members the element's rebuild could steal.
+    ///
+    /// Unconditional — it does not ask whether the element is still split. A
+    /// gate would have to answer "will this pass split it again", and the pass
+    /// that follows answers that anyway by re-splitting; a wrong gate here is
+    /// the class of bug this function exists to fix.
+    fn restore_split_inlines(&mut self, was_split: Vec<usize>) {
+        for id in was_split {
+            if !self.tree.nodes.contains(id) {
+                continue;
+            }
+            self.rebuild_effective_taffy_children(id);
+            if let Some(owner) = Self::effective_taffy_owner(&self.tree.nodes, id) {
+                self.rebuild_effective_taffy_children(owner);
+            }
+        }
+    }
+
+    /// Take every split inline's boxes into its block container's Taffy child
+    /// list, and record the split so the next pass can undo it (#513).
+    ///
+    /// **Only the container's list is rebuilt, never the split inline's own**,
+    /// and that asymmetry is load-bearing. By the time this runs,
+    /// `create_anonymous_block_boxes` has already given each anonymous box its
+    /// members, so rebuilding the inline element's list from its DOM children
+    /// would steal those members straight back out of the boxes that lay them
+    /// out. The element's Taffy node is left childless by the rebuild itself:
+    /// every one of its children is a unit of the container — an anonymous box
+    /// stands in for each inline run, and a block, out-of-flow or `display: none`
+    /// child appears directly — so `set_children` on the container adopts all of
+    /// them and Taffy removes each from its previous parent.
+    ///
+    /// **This pass is needed even when no anonymous box was minted**, which is
+    /// the case `create_anonymous_block_boxes`' own rebuild cannot cover:
+    /// `<a><div>card</div></a>` holds no inline content, so `has_inline` is false
+    /// and no run exists, and without this the block would stay a Taffy child of
+    /// the `<a>`. Measured consequence of skipping it — not hypothetical, and not
+    /// merely untidy: with a block sibling before the `<a>`, Taffy positions the
+    /// block relative to the `<a>` while paint reaches it directly from the
+    /// container (the `<a>` is not in the box tree and its `layout` is zeroed), so
+    /// it is drawn over that sibling.
+    fn split_inline_boxes(&mut self) {
+        let split: Vec<usize> = self
+            .tree
+            .nodes
+            .iter()
+            .filter(|(_, node)| node.is_split_inline())
+            .map(|(id, _)| id)
+            .collect();
+        if split.is_empty() {
+            self.tree.split_inlines.clear();
+            return;
+        }
+
+        let mut owners: Vec<usize> = Vec::new();
+        for &id in &split {
+            if let Some(owner) = Self::effective_taffy_owner(&self.tree.nodes, id)
+                && !owners.contains(&owner)
+            {
+                owners.push(owner);
+            }
+        }
+        for owner in owners {
+            self.rebuild_effective_taffy_children(owner);
+        }
+
+        self.tree.split_inlines = split;
+    }
+
     /// Detect IFC roots and mark inline children.
     ///
     /// An element is an IFC root if it's a block container that has any
@@ -1094,22 +1211,24 @@ impl RinchDocument {
     /// paths (standalone Taffy vs IFC) and the sync bugs that arise when
     /// elements transition between them during editing.
     pub(crate) fn setup_inline_formatting_contexts(&mut self) {
-        // Before everything else: the classification the passes below consume.
-        //
-        // **Nothing in this pass reads it yet** (#513 PR A) — the consumers land
-        // with the split. So the ordering is, today, unwitnessed: the mutant that
-        // moves this call after `create_anonymous_block_boxes` is killed only
-        // because the clear then wipes a freshly-minted anonymous box's value,
-        // which is a coincidence and not the reason the order matters. The reason
-        // is on `recompute_contributes_in_flow_block` itself; do not read that
-        // kill as cover for it.
+        // Before everything else: the classification every pass below consumes.
+        // `collect_run_units` reads it, so `box_tree_children` and therefore
+        // `collect_effective_taffy_children` do — which means the cleanups and
+        // the rebuilds below all do. Reading a previous pass's value here would
+        // rebuild a Taffy child list from a classification this pass is about to
+        // contradict; see the function's own doc.
         self.recompute_contributes_in_flow_block();
 
-        // Clean up the previous pass's measure leaves and anonymous block
-        // boxes, then recreate both for the current DOM state.
+        // Clean up the previous pass's measure leaves, anonymous block boxes and
+        // splits, then recreate all three for the current DOM state.
         self.cleanup_ifc_measure_leaves();
+        let was_split = std::mem::take(&mut self.tree.split_inlines);
         self.cleanup_anonymous_block_boxes();
+        self.restore_split_inlines(was_split);
         self.create_anonymous_block_boxes();
+        // After the boxes exist, so the container's rebuilt list names them
+        // rather than their members (#513).
+        self.split_inline_boxes();
 
         // Put back every box a past marking pass took out and that is no longer
         // the IFC's to hold (#597). Before the marking pass below, so that a
@@ -1603,21 +1722,29 @@ impl RinchDocument {
     /// | root + inline-block | off | 0 | 15 | 15 |
     /// | root + inline-block | on | 0 | 15 | **15** |
     ///
-    /// **Seeding is what earns its keep; suppression currently changes
-    /// nothing** — 15 either way — and saying so is the point. Every one of
-    /// today's 15 lines is a #513 shape whose stranded nodes are siblings, so
-    /// there is no ancestor to suppress from. Suppression is kept for the
+    /// **Seeding is what earns its keep; suppression changed nothing when this
+    /// was measured** — 15 either way — and saying so is the point. Every one of
+    /// those 15 lines was a #513 shape whose stranded nodes are siblings, so
+    /// there was no ancestor to suppress from. Suppression is kept for the
     /// *nested* case, which `only_the_topmost_detached_node_is_named` pins
     /// directly and which the suite last exhibited on `db9c64f` (36 lines
     /// against 26 there).
     ///
-    /// **D is not merely a #513 detector, which today's 15 lines would
-    /// suggest.** Disable #603's inline-level crossing trigger (leaving its
-    /// heal in place) and the sweep reports **18** `D detached` lines and still
-    /// **zero** `C orphan`: five of them are #597's own damage in
-    /// `ifc_reattach_tests`, a defect class C is completely blind to. Two of
-    /// today's 15 are the reverse — created by that trigger, in the
-    /// `block → inline` path #603 documented as *converging on #513*.
+    /// **The 15 are gone**: #513's fix removed that whole class, and the live
+    /// `D` count is now the #591 shape alone. The table above is kept as the
+    /// measurement it was, at the commit it was taken on, because what it
+    /// establishes — seeding matters, suppression is insurance — does not depend
+    /// on which defects happened to be open.
+    ///
+    /// **D is not merely a #513 detector, which those 15 lines would have
+    /// suggested** — and #513's fix is the proof, since D survived it with a
+    /// line still to report. Disable #603's inline-level crossing trigger
+    /// (leaving its heal in place) and the sweep reported **18** `D detached`
+    /// lines and still **zero** `C orphan`: five of them were #597's own damage
+    /// in `ifc_reattach_tests`, a defect class C is completely blind to. Two of
+    /// the 15 were the reverse — created by that trigger, in the
+    /// `block → inline` path #603 documented as *converging on #513*, and now
+    /// clean because that convergence resolved in #513's direction.
     ///
     /// **They are ordered, not independent, and the witness is a fixture rather
     /// than a number.** Suppression applied over a wrong seed set does not
@@ -1634,8 +1761,8 @@ impl RinchDocument {
     /// happen to exist at one commit.** That fixture puts a real orphan under an
     /// inline-block's subtree, so seeded correctly the orphan is the one line
     /// reported and seeded from the root alone it disappears behind its
-    /// ancestor. It depends on no open defect and still says this after #513
-    /// lands.
+    /// ancestor. It depends on no open defect and still said this after #513
+    /// landed — which it has, so that is now observed rather than forecast.
     ///
     /// **Cost, measured rather than asserted.** One BFS over the
     /// `taffy.children()` reads A and B already make — kept rather than
@@ -1705,8 +1832,8 @@ impl RinchDocument {
     /// subtree should not panic. `RINCH_TREE_CHECK=1` sweeps it across a whole
     /// suite and **fails** on what it finds (debug builds only), but it fails on
     /// [`Self::tree_check_verdict`]'s partition rather than on this list, which
-    /// is what lets #513's open block-in-inline detachment be reported without
-    /// turning the suite red. `RINCH_TREE_CHECK=warn` prints instead, which is
+    /// is what lets #591's open out-of-flow-in-inline detachment be reported
+    /// without turning the suite red. `RINCH_TREE_CHECK=warn` prints instead, which is
     /// what the flag did for its whole life before #584 — and printed to a
     /// stderr `cargo test` captures, so it showed nobody anything.
     ///
@@ -2010,33 +2137,44 @@ impl RinchDocument {
     /// nothing asserts. A violation was reported 149 times under `--nocapture`
     /// and 0 times without it, for the whole life of the flag.
     ///
-    /// It cannot simply fail on everything: #513 is open, and block-level
-    /// content inside an inline element is laid out by nobody, so 15 `D
-    /// detached` lines are live across `-p rinch-dom -p rinch` (measured on
-    /// `fdc01d5`). `waived` holds exactly those; `fatal` holds everything else,
-    /// and the sweep fails on it.
+    /// It cannot simply fail on everything: **#591** is open, and an out-of-flow
+    /// child of an inline element is laid out by nobody, so a `D detached` line
+    /// is live across `-p rinch-dom -p rinch`. `waived` holds exactly those;
+    /// `fatal` holds everything else, and the sweep fails on it.
+    ///
+    /// (It was **#513**'s waiver, and 15 lines, until that issue was fixed. The
+    /// fix removed the whole block-in-inline class and left one line standing —
+    /// the out-of-flow shape #513 deliberately does not touch, because CSS 2.1
+    /// §9.4.2 says an out-of-flow box does not break an inline formatting
+    /// context. See [`Self::strandings_under_a_detached_inline`]; the predicate
+    /// did not change, only what is left for it to find.)
     ///
     /// # What the waiver waives, and why it is a shape rather than a count
     ///
     /// A count (*"15 lines are expected"*) would move with every fixture added
     /// or removed, and would pass a brand-new detachment in for free the moment
     /// an unrelated fixture stopped reporting one. The waiver is
-    /// [`Self::block_in_inline_detachments`] instead: a `D detached` node whose
-    /// Taffy chain terminates at one of **its own DOM ancestors** that the
-    /// inline formatting context detached on purpose. That is #513's mechanism
+    /// [`Self::strandings_under_a_detached_inline`] instead: a `D detached` node
+    /// whose Taffy chain terminates at one of **its own DOM ancestors** that the
+    /// inline formatting context detached on purpose. That is the mechanism
     /// stated structurally, so a new `D` anywhere else — a `display: contents`
     /// wrapper's stranded chain, a moved Taffy edge, a subtree hanging off a
     /// freed node — is `fatal`, and so is every `A`, `B`, `C`, `E` and DOM-tree
     /// line whatever its shape.
     ///
+    /// Being structural is what let it survive #513's fix as a **rename**: the
+    /// class it was written for went away and the predicate needed no edit at
+    /// all. A waiver written as "these 15 lines" would have had to be rebuilt.
+    ///
     /// It fails in **both** directions, which is the whole requirement:
     ///
     /// * a new violation of any class is `fatal` and the sweep panics;
-    /// * when #513 is fixed the waiver has nothing left to waive, and
-    ///   `tree_check_hook_tests::the_block_in_inline_waiver_still_waives_something`
+    /// * when #591 is fixed the waiver has nothing left to waive, and
+    ///   `tree_check_hook_tests::the_out_of_flow_in_inline_waiver_still_waives_something`
     ///   fails and names the deletion. That fixture is the waiver's only
     ///   witness — a waiver whose retirement nothing asserts goes quiet and
-    ///   stale, which is the failure #584 is about.
+    ///   stale, which is the failure #584 is about. It has already done that job
+    ///   once, for #513, which is the evidence that it bites.
     ///
     /// `run_bookkeeping_violations` is deliberately absent, for the reason
     /// given at the sweep's call site: it is not any-time-true.
@@ -2054,7 +2192,7 @@ impl RinchDocument {
         // off. Cheap, but paid for nothing on every clean pass, and there is no
         // `D` line in the overwhelming majority of them.
         let waivable: Vec<String> = if taffy.iter().any(|l| l.starts_with("D detached")) {
-            self.block_in_inline_detachments()
+            self.strandings_under_a_detached_inline()
                 .into_iter()
                 .map(|id| format!("D detached: dom {id} "))
                 .collect()
@@ -2074,17 +2212,35 @@ impl RinchDocument {
         verdict
     }
 
-    /// Every node whose Taffy detachment is explained by #513: block-level
-    /// content inside an inline element.
+    /// Every node stranded in Taffy because an inline **ancestor** of it was
+    /// detached into an inline formatting context — today, #591.
     ///
-    /// The mechanism, measured on `fdc01d5` over all 15 live `D detached` lines
-    /// in `-p rinch-dom -p rinch` — each one's Taffy parent chain terminates at
-    /// an `<a>`, `<span>` or `<div>` with `display: Inline`, `mode: Inline` and
-    /// `ifc_root: Some(..)`. `mark_inline_descendants` detaches an inline
-    /// element's Taffy node because Parley lays that content out instead, and a
-    /// block-level child left in its child list goes with it: every edge above
-    /// the child is intact, nothing computes any of them, and `D` is the rule
-    /// that sees it (#589).
+    /// `mark_inline_descendants` removes an inline element's Taffy node because
+    /// Parley lays that content out instead, and anything left in that node's
+    /// child list goes with it: every edge above it is intact, nothing computes
+    /// any of them, and `D` is the rule that sees it (#589).
+    ///
+    /// # It was #513's waiver and is now #591's
+    ///
+    /// When this was written, all 15 live `D detached` lines in
+    /// `-p rinch-dom -p rinch` were block-level content inside an inline
+    /// element — #513 — and the function was named for it. #513's fix removed
+    /// that whole class: a `display: inline` element holding an in-flow
+    /// block-level box is now **split** around it
+    /// ([`crate::node::Node::is_split_inline`]), so its pieces are units of its
+    /// block container, the block is a Taffy child of that container, and nothing
+    /// is stranded.
+    ///
+    /// What survives is the shape #513 deliberately does **not** touch, because
+    /// CSS 2.1 §9.4.2 says an out-of-flow box neither breaks an inline formatting
+    /// context nor forces anonymous-box generation: an `absolute` or `fixed` child
+    /// of an inline element does not split it, so the element is still detached
+    /// whole and that child is still laid out by nobody. That is #591, and it is
+    /// the one line this waiver now waives.
+    ///
+    /// **The predicate itself is unchanged** — it was always structural rather
+    /// than a description of #513's markup, which is exactly why the retarget is a
+    /// rename and a doc rewrite rather than new logic.
     ///
     /// Two conditions, not one. The terminus must be
     ///
@@ -2097,9 +2253,13 @@ impl RinchDocument {
     ///    `taffy_reachability_tests`' `reparent_taffy` shape, which #589 added
     ///    the `D` rule for.
     ///
+    /// Both conditions are what keep this narrow enough to be worth having: a
+    /// blanket `D` exemption would make the sweep useless, and
+    /// `tree_check_hook_tests` pins each condition on its own.
+    ///
     /// Both walks are bounded by the node count and **fail closed**: an
     /// unterminated chain waives nothing, so a cycle reports rather than hangs.
-    fn block_in_inline_detachments(&self) -> Vec<usize> {
+    fn strandings_under_a_detached_inline(&self) -> Vec<usize> {
         let cap = self.tree.nodes.len() + 1;
         let mut out = Vec::new();
         for (id, node) in &self.tree.nodes {
@@ -2161,7 +2321,7 @@ impl RinchDocument {
     /// the note partway down that item). Read it there.
     ///
     /// [`Self::tree_check_verdict`] is what the `RINCH_TREE_CHECK` sweep
-    /// actually fails on: this list, minus #513's known block-in-inline
+    /// actually fails on: this list, minus #591's known out-of-flow-in-inline
     /// detachment.
     pub fn taffy_tree_violations(&self) -> Vec<String> {
         use crate::computed_style::values::DisplayValue;
@@ -2281,7 +2441,17 @@ impl RinchDocument {
             };
             let display = node.computed_style.display;
             let hidden_here = hidden || display == DisplayValue::None;
-            let boxless = matches!(display, DisplayValue::None | DisplayValue::Contents);
+            // A **split inline** joins the boxless set (#513): CSS 2.1 §9.2.1.1
+            // breaks it into fragments, rinch models the fragments' geometry
+            // through anonymous block boxes and models no box for the element
+            // itself, and its Taffy node legitimately holds nothing and is held
+            // by nobody. So `C` and `D` have nothing to ask about it — and `E`
+            // has everything to ask: this is what makes `read_layout_results`'
+            // zeroing an enforced invariant instead of a coincidence, on the very
+            // path (`block → inline`) where Taffy would otherwise keep serving it
+            // a stale box.
+            let boxless = matches!(display, DisplayValue::None | DisplayValue::Contents)
+                || node.is_split_inline();
             let rect = (
                 node.layout.x,
                 node.layout.y,
@@ -2361,58 +2531,55 @@ impl RinchDocument {
     /// it. (A sibling predicate that *did* require it,
     /// `contents_wraps_only_inline`, was deleted in #586 once the IFC-root scan
     /// began reading units and answered its question directly.)
+    ///
+    /// # It is the memoized classifier now, not a per-call scan
+    ///
+    /// This used to walk the wrapper's subtree on every call
+    /// (`scan_contents_children`, deleted with #513's split), so a chain of
+    /// nested wrappers was rescanned once per ancestor. It reads
+    /// [`Node::contributes_in_flow_block`] instead — the same question, answered
+    /// bottom-up once per `ifc_dirty` pass by
+    /// [`Self::recompute_contributes_in_flow_block`].
+    ///
+    /// **The two answers are not identical, and the difference is the point.**
+    /// The field recurses through a `display: inline` element and the old scan
+    /// did not, so a wrapper holding `<a>x<div/>y</a>` is *opaque* here and was
+    /// *transparent* before. That is the correct answer — the wrapper does hold
+    /// an in-flow block-level box — and it was not safe to adopt before the split
+    /// existed: such a container was still an IFC root, so calling the wrapper
+    /// opaque stopped the marking pass and the walk at it and dropped everything
+    /// after it (`split_inline_predicate_tests`'
+    /// `the_transparency_scan_is_not_switched_over_yet`, landed with the
+    /// classifier for exactly this, and rewritten here).
+    ///
+    /// It is safe now because the container is no longer a root: the `<a>` is
+    /// flattened into its units, so it holds an in-flow block-level unit, an
+    /// anonymous box takes each inline run, and nothing asks this question of it
+    /// at all. Measured, not argued — the fixture asserts the shape renders like
+    /// its wrapper-free twin.
+    ///
+    /// # The *opaque* answer is now believed unreachable
+    ///
+    /// And that is measured too: the mutant that makes this return `true`
+    /// unconditionally — "every wrapper is transparent" — survives
+    /// `-p rinch-dom -p rinch`. The reason is the same one that makes the switch
+    /// safe. A wrapper is opaque exactly when it holds an in-flow block-level
+    /// box; the unit collector flattens such a wrapper before any consumer of
+    /// this predicate runs, so the container is never discovered as an IFC root
+    /// and neither the marking pass nor the inline walk ever reaches the wrapper
+    /// to ask.
+    ///
+    /// This is the **third** arm #513's fix left in that position, with the two
+    /// `break` arms in `mark_inline_descendants` and `walk_inline_children` — one
+    /// cause, three arms, filed together. The function is kept rather than
+    /// collapsed to `true`, for the same reason those are kept: "I could not
+    /// construct a survivor" is an argument and not a proof, and the transparent
+    /// answer is still very much live (rsx emits a `display: contents` wrapper for
+    /// every `if`/`match`/`for`).
     fn contents_is_inline_transparent(nodes: &slab::Slab<Node>, node_id: usize) -> bool {
-        Self::scan_contents_children(nodes, node_id, &mut false)
-    }
-
-    /// Recursively classify `node_id`'s children, descending only through
-    /// `display:contents` wrappers. Sets `found_inline` when inline content is
-    /// seen under a contents wrapper. Returns false as soon as an **in-flow**
-    /// block-level (non-contents) element is encountered; an out-of-flow box is
-    /// skipped (#289).
-    fn scan_contents_children(
-        nodes: &slab::Slab<Node>,
-        node_id: usize,
-        found_inline: &mut bool,
-    ) -> bool {
-        for &child_id in &nodes[node_id].children {
-            let child = match nodes.get(child_id) {
-                Some(c) => c,
-                None => continue,
-            };
-            match child.inline_flow_role() {
-                // A comment renders nothing; `display: none` generates no box
-                // at all — neither is inline content nor a block-level box
-                // that could break the inline flow.
-                InlineFlowRole::Comment | InlineFlowRole::NoBox => {}
-                InlineFlowRole::Contents => {
-                    if !Self::scan_contents_children(nodes, child_id, found_inline) {
-                        return false;
-                    }
-                }
-                InlineFlowRole::Inline => *found_inline = true,
-                InlineFlowRole::OutOfFlow => {
-                    // An out-of-flow box neither breaks an inline formatting
-                    // context (CSS 2.1 §9.4.2) nor belongs to it — skip it,
-                    // as the decision loop in
-                    // `setup_inline_formatting_contexts` and
-                    // `walk_inline_children` do (#289). It stays attached to
-                    // the IFC root's Taffy node with `ifc_root == None`, so
-                    // Taffy lays it out and the stacking sequence paints it,
-                    // while the #466 measure leaf keeps the root's inline
-                    // measure reachable. Display-first classification —
-                    // [`Node::inline_flow_role`]'s contract — is what sends a
-                    // boxless `display: contents; position: absolute` wrapper
-                    // into the recursion above rather than this skip.
-                }
-                InlineFlowRole::InFlowBlock => {
-                    // A real in-flow block-level box — mixed content, not our
-                    // case.
-                    return false;
-                }
-            }
-        }
-        true
+        nodes
+            .get(node_id)
+            .is_none_or(|node| !node.contributes_in_flow_block)
     }
 
     /// Collect, in flattened DOM order, the Taffy ids of the out-of-flow boxes
@@ -2719,8 +2886,9 @@ impl RinchDocument {
                 }
                 InlineFlowRole::NoBox => {
                     // A `display: none` child generates no box at all — which is
-                    // exactly why `scan_contents_children` skips it when deciding
-                    // that a contents wrapper is transparent to this IFC. But its
+                    // exactly why `contributes_in_flow_block` does not count it
+                    // when deciding that a contents wrapper is transparent to
+                    // this IFC. But its
                     // Taffy node — reparented here by `sync_display_contents`, or
                     // a direct sibling of the wrapper — still counts toward
                     // Taffy's `has_children`, and one attached child makes this
@@ -2776,6 +2944,28 @@ impl RinchDocument {
                     // screen.
                 }
                 InlineFlowRole::InFlowBlock => {
+                    // **Believed unreachable since #513, and kept anyway.** An
+                    // IFC root's units cannot contain an `InFlowBlock`: if one is
+                    // present then `has_inline && has_block` both hold,
+                    // `create_anonymous_block_boxes` mints a run for every
+                    // maximal inline stretch, every inline unit therefore carries
+                    // a `run_box`, and the root scan skips those — so
+                    // `has_non_comment_inline` is false and the container is never
+                    // discovered as a root. The recursive calls are no better off:
+                    // a transparent `display: contents` wrapper holds no in-flow
+                    // block by definition, and a non-split `display: inline`
+                    // element holds none either.
+                    //
+                    // That is an **argument**, not a proof — I could not construct
+                    // a survivor, which is the right standard and not the same
+                    // thing — so the arm stays fail-closed rather than becoming an
+                    // `unreachable!()`. Its three witnesses all reached it through
+                    // block-in-inline markup and no longer can; the lost coverage
+                    // is filed as #615 (the #585/#593 family). **Do not delete this arm
+                    // on the strength of "no test covers it"**: coverage removed
+                    // by a correct fix reads identically to coverage that never
+                    // existed.
+                    //
                     // An in-flow block-level child ends the marking pass —
                     // `break`, not `continue`, matching where
                     // `walk_inline_children` stops building the line (#366).
@@ -3410,6 +3600,70 @@ impl RinchDocument {
         props
     }
 
+    /// Push a background span for `owner` over `start..end`, if it has a visible
+    /// one — the one place an inline box's background becomes a span, so the
+    /// ordinary `display: inline` arm and the split-inline bridge below cannot
+    /// disagree about padding or radius.
+    fn push_inline_background(
+        owner: &Node,
+        start: usize,
+        end: usize,
+        background_spans: &mut Vec<crate::node::InlineBackgroundSpan>,
+    ) {
+        if end <= start {
+            return;
+        }
+        let Some(color) = owner.computed_style.background_color() else {
+            return;
+        };
+        // Skip transparent backgrounds (alpha == 0).
+        if color.components[3] <= 0.0 {
+            return;
+        }
+        let cs = &owner.computed_style;
+        background_spans.push(crate::node::InlineBackgroundSpan {
+            start,
+            end,
+            color,
+            padding_left: cs.padding_left.to_px(),
+            padding_right: cs.padding_right.to_px(),
+            padding_top: cs.padding_top.to_px(),
+            padding_bottom: cs.padding_bottom.to_px(),
+            border_radius: cs.border_radius_top_left.to_px(),
+        });
+    }
+
+    /// The `is_split_inline` DOM ancestors of `node_id` below `stop_at`,
+    /// outermost first (#513).
+    ///
+    /// A split inline is flattened out of the box tree, so its run members are
+    /// walked by the anonymous block box directly and the element itself is never
+    /// walked — which is why anything it would have contributed to the line has to
+    /// be reached from its descendants instead.
+    fn split_inline_ancestors(
+        nodes: &slab::Slab<Node>,
+        node_id: usize,
+        stop_at: Option<usize>,
+    ) -> Vec<usize> {
+        let mut chain = Vec::new();
+        let mut cur = nodes.get(node_id).and_then(|n| n.parent);
+        let cap = nodes.len() + 1;
+        let mut hops = 0;
+        while let Some(id) = cur {
+            if Some(id) == stop_at || hops > cap {
+                break;
+            }
+            hops += 1;
+            let Some(node) = nodes.get(id) else { break };
+            if node.is_split_inline() {
+                chain.push(id);
+            }
+            cur = node.parent;
+        }
+        chain.reverse();
+        chain
+    }
+
     /// Recursively walk inline children, pushing text and style spans into the TreeBuilder.
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn walk_inline_children(
@@ -3428,11 +3682,55 @@ impl RinchDocument {
         // exactly the same set — that is [`Node::inline_flow_role`]'s contract
         // (#366) and it now includes where the set comes from.
         let children: Vec<usize> = nodes[parent_id].ifc_children().to_vec();
+
+        // **A split inline's own background has to be reached from its members**
+        // (#513). The element is flattened out of the box tree, so the arm below
+        // that records an inline box's background never runs for it — and before
+        // this, `<a style="background: cyan">text<div/>tail</a>` painted no cyan at
+        // all, where the unsplit twin paints it and the pre-split engine painted it
+        // over `text`. Measured: 436px before the split landed, 0 after, 761 on the
+        // twin. That is a regression this change would otherwise introduce, not a
+        // gap it inherits, which is why it is fixed here rather than filed.
+        //
+        // One span per ancestor per **contiguous stretch** of the run that lies
+        // inside it, rather than one per member: two text members inside the same
+        // `<a>` are one fragment and must be one rectangle, or the padding at the
+        // seam is drawn twice. `open` holds the ancestors whose stretch is still
+        // running, outermost first, with the flat offset each began at.
+        //
+        // What this does **not** do is model fragment identity: there is no inline
+        // box per fragment, only a background rectangle per stretch, so per-fragment
+        // *borders* are still unimplemented. See `paint::drawn_by_its_ifc`.
+        let container = nodes[parent_id].parent;
+        let bridging = nodes[parent_id].is_anonymous_block_box;
+        let mut open: Vec<(usize, usize)> = Vec::new();
+
         for child_id in children {
             let child = match nodes.get(child_id) {
                 Some(c) => c,
                 None => continue,
             };
+
+            // Diff this member's split-inline ancestor chain against the open
+            // stretches: close the ones it has left (emitting their span), open
+            // the ones it has entered. `flat_pos` is the seam in both directions.
+            if bridging {
+                let chain = Self::split_inline_ancestors(nodes, child_id, container);
+                let keep = open
+                    .iter()
+                    .zip(chain.iter())
+                    .take_while(|((open_id, _), chain_id)| open_id == *chain_id)
+                    .count();
+                for (owner_id, start) in open.drain(keep..).rev() {
+                    if let Some(owner) = nodes.get(owner_id) {
+                        Self::push_inline_background(owner, start, *flat_pos, background_spans);
+                    }
+                }
+                for &owner_id in &chain[keep..] {
+                    open.push((owner_id, *flat_pos));
+                }
+            }
+
             // The flow decision is [`Node::inline_flow_role`]'s — the same
             // classifier `mark_inline_descendants` consumes, which is what
             // keeps "mark exactly what this walk flows" a single rule (#366).
@@ -3575,22 +3873,12 @@ impl RinchDocument {
 
                     builder.pop_style_span();
 
-                    // Record background span if the inline element has a visible background
-                    if has_bg && *flat_pos > bg_start {
-                        let bg_color = child_computed.background_color().unwrap();
-                        // Skip transparent backgrounds (alpha == 0)
-                        if bg_color.components[3] > 0.0 {
-                            background_spans.push(crate::node::InlineBackgroundSpan {
-                                start: bg_start,
-                                end: *flat_pos,
-                                color: bg_color,
-                                padding_left: child_computed.padding_left.to_px(),
-                                padding_right: child_computed.padding_right.to_px(),
-                                padding_top: child_computed.padding_top.to_px(),
-                                padding_bottom: child_computed.padding_bottom.to_px(),
-                                border_radius: child_computed.border_radius_top_left.to_px(),
-                            });
-                        }
+                    // Record background span if the inline element has a visible
+                    // background. Through the shared helper, so this and the
+                    // split-inline bridge below cannot drift about padding or
+                    // radius.
+                    if has_bg {
+                        Self::push_inline_background(child, bg_start, *flat_pos, background_spans);
                     }
                 }
                 NodeKind::Element(_) if role == InlineFlowRole::Inline => {
@@ -3683,6 +3971,11 @@ impl RinchDocument {
                     // Skip comments in inline layout
                 }
                 _ => {
+                    // **Believed unreachable since #513, and kept anyway** — the
+                    // same argument, and the same refusal to promote it to a
+                    // proof, as `mark_inline_descendants`' `InFlowBlock` arm. Read
+                    // it there; the two arms are one rule and must stay one rule.
+                    //
                     // An in-flow block-level child — or the opaque
                     // `display: contents` wrapper standing for one — breaks
                     // the inline flow: stop here, exactly where
@@ -3692,6 +3985,13 @@ impl RinchDocument {
             }
             if bridged {
                 builder.pop_style_span();
+            }
+        }
+
+        // Close whatever is still open at the end of the run.
+        for (owner_id, start) in open.drain(..).rev() {
+            if let Some(owner) = nodes.get(owner_id) {
+                Self::push_inline_background(owner, start, *flat_pos, background_spans);
             }
         }
     }
