@@ -1449,10 +1449,13 @@ containing block is the span itself; an `absolute` truncated at a containing
 block above the span (#591's own child) and a `fixed` box never carried it. An
 `inline-block` button inside an `overflow: hidden` span could not be tapped. **The
 guard is deliberately wider than the boxless set**: a split inline and an
-*unmarked* inline element (the inner `<span>` of a re-measured `inline-block`,
-which carries a real Taffy box) are inline boxes too, and `overflow` applies to
-neither — narrowing the guard to the flowed predicate silently restores the clip
-on both. A future component that puts `overflow: hidden` on an inline-level
+*unmarked* inline element — one no IFC has claimed, which therefore keeps a real
+Taffy box — are inline boxes too, and `overflow` applies to neither — narrowing
+the guard to the flowed predicate silently restores the clip on both. The
+unmarked case used to be produced by the inner `<span>` of a re-measured
+`inline-block` (#630); since #592 an `inline-block` is a block container and that
+span is its IFC content with a `0x0` box, so the state is now reached only by
+construction in a fixture. A future component that puts `overflow: hidden` on an inline-level
 element loses its clip silently, exactly as in a browser; there is no warning.
 An inline element with `overflow: auto` is still found as a *scroll container*
 (those walks read `overflow` against `Scroll | Auto` directly) while clipping
@@ -2668,7 +2671,7 @@ Make changes, rebuild, launch again. The full cycle:
 
 - **Text wrapping/clipping**: Check that layout measurement and paint use the same font stack
 - **Elements stacking wrong**: Check the `display` property. `div` and other block elements default to `display: block` (per the UA stylesheet in `crates/rinch-dom/src/dom_impl/mod.rs`), so flex properties like `align-items` and `justify-content` do nothing until you set `display: flex` explicitly
-- **Components sitting side by side where you expected a column**: `display: inline-flex` is **inline-level** (#595) — an *atomic inline*, like `inline-block`: it joins the line around it and shrink-wraps, and only its inside is a flex container. `Button`, `Badge`, `Checkbox`, `Switch`, `Avatar`, `ActionIcon`, `CloseButton`, `Loader`, `Pagination` and `Center` all declare it, so two of them in a plain `<div>` share a line, exactly as in a browser and as on rinch-web. Put them in a `Stack` (or any `display: flex` parent) to stack them — CSS blockifies a flex item, so the `inline-flex` is `flex` there and nothing about this applies. `display: inline-grid` is inline-level too, and has been since #607 — an atomic inline whose *inside* is a grid container rather than a flex one
+- **Components sitting side by side where you expected a column**: `display: inline-flex` is **inline-level** (#595) — an *atomic inline*, like `inline-block`: it joins the line around it and shrink-wraps, and only its inside is a flex container. `Button`, `Badge`, `Checkbox`, `Switch`, `Avatar`, `ActionIcon`, `CloseButton`, `Loader`, `Pagination` and `Center` all declare it, so two of them in a plain `<div>` share a line, exactly as in a browser and as on rinch-web. Put them in a `Stack` (or any `display: flex` parent) to stack them — CSS blockifies a flex item, so the `inline-flex` is `flex` there and nothing about this applies. `display: inline-grid` is inline-level too, and has been since #607 — an atomic inline whose *inside* is a grid container rather than a flex one. `display: inline-block` is the third, and its **inside is a block container** (#592): its children stack, its inline runs get anonymous block boxes, and its own `font-size`/`font-weight`/`line-height` size its box. It laid its children out in a row until #592, because the Taffy container it built was a flex one
 - **Text not updating**: Verify signal/effect wiring in the component
 - **No display (headless)**: Use Xvfb with `DISPLAY=:99` when running without a monitor
 - **MCP tools not available**: Ensure `rinch-mcp-server` is built (`cargo build -p rinch-mcp-server`) and `.mcp.json` points to the binary

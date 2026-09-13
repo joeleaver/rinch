@@ -2520,23 +2520,45 @@ fn test_inline_block_inside_an_inline_block_is_not_joined_to_the_outer_ifc() {
     let inner = rinch_dom::testing::query_selector(&doc.tree, "[id=inner]")[0];
 
     // The block's IFC owns the inline-block box itself…
+    let outer = doc.tree.get(host).unwrap().ifc_root;
     assert!(
-        doc.tree.get(host).unwrap().ifc_root.is_some(),
+        outer.is_some(),
         "the inline-block is inline content of the block"
     );
-    // …and stops there.
+    // …and stops there. Since #592 the inner box **is** claimed — by the host's
+    // own IFC, because an `inline-block` is a block container on the inside —
+    // and the statement this fixture is about is that the claim is not the
+    // *outer* root's.
+    let claim = doc.tree.get(inner).unwrap().ifc_root;
     assert_eq!(
-        doc.tree.get(inner).unwrap().ifc_root,
-        None,
-        "the box inside an inline-block belongs to Taffy, not the outer IFC"
+        claim,
+        Some(host),
+        "the box inside an inline-block belongs to that inline-block's own IFC"
+    );
+    assert_ne!(
+        claim, outer,
+        "…and never to the outer root, which is what the passes named above \
+         would misread"
     );
 
     let l = doc.tree.get(inner).unwrap().layout;
     assert_eq!((l.width, l.height), (40.0, 12.0));
+    // Its `layout.x/y` is IFC-relative now rather than parent-relative, so the
+    // question has to be asked of the position paint and hit testing use.
+    // Chrome 150 puts it at `(7, 10)` inside the host: the host's line box is
+    // the container's declared 20px `line-height` and the 12px box
+    // baseline-aligns into it. rinch gives `(7, 7)` because a line box holding
+    // only an atomic inline gets no strut — **#624**, unchanged by #592 and
+    // pinned from the other side in
+    // `inline_block_block_container_tests::a_nested_atomic_inline_is_measured_before_the_box_that_places_it`.
+    let (hx, hy, _) =
+        rinch_dom::paint::compute_absolute_position_and_transform(&doc.tree, host, 1.0);
+    let (ix, iy, _) =
+        rinch_dom::paint::compute_absolute_position_and_transform(&doc.tree, inner, 1.0);
     assert_eq!(
-        (l.x, l.y),
+        ((ix - hx) as f32, (iy - hy) as f32),
         (7.0, 7.0),
-        "Taffy places it inside its parent's padding"
+        "it is painted inside its parent's padding"
     );
 }
 

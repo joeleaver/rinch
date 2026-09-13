@@ -186,6 +186,38 @@ impl RinchDocument {
                 );
             }
 
+            // Sync font-size and the rest of the inherited text properties from
+            // parent elements into text node contexts.
+            //
+            // **Before `compute_inline_block_layouts`, and that ordering is
+            // #625.** A `NodeContext::Text` is created with `font_size: 16.0`,
+            // `font_weight: 400.0` and empty `font_family`/`line_height_css` —
+            // placeholders this pass replaces. An atomic inline whose interior
+            // is a *flex* or *grid* container measures its text through that
+            // context, so running the measure first measured every one of them
+            // with the placeholders: `font-size: 32px` produced the same 211x22
+            // box as 16px, and the declared `line-height: 20px` came out 22,
+            // Parley's default for an undeclared 16px line, while paint used the
+            // real style and overflowed the box by 240px.
+            //
+            // It ran after for as long as the pass has existed, and only
+            // `inline-block` hid it: **that** interior is an inline formatting
+            // context (#592), and `build_inline_layout` reads the computed
+            // styles directly rather than the Taffy context, so the inline-block
+            // arm of #625 is fixed twice over. `inline-flex` and `inline-grid`
+            // have no second route and this line is the whole of their fix —
+            // measured, by putting the two calls back in their old order with
+            // everything else in #592 kept: `inline-block` stays correct and the
+            // other two regress to 211x22.
+            let t = web_time::Instant::now();
+            self.sync_text_contexts();
+            if perf {
+                eprintln!(
+                    "  [PERF] sync_text_contexts: {:.2}ms",
+                    t.elapsed().as_secs_f64() * 1000.0
+                );
+            }
+
             // Pre-compute layout for inline-block children that were detached from Taffy.
             // They need their own subtree measured so walk_inline_children can read dimensions.
             let t = web_time::Instant::now();
@@ -193,16 +225,6 @@ impl RinchDocument {
             if perf {
                 eprintln!(
                     "  [PERF] inline_block_layouts: {:.2}ms",
-                    t.elapsed().as_secs_f64() * 1000.0
-                );
-            }
-
-            // Sync font-size from parent elements to text node contexts
-            let t = web_time::Instant::now();
-            self.sync_text_contexts();
-            if perf {
-                eprintln!(
-                    "  [PERF] sync_text_contexts: {:.2}ms",
                     t.elapsed().as_secs_f64() * 1000.0
                 );
             }

@@ -38,14 +38,18 @@
 //! 1. **Nothing re-attaches.** `mark_inline_descendants` keeps no departure
 //!    record, so no later pass knows a box is missing from a list.
 //! 2. **Nothing notices.** `DisplayValue::to_taffy` is not injective:
-//!    `inline`/`block` both map to `taffy::Display::Block`,
-//!    `inline-block`/`flex`/`inline-flex`/`contents` all map to
+//!    `inline`/`block`/`inline-block` all map to `taffy::Display::Block`
+//!    (#592), `flex`/`inline-flex`/`contents` all map to
 //!    `taffy::Display::Flex`, and `grid`/`inline-grid` both map to
-//!    `taffy::Display::Grid` (#607). `apply_to_taffy` only sets `ifc_dirty` when
-//!    the **Taffy** display changes, so `inline-block → flex` — the issue's own
+//!    `taffy::Display::Grid` (#607). `apply_to_taffy` only set `ifc_dirty` when
+//!    the **Taffy** display changed, so `inline-block → flex` — the issue's own
 //!    repro — never re-ran the IFC pass at all. (`contents` was already
 //!    special-cased on the computed-display crossing itself, #520; the
-//!    inline-level crossing is the same shape and was not.)
+//!    inline-level crossing is the same shape and was not.) #597's repair asked
+//!    whether `DisplayMode::is_inline_level` **crossed**; #592 widened it to
+//!    "any `DisplayMode` change", because `inline ↔ inline-block` is
+//!    inline-level on both sides and, once `inline-block` mapped to
+//!    `Display::Block`, equal on every Taffy field as well.
 //!
 //! `the_span_and_svg_route` needs only (1): its parent's `block → flex` is a
 //! real Taffy display change, so the pass does run, and so does
