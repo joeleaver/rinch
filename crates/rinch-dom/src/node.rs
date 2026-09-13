@@ -1473,7 +1473,7 @@ impl NodeTree {
 /// disabled `<option>`); the plain HTML `disabled` is what the component library
 /// writes — `Button`, `ActionIcon`, `CloseButton`, `TextInput`, `Textarea`,
 /// `NumberInput`, `PasswordInput`, `Checkbox`, `Radio`, `Switch`, `NavLink`,
-/// `Pagination`, `Tabs`, `Accordion`, `DropdownMenu`, `Fieldset`.
+/// `Pagination`, `Tabs`, `Accordion`, `DropdownMenu`, `Select`, `Fieldset`.
 ///
 /// **The two spellings are read by two different rules**, each spelled once
 /// below, because they answer to two different authorities:
@@ -1511,11 +1511,19 @@ fn html_disabled_attribute_is_set(node: &Node) -> bool {
 ///
 /// Not an HTML attribute, so the browser rule above has no jurisdiction: this is
 /// rinch's convention, documented as "present unless the value is `false`" since
-/// it was written, and implemented on both backends on purpose — the web's
-/// sibling `data-nofocus` selector is
-/// `[data-nofocus]:not([data-nofocus="false" i])`. The rule itself is
-/// [`rinch_core::dom::data_attr_is_on`], shared with `RinchApp::node_is_nofocus`
-/// so the family cannot drift.
+/// it was written. `data-disabled` has no web reader at all — the browser does not
+/// know the attribute — so the escape's two-backend half is carried by its
+/// sibling `data-nofocus`, whose web selector is
+/// `[data-nofocus]:not([data-nofocus="false" i])`.
+///
+/// The rule itself is [`rinch_core::dom::data_attr_is_on`], shared with
+/// `RinchApp::node_is_nofocus` so the two spell one rule. Shared, not enforced:
+/// each reader still picks its own helper, and `"0"` is the only value that can
+/// tell which one it picked — pinned at both readers by
+/// `computed_style_tests::the_data_escape_excuses_only_false_at_the_reader` and
+/// `nofocus_tests::only_false_opts_out_not_zero`, because with every fixture
+/// sampling `""` / `"false"` / `"true"` a reader could revert to
+/// [`rinch_core::dom::attr_is_truthy`] with the whole suite green.
 fn data_disabled_attribute_is_on(node: &Node) -> bool {
     node.attributes
         .get("data-disabled")

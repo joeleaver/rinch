@@ -56,10 +56,17 @@ All four are **boolean attributes**: their presence is their value, so
 The two HTML attributes, `disabled` and `readonly`, are read by **presence
 alone**, exactly as a browser reads them: `disabled="false"` disables and
 `readonly="false"` is read-only, on desktop and on the web alike (issue #612).
-rinch's **own** `data-disabled` and `data-nofocus` are the exception, and the
-only one: there the literal `"false"` turns the attribute off, on both backends.
-Reach for it when you are writing the attribute by hand and would otherwise have
-to branch between writing and removing it.
+That applies to every tag the attribute reaches, so a `<textarea readonly="false">`
+is read-only too.
+
+rinch's **own** `data-disabled` and `data-nofocus` are the exception, and the only
+one: there the literal `"false"` turns the attribute off. `data-nofocus` is read
+that way on both backends; `data-disabled` is a desktop attribute with no web
+reader, because the browser does not know it. Only `"false"` is excused — `"0"` is
+on, matching the web's `[data-nofocus="false" i]` selector. Reach for the escape
+when you are writing the attribute **by hand with `set_attribute`** and would
+otherwise have to branch between writing and removing it; a `bool` in `rsx!`
+already removes it for you.
 
 A **disabled `<fieldset>`** disables every control below it, which is what the
 element is for. HTML's carve-out is honoured: controls inside the fieldset's

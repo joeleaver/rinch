@@ -1106,3 +1106,152 @@ fn a_press_on_a_focusable_inside_a_disabled_fieldset_claims_nothing() {
         "and no :focus ring is painted on it"
     );
 }
+
+// ── the `"false"` spelling, on each route above ─────────────────────────────
+
+/// The **edit-time** leg at the `"false"` spelling: a field that goes
+/// `disabled="false"` while focused refuses the next key and releases the
+/// keyboard (issue #612).
+///
+/// `a_field_that_goes_disabled_while_focused_stops_accepting_keys` and its two
+/// neighbours all write the bare presence form, which is where the retired escape
+/// and the new rule agree. This is the spelling where they differ, and it is
+/// where the change bites hardest: before #612 that string *enabled* the field,
+/// so the claim was retained and typing kept working.
+#[test]
+fn a_field_that_goes_disabled_false_while_focused_releases_the_keyboard() {
+    let (mut app, ids, log) = mount_fixture();
+
+    click_center(&mut app, ids.plain);
+    type_str(&mut app, "ab");
+    assert_eq!(focused_text(&app), "ab", "typing works while enabled");
+    log.borrow_mut().clear();
+
+    set_attr(&mut app, ids.plain, "disabled", Some("false"));
+    type_str(&mut app, "cd");
+
+    assert_eq!(
+        dom_value(&app, ids.plain),
+        "ab",
+        "`disabled=\"false\"` disables, so the next keystroke changes nothing"
+    );
+    assert_eq!(app.focus_target, FocusTarget::None, "and it releases");
+    assert_eq!(app.focused_input_node_id, None);
+    assert!(!app.has_focused_input());
+    assert!(
+        log.borrow().is_empty(),
+        "and fires no oninput and no data-onchange: {:?}",
+        log.borrow()
+    );
+}
+
+/// `<fieldset disabled="false">` disables its subtree for **focus**, the first
+/// `<legend>` excepted — the same rule the bare presence form gets, since both
+/// route through `node_is_disabled`.
+///
+/// Its styling twin is
+/// `rinch-dom/tests/computed_style_tests.rs::a_fieldset_disabled_false_styles_its_subtree_except_the_legend`,
+/// which carries the Chrome measurement.
+#[test]
+fn a_fieldset_disabled_false_still_disables_its_subtree() {
+    let (mut app, ids, _log) = mount_fixture();
+
+    set_attr(&mut app, ids.fieldset, "disabled", Some("false"));
+    let order = app.collect_focusable_nodes();
+
+    assert!(
+        !order.contains(&ids.in_fieldset),
+        "a control below `<fieldset disabled=\"false\">` is not a Tab stop: {order:?}"
+    );
+    assert!(
+        order.contains(&ids.in_legend),
+        "and the first <legend>'s carve-out still applies: {order:?}"
+    );
+
+    click_center(&mut app, ids.in_fieldset);
+    assert_eq!(app.focused_input_node_id, None, "and takes no claim");
+}
+
+/// `readonly="false"` on a `<textarea>` refuses text exactly as it does on an
+/// `<input>` — `node_is_readonly` is tag-agnostic — while on a `<select>` it is
+/// inert.
+///
+/// The `<textarea>` half is a behaviour change in its own right, and the reason
+/// it is spelled out rather than left implied by the `<input>` fixture: #612's
+/// prose speaks of `<input readonly="false">`, and a reader could reasonably
+/// wonder whether the other text control followed.
+///
+/// The `<select>` half is unchanged by #612 and is here to bound the claim. HTML
+/// gives `<select>` no `readonly`, and desktop never consults `node_is_readonly`
+/// for one: the only caller chain is `focused_input_is_readonly` →
+/// `handle_input_edit_command`, reachable only through `focused_input_node_id`,
+/// which a `<select>` never sets — it takes `FocusTarget::Node` and its popup
+/// owns the keyboard (issue #424).
+#[test]
+fn readonly_false_on_a_textarea_refuses_text_and_is_inert_on_a_select() {
+    let log: Rc<RefCell<Vec<String>>> = Rc::new(RefCell::new(Vec::new()));
+    let l1 = log.clone();
+    let ta_h = register_input_handler(InputCallback::new(move |v: String| {
+        l1.borrow_mut().push(format!("ta:{v}"));
+    }));
+    let l2 = log.clone();
+    let sel_h = register_input_handler(InputCallback::new(move |v: String| {
+        l2.borrow_mut().push(format!("sel:{v}"));
+    }));
+
+    let ids: Rc<Cell<(usize, usize)>> = Rc::new(Cell::new((0, 0)));
+    let ids_in = ids.clone();
+    let mut app = RinchApp::new(move |scope: &mut RenderScope| {
+        let root = scope.create_element("div");
+        let ta = scope.create_element("textarea");
+        ta.set_attribute("style", "display: block; width: 200px; height: 60px");
+        ta.set_attribute("data-oninput", &ta_h.0.to_string());
+        ta.set_attribute("readonly", "false");
+        let sel = scope.create_element("select");
+        sel.set_attribute("style", "display: block; width: 200px; height: 30px");
+        sel.set_attribute("data-onchange", &sel_h.0.to_string());
+        sel.set_attribute("readonly", "false");
+        for (v, t) in [("a", "Alpha"), ("b", "Bravo")] {
+            let o = scope.create_element("option");
+            o.set_attribute("value", v);
+            let txt = scope.create_text(t);
+            o.append_child(&txt);
+            sel.append_child(&o);
+        }
+        root.append_child(&ta);
+        root.append_child(&sel);
+        ids_in.set((ta.node_id().0, sel.node_id().0));
+        root
+    });
+    app.mount_component(800.0, 600.0);
+    app.resolve_and_repaint(800.0, 600.0);
+    let (ta, sel) = ids.get();
+
+    // textarea: focuses, refuses text.
+    click_center(&mut app, ta);
+    assert_eq!(
+        app.focused_input_node_id,
+        Some(ta),
+        "a read-only <textarea> still focuses"
+    );
+    type_str(&mut app, "xy");
+    assert_eq!(
+        focused_text(&app),
+        "",
+        "`readonly=\"false\"` on a <textarea> refuses text (#612)"
+    );
+
+    // select: readonly is not an HTML select attribute, and desktop ignores it.
+    click_center(&mut app, sel);
+    assert!(
+        app.open_select.is_some(),
+        "`readonly` is inert on a <select>: its popup still opens"
+    );
+    let pt = second_option_point(&app);
+    click(&mut app, pt.0, pt.1);
+    assert_eq!(
+        *log.borrow(),
+        vec!["sel:b".to_string()],
+        "and the pick still commits"
+    );
+}

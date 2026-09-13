@@ -220,6 +220,38 @@ fn the_false_value_opts_out() {
     assert_eq!(app.focus_target, FocusTarget::Node(ids.opted_out_btn));
 }
 
+/// `"false"` is the **only** string the escape excuses: `"0"` is on.
+///
+/// That is the single value where rinch's `data-` rule and the writer's
+/// `attr_is_truthy` disagree, so it is the only one that can tell which of them
+/// `node_is_nofocus` is using. Measured: without this assertion the reader can be
+/// pointed back at `attr_is_truthy` and `cargo test -p rinch --lib` stays green
+/// at 419 passed. Its `data-disabled` twin is
+/// `rinch-dom/tests/computed_style_tests.rs::the_data_escape_excuses_only_false_at_the_reader`.
+#[test]
+fn only_false_opts_out_not_zero() {
+    let (mut app, ids, _log) = mount_fixture();
+    {
+        let doc = app.doc.as_ref().unwrap();
+        let mut d = doc.borrow_mut();
+        d.tree
+            .get_mut(ids.opted_out_btn)
+            .expect("node is live")
+            .attributes
+            .insert("data-nofocus".to_string(), "0".to_string());
+    }
+    focus_editor(&mut app, ids);
+
+    press(&mut app, ids.opted_out_btn);
+
+    assert_eq!(
+        app.focus_target,
+        FocusTarget::Editor(ids.editor),
+        "`data-nofocus=\"0\"` is ON: rinch's escape excuses only `\"false\"`, \
+         matching the web's `[data-nofocus=\"false\" i]` selector (#612)"
+    );
+}
+
 /// The toolbar's blank chrome — between and around the buttons — must not blur
 /// the editor either. A press there carries no `data-rid`, so before this the
 /// editor-blur phase would have released it.

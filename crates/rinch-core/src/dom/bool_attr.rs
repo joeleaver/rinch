@@ -41,8 +41,9 @@
 ///   fails, so it is written the same way. (rinch honours it through
 ///   `.rinch-tabs__panel[hidden]`, a presence selector, so desktop agrees.)
 /// - **`data-disabled`** and **`data-nofocus`** are rinch's own boolean
-///   attributes, documented as "present unless the value is `false`" and read
-///   that way by both backends. Writing them by presence makes a reactive
+///   attributes, documented as "present unless the value is `false`" — desktop
+///   reads both that way, and the web reads `data-nofocus` that way (it has no
+///   `data-disabled` reader at all). Writing them by presence makes a reactive
 ///   binding correct by construction instead of correct by that tolerance.
 pub fn is_boolean_attribute(name: &str) -> bool {
     matches!(
@@ -89,9 +90,11 @@ pub fn is_boolean_attribute(name: &str) -> bool {
 /// Truthiness for a value **being written into** a boolean attribute.
 ///
 /// This is the *writer's* rule, and it is the only thing it is for: deciding
-/// which of the two shapes — presence or absence — a value asks for. Callers
-/// are [`super::NodeHandle::write_attribute`] and the web backend's
-/// property-mirroring arm for `checked` / `selected` / `indeterminate`.
+/// which of the two shapes — presence or absence — a value asks for. The three
+/// production callers are [`super::NodeHandle::write_attribute`] and, in the web
+/// backend, both `sync_reflected_property`'s arm for `checked` / `selected` /
+/// `indeterminate` and `set_attribute`'s presence-mapping arm for
+/// `checked` / `selected`.
 ///
 /// rinch writes these two ways: `rsx!` renders a `bool` through `Display`, so
 /// it arrives as `"true"` / `"false"`, while components set the bare presence
@@ -115,10 +118,12 @@ pub fn attr_is_truthy(value: &str) -> bool {
 ///
 /// `data-disabled` and `data-nofocus` are rinch inventions, not HTML, and rinch
 /// gives them an escape HTML has no equivalent of: present means on *unless* the
-/// value is the literal `false`, ASCII-case-insensitively. Both backends
-/// implement it on purpose — desktop through this function, the web through
-/// `event_delegation.rs`'s `[data-nofocus]:not([data-nofocus="false" i])` — so
-/// it is a two-backend rinch convention rather than a desktop quirk.
+/// value is the literal `false`, ASCII-case-insensitively. It is a rinch
+/// convention rather than a desktop quirk, and `data-nofocus` is what shows that:
+/// desktop reads it through this function and the web through
+/// `event_delegation.rs`'s `[data-nofocus]:not([data-nofocus="false" i])`.
+/// (`data-disabled` has no web reader, so there is nothing on that side to
+/// agree or disagree with.)
 ///
 /// The plain HTML `disabled` / `readonly` deliberately do **not** go through
 /// here: they are read by presence alone, the way a browser reads them (issue

@@ -2108,7 +2108,7 @@ impl RinchApp {
     /// `disabled` is what the whole component library writes — `Button`,
     /// `ActionIcon`, `CloseButton`, `TextInput`, `Textarea`, `NumberInput`,
     /// `PasswordInput`, `Checkbox`, `Radio`, `Switch`, `NavLink`, `Pagination`,
-    /// `Tabs`, `Accordion`, `DropdownMenu`, `Fieldset`. Consulting only the
+    /// `Tabs`, `Accordion`, `DropdownMenu`, `Select`, `Fieldset`. Consulting only the
     /// first left every one of those tabbable, and a disabled `<input>` fully
     /// typable, which is issue #315.
     ///
@@ -2146,6 +2146,18 @@ impl RinchApp {
     /// and matches `:read-only` in Chrome 150 (issue #612). To say *writable*,
     /// remove the attribute — which is what a falsey reactive binding does
     /// (`NodeHandle::write_attribute`, #551).
+    ///
+    /// The `:read-only` half of that is the **oracle, not a description of
+    /// desktop**: rinch supports ten pseudo-classes and `:read-only` is not among
+    /// them (`rinch_dom::stylesheet::selector_impl`), so this predicate has no CSS
+    /// consumer the way `node_is_disabled` has `:disabled`. It is quoted because it
+    /// is how a browser answers the markup, which is what #612 aligned to.
+    ///
+    /// Tag-agnostic, like the rest of the focus machinery: a `<textarea>` is
+    /// read-only by the same rule (pinned by
+    /// `disabled_input_tests::readonly_false_on_a_textarea_refuses_text_and_is_inert_on_a_select`),
+    /// while a `<select>` never reaches this predicate at all — it takes
+    /// `FocusTarget::Node`, never `focused_input_node_id`.
     pub(crate) fn node_is_readonly(node: &rinch_dom::Node) -> bool {
         node.attributes.contains_key("readonly")
     }
