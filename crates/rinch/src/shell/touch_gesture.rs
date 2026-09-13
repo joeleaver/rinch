@@ -77,14 +77,91 @@ const MOMENTUM_MIN_VELOCITY: f32 = 0.5;
 /// here would re-tune the fling as a side effect of describing it.
 const MOMENTUM_TICK: Duration = Duration::from_nanos(16_666_667);
 
-/// The most ticks one call is allowed to advance the fling by.
+/// The most ticks one call is allowed to *move* the list by.
 ///
-/// A frame that took 200ms — a stall, a sheet rasterising, the app coming back
-/// from the background with a fling still in flight — would otherwise resolve
-/// twelve ticks at once and jump the list a screenful in a single frame. Four
-/// is a 15fps frame: past that the fling is already visibly broken and the
-/// honest thing is to under-shoot rather than to teleport.
+/// A frame that took 200ms — a stall, a sheet rasterising — would otherwise
+/// resolve twelve ticks at once and jump the list a screenful in a single
+/// frame. Four is a 15fps frame: past that the fling is already visibly broken
+/// and the honest thing is to under-shoot rather than to teleport.
+///
+/// **Distance only, since issue #557.** It used to clamp the *decay* by the
+/// same factor, and that is what made a fling immortal: the clock moved five
+/// seconds and the curve was told about 67ms of it, so a stall of any length
+/// cost the fling the same 18% of its speed and the remaining 82% was spent in
+/// front of a user who had looked away. The decay is charged the true elapsed
+/// time now. Under-shooting the distance while paying the whole of the time is
+/// exactly the trade the paragraph above argues for; clamping both was the
+/// trade nobody argued for. A gap too long to be a hitch at all is ended
+/// rather than clamped — see [`MOMENTUM_MAX_STALL`], which is what decides
+/// where this clamp stops applying.
+///
+/// **Four is a judgement, not a measurement**, and since issue #559 it is
+/// pinned against a literal rather than derived from itself. For the suite's
+/// 5000px/s flick four ticks is 333px in one frame and eight would be 667px —
+/// a quarter of a 1080x2460 handset appearing between two pictures.
+/// `a_stalled_frame_pays_at_most_four_ticks_of_fling` asserts that literal from
+/// above and `a_gap_below_the_clamp_is_paid_in_full` asserts the clamp does not
+/// bite below it.
+///
+/// **What that pins is a tolerance, not the point 4.0**, and the width of it is
+/// deliberate rather than slack. The ceiling is four ticks of the *launch*
+/// speed while the frame it measures is four ticks of the *once-decayed* speed,
+/// which is about 5% lower, so the band admits anything in **[3.55, 4.2]** —
+/// swept by the reviewer of #649 one hundredth at a time, not inferred: 3.5 and
+/// 4.3 fail, 3.55 and 4.2 pass. 8.0 and 2.0, the two directions #559 asks
+/// about, are both caught. Tightening it further would mean asserting the
+/// decayed value, which pins [`MOMENTUM_FRICTION`] into a test about the clamp.
 const MOMENTUM_MAX_STEPS: f32 = 4.0;
+
+/// The longest gap between two momentum ticks that a fling survives.
+///
+/// **A gap is one of two things and they want opposite answers.** A hitch — a
+/// sheet rasterising, a slow paint, a collection — interrupts a fling the user
+/// is *watching*; the honest answer is to keep going and pay for the time that
+/// passed, which is what [`MOMENTUM_MAX_STEPS`] and the elapsed decay do
+/// together. An absence — the app backgrounded mid-flick, the loop away for
+/// seconds — is a fling nobody watched, and a list that starts moving on its
+/// own when the user comes back is motion they cannot connect to anything they
+/// did. Past this bound the fling is therefore abandoned outright: velocity to
+/// zero, no wheel event, nothing left to resume.
+///
+/// **Charging the decay honestly is not enough on its own**, which is the
+/// measurement that put a second bound here rather than only fixing the first.
+/// [`MOMENTUM_FRICTION`] is geometric, so a one-second gap takes `0.95^60` =
+/// 4.6% of the velocity — leaving 3.8px per tick of an 83.3px flick, seven
+/// times [`MOMENTUM_MIN_VELOCITY`], and a measured 0.65s of coast still to run.
+/// A gap of 1.7s is the first that decays an ordinary flick below the stop
+/// threshold on its own, and by then the case for resuming at all is long
+/// gone. (Issue #557 read that
+/// 4.6% as the resulting velocity rather than the factor and concluded the
+/// fling "simply ends". It does not, and the number is written down here so
+/// that the next reader does not have to re-derive it.)
+///
+/// What the honest decay *does* buy, and it is most of the fix: for every
+/// stall short enough to keep its fling, the coast now finishes at the instant
+/// it would have finished undisturbed — 1712 to 1724ms across every stall this
+/// bound lets through, and across stalls up to 1.5s with the bound lifted,
+/// against 1696ms rising to 3132ms before. That is
+/// `a_stall_does_not_extend_the_fling`.
+///
+/// **Half a second, and why that number.** It is the same order as
+/// [`MAX_EVENT_AGE`], which already means "the loop was away" in this file, for
+/// the same cause — an app backgrounded mid-gesture. (Only that one. The other
+/// cause `MAX_EVENT_AGE` names is a clock jump, which cannot be a cause here: a
+/// jump is not a gap between two momentum ticks.) Thirty dropped frames at 60Hz
+/// is not a stutter,
+/// it is a freeze, and every gap short enough to read as a stutter is well
+/// inside this and keeps its fling.
+///
+/// The boundary is discontinuous — a 499ms stall leaves 1.15s of coast and a
+/// 501ms one leaves none — and that is not an artefact waiting to be smoothed
+/// away. Any bound has it, and moving the bound only moves the size of the
+/// step: measured with this bound lifted and the decay charged honestly, the
+/// residue is 1.55s at 100ms of stall, 1.15s at 500ms and 0.16s at 1.5s. What
+/// the bound really separates is whether the user watched the gap happen, so a
+/// step at the point where that stops being true is the honest shape for it
+/// rather than a defect in it.
+const MOMENTUM_MAX_STALL: Duration = Duration::from_millis(500);
 
 /// How many finger positions are kept behind the fling's launch speed.
 ///
@@ -453,10 +530,20 @@ pub(crate) struct TouchGesture {
     /// Where to send scroll events (the initial touch point).
     scroll_origin: (f32, f32),
     /// When the fling was last advanced, so the next advance knows how much
-    /// time it owes. `None` between flings: the first tick of a new one has no
-    /// previous tick to measure from and is charged exactly one
-    /// [`MOMENTUM_TICK`], which is what the loop would have done before K39
-    /// anyway.
+    /// time it owes. `None` between flings.
+    ///
+    /// **Seeded at the lift, not at the first tick** (issue #558). The instant
+    /// the finger left the glass is the instant the fling started; it is the
+    /// same `now` [`Self::process`] is already handed on the `Up`, and it was
+    /// simply not kept. Without it the first tick had nothing to measure
+    /// against and was charged a flat 60Hz step however soon it landed — twice
+    /// the travel the elapsed time earns on a 120Hz panel and four times on a
+    /// 240Hz one, a kick at the moment the finger leaves the glass on exactly
+    /// the hardware the rest of this file was corrected for.
+    ///
+    /// It also puts the lift under [`MOMENTUM_MAX_STALL`] like every other
+    /// tick, so an app backgrounded in the instant after a flick does not start
+    /// coasting when it comes back.
     last_momentum: Option<Instant>,
     /// The recent finger positions, oldest first, and how many of the slots are
     /// filled. Two jobs, and it is worth being clear that the second is the one
@@ -642,6 +729,10 @@ impl TouchGesture {
                         let (vx, vy) = self.sample_velocity(now);
                         self.velocity_x = vx;
                         self.velocity_y = vy;
+                        // The fling starts here, so the first tick has a real
+                        // instant to measure itself against like every tick
+                        // after it. See `last_momentum` and issue #558.
+                        self.last_momentum = Some(now);
 
                         // End of scroll drag — momentum will be applied in
                         // tick(). No event: the document was told this gesture
@@ -691,6 +782,12 @@ impl TouchGesture {
                 self.state = TouchState::Idle;
                 self.velocity_x = 0.0;
                 self.velocity_y = 0.0;
+                // The clock goes with the velocity it timed, as it does on
+                // `Down`. Nothing can read a stale one — `tick_momentum`'s
+                // stop-threshold arm clears it before anything else looks —
+                // so this is symmetry rather than a fix, and it is pinned on
+                // the field because there is no behaviour to observe.
+                self.last_momentum = None;
                 self.forget_samples();
             }
             TouchAction::HoverMove => {
@@ -843,14 +940,42 @@ impl TouchGesture {
     /// **About 1%, not exactly.** The scheme emits `v * steps` and decays
     /// *after*, which is a left Riemann sum, so a finer sampling of the same
     /// curve integrates slightly under it: measured on the host, one flick
-    /// coasts 656.7px at 60Hz, 648.8px at 120Hz and 643.0px at 480Hz — a 1.2%
-    /// shortfall at 120Hz converging on 2.2%. The *duration* is unaffected,
+    /// coasts 656.7px at 60Hz, 648.4px at 120Hz and 642.2px at 480Hz — a 1.3%
+    /// shortfall at 120Hz converging on 2.2%. (The last two read 648.8 and
+    /// 643.0 until issue #558. Charging the first tick the time that elapsed
+    /// rather than a flat step takes a fraction of a pixel off every rate
+    /// except the reference one, where a frame *is* a tick and nothing moves.)
+    /// The *duration* is unaffected,
     /// because the stopping condition counts decay steps and `steps` sums to
     /// the same total either way. Both are far inside the factor of two this
     /// replaces, and pinned at a 5% tolerance in
     /// `the_same_fling_lasts_the_same_time_at_any_refresh_rate`; the reason to
     /// write the number down rather than say "the same" is that a later reader
     /// measuring 648.8 against 656.7 should find it already accounted for.
+    ///
+    /// # What a gap costs, and which of the two bounds pays for it
+    ///
+    /// The gap since the previous tick is charged three different ways
+    /// depending on how big it is, and the three are easy to confuse because
+    /// two of them are called a clamp:
+    ///
+    /// | gap since the last tick | moves the list by | decays the curve by | ends the fling |
+    /// |---|---|---|---|
+    /// | up to [`MOMENTUM_MAX_STEPS`] ticks | the whole gap | the whole gap | no |
+    /// | up to [`MOMENTUM_MAX_STALL`] | four ticks | **the whole gap** | no |
+    /// | past [`MOMENTUM_MAX_STALL`] | nothing | — | **yes** |
+    ///
+    /// The bold cell is issue #557: the decay used to be clamped alongside the
+    /// distance, so a five-second absence cost the fling 67ms of curve and the
+    /// list resumed at 82% of its speed in front of a user who had looked away.
+    /// The row under it is the other half of the same issue — decaying honestly
+    /// still leaves 0.65s of coast after a one-second gap, so a gap that long
+    /// is not a fling being interrupted at all. [`MOMENTUM_MAX_STALL`] argues
+    /// both numbers.
+    ///
+    /// The first tick of a fling is an ordinary row of that table and not a
+    /// case of its own, because the lift seeds `last_momentum` — see there, and
+    /// issue #558.
     pub(crate) fn tick_momentum(&mut self, now: Instant, events: &mut Vec<PlatformEvent>) -> bool {
         if matches!(self.state, TouchState::Scrolling) {
             // Still touching — don't apply momentum
@@ -866,33 +991,56 @@ impl TouchGesture {
             return false;
         }
 
-        // How much of the fling this call is responsible for. The first call of
-        // a fling has no previous tick to subtract, and charging it one whole
-        // step is both the old behaviour and the honest one: the lift it
-        // follows happened within the last frame, not at some knowable earlier
-        // instant.
-        let steps = match self.last_momentum {
-            Some(last) => (now.saturating_duration_since(last).as_secs_f32()
-                / MOMENTUM_TICK.as_secs_f32())
-            .clamp(0.0, MOMENTUM_MAX_STEPS),
-            None => 1.0,
+        // A fling always has a launch instant, because the lift in `process`
+        // that sets the velocity is the same statement that seeds this.
+        // Reaching the `else` would mean a velocity that no lift produced: two
+        // guards make
+        // that unreachable today — the check above returns before it for any
+        // velocity below the stop threshold, and `TouchAction::Down` is the
+        // only route back into `Scrolling` and zeroes the velocity on the way
+        // — but it is an argument about the state machine rather than a type,
+        // so the arm degrades gently instead of guessing a step: start the
+        // clock and let the next tick measure a real interval.
+        let Some(last) = self.last_momentum else {
+            self.last_momentum = Some(now);
+            return true;
         };
+
+        let gap = now.saturating_duration_since(last);
+        if gap > MOMENTUM_MAX_STALL {
+            // Not a hitch — the loop was away. Nobody watched this fling, so
+            // there is nothing to resume. See `MOMENTUM_MAX_STALL`.
+            self.velocity_x = 0.0;
+            self.velocity_y = 0.0;
+            self.last_momentum = None;
+            return false;
+        }
+
+        // How much of the fling this call is responsible for — and the two
+        // jobs want different answers, which is the whole of issue #557. The
+        // distance is clamped so that a stalled frame nudges the list rather
+        // than teleporting it; the decay is charged the time that really
+        // passed, because the curve is a function of the clock and not of how
+        // often anyone looked at it.
+        let elapsed_steps = gap.as_secs_f32() / MOMENTUM_TICK.as_secs_f32();
+        let move_steps = elapsed_steps.clamp(0.0, MOMENTUM_MAX_STEPS);
         self.last_momentum = Some(now);
 
         let (ox, oy) = self.scroll_origin;
         events.push(PlatformEvent::MouseWheel {
             x: ox,
             y: oy,
-            delta_x: (self.velocity_x * steps) as f64,
-            delta_y: (self.velocity_y * steps) as f64,
+            delta_x: (self.velocity_x * move_steps) as f64,
+            delta_y: (self.velocity_y * move_steps) as f64,
         });
 
-        // `powf`, not a repeated multiply, because `steps` is fractional at any
-        // refresh rate that is not the reference one — at 120Hz every tick is
-        // half a step. Geometric decay is what makes that meaningful: 0.95^0.5
-        // twice is 0.95 once, so the curve does not depend on how finely it is
-        // sampled.
-        let decay = MOMENTUM_FRICTION.powf(steps);
+        // `powf`, not a repeated multiply, because `elapsed_steps` is
+        // fractional at any refresh rate that is not the reference one — at
+        // 120Hz every tick is half a step. Geometric decay is what makes that
+        // meaningful: 0.95^0.5 twice is 0.95 once, so the curve does not depend
+        // on how finely it is sampled — and, since #557, does not depend on
+        // whether it was sampled at all.
+        let decay = MOMENTUM_FRICTION.powf(elapsed_steps);
         self.velocity_x *= decay;
         self.velocity_y *= decay;
         true
@@ -959,6 +1107,29 @@ mod tests {
             let now = self.t0 + Duration::from_millis(ms);
             self.gesture.tick_long_press(now, &mut self.events);
             self.gesture.tick_momentum(now, &mut self.events);
+        }
+
+        /// Turn the loop every 16ms from `from_ms` until the fling settles.
+        /// Answers the instant it settled on and how far the list travelled
+        /// after `from_ms` — the two numbers every stall fixture below is
+        /// about.
+        fn coast_from(&mut self, from_ms: u64) -> (u64, f64) {
+            let before = self.events.len();
+            let mut t = from_ms;
+            self.tick(t);
+            while self.gesture.has_momentum() {
+                t += 16;
+                assert!(t < 60_000, "a fling that never settles is a hung list");
+                self.tick(t);
+            }
+            let travelled = self.events[before..]
+                .iter()
+                .filter_map(|e| match e {
+                    PlatformEvent::MouseWheel { delta_y, .. } => Some(delta_y.abs()),
+                    _ => None,
+                })
+                .sum();
+            (t, travelled)
         }
 
         /// Everything emitted since the gesture began.
@@ -1307,14 +1478,18 @@ mod tests {
         );
     }
 
-    /// The clamp, which exists so that a stall does not become a teleport.
+    /// The suite's standard flick, up to the frame before the gap: 40px of
+    /// finger every 8ms — 5000px/s, which is 83.33px per 60Hz tick — lifted at
+    /// t=48ms, with the loop turning on the lift's own instant and once more at
+    /// t=64ms.
     ///
-    /// A loop that missed 200ms — a sheet rasterising, an app returning from
-    /// the background with a fling still in flight — owes twelve ticks. Paying
-    /// all twelve in one frame moves the list a screenful between two pictures,
-    /// which is worse than the stall it is compensating for.
-    #[test]
-    fn a_stalled_frame_pays_at_most_four_ticks_of_fling() {
+    /// Every stall fixture below starts here, so the only thing that varies
+    /// between them is the size of the gap that follows. By t=64 the fling has
+    /// been decayed once (one 16ms tick, `0.95^0.96`) and is travelling
+    /// 79.3px per tick rather than the 83.3 it launched at, which is why the
+    /// numbers those fixtures assert sit a few per cent under the launch
+    /// speed's round figures.
+    fn standard_flick() -> Finger {
         let mut f = Finger::new();
         f.act(0, TouchAction::Down, 100.0, 900.0);
         for i in 1..=5 {
@@ -1322,23 +1497,346 @@ mod tests {
         }
         f.act(48, TouchAction::Up, 100.0, 700.0);
         f.tick(64);
+        f
+    }
+
+    /// The one wheel event a stalled frame owes, and the number
+    /// [`MOMENTUM_MAX_STEPS`] is worth.
+    ///
+    /// A loop that missed 300ms — a sheet rasterising, a slow paint — owes
+    /// eighteen ticks. Paying all eighteen in one frame moves the list a
+    /// screenful between two pictures, which is worse than the stall it is
+    /// compensating for.
+    ///
+    /// **The expected ceiling is a literal, and that is the point of it**
+    /// (issue #559). It used to be computed as `… * MOMENTUM_MAX_STEPS`, so
+    /// both sides of the comparison scaled with the constant under test and
+    /// `4.0 -> 8.0` — doubling how far one stalled frame may jump the list —
+    /// left the suite green. 334px is four 60Hz ticks of the 5000px/s finger
+    /// *this test scripted*, plus a pixel; the emitted 317px is that less the
+    /// one tick of decay `standard_flick` has already spent. The floor is what
+    /// pins the constant from the other side, and
+    /// `a_gap_below_the_clamp_is_paid_in_full` is what stops it being pinned
+    /// only where the clamp bites. Between them the pair brackets
+    /// `MOMENTUM_MAX_STEPS` to roughly [3.5, 4.2].
+    ///
+    /// The derived form is kept as a second assertion, because it is a good
+    /// cross-check of a different thing: that the launch speed is in pixels per
+    /// tick and not the per-*sample* distance it was once confused with (see
+    /// [`VELOCITY_WINDOW`]). It is the *unit* that assertion pins, not the
+    /// number.
+    ///
+    /// A gap this size is well inside [`MOMENTUM_MAX_STALL`]; past that bound
+    /// there is no wheel event to measure at all, which is
+    /// `a_gap_too_long_to_be_a_hitch_ends_the_fling`.
+    #[test]
+    fn a_stalled_frame_pays_at_most_four_ticks_of_fling() {
+        let mut f = standard_flick();
         let before = f.events.len();
-        f.tick(1_064); // a full second of nothing
+        f.tick(364); // 300ms of nothing: eighteen ticks owed, four payable
         let PlatformEvent::MouseWheel { delta_y, .. } = f.events[before] else {
             panic!("the stalled frame still owes one wheel event");
         };
-        // The finger covered 40px every 8ms, which is 5000px/s, which is 83px
-        // per 60Hz tick — the unit MOMENTUM_MAX_STEPS counts in. This number
-        // used to be written as a flat 40, the per-*sample* distance, and the
-        // two agreed only because the old velocity estimate confused the two
-        // units (see VELOCITY_WINDOW). The clamp is the same clamp; only the unit
-        // it is measured in has been corrected.
+        assert!(
+            (280.0..334.0).contains(&delta_y.abs()),
+            "one frame after a 300ms stall moved the list {:.0}px. Four 60Hz \
+             ticks of a 5000px/s finger is 333px and this fling has decayed \
+             once since the lift, so 317px is what it is worth; eight ticks \
+             would be 635px and a quarter of a handset appearing between two \
+             pictures.",
+            delta_y.abs()
+        );
+
+        // The unit cross-check the derived form was always good for: the
+        // launch speed is pixels per MOMENTUM_TICK, not the per-sample
+        // distance. 40px every 8ms is 5000px/s is 83.3px per tick.
         let ceiling = 40.0 / 0.008 * MOMENTUM_TICK.as_secs_f64() * f64::from(MOMENTUM_MAX_STEPS);
         assert!(
             delta_y.abs() < ceiling + 1.0,
-            "one frame after a one-second stall moved the list {delta_y:.0}px, \
-             past the {ceiling:.0}px that four ticks of this fling are worth"
+            "{:.0}px is past the {ceiling:.0}px that {MOMENTUM_MAX_STEPS} ticks \
+             of this fling are worth",
+            delta_y.abs()
         );
+    }
+
+    /// The clamp does not bite below itself, which is the half of
+    /// [`MOMENTUM_MAX_STEPS`] a ceiling assertion cannot see.
+    ///
+    /// A 50ms gap is three ticks, and three ticks is what it must cost: a
+    /// clamp that fired here would make every dropped frame under-shoot, and
+    /// the assertion above — which only ever looks at a gap large enough to be
+    /// clamped — would not notice. Sampling one gap on each side of four ticks
+    /// is also what keeps this pair off the clamp's own fixed point, where a
+    /// gap of exactly [`MOMENTUM_MAX_STEPS`] ticks reads the same clamped or
+    /// not.
+    ///
+    /// 250px is what a 5000px/s finger earns in 50ms, and the decay this fling
+    /// has already spent can only take away from it; 200px is a clamp at 2.5
+    /// ticks.
+    #[test]
+    fn a_gap_below_the_clamp_is_paid_in_full() {
+        let mut f = standard_flick();
+        let before = f.events.len();
+        f.tick(114); // 50ms: three ticks, and no clamp in sight
+        let PlatformEvent::MouseWheel { delta_y, .. } = f.events[before] else {
+            panic!("the gap still owes one wheel event");
+        };
+        assert!(
+            (200.0..251.0).contains(&delta_y.abs()),
+            "a 50ms gap moved the list {:.0}px where three ticks of this fling \
+             are worth 238px — a clamp that bites below \
+             {MOMENTUM_MAX_STEPS} ticks makes every dropped frame under-shoot",
+            delta_y.abs()
+        );
+    }
+
+    /// A stall costs the fling the time it lasted: issue #557's decay half.
+    ///
+    /// The strongest statement of it needs no knowledge of the curve at all.
+    /// The fling's velocity is a function of the wall clock, so **the instant
+    /// it settles on cannot depend on whether the loop was watching** — a
+    /// 400ms gap in the middle of a coast must move the finishing line by
+    /// nothing.
+    ///
+    /// It used to move it by the whole stall and then some. The decay was
+    /// clamped to [`MOMENTUM_MAX_STEPS`] alongside the distance, so a gap of
+    /// any length cost the curve at most four ticks: measured on `158a05e`,
+    /// this flick ends at 1696ms undisturbed and at 2032ms with 400ms of
+    /// stall — and at 6632ms with five seconds of it, because the residue was
+    /// flat at 1568ms for *every* stall past 83ms.
+    ///
+    /// Powers compose, so the tolerance here is a tick of quantisation and not
+    /// a fudge: `0.95^a * 0.95^b` is `0.95^(a+b)` exactly, whatever the loop
+    /// did in between.
+    #[test]
+    fn a_stall_does_not_extend_the_fling() {
+        let (undisturbed, _) = standard_flick().coast_from(80);
+
+        let mut stalled = standard_flick();
+        let (settled, _) = stalled.coast_from(464); // 400ms of nothing at t=64
+
+        assert!(
+            settled.abs_diff(undisturbed) <= 32,
+            "the fling settles at {undisturbed}ms when the loop keeps turning \
+             and at {settled}ms after a 400ms stall. A stall is time passing, \
+             and the curve is a function of time."
+        );
+    }
+
+    /// A gap too long to be a hitch ends the fling: issue #557's other half.
+    ///
+    /// Background the app mid-flick, make coffee, come back — and the list
+    /// resumes at essentially the speed it had when you left and runs out the
+    /// rest of its curve in front of you. Measured on `158a05e`, 1568ms of it
+    /// and 1518px, for a stall of 100ms or of five seconds alike.
+    ///
+    /// **Charging the decay honestly does not fix this on its own**, which is
+    /// why there is a second bound rather than only the fix above: a one-second
+    /// gap takes `0.95^60` = 4.6% off the velocity, which still leaves seven
+    /// times [`MOMENTUM_MIN_VELOCITY`] and two thirds of a second of coast.
+    /// [`MOMENTUM_MAX_STALL`] argues the number; this asserts it from both
+    /// sides at 450ms and 550ms, well clear of the boundary, and then again on
+    /// the two instants either side of it.
+    ///
+    /// **Both, because they pin different things.** The pair at 450/550ms says
+    /// the bound is somewhere between them, which is what a reader cares about
+    /// and what killed the 250ms and 1000ms mutants. It says nothing about
+    /// whether a gap of *exactly* `MOMENTUM_MAX_STALL` survives: `>` and `>=`
+    /// both pass it, and the review of #649 found that survivor. So 500ms and
+    /// 501ms are asserted too. A gap landing on the nanosecond is measure-zero
+    /// on a real clock and either spelling would be defensible — the point is
+    /// that the code has *made* a choice, and an unpinned choice is one a
+    /// refactor can reverse in silence. The `Duration` comparison is exact
+    /// integer nanoseconds, so this is not a float knife-edge.
+    #[test]
+    fn a_gap_too_long_to_be_a_hitch_ends_the_fling() {
+        // Just inside: a bad half second is still a fling being interrupted.
+        let mut survives = standard_flick();
+        let before = survives.events.len();
+        survives.tick(514); // 450ms
+        assert!(
+            survives.gesture.has_momentum(),
+            "a 450ms gap is inside MOMENTUM_MAX_STALL and must not end the fling"
+        );
+        assert!(
+            survives.events[before..].iter().any(|e| matches!(
+                e,
+                PlatformEvent::MouseWheel { delta_y, .. } if delta_y.abs() > 1.0
+            )),
+            "and it still owes the frame it stalled through"
+        );
+
+        // Just outside: nobody watched this, so there is nothing to resume.
+        let mut ends = standard_flick();
+        let before = ends.events.len();
+        assert!(
+            !ends
+                .gesture
+                .tick_momentum(ends.t0 + Duration::from_millis(614), &mut ends.events),
+            "a 550ms gap is past MOMENTUM_MAX_STALL and the fling is over"
+        );
+        assert!(!ends.gesture.has_momentum(), "and it stays over");
+        assert_eq!(
+            ends.events.len(),
+            before,
+            "an abandoned fling emits nothing: {:?}",
+            summarize(&ends.events[before..])
+        );
+
+        // The headline symptom, end to end: five seconds away, then the loop
+        // turns again and the list does not move.
+        let mut away = standard_flick();
+        let (_, coast) = away.coast_from(5_064);
+        assert_eq!(
+            coast, 0.0,
+            "the list travelled {coast:.0}px after a five-second absence"
+        );
+
+        // The lift is a tick like any other, so the same is true of an app
+        // backgrounded in the instant after the flick — before the fling has
+        // advanced even once. See `last_momentum` and issue #558.
+        let mut at_the_lift = Finger::new();
+        at_the_lift.act(0, TouchAction::Down, 100.0, 900.0);
+        for i in 1..=5 {
+            at_the_lift.act(i * 8, TouchAction::Move, 100.0, 900.0 - 40.0 * i as f32);
+        }
+        at_the_lift.act(48, TouchAction::Up, 100.0, 700.0);
+        let (_, coast) = at_the_lift.coast_from(5_048);
+        assert_eq!(
+            coast, 0.0,
+            "a flick the app was backgrounded on travelled {coast:.0}px when it \
+             came back"
+        );
+    }
+
+    /// The boundary is inclusive: exactly [`MOMENTUM_MAX_STALL`] survives.
+    ///
+    /// Split out from the fixture above so that a failure names which half
+    /// broke — the bound moved, or its inclusivity flipped. See that fixture's
+    /// doc for why an unpinned `>` against `>=` is worth a test even though the
+    /// two are indistinguishable in the field.
+    #[test]
+    fn a_gap_of_exactly_the_stall_bound_still_keeps_its_fling() {
+        // The last tick was at t=64, so t=564 is a gap of exactly 500ms.
+        let mut on_the_bound = standard_flick();
+        let before = on_the_bound.events.len();
+        on_the_bound.tick(564);
+        assert!(
+            on_the_bound.gesture.has_momentum(),
+            "a gap of exactly MOMENTUM_MAX_STALL is not longer than it"
+        );
+        assert!(
+            on_the_bound.events[before..].iter().any(|e| matches!(
+                e,
+                PlatformEvent::MouseWheel { delta_y, .. } if delta_y.abs() > 1.0
+            )),
+            "and it owes the frame it stalled through"
+        );
+
+        // One millisecond more is one millisecond too many.
+        let mut past_it = standard_flick();
+        let before = past_it.events.len();
+        past_it.tick(565);
+        assert!(
+            !past_it.gesture.has_momentum(),
+            "a gap of MOMENTUM_MAX_STALL + 1ms ends the fling"
+        );
+        assert_eq!(
+            past_it.events.len(),
+            before,
+            "and emits nothing: {:?}",
+            summarize(&past_it.events[before..])
+        );
+    }
+
+    /// A cancelled gesture leaves nothing of the fling behind, the momentum
+    /// clock included.
+    ///
+    /// `TouchAction::Down` clears the velocities and `last_momentum` together;
+    /// `Cancel` used to clear the velocities and leave the clock at a stale
+    /// `Some(t)`. That is unreachable as a defect — `tick_momentum`'s
+    /// stop-threshold arm clears it before anything can read it — so there is
+    /// no behaviour to assert and this reads the field directly. Raised by the
+    /// review of #649 as a symmetry nit; pinned rather than only fixed, because
+    /// a symmetry nobody checks is one that comes back.
+    ///
+    /// **`process` is called directly here, and that is the whole test.**
+    /// Written first through [`Finger::act`], it passed against the unfixed
+    /// code: `act` is an event *and* the turn of the loop that follows it, and
+    /// that turn's `tick_momentum` clears the clock by the other route. The
+    /// same unreachability that makes this a nit makes the obvious fixture
+    /// hollow — correct and broken agree one line later — so the observation
+    /// has to be taken between the cancel and the next tick.
+    #[test]
+    fn a_cancel_clears_the_momentum_clock_as_well_as_the_velocity() {
+        let mut f = standard_flick();
+        assert!(
+            f.gesture.last_momentum.is_some(),
+            "the flick must leave a live fling for the cancel to clear"
+        );
+
+        let now = f.t0 + Duration::from_millis(80);
+        f.gesture
+            .process(TouchAction::Cancel, 100.0, 700.0, now, &mut f.events);
+        assert!(!f.gesture.has_momentum(), "a cancel ends the fling");
+        assert_eq!(
+            f.gesture.last_momentum, None,
+            "and takes the clock with it, as `Down` does"
+        );
+    }
+
+    /// The first tick of a fling is charged the time since the lift, not a flat
+    /// 60Hz step: issue #558.
+    ///
+    /// The lift instant is known — it is the `now` [`TouchGesture::process`] is
+    /// handed on the `Up` — and until #558 it was simply not kept, so the first
+    /// frame of every fling moved the list by a whole reference tick's worth of
+    /// travel whatever the refresh rate. On a 120Hz panel that is twice what
+    /// the elapsed time earns and on 240Hz four times: a kick at the moment the
+    /// finger leaves the glass, on exactly the high-refresh hardware the rest
+    /// of this file was corrected for.
+    ///
+    /// Driven directly rather than through [`Finger`], because `Finger::act`
+    /// turns the loop on the lift's own instant and the whole question here is
+    /// what a *later* first tick is worth. Measured on `158a05e`, every row
+    /// below emitted 83.33px — including a first tick landing 0ms after the
+    /// lift.
+    #[test]
+    fn the_first_tick_of_a_fling_is_charged_the_time_since_the_lift() {
+        // 5000px/s of finger is 83.33px per 60Hz tick.
+        for (gap, want, what) in [
+            (Duration::from_millis(4), 20.0, "4ms after the lift"),
+            (MOMENTUM_TICK / 2, 41.667, "one 120Hz frame"),
+            (MOMENTUM_TICK, 83.333, "one 60Hz frame"),
+        ] {
+            let t0 = Instant::now();
+            let mut g = TouchGesture::new();
+            let mut ev = Vec::new();
+            g.process(TouchAction::Down, 100.0, 900.0, t0, &mut ev);
+            for i in 1..=5u64 {
+                g.process(
+                    TouchAction::Move,
+                    100.0,
+                    900.0 - 40.0 * i as f32,
+                    t0 + Duration::from_millis(i * 8),
+                    &mut ev,
+                );
+            }
+            let lift = t0 + Duration::from_millis(48);
+            g.process(TouchAction::Up, 100.0, 700.0, lift, &mut ev);
+
+            ev.clear();
+            g.tick_momentum(lift + gap, &mut ev);
+            let PlatformEvent::MouseWheel { delta_y, .. } = ev[0] else {
+                panic!("the lift owes a fling");
+            };
+            assert!(
+                (delta_y.abs() - want).abs() < 0.5,
+                "a first tick {what} moved the list {:.2}px where the elapsed \
+                 time earns {want:.2}px",
+                delta_y.abs()
+            );
+        }
     }
 
     // ── The launch speed, and the unit it is written in ──────────────────────
@@ -1676,10 +2174,16 @@ mod tests {
             &mut ev,
         );
 
-        // The first momentum tick is charged exactly one step, so its wheel
-        // delta *is* the launch speed in pixels per MOMENTUM_TICK.
+        // One whole MOMENTUM_TICK after the lift, so this tick is charged
+        // exactly one step and its wheel delta *is* the launch speed in pixels
+        // per MOMENTUM_TICK. It used to be enough to tick at any instant at
+        // all — the first tick of a fling was charged a flat step whenever it
+        // landed, which is the defect issue #558 fixed; at this test's 120Hz
+        // report rate `lift + REPORT` is half a tick and now earns half as
+        // much, which is correct and would read here as a launch speed half
+        // the truth.
         ev.clear();
-        g.tick_momentum(at(lift + REPORT), &mut ev);
+        g.tick_momentum(at(lift) + MOMENTUM_TICK, &mut ev);
         let PlatformEvent::MouseWheel { delta_y, .. } = ev[0] else {
             panic!("the lift owes a fling");
         };
