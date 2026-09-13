@@ -34,7 +34,13 @@ pub fn styles() -> String {
     left: 0;
     right: 0;
     bottom: 0;
-    background-color: rgba(0, 0, 0, 0.75);
+    /* #474: `overlay_opacity` publishes --rinch-modal-overlay-opacity on this
+       element; the alpha channel is where it belongs, not an `opacity`
+       declaration — the backdrop is already 75% transparent, so an `opacity`
+       would compose with that alpha instead of replacing it (and would make
+       the overlay a stacking context). The fallback is the value that was
+       hard-coded here, so an unset prop paints exactly as before. */
+    background-color: rgba(0, 0, 0, var(--rinch-modal-overlay-opacity, 0.75));
     backdrop-filter: blur(var(--rinch-modal-overlay-blur, 0));
 }
 

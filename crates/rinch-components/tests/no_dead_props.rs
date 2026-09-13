@@ -29,28 +29,42 @@
 //!
 //! ## Known limits (this is a floor, not a ceiling)
 //!
-//! It finds props nothing reads. It does **not** find a prop read only inside a
-//! helper that is itself never called, one read into a value that is then
-//! discarded, or one reached through a binding rather than `self.` (no
-//! component does that today). A field read by *any* impl of its own struct
-//! counts as read, including one only a `class_string()` helper touches — which
-//! is right, since that helper's output is what `render` applies.
+//! It finds props nothing reads. It does **not** find:
+//!
+//! - a prop read only inside a helper that is itself never called, or one read
+//!   into a value that is then discarded;
+//! - a prop **read into a custom property no stylesheet spends** — the read is
+//!   real, the effect is nil. `Modal::overlay_opacity` was exactly that until
+//!   #646 wired the two sheets, and #474's hand sweep caught it where this scan
+//!   could not;
+//! - a prop reached through a binding rather than `self` (`let me = self; …
+//!   me.radius`) — that reports a false *positive*, which errs safe;
+//! - a `self.field` inside a **comment or a string literal**, which counts as a
+//!   read. Measured; no component does it today.
+//!
+//! A field read by *any* impl of its own struct counts as read, including one
+//! only a `class_string()` helper touches — which is right, since that helper's
+//! output is what `render` applies.
+//!
+//! One latent hazard in the parser rather than the rule: [`top_level_items`]
+//! ends an item at a column-0 `}` or `;`, so a raw string containing column-0
+//! CSS in a `src/*.rs` file would corrupt the item ranges. None does today —
+//! the CSS all lives in `src/styles/`, which this scan does not read.
 
 use std::collections::BTreeSet;
 use std::path::Path;
 
 /// Props that are declared, documented, and still not wired — the debt #474
 /// catalogued, with the sub-cluster each belongs to. Every entry must name a
-/// live reason: this list may only shrink. It started at 31 and is 20; the
-/// eleven that left were #474's whole `z_index` sub-cluster, its five dead
-/// `radius` props and `CloseButton::icon_size`.
+/// live reason: this list may only shrink. It started at 31 and is 19; the
+/// twelve that left were #474's whole `z_index` sub-cluster, its five dead
+/// `radius` props, `CloseButton::icon_size` and `Drawer::overlay_opacity`.
 ///
 /// The overlay-behaviour cluster (#474 category A) is deliberately not wired:
 /// `close_on_escape`, `trap_focus` and `lock_scroll` are new interaction work
 /// against the focus arbiter (CLAUDE.md lists backdrop modality as *not yet*
-/// implemented — these props are that gap, declared as if it were closed),
-/// `overlay_opacity` needs a `Drawer` overlay to apply it to, and `auto_close`
-/// is a timer.
+/// implemented — these props are that gap, declared as if it were closed), and
+/// `auto_close` is a timer.
 const ALLOWLIST: &[(&str, &str)] = &[
     // #474 category A — overlay behaviour that does not exist yet.
     ("Modal::close_on_escape", "#474 A: focus/key behaviour"),
@@ -59,7 +73,6 @@ const ALLOWLIST: &[(&str, &str)] = &[
     ("Drawer::close_on_escape", "#474 A: focus/key behaviour"),
     ("Drawer::lock_scroll", "#474 A: scroll locking"),
     ("Drawer::trap_focus", "#474 A: focus arbiter work"),
-    ("Drawer::overlay_opacity", "#474 A: unapplied overlay var"),
     ("Popover::close_on_click_outside", "#474 A: no backdrop yet"),
     ("Popover::close_on_escape", "#474 A: focus/key behaviour"),
     ("Popover::trap_focus", "#474 A: focus arbiter work"),
@@ -157,17 +170,38 @@ fn is_boilerplate_impl(header: &str) -> bool {
         || header.contains("Default for")
 }
 
-/// Does `text` mention `self.<field>` as a whole field name?
+/// Does `text` mention `self . <field>` as a whole field name?
+///
+/// **Whitespace between `self`, the dot and the field is tolerated, and that is
+/// load-bearing.** `cargo fmt` wraps a long expression as `self`⏎`.overlay_opacity`,
+/// and a literal `self.<field>` search calls that field unread — so a reformat
+/// with no behaviour change whatsoever flips a prop's status and turns this test
+/// red or green for nothing. Measured on `Drawer::overlay_opacity`, which sat in
+/// the allowlist for exactly that reason until #646.
 fn reads_field(text: &str, field: &str) -> bool {
-    let needle = format!("self.{field}");
     let mut from = 0;
-    while let Some(at) = text[from..].find(&needle) {
-        let end = from + at + needle.len();
-        let next = text[end..].chars().next();
-        if !matches!(next, Some(c) if c.is_alphanumeric() || c == '_') {
+    while let Some(at) = text[from..].find("self") {
+        let start = from + at;
+        from = start + "self".len();
+
+        // `myself.field` is not a read of `self`.
+        if text[..start]
+            .chars()
+            .next_back()
+            .is_some_and(|c| c.is_alphanumeric() || c == '_')
+        {
+            continue;
+        }
+
+        let Some(after_dot) = text[from..].trim_start().strip_prefix('.') else {
+            continue;
+        };
+        let Some(tail) = after_dot.trim_start().strip_prefix(field) else {
+            continue;
+        };
+        if !tail.starts_with(|c: char| c.is_alphanumeric() || c == '_') {
             return true;
         }
-        from = end;
     }
     false
 }

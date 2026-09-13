@@ -29,7 +29,9 @@ pub fn styles() -> String {
     left: 0;
     right: 0;
     bottom: 0;
-    background-color: rgba(0, 0, 0, 0.75);
+    /* #474: see the note in `styles::modal` — `overlay_opacity` rides the
+       alpha channel, with the old hard-coded value as the fallback. */
+    background-color: rgba(0, 0, 0, var(--rinch-drawer-overlay-opacity, 0.75));
 }
 
 /* Drawer container */

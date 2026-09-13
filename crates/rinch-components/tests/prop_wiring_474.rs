@@ -314,6 +314,77 @@ fn the_close_glyph_has_paths_rather_than_an_empty_span() {
     );
 }
 
+// ------------------------------------------------------- overlay_opacity
+
+/// `Modal` and `Drawer` published their overlay opacity as a custom property
+/// that neither stylesheet spent — declared, documented, inert, exactly like
+/// the five `z_index` props. Note the scan in `no_dead_props` cannot catch this
+/// shape: reading a prop into a variable nobody consumes *is* a read.
+#[test]
+fn overlay_opacity_is_published_and_spent() {
+    for (component, property, selector) in [
+        (
+            "Modal",
+            "--rinch-modal-overlay-opacity",
+            "rgba(0, 0, 0, var(--rinch-modal-overlay-opacity, 0.75))",
+        ),
+        (
+            "Drawer",
+            "--rinch-drawer-overlay-opacity",
+            "rgba(0, 0, 0, var(--rinch-drawer-overlay-opacity, 0.75))",
+        ),
+    ] {
+        let m = match component {
+            "Modal" => Mounted::new(Modal {
+                opened: true,
+                overlay_opacity: Some(0.25),
+                ..Default::default()
+            }),
+            _ => Mounted::new(Drawer {
+                opened: true,
+                overlay_opacity: Some(0.25),
+                ..Default::default()
+            }),
+        };
+        let overlay = m
+            .find(&format!("rinch-{}__overlay", component.to_lowercase()))
+            .expect("the component renders an overlay");
+        let style = overlay.get_attribute("style").unwrap_or_default();
+        assert!(
+            style.contains(&format!("{property}: 0.25")),
+            "{component}: overlay_opacity must publish `{property}`; got {style:?}"
+        );
+        assert!(
+            sheet().contains(selector),
+            "{component}: the sheet must spend it on the backdrop's alpha —              `{selector}`"
+        );
+    }
+}
+
+#[test]
+fn an_unset_overlay_opacity_publishes_nothing() {
+    for component in ["Modal", "Drawer"] {
+        let m = match component {
+            "Modal" => Mounted::new(Modal {
+                opened: true,
+                ..Default::default()
+            }),
+            _ => Mounted::new(Drawer {
+                opened: true,
+                ..Default::default()
+            }),
+        };
+        let overlay = m
+            .find(&format!("rinch-{}__overlay", component.to_lowercase()))
+            .expect("the component renders an overlay");
+        let style = overlay.get_attribute("style").unwrap_or_default();
+        assert!(
+            !style.contains("overlay-opacity"),
+            "{component}: an unset overlay_opacity must leave the sheet's own              level in place; got style {style:?}"
+        );
+    }
+}
+
 // ----------------------------------------------------------------- z_index
 
 /// Each overlay publishes one custom property, and the sheet spends it on the

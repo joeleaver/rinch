@@ -13,6 +13,13 @@
 //! The CSS half stays per component, because the class has to *land* somewhere
 //! different in each one: on the box itself (`Badge`, `CloseButton`), on the
 //! field inside a wrapper (`TextInput`), on every tab button (`Tabs`).
+//!
+//! **The module is `class_utils` and not `radius` on purpose.** `rinch-theme`
+//! declares its own `pub mod radius`, and the `rinch` facade globs both
+//! `rinch_theme::*` and `rinch_components::*` into one prelude — two modules of
+//! the same name there is an `ambiguous_glob_reexports` warning, which is fatal
+//! only under CI's `-D warnings` and invisible to a single-crate clippy run.
+//! Renaming this module back would rediscover that in CI.
 
 /// The five steps of the theme's radius scale, in ascending order.
 ///

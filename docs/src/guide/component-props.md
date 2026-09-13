@@ -730,10 +730,24 @@ So `Modal { z_index: 500 }` is overlay 500 / panel 501, and
 `DropdownMenu { z_index: 500 }` is panel 500 / backdrop 499; one number moves
 the component as a piece. Leaving it unset keeps the stylesheet's own levels.
 
-These overlays are `position: fixed`, so the level orders them within their
-nearest ancestor stacking context rather than against the whole page — see
-the stacking-context notes in CLAUDE.md if a raised overlay still sits under
-something.
+Every layer that carries a level is a *positioned* box — `fixed` for the
+`Modal`/`Drawer` roots, the `DropdownMenu` backdrop and the `Notification`;
+`absolute` or `relative` for the panels inside them — so the level orders it
+within its nearest ancestor stacking context rather than against the whole
+page. See the stacking-context notes in CLAUDE.md if a raised overlay still
+sits under something.
+
+Two limits worth knowing. The level is published as an inherited custom
+property, so an overlay of the **same type** nested inside a raised one inherits
+its level instead of falling back to the default — Chromium does exactly the
+same with the same CSS, and before this prop existed both were equal anyway.
+And a component-level **`style:` prop replaces the root's whole inline style**,
+which drops the published level and silently returns the overlay to its
+stylesheet default; that is
+[issue #647](https://github.com/joeleaver/rinch/issues/647), a pre-existing
+`rsx!` behaviour that also eats `Notification::color` and `Popover::width`, and
+it is not specific to `z_index` — an inline `z-index` would be erased by the
+same write. Style *shorthands* (`p:`, `mt:` …) merge and are unaffected.
 
 ### Tooltip
 
@@ -762,7 +776,7 @@ Positioned with `top: var(--rinch-window-top-inset, 0px)`, so it clears any wind
 | `size` | `String` | `""` | |
 | `radius` | `String` | `""` | |
 | `with_overlay` | `bool` | **`true`** | |
-| `overlay_opacity` | `Option<f32>` | `None` | |
+| `overlay_opacity` | `Option<f32>` | `None` | Backdrop alpha, 0-1 (default 0.75). Applies to the dimming overlay, not the panel |
 | `overlay_blur` | `String` | `""` | |
 | `centered` | `bool` | `false` | |
 | `close_on_click_outside` | `bool` | **`true`** | |
@@ -788,7 +802,7 @@ Positioned with `top: var(--rinch-window-top-inset, 0px)`, so it clears any wind
 | `position` | `String` | `""` | "left", "right", "top", "bottom" |
 | `size` | `String` | `""` | |
 | `with_overlay` | `bool` | **`true`** | |
-| `overlay_opacity` | `Option<f32>` | `None` | |
+| `overlay_opacity` | `Option<f32>` | `None` | Backdrop alpha, 0-1 (default 0.75). Applies to the dimming overlay, not the panel |
 | `close_on_click_outside` | `bool` | **`true`** | |
 | `close_on_escape` | `bool` | **`true`** | |
 | `with_close_button` | `bool` | **`true`** | |
@@ -920,7 +934,7 @@ Sub-components: **HoverCardTarget** (no props), **HoverCardDropdown** (no props)
 | `position` | `String` | `""` | |
 | `grow` | `bool` | `false` | |
 | `color` | `String` | `""` | |
-| `radius` | `String` | `""` | One of `xs sm md lg xl`, rounding the tab buttons. `outline` tabs keep their bottom corners square; the default underline variant has no visible corners to round |
+| `radius` | `String` | `""` | One of `xs sm md lg xl`, rounding the tab buttons. `outline` tabs keep their bottom corners square; the default underline variant has no visible corners to round at rest, though its hover background does |
 
 **TabsList:** `grow: bool`, `justify: String`.
 

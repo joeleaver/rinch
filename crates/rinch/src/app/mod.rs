@@ -9,6 +9,8 @@
 #[cfg(test)]
 mod blink_and_click_focus_tests;
 mod click_handling;
+#[cfg(test)]
+mod component_radius_tests;
 #[cfg(feature = "debug")]
 mod debug_commands;
 #[cfg(test)]
@@ -36,6 +38,8 @@ mod key_event_data_tests;
 mod node_ime_tests;
 #[cfg(all(test, feature = "desktop"))]
 mod nofocus_tests;
+#[cfg(test)]
+mod overlay_opacity_tests;
 #[cfg(test)]
 mod overlay_z_index_tests;
 mod select_widget;
