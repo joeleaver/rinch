@@ -21,7 +21,10 @@ pub fn styles() -> String {
     padding: var(--rinch-spacing-xs);
     width: var(--rinch-dropdown-menu-width, auto);
     min-width: 160px;
-    z-index: 100;
+    /* #474: `DropdownMenu { z_index }` publishes --rinch-dropdown-menu-z-index
+       on the root; the backdrop below derives its level from the same number,
+       so it stays exactly one under the panel however high the pair moves. */
+    z-index: var(--rinch-dropdown-menu-z-index, 100);
 }
 
 /* Positions - default to bottom-start for better UX */
@@ -161,7 +164,7 @@ pub fn styles() -> String {
     left: 0;
     right: 0;
     bottom: 0;
-    z-index: 99;
+    z-index: calc(var(--rinch-dropdown-menu-z-index, 100) - 1);
     display: none;
 }
 

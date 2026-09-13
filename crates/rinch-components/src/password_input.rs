@@ -198,6 +198,11 @@ impl PasswordInput {
             classes.push("rinch-password-input--disabled");
         }
 
+        // Radius class (#474): the wrapper is the bordered box here, not the
+        // `<input>`, which has no border of its own.
+        let radius_cls = crate::class_utils::radius_class("rinch-password-input", &self.radius);
+        classes.extend(radius_cls.as_deref());
+
         classes.join(" ")
     }
 }

@@ -12,7 +12,9 @@ pub fn styles() -> String {
     min-width: 300px;
     max-width: 400px;
     position: fixed;
-    z-index: 300;
+    /* #474: `Notification { z_index }` publishes
+       --rinch-notification-z-index on this box. */
+    z-index: var(--rinch-notification-z-index, 300);
 }
 
 /* Hidden state */

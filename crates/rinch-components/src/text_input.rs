@@ -123,6 +123,11 @@ impl TextInput {
             classes.push("rinch-text-input--error");
         }
 
+        // Radius class (#457): lands on the wrapper, and the stylesheet carries
+        // it down to the field — which is the box with the border.
+        let radius_cls = crate::class_utils::radius_class("rinch-text-input", &self.radius);
+        classes.extend(radius_cls.as_deref());
+
         classes.join(" ")
     }
 }

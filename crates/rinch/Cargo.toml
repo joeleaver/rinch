@@ -77,6 +77,10 @@ softbuffer = { git = "https://github.com/rust-windowing/softbuffer", rev = "672d
 rinch-core = { workspace = true, features = ["test-util"] }
 # Test-only: direct tree/text queries against RinchDocument (tests/multi_context.rs).
 rinch-dom = { workspace = true }
+# Test-only: `app::component_radius_tests` loads the real theme variables, without
+# which every `var(--rinch-radius-*)` in the component CSS is invalid at
+# computed-value time and every radius reads 0.
+rinch-theme = { workspace = true }
 # Test-only: `popup_backdrop_hit_tests` mounts a real `DropdownMenu` under its
 # real stylesheet, so the ordering the component depends on is checked against
 # the component itself and not against a copy of its CSS. A dev-dependency, not

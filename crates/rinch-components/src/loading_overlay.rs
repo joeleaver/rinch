@@ -66,16 +66,8 @@ impl LoadingOverlay {
             classes.push("rinch-loading-overlay--visible");
         }
 
-        if !self.radius.is_empty() {
-            match self.radius.as_str() {
-                "xs" => classes.push("rinch-loading-overlay--radius-xs"),
-                "sm" => classes.push("rinch-loading-overlay--radius-sm"),
-                "md" => classes.push("rinch-loading-overlay--radius-md"),
-                "lg" => classes.push("rinch-loading-overlay--radius-lg"),
-                "xl" => classes.push("rinch-loading-overlay--radius-xl"),
-                _ => {}
-            }
-        }
+        let radius_cls = crate::class_utils::radius_class("rinch-loading-overlay", &self.radius);
+        classes.extend(radius_cls.as_deref());
 
         classes.join(" ")
     }

@@ -21,7 +21,9 @@ pub fn styles() -> String {
     padding: var(--rinch-spacing-sm);
     width: var(--rinch-popover-width, auto);
     min-width: 150px;
-    z-index: 100;
+    /* #474: `Popover { z_index }` publishes --rinch-popover-z-index on the
+       root, which inherits down to this separately-rendered dropdown. */
+    z-index: var(--rinch-popover-z-index, 100);
     opacity: 0;
     visibility: hidden;
     transition: opacity 150ms ease, visibility 150ms ease, transform 150ms ease;

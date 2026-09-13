@@ -189,16 +189,8 @@ impl Modal {
             classes.push(ModalSize::Md.class_name());
         }
 
-        if !self.radius.is_empty() {
-            match self.radius.as_str() {
-                "xs" => classes.push("rinch-modal--radius-xs"),
-                "sm" => classes.push("rinch-modal--radius-sm"),
-                "md" => classes.push("rinch-modal--radius-md"),
-                "lg" => classes.push("rinch-modal--radius-lg"),
-                "xl" => classes.push("rinch-modal--radius-xl"),
-                _ => {}
-            }
-        }
+        let radius_cls = crate::class_utils::radius_class("rinch-modal", &self.radius);
+        classes.extend(radius_cls.as_deref());
 
         if self.centered {
             classes.push("rinch-modal--centered");
@@ -256,6 +248,16 @@ impl Component for Modal {
         };
         let root = rinch_macros::rsx! { div { class: "rinch-modal__root" } };
         root.set_attribute("class", &root_class);
+
+        // z_index (#474). One custom property on the root: the stylesheet reads
+        // it for both layers and keeps the panel exactly one above the
+        // full-viewport root, which is what the hard-coded 200/201 pair did.
+        // Writing it here rather than as two inline `z-index` declarations also
+        // reaches the panel, whose class string is rewritten by the
+        // `opened_fn` effect below.
+        if let Some(z) = self.z_index {
+            root.set_attribute("style", &format!("--rinch-modal-z-index: {}", z));
+        }
 
         // If reactive opened_fn is provided, create an Effect to toggle visibility via class
         if let Some(ref opened_fn) = self.opened_fn {

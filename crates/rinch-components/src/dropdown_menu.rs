@@ -219,16 +219,8 @@ impl DropdownMenu {
 
         classes.push(self.resolved_position().class_name());
 
-        if !self.radius.is_empty() {
-            match self.radius.as_str() {
-                "xs" => classes.push("rinch-dropdown-menu--radius-xs"),
-                "sm" => classes.push("rinch-dropdown-menu--radius-sm"),
-                "md" => classes.push("rinch-dropdown-menu--radius-md"),
-                "lg" => classes.push("rinch-dropdown-menu--radius-lg"),
-                "xl" => classes.push("rinch-dropdown-menu--radius-xl"),
-                _ => {}
-            }
-        }
+        let radius_cls = crate::class_utils::radius_class("rinch-dropdown-menu", &self.radius);
+        classes.extend(radius_cls.as_deref());
 
         if !self.shadow.is_empty() {
             match self.shadow.as_str() {
@@ -267,6 +259,15 @@ impl Component for DropdownMenu {
         }
         if !self.width.is_empty() {
             style_parts.push(format!("--rinch-dropdown-menu-width: {}", self.width));
+        }
+        // z_index (#474): an inherited custom property, for two reasons beyond
+        // the dropdown being a separate component — the backdrop's level is
+        // derived from the panel's in CSS, so one number moves both and keeps
+        // the backdrop below the items; and the inline `style` of both of them
+        // is rewritten wholesale by the visibility effects below, which would
+        // drop an inline `z-index` the first time the menu opened.
+        if let Some(z) = self.z_index {
+            style_parts.push(format!("--rinch-dropdown-menu-z-index: {}", z));
         }
 
         let root = rinch_macros::rsx! { div { class: "rinch-dropdown-menu" } };

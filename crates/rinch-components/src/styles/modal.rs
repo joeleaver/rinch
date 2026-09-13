@@ -16,7 +16,10 @@ pub fn styles() -> String {
     align-items: flex-start;
     justify-content: center;
     padding: var(--rinch-spacing-xl);
-    z-index: 200;
+    /* #474: `Modal { z_index }` publishes --rinch-modal-z-index on this
+       root; the panel below derives its own level from the same number, so
+       one prop moves both and the panel stays one above the overlay. */
+    z-index: var(--rinch-modal-z-index, 200);
 }
 
 /* Hidden state */
@@ -31,7 +34,13 @@ pub fn styles() -> String {
     left: 0;
     right: 0;
     bottom: 0;
-    background-color: rgba(0, 0, 0, 0.75);
+    /* #474: `overlay_opacity` publishes --rinch-modal-overlay-opacity on this
+       element; the alpha channel is where it belongs, not an `opacity`
+       declaration — the backdrop is already 75% transparent, so an `opacity`
+       would compose with that alpha instead of replacing it (and would make
+       the overlay a stacking context). The fallback is the value that was
+       hard-coded here, so an unset prop paints exactly as before. */
+    background-color: rgba(0, 0, 0, var(--rinch-modal-overlay-opacity, 0.75));
     backdrop-filter: blur(var(--rinch-modal-overlay-blur, 0));
 }
 
@@ -44,7 +53,7 @@ pub fn styles() -> String {
     max-height: calc(100vh - var(--rinch-spacing-xl) * 2);
     overflow-y: auto;
     margin-top: var(--rinch-spacing-xl);
-    z-index: 201;
+    z-index: calc(var(--rinch-modal-z-index, 200) + 1);
 }
 
 /* Centered modal */

@@ -125,6 +125,11 @@ impl Badge {
             classes.push("rinch-badge--full-width");
         }
 
+        // Radius class (#474): the base class is a pill, so a radius step has
+        // to override it rather than fill a gap.
+        let radius_cls = crate::class_utils::radius_class("rinch-badge", &self.radius);
+        classes.extend(radius_cls.as_deref());
+
         classes.join(" ")
     }
 }

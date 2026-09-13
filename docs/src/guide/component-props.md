@@ -137,12 +137,16 @@ Icon-only button. For text-based action buttons, use `Button` with compact styli
 
 ### CloseButton
 
+Draws a stroked X, sized by `icon_size` or by `size`. Until issue #474 it drew
+nothing at all: the glyph was an empty `<span class="rinch-icon rinch-icon--close">`
+and no stylesheet in the workspace matches that class.
+
 | Prop | Type | Default | Description |
 |------|------|---------|-------------|
 | `size` | `String` | `""` | xs, sm, md, lg, xl |
 | `radius` | `String` | `""` | |
 | `disabled` | `bool` | `false` | |
-| `icon_size` | `Option<u32>` | `None` | Custom icon size in pixels |
+| `icon_size` | `Option<u32>` | `None` | The X's edge length in px. Unset, it follows `size`: 12 / 14 / 16 / 20 / 24 for xs…xl |
 | `onclick` | `Option<Callback>` | `None` | Click handler |
 
 ---
@@ -160,7 +164,7 @@ Icon-only button. For text-based action buttons, use `Button` with compact styli
 | `size` | `String` | `""` | xs, sm, md, lg, xl |
 | `disabled` | `bool` | `false` | |
 | `required` | `bool` | `false` | |
-| `radius` | `String` | `""` | |
+| `radius` | `String` | `""` | One of `xs sm md lg xl`, rounding the field. Empty keeps the theme's default radius |
 | `input_type` | `String` | `""` | HTML input type ("text", "email", etc.) |
 | `value` | `String` | `""` | Static value |
 | `value_fn` | `Option<ReactiveString>` | `None` | Reactive value binding (auto-wrapped) |
@@ -205,7 +209,7 @@ Custom Default: `toggle_visibility` defaults to `true`.
 | `required` | `bool` | `false` | |
 | `autofocus` | `bool` | `false` | |
 | `size` | `String` | `""` | |
-| `radius` | `String` | `""` | |
+| `radius` | `String` | `""` | One of `xs sm md lg xl`, rounding the field. The visibility toggle inside keeps its own radius |
 | `toggle_visibility` | `bool` | **`true`** | Show/hide the eye toggle button |
 | `ontoggle` | `Option<Callback>` | `None` | Fires when visibility toggled |
 | `oninput` | `Option<InputCallback>` | `None` | Receives `String` |
@@ -232,7 +236,7 @@ Custom Default: `toggle_visibility` defaults to `true`.
 | `hide_controls` | `bool` | `false` | Hide +/- buttons |
 | `required` | `bool` | `false` | |
 | `size` | `String` | `""` | |
-| `radius` | `String` | `""` | |
+| `radius` | `String` | `""` | One of `xs sm md lg xl`. Rounds the field, a prefix/suffix and the steppers together |
 | `onincrement` | `Option<Callback>` | `None` | Notification; uncontrolled, the component steps the field itself and reports through `oninput` (#501) |
 | `ondecrement` | `Option<Callback>` | `None` | Notification (see `onincrement`) |
 | `oninput` | `Option<InputCallback>` | `None` | Receives `String` from direct text entry, and — uncontrolled — each stepper-written value |
@@ -594,7 +598,7 @@ Custom Default: `ignore_case` defaults to `true`.
 | `variant` | `String` | `""` | "filled", "light", "outline", "dot", "transparent", "white", "default", "gradient" |
 | `size` | `String` | `""` | |
 | `color` | `String` | `""` | |
-| `radius` | `String` | `""` | |
+| `radius` | `String` | `""` | One of `xs sm md lg xl`. A badge is a pill by default, so this squares it off |
 | `full_width` | `bool` | `false` | |
 
 ### Card
@@ -716,6 +720,35 @@ Custom Default: `animate` and `visible` default to `true`.
 
 ## Overlays
 
+**`z_index` on an overlay** (issue #474). `Modal`, `Drawer`, `Popover`,
+`DropdownMenu` and `Notification` each paint more than one box, and the boxes
+have to stay ordered against each other: a modal's panel above its overlay, a
+menu's backdrop below its panel. `z_index` therefore names the level of the
+component's *base* layer — the one whose stylesheet number the per-component
+table below quotes — and every other layer keeps its existing offset from it.
+So `Modal { z_index: 500 }` is overlay 500 / panel 501, and
+`DropdownMenu { z_index: 500 }` is panel 500 / backdrop 499; one number moves
+the component as a piece. Leaving it unset keeps the stylesheet's own levels.
+
+Every layer that carries a level is a *positioned* box — `fixed` for the
+`Modal`/`Drawer` roots, the `DropdownMenu` backdrop and the `Notification`;
+`absolute` or `relative` for the panels inside them — so the level orders it
+within its nearest ancestor stacking context rather than against the whole
+page. See the stacking-context notes in CLAUDE.md if a raised overlay still
+sits under something.
+
+Two limits worth knowing. The level is published as an inherited custom
+property, so an overlay of the **same type** nested inside a raised one inherits
+its level instead of falling back to the default — Chromium does exactly the
+same with the same CSS, and before this prop existed both were equal anyway.
+And a component-level **`style:` prop replaces the root's whole inline style**,
+which drops the published level and silently returns the overlay to its
+stylesheet default; that is
+[issue #647](https://github.com/joeleaver/rinch/issues/647), a pre-existing
+`rsx!` behaviour that also eats `Notification::color` and `Popover::width`, and
+it is not specific to `z_index` — an inline `z-index` would be erased by the
+same write. Style *shorthands* (`p:`, `mt:` …) merge and are unaffected.
+
 ### Tooltip
 
 | Prop | Type | Default | Description |
@@ -743,14 +776,14 @@ Positioned with `top: var(--rinch-window-top-inset, 0px)`, so it clears any wind
 | `size` | `String` | `""` | |
 | `radius` | `String` | `""` | |
 | `with_overlay` | `bool` | **`true`** | |
-| `overlay_opacity` | `Option<f32>` | `None` | |
+| `overlay_opacity` | `Option<f32>` | `None` | Backdrop alpha, 0-1 (default 0.75). Applies to the dimming overlay, not the panel |
 | `overlay_blur` | `String` | `""` | |
 | `centered` | `bool` | `false` | |
 | `close_on_click_outside` | `bool` | **`true`** | |
 | `close_on_escape` | `bool` | **`true`** | |
 | `with_close_button` | `bool` | **`true`** | |
 | `padding` | `String` | `""` | |
-| `z_index` | `Option<i32>` | `None` | |
+| `z_index` | `Option<i32>` | `None` | Stacking level of the whole modal: the full-viewport overlay sits here and the panel one above it (defaults 200 / 201) |
 | `lock_scroll` | `bool` | **`true`** | |
 | `trap_focus` | `bool` | **`true`** | |
 | `onclose` | `Option<Callback>` | `None` | |
@@ -769,12 +802,12 @@ Positioned with `top: var(--rinch-window-top-inset, 0px)`, so it clears any wind
 | `position` | `String` | `""` | "left", "right", "top", "bottom" |
 | `size` | `String` | `""` | |
 | `with_overlay` | `bool` | **`true`** | |
-| `overlay_opacity` | `Option<f32>` | `None` | |
+| `overlay_opacity` | `Option<f32>` | `None` | Backdrop alpha, 0-1 (default 0.75). Applies to the dimming overlay, not the panel |
 | `close_on_click_outside` | `bool` | **`true`** | |
 | `close_on_escape` | `bool` | **`true`** | |
 | `with_close_button` | `bool` | **`true`** | |
 | `padding` | `String` | `""` | |
-| `z_index` | `Option<i32>` | `None` | |
+| `z_index` | `Option<i32>` | `None` | Stacking level of the whole drawer: the overlay sits here and the panel one above it (defaults 200 / 201) |
 | `lock_scroll` | `bool` | **`true`** | |
 | `trap_focus` | `bool` | **`true`** | |
 | `onclose` | `Option<Callback>` | `None` | |
@@ -796,7 +829,7 @@ Custom Default: `with_close_button` defaults to `true`.
 | `icon` | `Option<TablerIcon>` | `None` | |
 | `auto_close` | `u32` | `0` | Auto-close delay in ms (0 = disabled) |
 | `loading` | `bool` | `false` | |
-| `z_index` | `Option<i32>` | `None` | |
+| `z_index` | `Option<i32>` | `None` | Stacking level of the toast (default 300) |
 | `onclose` | `Option<Callback>` | `None` | |
 
 ### Popover
@@ -816,7 +849,7 @@ Custom Default: `close_on_click_outside` and `close_on_escape` default to `true`
 | `close_on_click_outside` | `bool` | **`true`** | |
 | `close_on_escape` | `bool` | **`true`** | |
 | `width` | `String` | `""` | |
-| `z_index` | `Option<i32>` | `None` | |
+| `z_index` | `Option<i32>` | `None` | Stacking level of the dropdown (default 100) |
 | `trap_focus` | `bool` | `false` | |
 
 Sub-components: **PopoverTarget** (no props), **PopoverDropdown** (no props).
@@ -843,7 +876,7 @@ Custom Default: `close_on_click_outside` and `close_on_item_click` default to `t
 | `close_on_click_outside` | `bool` | **`true`** | |
 | `close_on_item_click` | `bool` | **`true`** | |
 | `width` | `String` | `""` | |
-| `z_index` | `Option<i32>` | `None` | |
+| `z_index` | `Option<i32>` | `None` | Stacking level of the menu panel; its click-catching backdrop stays one below (defaults 100 / 99) |
 
 **DropdownMenuTarget**, **DropdownMenuDropdown**, **DropdownMenuLabel**, **DropdownMenuDivider**: No props.
 
@@ -901,7 +934,7 @@ Sub-components: **HoverCardTarget** (no props), **HoverCardDropdown** (no props)
 | `position` | `String` | `""` | |
 | `grow` | `bool` | `false` | |
 | `color` | `String` | `""` | |
-| `radius` | `String` | `""` | |
+| `radius` | `String` | `""` | One of `xs sm md lg xl`, rounding the tab buttons. `outline` tabs keep their bottom corners square; the default underline variant has no visible corners to round at rest, though its hover background does |
 
 **TabsList:** `grow: bool`, `justify: String`.
 

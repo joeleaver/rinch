@@ -145,16 +145,8 @@ impl Popover {
             classes.push(PopoverPosition::Bottom.class_name());
         }
 
-        if !self.radius.is_empty() {
-            match self.radius.as_str() {
-                "xs" => classes.push("rinch-popover--radius-xs"),
-                "sm" => classes.push("rinch-popover--radius-sm"),
-                "md" => classes.push("rinch-popover--radius-md"),
-                "lg" => classes.push("rinch-popover--radius-lg"),
-                "xl" => classes.push("rinch-popover--radius-xl"),
-                _ => {}
-            }
-        }
+        let radius_cls = crate::class_utils::radius_class("rinch-popover", &self.radius);
+        classes.extend(radius_cls.as_deref());
 
         if !self.shadow.is_empty() {
             match self.shadow.as_str() {
@@ -193,6 +185,12 @@ impl Component for Popover {
         }
         if let Some(offset) = self.arrow_offset {
             style_parts.push(format!("--rinch-popover-arrow-offset: {}px", offset));
+        }
+        // z_index (#474): the dropdown is a separate component, so the level
+        // travels to it the way this component's width and offsets already do —
+        // as an inherited custom property the stylesheet reads.
+        if let Some(z) = self.z_index {
+            style_parts.push(format!("--rinch-popover-z-index: {}", z));
         }
 
         let root = rinch_macros::rsx! { div { class: "rinch-popover" } };

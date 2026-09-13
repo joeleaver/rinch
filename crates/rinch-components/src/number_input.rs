@@ -188,6 +188,13 @@ impl NumberInput {
             classes.push("rinch-number-input--no-controls");
         }
 
+        // Radius class (#474). Five boxes share this component's corners — the
+        // field, a prefix, a suffix and two stepper buttons — so the stylesheet
+        // rebinds the radius they all derive from rather than re-stating five
+        // corner geometries per step.
+        let radius_cls = crate::class_utils::radius_class("rinch-number-input", &self.radius);
+        classes.extend(radius_cls.as_deref());
+
         classes.join(" ")
     }
 }

@@ -119,16 +119,8 @@ impl HoverCard {
             classes.push(HoverCardPosition::Bottom.class_name());
         }
 
-        if !self.radius.is_empty() {
-            match self.radius.as_str() {
-                "xs" => classes.push("rinch-hover-card--radius-xs"),
-                "sm" => classes.push("rinch-hover-card--radius-sm"),
-                "md" => classes.push("rinch-hover-card--radius-md"),
-                "lg" => classes.push("rinch-hover-card--radius-lg"),
-                "xl" => classes.push("rinch-hover-card--radius-xl"),
-                _ => {}
-            }
-        }
+        let radius_cls = crate::class_utils::radius_class("rinch-hover-card", &self.radius);
+        classes.extend(radius_cls.as_deref());
 
         if !self.shadow.is_empty() {
             match self.shadow.as_str() {

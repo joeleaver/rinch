@@ -129,6 +129,7 @@ pub mod button;
 pub mod card;
 pub mod center;
 pub mod checkbox;
+pub mod class_utils;
 pub mod close_button;
 pub mod code;
 pub mod color_input;

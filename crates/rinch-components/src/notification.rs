@@ -172,16 +172,8 @@ impl Notification {
             classes.push(NotificationPosition::TopRight.class_name());
         }
 
-        if !self.radius.is_empty() {
-            match self.radius.as_str() {
-                "xs" => classes.push("rinch-notification--radius-xs"),
-                "sm" => classes.push("rinch-notification--radius-sm"),
-                "md" => classes.push("rinch-notification--radius-md"),
-                "lg" => classes.push("rinch-notification--radius-lg"),
-                "xl" => classes.push("rinch-notification--radius-xl"),
-                _ => {}
-            }
-        }
+        let radius_cls = crate::class_utils::radius_class("rinch-notification", &self.radius);
+        classes.extend(radius_cls.as_deref());
 
         if self.with_border {
             classes.push("rinch-notification--with-border");
@@ -204,20 +196,22 @@ impl Component for Notification {
             self.opened
         };
 
-        // Color style
-        let color_style = if self.color.is_empty() {
-            None
-        } else {
+        // Inline custom properties: the colour, and z_index's level (#474).
+        let mut style_parts: Vec<String> = Vec::new();
+        if !self.color.is_empty() {
             let c = &self.color;
             if c.starts_with('#') || c.starts_with("rgb") || c.starts_with("hsl") {
-                Some(format!("--rinch-notification-color: {}", c))
+                style_parts.push(format!("--rinch-notification-color: {}", c));
             } else {
-                Some(format!(
+                style_parts.push(format!(
                     "--rinch-notification-color: var(--rinch-color-{}-6)",
                     c
-                ))
+                ));
             }
-        };
+        }
+        if let Some(z) = self.z_index {
+            style_parts.push(format!("--rinch-notification-z-index: {}", z));
+        }
 
         // Close handler
         let close_handler_id = self.onclose.as_ref().map(|cb| {
@@ -236,8 +230,8 @@ impl Component for Notification {
         };
         let root = rinch_macros::rsx! { div { class: "rinch-notification" } };
         root.set_attribute("class", &root_class);
-        if let Some(ref style) = color_style {
-            root.set_attribute("style", style);
+        if !style_parts.is_empty() {
+            root.set_attribute("style", &style_parts.join("; "));
         }
 
         // If reactive opened_fn is provided, create an Effect to toggle visibility via class

@@ -124,16 +124,8 @@ impl Stepper {
             classes.push(StepperOrientation::Horizontal.class_name());
         }
 
-        if !self.radius.is_empty() {
-            match self.radius.as_str() {
-                "xs" => classes.push("rinch-stepper--radius-xs"),
-                "sm" => classes.push("rinch-stepper--radius-sm"),
-                "md" => classes.push("rinch-stepper--radius-md"),
-                "lg" => classes.push("rinch-stepper--radius-lg"),
-                "xl" => classes.push("rinch-stepper--radius-xl"),
-                _ => {}
-            }
-        }
+        let radius_cls = crate::class_utils::radius_class("rinch-stepper", &self.radius);
+        classes.extend(radius_cls.as_deref());
 
         classes.join(" ")
     }
