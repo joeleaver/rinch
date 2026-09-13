@@ -158,6 +158,26 @@ pub struct ComputedStyle {
     pub text_align: TextAlignValue,
     pub text_decoration: TextDecorationValue,
     pub text_transform: TextTransformValue,
+    /// Where the underline sits, in **parley's** terms, not CSS's — and
+    /// **nothing sets it from CSS** (#580).
+    ///
+    /// `None` means "the font's own underline metric", which is what every node
+    /// gets: `text-underline-offset` is gecko-only in this Stylo build, so the
+    /// declaration never reaches `from_stylo`. The field and its two consumers
+    /// in `ifc.rs` are kept, tested and inert, waiting for a parse route.
+    ///
+    /// `Some(px)` becomes `parley::style::StyleProperty::UnderlineOffset`, which
+    /// **replaces** the font's metric and is measured **up from the baseline**
+    /// (paint draws the line at `gy - offset`). So larger is higher, and
+    /// `Some(0.0)` is the baseline itself — measured in
+    /// `crates/rinch-dom/tests/underline_offset_tests.rs`.
+    ///
+    /// CSS `text-underline-offset` means the opposite: the *auto* position
+    /// pushed further **away from** the text. Assigning the CSS pixel value here
+    /// would draw the underline that far above the baseline, through the glyphs.
+    /// Expressing the CSS property needs a delta applied against
+    /// `run_metrics.underline_offset` in paint, where the font is known — not a
+    /// value substituted where the style is built.
     pub text_underline_offset: Option<f32>,
     pub white_space: WhiteSpaceValue,
     pub overflow_wrap: OverflowWrapValue,
