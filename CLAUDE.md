@@ -1363,7 +1363,8 @@ transition frame. **A component whose overlay must cover its parent (e.g.
 it the overlay now covers the window, as it always has on the web.
 
 **Overflow clipping.** One predicate — `Node::clips_overflow()`, "either axis is
-not `visible`" — and one shape, `paint::clip_shape` (the rounded border box).
+not `visible`, and the box is not a non-atomic `display: inline` element" — and
+one shape, `paint::clip_shape` (the rounded border box).
 Everything that needs either asks those: paint's clip bracket, its dirty-region
 subtree prune, the layer-bounds walk, a hoisted entry's clip chain, hit
 testing's `check_children` gate, and `RinchApp`'s two viewport clip walks.
@@ -1411,6 +1412,29 @@ the component library.
 
 A third one is gone: **clipping no longer forms a stacking context** — see
 **Stacking contexts and the clip chain** below.
+
+**A non-atomic `display: inline` element never clips** (#591 PR 1), whatever its
+`overflow` computes to — `overflow` applies to block, flex and grid containers
+(css-overflow-3 §3), and an inline *box* is none of those; an `inline-block` is a
+block container and still clips. The predicate says so, not `clip_shape`, so the
+bracket, the chain, hit testing's gate and the dirty-region prune all agree. The
+rinch-specific reason it had to be said: a *flowed* inline element owns no box
+(`Node::is_flowed_inline_element` — its `layout` is zeroed and `E ghost box`
+enforces that), so a clip derived from it was a `0x0` rect that the stacking
+collector pushed onto the chain of a positioned box hoisted out from under it
+whose entry carries the live chain — a `relative` box, or an `absolute` whose
+containing block is the span itself; an `absolute` truncated at a containing
+block above the span (#591's own child) and a `fixed` box never carried it. An
+`inline-block` button inside an `overflow: hidden` span could not be tapped. **The
+guard is deliberately wider than the boxless set**: a split inline and an
+*unmarked* inline element (the inner `<span>` of a re-measured `inline-block`,
+which carries a real Taffy box) are inline boxes too, and `overflow` applies to
+neither — narrowing the guard to the flowed predicate silently restores the clip
+on both. A future component that puts `overflow: hidden` on an inline-level
+element loses its clip silently, exactly as in a browser; there is no warning.
+An inline element with `overflow: auto` is still found as a *scroll container*
+(those walks read `overflow` against `Scroll | Auto` directly) while clipping
+nothing — pre-existing, and no ink is at stake on a `0x0` box.
 
 Anything new that asks "does this clip" must call the predicate, not re-derive
 it. Code looking for the nearest *scroll* container (sticky positioning, wheel

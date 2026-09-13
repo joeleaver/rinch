@@ -2535,8 +2535,18 @@ impl RinchDocument {
             // zeroing an enforced invariant instead of a coincidence, on the very
             // path (`block → inline`) where Taffy would otherwise keep serving it
             // a stale box.
+            //
+            // A **flowed inline element** joins it too (#591): a `<span>` that
+            // an IFC lays out owns no box — its fragments are the line's —
+            // and `read_layout_results` zeroes it for the same stale-detached-
+            // node reason. The `ifc_root.is_some()` exemption two arms down is
+            // for inline content that *does* carry a box: a direct text child
+            // (stretched to the line block) and an atomic inline (measured by
+            // Taffy, positioned by the IFC). `Node::is_flowed_inline_element`
+            // excludes exactly those two.
             let boxless = matches!(display, DisplayValue::None | DisplayValue::Contents)
-                || node.is_split_inline();
+                || node.is_split_inline()
+                || node.is_flowed_inline_element();
             let rect = (
                 node.layout.x,
                 node.layout.y,

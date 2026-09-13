@@ -457,3 +457,150 @@ fn inline_content_keeps_a_real_box_and_is_not_a_ghost() {
         lines(&doc)
     );
 }
+
+/// **Checker.** The third boxless kind — a **flowed inline element** (#591 PR 1).
+///
+/// A `<span>` that an IFC lays out owns no box: its fragments are the line's, its
+/// background is a span over the flat text, and nothing writes its `layout` on
+/// purpose. So it joins `none`, `contents` and the split inline in `E`'s set, and
+/// the producer that puts a box on one — a `display: block → inline` restyle,
+/// where Taffy keeps serving the detached node its block pass's layout — is
+/// pinned from the other side in
+/// `ifc_reattach_tests::a_wrapper_restyled_to_inline_drops_the_box_its_block_pass_left`.
+///
+/// This does **not** widen `E` to the whole `ifc_root` exempt set, which
+/// `inline_content_keeps_a_real_box_and_is_not_a_ghost` above forbids: an atomic
+/// inline and a direct text child of the root carry real boxes, and
+/// `Node::is_flowed_inline_element` excludes both by construction.
+#[test]
+fn a_flowed_inline_element_that_kept_its_box_is_reported_as_a_ghost() {
+    let mut doc = RinchDocument::new();
+    let body = doc.body();
+    let p = el(
+        &mut doc,
+        body,
+        "p",
+        "width: 400px; font-size: 16px; line-height: 20px",
+    );
+    txt(&mut doc, p, "before ");
+    let sp = el(&mut doc, p, "span", "");
+    txt(&mut doc, sp, "mid");
+    txt(&mut doc, p, " after");
+    doc.resolve_layout(VW, VH);
+    assert!(
+        doc.tree.get(sp.0).unwrap().ifc_root.is_some(),
+        "precondition: the span is IFC content"
+    );
+    assert!(
+        doc.taffy_tree_violations().is_empty(),
+        "precondition: a flowed inline element carries no box today:\n  {}",
+        lines(&doc)
+    );
+
+    doc.tree.nodes[sp.0].layout.width = 400.0;
+    doc.tree.nodes[sp.0].layout.height = 20.0;
+
+    let v = doc.taffy_tree_violations();
+    assert!(
+        v.iter().any(|l| l.starts_with("E ghost box")),
+        "a flowed inline element holding a 400x20 box is the stale-crossing ghost:\n  {}",
+        v.join("\n  ")
+    );
+}
+
+/// **Producer, and the third condition's reason to exist.** An **unmarked**
+/// `display: inline` element carries a real box, and `E` must leave it alone.
+///
+/// Inside a re-measured `inline-block` the inner `<span>` is never marked IFC
+/// content (`ifc_root == None`) — #630 is that shape — and Taffy lays it out as
+/// a block child of the inline-block: under `padding: 11px 13px` its box is
+/// `(13, 11, 50x50)`, and every descendant's painted position is summed through
+/// that origin. `is_flowed_inline_element` requires `ifc_root.is_some()` exactly
+/// so that this node is **not** zeroed; the mutant that drops the condition
+/// zeroes it, moves the child by `(13, 11)`, and survived the whole suite until
+/// this fixture existed (review of PR 1, mutant g). The shape is off the origin
+/// on purpose: at the inline-block's own origin the zeroed and the real box
+/// agree about everything a consumer reads.
+///
+/// It also pins the other side of the same hole (mutant h): `clips_overflow`'s
+/// guard is "non-atomic inline element", deliberately wider than the flowed
+/// predicate, so this unmarked span does not clip either — narrowing the guard
+/// to `is_flowed_inline_element` would restore a 50x50 clip here (measured by
+/// the reviewer: 40000 → 1400 red pixels).
+#[test]
+fn an_unmarked_inline_inside_an_inline_block_keeps_its_real_box() {
+    let mut doc = RinchDocument::new();
+    let body = doc.body();
+    let p = el(
+        &mut doc,
+        body,
+        "div",
+        "width: 400px; font-size: 16px; line-height: 20px",
+    );
+    let ib = el(
+        &mut doc,
+        p,
+        "span",
+        "display: inline-block; position: relative; padding: 11px 13px",
+    );
+    let inner = el(
+        &mut doc,
+        ib,
+        "span",
+        "overflow: hidden; width: 50px; height: 50px",
+    );
+    // An inline-block child, NOT a block: a block child would make the inner
+    // span a *split* inline (#513), which is zeroed by a different branch and is
+    // a different node class — that is the trap this fixture was first written
+    // into, measured as `(0,0,0,0)` before the child was changed.
+    let child = el(
+        &mut doc,
+        inner,
+        "span",
+        "display: inline-block; width: 200px; height: 200px; background: rgb(255, 0, 0)",
+    );
+    doc.resolve_layout(VW, VH);
+
+    let n = doc.tree.get(inner.0).unwrap();
+    assert_eq!(
+        n.display_mode,
+        rinch_dom::node::DisplayMode::Inline,
+        "precondition: the inner span is a non-atomic inline element"
+    );
+    assert_eq!(
+        n.ifc_root, None,
+        "precondition: it is unmarked — the IFC inside a re-measured inline-block does not claim it (#630)"
+    );
+    assert!(
+        !n.is_split_inline(),
+        "precondition: an inline-block child does not split it — this is the unmarked, not the split, kind"
+    );
+    assert!(
+        !n.is_flowed_inline_element(),
+        "an unmarked inline element is not a flowed one — the `ifc_root` condition is what says so"
+    );
+    assert!(
+        n.layout.x == 13.0 && n.layout.y == 11.0 && n.layout.width > 0.0 && n.layout.height > 0.0,
+        "it keeps the real box Taffy gave it, inside the inline-block's padding, got {:?}",
+        n.layout
+    );
+    assert!(
+        !n.clips_overflow(),
+        "…and being an inline element it does not clip, real box or not"
+    );
+
+    let (ibx, iby, _) =
+        rinch_dom::paint::compute_absolute_position_and_transform(&doc.tree, ib.0, 1.0);
+    let (cx, cy, _) =
+        rinch_dom::paint::compute_absolute_position_and_transform(&doc.tree, child.0, 1.0);
+    assert_eq!(
+        (cx - ibx, cy - iby),
+        (13.0, 11.0),
+        "the child is painted through the span's real origin — zeroing the span would put it at the inline-block's origin"
+    );
+    assert!(
+        doc.taffy_tree_violations().is_empty(),
+        "and nothing reports a legitimate box:\n  {}",
+        lines(&doc)
+    );
+}

@@ -997,9 +997,44 @@ impl Node {
     /// values and only one of them clips. Code looking for the nearest scroll
     /// container (sticky positioning, wheel routing, the scrollbar overlays)
     /// wants a different predicate and must not borrow this one.
+    ///
+    /// **A non-atomic `display: inline` element never clips**, whatever its
+    /// `overflow` computes to. `overflow` applies to block containers, flex
+    /// containers and grid containers (css-overflow-3 §3) — an `inline-block`
+    /// is a block container and still clips; an inline *box* is none of those,
+    /// and a browser ignores `overflow: hidden` on a `<span>`. rinch has a
+    /// second reason to say so here rather than leave it to the spec: a
+    /// *flowed* inline element owns no box (its fragments' geometry is the
+    /// line's — see [`Self::is_flowed_inline_element`]), so a clip derived from
+    /// its `layout` was a `0x0` rect at its parent's origin, and
+    /// `stacking::Collector::descend` pushed exactly that onto the clip chain of
+    /// a positioned box hoisted out from under it whose entry carries the live
+    /// chain — a `position: relative` box, or an `absolute` whose containing
+    /// block is the span itself. (Not an `absolute` whose containing block is
+    /// above the span: `Collector::span` truncates its chain at the containing
+    /// block, so #591's own absolutely positioned child never carried this clip
+    /// — measured `[]` on the base. Not a `fixed` box: its chain is empty by
+    /// rule.) An `inline-block` button inside an `overflow: hidden` span was
+    /// untappable.
+    ///
+    /// **This guard is deliberately wider than the boxless set.** It keys on
+    /// "non-atomic inline element", not on [`Self::is_flowed_inline_element`]:
+    /// a split inline (#513, `ifc_root` unset) and an *unmarked* inline element
+    /// — the inner `<span>` of a re-measured `inline-block`, which is never
+    /// marked and which Taffy gives a real block box — are inline boxes too, and
+    /// `overflow` applies to neither. Narrowing the guard to the flowed
+    /// predicate reads like a tidy unification and silently restores the clip
+    /// on both; `clip_predicate_tests` pins each. Guarded in the predicate rather
+    /// than in `clip_shape`, because everything that asks "does this clip" is
+    /// required to ask here (`paint::clip`'s module doc), and a guard one layer
+    /// down would leave hit testing's `check_children` gate and the dirty-region
+    /// prune still believing the span clips.
     pub fn clips_overflow(&self) -> bool {
         use crate::computed_style::OverflowValue;
 
+        if self.is_element() && self.display_mode == DisplayMode::Inline {
+            return false;
+        }
         !matches!(self.computed_style.overflow_x, OverflowValue::Visible)
             || !matches!(self.computed_style.overflow_y, OverflowValue::Visible)
     }
@@ -1181,6 +1216,52 @@ impl Node {
         self.is_element()
             && self.display_mode == DisplayMode::Inline
             && self.contributes_in_flow_block
+    }
+
+    /// Whether this is a non-atomic `display: inline` element that an inline
+    /// formatting context flows — the `<span>`, `<a>`, `<b>` whose `ifc_root`
+    /// the marking pass set.
+    ///
+    /// Such an element **owns no box**. Parley lays out its *fragments* as part
+    /// of the line, its background is a span over the flat text
+    /// (`InlineBackgroundSpan`), and nothing ever writes its `layout`:
+    /// `write_inline_positions` writes `InlineBox` items — atomic inlines — and
+    /// the root's direct text children, and `read_layout_results` reads a Taffy
+    /// node the marking pass detached. So the only values its `layout` can hold
+    /// are `0x0`, or a **stale** box from a pass when it was block-level (a
+    /// `<span style="display: block">` restyled to `inline` keeps its
+    /// `400x20`, measured — Taffy serves a detached node the layout it last
+    /// computed, #543's mechanism). `read_layout_results` zeroes it and
+    /// `taffy_tree_violations` puts it in `E ghost box`'s boxless set, exactly
+    /// as for a split inline and a `display: contents` wrapper, so that a
+    /// coordinate sum stepping through it — `compute_absolute_position` reaches
+    /// every descendant through `box_tree_parent`, which keeps the element in
+    /// the chain — adds nothing (#591).
+    ///
+    /// Three conditions, each excluding a look-alike:
+    ///
+    /// * **an element** — a text node's `display_mode` is `Inline` too, and a
+    ///   text node that is a direct child of its IFC root *does* carry a box
+    ///   (`write_inline_positions` stretches it to the line block for
+    ///   scroll-height);
+    /// * **`DisplayMode::Inline` exactly** — an atomic inline (`inline-block`,
+    ///   `inline-flex`) is measured by Taffy and positioned by the IFC and
+    ///   carries a real box (`taffy_reachability_tests::inline_content_keeps_a_real_box_and_is_not_a_ghost`);
+    /// * **`ifc_root` is set** — an **unmarked** `display: inline` element
+    ///   carries a real box: the inner `<span>` of a re-measured `inline-block`
+    ///   is never marked (`ifc_root == None`), Taffy lays it out as a block
+    ///   child of the inline-block, and every descendant's painted position is
+    ///   summed through that box — measured `(13, 11, 50x50)` under
+    ///   `padding: 11px 13px`
+    ///   (`taffy_reachability_tests::an_unmarked_inline_inside_an_inline_block_keeps_its_real_box`).
+    ///   A split inline is never marked either (#513) and has its own zeroing
+    ///   branch. (A `display: inline` element blockified into a flex or grid
+    ///   item, or by `position: absolute`, is excluded by the *second*
+    ///   condition, not this one: Stylo's blockification reaches
+    ///   `computed_style.display`, which `style_resolution` syncs into
+    ///   `display_mode`, so it is `Block` there.)
+    pub fn is_flowed_inline_element(&self) -> bool {
+        self.is_element() && self.display_mode == DisplayMode::Inline && self.ifc_root.is_some()
     }
 }
 

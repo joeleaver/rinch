@@ -749,3 +749,103 @@ fn doc_taffy_parent_dom(doc: &RinchDocument, id: NodeId) -> Option<usize> {
     let p = doc.tree.taffy.parent(t)?;
     doc.tree.taffy_map.get(&p).copied()
 }
+
+// ---------------------------------------------------------------------------
+// #591 PR 1 — a flowed inline element owns no box.
+// ---------------------------------------------------------------------------
+
+/// `<span style="display: block">text tail</span>` under a container with
+/// `padding: 13px 17px`, restyled to `display: inline`.
+///
+/// Before this fix the span kept its block pass's `(17, 13, …x20)` box for ever:
+/// the marking pass detached its Taffy node, Taffy serves a detached node the
+/// layout it last computed, and `read_layout_results` wrote it back every pass
+/// (#543's mechanism, reached without `display: none`). `taffy_tree_violations`
+/// said nothing, because the `ifc_root` exemption covered it. A flowed inline
+/// element owns no box — Parley lays out its fragments as part of the line and
+/// nothing ever writes its `layout` on purpose — so the stale one is now zeroed
+/// and `E ghost box` enforces the zero
+/// (`taffy_reachability_tests::a_flowed_inline_element_that_kept_its_box_is_reported_as_a_ghost`).
+///
+/// **The padding is what takes this off the fixed point.** At the origin a stale
+/// `(0, 0, 400x20)` and a zeroed box agree about the one thing a consumer reads
+/// from this node — the offset `compute_absolute_position` adds when it steps
+/// through it on the way up from a descendant — so the bare shape passes either
+/// way. Under `13/17` it does not, and the consumer that reads it is exactly the
+/// one #591's out-of-flow child reaches the screen through.
+///
+/// The declared twin — the same end state written as `<span>` from the start —
+/// is the control: its span never had a block pass, so its box is zero on either
+/// side of this fix, and `assert_paths_agree` says the two are one shape now.
+#[test]
+fn a_wrapper_restyled_to_inline_drops_the_box_its_block_pass_left() {
+    const CONTAINER: &str = "width: 400px; line-height: 20px; font-size: 16px; padding: 13px 17px";
+    let (r, d) = twins(|doc, restyle| {
+        let body = doc.body();
+        let c = el(doc, body, "div", CONTAINER);
+        let sp = el(doc, c, "span", if restyle { "display: block" } else { "" });
+        txt(doc, sp, "text ");
+        // The consumer the zeroing is for: a descendant whose painted position
+        // is summed through the wrapper's box.
+        let ib = el(
+            doc,
+            sp,
+            "span",
+            "display: inline-block; width: 40px; height: 20px",
+        );
+        if restyle {
+            doc.resolve_layout(VW, VH);
+            let (x, y, w, h) = geom(doc, sp);
+            assert!(
+                x == 17.0 && y == 13.0 && w > 0.0 && h > 0.0,
+                "precondition: the block pass gave the span a real box inside the padding, got {:?}",
+                (x, y, w, h)
+            );
+            doc.set_attribute(sp, "style", "display: inline");
+        }
+        doc.resolve_layout(VW, VH);
+        vec![c, sp, ib]
+    });
+    let (c, sp, ib) = (NodeId(3), NodeId(4), NodeId(6));
+
+    assert_eq!(
+        ifc_root(&r, sp),
+        Some(c.0),
+        "the restyled span is the container's inline content now"
+    );
+    assert_eq!(
+        geom(&r, sp),
+        (0.0, 0.0, 0.0, 0.0),
+        "a flowed inline element owns no box — the block pass's box must not survive the crossing"
+    );
+    // The consequence, not just the cause: on the unfixed base the inline-block
+    // was painted at `(92, 23)` against the declared twin's `(75, 10)` — the
+    // stale `(17, 13)` added once too often.
+    let painted = |doc: &RinchDocument, id: NodeId| {
+        let (x, y, _) =
+            rinch_dom::paint::compute_absolute_position_and_transform(&doc.tree, id.0, 1.0);
+        (x, y)
+    };
+    assert_eq!(
+        painted(&r, ib),
+        painted(&d, ib),
+        "the inline-block is painted where the declared twin paints it"
+    );
+    assert_eq!(
+        geom(&r, ib),
+        geom(&d, ib),
+        "inline-block: box differs by path"
+    );
+    assert_eq!(
+        ifc_root(&r, ib),
+        ifc_root(&d, ib),
+        "inline-block: ifc_root differs by path"
+    );
+    // Not `assert_paths_agree` for the inline-block: its Taffy *attachment* is
+    // path-dependent and pre-existing — measured on `main` (`0bfbd33`): restyled,
+    // its Taffy parent is `None`; declared, it is the detached span. Both are
+    // dead edges for a node `measure_inline_blocks` lays out as a Taffy root of
+    // its own, which is why nothing above notices. Recorded as an asymmetry, not
+    // pinned either way here.
+    assert_paths_agree(&r, &d, &[("container", c), ("wrapper", sp)]);
+}
