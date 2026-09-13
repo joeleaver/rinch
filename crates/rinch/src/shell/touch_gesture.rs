@@ -96,12 +96,21 @@ const MOMENTUM_TICK: Duration = Duration::from_nanos(16_666_667);
 /// where this clamp stops applying.
 ///
 /// **Four is a judgement, not a measurement**, and since issue #559 it is
-/// pinned as a number rather than derived from itself. For the suite's
+/// pinned against a literal rather than derived from itself. For the suite's
 /// 5000px/s flick four ticks is 333px in one frame and eight would be 667px —
 /// a quarter of a 1080x2460 handset appearing between two pictures.
 /// `a_stalled_frame_pays_at_most_four_ticks_of_fling` asserts that literal from
 /// above and `a_gap_below_the_clamp_is_paid_in_full` asserts the clamp does not
-/// bite below it, so the value is bracketed rather than merely shaped.
+/// bite below it.
+///
+/// **What that pins is a tolerance, not the point 4.0**, and the width of it is
+/// deliberate rather than slack. The ceiling is four ticks of the *launch*
+/// speed while the frame it measures is four ticks of the *once-decayed* speed,
+/// which is about 5% lower, so the band admits anything in **[3.55, 4.2]** —
+/// swept by the reviewer of #649 one hundredth at a time, not inferred: 3.5 and
+/// 4.3 fail, 3.55 and 4.2 pass. 8.0 and 2.0, the two directions #559 asks
+/// about, are both caught. Tightening it further would mean asserting the
+/// decayed value, which pins [`MOMENTUM_FRICTION`] into a test about the clamp.
 const MOMENTUM_MAX_STEPS: f32 = 4.0;
 
 /// The longest gap between two momentum ticks that a fling survives.
@@ -130,13 +139,17 @@ const MOMENTUM_MAX_STEPS: f32 = 4.0;
 ///
 /// What the honest decay *does* buy, and it is most of the fix: for every
 /// stall short enough to keep its fling, the coast now finishes at the instant
-/// it would have finished undisturbed — 1712 to 1724ms across stalls from zero
-/// to 1.5s, against 1696ms rising to 3132ms before. That is
+/// it would have finished undisturbed — 1712 to 1724ms across every stall this
+/// bound lets through, and across stalls up to 1.5s with the bound lifted,
+/// against 1696ms rising to 3132ms before. That is
 /// `a_stall_does_not_extend_the_fling`.
 ///
 /// **Half a second, and why that number.** It is the same order as
-/// [`MAX_EVENT_AGE`], which already means "the loop was away" in this file and
-/// names the same two causes. Thirty dropped frames at 60Hz is not a stutter,
+/// [`MAX_EVENT_AGE`], which already means "the loop was away" in this file, for
+/// the same cause — an app backgrounded mid-gesture. (Only that one. The other
+/// cause `MAX_EVENT_AGE` names is a clock jump, which cannot be a cause here: a
+/// jump is not a gap between two momentum ticks.) Thirty dropped frames at 60Hz
+/// is not a stutter,
 /// it is a freeze, and every gap short enough to read as a stutter is well
 /// inside this and keeps its fling.
 ///
@@ -769,6 +782,12 @@ impl TouchGesture {
                 self.state = TouchState::Idle;
                 self.velocity_x = 0.0;
                 self.velocity_y = 0.0;
+                // The clock goes with the velocity it timed, as it does on
+                // `Down`. Nothing can read a stale one — `tick_momentum`'s
+                // stop-threshold arm clears it before anything else looks —
+                // so this is symmetry rather than a fix, and it is pinned on
+                // the field because there is no behaviour to observe.
+                self.last_momentum = None;
                 self.forget_samples();
             }
             TouchAction::HoverMove => {
@@ -1616,7 +1635,19 @@ mod tests {
     /// gap takes `0.95^60` = 4.6% off the velocity, which still leaves seven
     /// times [`MOMENTUM_MIN_VELOCITY`] and two thirds of a second of coast.
     /// [`MOMENTUM_MAX_STALL`] argues the number; this asserts it from both
-    /// sides, at 450ms and 550ms rather than at the boundary itself.
+    /// sides at 450ms and 550ms, well clear of the boundary, and then again on
+    /// the two instants either side of it.
+    ///
+    /// **Both, because they pin different things.** The pair at 450/550ms says
+    /// the bound is somewhere between them, which is what a reader cares about
+    /// and what killed the 250ms and 1000ms mutants. It says nothing about
+    /// whether a gap of *exactly* `MOMENTUM_MAX_STALL` survives: `>` and `>=`
+    /// both pass it, and the review of #649 found that survivor. So 500ms and
+    /// 501ms are asserted too. A gap landing on the nanosecond is measure-zero
+    /// on a real clock and either spelling would be defensible — the point is
+    /// that the code has *made* a choice, and an unpinned choice is one a
+    /// refactor can reverse in silence. The `Duration` comparison is exact
+    /// integer nanoseconds, so this is not a float knife-edge.
     #[test]
     fn a_gap_too_long_to_be_a_hitch_ends_the_fling() {
         // Just inside: a bad half second is still a fling being interrupted.
@@ -1675,6 +1706,82 @@ mod tests {
             coast, 0.0,
             "a flick the app was backgrounded on travelled {coast:.0}px when it \
              came back"
+        );
+    }
+
+    /// The boundary is inclusive: exactly [`MOMENTUM_MAX_STALL`] survives.
+    ///
+    /// Split out from the fixture above so that a failure names which half
+    /// broke — the bound moved, or its inclusivity flipped. See that fixture's
+    /// doc for why an unpinned `>` against `>=` is worth a test even though the
+    /// two are indistinguishable in the field.
+    #[test]
+    fn a_gap_of_exactly_the_stall_bound_still_keeps_its_fling() {
+        // The last tick was at t=64, so t=564 is a gap of exactly 500ms.
+        let mut on_the_bound = standard_flick();
+        let before = on_the_bound.events.len();
+        on_the_bound.tick(564);
+        assert!(
+            on_the_bound.gesture.has_momentum(),
+            "a gap of exactly MOMENTUM_MAX_STALL is not longer than it"
+        );
+        assert!(
+            on_the_bound.events[before..].iter().any(|e| matches!(
+                e,
+                PlatformEvent::MouseWheel { delta_y, .. } if delta_y.abs() > 1.0
+            )),
+            "and it owes the frame it stalled through"
+        );
+
+        // One millisecond more is one millisecond too many.
+        let mut past_it = standard_flick();
+        let before = past_it.events.len();
+        past_it.tick(565);
+        assert!(
+            !past_it.gesture.has_momentum(),
+            "a gap of MOMENTUM_MAX_STALL + 1ms ends the fling"
+        );
+        assert_eq!(
+            past_it.events.len(),
+            before,
+            "and emits nothing: {:?}",
+            summarize(&past_it.events[before..])
+        );
+    }
+
+    /// A cancelled gesture leaves nothing of the fling behind, the momentum
+    /// clock included.
+    ///
+    /// `TouchAction::Down` clears the velocities and `last_momentum` together;
+    /// `Cancel` used to clear the velocities and leave the clock at a stale
+    /// `Some(t)`. That is unreachable as a defect — `tick_momentum`'s
+    /// stop-threshold arm clears it before anything can read it — so there is
+    /// no behaviour to assert and this reads the field directly. Raised by the
+    /// review of #649 as a symmetry nit; pinned rather than only fixed, because
+    /// a symmetry nobody checks is one that comes back.
+    ///
+    /// **`process` is called directly here, and that is the whole test.**
+    /// Written first through [`Finger::act`], it passed against the unfixed
+    /// code: `act` is an event *and* the turn of the loop that follows it, and
+    /// that turn's `tick_momentum` clears the clock by the other route. The
+    /// same unreachability that makes this a nit makes the obvious fixture
+    /// hollow — correct and broken agree one line later — so the observation
+    /// has to be taken between the cancel and the next tick.
+    #[test]
+    fn a_cancel_clears_the_momentum_clock_as_well_as_the_velocity() {
+        let mut f = standard_flick();
+        assert!(
+            f.gesture.last_momentum.is_some(),
+            "the flick must leave a live fling for the cancel to clear"
+        );
+
+        let now = f.t0 + Duration::from_millis(80);
+        f.gesture
+            .process(TouchAction::Cancel, 100.0, 700.0, now, &mut f.events);
+        assert!(!f.gesture.has_momentum(), "a cancel ends the fling");
+        assert_eq!(
+            f.gesture.last_momentum, None,
+            "and takes the clock with it, as `Down` does"
         );
     }
 
