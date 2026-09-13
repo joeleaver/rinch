@@ -523,8 +523,10 @@ fn an_empty_container_is_not_a_marked_root_and_keeps_the_line_floor() {
 
 // ── display:none children of an IFC root (#466's fifth shape) ───────────────
 
-/// A `display: none` child generates no box, and `scan_contents_children`
-/// already says so when it classifies a contents wrapper as transparent — but
+/// A `display: none` child generates no box, and the transparency classifier
+/// already says so when it judges a contents wrapper transparent
+/// (`scan_contents_children` until #513 folded it into
+/// `Node::contributes_in_flow_block`) — but
 /// `mark_inline_descendants` used to leave the hidden child's Taffy node
 /// attached, so the root was a non-leaf, its measure structurally
 /// unreachable, and the container collapsed to `h = 0` with its visible text

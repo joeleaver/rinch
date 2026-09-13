@@ -1057,7 +1057,8 @@ impl Node {
     /// Seven sites used to hand-roll this classification — `has_inline`,
     /// `has_block` and the run-grouping loop in `create_anonymous_block_boxes`,
     /// the decision loop in `setup_inline_formatting_contexts`,
-    /// `scan_contents_children`, `collect_contents_out_of_flow`,
+    /// `scan_contents_children` (since folded into
+    /// [`Self::contributes_in_flow_block`], #513), `collect_contents_out_of_flow`,
     /// `mark_inline_descendants` and `walk_inline_children` — and they were
     /// caught disagreeing twice in one review cycle (#466): once on
     /// display-vs-position precedence (a `debug_assert` panic on markup `main`
@@ -1207,6 +1208,23 @@ pub struct NodeTree {
     /// IDs of anonymous block box nodes created during layout.
     /// Tracked for cleanup at the start of each layout pass.
     pub anonymous_block_boxes: Vec<RawNodeId>,
+    /// The `display: inline` elements the last IFC pass **split** around
+    /// block-level content (#513) — [`Node::is_split_inline`].
+    ///
+    /// Recreated from scratch each `ifc_dirty` pass, exactly like
+    /// [`Self::anonymous_block_boxes`] and [`Self::ifc_measure_leaves`], and for
+    /// exactly their reason: splitting takes the element's boxes out of its own
+    /// Taffy child list and puts them in its block container's, and **nothing
+    /// else would put them back** when the element stops being split. That is
+    /// [`Node::contents_spliced`]'s shape one pass along (#520) and
+    /// `reattach_departed_ifc_children`'s one arm over (#597): a departure the
+    /// tree records so a later pass can undo it.
+    ///
+    /// A list rather than a per-node flag because the undo is unconditional —
+    /// `restore_split_inlines` rebuilds each entry's own Taffy child list and its
+    /// block container's — so there is no gate to get wrong, and the entries a
+    /// pass still wants are simply re-recorded by `split_inline_boxes`.
+    pub split_inlines: Vec<RawNodeId>,
     /// Taffy-only measure leaves for IFC roots whose out-of-flow children stay
     /// attached (#466): IFC root DOM id → the childless Taffy node carrying its
     /// [`NodeContext::InlineRoot`]. These nodes have **no DOM identity** — they
@@ -1374,6 +1392,7 @@ impl NodeTree {
             active_node: None,
             guard,
             anonymous_block_boxes: Vec::new(),
+            split_inlines: Vec::new(),
             ifc_measure_leaves: HashMap::new(),
             active_transitions: HashMap::new(),
             active_animations: HashMap::new(),

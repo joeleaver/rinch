@@ -1007,7 +1007,8 @@ fn an_absolutely_positioned_contents_wrapper_still_counts_as_block_content() {
 
 // ── #289: an out-of-flow box behind a `display:contents` wrapper ────────────
 //
-// `scan_contents_children` classified any non-inline child as "a real
+// The transparency classifier (`scan_contents_children` then; since #513,
+// `Node::contributes_in_flow_block`) classified any non-inline child as "a real
 // block-level box", out-of-flow ones included, so a `display:contents` wrapper
 // whose only non-inline content is absolutely positioned was judged opaque and
 // pushed out of the IFC: its texts stayed attached to the container as bare

@@ -414,18 +414,33 @@ pub(crate) fn ifc_root_content_origin(root: &Node) -> (f32, f32) {
 /// exactly right first. Tracked separately; the simple rule is correct about
 /// *where* and *how many*, which is what was broken.
 ///
-/// **Residual (#513).** The stamp is honest now: `mark_inline_descendants`
-/// breaks at an in-flow block-level child exactly where
-/// `walk_inline_children` stops building the line (#366), so a box carrying
-/// an `ifc_root` really is flowed by that IFC. What remains is that block
-/// content inside an inline element still renders **nowhere**, and so does
-/// everything after it: the walk stops at the block, so neither it nor its
-/// later siblings reach a line — and they cannot paint from the tree walk
-/// either, because this predicate skips their marked inline ancestor (the
-/// `<a>`) as drawn-by-its-IFC and never descends beneath it. There is no
-/// block-in-inline splitting to give them boxes of their own. If a box
-/// vanishes and its markup matches `<a>text<div>block</div>tail</a>`, that
-/// is #513, not a new miss here.
+/// **#513 is fixed, and this predicate is no longer asked about that shape.**
+/// It used to be the second half of the defect: an inline element holding a
+/// block was marked and detached, this predicate answered `true` for it, and
+/// `paint_children_with_stacking` skipped it and never descended — so the block
+/// and everything after it rendered nowhere. A `display: inline` element holding
+/// an in-flow block-level box is now **split** around it
+/// ([`crate::node::Node::is_split_inline`]), which takes it out of
+/// `box_tree_children` entirely: paint reaches its pieces through the anonymous
+/// block boxes that lay each run out, and the block directly from the container.
+/// This function is never called with such an element, because paint never sees
+/// one as a child.
+///
+/// **What #513's fix does NOT model is fragment identity.** CSS 2.1 §9.2.1.1
+/// splits the inline box into one fragment per side of the block, each a real
+/// inline box with its own background, border and padding; rinch gives the
+/// *geometry* of those fragments and keeps no box for the element itself. So do
+/// not read "block-in-inline splitting landed" as "rinch has inline fragments" —
+/// it does not, and anything that needs per-fragment boxes is unbuilt.
+///
+/// **Residual (#591).** An **out-of-flow** child of an inline element is a
+/// different shape and is still lost: CSS 2.1 §9.4.2 says an out-of-flow box
+/// neither breaks an inline formatting context nor forces anonymous-box
+/// generation, so such an element is *not* split, is still detached whole, and
+/// this predicate still skips it — taking its absolutely positioned child with
+/// it. If a box vanishes and its markup matches
+/// `<a>text<div style="position:absolute"/>tail</a>`, that is #591, not a new
+/// miss here.
 pub(crate) fn drawn_by_its_ifc(tree: &NodeTree, child: &Node) -> bool {
     child
         .ifc_root
