@@ -1729,212 +1729,6 @@ impl RinchDocument {
         violations
     }
 
-    /// Every way the Taffy tree disagrees with itself or loses a box (#476),
-    /// as human-readable lines. Empty is the invariant.
-    ///
-    /// Three properties, and each one caught a real defect on the tree this
-    /// landed against:
-    ///
-    /// - **A** no Taffy node appears in two parents' `children()` lists. Taffy's
-    ///   `add_child` writes `parents[child]` and pushes **without** removing the
-    ///   child from a previous parent's vector, so a clear-and-`add_child`
-    ///   rebuild could leave one node in two lists — and the container would lay
-    ///   out from whichever copy it happened to hold. `set_children` scrubs, so
-    ///   the fix that routes both anonymous-box rebuilds through it is what
-    ///   makes A hold.
-    /// - **B** `taffy.parent(c)` names the parent whose list actually holds `c`.
-    ///   The other half of the same inconsistency; a violation means layout and
-    ///   any parent-walking consumer disagree about the tree.
-    /// - **C** no **orphan**: every DOM node that generates a box and is not
-    ///   claimed by an IFC has a Taffy parent. This is #476 stated directly —
-    ///   an orphan is laid out by nothing and painted by nothing, and no other
-    ///   assertion in the crate notices, because the `debug_assert` on
-    ///   [`Self::ifc_leaf_invariant_violations`] only inspects carriers of
-    ///   `InlineRoot` *that have children*.
-    /// - **D** no **detached** subtree: the same node is *reachable* from a
-    ///   Taffy node a compute pass actually runs on. C is the local
-    ///   approximation of this and D is the property itself — see below.
-    /// - **E** no **ghost box**: a node C and D exempt *because it generates no
-    ///   box* carries no box. See below.
-    ///
-    /// # D, and why C is not enough (#589)
-    ///
-    /// C asks *"does this node have a Taffy parent?"*, which is **local**. The
-    /// property layout actually depends on is **global**: reachable from a
-    /// root Taffy computes from. A chain of perfectly valid edges hanging off
-    /// nothing satisfies C at every link.
-    ///
-    /// That is not hypothetical. Detach a subtree at a `display: contents`
-    /// node — the one node in the chain with no Taffy parent, and the one C
-    /// exempts by design — and every node below it still reports a parent. A,
-    /// B and `dom_tree_violations` all compare a tree against itself and the
-    /// detached subtree is internally perfect. Measured (#589, #585's mutant):
-    /// every validator in the crate answered `[]` while a flex column measured
-    /// `0` and its whole branch was laid out nowhere.
-    ///
-    /// So D replaces C's final test with set membership, and C survives only
-    /// as the **trivial case** of it — a node with no Taffy parent at all.
-    /// Two messages rather than one because they point at different bugs (and
-    /// `C orphan` is already referenced by #584), not because they are two
-    /// rules.
-    ///
-    /// **Reachable from *which* roots.** Not the document root alone.
-    /// [`Self::inline_block_measure_roots`] is a second, legitimate category:
-    /// an atomic inline inside an IFC is detached from its parent's tree on
-    /// purpose and `measure_inline_blocks` computes it as a Taffy **root**, so
-    /// its subtree is laid out correctly while being unreachable from the
-    /// document root. Seeding from it is what separates "computed by a pass of
-    /// its own" from "computed by nobody".
-    ///
-    /// Seed from **what runs a compute pass**, never from the exemption list.
-    /// Nothing computes from a `display: contents` node, so seeding one would
-    /// re-admit the exact subtree #589 is about.
-    ///
-    /// **Only the topmost detached node in a DOM subtree is named.** A node
-    /// whose DOM ancestor was already reported is suppressed: one defect
-    /// strands a whole branch, and naming every node in it buries the one that
-    /// needs fixing. The cost is that a second, independent detachment
-    /// *inside* an already reported subtree is not separately named.
-    ///
-    /// Measured over `RINCH_TREE_CHECK=1 cargo test -p rinch-dom -p rinch --
-    /// --nocapture` on `1a60722` — where, since #603, **C alone prints
-    /// nothing at all**:
-    ///
-    /// | seeds | suppression | `C orphan` | `D detached` | total |
-    /// |---|---|---|---|---|
-    /// | root only | off | 0 | 116 | 116 |
-    /// | root only | on | 0 | 77 | 77 |
-    /// | root + inline-block | off | 0 | 15 | 15 |
-    /// | root + inline-block | on | 0 | 15 | **15** |
-    ///
-    /// **Seeding is what earns its keep; suppression changed nothing when this
-    /// was measured** — 15 either way — and saying so is the point. Every one of
-    /// those 15 lines was a #513 shape whose stranded nodes are siblings, so
-    /// there was no ancestor to suppress from. Suppression is kept for the
-    /// *nested* case, which `only_the_topmost_detached_node_is_named` pins
-    /// directly and which the suite last exhibited on `db9c64f` (36 lines
-    /// against 26 there).
-    ///
-    /// **The 15 are gone**: #513's fix removed that whole class, and the live
-    /// `D` count is now the #591 shape alone. The table above is kept as the
-    /// measurement it was, at the commit it was taken on, because what it
-    /// establishes — seeding matters, suppression is insurance — does not depend
-    /// on which defects happened to be open.
-    ///
-    /// **D is not merely a #513 detector, which those 15 lines would have
-    /// suggested** — and #513's fix is the proof, since D survived it with a
-    /// line still to report. Disable #603's inline-level crossing trigger
-    /// (leaving its heal in place) and the sweep reported **18** `D detached`
-    /// lines and still **zero** `C orphan`: five of them were #597's own damage
-    /// in `ifc_reattach_tests`, a defect class C is completely blind to. Two of
-    /// the 15 were the reverse — created by that trigger, in the
-    /// `block → inline` path #603 documented as *converging on #513*, and now
-    /// clean because that convergence resolved in #513's direction.
-    ///
-    /// **They are ordered, not independent, and the witness is a fixture rather
-    /// than a number.** Suppression applied over a wrong seed set does not
-    /// merely fail to help — it **loses true positives**, because a node
-    /// reported only because reachability was seeded wrongly still suppresses
-    /// everything beneath it. On `db9c64f` the root-only-plus-suppression cell
-    /// reported **6** `C orphan` lines where every other cell reported 16;
-    /// #603 fixed all sixteen of those orphans and that demonstration
-    /// evaporated within one session.
-    ///
-    /// Which is the general lesson, and the reason it is now built by hand in
-    /// `taffy_reachability_tests::a_true_orphan_survives_under_a_legitimately_unreachable_ancestor`:
-    /// **a validator's design property must not be evidenced by whichever bugs
-    /// happen to exist at one commit.** That fixture puts a real orphan under an
-    /// inline-block's subtree, so seeded correctly the orphan is the one line
-    /// reported and seeded from the root alone it disappears behind its
-    /// ancestor. It depends on no open defect and still said this after #513
-    /// landed — which it has, so that is now observed rather than forecast.
-    ///
-    /// **Cost, measured rather than asserted.** One BFS over the
-    /// `taffy.children()` reads A and B already make — kept rather than
-    /// re-read — plus one membership test per DOM node. Same `O(nodes)` C
-    /// already paid, and it runs only from a test or under
-    /// `RINCH_TREE_CHECK=1`.
-    ///
-    /// The constant is **not** free, though, and the first draft of this got it
-    /// badly wrong by comparing against a mutant that still paid for the BFS.
-    /// On a 2203-node document, debug build, 200 iterations, best of 3 in one
-    /// quiet session: the whole validator is **1.40ms** with D and E against
-    /// **1.03ms** without them. Spelling the same two structures as a
-    /// `HashMap` and a `HashSet` cost **2.72ms** — `SipHash` in a debug build,
-    /// ~6600 probes, which is more than the rest of the check put together.
-    /// Hence the `binary_search` on `parents`; do not "simplify" it back.
-    /// (Re-measured after the #603 rebase at 1.41 / 1.16 on a loaded machine:
-    /// the absolute figures move with load, the hashing penalty did not.)
-    ///
-    /// # E, and what it is for (#543)
-    ///
-    /// C and D exempt three kinds of node, and for two of them the exemption
-    /// is *"this element generates no box"* — `display: none` and
-    /// `display: contents`. That is a claim with a testable consequence, so E
-    /// tests it: such a node's `layout` must be zero.
-    ///
-    /// A closed `DropdownMenu` that kept a `160x168` box, stayed painted and
-    /// stayed clickable (#543) is exactly this shape, and it shipped with every
-    /// validator here answering `[]` — because the node was exempt from the
-    /// only rule that looked at it.
-    ///
-    /// # What C, D and E do **not** guarantee
-    ///
-    /// Stated because an invariant read as stronger than it is, is worse than
-    /// no invariant:
-    ///
-    /// - **The `ifc_root` exemption is unconditional, and nothing here can see
-    ///   past it.** Inline content legitimately carries a real box — the IFC
-    ///   assigns it (`write_inline_positions`), not Taffy — so E cannot ask the
-    ///   box question of an `ifc_root` node, and C and D exempt it outright.
-    ///   Measured directly: strand a node the #589 way and D reports it; set
-    ///   `ifc_root = Some(..)` on that same tree and the report goes to `[]`.
-    ///   A node carrying a mark no IFC honours would therefore be invisible to
-    ///   all three rules.
-    ///
-    ///   **This was written as "blind to #597's intermediate state", and #603
-    ///   voided that.** Measured on `1a60722`, both of #597's routes — a bare
-    ///   `<button>` restyled to `display: flex`, and a `<span>`/`<svg>` pair
-    ///   blockified by their parent becoming flex — reach `ifc_root = None`
-    ///   with a real Taffy parent on the **first** pass after the restyle.
-    ///   There is no intermediate state left to be blind to. The stale mark
-    ///   existed because the marking pass never ran, not because it ran and
-    ///   left something behind, and #603's crossing trigger makes it run.
-    ///   No other producer for the shape was found on this base — *not found*,
-    ///   which is not the same as *does not exist*.
-    /// - **Anonymous block boxes are not visited.** The walk is over
-    ///   `node.children`, and a box lives in its container's `run_boxes`. A
-    ///   detached box is reported only through its members, which are ordinary
-    ///   DOM nodes and are walked.
-    /// - **E says nothing about the root**, which carries the viewport box, and
-    ///   nothing about nodes *inside* a `display: none` subtree — the walk
-    ///   stops reporting at the subtree's top node, which is where the repair
-    ///   goes.
-    ///
-    /// Deliberately **not** a bare `debug_assert` in `resolve_layout`, and
-    /// #584 did not make it one: C is a claim about author markup as much as
-    /// about the engine, and a document that legitimately holds a detached
-    /// subtree should not panic. `RINCH_TREE_CHECK=1` sweeps it across a whole
-    /// suite and **fails** on what it finds (debug builds only), but it fails on
-    /// [`Self::tree_check_verdict`]'s partition rather than on this list, which
-    /// is what lets #591's open out-of-flow-in-inline detachment be reported
-    /// without turning the suite red. `RINCH_TREE_CHECK=warn` prints instead, which is
-    /// what the flag did for its whole life before #584 — and printed to a
-    /// stderr `cargo test` captures, so it showed nobody anything.
-    ///
-    /// ---
-    ///
-    /// **Everything above this line describes
-    /// [`Self::taffy_tree_violations`], not the function it is attached to.**
-    /// There is no separator between the two doc blocks and no item between
-    /// them, so rustdoc hands the whole `A`/`B`/`C`/`D`/`E` writeup to
-    /// `dom_tree_violations` and leaves `taffy_tree_violations` — the function
-    /// the sweep now fails on — with no documentation at all. Pre-existing, and
-    /// noted rather than repaired here: separating them means moving ~150 lines
-    /// of prose, which does not belong in #584's diff.
-    ///
-    /// ---
-    ///
     /// Violations of the **DOM** tree's own invariants — the check
     /// `taffy_tree_violations` structurally could not make (#578).
     ///
@@ -2396,18 +2190,198 @@ impl RinchDocument {
         out
     }
 
-    /// Violations of the **Taffy** tree's own invariants: `A` double-claim, `B`
-    /// parent disagreement, `C` orphan, `D` detached (#589) and `E` ghost box
-    /// (#543).
+    /// Every way the Taffy tree disagrees with itself or loses a box (#476),
+    /// as human-readable lines. Empty is the invariant.
     ///
-    /// The rules, their exemptions, what each exemption costs and the measured
-    /// tables behind them are written up at length — but that writeup is
-    /// attached to [`Self::dom_tree_violations`] by a missing doc separator (see
-    /// the note partway down that item). Read it there.
+    /// Three properties, and each one caught a real defect on the tree this
+    /// landed against:
     ///
-    /// [`Self::tree_check_verdict`] is what the `RINCH_TREE_CHECK` sweep
-    /// actually fails on: this list, minus #591's known out-of-flow-in-inline
-    /// detachment.
+    /// - **A** no Taffy node appears in two parents' `children()` lists. Taffy's
+    ///   `add_child` writes `parents[child]` and pushes **without** removing the
+    ///   child from a previous parent's vector, so a clear-and-`add_child`
+    ///   rebuild could leave one node in two lists — and the container would lay
+    ///   out from whichever copy it happened to hold. `set_children` scrubs, so
+    ///   the fix that routes both anonymous-box rebuilds through it is what
+    ///   makes A hold.
+    /// - **B** `taffy.parent(c)` names the parent whose list actually holds `c`.
+    ///   The other half of the same inconsistency; a violation means layout and
+    ///   any parent-walking consumer disagree about the tree.
+    /// - **C** no **orphan**: every DOM node that generates a box and is not
+    ///   claimed by an IFC has a Taffy parent. This is #476 stated directly —
+    ///   an orphan is laid out by nothing and painted by nothing, and no other
+    ///   assertion in the crate notices, because the `debug_assert` on
+    ///   [`Self::ifc_leaf_invariant_violations`] only inspects carriers of
+    ///   `InlineRoot` *that have children*.
+    /// - **D** no **detached** subtree: the same node is *reachable* from a
+    ///   Taffy node a compute pass actually runs on. C is the local
+    ///   approximation of this and D is the property itself — see below.
+    /// - **E** no **ghost box**: a node C and D exempt *because it generates no
+    ///   box* carries no box. See below.
+    ///
+    /// # D, and why C is not enough (#589)
+    ///
+    /// C asks *"does this node have a Taffy parent?"*, which is **local**. The
+    /// property layout actually depends on is **global**: reachable from a
+    /// root Taffy computes from. A chain of perfectly valid edges hanging off
+    /// nothing satisfies C at every link.
+    ///
+    /// That is not hypothetical. Detach a subtree at a `display: contents`
+    /// node — the one node in the chain with no Taffy parent, and the one C
+    /// exempts by design — and every node below it still reports a parent. A,
+    /// B and `dom_tree_violations` all compare a tree against itself and the
+    /// detached subtree is internally perfect. Measured (#589, #585's mutant):
+    /// every validator in the crate answered `[]` while a flex column measured
+    /// `0` and its whole branch was laid out nowhere.
+    ///
+    /// So D replaces C's final test with set membership, and C survives only
+    /// as the **trivial case** of it — a node with no Taffy parent at all.
+    /// Two messages rather than one because they point at different bugs (and
+    /// `C orphan` is already referenced by #584), not because they are two
+    /// rules.
+    ///
+    /// **Reachable from *which* roots.** Not the document root alone.
+    /// [`Self::inline_block_measure_roots`] is a second, legitimate category:
+    /// an atomic inline inside an IFC is detached from its parent's tree on
+    /// purpose and `measure_inline_blocks` computes it as a Taffy **root**, so
+    /// its subtree is laid out correctly while being unreachable from the
+    /// document root. Seeding from it is what separates "computed by a pass of
+    /// its own" from "computed by nobody".
+    ///
+    /// Seed from **what runs a compute pass**, never from the exemption list.
+    /// Nothing computes from a `display: contents` node, so seeding one would
+    /// re-admit the exact subtree #589 is about.
+    ///
+    /// **Only the topmost detached node in a DOM subtree is named.** A node
+    /// whose DOM ancestor was already reported is suppressed: one defect
+    /// strands a whole branch, and naming every node in it buries the one that
+    /// needs fixing. The cost is that a second, independent detachment
+    /// *inside* an already reported subtree is not separately named.
+    ///
+    /// Measured over `RINCH_TREE_CHECK=1 cargo test -p rinch-dom -p rinch --
+    /// --nocapture` on `1a60722` — where, since #603, **C alone prints
+    /// nothing at all**:
+    ///
+    /// | seeds | suppression | `C orphan` | `D detached` | total |
+    /// |---|---|---|---|---|
+    /// | root only | off | 0 | 116 | 116 |
+    /// | root only | on | 0 | 77 | 77 |
+    /// | root + inline-block | off | 0 | 15 | 15 |
+    /// | root + inline-block | on | 0 | 15 | **15** |
+    ///
+    /// **Seeding is what earns its keep; suppression changed nothing when this
+    /// was measured** — 15 either way — and saying so is the point. Every one of
+    /// those 15 lines was a #513 shape whose stranded nodes are siblings, so
+    /// there was no ancestor to suppress from. Suppression is kept for the
+    /// *nested* case, which `only_the_topmost_detached_node_is_named` pins
+    /// directly and which the suite last exhibited on `db9c64f` (36 lines
+    /// against 26 there).
+    ///
+    /// **The 15 are gone**: #513's fix removed that whole class, and the live
+    /// `D` count is now the #591 shape alone. The table above is kept as the
+    /// measurement it was, at the commit it was taken on, because what it
+    /// establishes — seeding matters, suppression is insurance — does not depend
+    /// on which defects happened to be open.
+    ///
+    /// **D is not merely a #513 detector, which those 15 lines would have
+    /// suggested** — and #513's fix is the proof, since D survived it with a
+    /// line still to report. Disable #603's inline-level crossing trigger
+    /// (leaving its heal in place) and the sweep reported **18** `D detached`
+    /// lines and still **zero** `C orphan`: five of them were #597's own damage
+    /// in `ifc_reattach_tests`, a defect class C is completely blind to. Two of
+    /// the 15 were the reverse — created by that trigger, in the
+    /// `block → inline` path #603 documented as *converging on #513*, and now
+    /// clean because that convergence resolved in #513's direction.
+    ///
+    /// **They are ordered, not independent, and the witness is a fixture rather
+    /// than a number.** Suppression applied over a wrong seed set does not
+    /// merely fail to help — it **loses true positives**, because a node
+    /// reported only because reachability was seeded wrongly still suppresses
+    /// everything beneath it. On `db9c64f` the root-only-plus-suppression cell
+    /// reported **6** `C orphan` lines where every other cell reported 16;
+    /// #603 fixed all sixteen of those orphans and that demonstration
+    /// evaporated within one session.
+    ///
+    /// Which is the general lesson, and the reason it is now built by hand in
+    /// `taffy_reachability_tests::a_true_orphan_survives_under_a_legitimately_unreachable_ancestor`:
+    /// **a validator's design property must not be evidenced by whichever bugs
+    /// happen to exist at one commit.** That fixture puts a real orphan under an
+    /// inline-block's subtree, so seeded correctly the orphan is the one line
+    /// reported and seeded from the root alone it disappears behind its
+    /// ancestor. It depends on no open defect and still said this after #513
+    /// landed — which it has, so that is now observed rather than forecast.
+    ///
+    /// **Cost, measured rather than asserted.** One BFS over the
+    /// `taffy.children()` reads A and B already make — kept rather than
+    /// re-read — plus one membership test per DOM node. Same `O(nodes)` C
+    /// already paid, and it runs only from a test or under
+    /// `RINCH_TREE_CHECK=1`.
+    ///
+    /// The constant is **not** free, though, and the first draft of this got it
+    /// badly wrong by comparing against a mutant that still paid for the BFS.
+    /// On a 2203-node document, debug build, 200 iterations, best of 3 in one
+    /// quiet session: the whole validator is **1.40ms** with D and E against
+    /// **1.03ms** without them. Spelling the same two structures as a
+    /// `HashMap` and a `HashSet` cost **2.72ms** — `SipHash` in a debug build,
+    /// ~6600 probes, which is more than the rest of the check put together.
+    /// Hence the `binary_search` on `parents`; do not "simplify" it back.
+    /// (Re-measured after the #603 rebase at 1.41 / 1.16 on a loaded machine:
+    /// the absolute figures move with load, the hashing penalty did not.)
+    ///
+    /// # E, and what it is for (#543)
+    ///
+    /// C and D exempt three kinds of node, and for two of them the exemption
+    /// is *"this element generates no box"* — `display: none` and
+    /// `display: contents`. That is a claim with a testable consequence, so E
+    /// tests it: such a node's `layout` must be zero.
+    ///
+    /// A closed `DropdownMenu` that kept a `160x168` box, stayed painted and
+    /// stayed clickable (#543) is exactly this shape, and it shipped with every
+    /// validator here answering `[]` — because the node was exempt from the
+    /// only rule that looked at it.
+    ///
+    /// # What C, D and E do **not** guarantee
+    ///
+    /// Stated because an invariant read as stronger than it is, is worse than
+    /// no invariant:
+    ///
+    /// - **The `ifc_root` exemption is unconditional, and nothing here can see
+    ///   past it.** Inline content legitimately carries a real box — the IFC
+    ///   assigns it (`write_inline_positions`), not Taffy — so E cannot ask the
+    ///   box question of an `ifc_root` node, and C and D exempt it outright.
+    ///   Measured directly: strand a node the #589 way and D reports it; set
+    ///   `ifc_root = Some(..)` on that same tree and the report goes to `[]`.
+    ///   A node carrying a mark no IFC honours would therefore be invisible to
+    ///   all three rules.
+    ///
+    ///   **This was written as "blind to #597's intermediate state", and #603
+    ///   voided that.** Measured on `1a60722`, both of #597's routes — a bare
+    ///   `<button>` restyled to `display: flex`, and a `<span>`/`<svg>` pair
+    ///   blockified by their parent becoming flex — reach `ifc_root = None`
+    ///   with a real Taffy parent on the **first** pass after the restyle.
+    ///   There is no intermediate state left to be blind to. The stale mark
+    ///   existed because the marking pass never ran, not because it ran and
+    ///   left something behind, and #603's crossing trigger makes it run.
+    ///   No other producer for the shape was found on this base — *not found*,
+    ///   which is not the same as *does not exist*.
+    /// - **Anonymous block boxes are not visited.** The walk is over
+    ///   `node.children`, and a box lives in its container's `run_boxes`. A
+    ///   detached box is reported only through its members, which are ordinary
+    ///   DOM nodes and are walked.
+    /// - **E says nothing about the root**, which carries the viewport box, and
+    ///   nothing about nodes *inside* a `display: none` subtree — the walk
+    ///   stops reporting at the subtree's top node, which is where the repair
+    ///   goes.
+    ///
+    /// Deliberately **not** a bare `debug_assert` in `resolve_layout`, and
+    /// #584 did not make it one: C is a claim about author markup as much as
+    /// about the engine, and a document that legitimately holds a detached
+    /// subtree should not panic. `RINCH_TREE_CHECK=1` sweeps it across a whole
+    /// suite and **fails** on what it finds (debug builds only), but it fails on
+    /// [`Self::tree_check_verdict`]'s partition rather than on this list, which
+    /// is what lets #591's open out-of-flow-in-inline detachment be reported
+    /// without turning the suite red. `RINCH_TREE_CHECK=warn` prints instead, which is
+    /// what the flag did for its whole life before #584 — and printed to a
+    /// stderr `cargo test` captures, so it showed nobody anything.
     pub fn taffy_tree_violations(&self) -> Vec<String> {
         use crate::computed_style::values::DisplayValue;
         use std::collections::HashMap;
