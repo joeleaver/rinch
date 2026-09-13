@@ -308,15 +308,25 @@ fn an_inherited_upright_does_not_suppress_the_ua_italic() {
     );
 }
 
+/// Each of the five decorated tags, one at a time. The deleted block named
+/// `u`/`ins` and `s`/`strike`/`del` in two unguarded arms, so a partial
+/// restoration of either arm — or of a single tag out of either — has to be
+/// caught: `u` and `s` alone leave `ins`, `strike` and `del` unpinned.
 #[test]
-fn text_decoration_none_beats_the_ua_underline_and_line_through() {
+fn text_decoration_none_beats_the_ua_default_on_every_decorated_tag() {
+    // (tag, the line the UA sheet gives it)
+    const UNDERLINED: [&str; 2] = ["u", "ins"];
+    const STRUCK: [&str; 3] = ["s", "strike", "del"];
+
     let mut doc = RinchDocument::new();
     let body = doc.body();
     let c = el(&mut doc, body, "div", "width: 400px");
-    let u_bare = el(&mut doc, c, "u", "");
-    let u_none = el(&mut doc, c, "u", "text-decoration: none");
-    let s_bare = el(&mut doc, c, "s", "");
-    let s_none = el(&mut doc, c, "s", "text-decoration: none");
+    let mut cases = Vec::new();
+    for tag in UNDERLINED.iter().chain(STRUCK.iter()) {
+        let bare = el(&mut doc, c, tag, "");
+        let off = el(&mut doc, c, tag, "text-decoration: none");
+        cases.push((*tag, bare, off));
+    }
     doc.resolve_layout(800.0, 600.0);
 
     let deco = |id: rinch_core::dom::NodeId| {
@@ -324,16 +334,99 @@ fn text_decoration_none_beats_the_ua_underline_and_line_through() {
         (d.underline, d.strikethrough)
     };
 
-    assert_eq!(deco(u_bare), (true, false), "bare <u> is underlined");
+    for (tag, bare, off) in cases {
+        let expected_bare = if UNDERLINED.contains(&tag) {
+            (true, false)
+        } else {
+            (false, true)
+        };
+        assert_eq!(
+            deco(bare),
+            expected_bare,
+            "a bare <{tag}> must carry its UA text-decoration"
+        );
+        assert_eq!(
+            deco(off),
+            (false, false),
+            "`text-decoration: none` on <{tag}> must clear it"
+        );
+    }
+}
+
+/// An author value that is neither the UA default nor `none` must *replace* the
+/// UA one, not be added to it. The two deleted arms were unguarded, so they used
+/// to force their own line on in addition to whatever the author asked for — a
+/// `<u>` asking for `line-through` got both lines.
+#[test]
+fn an_author_text_decoration_replaces_the_ua_one_rather_than_joining_it() {
+    let mut doc = RinchDocument::new();
+    let body = doc.body();
+    let c = el(&mut doc, body, "div", "width: 400px");
+    let u_struck = el(&mut doc, c, "u", "text-decoration: line-through");
+    let ins_struck = el(&mut doc, c, "ins", "text-decoration: line-through");
+    let s_under = el(&mut doc, c, "s", "text-decoration: underline");
+    let del_under = el(&mut doc, c, "del", "text-decoration: underline");
+    let strike_under = el(&mut doc, c, "strike", "text-decoration: underline");
+    let u_both = el(&mut doc, c, "u", "text-decoration: underline line-through");
+    doc.resolve_layout(800.0, 600.0);
+
+    let deco = |id: rinch_core::dom::NodeId| {
+        let d = &doc.tree.get(id.0).unwrap().computed_style.text_decoration;
+        (d.underline, d.strikethrough)
+    };
+
+    assert_eq!(deco(u_struck), (false, true), "<u> asking for line-through");
+    assert_eq!(deco(ins_struck), (false, true), "<ins> likewise");
+    assert_eq!(deco(s_under), (true, false), "<s> asking for underline");
+    assert_eq!(deco(del_under), (true, false), "<del> likewise");
+    assert_eq!(deco(strike_under), (true, false), "<strike> likewise");
     assert_eq!(
-        deco(u_none),
-        (false, false),
-        "`text-decoration: none` on <u> must clear the underline"
+        deco(u_both),
+        (true, true),
+        "both lines asked for, both lines on"
     );
-    assert_eq!(deco(s_bare), (false, true), "bare <s> is struck through");
+}
+
+// ===== The one presentational default still applied by tag =====
+
+/// `user-select` is the only presentational default `apply_stylo_styles_to_taffy`
+/// still applies by tag name, because this Stylo build does not carry the
+/// property at all — so there is nothing for a UA rule to cascade and nothing
+/// for `from_stylo` to read. The tag set must stay exactly the code-ish
+/// elements, and because the tag default is written *before* the inline `style`
+/// attribute is re-read, an author declaration must still win.
+#[test]
+fn user_select_is_applied_by_tag_only_to_the_code_elements() {
+    use rinch_dom::computed_style::UserSelectValue as U;
+
+    let mut doc = RinchDocument::new();
+    let body = doc.body();
+    let c = el(&mut doc, body, "div", "width: 400px");
+    let code = el(&mut doc, c, "code", "");
+    let pre = el(&mut doc, c, "pre", "");
+    let kbd = el(&mut doc, c, "kbd", "");
+    let samp = el(&mut doc, c, "samp", "");
+    let neutral_div = el(&mut doc, c, "div", "");
+    let neutral_span = el(&mut doc, c, "span", "");
+    let off = el(&mut doc, c, "code", "user-select: none");
+    let all = el(&mut doc, c, "pre", "user-select: all");
+    doc.resolve_layout(800.0, 600.0);
+
+    let us = |id: rinch_core::dom::NodeId| doc.tree.get(id.0).unwrap().computed_style.user_select;
+
+    for (id, tag) in [(code, "code"), (pre, "pre"), (kbd, "kbd"), (samp, "samp")] {
+        assert_eq!(us(id), U::Text, "<{tag}> is selectable text by tag");
+    }
     assert_eq!(
-        deco(s_none),
-        (false, false),
-        "`text-decoration: none` on <s> must clear the strikethrough"
+        us(neutral_div),
+        U::Auto,
+        "a neutral tag keeps the initial `auto`"
     );
+    assert_eq!(us(neutral_span), U::Auto, "and so does an inline one");
+    assert_eq!(
+        us(off),
+        U::None,
+        "an inline `user-select: none` beats the tag default"
+    );
+    assert_eq!(us(all), U::All, "and so does any other author value");
 }
