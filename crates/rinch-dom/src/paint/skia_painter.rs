@@ -227,6 +227,16 @@ fn to_skia_stroke(stroke: &KurboStroke) -> SkStroke {
 
 /// Saved state for clip/layer operations.
 enum LayerState {
+    /// A push that changed nothing, so its pop restores nothing.
+    ///
+    /// The stack has to stay balanced whatever a push decided to do, so a
+    /// fast path that skips its work still pushes — and this is the only
+    /// spelling of "skipped" that is true. `Clip { previous_mask: None }` is
+    /// *not* a way to say it: that is the claim that nothing was clipping,
+    /// and popping it installs that claim over whatever really was. See
+    /// [`TinySkiaPainter::push_layer`]'s near-opaque branch (#560) and the
+    /// rule stated in [`TinySkiaPainter::push_clip`].
+    Noop,
     /// A clip layer — just a saved mask to restore on pop.
     Clip { previous_mask: Option<Mask> },
     /// An opacity/blend layer — content drawn to a temporary pixmap.
@@ -653,12 +663,15 @@ impl Painter for TinySkiaPainter {
         // the dirty-region clip (`RinchApp::build_pixels`), so `previous_mask`
         // is `Some(..)` for every DOM clip in a partial repaint.
         //
-        // [`Self::push_layer`] breaks the same rule and is **not** fixed here:
-        // its near-opaque fast path pushes `previous_mask: None` without taking
-        // the mask, so `pop_layer` restores a `None` over whatever was in force
-        // and destroys the enclosing clip. Reachable straight from CSS with an
-        // `opacity` that rounds to 1. Pre-existing, filed as **#560**, and
-        // deliberately left alone by this PR rather than folded in.
+        // [`Self::push_layer`]'s near-opaque fast path was the **third**
+        // instance of the same rule broken the same way — `previous_mask: None`
+        // pushed without taking the mask — and is fixed under #560. It is fixed
+        // the other way round from these two, and the difference is worth
+        // knowing before adding a fourth fast path: a give-up *here* has already
+        // taken the mask, so the cheap repair is to put it back, while a
+        // near-opaque layer never took it, so the cheap repair is to save
+        // nothing at all ([`LayerState::Noop`]). Both satisfy the rule; only one
+        // of them is free at each site.
         let Some(path) = shape_to_path(shape) else {
             // Hardening, not a fix for anything reachable — say so rather than
             // let it read as a closed defect. No `push_clip` call site in the
@@ -770,10 +783,36 @@ impl Painter for TinySkiaPainter {
         _bounds: &PaintShape,
     ) {
         if (opacity - 1.0).abs() < f32::EPSILON {
-            // Fully opaque — just push a no-op clip layer to keep the stack balanced
-            self.layer_stack.push(LayerState::Clip {
-                previous_mask: None,
-            });
+            // Near-opaque: compositing a layer back at this alpha changes no
+            // pixel, so no layer is allocated. The push still has to happen —
+            // `pop_layer` is called unconditionally by the caller — and what it
+            // pushes has to say *truthfully* that nothing was changed.
+            //
+            // > **A fast path that skips clipping work must still preserve the
+            // > clip it inherited.** Pushing `previous_mask: None` is a claim
+            // > that nothing was clipping — not a way of saying "I did not need
+            // > to change anything". The two are indistinguishable at the push
+            // > and catastrophic at the pop.
+            //
+            // `Clip { previous_mask: None }` stood here and was the second
+            // claim while meaning the first: this branch never `.take()`s the
+            // mask, so the clip it inherited is still in force for everything
+            // drawn inside the layer, and then `pop_layer` installs the `None`
+            // over it. Everything painted after the pop, until something else
+            // pushes or pops a clip, is unclipped. Measured from CSS, not
+            // inferred: `opacity: 0.99999994` (the one f32 below `1.0` inside
+            // `f32::EPSILON` of it) on the first of two stacking-context
+            // children of a `50x50` `overflow: hidden` box lets the *second*
+            // one paint at full size outside it, while `opacity: 1` and
+            // `opacity: 0.5` both clip — `opacity_layer_clip_tests`.
+            //
+            // Saving the mask instead, the way [`Self::push_clip`]'s give-up
+            // branches do, would also be correct and is the wrong trade here:
+            // it means cloning a full-surface `Mask` (2.66MB at 1080x2460, per
+            // the cost note in `push_clip`) on the one path whose entire
+            // purpose is to cost nothing. Saving nothing is both cheaper and
+            // the more honest statement — see [`LayerState::Noop`].
+            self.layer_stack.push(LayerState::Noop);
             return;
         }
 
@@ -804,6 +843,10 @@ impl Painter for TinySkiaPainter {
         };
 
         match state {
+            // Nothing was saved because nothing was changed (`push_layer`'s
+            // near-opaque branch). Writing anything to `clip_mask` here — a
+            // `None` above all — would be inventing state this push never took.
+            LayerState::Noop => {}
             LayerState::Clip { previous_mask } => {
                 self.clip_mask = previous_mask;
             }
