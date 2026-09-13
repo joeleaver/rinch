@@ -229,11 +229,14 @@ fn the_classifier_is_display_first() {
 ///
 /// **What that costs is recorded rather than hidden:** the
 /// `InFlowBlock => break` arm in `mark_inline_descendants` and the `_ => break`
-/// arm in `walk_inline_children` were reachable only through markup like this,
-/// and are now believed unreachable. Both are kept fail-closed with the argument
-/// at each arm, and the lost witnesses are filed in the #585/#593 family. This
-/// fixture is deliberately **not** written to reach them: a fixture that
-/// contrived a shape purely to keep an arm covered would be testing the contrivance.
+/// arm in `walk_inline_children` were reachable only through *attached* markup
+/// like this, and no longer are. They were filed as #615 and believed unreachable
+/// outright; that was wrong, and the two fixtures at the end of this file are the
+/// witnesses — a **detached** subtree reaches both, because the flattening this
+/// fixture relies on reads a field that is deliberately `false` outside the
+/// document. This fixture is still deliberately **not** written to reach them: a
+/// fixture that contrived a shape purely to keep an arm covered would be testing
+/// the contrivance, and the detached route is not a contrivance.
 #[test]
 fn a_block_inside_an_inline_splits_it_rather_than_stopping_the_walk() {
     let mut doc = RinchDocument::new();
@@ -673,4 +676,382 @@ fn every_inline_role_kind_still_flows_and_is_marked() {
     }
     assert_marks_match_flow(&doc);
     assert_eq!(doc.ifc_leaf_invariant_violations(), Vec::<usize>::new());
+}
+
+// ── #615: the two `break` arms, reached through a detached subtree ──────────
+//
+// `mark_inline_descendants`' `InFlowBlock => break` and `walk_inline_children`'s
+// `_ => break` lost all three of their witnesses to #513's fix, which flattens a
+// `display: inline` element holding an in-flow block into its container's units
+// so that neither pass ever meets the block. They were filed as #615 and argued
+// to be unreachable. They are not.
+//
+// The flattening step reads `Node::contributes_in_flow_block`, and
+// `recompute_contributes_in_flow_block` folds that field from the **document
+// root** down, so a node unreachable from it keeps `false` — deliberately, as
+// that function's doc says, because `false` is the pre-#513 classification and
+// the conservative direction. Outside the document, therefore, an inline element
+// holding a block is *not* split, stays a unit of its container, leaves
+// `has_block` false, mints no anonymous box, and leaves the container an IFC root
+// whose marking pass and inline walk both walk into the inline element and meet
+// the block — exactly as they did before #513.
+//
+// So these two arms are what makes that conservative direction safe: they are
+// #366's rule ("mark exactly what the walk flows") doing its job in the one place
+// that still needs it. Each of the three fixtures below asserts **both** halves on
+// one document, because the two mutants are not caught by one assertion: making the
+// mark `continue` stamps `ifc_root` on the text after the block, and making the walk
+// `continue` flows that text into the line ahead of the block. The first two share
+// `assert_both_passes_stop_at_the_block`; the third decides on a node one level
+// deeper and spells its own, for the reason its doc gives.
+//
+// Three histories, so that closing one leaves witnesses. None is contrived: rsx
+// removes a branch and its `NodeHandle`s can outlive the removal, every `rsx!`
+// subtree is built before it is appended, and the third is the first two with a
+// `display: contents` wrapper in the way, which is what rsx puts there for every
+// `if`/`match`/`for`.
+//
+// **One change would kill all three at once: #628.** The IFC passes iterate the whole
+// slab, so they run over detached subtrees at all — doing Parley work for a subtree
+// that paints nothing, on every layout pass. Skipping them is the optimisation #628
+// proposes, and it would silently delete the *only* route that reaches either arm.
+// If you are that change: these arms need a new witness in the same commit, or an
+// explicit decision that they are dead (#615 is the history, and "no test covers it"
+// was already not good enough once). Deleting these fixtures as obsolete is the
+// `ANCHOR-MISSING` failure mode; they are the witnesses, not decoration. A
+// reachability skip also has to seed `tree.anonymous_block_boxes` explicitly — a box
+// is not in the element tree (#566), so a naive walk over `children` skips every one
+// and takes three unrelated fixtures with it.
+//
+// The third arm filed with them — `contents_is_inline_transparent`'s *opaque*
+// answer — is **not** witnessed by this route and cannot be: the same clearing
+// that un-splits the inline element also makes every wrapper in the subtree
+// answer *transparent*. Its own argument lives at that function.
+
+/// Assert, on a document whose `container` holds `<a>text<div/>tail</a>` and is
+/// **not** part of the document tree, that both passes stop at the block.
+///
+/// Split out because the two fixtures below differ only in how the subtree came
+/// to be detached, and the claim is identical.
+fn assert_both_passes_stop_at_the_block(
+    doc: &RinchDocument,
+    container: NodeId,
+    link: NodeId,
+    text: NodeId,
+    block: NodeId,
+    tail: NodeId,
+) {
+    // Preconditions. Each is load-bearing: if any of them stops holding, the
+    // assertions below would pass for the wrong reason (nothing reaches the arms
+    // at all), and this fixture would go hollow without failing.
+    let a = doc.tree.get(link.0).unwrap();
+    assert!(
+        !a.contributes_in_flow_block,
+        "precondition: the fold does not reach a detached subtree, so the field \
+         stays `false` — that is the whole route to these arms"
+    );
+    assert!(
+        !a.is_split_inline(),
+        "precondition: and therefore the inline element is not split, so it is \
+         still a unit of its container"
+    );
+    assert!(
+        doc.tree.get(container.0).unwrap().text_layout.is_some(),
+        "precondition: so the container is an IFC root again"
+    );
+    assert_eq!(
+        ifc_root_of(doc, link),
+        Some(container.0),
+        "precondition: and the marking pass really walked into the inline element"
+    );
+    assert_eq!(
+        ifc_root_of(doc, text),
+        Some(container.0),
+        "precondition: the side before the block joined the IFC"
+    );
+    assert!(
+        flowed_by(doc, container.0, text.0),
+        "precondition: …and was flowed into the line"
+    );
+
+    // `mark_inline_descendants`' `InFlowBlock => break`. With `continue` instead,
+    // `tail` is stamped with the root's id while no IFC lays it out — #366's
+    // divergence, the one this arm exists to prevent.
+    assert_eq!(
+        ifc_root_of(doc, tail),
+        None,
+        "the marking pass stops at the in-flow block: everything after it stays \
+         in Taffy, unmarked (#366/#615)"
+    );
+    assert_eq!(
+        ifc_root_of(doc, block),
+        None,
+        "an in-flow block is never IFC content"
+    );
+
+    // `walk_inline_children`'s `_ => break`. With `continue` instead, `tail`'s
+    // text is appended to the line *ahead* of the block it comes after.
+    assert!(
+        !flowed_by(doc, container.0, tail.0),
+        "the inline walk stops at the same block, so `tail` reaches no line"
+    );
+    let layout = doc
+        .tree
+        .get(container.0)
+        .unwrap()
+        .text_layout
+        .as_ref()
+        .unwrap();
+    assert_eq!(
+        layout.text_content, "text",
+        "and the line holds only the side before the block — `texttail` is what \
+         walking past it produces"
+    );
+
+    // The invariant the arms are one half of, plus the validators, so a future
+    // change cannot buy this behaviour with a stranded box.
+    assert_marks_match_flow(doc);
+    assert_eq!(doc.ifc_leaf_invariant_violations(), Vec::<usize>::new());
+    let verdict = doc.tree_check_verdict();
+    assert!(
+        verdict.fatal.is_empty(),
+        "a detached subtree is otherwise healthy: {:?}",
+        verdict.fatal
+    );
+}
+
+/// Route 1: the subtree was laid out **attached** — so every computed style is
+/// real, and the `<a>` was genuinely split on the first pass — and then removed
+/// from the document while its nodes stayed alive.
+///
+/// This is the stronger of the two, because nothing about the classification is
+/// owed to unresolved styles: the first `resolve_layout` splits the `<a>`, and the
+/// second un-splits it purely because the fold can no longer reach it.
+///
+/// Kills: `InFlowBlock => break` → `continue` in `mark_inline_descendants`
+/// (measured: this test plus `a_never_attached_subtree_…`), and `_ => break` →
+/// no-op in `walk_inline_children` (same two).
+#[test]
+fn a_removed_subtree_still_stops_the_mark_and_the_walk_at_a_block() {
+    let mut doc = RinchDocument::new();
+    let body = doc.body();
+    let container = child_of(
+        &mut doc,
+        body,
+        "div",
+        "font-size: 16px; line-height: 20px; width: 400px",
+    );
+    let link = child_of(&mut doc, container, "a", "");
+    let text = text_in(&mut doc, link, "text");
+    let block = child_of(&mut doc, link, "div", "width: 30px; height: 30px");
+    let tail = text_in(&mut doc, link, "tail");
+    doc.resolve_layout(VW, VH);
+
+    assert!(
+        doc.tree.get(link.0).unwrap().is_split_inline(),
+        "control: attached, the same markup is #513's split inline"
+    );
+    assert_eq!(
+        ifc_root_of(&doc, link),
+        None,
+        "control: …so it is not inline content of anything"
+    );
+
+    doc.remove_child(body, container);
+    // A changed viewport, or `resolve_layout` early-returns on `!layout_dirty`
+    // and neither pass runs at all.
+    doc.resolve_layout(VW - 7.0, VH);
+
+    assert_both_passes_stop_at_the_block(&doc, container, link, text, block, tail);
+}
+
+/// Route 2: the subtree was **never** appended — the state every `rsx!` tree
+/// passes through between `create_element` and `append_child`.
+///
+/// Kept beside route 1 rather than folded into it: the two reach the arms by
+/// different histories (a real split undone, versus one that never happened), so
+/// closing one leaves the other as the witness.
+#[test]
+fn a_never_attached_subtree_stops_them_at_a_block_too() {
+    let mut doc = RinchDocument::new();
+    let container = doc.create_element("div");
+    doc.set_attribute(
+        container,
+        "style",
+        "font-size: 16px; line-height: 20px; width: 400px",
+    );
+    let link = child_of(&mut doc, container, "a", "");
+    let text = text_in(&mut doc, link, "text");
+    let block = child_of(&mut doc, link, "div", "width: 30px; height: 30px");
+    let tail = text_in(&mut doc, link, "tail");
+    doc.resolve_layout(VW, VH);
+
+    assert_both_passes_stop_at_the_block(&doc, container, link, text, block, tail);
+}
+
+/// The other half of `contents_is_inline_transparent`'s argument, made checkable —
+/// and the `break` arms reached a third way, one level deeper.
+///
+/// The opaque branch of that predicate has no witness, and the reason is structural:
+/// `collect_run_units` flattens a `display: contents` wrapper whatever the field
+/// says, so an *attached* opaque wrapper always puts its block into its container's
+/// units and costs the container its roothood. This pins the detached half. The route
+/// that witnessed the `break` arms **inverts** here, because the same clearing that
+/// un-splits an inline element also makes every wrapper in the subtree answer
+/// *transparent*.
+///
+/// **The wrapper is inside the `<a>`, and that placement is the whole point.**
+/// Directly under the container it is never reached at all (the induction's first
+/// case), so a fixture shaped that way would assert the field while claiming a reach
+/// that was not happening. Behind a detached — and therefore unsplit — `<a>`, the
+/// marking pass walks in, asks the question, and gets `true`; and **only the
+/// transparent branch marks**, because the opaque one `break`s before the write. So
+/// `wrapper.ifc_root == Some(container)` is the observable proof that the function ran
+/// and what it answered.
+///
+/// **The wrapper holds content after its block, and that is not decoration either.**
+/// With the block as its only child, `break` and `continue` do the same thing — the
+/// loop has nothing left to skip — so a fixture shaped that way would *reach* both
+/// arms and discriminate neither, which is this repo's fixed-point trap in its purest
+/// form. `post` is what the arms decide. And the stop is **scoped to the wrapper's own
+/// child loop**, not to the line: `tail`, back out in the `<a>`, is still marked and
+/// still flowed. That is the pre-#513 behaviour these arms preserve, and asserting it
+/// here keeps the next reader from mistaking the scope.
+///
+/// Kills: deleting the clear in `recompute_contributes_in_flow_block` (its
+/// precondition goes first), and both `break` arms, by a different route from the two
+/// fixtures above — an earlier version of this doc claimed it killed nothing.
+#[test]
+fn a_detached_contents_wrapper_answers_transparent_inside_a_detached_inline() {
+    let mut doc = RinchDocument::new();
+    let body = doc.body();
+    let container = child_of(
+        &mut doc,
+        body,
+        "div",
+        "font-size: 16px; line-height: 20px; width: 400px",
+    );
+    let link = child_of(&mut doc, container, "a", "");
+    let text = text_in(&mut doc, link, "text");
+    let wrapper = child_of(&mut doc, link, "span", "display: contents");
+    let pre = text_in(&mut doc, wrapper, "pre");
+    let block = child_of(&mut doc, wrapper, "div", "width: 30px; height: 30px");
+    let post = text_in(&mut doc, wrapper, "post");
+    let tail = text_in(&mut doc, link, "tail");
+    doc.resolve_layout(VW, VH);
+
+    assert!(
+        doc.tree.get(wrapper.0).unwrap().contributes_in_flow_block,
+        "control: attached, the wrapper is opaque — it really does hold a block"
+    );
+    assert!(
+        doc.tree.get(link.0).unwrap().is_split_inline(),
+        "control: …so the `<a>` around it is split"
+    );
+    assert!(
+        doc.tree.get(container.0).unwrap().text_layout.is_none(),
+        "control: …and that is exactly why the container is not an IFC root, so \
+         nothing ever asks the wrapper the question while it is attached"
+    );
+
+    doc.remove_child(body, container);
+    doc.resolve_layout(VW - 7.0, VH);
+
+    // Preconditions: the detached route reopened, one level deeper than the two
+    // fixtures above.
+    assert!(
+        !doc.tree.get(link.0).unwrap().contributes_in_flow_block
+            && !doc.tree.get(link.0).unwrap().is_split_inline(),
+        "precondition: the fold does not reach a detached subtree, so the `<a>` is \
+         no longer split"
+    );
+    assert!(
+        doc.tree.get(container.0).unwrap().text_layout.is_some(),
+        "precondition: so the container is an IFC root again"
+    );
+    assert_eq!(
+        role_of(&doc, wrapper),
+        InlineFlowRole::Contents,
+        "the wrapper is still a `display: contents` element — its computed style \
+         survives the detach"
+    );
+    assert_eq!(
+        role_of(&doc, block),
+        InlineFlowRole::InFlowBlock,
+        "…and it still holds an in-flow block-level box"
+    );
+
+    // `contents_is_inline_transparent` answered `true`, and the mark is the proof.
+    assert!(
+        !doc.tree.get(wrapper.0).unwrap().contributes_in_flow_block,
+        "the field is `false` here: `recompute_contributes_in_flow_block` folds from \
+         the document root, so the wrapper answers *transparent*. The detached route \
+         cannot witness the opaque branch — it inverts it."
+    );
+    assert_eq!(
+        ifc_root_of(&doc, wrapper),
+        Some(container.0),
+        "and this is the proof the predicate was consulted and answered `true`: only \
+         the transparent branch of `mark_inline_descendants`' `Contents` arm writes \
+         this mark, the opaque one `break`s before it"
+    );
+    assert_eq!(
+        ifc_root_of(&doc, pre),
+        Some(container.0),
+        "so the wrapper's content before the block joined the IFC"
+    );
+    assert!(
+        flowed_by(&doc, container.0, pre.0),
+        "…and was flowed into the line"
+    );
+
+    // The two `break` arms, decided on `post` rather than on `tail`.
+    assert_eq!(
+        ifc_root_of(&doc, post),
+        None,
+        "`mark_inline_descendants` stops at the block *inside the wrapper*: what \
+         follows it there is left unmarked (#366/#615)"
+    );
+    assert_eq!(
+        ifc_root_of(&doc, block),
+        None,
+        "an in-flow block is never IFC content"
+    );
+    assert!(
+        !flowed_by(&doc, container.0, post.0),
+        "`walk_inline_children` stops at the same block, so `post` reaches no line"
+    );
+
+    // The stop is scoped to the wrapper's own loop — `tail` is outside it.
+    assert_eq!(
+        ifc_root_of(&doc, tail),
+        Some(container.0),
+        "`tail` is a child of the `<a>`, not of the wrapper, so the wrapper's `break` \
+         does not reach it: the `<a>`'s own loop carries on"
+    );
+    let layout = doc
+        .tree
+        .get(container.0)
+        .unwrap()
+        .text_layout
+        .as_ref()
+        .unwrap();
+    assert_eq!(
+        layout.text_content, "textpretail",
+        "the line holds everything but `post` — `textpreposttail` is what walking \
+         past the block produces"
+    );
+    assert!(
+        flowed_by(&doc, container.0, text.0) && flowed_by(&doc, container.0, tail.0),
+        "…and both sides outside the wrapper really are in it"
+    );
+
+    assert_marks_match_flow(&doc);
+    assert_eq!(doc.ifc_leaf_invariant_violations(), Vec::<usize>::new());
+    let verdict = doc.tree_check_verdict();
+    assert!(
+        verdict.fatal.is_empty(),
+        "a detached subtree is otherwise healthy: {:?}",
+        verdict.fatal
+    );
 }
