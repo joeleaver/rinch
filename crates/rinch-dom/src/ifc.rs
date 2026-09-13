@@ -36,6 +36,28 @@ use crate::node::{
 /// No-ops unless the node is a childless element that would establish an IFC
 /// and left its height `auto`; an explicit height (a `height: 1px` separator)
 /// is never inflated.
+///
+/// # The `is_block_container()` test survives mutation, and the reason is not
+/// reachability
+///
+/// Removing `Inline` from it — letting a childless `display: inline` element
+/// take the one-line floor — keeps `-p rinch-dom -p rinch` green (#593).
+/// Re-measured after #513 landed and still green. The arm is **reached**, and
+/// often: instrumented, a childless inline element reaches it in 29 of the
+/// suite's 52 test binaries and in 38 of 67 constructed shapes, so this is not
+/// a dead branch.
+///
+/// What is unobserved is the *consequence*, and the mechanism is the detach: an
+/// inline element that is IFC content is removed from its parent's Taffy node by
+/// `mark_inline_descendants`, so Taffy computes nothing from its style and a
+/// `min-height` written there reaches no number anybody reads. That is the reason
+/// the green is unsurprising, **not** a proof of it — it does not cover a
+/// childless inline element whose parent is not an IFC root, which keeps its Taffy
+/// node. The measurement is the measurement; this is why it came out that way.
+///
+/// Keep the test regardless: a `min-height` on an inline-level box is wrong
+/// whether or not anything can see it, and the four sites asking this question
+/// are one authority (#614).
 pub(crate) fn apply_empty_block_line_floor(node: &Node, style: &mut taffy::Style) {
     use crate::computed_style::values::DisplayValue;
 
@@ -101,6 +123,62 @@ impl RinchDocument {
             if !node.is_element() {
                 continue;
             }
+            // Only block containers can be IFC roots — and **this gate is
+            // redundant *here*** (#593), which is why removing `Inline` from it
+            // killed no test and moved no pixel while the same mutation at
+            // `create_anonymous_block_boxes` fails 8 tests and at
+            // `setup_inline_formatting_contexts` fails 6 — both re-measured on
+            // *this* tree, because #593's own 3 and 9 were taken before #513 and a
+            // count quoted across a tree change is how evidence goes stale without
+            // telling anyone. A node this gate skips
+            // cannot pass the `is_ifc` test below, so the test already is the
+            // gate.
+            //
+            // The argument is closed and rests on two greppable facts.
+            // `mark_inline_descendants` holds the **only** two writes of
+            // `Some(_)` to `ifc_root` in the workspace (every other write clears
+            // it: `cleanup_anonymous_block_boxes`,
+            // `setup_inline_formatting_contexts`' reset, and
+            // `clear_ifc_root_recursive`), and it only ever writes a `root_id`
+            // that `setup_inline_formatting_contexts`' own root scan admitted —
+            // through the **same** `is_block_container()` call. So a child carrying
+            // `ifc_root == Some(id)` is itself proof that `id` is a block
+            // container. A *stale* mark cannot open a hole either, and the link
+            // that carries that is `layout_dirty`, not only `ifc_dirty`. The reset
+            // runs every `ifc_dirty` pass — but this function has a **second call
+            // site where it has not run**: `layout_engine.rs`'s text-only early
+            // return (`!layout_dirty && !dirty_ifc_text_roots.is_empty()`), which
+            // runs neither `setup_inline_formatting_contexts` nor
+            // `recompute_contributes_in_flow_block`. What closes that path is that
+            // the inline-level crossing in `apply_stylo_styles_to_taffy` sets
+            // `layout_dirty` **as well as** `ifc_dirty`, so a display change can
+            // never be observed by the text-only call: the pass that sees it is
+            // always the full one, and the reset has fired.
+            //
+            // Measured as well as argued, because an argument is not a
+            // measurement: instrumented to count every node that fails this gate
+            // and *would* pass the test below — **mode-agnostic**, so a
+            // `DisplayMode` variant added later is counted too (`InlineGrid`
+            // arrived with #607 after the first sweep, which bucketed by mode and
+            // would have missed it) — over 67 constructed shapes and all of
+            // `-p rinch-dom -p rinch`. **Zero.**
+            //
+            // Kept rather than deleted: the four sites asking this question are
+            // one authority since #614, and a redundant fourth agreement costs a
+            // `matches!` while a site that has stopped asking is how #518, #476
+            // and #568 happened.
+            //
+            // **"Redundant" means something different at each of the other three,
+            // and lumping them together was this comment's own error.** Two are
+            // load-bearing with witnesses: the same mutation fails 8 tests at
+            // `create_anonymous_block_boxes`' phase-1 scan and 6 at
+            // `setup_inline_formatting_contexts`' root scan. The third,
+            // `apply_empty_block_line_floor`, is a *third* category rather than a
+            // second redundancy — its mutant is green like this one's, but for an
+            // unrelated reason: its arm is **reached constantly** and what is
+            // unobserved is the consequence (see that function's own doc). So this
+            // site is the only one of the four whose arm nothing can reach in a way
+            // that matters.
             if !node.display_mode.is_block_container() {
                 continue;
             }
@@ -1040,25 +1118,32 @@ impl RinchDocument {
     /// sets theirs when it mints them, because by the rule above an anonymous
     /// block box (an in-flow `Block`) contributes `true`.
     fn recompute_contributes_in_flow_block(&mut self) {
-        // **The clear is defence, not a fix, and that is measured**: the mutant
-        // that deletes these three lines survives `-p rinch-dom -p rinch` (51
-        // targets), including the transition fixture written to catch exactly
-        // this — derived state that is only ever set. The reason is that the
-        // fold below *writes* every node the walk reaches, `false` included, so
-        // the clear can only matter for the two classes it does not reach: an
-        // anonymous block box, which is minted fresh with its value every pass,
-        // and a node detached from the document root, which nothing reads while
-        // it is detached and which the walk reaches again the moment it is
-        // re-attached (a structural change sets `ifc_dirty`).
+        // **The clear is load-bearing, and this paragraph used to say the
+        // opposite.** Until #615 it read "defence, not a fix", on the strength of
+        // a mutant that deleted these three lines and survived, and of an
+        // argument that a detached node's field "is read by nothing while it is
+        // detached". Both statements are now false, and the same change falsified
+        // them: the IFC passes *do* read the field for a detached node —
+        // `collect_run_units` asks `Node::is_split_inline()`, which is a read of
+        // it — so without the clear a `<a>` that left the document keeps `true`,
+        // goes on being flattened, and the container never becomes an IFC root
+        // again. That is the whole of #615's witness route, so deleting the clear
+        // closes it.
         //
-        // It is kept because "nothing reads it while detached" is an argument
-        // about every current reader, and the direction it fails in is the bad
-        // one: a node that carried `true` and left the tree would keep it, so a
-        // list rebuilt for a detached container — `cleanup_anonymous_block_boxes`
-        // takes its parents from boxes minted on the *previous* pass and can
-        // reach one — would flatten a split inline that no longer is one.
-        // `false` is the pre-field behaviour, and one pass over a slab this
-        // function already walks is not a cost worth arguing about.
+        // Measured on this tree, not argued: the mutant that deletes these three
+        // lines is now **killed** by `ifc_classifier_tests`'
+        // `a_removed_subtree_still_stops_the_mark_and_the_walk_at_a_block` and
+        // `a_detached_contents_wrapper_answers_transparent_inside_a_detached_inline`,
+        // both at their *precondition* assertions — which is the right place, since
+        // what the mutant destroys is the shape rather than the answer.
+        //
+        // The fold below still writes every node the walk reaches, `false`
+        // included, so the clear only ever decides the two classes it does not
+        // reach: an anonymous block box, minted fresh with its value every pass,
+        // and a node detached from the document root — which is the class that
+        // turned out to matter. `false` is the pre-field behaviour for it, and
+        // deliberately so (see the doc above), and one pass over a slab this
+        // function already walks was never a cost worth arguing about.
         for (_id, node) in self.tree.nodes.iter_mut() {
             node.contributes_in_flow_block = false;
         }
@@ -2558,24 +2643,70 @@ impl RinchDocument {
     /// at all. Measured, not argued — the fixture asserts the shape renders like
     /// its wrapper-free twin.
     ///
-    /// # The *opaque* answer is now believed unreachable
+    /// # The *opaque* answer has no witness, and the argument is now closed
     ///
-    /// And that is measured too: the mutant that makes this return `true`
-    /// unconditionally — "every wrapper is transparent" — survives
-    /// `-p rinch-dom -p rinch`. The reason is the same one that makes the switch
-    /// safe. A wrapper is opaque exactly when it holds an in-flow block-level
-    /// box; the unit collector flattens such a wrapper before any consumer of
-    /// this predicate runs, so the container is never discovered as an IFC root
-    /// and neither the marking pass nor the inline walk ever reaches the wrapper
-    /// to ask.
+    /// The mutant that makes this return `true` unconditionally — "every wrapper
+    /// is transparent" — survives `-p rinch-dom -p rinch`. It was filed with the
+    /// two `break` arms in `mark_inline_descendants` and `walk_inline_children`
+    /// as one cause, three arms (#615). **Those two turned out to be reachable
+    /// and now have witnesses; this one is different, and the route that
+    /// witnessed them cannot witness it.** Do not carry the three over as one
+    /// fact any more.
     ///
-    /// This is the **third** arm #513's fix left in that position, with the two
-    /// `break` arms in `mark_inline_descendants` and `walk_inline_children` — one
-    /// cause, three arms, filed together. The function is kept rather than
-    /// collapsed to `true`, for the same reason those are kept: "I could not
-    /// construct a survivor" is an argument and not a proof, and the transparent
-    /// answer is still very much live (rsx emits a `display: contents` wrapper for
-    /// every `if`/`match`/`for`).
+    /// The induction, over the fold's own recursion. `contributes_in_flow_block`
+    /// is `true` only for a node `recompute_contributes_in_flow_block` reached,
+    /// i.e. an attached one. Take an attached wrapper `W` with the field set, and
+    /// ask who could pass it to this function:
+    ///
+    /// * **a child of an IFC root `R`** (the marking pass, and the measure-leaf
+    ///   decision loop) — `W`'s field is set only because some descendant reached
+    ///   through boxless/`display: inline` nodes is an `InFlowBlock`, which is
+    ///   exactly the chain `collect_run_units` follows, so that block **is** a
+    ///   unit of `R`. Then `has_block` holds, every inline unit carries a
+    ///   `run_box`, and **`R` is not a root** — which is what saves both sites.
+    ///   Note the measure-leaf loop reaches its `Contents` arm over `R`'s *raw*
+    ///   `children` and never calls the collector at all, so "the collector
+    ///   flattens it" is not that site's reason; not being a root is.
+    ///   Contradiction;
+    /// * **a child of a `display: inline` element `E` the walk recursed into** —
+    ///   if `W` contributes then so does `E` (the fold descends into an inline
+    ///   element unconditionally), so `E` is a split inline, so `E` is never a
+    ///   unit and the walk never reaches it. Contradiction;
+    /// * **a child of a transparent wrapper the walk recursed into** — that
+    ///   wrapper's field is `false`, so no child of it contributes.
+    ///   Contradiction.
+    ///
+    /// And the staleness route that falsified the other two arms' version of this
+    /// argument **inverts here**: a detached subtree has the field cleared to
+    /// `false`, so however many blocks a wrapper in it holds, it answers
+    /// *transparent*. That is the half of the argument a future reader can check.
+    /// `ifc_classifier_tests`'
+    /// `a_detached_contents_wrapper_answers_transparent_inside_a_detached_inline`
+    /// pins it, and it pins the *answer* rather than only the field it reads: the
+    /// wrapper ends up carrying `ifc_root`, and only the transparent branch marks —
+    /// the opaque one `break`s first — so the mark is proof this function ran and
+    /// answered `true`. (The fixture puts the wrapper inside an `<a>` for exactly
+    /// that reason. Directly under the container it would never be reached, which
+    /// is the induction's first case, and an earlier version of this sentence
+    /// claimed a reach that was not happening.)
+    ///
+    /// **A fourth arm rides on the same zero** and is recorded here rather than
+    /// left to be re-derived: the `else { in_flow_stays_attached = true }` branch of
+    /// `setup_inline_formatting_contexts`' measure-leaf loop is entered only on an
+    /// opaque answer, so it is unwitnessed by this same induction.
+    ///
+    /// Of 67 constructed shapes, the ones carrying a `display: contents` wrapper
+    /// do reach this function — stylesheet flips, class flips,
+    /// `position: absolute → static`, `display: none → block`,
+    /// `inline-block → block`, `set_inner_html`, `replace_node`, nested wrappers,
+    /// detached wrappers — and neither they nor the whole suite **ever** take the
+    /// opaque branch. It is kept rather than collapsed to `true` because
+    /// the induction assumes a fresh fold, which is guaranteed only for the
+    /// marking pass — the walk may read a fold one pass old — and because the
+    /// transparent answer is very much live (rsx emits a `display: contents`
+    /// wrapper for every `if`/`match`/`for`). **Deleting it is a behaviour change
+    /// in a direction no test can see**, which is the #585 standard for keeping
+    /// it.
     fn contents_is_inline_transparent(nodes: &slab::Slab<Node>, node_id: usize) -> bool {
         nodes
             .get(node_id)
@@ -2945,27 +3076,43 @@ impl RinchDocument {
                     // screen.
                 }
                 InlineFlowRole::InFlowBlock => {
-                    // **Believed unreachable since #513, and kept anyway.** An
-                    // IFC root's units cannot contain an `InFlowBlock`: if one is
-                    // present then `has_inline && has_block` both hold,
-                    // `create_anonymous_block_boxes` mints a run for every
-                    // maximal inline stretch, every inline unit therefore carries
-                    // a `run_box`, and the root scan skips those — so
-                    // `has_non_comment_inline` is false and the container is never
-                    // discovered as a root. The recursive calls are no better off:
-                    // a transparent `display: contents` wrapper holds no in-flow
-                    // block by definition, and a non-split `display: inline`
-                    // element holds none either.
+                    // **Reachable, in a detached subtree — #615 is answered, and
+                    // the earlier "believed unreachable" note was wrong.**
                     //
-                    // That is an **argument**, not a proof — I could not construct
-                    // a survivor, which is the right standard and not the same
-                    // thing — so the arm stays fail-closed rather than becoming an
-                    // `unreachable!()`. Its three witnesses all reached it through
-                    // block-in-inline markup and no longer can; the lost coverage
-                    // is filed as #615 (the #585/#593 family). **Do not delete this arm
-                    // on the strength of "no test covers it"**: coverage removed
-                    // by a correct fix reads identically to coverage that never
-                    // existed.
+                    // The argument it rested on is sound *for an attached tree*:
+                    // an IFC root's units cannot contain an `InFlowBlock`, because
+                    // `has_inline && has_block` would both hold,
+                    // `create_anonymous_block_boxes` would mint a run for every
+                    // maximal inline stretch, every inline unit would carry a
+                    // `run_box`, and the root scan skips those — so
+                    // `has_non_comment_inline` is false and the container is never
+                    // discovered as a root.
+                    //
+                    // What it missed is that the step "an inline holding a block
+                    // is flattened into its container's units" reads
+                    // [`Node::contributes_in_flow_block`], and
+                    // `recompute_contributes_in_flow_block` walks from the
+                    // document root, so **a node unreachable from it keeps
+                    // `false`** — deliberately, as that function's own doc says,
+                    // because `false` is the pre-#513 behaviour and the
+                    // conservative direction. In a detached subtree the `<a>` of
+                    // `<div><a>text<div/>tail</a></div>` is therefore *not* split,
+                    // stays a unit of its container, `has_block` reads false, no
+                    // anonymous box is minted, the container is an IFC root again,
+                    // and this pass recurses into the `<a>` and meets the block —
+                    // exactly as it did before #513. Two ordinary routes reach it:
+                    // a subtree `remove_child`-ed from the document while its
+                    // handles are still alive, and one built before it is
+                    // appended. Both are pinned in `ifc_classifier_tests`
+                    // (`a_removed_subtree_still_stops_the_mark_and_the_walk_at_a_block`,
+                    // `a_never_attached_subtree_stops_them_at_a_block_too`), and
+                    // the mutant that makes this arm `continue` fails both.
+                    //
+                    // So the arm is what makes that conservative direction *safe*:
+                    // it is #366's rule doing its job in the one place that still
+                    // needs it. The 67-shape sweep that found the route found no
+                    // attached shape that reaches it, which is consistent with the
+                    // first paragraph rather than a gap in it.
                     //
                     // An in-flow block-level child ends the marking pass —
                     // `break`, not `continue`, matching where
@@ -3976,10 +4123,18 @@ impl RinchDocument {
                     // Skip comments in inline layout
                 }
                 _ => {
-                    // **Believed unreachable since #513, and kept anyway** — the
-                    // same argument, and the same refusal to promote it to a
-                    // proof, as `mark_inline_descendants`' `InFlowBlock` arm. Read
-                    // it there; the two arms are one rule and must stay one rule.
+                    // **Reachable in a detached subtree, same route and same
+                    // witnesses as `mark_inline_descendants`' `InFlowBlock` arm**
+                    // (#615). Read the mechanism there; the two arms are one rule
+                    // and must stay one rule, and the two fixtures named there
+                    // assert both halves of it on one document — the mark leaves
+                    // `tail` unmarked, and this walk leaves it out of the line.
+                    //
+                    // Note which mutant each half kills: making the *mark*
+                    // `continue` stamps `ifc_root` on `tail`, and making *this*
+                    // arm `continue` flows `tail` into the line ahead of the
+                    // block. Neither is caught by the other's assertion, which is
+                    // why both are asserted.
                     //
                     // An in-flow block-level child — or the opaque
                     // `display: contents` wrapper standing for one — breaks
