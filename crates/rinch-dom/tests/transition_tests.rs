@@ -1111,3 +1111,199 @@ fn keyframes_values_needing_more_than_a_font_size_are_declined() {
         );
     }
 }
+
+/// **A finished layout-affecting transition must reach the layout, not just
+/// the computed style** (#489).
+///
+/// `RinchDocument::tick_transitions` rebuilds the Taffy style from the
+/// interpolated values, but it used to leave `tree.layout_dirty` alone — and
+/// `resolve_layout` early-returns on `!layout_dirty`. So the *end* value of a
+/// `width` transition landed in `computed_style` and in the Taffy style and
+/// then sat there: the node kept whatever box the last relayout that happened
+/// for some *other* reason had given it. In UI Zoo's Inputs section that froze
+/// the checkbox/switch/select size cards at an arbitrary point on their curves,
+/// at a different point on every run, and cascaded ±1px through 112 of the
+/// section's 1011 boxes.
+///
+/// Both resolves below use the **same** viewport on purpose: a viewport change
+/// sets `layout_dirty` by itself and would make this pass either way.
+#[test]
+fn a_finished_width_transition_reaches_the_layout() {
+    use rinch_core::dom::DomDocument;
+
+    let (mut doc, div) = transitioning_div(
+        ".slider { width: 100px; height: 40px; transition: width 150ms linear; } \
+         .slider.wide { width: 200px; }",
+    );
+    assert_eq!(
+        doc.tree.get(div.0).unwrap().layout.width,
+        100.0,
+        "the pre-change width should be the declared 100px"
+    );
+
+    doc.set_attribute(div, "class", "slider wide");
+    doc.resolve_layout(800.0, 600.0);
+
+    // Back-date the running transition past its own duration so the next tick
+    // completes it. This is what keeps the test clock-free —
+    // `RinchDocument::tick_transitions` reads `SystemTime::now()` itself.
+    let running = doc
+        .tree
+        .active_transitions
+        .get_mut(&div.0)
+        .expect("the class change should have started a width transition");
+    for t in running.values_mut() {
+        t.start_time_ms -= 10_000.0;
+    }
+
+    doc.tick_transitions();
+    doc.resolve_layout(800.0, 600.0);
+
+    assert_eq!(
+        doc.tree.get(div.0).unwrap().layout.width,
+        200.0,
+        "a completed width transition must leave the box at its end value"
+    );
+}
+
+/// A `<div class="grow">` with a text child, under `css`, laid out once with
+/// animations armed. Separate from [`animated_div`], which hard-codes a colour
+/// animation on a 10x10 box.
+fn animated_width_div(css: &str) -> (rinch_dom::RinchDocument, rinch_core::dom::NodeId) {
+    use rinch_core::dom::DomDocument;
+
+    let mut doc = rinch_dom::RinchDocument::new();
+    let body = doc.body();
+    let style_el = doc.create_element("style");
+    let text = doc.create_text(css);
+    doc.append_child(style_el, text);
+    doc.append_child(body, style_el);
+
+    let div = doc.create_element("div");
+    doc.set_attribute(div, "class", "grow");
+    doc.append_child(body, div);
+
+    doc.tree.transitions_enabled = true;
+    doc.resolve_layout(800.0, 600.0);
+    (doc, div)
+}
+
+/// The **animation** half of [`a_finished_width_transition_reaches_the_layout`]
+/// (#489). `tick_animations` is the second `taffy.set_style` site that used to
+/// leave `tree.layout_dirty` alone, and it needs its own pin: a fix applied to
+/// only one of the two sites passes the transition test and fails this one.
+///
+/// `forwards` is what makes the end state observable — without a fill mode the
+/// completed animation is dropped having applied nothing.
+#[test]
+fn a_finished_width_animation_reaches_the_layout() {
+    let (mut doc, div) = animated_width_div(
+        "@keyframes grow { from { width: 100px; } to { width: 200px; } } \
+         .grow { animation: grow 150ms linear forwards; width: 100px; height: 40px; }",
+    );
+    assert_eq!(
+        doc.tree.get(div.0).unwrap().layout.width,
+        100.0,
+        "at the start of the animation the box should be at the `from` width"
+    );
+
+    // Back-date past the duration so the next tick lands in the `forwards`
+    // fill, clock-free — `RinchDocument::tick_animations` reads
+    // `SystemTime::now()` itself.
+    for anim in doc
+        .tree
+        .active_animations
+        .get_mut(&div.0)
+        .expect("the first layout should have started the animation")
+    {
+        anim.start_time_ms -= 10_000.0;
+    }
+
+    doc.tick_animations();
+    doc.resolve_layout(800.0, 600.0);
+
+    assert_eq!(
+        doc.tree.get(div.0).unwrap().layout.width,
+        200.0,
+        "a completed `forwards` animation must leave the box at its end value"
+    );
+}
+
+/// A `<div class="{class}">` holding a paragraph of text, under `css`, laid out
+/// once with transitions armed.
+fn texted_div(css: &str, class: &str) -> (rinch_dom::RinchDocument, rinch_core::dom::NodeId) {
+    use rinch_core::dom::DomDocument;
+
+    let mut doc = rinch_dom::RinchDocument::new();
+    let body = doc.body();
+    let style_el = doc.create_element("style");
+    let sheet = doc.create_text(css);
+    doc.append_child(style_el, sheet);
+    doc.append_child(body, style_el);
+
+    let div = doc.create_element("div");
+    doc.set_attribute(div, "class", class);
+    let text = doc.create_text("Hello world, wrap me please, several words here");
+    doc.append_child(div, text);
+    doc.append_child(body, div);
+
+    doc.tree.transitions_enabled = true;
+    doc.resolve_layout(800.0, 600.0);
+    (doc, div)
+}
+
+/// The **text** case of #489: a finished `font-size` transition must reach the
+/// inline layout, not just `computed_style`.
+///
+/// This is the same missing `layout_dirty` — measured, it left a 10px box at
+/// its 10px height forever while `computed_style` said 40px — but it is worth
+/// its own pin because it travels a different route: the size change lands in
+/// the IFC's Parley measurement rather than in a Taffy `size` field, and the
+/// question of whether `tick_transitions` additionally owes the tree an
+/// `ifc_dirty` was open until this measured that it does not.
+///
+/// The oracle is a **second document** declaring the end size directly, never a
+/// glyph-derived literal: a height measured from text is a pin on whichever
+/// fonts the machine happens to have, and CI's differ from a developer's.
+#[test]
+fn a_finished_font_size_transition_reaches_the_inline_layout() {
+    use rinch_core::dom::DomDocument;
+
+    const CSS: &str = ".t { width: 200px; font-size: 10px; line-height: 1.5; \
+                       transition: font-size 150ms linear; } \
+                       .t.big { font-size: 40px; }";
+
+    let (reference, ref_div) = texted_div(CSS, "t big");
+    let want = reference.tree.get(ref_div.0).unwrap().layout.height;
+
+    let (mut doc, div) = texted_div(CSS, "t");
+    let small = doc.tree.get(div.0).unwrap().layout.height;
+    assert!(
+        want > small,
+        "the 40px reference ({want}) must be taller than the 10px box ({small}) \
+         or this fixture is parked on a fixed point"
+    );
+
+    doc.set_attribute(div, "class", "t big");
+    doc.resolve_layout(800.0, 600.0);
+    for t in doc
+        .tree
+        .active_transitions
+        .get_mut(&div.0)
+        .expect("the class change should have started a font-size transition")
+        .values_mut()
+    {
+        t.start_time_ms -= 10_000.0;
+    }
+
+    doc.tick_transitions();
+    doc.resolve_layout(800.0, 600.0);
+
+    let got = doc.tree.get(div.0).unwrap().layout.height;
+    assert!(
+        (got - want).abs() < 0.5,
+        "a completed font-size transition should leave the box the height a \
+         directly-declared 40px box has: want {want}, got {got} \
+         (the 10px box was {small})"
+    );
+}

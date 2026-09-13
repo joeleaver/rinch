@@ -538,9 +538,11 @@ impl RinchDocument {
                 if let Ok(old_taffy_style) = self.tree.taffy.style(taffy_id) {
                     if old_taffy_style != &taffy_style {
                         let _ = self.tree.taffy.set_style(taffy_id, taffy_style);
+                        self.tree.layout_dirty = true;
                     }
                 } else {
                     let _ = self.tree.taffy.set_style(taffy_id, taffy_style);
+                    self.tree.layout_dirty = true;
                 }
             }
         }
@@ -623,9 +625,11 @@ impl RinchDocument {
                 if let Ok(old_taffy_style) = self.tree.taffy.style(taffy_id) {
                     if old_taffy_style != &taffy_style {
                         let _ = self.tree.taffy.set_style(taffy_id, taffy_style);
+                        self.tree.layout_dirty = true;
                     }
                 } else {
                     let _ = self.tree.taffy.set_style(taffy_id, taffy_style);
+                    self.tree.layout_dirty = true;
                 }
             }
         }
