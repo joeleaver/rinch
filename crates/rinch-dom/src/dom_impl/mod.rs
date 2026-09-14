@@ -238,6 +238,87 @@ impl RinchDocument {
                 font-style: italic;
             }
 
+            /* The heading scale, verbatim from the HTML Standard's rendering
+               section and measured against Chrome 150 (issue #627). rinch used
+               to name h1–h6 only in the `display: block` rule above, so a bare
+               `<h1>` computed 16px/400/no-margin — body text — while `rinch-web`
+               ran on the browser's own UA sheet and rendered a heading. That
+               divergence is the defect; these are the browser's numbers.
+
+               `em`, not px, at both sites and deliberately: the scale is
+               relative to the *inherited* size (an `<h1>` in a 32px container is
+               64px), and an `em` in `margin` resolves against the element's
+               **own** computed font-size, so an author `font-size` moves the
+               margins with it — `<h1 style="font-size: 12px">` gets 8.04px of
+               margin in Chrome, not 21.44px. Both facts are invisible at the
+               default root size, where 2em is exactly 32px and 0.67em of either
+               font-size is exactly 21.44px; `ua_heading_typography_tests` samples
+               off that fixed point.
+
+               Cascade rules, never a post-cascade patch — #616/#618 deleted the
+               tag fixup that used to stamp `font-weight` after the cascade,
+               precisely because an author `font-weight: normal` could not beat
+               it. An author declaration beats these, which is the #616
+               handshake `an_author_declaration_beats_the_new_ua_heading_rules`
+               pins. */
+            h1 { font-size: 2em;    margin-block: 0.67em; }
+            h2 { font-size: 1.5em;  margin-block: 0.83em; }
+            h3 { font-size: 1.17em; margin-block: 1em; }
+            h4 { font-size: 1em;    margin-block: 1.33em; }
+            h5 { font-size: 0.83em; margin-block: 1.67em; }
+            h6 { font-size: 0.67em; margin-block: 2.33em; }
+
+            h1, h2, h3, h4, h5, h6 {
+                font-weight: bold;
+            }
+
+            /* A browser also gives `<th>` `display: table-cell`, and this rule
+               deliberately does not: rinch has no table formatting context at
+               all — `DisplayValue` carries no table variant, `table` is
+               `display: block` above, and `tr`/`td`/`th`/`thead` keep Stylo's
+               default `inline`. Declaring a display the layout engine cannot
+               honour would buy nothing and mislead.
+               `the_th_rule_does_not_claim_a_table_display` is the pin.
+
+               `font-weight` is plainly real. `text-align` is real as a computed
+               value everywhere, and takes visible effect wherever the cell is
+               given a block display — which the rich-text editor does
+               (`rinch-editor-view/src/styles.rs`: `td, th { display: block }`).
+               On a *default* `<th>` it is inert, because rinch reads alignment
+               from the IFC root and a `display: inline` cell establishes no
+               inline formatting context.
+
+               **`-moz-center-or-inherit`, not `center`, and the difference is
+               observable.** The HTML Standard makes this rule conditional — it
+               matches "th elements that have a parent node whose computed value
+               for the 'text-align' property is its initial value" — so a `<th>`
+               under an alignment its parent actually declares must *inherit*
+               that, not be re-centred. Chrome implements the condition as its
+               own private `-internal-center`; measured in Chrome 150, a `<th>`
+               under a `text-align: right` ancestor computes `right`, under
+               `justify` computes `justify`, and — the case that pins the wording
+               — a `<th>` in a `<table style="text-align: start">` inside a
+               `text-align: right` div computes `center` again, because the
+               condition is on the **parent node**, not on any ancestor.
+
+               Stylo 0.11 carries exactly this value (`MozCenterOrInherit`, whose
+               own doc comment quotes the same spec paragraph). It is not
+               gecko-gated, and it parses whenever `chrome_rules_enabled()` — i.e.
+               for any non-author origin, which this sheet is
+               (`Origin::UserAgent`, below). **An author stylesheet cannot use it**
+               and will have the declaration dropped; that asymmetry is the whole
+               reason the value exists.
+
+               Spelling it `center` instead is a silent, *unconditional* centring
+               that matches Chrome only where the parent declares no alignment —
+               which is every fixture that does not go looking, and was the
+               surviving mutant this rule shipped with. `a_th_inherits_an_alignment_its_parent_declares`
+               samples off that fixed point. */
+            th {
+                font-weight: bold;
+                text-align: -moz-center-or-inherit;
+            }
+
             u, ins {
                 text-decoration-line: underline;
             }
