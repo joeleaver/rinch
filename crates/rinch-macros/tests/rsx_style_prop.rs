@@ -542,6 +542,67 @@ fn a_repeated_property_collapses_where_css_says_it_does() {
     );
 }
 
+/// A `style:` that itself declares a property **twice** still reaches
+/// `rinch-dom`'s `parse_style_string`, which collapses it at the wrong
+/// position. Pre-existing, **Refs #670**, and not introduced by the merge.
+///
+/// The merge's own splitter gets the position right — that is
+/// `a_repeated_property_collapses_where_css_says_it_does` — but only on the
+/// path that parses. The **verbatim** path writes the author's string
+/// byte-for-byte, duplicate included, and a second author is what then hands
+/// it to the other parser. `p: "12px"` is that second author here: its
+/// `set_style` re-serialises the block through `parse_style_string`, which
+/// keeps the *first* `inset` position and lets the `left` longhand win.
+///
+/// **Pinned at the value rinch computes today, not at the browser's**, so this
+/// is a named deviation rather than a surprise: Chrome 150 computes
+/// `left: 4px` for this block, measured. When #670 lands, this fixture is what
+/// has to change, and `Length(25.0)` becomes `Length(4.0)`.
+///
+/// Desktop only — on the web the same verbatim `setAttribute` hands the
+/// duplicate to the browser, which collapses it correctly.
+#[component]
+fn duplicate_through_the_verbatim_path() -> NodeHandle {
+    rsx! {
+        div {
+            style: "position: absolute; width: 10px; height: 10px; \
+                    inset: 0px; left: 25px; inset: 4px",
+            p: "12px",
+        }
+    }
+}
+
+#[test]
+fn a_duplicate_in_a_style_prop_still_reaches_the_other_parser() {
+    let doc = Rc::new(RefCell::new(RinchDocument::new()));
+    let body = doc.borrow().body();
+    let mut scope = RenderScope::new(doc.clone(), body);
+    let root = duplicate_through_the_verbatim_path(&mut scope);
+    doc.borrow_mut().append_child(body, root.node_id());
+
+    assert_eq!(
+        decl(&root, "padding").as_deref(),
+        Some("12px"),
+        "the second author has to have written, or nothing hands the duplicate on"
+    );
+
+    doc.borrow_mut().recompute_all_styles_full();
+    doc.borrow_mut().resolve_layout(800.0, 600.0);
+
+    let d = doc.borrow();
+    let style = &d
+        .tree
+        .get(root.node_id().0)
+        .expect("the box is in the tree")
+        .computed_style;
+    assert_eq!(
+        format!("{:?}", style.left),
+        "Length(25.0)",
+        "#670: `parse_style_string` keeps the first `inset` position, so the \
+         `left` longhand wins where CSS says it loses. Chrome gives 4px"
+    );
+}
+
 // ── 7. the issue's own repro, end to end through `rsx!` ─────────────────────
 
 /// `Modal { z_index: 517, style: "margin: 0" }` computes 517.

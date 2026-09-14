@@ -58,8 +58,18 @@ use super::NodeHandle;
 /// a duplicate is collapsed the other way — measured: `set_style("color",
 /// "red")` on a node whose attribute is `inset: 0px; left: 25px; inset: 4px`
 /// gives `inset: 4px; left: 25px; color: red`. That is pre-existing, and is
-/// **Refs #670**. Nothing this module writes carries a duplicate for it to
-/// see, because this function removed it.
+/// **Refs #670**.
+///
+/// Nothing this module writes **on its merge path** carries a duplicate,
+/// because this function removed it. Its **verbatim** path passes the author's
+/// string through unchanged, duplicate included, so a `style:` that itself
+/// declares a property twice does reach `parse_style_string` as soon as a
+/// second author's `set_style` touches the node — and is collapsed at the
+/// wrong position there. `rsx_style_prop::a_duplicate_in_a_style_prop_still_
+/// reaches_the_other_parser` pins that, at the value rinch computes rather
+/// than the browser's, so it is a named deviation and not a surprise. Desktop
+/// only: on the web the same verbatim `setAttribute` hands the duplicate to
+/// the browser, which collapses it correctly.
 ///
 /// A part with no top-level `:`, or an empty property name, is dropped — it is
 /// not a declaration.
@@ -269,9 +279,11 @@ struct Written {
 ///   last value is indistinguishable from it, so it is taken to be this
 ///   author's and taken back with the rest. Telling two authors apart when
 ///   they wrote the same bytes for the same property needs a per-author shadow
-///   copy of the block, which this does not keep. In practice that lands
-///   inside the same-property collision described below, which is already the
-///   caller's mistake to make.
+///   copy of the block, which this does not keep. Reaching it takes two
+///   authors writing the same bytes for one property — either the
+///   same-property collision described below, which is already the caller's
+///   mistake, or a component rewriting its own root style after `render` to a
+///   value the caller happens to be declaring too.
 /// - **What a declaration reverts to is carried forward** across re-runs in
 ///   which this author keeps declaring it, so the value it originally displaced
 ///   is still what comes back when it finally stops.
