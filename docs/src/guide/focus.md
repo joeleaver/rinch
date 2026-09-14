@@ -606,6 +606,13 @@ option list inside a dialog still scrolls. Anything else that portals a
 *scrollable* element to the body needs the same, with the same
 push-on-open / release-on-close lifetime.
 
+The exemption has no portable spelling yet, so it covers the runtime's own
+portals and nothing else. A scroll container of yours that sits **outside** the
+locking overlay in the tree — window chrome, a panel anchored to the frame — is
+refused while the lock is held; the Linux in-app menu bar's own dropdown is the
+known instance, tracked in
+[issue #701](https://github.com/joeleaver/rinch/issues/701).
+
 ## Where this does *not* apply
 
 - **The browser backend (`rinch-web`).** There is no arbiter there because the

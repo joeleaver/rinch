@@ -1354,7 +1354,11 @@ register_focus_target(
   putting the popup there would freeze the page whenever a `<select>` was open.
   `ContextMenu` is the other body portal and needs none *today* — its dropdown
   declares no `overflow`/`max-height`, so it is not a scroll container; give one
-  either and it inherits the trap silently. What the lock does **not** gate:
+  either and it inherits the trap silently. The exemption has **no portable
+  spelling**: `push_scroll_lock_exempt` is a `NodeTree` method, reachable from
+  the runtime and not through `NodeHandle`, so a scroll container built by a
+  *component* and sitting outside the locking overlay stays refused — the Linux
+  in-app menu bar's own dropdown is the known instance (#701). What the lock does **not** gate:
   programmatic scrolling (`set_scroll_top`), and keyboard page-scrolling, which
   desktop does not have at all. A touch scroll and the MCP `scroll` tool both arrive as
   `PlatformEvent::MouseWheel`, so they are gated. `RenderScope::body_handle()`
