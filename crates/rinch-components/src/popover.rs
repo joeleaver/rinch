@@ -244,7 +244,6 @@ impl Component for Popover {
         }
 
         let root = rinch_macros::rsx! { div { class: "rinch-popover" } };
-        let base_class = self.class_string_closed();
         root.set_attribute("class", &self.class_string());
         if !style_parts.is_empty() {
             root.set_attribute("style", &style_parts.join("; "));
@@ -261,7 +260,7 @@ impl Component for Popover {
         // surgically, without re-rendering the component.
         if let Some(opened_fn) = self.opened_fn.clone() {
             let root_c = root.clone();
-            let base = base_class.clone();
+            let base = self.class_string_closed();
             __scope.create_effect(move || {
                 if opened_fn() {
                     root_c.set_attribute("class", &format!("{base} rinch-popover--opened"));
