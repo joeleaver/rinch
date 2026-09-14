@@ -91,6 +91,10 @@ A stable reference to a DOM node. Delegates all operations via `Weak<RefCell<dyn
 ```rust
 impl NodeHandle {
     pub fn set_attribute(&self, name: &str, value: &str);
+    // Renders a value into an attribute: for an HTML boolean attribute
+    // (`disabled`, `checked`, `selected`, …) a truthy value writes the bare
+    // presence form and a falsey one removes it. `set_attribute` stays literal.
+    pub fn write_attribute(&self, name: &str, value: &str);
     pub fn remove_attribute(&self, name: &str);
     pub fn set_text(&self, content: &str);
     pub fn append_child(&self, child: &NodeHandle);

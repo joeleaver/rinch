@@ -271,14 +271,13 @@ fn sync_reflected_property(node: &web_sys::Node, name: &str, value: &str) {
                 select.set_value(value);
             }
         }
-        "checked" => {
-            if let Some(input) = node.dyn_ref::<web_sys::HtmlInputElement>() {
-                let on = attr_is_truthy(value);
-                if input.checked() != on {
-                    input.set_checked(on);
-                }
-            }
-        }
+        // `indeterminate` is the one member of the reflected family with **no**
+        // content attribute at all — it is a property-only IDL flag, HTML has no
+        // `indeterminate` attribute, and `is_boolean_attribute` does not list
+        // it. So it has no presence for anyone to read and the string is all
+        // there is: truthiness is the only mapping available, and it stays.
+        // `checked` and `selected` are real attributes and go through
+        // [`sync_presence_property`] instead (issue #622).
         "indeterminate" => {
             if let Some(input) = node.dyn_ref::<web_sys::HtmlInputElement>() {
                 let on = attr_is_truthy(value);
@@ -287,12 +286,43 @@ fn sync_reflected_property(node: &web_sys::Node, name: &str, value: &str) {
                 }
             }
         }
+        _ => {}
+    }
+}
+
+/// Mirror a **presence** boolean attribute (`checked`, `selected`) onto the live
+/// IDL property it reflects.
+///
+/// The content attribute is only the control's *default*: the browser sets a
+/// dirty checkedness / selectedness flag on the first user toggle and stops
+/// mirroring the attribute into the property from then on. rinch has no such
+/// flag — desktop's `:checked` (`stylo_impl.rs`) and `<option>` selectedness
+/// (`select.rs`) read the attribute and nothing else — so the app's write has to
+/// win on both backends, which is why the property is written here at all
+/// (issue #100).
+///
+/// What it is told is the attribute's **presence**, never its string. A present
+/// `checked` checks the box whatever it holds, `"false"` included — the
+/// browser's own rule for raw markup, measured in
+/// `tests/boolean_attributes.rs::html_reads_a_present_boolean_attribute_as_true_whatever_its_value`
+/// — and absence is the only off state (issue #622). The truthiness mapping that
+/// used to sit here belongs to the *writer*,
+/// [`rinch_core::dom::NodeHandle::write_attribute`], which removes the attribute
+/// for a falsey value before the backend sees it (issue #551).
+fn sync_presence_property(node: &web_sys::Node, name: &str, present: bool) {
+    match name {
+        "checked" => {
+            if let Some(input) = node.dyn_ref::<web_sys::HtmlInputElement>()
+                && input.checked() != present
+            {
+                input.set_checked(present);
+            }
+        }
         "selected" => {
-            if let Some(option) = node.dyn_ref::<web_sys::HtmlOptionElement>() {
-                let on = attr_is_truthy(value);
-                if option.selected() != on {
-                    option.set_selected(on);
-                }
+            if let Some(option) = node.dyn_ref::<web_sys::HtmlOptionElement>()
+                && option.selected() != present
+            {
+                option.set_selected(present);
             }
         }
         _ => {}
@@ -951,20 +981,35 @@ impl DomDocument for WebDocument {
         if let Some(n) = self.nodes.get(&node.0) {
             if let Ok(el) = n.clone().dyn_into::<web_sys::Element>() {
                 match name {
-                    // Boolean content attributes follow HTML *presence* semantics:
-                    // a present attribute is true regardless of its string value.
-                    // The rsx macro stringifies a `bool` closure to `"true"`/
-                    // `"false"`, so writing the literal string would leave
-                    // `checked="false"` *present* — meaning `defaultChecked` stays
-                    // true, `[checked]` selectors match, and `form.reset()` would
-                    // re-check it, all contradicting the property synced below.
-                    // Mirror truthiness onto presence instead.
+                    // `checked` and `selected` are HTML **boolean** attributes:
+                    // presence is the whole value. `set_attribute` is the literal
+                    // primitive on both backends, so the string is written as
+                    // given and the control follows the attribute's *presence*,
+                    // whatever that string says (issue #622). That is the
+                    // browser's own rule for raw markup — `<input
+                    // checked="false">` is checked, measured in
+                    // `tests/boolean_attributes.rs` — and desktop's, whose
+                    // `:checked` and `<option selected>` readers look at presence
+                    // alone.
+                    //
+                    // This arm used to mirror `attr_is_truthy` onto presence,
+                    // because `rsx!` stringified a `bool` closure straight into
+                    // here and nothing else would ever have turned the attribute
+                    // off. #551 moved that mapping into the writer —
+                    // `NodeHandle::write_attribute` removes a boolean attribute
+                    // whose value is falsey, on both backends — so a reactive
+                    // `checked: {|| flag.get()}` still turns off, and what was
+                    // left here was a `set_attribute` that meant two different
+                    // things on the two backends for exactly two names.
+                    //
+                    // Reach for `write_attribute` when you are rendering a value;
+                    // reach for `remove_attribute` when you mean off.
                     "checked" | "selected" => {
-                        if attr_is_truthy(value) {
-                            el.set_attribute(name, "").ok();
-                        } else {
-                            el.remove_attribute(name).ok();
-                        }
+                        el.set_attribute(name, value).ok();
+                        // Presence, not the string: see `sync_presence_property`
+                        // for why the live property is written at all.
+                        sync_presence_property(n, name, true);
+                        return;
                     }
                     // `indeterminate` is a property-only flag with no HTML content
                     // attribute; don't materialize a bogus one (the property is
@@ -996,6 +1041,11 @@ impl DomDocument for WebDocument {
             // stop updating what is displayed. Mirror the property too so
             // signal-driven updates keep working after the control has been typed
             // into / toggled (issue #100).
+            //
+            // `checked` and `selected` returned above, having mirrored their own
+            // presence; `value` returned into `write_value_attribute`. What
+            // reaches here is `indeterminate` and everything with no reflected
+            // property at all.
             sync_reflected_property(n, name, value);
         }
     }
@@ -1016,9 +1066,13 @@ impl DomDocument for WebDocument {
             // Keep the reflected property in sync when the attribute is removed,
             // otherwise a dirtied control keeps showing the stale property (#100).
             match name {
-                "checked" | "selected" | "indeterminate" => {
-                    sync_reflected_property(n, name, "false")
-                }
+                // Absence is the off state for the presence pair, and the only
+                // one — a dirtied control would otherwise keep showing the stale
+                // property (#100, #622).
+                "checked" | "selected" => sync_presence_property(n, name, false),
+                // `indeterminate` has no content attribute to be absent, so
+                // "remove it" is simply "off".
+                "indeterminate" => sync_reflected_property(n, name, "false"),
                 _ => {}
             }
         }
@@ -1390,7 +1444,7 @@ mod tests {
         assert!(attr_is_truthy("true"));
         assert!(!attr_is_truthy("false"));
         // Components use the HTML presence form: an empty string is *present*,
-        // hence true (e.g. `input.set_attribute("checked", "")`).
+        // hence true (e.g. a `hidden: {|| flag.get()}` binding rendering `""`).
         assert!(attr_is_truthy(""));
         // Other falsey spellings.
         assert!(!attr_is_truthy("0"));

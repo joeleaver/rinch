@@ -111,9 +111,41 @@ rsx! {
 }
 ```
 
-A closure that yields a *string* into a boolean attribute follows the same
-truthiness rule the runtime's own readers use: everything is on except `"false"`
-(any case) and `"0"`, so the bare `""` that components write stays on.
+A closure that yields a *string* into a boolean attribute follows a writer's
+truthiness rule: everything is on except `"false"` (any case) and `"0"`, so the
+bare `""` that components write stays on.
+
+That rule is the **writer's**, and for the HTML set it is nobody's reader: no
+reader of `disabled`, `checked`, `readonly` and their kind has a falsey string on
+either backend, because a browser has none (issue #612). rinch's own
+`data-disabled` and `data-nofocus` — listed as boolean attributes above — are the
+exception, and the only one: their readers do honour a literal `"false"`, on
+desktop through `rinch_core::dom::data_attr_is_on` and on the web through the
+selector `[data-nofocus]:not([data-nofocus="false" i])`. That escape is narrower
+than the writer's rule, too: `"0"` is **on** for those two.
+
+**Writing one by hand.** `set_attribute` is the *literal* primitive on both
+backends: it writes the string you give it, so `set_attribute("checked",
+"false")` leaves the attribute **present**, and a present boolean attribute is
+true. There are two spellings of off, and neither is a string:
+
+```rust
+// Rendering a bool you already have — presence or absence, chosen for you.
+node.write_attribute("checked", &flag.to_string());
+
+// Or say it outright.
+if flag { node.set_attribute("checked", "") } else { node.remove_attribute("checked") }
+```
+
+That was a real divergence until issue #622: the web backend mapped truthiness
+onto presence for `checked` and `selected` alone, so the same call unchecked a box
+in the browser and checked it on the desktop backend.
+
+On the web, `checked` and `<option selected>` also drive the control's live
+property, not only the attribute — a browser stops mirroring the attribute into
+the property once the user has toggled the control, and rinch has no such flag, so
+a programmatic write keeps winning. It follows the attribute's presence, matching
+what the desktop backend's `:checked` reads.
 
 Component props are unaffected — a component's `disabled: bool` is an ordinary
 typed field, and the component decides how to render it.

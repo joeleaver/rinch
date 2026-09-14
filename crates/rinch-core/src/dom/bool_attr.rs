@@ -90,11 +90,17 @@ pub fn is_boolean_attribute(name: &str) -> bool {
 /// Truthiness for a value **being written into** a boolean attribute.
 ///
 /// This is the *writer's* rule, and it is the only thing it is for: deciding
-/// which of the two shapes — presence or absence — a value asks for. The three
+/// which of the two shapes — presence or absence — a value asks for. The two
 /// production callers are [`super::NodeHandle::write_attribute`] and, in the web
-/// backend, both `sync_reflected_property`'s arm for `checked` / `selected` /
-/// `indeterminate` and `set_attribute`'s presence-mapping arm for
-/// `checked` / `selected`.
+/// backend, `sync_reflected_property`'s arm for `indeterminate` — a property-only
+/// IDL flag with no content attribute, so a string is all it ever has.
+///
+/// It is **not** what [`super::NodeHandle::set_attribute`] does. That is the
+/// literal primitive on both backends: it writes the string it is given, and for
+/// a boolean attribute the result is *presence*, whatever the string says. The
+/// web backend used to route `checked` / `selected` through here instead, so the
+/// same call unchecked a box on web and checked it on desktop; issue #622 made
+/// that arm literal.
 ///
 /// rinch writes these two ways: `rsx!` renders a `bool` through `Display`, so
 /// it arrives as `"true"` / `"false"`, while components set the bare presence
