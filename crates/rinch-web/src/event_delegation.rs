@@ -1517,16 +1517,43 @@ fn trap_root(browser_doc: &web_sys::Document) -> Option<web_sys::Element> {
 ///
 /// **This is not desktop's collector, and cannot be.** It is a CSS selector
 /// plus a filter where desktop walks its own tree, so the two sets are computed
-/// by different code and agree only as far as they are each written to. Two
-/// differences are known and accepted: the browser's `:disabled` reaches the
-/// descendants of a `<fieldset disabled>` for form controls only, where
-/// desktop's `node_is_disabled` is tag-agnostic and would also take a
-/// `tabindex` div out; and rinch's own `data-disabled` is honoured here
-/// explicitly because no browser knows the attribute.
+/// by different code and agree only as far as they are each written to. Known
+/// differences include: `:disabled` reaches the descendants of a
+/// `<fieldset disabled>` for form controls only, where desktop's
+/// `node_is_disabled` is tag-agnostic and would also take a `tabindex` div out;
+/// rinch's own `data-disabled` is honoured here explicitly because no browser
+/// knows the attribute; `<a href="">` is a stop here (matched by presence) and
+/// not on desktop, which trims the href; and desktop does *not* trim a
+/// `tabindex` before parsing it, so `" -1 "` is a stop there and not here. That
+/// list is open rather than closed, which is the point of the next paragraph.
+///
+/// **The set is not the authority — the browser is**, and
+/// [`handle_trapped_tab`] is written that way. This filter is best-effort: no
+/// enumeration of it can be complete, because focusability is the browser's own
+/// computation over the whole ancestor chain, the shadow tree, `inert`, and
+/// whatever the platform adds next. So the caller *verifies the move* and steps
+/// on when the browser declines, and this function only has to be close enough
+/// to keep that loop short. Tightening it is still worth doing — `:disabled` is
+/// here because it is exactly the browser's own rule and it covers the common
+/// `<fieldset disabled>` case with no retry — but nothing may depend on it
+/// being exhaustive.
+///
+/// The set is also **narrower than the browser's** in the other direction:
+/// `contenteditable`, `<iframe>`, `<summary>`, `<audio controls>` and
+/// `<area href>` are browser Tab stops and are in neither backend's set, so an
+/// overlay containing one loses it while trapped. Consistent between backends,
+/// divergent from the browser, and noted in `docs/src/guide/focus.md`.
 fn trap_focusables(root: &web_sys::Element) -> Vec<web_sys::HtmlElement> {
     let mut out = Vec::new();
     let mut consider = |el: web_sys::Element| {
-        if el.has_attribute("disabled")
+        // `:disabled` is the browser's own rule, and it is the one that reaches
+        // *down* from a `<fieldset disabled>` — which `Fieldset { disabled }`
+        // ships, and which a form section disabled mid-save inside a `Modal`
+        // reaches every time. The explicit `has_attribute("disabled")` stays
+        // beside it because `:disabled` matches form controls only, while
+        // desktop's `node_is_disabled` is tag-agnostic.
+        if el.matches(":disabled").unwrap_or(false)
+            || el.has_attribute("disabled")
             || el
                 .get_attribute("data-disabled")
                 .is_some_and(|v| rinch_core::dom::data_attr_is_on(&v))
@@ -1562,12 +1589,26 @@ fn trap_focusables(root: &web_sys::Element) -> Vec<web_sys::HtmlElement> {
 /// containment means Tab does not leave, and that is the one case where "does
 /// not leave" and "goes nowhere" are the same thing. Desktop's `handle_tab`
 /// returns on the same empty list for the same reason.
+///
+/// **The move is verified, and a refusal steps on.** `focus()` is a request the
+/// browser may decline — for a `<button>` inside a `<fieldset disabled>`, a
+/// `tabindex` it parsed differently, an `inert` subtree, anything it knows about
+/// focusability that [`trap_focusables`] does not. Taking the first candidate on
+/// trust and preventing the default anyway is how forward Tab **dies** inside a
+/// dialog: the refused element is not focused, the next press recomputes the
+/// same index from the same unchanged `activeElement`, and it is refused again,
+/// for the rest of the session. So each candidate is checked against
+/// `activeElement` and the walk continues, at most once round the ring — which
+/// is also why the filter above can be best-effort rather than exhaustive.
+/// Desktop has the same shape of hole through `focus_element`'s own bail-out,
+/// pre-existing and not specific to trapping.
 fn handle_trapped_tab(browser_doc: &web_sys::Document, shift: bool) -> bool {
     let Some(root) = trap_root(browser_doc) else {
         return false;
     };
     let items = trap_focusables(&root);
-    if items.is_empty() {
+    let n = items.len();
+    if n == 0 {
         return true;
     }
 
@@ -1580,13 +1621,32 @@ fn handle_trapped_tab(browser_doc: &web_sys::Document, shift: bool) -> bool {
     // Identical arithmetic to desktop's `handle_tab`, including where focus
     // starts outside the trap: Tab enters at the first stop, Shift+Tab at the
     // last.
-    let target = match (current, shift) {
-        (Some(i), false) => (i + 1) % items.len(),
-        (Some(i), true) => i.checked_sub(1).unwrap_or(items.len() - 1),
+    let first = match (current, shift) {
+        (Some(i), false) => (i + 1) % n,
+        (Some(i), true) => i.checked_sub(1).unwrap_or(n - 1),
         (None, false) => 0,
-        (None, true) => items.len() - 1,
+        (None, true) => n - 1,
     };
-    let _ = items[target].focus();
+
+    for step in 0..n {
+        // Forward walks up the ring, Shift+Tab down it. `n - step` keeps the
+        // subtraction non-negative without a signed cast; `step < n`, so this
+        // never wraps twice.
+        let idx = if shift {
+            (first + n - step) % n
+        } else {
+            (first + step) % n
+        };
+        let _ = items[idx].focus();
+        if browser_doc
+            .active_element()
+            .is_some_and(|a| items[idx].is_same_node(Some(a.unchecked_ref())))
+        {
+            return true;
+        }
+    }
+    // Nothing in the trap would take focus. Same answer as the empty trap:
+    // consume the key rather than let Tab out of the overlay.
     true
 }
 

@@ -315,3 +315,162 @@ fn the_focusable_set_inside_a_trap_honours_disabled_and_negative_tabindex() {
     assert_eq!(f.active(), "first", "and the cycle wraps");
     f.teardown();
 }
+
+// ── the browser is the authority on focusability ────────────────────────────
+
+/// A `<fieldset disabled>` inside a trap does not wedge forward Tab.
+///
+/// **The defect this pins was a regression, and its symptom was the exact
+/// failure containment exists to prevent.** `trap_focusables` decides membership
+/// from an element's *own* attributes; a `<button>` inside a disabled
+/// `<fieldset>` carries none, so it landed in the list — and `focus()` on it is
+/// refused by the browser. With the default prevented anyway, focus did not
+/// move, the next press recomputed the same index from the same unchanged
+/// `activeElement`, and **forward Tab was dead for the rest of the session**
+/// (Shift+Tab still moved). Before this feature existed the browser's own Tab
+/// ran and skipped the control correctly.
+///
+/// `Fieldset { disabled: true }` ships in the component library and writes a
+/// bare `disabled`, so a form section disabled while saving, inside a `Modal`,
+/// is the ordinary shape of it.
+///
+/// **Mutant: taking `items[target]` on trust** (the single unchecked `focus()`
+/// this replaced). Both presses then answer `first` and the second assertion
+/// dies. The `:disabled` half of the filter covers *this* case without a retry,
+/// so the fixture below is the one that pins the retry itself.
+#[wasm_bindgen_test]
+fn a_disabled_fieldset_inside_a_trap_does_not_wedge_tab() {
+    let f = Fixture::mount(move |scope| {
+        let root = scope.create_element("div");
+        let region = scope.create_element("div");
+        region.set_attribute("data-trap-focus", "");
+        region.set_attribute("style", VISIBLE);
+
+        let fieldset = scope.create_element("fieldset");
+        fieldset.set_attribute("disabled", "");
+        fieldset.append_child(&button(scope, "mid"));
+
+        region.append_child(&button(scope, "first"));
+        region.append_child(&fieldset);
+        region.append_child(&button(scope, "last"));
+        root.append_child(&region);
+        root
+    });
+
+    f.el("first").focus().unwrap();
+    tab(false);
+    assert_eq!(
+        f.active(),
+        "last",
+        "the browser refuses focus inside a disabled fieldset, so Tab must \
+         step over `mid` rather than stall on it"
+    );
+    tab(false);
+    assert_eq!(f.active(), "first", "and the cycle still wraps");
+    f.teardown();
+}
+
+/// The same class, reached a different way: a `tabindex` the browser and rinch
+/// parse differently.
+///
+/// `<div tabindex="abc">` matches `[tabindex]`, and `"abc".parse::<i32>()`
+/// fails — so `is_ok_and(|n| n < 0)` is false and the filter *keeps* it. Chrome
+/// reports `tabIndex === -1` for it and refuses `focus()`. No filter can be
+/// closed over this class, which is why the caller verifies the move instead.
+///
+/// **Mutant: the unchecked `focus()`.** Nothing but the retry saves this one —
+/// `:disabled` does not match a div, and no attribute test would have caught a
+/// value whose meaning is the browser's own to decide.
+#[wasm_bindgen_test]
+fn an_unfocusable_tabindex_inside_a_trap_does_not_wedge_tab() {
+    let f = Fixture::mount(move |scope| {
+        let root = scope.create_element("div");
+        let region = scope.create_element("div");
+        region.set_attribute("data-trap-focus", "");
+        region.set_attribute("style", VISIBLE);
+
+        let odd = scope.create_element("div");
+        odd.set_attribute("id", "odd");
+        odd.set_attribute("tabindex", "abc");
+        odd.set_attribute("style", "display: block; width: 100px; height: 20px");
+
+        region.append_child(&button(scope, "first"));
+        region.append_child(&odd);
+        region.append_child(&button(scope, "last"));
+        root.append_child(&region);
+        root
+    });
+
+    f.el("first").focus().unwrap();
+    tab(false);
+    assert_eq!(
+        f.active(),
+        "last",
+        "an element the browser will not focus must not stall the cycle"
+    );
+    tab(false);
+    assert_eq!(f.active(), "first");
+    f.teardown();
+}
+
+// ── nesting ─────────────────────────────────────────────────────────────────
+
+/// A nested trap that closes hands containment back to the outer one, with
+/// focus still inside the closed subtree.
+///
+/// **This is the only web coverage of nesting, and the only fixture that
+/// reaches `trap_root`'s rule 1 at all.** Every other fixture here has focus
+/// either outside the trap or inside a trap that stays visible, so rule 1 either
+/// `break`s at `closest` or finds a visible ancestor on its first look — and a
+/// mutant that drops `element_is_visible` from **rule 1 only** survives all of
+/// them. Here the nearest trap ancestor of the focused control is the one that
+/// just went `display: none`, so stepping over it to the outer trap is the whole
+/// behaviour.
+///
+/// The desktop twin is
+/// `trap_focus_tests::closing_a_nested_trap_hands_containment_back_to_the_outer_one`.
+#[wasm_bindgen_test]
+fn closing_a_nested_trap_hands_containment_back_to_the_outer_one() {
+    let f = Fixture::mount(move |scope| {
+        let root = scope.create_element("div");
+        let outer = scope.create_element("div");
+        outer.set_attribute("id", "outer");
+        outer.set_attribute("data-trap-focus", "");
+        outer.set_attribute("style", VISIBLE);
+
+        let inner = scope.create_element("div");
+        inner.set_attribute("id", "inner");
+        inner.set_attribute("data-trap-focus", "");
+        inner.set_attribute("style", "display: block; width: 200px; height: 60px");
+        inner.append_child(&button(scope, "in-a"));
+        inner.append_child(&button(scope, "in-b"));
+
+        outer.append_child(&button(scope, "out-a"));
+        outer.append_child(&inner);
+        outer.append_child(&button(scope, "out-b"));
+        root.append_child(&outer);
+        root
+    });
+
+    f.el("in-a").focus().unwrap();
+    tab(false);
+    assert_eq!(f.active(), "in-b", "precondition: the inner trap is live");
+
+    // Close the inner overlay the way its component would: no box any more,
+    // attribute or not.
+    f.el("inner")
+        .set_attribute("style", "display: none")
+        .unwrap();
+
+    tab(false);
+    assert_eq!(
+        f.active(),
+        "out-a",
+        "the outer trap takes over; the inner's two controls are gone"
+    );
+    tab(false);
+    assert_eq!(f.active(), "out-b");
+    tab(false);
+    assert_eq!(f.active(), "out-a", "and the outer cycle wraps");
+    f.teardown();
+}

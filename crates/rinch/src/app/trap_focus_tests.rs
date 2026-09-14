@@ -348,10 +348,18 @@ fn trap_focus_false_leaves_tab_to_the_whole_document() {
 ///
 /// `Modal::render` runs *once* — `opened_fn` only rewrites a class — so a closed
 /// modal stays mounted with its root in the tree. Note this fixture alone kills
-/// no single guard, because a closed modal is protected twice over (the
+/// no single *guard*, because a closed modal is protected twice over (the
 /// attribute is removed *and* the root is `display: none`); the two guards have
 /// a fixture each below. What it does pin is the whole round trip, including
 /// that Tab does not simply go **dead** while a closed dialog is mounted.
+///
+/// **The reopen step needs Shift+Tab to say anything at all.** A plain Tab from
+/// `before` lands on `inside_first` either way, because `inside_first` is also
+/// the next stop in plain *document* order — the classic fixed point, and the
+/// reason this fixture used to be one of the four M1 (the whole-tree walk) does
+/// not kill. Shift+Tab from `before` separates them: with the trap live there is
+/// no current index inside the list, so it enters at the trap's **last** stop,
+/// while an untrapped document wraps from index 0 to `after`.
 #[test]
 fn a_closed_but_mounted_modal_traps_nothing_and_traps_again_when_reopened() {
     let open = Signal::new(false);
@@ -372,6 +380,18 @@ fn a_closed_but_mounted_modal_traps_nothing_and_traps_again_when_reopened() {
         focused(&app),
         Some(ids.inside_first),
         "and the trap is live again once it opens"
+    );
+
+    // The discriminating half: from a claim *outside* the reopened trap,
+    // backwards.
+    app.focus_element(ids.before);
+    shift_tab(&mut app);
+    assert_eq!(
+        focused(&app),
+        Some(ids.inside_last),
+        "Shift+Tab from outside the reopened trap enters it at its last stop; \
+         an untrapped document would have wrapped to {}",
+        ids.after
     );
 
     open.set(false);
