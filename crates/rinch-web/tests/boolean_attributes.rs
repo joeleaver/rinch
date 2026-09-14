@@ -29,7 +29,7 @@
 use rinch::prelude::*;
 use rinch_core::element::ThemeProviderProps;
 use rinch_web::RootHandle;
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 use wasm_bindgen::JsCast;
 use wasm_bindgen_test::*;
@@ -301,6 +301,192 @@ fn boolean_attributes_clear_and_enumerated_ones_keep_their_value() {
         f.attr("vp", "data-viewport-ready").as_deref(),
         Some("false"),
         "data-viewport-ready=\"false\" is rinch's opt-out; removing it inverts it"
+    );
+
+    f.teardown();
+}
+
+// ── #622: `set_attribute` is the literal primitive, on both backends ─────────
+
+/// Build a checkbox and a two-option `<select>`, handing the test their
+/// `NodeHandle`s so it can call the DOM primitive directly.
+///
+/// The `rsx!` cases above go through `NodeHandle::write_attribute`, which maps
+/// truthiness onto presence before the backend ever sees a string (#551). These
+/// tests are about the layer *below* that — what `set_attribute` itself does
+/// with a string it is handed — so they must not go through the macro.
+fn checked_family_fixture(
+    out: Rc<RefCell<Option<(NodeHandle, NodeHandle)>>>,
+) -> impl FnOnce(&mut RenderScope) -> NodeHandle + 'static {
+    move |scope: &mut RenderScope| {
+        let root = scope.create_element("div");
+
+        let input = scope.create_element("input");
+        input.set_attribute("type", "checkbox");
+        input.set_attribute("id", "lit-chk");
+        root.append_child(&input);
+
+        let select = scope.create_element("select");
+        select.set_attribute("id", "lit-sel");
+        let o0 = scope.create_element("option");
+        o0.set_attribute("value", "v0");
+        let o1 = scope.create_element("option");
+        o1.set_attribute("value", "v1");
+        o1.set_attribute("id", "lit-opt");
+        select.append_child(&o0);
+        select.append_child(&o1);
+        root.append_child(&select);
+
+        *out.borrow_mut() = Some((input, o1));
+        root
+    }
+}
+
+/// `set_attribute("checked" | "selected", …)` writes the string it is given and
+/// the control follows the attribute's **presence**, whatever that string says.
+///
+/// This is issue #622. The web backend used to route those two names through
+/// `attr_is_truthy` and *remove* the attribute for a falsey string, so
+/// `set_attribute("checked", "false")` unchecked the box on web and checked it
+/// on desktop, whose `:checked` reads presence alone — and so does a browser,
+/// for the raw markup measured by
+/// `html_reads_a_present_boolean_attribute_as_true_whatever_its_value` above.
+///
+/// Red at that commit on its very first assertion: the attribute was absent.
+///
+/// The `indeterminate` block at the end is the counter-case. It is a
+/// property-only IDL flag with **no** content attribute, so it has no presence
+/// to read and keeps its truthiness mapping; a fix that presence-maps the whole
+/// reflected family fails there.
+#[wasm_bindgen_test]
+fn set_attribute_writes_the_checked_family_literally() {
+    let out = Rc::new(RefCell::new(None));
+    let f = Fixture::mount(checked_family_fixture(out.clone()));
+    let (input, option) = out.borrow().clone().expect("fixture built");
+
+    // The literal string lands in the attribute …
+    input.set_attribute("checked", "false");
+    assert_eq!(
+        f.attr("lit-chk", "checked").as_deref(),
+        Some("false"),
+        "`set_attribute` is the literal primitive: the string is written, not \
+         mapped onto presence (#622). Truthiness lives in `write_attribute`."
+    );
+    // … and *presence* is what the control follows.
+    assert!(
+        f.prop("lit-chk", "checked"),
+        "a present `checked` checks the box whatever its value — the browser's \
+         own rule for raw markup, and desktop's `:checked`"
+    );
+
+    // Absence is the only off state.
+    input.remove_attribute("checked");
+    assert_eq!(f.attr("lit-chk", "checked"), None);
+    assert!(!f.prop("lit-chk", "checked"), "removal unchecks it");
+
+    // The bare presence form components write.
+    input.set_attribute("checked", "");
+    assert_eq!(f.attr("lit-chk", "checked").as_deref(), Some(""));
+    assert!(f.prop("lit-chk", "checked"));
+
+    // Same for `<option selected>`, which desktop's `collect_options` also reads
+    // by presence.
+    option.set_attribute("selected", "false");
+    assert_eq!(
+        f.attr("lit-opt", "selected").as_deref(),
+        Some("false"),
+        "literal here too"
+    );
+    assert!(
+        f.prop("lit-opt", "selected"),
+        "`selected=\"false\"` selects the option — matching \
+         `boolean_attribute_readers::an_option_is_selected_by_the_presence_of_the_attribute`"
+    );
+    let select: web_sys::HtmlSelectElement = f.el("lit-sel").dyn_into().unwrap();
+    assert_eq!(
+        select.selected_index(),
+        1,
+        "and the <select> follows its option"
+    );
+
+    option.remove_attribute("selected");
+    assert_eq!(f.attr("lit-opt", "selected"), None);
+    assert!(!f.prop("lit-opt", "selected"), "removal deselects it");
+
+    // The counter-case: `indeterminate` is a property-only IDL flag. HTML has no
+    // such content attribute, so `is_boolean_attribute` does not list it,
+    // `write_attribute` cannot map it, and there is no presence for a reader to
+    // read — the truthiness mapping is all it has and it stays.
+    input.set_attribute("indeterminate", "true");
+    assert!(f.prop("lit-chk", "indeterminate"));
+    assert_eq!(
+        f.attr("lit-chk", "indeterminate"),
+        None,
+        "no bogus content attribute is materialized for a property-only flag"
+    );
+    input.set_attribute("indeterminate", "false");
+    assert!(
+        !f.prop("lit-chk", "indeterminate"),
+        "a falsey string still clears a property-only flag: presence is not a \
+         thing it has"
+    );
+
+    f.teardown();
+}
+
+/// A programmatic write wins after the user has toggled the control.
+///
+/// The browser sets a *dirty checkedness* flag on the first user toggle and
+/// stops mirroring the `checked` content attribute onto the live `.checked`
+/// property from then on. rinch has no such flag — desktop's `:checked` reads
+/// the attribute and nothing else — so the web backend mirrors the property
+/// itself (issue #100), and #622 makes that mirror follow **presence** rather
+/// than the string.
+///
+/// Red at the #622 commit on its last assertion only: `checked="false"` removed
+/// the attribute and cleared the property, so the app's write silently unchecked
+/// a box that desktop would have checked. Everything above that assertion passes
+/// at that commit, and is here so a fix that drops the property mirror
+/// altogether — the other way to make the first test green — fails.
+#[wasm_bindgen_test]
+fn a_write_after_the_user_toggled_the_control_still_wins() {
+    let out = Rc::new(RefCell::new(None));
+    let f = Fixture::mount(checked_family_fixture(out.clone()));
+    let (input, _option) = out.borrow().clone().expect("fixture built");
+
+    input.set_attribute("checked", "");
+    assert!(f.prop("lit-chk", "checked"), "the app checks it");
+
+    // The user unchecks it. The content attribute is the control's *default* and
+    // a user toggle does not touch it, so attribute and property now disagree.
+    f.el("lit-chk").click();
+    assert!(!f.prop("lit-chk", "checked"), "the click unchecks it");
+    assert_eq!(
+        f.attr("lit-chk", "checked").as_deref(),
+        Some(""),
+        "the user toggle leaves the content attribute alone — the dirty flag"
+    );
+
+    // The app writes the same attribute again. A browser would change only
+    // `defaultChecked` here; rinch makes the control follow, or a reactive
+    // binding would go stale after the first click.
+    input.set_attribute("checked", "");
+    assert!(
+        f.prop("lit-chk", "checked"),
+        "a programmatic write must re-check a dirtied control (#100)"
+    );
+
+    // Removal turns it off, dirty or not.
+    input.remove_attribute("checked");
+    assert!(!f.prop("lit-chk", "checked"));
+
+    // And a falsey *string* is a presence, so it turns it back on — which is
+    // what desktop has always done with the same call (#622).
+    input.set_attribute("checked", "false");
+    assert!(
+        f.prop("lit-chk", "checked"),
+        "`set_attribute(\"checked\", \"false\")` makes the attribute present, \
+         and presence checks the box on both backends (#622)"
     );
 
     f.teardown();
