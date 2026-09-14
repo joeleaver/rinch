@@ -786,7 +786,15 @@ the notification closes — or unmounts — first, so a toast the user dismisses
 hand does not fire `onclose` a second time at its original deadline, and one
 that is shown again gets a fresh delay. `0` is off.
 
-`trap_focus` and `lock_scroll` are **still not wired**; they are tracked in
+*`trap_focus`* contains **Tab** inside the overlay while it is open: the
+component stamps `data-trap-focus` on its root, and both backends cycle Tab and
+Shift+Tab within that element instead of walking the page. A *click* outside is
+untouched — the pointer is not trapped, as a *non-modal* dialog's is not — and focus is neither
+moved into the overlay on open nor restored on close
+([issue #695](https://github.com/joeleaver/rinch/issues/695)). Details and the
+nesting rule are in the [focus guide](focus.md#containing-tab-inside-an-overlay).
+
+`lock_scroll` is **still not wired**; it is tracked in
 [issue #474](https://github.com/joeleaver/rinch/issues/474).
 
 ### Tooltip
@@ -825,7 +833,7 @@ Positioned with `top: var(--rinch-window-top-inset, 0px)`, so it clears any wind
 | `padding` | `String` | `""` | |
 | `z_index` | `Option<i32>` | `None` | Stacking level of the whole modal: the full-viewport overlay sits here and the panel one above it (defaults 200 / 201) |
 | `lock_scroll` | `bool` | **`true`** | **Not wired yet** (#474) |
-| `trap_focus` | `bool` | **`true`** | **Not wired yet** (#474) |
+| `trap_focus` | `bool` | **`true`** | Tab cycles inside the overlay while it is open (#474) |
 | `onclose` | `Option<Callback>` | `None` | |
 
 ### Drawer
@@ -849,7 +857,7 @@ Positioned with `top: var(--rinch-window-top-inset, 0px)`, so it clears any wind
 | `padding` | `String` | `""` | |
 | `z_index` | `Option<i32>` | `None` | Stacking level of the whole drawer: the overlay sits here and the panel one above it (defaults 200 / 201) |
 | `lock_scroll` | `bool` | **`true`** | **Not wired yet** (#474) |
-| `trap_focus` | `bool` | **`true`** | **Not wired yet** (#474) |
+| `trap_focus` | `bool` | **`true`** | Tab cycles inside the overlay while it is open (#474) |
 | `onclose` | `Option<Callback>` | `None` | |
 
 ### Notification
@@ -896,7 +904,7 @@ neither dismissal prop had anywhere to send a request. Both `onclose` and
 | `close_on_escape` | `bool` | **`true`** | Escape invokes `onclose` while this is the innermost open overlay |
 | `width` | `String` | `""` | |
 | `z_index` | `Option<i32>` | `None` | Stacking level of the dropdown; its click-catching backdrop stays one below (defaults 100 / 99) |
-| `trap_focus` | `bool` | `false` | **Not wired yet** (#474) |
+| `trap_focus` | `bool` | `false` | Tab cycles inside the popover (target + dropdown) while it is open (#474) |
 | `onclose` | `Option<Callback>` | `None` | Invoked when the popover asks to close |
 
 Sub-components: **PopoverTarget** (no props), **PopoverDropdown** (no props).

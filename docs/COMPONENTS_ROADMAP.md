@@ -178,5 +178,6 @@ Tier 4 overlay components are implemented with:
   dismiss backdrop)
 - Escape key support (via `close_on_escape` prop, on the dismiss stack)
 - Auto-dismiss (via `Notification::auto_close`)
-- ⛔ Focus trapping: `trap_focus` is declared on Modal/Drawer/Popover and **not
-  wired** — issue #474
+- Focus trapping: `trap_focus` on Modal/Drawer/Popover stamps `data-trap-focus`
+  and both backends cycle Tab inside the overlay (issue #474). Moving focus into
+  an overlay on open and restoring it on close is issue #695

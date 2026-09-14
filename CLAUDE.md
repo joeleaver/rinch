@@ -1166,14 +1166,15 @@ tag-agnostic where HTML ignores `disabled` on a `<div>`, and rinch has no
 browser has no notion of, which meant one markup and opposite behaviour. To say
 *enabled*, **remove** the attribute, which is what a falsey reactive `bool` does
 for you (`NodeHandle::write_attribute`, #551).
-rinch's **own** `data-disabled` and `data-nofocus` keep the escape, and are the
-only two that have it — a rinch convention rather than a desktop quirk, which
-`data-nofocus` is what shows: the web reads it the same way, through
-`[data-nofocus]:not([data-nofocus="false" i])`. (`data-disabled` has no web
+rinch's **own** `data-disabled`, `data-nofocus` and `data-trap-focus` keep the
+escape, and are the only three that have it — a rinch convention rather than a
+desktop quirk, which the latter two are what show: the web reads them the same
+way, through `[data-nofocus]:not([data-nofocus="false" i])` and
+`[data-trap-focus]:not([data-trap-focus="false" i])`. (`data-disabled` has no web
 reader; the browser does not know the attribute.) The rules are one function
-each — `rinch_core::dom::data_attr_is_on` for the `data-` pair, a bare
+each — `rinch_core::dom::data_attr_is_on` for the `data-` family, a bare
 `contains_key` for the HTML pair — and `"0"` is the only value that can tell
-which one a reader uses, so both readers pin it.
+which one a reader uses, so all three readers pin it.
 
 A disabled `<fieldset>` disables its
 subtree (except its first `<legend>`); every other tag's `disabled` removes
@@ -1189,13 +1190,43 @@ and make it a typable text field (issue #424). `Select`'s trigger `<div>`
 carries `tabindex="0"` + combobox ARIA (issue #251); arrow/Enter/Escape
 navigation of its **open** option list is issue #434.
 
+**Tab is contained by an open overlay** (`trap_focus`, #474). `Modal`, `Drawer`
+and `Popover` stamp **`data-trap-focus`** on their root while open and **remove**
+it when closed, and both backends read it: desktop's
+`RinchApp::tab_trap_root` starts `collect_focusable_nodes_from` at the trap so
+`handle_tab`'s existing wrap becomes a wrap *inside* it, and `rinch-web`'s
+keydown listener collects the trap's focusable descendants and calls `focus()`
+itself. Which trap: the nearest one the current claim sits inside, else the
+**last** visible one in DOM pre-order — so nesting resolves inside-out and no
+`z-index` is read, matching the dismiss stack's LIFO. Two guards, and a fixture
+each, because a closed `Modal` satisfies both: the attribute is removed (hence
+`is_boolean_attribute`, so `write_attribute` removes rather than writing
+`"false"`), **and** a trap with no box is skipped. **Only Tab is contained** — a
+click or a scripted `focus()` outside still moves focus out, which is a
+*non-modal* `<dialog>`'s behaviour; `showModal()` inerts the page and refuses
+both, and rinch models neither (#695). On the web the **browser** is the
+authority on focusability, not `trap_focusables`' selector: `handle_trapped_tab`
+checks `activeElement` after each `focus()` and steps on when the browser
+declines, because a filter cannot be closed over `<fieldset disabled>`, a
+`tabindex` the browser parsed differently, or `inert`. A trap whose every
+control the browser refuses therefore takes the **empty-trap** path — key
+consumed, focus unmoved — not an endless retry. `register_focus_target`'s
+`on_key` is the obvious-looking route and silently does nothing: the arbiter
+offers a key to a registered target only while it holds `FocusTarget::Node`, and
+the focused element inside a dialog is normally an `<input>`.
+`crates/rinch/src/app/trap_focus_tests.rs` and
+`crates/rinch-web/tests/trap_focus.rs` are the pins — twins, not shared code,
+since the focusable set is a tree walk on one backend and a CSS selector on the
+other.
+
 Still unmatched to the web: a positive `tabindex` does not order ahead of DOM
-order (issue #435), and a Modal/Drawer backdrop does not contain Tab.
+order (issue #435), and an overlay neither moves focus into itself on open nor
+restores it on close (issue #695).
 
 **`data-nofocus` takes the click without the keyboard** (issue #312) — the
 `preventDefault()`-on-mousedown mechanism browsers converged on, which an editor
 toolbar needs so Bold does not blur the editor it acts on. Same boolean rule as
-`data-disabled` — including the `"false"` escape, which these two rinch-owned
+`data-disabled` — including the `"false"` escape, which the three rinch-owned
 attributes keep and the HTML pair does not — read **anywhere on the pressed
 node's ancestor chain** so a toolbar carries it once; it protects whatever holds
 the keyboard (editor, input, surface, node), the `data-rid` click still fires,
@@ -1286,10 +1317,14 @@ register_focus_target(
   `on_focus_lost`. `ImeEvent::DeleteSurrounding` stays inert on desktop
   (`sync_ime` requests only `with_cursor_area()`).
 - Not yet: the Android soft keyboard for a registered target (the shell still
-  watches for a focused `<input>`/editor), and backdrop modality (Tab still
-  reaches controls behind a Modal/Drawer backdrop — their `trap_focus` prop is
-  that gap, #474). *Dismissal* is separate and does work: see the dismiss stack
-  above.
+  watches for a focused `<input>`/editor), and moving focus *into* an overlay on
+  open or restoring it on close (#695). **Tab containment does work** — see
+  `data-trap-focus` above — as does *dismissal*, via the dismiss stack. What
+  remains unmatched is **modality**: a click still reaches a control the backdrop
+  does not cover, and a click — or a scripted `focus()` — outside an overlay
+  moves focus out of it. That matches a *non-modal* `<dialog>`; a browser's
+  `showModal()` inerts the rest of the page and refuses even a scripted focus
+  behind it (measured, Chrome 150), which rinch does not model.
 - **An open `<select>` popup joins the dismiss stack** (#671). It is handled by
   the arbiter, which is step 2, while the stack is inside step 1 — so once
   `close_on_escape` started working, a `<select>` inside a `Modal` lost Escape
@@ -2611,7 +2646,7 @@ Button { variant: "filled" }
 
 **Component Props vs HTML Attributes:**
 
-- **HTML elements** (`div`, `span`, `p`, etc.) accept any attribute as a string: `style:`, `class:`, `id:`, custom `data-*`, etc. They also support reactive closures `{|| expr}` on any attribute. An **HTML boolean attribute** is the exception to "as a string": its *presence* is its value, so `rsx!` writes the bare presence form for a truthy value and **removes** the attribute for a falsey one, through `NodeHandle::write_attribute` rather than `set_attribute` (issue #551). Writing `disabled="false"` would leave the attribute present, which HTML — and therefore the browser, measured — reads as *disabled*; a reactive `disabled: {|| busy.get()}` was disabled from the first render and never recovered, on **both** backends. The set is `rinch_core::dom::is_boolean_attribute`: the 30 rows the WHATWG attributes index marks "Boolean attribute", plus `hidden` (enumerated, but its invalid-value default is the hidden state, so `hidden="false"` hides) and rinch's own `data-disabled` / `data-nofocus`. **The rule keys on the attribute name, not the value's type**, and that is load-bearing: `draggable` is enumerated (`"true"`/`"false"`, invalid → `auto`) and desktop's drag dispatch matches the literal `"true"`, the ARIA states are tri-valued, and `data-viewport-ready`'s *absence* means ready — presence-mapping any of them loses or inverts it. A *string* yielded into a boolean attribute follows `attr_is_truthy` (on unless `"false"` in any case, or `"0"`), which is the **writer's** rule and nobody's reader: every desktop reader of the HTML set is presence-only, correctly, because a browser is (`:checked` matches on `checked="false"`, `:disabled` on `disabled="false"`, both measured) — which is why #551 reproduced on desktop and why the cure is a writer that removes rather than a reader that learns a falsey string. **`set_attribute` is not that writer.** It is the literal primitive on both backends — including for the `checked` family, which is issue #612's divergence over again and what **#622** closed: the web arm used to presence-map `checked` / `selected` through `attr_is_truthy`, so `set_attribute("checked", "false")` unchecked the box on web and checked it on desktop. It now writes the string, leaving the attribute *present*, which checks the box on both. Writing a `bool` is `write_attribute`'s job; meaning "off" is `remove_attribute`'s. On web the live IDL property (`.checked`, `<option>.selected`) is mirrored from that **presence** and not from the string, because a browser stops mirroring the attribute onto the property once the user has toggled the control (the dirty-checkedness flag) and rinch has no such flag — desktop's reader sees the attribute and nothing else, so the app's write has to win on both. `indeterminate` is the exception and stays truthiness-mapped: HTML has no such content attribute at all, so it has no presence for anyone to read. A `"false"` escape survives for exactly two attributes, rinch's own `data-disabled` / `data-nofocus`, spelled once as `rinch_core::dom::data_attr_is_on`; issue #612 retired it from `disabled` / `readonly`, where it had been desktop-only and so a pure divergence. It is a deliberate convention rather than a leftover, and `data-nofocus` is what shows that — the web reads it the same way, through `[data-nofocus]:not([data-nofocus="false" i])`, while `data-disabled` has no web reader at all. Note `data_attr_is_on` is deliberately *narrower* than `attr_is_truthy`: `"0"` is on, matching that selector, and `"0"` is therefore the only value that distinguishes the two rules — which is why both desktop readers pin it (`computed_style_tests::the_data_escape_excuses_only_false_at_the_reader`, `nofocus_tests::only_false_opts_out_not_zero`). **`oninput` and `onchange` on `<input>`/`<textarea>` elements** receive the input value as a `String` — use `Fn(String)` closures, not `Fn()`. They are **not aliases** (issue #226): `oninput` fires per keystroke with the live value; `onchange` fires once at the commit boundary — focus leaves the control after a modification, Enter (single-line inputs only; a `<textarea>` commits at blur), or a `<select>` pick — and only if the value actually changed since focus. On Enter, `onchange` fires before `onsubmit`:
+- **HTML elements** (`div`, `span`, `p`, etc.) accept any attribute as a string: `style:`, `class:`, `id:`, custom `data-*`, etc. They also support reactive closures `{|| expr}` on any attribute. An **HTML boolean attribute** is the exception to "as a string": its *presence* is its value, so `rsx!` writes the bare presence form for a truthy value and **removes** the attribute for a falsey one, through `NodeHandle::write_attribute` rather than `set_attribute` (issue #551). Writing `disabled="false"` would leave the attribute present, which HTML — and therefore the browser, measured — reads as *disabled*; a reactive `disabled: {|| busy.get()}` was disabled from the first render and never recovered, on **both** backends. The set is `rinch_core::dom::is_boolean_attribute`: the 30 rows the WHATWG attributes index marks "Boolean attribute", plus `hidden` (enumerated, but its invalid-value default is the hidden state, so `hidden="false"` hides) and rinch's own `data-disabled` / `data-nofocus` / `data-trap-focus`. **The rule keys on the attribute name, not the value's type**, and that is load-bearing: `draggable` is enumerated (`"true"`/`"false"`, invalid → `auto`) and desktop's drag dispatch matches the literal `"true"`, the ARIA states are tri-valued, and `data-viewport-ready`'s *absence* means ready — presence-mapping any of them loses or inverts it. A *string* yielded into a boolean attribute follows `attr_is_truthy` (on unless `"false"` in any case, or `"0"`), which is the **writer's** rule and nobody's reader: every desktop reader of the HTML set is presence-only, correctly, because a browser is (`:checked` matches on `checked="false"`, `:disabled` on `disabled="false"`, both measured) — which is why #551 reproduced on desktop and why the cure is a writer that removes rather than a reader that learns a falsey string. **`set_attribute` is not that writer.** It is the literal primitive on both backends — including for the `checked` family, which is issue #612's divergence over again and what **#622** closed: the web arm used to presence-map `checked` / `selected` through `attr_is_truthy`, so `set_attribute("checked", "false")` unchecked the box on web and checked it on desktop. It now writes the string, leaving the attribute *present*, which checks the box on both. Writing a `bool` is `write_attribute`'s job; meaning "off" is `remove_attribute`'s. On web the live IDL property (`.checked`, `<option>.selected`) is mirrored from that **presence** and not from the string, because a browser stops mirroring the attribute onto the property once the user has toggled the control (the dirty-checkedness flag) and rinch has no such flag — desktop's reader sees the attribute and nothing else, so the app's write has to win on both. `indeterminate` is the exception and stays truthiness-mapped: HTML has no such content attribute at all, so it has no presence for anyone to read. A `"false"` escape survives for exactly three attributes, rinch's own `data-disabled` / `data-nofocus` / `data-trap-focus`, spelled once as `rinch_core::dom::data_attr_is_on`; issue #612 retired it from `disabled` / `readonly`, where it had been desktop-only and so a pure divergence. It is a deliberate convention rather than a leftover, and `data-nofocus` / `data-trap-focus` are what show that — the web reads them the same way, through `[data-nofocus]:not([data-nofocus="false" i])` and `[data-trap-focus]:not([data-trap-focus="false" i])`, while `data-disabled` has no web reader at all. Note `data_attr_is_on` is deliberately *narrower* than `attr_is_truthy`: `"0"` is on, matching those selectors, and `"0"` is therefore the only value that distinguishes the two rules — which is why all three desktop readers pin it (`computed_style_tests::the_data_escape_excuses_only_false_at_the_reader`, `nofocus_tests::only_false_opts_out_not_zero`, `trap_focus_tests::the_false_escape_opts_out_and_zero_does_not`). **`oninput` and `onchange` on `<input>`/`<textarea>` elements** receive the input value as a `String` — use `Fn(String)` closures, not `Fn()`. They are **not aliases** (issue #226): `oninput` fires per keystroke with the live value; `onchange` fires once at the commit boundary — focus leaves the control after a modification, Enter (single-line inputs only; a `<textarea>` commits at blur), or a `<select>` pick — and only if the value actually changed since focus. On Enter, `onchange` fires before `onsubmit`:
   ```rust
   input {
       oninput: move |value: String| name_signal.set(value),

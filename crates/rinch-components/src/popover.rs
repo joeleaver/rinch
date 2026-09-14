@@ -324,6 +324,19 @@ impl Component for Popover {
             self.onclose.as_ref(),
         );
 
+        // trap_focus (#474). Off by default here, unlike `Modal`/`Drawer`: a
+        // popover is not modal, and its root holds its **target** as well as
+        // its dropdown — so a trap on it confines Tab to the trigger plus the
+        // dropdown's own controls, which is what an opt-in menu-style popover
+        // wants and what a tooltip-style one must not have.
+        crate::overlay_focus::arm_trap_focus(
+            __scope,
+            &root,
+            self.trap_focus,
+            self.opened,
+            self.opened_fn.as_ref(),
+        );
+
         root
     }
 }

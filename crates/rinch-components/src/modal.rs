@@ -275,6 +275,18 @@ impl Component for Modal {
             });
         }
 
+        // trap_focus (#474): `data-trap-focus` on the root while the modal is
+        // open, removed when it closes. Confinement itself is the backends'
+        // job — see `overlay_focus` for why this is an attribute and not a
+        // registered focus target.
+        crate::overlay_focus::arm_trap_focus(
+            __scope,
+            &root,
+            self.trap_focus,
+            self.opened,
+            self.opened_fn.as_ref(),
+        );
+
         // close_on_escape (#474): join the dismiss stack for as long as this
         // modal is mounted. The open check happens at dispatch, not here — a
         // closed modal stays mounted and must leave Escape to the app.

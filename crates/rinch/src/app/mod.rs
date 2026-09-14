@@ -48,6 +48,8 @@ mod select_widget;
 mod text_selection;
 #[cfg(test)]
 mod textarea_newline_tests;
+#[cfg(test)]
+mod trap_focus_tests;
 
 pub(crate) use hit_testing::*;
 
@@ -2090,11 +2092,6 @@ impl RinchApp {
 
     /// Handle Tab/Shift+Tab key to navigate between focusable elements.
     fn handle_tab(&mut self, shift: bool) {
-        let focusable = self.collect_focusable_nodes();
-        if focusable.is_empty() {
-            return;
-        }
-
         // Find current focused element: a focused input, a generic focusable
         // node held by the arbiter, or — falling back — the DOM's focused node
         // resolved upward to its nearest focusable ancestor (a pointer click
@@ -2108,6 +2105,23 @@ impl RinchApp {
             FocusTarget::Input(id) | FocusTarget::Node(id) => Some(id),
             _ => self.focused_input_node_id,
         };
+
+        // `trap_focus` (issue #474): an open overlay confines Tab to itself, by
+        // being the root the collection walks from. `handle_tab` wraps modulo
+        // the list it is handed and knows nothing else, so containment costs
+        // one substitution here and no change to the cycling below. Resolved
+        // *after* `current`, because the trap chosen is the one the current
+        // claim sits inside.
+        let focusable = match self.tab_trap_root(current) {
+            Some(root) => self.collect_focusable_nodes_from(root),
+            None => self.collect_focusable_nodes(),
+        };
+        // A trap with nothing focusable inside it swallows Tab rather than
+        // letting it out: that is what containment means, and it is the state a
+        // browser leaves an `inert`-ed page in too.
+        if focusable.is_empty() {
+            return;
+        }
 
         let current_idx = current
             .and_then(|id| focusable.iter().position(|&fid| fid == id))
@@ -2386,19 +2400,163 @@ impl RinchApp {
             .is_some_and(|v| rinch_core::dom::data_attr_is_on(v))
     }
 
+    /// Whether a node declares itself a **focus trap** (`data-trap-focus`,
+    /// issue #474).
+    ///
+    /// rinch's third own boolean attribute, so it keeps rinch's `"false"`
+    /// escape exactly as `data-nofocus` does, through the one shared rule
+    /// [`rinch_core::dom::data_attr_is_on`]. `rinch-web` implements the same
+    /// escape (`[data-trap-focus]:not([data-trap-focus="false" i])`), which is
+    /// what makes it a convention rather than a desktop quirk.
+    ///
+    /// Presence is what an overlay writes and *absence* is what it writes when
+    /// it closes — `NodeHandle::write_attribute` removes it for a falsey value,
+    /// which is why the attribute is in
+    /// [`rinch_core::dom::is_boolean_attribute`]. A closed overlay that left
+    /// `data-trap-focus="false"` behind would still be skipped by this reader,
+    /// but only by the escape; the removal is the guarantee, and the escape is
+    /// the backstop.
+    pub(crate) fn node_traps_focus(node: &rinch_dom::Node) -> bool {
+        node.attributes
+            .get("data-trap-focus")
+            .is_some_and(|v| rinch_core::dom::data_attr_is_on(v))
+    }
+
+    /// Whether a node has a box the user could reach — a non-zero layout, and
+    /// not `visibility: hidden`/`collapse`.
+    ///
+    /// Shared by the focusable collector and the trap-root search so the two
+    /// cannot drift: a closed `Modal`'s root is `display: none`, which is a zero
+    /// box, and a trap the collector would find nothing inside must not be
+    /// chosen as the root in the first place — that would leave Tab dead for
+    /// the rest of the session.
+    fn node_is_visible(node: &rinch_dom::Node) -> bool {
+        node.layout.width > 0.0
+            && node.layout.height > 0.0
+            && !matches!(
+                node.computed_style.visibility,
+                rinch_dom::computed_style::VisibilityValue::Hidden
+                    | rinch_dom::computed_style::VisibilityValue::Collapse
+            )
+    }
+
+    /// The live focus trap Tab is confined to, if any (issue #474).
+    ///
+    /// Two rules, in order:
+    ///
+    /// 1. **The nearest visible trap the current claim sits inside.** Whatever
+    ///    holds the keyboard keeps it.
+    /// 2. **Otherwise, the last visible trap in DOM pre-order.** Nothing is
+    ///    focused, or focus is outside every trap (an overlay that has just
+    ///    opened, before anything inside it is focused). Last, not first, is
+    ///    the nesting rule: an overlay opened from inside another is rendered
+    ///    deeper, so later.
+    ///
+    /// **The two rules agree about nesting, and that is worth knowing before
+    /// touching either.** For a trap inside a trap the inner one is *both* the
+    /// nearest ancestor of a claim inside it and the last in pre-order, so rule
+    /// 2 alone answers "the inner wins while it is open" and "the outer takes
+    /// over when it closes" — measured, by deleting rule 1 and watching the
+    /// nesting fixtures stay green. Rule 1 earns its place on **siblings**:
+    /// two traps open at once where neither contains the other (a `Drawer` and
+    /// a `Popover` elsewhere on the page), where rule 2 would drag Tab out of
+    /// the one the user is typing in and into the later one.
+    /// `trap_focus_tests::focus_inside_one_of_two_sibling_traps_stays_in_that_one`
+    /// is the sole witness; delete it and rule 1 has no test at all.
+    ///
+    /// **`z-index` is deliberately not consulted**, so a raised-but-earlier
+    /// overlay loses to a later one. That matches the Escape dismiss stack,
+    /// which is LIFO by registration for the same reason, and it means one
+    /// mental model covers both keys.
+    ///
+    /// Visibility is checked at every step, so a *closed* overlay is skipped
+    /// even if it kept the attribute — see [`Self::node_is_visible`].
+    fn tab_trap_root(&self, current: Option<usize>) -> Option<usize> {
+        let doc = self.doc.as_ref()?;
+        let d = doc.borrow();
+
+        // 1. Ancestor-or-self of whatever holds focus. The DOM's own focused
+        //    node is the fallback for a claim the arbiter does not model as a
+        //    node id (a `Select` popup, the editor).
+        let mut cur = current.or(d.tree.focused_node);
+        while let Some(id) = cur {
+            let Some(node) = d.tree.get(id) else { break };
+            if Self::node_traps_focus(node) && Self::node_is_visible(node) {
+                return Some(id);
+            }
+            cur = node.parent;
+        }
+
+        // 2. The last one in pre-order. The walk pushes children in reverse so
+        //    the stack pops them in document order, which is what makes "last"
+        //    mean last in the document rather than last visited.
+        let mut last = None;
+        let mut stack = vec![0usize];
+        while let Some(nid) = stack.pop() {
+            let Some(node) = d.tree.get(nid) else {
+                continue;
+            };
+            if Self::node_traps_focus(node) && Self::node_is_visible(node) {
+                last = Some(nid);
+            }
+            for &child in node.children.iter().rev() {
+                stack.push(child);
+            }
+        }
+        last
+    }
+
+    /// Whether the subtree at `root` starts out disabled by an ancestor
+    /// `<fieldset disabled>` above it.
+    ///
+    /// [`Self::collect_focusable_nodes_from`] inherits the flag downwards, so a
+    /// walk that starts below the root of the document has to be told what it
+    /// would have inherited on the way down. Walking up instead of down gives
+    /// the same answer, including HTML's carve-out: only the fieldset's *own*
+    /// first `<legend>` is exempt from it, and an outer disabled fieldset still
+    /// reaches into a nested legend.
+    fn inherited_disable_above(d: &RinchDocument, root: usize) -> bool {
+        let mut child = root;
+        let mut cur = d.tree.get(root).and_then(|n| n.parent);
+        while let Some(id) = cur {
+            let Some(node) = d.tree.get(id) else { break };
+            if Self::node_is_disabled(node)
+                && node.tag() == Some("fieldset")
+                && rinch_dom::first_legend_child(&d.tree, node) != Some(child)
+            {
+                return true;
+            }
+            child = id;
+            cur = node.parent;
+        }
+        false
+    }
+
     /// Collect all focusable node IDs in DOM pre-order (natural tab order).
     fn collect_focusable_nodes(&self) -> Vec<usize> {
+        self.collect_focusable_nodes_from(0)
+    }
+
+    /// The same collection, confined to the subtree at `root`.
+    ///
+    /// `root = 0` is the whole document, which is what
+    /// [`Self::collect_focusable_nodes`] asks for. Any other root is a focus
+    /// trap (issue #474) — and because `handle_tab` wraps modulo the list it is
+    /// given, confining the list is the whole of confining Tab.
+    fn collect_focusable_nodes_from(&self, root: usize) -> Vec<usize> {
         let Some(doc) = &self.doc else {
             return Vec::new();
         };
         let d = doc.borrow();
         let mut result = Vec::new();
 
-        // Walk DOM tree depth-first from root (node 0). The flag rides the
-        // stack because `<fieldset disabled>` is the one element whose
-        // `disabled` reaches its whole subtree, and inheriting it downwards
-        // costs nothing where an ancestor walk per node would be quadratic.
-        let mut stack: Vec<(usize, bool)> = vec![(0, false)];
+        // Walk DOM tree depth-first from `root`. The flag rides the stack
+        // because `<fieldset disabled>` is the one element whose `disabled`
+        // reaches its whole subtree, and inheriting it downwards costs nothing
+        // where an ancestor walk per node would be quadratic. It is seeded from
+        // *above* `root`, which is a no-op for the whole-document walk and the
+        // only way a trap inside a disabled fieldset stays disabled.
+        let mut stack: Vec<(usize, bool)> = vec![(root, Self::inherited_disable_above(&d, root))];
         while let Some((nid, inherited_disabled)) = stack.pop() {
             let Some(node) = d.tree.get(nid) else {
                 continue;
@@ -2415,13 +2573,7 @@ impl RinchApp {
             let skip_self = self_disabled
                 || inherited_disabled
                 || Self::effective_tabindex(node).is_some_and(|v| v < 0)
-                || node.layout.width <= 0.0
-                || node.layout.height <= 0.0
-                || matches!(
-                    node.computed_style.visibility,
-                    rinch_dom::computed_style::VisibilityValue::Hidden
-                        | rinch_dom::computed_style::VisibilityValue::Collapse
-                );
+                || !Self::node_is_visible(node);
 
             if !skip_self {
                 // Focusable: an effective `tabindex >= 0` — explicit, or

@@ -31,7 +31,8 @@
 //! no longer the odd ones out — they are the rule, and
 //! `computed_style_tests::the_disabled_selector_follows_the_boolean_attribute_rule`
 //! is where `:disabled` says the same. Only rinch's own `data-disabled` /
-//! `data-nofocus` keep an escape, because both backends implement it on purpose.
+//! `data-nofocus` / `data-trap-focus` keep an escape, because both backends
+//! implement it on purpose.
 //!
 //! Each test asserts *both* directions on purpose: at scroll-offset-zero-style
 //! fixed points a broken and a fixed reader agree, and "present means on" is only

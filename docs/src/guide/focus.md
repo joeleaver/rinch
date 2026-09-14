@@ -47,8 +47,9 @@ rows and list items; none of those should be Tab stops.
 | `disabled` / `data-disabled` | Takes no focus at all, and accepts no keyboard edit. Both spellings count — the component library writes the HTML one, the runtime's own widgets write the `data-` one |
 | `readonly` | Focuses, moves its caret, selects and copies like any other field — and refuses every command that would change its text (typing, delete, cut, paste, undo/redo) |
 | `data-nofocus` | A press here takes the **click** but not the keyboard: whatever is focused stays focused. Read anywhere on the pressed element's ancestor chain, so a toolbar carries it once |
+| `data-trap-focus` | Tab and Shift+Tab cycle **inside** this element instead of walking the page. What `Modal`, `Drawer` and `Popover` write while they are open — see [Containing Tab inside an overlay](#containing-tab-inside-an-overlay) |
 
-All four are **boolean attributes**: their presence is their value, so
+All five are **boolean attributes**: their presence is their value, so
 `disabled`, `disabled=""` and `disabled="disabled"` say the same thing. To say
 *enabled*, remove the attribute — a `bool` in `rsx!` does that for you
 (`button { disabled: {move || busy.get()} }`).
@@ -59,11 +60,12 @@ alone**, exactly as a browser reads them: `disabled="false"` disables and
 That applies to every tag the attribute reaches, so a `<textarea readonly="false">`
 is read-only too.
 
-rinch's **own** `data-disabled` and `data-nofocus` are the exception, and the only
-one: there the literal `"false"` turns the attribute off. `data-nofocus` is read
-that way on both backends; `data-disabled` is a desktop attribute with no web
-reader, because the browser does not know it. Only `"false"` is excused — `"0"` is
-on, matching the web's `[data-nofocus="false" i]` selector. Reach for the escape
+rinch's **own** `data-disabled`, `data-nofocus` and `data-trap-focus` are the
+exception, and the only one: there the literal `"false"` turns the attribute off.
+`data-nofocus` and `data-trap-focus` are read that way on both backends;
+`data-disabled` is a desktop attribute with no web reader, because the browser
+does not know it. Only `"false"` is excused — `"0"` is on, matching the web's
+`[data-nofocus="false" i]` selector. Reach for the escape
 when you are writing the attribute **by hand with `set_attribute`** and would
 otherwise have to branch between writing and removing it; a `bool` in `rsx!`
 already removes it for you.
@@ -128,10 +130,11 @@ behave like a button — and what makes Space on a `Checkbox`'s visually hidden
 `<input>` toggle the `<label>` that wraps it.
 
 > **Still not matched to the web.** A positive `tabindex` does not order ahead
-> of DOM order — the collector is a plain pre-order walk (issue #435) — and a
-> Modal's or Drawer's backdrop does not contain Tab, so controls behind it stay
-> reachable. Arrow/Enter/Escape navigation of the `Select` component's open
-> option list is issue #434.
+> of DOM order — the collector is a plain pre-order walk (issue #435).
+> Arrow/Enter/Escape navigation of the `Select` component's open option list is
+> issue #434. An overlay does not move focus *into* itself when it opens, or
+> give it back when it closes (issue #695) — Tab is contained, but the first
+> press is the user's.
 
 ### Taking the click without the keyboard
 
@@ -168,10 +171,93 @@ The rules:
   link-URL field in a toolbar has to be usable, so the field's own claim wins
   over the region's opt-out.
 - Boolean attribute, same rule as `data-disabled`: present means on whatever
-  the value, and the explicit `"false"` opts out — one of rinch's own two
+  the value, and the explicit `"false"` opts out — one of rinch's own three
   attributes where that escape exists.
 - It works on **both backends**. On the web it becomes `preventDefault()` on
   the `pointerdown`.
+
+### Containing Tab inside an overlay
+
+A dialog that lets Tab walk out into the page behind it is not really a dialog:
+the keyboard user ends up editing a form they cannot see. `Modal`, `Drawer` and
+`Popover` all take a **`trap_focus`** prop for this — `true` by default on the
+first two, `false` on `Popover`, which is not modal.
+
+```rust
+rsx! {
+    Modal {
+        opened_fn: move || open.get(),
+        onclose: move || open.set(false),
+        trap_focus: true,          // the default; `false` lets Tab out
+        TextInput { placeholder: "Name" }
+        Button { onclick: move || save(), "Save" }
+    }
+}
+```
+
+While the overlay is open its root carries **`data-trap-focus`**, and both
+backends read it: Tab and Shift+Tab cycle the focusable elements inside that
+element and wrap at its ends, instead of walking the whole document. When it
+closes the attribute is removed and Tab goes back to the page.
+
+You can put the attribute on anything, not just these three components — it is a
+plain contract, the way `data-nofocus` is:
+
+```rust
+div { data-trap-focus: "", class: "command-palette",
+    input { }
+    button { "Run" }
+}
+```
+
+The rules:
+
+- **Which trap wins.** Whichever one currently holds the keyboard; if none does,
+  the **last** one in document order. Nesting therefore resolves inside-out — a
+  modal opened from a modal is rendered deeper, so later — and when the inner one
+  closes the outer takes over with focus unmoved. `z-index` is not consulted, so
+  a raised-but-earlier overlay loses to a later one; that matches the [dismiss
+  stack](#the-dismiss-stack), which answers Escape in the same order.
+- **A trap with no box is not a trap.** A closed `Modal`'s root is
+  `display: none`, so it is skipped even if the attribute were left on it. Both
+  guards are real, and the component relies on the first: it *removes* the
+  attribute rather than writing `"false"` into it.
+- **Only Tab is contained.** A **click** outside the overlay still moves focus
+  out of it, and so does a scripted `focus()`. That is what a *non-modal*
+  `<dialog>` does; a browser's `showModal()` goes further and marks the rest of
+  the page `inert`, so even a scripted focus behind it is refused — measured in
+  Chrome 150. rinch has no `inert` and no `showModal` semantics, so `trap_focus`
+  is a Tab rule, not a modality barrier. The backdrop's `close_on_click_outside`
+  is what an outside click is for; full modality is [issue
+  #695](https://github.com/joeleaver/rinch/issues/695)'s territory.
+- **A trap with nothing focusable inside it swallows Tab.** That is what
+  containment means when there is nowhere to go — and on the web the same is
+  true of a trap whose every control the *browser* refuses to focus (all of them
+  inside a `<fieldset disabled>`, say): the key is consumed and focus stays put,
+  rather than the stepping-on above running forever.
+- Boolean attribute, same rule as `data-nofocus`: present means on whatever the
+  value, and the explicit `"false"` opts out.
+- **Both backends, different code.** Desktop starts its own focusable walk at
+  the trap; `rinch-web` collects the trap's focusable descendants with a CSS
+  selector and calls `focus()` itself. The two sets are therefore computed
+  separately and agree only as far as each is written to — desktop's notion of
+  focusable is already documented as broader than HTML's in places. Trapping
+  inherits that difference rather than creating it. On the web the **browser**
+  is the authority, not rinch's selector: a `focus()` it declines (a control
+  inside a `<fieldset disabled>`, a `tabindex` it parsed differently) is stepped
+  over rather than trusted, so an element rinch listed and the browser will not
+  focus cannot stall the cycle.
+- **Some browser Tab stops are not rinch Tab stops**, on either backend:
+  `contenteditable` elements, `<iframe>`, `<summary>`, `<audio controls>` and
+  `<area href>` are reachable by Tab in a browser and are in neither backend's
+  focusable set. An overlay containing one loses it while trapped — and outside
+  a trap those elements are not desktop Tab stops either, so this is the
+  focusable set's shape rather than something trapping introduces. Give such an
+  element an explicit `tabindex="0"` if it has to be reachable.
+
+**Not done yet (issue #695):** focus is not moved *into* an overlay when it
+opens, and not restored when it closes. The first Tab after opening enters the
+trap, which covers the gap but is not what a browser `<dialog>` does.
 
 ## Registering a focus target
 
@@ -468,7 +554,9 @@ the slot rather than restoring what it displaced.
 - **The browser backend (`rinch-web`).** There is no arbiter there because the
   browser is one: `register_focus_target` is a desktop / Android / embed API.
   On web, give the element a real `tabindex` and use the DOM's own `focus`,
-  `blur` and `keydown` events.
+  `blur` and `keydown` events. `data-trap-focus` is the exception — it works on
+  both backends, because it is a contract the backend reads rather than a
+  registration against the arbiter.
 - **The document-level keyboard hook.** `set_keyboard_interceptor` is a
   capture-phase hook for the whole document, dispatched *before* the arbiter and
   regardless of focus. It is for global shortcuts; `on_key` is for a focused
@@ -490,8 +578,10 @@ the slot rather than restoring what it displaced.
 - **The Android soft keyboard.** A registered target participates in desktop
   IME, but does not yet raise Android's on-screen keyboard: the shell still
   watches for a focused `<input>` or the rich-text editor.
-- **Modal containment.** Tab still reaches controls behind a `Modal`, `Drawer`
-  or `DropdownMenu` backdrop; the backdrop blocks pointer hits only. Their
-  `trap_focus` prop is that gap and is not wired yet (issue #474). *Dismissal*
-  is a separate question and does work — see [the dismiss
-  stack](#the-dismiss-stack).
+- **Modality.** Tab **is** contained by an open `Modal` or `Drawer` — see
+  [Containing Tab inside an overlay](#containing-tab-inside-an-overlay) — but a
+  *click* still reaches controls behind the backdrop wherever the backdrop
+  itself does not cover them, and a click or a scripted `focus()` outside an
+  overlay moves focus out of it. A browser's `showModal()` refuses both, because
+  it marks the rest of the page `inert`; rinch has no `inert` and models no
+  `showModal`. `DropdownMenu` has no `trap_focus` prop and contains nothing.
