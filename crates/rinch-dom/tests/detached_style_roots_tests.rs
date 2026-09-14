@@ -33,12 +33,31 @@
 //!
 //! | fixture | mutant |
 //! |---|---|
-//! | `a_detached_subtree_is_not_recascaded_to_initial_values` | the connectivity skip removed |
+//! | `a_detached_subtree_is_not_recascaded_to_initial_values` | the skip removed; the skip moved to the push sites |
+//! | `a_descendant_of_a_detached_node_is_not_recascaded_either` | a shallow `parent.is_some()` in place of the walk |
 //! | `a_detached_subtree_keeps_its_text_layout` | the skip removed (the shaping half of #668) |
 //! | `a_child_styled_before_it_is_spliced_in_does_not_animate` | the skip removed; `has_been_styled` set on a skipped node |
 //! | `a_node_skipped_while_detached_is_styled_when_it_attaches` | the skip present, attach not re-resolving |
-//! | `a_node_attached_before_the_next_resolve_is_not_skipped` | connectivity tested at push time instead of resolve time |
+//! | `a_node_attached_before_the_next_resolve_is_not_skipped` | connectivity asked at the push sites instead of here |
 //! | `a_detached_node_is_still_readable` | a skip that clears the cached style instead of leaving it |
+//!
+//! Every one of those was run. Two results are worth recording because they are
+//! not what a reader would guess.
+//!
+//! **Setting `has_been_styled` on a skipped node does not bring the animation
+//! back**, so no fixture here kills that mutant and none claims to. The skip
+//! withholds two things at once: the flag, and a `computed_style` populated
+//! from the parentless cascade. A transition needs an old *value* to leave, and
+//! a node that was skipped has `width: auto` — not the 20px the parentless
+//! cascade used to give it — so `diff_animatable` finds nothing to animate
+//! whatever the flag says. The two halves come from the one skip and no small
+//! edit separates them.
+//!
+//! **Issue #651's other suggested cure — keep the parentless cascade and only
+//! withhold `has_been_styled` — fixes the mount half and leaves the unmount
+//! half exactly as it was.** Measured: the transition fixture passes under it
+//! and all three #668 fixtures fail. That is why the skip is in
+//! `resolve_styles` rather than at the `has_been_styled` assignment.
 
 use rinch_core::dom::DomDocument;
 use rinch_dom::RinchDocument;
@@ -120,10 +139,70 @@ fn a_detached_subtree_is_not_recascaded_to_initial_values() {
     );
 }
 
+/// "Connected" means *reachable from the document*, not *has a parent*. A row
+/// **inside** a removed panel still has a parent, so a shallow
+/// `parent.is_some()` test keeps its entry — and then
+/// `find_parent_computed_style` walks to the panel, finds no cached style there
+/// (the `set_attribute` on the panel cleared the whole subtree's through
+/// `invalidate_descendant_styles`), walks off the top, and cascades the row
+/// against `None` exactly as before.
+#[test]
+fn a_descendant_of_a_detached_node_is_not_recascaded_either() {
+    let mut doc = RinchDocument::new();
+    doc.load_css(
+        ".root { font-family: monospace; color: rgb(0,128,0); font-size: 16px; \
+                 line-height: 20px; }",
+    );
+    let body = doc.body();
+    let root = doc.create_element("div");
+    doc.set_attribute(root, "class", "root");
+    doc.append_child(body, root);
+
+    let panel = doc.create_element("div");
+    let row = doc.create_element("div");
+    let t = doc.create_text("hello");
+    doc.append_child(row, t);
+    doc.append_child(panel, row);
+    doc.append_child(root, panel);
+    doc.resolve_layout(800.0, 600.0);
+
+    let mounted = doc
+        .tree
+        .get(row.0)
+        .unwrap()
+        .computed_style
+        .font_family
+        .clone();
+    assert!(
+        mounted.contains("monospace"),
+        "precondition: the mounted row inherits monospace, not {mounted:?}"
+    );
+
+    // The panel's own pending entry clears the whole subtree's cached styles;
+    // the row then gets an entry of its own, and only then does the panel leave.
+    doc.set_attribute(panel, "data-x", "1");
+    doc.set_attribute(row, "data-y", "1");
+    doc.remove_node(panel);
+    doc.resolve_layout(800.0, 600.0);
+
+    assert_eq!(
+        doc.tree.get(row.0).unwrap().computed_style.font_family,
+        mounted,
+        "a node whose parent chain does not reach the document is detached too, \
+         however many parents it has"
+    );
+}
+
 /// The shaping half of #668: `build_ifc_layouts` collects its roots from the
-/// whole slab, so a detached subtree that was recascaded is also **reshaped**,
-/// every layout, from values CSS never asked for. With the cascade skipped
-/// there is no new style to reshape from, so the old layout survives.
+/// whole slab, so a detached subtree that was recascaded is **reshaped** from
+/// values CSS never asked for.
+///
+/// **The detached root is still collected and still reshaped after this fix** —
+/// that is #628 and this change does not touch it. Instrumented on this very
+/// fixture, `build_ifc_layouts` reports `1 roots, 1 detached` on the pass after
+/// the removal at both revisions. What changes is the *style* it reshapes from:
+/// unchanged rather than invented, so the glyphs come out where they were. The
+/// assertion is therefore on the width, not on the layout's survival.
 #[test]
 fn a_detached_subtree_keeps_its_text_layout() {
     let (mut doc, _root, panel, _t) = mounted_panel();
@@ -253,24 +332,55 @@ fn a_node_skipped_while_detached_is_styled_when_it_attaches() {
 /// Connectivity is a question about the tree at **resolve** time, not at push
 /// time. A node whose entry was pushed while it was detached and which is
 /// attached before the next `resolve_styles` must still be resolved by that
-/// entry — a filter applied where `set_attribute` pushes would drop it.
+/// entry.
+///
+/// **Two things here are load-bearing and neither is decoration.**
+///
+/// `suppress_inline_restyle` is the only way to reach the case at all. An
+/// ordinary `append_child` calls `recompute_node_styles_recursive` *and
+/// resolves inside it*, so the node is styled before control returns and no
+/// entry ever survives to a later pass. The flag is `append_child`'s own
+/// documented branch for bulk DOM operations; nothing sets it today, which is
+/// exactly why the resolve-time spelling matters — it is what keeps that branch
+/// safe if anything ever does.
+///
+/// `neighbour` is a positive control. `resolve_styles` falls back to a **full
+/// tree walk** when `style_roots` comes out empty, which reaches every
+/// connected node and would make this fixture pass without the targeted path
+/// running at all. One connected entry in the list forces the branch under
+/// test, and the assertion before the layout says so.
 #[test]
 fn a_node_attached_before_the_next_resolve_is_not_skipped() {
     let mut doc = RinchDocument::new();
-    doc.load_css(".w { width: 73px; height: 9px; }");
+    doc.load_css(".w { width: 73px; height: 9px; } .n { width: 31px; height: 9px; }");
     let body = doc.body();
     let host = doc.create_element("div");
     doc.append_child(body, host);
+    let neighbour = doc.create_element("div");
+    doc.append_child(body, neighbour);
     doc.resolve_layout(800.0, 600.0);
 
-    // Build detached, class it detached, splice it in with the low-level
-    // `append_child`, then resolve — the entry pushed while it was parentless
-    // is the one that must carry the style.
+    // Classed while parentless: the entry goes in with the node detached.
     let child = doc.create_element("div");
     doc.set_attribute(child, "class", "w");
+    // Spliced in without the insertion's own restyle, so that entry is the only
+    // thing that can carry the style.
+    doc.tree.suppress_inline_restyle = true;
     doc.append_child(host, child);
+    doc.tree.suppress_inline_restyle = false;
+    // ...alongside a connected entry, so the list cannot empty out.
+    doc.set_attribute(neighbour, "class", "n");
+    assert!(
+        doc.tree.style_roots.contains(&child.0) && doc.tree.style_roots.contains(&neighbour.0),
+        "positive control: the targeted path, not the empty-list full walk"
+    );
     doc.resolve_layout(800.0, 600.0);
 
+    assert_eq!(
+        doc.tree.get(neighbour.0).unwrap().layout.width,
+        31.0,
+        "positive control: the connected entry resolved, so the pass ran"
+    );
     assert_eq!(
         doc.tree.get(child.0).unwrap().layout.width,
         73.0,
@@ -299,6 +409,13 @@ fn a_detached_node_is_still_readable() {
     // The `query_node_layout` path, on the node and on its text child.
     assert!(doc.query_node_layout(panel.0 as u64).is_some());
     let _ = doc.query_node_layout(t.0 as u64);
-    // The whole-slab serializers walk every node, detached ones included.
+    // `serialize_tree*` and `query_selector` both walk from `tree.body_id`, so
+    // the MCP `dom_tree` and `query_selector` tools never reach a detached node
+    // at all — `get_node(id)` above is the only one that can be pointed at one.
+    // Measured, not assumed: `data-x` is on the panel and nothing else.
+    assert!(
+        rinch_dom::testing::query_selector(&doc.tree, "[data-x]").is_empty(),
+        "a detached node is outside the tree the debug tools walk"
+    );
     let _ = rinch_dom::testing::serialize_tree_verbose(&doc.tree);
 }

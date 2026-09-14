@@ -12,6 +12,43 @@
 //! Each case prints one line of minima over its rounds. The shape under test is
 //! the issue's own: a reactive `if` whose inactive branch is a large prebuilt
 //! panel, sitting detached while the document keeps laying out.
+//!
+//! # What was measured, and what it says
+//!
+//! **Wall clock does not move, and the honest reading is that it cannot.** Four
+//! alternating rounds of both binaries, release, `resolve_layout` minima in ms:
+//!
+//! | case | base `ab5ffda` | with the skip |
+//! |---|---|---|
+//! | `DETACHED-PENDING-500` | 8.03 | 6.39 |
+//! | `ATTACHED-PENDING-500` (control) | 8.34 | 11.50 |
+//! | `DETACHED-IDLE-500` | 0.003 | 0.004 |
+//!
+//! The control moved *further* than the case, in the other direction, so the
+//! spread here is the host and nothing else. What surrounds the cascade is
+//! unchanged and dominates it: `set_attribute` recurses the whole 1001-node
+//! subtree in `invalidate_descendant_styles`, and `build_ifc_layouts` collects
+//! all 501 IFC roots from the slab whether they are in the document or not.
+//! Instrumented, that collection reports `501 roots, 500 detached` on every
+//! pass after the removal, at both revisions — which is #628, not this change.
+//!
+//! **Counted instead of timed, the work removed is exact.** A probe on the
+//! Stylo cascade in `resolve_styles_recursive`, over three ticks of
+//! `detached_panel_with_a_pending_entry`:
+//!
+//! | | cascades |
+//! |---|---|
+//! | base `ab5ffda` | 1503 (501 per tick: the panel and its 500 rows) |
+//! | with the skip | 0 |
+//!
+//! So the claim this change can support is not "layout got faster". It is that
+//! 501 Stylo cascades per tick stop happening, and that **every one of them
+//! computed a wrong answer** — which is what the fixtures in
+//! `detached_style_roots_tests.rs` are actually about.
+//!
+//! The `DETACHED-IDLE` row is the one to read for a real app: an inactive
+//! branch nobody writes to has no pending entry, so the cascade was never
+//! reached at either revision and nothing here applies to it.
 
 use rinch_core::dom::DomDocument;
 use rinch_dom::RinchDocument;
