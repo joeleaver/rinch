@@ -32,8 +32,32 @@ pub fn find_matching_spec(
         })
 }
 
-/// Start transitions for property changes, storing them in the node tree.
-/// Returns the properties that are transitioning (so the caller can preserve old values).
+/// Start, retarget, reverse or leave alone a transition for each changed
+/// property — css-transitions-1 §3, "Starting of transitions".
+///
+/// Returns the properties that are transitioning, which is what tells the
+/// caller to keep the *interpolated* value rather than the after-change one it
+/// has just assigned into `computed_style`. A property whose running transition
+/// is left untouched is still on that list: the caller assigns the whole
+/// after-change style in the same breath, so dropping the property from it
+/// would snap the box to its end value for a frame (#489 needed only one).
+///
+/// **A running transition whose end value still equals the after-change value
+/// is left exactly as it is** (#652). It used to be replaced unconditionally,
+/// and since the caller diffs `computed_style` — which holds the interpolated
+/// value while a transition runs — against the freshly resolved target, *every*
+/// restyle of a transitioning node restarted its transition with a new clock.
+/// A declared 150ms animation then ran for as long as restyles kept arriving:
+/// measured on one UI Zoo navigation, the `--lg` checkbox's width transition
+/// restarted nine times and crawled toward its target instead of arriving.
+///
+/// What is **not** implemented, and is a deliberate scoping rather than an
+/// oversight: §3's interpolability precondition. A pair of values that cannot
+/// be interpolated (a length against a percentage, say) still gets an
+/// `ActiveTransition` that idles for its whole duration, because
+/// `AnimatableValue::interpolate` answers `None` for it and the tick then
+/// writes nothing. That is the pre-existing behaviour and it snaps either way;
+/// cancelling instead would only save the idle frames.
 pub fn start_transitions(
     active_transitions: &mut HashMap<TransitionProperty, ActiveTransition>,
     specs: &[TransitionSpec],
@@ -48,30 +72,67 @@ pub fn start_transitions(
             None => continue,
         };
 
-        // If already transitioning this property, start reversal from current value
-        let from = if let Some(existing) = active_transitions.get(&change.property) {
-            // Get current interpolated value for smooth reversal
-            match existing.value_at(current_time_ms) {
-                Some(v) => v,
-                None => change.old_value.clone(),
+        // Cloned rather than borrowed so the §3 step 5.1 arm below can remove
+        // the entry. One clone per changed property per restyle, and every
+        // variant a `PropertyChange` can carry is `Copy`-sized.
+        let existing = active_transitions.get(&change.property).cloned();
+
+        let started = match existing {
+            // §3 step 4: nothing was transitioning this property, so start from
+            // the before-change value over the declared duration.
+            None => ActiveTransition::starting(
+                change.property,
+                change.old_value.clone(),
+                change.new_value.clone(),
+                spec,
+                current_time_ms,
+            ),
+
+            // §3: a running transition whose end value still equals the
+            // after-change value is left alone — same target, same clock.
+            Some(ref existing) if existing.to.same_computed_value(&change.new_value) => {
+                transitioning.push(change.property);
+                continue;
             }
-        } else {
-            change.old_value.clone()
+
+            Some(existing) => {
+                let current = existing
+                    .value_at(current_time_ms)
+                    .unwrap_or_else(|| change.old_value.clone());
+
+                // §3 step 5.1: the running transition has already arrived at the
+                // new target, so cancel it and start nothing. Leaving the
+                // property off `transitioning` lets the caller's after-change
+                // value stand — which is the value the box is already at.
+                if current.same_computed_value(&change.new_value) {
+                    active_transitions.remove(&change.property);
+                    continue;
+                }
+
+                // §3 step 5.3: a reversal — the new target is the value this
+                // transition would reverse back to — is shortened in proportion
+                // to how far it had got. §3 step 5.2 is everything else: cancel
+                // and restart from the current value over the full duration.
+                let is_reversal = existing
+                    .reversing_adjusted_start_value
+                    .same_computed_value(&change.new_value)
+                    && spec.duration_ms + spec.delay_ms > 0.0;
+
+                if is_reversal {
+                    existing.reversing(current, change.new_value.clone(), spec, current_time_ms)
+                } else {
+                    ActiveTransition::starting(
+                        change.property,
+                        current,
+                        change.new_value.clone(),
+                        spec,
+                        current_time_ms,
+                    )
+                }
+            }
         };
 
-        active_transitions.insert(
-            change.property,
-            ActiveTransition {
-                property: change.property,
-                from,
-                to: change.new_value.clone(),
-                timing: spec.timing,
-                start_time_ms: current_time_ms,
-                duration_ms: spec.duration_ms,
-                delay_ms: spec.delay_ms,
-            },
-        );
-
+        active_transitions.insert(change.property, started);
         transitioning.push(change.property);
     }
 
