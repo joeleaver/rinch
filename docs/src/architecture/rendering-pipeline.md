@@ -237,6 +237,50 @@ shell whose first paint after the change is slower than the transition is long
 (Android's is around 300ms against a typical 220ms), that is the only tick the
 transition ever gets.
 
+## Starting a transition
+
+Turning the clock is what advances a transition; style resolution is what
+starts, retargets, reverses or cancels one. `transition::start_transitions`
+implements css-transitions-1 §3, "Starting of transitions", against the
+properties the style differ found a change in:
+
+| The running transition | What happens |
+|---|---|
+| none | start from the before-change value over the declared duration (§3 step 4) |
+| its end value still equals the after-change value | **left exactly as it is** — same endpoints, same clock |
+| it has already reached the after-change value | cancelled; nothing is started (§3 step 5.1) |
+| the after-change value is the value it would reverse back to | cancelled, and a **shortened** reversal started (§3 step 5.3) |
+| anything else | cancelled and restarted from the current interpolated value, over the full declared duration (§3 step 5.2) |
+
+The second row is the one that is easy to get wrong, because the caller diffs
+the node's `computed_style` — which holds the **interpolated** value while a
+transition runs — against the freshly resolved target. Every restyle of a
+transitioning node therefore *looks* like a change, and rinch used to restart
+the transition on each one with a brand new clock (#652). A declared 150ms
+animation then ran for as long as restyles kept arriving, its duration a
+function of how much else on the page happened to be animating; with `ease`,
+which is slow near t=0, each restart advanced the value by a sliver and the box
+crawled toward its target instead of arriving.
+
+A property whose transition was left alone is still reported as *transitioning*
+to the caller. That is what tells style resolution to write the interpolated
+value back over the after-change style it has just assigned wholesale — without
+it the box would snap to its end value for one frame, which is all #489 needed.
+
+**A reversal is shortened.** Turning a 150ms slide around half way through is
+75ms of travel back, not another 150ms, so it lands on its old start value at
+the moment it would have reached its end value — the behaviour a hover in and
+straight back out depends on. The factor folds the running transition's own
+factor back in (`|f·progress + (1 − f)|`), so reversing a reversal is measured
+against the declared duration rather than compounding toward zero.
+
+What rinch does **not** implement from §3 is the interpolability precondition.
+A pair of values that cannot be interpolated — a length against a percentage,
+which needs a `calc()` that `ComputedStyle` cannot hold — still gets an
+`ActiveTransition`, which then idles for its whole duration because
+`AnimatableValue::interpolate` answers `None` for it. The property snaps either
+way; cancelling instead would only save the idle ticks.
+
 ## Optimizations
 
 Current and planned improvements to the rendering pipeline:

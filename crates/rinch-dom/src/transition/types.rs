@@ -540,9 +540,7 @@ impl AnimatableValue {
             _ => None,
         }
     }
-}
 
-impl AnimatableValue {
     /// Whether two animatable values denote the **same computed value**.
     ///
     /// css-transitions-1 §3 "Starting of transitions" compares a running
@@ -765,7 +763,8 @@ impl ActiveTransition {
             start_time_ms: current_time_ms,
             duration_ms: spec.duration_ms * factor,
             // A negative delay is an offset into the curve, not a wait, so the
-            // spec shortens only a positive one.
+            // spec shortens only a nonnegative one — and zero is unaffected
+            // either way, which is why the branch can test `> 0.0`.
             delay_ms: if spec.delay_ms > 0.0 {
                 spec.delay_ms * factor
             } else {

@@ -1542,10 +1542,16 @@ fn repeated_restyles_do_not_extend_a_transitions_declared_duration() {
     );
 }
 
-/// The same, with `ease` — the timing function the issue measured. `ease` is
-/// slow near t=0, so every restart advanced the value by a sliver and the box
-/// crawled toward its target asymptotically. Nothing here depends on the shape
-/// of the curve: both assertions are about *when* it finishes.
+/// **The issue's own shape, with the real component's declaration.** The
+/// `--lg` checkbox the issue measured is `.rinch-checkbox__box`, which declares
+/// `transition: all 150ms ease` and goes from `1.25rem` (20px) to `1.875rem`
+/// (30px) — the endpoints, the shorthand and the timing function below, copied
+/// from `rinch-components/src/styles/checkbox.rs`. So this is that case rather
+/// than a stand-in for it, without a component mount.
+///
+/// `ease` is slow near t=0, so every restart advanced the value by a sliver and
+/// the box crawled toward its target asymptotically. Nothing here depends on
+/// the shape of the curve: both assertions are about *when* it finishes.
 #[test]
 fn repeated_restyles_do_not_extend_an_ease_transition_either() {
     use rinch_core::dom::DomDocument;

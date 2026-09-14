@@ -73,8 +73,8 @@ pub fn start_transitions(
         };
 
         // Cloned rather than borrowed so the §3 step 5.1 arm below can remove
-        // the entry. One clone per changed property per restyle, and every
-        // variant a `PropertyChange` can carry is `Copy`-sized.
+        // the entry. One clone per changed property per restyle, of a value
+        // `diff_animatable` only ever builds out of scalars.
         let existing = active_transitions.get(&change.property).cloned();
 
         let started = match existing {
