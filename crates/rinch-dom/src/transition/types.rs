@@ -540,6 +540,112 @@ impl AnimatableValue {
             _ => None,
         }
     }
+
+    /// Whether two animatable values denote the **same computed value**.
+    ///
+    /// css-transitions-1 §3 "Starting of transitions" compares a running
+    /// transition's end value against the value in the after-change style, and
+    /// both are computed values off the same resolution path — so this is an
+    /// equality test, not a distance test. It uses the tolerances the style
+    /// differ uses (a thousandth of a pixel for lengths, exact 8-bit channels
+    /// for colours) so that "the differ saw a change" and
+    /// "the running transition is already serving that change" are decided on
+    /// one notion of sameness.
+    ///
+    /// Two values of different kinds are never the same value, with one
+    /// deliberate exception: `LengthPercentage`'s unitless `Zero` and a zero
+    /// `Length` are the same computed value and compare equal. A percentage
+    /// compares only against a percentage — resolving one needs a containing
+    /// block, which style resolution does not have at diff time.
+    ///
+    /// [`AnimatableValue::TransformComponents`] always compares unequal: it is
+    /// produced only by the `@keyframes` extractor, and animations do not come
+    /// through [`PropertyChange`], which `diff_animatable` is the sole producer
+    /// of. Should one ever arrive, "unequal" means the transition restarts,
+    /// which is what it did before this comparison existed.
+    pub fn same_computed_value(&self, other: &AnimatableValue) -> bool {
+        use super::diff::{approx_eq, colors_equal};
+        match (self, other) {
+            (AnimatableValue::Float(a), AnimatableValue::Float(b)) => approx_eq(*a, *b),
+            (AnimatableValue::Color(a), AnimatableValue::Color(b)) => colors_equal(*a, *b),
+            (AnimatableValue::Dimension(a), AnimatableValue::Dimension(b)) => dimension_eq(a, b),
+            (AnimatableValue::LengthPercentage(a), AnimatableValue::LengthPercentage(b)) => {
+                length_percentage_eq(a, b)
+            }
+            (
+                AnimatableValue::LengthPercentageAuto(a),
+                AnimatableValue::LengthPercentageAuto(b),
+            ) => length_percentage_auto_eq(a, b),
+            (AnimatableValue::Transform(a), AnimatableValue::Transform(b)) => {
+                animatable_transform_eq(a, b)
+            }
+            _ => false,
+        }
+    }
+}
+
+fn dimension_eq(a: &DimensionValue, b: &DimensionValue) -> bool {
+    use super::diff::approx_eq;
+    match (a, b) {
+        (DimensionValue::Auto, DimensionValue::Auto) => true,
+        (DimensionValue::Length(x), DimensionValue::Length(y)) => approx_eq(*x, *y),
+        (DimensionValue::Percent(x), DimensionValue::Percent(y)) => approx_eq(*x, *y),
+        (
+            DimensionValue::Calc { px: px1, pct: pct1 },
+            DimensionValue::Calc { px: px2, pct: pct2 },
+        ) => approx_eq(*px1, *px2) && approx_eq(*pct1, *pct2),
+        _ => false,
+    }
+}
+
+fn length_percentage_eq(a: &LengthPercentageValue, b: &LengthPercentageValue) -> bool {
+    use super::diff::approx_eq;
+    match (a, b) {
+        (LengthPercentageValue::Zero, LengthPercentageValue::Zero) => true,
+        (LengthPercentageValue::Zero, LengthPercentageValue::Length(v))
+        | (LengthPercentageValue::Length(v), LengthPercentageValue::Zero) => approx_eq(*v, 0.0),
+        (LengthPercentageValue::Length(x), LengthPercentageValue::Length(y)) => approx_eq(*x, *y),
+        (LengthPercentageValue::Percent(x), LengthPercentageValue::Percent(y)) => approx_eq(*x, *y),
+        (
+            LengthPercentageValue::Calc { px: px1, pct: pct1 },
+            LengthPercentageValue::Calc { px: px2, pct: pct2 },
+        ) => approx_eq(*px1, *px2) && approx_eq(*pct1, *pct2),
+        _ => false,
+    }
+}
+
+fn length_percentage_auto_eq(a: &LengthPercentageAutoValue, b: &LengthPercentageAutoValue) -> bool {
+    use super::diff::approx_eq;
+    match (a, b) {
+        (LengthPercentageAutoValue::Auto, LengthPercentageAutoValue::Auto) => true,
+        (LengthPercentageAutoValue::Length(x), LengthPercentageAutoValue::Length(y)) => {
+            approx_eq(*x, *y)
+        }
+        (LengthPercentageAutoValue::Percent(x), LengthPercentageAutoValue::Percent(y)) => {
+            approx_eq(*x, *y)
+        }
+        (
+            LengthPercentageAutoValue::Calc { px: px1, pct: pct1 },
+            LengthPercentageAutoValue::Calc { px: px2, pct: pct2 },
+        ) => approx_eq(*px1, *px2) && approx_eq(*pct1, *pct2),
+        _ => false,
+    }
+}
+
+fn animatable_transform_eq(a: &AnimatableTransform, b: &AnimatableTransform) -> bool {
+    let close = |x: f64, y: f64| (x - y).abs() < 0.001;
+    a.matrix
+        .iter()
+        .zip(b.matrix.iter())
+        .all(|(x, y)| close(*x, *y))
+        && a.pct_translate_w
+            .iter()
+            .zip(b.pct_translate_w.iter())
+            .all(|(x, y)| close(*x, *y))
+        && a.pct_translate_h
+            .iter()
+            .zip(b.pct_translate_h.iter())
+            .all(|(x, y)| close(*x, *y))
 }
 
 /// Linearly interpolate between two colors in sRGB space.
@@ -581,11 +687,125 @@ pub struct ActiveTransition {
     pub to: AnimatableValue,
     pub timing: TimingFunction,
     pub start_time_ms: f64,
+    /// The duration this transition will actually take. It is the declared
+    /// `transition-duration` for every transition but a reversal, which
+    /// css-transitions-1 §3 shortens by [`Self::reversing_shortening_factor`].
     pub duration_ms: f64,
     pub delay_ms: f64,
+    /// The value a *reversal* of this transition would head back to
+    /// (css-transitions-1 §3's "reversing-adjusted start value"). It is the
+    /// start value for an ordinary transition, and the **end value of the
+    /// transition it reversed** for a reversal — which is what makes reversing
+    /// a reversal come back out at the right length.
+    pub reversing_adjusted_start_value: AnimatableValue,
+    /// The fraction of the declared **duration** this transition was given, in
+    /// `0.0..=1.0`. `1.0` for everything but a reversal: a reversal taken when
+    /// the transition was half way *there* is half as much travel back, so it
+    /// gets half the duration.
+    ///
+    /// It keys on *progress*, not elapsed time, so "half way" means half way
+    /// along the curve. Under `linear` the two coincide and reversing a 150ms
+    /// transition after 75ms gives 75ms; under `ease` — which is what every
+    /// transition in `rinch-components` declares — the output at input 0.5 is
+    /// 0.8024, so the same reversal gets 120.4ms.
+    ///
+    /// The declared **delay** is not scaled by it unless the delay is negative;
+    /// see [`ActiveTransition::reversing`].
+    pub reversing_shortening_factor: f64,
 }
 
 impl ActiveTransition {
+    /// Start a transition from `from` to `to` over `spec`'s declared timing.
+    ///
+    /// This is css-transitions-1 §3 item 1 (a property that was not
+    /// transitioning) and item 4.4 (a running transition whose target changed
+    /// to something that is not a reversal) alike: both take the full declared
+    /// duration and reset the reversing bookkeeping to its identity.
+    pub fn starting(
+        property: TransitionProperty,
+        from: AnimatableValue,
+        to: AnimatableValue,
+        spec: &TransitionSpec,
+        current_time_ms: f64,
+    ) -> Self {
+        Self {
+            property,
+            reversing_adjusted_start_value: from.clone(),
+            from,
+            to,
+            timing: spec.timing,
+            start_time_ms: current_time_ms,
+            duration_ms: spec.duration_ms,
+            delay_ms: spec.delay_ms,
+            reversing_shortening_factor: 1.0,
+        }
+    }
+
+    /// Reverse `self`: head back to `to` from wherever it currently is, over a
+    /// *shortened* slice of `spec`'s declared timing (css-transitions-1 §3
+    /// item 4.3).
+    ///
+    /// The caller has already established that `to` is `self`'s
+    /// reversing-adjusted start value, which is what makes this a reversal
+    /// rather than a plain retarget. The new shortening factor folds `self`'s
+    /// own factor in, so reversing a reversal is measured against the declared
+    /// duration rather than compounding.
+    pub fn reversing(
+        &self,
+        from: AnimatableValue,
+        to: AnimatableValue,
+        spec: &TransitionSpec,
+        current_time_ms: f64,
+    ) -> Self {
+        let progress = self.output_progress_at(current_time_ms) as f64;
+        let factor = ((self.reversing_shortening_factor * progress)
+            + (1.0 - self.reversing_shortening_factor))
+            .abs()
+            .clamp(0.0, 1.0);
+        Self {
+            property: self.property,
+            from,
+            // The value this new transition would itself be reversed back to is
+            // the one the transition it cancelled was heading for.
+            reversing_adjusted_start_value: self.to.clone(),
+            to,
+            timing: spec.timing,
+            start_time_ms: current_time_ms,
+            duration_ms: spec.duration_ms * factor,
+            // Only a **negative** delay is shortened. A negative delay is an
+            // offset into the curve, so a shortened curve has to be entered
+            // proportionally further along; a nonnegative delay is a *wait*
+            // before the curve begins and the spec uses it as declared. Getting
+            // this backwards halves a grace period: `HoverCard`'s close
+            // direction carries `transition-delay: 150ms` for exactly that, and
+            // a hover-out part way through the fade-in is this code path.
+            delay_ms: if spec.delay_ms < 0.0 {
+                spec.delay_ms * factor
+            } else {
+                spec.delay_ms
+            },
+            reversing_shortening_factor: factor,
+        }
+    }
+
+    /// The timing function's **output progress** at `current_time_ms` — the
+    /// eased fraction of the way from `from` to `to`, which is the quantity
+    /// css-transitions-1 §3 measures a reversal's shortening against.
+    ///
+    /// `0` throughout a positive delay (nothing has moved yet) and `1` once the
+    /// duration is spent.
+    pub fn output_progress_at(&self, current_time_ms: f64) -> f32 {
+        let elapsed = current_time_ms - self.start_time_ms;
+        if elapsed < self.delay_ms {
+            return self.timing.apply(0.0);
+        }
+        if self.duration_ms <= 0.0 {
+            return self.timing.apply(1.0);
+        }
+        let raw_t = ((elapsed - self.delay_ms) / self.duration_ms).clamp(0.0, 1.0) as f32;
+        self.timing.apply(raw_t)
+    }
+
     /// Compute the current interpolated value.
     pub fn value_at(&self, current_time_ms: f64) -> Option<AnimatableValue> {
         let elapsed = current_time_ms - self.start_time_ms;

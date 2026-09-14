@@ -156,6 +156,8 @@ fn test_active_transition_value_at() {
         start_time_ms: 1000.0,
         duration_ms: 500.0,
         delay_ms: 0.0,
+        reversing_adjusted_start_value: AnimatableValue::Float(0.0),
+        reversing_shortening_factor: 1.0,
     };
 
     // Before start (during delay or before)
@@ -187,6 +189,8 @@ fn test_active_transition_with_delay() {
         start_time_ms: 1000.0,
         duration_ms: 500.0,
         delay_ms: 200.0,
+        reversing_adjusted_start_value: AnimatableValue::Float(0.0),
+        reversing_shortening_factor: 1.0,
     };
 
     // During delay — should be at from value
@@ -222,6 +226,8 @@ fn test_active_transition_is_complete() {
         start_time_ms: 1000.0,
         duration_ms: 300.0,
         delay_ms: 0.0,
+        reversing_adjusted_start_value: AnimatableValue::Float(0.0),
+        reversing_shortening_factor: 1.0,
     };
 
     assert!(!t.is_complete(1000.0));
@@ -1306,4 +1312,791 @@ fn a_finished_font_size_transition_reaches_the_inline_layout() {
          directly-declared 40px box has: want {want}, got {got} \
          (the 10px box was {small})"
     );
+}
+
+// ── #652: css-transitions-1 §3, "Starting of transitions" ────────────────────
+//
+// `start_transitions` used to insert a fresh `ActiveTransition` for every
+// property in the diff, unconditionally. Its caller diffs the node's
+// `computed_style` — which holds the *interpolated* value while a transition
+// runs — against the freshly resolved target, so **every** restyle of a node
+// mid-transition saw a change and restarted the transition with a new clock.
+// A declared 150ms animation then ran for as long as restyles kept arriving.
+//
+// §3 says the opposite: a running transition whose end value still equals the
+// after-change value is left alone. The same section says a *reversal* is
+// shortened in proportion to how far the transition it cancels had got.
+
+/// The `width` in a node's computed style, in px.
+fn computed_width_px(doc: &rinch_dom::RinchDocument, id: rinch_core::dom::NodeId) -> f32 {
+    match doc.tree.get(id.0).unwrap().computed_style.width {
+        DimensionValue::Length(px) => px,
+        other => panic!("expected a length width, got {other:?}"),
+    }
+}
+
+/// The node's running `width` transition, or `None` if it has none.
+fn width_transition(
+    doc: &rinch_dom::RinchDocument,
+    id: rinch_core::dom::NodeId,
+) -> Option<&ActiveTransition> {
+    doc.tree
+        .active_transitions
+        .get(&id.0)
+        .and_then(|m| m.get(&TransitionProperty::Width))
+}
+
+/// Move the node's running `width` transition `by_ms` into the past, so that
+/// "now" — which `resolve_layout` reads off the wall clock itself — sits that
+/// far along the curve. Returns the back-dated start time.
+fn backdate_width_transition(
+    doc: &mut rinch_dom::RinchDocument,
+    id: rinch_core::dom::NodeId,
+    by_ms: f64,
+) -> f64 {
+    let t = doc
+        .tree
+        .active_transitions
+        .get_mut(&id.0)
+        .and_then(|m| m.get_mut(&TransitionProperty::Width))
+        .expect("the class change should have started a width transition");
+    t.start_time_ms -= by_ms;
+    t.start_time_ms
+}
+
+/// A `width` transition from `css`, back-dated so the wall clock now reads
+/// `elapsed_ms` into it. Returns the document, the node, and the (back-dated)
+/// start time.
+fn running_width_transition(
+    css: &str,
+    elapsed_ms: f64,
+) -> (rinch_dom::RinchDocument, rinch_core::dom::NodeId, f64) {
+    use rinch_core::dom::DomDocument;
+
+    let (mut doc, div) = transitioning_div(css);
+    doc.set_attribute(div, "class", "slider wide");
+    doc.resolve_layout(800.0, 600.0);
+    let start = backdate_width_transition(&mut doc, div, elapsed_ms);
+    (doc, div, start)
+}
+
+const LINEAR_20_TO_30: &str = ".slider { width: 20px; height: 40px; \
+     transition: width 150ms linear; } \
+     .slider.wide { width: 30px; }";
+
+// `150ms` is `0.15s`, which does not survive an f32 round trip: the spec comes
+// back as 150.00000596ms. So "at the declared duration" is read one millisecond
+// past it rather than on the nose — an assertion sitting exactly on 150.0 fails
+// against correct code.
+const JUST_PAST_150: f64 = 151.0;
+
+fn px(v: f32) -> AnimatableValue {
+    AnimatableValue::Dimension(DimensionValue::Length(v))
+}
+
+fn px_of(v: &AnimatableValue) -> f32 {
+    match v {
+        AnimatableValue::Dimension(DimensionValue::Length(px)) => *px,
+        other => panic!("expected a length, got {other:?}"),
+    }
+}
+
+fn width_spec(duration_ms: f64, delay_ms: f64) -> TransitionSpec {
+    TransitionSpec {
+        property: TransitionProperty::Width,
+        duration_ms,
+        delay_ms,
+        timing: TimingFunction::Linear,
+    }
+}
+
+fn width_change(old: f32, new: f32) -> PropertyChange {
+    PropertyChange {
+        property: TransitionProperty::Width,
+        old_value: px(old),
+        new_value: px(new),
+    }
+}
+
+/// A map holding one running `width` transition, `from` → `to`, started at
+/// `start_time_ms` over `spec`.
+fn running(
+    from: f32,
+    to: f32,
+    spec: &TransitionSpec,
+    start_time_ms: f64,
+) -> HashMap<TransitionProperty, ActiveTransition> {
+    let mut active = HashMap::new();
+    active.insert(
+        TransitionProperty::Width,
+        ActiveTransition::starting(
+            TransitionProperty::Width,
+            px(from),
+            px(to),
+            spec,
+            start_time_ms,
+        ),
+    );
+    active
+}
+
+/// **(a) The bug.** An unrelated restyle — here a `data-` attribute nobody's
+/// selector reads — re-resolves the node, and the resolved `width` is still the
+/// same 30px the running transition is already heading for. The transition must
+/// be left exactly as it is.
+///
+/// The clock assertion is exact and jitter-free: the restyle happens at some
+/// wall-clock time strictly after the back-dated start, so a restart is
+/// *always* observable as a different `start_time_ms`.
+///
+/// Kills two mutants: the unconditional `insert` this replaced, and a guard
+/// that compares the running transition's `from` (20) rather than its `to` (30)
+/// against the after-change value.
+#[test]
+fn an_unrelated_restyle_leaves_a_running_transition_alone() {
+    use rinch_core::dom::DomDocument;
+
+    let (mut doc, div, start) = running_width_transition(LINEAR_20_TO_30, 50.0);
+
+    doc.set_attribute(div, "data-probe", "1");
+    doc.resolve_layout(800.0, 600.0);
+
+    let t = width_transition(&doc, div).expect("the transition must still be running");
+    assert_eq!(
+        t.start_time_ms, start,
+        "an unrelated restyle must not reset the transition's clock"
+    );
+    assert!(
+        (px_of(&t.from) - 20.0).abs() < 0.001,
+        "the transition must still start from its original 20px, got {:?}",
+        t.from
+    );
+
+    // Linear, so 100ms into 150ms of 20 → 30 is exactly 26.667px. Before the
+    // fix the restart at ~50ms left it at ~25.6 and it arrived 50ms late.
+    rinch_dom::transition::tick_transitions(&mut doc.tree, start + 100.0);
+    let w = computed_width_px(&doc, div);
+    assert!(
+        (w - 26.667).abs() < 0.05,
+        "two thirds of the way through a 20 → 30 linear transition the width \
+         should be 26.667, got {w}"
+    );
+}
+
+/// **(a2) The leave-alone path must still report the property as
+/// transitioning.** The caller assigns the whole after-change style into
+/// `computed_style` and then writes the interpolated value back for exactly the
+/// properties `start_transitions` returns. A guard that leaves the transition
+/// alone but drops the property from that list snaps the box to its end value
+/// for a frame — and one frame is all #489 needed.
+///
+/// Kills the mutant that `continue`s without pushing onto `transitioning`,
+/// which is what the issue's own fix sketch proposed.
+#[test]
+fn the_leave_alone_path_keeps_the_interpolated_value_in_the_computed_style() {
+    use rinch_core::dom::DomDocument;
+
+    let (mut doc, div, _start) = running_width_transition(LINEAR_20_TO_30, 50.0);
+
+    doc.set_attribute(div, "data-probe", "1");
+    doc.resolve_layout(800.0, 600.0);
+
+    // ~50ms into 150ms of 20 → 30 is ~23.3px; the restyle itself costs a few ms
+    // of wall clock, so allow a little more progress but nothing near 30.
+    let w = computed_width_px(&doc, div);
+    assert!(
+        (23.0..24.5).contains(&w),
+        "the restyle must leave the interpolated width in place, not the 30px \
+         target it resolved, got {w}"
+    );
+}
+
+/// **The user-visible contract** (the fixture the issue asks for): a declared
+/// 150ms transition arrives in 150ms however many restyles happen while it
+/// runs. Ten of them here; before the fix each reset the clock and the box was
+/// still ~27.8px at t=150.
+#[test]
+fn repeated_restyles_do_not_extend_a_transitions_declared_duration() {
+    use rinch_core::dom::DomDocument;
+
+    let (mut doc, div, start) = running_width_transition(LINEAR_20_TO_30, 50.0);
+
+    for i in 0..10 {
+        doc.set_attribute(div, "data-probe", &i.to_string());
+        doc.resolve_layout(800.0, 600.0);
+    }
+
+    assert!(
+        width_transition(&doc, div)
+            .expect("still running")
+            .is_complete(start + JUST_PAST_150),
+        "a 150ms transition must be complete 150ms after it started, however \
+         many restyles happened in between"
+    );
+
+    rinch_dom::transition::tick_transitions(&mut doc.tree, start + JUST_PAST_150);
+    let w = computed_width_px(&doc, div);
+    assert!(
+        (w - 30.0).abs() < 0.001,
+        "at its declared duration the transition must be at its end value, got {w}"
+    );
+}
+
+/// **The issue's own shape, with the real component's declaration.** The
+/// `--lg` checkbox the issue measured is `.rinch-checkbox__box`, which declares
+/// `transition: all 150ms ease` and goes from `1.25rem` (20px) to `1.875rem`
+/// (30px) — the endpoints, the shorthand and the timing function below, copied
+/// from `rinch-components/src/styles/checkbox.rs`. So this is that case rather
+/// than a stand-in for it, without a component mount.
+///
+/// `ease` is slow near t=0, so every restart advanced the value by a sliver and
+/// the box crawled toward its target asymptotically. Nothing here depends on
+/// the shape of the curve: both assertions are about *when* it finishes.
+#[test]
+fn repeated_restyles_do_not_extend_an_ease_transition_either() {
+    use rinch_core::dom::DomDocument;
+
+    let (mut doc, div, start) = running_width_transition(
+        ".slider { width: 20px; height: 40px; transition: all 150ms ease; } \
+         .slider.wide { width: 30px; }",
+        10.0,
+    );
+
+    for i in 0..10 {
+        doc.set_attribute(div, "data-probe", &i.to_string());
+        doc.resolve_layout(800.0, 600.0);
+    }
+
+    assert!(
+        width_transition(&doc, div)
+            .expect("still running")
+            .is_complete(start + JUST_PAST_150),
+        "an `ease` transition must be complete at its declared duration too"
+    );
+
+    rinch_dom::transition::tick_transitions(&mut doc.tree, start + JUST_PAST_150);
+    let w = computed_width_px(&doc, div);
+    assert!(
+        (w - 30.0).abs() < 0.001,
+        "an `ease` transition must also arrive at its declared duration, got {w}"
+    );
+    assert!(
+        width_transition(&doc, div).is_none(),
+        "a completed transition must have been removed by the tick"
+    );
+}
+
+/// **(e) A restyle during a transition's `delay`.** The clock has started but
+/// nothing has moved, so a restart is invisible at the moment it happens and
+/// shows up only as a late arrival: before the fix, ticking at 175ms — 75ms
+/// into a 150ms curve that began after a 100ms delay — still found the box at
+/// its start value, because the restarted delay had not run out.
+#[test]
+fn an_unrelated_restyle_during_a_transitions_delay_does_not_restart_it() {
+    use rinch_core::dom::DomDocument;
+
+    let (mut doc, div, start) = running_width_transition(
+        ".slider { width: 20px; height: 40px; \
+         transition: width 150ms linear 100ms; } \
+         .slider.wide { width: 30px; }",
+        50.0,
+    );
+
+    doc.set_attribute(div, "data-probe", "1");
+    doc.resolve_layout(800.0, 600.0);
+
+    assert_eq!(
+        width_transition(&doc, div)
+            .expect("still running")
+            .start_time_ms,
+        start,
+        "a restyle inside the delay must not reset the clock either"
+    );
+
+    // 100ms delay, then half of a 150ms linear ramp: 25px.
+    rinch_dom::transition::tick_transitions(&mut doc.tree, start + 175.0);
+    let w = computed_width_px(&doc, div);
+    assert!(
+        (w - 25.0).abs() < 0.05,
+        "half way through the ramp that follows the delay the width should be \
+         25, got {w}"
+    );
+}
+
+/// **(d) A transition that has run past its duration but has not been ticked
+/// away yet.** `resolve_layout` runs before `tick_transitions` in a frame, so
+/// the map really does hold finished transitions at diff time, and the last
+/// interpolated value written into `computed_style` is a little short of the
+/// end value — a genuine diff.
+///
+/// Kills the `from`-instead-of-`to` mutant on its own: `from` (20) differs from
+/// the after-change 30, so that comparison restarts a transition that has
+/// already finished and gives it a fresh 150ms of doing nothing.
+#[test]
+fn a_finished_but_unticked_transition_is_not_restarted() {
+    let spec = width_spec(150.0, 0.0);
+    let mut active = running(20.0, 30.0, &spec, 1000.0);
+
+    // 1200ms — 50ms past the end of a 150ms transition that began at 1000.
+    let transitioning = start_transitions(
+        &mut active,
+        std::slice::from_ref(&spec),
+        &[width_change(29.9, 30.0)],
+        1200.0,
+    );
+
+    assert_eq!(
+        active[&TransitionProperty::Width].start_time_ms,
+        1000.0,
+        "a finished transition must be left alone"
+    );
+    assert_eq!(
+        transitioning,
+        vec![TransitionProperty::Width],
+        "it is still the transition's value that belongs in the computed style"
+    );
+}
+
+/// **(b) A target that genuinely changed mid-flight restarts from the current
+/// interpolated value, with a fresh clock and the full declared duration.**
+/// This is the behaviour the leave-alone guard must not swallow.
+///
+/// Kills the "never restart" mutant — a guard that leaves *every* running
+/// transition alone.
+#[test]
+fn a_changed_target_restarts_the_transition_from_where_it_is() {
+    let spec = width_spec(150.0, 0.0);
+    let mut active = running(20.0, 30.0, &spec, 1000.0);
+
+    // Half way along, the target becomes 50px — neither the 30 it was heading
+    // for nor the 20 it started from, so this is a retarget, not a reversal.
+    start_transitions(
+        &mut active,
+        std::slice::from_ref(&spec),
+        &[width_change(25.0, 50.0)],
+        1075.0,
+    );
+
+    let t = &active[&TransitionProperty::Width];
+    assert_eq!(
+        t.start_time_ms, 1075.0,
+        "a changed target restarts the clock"
+    );
+    assert_eq!(
+        t.duration_ms, 150.0,
+        "and gets the declared duration in full"
+    );
+    assert_eq!(
+        t.reversing_shortening_factor, 1.0,
+        "a retarget is not a reversal and is not shortened"
+    );
+    assert!(
+        (px_of(&t.from) - 25.0).abs() < 0.001,
+        "it must restart from the current interpolated 25px, got {:?}",
+        t.from
+    );
+    assert!(
+        (px_of(&t.to) - 50.0).abs() < 0.001,
+        "heading for the new 50px, got {:?}",
+        t.to
+    );
+}
+
+/// **§3 item 4.1.** A running transition that has already arrived at the new
+/// target is cancelled outright, and the property is *not* reported as
+/// transitioning — the after-change value the caller already wrote is the value
+/// the box is at.
+///
+/// Kills the mutant that omits item 4.1 and starts a 25px → 25px transition
+/// that then occupies the node for a further 150ms of ticks.
+#[test]
+fn a_transition_that_has_already_reached_the_new_target_is_cancelled() {
+    let spec = width_spec(150.0, 0.0);
+    let mut active = running(20.0, 30.0, &spec, 1000.0);
+
+    let transitioning = start_transitions(
+        &mut active,
+        std::slice::from_ref(&spec),
+        &[width_change(25.0, 25.0)],
+        1075.0,
+    );
+
+    assert!(
+        active.is_empty(),
+        "a transition that has reached its new target must be cancelled, got {active:?}"
+    );
+    assert!(
+        transitioning.is_empty(),
+        "and the after-change value must be allowed to stand"
+    );
+}
+
+/// **(c) §3 item 4.3: a reversal is shortened.** A reversal taken when the
+/// transition is half way *there* is half as much travel back, so it gets half
+/// the duration — and lands on its old start value at exactly the moment the
+/// transition it cancelled would have reached its end value.
+///
+/// Under `linear`, half way *there* is half way by time, which is why the
+/// numbers below are 75ms of 150ms. That coincidence is a fixed point, and
+/// [`reversing_under_ease_keys_on_the_eased_output_not_the_elapsed_time`] is
+/// the fixture that samples off it.
+///
+/// Kills the mutant that reverses with a shortening factor of 1 (the plain
+/// step-5.2 restart), which gives the reversal a full 150ms.
+#[test]
+fn reversing_a_transition_half_way_through_takes_half_as_long() {
+    let spec = width_spec(150.0, 0.0);
+    let mut active = running(20.0, 30.0, &spec, 1000.0);
+
+    // Back to 20 at t=1075: linear, so progress is 0.5 and the box is at 25.
+    start_transitions(
+        &mut active,
+        std::slice::from_ref(&spec),
+        &[width_change(25.0, 20.0)],
+        1075.0,
+    );
+
+    let t = &active[&TransitionProperty::Width];
+    assert_eq!(t.start_time_ms, 1075.0);
+    assert!(
+        (t.reversing_shortening_factor - 0.5).abs() < 0.001,
+        "half way through, the factor is the progress: got {}",
+        t.reversing_shortening_factor
+    );
+    assert!(
+        (t.duration_ms - 75.0).abs() < 0.001,
+        "a reversal half way through a 150ms transition lasts 75ms, got {}",
+        t.duration_ms
+    );
+    assert!(
+        (px_of(&t.from) - 25.0).abs() < 0.001,
+        "from the current 25px"
+    );
+    assert!(
+        (px_of(&t.to) - 20.0).abs() < 0.001,
+        "back to the original 20px"
+    );
+    assert!(
+        (px_of(&t.reversing_adjusted_start_value) - 30.0).abs() < 0.001,
+        "a reversal would itself reverse back to the value it cancelled heading for"
+    );
+    assert!(
+        t.is_complete(1150.0),
+        "it must land at 1150 — the moment the transition it cancelled would \
+         have arrived"
+    );
+}
+
+/// **Reversing a reversal.** The shortening factor folds the running
+/// transition's own factor back in — `|f·progress + (1 − f)|` — so a second
+/// turn is measured against the *declared* duration rather than compounding
+/// down to nothing.
+///
+/// Kills the mutant that drops the `(1 − f)` term: it would give 0.25 and a
+/// 37.5ms duration here, where the spec gives 0.75 and 112.5ms. That term is
+/// invisible on the first reversal, where `f` is 1 and it is zero — the
+/// fixed point this fixture exists to sample off.
+#[test]
+fn reversing_a_reversal_is_measured_against_the_declared_duration() {
+    let spec = width_spec(150.0, 0.0);
+    let mut active = running(20.0, 30.0, &spec, 1000.0);
+
+    // First reversal at 1075: 25px → 20px over 75ms, factor 0.5.
+    start_transitions(
+        &mut active,
+        std::slice::from_ref(&spec),
+        &[width_change(25.0, 20.0)],
+        1075.0,
+    );
+    // Second at 1112.5 — half way through those 75ms, so the box is at 22.5px
+    // and heading back to 30, which is the reversal's reversing-adjusted start
+    // value.
+    start_transitions(
+        &mut active,
+        std::slice::from_ref(&spec),
+        &[width_change(22.5, 30.0)],
+        1112.5,
+    );
+
+    let t = &active[&TransitionProperty::Width];
+    assert!(
+        (t.reversing_shortening_factor - 0.75).abs() < 0.001,
+        "|0.5·0.5 + (1 − 0.5)| = 0.75, got {}",
+        t.reversing_shortening_factor
+    );
+    assert!(
+        (t.duration_ms - 112.5).abs() < 0.001,
+        "0.75 of the declared 150ms, got {}",
+        t.duration_ms
+    );
+    assert!(
+        (px_of(&t.from) - 22.5).abs() < 0.001,
+        "from the current 22.5px"
+    );
+    assert!((px_of(&t.to) - 30.0).abs() < 0.001, "back toward 30px");
+    assert!(
+        (px_of(&t.reversing_adjusted_start_value) - 20.0).abs() < 0.001,
+        "and a third turn would head back to 20 again"
+    );
+}
+
+/// A `TransitionSpec` for `width` with an explicit timing function.
+fn width_spec_timing(duration_ms: f64, delay_ms: f64, timing: TimingFunction) -> TransitionSpec {
+    TransitionSpec {
+        property: TransitionProperty::Width,
+        duration_ms,
+        delay_ms,
+        timing,
+    }
+}
+
+/// **§3 item 4.3's delay rule: a NONNEGATIVE delay is used as declared.**
+///
+/// The spec scales only a *negative* delay by the reversing shortening factor.
+/// A negative delay is an offset into the curve, so a shortened curve must be
+/// entered proportionally further along; a nonnegative delay is a wait before
+/// the curve begins, and a wait is not shortened.
+///
+/// This is not academic. `rinch-components`' `HoverCard` sets
+/// `transition-delay: 150ms` on its close direction, under a comment saying
+/// "keep dropdown visible while moving to it" — a grace period. A hover-out part
+/// way through the fade-in is precisely this path, so scaling the delay halves
+/// the grace period, and halves it further the later the user leaves.
+///
+/// Kills the mutant that scales a nonnegative delay (which is what this branch
+/// did before review), and the mutant that drops the scaling branch entirely
+/// would be caught by its negative-delay sibling below.
+#[test]
+fn a_reversal_does_not_shorten_a_nonnegative_delay() {
+    let spec = width_spec(150.0, 100.0);
+    let mut active = running(20.0, 30.0, &spec, 1000.0);
+
+    // The delay runs 1000..1100; half way along the 150ms ramp is 1175, where
+    // the box is at 25px.
+    start_transitions(
+        &mut active,
+        std::slice::from_ref(&spec),
+        &[width_change(25.0, 20.0)],
+        1175.0,
+    );
+
+    let t = &active[&TransitionProperty::Width];
+    assert!(
+        (t.reversing_shortening_factor - 0.5).abs() < 0.001,
+        "half way along the ramp is a factor of 0.5, got {}",
+        t.reversing_shortening_factor
+    );
+    assert!(
+        (t.duration_ms - 75.0).abs() < 0.001,
+        "the duration is shortened, got {}",
+        t.duration_ms
+    );
+    assert!(
+        (t.delay_ms - 100.0).abs() < 0.001,
+        "but the declared 100ms delay is used as-is, got {}",
+        t.delay_ms
+    );
+}
+
+/// **The other half of the same rule: a NEGATIVE delay IS scaled.**
+///
+/// Kills the mutant that passes every delay through unscaled — the half of the
+/// old, inverted rule that a nonnegative-delay fixture cannot see.
+#[test]
+fn a_reversal_does_shorten_a_negative_delay() {
+    let spec = width_spec(150.0, -50.0);
+    let mut active = running(20.0, 30.0, &spec, 1000.0);
+
+    // A -50ms delay starts the ramp 50ms in, so at 1050 the ramp is 100ms of
+    // 150 along: progress 2/3, and the box is at 26.667px.
+    start_transitions(
+        &mut active,
+        std::slice::from_ref(&spec),
+        &[width_change(26.667, 20.0)],
+        1050.0,
+    );
+
+    let t = &active[&TransitionProperty::Width];
+    assert!(
+        (t.reversing_shortening_factor - 2.0 / 3.0).abs() < 0.001,
+        "two thirds along is a factor of 2/3, got {}",
+        t.reversing_shortening_factor
+    );
+    assert!(
+        (t.delay_ms - (-50.0 * 2.0 / 3.0)).abs() < 0.001,
+        "a negative delay is scaled with the duration, got {}",
+        t.delay_ms
+    );
+}
+
+/// **End to end: the grace period survives the reversal.** Drives the whole
+/// path — real stylesheet, real class changes, real style resolution — and
+/// reads the box. 75ms into a reversal whose delay is 100ms, nothing may have
+/// moved yet.
+///
+/// With the delay wrongly scaled to 50ms the box is already 25ms down a 75ms
+/// ramp, at ~23.36px. This is the fixture that would have caught the inverted
+/// rule through behaviour rather than through a field.
+#[test]
+fn a_reversals_delay_still_holds_the_box_still() {
+    use rinch_core::dom::DomDocument;
+
+    let (mut doc, div, start) = running_width_transition(
+        ".slider { width: 20px; height: 40px; \
+         transition: width 150ms linear 100ms; } \
+         .slider.wide { width: 30px; }",
+        175.0,
+    );
+
+    // Tick the back-dated clock so the interpolated value is actually in the
+    // computed style: 175ms in is 100ms of delay then half of the 150ms ramp,
+    // so the box is at 25px. Without this the style still holds the 20px the
+    // first resolve wrote, the reversal's target is also 20, and the differ
+    // reports no change at all — the fixture would pass on a vacuum.
+    rinch_dom::transition::tick_transitions(&mut doc.tree, start + 175.0);
+    assert!(
+        (computed_width_px(&doc, div) - 25.0).abs() < 0.001,
+        "the box should be half way up the ramp before the reversal"
+    );
+
+    // Reverse by putting the class back.
+    doc.set_attribute(div, "class", "slider");
+    doc.resolve_layout(800.0, 600.0);
+
+    let reversal_start = width_transition(&doc, div)
+        .expect("the class change back should have started a reversal")
+        .start_time_ms;
+
+    rinch_dom::transition::tick_transitions(&mut doc.tree, reversal_start + 75.0);
+    let w = computed_width_px(&doc, div);
+    assert!(
+        (w - 25.0).abs() < 0.3,
+        "75ms into a reversal whose delay is 100ms the box must not have moved \
+         from the 25px it reversed at, got {w}"
+    );
+}
+
+/// **A reversal off the half-way point.** Both of the original reversal
+/// fixtures reverse at exactly progress 0.5, where `progress` and
+/// `1 − progress` are the same number — so a factor built from the wrong one of
+/// those killed nothing. A third of the way along tells them apart: the spec
+/// gives 1/3 and 50ms, the mutant 2/3 and 100ms.
+#[test]
+fn reversing_a_third_of_the_way_through_shortens_to_a_third() {
+    let spec = width_spec(150.0, 0.0);
+    let mut active = running(20.0, 30.0, &spec, 1000.0);
+
+    // t=1050 of a 150ms linear ramp: progress 1/3, the box at 23.333px.
+    start_transitions(
+        &mut active,
+        std::slice::from_ref(&spec),
+        &[width_change(23.333, 20.0)],
+        1050.0,
+    );
+
+    let t = &active[&TransitionProperty::Width];
+    assert!(
+        (t.reversing_shortening_factor - 1.0 / 3.0).abs() < 0.001,
+        "a third of the way along is a factor of 1/3, got {}",
+        t.reversing_shortening_factor
+    );
+    assert!(
+        (t.duration_ms - 50.0).abs() < 0.001,
+        "a third of 150ms is 50ms, got {}",
+        t.duration_ms
+    );
+}
+
+/// **The factor keys on the timing function's OUTPUT, not the elapsed time.**
+/// Every other reversal fixture is `linear`, where output and input are the
+/// same number, so nothing pinned which of the two the factor reads — and every
+/// transition `rinch-components` declares is `ease`, not `linear`.
+///
+/// `ease` is `cubic-bezier(0.25, 0.1, 0.25, 1)`, whose output at input 0.5 is
+/// **0.8024033875848569** — solved independently of rinch's own bezier code, by
+/// bisecting the X polynomial and evaluating Y. So reversing half way through a
+/// 150ms `ease` transition takes **120.4ms**, not 75ms: by then the box has
+/// already travelled 80% of the way, and it has 80% of the way to come back.
+///
+/// Kills the mutant that feeds raw elapsed time to the factor (it would say
+/// 0.5 and 75ms) and, independently, the `1 − progress` mutant (0.1976).
+#[test]
+fn reversing_under_ease_keys_on_the_eased_output_not_the_elapsed_time() {
+    const EASE_AT_HALF: f64 = 0.802_403_387_584_856_9;
+
+    let spec = width_spec_timing(150.0, 0.0, TimingFunction::Ease);
+    let mut active = running(20.0, 30.0, &spec, 1000.0);
+
+    // Half way through by *time*; by progress the box is already at 28.024px.
+    start_transitions(
+        &mut active,
+        std::slice::from_ref(&spec),
+        &[width_change(28.024, 20.0)],
+        1075.0,
+    );
+
+    let t = &active[&TransitionProperty::Width];
+    assert!(
+        (t.reversing_shortening_factor - EASE_AT_HALF).abs() < 0.005,
+        "the factor is `ease`'s output ({EASE_AT_HALF}), not its input 0.5, got {}",
+        t.reversing_shortening_factor
+    );
+    assert!(
+        (t.duration_ms - 150.0 * EASE_AT_HALF).abs() < 0.8,
+        "so the reversal lasts ~120.4ms, not 75ms, got {}",
+        t.duration_ms
+    );
+    assert!(
+        (px_of(&t.from) - 20.0 - 10.0 * EASE_AT_HALF as f32).abs() < 0.01,
+        "and it starts from the eased 28.024px, got {:?}",
+        t.from
+    );
+}
+
+/// **§3 item 1 and item 4.2: a combined duration of zero or less starts
+/// nothing and cancels anything running.**
+///
+/// Reachable from CSS, which is why it is worth implementing rather than
+/// documenting away: `transition: width 150ms linear -200ms` has a combined
+/// duration of −50ms and *is* emitted, because the extractor gates on
+/// `duration > 0 || delay > 0`.
+///
+/// Kills the mutant that drops either guard: without them a transition is
+/// created that is already complete, occupying the node's map for a frame and
+/// leaving the property in `transitioning`.
+#[test]
+fn a_combined_duration_of_zero_or_less_starts_no_transition() {
+    let spec = width_spec(150.0, -200.0);
+
+    // Item 1: nothing running.
+    let mut active = HashMap::new();
+    let transitioning = start_transitions(
+        &mut active,
+        std::slice::from_ref(&spec),
+        &[width_change(20.0, 30.0)],
+        1000.0,
+    );
+    assert!(
+        active.is_empty(),
+        "a combined duration of -50ms must start nothing, got {active:?}"
+    );
+    assert!(
+        transitioning.is_empty(),
+        "and must let the after-change value stand"
+    );
+
+    // Item 4.2: one running, under a spec that has since lost its duration.
+    let long = width_spec(150.0, 0.0);
+    let mut active = running(20.0, 30.0, &long, 1000.0);
+    let transitioning = start_transitions(
+        &mut active,
+        std::slice::from_ref(&spec),
+        &[width_change(25.0, 40.0)],
+        1075.0,
+    );
+    assert!(
+        active.is_empty(),
+        "a running transition must be cancelled, not retargeted, got {active:?}"
+    );
+    assert!(transitioning.is_empty());
 }

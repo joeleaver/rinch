@@ -210,11 +210,17 @@ pub fn diff_animatable(old: &ComputedStyle, new: &ComputedStyle) -> Vec<Property
     changes
 }
 
-fn approx_eq(a: f32, b: f32) -> bool {
+/// The tolerance every animatable comparison in this module uses: two computed
+/// lengths within a thousandth of a pixel are the same value.
+///
+/// `types::AnimatableValue::same_computed_value` shares it, so that "the differ
+/// saw a change" and "a running transition is already serving that change"
+/// (css-transitions-1 §3) are decided on one notion of sameness.
+pub(super) fn approx_eq(a: f32, b: f32) -> bool {
     (a - b).abs() < 0.001
 }
 
-fn colors_equal(a: Color, b: Color) -> bool {
+pub(super) fn colors_equal(a: Color, b: Color) -> bool {
     let a = a.to_rgba8();
     let b = b.to_rgba8();
     a.r == b.r && a.g == b.g && a.b == b.b && a.a == b.a
