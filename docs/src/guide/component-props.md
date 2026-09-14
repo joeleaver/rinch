@@ -794,8 +794,42 @@ moved into the overlay on open nor restored on close
 ([issue #695](https://github.com/joeleaver/rinch/issues/695)). Details and the
 nesting rule are in the [focus guide](focus.md#containing-tab-inside-an-overlay).
 
-`lock_scroll` is **still not wired**; it is tracked in
-[issue #474](https://github.com/joeleaver/rinch/issues/474).
+*`lock_scroll`* holds the page still while the overlay is open, and this is the
+one overlay behaviour that **works differently on the two backends**. Desktop
+refuses the *scroll gesture*: a wheel (which is also what a touch scroll and the
+MCP `scroll` tool arrive as) and a scrollbar-thumb press are rejected for any
+container that is not inside a locking overlay, so the dialog's own
+`overflow: auto` body still scrolls while the page behind does not. Nothing is
+restyled, so the page does not move and its scroll position is exactly where the
+user left it. The web sets `overflow: hidden` on the real `<html>`, because
+rinch cannot gate the browser's own wheel — which **also removes the page's
+scrollbar**, so a web page with a classic (non-overlay) scrollbar shifts
+sideways when an overlay opens, and a desktop one does not. That is the whole of
+the divergence.
+
+Two more things follow from "the gesture, not the style" on desktop, and neither
+has a web equivalent:
+
+- The page's scrollbar is still **painted** while it is locked. You can see it;
+  it will not move. Nothing is drawn differently, only refused.
+- Only *input* is gated. Programmatic scrolling — `NodeHandle::set_scroll_top`,
+  an app scrolling a list behind the dialog on purpose — still works. Desktop
+  has no keyboard page-scrolling (PageDown and the arrows scroll nothing at the
+  document level), so there is nothing to gate there.
+- A scrollbar drag already **in flight** when the lock arrives is ended, not
+  left to keep scrolling the page while the button is held.
+- The native `<select>` popup is **exempt**: its option list is appended to
+  `<body>`, so it is not inside any overlay's root, and a long list inside a
+  dialog would otherwise be unscrollable. See [Focus](./focus.md#locking-the-page-behind-an-overlay).
+
+On the web the lock is the whole page even in island mode — there is one
+`<html>` — so a rinch `Modal` inside an island freezes its host page too.
+
+Locks are **counted**: two overlays open and the inner one closing leaves the
+page locked, and an overlay that unmounts while still open releases its own.
+A custom overlay of your own takes one with
+`node.set_scroll_locked(true)` on its root — the node matters, it is the subtree
+that stays scrollable — and must release it on close *and* on unmount.
 
 ### Tooltip
 
@@ -832,7 +866,7 @@ Positioned with `top: var(--rinch-window-top-inset, 0px)`, so it clears any wind
 | `with_close_button` | `bool` | **`true`** | |
 | `padding` | `String` | `""` | |
 | `z_index` | `Option<i32>` | `None` | Stacking level of the whole modal: the full-viewport overlay sits here and the panel one above it (defaults 200 / 201) |
-| `lock_scroll` | `bool` | **`true`** | **Not wired yet** (#474) |
+| `lock_scroll` | `bool` | **`true`** | Holds the page still while open. Desktop refuses the gesture, web sets `overflow: hidden` on `<html>` — see [Overlays](#overlays) |
 | `trap_focus` | `bool` | **`true`** | Tab cycles inside the overlay while it is open (#474) |
 | `onclose` | `Option<Callback>` | `None` | |
 
@@ -856,7 +890,7 @@ Positioned with `top: var(--rinch-window-top-inset, 0px)`, so it clears any wind
 | `with_close_button` | `bool` | **`true`** | |
 | `padding` | `String` | `""` | |
 | `z_index` | `Option<i32>` | `None` | Stacking level of the whole drawer: the overlay sits here and the panel one above it (defaults 200 / 201) |
-| `lock_scroll` | `bool` | **`true`** | **Not wired yet** (#474) |
+| `lock_scroll` | `bool` | **`true`** | Holds the page still while open. Desktop refuses the gesture, web sets `overflow: hidden` on `<html>` — see [Overlays](#overlays) |
 | `trap_focus` | `bool` | **`true`** | Tab cycles inside the overlay while it is open (#474) |
 | `onclose` | `Option<Callback>` | `None` | |
 

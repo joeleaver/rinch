@@ -53,6 +53,11 @@ pub use event_delegation::setup_event_delegation;
 #[doc(hidden)]
 pub use event_delegation::{__force_trusted_clicks, __reset_activation_state};
 pub use web_document::WebDocument;
+/// Test-only handles on the page scroll lock (#474), so a fixture that fails
+/// between a lock and its unlock cannot leave `<html>` hidden for every test
+/// after it.
+#[doc(hidden)]
+pub use web_document::{__reset_scroll_lock, __scroll_lock_depth};
 
 // The renderer-agnostic rich-text editor, re-exported so a web app uses the *same*
 // API as desktop: `create_editor()` → `EditorHandle`, mounted via `Editor {}`. The

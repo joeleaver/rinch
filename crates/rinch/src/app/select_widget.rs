@@ -246,6 +246,13 @@ impl RinchApp {
             disabled.push(opt.disabled);
         }
         d.append_child(body, panel);
+        // #474: the panel is a body portal, so it is not a descendant of an open
+        // `Modal`/`Drawer`'s root and `lock_scroll` would refuse its wheel and
+        // its thumb — a 40-option list inside a dialog, unscrollable, in every
+        // app, since the prop defaults to `true`. Exempt it explicitly.
+        // Released in `remove_select_popup_nodes`, the one place `open_select`
+        // becomes `None`, beside the dismiss handle (#671) for the same reason.
+        d.tree.push_scroll_lock_exempt(panel.0);
         drop(d);
 
         let initial_value = model
@@ -308,6 +315,9 @@ impl RinchApp {
         self.select_dismiss_asked.set(false);
         if let Some(doc) = self.doc.clone() {
             let mut d = doc.borrow_mut();
+            // The scroll-lock exemption leaves with the popup (#474), like the
+            // dismiss entry above.
+            d.tree.release_scroll_lock_exempt(open.panel_id);
             d.remove_node(NodeId(open.panel_id));
             d.remove_node(NodeId(open.backdrop_id));
         }

@@ -66,6 +66,124 @@ thread_local! {
     /// detached, so its callers cannot tell a pruned id from a detached one.
     static NODE_REGISTRY: std::cell::RefCell<HashMap<usize, web_sys::Node>> =
         std::cell::RefCell::new(HashMap::new());
+
+    /// The page's scroll lock (#474): how many overlays hold one, and what
+    /// `<html>`'s inline `overflow` was before the first of them took it.
+    ///
+    /// **Page-global, not per-`WebDocument`.** There is one `<html>` however many
+    /// island roots share the page, so a per-document counter would let the
+    /// second island's modal restore an `overflow` the first island's modal is
+    /// still relying on. Keyed by nothing for the same reason: the lock is a
+    /// property of the page.
+    static SCROLL_LOCK: std::cell::RefCell<ScrollLock> =
+        const { std::cell::RefCell::new(ScrollLock { held: 0, saved: None }) };
+}
+
+/// The inline declarations the page scroll lock overwrites, in the order they
+/// are saved and restored.
+///
+/// **The longhands, not just the shorthand.** `overflow: hidden` sets both, and
+/// `remove_property("overflow")` removes both — so saving only the shorthand
+/// loses an inline `overflow-x` that had no matching `overflow-y`: the shorthand
+/// serializes to `""` for that element, the restore takes the "there was
+/// nothing" path, and a declaration the lock never wrote is destroyed. Saving
+/// all three and restoring all three is exact in every case, including the
+/// ordinary one where only the shorthand was set (it round-trips through the two
+/// longhands unchanged).
+const OVERFLOW_PROPS: [&str; 3] = ["overflow", "overflow-x", "overflow-y"];
+
+/// See [`SCROLL_LOCK`].
+struct ScrollLock {
+    /// How many overlays currently hold the lock. The page is locked while this
+    /// is non-zero, so an inner modal closing over an outer one changes nothing.
+    held: u32,
+    /// `<html>`'s inline [`OVERFLOW_PROPS`] as they were when `held` went
+    /// 0 → 1, restored when it goes back to 0. An empty entry means "there was
+    /// no inline declaration", which restores by *removing* the property rather
+    /// than setting it to the empty string — the two differ to `style.cssText`,
+    /// and a page whose `overflow` comes from a stylesheet must get that value
+    /// back, not an empty inline override.
+    saved: Option<[String; 3]>,
+}
+
+/// `<html>` as an `HtmlElement`, the element the page's scroll lock acts on.
+///
+/// Deliberately **not** `WebDocument::body()`: that is `<div id="rinch-body">`
+/// (or the island host), a descendant of the real `<body>`, and `overflow:
+/// hidden` there does not stop the page scrolling.
+fn document_element_style() -> Option<web_sys::CssStyleDeclaration> {
+    let doc = web_sys::window()?.document()?;
+    let html: web_sys::HtmlElement = doc.document_element()?.dyn_into().ok()?;
+    Some(html.style())
+}
+
+/// Web's half of `lock_scroll` (#474), page-global and counted.
+///
+/// rinch cannot gate the browser's own wheel, so the only mechanism available is
+/// `overflow: hidden` on `<html>` — which is also what every web overlay library
+/// does. That is the documented divergence from desktop: this removes the page's
+/// scrollbar as well as its scrolling, so a page with a classic (non-overlay)
+/// scrollbar shifts horizontally when an overlay opens. Desktop's scrollbars are
+/// overlays with no gutter and it gates the gesture instead, so it does not.
+fn set_page_scroll_locked(locked: bool) {
+    SCROLL_LOCK.with(|cell| {
+        let mut lock = cell.borrow_mut();
+        if locked {
+            lock.held += 1;
+            if lock.held == 1
+                && let Some(style) = document_element_style()
+            {
+                lock.saved =
+                    Some(OVERFLOW_PROPS.map(|p| style.get_property_value(p).unwrap_or_default()));
+                style.set_property("overflow", "hidden").ok();
+            }
+        } else {
+            // An unlock with nothing held is ignored, not underflowed: an
+            // overlay's `on_cleanup` releases a lock its own effect may already
+            // have released.
+            lock.held = lock.held.saturating_sub(1);
+            if lock.held == 0
+                && let Some(style) = document_element_style()
+            {
+                let saved = lock.saved.take();
+                // Clear the shorthand first, which clears both longhands with
+                // it, then put back only what was actually there. Order matters:
+                // restoring a longhand and *then* removing the shorthand would
+                // remove the longhand again.
+                style.remove_property("overflow").ok();
+                if let Some(saved) = saved {
+                    for (prop, prev) in OVERFLOW_PROPS.iter().zip(saved.iter()) {
+                        if !prev.is_empty() {
+                            style.set_property(prop, prev).ok();
+                        }
+                    }
+                }
+            }
+        }
+    });
+}
+
+/// Reset the page scroll lock. Test-only: a fixture that fails between a lock
+/// and its unlock would otherwise leave `<html>` hidden for every test after it.
+#[doc(hidden)]
+pub fn __reset_scroll_lock() {
+    SCROLL_LOCK.with(|cell| {
+        *cell.borrow_mut() = ScrollLock {
+            held: 0,
+            saved: None,
+        };
+    });
+    if let Some(style) = document_element_style() {
+        for prop in OVERFLOW_PROPS {
+            style.remove_property(prop).ok();
+        }
+    }
+}
+
+/// How many overlays currently hold the page scroll lock. Test-only.
+#[doc(hidden)]
+pub fn __scroll_lock_depth() -> u32 {
+    SCROLL_LOCK.with(|cell| cell.borrow().held)
 }
 
 /// Resolve a rinch `NodeId.0` to its live browser node — the editor glue uses this to
@@ -1318,6 +1436,12 @@ impl DomDocument for WebDocument {
         {
             el.focus().ok();
         }
+    }
+
+    /// `root` is ignored here: the browser owns the wheel, so there is nothing to
+    /// gate per-subtree. See [`set_page_scroll_locked`].
+    fn set_scroll_locked(&mut self, locked: bool, _root: NodeId) {
+        set_page_scroll_locked(locked);
     }
 
     fn resolve_layout(&mut self, _width: f32, _height: f32) {

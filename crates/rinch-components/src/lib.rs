@@ -159,6 +159,7 @@ pub mod notification;
 pub mod number_input;
 pub mod overlay_dismiss;
 pub mod overlay_focus;
+pub mod overlay_scroll_lock;
 pub mod pagination;
 pub mod paper;
 pub mod password_input;
