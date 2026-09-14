@@ -10,6 +10,18 @@
 //! [`StyleProp`] applies one author's declarations **over** whatever is already
 //! there, last-wins per property, and remembers enough to take them off again
 //! on a re-run without disturbing anyone else's.
+//!
+//! It works by rewriting the whole attribute from its own parsed contents,
+//! rather than by handing each declaration to
+//! [`set_style`](super::NodeHandle::set_style). That is one code path for both
+//! backends, and it is also the only one of the two that can carry
+//! `!important` — measured in Chrome 150, `el.style.setProperty("color",
+//! "red !important")` is a **no-op** (the value does not parse; the attribute
+//! stays absent), while `el.setAttribute("style", "color: red !important")`
+//! keeps it and `getPropertyPriority("color")` answers `"important"`. The same
+//! probe is where the web half of the bug was confirmed:
+//! `setAttribute("style", …)` replaces the whole declaration block there too,
+//! so `rinch-web` had this defect identically.
 
 use std::borrow::Cow;
 
