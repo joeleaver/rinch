@@ -2551,7 +2551,7 @@ Button { variant: "filled" }
   moved it. Construct one with `ScrollEvent::new(top, left)`; a struct literal
   will not compile downstream. `ScrollEvent` is in the prelude.
 - **Components** (`Button`, `TextInput`, `Stack`, etc.) accept their declared struct fields as props. Additionally, all components support these universal props:
-  - `style:` — Applied to the component's root DOM element after rendering. Supports static strings and reactive closures.
+  - `style:` — Applied to the component's root DOM element after rendering. Supports static strings and reactive closures. **Merged, not assigned** (issue #647): the declarations are laid over whatever is already on the root, last-wins per property, so every inline declaration the component's own `render` wrote survives — which is how `Modal`, `Drawer`, `Popover`, `DropdownMenu`, `Notification` and `LoadingOverlay` publish `z_index`, `offset`, `overlay_blur` and the rest as custom properties. A write of the whole attribute silently returned all five overlays to their stylesheet defaults. A **reactive** `style:` takes its own previous declarations off on each re-run (restoring any value it had displaced), so it neither accumulates nor eats a second author's work. The same is true of `style:` on an HTML element, where the second author is usually a style shorthand: `div { style: {|| …}, p: "md" }` keeps its padding. An element with no second author keeps the author's string verbatim.
   - `class:` — Merged with the component's own CSS classes (additive, not replacing). Supports static strings and reactive closures.
 
 ```rust

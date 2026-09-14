@@ -93,16 +93,21 @@ pub fn generate_reactive_component_stmt(
         .collect();
     ctx.pop_closure_frame();
 
-    // Style/class inside the reactive closure use simple set (no separate effects needed)
+    // Style/class inside the reactive closure use simple set (no separate
+    // effects needed). `merge_style`, not `set_attribute`: the declarations
+    // `Component::render` just wrote are how a component publishes its props
+    // (issue #647), and the caller's `style:` goes *over* them. No `StyleProp`
+    // memory here — this closure re-renders into a **fresh** element every
+    // time, so there is nothing of the caller's left on it to take off.
     let style_code = if let Some(prop) = style_prop {
         let value = &prop.value;
         if is_literal_expr(value) {
             let value_str = crate::helpers::expr_to_string(value);
-            quote! { #result_var.set_attribute("style", #value_str); }
+            quote! { #result_var.merge_style(#value_str); }
         } else if let Some(closure) = get_closure_expr(value) {
-            quote! { #result_var.set_attribute("style", &::std::string::ToString::to_string(&(#closure)())); }
+            quote! { #result_var.merge_style(&::std::string::ToString::to_string(&(#closure)())); }
         } else {
-            quote! { #result_var.set_attribute("style", &::std::string::ToString::to_string(&#value)); }
+            quote! { #result_var.merge_style(&::std::string::ToString::to_string(&#value)); }
         }
     } else {
         quote! {}
@@ -314,16 +319,21 @@ pub fn element_to_dom_component_reactive(
         .collect();
     ctx.pop_closure_frame();
 
-    // Style/class inside the reactive closure use simple set (no separate effects needed)
+    // Style/class inside the reactive closure use simple set (no separate
+    // effects needed). `merge_style`, not `set_attribute`: the declarations
+    // `Component::render` just wrote are how a component publishes its props
+    // (issue #647), and the caller's `style:` goes *over* them. No `StyleProp`
+    // memory here — this closure re-renders into a **fresh** element every
+    // time, so there is nothing of the caller's left on it to take off.
     let style_code = if let Some(prop) = style_prop {
         let value = &prop.value;
         if is_literal_expr(value) {
             let value_str = crate::helpers::expr_to_string(value);
-            quote! { #result_var.set_attribute("style", #value_str); }
+            quote! { #result_var.merge_style(#value_str); }
         } else if let Some(closure) = get_closure_expr(value) {
-            quote! { #result_var.set_attribute("style", &::std::string::ToString::to_string(&(#closure)())); }
+            quote! { #result_var.merge_style(&::std::string::ToString::to_string(&(#closure)())); }
         } else {
-            quote! { #result_var.set_attribute("style", &::std::string::ToString::to_string(&#value)); }
+            quote! { #result_var.merge_style(&::std::string::ToString::to_string(&#value)); }
         }
     } else {
         quote! {}

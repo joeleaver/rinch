@@ -1037,6 +1037,20 @@ div { p: "20px" }  // becomes: padding: 20px (passed through)
 
 Shorthands are applied via `set_style()` after component rendering and after the `style:` prop. This means shorthands win over conflicting properties in `style:`.
 
+`style:` itself is **merged, not assigned** (issue #647). Its declarations are laid over whatever is already on the element — a shorthand prop, something the runtime wrote through `set_style()`, and on a component every inline declaration the component's own `render` wrote — last-wins per property, so nothing but a genuine collision is disturbed:
+
+```rust
+// The component publishes `--rinch-modal-z-index: 517` on its root from
+// `render`; the caller's `margin: 0` joins it rather than replacing it.
+Modal { z_index: 517, style: "margin: 0" }
+
+// `padding` survives the first signal change. It used to be erased, because
+// the re-firing `style:` effect wrote the whole `style` attribute.
+div { style: {|| format!("color: {}", tint.get())}, p: "md" }
+```
+
+A **reactive** `style:` also takes its own previous declarations off before laying the new ones on, so it never accumulates: a property the closure has stopped naming is removed, and if it had been overriding a value, that value comes back. An element with no second author on its style attribute keeps the author's string verbatim.
+
 ## Styling
 
 Inline styles and CSS classes work like regular HTML:

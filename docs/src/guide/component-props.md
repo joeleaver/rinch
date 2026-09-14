@@ -10,6 +10,8 @@ This page lists every prop for every component in `rinch-components`. All compon
 
 **Universal props:** All components support `style:` and `class:` in RSX, which are applied to the component's root DOM element. These support reactive closures `{|| expr}`.
 
+Both **merge** with what the component itself put on that root rather than replacing it: `class:` is added to the component's own classes, and `style:` is laid over the component's own inline declarations, last-wins per property. That matters because a component's inline style is not decoration — it is how a component publishes a prop to its own stylesheet, and every overlay's `z_index` is a custom property written there. `style:` used to write the whole attribute, which erased all of them ([issue #647](https://github.com/joeleaver/rinch/issues/647)). A reactive `style:` replaces its *own* previous declarations on each re-run and hands back any value it had been overriding, so it never accumulates and never eats a second author's work.
+
 **Style shorthands:** All elements and components support CSS shorthand props like `w`, `h`, `m`, `p`, `maw`, etc. These expand to `set_style()` calls and compose with component styles. Spacing scale values (`xs`, `sm`, `md`, `lg`, `xl`) auto-resolve to `var(--rinch-spacing-{value})`:
 
 ```rust
@@ -737,17 +739,16 @@ within its nearest ancestor stacking context rather than against the whole
 page. See the stacking-context notes in CLAUDE.md if a raised overlay still
 sits under something.
 
-Two limits worth knowing. The level is published as an inherited custom
+One limit worth knowing: the level is published as an inherited custom
 property, so an overlay of the **same type** nested inside a raised one inherits
 its level instead of falling back to the default — Chromium does exactly the
 same with the same CSS, and before this prop existed both were equal anyway.
-And a component-level **`style:` prop replaces the root's whole inline style**,
-which drops the published level and silently returns the overlay to its
-stylesheet default; that is
-[issue #647](https://github.com/joeleaver/rinch/issues/647), a pre-existing
-`rsx!` behaviour that also eats `Notification::color` and `Popover::width`, and
-it is not specific to `z_index` — an inline `z-index` would be erased by the
-same write. Style *shorthands* (`p:`, `mt:` …) merge and are unaffected.
+
+A component-level `style:` prop is safe to combine with it. It used to replace
+the root's whole inline style, which dropped the published level and silently
+returned the overlay to its stylesheet default (issue #647, fixed); a `style:`
+now merges into the root's own declarations the way `class:` and the style
+shorthands always have. See the **Universal props** note at the top of this page.
 
 ### Tooltip
 

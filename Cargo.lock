@@ -4993,6 +4993,7 @@ dependencies = [
  "quote",
  "rinch",
  "rinch-core",
+ "rinch-dom",
  "syn 2.0.114",
 ]
 
