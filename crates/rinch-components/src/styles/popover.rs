@@ -34,6 +34,30 @@ pub fn styles() -> String {
     visibility: visible;
 }
 
+/* Backdrop — the invisible overlay that catches outside clicks when
+   close_on_click_outside is true (#474). Its level is derived from the same
+   --rinch-popover-z-index as the dropdown so it stays exactly one under the
+   panel however high the pair moves, and a click on the popover's own content
+   still lands on the content.
+
+   `fixed`, not `absolute`, and that is not incidental: an absolute box is
+   clipped by an `overflow` ancestor in its containing-block chain, so inside a
+   sidebar or a table cell the dismiss region would stop where the panel does
+   and "outside" would mean "outside that panel". A fixed box's clip chain is
+   empty. It also puts the backdrop above the app's own fixed chrome, which is
+   why clicking a hand-rolled titlebar dismisses. The long note above
+   `.rinch-dropdown-menu__backdrop` has the whole history — this rule is that
+   rule, with a different custom property. */
+.rinch-popover__backdrop {
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    z-index: calc(var(--rinch-popover-z-index, 100) - 1);
+    display: none;
+}
+
 /* Positions */
 .rinch-popover--bottom .rinch-popover__dropdown {
     top: 100%;

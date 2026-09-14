@@ -39,6 +39,8 @@ mod node_ime_tests;
 #[cfg(all(test, feature = "desktop"))]
 mod nofocus_tests;
 #[cfg(test)]
+mod overlay_dismiss_tests;
+#[cfg(test)]
 mod overlay_opacity_tests;
 #[cfg(test)]
 mod overlay_z_index_tests;
@@ -414,6 +416,30 @@ pub struct RinchApp {
     /// `focus_target == FocusTarget::Select(_)`. Holds the app-created popup DOM
     /// node ids and the keyboard highlight state (issue #121).
     pub(crate) open_select: Option<select_widget::OpenSelect>,
+    /// The flag the open `<select>` popup's dismiss handler sets, and the entry
+    /// it set it from (#671).
+    ///
+    /// A dismiss handler is an `Fn() -> bool` and closing the popup needs
+    /// `&mut RinchApp`, so the handler only *asks*: it sets the flag and
+    /// consumes the key. `handle_event` drains the flag the moment
+    /// `dispatch_keyboard_event` returns, which is the same deferred-work shape
+    /// as `PendingFocusWork`.
+    ///
+    /// **On the Escape path the flag cannot be set and left undrained**: it is
+    /// only ever set by a handler that also returns `true`, and
+    /// `dispatch_keyboard_event` answering `true` is exactly when the drain site
+    /// runs. That is the whole of it today — `dispatch_dismiss` has one
+    /// production caller.
+    ///
+    /// It is **not** a property of the flag itself, and a second caller would
+    /// not inherit it. `dispatch_dismiss` is public and invites a direct call
+    /// for another dismiss gesture (Android's system Back is the example its own
+    /// docs give); called that way with a `<select>` open, this flag is set with
+    /// nothing to drain it, so the gesture appears to do nothing and the popup
+    /// closes later at whatever keystroke next reaches the drain site. A new
+    /// caller must drain the flag itself, the way the Escape path does.
+    pub(crate) select_dismiss_asked: Rc<std::cell::Cell<bool>>,
+    pub(crate) select_dismiss_handle: Option<rinch_core::DismissHandle>,
     /// Whether the native-select popup stylesheet has been injected (once).
     pub(crate) select_css_injected: bool,
     /// The "goal column" (a window-space x) preserved across consecutive vertical
@@ -497,6 +523,8 @@ impl RinchApp {
             window_focused: true,
             node_activation_held: None,
             open_select: None,
+            select_dismiss_asked: Rc::new(std::cell::Cell::new(false)),
+            select_dismiss_handle: None,
             select_css_injected: false,
             #[cfg(feature = "desktop")]
             editor_goal_x: None,

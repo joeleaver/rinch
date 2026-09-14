@@ -1240,7 +1240,18 @@ register_focus_target(
   latch must clear regardless). `KeyEventData` is `#[non_exhaustive]` — build
   one with `KeyEventData::new(key, code)` plus `with_modifiers`/`with_kind`.
   `set_keyboard_interceptor` is unrelated — a document-level capture-phase hook
-  dispatched *before* the arbiter. It shares the *lifetime* rule though (#183):
+  dispatched *before* the arbiter. **It is the wrong registry for Escape**
+  (#474): it is one slot per document, so a second overlay registering there
+  disables the first and its unmount clears the slot rather than restoring what
+  it displaced. Escape goes through the **dismiss stack** instead —
+  `rinch_core::push_dismiss_handler(doc_key, || bool) -> DismissHandle`,
+  LIFO, per document (`doc_matches`: only two differing `Some` keys are
+  refused, so a backend that marks none — rinch-web — reaches every handler),
+  owner-checked at dispatch, dispatched from inside
+  `dispatch_keyboard_event` for an Escape *press* after the interceptor (so
+  both backends get it with no edit). `Modal`/`Drawer`/`Popover`'s
+  `close_on_escape` rides it; a custom overlay should too. It shares the
+  *lifetime* rule though (#183):
   registering it during a render releases it on unmount, ownerless registration
   keeps app lifetime, and an earlier unmount never clobbers a later
   registration. Same for `set_paste_interceptor`, `set_selection_callback` and
@@ -1276,7 +1287,24 @@ register_focus_target(
   (`sync_ime` requests only `with_cursor_area()`).
 - Not yet: the Android soft keyboard for a registered target (the shell still
   watches for a focused `<input>`/editor), and backdrop modality (Tab still
-  reaches controls behind a Modal/Drawer backdrop).
+  reaches controls behind a Modal/Drawer backdrop — their `trap_focus` prop is
+  that gap, #474). *Dismissal* is separate and does work: see the dismiss stack
+  above.
+- **An open `<select>` popup joins the dismiss stack** (#671). It is handled by
+  the arbiter, which is step 2, while the stack is inside step 1 — so once
+  `close_on_escape` started working, a `<select>` inside a `Modal` lost Escape
+  to the modal. It now pushes its own entry when it opens (`open_select_popup`,
+  released at `remove_select_popup_nodes`, the one place `open_select` becomes
+  `None`), and since the popup opens *after* the modal mounted, LIFO puts it on
+  top with no precedence special case anywhere. A dismiss handler is an
+  `Fn() -> bool` and closing the popup needs `&mut RinchApp`, so the handler
+  only sets a flag and consumes; `handle_event` drains it the moment
+  `dispatch_keyboard_event` returns — the `PendingFocusWork` shape. On that path
+  the flag cannot be left set: only a handler that returns `true` sets it, and
+  `true` is exactly when the drain site runs. That holds for the Escape path,
+  not for the flag as such — `dispatch_dismiss` is public and a shell calling it
+  for another gesture (Android Back) would set the flag with nothing to drain
+  it, so a new caller has to drain it the way `handle_event` does.
 - **Web has no arbiter** — `register_focus_target` is desktop/Android/embed
   only; use a real `tabindex` and the DOM's own `focus`/`blur` there.
 

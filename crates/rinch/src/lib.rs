@@ -158,6 +158,11 @@ pub mod prelude {
     // logic can see content copied outside the app, because the browser's `paste`
     // event carries it and arrives *after* the Ctrl+V keydown.
     pub use rinch_core::{PasteEventData, clear_paste_interceptor, set_paste_interceptor};
+    // The dismiss stack (issue #474): who gets Escape, topmost overlay first.
+    // A custom overlay joins it the way `Modal`, `Drawer` and `Popover` do, and
+    // should — a lone `set_keyboard_interceptor` is one slot per document, so
+    // two overlays registering there silently disable each other.
+    pub use rinch_core::{DismissHandle, dispatch_dismiss, push_dismiss_handler};
     // The platform saying that something the app read at mount is now stale —
     // dark mode, the accent colour, the font scale, the insets. Deliberately
     // *not* behind a `#[cfg]`: the Android shell is the only thing that

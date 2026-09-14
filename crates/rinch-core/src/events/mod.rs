@@ -4,6 +4,7 @@
 //! to Rust callbacks, enabling reactive event handling in the UI.
 
 mod configuration;
+mod dismiss;
 mod drag;
 mod drag_context;
 mod handlers;
@@ -14,6 +15,7 @@ mod selection;
 
 // Re-export all public items so external code continues to work.
 pub use configuration::*;
+pub use dismiss::*;
 pub use drag::*;
 pub use drag_context::*;
 pub use handlers::*;

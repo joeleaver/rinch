@@ -1,4 +1,6 @@
-//! The eleven props #474 wired: five `radius`, five `z_index`, one `icon_size`.
+//! The props #474 wired, at the component level: five `radius`, five
+//! `z_index`, `CloseButton::icon_size`, the two `overlay_opacity`, and — from
+//! the dismissal PR — `Popover::close_on_click_outside`.
 //!
 //! Each was declared, documented in `docs/src/guide/component-props.md`, and
 //! read by nothing. `tests/no_dead_props.rs` is what keeps that from recurring;
@@ -416,7 +418,8 @@ const Z_CASES: &[ZCase] = &[
         component: "Popover",
         property: "--rinch-popover-z-index",
         base: "z-index: var(--rinch-popover-z-index, 100);",
-        derived: None,
+        // The outside-click backdrop (#474), one level under the panel.
+        derived: Some("z-index: calc(var(--rinch-popover-z-index, 100) - 1);"),
     },
     ZCase {
         component: "DropdownMenu",
@@ -556,8 +559,88 @@ fn the_wired_overlays_hard_code_no_z_index() {
     // Positive control: a selector tracker that matched nothing would pass the
     // loop above without looking at a single declaration.
     assert_eq!(
-        checked, 8,
-        "expected the eight z-index declarations these five own (2 Modal, \
-         2 Drawer, 1 Popover, 2 DropdownMenu, 1 Notification), saw {checked}"
+        checked, 9,
+        "expected the nine z-index declarations these five own (2 Modal, \
+         2 Drawer, 2 Popover, 2 DropdownMenu, 1 Notification), saw {checked}"
+    );
+}
+
+// ------------------------------------------------- Popover outside clicks
+
+/// `Popover::close_on_click_outside` renders a dismiss backdrop, and that
+/// backdrop carries a live `data-rid` — the attribute both backends dispatch,
+/// which is what makes this one component change work on desktop and on the
+/// web with no backend edit.
+///
+/// The off case is beside it because "always renders a backdrop" satisfies the
+/// on case and silently makes a `Popover` swallow the page's clicks.
+#[test]
+fn close_on_click_outside_renders_a_backdrop_that_carries_a_handler() {
+    let m = Mounted::new(Popover {
+        close_on_click_outside: true,
+        onclose: Some(rinch_core::Callback::new(|| {})),
+        ..Default::default()
+    });
+    let backdrop = m
+        .find("rinch-popover__backdrop")
+        .expect("close_on_click_outside must render a backdrop");
+    assert!(
+        backdrop
+            .get_attribute("data-rid")
+            .is_some_and(|rid| !rid.is_empty()),
+        "the backdrop must carry a data-rid, or clicking it does nothing"
+    );
+
+    let off = Mounted::new(Popover {
+        close_on_click_outside: false,
+        onclose: Some(rinch_core::Callback::new(|| {})),
+        ..Default::default()
+    });
+    assert!(
+        off.find("rinch-popover__backdrop").is_none(),
+        "with the prop off there must be no backdrop to swallow clicks"
+    );
+
+    // And nothing to send the click to means nothing to click: a `Popover`
+    // with no `onclose` cannot close itself, so a backdrop would only eat the
+    // page's clicks.
+    let no_callback = Mounted::new(Popover {
+        close_on_click_outside: true,
+        ..Default::default()
+    });
+    assert!(no_callback.find("rinch-popover__backdrop").is_none());
+}
+
+/// The sheet must actually style that class. A backdrop with no rule is
+/// `display: block`, `position: static` and zero-sized — the same bug one layer
+/// down.
+///
+/// The `position` assertion is scoped to **this rule's own body**, not to the
+/// whole sheet. `.rinch-modal__overlay` and `.rinch-drawer__overlay` are both
+/// `position: fixed`, so a whole-sheet `contains("position: fixed")` passes
+/// unchanged even if this backdrop were spelled `absolute` — a fixed point, and
+/// an assertion that cannot fail for the reason it names. (The behavioural pin
+/// is `rinch`'s `overlay_dismiss_tests::the_popover_backdrop_takes_its_geometry\
+/// _from_the_stylesheet`, which reads the *computed* value.)
+#[test]
+fn the_sheet_styles_the_popover_backdrop() {
+    let css = sheet();
+    let start = css
+        .find(".rinch-popover__backdrop {")
+        .expect("no rule styles `.rinch-popover__backdrop`");
+    let body = &css[start..];
+    let body = &body[..body.find('}').expect("the rule is closed")];
+
+    assert!(
+        body.contains("position: fixed"),
+        "the backdrop must be fixed — an absolute one is clipped by whatever \
+         clips the popover, so \"outside\" stops at the enclosing panel. Rule \
+         body was: {body}"
+    );
+    assert!(
+        body.contains("z-index: calc(var(--rinch-popover-z-index"),
+        "the backdrop's level must derive from the popover's own property, or \
+         `z_index` moves the panel and leaves the backdrop behind. Rule body \
+         was: {body}"
     );
 }

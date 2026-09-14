@@ -22,6 +22,7 @@
 use rinch_core::Component;
 use rinch_core::dom::{NodeHandle, RenderScope};
 use rinch_tabler_icons::{TablerIcon, TablerIconStyle, render_tabler_icon};
+use std::cell::Cell;
 use std::rc::Rc;
 
 /// Reactive callback type for opened state.
@@ -249,6 +250,66 @@ impl Component for Notification {
                         "class",
                         &format!("{} rinch-notification--hidden", base_class_clone),
                     );
+                }
+            });
+        }
+
+        // auto_close (#474): dismiss after `auto_close` ms. `0` means off, as
+        // `component-props.md` has always documented.
+        //
+        // The timeout is armed on the **false→true edge** and cleared on the
+        // true→false one, so a notification the user dismisses by hand does not
+        // fire `onclose` a second time when its original deadline arrives, and
+        // one that is shown again gets a fresh delay rather than inheriting a
+        // stale deadline. Unmounting cancels it twice over: explicitly, through
+        // the cleanup below, and again inside `set_timeout`, which drops a
+        // callback whose component is gone (issue #141).
+        if self.auto_close > 0
+            && let Some(onclose) = self.onclose.clone()
+        {
+            let delay = self.auto_close;
+            let pending: Rc<Cell<Option<rinch_core::TimeoutHandle>>> = Rc::new(Cell::new(None));
+
+            let arm = {
+                let pending = pending.clone();
+                move || {
+                    let cb = onclose.clone();
+                    let slot = pending.clone();
+                    let handle = rinch_core::set_timeout(delay, move || {
+                        slot.set(None);
+                        cb.invoke();
+                    });
+                    pending.set(Some(handle));
+                }
+            };
+
+            if let Some(ref opened_fn) = self.opened_fn {
+                let opened_fn = opened_fn.clone();
+                let pending_e = pending.clone();
+                let was_open = Cell::new(is_opened);
+                if is_opened {
+                    arm();
+                }
+                __scope.create_effect(move || {
+                    let open = opened_fn();
+                    if open && !was_open.get() {
+                        arm();
+                    } else if !open
+                        && was_open.get()
+                        && let Some(handle) = pending_e.take()
+                    {
+                        rinch_core::clear_timeout(handle);
+                    }
+                    was_open.set(open);
+                });
+            } else if is_opened {
+                arm();
+            }
+
+            let pending_c = pending;
+            __scope.on_cleanup(move || {
+                if let Some(handle) = pending_c.take() {
+                    rinch_core::clear_timeout(handle);
                 }
             });
         }

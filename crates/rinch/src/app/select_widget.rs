@@ -266,6 +266,29 @@ impl RinchApp {
             typeahead_at: None,
             initial_value,
         });
+        // #671: join the dismiss stack, above whatever overlay is already on
+        // it — the popup opens *after* the modal mounted, so LIFO puts it first
+        // by exactly the rule that makes nested modals work, and no precedence
+        // special case is needed anywhere.
+        //
+        // `unowned` so it keeps app lifetime: this is the runtime's own entry,
+        // not a component's, and it must not die with whatever scope the click
+        // handler that opened the popup happened to be running in.
+        //
+        // **No test fails if you delete it**, and that is not evidence it is
+        // decorative: every path that reaches here today comes from `RinchApp`'s
+        // own click handling, where `current_owner()` is already `None`. It
+        // starts mattering the first time a select is opened from inside a
+        // component callback.
+        let doc_key = self.doc_key();
+        let asked = self.select_dismiss_asked.clone();
+        self.select_dismiss_handle = Some(rinch_core::reactive::unowned(move || {
+            rinch_core::push_dismiss_handler(doc_key, move || {
+                asked.set(true);
+                true
+            })
+        }));
+
         // Select focus was installed at the top, before the popup was built.
         self.scene_dirty = true;
         self.resolve_and_repaint(vp_w, vp_h);
@@ -278,6 +301,11 @@ impl RinchApp {
         let Some(open) = self.open_select.take() else {
             return;
         };
+        // The dismiss entry leaves the stack with the popup (#671). This is the
+        // one place `open_select` becomes `None`, so it is the one place the
+        // release has to be.
+        self.select_dismiss_handle = None;
+        self.select_dismiss_asked.set(false);
         if let Some(doc) = self.doc.clone() {
             let mut d = doc.borrow_mut();
             d.remove_node(NodeId(open.panel_id));
@@ -313,7 +341,7 @@ impl RinchApp {
     /// anchor and restarted at the top of the document. The **mouse** route
     /// never showed it: its mousedown claim leaves `focused_node` on the
     /// select, so the ancestor-walk fallback still had something to find.
-    fn close_select_popup_returning_focus(&mut self) {
+    pub(super) fn close_select_popup_returning_focus(&mut self) {
         let select_id = self.open_select.as_ref().map(|o| o.select_id);
         self.close_select_popup();
         let Some(select_id) = select_id else { return };

@@ -166,15 +166,38 @@ pub fn clear_keyboard_interceptor() {
 }
 
 /// Dispatch a keyboard event to the dispatching document's interceptor (or the
-/// thread-global fallback). Returns true if the event was handled.
+/// thread-global fallback), then — for an **Escape press** only — to the
+/// [dismiss stack](super::dispatch_dismiss). Returns true if the event was
+/// handled and should not reach the runtime.
 ///
 /// The `Rc` is cloned out before the call so the handler may re-enter (install a
 /// different interceptor, for instance) without a double borrow.
+///
+/// # Why the dismiss stack is dispatched from here
+///
+/// Both backends already call this, ahead of their own key handling — desktop
+/// in `RinchApp`'s `KeyDown` arm, before the focus arbiter, so Escape closes a
+/// modal while an `<input>` inside it holds the keyboard; rinch-web in its
+/// document `keydown` listener. Putting the scan here rather than at each call
+/// site is what lets overlays close on Escape on every backend with **no
+/// backend change at all**, and keeps the precedence question ("what beats
+/// Escape?") answered in one place.
+///
+/// The interceptor still wins: it is the document-level capture-phase hook, and
+/// an app that consumes Escape there means it. A **release** never dismisses —
+/// `KeyUp` comes through this same function and must not close anything.
 pub fn dispatch_keyboard_event(data: &KeyEventData) -> bool {
-    match crate::reactive::read_doc_scoped_slot(&KEYBOARD_INTERCEPTOR) {
+    let intercepted = match crate::reactive::read_doc_scoped_slot(&KEYBOARD_INTERCEPTOR) {
         Some(cb) => cb(data),
         None => false,
+    };
+    if intercepted {
+        return true;
     }
+    if data.key == "Escape" && data.is_down() {
+        return super::dispatch_dismiss();
+    }
+    false
 }
 
 #[cfg(test)]
@@ -257,6 +280,62 @@ mod tests {
 
         second.dispose();
         assert!(!dispatch_keyboard_event(&key("a")));
+    }
+
+    /// **The interceptor wins over the dismiss stack** (#474).
+    ///
+    /// `dispatch_keyboard_event`'s own doc says so, and nothing tested it:
+    /// removing the `if intercepted { return true; }` early return left both
+    /// suites green, because every other fixture uses an Escape no interceptor
+    /// is registered for. An app that consumes Escape in its document-level
+    /// hook means to own it, and an open modal must not take it anyway.
+    ///
+    /// Both directions, because "the stack never runs" passes the first half
+    /// on its own.
+    #[test]
+    fn an_interceptor_that_consumes_escape_keeps_it_from_the_dismiss_stack() {
+        clear_keyboard_interceptor();
+        let reached = Rc::new(Cell::new(0u32));
+        let r = reached.clone();
+        let _entry = crate::events::push_dismiss_handler(0, move || {
+            r.set(r.get() + 1);
+            true
+        });
+
+        // Declining: the stack is consulted and consumes.
+        set_keyboard_interceptor(|_| false);
+        assert!(dispatch_keyboard_event(&key("Escape")));
+        assert_eq!(reached.get(), 1, "a declining interceptor falls through");
+
+        // Consuming: the stack is never reached.
+        set_keyboard_interceptor(|_| true);
+        assert!(dispatch_keyboard_event(&key("Escape")));
+        assert_eq!(
+            reached.get(),
+            1,
+            "an interceptor that consumes Escape must keep it from the stack"
+        );
+
+        clear_keyboard_interceptor();
+    }
+
+    /// And the stack only ever sees **Escape**: any other key an interceptor
+    /// declines falls through to the runtime untouched, as it always has.
+    #[test]
+    fn a_key_that_is_not_escape_never_reaches_the_dismiss_stack() {
+        clear_keyboard_interceptor();
+        let reached = Rc::new(Cell::new(0u32));
+        let r = reached.clone();
+        let _entry = crate::events::push_dismiss_handler(0, move || {
+            r.set(r.get() + 1);
+            true
+        });
+        assert!(!dispatch_keyboard_event(&key("a")));
+        assert!(!dispatch_keyboard_event(&key("Enter")));
+        assert_eq!(reached.get(), 0);
+        // Positive control: the instrument fires for the key it is meant to.
+        assert!(dispatch_keyboard_event(&key("Escape")));
+        assert_eq!(reached.get(), 1);
     }
 
     /// Registering outside any render has no owner, so nothing releases it —

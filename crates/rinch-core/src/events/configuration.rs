@@ -180,12 +180,16 @@ pub fn clear_configuration_change_handler() {
 /// dropped, which is not tidiness — it is what makes a handler that calls
 /// [`set_configuration_change_handler`] on itself (or clears it, or is dropped
 /// as a consequence of what it wrote) a re-registration rather than a
-/// `BorrowMutError`. `dispatch_keyboard_event` holds its borrow across the
-/// call and gets away with it because a keypress interceptor has no reason to
-/// re-register mid-keypress; a configuration handler that swaps a whole theme
-/// out from under the tree very plausibly does. That rule lives in
+/// `BorrowMutError`. That rule lives in
 /// [`read_scoped_slot`](crate::reactive::read_scoped_slot) rather than being
-/// paraphrased here.
+/// paraphrased here, and every dispatcher in this module follows it —
+/// including [`dispatch_keyboard_event`](super::dispatch_keyboard_event),
+/// which this paragraph used to name as the exception that held its borrow
+/// across the call. It does not, and has not since the per-document slots
+/// landed (#340): `read_doc_scoped_slot` clones out and releases before
+/// returning. The exception was real once; nothing depends on it now, and an
+/// Escape press goes on from there into the dismiss stack, which runs user
+/// handlers of its own.
 pub fn dispatch_configuration_change() {
     if let Some(handler) = crate::reactive::read_scoped_slot(&CONFIGURATION_CHANGE) {
         handler();

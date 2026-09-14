@@ -2,8 +2,15 @@
 //!
 //! Positioned popup content relative to a target element.
 
+use std::rc::Rc;
+
 use rinch_core::Component;
 use rinch_core::dom::{NodeHandle, RenderScope};
+use rinch_core::reactive::Effect;
+
+/// A reactive `opened` getter, spelled as `Modal`, `Drawer` and `DropdownMenu`
+/// spell theirs.
+pub type ReactiveBool = Rc<dyn Fn() -> bool>;
 
 /// Popover position.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -83,10 +90,12 @@ impl std::str::FromStr for PopoverPosition {
 ///     }
 /// }
 /// ```
-#[derive(Debug)]
 pub struct Popover {
     /// Whether the popover is open.
     pub opened: bool,
+    /// Reactive opened getter - use this for fine-grained updates.
+    /// When provided, the popover's dismissal tracks the signal automatically.
+    pub opened_fn: Option<ReactiveBool>,
     /// Position relative to target.
     pub position: String,
     /// Offset from target in pixels.
@@ -111,12 +120,41 @@ pub struct Popover {
     pub z_index: Option<i32>,
     /// Whether to trap focus.
     pub trap_focus: bool,
+    /// Callback when the popover should close.
+    ///
+    /// Both dismissal props need somewhere to send the request: a `Popover`
+    /// with no `onclose` cannot close itself, so `close_on_escape` and
+    /// `close_on_click_outside` are no-ops without it (issue #474).
+    pub onclose: Option<rinch_core::Callback>,
+}
+
+impl std::fmt::Debug for Popover {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Popover")
+            .field("opened", &self.opened)
+            .field("opened_fn", &self.opened_fn.as_ref().map(|_| "<reactive>"))
+            .field("position", &self.position)
+            .field("offset", &self.offset)
+            .field("radius", &self.radius)
+            .field("shadow", &self.shadow)
+            .field("with_arrow", &self.with_arrow)
+            .field("arrow_size", &self.arrow_size)
+            .field("arrow_offset", &self.arrow_offset)
+            .field("close_on_click_outside", &self.close_on_click_outside)
+            .field("close_on_escape", &self.close_on_escape)
+            .field("width", &self.width)
+            .field("z_index", &self.z_index)
+            .field("trap_focus", &self.trap_focus)
+            .field("onclose", &self.onclose.as_ref().map(|_| "<callback>"))
+            .finish()
+    }
 }
 
 impl Default for Popover {
     fn default() -> Self {
         Self {
             opened: false,
+            opened_fn: None,
             position: String::new(),
             offset: None,
             radius: String::new(),
@@ -129,12 +167,18 @@ impl Default for Popover {
             width: String::new(),
             z_index: None,
             trap_focus: false,
+            onclose: None,
         }
     }
 }
 
 impl Popover {
-    pub fn class_string(&self) -> String {
+    /// The root's classes for the **closed** state.
+    ///
+    /// Split out from [`class_string`](Self::class_string) so the `opened_fn`
+    /// effect can rebuild the class list without re-deriving position, radius
+    /// and shadow on every toggle.
+    pub fn class_string_closed(&self) -> String {
         let mut classes = vec!["rinch-popover"];
 
         if !self.position.is_empty() {
@@ -163,11 +207,17 @@ impl Popover {
             classes.push("rinch-popover--with-arrow");
         }
 
-        if self.opened {
-            classes.push("rinch-popover--opened");
-        }
-
         classes.join(" ")
+    }
+
+    /// The root's classes, including `rinch-popover--opened` when it is open.
+    pub fn class_string(&self) -> String {
+        let base = self.class_string_closed();
+        if self.opened {
+            format!("{base} rinch-popover--opened")
+        } else {
+            base
+        }
     }
 }
 
@@ -199,9 +249,80 @@ impl Component for Popover {
             root.set_attribute("style", &style_parts.join("; "));
         }
 
+        // The initial open state, from `opened_fn` when there is one — the same
+        // precedence `Modal`, `Drawer` and `Notification` use.
+        let is_opened = match &self.opened_fn {
+            Some(f) => f(),
+            None => self.opened,
+        };
+
+        // opened_fn (#474): keep the `--opened` class in step with the signal,
+        // surgically, without re-rendering the component.
+        if let Some(opened_fn) = self.opened_fn.clone() {
+            let root_c = root.clone();
+            let base = self.class_string_closed();
+            __scope.create_effect(move || {
+                if opened_fn() {
+                    root_c.set_attribute("class", &format!("{base} rinch-popover--opened"));
+                } else {
+                    root_c.set_attribute("class", &base);
+                }
+            });
+        }
+
         for child in children {
             root.append_child(child);
         }
+
+        // close_on_click_outside (#474): an invisible full-viewport backdrop
+        // that fires `onclose` when clicked, one z-level under the dropdown so
+        // a click *inside* the popover still reaches its own content. Copied
+        // from `DropdownMenu`, whose stylesheet note explains why `fixed` is
+        // load-bearing rather than incidental — an `absolute` box is clipped by
+        // an `overflow` ancestor, so "outside" would stop at whatever panel the
+        // popover lives in.
+        if self.close_on_click_outside && self.onclose.is_some() {
+            let backdrop = rinch_macros::rsx! { div { class: "rinch-popover__backdrop" } };
+            backdrop.set_attribute(
+                "style",
+                if is_opened {
+                    "display: block"
+                } else {
+                    "display: none"
+                },
+            );
+
+            if let Some(opened_fn) = self.opened_fn.clone() {
+                let backdrop_c = backdrop.clone();
+                Effect::new(move || {
+                    backdrop_c.set_attribute(
+                        "style",
+                        if opened_fn() {
+                            "display: block"
+                        } else {
+                            "display: none"
+                        },
+                    );
+                });
+            }
+
+            let cb = self.onclose.clone().unwrap();
+            let handler_id = __scope.register_handler(move || cb.invoke());
+            backdrop.set_attribute("data-rid", &handler_id.0.to_string());
+
+            root.append_child(&backdrop);
+        }
+
+        // close_on_escape (#474). See `overlay_dismiss` for why the open check
+        // is at dispatch time and not here.
+        crate::overlay_dismiss::arm_close_on_escape(
+            __scope,
+            &root,
+            self.close_on_escape,
+            self.opened,
+            self.opened_fn.as_ref(),
+            self.onclose.as_ref(),
+        );
 
         root
     }
