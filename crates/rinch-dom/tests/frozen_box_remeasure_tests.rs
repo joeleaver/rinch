@@ -550,6 +550,149 @@ fn a_width_transition_inside_an_atomic_inline_regrows_it() {
     );
 }
 
+/// The **animation** twin of the fixture above.
+///
+/// The Taffy re-sync is duplicated verbatim in `tick_transitions` and
+/// `tick_animations`, so a fixture for one of them is a fixture for neither
+/// copy in particular: the review of #694 measured the animation copy's mark
+/// being killed by **zero** fixtures while the transition copy's was covered.
+/// Duplicated code needs duplicated witnesses.
+///
+/// Kills the mutant that drops `mark_atomic_inline_dirty` from
+/// `tick_animations`' re-sync.
+#[test]
+fn a_width_animation_inside_an_atomic_inline_regrows_it() {
+    const CSS: &str = "
+        @keyframes grow { from { width: 50px; } to { width: 300px; } }
+        .wrap { width: 900px; font-size: 16px; line-height: 20px; font-family: sans-serif; }
+        .ib   { display: inline-block; }
+        .box  { display: block; height: 10px; width: 50px; }
+        .anim { animation: grow 1000ms linear forwards; }
+        .wide { width: 300px; }
+    ";
+    fn build(extra: &str) -> (RinchDocument, NodeId, NodeId) {
+        let mut doc = RinchDocument::new();
+        doc.load_css(CSS);
+        let body = doc.body();
+        let wrap = doc.create_element("div");
+        doc.set_attribute(wrap, "class", "wrap");
+        doc.append_child(body, wrap);
+        let ib = doc.create_element("span");
+        doc.set_attribute(ib, "class", "ib");
+        doc.append_child(wrap, ib);
+        let b = doc.create_element("div");
+        doc.set_attribute(b, "class", &format!("box {extra}"));
+        doc.append_child(ib, b);
+        doc.tree.transitions_enabled = true;
+        doc.resolve_layout(900.0, 600.0);
+        (doc, ib, b)
+    }
+
+    let (oracle, oracle_ib, _) = build("wide");
+    let expected = size_of(&oracle, oracle_ib);
+
+    let (mut doc, ib, b) = build("anim");
+    let before = size_of(&doc, ib);
+    assert_ne!(before, expected, "counter-oracle");
+    // The frame boundary a running app crosses here.
+    let _ = doc.take_dirty_nodes();
+
+    for a in doc
+        .tree
+        .active_animations
+        .get_mut(&b.0)
+        .expect("the class started a width animation")
+    {
+        a.start_time_ms -= 10_000.0;
+    }
+    doc.tick_animations();
+    doc.resolve_layout(900.0, 600.0);
+
+    assert_eq!(
+        size_of(&doc, ib),
+        expected,
+        "the atomic inline must contain its animated child; {before:?} is the \
+         box it was first measured at"
+    );
+}
+
+/// An IFC root that owns a **#466 measure leaf** reflows when an atomic inline
+/// inside it grows, at an unchanged available width.
+///
+/// The witness for `mark_ifc_measure_dirty(root_id)` in
+/// `remeasure_dirty_atomic_inlines`, which round 1 of the #694 review could not
+/// build and round 2 could. The shape needs three things at once: a root with
+/// an out-of-flow child, so `setup_inline_formatting_contexts` gives it a
+/// separate Taffy measure leaf instead of measuring it directly; a width that
+/// does not change, so nothing else invalidates the measure; and an atomic
+/// inline in the root's own inline content whose growth changes the root's line
+/// count. Dirty propagates up, not down, so a `mark_dirty` on the root never
+/// reaches that leaf.
+///
+/// Kills the mutant that drops the `mark_ifc_measure_dirty` call: the root
+/// stays one line tall around two lines of content.
+#[test]
+fn a_measure_leaf_root_reflows_when_an_atomic_inline_inside_it_grows() {
+    const CSS: &str = "
+        .wrap { width: 200px; font-size: 16px; line-height: 20px; font-family: sans-serif; }
+        .abs  { position: absolute; width: 10px; height: 10px; }
+        .ib   { display: inline-block; }
+    ";
+    fn build(label: &str) -> (RinchDocument, NodeId, NodeId, NodeId) {
+        let mut doc = RinchDocument::new();
+        doc.load_css(CSS);
+        let body = doc.body();
+        let wrap = doc.create_element("div");
+        doc.set_attribute(wrap, "class", "wrap");
+        doc.append_child(body, wrap);
+        // The out-of-flow child is what makes this root own a measure leaf.
+        let a = doc.create_element("div");
+        doc.set_attribute(a, "class", "abs");
+        doc.append_child(wrap, a);
+        let lead = doc.create_text("lead text ");
+        doc.append_child(wrap, lead);
+        let ib = doc.create_element("span");
+        doc.set_attribute(ib, "class", "ib");
+        doc.append_child(wrap, ib);
+        let t = doc.create_text(label);
+        doc.append_child(ib, t);
+        doc.resolve_layout(800.0, 600.0);
+        (doc, wrap, ib, t)
+    }
+
+    let (oracle, oracle_wrap, oracle_ib, _) = build("wide wide wide wide");
+    let expected_wrap = size_of(&oracle, oracle_wrap);
+    let expected_ib = size_of(&oracle, oracle_ib);
+
+    let (mut doc, wrap, ib, t) = build("x");
+    let before_wrap = size_of(&doc, wrap);
+    assert!(
+        doc.tree.ifc_measure_leaves.contains_key(&wrap.0),
+        "positive control: this shape must actually own a measure leaf, or the \
+         fixture pins nothing about `mark_ifc_measure_dirty`"
+    );
+    assert_ne!(
+        before_wrap, expected_wrap,
+        "counter-oracle: the root's height must differ between the two labels"
+    );
+    let _ = doc.take_dirty_nodes();
+
+    doc.set_text_content(t, "wide wide wide wide");
+    doc.resolve_layout(800.0, 600.0);
+
+    assert_eq!(
+        size_of(&doc, ib),
+        expected_ib,
+        "the atomic inline's own box"
+    );
+    assert_eq!(
+        size_of(&doc, wrap),
+        expected_wrap,
+        "the IFC root must reflow around the grown atomic inline; \
+         {before_wrap:?} is the box it was first measured at"
+    );
+}
+
 /// Atomic inlines **nest**, and the outer one is sized from the inner one's
 /// `Node::layout`.
 ///
@@ -620,9 +763,18 @@ fn nested_atomic_inlines_both_regrow() {
 ///
 /// A viewport resize is the event that isolates it: nothing about it dirties the
 /// IFC structure, and the re-cascade it forces produces identical computed
-/// styles, so `dirty_atomic_inlines` is **empty** on the pass that moves this
-/// box. Asserted, not assumed — otherwise the fixture would pass on whichever
-/// pass happened to do the work.
+/// styles, so nothing marks anything and `dirty_atomic_inlines` is empty going
+/// into the pass that moves this box.
+///
+/// **The attribution rests on a mutant, not on that emptiness.** Making
+/// `resolve_percentage_inline_blocks` return early kills this fixture and
+/// nothing else in the file — that is what says the third pass did the work.
+/// An earlier revision asserted `is_empty()` *after* the resolve as a "positive
+/// control"; the review of #694 showed it could not fail, because the pass
+/// drains the set — seeding it with this very node beforehand still left it
+/// empty afterwards. The check below is the same question asked where the
+/// answer is not predetermined: **before** the pass, with nothing cleared by
+/// hand.
 #[test]
 fn a_percentage_atomic_inline_tracks_a_viewport_resize() {
     const CSS: &str = "
@@ -656,20 +808,112 @@ fn a_percentage_atomic_inline_tracks_a_viewport_resize() {
         "counter-oracle: a 50% box must differ between a 900px and a 400px viewport"
     );
     let _ = doc.take_dirty_nodes();
-    doc.tree.dirty_atomic_inlines.clear();
+    assert!(
+        doc.tree.dirty_atomic_inlines.is_empty(),
+        "positive control: nothing may be marked going INTO the resize, or this \
+         fixture is pinning `remeasure_dirty_atomic_inlines` and not the third \
+         pass it is about. Asked before rather than after, and with nothing \
+         cleared by hand: the pass drains the set, so an empty set afterwards \
+         is a fixed point that cannot fail"
+    );
 
     doc.resolve_layout(400.0, 600.0);
 
-    assert!(
-        doc.tree.dirty_atomic_inlines.is_empty(),
-        "positive control: the dirty set must be empty across this pass, or the \
-         fixture is pinning `remeasure_dirty_atomic_inlines` and not the third \
-         pass it is about"
-    );
     assert_eq!(
         size_of(&doc, ib),
         expected,
         "the percentage atomic inline must track the new viewport; {wide:?} is \
          the box it had at 900px"
+    );
+}
+
+/// The IFC root around a re-measured atomic inline keeps its **shaped text**,
+/// not just its height.
+///
+/// The witness for `dirty_ifc_text_roots.insert(root_id)` in
+/// `remeasure_dirty_atomic_inlines`, which the review of #694 measured as
+/// surviving every test and every probe and reported as reading redundant. It
+/// is not: the same block sets `root.text_layout = None`, and
+/// `build_ifc_layouts` rebuilds a root only when it is rebuilding **all** of
+/// them — which it does exactly when `dirty_ifc_text_roots` is *empty*. So the
+/// insert is unnecessary until some **other** root is in that set, and then
+/// dropping it leaves this root's Parley layout at `None` for good: the box is
+/// the right size and nothing is drawn in it.
+///
+/// Hence the two roots. The second exists only to make the set non-empty, and
+/// the atomic inline grows through a **Taffy** style change, which is the route
+/// that does not dirty its own enclosing root on the way past. Measured against
+/// the mutant: height 30 either way, `text_layout` `Some` with the insert and
+/// `None` without it.
+#[test]
+fn a_remeasured_atomic_inlines_root_keeps_its_shaped_text() {
+    const CSS: &str = "
+        .wrap { width: 400px; font-size: 16px; line-height: 20px; font-family: sans-serif; }
+        .ib   { display: inline-block; }
+        .box  { display: block; height: 10px; width: 50px; }
+        .box.wide { width: 350px; }
+    ";
+    // `first` holds text plus an atomic inline; `second` holds text only.
+    fn build(box_class: &str, second_text: &str) -> (RinchDocument, NodeId, NodeId, NodeId) {
+        let mut doc = RinchDocument::new();
+        doc.load_css(CSS);
+        let body = doc.body();
+
+        let first = doc.create_element("div");
+        doc.set_attribute(first, "class", "wrap");
+        doc.append_child(body, first);
+        let lead = doc.create_text("alpha alpha ");
+        doc.append_child(first, lead);
+        let ib = doc.create_element("span");
+        doc.set_attribute(ib, "class", "ib");
+        doc.append_child(first, ib);
+        let inner = doc.create_element("div");
+        doc.set_attribute(inner, "class", &format!("box {box_class}"));
+        doc.append_child(ib, inner);
+
+        let second = doc.create_element("div");
+        doc.set_attribute(second, "class", "wrap");
+        doc.append_child(body, second);
+        let t2 = doc.create_text(second_text);
+        doc.append_child(second, t2);
+
+        doc.resolve_layout(800.0, 600.0);
+        (doc, first, inner, t2)
+    }
+
+    let (oracle, oracle_first, _, _) = build("wide", "beta beta beta");
+    let expected = size_of(&oracle, oracle_first);
+
+    let (mut doc, first, inner, second_text) = build("", "beta");
+    let before = size_of(&doc, first);
+    assert_ne!(
+        before, expected,
+        "counter-oracle: the wider inline-block must push the root to a second line"
+    );
+    let _ = doc.take_dirty_nodes();
+
+    // The *other* root goes into `dirty_ifc_text_roots`, which is what stops
+    // `build_ifc_layouts` from rebuilding everything.
+    doc.set_text_content(second_text, "beta beta beta");
+    // …and the atomic inline grows through a Taffy style, the route that does
+    // not dirty its own enclosing root.
+    doc.set_attribute(inner, "class", "box wide");
+    doc.resolve_layout(800.0, 600.0);
+
+    assert_eq!(
+        size_of(&doc, first),
+        expected,
+        "the root must reflow around the grown atomic inline; {before:?} is the \
+         box it was first measured at"
+    );
+    assert!(
+        doc.tree
+            .get(first.0)
+            .expect("the root is live")
+            .text_layout
+            .is_some(),
+        "the root must still hold a shaped inline layout — this is the half the \
+         height assertion above cannot see, and the only thing that fails when \
+         the `dirty_ifc_text_roots` insert is dropped"
     );
 }

@@ -3453,6 +3453,14 @@ impl RinchDocument {
         // Deepest first — an outer atomic inline sizes its `InlineBox` from the
         // inner one's `Node::layout`. Same order, same reason, as
         // `inline_block_measure_roots`.
+        //
+        // The input order this undoes is ascending node id, i.e. creation
+        // order, i.e. shallowest-first for a tree built parent-first — which is
+        // why `dirty_atomic_inlines` is a `BTreeSet` and must stay one. Under a
+        // `HashSet` the order was per-process random and the fixture that pins
+        // this line killed a sort-deleted mutant only **8** times in 25 runs —
+        // it missed it the other 17. It now kills it 25 times in 25. See that
+        // field's doc.
         targets.sort_by_key(|t| std::cmp::Reverse(t.0));
 
         let before: Vec<(f32, f32)> = targets

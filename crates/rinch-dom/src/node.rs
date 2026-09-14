@@ -1,7 +1,7 @@
 //! Node tree data structures for rinch-dom.
 
 use std::cell::Cell;
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 
@@ -1591,7 +1591,25 @@ pub struct NodeTree {
     ///
     /// Entries are node ids and are **not** validated on insert — a node may be
     /// removed before the set is read, so the consumer `get`s and skips.
-    pub dirty_atomic_inlines: HashSet<RawNodeId>,
+    ///
+    /// **A `BTreeSet`, and it is the *fixture* that needs it rather than the
+    /// code.** The consumer sorts these deepest-first, which is a real ordering
+    /// requirement — an outer atomic inline is sized from an inner one's
+    /// `Node::layout` — and that sort is correct whatever order it is handed.
+    /// What a `HashSet` broke was the ability to *pin* it: the unsorted order
+    /// was per-process random, so the fixture that pins the sort caught a
+    /// sort-deleted mutant 8 times in 25 runs and missed it the other 17
+    /// (measured by the review of #694). Ascending node id is creation order,
+    /// which for a tree built parent-first is shallowest-first — exactly the
+    /// order the sort has to undo — so the mutant now fails every run.
+    ///
+    /// Same-depth entries tie, and `sort_by_key` is stable, so their relative
+    /// order is this set's order. That cannot matter: two atomic inlines at
+    /// equal depth are siblings, and neither is measured from the other.
+    ///
+    /// Do not swap it back for a `HashSet`. The set holds a handful of entries
+    /// and its `O(log n)` insert is not on any path the cost harness measures.
+    pub dirty_atomic_inlines: BTreeSet<RawNodeId>,
     /// Cached IFC measure results from previous frames.
     /// Key: (ifc_root_node_id, wrap_width_bits) → (width, height).
     /// Invalidated per-root when text content changes.
@@ -1749,7 +1767,7 @@ impl NodeTree {
             dirty_ifc_text_roots: HashSet::new(),
             taffy_computes: 0,
             dirty_text_contexts: HashSet::new(),
-            dirty_atomic_inlines: HashSet::new(),
+            dirty_atomic_inlines: BTreeSet::new(),
             ifc_measure_cache: HashMap::new(),
             scroll_into_view_requests: Vec::new(),
             pending_scroll_clamps: Vec::new(),
