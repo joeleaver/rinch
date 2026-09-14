@@ -1422,6 +1422,62 @@ mpv hands a real frame to the compositor (`VideoPlayer::has_frame`, reset by
 A node that carries the attribute must say exactly `"true"` to punch, so a mis-stamped
 value fails safe.
 
+**Layout invalidation: three paths, two flags.** `resolve_layout` early-returns
+when `tree.layout_dirty` is false (styles resolve, dirty Parley layouts rebuild,
+**no Taffy compute**), and runs the inline-formatting-context setup passes only
+when `tree.ifc_dirty` is true. Both gates are load-bearing for frame cost and
+both used to be closed on changes that move a box:
+
+- **A typography change is a layout change (#678).** `font-family`,
+  `font-weight`, `font-style`, `line-height`, `letter-spacing`, `word-spacing`,
+  `text-transform`, `white-space` and `overflow-wrap` are not Taffy properties —
+  and neither is **`font-size`**, for a box whose own sizes are in `px`, since it
+  reaches the Taffy style only through a value that *uses* it. Any of them
+  re-wraps the text, so `ComputedStyle::same_measured_text_inputs` sets
+  `layout_dirty` for them. That predicate is deliberately **narrower** than
+  `same_text_layout_inputs` (#654), which decides whether the *glyphs* must be
+  re-shaped: `color` is baked into the glyphs and moves no box, so a
+  `:hover { color }` still takes the cheap path — pinned by
+  `frozen_box_remeasure_tests::a_colour_only_restyle_still_skips_taffy`, which
+  reads `tree.taffy_computes`, the counter that exists because nothing else
+  distinguishes "took the cheap path" from "recomputed and got the same answer".
+  Cost, measured on 500 rows: a whole-document typography swap goes 7.4 → 16.1ms,
+  a one-row hover 0.60 → 0.70ms.
+- **An atomic inline is sized by three passes and no compute (#661).**
+  `inline-block`, `inline-flex` and `inline-grid` boxes are detached from their
+  parent's Taffy child list so the enclosing IFC can measure them as Parley
+  `InlineBox`es, so the **root compute never reaches one**. All three sizers go
+  through `measure_inline_blocks`: `compute_inline_block_layouts` on an
+  `ifc_dirty` pass, `resolve_percentage_inline_blocks` after the root compute
+  for a percentage inline size (which is also what makes such a box track a
+  viewport resize, on a pass with no `ifc_dirty` and an empty dirty set), and —
+  since #661 —
+  `remeasure_dirty_atomic_inlines`. `ifc_dirty` is left false by a style-only
+  restyle and by a `set_text_content` alike, so before that third pass the box
+  was measured once and frozen at `225x20` while paint drew six lines. It
+  re-measures the ones a change actually reached, off a **dirty set**
+  (`tree.dirty_atomic_inlines`) rather than a flag: measured, re-measuring the
+  whole document instead costs
+  +47% on a one-row text edit in a 500-row document carrying 500 chips.
+- **A transition or animation writes `computed_style` directly**, so it reaches
+  none of the cascade's invalidation; `tick_transitions` and `tick_animations`
+  each invalidate the text measure of the nodes they are interpolating
+  (`TransitionProperty::changes_text_measure`). `font-size` is the only
+  animatable property in that set today, and the `All` arm of that predicate is
+  unreachable — a transition map is always keyed by the concrete property — so
+  `transition: all`, which `Checkbox` and `Radio` both declare, pays nothing per
+  frame. **Their Taffy re-sync marks atomic inlines separately**, because that
+  pre-pass fires only for `font-size` while a `transition: width` on a box
+  *inside* an `inline-block` is #661's own symptom reached without the cascade
+  (found by the review of #694).
+
+`RinchDocument::invalidate_text_measure_for_node` is the one place that knows
+what a typography change owes: the IFC's Parley layout, the box of any atomic
+inline above it, and the `NodeContext::Text` a text child is measured through
+when it is a flex or grid item — plus the Taffy `mark_dirty` beside that last
+one, since Taffy caches a leaf measure per available space and serves the stale
+one back otherwise.
+
 **Absolute positioning.** Taffy resolves an out-of-flow box against its **direct
 parent**, always. CSS resolves an absolute box against its nearest *positioned*
 ancestor — or, when it has none, against the initial containing block. rinch

@@ -3353,6 +3353,172 @@ impl RinchDocument {
             .map(|t| (t, None))
             .collect();
         self.measure_inline_blocks(&ib_taffy_ids);
+        // Everything pending is about to be measured by the line above.
+        self.tree.dirty_atomic_inlines.clear();
+    }
+
+    /// Record that `node_id`'s content or style changed, so every atomic inline
+    /// that contains it — itself included — needs re-measuring (issue #661).
+    ///
+    /// An atomic inline is detached from its parent's Taffy child list, so the
+    /// root compute cannot reach it and `run_taffy_compute` cannot notice that
+    /// anything below it moved. **Three** functions size one, all of them
+    /// through [`Self::measure_inline_blocks`]:
+    /// [`Self::compute_inline_block_layouts`] on an `ifc_dirty` pass,
+    /// [`Self::remeasure_dirty_atomic_inlines`] off this set, and
+    /// [`Self::resolve_percentage_inline_blocks`] after the root compute for a
+    /// box with a percentage inline size. The third is easy to forget and is
+    /// the one #661 itself proposed as the hook: measured, a
+    /// `display: inline-block; width: 50%` span tracks a **viewport** resize
+    /// with no `ifc_dirty` pass and an **empty** `dirty_atomic_inlines` — the
+    /// re-cascade a viewport change forces produces identical computed styles,
+    /// so nothing marks anything. `frozen_box_remeasure_tests::
+    /// a_percentage_atomic_inline_tracks_a_viewport_resize` asserts the empty
+    /// set as a positive control, so it cannot start passing for this set's
+    /// sake if that ever changes.
+    ///
+    /// **The walk does not stop at the first atomic inline it finds**, because
+    /// they nest: `<span ib><i ib>…</i></span>` sizes the outer box from the
+    /// inner one's `Node::layout`, so a change inside the inner box moves both.
+    /// It is the same reason `inline_block_measure_roots` sorts deepest-first.
+    /// `frozen_box_remeasure_tests::nested_atomic_inlines_both_regrow` is the
+    /// pin on both halves — deleting the sort left the whole suite green until
+    /// it existed.
+    ///
+    /// O(depth) per call and only called from the two places that can dirty a
+    /// measure without dirtying the IFC structure — a restyle that changed
+    /// something, and `set_text_content`. Every *structural* mutation sets
+    /// `ifc_dirty` instead, which re-measures the lot; this must not be added to
+    /// those paths, where it would cost an ancestor walk per `append_child` on
+    /// first build and buy nothing.
+    pub(crate) fn mark_atomic_inline_dirty(&mut self, node_id: usize) {
+        // Nothing to accumulate: the `ifc_dirty` pass measures every atomic
+        // inline in the document, and clears this set when it does.
+        if self.tree.ifc_dirty {
+            return;
+        }
+        let mut cur = Some(node_id);
+        while let Some(id) = cur {
+            let Some(node) = self.tree.nodes.get(id) else {
+                break;
+            };
+            if node.display_mode.is_atomic_inline() {
+                self.tree.dirty_atomic_inlines.insert(id);
+            }
+            cur = node.parent;
+        }
+    }
+
+    /// Re-measure the atomic inlines recorded by [`Self::mark_atomic_inline_dirty`]
+    /// (issue #661).
+    ///
+    /// Runs on a pass that computes Taffy **without** rebuilding the IFC
+    /// structure, which is where the freeze lived: a `font-size` change or a
+    /// `set_text_content` re-shapes the text inside an `inline-block` and leaves
+    /// the box that is supposed to contain it at the size it was first measured
+    /// at — measured, `225 x 20` while paint drew six lines.
+    ///
+    /// Must run **before** the root compute, for the same reason
+    /// `compute_inline_block_layouts` does: the enclosing IFC line-breaks
+    /// against `Node::layout` of the `InlineBox` it pushes for this box, so a
+    /// box re-measured afterwards would be one pass behind.
+    ///
+    /// Returns whether anything moved, which is only used for the perf log — the
+    /// invalidation the caller would otherwise do with it is done here, per
+    /// affected root, rather than globally.
+    pub(crate) fn remeasure_dirty_atomic_inlines(&mut self) -> bool {
+        if self.tree.dirty_atomic_inlines.is_empty() {
+            return false;
+        }
+        let dirty = std::mem::take(&mut self.tree.dirty_atomic_inlines);
+
+        // (depth, node id, taffy id, enclosing IFC root). The predicate is
+        // `inline_block_measure_roots`' — a node may have been removed, or have
+        // stopped being an atomic inline, since it was marked.
+        let mut targets: Vec<(usize, usize, taffy::NodeId, usize)> = Vec::new();
+        for id in dirty {
+            let Some(node) = self.tree.nodes.get(id) else {
+                continue;
+            };
+            let (Some(root_id), Some(taffy_id)) = (node.ifc_root, node.taffy_id) else {
+                continue;
+            };
+            if !node.display_mode.is_atomic_inline() {
+                continue;
+            }
+            let mut depth = 0usize;
+            let mut cur = node.parent;
+            while let Some(p) = cur {
+                depth += 1;
+                cur = self.tree.nodes.get(p).and_then(|n| n.parent);
+            }
+            targets.push((depth, id, taffy_id, root_id));
+        }
+        if targets.is_empty() {
+            return false;
+        }
+        // Deepest first — an outer atomic inline sizes its `InlineBox` from the
+        // inner one's `Node::layout`. Same order, same reason, as
+        // `inline_block_measure_roots`.
+        //
+        // The input order this undoes is ascending node id, i.e. creation
+        // order, i.e. shallowest-first for a tree built parent-first — which is
+        // why `dirty_atomic_inlines` is a `BTreeSet` and must stay one. Under a
+        // `HashSet` the order was per-process random and the fixture that pins
+        // this line killed a sort-deleted mutant only **8** times in 25 runs —
+        // it missed it the other 17. It now kills it 25 times in 25. See that
+        // field's doc.
+        targets.sort_by_key(|t| std::cmp::Reverse(t.0));
+
+        let before: Vec<(f32, f32)> = targets
+            .iter()
+            .map(|&(_, id, _, _)| {
+                let n = &self.tree.nodes[id];
+                (n.layout.width, n.layout.height)
+            })
+            .collect();
+
+        // Taffy caches a measure per (node, available space), and the previous
+        // pass measured these at exactly the available space this one will ask
+        // for — so without a mark the stale size is served straight back.
+        for &(_, _, taffy_id, _) in &targets {
+            let _ = self.tree.taffy.mark_dirty(taffy_id);
+        }
+        let measure: Vec<(taffy::NodeId, Option<f32>)> =
+            targets.iter().map(|&(_, _, t, _)| (t, None)).collect();
+        self.measure_inline_blocks(&measure);
+
+        // An IFC root that line-broke against the stale box has to break again.
+        // `resolve_percentage_inline_blocks` does the same three things for the
+        // same reason; the fourth, clearing the whole `ifc_measure_cache`, is
+        // deliberately narrowed to the affected roots here — this pass runs for
+        // an ordinary text edit, where flushing every root's cached measure is
+        // the cost the dirty set exists to avoid.
+        let mut changed = false;
+        for (i, &(_, id, _, root_id)) in targets.iter().enumerate() {
+            let now = {
+                let n = &self.tree.nodes[id];
+                (n.layout.width, n.layout.height)
+            };
+            if (now.0 - before[i].0).abs() <= 0.5 && (now.1 - before[i].1).abs() <= 0.5 {
+                continue;
+            }
+            changed = true;
+            if let Some(root) = self.tree.nodes.get_mut(root_id) {
+                root.text_layout = None;
+            }
+            self.tree.dirty_ifc_text_roots.insert(root_id);
+            self.tree
+                .ifc_measure_cache
+                .retain(|&(rid, _), _| rid != root_id);
+            if let Some(root_taffy) = self.tree.nodes.get(root_id).and_then(|n| n.taffy_id) {
+                let _ = self.tree.taffy.mark_dirty(root_taffy);
+            }
+            // The measure may live on the root's measure leaf, which a mark on
+            // the root does not reach — dirty propagates up, not down (#466).
+            self.mark_ifc_measure_dirty(root_id);
+        }
+        changed
     }
 
     /// One compute of a detached atomic-inline root, with the Parley measure

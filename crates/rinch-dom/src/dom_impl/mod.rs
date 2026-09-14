@@ -539,7 +539,37 @@ impl RinchDocument {
             .as_secs_f64()
             * 1000.0;
 
+        // Which nodes are having their *typography* interpolated, read **before**
+        // the tick, which removes a transition the moment it completes.
+        //
+        // A transition writes `computed_style` directly, so none of the cascade's
+        // invalidation runs for it — and a `font-size` frame changes no Taffy
+        // field of its own, so the loop below cannot notice it either. Left
+        // alone, each frame re-wraps the text and then serves the *previous*
+        // frame's cached measure back for the box.
+        //
+        // This is issue #678 arriving by a second route, and #678's own repair
+        // is what made it reachable — measured, not reasoned. Before that repair
+        // no Taffy compute ran on a typography-only pass at all, so nothing had
+        // cached a measure to serve and `transition_tests::a_finished_font_size_
+        // transition_reaches_the_inline_layout` was green. With the repair and
+        // without this pre-pass, the same fixture comes back 30px tall around
+        // 40px text.
+        let text_measure_nodes: Vec<usize> = self
+            .tree
+            .active_transitions
+            .iter()
+            .filter(|(_, props)| props.keys().any(|p| p.changes_text_measure()))
+            .map(|(id, _)| *id)
+            .collect();
+
         let any_active = crate::transition::tick_transitions(&mut self.tree, current_time_ms);
+
+        for node_id in text_measure_nodes {
+            self.invalidate_text_measure_for_node(node_id);
+            // The box has to be measured again, and no Taffy style changed.
+            self.tree.layout_dirty = true;
+        }
 
         // For layout-affecting transitions, we need to re-sync Taffy styles
         // from the updated computed_style values.
@@ -628,14 +658,30 @@ impl RinchDocument {
                 // the entire ancestor chain — unconditional calls here were causing
                 // 70%+ of Taffy nodes to lose their cache on every frame with
                 // active transitions, even when only paint-only properties changed.
-                if let Ok(old_taffy_style) = self.tree.taffy.style(taffy_id) {
-                    if old_taffy_style != &taffy_style {
-                        let _ = self.tree.taffy.set_style(taffy_id, taffy_style);
-                        self.tree.layout_dirty = true;
-                    }
-                } else {
+                let taffy_style_changed = match self.tree.taffy.style(taffy_id) {
+                    Ok(old_taffy_style) => old_taffy_style != &taffy_style,
+                    // No style to compare against: treat it as changed, which is
+                    // what the `else` arm this replaced did.
+                    Err(_) => true,
+                };
+                if taffy_style_changed {
                     let _ = self.tree.taffy.set_style(taffy_id, taffy_style);
                     self.tree.layout_dirty = true;
+                    // The twin of the cascade's call in
+                    // `apply_stylo_styles_to_taffy`, and it has to be here for
+                    // the same reason: a Taffy style change reaches this node's
+                    // own box through the compute, but not through an atomic
+                    // inline sitting between it and the compute root — that box
+                    // is detached from its parent's child list (#661).
+                    //
+                    // The tick pre-passes above do **not** cover this. They fire
+                    // only for `changes_text_measure()` properties, so an
+                    // ordinary `transition: width` on a box inside an
+                    // `inline-block` used to set `layout_dirty`, run a compute,
+                    // and leave the `inline-block` at `50x10` against a `300x10`
+                    // oracle — #661's symptom, on the one path that reaches it
+                    // without the cascade.
+                    self.mark_atomic_inline_dirty(node_id);
                 }
             }
         }
@@ -653,7 +699,29 @@ impl RinchDocument {
             .as_secs_f64()
             * 1000.0;
 
+        // The animation twin of the pre-pass in `tick_transitions` — same reason,
+        // same issue (#678). An animation's property set lives in its keyframes
+        // rather than in a map key, so the question is asked of those.
+        let text_measure_nodes: Vec<usize> = self
+            .tree
+            .active_animations
+            .iter()
+            .filter(|(_, anims)| {
+                anims.iter().any(|a| {
+                    a.keyframe_stops
+                        .iter()
+                        .any(|k| k.values.iter().any(|(p, _)| p.changes_text_measure()))
+                })
+            })
+            .map(|(id, _)| *id)
+            .collect();
+
         let any_active = crate::animation::tick_animations(&mut self.tree, current_time_ms);
+
+        for node_id in text_measure_nodes {
+            self.invalidate_text_measure_for_node(node_id);
+            self.tree.layout_dirty = true;
+        }
 
         // For layout-affecting animations, re-sync Taffy styles.
         let layout_dirty: Vec<usize> = self
@@ -715,14 +783,20 @@ impl RinchDocument {
                 // floor and the element collapses to zero height.
                 crate::ifc::apply_empty_block_line_floor(node, &mut taffy_style);
 
-                if let Ok(old_taffy_style) = self.tree.taffy.style(taffy_id) {
-                    if old_taffy_style != &taffy_style {
-                        let _ = self.tree.taffy.set_style(taffy_id, taffy_style);
-                        self.tree.layout_dirty = true;
-                    }
-                } else {
+                let taffy_style_changed = match self.tree.taffy.style(taffy_id) {
+                    Ok(old_taffy_style) => old_taffy_style != &taffy_style,
+                    // No style to compare against: treat it as changed, which is
+                    // what the `else` arm this replaced did.
+                    Err(_) => true,
+                };
+                if taffy_style_changed {
                     let _ = self.tree.taffy.set_style(taffy_id, taffy_style);
                     self.tree.layout_dirty = true;
+                    // Same atomic-inline hazard as `tick_transitions`, and the
+                    // pre-pass above covers it no better here: an animated
+                    // `width` on a box inside an `inline-block` leaves that box
+                    // frozen without this (#661).
+                    self.mark_atomic_inline_dirty(node_id);
                 }
             }
         }
