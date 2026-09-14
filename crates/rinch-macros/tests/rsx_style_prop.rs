@@ -420,18 +420,51 @@ fn a_reactive_style_prop_wins_a_collision_from_its_first_re_fire() {
 /// `style:` given a **non-closure, non-literal** expression is its own codegen
 /// arm, and nothing else here reaches it. There is a real caller:
 /// `examples/tree-demo/src/main.rs` passes `style: {icon_style.as_str()}`.
+///
+/// Note what it takes to make this discriminate. The bare expression is wrapped
+/// in an effect that *is* reactive — it tracks whatever it reads — so the
+/// signal has to be **set** before the fixture can tell a merge from an assign.
+/// Asserting only on the mounted element passes either way: at mount the style
+/// prop is written before the shorthand, so the shorthand lands on top of it
+/// whichever call made the write.
 #[component]
-fn html_style_dynamic_expr(css: String) -> NodeHandle {
+fn html_style_dynamic_expr(css: Signal<String>) -> NodeHandle {
     rsx! {
-        div { style: {css.clone()}, p: "12px" }
+        div { style: {css.get()}, p: "12px" }
     }
 }
 
 #[test]
 fn the_non_closure_dynamic_style_arm_merges_too() {
-    let (_doc, _scope, div) = mount(|s| html_style_dynamic_expr(s, String::from("color: red")));
+    let css = Signal::new(String::from("color: red"));
+    let (_doc, _scope, div) = mount(|s| html_style_dynamic_expr(s, css));
     assert_eq!(decl(&div, "padding").as_deref(), Some("12px"));
     assert_eq!(decl(&div, "color").as_deref(), Some("red"));
+
+    css.set(String::from("color: blue"));
+    assert_eq!(
+        decl(&div, "padding").as_deref(),
+        Some("12px"),
+        "the shorthand survives a re-fire of the bare-expression arm too"
+    );
+    assert_eq!(decl(&div, "color").as_deref(), Some("blue"));
+}
+
+/// The same arm on the **component** path, where the second author is the
+/// component's own `render` and the erasure is #647's own shape.
+#[component]
+fn component_style_dynamic_expr(css: Signal<String>) -> NodeHandle {
+    rsx! {
+        Overlay { level: 517, style: {css.get()} }
+    }
+}
+
+#[test]
+fn the_non_closure_dynamic_style_arm_keeps_the_components_declarations() {
+    let css = Signal::new(String::from("color: red"));
+    let (_doc, _scope, root) = mount(|s| component_style_dynamic_expr(s, css));
+    assert_eq!(decl(&root, "--overlay-z").as_deref(), Some("517"));
+    assert_eq!(decl(&root, "color").as_deref(), Some("red"));
 }
 
 /// The component path emits `style:` and the shorthands in its own order, and
