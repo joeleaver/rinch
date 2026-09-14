@@ -1353,7 +1353,7 @@ register_focus_target(
   Exempt is a separate list because `scroll_lock_roots` is also the count:
   putting the popup there would freeze the page whenever a `<select>` was open.
   `ContextMenu` is the other body portal and needs none *today* — its dropdown
-  declares no `overflow`/`max-height`, so it is not a scroll container; give one
+  declares no `overflow`/`max-height`, so it is not a scroll container; give it
   either and it inherits the trap silently. The exemption has **no portable
   spelling**: `push_scroll_lock_exempt` is a `NodeTree` method, reachable from
   the runtime and not through `NodeHandle`, so a scroll container built by a
