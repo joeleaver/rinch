@@ -113,6 +113,18 @@ pub(crate) fn pump_frame(app: &mut RinchApp, window_size: (u32, u32), scale_fact
 /// iteration that blocks. If the paint was skipped or the present failed, the
 /// loop must not come straight back to try it again as fast as the CPU allows.
 ///
+/// **A present that failed is still a frame that is owed, though**, and that
+/// narrowness used to lose it (issue #563). `presented` false with nothing
+/// pending is answered `None` here — sleep until something happens — so a CSS
+/// transition whose present failed froze where the failure left it until an
+/// unrelated event happened by. The loop now arms `REDRAW_PENDING` when a
+/// present it attempted did not happen, which arrives here as `wake_pending`
+/// and buys a **one-frame** retry: `frame_interval - spent`, bounded by the
+/// display and cleared by the first success. That bound is why it is not the
+/// busy-wait the paragraph above refuses — that would be pacing on a
+/// `presented` that is never true, with no interval between attempts at all.
+/// See `retry_owed_frame` below for the sequence and for what the retry costs.
+///
 /// `wake_pending` is the second half, and it closes a race rather than
 /// describing a state. `REDRAW_PENDING` is swapped to false early in the
 /// iteration, but a cross-thread callback that lands *after* that swap, or an
@@ -376,6 +388,63 @@ pub(crate) fn poll_timeout(
     }
 }
 
+/// Whether a frame the loop owed, and could not put on the glass, has to ask
+/// to be drawn again.
+///
+/// This is the other half of [`poll_timeout`]'s `presented`, and it exists
+/// because that argument is deliberately narrow (issue #563). `presented`
+/// means the pixels reached the window, not that a paint was attempted —
+/// which is what stops a failing present from becoming a busy-wait — but on
+/// its own it leaves a state with no way out:
+///
+/// 1. `needs_paint` is true because a CSS transition is running. A transition
+///    marks its node dirty; it does not queue a redraw *action*.
+/// 2. The present fails, so `presented` is false.
+/// 3. `REDRAW_PENDING` was swapped to false earlier in the same iteration and
+///    nothing has set it again.
+/// 4. `poll_timeout(true, false, false, …)` therefore answers `None`, and the
+///    loop sleeps on the looper.
+///
+/// The frame is still owed and nothing is going to ask for it. The transition
+/// is logically still running, so whenever an unrelated event does arrive the
+/// loop jumps straight to the transition's correct position — the failure is a
+/// freeze, not corruption, and any touch or waker recovers it, which is
+/// exactly why it could sit here unnoticed. It is this repository's recurring
+/// shape (#189, #463, #315, #479) inverted: **asleep until an event that may
+/// never be delivered**, rather than armed until one. The standing cure is the
+/// same one — a second, independent condition, not a more careful teardown.
+///
+/// It is not only the transition. `needs_paint` is `redraw || pending_layout
+/// || momentum || frame.needs_paint`, and the `redraw` in it has already been
+/// swapped out of `REDRAW_PENDING` by the time the present runs, while
+/// `pending_layout` has been resolved by `resolve_and_repaint` just above it.
+/// So a failed present drops a cross-thread callback's redraw request and a
+/// finished image decode as surely as it drops a transition frame; the
+/// transition is merely the case that keeps *asking*, which is what makes the
+/// stall visible as a frozen animation rather than as one late pixel.
+///
+/// So the loop arms `REDRAW_PENDING` when a present it attempted did not
+/// happen, and `poll_timeout` reads that as `wake_pending` and answers
+/// `frame_interval - spent`: **one frame**, not zero and not for ever. That
+/// bound is the whole difference between this and the thing
+/// `SoftSurface::present_pixels` returns a `bool` to prevent — treating the
+/// attempt as a present would pace the loop on a `presented` that is never
+/// true, as fast as the CPU allows. The cost, stated here rather than
+/// discovered: a present that keeps failing retries at the panel's rate
+/// (~120/s on the moto g stylus 5G) instead of the ~62/s of the 16ms poll
+/// card K37 replaced.
+///
+/// **It self-clears**, which is the second half of the cure. The retry
+/// iteration swaps `REDRAW_PENDING` back to false before it paints, so one
+/// successful present re-paces the loop on `presented` and nothing arms it
+/// again. `attempted` is what keeps it from arming anything else: a still
+/// screen presents nothing and owes nothing, and dropping that guard would put
+/// the loop back to waking at the refresh rate for ever — the battery half of
+/// card K37, and a worse bug than the one this fixes.
+pub(crate) fn retry_owed_frame(attempted: bool, presented: bool) -> bool {
+    attempted && !presented
+}
+
 #[cfg(test)]
 mod pacing_tests {
     use super::*;
@@ -570,6 +639,168 @@ mod pacing_tests {
             ),
             Some(FRAME),
             "the sooner of the two deadlines wins, always"
+        );
+    }
+
+    // ── The owed frame (issue #563) ──────────────────────────────────────
+
+    /// The loop's pacing state between two iterations: what iteration *N*
+    /// leaves behind for iteration *N+1* to block on.
+    #[derive(Default)]
+    struct LoopState {
+        /// `android_runtime`'s local of the same name.
+        presented: bool,
+        /// Its `REDRAW_PENDING`.
+        redraw_pending: bool,
+    }
+
+    /// One iteration of that state machine, in the order
+    /// `android_runtime::run_loop` performs it, returning the timeout the loop
+    /// then blocks for.
+    ///
+    /// **Why the fixtures below need a state machine at all**, rather than one
+    /// more `poll_timeout` assertion: the loop swaps `REDRAW_PENDING` to false
+    /// *before* it paints, the present sets `presented`, and the timeout is
+    /// computed at the top of the *next* iteration out of what this one left
+    /// behind. A frame that was owed and not delivered is a fact about the
+    /// hand-off between two iterations, so a single call cannot see it — which
+    /// is how #563 survived a suite that pins `poll_timeout` twelve ways.
+    ///
+    /// `mounted` is true throughout: the `surface.is_none()` bail `continue`s
+    /// above this block, and the only assignment to `mounted` sits beside the
+    /// one that creates the surface, so every iteration that reaches the
+    /// present has both.
+    fn iterate(
+        state: &mut LoopState,
+        // The frame is owed for a reason that is not `REDRAW_PENDING`: a
+        // running CSS transition, scroll momentum, a pending layout.
+        owed: bool,
+        // Whether the present this iteration attempts reaches the glass.
+        present_succeeds: bool,
+        // How long this iteration's work took.
+        spent: Duration,
+    ) -> Option<Duration> {
+        let redraw = std::mem::replace(&mut state.redraw_pending, false);
+        let needs_paint = redraw || owed;
+        // `presented = false` at the top of the iteration; the present block
+        // below it runs only when the frame is wanted.
+        state.presented = needs_paint && present_succeeds;
+        if retry_owed_frame(needs_paint, state.presented) {
+            state.redraw_pending = true;
+        }
+        poll_timeout(
+            true,
+            state.presented,
+            state.redraw_pending,
+            spent,
+            FRAME,
+            None,
+        )
+    }
+
+    /// **Issue #563.** A CSS transition is running, the present fails, and at
+    /// HEAD there is nothing left that could ask for the frame again: the
+    /// transition marks its node dirty rather than queueing a redraw action,
+    /// `REDRAW_PENDING` was swapped out before the paint, and `presented` is
+    /// false — so the loop sleeps on the looper and the animation freezes
+    /// where the failure left it, until a touch or a waker happens by.
+    #[test]
+    fn a_present_that_failed_mid_transition_asks_for_the_frame_again() {
+        let spent = Duration::from_millis(4);
+        let mut state = LoopState::default();
+
+        assert_eq!(
+            iterate(&mut state, true, false, spent),
+            Some(FRAME - spent),
+            "a frame that was owed and did not reach the glass is still owed; \
+             the loop has to come back for it within the display's frame"
+        );
+
+        // The control, and exactly what HEAD computes for this state: with
+        // nothing arming the flag, the same iteration answers "sleep until
+        // something happens" — which is the freeze.
+        assert_eq!(
+            poll_timeout(true, false, false, spent, FRAME, None),
+            None,
+            "the state #563 describes, with the repair taken out"
+        );
+    }
+
+    /// One frame, and the arming clears itself on the first success.
+    ///
+    /// The three iterations are the whole life of the repair: a failure arms
+    /// it, the retry delivers the frame that was owed *even though the
+    /// transition has ended in the meantime*, and the iteration after that
+    /// sleeps on the looper exactly as an idle loop did before #563. A retry
+    /// that did not clear would be card K37's battery regression wearing this
+    /// fix's clothes.
+    #[test]
+    fn the_retry_is_one_frame_and_clears_on_the_first_success() {
+        let spent = Duration::from_millis(4);
+        let mut state = LoopState::default();
+
+        assert_eq!(
+            iterate(&mut state, true, false, spent),
+            Some(FRAME - spent),
+            "the failure arms the retry"
+        );
+        assert_eq!(
+            iterate(&mut state, false, true, spent),
+            Some(FRAME - spent),
+            "the retry is the only thing asking for this frame now, and it is \
+             delivered"
+        );
+        assert_eq!(
+            iterate(&mut state, false, true, spent),
+            None,
+            "and then nothing is owed: a still screen must go back to sleeping \
+             on the looper, not wake at the refresh rate for ever"
+        );
+    }
+
+    /// A present that keeps failing keeps retrying — and the retry stays
+    /// bounded by the display's interval, one frame each time.
+    ///
+    /// This is the cost #563 accepts and the property that makes it
+    /// acceptable: it is **not** the busy-wait that `present_pixels` returns a
+    /// `bool` to prevent. Treating the attempt as a present would pace on a
+    /// `presented` that is never true and come straight back as fast as the
+    /// CPU allows; this sleeps a whole display frame between attempts.
+    #[test]
+    fn a_present_that_keeps_failing_retries_at_the_panel_rate_not_the_cpu_s() {
+        let spent = Duration::from_millis(1);
+        let mut state = LoopState::default();
+        for round in 0..4 {
+            assert_eq!(
+                iterate(&mut state, true, false, spent),
+                Some(FRAME - spent),
+                "round {round}: a repeated failure still costs a whole display \
+                 frame of sleep, never a zero-length poll"
+            );
+        }
+    }
+
+    /// The truth table, because each wrong cell is a different bug.
+    #[test]
+    fn only_an_attempted_present_that_did_not_happen_arms_a_retry() {
+        assert!(
+            retry_owed_frame(true, false),
+            "the owed frame — #563, the whole point"
+        );
+        assert!(
+            !retry_owed_frame(true, true),
+            "a frame that reached the glass is paid for; `presented` paces the \
+             next one and arming here would never clear"
+        );
+        assert!(
+            !retry_owed_frame(false, false),
+            "a still screen attempted nothing and owes nothing — arming here \
+             is card K37's battery regression, which is the worse bug"
+        );
+        assert!(
+            !retry_owed_frame(false, true),
+            "the loop cannot reach this (it assigns `presented` only inside \
+             the block `attempted` gates), and arming on it would never clear"
         );
     }
 }

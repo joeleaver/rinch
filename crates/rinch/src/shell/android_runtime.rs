@@ -655,8 +655,12 @@ fn run_loop(android_app: AndroidApp, mut app: RinchApp) {
         // make the screen redraw.
         let pending = frame.pending_layout;
         let needs_paint = redraw || pending || has_momentum || frame.needs_paint;
+        // Whether this iteration is going to try to put pixels on the glass.
+        // Named because the present's *outcome* is only meaningful beside it —
+        // see the `retry_owed_frame` call below the block.
+        let attempted = needs_paint && mounted;
 
-        if needs_paint && mounted {
+        if attempted {
             // Only on frames that are actually being drawn, and at most once a
             // second — see `RATE_RECHECK` for the mode change that made this
             // necessary.
@@ -682,6 +686,23 @@ fn run_loop(android_app: AndroidApp, mut app: RinchApp) {
                 let (pixels, w, h) = app.build_pixels(scale_factor, logical_size, false);
                 presented = s.present_pixels(pixels, w, h);
             }
+        }
+
+        // The frame was owed and did not reach the glass, so ask for it again
+        // (issue #563). Nothing else will: `redraw` was swapped out of
+        // `REDRAW_PENDING` above, the layout `pending` named was resolved by
+        // the `resolve_and_repaint` just inside the block, `build_scene` /
+        // `build_pixels` clear `scene_dirty` *before* the present, and a
+        // running CSS transition marks its node dirty without ever queueing a
+        // redraw *action* — so the loop's next `poll_timeout`
+        // would see `presented == false` with no wake pending, answer `None`,
+        // and sleep until something unrelated happened to arrive. The re-arm
+        // costs one display frame of sleep and clears itself on the first
+        // success; see `android_frame::retry_owed_frame` for why that bound is
+        // the whole difference between this and the busy-wait the `bool`
+        // returns of `present_pixels` / `present_scene` exist to prevent.
+        if android_frame::retry_owed_frame(attempted, presented) {
+            REDRAW_PENDING.store(true, Ordering::Release);
         }
     }
 }
@@ -1091,6 +1112,13 @@ impl SoftSurface {
     /// when it *fails* it returns at once, and a loop that treated that as a
     /// presented frame would come straight back and fail again as fast as the
     /// CPU allowed.
+    ///
+    /// Since issue #563 the loop *does* come back for a failed frame — it was
+    /// owed one and nothing else would have asked — but it arms
+    /// `REDRAW_PENDING` to do it, so the retry costs a whole display frame of
+    /// sleep. The distinction this `bool` draws is untouched and is still the
+    /// one that matters: it is the difference between retrying on the panel's
+    /// clock and retrying on the CPU's. See `android_frame::retry_owed_frame`.
     fn present_pixels(&mut self, pixels: &[u8], width: u32, height: u32) -> bool {
         use ndk::hardware_buffer_format::HardwareBufferFormat;
 
@@ -1813,7 +1841,10 @@ impl GpuSurface {
     /// [`SoftSurface::present_pixels`] for why the loop needs to be told:
     /// both early returns below are fast failures, and a loop that paced
     /// itself on "we tried to paint" rather than "we painted" would spin
-    /// through them.
+    /// through them. (It does retry a frame that failed, one display frame
+    /// later — issue #563, `android_frame::retry_owed_frame` — which is the
+    /// bounded version of the same thing and needs this `bool` to tell the two
+    /// apart.)
     fn present_scene(&mut self, renderer: &mut vello::Renderer, scene: &vello::Scene) -> bool {
         if let Err(e) = renderer.render_to_texture(
             &self.device,
