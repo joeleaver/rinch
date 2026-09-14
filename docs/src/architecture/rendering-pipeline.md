@@ -80,7 +80,7 @@ change the pass will not see.
 | flag | set by | what it buys |
 |---|---|---|
 | `layout_dirty` | a structural mutation, a text-content change, a viewport change, a decoded image, a **Taffy** style that actually changed, and a restyle that changes how text **measures** | the Taffy compute |
-| `ifc_dirty` | a structural mutation, a `display`/`position` change, a `DisplayMode` change | the inline-formatting-context setup passes, including the measure of every atomic inline |
+| `ifc_dirty` | a structural mutation, a `display`/`position` change, a `DisplayMode` change, a decoded `<img>`, a full restyle | the inline-formatting-context setup passes, including the measure of every atomic inline |
 
 - **Neither dirty** — styles are resolved, dirty Parley layouts are rebuilt, and
   the pass returns. A `:hover { color }` costs this and nothing more; it is the
@@ -90,6 +90,10 @@ change the pass will not see.
   changed under are re-measured from a dirty set.
 - **Both** — the IFC structure is rebuilt from scratch and every atomic inline in
   the document is measured.
+
+A decoded `<img>` is on the `ifc_dirty` list for a reason worth knowing: it is
+how a newly loaded image reaches a detached `inline-block` box, which no other
+invalidation in the table would have reached.
 
 ### Why a typography change is a layout change
 
@@ -114,9 +118,13 @@ interpolating.
 An `inline-block`, `inline-flex` or `inline-grid` box is **detached from its
 parent's Taffy child list** so the enclosing inline formatting context can
 measure it as a Parley `InlineBox`. The root compute therefore never reaches it,
-and the only two things that ever give one a size are the `ifc_dirty` pass and,
-since issue #661, a re-measure of the boxes a change actually reached
-(`dirty_atomic_inlines`). A component that declares `display: inline-flex` —
+and three passes give one a size, all through `measure_inline_blocks`: the
+`ifc_dirty` pass, which measures every atomic inline in the document; since
+issue #661, a re-measure of the boxes a change actually reached
+(`dirty_atomic_inlines`); and `resolve_percentage_inline_blocks`, which runs
+after the root compute and is what lets a percentage inline size resolve against
+a containing block that only has a width once the compute has run. A component
+that declares `display: inline-flex` —
 `Badge`, `Button` and the rest of the list in CLAUDE.md — is one of these
 whenever it sits beside text rather than inside a `Stack`.
 

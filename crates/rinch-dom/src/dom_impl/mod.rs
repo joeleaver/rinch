@@ -658,14 +658,30 @@ impl RinchDocument {
                 // the entire ancestor chain — unconditional calls here were causing
                 // 70%+ of Taffy nodes to lose their cache on every frame with
                 // active transitions, even when only paint-only properties changed.
-                if let Ok(old_taffy_style) = self.tree.taffy.style(taffy_id) {
-                    if old_taffy_style != &taffy_style {
-                        let _ = self.tree.taffy.set_style(taffy_id, taffy_style);
-                        self.tree.layout_dirty = true;
-                    }
-                } else {
+                let taffy_style_changed = match self.tree.taffy.style(taffy_id) {
+                    Ok(old_taffy_style) => old_taffy_style != &taffy_style,
+                    // No style to compare against: treat it as changed, which is
+                    // what the `else` arm this replaced did.
+                    Err(_) => true,
+                };
+                if taffy_style_changed {
                     let _ = self.tree.taffy.set_style(taffy_id, taffy_style);
                     self.tree.layout_dirty = true;
+                    // The twin of the cascade's call in
+                    // `apply_stylo_styles_to_taffy`, and it has to be here for
+                    // the same reason: a Taffy style change reaches this node's
+                    // own box through the compute, but not through an atomic
+                    // inline sitting between it and the compute root — that box
+                    // is detached from its parent's child list (#661).
+                    //
+                    // The tick pre-passes above do **not** cover this. They fire
+                    // only for `changes_text_measure()` properties, so an
+                    // ordinary `transition: width` on a box inside an
+                    // `inline-block` used to set `layout_dirty`, run a compute,
+                    // and leave the `inline-block` at `50x10` against a `300x10`
+                    // oracle — #661's symptom, on the one path that reaches it
+                    // without the cascade.
+                    self.mark_atomic_inline_dirty(node_id);
                 }
             }
         }
@@ -767,14 +783,20 @@ impl RinchDocument {
                 // floor and the element collapses to zero height.
                 crate::ifc::apply_empty_block_line_floor(node, &mut taffy_style);
 
-                if let Ok(old_taffy_style) = self.tree.taffy.style(taffy_id) {
-                    if old_taffy_style != &taffy_style {
-                        let _ = self.tree.taffy.set_style(taffy_id, taffy_style);
-                        self.tree.layout_dirty = true;
-                    }
-                } else {
+                let taffy_style_changed = match self.tree.taffy.style(taffy_id) {
+                    Ok(old_taffy_style) => old_taffy_style != &taffy_style,
+                    // No style to compare against: treat it as changed, which is
+                    // what the `else` arm this replaced did.
+                    Err(_) => true,
+                };
+                if taffy_style_changed {
                     let _ = self.tree.taffy.set_style(taffy_id, taffy_style);
                     self.tree.layout_dirty = true;
+                    // Same atomic-inline hazard as `tick_transitions`, and the
+                    // pre-pass above covers it no better here: an animated
+                    // `width` on a box inside an `inline-block` leaves that box
+                    // frozen without this (#661).
+                    self.mark_atomic_inline_dirty(node_id);
                 }
             }
         }

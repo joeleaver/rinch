@@ -3355,13 +3355,28 @@ impl RinchDocument {
     ///
     /// An atomic inline is detached from its parent's Taffy child list, so the
     /// root compute cannot reach it and `run_taffy_compute` cannot notice that
-    /// anything below it moved. Only [`Self::compute_inline_block_layouts`] and
-    /// [`Self::remeasure_dirty_atomic_inlines`] ever size one.
+    /// anything below it moved. **Three** functions size one, all of them
+    /// through [`Self::measure_inline_blocks`]:
+    /// [`Self::compute_inline_block_layouts`] on an `ifc_dirty` pass,
+    /// [`Self::remeasure_dirty_atomic_inlines`] off this set, and
+    /// [`Self::resolve_percentage_inline_blocks`] after the root compute for a
+    /// box with a percentage inline size. The third is easy to forget and is
+    /// the one #661 itself proposed as the hook: measured, a
+    /// `display: inline-block; width: 50%` span tracks a **viewport** resize
+    /// with no `ifc_dirty` pass and an **empty** `dirty_atomic_inlines` — the
+    /// re-cascade a viewport change forces produces identical computed styles,
+    /// so nothing marks anything. `frozen_box_remeasure_tests::
+    /// a_percentage_atomic_inline_tracks_a_viewport_resize` asserts the empty
+    /// set as a positive control, so it cannot start passing for this set's
+    /// sake if that ever changes.
     ///
     /// **The walk does not stop at the first atomic inline it finds**, because
     /// they nest: `<span ib><i ib>…</i></span>` sizes the outer box from the
     /// inner one's `Node::layout`, so a change inside the inner box moves both.
     /// It is the same reason `inline_block_measure_roots` sorts deepest-first.
+    /// `frozen_box_remeasure_tests::nested_atomic_inlines_both_regrow` is the
+    /// pin on both halves — deleting the sort left the whole suite green until
+    /// it existed.
     ///
     /// O(depth) per call and only called from the two places that can dirty a
     /// measure without dirtying the IFC structure — a restyle that changed

@@ -309,14 +309,15 @@ fn text_that_is_a_flex_item_is_remeasured_in_its_new_font() {
 
 /// A `transition: font-size` on a **flex row** re-measures the text inside it.
 ///
-/// The witness for the `dirty_text_contexts` half of
-/// `invalidate_text_measure_for_node`, and the one shape that needs it. A class
-/// swap reaches a text node's measure context by a second route —
+/// One of the two witnesses for the `dirty_text_contexts` half of
+/// `invalidate_text_measure_for_node`, and a **tick** is the shape that needs
+/// it. A class swap reaches a text node's measure context by a second route —
 /// `invalidate_descendant_styles` puts every descendant into `dirty_nodes`,
 /// which the incremental sync also reads — so the fixtures above survive
-/// deleting the insert. A **transition** writes `computed_style` without going
+/// deleting the insert. A transition writes `computed_style` without going
 /// through any of that: it marks only the transitioning element, and an element
-/// is not a text node.
+/// is not a text node. The animation twin below kills the same mutant for the
+/// same reason; those two are the pair, and nothing else in the crate is.
 ///
 /// **`take_dirty_nodes` is called on purpose.** `RinchApp` drains that set every
 /// frame, so a fixture that never drains it is measuring a state no running app
@@ -436,5 +437,239 @@ fn a_font_size_animation_on_a_flex_row_remeasures_its_text() {
         expected,
         "the finished font-size animation must re-measure the flex row's text; \
          {small} is the height it was measured at as 10px"
+    );
+}
+
+// -------------------------------------------- inside an atomic inline -----
+
+const NESTED_CSS: &str = "
+    .wrap  { width: 900px; font-size: 16px; line-height: 20px; font-family: sans-serif; }
+    .ib    { display: inline-block; }
+    .box   { display: block; height: 10px; width: 50px; }
+    .box.wide { width: 300px; }
+    .anim  { transition: width 150ms linear; }
+";
+
+/// `div.wrap > span.ib > div.box{extra}` — an ordinary block inside an atomic
+/// inline, sized in px so nothing here is measured from a font.
+fn block_in_atomic_inline(extra: &str) -> (RinchDocument, NodeId, NodeId) {
+    let mut doc = RinchDocument::new();
+    doc.load_css(NESTED_CSS);
+    let body = doc.body();
+    let wrap = doc.create_element("div");
+    doc.set_attribute(wrap, "class", "wrap");
+    doc.append_child(body, wrap);
+    let ib = doc.create_element("span");
+    doc.set_attribute(ib, "class", "ib");
+    doc.append_child(wrap, ib);
+    let b = doc.create_element("div");
+    doc.set_attribute(b, "class", &format!("box {extra}"));
+    doc.append_child(ib, b);
+    doc.tree.transitions_enabled = true;
+    doc.resolve_layout(900.0, 600.0);
+    (doc, ib, b)
+}
+
+/// A **Taffy** style change on a box inside an atomic inline grows the atomic
+/// inline.
+///
+/// The `font-size` and text fixtures above go through
+/// `invalidate_text_measure_for_node`; this one goes through the other call
+/// site, the `mark_atomic_inline_dirty` beside `set_style` in
+/// `apply_stylo_styles_to_taffy`. Nothing else in the crate covers it — the
+/// review of #694 measured that line surviving all 66 binaries of
+/// `-p rinch-dom -p rinch`.
+///
+/// Kills the mutant that drops that call (measured: `50x10` against a `300x10`
+/// oracle).
+#[test]
+fn a_taffy_restyle_inside_an_atomic_inline_regrows_it() {
+    let (oracle, oracle_ib, _) = block_in_atomic_inline("wide");
+    let expected = size_of(&oracle, oracle_ib);
+
+    let (mut doc, ib, b) = block_in_atomic_inline("");
+    let before = size_of(&doc, ib);
+    assert_ne!(
+        before, expected,
+        "counter-oracle: 50px and 300px children must give different boxes"
+    );
+    let _ = doc.take_dirty_nodes();
+
+    doc.set_attribute(b, "class", "box wide");
+    doc.resolve_layout(900.0, 600.0);
+
+    assert_eq!(
+        size_of(&doc, ib),
+        expected,
+        "the atomic inline must contain its restyled child; {before:?} is the \
+         box it was first measured at"
+    );
+}
+
+/// The same change arriving as a **transition frame** rather than a restyle.
+///
+/// The tick's own Taffy re-sync is a second call site for the same invalidation,
+/// and the tick pre-passes do not cover it: they fire only for
+/// `changes_text_measure()` properties, and `width` is not one. Found by the
+/// review of #694 as a fourth face of the same gap, live on this PR's own path.
+///
+/// Kills the mutant that drops `mark_atomic_inline_dirty` from
+/// `tick_transitions`' re-sync (measured: `50x10` against a `300x10` oracle).
+#[test]
+fn a_width_transition_inside_an_atomic_inline_regrows_it() {
+    let (oracle, oracle_ib, _) = block_in_atomic_inline("wide");
+    let expected = size_of(&oracle, oracle_ib);
+
+    let (mut doc, ib, b) = block_in_atomic_inline("anim");
+    let before = size_of(&doc, ib);
+    assert_ne!(before, expected, "counter-oracle");
+    let _ = doc.take_dirty_nodes();
+
+    doc.set_attribute(b, "class", "box anim wide");
+    doc.resolve_layout(900.0, 600.0);
+    // The frame boundary a running app crosses here.
+    let _ = doc.take_dirty_nodes();
+
+    for t in doc
+        .tree
+        .active_transitions
+        .get_mut(&b.0)
+        .expect("the class change started a width transition")
+        .values_mut()
+    {
+        t.start_time_ms -= 10_000.0;
+    }
+    doc.tick_transitions();
+    doc.resolve_layout(900.0, 600.0);
+
+    assert_eq!(
+        size_of(&doc, ib),
+        expected,
+        "the atomic inline must contain its transitioned child; {before:?} is \
+         the box it was first measured at"
+    );
+}
+
+/// Atomic inlines **nest**, and the outer one is sized from the inner one's
+/// `Node::layout`.
+///
+/// `mark_atomic_inline_dirty` says in bold that its walk does not stop at the
+/// first atomic inline it finds, and `remeasure_dirty_atomic_inlines` sorts its
+/// targets deepest-first from the same premise. Both were documented behaviour
+/// with no fixture until the review of #694 measured that deleting the sort
+/// leaves the whole suite green.
+///
+/// Kills that mutant: without the sort the outer box is measured from the
+/// inner one's *stale* layout and comes back one pass behind.
+#[test]
+fn nested_atomic_inlines_both_regrow() {
+    const CSS: &str = "
+        .wrap  { width: 900px; font-size: 16px; line-height: 20px; font-family: sans-serif; }
+        .outer { display: inline-block; }
+        .inner { display: inline-block; }
+    ";
+    fn build(text: &str) -> (RinchDocument, NodeId, NodeId) {
+        let mut doc = RinchDocument::new();
+        doc.load_css(CSS);
+        let body = doc.body();
+        let wrap = doc.create_element("div");
+        doc.set_attribute(wrap, "class", "wrap");
+        doc.append_child(body, wrap);
+        let outer = doc.create_element("span");
+        doc.set_attribute(outer, "class", "outer");
+        doc.append_child(wrap, outer);
+        let inner = doc.create_element("span");
+        doc.set_attribute(inner, "class", "inner");
+        doc.append_child(outer, inner);
+        let t = doc.create_text(text);
+        doc.append_child(inner, t);
+        doc.resolve_layout(900.0, 600.0);
+        (doc, outer, t)
+    }
+
+    let (oracle, oracle_outer, _) = build(LONG);
+    let expected = size_of(&oracle, oracle_outer);
+
+    let (mut doc, outer, t) = build("hello");
+    let before = size_of(&doc, outer);
+    assert_ne!(
+        before, expected,
+        "counter-oracle: the two texts must give different boxes"
+    );
+    let _ = doc.take_dirty_nodes();
+
+    doc.set_text_content(t, LONG);
+    doc.resolve_layout(900.0, 600.0);
+
+    assert_eq!(
+        size_of(&doc, outer),
+        expected,
+        "the outer atomic inline must grow with the inner one; {before:?} is \
+         the box it was first measured at"
+    );
+}
+
+/// The **third** pass that sizes an atomic inline, and the witness for saying so.
+///
+/// `mark_atomic_inline_dirty`'s doc used to claim that
+/// `compute_inline_block_layouts` and `remeasure_dirty_atomic_inlines` were the
+/// only two. `resolve_percentage_inline_blocks` is a third — it filters on the
+/// same `display_mode.is_atomic_inline()` predicate and calls
+/// `measure_inline_blocks` too — and it is the one #661 itself proposed as the
+/// hook. The review of #694 caught the claim; this is what keeps it caught.
+///
+/// A viewport resize is the event that isolates it: nothing about it dirties the
+/// IFC structure, and the re-cascade it forces produces identical computed
+/// styles, so `dirty_atomic_inlines` is **empty** on the pass that moves this
+/// box. Asserted, not assumed — otherwise the fixture would pass on whichever
+/// pass happened to do the work.
+#[test]
+fn a_percentage_atomic_inline_tracks_a_viewport_resize() {
+    const CSS: &str = "
+        .wrap { font-size: 16px; line-height: 20px; font-family: sans-serif; }
+        .ib   { display: inline-block; width: 50%; }
+    ";
+    fn build() -> (RinchDocument, NodeId) {
+        let mut doc = RinchDocument::new();
+        doc.load_css(CSS);
+        let body = doc.body();
+        let wrap = doc.create_element("div");
+        doc.set_attribute(wrap, "class", "wrap");
+        doc.append_child(body, wrap);
+        let ib = doc.create_element("span");
+        doc.set_attribute(ib, "class", "ib");
+        doc.append_child(wrap, ib);
+        let t = doc.create_text(SHORT);
+        doc.append_child(ib, t);
+        (doc, ib)
+    }
+
+    let (mut oracle, oracle_ib) = build();
+    oracle.resolve_layout(400.0, 600.0);
+    let expected = size_of(&oracle, oracle_ib);
+
+    let (mut doc, ib) = build();
+    doc.resolve_layout(900.0, 600.0);
+    let wide = size_of(&doc, ib);
+    assert_ne!(
+        wide, expected,
+        "counter-oracle: a 50% box must differ between a 900px and a 400px viewport"
+    );
+    let _ = doc.take_dirty_nodes();
+    doc.tree.dirty_atomic_inlines.clear();
+
+    doc.resolve_layout(400.0, 600.0);
+
+    assert!(
+        doc.tree.dirty_atomic_inlines.is_empty(),
+        "positive control: the dirty set must be empty across this pass, or the \
+         fixture is pinning `remeasure_dirty_atomic_inlines` and not the third \
+         pass it is about"
+    );
+    assert_eq!(
+        size_of(&doc, ib),
+        expected,
+        "the percentage atomic inline must track the new viewport; {wide:?} is \
+         the box it had at 900px"
     );
 }

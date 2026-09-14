@@ -125,9 +125,15 @@ impl TransitionProperty {
     /// earlier, unless the derived layout and the cached measure are dropped.
     /// That is what this predicate gates (issue #678).
     ///
-    /// `All` is included because a spec written `transition: all` can carry any
-    /// property; the map key is normally the concrete one, and answering yes for
-    /// the wildcard costs a spare invalidation rather than a stale box.
+    /// **The `All` arm is unreachable today**, and that is the good outcome
+    /// rather than a hedge. `start_transitions` inserts under
+    /// `change.property`, and the changes come from `diff_animatable` over
+    /// `_ALL_ANIMATABLE`, which excludes `All`; animation keyframes carry
+    /// concrete properties too. So `transition: all 150ms ease` — which
+    /// `checkbox.rs` and `radio.rs` both declare — pays a text-measure
+    /// invalidation only on the frames where `font-size` is what changed. The
+    /// arm stays as the safe answer if a future path ever does key a map by the
+    /// wildcard: a spare invalidation rather than a stale box.
     pub fn changes_text_measure(&self) -> bool {
         matches!(self, Self::FontSize | Self::All)
     }
