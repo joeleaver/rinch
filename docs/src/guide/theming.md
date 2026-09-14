@@ -452,7 +452,7 @@ is 300px wide inside an 800px containing block:
 |---|---|---|---|
 | block-level `width` | fills (800) | **wrong** — should shrink-wrap (300) | correct (800) |
 | `min-width` / `max-width` | no constraint | **wrong** — should constrain to 300 | correct |
-| `inline-block` or float `width` | shrink-wraps (300) | correct (300) | **wrong** — should fill (800) |
+| `inline-block` `width` | shrink-wraps (300) | correct (300) | **wrong** — should fill (800) |
 | flex-row item `width` (main axis) | content (300) | correct (300) | **wrong** — should fill (800) |
 | flex-column or grid item `width` (cross axis) | stretches (800) | **wrong** — should be 300 | correct (800) |
 | block `height` | content height | correct | **wrong** — should fill the containing block |
@@ -460,6 +460,12 @@ is 300px wide inside an 800px containing block:
 
 So the three intrinsic keywords are already right wherever `auto` is
 content-sized, and `stretch` is already right wherever `auto` fills.
+
+A browser would put floats in the shrink-wrapping row. rinch does not, because
+**rinch implements no CSS float at all** — measured, `float: left` on the same
+box gives 800, the full containing block, where a browser gives 300. So a float
+is not a way to reach the shrink-to-fit behaviour here; `display: inline-block`
+is.
 
 **The workaround in both directions is a declared length or percentage.** Where
 you reached for `width: fit-content` on a block, `display: inline-block` gives

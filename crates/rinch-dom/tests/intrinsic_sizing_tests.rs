@@ -471,6 +471,114 @@ fn rinch_auto_agrees_with_chrome_auto_everywhere_in_the_table() {
     }
 }
 
+/// The one place the substitution really did change layout, and the reason
+/// nothing else in this file could see it.
+///
+/// `ifc.rs` gives a **content-sized** box's text-layout pass 1px of slack
+/// (#120): such a box's width is its text's max-content width measured with no
+/// wrap and then floored to an integer pixel, so the pass that re-lays the text
+/// must be allowed up to 1px more than the content box or it re-wraps at a space
+/// inside a box that was sized for one line — the box unchanged, the glyphs on
+/// two.
+///
+/// That gate asks "was this box content-sized", which is a **used size**
+/// question, so an intrinsic keyword must answer yes. It read the *specified*
+/// value (`matches!(cs.width, DimensionValue::Auto)`) until this PR, which was
+/// harmless while `max-content` became `Auto` at conversion and became a live
+/// regression the moment the keyword survived. Found in review of #690, not by
+/// this file — every other case here holds a **declared block child**, so no
+/// inline formatting context is built and the tolerance is never consulted.
+///
+/// Both assertions are rinch against itself, so neither pins a font: `auto` and
+/// `max-content` shrink-wrap to the same box, so they must be handed the same
+/// `max_width`; and that `max_width` must be the content box plus exactly the
+/// 1px tolerance. Against the `is_auto()` spelling the two differ by 1.0.
+#[test]
+fn a_content_sized_box_keeps_its_one_pixel_wrap_tolerance() {
+    /// `(text_layout.max_width, the IFC root's content-box width)`.
+    fn measure(width_decl: &str) -> (f32, f32) {
+        let mut doc = RinchDocument::new();
+        let body = doc.body();
+        let cb = doc.create_element("div");
+        doc.set_attribute(cb, "style", "width: 800px");
+        doc.append_child(body, cb);
+        let t = doc.create_element("span");
+        doc.set_attribute(
+            t,
+            "style",
+            &format!(
+                "display: inline-block; line-height: 20px; font-size: 16px;                  padding: 0; border: 0; width: {width_decl}"
+            ),
+        );
+        doc.append_child(cb, t);
+        let txt = doc.create_text("the quick brown fox jumps over the lazy dog");
+        doc.append_child(t, txt);
+        doc.resolve_layout(VW, VH);
+
+        // Which node owns the Parley layout depends on the anonymous-box
+        // machinery (#592 made an inline-block a block container), so find it
+        // rather than assume — but only inside the box under test. The
+        // containing block is an IFC root too (the inline-block is an atomic
+        // inline on its line), and its own width is declared, so it is
+        // *correctly* given no tolerance and would mask the one being measured.
+        let mut stack = vec![t.0];
+        let mut roots: Vec<(usize, f32, f32)> = Vec::new();
+        while let Some(id) = stack.pop() {
+            let n = &doc.tree.nodes[id];
+            if let Some(tl) = n.text_layout.as_ref() {
+                roots.push((id, tl.max_width, n.layout.width));
+            }
+            stack.extend(n.children.iter().copied());
+        }
+        assert_eq!(
+            roots.len(),
+            1,
+            "expected exactly one IFC text root inside the inline-block, got {roots:?}"
+        );
+        let (_, max_width, box_width) = roots[0];
+        (max_width, box_width)
+    }
+
+    let (auto_mw, auto_box) = measure("auto");
+    let (kw_mw, kw_box) = measure("max-content");
+
+    assert!(
+        (auto_box - kw_box).abs() < 0.01,
+        "control: both spellings shrink-wrap to the same box ({auto_box} vs {kw_box})"
+    );
+    assert!(
+        (auto_mw - kw_mw).abs() < 0.01,
+        "`width: max-content` is content-sized exactly as `auto` is, so it must get the \
+         same wrap tolerance: auto gave max_width {auto_mw}, max-content gave {kw_mw}"
+    );
+    // And state the tolerance itself, so this cannot pass by both sides being 0.
+    assert!(
+        (kw_mw - kw_box - 1.0).abs() < 0.01,
+        "the content-sized tolerance is 1px: max_width {kw_mw} over a {kw_box} content box"
+    );
+}
+
+/// A witness for one sentence in the guide, which would otherwise be prose
+/// nothing checks.
+///
+/// `docs/src/guide/theming.md`'s "when `auto` happens to be the right answer"
+/// table lists the boxes where `auto` already shrink-wraps. A browser would put
+/// **floats** in that row; rinch must not, because it implements no CSS float
+/// at all — a floated box fills its containing block where Chrome 150 gives it
+/// 300 for the same content. So a float is not a way to reach shrink-to-fit
+/// here, and `display: inline-block` is.
+///
+/// Not a #626 behaviour. It guards the guidance #626's docs give.
+#[test]
+fn rinch_has_no_css_float_so_a_float_does_not_shrink_wrap() {
+    let (doc, t) = build("width: 800px", "float: left", "width", "auto");
+    assert_eq!(
+        size(&doc, t).0,
+        800.0,
+        "rinch implements no float, so a floated box fills; Chrome 150 gives 300"
+    );
+}
+
 /// The contrast that shows this is Taffy's shape rather than a rinch oversight:
 /// an intrinsic **grid track** works.
 ///

@@ -253,12 +253,19 @@ impl RinchDocument {
                     // tolerance can't absorb a full 1px floor; 1.0px provably can
                     // (`natural - content_width == frac(natural) < 1.0`). Explicit-
                     // width elements get no tolerance — they should wrap at their width.
-                    let tolerance =
-                        if matches!(cs.width, crate::computed_style::DimensionValue::Auto) {
-                            1.0
-                        } else {
-                            0.0
-                        };
+                    //
+                    // The question is about the **used** size, not the declared
+                    // one, so it is `lays_out_as_auto` (#626): `width:
+                    // max-content` shrink-wraps exactly as `auto` does today,
+                    // so its box was measured and floored the same way and it
+                    // needs the same slack. Reading `is_auto()` here gave such a
+                    // box 0px and re-wrapped its text inside a box sized for one
+                    // line — the box unchanged, the glyphs on two.
+                    let tolerance = if cs.width.lays_out_as_auto() {
+                        1.0
+                    } else {
+                        0.0
+                    };
                     Some(content_width + tolerance)
                 } else {
                     None
