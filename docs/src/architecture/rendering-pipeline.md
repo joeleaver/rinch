@@ -377,10 +377,15 @@ ends:
 - **A node outside the document is never styled**, so it never acquires the flag
   (#651/#668). `resolve_styles` drops a `style_roots` entry whose node is not
   connected to `tree.root_id`.
-- **A subtree that leaves the document loses the flag**, and any transition
-  running on it is cancelled (#699). `RinchDocument::detach_subtree_styles` does
-  both, for the whole removed subtree, at the three routes that detach one:
-  `remove_node`, `remove_child`, and `replace_node`'s displaced `old`.
+- **A subtree that leaves the document loses the flag**, and any transition or
+  animation running on it is cancelled (#699).
+  `RinchDocument::detach_subtree_styles` does all three, for the whole removed
+  subtree. Five places in `dom_impl/dom_document_impl.rs` write `parent = None`
+  and four call it: `remove_node`, `remove_child`, `replace_node`'s displaced
+  `old`, and `set_text_content` on an element with children, which orphans every
+  one of them without freeing the slab. The fifth, `set_inner_html`, is safe by
+  destruction — `NodeTree::remove_subtree` frees the entries and drops both
+  animation maps with them.
 
 Without the second, a node styled while it was connected, then detached, keeps
 the flag *and* the `computed_style` it had in the document. If an ancestor's

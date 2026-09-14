@@ -412,6 +412,13 @@ impl DomDocument for RinchDocument {
                 let old_children: Vec<_> = self.tree.nodes[n].children.clone();
                 for child in old_children {
                     self.tree.nodes[child].parent = None;
+                    // The fourth detach route, and the one that does not look
+                    // like one (#699). These children are orphaned but **not
+                    // freed** — unlike `set_inner_html`, which reaches
+                    // `NodeTree::remove_subtree` and drops the slab entry along
+                    // with both animation maps — so a handle app code still
+                    // holds stays alive, styled, and transitioning.
+                    self.detach_subtree_styles(child);
                     // Remove each child's contribution from taffy — for a
                     // spliced `display: contents` child that is its
                     // children's slots, not its own id (#517)

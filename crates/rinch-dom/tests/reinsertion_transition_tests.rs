@@ -17,8 +17,12 @@
 //! left this one untouched, and its reviewer measured it identical at base and
 //! head. The cure has to be at the **detach**, because nothing at the
 //! re-insertion can tell a returning subtree from one that never left:
-//! `RinchDocument::detach_subtree_styles`, called from the three routes by
-//! which a subtree leaves the document.
+//! `RinchDocument::detach_subtree_styles`, called from **four of the five places
+//! in `dom_impl/dom_document_impl.rs` that write `parent = None`** — the fifth,
+//! `set_inner_html`, frees the subtree outright through
+//! `NodeTree::remove_subtree` and needs no reset. The fourth,
+//! `set_text_content`, does not look like a detach at all and was missed on the
+//! first pass; see `set_text_content_is_a_detach_too`.
 //!
 //! # Mutants, and what kills each
 //!
@@ -27,20 +31,46 @@
 //!
 //! | mutant | killed by |
 //! |---|---|
-//! | no reset at all (`main` at `cbdfc5a`) | 6 of the 11 — everything but the two move fixtures, the unchanged-ancestor control, the `display: none` pin and the `clear_animations` counter-oracle |
+//! | no reset anywhere (`main` at `cbdfc5a`) | 9 of the 14 — everything but the two move fixtures, the unchanged-ancestor control, the `display: none` pin and the `clear_animations` counter-oracle |
 //! | reset the detach root only, not the subtree | `a_deep_node_in_a_reinserted_subtree_does_not_animate_either`, **alone** |
-//! | reset `has_been_styled`, leave `active_transitions` | `a_transition_running_when_the_subtree_is_detached_does_not_resume`, **alone** |
-//! | reset in `remove_node` only | `remove_child_is_a_detach_too`, `the_subtree_a_replace_displaces_is_a_detach_too`, `a_detached_subtree_keeps_the_style_it_last_had` |
+//! | reset `has_been_styled`, leave `active_transitions` | `a_transition_running_when_the_subtree_is_detached_does_not_resume` and `set_text_content_is_a_detach_too` |
+//! | drop `active_transitions` but not `active_animations` | `a_detached_animation_stops_asking_for_frames`, **alone** |
+//! | `remove_child` and `replace_node` unhooked | `remove_child_is_a_detach_too`, `the_subtree_a_replace_displaces_is_a_detach_too`, `a_detached_subtree_keeps_the_style_it_last_had` |
+//! | `set_text_content` unhooked — **the state this PR shipped in for one round** | `set_text_content_is_a_detach_too`, **alone** |
 //! | also clear `computed_style` and `text_layout` in the reset | `a_detached_subtree_keeps_the_style_it_last_had` here, **and four fixtures in `detached_style_roots_tests`** |
 //! | also reset on a reparenting `append_child`/`insert_before`/`insert_child` (over-reach) | `a_reparenting_move_does_not_restart_a_running_transition` and `a_keyed_for_reorder_does_not_restart_a_running_transition`, and nothing else |
+//! | over-reach on `insert_before` + `insert_child` **only** | `a_keyed_for_reorder_does_not_restart_a_running_transition`, **alone** |
+//! | never re-arm (`has_been_styled = true` deleted from the cascade) | 6 here **and 10 in `transition_tests`** — recorded because `a_subtree_that_has_been_round_tripped_can_still_transition` is **not** its only witness, and does not claim to be |
 //!
-//! Two rows are worth reading twice.
+//! Four rows are this PR's review round, and three of them are mutants that
+//! **survived the first eleven fixtures** — the `set_text_content` row, the
+//! `active_animations` row and the partial over-reach row. Each was found by
+//! constructing a counter-case to a sentence rather than by reading the diff,
+//! which is the project's standing lesson about confident negatives.
+//!
+//! The last row is the honest one. `a_subtree_that_has_been_round_tripped_can_
+//! still_transition` kills no mutant on its own: deleting the cascade's
+//! `has_been_styled = true` breaks sixteen fixtures across two files. It is here
+//! because **re-armability is a property nothing else in the suite asserts**, and
+//! "clear a flag on the way out" is one careless edit away from "clear it and
+//! never set it again" — which is #704's failure mode exactly, and which every
+//! other fixture in this file would be equally happy with.
+//!
+//! Three rows are worth reading twice.
 //!
 //! **The over-reach row.** A keyed `for` reorder moves rows with
 //! `insert_after`, which is `insert_before`/`append_child` — the same three
 //! lines that unlink a node from its old parent. Resetting there would restart
 //! every mid-flight transition on every list reorder, and those two fixtures
 //! are the only thing in the suite that says so.
+//!
+//! **The partial over-reach row.** `NodeHandle::insert_after` falls through to
+//! `append_child` when its anchor has no next sibling, so a keyed rotation that
+//! moves a row to the *end* never reaches `insert_before`. Both move fixtures
+//! sat there in the first revision and the over-reach mutant applied to
+//! `insert_before`/`insert_child` alone passed all eleven. The reorder fixture
+//! now moves the last row to the **front**, which is the route every move but
+//! the last-position one takes.
 //!
 //! **The `computed_style` row.** Clearing the stale value as well as the flag
 //! is the obvious second half, and it is wrong: #696 pinned a detached node as
@@ -367,9 +397,20 @@ fn a_reparenting_move_does_not_restart_a_running_transition() {
 /// The same property one level up, through the reconciler an app actually
 /// reaches: a keyed `for` list reordered while one of its rows is mid-flight.
 ///
-/// `ListOp::Move` splices the row with `insert_after`, so this is the shape the
-/// over-reach mutant would break in production — every mid-flight transition in
-/// a list restarted on every reorder.
+/// `ListOp::Move` splices the row with `NodeHandle::insert_after`, so this is
+/// the shape the over-reach mutant would break in production — every mid-flight
+/// transition in a list restarted on every reorder.
+///
+/// **The row is moved to the FRONT, and that is the whole point of the
+/// rotation chosen.** `insert_after` falls through to `append_child` when the
+/// anchor has no next sibling, so a rotation that moves a row to the *end*
+/// exercises `append_child` — which the fixture above already covers. Moving
+/// the last row to the front gives the marker a live next sibling and takes
+/// `insert_before`, which is the route a keyed reorder uses for **every move
+/// that is not to the last position**. An earlier revision rotated
+/// `[a,b,c] → [b,c,a]`; both move fixtures then sat on `append_child`, and the
+/// over-reach mutant applied to `insert_before`/`insert_child` alone passed all
+/// eleven — measured by this PR's reviewer, which is how the hole was found.
 #[test]
 fn a_keyed_for_reorder_does_not_restart_a_running_transition() {
     let doc = Rc::new(RefCell::new(RinchDocument::new()));
@@ -400,28 +441,28 @@ fn a_keyed_for_reorder_does_not_restart_a_running_transition() {
     );
     doc.borrow_mut().resolve_layout(800.0, 600.0);
 
-    let row_a = rows
+    let row_c = rows
         .borrow()
         .iter()
-        .find(|(k, _)| k == "a")
+        .find(|(k, _)| k == "c")
         .map(|(_, id)| *id)
-        .expect("row a was rendered");
+        .expect("row c was rendered");
     assert_eq!(
-        width_px(&doc.borrow(), row_a),
+        width_px(&doc.borrow(), row_c),
         Some(20.0),
         "precondition: the rows take their width from the wrapper"
     );
 
-    // Put row a mid-flight, then rotate the list.
+    // Put row c mid-flight, then rotate it to the front.
     wrap.set_attribute("class", "w--b");
     doc.borrow_mut().resolve_layout(801.0, 600.0);
     assert_eq!(
-        running(&doc.borrow(), row_a),
+        running(&doc.borrow(), row_c),
         1,
-        "precondition: row a is transitioning"
+        "precondition: row c is transitioning"
     );
 
-    order.set(vec!["b".to_string(), "c".to_string(), "a".to_string()]);
+    order.set(vec!["c".to_string(), "a".to_string(), "b".to_string()]);
     doc.borrow_mut().resolve_layout(802.0, 600.0);
 
     assert_eq!(
@@ -430,9 +471,9 @@ fn a_keyed_for_reorder_does_not_restart_a_running_transition() {
         "positive control: the reorder moved the rows, it did not re-render them"
     );
     assert_eq!(
-        running(&doc.borrow(), row_a),
+        running(&doc.borrow(), row_c),
         1,
-        "a moved row keeps transitioning"
+        "a row moved to the front keeps transitioning"
     );
 }
 
@@ -554,6 +595,164 @@ fn toggling_display_none_is_not_a_detach() {
         running(&doc, boxed),
         1,
         "and it is still running when the node is shown — unchanged by #699"
+    );
+}
+
+/// `set_text_content` is the **fourth** detach route, and the one that does not
+/// look like one.
+///
+/// Called on an element that has children, it orphans every one of them
+/// (`dom_document_impl.rs`, the `_ =>` arm) and replaces them with a single text
+/// node. What makes it #699's shape rather than a tidy teardown is that it
+/// **does not free the slab entry**: unlike `set_inner_html`, which reaches
+/// `NodeTree::remove_subtree` and drops the node along with both animation maps,
+/// these children stay alive, styled, and transitioning, reachable by any
+/// `NodeHandle` the app still holds.
+///
+/// Missed on this PR's first pass, where the doc said "the three routes by which
+/// a subtree leaves the document" in five places. Found by the reviewer with a
+/// constructed counter-case, measured at head: the box came back at
+/// **20.647852px with one transition running**, and the transition went on
+/// ticking on an unreachable node in between.
+///
+/// Kills the "hook only `remove_node` / `remove_child` / `replace_node`" mutant,
+/// which is the state this PR shipped in for one round.
+#[test]
+fn set_text_content_is_a_detach_too() {
+    let (mut doc, wrap, _unused) = mounted_box();
+    // A holder between the wrapper and the box, so `set_text_content` on the
+    // holder displaces the box rather than the whole subtree under test.
+    let holder = doc.create_element("div");
+    doc.append_child(wrap, holder);
+    let boxed = doc.create_element("div");
+    doc.set_attribute(boxed, "class", "box");
+    doc.append_child(holder, boxed);
+    doc.resolve_layout(801.0, 600.0);
+    assert_eq!(width_px(&doc, boxed), Some(20.0), "precondition");
+
+    // Mid-flight when it is displaced, so both halves are under test: the
+    // running transition, and the flag the re-insertion would read.
+    doc.set_attribute(wrap, "class", "w--b");
+    doc.resolve_layout(802.0, 600.0);
+    assert_eq!(running(&doc, boxed), 1, "precondition: in flight");
+
+    doc.set_text_content(holder, "replaced");
+    assert!(
+        doc.tree.get(boxed.0).is_some(),
+        "precondition: orphaned, NOT freed — that is what makes this reachable"
+    );
+    assert!(doc.tree.get(boxed.0).unwrap().parent.is_none());
+    assert!(!styled(&doc, boxed), "the flag goes");
+    assert_eq!(running(&doc, boxed), 0, "and the transition with it");
+
+    // Put it back under an ancestor that changed while it was out.
+    doc.set_attribute(wrap, "class", "w--a");
+    doc.resolve_layout(803.0, 600.0);
+    doc.append_child(wrap, boxed);
+    doc.resolve_layout(804.0, 600.0);
+
+    assert_eq!(running(&doc, boxed), 0, "no transition on re-insertion");
+    assert_eq!(
+        width_px(&doc, boxed),
+        Some(20.0),
+        "it snaps, it does not crawl"
+    );
+}
+
+/// A detached subtree stops asking the shell for frames.
+///
+/// The transition half of the reset self-limits — a transition has a declared
+/// duration and dies after it. An **animation** does not: `animation: spin 1s
+/// linear infinite` on a removed-but-not-freed node runs forever, and the
+/// desktop shell decides whether to schedule another frame from
+/// `!tree.active_animations.is_empty()` (`rinch/src/app/event_dispatch.rs`), so a
+/// `Loader` removed through a route without `NodeHandle::clear_animations` —
+/// `remove_child`, `replace_with`, a direct `NodeHandle::remove` — kept a
+/// desktop app rendering at full rate with nothing on screen to show for it.
+///
+/// This is why the helper drops `active_animations` beside `active_transitions`,
+/// which is also what `NodeTree::remove_subtree` does when it frees a subtree.
+/// Kills the "drop `active_transitions` only" mutant; no other fixture does,
+/// because an animation writes `computed_style` without consulting
+/// `has_been_styled`, so #699's own symptom cannot see it.
+#[test]
+fn a_detached_animation_stops_asking_for_frames() {
+    let mut doc = RinchDocument::new();
+    doc.load_css(
+        "@keyframes sp { from { width: 10px; } to { width: 100px; } } \
+         .spin { animation: sp 1000s linear infinite; width: 10px; height: 10px; \
+                 font-size: 16px; line-height: 20px; }",
+    );
+    let body = doc.body();
+    let spinner = doc.create_element("div");
+    doc.set_attribute(spinner, "class", "spin");
+    doc.append_child(body, spinner);
+    doc.tree.transitions_enabled = true;
+    doc.resolve_layout(800.0, 600.0);
+    assert!(
+        !doc.tree.active_animations.is_empty(),
+        "precondition: the shell is being asked for frames"
+    );
+
+    doc.remove_node(spinner);
+
+    assert!(
+        doc.tree.active_animations.is_empty(),
+        "a removed spinner must stop asking for frames — it has no duration to \
+         expire and nothing else ever clears it"
+    );
+    assert!(
+        !doc.tick_animations(),
+        "and the tick must agree there is nothing left to advance"
+    );
+}
+
+/// The reset must not **permanently** disarm, which is the exact thing #704 got
+/// wrong.
+///
+/// Two full round trips, then an ordinary in-document class change with nothing
+/// detached: it has to animate. `has_been_styled` is set again by the
+/// re-insertion's own resolution, so the node is re-armed the moment it is back
+/// — but nothing in the suite said so, and "clear a flag on the way out" is one
+/// careless edit away from "clear it and never set it again", which is
+/// indistinguishable from a working fix on every other fixture here.
+///
+/// The second trip is not decoration: it is what says the reset is idempotent
+/// rather than a one-shot that a second detach corrupts.
+///
+/// **It kills no mutant on its own**, and does not claim to — deleting the
+/// cascade's `has_been_styled = true` breaks six fixtures here and ten in
+/// `transition_tests`. It is a pin on a property, not a discriminator, which is
+/// the honest reason to keep it: no other fixture in this file would notice a
+/// change that made the reset permanent.
+#[test]
+fn a_subtree_that_has_been_round_tripped_can_still_transition() {
+    let (mut doc, wrap, boxed) = mounted_box();
+
+    for (out_at, in_at, class, expect) in [
+        (801.0_f32, 802.0_f32, "w--b", 30.0_f32),
+        (803.0, 804.0, "w--a", 20.0),
+    ] {
+        doc.remove_node(boxed);
+        doc.set_attribute(wrap, "class", class);
+        doc.resolve_layout(out_at, 600.0);
+        doc.append_child(wrap, boxed);
+        doc.resolve_layout(in_at, 600.0);
+        assert_eq!(running(&doc, boxed), 0, "{class}: no transition on return");
+        assert_eq!(width_px(&doc, boxed), Some(expect), "{class}: arrived");
+        assert!(
+            styled(&doc, boxed),
+            "{class}: and re-armed by that resolution"
+        );
+    }
+
+    // Nothing detached this time. This one must animate.
+    doc.set_attribute(wrap, "class", "w--b");
+    doc.resolve_layout(805.0, 600.0);
+    assert_eq!(
+        running(&doc, boxed),
+        1,
+        "an ordinary change after a round trip still transitions"
     );
 }
 

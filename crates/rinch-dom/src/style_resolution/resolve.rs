@@ -73,19 +73,21 @@ impl RinchDocument {
         //
         // **The `style_roots` list is still not filtered on removal**, and that
         // is unchanged by #699. `remove_node` could drop the subtree's entries
-        // eagerly, but it is one of three detach routes (`remove_child` and
-        // `replace_node`'s implicit detach of `old` are the others), so an
-        // eager drop there would be a partial cure that reads as a complete one
-        // — and it can remove no work this skip does not already remove.
+        // eagerly, but it is one of four detach routes (`remove_child`,
+        // `replace_node`'s implicit detach of `old`, and `set_text_content`'s
+        // orphaning of an element's children are the others), so an eager drop
+        // there would be a partial cure that reads as a complete one — and it
+        // can remove no work this skip does not already remove.
         //
-        // #699 does hook all three of those routes
+        // #699 does hook all four of those routes
         // (`RinchDocument::detach_subtree_styles`), and it is a different
         // question with a different answer: it resets `has_been_styled` and
-        // cancels running transitions, because a subtree that left the document
-        // has no *before-change style*. It touches neither this list nor the
-        // node's `computed_style`. A reparenting `append_child` /
-        // `insert_before` / `insert_child` is deliberately not hooked — those
-        // are moves, and the node is connected again before the call returns.
+        // cancels running transitions and animations, because a subtree that
+        // left the document has no *before-change style*. It touches neither
+        // this list nor the node's `computed_style`. A reparenting
+        // `append_child` / `insert_before` / `insert_child` is deliberately not
+        // hooked — those are moves, and the node is connected again before the
+        // call returns.
         //
         // Sort by depth (shallowest first) so that if both a parent and
         // child appear, the parent is resolved first and the child can

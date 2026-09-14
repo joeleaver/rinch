@@ -2484,11 +2484,27 @@ the same rule as above, read from the other end. A node styled while it was
 it was out, its re-insertion resolved to a different value, the cascade read
 old ≠ new on an already-styled node, and the box **animated in from a style the
 user never saw**. `RinchDocument::detach_subtree_styles` now clears the flag and
-cancels any running transition for the **whole removed subtree**, at the three
-routes that detach one: `remove_node`, `remove_child`, and `replace_node`'s
-displaced `old`. Cancelling the transition is not optional — `tick_transitions`
-walks `tree.active_transitions`, not the document, so one left behind would go
-on writing interpolated values straight through the re-insertion.
+cancels any running transition **and animation** for the **whole removed
+subtree**. Cancelling the transition is not optional — `tick_transitions` walks
+`tree.active_transitions`, not the document, so one left behind would go on
+writing interpolated values straight through the re-insertion. Cancelling the
+*animation* is a separate repair riding along: an animation has no declared
+duration to expire, and the desktop shell keeps asking for frames while
+`tree.active_animations` is non-empty, so a `Loader` removed through a route
+without `NodeHandle::clear_animations` kept an app rendering forever.
+
+**Five places in `dom_impl/dom_document_impl.rs` write `parent = None`; four
+call the helper.** `remove_node` (every reactive removal funnels through
+`NodeHandle::remove`), `remove_child` (plus `RenderScope`'s batched
+`DomUpdate::RemoveChild`), `replace_node`'s displaced `old`, and —
+least obviously — **`set_text_content` on an element with children**, which
+orphans every one of them without freeing the slab, so a handle the app still
+holds stays alive and styled. That fourth one was missed on the first pass, when
+this paragraph said "the three routes"; it is the count to re-check against
+`grep -n '\.parent = None'` if a sixth ever appears, because an unhooked one is
+silent. The fifth is `set_inner_html`, safe by **destruction** rather than
+reset — it calls `NodeTree::remove_subtree`, which frees the entries and drops
+both animation maps with them.
 
 Three things it deliberately does not do.
 
@@ -2509,7 +2525,10 @@ Three things it deliberately does not do.
   none for an element that is not being rendered: **#703**.
 
 Worth knowing about the reactive helpers: `show_dom`, `match_dom` and
-`for_each_dom_typed` call `NodeHandle::clear_animations()` before `remove()`,
+`for_each_dom_typed` call `NodeHandle::clear_animations()` before `remove()`
+(all but `for_each_dom_typed`'s `Changed` arm, which re-renders a row in place
+and does not — no exposure, the node is replaced, but the sentence is not a
+universal),
 which stamps a literal inline `transition: none; animation: none` over the whole
 subtree and **never takes it off again** — so a branch hidden once can never
 transition again, for any reason. That is a bigger hammer than #699's and a

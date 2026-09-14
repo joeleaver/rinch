@@ -2471,7 +2471,10 @@ impl RinchDocument {
     /// node leaves, because nothing at the re-insertion can tell a returning
     /// subtree from one that never left.
     ///
-    /// Two things are reset and a third deliberately is not.
+    /// Three things are reset and a fourth deliberately is not. The three are
+    /// exactly what [`NodeTree::remove_subtree`] drops when it *frees* a
+    /// subtree, minus the freeing — which is the point: a detached node is not
+    /// a dead one, and rinch has to keep it readable.
     ///
     /// - **`has_been_styled`**, for the whole removed subtree. Not just its
     ///   root: a descendant carries its own flag and its own `transition`
@@ -2484,6 +2487,16 @@ impl RinchDocument {
     ///   reinstating the very animation the flag reset removes. Cancelling on
     ///   removal is also what CSS asks for, and it stops a detached node that is
     ///   never re-inserted from marking the tree layout-dirty for 150ms.
+    /// - **Any running animation**, for the same nodes. Not needed by #699's
+    ///   own symptom — an animation writes `computed_style` without consulting
+    ///   `has_been_styled` either way — but a `@keyframes` animation has no
+    ///   150ms bound to self-limit against, and the desktop shell decides
+    ///   whether to keep asking for frames from
+    ///   `!tree.active_animations.is_empty()` (`rinch/src/app/event_dispatch.rs`).
+    ///   A `Loader` removed through a route without `NodeHandle::clear_animations`
+    ///   — `remove_child`, `replace_with`, a direct `NodeHandle::remove` — kept a
+    ///   desktop app rendering forever.
+    ///   `a_detached_animation_stops_asking_for_frames` is the pin.
     /// - **`computed_style` is left exactly as it was**, and so is
     ///   `text_layout`. Clearing either would be wrong twice over. #696 pinned
     ///   a detached node as still readable —
@@ -2500,14 +2513,23 @@ impl RinchDocument {
     ///
     /// # Where this is called from
     ///
-    /// The routes by which a subtree leaves the document, all in
-    /// `dom_impl/dom_document_impl.rs`:
+    /// **Five places in `dom_impl/dom_document_impl.rs` write `parent = None`.**
+    /// Four of them call this; the fifth does not need to. That count is the
+    /// claim to check against `grep -n '\.parent = None'` if this file ever
+    /// grows a sixth — an unhooked one is silent, which is how the fourth row
+    /// below was missed on the first pass.
     ///
     /// | route | who reaches it |
     /// |---|---|
     /// | `remove_node` | every reactive removal — `show_dom`, `match_dom`, `for_each_dom_typed`'s `Remove`, its re-render swap and `reclaim_displaced`, `virtual_list` — all funnel through `NodeHandle::remove` |
     /// | `remove_child` | `NodeHandle::remove_child` and `RenderScope`'s batched `DomUpdate::RemoveChild` |
     /// | `replace_node` | the displaced `old` subtree |
+    /// | `set_text_content` | `NodeHandle::set_text_content` and `RenderScope`'s batched `DomUpdate::SetTextContent`, **when the target is an element with children** — it orphans every one of them. Reactive text in `rsx!` targets a text node and takes the other branch, so this is app code writing over an element's children |
+    ///
+    /// The fifth is `set_inner_html`, and it is safe by **destruction** rather
+    /// than by reset: it calls `NodeTree::remove_subtree`, which frees the slab
+    /// entries and drops `active_transitions` and `active_animations` with them.
+    /// Nothing survives to carry a stale flag, and the handle is retired.
     ///
     /// **A reparenting `append_child` / `insert_before` / `insert_child` is
     /// deliberately not on that list.** Those three are the *move* routes — a
@@ -2538,6 +2560,7 @@ impl RinchDocument {
             node.has_been_styled = false;
             stack.extend(node.children.iter().copied());
             self.tree.active_transitions.remove(&id);
+            self.tree.active_animations.remove(&id);
         }
     }
 
