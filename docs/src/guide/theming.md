@@ -118,6 +118,15 @@ var(--rinch-h1-line-height)
 var(--rinch-h1-font-weight)
 ```
 
+These drive the `Title` component. A **bare** `<h1>`–`<h6>` does not read them:
+it gets the browser's own user-agent typography instead — `2em` down to
+`0.67em`, `font-weight: bold`, and `em` block margins, exactly the values the
+HTML Standard's rendering section gives (issue #627). `<th>` likewise gets
+`font-weight: bold; text-align: center`. Those are UA-origin cascade rules, so
+any declaration of your own beats them, and `Title` (which declares its own
+size, weight and `margin: 0`) is unaffected. Reach for `Title` when you want the
+theme's scale and a plain heading tag when you want the browser's.
+
 #### Scaling the whole UI with `rem`
 
 `rem` lengths resolve against the computed font-size of the root (`<html>`)

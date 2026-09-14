@@ -233,29 +233,51 @@ fn a_normal_weight_b_measures_like_a_span_not_like_a_bold_b() {
     );
 }
 
-// ===== Tags with no UA font-weight of their own =====
+// ===== The tags that gained a UA font-weight in #627 =====
 
-/// rinch's UA stylesheet gives `<h1>`–`<h6>` and `<th>` no `font-weight`, so
-/// they are 400 with or without a declaration. Pinned so that anyone adding
-/// the missing UA rules (a separate change) has to decide about #616's shape
-/// for them at the same time.
+/// `<h1>`–`<h6>` and `<th>` now carry the browser's UA `font-weight: bold`
+/// (#627), and #616's rule holds for them exactly as it does for `<b>`: an
+/// author `normal` computes 400.
+///
+/// This test used to pin the opposite — that rinch gave these tags no UA
+/// `font-weight` at all — and said so explicitly, as the handshake for whoever
+/// added the missing rules. #627 is that change; the handshake is discharged
+/// here, by asserting the same shape in the new direction.
+///
+/// The rest of #627's surface (the `2em`…`0.67em` size scale, the `em` block
+/// margins, `<th>`'s `text-align`, and every one measured against Chrome 150)
+/// lives in `ua_heading_typography_tests`. This file keeps only the weight,
+/// because the weight is what #616 is about.
 #[test]
-fn headings_and_th_carry_no_ua_font_weight_in_rinch() {
+fn headings_and_th_carry_the_ua_bold_and_an_author_normal_still_wins() {
     let mut doc = RinchDocument::new();
     let body = doc.body();
     let c = el(&mut doc, body, "div", "width: 400px");
-    let h1 = el(&mut doc, c, "h1", "");
+    let headings: Vec<_> = ["h1", "h2", "h3", "h4", "h5", "h6"]
+        .iter()
+        .map(|tag| (*tag, el(&mut doc, c, tag, "")))
+        .collect();
     let h1_normal = el(&mut doc, c, "h1", "font-weight: normal");
     let h1_bold = el(&mut doc, c, "h1", "font-weight: bold");
     let th = el(&mut doc, c, "th", "");
     let th_normal = el(&mut doc, c, "th", "font-weight: normal");
+    // `<td>` is the discriminator for the `<th>` rule: a browser bolds the
+    // header cell and not the data cell.
+    let td = el(&mut doc, c, "td", "");
     doc.resolve_layout(800.0, 600.0);
 
-    assert_eq!(weight(&doc, h1), 400.0, "rinch's <h1> has no UA bold");
-    assert_eq!(weight(&doc, h1_normal), 400.0);
+    for (tag, id) in headings {
+        assert_eq!(weight(&doc, id), 700.0, "<{tag}> carries the UA bold");
+    }
+    assert_eq!(
+        weight(&doc, h1_normal),
+        400.0,
+        "`font-weight: normal` on <h1> must beat the UA bold — #616's rule"
+    );
     assert_eq!(weight(&doc, h1_bold), 700.0, "an explicit bold works");
-    assert_eq!(weight(&doc, th), 400.0, "rinch's <th> has no UA bold");
-    assert_eq!(weight(&doc, th_normal), 400.0);
+    assert_eq!(weight(&doc, th), 700.0, "<th> carries the UA bold");
+    assert_eq!(weight(&doc, th_normal), 400.0, "and `normal` beats it");
+    assert_eq!(weight(&doc, td), 400.0, "<td> is not bold");
 }
 
 // ===== The sibling properties with the same shape =====

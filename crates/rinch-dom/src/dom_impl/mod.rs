@@ -238,6 +238,53 @@ impl RinchDocument {
                 font-style: italic;
             }
 
+            /* The heading scale, verbatim from the HTML Standard's rendering
+               section and measured against Chrome 150 (issue #627). rinch used
+               to name h1–h6 only in the `display: block` rule above, so a bare
+               `<h1>` computed 16px/400/no-margin — body text — while `rinch-web`
+               ran on the browser's own UA sheet and rendered a heading. That
+               divergence is the defect; these are the browser's numbers.
+
+               `em`, not px, at both sites and deliberately: the scale is
+               relative to the *inherited* size (an `<h1>` in a 32px container is
+               64px), and an `em` in `margin` resolves against the element's
+               **own** computed font-size, so an author `font-size` moves the
+               margins with it — `<h1 style="font-size: 12px">` gets 8.04px of
+               margin in Chrome, not 21.44px. Both facts are invisible at the
+               default root size, where 2em is exactly 32px and 0.67em of either
+               font-size is exactly 21.44px; `ua_heading_typography_tests` samples
+               off that fixed point.
+
+               Cascade rules, never a post-cascade patch — #616/#618 deleted the
+               tag fixup that used to stamp `font-weight` after the cascade,
+               precisely because an author `font-weight: normal` could not beat
+               it. An author declaration beats these, which is the #616
+               handshake `an_author_declaration_beats_the_new_ua_heading_rules`
+               pins. */
+            h1 { font-size: 2em;    margin-block: 0.67em; }
+            h2 { font-size: 1.5em;  margin-block: 0.83em; }
+            h3 { font-size: 1.17em; margin-block: 1em; }
+            h4 { font-size: 1em;    margin-block: 1.33em; }
+            h5 { font-size: 0.83em; margin-block: 1.67em; }
+            h6 { font-size: 0.67em; margin-block: 2.33em; }
+
+            h1, h2, h3, h4, h5, h6 {
+                font-weight: bold;
+            }
+
+            /* A browser also gives `<th>` `display: table-cell`, and this rule
+               deliberately does not: rinch has no table formatting context at
+               all — `DisplayValue` carries no table variant, `table` is
+               `display: block` above, and `tr`/`td`/`th`/`thead` keep Stylo's
+               default `inline`. Declaring a display the layout engine cannot
+               honour would buy nothing and mislead. `font-weight` and
+               `text-align` are real, so those are what is here.
+               `the_th_rule_does_not_claim_a_table_display` is the pin. */
+            th {
+                font-weight: bold;
+                text-align: center;
+            }
+
             u, ins {
                 text-decoration-line: underline;
             }
