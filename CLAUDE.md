@@ -1312,9 +1312,11 @@ register_focus_target(
   watches for a focused `<input>`/editor), and moving focus *into* an overlay on
   open or restoring it on close (#695). **Tab containment does work** — see
   `data-trap-focus` above — as does *dismissal*, via the dismiss stack. What
-  remains unmatched is pointer modality: a click still reaches a control the
-  backdrop does not cover, and a click outside an overlay moves focus out of it,
-  as in a browser.
+  remains unmatched is **modality**: a click still reaches a control the backdrop
+  does not cover, and a click — or a scripted `focus()` — outside an overlay
+  moves focus out of it. That matches a *non-modal* `<dialog>`; a browser's
+  `showModal()` inerts the rest of the page and refuses even a scripted focus
+  behind it (measured, Chrome 150), which rinch does not model.
 - **An open `<select>` popup joins the dismiss stack** (#671). It is handled by
   the arbiter, which is step 2, while the stack is inside step 1 — so once
   `close_on_escape` started working, a `<select>` inside a `Modal` lost Escape

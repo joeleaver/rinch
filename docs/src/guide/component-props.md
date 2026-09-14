@@ -789,7 +789,7 @@ that is shown again gets a fresh delay. `0` is off.
 *`trap_focus`* contains **Tab** inside the overlay while it is open: the
 component stamps `data-trap-focus` on its root, and both backends cycle Tab and
 Shift+Tab within that element instead of walking the page. A *click* outside is
-untouched — the pointer is not trapped, as in a browser — and focus is neither
+untouched — the pointer is not trapped, as a *non-modal* dialog's is not — and focus is neither
 moved into the overlay on open nor restored on close
 ([issue #695](https://github.com/joeleaver/rinch/issues/695)). Details and the
 nesting rule are in the [focus guide](focus.md#containing-tab-inside-an-overlay).

@@ -223,9 +223,13 @@ The rules:
   guards are real, and the component relies on the first: it *removes* the
   attribute rather than writing `"false"` into it.
 - **Only Tab is contained.** A **click** outside the overlay still moves focus
-  out of it, exactly as a browser lets a click leave a dialog. `trap_focus` is
-  not a modality barrier for the pointer; the backdrop's
-  `close_on_click_outside` is what an outside click is for.
+  out of it, and so does a scripted `focus()`. That is what a *non-modal*
+  `<dialog>` does; a browser's `showModal()` goes further and marks the rest of
+  the page `inert`, so even a scripted focus behind it is refused — measured in
+  Chrome 150. rinch has no `inert` and no `showModal` semantics, so `trap_focus`
+  is a Tab rule, not a modality barrier. The backdrop's `close_on_click_outside`
+  is what an outside click is for; full modality is [issue
+  #695](https://github.com/joeleaver/rinch/issues/695)'s territory.
 - **A trap with nothing focusable inside it swallows Tab.** That is what
   containment means when there is nowhere to go.
 - Boolean attribute, same rule as `data-nofocus`: present means on whatever the
@@ -235,7 +239,18 @@ The rules:
   selector and calls `focus()` itself. The two sets are therefore computed
   separately and agree only as far as each is written to — desktop's notion of
   focusable is already documented as broader than HTML's in places. Trapping
-  inherits that difference rather than creating it.
+  inherits that difference rather than creating it. On the web the **browser**
+  is the authority, not rinch's selector: a `focus()` it declines (a control
+  inside a `<fieldset disabled>`, a `tabindex` it parsed differently) is stepped
+  over rather than trusted, so an element rinch listed and the browser will not
+  focus cannot stall the cycle.
+- **Some browser Tab stops are not rinch Tab stops**, on either backend:
+  `contenteditable` elements, `<iframe>`, `<summary>`, `<audio controls>` and
+  `<area href>` are reachable by Tab in a browser and are in neither backend's
+  focusable set. An overlay containing one loses it while trapped — and outside
+  a trap those elements are not desktop Tab stops either, so this is the
+  focusable set's shape rather than something trapping introduces. Give such an
+  element an explicit `tabindex="0"` if it has to be reachable.
 
 **Not done yet (issue #695):** focus is not moved *into* an overlay when it
 opens, and not restored when it closes. The first Tab after opening enters the
@@ -560,9 +575,10 @@ the slot rather than restoring what it displaced.
 - **The Android soft keyboard.** A registered target participates in desktop
   IME, but does not yet raise Android's on-screen keyboard: the shell still
   watches for a focused `<input>` or the rich-text editor.
-- **Pointer modality.** Tab **is** contained by an open `Modal` or `Drawer` —
-  see [Containing Tab inside an overlay](#containing-tab-inside-an-overlay) —
-  but a *click* still reaches controls behind the backdrop wherever the backdrop
-  itself does not cover them, and a click outside an overlay moves focus out of
-  it. That is what a browser does too. `DropdownMenu` has no `trap_focus` prop
-  and contains nothing.
+- **Modality.** Tab **is** contained by an open `Modal` or `Drawer` — see
+  [Containing Tab inside an overlay](#containing-tab-inside-an-overlay) — but a
+  *click* still reaches controls behind the backdrop wherever the backdrop
+  itself does not cover them, and a click or a scripted `focus()` outside an
+  overlay moves focus out of it. A browser's `showModal()` refuses both, because
+  it marks the rest of the page `inert`; rinch has no `inert` and models no
+  `showModal`. `DropdownMenu` has no `trap_focus` prop and contains nothing.
