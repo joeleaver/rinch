@@ -139,13 +139,37 @@ impl ComputedStyle {
     /// them anyway. `overflow_x` is half the `text-overflow: ellipsis`
     /// condition, which decides whether the layout is rebuilt truncated. The
     /// background-span row is **gated on `display: inline`**, because only a
-    /// non-atomic inline box contributes a span — the two `push_inline_background`
-    /// call sites in `walk_inline_children` are both behind
-    /// `display_mode == DisplayMode::Inline`, and the split-inline bridge walks
-    /// the same elements. Without that gate a `:hover { background-color }` on a
-    /// block would re-shape its own label's glyphs on every hover, which is the
-    /// cost this predicate exists to avoid. The gate reads *either* side, so a
-    /// box that changes into or out of `display: inline` is compared too.
+    /// non-atomic inline box contributes a span. There are **three**
+    /// `push_inline_background` call sites, all in `walk_inline_children` and
+    /// all behind `DisplayMode::Inline`: the `display: inline` arm itself,
+    /// which tests `child.display_mode` directly, and the two halves of the
+    /// split-inline bridge — one closing the stretches a run member has left,
+    /// one closing whatever is still open at the end of the run — whose owners
+    /// come from `split_inline_ancestors`, i.e. from `Node::is_split_inline`,
+    /// which requires `display_mode == DisplayMode::Inline` as its second
+    /// clause. Without the gate a `:hover { background-color }` on a block would
+    /// re-shape its own label's glyphs on every hover, which is the cost this
+    /// predicate exists to avoid. The gate reads *either* side, so a box that
+    /// changes into or out of `display: inline` is compared too.
+    ///
+    /// **The gate and those call sites read two different fields, and one line
+    /// keeps them in step.** This predicate tests `ComputedStyle::display`;
+    /// every call site tests `Node::display_mode`. The two agree because
+    /// `RinchDocument::apply_stylo_styles_to_taffy` derives the second from the
+    /// first — `DisplayValue::Inline => DisplayMode::Inline`, the only arm that
+    /// produces `DisplayMode::Inline` — a few lines after it calls this
+    /// predicate, in the same loop iteration and from the same `new_style`. So
+    /// there is no ordering hazard and no third source of truth *for a node the
+    /// cascade has reached*. `display_mode`'s other writers cannot reintroduce
+    /// one: `default_display_for_tag` sets it at element creation, before any
+    /// cascade, when the node has no derived layout to invalidate, and
+    /// `cleanup_anonymous_block_boxes`' anonymous block box is forced to
+    /// `DisplayMode::Block`, which contributes no span by construction. **A
+    /// future writer that sets `display_mode` to `Inline` for a node whose
+    /// computed `display` is something else would silently under-list this
+    /// predicate** — the node would produce a background span that no style
+    /// change ever invalidates — so such a writer needs a matching arm here,
+    /// not just there.
     ///
     /// Hand-written rather than `PartialEq` for the same reason
     /// `RinchDocument::same_inline_text_style` is —
