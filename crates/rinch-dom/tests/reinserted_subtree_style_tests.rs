@@ -360,9 +360,13 @@ fn a_branch_swapped_out_and_back_keeps_its_font() {
 ///
 /// `apply_stylo_styles_to_taffy` invalidates **only** when this answers false,
 /// so a field dropped from the predicate is a silent return of this bug for
-/// that property with nothing above it to notice — and a predicate that always
-/// answers false has nothing *behavioural* above it to notice either, since it
-/// is merely correct and slower. This is that mutant's only pin.
+/// that property, with nothing above it to notice. A predicate that always
+/// answers false has nothing above it to notice either, and for the opposite
+/// reason: it is *correct*, merely wasteful, so no behavioural fixture can see
+/// it. This test is that mutant's only pin, and the waste it guards against is
+/// argued mechanically rather than measured — see
+/// `tests/restyle_invalidation_bench.rs`, where the gap an earlier revision of
+/// #654 claimed did not reproduce.
 #[test]
 fn the_staleness_gate_lists_what_an_inline_layout_is_built_from() {
     use rinch_dom::computed_style::{ComputedStyle, DisplayValue};

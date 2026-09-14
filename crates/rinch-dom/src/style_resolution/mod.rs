@@ -859,11 +859,22 @@ impl RinchDocument {
             // it alone leaves every other test in the crate green and kills
             // `an_ifc_root_with_a_measure_leaf_is_remeasured_in_its_new_font`.
             //
-            // Gated on a real change, and that gate is load-bearing rather than
-            // an optimisation: unconditionally invalidating here re-shapes every
-            // moved subtree's text on every DOM insertion, which measured 2-9x
-            // slower on a 500-row keyed reversal (where nothing about the
-            // typography changes at all).
+            // Gated on a real change. **The gate is not backed by a
+            // measurement**, and the honest reason it is here is mechanical
+            // rather than empirical: invalidating unconditionally would re-shape
+            // every restyled node's text whether or not any typography changed,
+            // and a scalar comparison in place of a guaranteed invalidation
+            // cannot be the slower of the two. An earlier revision of #654
+            // claimed a 2-9x gap on a 500-row keyed reversal. That was measured
+            // without interleaving the variants, on a host running at four times
+            // its core count, and it is withdrawn: neither this PR's reviewer
+            // nor a re-run with the binaries built once and alternated could
+            // reproduce it. `tests/restyle_invalidation_bench.rs` is that
+            // harness, `#[ignore]`d, so the next person measures rather than
+            // inherits a number. Both variants are correct, so nothing
+            // behavioural can tell them apart — `the_staleness_gate_lists_what_
+            // an_inline_layout_is_built_from` is the only pin on the predicate's
+            // contents.
             if text_layout_stale {
                 self.invalidate_ifc_for_node(node_id);
             }
