@@ -231,7 +231,10 @@ The rules:
   is what an outside click is for; full modality is [issue
   #695](https://github.com/joeleaver/rinch/issues/695)'s territory.
 - **A trap with nothing focusable inside it swallows Tab.** That is what
-  containment means when there is nowhere to go.
+  containment means when there is nowhere to go — and on the web the same is
+  true of a trap whose every control the *browser* refuses to focus (all of them
+  inside a `<fieldset disabled>`, say): the key is consumed and focus stays put,
+  rather than the stepping-on above running forever.
 - Boolean attribute, same rule as `data-nofocus`: present means on whatever the
   value, and the explicit `"false"` opts out.
 - **Both backends, different code.** Desktop starts its own focusable walk at

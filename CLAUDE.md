@@ -1202,7 +1202,15 @@ itself. Which trap: the nearest one the current claim sits inside, else the
 each, because a closed `Modal` satisfies both: the attribute is removed (hence
 `is_boolean_attribute`, so `write_attribute` removes rather than writing
 `"false"`), **and** a trap with no box is skipped. **Only Tab is contained** — a
-click outside still moves focus out, as in a browser. `register_focus_target`'s
+click or a scripted `focus()` outside still moves focus out, which is a
+*non-modal* `<dialog>`'s behaviour; `showModal()` inerts the page and refuses
+both, and rinch models neither (#695). On the web the **browser** is the
+authority on focusability, not `trap_focusables`' selector: `handle_trapped_tab`
+checks `activeElement` after each `focus()` and steps on when the browser
+declines, because a filter cannot be closed over `<fieldset disabled>`, a
+`tabindex` the browser parsed differently, or `inert`. A trap whose every
+control the browser refuses therefore takes the **empty-trap** path — key
+consumed, focus unmoved — not an endless retry. `register_focus_target`'s
 `on_key` is the obvious-looking route and silently does nothing: the arbiter
 offers a key to a registered target only while it holds `FocusTarget::Node`, and
 the focused element inside a dialog is normally an `<input>`.
