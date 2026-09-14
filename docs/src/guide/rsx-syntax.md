@@ -1113,7 +1113,7 @@ Every author of an inline style — a `style:` prop, a style shorthand, a `set_s
 - **A `;` or `:` inside `url(…)`, `"…"` or `'…'` is part of that value.** A `background-image: url(data:image/png;base64,…)` already on the element survives every later write by anybody else. `rinch-dom` used to split on a bare `;`, so the next unrelated `set_style()` on that node cut the URI in half and the image vanished.
 - **A property declared twice collapses at the *last* declaration's position**, which is what a browser does. That is behaviour and not spelling as soon as a shorthand is involved: `style: "inset: 0px; left: 25px; inset: 4px"` computes a `left` of `4px`, because the surviving `inset` sits after the `left` it overrides.
 
-`/* … */` comments are removed before any of this, wherever they sit, and `!important` is carried through untouched.
+`/* … */` comments are removed before any of this — from a property name as readily as a value — everywhere CSS sees one. The two places it does not are inside a string and inside an unquoted `url(…)`, which is a single token: `url(http://a/*b*/c.png)` keeps its `/*b*/` and names the image the author wrote, as in a browser. `!important` is carried through untouched.
 
 ## Styling
 

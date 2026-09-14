@@ -135,6 +135,13 @@ pub(super) fn paint_text_selection_highlight(
 /// Through `rinch_core::dom::split_declarations`, the workspace's one
 /// inline-style parser (#670), so a `;` or `:` inside a quoted or bracketed
 /// value is part of that value here too.
+///
+/// That also changed what a **duplicate** answers: this used to return the
+/// first matching declaration and now returns the **last**, because the parser
+/// collapses a repeated property there. The new answer is the browser's —
+/// measured in Chrome 150, `getPropertyValue` on
+/// `user-select: none; user-select: text` is `"text"` — and no caller was
+/// affected, since this function has none.
 #[allow(dead_code)]
 pub(super) fn get_style_property(node: &Node, property: &str) -> Option<String> {
     // `computed_style_str` (used during style resolution) if there is one;
@@ -460,6 +467,25 @@ mod tests {
         );
         assert_eq!(get_style_property(&node, "padding").as_deref(), Some("4px"));
         assert_eq!(get_style_property(&node, "color"), None);
+    }
+
+    /// A property declared twice answers its **last** value, which is CSSOM's
+    /// rule — measured in Chrome 150, `getPropertyValue` on
+    /// `user-select: none; user-select: text` is `"text"`. The pre-#670 reader
+    /// returned the first match; this is what says which one it is now (#706
+    /// review, F3).
+    #[test]
+    fn get_style_property_answers_the_last_of_a_duplicate() {
+        let guard = style::shared_lock::SharedRwLock::new();
+        let mut node = Node::element(0, "div", guard);
+        node.attributes.insert(
+            "style".to_string(),
+            "user-select: none; gap: 4px; user-select: text".to_string(),
+        );
+        assert_eq!(
+            get_style_property(&node, "user-select").as_deref(),
+            Some("text")
+        );
     }
 
     /// `computed_style_str` wins over the attribute when there is one, and an

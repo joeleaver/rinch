@@ -892,3 +892,62 @@ fn a_user_select_inside_a_quoted_value_is_not_a_declaration() {
         "positive control: an actual `user-select: none` must still apply"
     );
 }
+
+/// A `/*` inside an unquoted `url(…)` is part of the URL, and the round trip
+/// an unrelated `set_style` puts the attribute through must keep it.
+///
+/// This is the end-to-end half of
+/// `inline_style::a_comment_marker_inside_an_unquoted_url_is_part_of_the_url`,
+/// and it is here because the computed value is what makes the defect
+/// *silent*: stripping `/*b*/` leaves a perfectly well-formed declaration
+/// naming a **different image**, so an attribute-string assertion is the only
+/// thing that would catch it in the terminated case and nothing would catch
+/// the consequence. Found by the PR #706 review (F1).
+#[test]
+fn a_comment_marker_inside_a_url_survives_the_next_set_style() {
+    use rinch_dom::computed_style::BackgroundValue;
+
+    let mut doc = RinchDocument::new();
+    let body = doc.body();
+    let div = doc.create_element("div");
+    doc.set_attribute(
+        div,
+        "style",
+        "width: 10px; height: 10px; background: url(http://example.test/a/*b*/c.png) no-repeat",
+    );
+    doc.append_child(body, div);
+    doc.set_style(div, "padding", "12px");
+    doc.resolve_layout(800.0, 600.0);
+
+    assert_eq!(
+        doc.get_attribute(div, "style").unwrap(),
+        "width: 10px; height: 10px; \
+         background: url(http://example.test/a/*b*/c.png) no-repeat; padding: 12px"
+    );
+    match &doc.tree.get(div.0).unwrap().computed_style.background {
+        BackgroundValue::Image { url } => assert_eq!(
+            url, "http://example.test/a/*b*/c.png",
+            "stripping the `/*b*/` names a different image, and says nothing"
+        ),
+        other => panic!("the url did not survive re-serialisation: {other:?}"),
+    }
+}
+
+/// An *unterminated* `/*` inside a url is the destructive half of the same
+/// rule: an unterminated comment runs to the end of the string, so reading one
+/// here would swallow every declaration after the url.
+#[test]
+fn an_unterminated_comment_marker_in_a_url_does_not_eat_the_rest() {
+    let mut doc = RinchDocument::new();
+    let div = doc.create_element("div");
+    doc.set_attribute(
+        div,
+        "style",
+        "background-image: url(http://example.test/a/*b.png); color: red",
+    );
+    doc.set_style(div, "padding", "12px");
+    assert_eq!(
+        doc.get_attribute(div, "style").unwrap(),
+        "background-image: url(http://example.test/a/*b.png); color: red; padding: 12px"
+    );
+}

@@ -37,7 +37,9 @@ use super::NodeHandle;
 /// part of the value, not a separator. That matters for the shape that reaches
 /// inline styles most often — a `background-image:
 /// url("data:image/svg+xml;base64,…")`, whose value carries both. `/* … */`
-/// comments are removed first, wherever they sit.
+/// comments are removed first — from a property name as readily as a value —
+/// **except** where CSS does not see one: inside a string, and inside an
+/// unquoted `url(…)`, which is a single token. See [`strip_comments`].
 ///
 /// A property declared twice collapses the way CSSOM collapses it: the earlier
 /// declaration is dropped and the **last** one keeps its own position.
@@ -116,9 +118,25 @@ pub fn serialize_declarations(decls: &[(String, String)]) -> String {
 /// Remove `/* … */` comments, which a browser does before it sees declarations
 /// at all — so a comment may sit anywhere, property name included.
 ///
-/// Quote-aware, because `content: "/*"` is a string and not a comment. An
-/// unterminated comment runs to the end, as CSS says it does. The common case
-/// (no comment) borrows.
+/// **Two places a `/*` is not a comment**, and both are destructive to get
+/// wrong, because everything here is on the round trip `set_style` puts an
+/// author's whole attribute through:
+///
+/// - **inside a string**, because `content: "/*"` is a string; and
+/// - **inside an unquoted `url(…)`**, because a url-token is a *single* token
+///   and CSS never looks inside one for a comment. Measured in Chrome 150:
+///   `background-image: url(http://a/*b*/c.png)` keeps the `/*b*/`, and
+///   stripping it resolves a **different image**. The unterminated shape is
+///   worse — an unterminated comment runs to the end of the string, as CSS
+///   says it does, so treating `url(http://a/*b.png); color: red` as one would
+///   swallow the `color` declaration whole (#670 review, F1).
+///
+/// `url("…")` is not this case: that is a function taking a string, so the
+/// quote machinery already covers it. A comment inside any *other* function is
+/// a comment — `width: calc(10px /* x */ + 5px)` loses it, as in Chrome — so
+/// this is narrower than "anything in brackets", deliberately.
+///
+/// The common case (no comment) borrows.
 ///
 /// Every index cut here lands on an ASCII byte, so a multi-byte value —
 /// `content: "→"` — is never split mid-character.
@@ -145,6 +163,11 @@ fn strip_comments(css: &str) -> Cow<'_, str> {
             i += 1;
             continue;
         }
+        // A url-token is one token: every byte of it is kept, `/*` included.
+        if let Some(end) = unquoted_url_end(bytes, i) {
+            i = end;
+            continue;
+        }
         match b {
             b'"' | b'\'' => {
                 quote = Some(b);
@@ -168,6 +191,46 @@ fn strip_comments(css: &str) -> Cow<'_, str> {
     }
     out.push_str(&css[keep_from..]);
     Cow::Owned(out)
+}
+
+/// If an **unquoted** `url(` token starts at `i`, the index just past its
+/// closing `)` — or the end of the input when it has none, which is what CSS's
+/// bad-url-token does.
+///
+/// `None` for everything else, including `url("…")`: that is a function token
+/// taking a string, and the caller's quote handling already covers it.
+///
+/// The returned index is always a UTF-8 boundary: it is either one past an
+/// ASCII `)` or the end of the slice. The `\` skip may *step* onto a
+/// continuation byte, which matches neither arm and is simply stepped over.
+fn unquoted_url_end(bytes: &[u8], i: usize) -> Option<usize> {
+    if !bytes.get(i..i + 4)?.eq_ignore_ascii_case(b"url(") {
+        return None;
+    }
+    // `myurl(` is not a url token — the `url` has to start the identifier.
+    if i > 0
+        && matches!(
+            bytes[i - 1],
+            b'a'..=b'z' | b'A'..=b'Z' | b'0'..=b'9' | b'-' | b'_' | b'\\'
+        )
+    {
+        return None;
+    }
+    let mut j = i + 4;
+    while j < bytes.len() && bytes[j].is_ascii_whitespace() {
+        j += 1;
+    }
+    if matches!(bytes.get(j), Some(b'"') | Some(b'\'')) {
+        return None;
+    }
+    while j < bytes.len() {
+        match bytes[j] {
+            b'\\' => j += 2,
+            b')' => return Some(j + 1),
+            _ => j += 1,
+        }
+    }
+    Some(bytes.len())
 }
 
 /// Where the top-level separators are, honouring quotes and brackets.
@@ -481,6 +544,59 @@ mod tests {
         // …but `/*` inside a string is a string.
         let decls = split_declarations(r#"content: "/*"; color: red"#);
         assert_eq!(names(&decls), ["content", "color"]);
+    }
+
+    /// A `/*` inside an **unquoted** `url(…)` is part of the URL, not a
+    /// comment — a url-token is one token and CSS never looks inside it.
+    ///
+    /// Both shapes are here because they fail differently and the second is
+    /// the destructive one. Stripping a *terminated* `/*b*/` resolves a
+    /// **different image**, quietly; an *unterminated* `/*` runs to the end of
+    /// the string, so it would swallow every declaration after it. Measured in
+    /// Chrome 150: `background-image: url(http://a/*b*/c.png)` serialises back
+    /// with the `/*b*/` intact (#670 review, F1).
+    #[test]
+    fn a_comment_marker_inside_an_unquoted_url_is_part_of_the_url() {
+        let decls = split_declarations("background-image: url(http://a/*b*/c.png)");
+        assert_eq!(
+            value(&decls, "background-image"),
+            Some("url(http://a/*b*/c.png)")
+        );
+
+        // The unterminated opener: the declaration *after* it must survive.
+        let decls = split_declarations("background-image: url(http://a/*b.png); color: red");
+        assert_eq!(names(&decls), ["background-image", "color"]);
+        assert_eq!(
+            value(&decls, "background-image"),
+            Some("url(http://a/*b.png)")
+        );
+        assert_eq!(value(&decls, "color"), Some("red"));
+    }
+
+    /// The positive control for the rule above, and the reason it is spelled
+    /// as "a url-token" rather than "anything in brackets": a comment inside
+    /// any *other* function is still a comment, which is what Chrome does.
+    ///
+    /// Without it, a bracket-depth spelling of the same fix would pass the
+    /// `url()` fixture while diverging from the browser everywhere else, and
+    /// nothing would say so.
+    #[test]
+    fn a_comment_inside_any_other_function_is_still_stripped() {
+        let decls = split_declarations("width: calc(10px /* x */ + 5px)");
+        assert_eq!(value(&decls, "width"), Some("calc(10px  + 5px)"));
+
+        // `url("…")` is a function taking a string, not a url-token — but the
+        // `/*` is inside the string, so it survives for the *other* reason.
+        let decls = split_declarations(r#"background-image: url("http://a/*b*/c.png")"#);
+        assert_eq!(
+            value(&decls, "background-image"),
+            Some(r#"url("http://a/*b*/c.png")"#)
+        );
+
+        // And `url` has to start the identifier: `myurl(` is an ordinary
+        // function, so a comment inside it goes.
+        let decls = split_declarations("background-image: myurl(a/*b*/c)");
+        assert_eq!(value(&decls, "background-image"), Some("myurl(ac)"));
     }
 
     /// `!important` is part of the value and survives a round trip, so a merge
