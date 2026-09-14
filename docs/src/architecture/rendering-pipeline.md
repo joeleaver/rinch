@@ -299,7 +299,10 @@ which then idles for its whole duration because `AnimatableValue::interpolate`
 answers `None` for it. The property snaps either way; cancelling instead would
 only save the idle ticks. And **item 3**, cancelling a running transition whose
 property has stopped matching `transition-property`: rinch skips the property
-and leaves the transition running. Both are pre-existing.
+and leaves the transition running, so the box snaps to the target on the restyle
+and then jumps backwards on the next tick, which resumes writing the interpolated
+value. Any restyle that changes `transition-property` mid-transition reaches it.
+Both gaps are pre-existing; item 3 is tracked as issue #693.
 
 ## Optimizations
 
