@@ -1345,9 +1345,18 @@ register_focus_target(
   backends, so an inner modal closing over an outer one leaves the page locked,
   and `overlay_scroll_lock::arm_lock_scroll` releases on close *and* in
   `on_cleanup` — an unmount while open would otherwise wedge the page for the
-  session. What it does **not** gate: programmatic scrolling
-  (`set_scroll_top`), and keyboard page-scrolling, which desktop does not have
-  at all. A touch scroll and the MCP `scroll` tool both arrive as
+  session. A scrollbar drag already **in flight** when the lock arrives is
+  ended rather than left scrolling (the #189 shape, re-checked in `MouseMove`),
+  and the native `<select>` popup is **exempt** through a second list,
+  `NodeTree::scroll_lock_exempt` — its option panel is a `<body>` portal, so it
+  is inside no overlay's root and a long list in a dialog was unscrollable.
+  Exempt is a separate list because `scroll_lock_roots` is also the count:
+  putting the popup there would freeze the page whenever a `<select>` was open.
+  `ContextMenu` is the other body portal and needs none *today* — its dropdown
+  declares no `overflow`/`max-height`, so it is not a scroll container; give one
+  either and it inherits the trap silently. What the lock does **not** gate:
+  programmatic scrolling (`set_scroll_top`), and keyboard page-scrolling, which
+  desktop does not have at all. A touch scroll and the MCP `scroll` tool both arrive as
   `PlatformEvent::MouseWheel`, so they are gated. `RenderScope::body_handle()`
   is the trap the design avoids — on web it is `<div id="rinch-body">`, not the
   page.

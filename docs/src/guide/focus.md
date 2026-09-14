@@ -581,10 +581,30 @@ root.set_scroll_locked(false);
   painted — visible, and inert.
 - **Input only.** Programmatic scrolling (`set_scroll_top`, a list the app
   scrolls itself) is untouched on both.
+- **A drag already in flight ends when a lock arrives.** A scrollbar thumb the
+  user is holding when something else opens a dialog is released rather than
+  left to go on scrolling the page.
+- **In island mode the lock is still the whole page.** There is one `<html>`, so
+  a rinch `Modal` inside an island freezes the host page, not just rinch's own
+  region — one lock, counted across every island on the page. That is what every
+  web overlay library does, but an embedder should know it before shipping a
+  dialog into someone else's page.
+- **On iOS Safari, `overflow: hidden` on `<html>` is not always enough** to stop
+  rubber-band scrolling; libraries there add a `position: fixed` body trick. We
+  have not tested it and rinch does not do it, so treat the web half as "the
+  page stops scrolling in every browser we have measured" rather than as
+  universal.
 
 Do **not** reach for `RenderScope::body_handle()` and set `overflow: hidden`
 there: on the web that handle is `<div id="rinch-body">`, a descendant of the
 real `<body>`, and styling it does not stop the page scrolling.
+
+**A scroll container the runtime portals to `<body>` is exempt**, because it is
+not a descendant of any overlay's root: the native `<select>` popup registers
+itself with `NodeTree::push_scroll_lock_exempt` while it is open, so a long
+option list inside a dialog still scrolls. Anything else that portals a
+*scrollable* element to the body needs the same, with the same
+push-on-open / release-on-close lifetime.
 
 ## Where this does *not* apply
 

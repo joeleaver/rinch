@@ -816,6 +816,14 @@ has a web equivalent:
   an app scrolling a list behind the dialog on purpose — still works. Desktop
   has no keyboard page-scrolling (PageDown and the arrows scroll nothing at the
   document level), so there is nothing to gate there.
+- A scrollbar drag already **in flight** when the lock arrives is ended, not
+  left to keep scrolling the page while the button is held.
+- The native `<select>` popup is **exempt**: its option list is appended to
+  `<body>`, so it is not inside any overlay's root, and a long list inside a
+  dialog would otherwise be unscrollable. See [Focus](./focus.md#locking-the-page-behind-an-overlay).
+
+On the web the lock is the whole page even in island mode — there is one
+`<html>` — so a rinch `Modal` inside an island freezes its host page too.
 
 Locks are **counted**: two overlays open and the inner one closing leaves the
 page locked, and an overlay that unmounts while still open releases its own.

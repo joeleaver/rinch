@@ -79,18 +79,31 @@ thread_local! {
         const { std::cell::RefCell::new(ScrollLock { held: 0, saved: None }) };
 }
 
+/// The inline declarations the page scroll lock overwrites, in the order they
+/// are saved and restored.
+///
+/// **The longhands, not just the shorthand.** `overflow: hidden` sets both, and
+/// `remove_property("overflow")` removes both — so saving only the shorthand
+/// loses an inline `overflow-x` that had no matching `overflow-y`: the shorthand
+/// serializes to `""` for that element, the restore takes the "there was
+/// nothing" path, and a declaration the lock never wrote is destroyed. Saving
+/// all three and restoring all three is exact in every case, including the
+/// ordinary one where only the shorthand was set (it round-trips through the two
+/// longhands unchanged).
+const OVERFLOW_PROPS: [&str; 3] = ["overflow", "overflow-x", "overflow-y"];
+
 /// See [`SCROLL_LOCK`].
 struct ScrollLock {
     /// How many overlays currently hold the lock. The page is locked while this
     /// is non-zero, so an inner modal closing over an outer one changes nothing.
     held: u32,
-    /// `<html>`'s inline `overflow` as it was when `held` went 0 → 1, restored
-    /// when it goes back to 0. `Some("")` means "there was no inline
-    /// declaration", which restores by *removing* the property rather than
-    /// setting it to the empty string — the two differ to
-    /// `style.cssText`, and a page whose `overflow` comes from a stylesheet must
-    /// get that value back, not an empty inline override.
-    saved: Option<String>,
+    /// `<html>`'s inline [`OVERFLOW_PROPS`] as they were when `held` went
+    /// 0 → 1, restored when it goes back to 0. An empty entry means "there was
+    /// no inline declaration", which restores by *removing* the property rather
+    /// than setting it to the empty string — the two differ to `style.cssText`,
+    /// and a page whose `overflow` comes from a stylesheet must get that value
+    /// back, not an empty inline override.
+    saved: Option<[String; 3]>,
 }
 
 /// `<html>` as an `HtmlElement`, the element the page's scroll lock acts on.
@@ -120,7 +133,8 @@ fn set_page_scroll_locked(locked: bool) {
             if lock.held == 1
                 && let Some(style) = document_element_style()
             {
-                lock.saved = Some(style.get_property_value("overflow").unwrap_or_default());
+                lock.saved =
+                    Some(OVERFLOW_PROPS.map(|p| style.get_property_value(p).unwrap_or_default()));
                 style.set_property("overflow", "hidden").ok();
             }
         } else {
@@ -131,12 +145,17 @@ fn set_page_scroll_locked(locked: bool) {
             if lock.held == 0
                 && let Some(style) = document_element_style()
             {
-                match lock.saved.take() {
-                    Some(prev) if !prev.is_empty() => {
-                        style.set_property("overflow", &prev).ok();
-                    }
-                    _ => {
-                        style.remove_property("overflow").ok();
+                let saved = lock.saved.take();
+                // Clear the shorthand first, which clears both longhands with
+                // it, then put back only what was actually there. Order matters:
+                // restoring a longhand and *then* removing the shorthand would
+                // remove the longhand again.
+                style.remove_property("overflow").ok();
+                if let Some(saved) = saved {
+                    for (prop, prev) in OVERFLOW_PROPS.iter().zip(saved.iter()) {
+                        if !prev.is_empty() {
+                            style.set_property(prop, prev).ok();
+                        }
                     }
                 }
             }
@@ -155,7 +174,9 @@ pub fn __reset_scroll_lock() {
         };
     });
     if let Some(style) = document_element_style() {
-        style.remove_property("overflow").ok();
+        for prop in OVERFLOW_PROPS {
+            style.remove_property(prop).ok();
+        }
     }
 }
 

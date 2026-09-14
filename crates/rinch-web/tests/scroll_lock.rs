@@ -199,6 +199,75 @@ fn an_existing_inline_overflow_is_restored_rather_than_blanked() {
     host.remove();
 }
 
+/// An inline **longhand** with no partner survives the lock, and so does a
+/// longhand pair that does not agree.
+///
+/// `overflow: hidden` sets both longhands and `remove_property("overflow")`
+/// removes both — so a restore that saved only the shorthand loses an inline
+/// `overflow-x` outright: the shorthand serializes to `""` for such an element,
+/// the release takes the "there was nothing here" path, and a declaration the
+/// lock never wrote is destroyed with no error.
+///
+/// The disagreeing pair (`hidden` / `scroll`) is the case that cannot be faked
+/// by round-tripping the shorthand.
+#[wasm_bindgen_test]
+fn an_inline_overflow_longhand_survives_a_lock() {
+    let host = fresh_host();
+    let captured: Rc<RefCell<Option<NodeHandle>>> = Rc::new(RefCell::new(None));
+    let captured_in = captured.clone();
+    let root = rinch_web::mount_into(
+        &host,
+        ThemeProviderProps::default(),
+        move |scope: &mut RenderScope| {
+            let el = scope.create_element("div");
+            *captured_in.borrow_mut() = Some(el.clone());
+            el
+        },
+    );
+    let node = captured.borrow().clone().expect("mounted once");
+
+    // A lone longhand: the shorthand reads back as "" for this element.
+    html_style().set_property("overflow-x", "scroll").unwrap();
+    assert_eq!(
+        html_overflow(),
+        "",
+        "premise: one longhand alone does not serialize as a shorthand"
+    );
+
+    node.set_scroll_locked(true);
+    node.set_scroll_locked(false);
+    assert_eq!(
+        html_style().get_property_value("overflow-x").unwrap(),
+        "scroll",
+        "the lock must not destroy a declaration it never wrote"
+    );
+    assert_eq!(
+        html_style()
+            .get_property_value("overflow-y")
+            .unwrap_or_default(),
+        "",
+        "and must not invent the partner it briefly set"
+    );
+
+    // A pair that disagrees, which no shorthand can express.
+    html_style().set_property("overflow-x", "hidden").unwrap();
+    html_style().set_property("overflow-y", "scroll").unwrap();
+    node.set_scroll_locked(true);
+    node.set_scroll_locked(false);
+    assert_eq!(
+        html_style().get_property_value("overflow-x").unwrap(),
+        "hidden"
+    );
+    assert_eq!(
+        html_style().get_property_value("overflow-y").unwrap(),
+        "scroll"
+    );
+
+    rinch_web::__reset_scroll_lock();
+    root.unmount();
+    host.remove();
+}
+
 // ── 2. Through the component ─────────────────────────────────────────────────
 
 /// `Modal { lock_scroll }` reaches all of the above on web, opening and closing.

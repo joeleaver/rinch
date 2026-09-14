@@ -316,6 +316,25 @@ impl RinchApp {
                     return actions;
                 }
 
+                // A drag whose container a scroll lock has since shut out is
+                // **over**, not merely inert (#474). The gate that refused the
+                // press is at the arm, and this continuation re-reads nothing —
+                // so an overlay opened mid-drag by something other than the user
+                // (a timer, a network reply, a menu callback) used to leave the
+                // page scrolling under the lock for as long as the button was
+                // held. State armed by one event and cleared only by a second
+                // that may never arrive; ending it here is the independent
+                // second clearing condition. Ended rather than suspended
+                // deliberately: if the lock lifts mid-drag the pointer is
+                // somewhere unrelated by then, and resuming would jump the
+                // container to it.
+                if let Some(drag) = &self.scrollbar_drag
+                    && let Some(doc) = &self.doc
+                    && doc.borrow().tree.scroll_locked_out(drag.node_id)
+                {
+                    self.scrollbar_drag = None;
+                }
+
                 // Handle scrollbar drag
                 if let Some(drag) = &self.scrollbar_drag {
                     let node_id = drag.node_id;

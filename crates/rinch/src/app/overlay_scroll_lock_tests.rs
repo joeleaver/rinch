@@ -97,8 +97,11 @@ fn mount_with_overlay(
             "style",
             "position: absolute; left: 0; top: 0; width: 800px; height: 600px; overflow: auto",
         );
+        // Overflowing on **both** axes: the vertical range is 1400 and the
+        // horizontal one 1200, so a 700px gesture on either lands off both ends
+        // of its own range.
         let tall = scope.create_element("div");
-        tall.set_attribute("style", "width: 100%; height: 2000px");
+        tall.set_attribute("style", "width: 2000px; height: 2000px");
         page_el.append_child(&tall);
         page_in.set(Some(page_el.node_id().0));
         root.append_child(&page_el);
@@ -152,6 +155,10 @@ fn centre(app: &RinchApp, node_id: usize) -> (f32, f32) {
 
 fn scroll_top(app: &RinchApp, id: usize) -> f64 {
     offsets(app, id).1
+}
+
+fn scroll_left(app: &RinchApp, id: usize) -> f64 {
+    offsets(app, id).0
 }
 
 // ── 1. The precondition, and the prop's off switch ───────────────────────────
@@ -550,5 +557,303 @@ fn a_locked_page_does_not_hand_over_its_scrollbar_thumb() {
     assert_eq!(
         hit.node_id, f.page,
         "and it belongs to the page, not to something else"
+    );
+}
+
+// ── 5. The gate's other two branches ─────────────────────────────────────────
+
+/// **The ancestor route**, which every fixture above leaves untested.
+///
+/// The wheel arm resolves a container two ways: the hit node's ancestor walk,
+/// and a geometric fallback for when the hit is in another DOM branch. A modal
+/// covers the viewport, so the hit is always its backdrop and the ancestor walk
+/// always answers `None` — the fallback is the only branch those fixtures
+/// exercise, and a gate applied to the fallback alone passes all of them.
+///
+/// The ancestor route is not hypothetical: it is the one a **custom overlay**
+/// takes, which is what `docs/src/guide/focus.md` now tells people to build with
+/// `root.set_scroll_locked(true)`. Such an overlay need not cover the viewport,
+/// so the pointer lands on page content and the walk resolves the page.
+///
+/// The premise is asserted, not assumed: if the fixture ever stopped taking the
+/// ancestor route it would silently go back to testing the fallback twice.
+#[test]
+fn a_lock_taken_by_a_non_covering_overlay_gates_the_ancestor_route_too() {
+    // The modal stays **closed**, so nothing covers the page and no lock comes
+    // from it; the lock below is the custom-overlay case the guide documents.
+    let open = Signal::new(false);
+    let mut f = modal_over_page(open, true);
+
+    {
+        let d = f.app.doc.as_ref().unwrap().borrow();
+        let hit = hit_test(&d.tree, AIM.0, AIM.1).expect("the pointer is over the page");
+        assert_eq!(
+            find_scroll_container(&d.tree, hit),
+            Some(f.page),
+            "premise: the ancestor walk resolves the page here — without this \
+             the fixture tests the geometric fallback a second time"
+        );
+    }
+
+    let doc = f.app.doc.as_ref().unwrap();
+    doc.borrow_mut()
+        .set_scroll_locked(true, rinch_core::dom::NodeId(f.inner));
+
+    wheel(&mut f.app, AIM, 0.0, WHEEL_DY);
+    assert_eq!(
+        scroll_top(&f.app, f.page),
+        0.0,
+        "a lock refuses the ancestor route as well as the geometric one"
+    );
+}
+
+/// **The horizontal axis.** "Both axes" was asserted by prose: no fixture above
+/// passes a non-zero `delta_x`, so deleting the gate from the horizontal arm
+/// changed nothing anywhere.
+///
+/// Checked with the lock off as well as on, in one fixture, because a page that
+/// does not scroll sideways at all would pass the locked half for the wrong
+/// reason.
+#[test]
+fn the_lock_gates_the_horizontal_axis_too() {
+    let open = Signal::new(false);
+    let mut f = modal_over_page(open, true);
+
+    wheel(&mut f.app, AIM, WHEEL_DY, 0.0);
+    assert_eq!(
+        scroll_left(&f.app, f.page),
+        EXPECTED_PAGE_SCROLL,
+        "precondition: closed modal, so the page scrolls sideways"
+    );
+
+    open.set(true);
+    f.app.resolve_and_repaint(VIEWPORT.0, VIEWPORT.1);
+
+    wheel(&mut f.app, AIM, WHEEL_DY, 0.0);
+    assert_eq!(
+        scroll_left(&f.app, f.page),
+        EXPECTED_PAGE_SCROLL,
+        "and stops moving sideways once the modal locks it"
+    );
+}
+
+// ── 6. A drag already in flight ──────────────────────────────────────────────
+
+/// **A scrollbar drag armed before the lock ends when the lock arrives.**
+///
+/// The gate is at the *arm* (`find_scrollbar_hit`), and the `MouseMove`
+/// continuation re-read nothing — so an overlay opened mid-drag by something
+/// other than the user (a timer, a network reply, a menu callback) left the page
+/// scrolling under the lock for as long as the button was held. State armed by
+/// one event and cleared only by a second that may never arrive.
+///
+/// The positive control is the same sequence without the lock: without it, a
+/// fixture whose drag was never armed asserts exactly the same thing.
+#[test]
+fn a_scrollbar_drag_already_in_flight_ends_when_the_lock_arrives() {
+    for lock_midway in [false, true] {
+        let open = Signal::new(false);
+        let mut f = modal_over_page(open, true);
+        let bar = (VIEWPORT.0 - 3.0, 40.0);
+
+        f.app.handle_event(
+            PlatformEvent::MouseDown {
+                x: bar.0,
+                y: bar.1,
+                button: MouseButton::Left,
+            },
+            (800, 600),
+            1.0,
+        );
+        assert!(
+            f.app.scrollbar_drag.is_some(),
+            "precondition: the press armed a drag on the page's bar"
+        );
+        let after_press = scroll_top(&f.app, f.page);
+
+        if lock_midway {
+            open.set(true);
+            f.app.resolve_and_repaint(VIEWPORT.0, VIEWPORT.1);
+        }
+
+        f.app.handle_event(
+            PlatformEvent::MouseMove {
+                x: bar.0,
+                y: bar.1 + 200.0,
+            },
+            (800, 600),
+            1.0,
+        );
+
+        let moved = scroll_top(&f.app, f.page) - after_press;
+        if lock_midway {
+            assert_eq!(moved, 0.0, "the lock arrived, so the drag is over");
+            assert!(
+                f.app.scrollbar_drag.is_none(),
+                "and it is ended rather than left armed and inert"
+            );
+        } else {
+            assert!(
+                moved > 100.0,
+                "control: with no lock the very same drag moves the page, got {moved}"
+            );
+        }
+    }
+}
+
+// ── 7. Body portals ──────────────────────────────────────────────────────────
+
+/// **A native `<select>` popup inside a locking modal still scrolls.**
+///
+/// The popup's option list is appended to `<body>` on purpose
+/// (`select_widget.rs`), so it is not a descendant of the modal's root and the
+/// lock refused its wheel and its thumb. `lock_scroll` defaults to `true`, so
+/// that arrived in every app with a long `<select>` in a dialog, with no opt-in.
+///
+/// The page is asserted still locked in the same breath: the cure must be an
+/// exemption for this subtree, not a hole in the lock.
+#[test]
+fn a_select_popup_inside_a_locking_modal_still_scrolls() {
+    let open = Signal::new(true);
+    let select_id: Rc<Cell<Option<usize>>> = Rc::new(Cell::new(None));
+    let sel_in = select_id.clone();
+    let page: Rc<Cell<Option<usize>>> = Rc::new(Cell::new(None));
+    let page_in = page.clone();
+
+    let mut app = mount(move |scope: &mut RenderScope| {
+        let root = scope.create_element("div");
+        root.set_attribute("style", "position: relative; width: 800px; height: 600px");
+        let page_el = scope.create_element("div");
+        page_el.set_attribute(
+            "style",
+            "position: absolute; left: 0; top: 0; width: 800px; height: 600px; overflow: auto",
+        );
+        let tall = scope.create_element("div");
+        tall.set_attribute("style", "width: 100%; height: 2000px");
+        page_el.append_child(&tall);
+        page_in.set(Some(page_el.node_id().0));
+        root.append_child(&page_el);
+
+        let select = scope.create_element("select");
+        // Long enough to overflow the 260px popup cap several times over.
+        for i in 0..40 {
+            let opt = scope.create_element("option");
+            let label = format!("Option {i}");
+            opt.set_attribute("value", &label);
+            let t = scope.create_text(&label);
+            opt.append_child(&t);
+            select.append_child(&opt);
+        }
+        sel_in.set(Some(select.node_id().0));
+
+        let modal = Modal {
+            opened_fn: Some(reactive(open)),
+            lock_scroll: true,
+            close_on_click_outside: false,
+            ..Default::default()
+        }
+        .render(scope, &[select]);
+        root.append_child(&modal);
+        root
+    });
+
+    let page = page.get().expect("the page's node id");
+    let select = select_id.get().expect("the select's node id");
+    app.open_select_popup(select, VIEWPORT.0, VIEWPORT.1);
+    let panel = app
+        .open_select
+        .as_ref()
+        .expect("the popup is open")
+        .panel_id;
+
+    let max_scroll = {
+        let d = app.doc.as_ref().unwrap().borrow();
+        let nid = rinch_core::dom::NodeId(panel);
+        d.scroll_height(nid) - d.client_height(nid)
+    };
+    assert!(
+        max_scroll > -WHEEL_DY,
+        "precondition: the option list must have more room than the gesture \
+         uses, or the assertion below would sit on the clamp — got {max_scroll}"
+    );
+
+    let inside = centre(&app, panel);
+    wheel(&mut app, inside, 0.0, WHEEL_DY);
+    assert_eq!(
+        scroll_top(&app, panel),
+        -WHEEL_DY,
+        "the popup is a body portal, so the lock must exempt it explicitly"
+    );
+
+    // And its thumb is grabbable, which the same gate refused.
+    {
+        let d = app.doc.as_ref().unwrap().borrow();
+        let (px, py, pw, ph) = painted_element_box(&d.tree, panel);
+        let hit = find_scrollbar_hit(&d.tree, px + pw - 3.0, py + ph / 2.0)
+            .expect("the popup's own bar is grabbable");
+        assert_eq!(hit.node_id, panel);
+    }
+
+    // The exemption is for the popup, not a hole in the lock.
+    wheel(&mut app, AIM, 0.0, WHEEL_DY);
+    assert_eq!(
+        scroll_top(&app, page),
+        0.0,
+        "the page behind is still locked"
+    );
+}
+
+/// The exemption leaves with the popup: closing it must not leave a hole behind
+/// for whatever node id the slab hands out next.
+#[test]
+fn closing_the_select_popup_releases_its_exemption() {
+    let open = Signal::new(true);
+    let select_id: Rc<Cell<Option<usize>>> = Rc::new(Cell::new(None));
+    let sel_in = select_id.clone();
+
+    let mut app = mount(move |scope: &mut RenderScope| {
+        let select = scope.create_element("select");
+        for i in 0..40 {
+            let opt = scope.create_element("option");
+            let label = format!("Option {i}");
+            opt.set_attribute("value", &label);
+            let t = scope.create_text(&label);
+            opt.append_child(&t);
+            select.append_child(&opt);
+        }
+        sel_in.set(Some(select.node_id().0));
+        Modal {
+            opened_fn: Some(reactive(open)),
+            lock_scroll: true,
+            close_on_click_outside: false,
+            ..Default::default()
+        }
+        .render(scope, &[select])
+    });
+
+    let select = select_id.get().expect("the select's node id");
+    app.open_select_popup(select, VIEWPORT.0, VIEWPORT.1);
+    assert_eq!(
+        app.doc
+            .as_ref()
+            .unwrap()
+            .borrow()
+            .tree
+            .scroll_lock_exempt
+            .len(),
+        1,
+        "precondition: the popup took an exemption"
+    );
+
+    app.close_select_popup();
+    assert!(
+        app.doc
+            .as_ref()
+            .unwrap()
+            .borrow()
+            .tree
+            .scroll_lock_exempt
+            .is_empty(),
+        "the exemption goes with the popup"
     );
 }

@@ -1519,6 +1519,29 @@ pub struct NodeTree {
     /// root can legitimately appear twice only through a double-lock bug, and a
     /// `Vec` of at most a handful of entries is cheaper to scan than to hash.
     pub scroll_lock_roots: Vec<RawNodeId>,
+    /// Subtrees a scroll lock must **not** reach, whatever
+    /// [`Self::scroll_lock_roots`] says (#474).
+    ///
+    /// A lock exempts its own overlay by naming its root, which works because an
+    /// overlay's scrollable parts are its descendants. A **body portal** breaks
+    /// that: the runtime's native `<select>` popup appends its option list to
+    /// `<body>` on purpose (`select_widget.rs` — so it reuses layout, paint,
+    /// theming, scrolling and hit testing), so a popup opened *inside* a locking
+    /// `Modal` is not a descendant of the modal's root and the lock refuses its
+    /// wheel and its thumb. `lock_scroll` defaults to `true`, so that reached
+    /// every app with a long `<select>` in a dialog.
+    ///
+    /// It is a **second list rather than another entry in the first** because
+    /// the first one is also the count: pushing the popup there would exempt it
+    /// and *take a lock*, freezing the page whenever any `<select>` was open.
+    ///
+    /// Anything else that portals a **scroll container** to `<body>` needs an
+    /// entry here, with the same push-on-open / release-on-close lifetime.
+    /// `ContextMenu` (`rinch-components`' `context_menu.rs`) is the other body
+    /// portal today and needs none: its dropdown declares no `overflow` and no
+    /// `max-height`, so it is not a scroll container. Give it either and it
+    /// inherits this trap silently.
+    pub scroll_lock_exempt: Vec<RawNodeId>,
     /// Shared lock for Stylo CSS engine.
     pub guard: SharedRwLock,
     /// IDs of anonymous block box nodes created during layout.
@@ -1707,6 +1730,7 @@ impl NodeTree {
             focused_node: None,
             active_node: None,
             scroll_lock_roots: Vec::new(),
+            scroll_lock_exempt: Vec::new(),
             guard,
             anonymous_block_boxes: Vec::new(),
             split_inlines: Vec::new(),
@@ -1756,12 +1780,31 @@ impl NodeTree {
         }
         let mut current = Some(node_id);
         while let Some(id) = current {
-            if self.scroll_lock_roots.contains(&id) {
+            if self.scroll_lock_roots.contains(&id) || self.scroll_lock_exempt.contains(&id) {
                 return false;
             }
             current = self.nodes.get(id).and_then(|n| n.parent);
         }
         true
+    }
+
+    /// Exempt `node_id`'s subtree from every scroll lock — see
+    /// [`Self::scroll_lock_exempt`]. Paired with
+    /// [`Self::release_scroll_lock_exempt`] on the portal's teardown.
+    pub fn push_scroll_lock_exempt(&mut self, node_id: RawNodeId) {
+        self.scroll_lock_exempt.push(node_id);
+    }
+
+    /// Release one exemption taken by [`Self::push_scroll_lock_exempt`].
+    ///
+    /// Removes a single occurrence, from the back, for the reason the lock list
+    /// does: two portals open at once must each release only their own. A
+    /// release with no matching entry is ignored rather than panicking, so a
+    /// teardown that runs twice is harmless.
+    pub fn release_scroll_lock_exempt(&mut self, node_id: RawNodeId) {
+        if let Some(i) = self.scroll_lock_exempt.iter().rposition(|n| *n == node_id) {
+            self.scroll_lock_exempt.remove(i);
+        }
     }
 
     /// Get a mutable reference to a node.
