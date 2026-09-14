@@ -655,8 +655,12 @@ fn run_loop(android_app: AndroidApp, mut app: RinchApp) {
         // make the screen redraw.
         let pending = frame.pending_layout;
         let needs_paint = redraw || pending || has_momentum || frame.needs_paint;
+        // Whether this iteration is going to try to put pixels on the glass.
+        // Named because the present's *outcome* is only meaningful beside it —
+        // see the `retry_owed_frame` call below the block.
+        let attempted = needs_paint && mounted;
 
-        if needs_paint && mounted {
+        if attempted {
             // Only on frames that are actually being drawn, and at most once a
             // second — see `RATE_RECHECK` for the mode change that made this
             // necessary.
@@ -682,6 +686,36 @@ fn run_loop(android_app: AndroidApp, mut app: RinchApp) {
                 let (pixels, w, h) = app.build_pixels(scale_factor, logical_size, false);
                 presented = s.present_pixels(pixels, w, h);
             }
+        }
+
+        // The frame was owed and did not reach the glass, so ask for it again
+        // (issue #563). Nothing else will: `redraw` was swapped out of
+        // `REDRAW_PENDING` above, the layout `pending` named was resolved by
+        // the `resolve_and_repaint` just inside the block, `build_scene` /
+        // `build_pixels` clear `scene_dirty` *before* the present, and a
+        // running CSS transition marks its node dirty without ever queueing a
+        // redraw *action* — so the loop's next `poll_timeout`
+        // would see `presented == false` with no wake pending, answer `None`,
+        // and sleep until something unrelated happened to arrive. The re-arm
+        // costs one display frame of sleep and clears itself on the first
+        // success; see `android_frame::retry_owed_frame` for the sequence.
+        //
+        // **The clock reset is half the repair, not a tidy-up.** `poll_timeout`
+        // answers `frame_interval - spent`, and the `spent` it is handed is
+        // `frame_start.elapsed()` — this whole iteration, paint included. A
+        // paint that overran the display's frame (85.2ms against an 8.33ms
+        // panel in K37's own software `sheet` row) saturates that to
+        // `Duration::ZERO`, so without this line the retry is immediate and the
+        // loop spins at whatever rate the CPU allows, failing every time: the
+        // exact busy-wait the `bool` returns of `present_pixels` /
+        // `present_scene` exist to prevent, reintroduced by the cure. Restart
+        // the clock here and the retry is measured from the arm instead, so it
+        // gets a whole frame. A frame that *reached the glass* still gets
+        // `ZERO` when it overran, and should — that is catching up, not failing
+        // faster.
+        if android_frame::retry_owed_frame(attempted, presented) {
+            REDRAW_PENDING.store(true, Ordering::Release);
+            frame_start = Instant::now();
         }
     }
 }
@@ -1041,6 +1075,10 @@ struct SoftSurface {
     native: ndk::native_window::NativeWindow,
     width: u32,
     height: u32,
+    /// Keeps a permanent window-format fault from becoming ~120 `error` lines
+    /// a second now that the loop retries it. See
+    /// [`android_frame::PresentFaultLog`].
+    faults: android_frame::PresentFaultLog,
 }
 
 #[cfg(not(feature = "android-gpu"))]
@@ -1054,6 +1092,7 @@ impl SoftSurface {
             native: window.clone(),
             width: width.max(1),
             height: height.max(1),
+            faults: android_frame::PresentFaultLog::default(),
         };
         surface.configure();
         surface
@@ -1091,6 +1130,22 @@ impl SoftSurface {
     /// when it *fails* it returns at once, and a loop that treated that as a
     /// presented frame would come straight back and fail again as fast as the
     /// CPU allowed.
+    ///
+    /// Since issue #563 the loop *does* come back for a failed frame — it was
+    /// owed one and nothing else would have asked — but it arms
+    /// `REDRAW_PENDING` **and restarts its frame clock** to do it, so the retry
+    /// costs a whole display frame of sleep. Both halves are needed: without
+    /// the clock reset a paint that already overran the frame leaves
+    /// `frame_interval - spent` saturated at zero and the retry is immediate,
+    /// which is the spin this `bool` exists to prevent, arriving by a different
+    /// road. The distinction it draws is untouched and is still the one that
+    /// matters: retrying on the panel's clock rather than on the CPU's. See
+    /// `android_frame::retry_owed_frame`.
+    ///
+    /// The `error` below is reported once per fault rather than once per
+    /// attempt, because the retry means there are now ~120 attempts a second
+    /// and this particular fault — a window whose buffer format has no byte
+    /// size — does not heal. See `android_frame::PresentFaultLog`.
     fn present_pixels(&mut self, pixels: &[u8], width: u32, height: u32) -> bool {
         use ndk::hardware_buffer_format::HardwareBufferFormat;
 
@@ -1132,7 +1187,16 @@ impl SoftSurface {
         // safe way to reach the bytes — the one case where the unwritten buffer
         // goes out as it is.
         let Some(lines) = guard.lines() else {
-            log::error!("present: window buffer format {format:?} has no byte size");
+            if self.faults.failed() {
+                log::error!(
+                    "present: window buffer format {format:?} has no byte size. \
+                     The frame is owed, so the loop retries it once per display \
+                     frame (#563); repeats are logged at debug until a present \
+                     succeeds."
+                );
+            } else {
+                log::debug!("present: window buffer format {format:?} has no byte size");
+            }
             return false;
         };
 
@@ -1163,6 +1227,7 @@ impl SoftSurface {
             line[n..].fill(std::mem::MaybeUninit::new(0));
         }
         // Dropping the guard unlocks the buffer and posts it.
+        self.faults.presented();
         true
     }
 }
@@ -1576,6 +1641,9 @@ struct GpuSurface {
     queue: wgpu::Queue,
     width: u32,
     height: u32,
+    /// Keeps a hard GPU fault from becoming ~120 `error` lines a second now
+    /// that the loop retries it. See [`android_frame::PresentFaultLog`].
+    faults: android_frame::PresentFaultLog,
 }
 
 #[cfg(feature = "android-gpu")]
@@ -1699,6 +1767,7 @@ impl GpuSurface {
             queue: ctx.queue.clone(),
             width,
             height,
+            faults: android_frame::PresentFaultLog::default(),
         })
     }
 
@@ -1779,11 +1848,26 @@ impl GpuSurface {
                 Err(e @ (wgpu::SurfaceError::Outdated | wgpu::SurfaceError::Lost))
                     if attempt == 0 =>
                 {
-                    log::info!("GPU: swapchain {e:?}, reconfiguring");
+                    // Read rather than claim: this line sits in front of the
+                    // `error` below on the same failed attempt, and must not
+                    // spend the one report that fault is owed.
+                    if self.faults.reported() {
+                        log::debug!("GPU: swapchain {e:?}, reconfiguring");
+                    } else {
+                        log::info!("GPU: swapchain {e:?}, reconfiguring");
+                    }
                     self.reconfigure();
                 }
                 Err(e) => {
-                    log::error!("GPU: acquire failed: {e:?}");
+                    if self.faults.failed() {
+                        log::error!(
+                            "GPU: acquire failed: {e:?}. The frame is owed, so the loop \
+                             retries it once per display frame (#563); repeats are logged \
+                             at debug until a present succeeds."
+                        );
+                    } else {
+                        log::debug!("GPU: acquire failed: {e:?}");
+                    }
                     return None;
                 }
             }
@@ -1813,7 +1897,12 @@ impl GpuSurface {
     /// [`SoftSurface::present_pixels`] for why the loop needs to be told:
     /// both early returns below are fast failures, and a loop that paced
     /// itself on "we tried to paint" rather than "we painted" would spin
-    /// through them.
+    /// through them. (It does retry a frame that failed, one display frame
+    /// later — issue #563, `android_frame::retry_owed_frame` — which is the
+    /// bounded version of the same thing and needs this `bool` to tell the two
+    /// apart. "One display frame" is true only because the loop restarts its
+    /// frame clock as it arms; the subtraction alone would saturate to zero on
+    /// any frame that overran, which on this path is most of them.)
     fn present_scene(&mut self, renderer: &mut vello::Renderer, scene: &vello::Scene) -> bool {
         if let Err(e) = renderer.render_to_texture(
             &self.device,
@@ -1827,7 +1916,15 @@ impl GpuSurface {
                 antialiasing_method: vello::AaConfig::Area,
             },
         ) {
-            log::error!("GPU render failed: {e}");
+            if self.faults.failed() {
+                log::error!(
+                    "GPU render failed: {e}. The frame is owed, so the loop retries it \
+                     once per display frame (#563); repeats are logged at debug until a \
+                     present succeeds."
+                );
+            } else {
+                log::debug!("GPU render failed: {e}");
+            }
             return false;
         }
 
@@ -1847,6 +1944,7 @@ impl GpuSurface {
             .copy(&self.device, &mut encoder, &self.target_view, &view);
         self.queue.submit(std::iter::once(encoder.finish()));
         frame.present();
+        self.faults.presented();
         true
     }
 }
