@@ -257,6 +257,23 @@ fn a_reactive_style_attribute_keeps_a_shorthand_prop() {
     assert_eq!(decl(&div, "color").as_deref(), Some("blue"));
 }
 
+/// A shorthand prop still wins a collision with `style:`, which is the order
+/// the guide documents. Without this the two could be emitted either way round
+/// and every other fixture here would stay green: none of them collides.
+#[component]
+fn html_style_collides_with_shorthand() -> NodeHandle {
+    rsx! {
+        div { style: "padding: 0; color: red", p: "12px" }
+    }
+}
+
+#[test]
+fn a_shorthand_prop_wins_a_collision_with_the_style_prop() {
+    let (_doc, _scope, div) = mount(html_style_collides_with_shorthand);
+    assert_eq!(decl(&div, "padding").as_deref(), Some("12px"));
+    assert_eq!(decl(&div, "color").as_deref(), Some("red"));
+}
+
 /// An element with a `style:` and nothing else keeps the author's string
 /// verbatim — the merge must not reformat what it has no reason to touch.
 #[component]
