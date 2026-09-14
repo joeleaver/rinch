@@ -174,6 +174,9 @@ This document tracks the progress of porting Mantine components to Rinch.
 Tier 4 overlay components are implemented with:
 - ✅ Portal rendering via `Element::Portal` (rendering outside normal DOM hierarchy)
 - CSS-only hover states for HoverCard, Popover, DropdownMenu
-- Focus trapping support (via `trap_focus` prop on Modal/Drawer)
-- Click-outside detection (via overlay click handlers)
-- Escape key support (via `close_on_escape` prop)
+- Click-outside detection (via overlay click handlers, and `Popover`'s own
+  dismiss backdrop)
+- Escape key support (via `close_on_escape` prop, on the dismiss stack)
+- Auto-dismiss (via `Notification::auto_close`)
+- ⛔ Focus trapping: `trap_focus` is declared on Modal/Drawer/Popover and **not
+  wired** — issue #474

@@ -404,6 +404,58 @@ Everything under [Window focus](#window-focus) applies: while the window is
 blurred, IME reports disabled and no composition is routed, but the claim — and
 `on_ime` with it — comes back on refocus.
 
+## The dismiss stack
+
+Escape is the one key an overlay has to answer without holding the keyboard: a
+`Modal` is dismissed by Escape whether the focus is on a field inside it, on the
+modal itself, or nowhere at all. That is a different job from both APIs above,
+and it has its own registry (issue #474).
+
+```rust
+use rinch::prelude::*;
+
+let opened = Signal::new(true);
+let handle = push_dismiss_handler(root.doc_key(), move || {
+    if opened.get() {
+        opened.set(false);
+        true            // consumed: the key stops here
+    } else {
+        false           // not open: pass it to the overlay below, then the app
+    }
+});
+__scope.on_cleanup(move || drop(handle));
+```
+
+- **It is a stack, last in first out.** The most recently registered handler is
+  asked first, so two nested modals close innermost-first. The first handler
+  that returns `true` consumes the key and the ones beneath it are never asked.
+- **Answer `false` while you are closed.** An overlay usually stays *mounted*
+  when it closes — `opened_fn` only rewrites a class — so the check belongs
+  inside the handler, at dispatch time, not at registration. A handler that
+  always returns `true` swallows Escape for the rest of the session.
+- **It is released on unmount**, twice over: the [`DismissHandle`] releases it
+  when it drops, and an entry whose owning scope has been disposed is dropped
+  as the scan passes it rather than run (issue #183 — its captured signals are
+  already freed).
+- **It is scoped per document.** Two `RinchContext`s on one thread do not answer
+  each other's Escape (issues #134, #139).
+- **Both backends, no branch.** Dispatch lives inside
+  `dispatch_keyboard_event`, which desktop calls ahead of the focus arbiter and
+  `rinch-web` calls from its document `keydown` listener.
+
+Two things are dispatched **before** the stack and will take Escape from it: a
+`set_keyboard_interceptor` that consumes the key, and an in-progress drag, which
+Escape cancels.
+
+`Modal`, `Drawer` and `Popover` already do all of this for you through their
+`close_on_escape` prop — reach for `push_dismiss_handler` when you are building
+an overlay of your own. **Prefer it over `set_keyboard_interceptor` for
+Escape**: the interceptor is a single slot per document, so a second overlay
+registering there silently disables the first, and when it unmounts it clears
+the slot rather than restoring what it displaced.
+
+[`DismissHandle`]: https://docs.rs/rinch/latest/rinch/struct.DismissHandle.html
+
 ## Where this does *not* apply
 
 - **The browser backend (`rinch-web`).** There is no arbiter there because the
@@ -422,7 +474,8 @@ blurred, IME reports disabled and no composition is routed, but the claim — an
   outside any dispatch still share the single fallback slot, last-wins. Its *lifetime* does match the arbiter's, though:
   registering it during a render releases it when that component unmounts,
   exactly as a `FocusEntry` is deregistered (issue #183). Registering it from
-  `main` keeps app lifetime.
+  `main` keeps app lifetime. For **Escape**, use
+  [the dismiss stack](#the-dismiss-stack) instead — one slot cannot nest.
 - **IME on the browser backend.** `on_ime` is desktop / Android / embed only,
   like the rest of this API. On web, attach `compositionstart` /
   `compositionupdate` / `compositionend` to your element yourself — the browser
@@ -431,5 +484,7 @@ blurred, IME reports disabled and no composition is routed, but the claim — an
   IME, but does not yet raise Android's on-screen keyboard: the shell still
   watches for a focused `<input>` or the rich-text editor.
 - **Modal containment.** Tab still reaches controls behind a `Modal`, `Drawer`
-  or `DropdownMenu` backdrop; the backdrop blocks pointer hits only. Tracked
-  separately.
+  or `DropdownMenu` backdrop; the backdrop blocks pointer hits only. Their
+  `trap_focus` prop is that gap and is not wired yet (issue #474). *Dismissal*
+  is a separate question and does work — see [the dismiss
+  stack](#the-dismiss-stack).

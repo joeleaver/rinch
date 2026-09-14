@@ -749,6 +749,40 @@ stylesheet default; that is
 it is not specific to `z_index` — an inline `z-index` would be erased by the
 same write. Style *shorthands* (`p:`, `mt:` …) merge and are unaffected.
 
+**Dismissing an overlay** (issue #474). `close_on_escape`, and
+`Popover::close_on_click_outside`, and `Notification::auto_close` were declared
+and read by nothing until the dismissal PR. All three now work, on desktop and
+on the web, and all three are requests rather than actions: they invoke
+`onclose`, and **it is the app that closes the overlay** by writing the signal
+`opened_fn` reads. An overlay with no `onclose` has nowhere to send the request,
+so it registers nothing and leaves the key or the click to the app.
+
+*Escape* goes through the **dismiss stack** — a last-in-first-out list every
+open overlay joins while it is mounted. The innermost open overlay answers the
+key and the ones beneath it do not, so nesting works; an overlay that is mounted
+but **closed** passes the key down rather than swallowing it; and a key nothing
+takes reaches the app unchanged. Two things beat it, both pre-existing and both
+correct: a document-level
+[`set_keyboard_interceptor`](./focus.md#the-document-level-interceptor), which
+is the app saying it means to have Escape, and an in-progress drag, which
+Escape cancels. A custom overlay of your own joins the same stack with
+[`push_dismiss_handler`](./focus.md#the-dismiss-stack) — reach for that rather
+than an interceptor, which is one slot per document and so cannot nest.
+
+*Outside clicks* are caught by an invisible full-viewport backdrop the component
+renders while it is open, one stacking level under its own panel, so a click on
+the overlay's own content still reaches the content. `Modal` and `Drawer` use
+their dimming overlay for this and always have; `Popover` gained one with the
+same PR.
+
+*`auto_close`* arms a timer when the notification **opens** and cancels it if
+the notification closes — or unmounts — first, so a toast the user dismisses by
+hand does not fire `onclose` a second time at its original deadline, and one
+that is shown again gets a fresh delay. `0` is off.
+
+`trap_focus` and `lock_scroll` are **still not wired**; they are tracked in
+[issue #474](https://github.com/joeleaver/rinch/issues/474).
+
 ### Tooltip
 
 | Prop | Type | Default | Description |
@@ -779,13 +813,13 @@ Positioned with `top: var(--rinch-window-top-inset, 0px)`, so it clears any wind
 | `overlay_opacity` | `Option<f32>` | `None` | Backdrop alpha, 0-1 (default 0.75). Applies to the dimming overlay, not the panel |
 | `overlay_blur` | `String` | `""` | |
 | `centered` | `bool` | `false` | |
-| `close_on_click_outside` | `bool` | **`true`** | |
-| `close_on_escape` | `bool` | **`true`** | |
+| `close_on_click_outside` | `bool` | **`true`** | A click on the dimming overlay invokes `onclose` |
+| `close_on_escape` | `bool` | **`true`** | Escape invokes `onclose` while this is the innermost open overlay |
 | `with_close_button` | `bool` | **`true`** | |
 | `padding` | `String` | `""` | |
 | `z_index` | `Option<i32>` | `None` | Stacking level of the whole modal: the full-viewport overlay sits here and the panel one above it (defaults 200 / 201) |
-| `lock_scroll` | `bool` | **`true`** | |
-| `trap_focus` | `bool` | **`true`** | |
+| `lock_scroll` | `bool` | **`true`** | **Not wired yet** (#474) |
+| `trap_focus` | `bool` | **`true`** | **Not wired yet** (#474) |
 | `onclose` | `Option<Callback>` | `None` | |
 
 ### Drawer
@@ -803,13 +837,13 @@ Positioned with `top: var(--rinch-window-top-inset, 0px)`, so it clears any wind
 | `size` | `String` | `""` | |
 | `with_overlay` | `bool` | **`true`** | |
 | `overlay_opacity` | `Option<f32>` | `None` | Backdrop alpha, 0-1 (default 0.75). Applies to the dimming overlay, not the panel |
-| `close_on_click_outside` | `bool` | **`true`** | |
-| `close_on_escape` | `bool` | **`true`** | |
+| `close_on_click_outside` | `bool` | **`true`** | A click on the dimming overlay invokes `onclose` |
+| `close_on_escape` | `bool` | **`true`** | Escape invokes `onclose` while this is the innermost open overlay |
 | `with_close_button` | `bool` | **`true`** | |
 | `padding` | `String` | `""` | |
 | `z_index` | `Option<i32>` | `None` | Stacking level of the whole drawer: the overlay sits here and the panel one above it (defaults 200 / 201) |
-| `lock_scroll` | `bool` | **`true`** | |
-| `trap_focus` | `bool` | **`true`** | |
+| `lock_scroll` | `bool` | **`true`** | **Not wired yet** (#474) |
+| `trap_focus` | `bool` | **`true`** | **Not wired yet** (#474) |
 | `onclose` | `Option<Callback>` | `None` | |
 
 ### Notification
@@ -827,7 +861,7 @@ Custom Default: `with_close_button` defaults to `true`.
 | `with_close_button` | `bool` | **`true`** | |
 | `with_border` | `bool` | `false` | |
 | `icon` | `Option<TablerIcon>` | `None` | |
-| `auto_close` | `u32` | `0` | Auto-close delay in ms (0 = disabled) |
+| `auto_close` | `u32` | `0` | Invoke `onclose` this many ms after it opens (0 = disabled). Cancelled if it closes or unmounts first |
 | `loading` | `bool` | `false` | |
 | `z_index` | `Option<i32>` | `None` | Stacking level of the toast (default 300) |
 | `onclose` | `Option<Callback>` | `None` | |
@@ -836,9 +870,15 @@ Custom Default: `with_close_button` defaults to `true`.
 
 Custom Default: `close_on_click_outside` and `close_on_escape` default to `true`.
 
+`Popover` had **no close callback and no reactive open state** until #474, so
+neither dismissal prop had anywhere to send a request. Both `onclose` and
+`opened_fn` were added then, matching `DropdownMenu`; a `Popover` without
+`onclose` still renders, and simply cannot dismiss itself.
+
 | Prop | Type | Default | Description |
 |------|------|---------|-------------|
 | `opened` | `bool` | `false` | |
+| `opened_fn` | `Option<ReactiveBool>` | `None` | Reactive open state (auto-wrapped) |
 | `position` | `String` | `""` | |
 | `offset` | `Option<i32>` | `None` | |
 | `radius` | `String` | `""` | |
@@ -846,11 +886,12 @@ Custom Default: `close_on_click_outside` and `close_on_escape` default to `true`
 | `with_arrow` | `bool` | `false` | |
 | `arrow_size` | `Option<f32>` | `None` | |
 | `arrow_offset` | `Option<f32>` | `None` | |
-| `close_on_click_outside` | `bool` | **`true`** | |
-| `close_on_escape` | `bool` | **`true`** | |
+| `close_on_click_outside` | `bool` | **`true`** | Renders a dismiss backdrop while open; a click on it invokes `onclose` |
+| `close_on_escape` | `bool` | **`true`** | Escape invokes `onclose` while this is the innermost open overlay |
 | `width` | `String` | `""` | |
-| `z_index` | `Option<i32>` | `None` | Stacking level of the dropdown (default 100) |
-| `trap_focus` | `bool` | `false` | |
+| `z_index` | `Option<i32>` | `None` | Stacking level of the dropdown; its click-catching backdrop stays one below (defaults 100 / 99) |
+| `trap_focus` | `bool` | `false` | **Not wired yet** (#474) |
+| `onclose` | `Option<Callback>` | `None` | Invoked when the popover asks to close |
 
 Sub-components: **PopoverTarget** (no props), **PopoverDropdown** (no props).
 
