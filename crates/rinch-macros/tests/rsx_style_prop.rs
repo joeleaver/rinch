@@ -486,6 +486,62 @@ fn a_shorthand_prop_wins_a_collision_on_the_component_path_too() {
     assert_eq!(decl(&root, "--overlay-z").as_deref(), Some("517"));
 }
 
+/// A component whose root is positioned, so a repeated `inset`/`left` in a
+/// caller's `style:` decides something the cascade can be asked about.
+#[component]
+fn PositionedBox() -> NodeHandle {
+    let root = __scope.create_element("div");
+    root.set_attribute("class", "positioned");
+    root.set_attribute("style", "position: absolute; width: 10px; height: 10px");
+    root
+}
+
+#[component]
+fn repeated_property_through_a_style_prop() -> NodeHandle {
+    rsx! {
+        PositionedBox { style: "inset: 0px; left: 25px; inset: 4px" }
+    }
+}
+
+/// A property declared twice in one `style:` collapses at the **last**
+/// position, which is where CSS puts it, and the difference is a computed
+/// value rather than a formatting preference.
+///
+/// Chrome 150 gives `inset: 0px; left: 25px; inset: 4px` a computed `left` of
+/// `4px`: the surviving `inset` sits after the `left` it overrides. Collapsing
+/// at the first position instead yields `inset: 4px; left: 25px` and a computed
+/// `left` of `25px` — the longhand wins, and the element is 21px out.
+///
+/// **The component root has to carry its own inline style for this to test
+/// anything.** On a bare element the merge takes its verbatim path and hands
+/// the author's string to Stylo untouched, and Stylo collapses it correctly by
+/// itself — a fixed point where both position rules agree. A second author is
+/// what forces the string through `split_declarations`.
+#[test]
+fn a_repeated_property_collapses_where_css_says_it_does() {
+    let doc = Rc::new(RefCell::new(RinchDocument::new()));
+    let body = doc.borrow().body();
+    let mut scope = RenderScope::new(doc.clone(), body);
+    let root = repeated_property_through_a_style_prop(&mut scope);
+    doc.borrow_mut().append_child(body, root.node_id());
+
+    doc.borrow_mut().recompute_all_styles_full();
+    doc.borrow_mut().resolve_layout(800.0, 600.0);
+
+    let d = doc.borrow();
+    let style = &d
+        .tree
+        .get(root.node_id().0)
+        .expect("the box is in the tree")
+        .computed_style;
+    assert_eq!(
+        format!("{:?}", style.left),
+        "Length(4.0)",
+        "the later `inset` must survive at its own position, after the `left` \
+         it overrides"
+    );
+}
+
 // ── 7. the issue's own repro, end to end through `rsx!` ─────────────────────
 
 /// `Modal { z_index: 517, style: "margin: 0" }` computes 517.

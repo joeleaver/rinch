@@ -39,21 +39,28 @@ use super::NodeHandle;
 /// url("data:image/svg+xml;base64,…")`, whose value carries both. `/* … */`
 /// comments are removed first, wherever they sit.
 ///
-/// A property declared twice collapses to its last value, kept at the *first*
-/// declaration's position. **That position is a deviation from CSSOM**, not a
-/// match for it. Measured in Chrome 150: for
+/// A property declared twice collapses the way CSSOM collapses it: the earlier
+/// declaration is dropped and the **last** one keeps its own position.
+///
+/// Measured in Chrome 150, because the position is not cosmetic. For
 /// `margin: 1px; color: red; gap: 2px; color: blue`, `style.cssText` is
-/// `margin: 1px; gap: 2px; color: blue;` — the *last* position. (The attribute
-/// itself reads back as the author wrote it until something touches the CSSOM,
-/// so `getAttribute` is not where the collapse shows.) The difference is
-/// observable where a shorthand and one of its longhands are involved: Chrome
-/// gives `inset: 0px; left: 25px; inset: 4px` a computed `left` of `4px` —
-/// collapsing it to `inset: 4px` and dropping the longhand — where
-/// re-serialising to `inset: 4px; left: 25px` computes `25px`. This mirrors
-/// `rinch-dom`'s own `parse_style_string`, which has always collapsed this way,
-/// so the two agree with each other; reconciling both with CSSOM is separate
-/// work. A part with no top-level `:`, or an empty property name, is dropped —
-/// it is not a declaration.
+/// `margin: 1px; gap: 2px; color: blue;` — `color` at the *last* position, not
+/// the first. (The attribute itself reads back as the author wrote it until
+/// something touches the CSSOM, so `getAttribute` is not where the collapse
+/// shows.) It is behaviourally observable wherever a shorthand and one of its
+/// longhands are involved: Chrome gives `inset: 0px; left: 25px; inset: 4px` a
+/// computed `left` of `4px`, because the surviving `inset` sits after the
+/// `left` it overrides — where collapsing at the first position gives
+/// `inset: 4px; left: 25px` and a computed `left` of `25px`.
+///
+/// `rinch-dom`'s own `parse_style_string` still collapses at the first
+/// position, so an attribute that reaches a `set_style` while it still carries
+/// a duplicate is collapsed the other way. That is pre-existing and tracked
+/// separately; nothing this module writes carries a duplicate, because this
+/// function removed it.
+///
+/// A part with no top-level `:`, or an empty property name, is dropped — it is
+/// not a declaration.
 ///
 /// Values are kept verbatim, `!important` included, so a round trip through
 /// [`serialize_declarations`] preserves what the author wrote.
@@ -73,10 +80,10 @@ pub fn split_declarations(css: &str) -> Vec<(String, String)> {
         if name.is_empty() {
             continue;
         }
-        match out.iter_mut().find(|(k, _)| k == name) {
-            Some(slot) => slot.1 = value.to_string(),
-            None => out.push((name.to_string(), value.to_string())),
+        if let Some(at) = out.iter().position(|(k, _)| k == name) {
+            out.remove(at);
         }
+        out.push((name.to_string(), value.to_string()));
     }
     out
 }
@@ -463,19 +470,20 @@ mod tests {
         assert_eq!(serialize_declarations(&decls), "color: red !important");
     }
 
-    /// A property declared twice collapses to the last value, at the **first**
-    /// position. Two other properties either side, because a two-element list
-    /// gives the same answer whichever position rule is in force.
+    /// A property declared twice collapses to the last value at the **last**
+    /// position, the way CSSOM does — measured in Chrome 150, where
+    /// `margin: 1px; color: red; gap: 2px; color: blue` has a `cssText` of
+    /// `margin: 1px; gap: 2px; color: blue;`.
     ///
-    /// This is a deviation from CSSOM, not a match for it — Chrome 150 keeps
-    /// the last position — and it is pinned here as the deviation it is, so a
-    /// future reconciliation with `rinch-dom`'s `parse_style_string` has to
-    /// come through this fixture rather than around it. See the note on
-    /// [`split_declarations`].
+    /// Two other properties either side, because a two-element list gives the
+    /// same answer whichever position rule is in force. The position is what
+    /// makes this more than cosmetic: see
+    /// `rsx_style_prop::a_repeated_property_collapses_where_css_says_it_does`,
+    /// which asserts the computed `left` it decides.
     #[test]
-    fn a_repeated_property_keeps_the_first_position_and_the_last_value() {
+    fn a_repeated_property_keeps_the_last_position_and_the_last_value() {
         let decls = split_declarations("a: 1; color: red; b: 2; color: blue");
-        assert_eq!(names(&decls), ["a", "color", "b"]);
+        assert_eq!(names(&decls), ["a", "b", "color"]);
         assert_eq!(value(&decls, "color"), Some("blue"));
     }
 
