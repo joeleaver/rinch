@@ -239,9 +239,17 @@ fn an_id_selector_composes_with_hover() {
 /// An id written, rewritten and removed at runtime. Each step restyles, so the
 /// stored atom has to track every write.
 ///
-/// Kills three mutants: the atom never stored (step 1 stays 0), the atom not
-/// updated on rewrite (step 2 keeps the old rule), the atom not cleared on
-/// remove (step 3 keeps the last rule).
+/// Kills three mutants, though not all three through the margin. Each figure
+/// below is measured against that mutant, not predicted:
+///
+/// - **atom never stored** — step 1 reads 0.
+/// - **atom not updated on rewrite** — step 2 reads **0**, not the old 11. A
+///   stale atom does not keep the old rule: it sends the bucket lookup to
+///   `#a`, where `has_id` reads the *attribute* and refuses on the new value,
+///   while `#b` is never offered at all. The node ends up with neither rule.
+/// - **atom not cleared on remove** — step 3's margin is a *fixed point* and
+///   passes. The store assertion that follows it is what kills that one; the
+///   comment there explains why.
 #[test]
 fn an_id_set_changed_and_removed_at_runtime_tracks_the_rules() {
     let mut doc = RinchDocument::new();
@@ -270,8 +278,10 @@ fn an_id_set_changed_and_removed_at_runtime_tracks_the_rules() {
     assert_eq!(
         margin_top(&doc, n),
         23.0,
-        "an id rewritten at runtime must move to #b — a stored atom that is \
-         written once and never updated leaves this at 11"
+        "an id rewritten at runtime must move to #b — a stored atom written \
+         once and never updated leaves this at 0, not 11 (measured): the stale \
+         atom sends the bucket lookup to `#a`, which `has_id` then refuses on \
+         the new attribute value, while `#b` is never offered at all"
     );
 
     doc.remove_attribute(n, "id");
