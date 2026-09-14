@@ -27,12 +27,15 @@
 //!   dead owner's handler closes over signals its component already freed, so
 //!   it is dropped rather than run. The [`DismissHandle`] is the *eager* release;
 //!   liveness is what covers a handle that was leaked or outlived by its state.
-//! - **One document's Escape does not reach another's overlay.** Two
+//! - **Two *marked* documents do not answer each other's Escape.** Two
 //!   `RinchContext`s on one thread share every thread-local here (#134/#139), so
 //!   an entry carries the document it was registered against and dispatch
-//!   applies [`doc_matches`] — permissive by construction, so a registration
-//!   made with no document (a test, a headless host) and a dispatch from a
-//!   backend that never marks one (rinch-web) both still work.
+//!   applies [`doc_matches`], whose rule this is: only two `Some` keys that
+//!   differ are refused. Everything else is permissive by construction, which
+//!   is what keeps a registration made with no document (a test, a headless
+//!   host) working, and what keeps `rinch-web` — which marks no dispatching
+//!   document at all, so two islands on one page share one stack — working
+//!   too.
 //!
 //! Dispatch is wired into
 //! [`dispatch_keyboard_event`](super::dispatch_keyboard_event), *after* the

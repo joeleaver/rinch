@@ -1245,7 +1245,9 @@ register_focus_target(
   disables the first and its unmount clears the slot rather than restoring what
   it displaced. Escape goes through the **dismiss stack** instead —
   `rinch_core::push_dismiss_handler(doc_key, || bool) -> DismissHandle`,
-  LIFO, per document, owner-checked at dispatch, dispatched from inside
+  LIFO, per document (`doc_matches`: only two differing `Some` keys are
+  refused, so a backend that marks none — rinch-web — reaches every handler),
+  owner-checked at dispatch, dispatched from inside
   `dispatch_keyboard_event` for an Escape *press* after the interceptor (so
   both backends get it with no edit). `Modal`/`Drawer`/`Popover`'s
   `close_on_escape` rides it; a custom overlay should too. It shares the
