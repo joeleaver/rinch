@@ -91,12 +91,12 @@ impl ComputedStyle {
                 .unwrap_or_default(),
 
             // Dimensions
-            width: size_from_stylo(&position_style.width),
-            height: size_from_stylo(&position_style.height),
-            min_width: size_from_stylo(&position_style.min_width),
-            min_height: size_from_stylo(&position_style.min_height),
-            max_width: max_size_from_stylo(&position_style.max_width),
-            max_height: max_size_from_stylo(&position_style.max_height),
+            width: size_from_stylo("width", &position_style.width),
+            height: size_from_stylo("height", &position_style.height),
+            min_width: size_from_stylo("min-width", &position_style.min_width),
+            min_height: size_from_stylo("min-height", &position_style.min_height),
+            max_width: max_size_from_stylo("max-width", &position_style.max_width),
+            max_height: max_size_from_stylo("max-height", &position_style.max_height),
 
             // Flexbox
             flex_direction: flex_direction_from_stylo(&position_style.flex_direction),

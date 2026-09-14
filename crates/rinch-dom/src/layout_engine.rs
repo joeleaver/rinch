@@ -1229,8 +1229,8 @@ impl RinchDocument {
                     let right = style.right.resolve(vw);
                     let bottom = style.bottom.resolve(vh);
                     let left = style.left.resolve(vw);
-                    let width_auto = style.width.is_auto();
-                    let height_auto = style.height.is_auto();
+                    let width_auto = style.width.lays_out_as_auto();
+                    let height_auto = style.height.lays_out_as_auto();
 
                     // Horizontal positioning
                     if let (Some(l), Some(r)) = (left, right) {
@@ -1430,7 +1430,9 @@ impl RinchDocument {
                 DimensionValue::Length(v) => Some(*v),
                 DimensionValue::Percent(p) => Some(p * vh),
                 DimensionValue::Calc { px, pct } => Some(px + pct * vh),
-                DimensionValue::Auto => None,
+                // An intrinsic keyword lays out as `auto` (#626), so it
+                // constrains nothing here either.
+                DimensionValue::Auto | DimensionValue::Intrinsic(_) => None,
             }
         };
         if let Some(max_h) = resolve(&node.computed_style.max_height) {

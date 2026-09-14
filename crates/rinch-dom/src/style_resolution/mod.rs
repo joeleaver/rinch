@@ -634,7 +634,7 @@ impl RinchDocument {
             // than as a text child, so nothing else gives it a content height —
             // without this it collapses to a single line regardless of `rows`.
             // The HTML default is 2 rows.
-            if node.tag() == Some("textarea") && new_style.height.is_auto() {
+            if node.tag() == Some("textarea") && new_style.height.lays_out_as_auto() {
                 let rows = node
                     .attributes
                     .get("rows")
@@ -669,7 +669,7 @@ impl RinchDocument {
             // too). The text width is estimated from the label length rather than
             // measured with Parley (not available at style-resolution time) —
             // erring wide is harmless since the painter clips to the content box.
-            if node.tag() == Some("select") && new_style.width.is_auto() {
+            if node.tag() == Some("select") && new_style.width.lays_out_as_auto() {
                 let model = crate::select::resolve_select_model(&self.tree, node_id);
                 let widest = model
                     .options
