@@ -2516,6 +2516,65 @@ layout is still styled by that same entry. Entering the document is what styles 
 node, through `recompute_node_styles_recursive`, which every insertion route ends
 in (`append_child`, `insert_before`, `insert_child`, `replace_node`).
 
+**A subtree that leaves the document loses its before-change style** (#699) —
+the same rule as above, read from the other end. A node styled while it was
+*connected*, then detached, used to keep `has_been_styled` **and** the
+`computed_style` it had in the document; so if an ancestor's class changed while
+it was out, its re-insertion resolved to a different value, the cascade read
+old ≠ new on an already-styled node, and the box **animated in from a style the
+user never saw**. `RinchDocument::detach_subtree_styles` now clears the flag and
+cancels any running transition **and animation** for the **whole removed
+subtree**. Cancelling the transition is not optional — `tick_transitions` walks
+`tree.active_transitions`, not the document, so one left behind would go on
+writing interpolated values straight through the re-insertion. Cancelling the
+*animation* is a separate repair riding along: an animation has no declared
+duration to expire, and the desktop shell keeps asking for frames while
+`tree.active_animations` is non-empty, so a `Loader` removed through a route
+without `NodeHandle::clear_animations` kept an app rendering forever.
+
+**Five places in `dom_impl/dom_document_impl.rs` write `parent = None`; four
+call the helper.** `remove_node` (every reactive removal funnels through
+`NodeHandle::remove`), `remove_child` (plus `RenderScope`'s batched
+`DomUpdate::RemoveChild`), `replace_node`'s displaced `old`, and —
+least obviously — **`set_text_content` on an element with children**, which
+orphans every one of them without freeing the slab, so a handle the app still
+holds stays alive and styled. That fourth one was missed on the first pass, when
+this paragraph said "the three routes"; it is the count to re-check against
+`grep -n '\.parent = None'` if a sixth ever appears, because an unhooked one is
+silent. The fifth is `set_inner_html`, safe by **destruction** rather than
+reset — it calls `NodeTree::remove_subtree`, which frees the entries and drops
+both animation maps with them.
+
+Three things it deliberately does not do.
+
+- **It does not clear `computed_style` or `text_layout`.** A detached node still
+  reads back as it last did in the document (above), and the re-insertion's own
+  staleness gates compare against that same style to decide whether to re-shape
+  the text (#654, #661, #678). The flag is what the transition reads; the value
+  is what everything else reads.
+- **A move is not a detach.** `append_child`, `insert_before` and `insert_child`
+  unlink a node from its old parent with the same lines `remove_child` uses, but
+  it is back in the document before the call returns — so a row that was
+  mid-transition when a keyed `for` reordered the list goes on transitioning
+  (`insert_after` is how a reorder moves rows). The one shape that *does* leave
+  under a move — appending a mounted node into a **detached** parent — is not
+  covered: **#702**.
+- **`display: none` is not a detach**, and rinch still starts a transition for a
+  style change made while an element is hidden, where css-transitions-1 §3 starts
+  none for an element that is not being rendered: **#703**.
+
+Worth knowing about the reactive helpers: `show_dom`, `match_dom` and
+`for_each_dom_typed` call `NodeHandle::clear_animations()` before `remove()`
+(all but `for_each_dom_typed`'s `Changed` arm, which re-renders a row in place
+and does not — no exposure, the node is replaced, but the sentence is not a
+universal),
+which stamps a literal inline `transition: none; animation: none` over the whole
+subtree and **never takes it off again** — so a branch hidden once can never
+transition again, for any reason. That is a bigger hammer than #699's and a
+defect of its own (**#704**), and it is why #699's fixtures drive the
+`DomDocument` API directly: through one of those helpers, removing the whole fix
+changes nothing.
+
 ### Native Control Flow (if / for / match)
 
 The `rsx!` macro supports native Rust control flow. All control flow is **always reactive** — conditions, iterators, and scrutinees are automatically wrapped in closures and tracked by Effects.
