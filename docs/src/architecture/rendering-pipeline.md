@@ -263,12 +263,28 @@ optimisations.
 **Neither an ancestor's culling nor its elision can remove a `position: fixed` descendant.** A
 fixed box is painted in viewport space, from the sequence of its nearest stacking-context
 ancestor, so *that ancestor's* box says nothing about whether the fixed box is on screen — an
-off-window clipping stacking context is therefore not pruned, and a clip whose subtree holds a
+off-window stacking context holding one is therefore not pruned, and a clip whose subtree holds a
 fixed box is never elided. Note the shape of that claim: it is about what an ancestor may
 conclude, not about the fixed box itself. A fixed box is culled and elided on its own terms like
 any other — one covering the window has its own clip elided, one 600px below the window is
 culled — and both are correct, because in viewport space its own rect is the whole truth about
 where it lands.
+
+**How an ancestor knows: it measures the subtree, it does not read the node's category.** The
+cull asks `layer_bounds::subtree_is_entirely_outside` — the same walk that sizes an opacity
+layer — and prunes a stacking context only on a *definite* extent that misses the render target.
+Every not-knowing means paint in full: a `position: fixed` descendant (which is what keeps the
+paragraph above true, by construction), a `position: sticky` one (paint places it by an ancestor
+walk the subtree does not contain), a `position: absolute` one that would escape a clip below its
+containing block (#550), the walk's visit budget, and its depth cap.
+
+The cull used to answer the syntactic question instead — decline for *every* stacking context
+with children — and that was correct and expensive: an `opacity: 0.5` sheet parked below the fold
+allocated, filled and composited a whole-surface pixmap every frame, 26.7ms against 0.8ms on
+three of them at 1080x2460 (#562). Narrowing it to stacking contexts that *also* clip is the
+obvious repair and is **wrong**: the skip-draw-and-recurse arm it hands the rest to runs before
+any layer is pushed, so the sheet's fixed descendant came back unfaded, with the whole suite
+green. Measuring the subtree is what makes the cheap answer and the correct answer the same one.
 
 **And the cull tests a box's layout rect against the window grown by a margin**, not against the
 window itself, because a `box-shadow`, an `outline` or a text run wider than its own box all put

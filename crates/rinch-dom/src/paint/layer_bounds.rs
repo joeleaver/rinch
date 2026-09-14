@@ -1,4 +1,4 @@
-//! How far a subtree reaches, for the two questions that need to know.
+//! How far a subtree reaches, for the three questions that need to know.
 //!
 //! [`opacity_layer_bounds`] is the original one — how large a layer has to be
 //! so that it does not cut off what it composites — and everything below is
@@ -8,6 +8,17 @@
 //! here rather than in `paint/mod.rs` for the reason **Mirroring, not
 //! re-deriving** gives below, and because the version that lived there got the
 //! IFC content origin wrong — see that function's own doc.
+//!
+//! [`subtree_is_entirely_outside`] is the third (#562): the off-window cull
+//! wants to skip a stacking context, and a stacking context's own box is not
+//! evidence about a `position: fixed` descendant painted in viewport space. It
+//! is the same walk again, asked whether the answer can be acted on at all —
+//! so it returns a *decision* rather than a rect, and every not-knowing below
+//! answers "no". **It is also the one caller for which an under-measure is not
+//! a GPU-only cost**: the other two hand their answer to `push_layer`, where
+//! too small loses content on the Vello path; this one hands it to a `return`,
+//! where too small loses content everywhere. That is why it is the only caller
+//! that refuses #550's hole — see the end of **The mirror has a hole**.
 //!
 //! An element with `opacity < 1` is composited through a group layer, and every
 //! `push_layer` in this crate is handed a *bounds* shape along with the opacity.
@@ -152,11 +163,22 @@
 //! - **`position: fixed`** — chain truncated to nothing. Handled, by `Escapes`.
 //! - **`position: absolute`** — chain truncated at its containing block, so it
 //!   escapes any clipper *below* that block while remaining clipped by the ones
-//!   above. **Not handled**: this walk still narrows an absolute at every
-//!   clipping ancestor, so a layer holding one can come back too small in the
-//!   same way. It is pre-existing rather than new, it needs a *partial* escape
-//!   that `Escapes` cannot express, and it is filed as **#550** — named here so
-//!   the gap is visible instead of latent.
+//!   above. **Not handled for the two bounds callers**: they still narrow an
+//!   absolute at every clipping ancestor, so a layer holding one can come back
+//!   too small in the same way. It is pre-existing rather than new, it needs a
+//!   *partial* escape that `Escapes` cannot express, and it is filed as
+//!   **#550** — named here so the gap is visible instead of latent.
+//!
+//!   [`subtree_is_entirely_outside`] sets [`Walk::absolutes_escape_clips`] and
+//!   does not accept it, because for a cull the same under-measure deletes a
+//!   box rather than clipping a layer. It does not *close* #550 either: it
+//!   answers `Escapes` for an absolute whenever [`Walk::clipper_below_cb`] says
+//!   there is a clip in scope it would escape, which is a whole escape where a
+//!   partial one would be exact. That costs an unpruned subtree and never a
+//!   lost box, which is the direction **The one rule** asks for. Turning the
+//!   same flag on for the bounds callers would close #550 for them too, at the
+//!   price of [`UNBOUNDED`] on every layer holding such an absolute; that is a
+//!   GPU trade nobody has measured, so it stays off there.
 //! - **`position: sticky`** takes the **full** chain and is correctly not one of
 //!   them; its `Unknown` is about coordinates, not clipping, and narrowing it is
 //!   right.
@@ -186,6 +208,18 @@ pub const UNBOUNDED: Rect = Rect::new(-1e7, -1e7, 1e7, 1e7);
 /// This runs once per frame per translucent element, on a phone, in a frame
 /// budget of 8.3ms — cards K42 and K43 spent a lot of effort getting this app
 /// to 120fps on a moto g stylus 5G and this must not be where it goes back.
+///
+/// Since #562 it also runs once per off-window stacking context the cull is
+/// deciding about. **That is not free, and it is not always a saving either.**
+/// On a definite answer the walk replaces the paint of a whole subtree, which
+/// is the case it is for. On a *not-knowing* it is paid on top: the walk runs,
+/// answers [`Extent::Unknown`] or [`Extent::Escapes`], and the subtree is
+/// painted in full anyway. Measured on the adverse shape — 60 off-window
+/// `opacity: 0.99` stacking contexts, each 200 plain children with a
+/// `position: sticky` box **last**, so the sibling loop measures all of them —
+/// that is 12,000 extra visits a frame, and it lands below the noise floor
+/// either way: 1.165 → 0.943ms against a no-op painter, 555.5 → 558.3ms with
+/// `TinySkiaPainter`. The cap below is what keeps it there.
 ///
 /// Measured on the developer laptop, in release, the walk costs about 20ns a
 /// node and allocates nothing: a 181-node subtree of rows, cells and labels —
@@ -380,6 +414,8 @@ pub fn opacity_layer_bounds(
         scale,
         budget: MAX_VISITS,
         skip_root_clip: false,
+        absolutes_escape_clips: false,
+        clipper_below_cb: false,
     };
     match walk.node(node_id, offset_x, offset_y, Affine::IDENTITY, true, 0) {
         // A zero-area answer is not worth trusting even when it is arrived at
@@ -452,6 +488,8 @@ pub(super) fn clip_cuts_nothing(
         scale,
         budget: MAX_VISITS,
         skip_root_clip: true,
+        absolutes_escape_clips: false,
+        clipper_below_cb: false,
     };
     match walk.node(node_id, offset_x, offset_y, Affine::IDENTITY, true, 0) {
         // Half a device pixel of slack, matching the tolerance every other
@@ -471,6 +509,83 @@ pub(super) fn clip_cuts_nothing(
         // `Unknown` (a sticky descendant) and `Escapes` (a fixed one, the visit
         // budget, `MAX_DEPTH`) are both "I could not place it", and a clip is
         // never elided on a not-knowing.
+        Extent::Unknown | Extent::Escapes => false,
+    }
+}
+
+/// Is everything this subtree paints **certainly** outside the region
+/// `region_hits` describes?
+///
+/// The off-window cull's question (#562), and it is deliberately not spelled as
+/// a rect: only a `true` from this may be acted on, so the not-knowing states
+/// have to be answered here rather than smuggled out as [`UNBOUNDED`] and
+/// re-decided by a caller. `false` means "it might reach the region, or I could
+/// not tell", which is the answer for [`Extent::Unknown`] (a sticky descendant
+/// whose position comes from an ancestor walk), [`Extent::Escapes`] (a
+/// `position: fixed` descendant, the visit budget, `MAX_DEPTH`) and for a root
+/// this walk cannot find.
+///
+/// `transform` is the node's composed CSS transform, exactly as `paint_node`
+/// hands it to the painter: this walk answers in the node's own untransformed
+/// space (see [`opacity_layer_bounds`]), and the region is in screen space.
+///
+/// # Why the cull cannot ask a syntactic question instead
+///
+/// `paint_node` used to decline the shortcut for every stacking context with
+/// children, on the grounds that one may own a hoisted `position: fixed` entry
+/// painted in viewport space — where its own box says nothing about whether it
+/// is on screen (#561). That is correct and very expensive: an `opacity < 1`
+/// stacking context parked below the fold then allocates, fills and composites
+/// a whole-surface pixmap every frame for a picture nobody sees.
+///
+/// The narrowing proposed for it — decline only for a stacking context that
+/// *also* clips — is **not** lossless, measured: the skip-draw-and-recurse arm
+/// it hands the non-clipping ones to sits before every `push_layer` in
+/// `paint_node`, so an off-window `opacity: 0.5` sheet's on-screen fixed
+/// descendant came back at full strength instead of half. Asking *whether*
+/// something is painted was never the question; asking what the subtree paints,
+/// and where, is.
+pub(super) fn subtree_is_entirely_outside(
+    tree: &NodeTree,
+    node_id: RawNodeId,
+    scale: f64,
+    x: f64,
+    y: f64,
+    transform: Affine,
+    region_hits: impl Fn(Rect) -> bool,
+) -> bool {
+    let Some(node) = tree.get(node_id) else {
+        return false;
+    };
+    let offset_x = x - node.layout.x as f64 * scale;
+    let offset_y = y - node.layout.y as f64 * scale;
+
+    let mut walk = Walk {
+        tree,
+        scale,
+        budget: MAX_VISITS,
+        skip_root_clip: false,
+        absolutes_escape_clips: true,
+        clipper_below_cb: false,
+    };
+    match walk.node(node_id, offset_x, offset_y, Affine::IDENTITY, true, 0) {
+        Extent::Within(r) => !region_hits(transform.transform_rect_bbox(r)),
+        // Paint draws nothing at all in here, so it certainly draws nothing in
+        // the region. It is the honest arm and not a fall-through, and it is
+        // unreachable from the one caller — but **not** because the walk unions
+        // the root's own box onto every answer, which it does not: the four
+        // early exits below (the tag list, `estimated_height`, `opacity <= 0.0`,
+        // `display: none`) return `Nothing` above that union, and the zero-area
+        // branch returns the children's extent with no root box on it at all.
+        //
+        // The reason is on the caller's side. `paint_node` makes those same four
+        // refusals, and takes its own zero-area branch, *above* the cull — so a
+        // node that would answer `Nothing` for any of those five reasons has
+        // already returned and never reaches this call. Worth stating precisely
+        // rather than plausibly: the wrong reason is the one a future editor
+        // would re-check when adding a fifth exit to `Walk::node`, and it would
+        // tell them the union covers it.
+        Extent::Nothing => true,
         Extent::Unknown | Extent::Escapes => false,
     }
 }
@@ -499,6 +614,29 @@ struct Walk<'a> {
     /// that function working and being vacuous. See its doc comment.
     /// Descendants' clips always apply, in both callers.
     skip_root_clip: bool,
+    /// Answer [`Extent::Escapes`] for a `position: absolute` descendant that
+    /// this walk would narrow by a clip paint does not apply to it — **#550's
+    /// hole, closed for the one caller that cannot survive it**.
+    ///
+    /// Only [`subtree_is_entirely_outside`] sets this, and the asymmetry is
+    /// deliberate rather than an oversight. The two older callers hand their
+    /// answer to `push_layer` as *bounds*, where an under-measure costs content
+    /// on the Vello path only; the cull hands it to a `return`, where an
+    /// under-measure costs content on **every** path. The direction of the
+    /// error is the same in both — see **The one rule** — but the price is not,
+    /// and turning this on for the bounds callers would enlarge every layer
+    /// holding an absolute to [`UNBOUNDED`]. That is a GPU cost to weigh
+    /// against #550's benefit, and it is not this flag's job to decide it.
+    absolutes_escape_clips: bool,
+    /// Whether a clipping ancestor sits **strictly below** the nearest ancestor
+    /// that establishes a containing block for absolutes — i.e. whether there
+    /// is a clip in scope that an absolute found here would escape.
+    ///
+    /// Mirrors [`crate::stacking::Collector`]'s `cb_depth`, which is the
+    /// authority: an absolute's clip chain is `live[..cb_depth]`, counted
+    /// *after* the containing block's own clip is pushed, so that block's clip
+    /// is in the chain and every clip inside it is not.
+    clipper_below_cb: bool,
 }
 
 impl Walk<'_> {
@@ -584,7 +722,11 @@ impl Walk<'_> {
         //   by the exit below anyway, and a `position: fixed` box inside a
         //   virtualized editor block is not something the editor model can
         //   produce. If either ever becomes reachable, the answer is `Escapes`,
-        //   for exactly the reason the give-up guard above returns it.
+        //   for exactly the reason the give-up guard above returns it — and
+        //   since #562 that is worth more than it was: a `Nothing` this walk
+        //   should not have given used to shrink an opacity layer on the Vello
+        //   path, and now also lets the off-window cull `return` on a subtree
+        //   with something painted in it, on every backend.
         if let NodeKind::Element(ref el) = node.kind
             && matches!(
                 el.tag.as_str(),
@@ -636,6 +778,30 @@ impl Walk<'_> {
             if cs.position == PositionValue::Fixed {
                 return Extent::Escapes;
             }
+            // `position: absolute` escapes the clippers **below its containing
+            // block** — `Collector::span` truncates its chain at `cb_depth` —
+            // while this walk narrows it at every clipping ancestor it descends
+            // through. That is #550, named in the module doc as a known hole,
+            // and it is the one hole a *cull* cannot live with: an under-measure
+            // here does not shrink a layer, it deletes a box on every backend.
+            //
+            // The narrowing is only wrong when there is something to escape, so
+            // the answer is conditioned on that rather than blanket: with no
+            // clipper in scope below the containing block, the ordinary descent
+            // places the box exactly where paint does and the extent is honest.
+            // A sheet holding an absolutely positioned close button — the shape
+            // this cull is for — therefore still prunes.
+            //
+            // A *partial* escape (clipped by the chain above the containing
+            // block, not by the clips below it) is what would be exactly right,
+            // and is what `Extent::Escapes` cannot express; this is the
+            // conservative whole-escape instead.
+            if self.absolutes_escape_clips
+                && self.clipper_below_cb
+                && cs.position == PositionValue::Absolute
+            {
+                return Extent::Escapes;
+            }
             // `position: sticky` is painted at a position `paint_node` derives
             // by walking *up* to the nearest scroll ancestor — which may well be
             // above the element this layer belongs to. The subtree alone does not
@@ -662,7 +828,14 @@ impl Walk<'_> {
             // in the grandparent's space, so paint recurses with the offsets and
             // transform it was given, unchanged.
             if cs.display == DisplayValue::Contents {
-                return self.children(node, offset_x, offset_y, parent_transform, depth);
+                return self.scoped_children(
+                    node,
+                    offset_x,
+                    offset_y,
+                    parent_transform,
+                    depth,
+                    is_root,
+                );
             }
 
             // A box collapsed to zero in one dimension still keeps its origin
@@ -680,7 +853,14 @@ impl Walk<'_> {
             // the only branch of which that is true. The module doc's safety
             // property is stated with this exception; see "The one rule".
             let transform = self.own_transform(node, x, y, parent_transform, is_root);
-            return self.children(node, x - scroll.x, y - scroll.y, transform, depth);
+            return self.scoped_children(
+                node,
+                x - scroll.x,
+                y - scroll.y,
+                transform,
+                depth,
+                is_root,
+            );
         }
 
         let x = offset_x + layout.x as f64 * self.scale;
@@ -772,7 +952,8 @@ impl Walk<'_> {
             ));
         }
 
-        let mut children = self.children(node, x - scroll.x, y - scroll.y, transform, depth);
+        let mut children =
+            self.scoped_children(node, x - scroll.x, y - scroll.y, transform, depth, is_root);
 
         // Where the subtree is genuinely clipped, the bounds shrink. The
         // predicate has to be the one `paint_node` opens its clip bracket with
@@ -800,6 +981,41 @@ impl Walk<'_> {
         }
 
         extent.union(children)
+    }
+
+    /// [`Self::children`] with [`Self::clipper_below_cb`] updated for this node
+    /// and restored afterwards — the walk's half of `Collector::descend`.
+    ///
+    /// Three answers, and the order of the arms is the whole of it:
+    ///
+    /// - **The root: `false`.** The root of this walk is the stacking context
+    ///   that collects the sequence its absolutes are entries of, and paint
+    ///   opens the collecting root's own clip bracket around that whole
+    ///   sequence (#549) — so the root's clip is one no absolute inside escapes,
+    ///   whether or not the root establishes their containing block.
+    /// - **A node that establishes a containing block: `false`.** `cb_depth` is
+    ///   counted *after* that node's own clip is pushed, so its clip is in the
+    ///   chain and nothing is escaped yet.
+    /// - **A node that clips and does not: `true`**, and it stays true for the
+    ///   rest of the descent until a containing block clears it.
+    fn scoped_children(
+        &mut self,
+        node: &Node,
+        offset_x: f64,
+        offset_y: f64,
+        transform: Affine,
+        depth: u32,
+        is_root: bool,
+    ) -> Extent {
+        let outer = self.clipper_below_cb;
+        self.clipper_below_cb = if is_root || node.establishes_abs_containing_block() {
+            false
+        } else {
+            outer || node.clips_overflow()
+        };
+        let extent = self.children(node, offset_x, offset_y, transform, depth);
+        self.clipper_below_cb = outer;
+        extent
     }
 
     /// Every child `paint_node` would descend into, at the offsets it would use.

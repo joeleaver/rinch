@@ -418,3 +418,558 @@ fn paint_subtree_does_not_cull_against_the_last_frames_window() {
          used has nothing to do with the pixmap this one draws into"
     );
 }
+
+// ---------------------------------------------------------------------------
+// #562: the prune is gated on what the subtree PAINTS, not on the node's box.
+// ---------------------------------------------------------------------------
+
+/// A painter that draws nothing and counts the group layers it is asked for.
+///
+/// The pixel oracles below can prove an off-window sheet is invisible; they
+/// cannot prove it was *cheap*, because a layer that is composited back with
+/// nothing on screen in it leaves no pixel either way. In the software painter
+/// a `push_layer` is a whole-surface pixmap allocated, filled and composited —
+/// the entire cost #562 is about — so counting the pushes is the only place the
+/// difference is observable.
+#[derive(Default)]
+struct Layers {
+    layers: usize,
+    pops: usize,
+}
+
+impl rinch_dom::paint::painter::Painter for Layers {
+    fn reset(&mut self) {
+        self.layers = 0;
+        self.pops = 0;
+    }
+    fn fill(
+        &mut self,
+        _: peniko::Fill,
+        _: peniko::kurbo::Affine,
+        _: &Brush,
+        _: &rinch_dom::paint::painter::PaintShape,
+    ) {
+    }
+    fn stroke(
+        &mut self,
+        _: &peniko::kurbo::Stroke,
+        _: peniko::kurbo::Affine,
+        _: &Brush,
+        _: &rinch_dom::paint::painter::PaintShape,
+    ) {
+    }
+    #[allow(clippy::too_many_arguments)]
+    fn draw_glyphs(
+        &mut self,
+        _: &peniko::FontData,
+        _: f32,
+        _: peniko::kurbo::Affine,
+        _: Option<peniko::kurbo::Affine>,
+        _: &Brush,
+        _: bool,
+        _: &[i16],
+        _: &[rinch_dom::paint::painter::PaintGlyph],
+    ) {
+    }
+    fn draw_image(
+        &mut self,
+        _: &rinch_dom::paint::painter::PaintImage<'_>,
+        _: peniko::kurbo::Affine,
+    ) {
+    }
+    fn push_clip(
+        &mut self,
+        _: peniko::Fill,
+        _: peniko::kurbo::Affine,
+        _: &rinch_dom::paint::painter::PaintShape,
+    ) {
+    }
+    fn push_layer(
+        &mut self,
+        _: rinch_dom::paint::painter::BlendMode,
+        _: f32,
+        _: peniko::kurbo::Affine,
+        _: &rinch_dom::paint::painter::PaintShape,
+    ) {
+        self.layers += 1;
+    }
+    fn pop_layer(&mut self) {
+        self.pops += 1;
+    }
+}
+
+fn count_layers(doc: &mut RinchDocument) -> Layers {
+    let mut p = Layers::default();
+    let mut layout_cx: parley::LayoutContext<Brush> = parley::LayoutContext::new();
+    rinch_dom::paint::paint_document(
+        &doc.tree,
+        &mut p,
+        1.0,
+        (VW, VH),
+        &mut doc.font_cx,
+        &mut layout_cx,
+    );
+    p
+}
+
+/// A full-screen translucent sheet parked below the fold, holding ordinary
+/// in-flow content — the shape #562 was filed for.
+fn off_window_sheet(doc: &mut RinchDocument, sheet_style: &str) {
+    let body = doc.body();
+    let sheet = doc.create_element("div");
+    doc.set_attribute(sheet, "style", sheet_style);
+    doc.append_child(body, sheet);
+    let row = doc.create_element("div");
+    doc.set_attribute(
+        row,
+        "style",
+        "width: 400px; height: 200px; background-color: rgb(255, 0, 0)",
+    );
+    doc.append_child(sheet, row);
+}
+
+/// **The regression #562 reports, and it is a count because it cannot be a
+/// pixel.** An `opacity: 0.5` sheet parked below the fold has nothing hoisted
+/// in it and nothing that paints anywhere but inside its own off-window box,
+/// so the whole subtree is skipped — and the skip has to happen *before* the
+/// group layer is opened, or it has saved nothing at all.
+///
+/// A pixel oracle cannot see this. The sheet's own children are off-window too,
+/// so the inner per-node cull already discards each of them and the composited
+/// layer comes back empty either way: a 400x3400 pixmap sampled at the sheet's
+/// own address reads 0 ink with the prune and 0 ink without it. What the prune
+/// actually saves is the layer itself, which in the software painter is a
+/// whole-surface pixmap allocated, filled and composited back — 26.7ms against
+/// 0.8ms on three such sheets at 1080x2460. `push_layer` is the only place that
+/// is observable.
+#[test]
+fn an_off_window_opacity_sheet_opens_no_group_layer() {
+    let mut doc = RinchDocument::new();
+    off_window_sheet(
+        &mut doc,
+        "position: absolute; left: 0px; top: 3000px; width: 400px; height: 300px; \
+         opacity: 0.5",
+    );
+    doc.resolve_layout(VW, VH);
+    let counted = count_layers(&mut doc);
+    assert_eq!(
+        (counted.layers, counted.pops),
+        (0, 0),
+        "the sheet is pruned before its opacity layer is pushed"
+    );
+}
+
+/// The control for the pair above, and what stops "never open a layer" from
+/// passing them: the very same sheet **on** the window still composites.
+#[test]
+fn an_on_window_opacity_sheet_still_opens_its_group_layer() {
+    let mut doc = RinchDocument::new();
+    off_window_sheet(
+        &mut doc,
+        "position: absolute; left: 0px; top: 0px; width: 400px; height: 300px; \
+         opacity: 0.5",
+    );
+    doc.resolve_layout(VW, VH);
+    let counted = count_layers(&mut doc);
+    assert_eq!(
+        (counted.layers, counted.pops),
+        (1, 1),
+        "an on-window translucent sheet is composited as it always was"
+    );
+}
+
+/// **The counterexample that killed #562's own proposal.** An off-window
+/// **non-clipping** `opacity: 0.5` stacking context owning an on-screen fixed
+/// box: the fixed box is painted *inside* that group layer, so it must come out
+/// at the sheet's opacity and not at full strength.
+///
+/// Asserting the **alpha** and not merely the presence is the whole point.
+/// #562's proposed `clips_overflow()` narrowing sends this node down the
+/// skip-draw-and-recurse arm, which sits before every `push_layer` in the
+/// function: the box still paints, at `[0, 200, 0, 255]` instead of
+/// `[0, 100, 0, 128]`. Every one of the 1017 tests in this crate stayed green
+/// for it.
+#[test]
+fn an_off_window_opacity_layer_keeps_its_fixed_descendant_faded() {
+    let mut doc = RinchDocument::new();
+    let body = doc.body();
+
+    let sheet = doc.create_element("div");
+    doc.set_attribute(
+        sheet,
+        "style",
+        "position: absolute; left: 0px; top: 3000px; width: 200px; height: 200px; \
+         opacity: 0.5",
+    );
+    doc.append_child(body, sheet);
+
+    let fixed = doc.create_element("div");
+    doc.set_attribute(
+        fixed,
+        "style",
+        "position: fixed; left: 100px; top: 60px; width: 120px; height: 100px; \
+         background-color: rgb(0, 200, 0)",
+    );
+    doc.append_child(sheet, fixed);
+
+    doc.resolve_layout(VW, VH);
+    let mut p = painter(1.0);
+    paint(&mut doc, &mut p, 1.0);
+
+    assert_eq!(
+        pixel_at(&p, 150, 100),
+        [0, 100, 0, 128],
+        "the fixed box is painted through its owner's opacity layer, and the \
+         owner's own box being off-window says nothing about either"
+    );
+}
+
+/// The same, with the fixed box **two levels down**, so the answer has to come
+/// from a walk of the subtree rather than from a glance at the direct children.
+#[test]
+fn a_fixed_box_nested_inside_an_off_window_stacking_context_still_paints() {
+    let mut doc = RinchDocument::new();
+    let body = doc.body();
+
+    let sheet = doc.create_element("div");
+    doc.set_attribute(
+        sheet,
+        "style",
+        "position: absolute; left: 0px; top: 3000px; width: 200px; height: 200px; \
+         opacity: 0.5",
+    );
+    doc.append_child(body, sheet);
+
+    let mid = doc.create_element("div");
+    doc.set_attribute(mid, "style", "width: 200px; height: 50px");
+    doc.append_child(sheet, mid);
+
+    let inner = doc.create_element("div");
+    doc.set_attribute(inner, "style", "width: 200px; height: 50px");
+    doc.append_child(mid, inner);
+
+    let fixed = doc.create_element("div");
+    doc.set_attribute(
+        fixed,
+        "style",
+        "position: fixed; left: 100px; top: 60px; width: 120px; height: 100px; \
+         background-color: rgb(0, 200, 0)",
+    );
+    doc.append_child(inner, fixed);
+
+    doc.resolve_layout(VW, VH);
+    let mut p = painter(1.0);
+    paint(&mut doc, &mut p, 1.0);
+
+    assert_eq!(
+        pixel_at(&p, 150, 100),
+        [0, 100, 0, 128],
+        "a fixed box two levels inside an off-window stacking context is still \
+         painted, and still faded"
+    );
+}
+
+/// **The extent is what is asked, not the box.** An off-window stacking context
+/// whose ordinary in-flow child reaches back onto the window — here by a
+/// negative margin — paints that child.
+///
+/// The node's own border box is off-window in both this fixture and the pruned
+/// one above, so a gate that reads the box alone cannot tell them apart.
+#[test]
+fn an_off_window_stacking_context_whose_child_reaches_the_window_is_not_pruned() {
+    let mut doc = RinchDocument::new();
+    let body = doc.body();
+
+    let sheet = doc.create_element("div");
+    doc.set_attribute(
+        sheet,
+        "style",
+        "position: absolute; left: 0px; top: 3000px; width: 200px; height: 200px; \
+         opacity: 0.5",
+    );
+    doc.append_child(body, sheet);
+
+    let reaching = doc.create_element("div");
+    doc.set_attribute(
+        reaching,
+        "style",
+        "margin-top: -2940px; margin-left: 40px; width: 120px; height: 100px; \
+         background-color: rgb(0, 200, 0)",
+    );
+    doc.append_child(sheet, reaching);
+
+    doc.resolve_layout(VW, VH);
+    let mut p = painter(1.0);
+    paint(&mut doc, &mut p, 1.0);
+
+    assert_eq!(
+        pixel_at(&p, 100, 100),
+        [0, 100, 0, 128],
+        "the child paints on the window, so the subtree that owns it is not \
+         off-window whatever its own box says"
+    );
+}
+
+/// **#550's hole, as a cull.** `stacking::Collector::span` truncates an
+/// absolute's clip chain at its containing block, so an absolute escapes any
+/// clipper *below* that block — while a subtree walk narrows it at every
+/// clipping ancestor it descends through. A prune keyed on an under-measured
+/// extent would discard this on-screen box.
+///
+/// The shape: an off-window positioned stacking context (the containing block),
+/// a **static** `overflow: hidden` box inside it (not in the absolute's chain),
+/// and an absolute a level below *that*, placed back on the window.
+#[test]
+fn an_absolute_escaping_a_clipper_below_its_containing_block_survives_the_cull() {
+    let mut doc = RinchDocument::new();
+    let body = doc.body();
+
+    let context = doc.create_element("div");
+    doc.set_attribute(
+        context,
+        "style",
+        "position: absolute; left: 0px; top: 3000px; width: 200px; height: 200px; \
+         z-index: 3",
+    );
+    doc.append_child(body, context);
+
+    let clipper = doc.create_element("div");
+    doc.set_attribute(
+        clipper,
+        "style",
+        "width: 200px; height: 40px; overflow: hidden",
+    );
+    doc.append_child(context, clipper);
+
+    // One level between the clipper and the absolute, so the clip has to be
+    // carried *down* the descent rather than noticed at the parent.
+    let inner = doc.create_element("div");
+    doc.set_attribute(inner, "style", "width: 200px");
+    doc.append_child(clipper, inner);
+
+    let escaping = doc.create_element("div");
+    doc.set_attribute(
+        escaping,
+        "style",
+        "position: absolute; left: 40px; top: -2940px; width: 120px; height: 100px; \
+         background-color: rgb(0, 200, 0)",
+    );
+    doc.append_child(inner, escaping);
+
+    doc.resolve_layout(VW, VH);
+    let mut p = painter(1.0);
+    paint(&mut doc, &mut p, 1.0);
+
+    assert_eq!(
+        ink(&p, 45, 155, 65, 155),
+        110 * 90,
+        "paint does not clip this absolute by a static clipper below its \
+         containing block, so nothing that measures the subtree may assume it \
+         is bounded by one"
+    );
+}
+
+/// **The other not-knowing, and it is not `Escapes`.** `paint_node` places a
+/// `position: sticky` box by walking *up* to its nearest scroll ancestor, which
+/// may be above the subtree being measured — so a walk of the subtree alone
+/// cannot say where the box lands, and answers `Extent::Unknown`.
+///
+/// Here the stacking context is parked 500px above the window and its sticky
+/// child is painted at `y = 100`, on it. The large `top` is only what makes the
+/// divergence visible in a unit fixture; the mechanism is the ancestor walk,
+/// and a scrolled container reaches the same place with an ordinary `top: 0`.
+///
+/// A gate that treated `Unknown` as prunable — the obvious simplification,
+/// since `Extent::clipped_to` narrows it happily everywhere else — deletes this
+/// box.
+#[test]
+fn an_off_window_stacking_context_with_a_sticky_descendant_is_not_pruned() {
+    let mut doc = RinchDocument::new();
+    let body = doc.body();
+
+    let sheet = doc.create_element("div");
+    doc.set_attribute(
+        sheet,
+        "style",
+        "position: absolute; left: 0px; top: -500px; width: 200px; height: 200px; \
+         opacity: 0.5",
+    );
+    doc.append_child(body, sheet);
+
+    let stuck = doc.create_element("div");
+    doc.set_attribute(
+        stuck,
+        "style",
+        "position: sticky; top: 600px; margin-left: 40px; width: 120px; height: 100px; \
+         background-color: rgb(0, 200, 0)",
+    );
+    doc.append_child(sheet, stuck);
+
+    doc.resolve_layout(VW, VH);
+    let mut p = painter(1.0);
+    paint(&mut doc, &mut p, 1.0);
+
+    assert_eq!(
+        pixel_at(&p, 100, 150),
+        [0, 100, 0, 128],
+        "a sticky box is placed by an ancestor walk, so the subtree that holds \
+         it does not contain the answer and may not be pruned on one"
+    );
+}
+
+/// **The extent comes back in the node's own untransformed space**, like the
+/// bounds `layer_bounds` hands `push_layer`, so the cull has to apply the
+/// node's composed transform to it before comparing — exactly as the box test
+/// three lines above it already does (#143).
+///
+/// Both boxes here are off-window *after* the transform except the child, which
+/// the transform carries back to the top of the window. A comparison made in
+/// the wrong space finds the subtree at `y = 2000` and deletes it.
+#[test]
+fn the_subtree_extent_is_compared_in_screen_space_not_layout_space() {
+    let mut doc = RinchDocument::new();
+    let body = doc.body();
+
+    let sheet = doc.create_element("div");
+    doc.set_attribute(
+        sheet,
+        "style",
+        "position: absolute; left: 0px; top: 3000px; width: 200px; height: 200px; \
+         opacity: 0.5; transform: translateY(-2000px)",
+    );
+    doc.append_child(body, sheet);
+
+    let reaching = doc.create_element("div");
+    doc.set_attribute(
+        reaching,
+        "style",
+        "margin-top: -1000px; margin-left: 40px; width: 120px; height: 100px; \
+         background-color: rgb(0, 200, 0)",
+    );
+    doc.append_child(sheet, reaching);
+
+    doc.resolve_layout(VW, VH);
+    let mut p = painter(1.0);
+    paint(&mut doc, &mut p, 1.0);
+
+    assert_eq!(
+        pixel_at(&p, 100, 50),
+        [0, 100, 0, 128],
+        "the child lands at the top of the window once the sheet's transform is \
+         applied; a cull that compares the untransformed extent loses it"
+    );
+}
+
+/// M8's pin. The walk root clips and does NOT establish a containing block, so an
+/// absolute inside it has its containing block above the root and `Collector::span`
+/// gives its entry an EMPTY chain — #549 says paint's own bracket around the sequence
+/// clips it anyway, which is why `scoped_children` clears the flag at the root. The
+/// picture is identical either way; only the layer count can see it.
+#[test]
+fn a_clipping_non_containing_block_root_still_prunes() {
+    let mut doc = RinchDocument::new();
+    let body = doc.body();
+    let sheet = doc.create_element("div");
+    doc.set_attribute(
+        sheet,
+        "style",
+        "margin-top: 3000px; width: 200px; height: 200px; opacity: 0.5; overflow: hidden",
+    );
+    doc.append_child(body, sheet);
+    let a = doc.create_element("div");
+    doc.set_attribute(
+        a,
+        "style",
+        "position: absolute; left: 40px; top: -2950px; width: 120px; height: 100px; \
+         background-color: rgb(0, 200, 0)",
+    );
+    doc.append_child(sheet, a);
+    doc.resolve_layout(VW, VH);
+    let counted = count_layers(&mut doc);
+    assert_eq!(
+        (counted.layers, counted.pops),
+        (0, 0),
+        "the collecting root's own clip is one no absolute inside escapes (#549)"
+    );
+}
+
+/// The same tree, from the **paint** side: the absolute really is clipped away, so
+/// the prune above discards nothing that would have been seen.
+///
+/// This is the only place in the suite that checks #549's claim from that direction,
+/// and it is what stops the fixture above from being a pin on a bug — a prune whose
+/// justification is "paint would have clipped it" is only as good as paint doing so.
+#[test]
+fn the_absolute_that_root_prunes_was_clipped_away_anyway() {
+    let mut doc = RinchDocument::new();
+    let body = doc.body();
+    let sheet = doc.create_element("div");
+    // On the window this time, so the cull plays no part and paint's own bracket
+    // is the only thing that can remove the box.
+    doc.set_attribute(
+        sheet,
+        "style",
+        "margin-top: 0px; width: 200px; height: 200px; opacity: 0.5; overflow: hidden",
+    );
+    doc.append_child(body, sheet);
+    let a = doc.create_element("div");
+    doc.set_attribute(
+        a,
+        "style",
+        "position: absolute; left: 40px; top: 250px; width: 120px; height: 100px; \
+         background-color: rgb(0, 200, 0)",
+    );
+    doc.append_child(sheet, a);
+    doc.resolve_layout(VW, VH);
+    // Taller than the window, so the box's own address is addressable and the
+    // off-window cull is not what removes it: at `y` 250..350 it is inside the
+    // cull rect (the window's 300 plus the 64px ink margin), so the clip is.
+    let mut p = TinySkiaPainter::new(VW as u32, 400);
+    paint(&mut doc, &mut p, 1.0);
+    assert_eq!(
+        ink(&p, 45, 155, 255, 345),
+        0,
+        "an absolute below a clipping collecting root is clipped by that root's own \
+         bracket, whatever its entry's chain says"
+    );
+}
+
+/// M10's pin. A clipping ancestor that IS a containing block clears the flag, so a
+/// sheet whose absolutely positioned content is genuinely bounded still prunes.
+#[test]
+fn an_absolute_bounded_by_a_clipping_containing_block_still_prunes() {
+    let mut doc = RinchDocument::new();
+    let body = doc.body();
+    let sheet = doc.create_element("div");
+    doc.set_attribute(
+        sheet,
+        "style",
+        "position: absolute; left: 0px; top: 3000px; width: 200px; height: 200px; opacity: 0.5",
+    );
+    doc.append_child(body, sheet);
+    let cb = doc.create_element("div");
+    doc.set_attribute(
+        cb,
+        "style",
+        "position: relative; width: 200px; height: 40px; overflow: hidden",
+    );
+    doc.append_child(sheet, cb);
+    let inner = doc.create_element("div");
+    doc.set_attribute(inner, "style", "width: 200px");
+    doc.append_child(cb, inner);
+    let a = doc.create_element("div");
+    doc.set_attribute(
+        a,
+        "style",
+        "position: absolute; left: 4px; top: 4px; width: 20px; height: 20px; \
+         background-color: rgb(255, 0, 0)",
+    );
+    doc.append_child(inner, a);
+    doc.resolve_layout(VW, VH);
+    let counted = count_layers(&mut doc);
+    assert_eq!(
+        (counted.layers, counted.pops),
+        (0, 0),
+        "a clipping containing block bounds its absolutes, so the prune survives"
+    );
+}
