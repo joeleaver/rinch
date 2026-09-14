@@ -245,6 +245,37 @@ rsx! {
 }
 ```
 
+## CSS Selector Support (desktop)
+
+Desktop styling runs through Stylo, the same cascade engine Servo uses, so
+specificity, inheritance, custom properties and `@media` behave as you expect.
+The **selector** surface is narrower than a browser's, and the gaps are silent:
+an unsupported selector parses fine and then matches nothing, with no warning.
+On `rinch-web` the browser does its own matching, so everything below works
+there — which is exactly what makes a gap easy to miss.
+
+Measured on the desktop engine:
+
+| Selector | Desktop | Note |
+|---|---|---|
+| `tag`, `.class`, `#id`, `*` | works | `#id` was silently dropped before #675 |
+| descendant / `>` / `+` / `~` | works | |
+| `[attr]`, `[attr=v]`, `~=`, `\|=`, `^=`, `$=`, `*=` | works | |
+| `[attr=v i]` (case-insensitive flag) | **ignored** | the `i` is discarded, so the match stays case-sensitive |
+| `:hover`, `:active`, `:focus`, `:focus-visible` | works | |
+| `:enabled`, `:disabled`, `:checked` | works | form controls only, by design |
+| `:link`, `:any-link` | works | `<a>`/`<area>` with an `href` |
+| `:visited` | never matches | rinch tracks no history |
+| `:first-child`, `:nth-child()`, `:not()`, `:is()`, `:where()`, `:root`, `:empty` | works | handled by the selector engine itself |
+| `:has()` | **never matches** | parses, then matches nothing even when the subject is present |
+| `:required`, `:optional`, `:read-only`, `:read-write`, `:placeholder-shown`, `:indeterminate`, `:valid`, `:invalid`, `:default`, `:defined`, `:target`, `:focus-within`, `:fullscreen`, `:lang()` | **never match** | they parse, then fall through to a catch-all `false` |
+| `::before`, `::after` | works | |
+| camelCase SVG type selectors (`linearGradient`, `clipPath`) | **never match** | type selectors are lowercased as if every element were HTML |
+| Presentational attributes (`<img width=100>`, `<td bgcolor>`) | **no effect** | legacy-attribute hints are not synthesized |
+
+Reach for a class where the table says a selector does not match — that is the
+one spelling with no gap on either backend.
+
 ## Extending the Theme
 
 ### Scoped Overrides

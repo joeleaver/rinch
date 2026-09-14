@@ -608,9 +608,22 @@ impl<'a> TElement for RinchNode<'a> {
         false
     }
 
+    /// The interned `id`, or `None` — Stylo's key into the id bucket (#675).
+    ///
+    /// This is **not** the matcher. `SelectorMap::get_all_matching_rules`
+    /// consults `self.id_hash` behind `if let Some(id) = rule_hash_target.id()`
+    /// with no `else` branch, so a `None` here means an id-**bucketed** rule is
+    /// never even offered to this element and [`Element::has_id`] — the real
+    /// predicate, correct all along — never runs for one. It does still run for
+    /// an id on the ancestor side (`#a > p` is bucketed by `p`, offered anyway,
+    /// and matched correctly even before #675), which is the asymmetry that hid
+    /// the bug. `bloom.rs`'s `each_relevant_element_hash` and stylo's id
+    /// invalidation read this too, and both are dormant in rinch.
+    ///
+    /// The return type is a reference, which is why `Node` stores the atom
+    /// rather than interning per call the way [`Self::each_class`] does.
     fn id(&self) -> Option<&Atom> {
-        // TODO: Store parsed Atom for ID
-        None
+        self.node().id_atom()
     }
 
     fn each_class<F>(&self, mut callback: F)
