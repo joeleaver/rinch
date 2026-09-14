@@ -443,9 +443,12 @@ __scope.on_cleanup(move || drop(handle));
   `dispatch_keyboard_event`, which desktop calls ahead of the focus arbiter and
   `rinch-web` calls from its document `keydown` listener.
 
-Two things are dispatched **before** the stack and will take Escape from it: a
+Some things are dispatched **before** the stack and will take Escape from it: a
 `set_keyboard_interceptor` that consumes the key, and an in-progress drag, which
-Escape cancels.
+Escape cancels. Both apply on either backend. `rinch-web` has one more — a
+focused `RenderSurface` swallows every key there, where on desktop a surface is
+routed by the arbiter, i.e. *after* the stack. That asymmetry is older than the
+stack (the interceptor already had it) and is not something this API changed.
 
 `Modal`, `Drawer` and `Popover` already do all of this for you through their
 `close_on_escape` prop — reach for `push_dismiss_handler` when you are building

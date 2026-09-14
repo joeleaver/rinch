@@ -1292,7 +1292,8 @@ register_focus_target(
   the arbiter, which is step 2, while the dismiss stack is inside step 1 — so a
   `<select>` opened inside a `Modal` loses Escape to the modal, where a browser
   would close the popup. The fix is for the select to push a dismiss handler of
-  its own when it opens.
+  its own when it opens, which puts it on top of the stack and needs no
+  precedence special case — **issue #671**.
 - **Web has no arbiter** — `register_focus_target` is desktop/Android/embed
   only; use a real `tabindex` and the DOM's own `focus`/`blur` there.
 

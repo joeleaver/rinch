@@ -1,9 +1,9 @@
 //! Escape-to-dismiss, shared by `Modal`, `Drawer` and `Popover` (issue #474).
 //!
 //! The three declared `close_on_escape` and did nothing with it. They all need
-//! the same four lines, and getting any of them subtly different is the bug
-//! this module exists to make impossible — in particular the **open check**,
-//! which belongs at dispatch and not here:
+//! the same wiring, and getting any of them subtly different is the bug this
+//! module exists to make impossible — in particular the **open check**, which
+//! belongs at dispatch and not here:
 //!
 //! `render` runs *once*. `opened_fn` only rewrites a class, so a closed overlay
 //! stays mounted with its handler in place. Deciding "register only when open"
