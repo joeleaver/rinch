@@ -2344,12 +2344,16 @@ parent at all, which is a cascade in which every inherited property lands on its
   `Switch`, `Select` all are) animated to its own size. A browser never animates
   there, because an element enters the document already carrying its final style.
 
-Two consequences worth knowing. A detached node's `computed_style` is now
-whatever it last resolved to **in** the document (a never-attached node's is the
-default `ComputedStyle`) rather than an invented parentless cascade; every reader
-keeps working, and paint and hit testing never reach one anyway since both walk
-from the root. And connectivity is asked at **resolve** time, not where the entry
-was pushed, so a node classed while detached and spliced in before the next
+Two consequences worth knowing. **A detached node's `computed_style` is now
+whatever it last resolved to *in* the document** — a never-attached node's is the
+default `ComputedStyle` — rather than an invented parentless cascade. Every
+reader keeps working. Paint and hit testing never see one, since both walk from
+`tree.body_id`, and so do `query_selector` and an unscoped `dom_tree`; but
+`dom_tree` takes a `root_id` and hands it straight to the serializer, so
+**`dom_tree(root_id: <a detached id>)` does reach one** — and what it reports is
+that last in-document style, where before this change it reported the parentless
+cascade's `serif`. And connectivity is asked at **resolve** time, not where the
+entry was pushed, so a node classed while detached and spliced in before the next
 layout is still styled by that same entry. Entering the document is what styles a
 node, through `recompute_node_styles_recursive`, which every insertion route ends
 in (`append_child`, `insert_before`, `insert_child`, `replace_node`).

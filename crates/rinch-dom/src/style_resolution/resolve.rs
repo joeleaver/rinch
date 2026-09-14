@@ -138,10 +138,22 @@ impl RinchDocument {
     /// function: the depth is only wanted for a node that has one.
     ///
     /// The anchor is `tree.root_id` — the document node, `<html>`'s parent —
-    /// rather than `html_id`, so this never refuses a node the full-tree walk
-    /// would have reached. A node parented directly to the document node is
-    /// outside that walk and inside this one; that asymmetry is unchanged from
-    /// before the connectivity test existed.
+    /// rather than `html_id`, so this refuses nothing the targeted path used to
+    /// resolve. A node parented directly to the document node is outside the
+    /// full-tree walk (which starts at `html_id`) and inside this one; that
+    /// asymmetry is unchanged from before the connectivity test existed.
+    /// `a_sibling_of_html_is_connected_because_the_anchor_is_the_document_node`
+    /// is the pin, and it fails against an `html_id` anchor.
+    ///
+    /// The `node_id == root_id` self-case is not decoration: without it the walk
+    /// starts at the document node's parent, finds `None`, and answers
+    /// "detached" for the one node that *is* the document — so an entry for it
+    /// would be dropped and the recascade it asks for would not happen.
+    /// `the_document_nodes_own_entry_is_resolved` is the pin.
+    ///
+    /// Both of those shapes are reachable only by handing a DOM method the
+    /// document node's own id, which nothing in rinch does. They are pinned
+    /// because they are the only things that tell the two anchors apart.
     ///
     /// A `None` also covers an id that is no longer in the slab, or whose
     /// ancestor chain leaves it — a `style_roots` entry outlives the node it

@@ -29,20 +29,30 @@
 //! `tree.root_id`. "Not in the document" is not a question CSS has an answer
 //! to, and the answer it was inventing was wrong in both directions.
 //!
-//! # What each fixture kills
+//! # Mutants, and what kills each
 //!
-//! | fixture | mutant |
+//! Attributions below are **measured**, not assigned — every mutant was applied
+//! to a committed revision and the whole file run against it.
+//!
+//! | mutant | killed by |
 //! |---|---|
-//! | `a_detached_subtree_is_not_recascaded_to_initial_values` | the skip removed; the skip moved to the push sites |
-//! | `a_descendant_of_a_detached_node_is_not_recascaded_either` | a shallow `parent.is_some()` in place of the walk |
-//! | `a_detached_subtree_keeps_its_text_layout` | the skip removed (the shaping half of #668) |
-//! | `a_child_styled_before_it_is_spliced_in_does_not_animate` | the skip removed; `has_been_styled` set on a skipped node |
-//! | `a_node_skipped_while_detached_is_styled_when_it_attaches` | the skip present, attach not re-resolving |
-//! | `a_node_attached_before_the_next_resolve_is_not_skipped` | connectivity asked at the push sites instead of here |
-//! | `a_detached_node_is_still_readable` | a skip that clears the cached style instead of leaving it |
+//! | the skip removed (the base `resolve.rs`) | 5 fixtures |
+//! | #651's option 2: cascade detached, withhold `has_been_styled` only | the 4 unmount fixtures; the mount one passes |
+//! | a shallow `parent.is_some()` in place of the walk | `a_descendant_of_a_detached_node_is_not_recascaded_either`, `the_document_nodes_own_entry_is_resolved` |
+//! | connectivity asked at the push sites instead of here | `a_node_attached_before_the_next_resolve_is_not_skipped`, alone |
+//! | the attach route not re-resolving | `a_node_skipped_while_detached_is_styled_when_it_attaches`, alone |
+//! | the walk anchored at `html_id` | `a_sibling_of_html_is_connected_because_the_anchor_is_the_document_node`, `the_document_nodes_own_entry_is_resolved` |
+//! | the `root_id` self-case dropped | `the_document_nodes_own_entry_is_resolved`, alone |
+//! | `has_been_styled` set on a skipped node | **nothing — it survives**, see below |
 //!
-//! Every one of those was run. Two results are worth recording because they are
-//! not what a reader would guess.
+//! The last two anchor fixtures reach shapes **no rinch code produces** — a node
+//! parented to the document node, and an attribute set on the document node
+//! itself. They are here because `depth_if_connected`'s choice of anchor and its
+//! self-case are both claims its doc makes, and a claim with no witness is what a
+//! later "simplification" deletes. Each says in its own doc how it is reached.
+//!
+//! Two results are worth recording because they are not what a reader would
+//! guess.
 //!
 //! **Setting `has_been_styled` on a skipped node does not bring the animation
 //! back**, so no fixture here kills that mutant and none claims to. The skip
@@ -55,12 +65,24 @@
 //!
 //! **Issue #651's other suggested cure — keep the parentless cascade and only
 //! withhold `has_been_styled` — fixes the mount half and leaves the unmount
-//! half exactly as it was.** Measured: the transition fixture passes under it
-//! and all three #668 fixtures fail. That is why the skip is in
-//! `resolve_styles` rather than at the `has_been_styled` assignment.
+//! half exactly as it was.** Measured: the mount fixture passes under it and
+//! all four unmount fixtures fail. That is why the skip is in `resolve_styles`
+//! rather than at the `has_been_styled` assignment.
 
 use rinch_core::dom::DomDocument;
 use rinch_dom::RinchDocument;
+
+/// A node's computed `width` in px, or `None` when it is not a length.
+///
+/// `DimensionValue` has no `PartialEq`, so the two fixtures that read a
+/// cascaded width off a node outside the laid-out tree — where `layout.width`
+/// is meaningless — go through this rather than a `matches!` per assertion.
+fn width_px(doc: &RinchDocument, node: rinch_core::dom::NodeId) -> Option<f32> {
+    match doc.tree.get(node.0)?.computed_style.width {
+        rinch_dom::computed_style::DimensionValue::Length(px) => Some(px),
+        _ => None,
+    }
+}
 
 /// A document with `.root { font-family: monospace; color: rgb(0,128,0) }`
 /// holding a `panel` with one text child, laid out once.
@@ -395,6 +417,13 @@ fn a_node_attached_before_the_next_resolve_is_not_skipped() {
 #[test]
 fn a_detached_node_is_still_readable() {
     let (mut doc, _root, panel, t) = mounted_panel();
+    let mounted_family = doc
+        .tree
+        .get(panel.0)
+        .unwrap()
+        .computed_style
+        .font_family
+        .clone();
     doc.set_attribute(panel, "data-x", "1");
     doc.remove_node(panel);
     doc.resolve_layout(800.0, 600.0);
@@ -409,13 +438,144 @@ fn a_detached_node_is_still_readable() {
     // The `query_node_layout` path, on the node and on its text child.
     assert!(doc.query_node_layout(panel.0 as u64).is_some());
     let _ = doc.query_node_layout(t.0 as u64);
-    // `serialize_tree*` and `query_selector` both walk from `tree.body_id`, so
-    // the MCP `dom_tree` and `query_selector` tools never reach a detached node
-    // at all — `get_node(id)` above is the only one that can be pointed at one.
-    // Measured, not assumed: `data-x` is on the panel and nothing else.
+
+    // **Scoping is what decides whether a debug tool reaches a detached node,
+    // not the tool.** `query_selector` and an unscoped `dom_tree` both start at
+    // `tree.body_id`, so neither finds one; `data-x` is on the panel and
+    // nothing else, which is what makes the first assertion exact.
     assert!(
         rinch_dom::testing::query_selector(&doc.tree, "[data-x]").is_empty(),
-        "a detached node is outside the tree the debug tools walk"
+        "query_selector walks from the body, so it cannot find a detached node"
     );
-    let _ = rinch_dom::testing::serialize_tree_verbose(&doc.tree);
+    let unscoped = rinch_dom::testing::serialize_tree_verbose(&doc.tree).to_string();
+    assert!(
+        !unscoped.contains("data-x"),
+        "an unscoped dom_tree walks from the body too"
+    );
+
+    // But `dom_tree` takes a `root_id` and hands it straight to
+    // `serialize_tree_full` (`app/debug_commands.rs`), so
+    // `dom_tree(root_id: <a detached id>)` **does** reach one — and what it
+    // reports is the style the node last resolved to *in* the document, which
+    // is the whole of this change. Before it, the same call answered with the
+    // parentless cascade's `serif`.
+    let scoped = rinch_dom::testing::serialize_tree_full(&doc.tree, None, Some(panel.0), true);
+    assert_eq!(
+        scoped["attributes"]["data-x"], "1",
+        "a root_id-scoped dom_tree does reach a detached node"
+    );
+    assert_eq!(
+        scoped["computed_styles"]["font_family"].as_str(),
+        Some(mounted_family.as_str()),
+        "and reports the style it last had in the document, not an invented one"
+    );
+    assert!(
+        mounted_family.contains("monospace"),
+        "counter-oracle: this says nothing on a host where the document's own \
+         family is already the initial `serif` ({mounted_family:?})"
+    );
+}
+
+/// **The anchor is `tree.root_id`, the document node, not `tree.html_id`** —
+/// and this is the shape that tells them apart: a node parented *directly* to
+/// the document node, a sibling of `<html>`.
+///
+/// It is reachable only by handing `append_child` the document node's own id,
+/// which nothing in rinch does. The fixture exists anyway, because the choice
+/// of anchor is a claim `depth_if_connected`'s doc makes and an unpinned claim
+/// is how a later edit "simplifies" one anchor into the other. The claim is
+/// that this change **refuses nothing the targeted path used to resolve**:
+/// before the connectivity test there was no test at all, so such a node was
+/// cascaded, and under the `root_id` anchor it still is. An `html_id` anchor
+/// would newly refuse it — silently, since the full-walk branch starts at
+/// `html_id` and never reaches it either.
+///
+/// `anchor`'s write is load-bearing twice over: it is the positive control that
+/// the pass ran, and it keeps `style_roots` non-empty so `resolve_styles` cannot
+/// fall back to the full walk and mask the difference.
+#[test]
+fn a_sibling_of_html_is_connected_because_the_anchor_is_the_document_node() {
+    let mut doc = RinchDocument::new();
+    doc.load_css(".x { width: 42px; height: 7px; } .t { width: 13px; height: 7px; }");
+    let body = doc.body();
+    let anchor = doc.create_element("div");
+    doc.append_child(body, anchor);
+    doc.resolve_layout(800.0, 600.0);
+
+    let document_node = rinch_core::dom::NodeId(doc.tree.root_id);
+    let extra = doc.create_element("div");
+    doc.append_child(document_node, extra);
+    doc.set_attribute(extra, "class", "x");
+    doc.set_attribute(anchor, "class", "t");
+    assert!(
+        doc.tree.style_roots.contains(&anchor.0),
+        "positive control: the targeted path, not the empty-list full walk"
+    );
+    doc.resolve_layout(800.0, 600.0);
+
+    assert_eq!(
+        width_px(&doc, anchor),
+        Some(13.0),
+        "positive control: the connected entry resolved, so the pass ran"
+    );
+    assert_eq!(
+        doc.tree.get(extra.0).unwrap().parent,
+        Some(doc.tree.root_id),
+        "precondition: the node really does hang off the document node"
+    );
+    assert_eq!(
+        width_px(&doc, extra),
+        Some(42.0),
+        "a child of the document node reaches the anchor and is still cascaded"
+    );
+}
+
+/// **The document node's own entry is resolved, not skipped**, which is what
+/// `depth_if_connected`'s `node_id == root_id` self-case is for. Without it the
+/// walk starts at `root_id`'s parent, finds `None`, and answers "detached" for
+/// the one node that is the document.
+///
+/// Reaching it needs `set_attribute` on the document node — again, something no
+/// rinch code does, and again pinned because the self-case is otherwise a line
+/// with no witness that reads as dead.
+///
+/// The observable difference needs a cascade whose answer has *changed*, or
+/// re-resolving and not re-resolving look identical. `load_css` merges a
+/// stylesheet without invalidating any cached style, so the new `.kid` width
+/// sits unused until something recascades; the `set_attribute` on the document
+/// node is what clears every descendant's cached data and asks for that
+/// recascade. Resolving from the document node walks the whole tree, so `kid`
+/// picks the new width up in the same pass. Skipping it leaves `kid` at the old
+/// one.
+#[test]
+fn the_document_nodes_own_entry_is_resolved() {
+    let mut doc = RinchDocument::new();
+    doc.load_css(".kid { width: 20px; height: 7px; }");
+    let body = doc.body();
+    let kid = doc.create_element("div");
+    doc.set_attribute(kid, "class", "kid");
+    doc.append_child(body, kid);
+    doc.resolve_layout(800.0, 600.0);
+    assert_eq!(
+        width_px(&doc, kid),
+        Some(20.0),
+        "precondition: the first rule applied"
+    );
+
+    doc.load_css(".kid { width: 33px; height: 7px; }");
+    let document_node = rinch_core::dom::NodeId(doc.tree.root_id);
+    doc.set_attribute(document_node, "data-x", "1");
+    assert_eq!(
+        doc.tree.style_roots.as_slice(),
+        &[doc.tree.root_id],
+        "positive control: the document node is the only entry, so the targeted \
+         path decides the outcome on its own"
+    );
+    doc.resolve_layout(800.0, 600.0);
+
+    assert_eq!(
+        width_px(&doc, kid),
+        Some(33.0),
+        "the document node's entry must recascade the tree, not be skipped"
+    );
 }
