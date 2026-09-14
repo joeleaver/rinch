@@ -52,12 +52,19 @@ pub fn find_matching_spec(
 /// restarted nine times and crawled toward its target instead of arriving.
 ///
 /// What is **not** implemented, and is a deliberate scoping rather than an
-/// oversight: §3's interpolability precondition. A pair of values that cannot
-/// be interpolated (a length against a percentage, say) still gets an
-/// `ActiveTransition` that idles for its whole duration, because
-/// `AnimatableValue::interpolate` answers `None` for it and the tick then
-/// writes nothing. That is the pre-existing behaviour and it snaps either way;
-/// cancelling instead would only save the idle frames.
+/// oversight: §3's *transitionability* precondition, which appears in item 1
+/// and again in item 4.2. A pair of values that cannot be interpolated (a
+/// length against a percentage, which would need a `calc()` `ComputedStyle`
+/// cannot hold) still gets an `ActiveTransition` that idles for its whole
+/// duration, because `AnimatableValue::interpolate` answers `None` for it and
+/// the tick then writes nothing. That is the pre-existing behaviour and it
+/// snaps either way; cancelling instead would only save the idle ticks.
+///
+/// Nor is §3 item 3 — cancel a running transition whose property has stopped
+/// matching `transition-property`. `find_matching_spec` answering `None` skips
+/// the property here and leaves any running transition running. Also
+/// pre-existing, and only reachable when the same restyle produces a diff for
+/// that property.
 pub fn start_transitions(
     active_transitions: &mut HashMap<TransitionProperty, ActiveTransition>,
     specs: &[TransitionSpec],
@@ -72,14 +79,24 @@ pub fn start_transitions(
             None => continue,
         };
 
-        // Cloned rather than borrowed so the §3 step 5.1 arm below can remove
+        // §3 calls `duration + delay` the *combined duration*. A negative
+        // `transition-delay` can drive it to zero or below — `transition: width
+        // 150ms linear -200ms` is emitted by `extract_from_stylo`, which gates
+        // on `duration > 0 || delay > 0` — and the spec then wants no
+        // transition at all: item 1 declines to start one, item 4.2 cancels a
+        // running one. Both leave the after-change value standing, which is
+        // what the property snaps to.
+        let combined_duration_ms = spec.duration_ms + spec.delay_ms;
+
+        // Cloned rather than borrowed so the cancelling arms below can remove
         // the entry. One clone per changed property per restyle, of a value
         // `diff_animatable` only ever builds out of scalars.
         let existing = active_transitions.get(&change.property).cloned();
 
         let started = match existing {
-            // §3 step 4: nothing was transitioning this property, so start from
+            // §3 item 1: nothing was transitioning this property, so start from
             // the before-change value over the declared duration.
+            None if combined_duration_ms <= 0.0 => continue,
             None => ActiveTransition::starting(
                 change.property,
                 change.old_value.clone(),
@@ -100,23 +117,27 @@ pub fn start_transitions(
                     .value_at(current_time_ms)
                     .unwrap_or_else(|| change.old_value.clone());
 
-                // §3 step 5.1: the running transition has already arrived at the
-                // new target, so cancel it and start nothing. Leaving the
+                // §3 item 4.1: the running transition has already arrived at
+                // the new target, so cancel it and start nothing. Leaving the
                 // property off `transitioning` lets the caller's after-change
                 // value stand — which is the value the box is already at.
-                if current.same_computed_value(&change.new_value) {
+                //
+                // §3 item 4.2 is the other cancel: no combined duration left in
+                // which to reach the new target.
+                if current.same_computed_value(&change.new_value) || combined_duration_ms <= 0.0 {
                     active_transitions.remove(&change.property);
                     continue;
                 }
 
-                // §3 step 5.3: a reversal — the new target is the value this
+                // §3 item 4.3: a reversal — the new target is the value this
                 // transition would reverse back to — is shortened in proportion
-                // to how far it had got. §3 step 5.2 is everything else: cancel
+                // to how far it had got. §3 item 4.4 is everything else: cancel
                 // and restart from the current value over the full duration.
+                // (4.2 has already taken the zero-combined-duration case, which
+                // is the other half of 4.3's precondition.)
                 let is_reversal = existing
                     .reversing_adjusted_start_value
-                    .same_computed_value(&change.new_value)
-                    && spec.duration_ms + spec.delay_ms > 0.0;
+                    .same_computed_value(&change.new_value);
 
                 if is_reversal {
                     existing.reversing(current, change.new_value.clone(), spec, current_time_ms)

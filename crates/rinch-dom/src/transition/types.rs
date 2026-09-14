@@ -698,17 +698,27 @@ pub struct ActiveTransition {
     /// transition it reversed** for a reversal — which is what makes reversing
     /// a reversal come back out at the right length.
     pub reversing_adjusted_start_value: AnimatableValue,
-    /// The fraction of the declared duration and delay this transition was
-    /// given, in `0.0..=1.0`. `1.0` for everything but a reversal: turning back
-    /// half-way through a 150ms slide is 75ms of travel, not another 150ms.
+    /// The fraction of the declared **duration** this transition was given, in
+    /// `0.0..=1.0`. `1.0` for everything but a reversal: a reversal taken when
+    /// the transition was half way *there* is half as much travel back, so it
+    /// gets half the duration.
+    ///
+    /// It keys on *progress*, not elapsed time, so "half way" means half way
+    /// along the curve. Under `linear` the two coincide and reversing a 150ms
+    /// transition after 75ms gives 75ms; under `ease` — which is what every
+    /// transition in `rinch-components` declares — the output at input 0.5 is
+    /// 0.8024, so the same reversal gets 120.4ms.
+    ///
+    /// The declared **delay** is not scaled by it unless the delay is negative;
+    /// see [`ActiveTransition::reversing`].
     pub reversing_shortening_factor: f64,
 }
 
 impl ActiveTransition {
     /// Start a transition from `from` to `to` over `spec`'s declared timing.
     ///
-    /// This is css-transitions-1 §3 step 4 (a property that was not
-    /// transitioning) and step 5.2 (a running transition whose target changed
+    /// This is css-transitions-1 §3 item 1 (a property that was not
+    /// transitioning) and item 4.4 (a running transition whose target changed
     /// to something that is not a reversal) alike: both take the full declared
     /// duration and reset the reversing bookkeeping to its identity.
     pub fn starting(
@@ -732,8 +742,8 @@ impl ActiveTransition {
     }
 
     /// Reverse `self`: head back to `to` from wherever it currently is, over a
-    /// *shortened* slice of `spec`'s declared timing (css-transitions-1 §3 step
-    /// 5.3).
+    /// *shortened* slice of `spec`'s declared timing (css-transitions-1 §3
+    /// item 4.3).
     ///
     /// The caller has already established that `to` is `self`'s
     /// reversing-adjusted start value, which is what makes this a reversal
@@ -762,10 +772,14 @@ impl ActiveTransition {
             timing: spec.timing,
             start_time_ms: current_time_ms,
             duration_ms: spec.duration_ms * factor,
-            // A negative delay is an offset into the curve, not a wait, so the
-            // spec shortens only a nonnegative one — and zero is unaffected
-            // either way, which is why the branch can test `> 0.0`.
-            delay_ms: if spec.delay_ms > 0.0 {
+            // Only a **negative** delay is shortened. A negative delay is an
+            // offset into the curve, so a shortened curve has to be entered
+            // proportionally further along; a nonnegative delay is a *wait*
+            // before the curve begins and the spec uses it as declared. Getting
+            // this backwards halves a grace period: `HoverCard`'s close
+            // direction carries `transition-delay: 150ms` for exactly that, and
+            // a hover-out part way through the fade-in is this code path.
+            delay_ms: if spec.delay_ms < 0.0 {
                 spec.delay_ms * factor
             } else {
                 spec.delay_ms

@@ -246,11 +246,12 @@ properties the style differ found a change in:
 
 | The running transition | What happens |
 |---|---|
-| none | start from the before-change value over the declared duration (§3 step 4) |
+| none | start from the before-change value over the declared duration (§3 item 1) |
 | its end value still equals the after-change value | **left exactly as it is** — same endpoints, same clock |
-| it has already reached the after-change value | cancelled; nothing is started (§3 step 5.1) |
-| the after-change value is the value it would reverse back to | cancelled, and a **shortened** reversal started (§3 step 5.3) |
-| anything else | cancelled and restarted from the current interpolated value, over the full declared duration (§3 step 5.2) |
+| it has already reached the after-change value | cancelled; nothing is started (§3 item 4.1) |
+| the combined duration (`duration + delay`) is zero or less | cancelled; nothing is started (§3 item 4.2) |
+| the after-change value is the value it would reverse back to | cancelled, and a **shortened** reversal started (§3 item 4.3) |
+| anything else | cancelled and restarted from the current interpolated value, over the full declared duration (§3 item 4.4) |
 
 The second row is the one that is easy to get wrong, because the caller diffs
 the node's `computed_style` — which holds the **interpolated** value while a
@@ -267,19 +268,38 @@ to the caller. That is what tells style resolution to write the interpolated
 value back over the after-change style it has just assigned wholesale — without
 it the box would snap to its end value for one frame, which is all #489 needed.
 
-**A reversal is shortened.** Turning a 150ms slide around half way through is
-75ms of travel back, not another 150ms, so it lands on its old start value at
-the moment it would have reached its end value — the behaviour a hover in and
-straight back out depends on. The factor folds the running transition's own
-factor back in (`|f·progress + (1 − f)|`), so reversing a reversal is measured
-against the declared duration rather than compounding toward zero.
+**A reversal is shortened.** A reversal taken when the transition is half way
+*there* is half as much travel back, so it gets half the duration and lands on
+its old start value at the moment the cancelled transition would have reached
+its end value — the behaviour a hover in and straight back out depends on. The
+factor folds the running transition's own factor back in
+(`|f·progress + (1 − f)|`), so reversing a reversal is measured against the
+declared duration rather than compounding toward zero.
 
-What rinch does **not** implement from §3 is the interpolability precondition.
-A pair of values that cannot be interpolated — a length against a percentage,
-which needs a `calc()` that `ComputedStyle` cannot hold — still gets an
-`ActiveTransition`, which then idles for its whole duration because
-`AnimatableValue::interpolate` answers `None` for it. The property snaps either
-way; cancelling instead would only save the idle ticks.
+Note that it keys on **progress**, not on elapsed time. Under `linear` the two
+coincide, so reversing a 150ms transition after 75ms takes 75ms. Under `ease` —
+which is what every transition in `rinch-components` declares, and `linear` what
+none of them do — the output at input 0.5 is 0.8024, so the same reversal takes
+**120.4ms**. It has to: 80% of the distance has been covered and 80% of it has
+to be covered again.
+
+**The delay is not shortened with it**, unless it is negative. A negative
+`transition-delay` is an offset into the curve, so a shortened curve is entered
+proportionally further along; a nonnegative one is a wait before the curve
+begins, and the spec uses it as declared. `HoverCard` is what this protects: its
+close direction carries `transition-delay: 150ms` as a grace period for moving
+the pointer onto the card, and scaling that with the factor would halve the
+grace period for anyone who leaves part way through the fade-in.
+
+Two things rinch does **not** implement from §3. The **transitionability**
+precondition, which appears in item 1 and again in item 4.2: a pair of values
+that cannot be interpolated — a length against a percentage, which needs a
+`calc()` that `ComputedStyle` cannot hold — still gets an `ActiveTransition`,
+which then idles for its whole duration because `AnimatableValue::interpolate`
+answers `None` for it. The property snaps either way; cancelling instead would
+only save the idle ticks. And **item 3**, cancelling a running transition whose
+property has stopped matching `transition-property`: rinch skips the property
+and leaves the transition running. Both are pre-existing.
 
 ## Optimizations
 
