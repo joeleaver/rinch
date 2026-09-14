@@ -303,6 +303,16 @@ impl Component for Drawer {
             self.onclose.as_ref(),
         );
 
+        // lock_scroll (#474): see the note in `modal.rs` — the two components
+        // share this shape too, including the release on unmount.
+        crate::overlay_scroll_lock::arm_lock_scroll(
+            __scope,
+            &root,
+            self.lock_scroll,
+            self.opened,
+            self.opened_fn.as_ref(),
+        );
+
         // Build the overlay
         if self.with_overlay {
             let overlay = rinch_macros::rsx! { div { class: "rinch-drawer__overlay" } };

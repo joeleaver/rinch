@@ -801,12 +801,25 @@ pub(crate) struct ScrollbarHit {
 /// rect (#203). The caller wanting the pointer's position *along* the track
 /// (jump-to-click, drag) asks [`rinch_dom::paint::point_in_painted_box`] for
 /// the same mapping.
+///
+/// **A bar a scroll lock has shut out is not here** (#474): while a `lock_scroll`
+/// overlay is open, the page's own bar answers `None` and the overlay's answers
+/// normally. Gating in this one function rather than at the press site keeps the
+/// two readers agreeing — [`pointer_on_scrollbar_thumb`] arbitrates the
+/// borderless-window resize edge against this answer, so a bar that cannot be
+/// dragged also stops stealing the edge from the resize handle (#399/#420).
+/// The bar is still **painted**: paint reads the same geometry from
+/// `rinch_dom::paint::scrollbar` and knows nothing about the lock, so a locked
+/// page's thumb is visible and inert. That is the deliberate half of the
+/// divergence the guide documents — desktop suppresses the scroll, web
+/// suppresses the scrollbar.
 pub(crate) fn find_scrollbar_hit(
     tree: &rinch_dom::NodeTree,
     x: f32,
     y: f32,
 ) -> Option<ScrollbarHit> {
-    find_scrollbar_hit_node(tree, tree.body_id, 0.0, 0.0, x, y, x, y)
+    let hit = find_scrollbar_hit_node(tree, tree.body_id, 0.0, 0.0, x, y, x, y)?;
+    (!tree.scroll_locked_out(hit.node_id)).then_some(hit)
 }
 
 #[allow(clippy::too_many_arguments)]

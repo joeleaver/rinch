@@ -750,6 +750,33 @@ impl DomDocument for RinchDocument {
         rinch_core::request_focus(self.doc_key, node_id.0);
     }
 
+    /// Desktop's half of `lock_scroll` (#474): record the locking overlay's root
+    /// so the wheel and scrollbar paths can refuse a gesture outside it.
+    ///
+    /// Nothing is restyled. Setting `overflow: hidden` on the body would be the
+    /// browser's move, but rinch's scrollbars are overlays with no gutter, so the
+    /// only thing it would buy is a reflow — and the body's retained
+    /// `scroll_offset` would then be sitting behind a fresh clip. Gating the
+    /// gesture leaves the page exactly where it was.
+    ///
+    /// The unlock removes **one** occurrence, from the back: two overlays holding
+    /// locks means two entries, and the inner one closing must leave the outer's
+    /// behind. An unlock with no matching entry is ignored rather than panicking
+    /// — an overlay's `on_cleanup` releases a lock its `opened_fn` effect may
+    /// already have released.
+    fn set_scroll_locked(&mut self, locked: bool, root: NodeId) {
+        if locked {
+            self.tree.scroll_lock_roots.push(root.0);
+        } else if let Some(i) = self
+            .tree
+            .scroll_lock_roots
+            .iter()
+            .rposition(|n| *n == root.0)
+        {
+            self.tree.scroll_lock_roots.remove(i);
+        }
+    }
+
     fn resolve_layout(&mut self, width: f32, height: f32) {
         // Delegate to the existing implementation method
         RinchDocument::resolve_layout(self, width, height);

@@ -56,20 +56,18 @@ use std::path::Path;
 
 /// Props that are declared, documented, and still not wired — the debt #474
 /// catalogued, with the sub-cluster each belongs to. Every entry must name a
-/// live reason: this list may only shrink. It started at 31 and is 11; the
-/// twenty that left were #474's whole `z_index` sub-cluster, its five dead
-/// `radius` props, `CloseButton::icon_size`, `Drawer::overlay_opacity`, the
-/// five dismissal props of category A, and its three `trap_focus` props.
+/// live reason: this list may only shrink. It started at 31 and is 9; the
+/// twenty-two that left were #474's whole `z_index` sub-cluster, its five dead
+/// `radius` props, `CloseButton::icon_size`, `Drawer::overlay_opacity`, and the
+/// whole of **category A**.
 ///
-/// What remains of the overlay-behaviour cluster (#474 category A) is
-/// `lock_scroll`, which is new interaction work against the wheel-routing path.
-/// The dismissal half — `close_on_escape`, `Popover::close_on_click_outside`,
-/// `Notification::auto_close` — landed with the dismiss stack, and `trap_focus`
-/// with `data-trap-focus` and the two backends' Tab containment.
+/// Category A — overlay behaviour — is **closed**. `close_on_escape`,
+/// `Popover::close_on_click_outside` and `Notification::auto_close` landed with
+/// the dismiss stack; `trap_focus` with `data-trap-focus` and the two backends'
+/// Tab containment; `lock_scroll` with `DomDocument::set_scroll_locked`. What is
+/// left below is categories C and D, which are a different kind of debt: a
+/// parent prop whose child's twin already works, and props that need markup.
 const ALLOWLIST: &[(&str, &str)] = &[
-    // #474 category A — overlay behaviour that does not exist yet.
-    ("Modal::lock_scroll", "#474 A: scroll locking"),
-    ("Drawer::lock_scroll", "#474 A: scroll locking"),
     // #474 category C — a parent prop whose child's twin works.
     ("List::icon", "#474 C: not plumbed to ListItem"),
     (

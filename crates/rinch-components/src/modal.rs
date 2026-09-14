@@ -299,6 +299,17 @@ impl Component for Modal {
             self.onclose.as_ref(),
         );
 
+        // lock_scroll (#474): hold a page scroll lock while this modal is open,
+        // naming this root as the subtree that stays scrollable. Released when
+        // it closes and again on unmount.
+        crate::overlay_scroll_lock::arm_lock_scroll(
+            __scope,
+            &root,
+            self.lock_scroll,
+            self.opened,
+            self.opened_fn.as_ref(),
+        );
+
         // Build the overlay
         if self.with_overlay {
             let overlay = rinch_macros::rsx! { div { class: "rinch-modal__overlay" } };

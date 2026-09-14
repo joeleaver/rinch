@@ -1504,6 +1504,21 @@ pub struct NodeTree {
     pub focused_node: Option<RawNodeId>,
     /// Currently active (mouse-pressed) node ID (for CSS :active).
     pub active_node: Option<RawNodeId>,
+    /// The roots of every overlay currently holding a **scroll lock** (#474) —
+    /// `Modal`/`Drawer`'s `lock_scroll`, arriving through
+    /// [`DomDocument::set_scroll_locked`](rinch_core::dom::DomDocument::set_scroll_locked).
+    ///
+    /// A `Vec` rather than a flag or a count because it has to answer two
+    /// questions at once: *is* the page locked (non-empty), and *which* subtrees
+    /// are exempt — the dialog's own `overflow: auto` body still scrolls. It is
+    /// counted by construction: each open overlay pushes its own root and
+    /// removes one occurrence when it closes, so an inner modal closing leaves
+    /// the outer one's entry behind and the page stays locked.
+    ///
+    /// Read through [`NodeTree::scroll_locked_out`]. Not a `HashSet`: the same
+    /// root can legitimately appear twice only through a double-lock bug, and a
+    /// `Vec` of at most a handful of entries is cheaper to scan than to hash.
+    pub scroll_lock_roots: Vec<RawNodeId>,
     /// Shared lock for Stylo CSS engine.
     pub guard: SharedRwLock,
     /// IDs of anonymous block box nodes created during layout.
@@ -1691,6 +1706,7 @@ impl NodeTree {
             hovered_node: None,
             focused_node: None,
             active_node: None,
+            scroll_lock_roots: Vec::new(),
             guard,
             anonymous_block_boxes: Vec::new(),
             split_inlines: Vec::new(),
@@ -1717,6 +1733,35 @@ impl NodeTree {
     /// Get a reference to a node.
     pub fn get(&self, id: RawNodeId) -> Option<&Node> {
         self.nodes.get(id)
+    }
+
+    /// Whether a **scroll gesture** landing on `node_id` must be refused because
+    /// an overlay holds a scroll lock (#474) and `node_id` is not inside it.
+    ///
+    /// `false` when nothing is locked, which is every frame of an ordinary app —
+    /// the empty-`Vec` early return is the whole cost there.
+    ///
+    /// Inclusive of the locking root itself: an overlay that is its own scroller
+    /// scrolls. The walk is up `parent`, so an anonymous block box or a split
+    /// inline between the two does not break the chain — they carry parents like
+    /// any other node.
+    ///
+    /// This gates **input only**. Programmatic scrolling
+    /// (`NodeHandle::set_scroll_top`, the layout pass's own clamp) is untouched,
+    /// deliberately: a lock is about what the user's gesture may move, and an app
+    /// that scrolls a list behind a dialog on purpose still can.
+    pub fn scroll_locked_out(&self, node_id: RawNodeId) -> bool {
+        if self.scroll_lock_roots.is_empty() {
+            return false;
+        }
+        let mut current = Some(node_id);
+        while let Some(id) = current {
+            if self.scroll_lock_roots.contains(&id) {
+                return false;
+            }
+            current = self.nodes.get(id).and_then(|n| n.parent);
+        }
+        true
     }
 
     /// Get a mutable reference to a node.

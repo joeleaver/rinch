@@ -298,6 +298,32 @@ pub trait DomDocument {
     /// * `node_id` - The ID of the element to focus
     fn focus_element(&mut self, node_id: NodeId);
 
+    /// Lock or unlock document-level scrolling on behalf of `root` (issue #474).
+    ///
+    /// This is what `Modal`/`Drawer`'s `lock_scroll` reaches. An overlay calls it
+    /// with `true` when it opens and `false` when it closes or unmounts; the
+    /// backend decides what "locked" means, because the two have nothing in
+    /// common mechanically:
+    ///
+    /// - **Desktop** rejects a *scroll gesture* whose container is outside every
+    ///   locking root, so the page behind does not move while the overlay's own
+    ///   `overflow: auto` body still does. Nothing is restyled.
+    /// - **Web** sets `overflow: hidden` on the real `<html>`, which is the only
+    ///   mechanism there is — rinch cannot gate the browser's own wheel.
+    ///
+    /// **`root` is the locking overlay's root node**, not the node to lock. It is
+    /// the reason this takes a node at all: desktop needs to know which subtree
+    /// is still allowed to scroll, and a bare `bool` cannot say. Web ignores it.
+    ///
+    /// **Implementations must count, not latch.** Two overlays open and the inner
+    /// one closing must leave the page locked, so a lock is held per `root` and
+    /// released per `root`. `NodeHandle::set_scroll_locked` is the caller-facing
+    /// spelling; `rinch-components`' `overlay_scroll_lock` is the caller.
+    ///
+    /// Defaulted to a no-op so a backend with no page to lock (and
+    /// `MockDomDocument`) keeps compiling.
+    fn set_scroll_locked(&mut self, _locked: bool, _root: NodeId) {}
+
     /// Resolve layout for the document at the given viewport size.
     ///
     /// This computes Taffy layout and builds text layouts (IFC) for all dirty nodes.

@@ -377,6 +377,25 @@ impl NodeHandle {
         }
     }
 
+    /// Lock or unlock document-level scrolling, with **this node as the locking
+    /// overlay's root** (issue #474).
+    ///
+    /// A `Modal`/`Drawer` with `lock_scroll` calls this on its own root when it
+    /// opens and again when it closes or unmounts. The node matters: desktop
+    /// keeps this subtree scrollable while rejecting a gesture anywhere else, so
+    /// the dialog's own `overflow: auto` body still works. See
+    /// [`DomDocument::set_scroll_locked`] for what each backend does and why the
+    /// count is the backend's job.
+    ///
+    /// Every lock must be paired with an unlock. Do **not** reach for
+    /// [`RenderScope::body_handle`](super::RenderScope::body_handle) instead:
+    /// on the web that is `<div id="rinch-body">`, not the page.
+    pub fn set_scroll_locked(&self, locked: bool) {
+        if let Some(doc) = self.doc.upgrade() {
+            doc.borrow_mut().set_scroll_locked(locked, self.node_id);
+        }
+    }
+
     /// Get the children of this node as NodeHandles.
     pub fn children(&self) -> Vec<NodeHandle> {
         if let Some(doc) = self.doc.upgrade() {

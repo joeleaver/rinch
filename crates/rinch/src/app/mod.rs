@@ -43,6 +43,8 @@ mod overlay_dismiss_tests;
 #[cfg(test)]
 mod overlay_opacity_tests;
 #[cfg(test)]
+mod overlay_scroll_lock_tests;
+#[cfg(test)]
 mod overlay_z_index_tests;
 mod select_widget;
 mod text_selection;
@@ -5798,7 +5800,11 @@ mod wheel_scroll_dispatch_tests {
 
     /// Wheel deltas are the *content's* movement, so a negative delta_x scrolls
     /// right — the same sign convention the touch recogniser emits with.
-    fn wheel(app: &mut RinchApp, (x, y): (f32, f32), delta_x: f64, delta_y: f64) {
+    ///
+    /// `pub(super)` so `overlay_scroll_lock_tests` drives its wheel through the
+    /// same two lines rather than a second copy that could drift in its sign
+    /// convention or its viewport.
+    pub(super) fn wheel(app: &mut RinchApp, (x, y): (f32, f32), delta_x: f64, delta_y: f64) {
         app.handle_event(
             PlatformEvent::MouseWheel {
                 x,
@@ -5811,7 +5817,9 @@ mod wheel_scroll_dispatch_tests {
         );
     }
 
-    fn offsets(app: &RinchApp, id: usize) -> (f64, f64) {
+    /// `(scroll_left, scroll_top)` of one container. See [`wheel`] for why this
+    /// is `pub(super)`.
+    pub(super) fn offsets(app: &RinchApp, id: usize) -> (f64, f64) {
         let d = app.doc.as_ref().unwrap().borrow();
         d.tree.get(id).unwrap().scroll_offset
     }

@@ -950,10 +950,19 @@ impl RinchApp {
                         // First try the hit node's ancestor chain. If the hit node is in
                         // a different DOM branch (e.g., an absolutely-positioned overlay),
                         // fall back to finding the scroll container geometrically at (x, y).
+                        // `scroll_locked_out` is `lock_scroll` (#474): an open
+                        // `Modal`/`Drawer` refuses a gesture whose container is
+                        // outside it. It gates here, at the *arm*, rather than
+                        // restyling the body — see
+                        // `RinchDocument::set_scroll_locked`. Both resolution
+                        // routes are covered, including the geometric fallback,
+                        // because a fixed overlay is exactly the shape that
+                        // fallback exists for.
                         if delta_y.abs() > 0.0
                             && let Some(scroll_node_id) =
                                 find_scroll_container(&doc_mut.tree, hit_node)
                                     .or_else(|| find_scroll_container_at_point(&doc_mut.tree, x, y))
+                            && !doc_mut.tree.scroll_locked_out(scroll_node_id)
                         {
                             let nid = rinch_core::dom::NodeId(scroll_node_id);
                             let content_height = doc_mut.scroll_height(nid);
@@ -992,6 +1001,7 @@ impl RinchApp {
                             .or_else(|| {
                                 find_horizontal_scroll_container_at_point(&doc_mut.tree, x, y)
                             })
+                            && !doc_mut.tree.scroll_locked_out(scroll_node_id)
                         {
                             let nid = rinch_core::dom::NodeId(scroll_node_id);
                             let content_width = doc_mut.scroll_width(nid);

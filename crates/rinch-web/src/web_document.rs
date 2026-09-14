@@ -66,6 +66,103 @@ thread_local! {
     /// detached, so its callers cannot tell a pruned id from a detached one.
     static NODE_REGISTRY: std::cell::RefCell<HashMap<usize, web_sys::Node>> =
         std::cell::RefCell::new(HashMap::new());
+
+    /// The page's scroll lock (#474): how many overlays hold one, and what
+    /// `<html>`'s inline `overflow` was before the first of them took it.
+    ///
+    /// **Page-global, not per-`WebDocument`.** There is one `<html>` however many
+    /// island roots share the page, so a per-document counter would let the
+    /// second island's modal restore an `overflow` the first island's modal is
+    /// still relying on. Keyed by nothing for the same reason: the lock is a
+    /// property of the page.
+    static SCROLL_LOCK: std::cell::RefCell<ScrollLock> =
+        const { std::cell::RefCell::new(ScrollLock { held: 0, saved: None }) };
+}
+
+/// See [`SCROLL_LOCK`].
+struct ScrollLock {
+    /// How many overlays currently hold the lock. The page is locked while this
+    /// is non-zero, so an inner modal closing over an outer one changes nothing.
+    held: u32,
+    /// `<html>`'s inline `overflow` as it was when `held` went 0 → 1, restored
+    /// when it goes back to 0. `Some("")` means "there was no inline
+    /// declaration", which restores by *removing* the property rather than
+    /// setting it to the empty string — the two differ to
+    /// `style.cssText`, and a page whose `overflow` comes from a stylesheet must
+    /// get that value back, not an empty inline override.
+    saved: Option<String>,
+}
+
+/// `<html>` as an `HtmlElement`, the element the page's scroll lock acts on.
+///
+/// Deliberately **not** `WebDocument::body()`: that is `<div id="rinch-body">`
+/// (or the island host), a descendant of the real `<body>`, and `overflow:
+/// hidden` there does not stop the page scrolling.
+fn document_element_style() -> Option<web_sys::CssStyleDeclaration> {
+    let doc = web_sys::window()?.document()?;
+    let html: web_sys::HtmlElement = doc.document_element()?.dyn_into().ok()?;
+    Some(html.style())
+}
+
+/// Web's half of `lock_scroll` (#474), page-global and counted.
+///
+/// rinch cannot gate the browser's own wheel, so the only mechanism available is
+/// `overflow: hidden` on `<html>` — which is also what every web overlay library
+/// does. That is the documented divergence from desktop: this removes the page's
+/// scrollbar as well as its scrolling, so a page with a classic (non-overlay)
+/// scrollbar shifts horizontally when an overlay opens. Desktop's scrollbars are
+/// overlays with no gutter and it gates the gesture instead, so it does not.
+fn set_page_scroll_locked(locked: bool) {
+    SCROLL_LOCK.with(|cell| {
+        let mut lock = cell.borrow_mut();
+        if locked {
+            lock.held += 1;
+            if lock.held == 1
+                && let Some(style) = document_element_style()
+            {
+                lock.saved = Some(style.get_property_value("overflow").unwrap_or_default());
+                style.set_property("overflow", "hidden").ok();
+            }
+        } else {
+            // An unlock with nothing held is ignored, not underflowed: an
+            // overlay's `on_cleanup` releases a lock its own effect may already
+            // have released.
+            lock.held = lock.held.saturating_sub(1);
+            if lock.held == 0
+                && let Some(style) = document_element_style()
+            {
+                match lock.saved.take() {
+                    Some(prev) if !prev.is_empty() => {
+                        style.set_property("overflow", &prev).ok();
+                    }
+                    _ => {
+                        style.remove_property("overflow").ok();
+                    }
+                }
+            }
+        }
+    });
+}
+
+/// Reset the page scroll lock. Test-only: a fixture that fails between a lock
+/// and its unlock would otherwise leave `<html>` hidden for every test after it.
+#[doc(hidden)]
+pub fn __reset_scroll_lock() {
+    SCROLL_LOCK.with(|cell| {
+        *cell.borrow_mut() = ScrollLock {
+            held: 0,
+            saved: None,
+        };
+    });
+    if let Some(style) = document_element_style() {
+        style.remove_property("overflow").ok();
+    }
+}
+
+/// How many overlays currently hold the page scroll lock. Test-only.
+#[doc(hidden)]
+pub fn __scroll_lock_depth() -> u32 {
+    SCROLL_LOCK.with(|cell| cell.borrow().held)
 }
 
 /// Resolve a rinch `NodeId.0` to its live browser node — the editor glue uses this to
@@ -1318,6 +1415,12 @@ impl DomDocument for WebDocument {
         {
             el.focus().ok();
         }
+    }
+
+    /// `root` is ignored here: the browser owns the wheel, so there is nothing to
+    /// gate per-subtree. See [`set_page_scroll_locked`].
+    fn set_scroll_locked(&mut self, locked: bool, _root: NodeId) {
+        set_page_scroll_locked(locked);
     }
 
     fn resolve_layout(&mut self, _width: f32, _height: f32) {
