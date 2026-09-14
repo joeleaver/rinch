@@ -125,6 +125,9 @@ impl std::fmt::Debug for Radio {
     }
 }
 
+/// The class the checked state adds to a radio's root.
+const CHECKED_CLASS: &str = "rinch-radio--checked";
+
 impl Radio {
     /// Generate the base CSS class string for this radio (without checked state).
     fn base_class_string(&self) -> String {
@@ -152,7 +155,8 @@ impl Radio {
     pub fn class_string(&self) -> String {
         let mut class = self.base_class_string();
         if self.checked {
-            class.push_str(" rinch-radio--checked");
+            class.push(' ');
+            class.push_str(CHECKED_CLASS);
         }
         class
     }
@@ -171,7 +175,7 @@ impl Component for Radio {
 
         // Build the class string
         let class = if is_checked {
-            format!("{} rinch-radio--checked", base_class)
+            format!("{base_class} {CHECKED_CLASS}")
         } else {
             base_class
         };
@@ -179,6 +183,15 @@ impl Component for Radio {
         // Create label container
         let label_node = rinch_macros::rsx! { label {} };
         label_node.set_attribute("class", &class);
+
+        // A size of this radio's own. The class alone cannot say so — the
+        // default is pushed unconditionally, so `rinch-radio--md` is what both
+        // `size: "md"` and an unset `size` produce. `RadioGroup` needs the
+        // difference to know whether its own `size` is free to apply, so the
+        // radio records the ask rather than only its outcome.
+        if !self.size.is_empty() {
+            label_node.set_attribute("data-size", &self.size);
+        }
 
         // Color style
         if !self.color.is_empty() {
@@ -253,7 +266,13 @@ impl Component for Radio {
         }
 
         // If reactive checked_fn is provided, create an Effect that toggles both
-        // the label's checked class AND the native <input>'s `checked` state. The
+        // the label's checked class AND the native <input>'s `checked` state.
+        //
+        // It adds and removes the one class rather than rewriting the whole
+        // `class` attribute from `base_class_string()`. A rewrite drops every
+        // class put on the node *after* render — `RadioGroup`'s size class, and
+        // the universal `class:` prop the rsx macro merges onto a component's
+        // root — so the first toggle would silently undo them. The
         // input is toggled by *presence* (set "" / remove) so it stays correct on
         // both backends: on web `set_attribute` mirrors it onto the live `.checked`
         // property (issue #100) — without this, the accessible/native checked
@@ -264,16 +283,14 @@ impl Component for Radio {
             let checked_fn = checked_fn.clone();
             let label_clone = label_node.clone();
             let input_clone = input.clone();
-            let base_class = self.base_class_string();
 
             __scope.create_effect(move || {
                 let is_checked = checked_fn();
                 if is_checked {
-                    label_clone
-                        .set_attribute("class", &format!("{} rinch-radio--checked", base_class));
+                    label_clone.add_class(CHECKED_CLASS);
                     input_clone.set_attribute("checked", "");
                 } else {
-                    label_clone.set_attribute("class", &base_class);
+                    label_clone.remove_class(CHECKED_CLASS);
                     input_clone.remove_attribute("checked");
                 }
             });
@@ -305,7 +322,11 @@ pub struct RadioGroup {
     pub description: String,
     /// Error message.
     pub error: String,
-    /// Size for all radios in group.
+    /// Default size for the radios in this group.
+    ///
+    /// Applied to every [`Radio`] in the group that did not set a `size` of its
+    /// own — the radio's size wins. A radio records its own ask as `data-size`,
+    /// which is what tells an unset `size` from an explicit `"md"`.
     pub size: String,
     /// Orientation (horizontal or vertical).
     pub orientation: String,
@@ -361,6 +382,12 @@ impl Component for RadioGroup {
             radios.append_child(child);
         }
 
+        if !self.size.is_empty()
+            && let Ok(size) = self.size.parse::<RadioSize>()
+        {
+            give_radios_a_default_size(&radios, size);
+        }
+
         container.append_child(&radios);
 
         // Error message
@@ -371,5 +398,34 @@ impl Component for RadioGroup {
         }
 
         container
+    }
+}
+
+/// Give every radio in `node`'s subtree that asked for no size of its own the
+/// group's `size`.
+///
+/// A radio always carries exactly one size class, so applying the group's means
+/// removing whichever one the radio defaulted to. The other modifier classes —
+/// `--checked`, `--disabled`, `--error` — are left alone.
+fn give_radios_a_default_size(node: &NodeHandle, size: RadioSize) {
+    let classes = node.get_attribute("class").unwrap_or_default();
+    if classes.split_whitespace().any(|c| c == "rinch-radio") {
+        if node.get_attribute("data-size").is_none() {
+            for step in [
+                RadioSize::Xs,
+                RadioSize::Sm,
+                RadioSize::Md,
+                RadioSize::Lg,
+                RadioSize::Xl,
+            ] {
+                node.remove_class(step.class_name());
+            }
+            node.add_class(size.class_name());
+        }
+        return;
+    }
+
+    for child in node.children() {
+        give_radios_a_default_size(&child, size);
     }
 }

@@ -93,6 +93,13 @@ pub struct Accordion {
     /// Chevron position (left, right).
     pub chevron_position: String,
     /// Whether to disable chevron rotation.
+    ///
+    /// Published as `data-disable-chevron-rotation` on the accordion's root,
+    /// which the stylesheet reads to hold the chevron still while its item is
+    /// open. It has to travel as a cascading attribute rather than a prop: the
+    /// chevron belongs to `AccordionControl` and the rotation is driven by
+    /// `AccordionItem`, and both of those have already rendered by the time this
+    /// component's `render` runs.
     pub disable_chevron_rotation: bool,
 }
 
@@ -138,6 +145,10 @@ impl Component for Accordion {
 
         if self.multiple {
             container.set_attribute("data-multiple", "true");
+        }
+
+        if self.disable_chevron_rotation {
+            container.set_attribute("data-disable-chevron-rotation", "true");
         }
 
         for child in children {
@@ -203,7 +214,13 @@ impl Component for AccordionItem {
             });
         }
 
-        // Rotate chevron on control — find the SVG child with the chevron class
+        // Rotate chevron on control — find the SVG child with the chevron class.
+        //
+        // The open state is a **class**, not an inline `transform`. An inline
+        // style is the top of the cascade, so an accordion asking for
+        // `disable_chevron_rotation` could not countermand it: that prop is read
+        // by `Accordion`, which renders after this item, and there is nothing
+        // left to take the rotation back off once it is inline.
         if let Some(ref btn) = control_btn {
             let chevron = btn.children().into_iter().find(|child| {
                 child
@@ -213,9 +230,9 @@ impl Component for AccordionItem {
             if let Some(chevron) = chevron {
                 __scope.create_effect(move || {
                     if is_open.get() {
-                        chevron.set_style("transform", "rotate(180deg)");
+                        chevron.add_class("rinch-accordion__chevron--rotated");
                     } else {
-                        chevron.set_style("transform", "");
+                        chevron.remove_class("rinch-accordion__chevron--rotated");
                     }
                 });
             }

@@ -30,7 +30,12 @@ pub type ReactiveBool = Rc<dyn Fn() -> bool>;
 pub struct Checkbox {
     /// Label displayed next to the checkbox.
     pub label: String,
-    /// Description displayed below the checkbox.
+    /// Description displayed below the label.
+    ///
+    /// Renders as `.rinch-checkbox__description` inside a `.rinch-checkbox__body`
+    /// column beside the box, the layout `Radio` already uses for the same pair.
+    /// A checkbox that carries one also takes `--with-description`, which aligns
+    /// the box to the first line instead of centring it on a two-line body.
     pub description: String,
     /// Size (xs, sm, md, lg).
     pub size: String,
@@ -84,6 +89,14 @@ impl Checkbox {
         // Disabled
         if self.disabled {
             classes.push("rinch-checkbox--disabled");
+        }
+
+        // A two-line body wants the box aligned to its first line. This belongs
+        // in the *base* class string rather than being added after render: the
+        // reactive-checked effect rebuilds the attribute from this method, and
+        // would drop anything added outside it.
+        if !self.description.is_empty() {
+            classes.push("rinch-checkbox--with-description");
         }
 
         classes.join(" ")
@@ -160,12 +173,25 @@ impl Component for Checkbox {
         box_node.append_child(&icon_span);
         label_node.append_child(&box_node);
 
-        // Label text
-        if !self.label.is_empty() {
-            let label_text = &self.label;
-            let label_span =
-                rinch_macros::rsx! { span { class: "rinch-checkbox__label", {label_text} } };
-            label_node.append_child(&label_span);
+        // Label and description
+        if !self.label.is_empty() || !self.description.is_empty() {
+            let body = rinch_macros::rsx! { div { class: "rinch-checkbox__body" } };
+
+            if !self.label.is_empty() {
+                let label_text = &self.label;
+                let label_span =
+                    rinch_macros::rsx! { span { class: "rinch-checkbox__label", {label_text} } };
+                body.append_child(&label_span);
+            }
+
+            if !self.description.is_empty() {
+                let desc = &self.description;
+                let desc_span =
+                    rinch_macros::rsx! { span { class: "rinch-checkbox__description", {desc} } };
+                body.append_child(&desc_span);
+            }
+
+            label_node.append_child(&body);
         }
 
         // If reactive checked_fn is provided, create an Effect that toggles both

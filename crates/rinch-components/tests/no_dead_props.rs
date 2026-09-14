@@ -25,7 +25,8 @@
 //! component here is a hand-written `struct` + `impl Component` and the macro is
 //! for *user* components — and destructuring `self` in `render` without `..`,
 //! which is compiler-enforced but is 59 files of churn and fights the `Debug`
-//! impls. So: source text, today, with the debt visible in `ALLOWLIST`.
+//! impls. So: source text, today, with the debt visible in `ALLOWLIST` — which
+//! #707 emptied.
 //!
 //! ## Known limits (this is a floor, not a ceiling)
 //!
@@ -56,42 +57,23 @@ use std::path::Path;
 
 /// Props that are declared, documented, and still not wired — the debt #474
 /// catalogued, with the sub-cluster each belongs to. Every entry must name a
-/// live reason: this list may only shrink. It started at 31 and is 9; the
-/// twenty-two that left were #474's whole `z_index` sub-cluster, its five dead
-/// `radius` props, `CloseButton::icon_size`, `Drawer::overlay_opacity`, and the
-/// whole of **category A**.
+/// live reason: **this list may only shrink**, and it is now empty. It started
+/// at 31, stood at 9 after #474's own three PRs, and #707 took the last nine.
 ///
-/// Category A — overlay behaviour — is **closed**. `close_on_escape`,
-/// `Popover::close_on_click_outside` and `Notification::auto_close` landed with
-/// the dismiss stack; `trap_focus` with `data-trap-focus` and the two backends'
-/// Tab containment; `lock_scroll` with `DomDocument::set_scroll_locked`. What is
-/// left below is categories C and D, which are a different kind of debt: a
-/// parent prop whose child's twin already works, and props that need markup.
-const ALLOWLIST: &[(&str, &str)] = &[
-    // #474 category C — a parent prop whose child's twin works.
-    ("List::icon", "#474 C: not plumbed to ListItem"),
-    (
-        "Stepper::completed_icon",
-        "#474 C: not plumbed to StepperStep",
-    ),
-    (
-        "Stepper::progress_icon",
-        "#474 C: not plumbed to StepperStep",
-    ),
-    (
-        "Stepper::allow_next_steps_select",
-        "#474 C: selection gating",
-    ),
-    ("RadioGroup::size", "#474 C: not plumbed to Radio"),
-    (
-        "Accordion::disable_chevron_rotation",
-        "#474 C: chevron is AccordionControl's",
-    ),
-    // #474 category D — content and input props.
-    ("Checkbox::description", "#474 D: needs markup + CSS"),
-    ("Switch::description", "#474 D: needs markup + CSS"),
-    ("Textarea::max_rows", "#474 D: autosize bound"),
-];
+/// All four of #474's categories are closed. **A** (overlay behaviour) landed
+/// with the dismiss stack, `data-trap-focus` and `DomDocument::set_scroll_locked`;
+/// **B** (styling) with the five `radius` props, `CloseButton::icon_size` and
+/// the two `overlay_opacity`; **C** (a parent prop whose child's twin works)
+/// with `List::icon`, the two `Stepper` icons, `Stepper::allow_next_steps_select`,
+/// `RadioGroup::size` and `Accordion::disable_chevron_rotation`; **D** (content
+/// and input props) with the two `description`s and `Textarea::max_rows`.
+///
+/// An empty list is the point of the ratchet, not the end of it: adding an entry
+/// is admitting a new dead prop, which is what #474 asked to be made visible
+/// rather than impossible. Nothing about the scan changes when it is empty —
+/// [`every_component_prop_is_read_or_allowlisted`] now fails on any unread prop
+/// at all.
+const ALLOWLIST: &[(&str, &str)] = &[];
 
 /// One top-level item: the header line that opens it plus its whole text.
 struct Item {

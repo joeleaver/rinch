@@ -30,7 +30,13 @@ pub type ReactiveBool = Rc<dyn Fn() -> bool>;
 pub struct Switch {
     /// Label displayed next to the switch.
     pub label: String,
-    /// Description displayed below the switch.
+    /// Description displayed below the label.
+    ///
+    /// Renders as `.rinch-switch__description` inside a `.rinch-switch__body`
+    /// column beside the track, the layout `Radio` already uses for the same
+    /// pair. A switch that carries one also takes `--with-description`, which
+    /// aligns the track to the first line instead of centring it on a two-line
+    /// body.
     pub description: String,
     /// Size (xs, sm, md, lg).
     pub size: String,
@@ -89,6 +95,14 @@ impl Switch {
         // Label position
         if !self.label_position.is_empty() && self.label_position == "start" {
             classes.push("rinch-switch--label-start");
+        }
+
+        // A two-line body wants the track aligned to its first line. This
+        // belongs in the *base* class string rather than being added after
+        // render: the reactive-checked effect rebuilds the attribute from this
+        // method, and would drop anything added outside it.
+        if !self.description.is_empty() {
+            classes.push("rinch-switch--with-description");
         }
 
         classes.join(" ")
@@ -157,12 +171,25 @@ impl Component for Switch {
 
         label_node.append_child(&track);
 
-        // Label text
-        if !self.label.is_empty() {
-            let label_text = &self.label;
-            let label_span =
-                rinch_macros::rsx! { span { class: "rinch-switch__label", {label_text} } };
-            label_node.append_child(&label_span);
+        // Label and description
+        if !self.label.is_empty() || !self.description.is_empty() {
+            let body = rinch_macros::rsx! { div { class: "rinch-switch__body" } };
+
+            if !self.label.is_empty() {
+                let label_text = &self.label;
+                let label_span =
+                    rinch_macros::rsx! { span { class: "rinch-switch__label", {label_text} } };
+                body.append_child(&label_span);
+            }
+
+            if !self.description.is_empty() {
+                let desc = &self.description;
+                let desc_span =
+                    rinch_macros::rsx! { span { class: "rinch-switch__description", {desc} } };
+                body.append_child(&desc_span);
+            }
+
+            label_node.append_child(&body);
         }
 
         // If reactive checked_fn is provided, create an Effect that toggles both
