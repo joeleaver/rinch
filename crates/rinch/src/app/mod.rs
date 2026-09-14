@@ -24,6 +24,8 @@ mod focus_lifecycle_tests;
 #[cfg(test)]
 mod font_tests;
 #[cfg(test)]
+mod frozen_component_box_tests;
+#[cfg(test)]
 mod hidpi_pointer_tests;
 pub(crate) mod hit_testing;
 #[cfg(test)]

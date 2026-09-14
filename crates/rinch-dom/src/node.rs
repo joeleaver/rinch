@@ -1546,6 +1546,52 @@ pub struct NodeTree {
     /// IFC roots whose text content changed since last layout.
     /// Used to skip expensive Parley rebuilds for unchanged IFC roots.
     pub dirty_ifc_text_roots: HashSet<RawNodeId>,
+    /// How many times `run_taffy_compute` has run over this tree.
+    ///
+    /// Instrumentation, not state: `resolve_layout`'s `!layout_dirty` early
+    /// return is a **behaviour** — a paint-only restyle must not pay for a
+    /// compute — and nothing observable distinguishes "took the cheap path" from
+    /// "recomputed and got the same answer". This counter is what lets a fixture
+    /// pin the cheap path (issue #678, whose repair widens what sets
+    /// `layout_dirty` and so could have swallowed it). One `u64` increment per
+    /// compute.
+    pub taffy_computes: u64,
+    /// Text nodes whose Taffy measure context (`NodeContext::Text`) no longer
+    /// matches the typography their parent now computes (issue #678).
+    ///
+    /// `sync_dirty_text_contexts` refreshes the contexts of text nodes in
+    /// `dirty_nodes`, which records DOM *mutations* — a recascade is not one, so
+    /// a text node whose parent's `font-size` changed kept a context built from
+    /// the old one. That is invisible wherever the measure goes through
+    /// `NodeContext::InlineRoot`, because `build_inline_layout` reads the
+    /// computed styles directly; it is the whole answer wherever it does not,
+    /// which is every text node that is a **flex or grid item** — including the
+    /// interior of an `inline-flex` or `inline-grid`, the two atomic inlines
+    /// #661 leaves frozen after its own repair.
+    ///
+    /// Read (and emptied) by `sync_dirty_text_contexts`; emptied unread by the
+    /// full `sync_text_contexts`, which refreshes every text node anyway.
+    pub dirty_text_contexts: HashSet<RawNodeId>,
+    /// Atomic inlines (`inline-block`, `inline-flex`, `inline-grid`) whose own
+    /// box may have changed size since the last layout pass (issue #661).
+    ///
+    /// An atomic inline is **detached from its parent's Taffy child list** so
+    /// the enclosing IFC measures it as an `InlineBox`, which means the root
+    /// Taffy compute never reaches it: the only thing that ever gives it a size
+    /// is `compute_inline_block_layouts`, and that runs only on an `ifc_dirty`
+    /// pass. A style change or a text change sets neither flag, so the box was
+    /// measured once and frozen while paint re-laid its text at the new style.
+    ///
+    /// This is the scoped repair: a **set**, not a flag, so a text change in one
+    /// row of a 500-row document re-measures that row's atomic inlines and not
+    /// the document's. Consumed (and emptied) by
+    /// `RinchDocument::remeasure_dirty_atomic_inlines` on a pass that runs Taffy
+    /// without rebuilding the IFC structure; cleared unconsumed on an
+    /// `ifc_dirty` pass, which re-measures every atomic inline anyway.
+    ///
+    /// Entries are node ids and are **not** validated on insert — a node may be
+    /// removed before the set is read, so the consumer `get`s and skips.
+    pub dirty_atomic_inlines: HashSet<RawNodeId>,
     /// Cached IFC measure results from previous frames.
     /// Key: (ifc_root_node_id, wrap_width_bits) → (width, height).
     /// Invalidated per-root when text content changes.
@@ -1701,6 +1747,9 @@ impl NodeTree {
             image_cache: ImageCache::new(),
             image_loader: None,
             dirty_ifc_text_roots: HashSet::new(),
+            taffy_computes: 0,
+            dirty_text_contexts: HashSet::new(),
+            dirty_atomic_inlines: HashSet::new(),
             ifc_measure_cache: HashMap::new(),
             scroll_into_view_requests: Vec::new(),
             pending_scroll_clamps: Vec::new(),

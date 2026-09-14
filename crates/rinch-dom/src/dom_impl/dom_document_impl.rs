@@ -361,6 +361,10 @@ impl DomDocument for RinchDocument {
         if let Some(parent_id) = self.tree.nodes[n].parent {
             self.invalidate_parent_ifc(parent_id);
         }
+        // New text is new content to shrink-wrap: every atomic inline above
+        // this node has to be measured again, and the root compute cannot do it
+        // — they are detached from its child list (issue #661).
+        self.mark_atomic_inline_dirty(n);
         // Track which IFC root has dirty text content so the measure callback
         // can skip expensive Parley rebuilds for unchanged roots.
         {

@@ -70,6 +70,56 @@ fn counter() -> NodeHandle {
 
 The `#[component]` macro injects a `__scope: &mut RenderScope` parameter. The `rsx!` macro generates calls to `__scope.create_element()`, `__scope.create_text()`, and `__scope.create_effect()` to build the DOM tree programmatically. No HTML strings are generated or parsed at runtime.
 
+## Layout Stage
+
+`RinchDocument::resolve_layout` is the whole of it, and it has **three** paths
+rather than one. Which it takes is decided by two flags on the tree, and the
+flags are the part worth knowing, because a change that dirties neither is a
+change the pass will not see.
+
+| flag | set by | what it buys |
+|---|---|---|
+| `layout_dirty` | a structural mutation, a text-content change, a viewport change, a decoded image, a **Taffy** style that actually changed, and a restyle that changes how text **measures** | the Taffy compute |
+| `ifc_dirty` | a structural mutation, a `display`/`position` change, a `DisplayMode` change | the inline-formatting-context setup passes, including the measure of every atomic inline |
+
+- **Neither dirty** — styles are resolved, dirty Parley layouts are rebuilt, and
+  the pass returns. A `:hover { color }` costs this and nothing more; it is the
+  reason the early return exists.
+- **`layout_dirty` only** — Taffy runs over the existing IFC structure. Text
+  measure contexts are refreshed incrementally, and the atomic inlines something
+  changed under are re-measured from a dirty set.
+- **Both** — the IFC structure is rebuilt from scratch and every atomic inline in
+  the document is measured.
+
+### Why a typography change is a layout change
+
+`font-family`, `font-weight`, `font-style`, `line-height`, `letter-spacing`,
+`word-spacing`, `text-transform`, `white-space` and `overflow-wrap` are not Taffy
+properties, and neither is `font-size` for a box whose own sizes are in `px`. A
+declaration change in any of them re-wraps the text and therefore moves the box
+around it, so it sets `layout_dirty` even though no Taffy field changed
+(`ComputedStyle::same_measured_text_inputs`, issue #678). That predicate is
+deliberately narrower than the one that decides whether the shaped glyphs have to
+be rebuilt (`same_text_layout_inputs`, issue #654): `color` is baked into the
+glyphs and moves nothing, and keeping it out of the first list is what keeps the
+cheap path cheap.
+
+A transition or an animation writes `computed_style` directly rather than through
+the cascade, so a `transition: font-size` frame reaches none of that gating on
+its own; both ticks invalidate the text measure of the nodes they are
+interpolating.
+
+### Why an atomic inline needs its own pass
+
+An `inline-block`, `inline-flex` or `inline-grid` box is **detached from its
+parent's Taffy child list** so the enclosing inline formatting context can
+measure it as a Parley `InlineBox`. The root compute therefore never reaches it,
+and the only two things that ever give one a size are the `ifc_dirty` pass and,
+since issue #661, a re-measure of the boxes a change actually reached
+(`dirty_atomic_inlines`). A component that declares `display: inline-flex` —
+`Badge`, `Button` and the rest of the list in CLAUDE.md — is one of these
+whenever it sits beside text rather than inside a `Stack`.
+
 ## Key Technologies
 
 ### rinch-dom

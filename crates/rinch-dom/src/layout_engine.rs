@@ -240,6 +240,21 @@ impl RinchDocument {
                     t.elapsed().as_secs_f64() * 1000.0
                 );
             }
+
+            // An atomic inline is detached from its parent's Taffy child list,
+            // so the compute below cannot reach it and the branch above — the
+            // only thing that ever sized one — has been skipped. Re-measure the
+            // ones something actually changed under (issue #661), before the
+            // compute, because the enclosing IFC line-breaks against the box
+            // this produces.
+            let t = web_time::Instant::now();
+            let moved = self.remeasure_dirty_atomic_inlines();
+            if perf && moved {
+                eprintln!(
+                    "  [PERF] remeasure_atomic_inlines: {:.2}ms",
+                    t.elapsed().as_secs_f64() * 1000.0
+                );
+            }
         }
 
         let available_space = taffy::Size {
@@ -449,6 +464,7 @@ impl RinchDocument {
         available_space: taffy::Size<taffy::AvailableSpace>,
         perf: bool,
     ) -> HashMap<(usize, u32), parley::layout::Layout<Brush>> {
+        self.tree.taffy_computes += 1;
         let font_cx = &mut self.font_cx;
         let layout_cx = &mut self.layout_cx;
         let nodes = &self.tree.nodes;
@@ -659,8 +675,13 @@ impl RinchDocument {
     }
 
     /// Incremental version of `sync_text_contexts` — only processes text nodes
-    /// that are in `dirty_nodes`. Used when IFC structure is unchanged (ifc_dirty=false)
-    /// to avoid walking all text nodes.
+    /// that are in `dirty_nodes` or `dirty_text_contexts`. Used when IFC
+    /// structure is unchanged (ifc_dirty=false) to avoid walking all text nodes.
+    ///
+    /// The second set is the one a **restyle** fills (#678): `dirty_nodes`
+    /// records DOM mutations, and a recascade is not one, so a text node whose
+    /// parent's `font-size` changed was measured out of a context built from the
+    /// old one. See `NodeTree::dirty_text_contexts`.
     #[allow(clippy::type_complexity)]
     pub(crate) fn sync_dirty_text_contexts(&mut self) {
         use crate::computed_style::{OverflowValue, WhiteSpaceValue};
@@ -678,7 +699,13 @@ impl RinchDocument {
             bool,
         )> = Vec::new();
 
-        for &id in &self.tree.dirty_nodes {
+        for id in self
+            .tree
+            .dirty_nodes
+            .iter()
+            .copied()
+            .chain(self.tree.dirty_text_contexts.iter().copied())
+        {
             let node = match self.tree.nodes.get(id) {
                 Some(n) => n,
                 None => continue,
@@ -771,6 +798,7 @@ impl RinchDocument {
                 parent_overflow_hidden,
             ));
         }
+        self.tree.dirty_text_contexts.clear();
 
         for (
             taffy_id,
@@ -810,6 +838,8 @@ impl RinchDocument {
     #[allow(clippy::type_complexity)]
     pub(crate) fn sync_text_contexts(&mut self) {
         use crate::computed_style::{OverflowValue, WhiteSpaceValue};
+        // Every text node is refreshed below, so nothing stays owed.
+        self.tree.dirty_text_contexts.clear();
         let mut updates: Vec<(
             taffy::NodeId,
             usize,
@@ -2118,6 +2148,56 @@ impl RinchDocument {
             current = parent;
         }
         owners
+    }
+
+    /// Everything a node's **typography** change owes the layout already taken
+    /// from it (issues #654, #661, #678).
+    ///
+    /// Three derived things are baked from a node's font, and each is dropped by
+    /// a different mechanism, which is why this is one function and not three
+    /// call sites that drift:
+    ///
+    /// 1. the Parley layout of the IFC that holds the text —
+    ///    [`Self::invalidate_ifc_for_node`];
+    /// 2. the box of any atomic inline above it, which no Taffy compute reaches
+    ///    — [`Self::mark_atomic_inline_dirty`];
+    /// 3. the `NodeContext::Text` a text child is measured through when it is a
+    ///    flex or grid item, which is a *copy* of this node's typography and
+    ///    which the incremental sync would not refresh, because the set it reads
+    ///    records DOM mutations and a restyle is not one. Taffy caches a leaf
+    ///    measure per available space, so the leaf is marked as well as the
+    ///    context — refreshing one without the other changes nothing.
+    ///
+    /// Called from the cascade (`apply_stylo_styles_to_taffy`, gated on
+    /// `ComputedStyle::same_text_layout_inputs`) and from the transition and
+    /// animation ticks, which write `computed_style` **without** going through
+    /// the cascade and so reach none of that gating by themselves.
+    ///
+    /// The cascade's gate is deliberately the **wider** of its two predicates —
+    /// `same_text_layout_inputs` rather than `same_measured_text_inputs`, which
+    /// is what decides `layout_dirty`. Step 2 is an O(depth) walk that does
+    /// nothing unless a compute follows, and steps 1 and 3 are invalidations
+    /// rather than work; so a property listed one predicate too wide costs a
+    /// spare re-shape, and one listed too narrow leaves a box frozen.
+    pub(crate) fn invalidate_text_measure_for_node(&mut self, node_id: usize) {
+        if !self.tree.nodes.contains(node_id) {
+            return;
+        }
+        self.invalidate_ifc_for_node(node_id);
+        self.mark_atomic_inline_dirty(node_id);
+        for child in self.tree.nodes[node_id].children.clone() {
+            let Some(child_node) = self.tree.nodes.get(child) else {
+                continue;
+            };
+            if !matches!(child_node.kind, NodeKind::Text(_)) {
+                continue;
+            }
+            let taffy_id = child_node.taffy_id;
+            self.tree.dirty_text_contexts.insert(child);
+            if let Some(t) = taffy_id {
+                let _ = self.tree.taffy.mark_dirty(t);
+            }
+        }
     }
 
     /// Invalidate the IFC that owns a node (if any).

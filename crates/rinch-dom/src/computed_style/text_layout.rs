@@ -218,4 +218,54 @@ impl ComputedStyle {
             && self.padding_bottom.to_px() == other.padding_bottom.to_px()
             && self.border_radius_top_left.to_px() == other.border_radius_top_left.to_px()
     }
+
+    /// The subset of [`Self::same_text_layout_inputs`] that can change a
+    /// **measured size** — how wide the shaped text is, and how many line boxes
+    /// it breaks into (issue #678).
+    ///
+    /// The larger predicate answers "must the Parley layout be rebuilt"; this
+    /// one answers "must Taffy run again". They are not the same question, and
+    /// the difference is the whole of the cheap path `resolve_layout` takes when
+    /// `layout_dirty` is false: a `:hover { color }` re-shapes the glyphs with a
+    /// new brush, which is a rebuild, and leaves every box exactly where it was,
+    /// which is not a relayout. A `:hover { font-weight: bold }` is both.
+    ///
+    /// **A property listed here that cannot move a box costs a spare Taffy
+    /// compute; one missing from here leaves the box frozen around re-wrapped
+    /// text**, which is #678 — so the asymmetry is the opposite way round to the
+    /// larger predicate's, and the tie-break is still "list it".
+    ///
+    /// Six of the larger list's entries are deliberately absent, each because
+    /// the producer that reads it consumes a width rather than producing one:
+    /// `color`, `text_align` (it distributes a line inside a width it is given),
+    /// `text_decoration` and `text_underline_offset` (ink, no advance),
+    /// `text_overflow` (the ellipsis rebuild truncates to a width already
+    /// decided) and the `same_inline_background_inputs` group. `overflow_x` is
+    /// absent for a different reason: it is a Taffy property, so a change in it
+    /// is already caught by the Taffy style comparison that sets `layout_dirty`
+    /// in the first place. The same is true of the paddings inside that group.
+    ///
+    /// `color` is the one pinned by a fixture
+    /// (`frozen_box_remeasure_tests::a_colour_only_restyle_still_skips_taffy`),
+    /// because it is the cheap path's whole reason for existing; the others are
+    /// documented rather than pinned.
+    pub fn same_measured_text_inputs(&self, other: &ComputedStyle) -> bool {
+        use super::values::LineHeightValue;
+        let same_line_height = match (self.line_height, other.line_height) {
+            (LineHeightValue::Normal, LineHeightValue::Normal) => true,
+            (LineHeightValue::Absolute(x), LineHeightValue::Absolute(y)) => x == y,
+            (LineHeightValue::Relative(x), LineHeightValue::Relative(y)) => x == y,
+            _ => false,
+        };
+        self.font_size == other.font_size
+            && self.font_weight == other.font_weight
+            && self.font_family == other.font_family
+            && self.font_style == other.font_style
+            && same_line_height
+            && self.letter_spacing == other.letter_spacing
+            && self.word_spacing == other.word_spacing
+            && self.text_transform == other.text_transform
+            && self.white_space == other.white_space
+            && self.overflow_wrap == other.overflow_wrap
+    }
 }

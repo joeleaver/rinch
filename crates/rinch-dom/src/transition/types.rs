@@ -112,6 +112,26 @@ impl TransitionProperty {
         })
     }
 
+    /// Whether interpolating this property changes how text **measures** — the
+    /// shaped width of a run, and the number of line boxes it breaks into.
+    ///
+    /// A different question from [`Self::affects_layout`], which asks whether
+    /// the *Taffy* style has to be rebuilt. `font-size` is the only property in
+    /// this enum whose effect on a box runs through text
+    /// measurement rather than through a Taffy field — it reaches a Taffy field
+    /// only via a value that *uses* it, an `em` length or a `line-height`
+    /// multiplier — so a frame of a `transition: font-size` re-wraps the text
+    /// and leaves the box around it at the size it was measured at one frame
+    /// earlier, unless the derived layout and the cached measure are dropped.
+    /// That is what this predicate gates (issue #678).
+    ///
+    /// `All` is included because a spec written `transition: all` can carry any
+    /// property; the map key is normally the concrete one, and answering yes for
+    /// the wildcard costs a spare invalidation rather than a stale box.
+    pub fn changes_text_measure(&self) -> bool {
+        matches!(self, Self::FontSize | Self::All)
+    }
+
     /// Whether this property affects layout (needs Taffy re-sync).
     pub fn affects_layout(&self) -> bool {
         !matches!(

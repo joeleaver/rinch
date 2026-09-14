@@ -736,6 +736,14 @@ impl RinchDocument {
                 .computed_style
                 .same_text_layout_inputs(&new_style);
 
+            // …and, narrower, whether the *measured size* that layout took from
+            // it is still the size this style would measure (issue #678). The
+            // two questions are different and the gap between them is the cheap
+            // path: see `ComputedStyle::same_measured_text_inputs`.
+            let measured_size_stale = !self.tree.nodes[node_id]
+                .computed_style
+                .same_measured_text_inputs(&new_style);
+
             // Extract transition specs from Stylo
             let transition_specs = TransitionSpec::extract_from_stylo(&computed_values);
             self.tree.nodes[node_id].transition_specs = transition_specs;
@@ -840,9 +848,11 @@ impl RinchDocument {
             self.tree.nodes[node_id].has_been_styled = true;
 
             // Drop the Parley layout the old typography was baked into, and
-            // the Taffy measurement taken from it (#654). `invalidate_ifc_for_node`
-            // is the one place that knows which node actually holds the layout:
-            // this node when it is the IFC root, its `ifc_root` when it is an
+            // every measurement taken from it (#654, #661, #678) —
+            // `invalidate_text_measure_for_node` is the one place that knows
+            // what those are. Its first step, `invalidate_ifc_for_node`, is the
+            // one place that knows which node actually *holds* the layout: this
+            // node when it is the IFC root, its `ifc_root` when it is an
             // inline inside one, and an ancestor walk for anything else.
             //
             // **It marks Taffy twice, and both marks are load-bearing on
@@ -876,7 +886,33 @@ impl RinchDocument {
             // an_inline_layout_is_built_from` is the only pin on the predicate's
             // contents.
             if text_layout_stale {
-                self.invalidate_ifc_for_node(node_id);
+                self.invalidate_text_measure_for_node(node_id);
+            }
+
+            // A typography change that re-wraps the text has to re-run Taffy,
+            // or the box keeps the size it was measured at in the old font
+            // (issue #678). `font-family`, `font-weight`, `font-style`,
+            // `line-height` (as a number), `letter-spacing`, `word-spacing`,
+            // `text-transform`, `white-space` and `overflow-wrap` are not Taffy
+            // properties, so the comparison further down never fires for them
+            // and `layout_dirty` stayed false: `resolve_layout` took its
+            // text-only branch, rebuilt the Parley layout in the new font and
+            // returned without a compute, leaving a block that should have gone
+            // 40 → 80 tall at 40.
+            //
+            // **`font-size` is on that list too, and that is not obvious.** It
+            // reaches the Taffy style only through a value that *uses* it — an
+            // `em` length, a `line-height` multiplier baked to px — so a box
+            // sized in `px` around text sized in `px` changes no Taffy field at
+            // all. The measured-inputs predicate is what catches it, and it is
+            // why #661's `font-size: 16px → 32px` repro froze before this line
+            // as well as after it.
+            //
+            // Narrower than `text_layout_stale` on purpose: a `:hover { color }`
+            // must still take the cheap path, which is what the early return in
+            // `resolve_layout` exists for.
+            if measured_size_stale {
+                self.tree.layout_dirty = true;
             }
 
             // Sync display_mode from computed style (always from new_style target)
@@ -1030,6 +1066,10 @@ impl RinchDocument {
                     }
                     let _ = self.tree.taffy.set_style(taffy_id, taffy_style);
                     self.tree.layout_dirty = true;
+                    // A Taffy style change reaches this node's own box through
+                    // the compute — unless an atomic inline sits between it and
+                    // the compute root, which is every node inside one (#661).
+                    self.mark_atomic_inline_dirty(node_id);
                     taffy_style_changed_count.set(taffy_style_changed_count.get() + 1);
                 }
             } else {

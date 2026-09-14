@@ -539,7 +539,37 @@ impl RinchDocument {
             .as_secs_f64()
             * 1000.0;
 
+        // Which nodes are having their *typography* interpolated, read **before**
+        // the tick, which removes a transition the moment it completes.
+        //
+        // A transition writes `computed_style` directly, so none of the cascade's
+        // invalidation runs for it — and a `font-size` frame changes no Taffy
+        // field of its own, so the loop below cannot notice it either. Left
+        // alone, each frame re-wraps the text and then serves the *previous*
+        // frame's cached measure back for the box.
+        //
+        // This is issue #678 arriving by a second route, and #678's own repair
+        // is what made it reachable — measured, not reasoned. Before that repair
+        // no Taffy compute ran on a typography-only pass at all, so nothing had
+        // cached a measure to serve and `transition_tests::a_finished_font_size_
+        // transition_reaches_the_inline_layout` was green. With the repair and
+        // without this pre-pass, the same fixture comes back 30px tall around
+        // 40px text.
+        let text_measure_nodes: Vec<usize> = self
+            .tree
+            .active_transitions
+            .iter()
+            .filter(|(_, props)| props.keys().any(|p| p.changes_text_measure()))
+            .map(|(id, _)| *id)
+            .collect();
+
         let any_active = crate::transition::tick_transitions(&mut self.tree, current_time_ms);
+
+        for node_id in text_measure_nodes {
+            self.invalidate_text_measure_for_node(node_id);
+            // The box has to be measured again, and no Taffy style changed.
+            self.tree.layout_dirty = true;
+        }
 
         // For layout-affecting transitions, we need to re-sync Taffy styles
         // from the updated computed_style values.
@@ -653,7 +683,29 @@ impl RinchDocument {
             .as_secs_f64()
             * 1000.0;
 
+        // The animation twin of the pre-pass in `tick_transitions` — same reason,
+        // same issue (#678). An animation's property set lives in its keyframes
+        // rather than in a map key, so the question is asked of those.
+        let text_measure_nodes: Vec<usize> = self
+            .tree
+            .active_animations
+            .iter()
+            .filter(|(_, anims)| {
+                anims.iter().any(|a| {
+                    a.keyframe_stops
+                        .iter()
+                        .any(|k| k.values.iter().any(|(p, _)| p.changes_text_measure()))
+                })
+            })
+            .map(|(id, _)| *id)
+            .collect();
+
         let any_active = crate::animation::tick_animations(&mut self.tree, current_time_ms);
+
+        for node_id in text_measure_nodes {
+            self.invalidate_text_measure_for_node(node_id);
+            self.tree.layout_dirty = true;
+        }
 
         // For layout-affecting animations, re-sync Taffy styles.
         let layout_dirty: Vec<usize> = self
