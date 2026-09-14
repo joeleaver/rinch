@@ -39,12 +39,51 @@ impl RinchDocument {
 
         // Targeted resolution: only visit the invalidated subtrees.
         //
+        // Entries whose node is **not connected to the document are dropped**
+        // (#651, #668). "What is this element's style?" is a question CSS only
+        // answers for elements in a document, and the answer this path was
+        // inventing for the rest was wrong in both directions: with no ancestor
+        // chain, `find_parent_computed_style` answers `None`, so every
+        // inherited property cascades to its *initial* value and no descendant
+        // selector can match.
+        //
+        // - **Unmount (#668).** A removed subtree holding a pending entry
+        //   recascaded to `font-family: serif` / `color: black`, and
+        //   `build_ifc_layouts` — which collects its roots from the whole slab
+        //   (#628) — then reshaped its text from those values, every layout.
+        // - **Mount (#651).** A component's child is classed before it is
+        //   spliced in; anything that resolves in the window between drains
+        //   that entry, cascades the child parentless, and sets
+        //   `has_been_styled`. Its first *attached* resolution is then a
+        //   **change** on an already-styled node, which is exactly what
+        //   `transition` waits for — a visible wrong animation on every mount
+        //   of a component sized by a modifier class on its wrapper
+        //   (`Checkbox`, `Switch`, `Select`). Skipping leaves the node
+        //   untouched by `apply_stylo_styles_to_taffy` as well, so
+        //   `has_been_styled` stays `false` and the splice is its first style,
+        //   which is the web's own rule.
+        //
+        // A dropped entry is not a lost resolution: every route that connects a
+        // node — `append_child`, `insert_before`, `insert_child`,
+        // `replace_node` — ends in `recompute_node_styles_recursive`, which
+        // invalidates the whole inserted subtree and pushes it as a root of its
+        // own. And connectivity is asked **here**, at resolve time, not where
+        // the entry was pushed, so a node classed while detached and spliced in
+        // before the next resolve is still carried by that same entry.
+        //
+        // The list is not filtered on removal. `remove_node` could drop the
+        // subtree's entries eagerly, but it is one of four detach routes
+        // (`remove_child`, a reparenting `append_child`/`insert_before` and
+        // `replace_node`'s implicit detach of `old` are the others), so an
+        // eager drop there would be a partial cure that reads as a complete
+        // one — and it can remove no work this skip does not already remove.
+        //
         // Sort by depth (shallowest first) so that if both a parent and
         // child appear, the parent is resolved first and the child can
         // be skipped (it will be covered by the parent's subtree walk).
         let mut sorted: Vec<(usize, usize)> = roots
             .into_iter()
-            .map(|id| (id, self.node_depth(id)))
+            .filter_map(|id| Some((id, self.depth_if_connected(id)?)))
             .collect();
         sorted.sort_unstable_by_key(|&(_, depth)| depth);
         sorted.dedup_by_key(|entry| entry.0);
@@ -92,15 +131,47 @@ impl RinchDocument {
         false
     }
 
-    /// Return the depth of a node in the tree (0 = root).
-    fn node_depth(&self, node_id: usize) -> usize {
+    /// The node's depth below the document node (0 = the document node
+    /// itself), or `None` when the node is **not connected to it**.
+    ///
+    /// One walk answers both questions, which is the whole reason they share a
+    /// function: the depth is only wanted for a node that has one.
+    ///
+    /// The anchor is `tree.root_id` — the document node, `<html>`'s parent —
+    /// rather than `html_id`, so this refuses nothing the targeted path used to
+    /// resolve. A node parented directly to the document node is outside the
+    /// full-tree walk (which starts at `html_id`) and inside this one; that
+    /// asymmetry is unchanged from before the connectivity test existed.
+    /// `a_sibling_of_html_is_connected_because_the_anchor_is_the_document_node`
+    /// is the pin, and it fails against an `html_id` anchor.
+    ///
+    /// The `node_id == root_id` self-case is not decoration: without it the walk
+    /// starts at the document node's parent, finds `None`, and answers
+    /// "detached" for the one node that *is* the document — so an entry for it
+    /// would be dropped and the recascade it asks for would not happen.
+    /// `the_document_nodes_own_entry_is_resolved` is the pin.
+    ///
+    /// Both of those shapes are reachable only by handing a DOM method the
+    /// document node's own id, which nothing in rinch does. They are pinned
+    /// because they are the only things that tell the two anchors apart.
+    ///
+    /// A `None` also covers an id that is no longer in the slab, or whose
+    /// ancestor chain leaves it — a `style_roots` entry outlives the node it
+    /// names.
+    fn depth_if_connected(&self, node_id: usize) -> Option<usize> {
+        if node_id == self.tree.root_id {
+            return self.tree.nodes.get(node_id).map(|_| 0);
+        }
         let mut depth = 0;
-        let mut current = self.tree.nodes.get(node_id).and_then(|n| n.parent);
+        let mut current = self.tree.nodes.get(node_id)?.parent;
         while let Some(pid) = current {
             depth += 1;
-            current = self.tree.nodes.get(pid).and_then(|n| n.parent);
+            if pid == self.tree.root_id {
+                return Some(depth);
+            }
+            current = self.tree.nodes.get(pid)?.parent;
         }
-        depth
+        None
     }
 
     /// Recursively resolve styles for a node and its descendants.
