@@ -17,6 +17,7 @@ use peniko::Brush;
 use peniko::color::{AlphaColor, Srgb};
 use selectors::matching::ElementSelectorFlags;
 use servo_arc::Arc as ServoArc;
+use style::Atom;
 use style::properties::PropertyDeclarationBlock;
 use style::shared_lock::{Locked, SharedRwLock};
 
@@ -474,7 +475,46 @@ pub struct Node {
     /// Child node IDs in order.
     pub children: Vec<RawNodeId>,
     /// Attributes (name → value).
+    ///
+    /// Read freely. Any write of the **`id`** key must go through
+    /// [`Node::write_attribute`] / [`Node::erase_attribute`], which keep
+    /// [`Node::id_atom`] in step. Other keys may be written directly and
+    /// several sites under `crates/rinch/src/app/` do (`value`, `data-preedit`,
+    /// the `data-text-sel*` trio, …); none of them writes `id`.
     pub attributes: HashMap<String, String>,
+    /// The `id` attribute, interned (#675).
+    ///
+    /// Stylo's `SelectorMap` files a rule whose rightmost compound carries an
+    /// `#id` into the **id bucket only** — `Bucket::ID` writes `id_hash`,
+    /// `Bucket::Universal` writes `other`, and `find_bucket` keeps exactly one.
+    /// `get_all_matching_rules` then consults that bucket behind
+    /// `if let Some(id) = rule_hash_target.id() { … }`, with no `else` and no
+    /// fallback, so an element whose `TElement::id()` answers `None` is never
+    /// offered a single id-keyed rule. `has_id` is the *predicate*, reached
+    /// only after some bucket hands the rule over — so it was implemented
+    /// correctly the whole time and never ran **for an id-bucketed rule**.
+    ///
+    /// An id on the *ancestor* side is a different rule and always worked:
+    /// `#a > p` is bucketed by the rightmost compound, `p`, so it was offered
+    /// to every `<p>` whatever `id()` answered, and `has_id` then ran on the
+    /// parent and matched. That asymmetry is why the bug was hard to see, and
+    /// `tests/id_selector_tests.rs` labels its `#a > p` assertion as the fixed
+    /// point it is.
+    ///
+    /// `id()` returns a **reference**, so the atom has to be stored — this is
+    /// the one attribute that cannot be interned per call the way
+    /// `each_class` interns classes. Three consumers read it:
+    /// `selector_map`'s bucket lookup, `bloom.rs`'s
+    /// `each_relevant_element_hash`, and stylo's id-based invalidation.
+    ///
+    /// **Invariant:** `id_atom == attributes.get("id").map(Atom::from)`.
+    /// [`Node::write_attribute`] and [`Node::erase_attribute`] are the only two
+    /// places that write the `id` key, and they maintain it. That is a fact
+    /// about today's call sites, not something the type system holds —
+    /// `attributes` is `pub` — so [`Node::id_atom`] debug-asserts the invariant
+    /// instead: a direct write of `id` fails loudly in every debug test rather
+    /// than silently un-fixing #675. The assert is compiled out in release.
+    id_atom: Option<Atom>,
     /// Dirty flags for incremental updates.
     pub dirty: DirtyFlags,
     /// Scroll offset (x, y).
@@ -759,6 +799,48 @@ impl std::fmt::Debug for Node {
 }
 
 impl Node {
+    /// Write one attribute, keeping the interned `id` in step (#675).
+    ///
+    /// The write path that keeps the interned `id` correct, and therefore the
+    /// only one an `id` write may take. It is **not** the only writer of
+    /// [`Node::attributes`] — that field is `pub` and other code writes
+    /// non-`id` keys directly — so nothing but [`Node::id_atom`]'s debug assert
+    /// enforces this. `id` is the one attribute Stylo needs as a stored `Atom`
+    /// rather than a `String` (see the field's own docs), because
+    /// `TElement::id()` hands back a reference.
+    pub fn write_attribute(&mut self, name: &str, value: &str) {
+        if name == "id" {
+            self.id_atom = Some(Atom::from(value));
+        }
+        self.attributes.insert(name.to_string(), value.to_string());
+    }
+
+    /// Remove one attribute, keeping the interned `id` in step (#675).
+    ///
+    /// Clearing the atom is the half that makes `#a { … }` stop applying when
+    /// the `id` is removed at runtime; leaving it set would keep the element in
+    /// the id bucket forever.
+    pub fn erase_attribute(&mut self, name: &str) {
+        if name == "id" {
+            self.id_atom = None;
+        }
+        self.attributes.remove(name);
+    }
+
+    /// The interned `id` attribute, or `None` when the node carries none.
+    ///
+    /// This is what `TElement::id()` hands to Stylo's bucket lookup (#675).
+    pub fn id_atom(&self) -> Option<&Atom> {
+        debug_assert_eq!(
+            self.id_atom.as_deref(),
+            self.attributes.get("id").map(|s| s.as_str()),
+            "Node::id_atom drifted from the `id` attribute — something wrote \
+             `attributes` directly instead of through `write_attribute` / \
+             `erase_attribute`, which silently un-fixes #675",
+        );
+        self.id_atom.as_ref()
+    }
+
     /// Create a new document root node.
     pub fn document(id: RawNodeId, guard: SharedRwLock) -> Self {
         Self {
@@ -767,6 +849,7 @@ impl Node {
             parent: None,
             children: Vec::new(),
             attributes: HashMap::new(),
+            id_atom: None,
             dirty: DirtyFlags::empty(),
             scroll_offset: (0.0, 0.0),
             taffy_id: None,
@@ -820,6 +903,7 @@ impl Node {
             parent: None,
             children: Vec::new(),
             attributes: HashMap::new(),
+            id_atom: None,
             dirty: DirtyFlags::STYLE | DirtyFlags::LAYOUT,
             scroll_offset: (0.0, 0.0),
             taffy_id: None,
@@ -872,6 +956,7 @@ impl Node {
             parent: None,
             children: Vec::new(),
             attributes: HashMap::new(),
+            id_atom: None,
             dirty: DirtyFlags::LAYOUT,
             scroll_offset: (0.0, 0.0),
             taffy_id: None,
@@ -922,6 +1007,7 @@ impl Node {
             parent: None,
             children: Vec::new(),
             attributes: HashMap::new(),
+            id_atom: None,
             dirty: DirtyFlags::empty(),
             scroll_offset: (0.0, 0.0),
             taffy_id: None,

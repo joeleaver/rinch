@@ -450,9 +450,7 @@ impl DomDocument for RinchDocument {
     }
 
     fn set_attribute(&mut self, node: NodeId, name: &str, value: &str) {
-        self.tree.nodes[node.0]
-            .attributes
-            .insert(name.to_string(), value.to_string());
+        self.tree.nodes[node.0].write_attribute(name, value);
 
         // Parse inline style into Stylo PropertyDeclarationBlock
         if name == "style" {
@@ -507,7 +505,7 @@ impl DomDocument for RinchDocument {
     }
 
     fn remove_attribute(&mut self, node: NodeId, name: &str) {
-        self.tree.nodes[node.0].attributes.remove(name);
+        self.tree.nodes[node.0].erase_attribute(name);
         if name == "style" {
             self.tree.nodes[node.0].style_attribute_cache = None;
         }
