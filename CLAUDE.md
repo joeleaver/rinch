@@ -2324,6 +2324,36 @@ Without the closure, expressions like `{count.get()}` are captured once at initi
 
 **Execution order is a contract** (#154): effects observing the same signal run in **registration order** (the order their `Effect`/`Memo` was created), and the pending queue drains FIFO — so an effect registered *after* an `rsx!` tree sees the post-patch DOM in the same flush ("run me last"), and a signal written from inside an effect queues its observers *behind* the current flush rather than preempting it. Enforced by `BTreeSet<ObserverId>` subscriber sets (ids are monotonic and never reused, so ascending id *is* registration order) plus `pop_front` in `flush_effects`. Don't swap either for a `HashSet`/LIFO. See `docs/src/guide/reactivity.md#execution-order`.
 
+**A node outside the document is not styled** (#651, #668). `set_attribute` /
+`remove_attribute` / `set_style` record the node in `tree.style_roots`, and
+`resolve_styles` **drops** an entry whose node is not connected to the document
+before cascading anything — "what is this element's style?" is a question CSS
+answers only for elements in a document. It used to answer anyway, against no
+parent at all, which is a cascade in which every inherited property lands on its
+*initial* value and no descendant selector can match:
+
+- **Unmount.** A removed subtree recascaded to `font-family: serif` / `color:
+  black`, and `build_ifc_layouts` — which collects its roots from the whole node
+  slab rather than by walking the document (#628) — reshaped its text in serif
+  from there. That is where #654's serif came from.
+- **Mount.** A component classes a child before splicing it in, so anything that
+  resolves in that window cascaded the child parentless *and* set its
+  `has_been_styled` flag. Its first real resolution then read as a **change** on
+  an already-styled node, which is exactly what `transition` waits for: every
+  mount of a component sized by a modifier class on its wrapper (`Checkbox`,
+  `Switch`, `Select` all are) animated to its own size. A browser never animates
+  there, because an element enters the document already carrying its final style.
+
+Two consequences worth knowing. A detached node's `computed_style` is now
+whatever it last resolved to **in** the document (a never-attached node's is the
+default `ComputedStyle`) rather than an invented parentless cascade; every reader
+keeps working, and paint and hit testing never reach one anyway since both walk
+from the root. And connectivity is asked at **resolve** time, not where the entry
+was pushed, so a node classed while detached and spliced in before the next
+layout is still styled by that same entry. Entering the document is what styles a
+node, through `recompute_node_styles_recursive`, which every insertion route ends
+in (`append_child`, `insert_before`, `insert_child`, `replace_node`).
+
 ### Native Control Flow (if / for / match)
 
 The `rsx!` macro supports native Rust control flow. All control flow is **always reactive** — conditions, iterators, and scrutinees are automatically wrapped in closures and tracked by Effects.
