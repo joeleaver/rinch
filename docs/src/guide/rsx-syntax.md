@@ -1106,6 +1106,15 @@ That second line is the shape the merge has to get right, and it is not a collis
 
 An element with no second author on its style attribute keeps the author's string verbatim, on every fire.
 
+### One parser, and what it does with an awkward value
+
+Every author of an inline style — a `style:` prop, a style shorthand, a `set_style()` from a component or the runtime — splits and re-joins the attribute with the same parser ([issue #670](https://github.com/joeleaver/rinch/issues/670)). Two things follow that you can rely on:
+
+- **A `;` or `:` inside `url(…)`, `"…"` or `'…'` is part of that value.** A `background-image: url(data:image/png;base64,…)` already on the element survives every later write by anybody else. `rinch-dom` used to split on a bare `;`, so the next unrelated `set_style()` on that node cut the URI in half and the image vanished.
+- **A property declared twice collapses at the *last* declaration's position**, which is what a browser does. That is behaviour and not spelling as soon as a shorthand is involved: `style: "inset: 0px; left: 25px; inset: 4px"` computes a `left` of `4px`, because the surviving `inset` sits after the `left` it overrides.
+
+`/* … */` comments are removed before any of this — from a property name as readily as a value — everywhere CSS sees one, and each leaves a space behind, because a comment ends the token before it even though it is not one itself. The two places CSS does not see a comment are inside a string and inside an unquoted `url(…)`, which is a single token: `url(http://a/*b*/c.png)` keeps its `/*b*/` and names the image the author wrote, as in a browser. There is one place a browser sees a comment and keeps it where rinch removes it — the interior of a **custom property** value, where Chrome reads `--x: 1px /* c */ 2px` back verbatim and rinch reads it back as `1px  2px`. The token stream is the same either way, so a `var()` substitution cannot tell; only the attribute string differs. `!important` is carried through untouched.
+
 ## Styling
 
 Inline styles and CSS classes work like regular HTML:

@@ -542,25 +542,27 @@ fn a_repeated_property_collapses_where_css_says_it_does() {
     );
 }
 
-/// A `style:` that itself declares a property **twice** still reaches
-/// `rinch-dom`'s `parse_style_string`, which collapses it at the wrong
-/// position. Pre-existing, **Refs #670**, and not introduced by the merge.
+/// A `style:` that itself declares a property **twice** is collapsed the same
+/// way whichever author parses it — because since #670 there is only one
+/// parser.
 ///
 /// The merge's own splitter gets the position right — that is
 /// `a_repeated_property_collapses_where_css_says_it_does` — but only on the
 /// path that parses. The **verbatim** path writes the author's string
 /// byte-for-byte, duplicate included, and a second author is what then hands
-/// it to the other parser. `p: "12px"` is that second author here: its
-/// `set_style` re-serialises the block through `parse_style_string`, which
-/// keeps the *first* `inset` position and lets the `left` longhand win.
+/// it to whatever `rinch-dom` parses attributes with. `p: "12px"` is that
+/// second author here: its `set_style` re-serialises the block, and this
+/// fixture is what says the re-serialisation agrees with the merge.
 ///
-/// **Pinned at the value rinch computes today, not at the browser's**, so this
-/// is a named deviation rather than a surprise: Chrome 150 computes
-/// `left: 4px` for this block, measured. When #670 lands, this fixture is what
-/// has to change, and `Length(25.0)` becomes `Length(4.0)`.
+/// It did not until #670. `rinch-dom` had its own `parse_style_string`, which
+/// kept the *first* `inset` position and so let the `left` longhand win —
+/// pinned here at `Length(25.0)` as a named deviation, against Chrome 150's
+/// measured `4px`. Both parsers are `rinch_core::dom::split_declarations` now,
+/// so the two authors agree and so does the browser.
 ///
-/// Desktop only — on the web the same verbatim `setAttribute` hands the
-/// duplicate to the browser, which collapses it correctly.
+/// Desktop only in the sense that matters for the *mechanism*: on the web the
+/// verbatim `setAttribute` hands the duplicate to the browser, which has
+/// always collapsed it correctly.
 #[component]
 fn duplicate_through_the_verbatim_path() -> NodeHandle {
     rsx! {
@@ -573,7 +575,7 @@ fn duplicate_through_the_verbatim_path() -> NodeHandle {
 }
 
 #[test]
-fn a_duplicate_in_a_style_prop_still_reaches_the_other_parser() {
+fn a_duplicate_in_a_style_prop_collapses_the_same_way_for_the_other_author() {
     let doc = Rc::new(RefCell::new(RinchDocument::new()));
     let body = doc.borrow().body();
     let mut scope = RenderScope::new(doc.clone(), body);
@@ -597,9 +599,10 @@ fn a_duplicate_in_a_style_prop_still_reaches_the_other_parser() {
         .computed_style;
     assert_eq!(
         format!("{:?}", style.left),
-        "Length(25.0)",
-        "#670: `parse_style_string` keeps the first `inset` position, so the \
-         `left` longhand wins where CSS says it loses. Chrome gives 4px"
+        "Length(4.0)",
+        "#670: the duplicate must collapse at its *last* position through the \
+         other author's `set_style` too, so the surviving `inset` still sits \
+         after the `left` it overrides — Chrome gives 4px"
     );
 }
 
