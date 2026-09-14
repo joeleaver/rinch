@@ -1545,17 +1545,25 @@ correct, and each has a fixture in
   clippers a fixed descendant escapes, and its `Extent::Escapes` case stops one
   narrowing a translucent layer to less than it paints — which tiny-skia ignores
   and Vello enforces, i.e. a software/GPU divergence no pixel test can see.
-  **`position: absolute` has the same hole and it is NOT handled** (#550), but
-  it is a *different shape*. `Collector::span` truncates an absolute's chain at
-  its containing block (`Absolute => self.cb_depth`, set at **any**
-  `establishes_abs_containing_block()` ancestor — any non-`static` position or a
-  transform), so it escapes the clippers *below* that block while staying
-  clipped by the ones above. `layer_bounds` narrows it at **every** clipping
-  ancestor regardless, so a layer holding one can come back too small with the
-  same GPU-only symptom. It needs a **partial** escape, which `Escapes` cannot
-  express — that is why only the `fixed` case is covered, and it is pre-existing
-  rather than something #204 introduced. `layer_bounds.rs`'s module doc names
-  both cases explicitly; read it before touching this.
+  **`position: absolute` has the same hole and it is NOT handled for the two
+  *bounds* callers** (#550), but it is a *different shape*. `Collector::span`
+  truncates an absolute's chain at its containing block (`Absolute =>
+  self.cb_depth`, set at **any** `establishes_abs_containing_block()` ancestor —
+  any non-`static` position or a transform), so it escapes the clippers *below*
+  that block while staying clipped by the ones above. `opacity_layer_bounds` and
+  `clip_cuts_nothing` narrow it at **every** clipping ancestor regardless, so a
+  layer holding one can come back too small with the same GPU-only symptom. It
+  needs a **partial** escape, which `Escapes` cannot express — that is why only
+  the `fixed` case is covered there, and it is pre-existing rather than something
+  #204 introduced. The module's **third** caller,
+  `subtree_is_entirely_outside` (the off-window cull, #562), does **not** accept
+  that hole and does not close it either: it answers `Escapes` for an absolute
+  whenever a clipping ancestor sits below the containing block, which is
+  whole-escape where partial would be exact — conservative in the direction that
+  costs an unpruned subtree rather than a deleted box. The asymmetry is
+  deliberate: a bounds under-measure costs content on the Vello path only, a
+  cull under-measure costs it on every path. `layer_bounds.rs`'s module doc names
+  all of this explicitly; read it before touching this.
 - **No transform composition is needed.** A transform creates a stacking
   context, so `descend` never crosses one and every link lives in the collecting
   root's own untransformed space — the same space the entries' offsets are in.

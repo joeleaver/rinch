@@ -22,7 +22,7 @@ use borders::*;
 pub use clip::{border_radii, clip_shape};
 use contenteditable::*;
 pub use layer_bounds::{UNBOUNDED, opacity_layer_bounds};
-use layer_bounds::{clip_cuts_nothing, opacity_layer_shape};
+use layer_bounds::{clip_cuts_nothing, opacity_layer_shape, subtree_is_entirely_outside};
 use svg::*;
 use text::*;
 
@@ -1487,18 +1487,39 @@ fn paint_node(
     // non-hoisted children would then paint *unclipped*, which trades a rare
     // missing box for a rare escaping one.
     //
-    // **What that costs, since it is not free and the headline number does not
-    // show it.** Every off-window stacking context now paints in full. For a
-    // transformed or z-indexed one that is nearly free — tiny-skia discards
-    // fills that land off the surface — but an `opacity < 1` one allocates and
-    // composites a whole-surface pixmap. Measured on three full-screen
-    // `opacity: 0.5` sheets parked below the fold at 1080x2460: main 39.1ms,
-    // this 26.7ms, and 0.8ms if the guard is removed. The cull's win is largely
-    // handed back on exactly that shape. Narrowing the gate with a
-    // `clips_overflow()` term would recover the non-clipping half and is
-    // tracked separately rather than taken here.
+    // **So the box is the wrong thing to ask, and #562 is what that cost.**
+    // Declining for every stacking context meant an `opacity < 1` one parked
+    // below the fold allocated, filled and composited a whole-surface pixmap
+    // every frame — 26.7ms against 0.8ms on three full-screen `opacity: 0.5`
+    // sheets at 1080x2460, most of this cull's own win handed back.
+    //
+    // The question is not "is this node a stacking context" but **"can anything
+    // in this subtree paint on screen"**, and `layer_bounds` already answers
+    // that for the two other callers that need it. So a stacking context is
+    // pruned on a *definite* subtree extent that misses the target, and painted
+    // in full on every not-knowing — a `position: fixed` descendant (which is
+    // #561's case, and makes the extent escape by construction), a sticky one,
+    // the visit budget, `MAX_DEPTH`. That is a bounded subtree walk in place of
+    // a 10MB pixmap.
+    //
+    // **The narrowing #562 originally proposed — decline only for a stacking
+    // context that also clips — is not lossless, and the difference is not one
+    // a pixel count catches.** It hands the non-clipping ones to the
+    // skip-draw-and-recurse arm, which sits before every `push_layer` here, so
+    // the sheet's on-screen fixed descendant still painted and came back at
+    // `[0, 200, 0, 255]` instead of `[0, 100, 0, 128]` — unfaded, with all 951
+    // tests in the crate green.
     let may_own_hoisted_entries = !node.children.is_empty() && node.creates_stacking_context();
-    if node_outside_dirty && !may_own_hoisted_entries {
+    if node_outside_dirty && may_own_hoisted_entries {
+        // The walk is only ever asked about a subtree paint is otherwise about
+        // to draw in full, so it is never the more expensive of the two — and a
+        // `false` leaves this node exactly where #561 left it.
+        if subtree_is_entirely_outside(tree, node_id, scale, x, y, node_transform, |r| {
+            intersects_dirty_region(r.x0, r.y0, r.width(), r.height())
+        }) {
+            return;
+        }
+    } else if node_outside_dirty {
         if node.clips_overflow() || node.children.is_empty() {
             return;
         }
