@@ -711,6 +711,24 @@ impl RinchDocument {
             // Capture old display before transitions overwrite computed_style
             let old_display = self.tree.nodes[node_id].computed_style.display;
 
+            // …and whether the shaped text this node's style produced is still
+            // the text this style would produce (issue #654). A `text_layout`
+            // is derived from the typography below it, but `build_ifc_layouts`
+            // re-serves one to any IFC root whose `max_width` is unchanged, so
+            // a recascade that changes the font, size, colour or line height
+            // and does not say so leaves the old glyphs on screen. Read here,
+            // acted on below — the assignment in between is what destroys the
+            // evidence. See `ComputedStyle::same_text_layout_inputs`.
+            //
+            // A node styled for the first time counts as changed: it has
+            // nothing derived yet, so the invalidation is free, and the
+            // alternative is comparing against `ComputedStyle::default()`,
+            // which is a coincidence away from answering "unchanged".
+            let text_layout_stale = !self.tree.nodes[node_id].has_been_styled
+                || !self.tree.nodes[node_id]
+                    .computed_style
+                    .same_text_layout_inputs(&new_style);
+
             // Extract transition specs from Stylo
             let transition_specs = TransitionSpec::extract_from_stylo(&computed_values);
             self.tree.nodes[node_id].transition_specs = transition_specs;
@@ -813,6 +831,22 @@ impl RinchDocument {
             }
 
             self.tree.nodes[node_id].has_been_styled = true;
+
+            // Drop the Parley layout the old typography was baked into, and
+            // the Taffy measurement taken from it (#654). `invalidate_ifc_for_node`
+            // is the one place that knows which node actually holds the layout:
+            // this node when it is the IFC root, its `ifc_root` when it is an
+            // inline inside one, and it also reaches the root's measure leaf,
+            // which a `mark_dirty` on the root does not (#466).
+            //
+            // Gated on a real change, and that gate is load-bearing rather than
+            // an optimisation: unconditionally invalidating here re-shapes every
+            // moved subtree's text on every DOM insertion, which measured 2-9x
+            // slower on a 500-row keyed reversal (where nothing about the
+            // typography changes at all).
+            if text_layout_stale {
+                self.invalidate_ifc_for_node(node_id);
+            }
 
             // Sync display_mode from computed style (always from new_style target)
             let display_mode = match new_style.display {
