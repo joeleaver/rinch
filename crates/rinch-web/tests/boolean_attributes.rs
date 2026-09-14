@@ -491,3 +491,56 @@ fn a_write_after_the_user_toggled_the_control_still_wins() {
 
     f.teardown();
 }
+
+/// A programmatic `selected` write wins after the option's selectedness has gone
+/// **dirty** — the `<option>` half of
+/// `a_write_after_the_user_toggled_the_control_still_wins`, which covers only
+/// `checked`.
+///
+/// `HTMLOptionElement.selected`'s *setter* sets the element's dirtiness flag,
+/// exactly as a user pick does, so a fixture can dirty an option without driving
+/// a real pick. A dirty option stops mirroring its content attribute into its
+/// selectedness, so without `sync_presence_property`'s `"selected"` arm the
+/// app's write would be invisible.
+///
+/// **This is the only fixture that kills deleting that arm** — measured: with it
+/// deleted the other two are 5/5 green. They exercise `selected` on a *pristine*
+/// option, where the browser mirrors the attribute into selectedness for free
+/// and a missing arm cannot be seen. That is the same fixed point
+/// `a_write_after_the_user_toggled_the_control_still_wins` exists to get off,
+/// one attribute over. Found by the review of PR #686.
+#[wasm_bindgen_test]
+fn a_selected_write_after_the_option_went_dirty_still_wins() {
+    let out = Rc::new(RefCell::new(None));
+    let f = Fixture::mount(checked_family_fixture(out.clone()));
+    let (_input, option) = out.borrow().clone().expect("fixture built");
+
+    // Dirty the second option's selectedness the way a user pick does, and leave
+    // it *deselected*: off the fixed point where attribute and selectedness
+    // agree by themselves.
+    let live: web_sys::HtmlOptionElement = f.el("lit-opt").dyn_into().unwrap();
+    live.set_selected(true);
+    live.set_selected(false);
+    assert!(
+        !f.prop("lit-opt", "selected"),
+        "the option starts deselected, and dirty"
+    );
+
+    // The app writes the attribute. A browser would move only the option's
+    // *default* here, because the option is dirty — so nothing would happen.
+    option.set_attribute("selected", "");
+    assert_eq!(f.attr("lit-opt", "selected").as_deref(), Some(""));
+    assert!(
+        f.prop("lit-opt", "selected"),
+        "a programmatic write must re-select a dirtied option (#100), because \
+         desktop's `collect_options` reads the attribute and nothing else"
+    );
+    let select: web_sys::HtmlSelectElement = f.el("lit-sel").dyn_into().unwrap();
+    assert_eq!(select.selected_index(), 1, "and the <select> follows");
+
+    // And removal still deselects it, dirty or not.
+    option.remove_attribute("selected");
+    assert!(!f.prop("lit-opt", "selected"), "removal deselects it");
+
+    f.teardown();
+}

@@ -113,9 +113,16 @@ rsx! {
 
 A closure that yields a *string* into a boolean attribute follows a writer's
 truthiness rule: everything is on except `"false"` (any case) and `"0"`, so the
-bare `""` that components write stays on. That rule belongs to the writer and to
-nothing else — no reader on either backend has a falsey string, because a browser
-has none.
+bare `""` that components write stays on.
+
+That rule is the **writer's**, and for the HTML set it is nobody's reader: no
+reader of `disabled`, `checked`, `readonly` and their kind has a falsey string on
+either backend, because a browser has none (issue #612). rinch's own
+`data-disabled` and `data-nofocus` — listed as boolean attributes above — are the
+exception, and the only one: their readers do honour a literal `"false"`, on
+desktop through `rinch_core::dom::data_attr_is_on` and on the web through the
+selector `[data-nofocus]:not([data-nofocus="false" i])`. That escape is narrower
+than the writer's rule, too: `"0"` is **on** for those two.
 
 **Writing one by hand.** `set_attribute` is the *literal* primitive on both
 backends: it writes the string you give it, so `set_attribute("checked",
