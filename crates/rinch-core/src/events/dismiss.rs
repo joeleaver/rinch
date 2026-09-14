@@ -134,6 +134,14 @@ pub fn push_dismiss_handler(doc_key: u64, f: impl Fn() -> bool + 'static) -> Dis
 /// Escape press. A shell with another gesture that means *close the topmost
 /// overlay* — Android's system Back, say — can call it directly.
 ///
+/// **A direct caller owns whatever its handlers deferred.** A handler that
+/// cannot finish the job in an `Fn() -> bool` will park the request somewhere
+/// and consume the key, trusting its caller to answer it: the desktop runtime's
+/// open-`<select>` entry does exactly that, and `RinchApp::handle_event` drains
+/// it the moment this function returns. Call this from somewhere else and that
+/// drain does not happen, so the gesture looks inert. Drain the same state the
+/// Escape path does.
+///
 /// Handlers run with **no borrow of the stack held**, because closing an overlay
 /// is very likely to unmount it, which drops its [`DismissHandle`] and mutates
 /// the stack from inside the handler.

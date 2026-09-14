@@ -1299,9 +1299,12 @@ register_focus_target(
   top with no precedence special case anywhere. A dismiss handler is an
   `Fn() -> bool` and closing the popup needs `&mut RinchApp`, so the handler
   only sets a flag and consumes; `handle_event` drains it the moment
-  `dispatch_keyboard_event` returns — the `PendingFocusWork` shape. The flag
-  cannot be left set: only a handler that returns `true` sets it, and `true` is
-  exactly when the drain site runs.
+  `dispatch_keyboard_event` returns — the `PendingFocusWork` shape. On that path
+  the flag cannot be left set: only a handler that returns `true` sets it, and
+  `true` is exactly when the drain site runs. That holds for the Escape path,
+  not for the flag as such — `dispatch_dismiss` is public and a shell calling it
+  for another gesture (Android Back) would set the flag with nothing to drain
+  it, so a new caller has to drain it the way `handle_event` does.
 - **Web has no arbiter** — `register_focus_target` is desktop/Android/embed
   only; use a real `tabindex` and the DOM's own `focus`/`blur` there.
 

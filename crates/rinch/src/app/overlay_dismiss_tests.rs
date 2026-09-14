@@ -663,6 +663,15 @@ fn escape_closes_an_open_select_and_leaves_the_modal_around_it_standing() {
 /// skipped but still *there*, and that the popup's entry left the stack when it
 /// closed rather than going on answering for the rest of the session — which is
 /// what a handle that was never released would do.
+///
+/// **The discriminating assertion is the *second* keystroke, not the third.**
+/// Against a build that never releases the handle, a popup entry still on the
+/// stack consumes Escape #2 as well and the modal never hears it, so the
+/// fixture dies on `"second Escape: the modal closes"`. The third keystroke
+/// pins something weaker and true — with everything closed, nothing dismisses —
+/// and is worth keeping, but it is not what catches the leak. (Measured; the
+/// comment used to credit the third, which is the "killed by the wrong
+/// assertion" shape.)
 #[test]
 fn a_select_opened_inside_a_modal_takes_the_first_escape_and_the_modal_the_second() {
     let open = Signal::new(true);

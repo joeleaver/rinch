@@ -274,6 +274,12 @@ impl RinchApp {
         // `unowned` so it keeps app lifetime: this is the runtime's own entry,
         // not a component's, and it must not die with whatever scope the click
         // handler that opened the popup happened to be running in.
+        //
+        // **No test fails if you delete it**, and that is not evidence it is
+        // decorative: every path that reaches here today comes from `RinchApp`'s
+        // own click handling, where `current_owner()` is already `None`. It
+        // starts mattering the first time a select is opened from inside a
+        // component callback.
         let doc_key = self.doc_key();
         let asked = self.select_dismiss_asked.clone();
         self.select_dismiss_handle = Some(rinch_core::reactive::unowned(move || {

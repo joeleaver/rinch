@@ -425,9 +425,19 @@ pub struct RinchApp {
     /// `dispatch_keyboard_event` returns, which is the same deferred-work shape
     /// as `PendingFocusWork`.
     ///
-    /// The flag cannot be set and left undrained: it is only ever set by a
-    /// handler that also returns `true`, and `dispatch_keyboard_event` answering
-    /// `true` is exactly when the drain site runs.
+    /// **On the Escape path the flag cannot be set and left undrained**: it is
+    /// only ever set by a handler that also returns `true`, and
+    /// `dispatch_keyboard_event` answering `true` is exactly when the drain site
+    /// runs. That is the whole of it today — `dispatch_dismiss` has one
+    /// production caller.
+    ///
+    /// It is **not** a property of the flag itself, and a second caller would
+    /// not inherit it. `dispatch_dismiss` is public and invites a direct call
+    /// for another dismiss gesture (Android's system Back is the example its own
+    /// docs give); called that way with a `<select>` open, this flag is set with
+    /// nothing to drain it, so the gesture appears to do nothing and the popup
+    /// closes later at whatever keystroke next reaches the drain site. A new
+    /// caller must drain the flag itself, the way the Escape path does.
     pub(crate) select_dismiss_asked: Rc<std::cell::Cell<bool>>,
     pub(crate) select_dismiss_handle: Option<rinch_core::DismissHandle>,
     /// Whether the native-select popup stylesheet has been injected (once).

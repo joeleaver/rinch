@@ -767,7 +767,8 @@ correct: a document-level
 is the app saying it means to have Escape, and an in-progress drag, which
 Escape cancels — both on either backend — plus, on `rinch-web` only, a focused
 `RenderSurface`, which swallows every key there. An open native `<select>`
-popup takes it too, but by joining this same stack rather than by beating it. A custom overlay of your own joins the same stack with
+popup takes it too, but by joining this same stack rather than by beating it.
+A custom overlay of your own joins the same stack with
 [`push_dismiss_handler`](./focus.md#the-dismiss-stack) — reach for that rather
 than an interceptor, which is one slot per document and so cannot nest.
 
