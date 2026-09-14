@@ -108,9 +108,9 @@ pub use events::{
 
 // Re-export DOM types for fine-grained rendering
 pub use dom::{
-    DomDocument, DomUpdate, IntoNode, NodeHandle, NodeId, RenderScope, UpdateBatch,
-    clear_render_scope, has_render_scope, reactive_component_dom, set_render_scope,
-    try_with_render_scope, with_render_scope,
+    DomDocument, DomUpdate, IntoNode, NodeHandle, NodeId, RenderScope, StyleProp, UpdateBatch,
+    clear_render_scope, has_render_scope, reactive_component_dom, serialize_declarations,
+    set_render_scope, split_declarations, try_with_render_scope, with_render_scope,
 };
 
 use std::cell::RefCell;

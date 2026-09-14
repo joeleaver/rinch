@@ -37,6 +37,12 @@ const ASKED: i32 = 517;
 /// Mount one of each overlay, all five with the same `z_index`, under the real
 /// component stylesheet.
 fn mount(z_index: Option<i32>) -> RinchApp {
+    mount_with(z_index, None)
+}
+
+/// As `mount`, but with `caller_style` laid over each overlay's root the way
+/// `rsx!` lays a component-level `style:` prop over it (issue #647).
+fn mount_with(z_index: Option<i32>, caller_style: Option<&'static str>) -> RinchApp {
     let mut app = RinchApp::new(move |scope: &mut RenderScope| {
         let root = scope.create_element("div");
 
@@ -47,6 +53,9 @@ fn mount(z_index: Option<i32>) -> RinchApp {
             ..Default::default()
         }
         .render(scope, &[]);
+        if let Some(css) = caller_style {
+            modal.merge_style(css);
+        }
         root.append_child(&modal);
 
         // Drawer: same shape.
@@ -56,6 +65,9 @@ fn mount(z_index: Option<i32>) -> RinchApp {
             ..Default::default()
         }
         .render(scope, &[]);
+        if let Some(css) = caller_style {
+            drawer.merge_style(css);
+        }
         root.append_child(&drawer);
 
         // Popover: the dropdown is a separate component, so the level has to
@@ -67,6 +79,9 @@ fn mount(z_index: Option<i32>) -> RinchApp {
             ..Default::default()
         }
         .render(scope, &[popover_target, popover_dropdown]);
+        if let Some(css) = caller_style {
+            popover.merge_style(css);
+        }
         root.append_child(&popover);
 
         // DropdownMenu: panel + the backdrop that catches outside clicks, which
@@ -80,6 +95,9 @@ fn mount(z_index: Option<i32>) -> RinchApp {
         let menu_target = DropdownMenuTarget.render(scope, &[]);
         let menu_dropdown = DropdownMenuDropdown.render(scope, &[]);
         let menu = menu_props.render(scope, &[menu_target, menu_dropdown]);
+        if let Some(css) = caller_style {
+            menu.merge_style(css);
+        }
         root.append_child(&menu);
 
         // Notification: one box, its own level.
@@ -89,6 +107,9 @@ fn mount(z_index: Option<i32>) -> RinchApp {
             ..Default::default()
         }
         .render(scope, &[]);
+        if let Some(css) = caller_style {
+            notification.merge_style(css);
+        }
         root.append_child(&notification);
 
         root
@@ -198,5 +219,33 @@ fn the_pairs_stay_ordered_at_every_level() {
                  ({bottom})"
             );
         }
+    }
+}
+
+/// A caller-supplied `style:` prop does not cost the overlay its level.
+///
+/// This is the end-to-end half of issue #647, and the measurement the issue
+/// reported: `Modal { z_index: 517, style: "margin: 0" }` computed 200, the
+/// pre-#474 default, because the prop was applied by writing the root's whole
+/// `style` attribute over the custom property the component had just published
+/// there. `rinch-macros`' `rsx_style_prop` fixtures pin what the macro emits;
+/// this is what says the merged attribute still carries a property Stylo
+/// substitutes into `z-index` — through the `calc()` offsets as well, which is
+/// why every layer is checked and not just the root.
+///
+/// The declaration deliberately **collides** with nothing the components write:
+/// a caller declaration that happened to be one of theirs would be pinning the
+/// collision rule instead, and would pass against a merge that dropped every
+/// other declaration.
+#[test]
+fn a_caller_style_prop_does_not_cost_the_overlay_its_level() {
+    let app = mount_with(Some(ASKED), Some("margin: 0"));
+    for (class, asked, _) in LAYERS {
+        assert_eq!(
+            computed_z(&app, class),
+            Some(*asked),
+            "`{class}` must still compute to {asked} with a caller `style:` on \
+             the component"
+        );
     }
 }

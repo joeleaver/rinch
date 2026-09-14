@@ -72,6 +72,9 @@
 /// The HTML boolean-attribute set and the truthiness rule for it (issue #551).
 mod bool_attr;
 
+/// Declaration-level arithmetic on an inline `style` attribute (issue #647).
+mod inline_style;
+
 /// A headless [`DomDocument`](traits::DomDocument) implementation for tests.
 /// Available to downstream test code via the `test-util` feature.
 #[cfg(any(test, feature = "test-util"))]
@@ -80,6 +83,7 @@ mod render_scope;
 pub mod traits;
 
 pub use bool_attr::{attr_is_truthy, data_attr_is_on, is_boolean_attribute};
+pub use inline_style::{StyleProp, serialize_declarations, split_declarations};
 pub use render_scope::*;
 pub use traits::*;
 
@@ -428,6 +432,24 @@ impl NodeHandle {
         if let Some(doc) = self.doc.upgrade() {
             doc.borrow_mut().set_styles(self.node_id, properties);
         }
+    }
+
+    /// Lay an author-written inline style string **over** this node's own,
+    /// last-wins per property (issue #647).
+    ///
+    /// This is what a component-level `style:` prop means: "applied to the
+    /// component's root", not "instead of whatever the root already has". A
+    /// component publishes its props through inline declarations on that root
+    /// — every overlay's `z_index` is a custom property written there — and
+    /// `set_attribute("style", …)` would erase all of them, silently and with
+    /// the prop still compiling.
+    ///
+    /// Stateless, so a caller that writes repeatedly to the **same** node wants
+    /// [`StyleProp`] instead: it takes its own previous declarations off before
+    /// laying the new ones on, which is what stops a reactive binding from
+    /// accumulating properties it no longer declares.
+    pub fn merge_style(&self, css: &str) {
+        StyleProp::default().apply(self, css);
     }
 
     /// Set the class attribute.

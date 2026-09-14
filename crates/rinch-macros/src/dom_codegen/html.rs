@@ -49,6 +49,18 @@ pub fn element_to_dom_html(element: &RsxElement, ctx: &mut DomCodegenContext) ->
     let mut shorthand_props = Vec::new();
     let mut attr_props = Vec::new();
 
+    // `style:` is pulled out of the attribute list: it is not a string written
+    // over whatever is there, it is a set of declarations laid over them
+    // (issue #647). A style shorthand is a second author on the same attribute,
+    // and so is anything the runtime writes through `set_style`.
+    //
+    // A side effect worth knowing, since #154 makes effect registration order a
+    // contract: a reactive `style:`'s effect is now always created after every
+    // reactive *attribute* effect on the same element, where it used to follow
+    // prop order. Nothing observable rides on it today — they write different
+    // attributes — but it is an ordering change, not a no-op.
+    let mut style_prop = None;
+
     for prop in &element.props {
         let name_str = prop.name.to_string();
         if name_str == "key" {
@@ -56,6 +68,8 @@ pub fn element_to_dom_html(element: &RsxElement, ctx: &mut DomCodegenContext) ->
             continue;
         } else if is_event_prop(&name_str) {
             event_props.push(prop);
+        } else if name_str == "style" {
+            style_prop = Some(prop);
         } else if expand_style_shorthand(&name_str).is_some() {
             shorthand_props.push(prop);
         } else {
@@ -225,6 +239,10 @@ pub fn element_to_dom_html(element: &RsxElement, ctx: &mut DomCodegenContext) ->
         })
         .collect();
 
+    // Emitted where the `style` attribute used to sit in the attribute loop, so
+    // a shorthand prop still wins a collision with it.
+    let style_code = generate_style_code(style_prop, &elem_var, ctx);
+
     // Generate shorthand style code (e.g., p: "md" -> set_style("padding", ...))
     let shorthand_code = generate_shorthand_code(&shorthand_props, &elem_var, ctx);
 
@@ -241,6 +259,7 @@ pub fn element_to_dom_html(element: &RsxElement, ctx: &mut DomCodegenContext) ->
             {
                 let #elem_var = __scope.create_element(#tag);
                 #(#attr_code)*
+                #style_code
                 #(#event_code)*
                 #shorthand_code
                 #elem_var
@@ -256,6 +275,7 @@ pub fn element_to_dom_html(element: &RsxElement, ctx: &mut DomCodegenContext) ->
                 let #elem_var = __scope.create_element(#tag);
                 #(#children_code)*
                 #(#attr_code)*
+                #style_code
                 #(#event_code)*
                 #shorthand_code
                 #elem_var
@@ -266,6 +286,7 @@ pub fn element_to_dom_html(element: &RsxElement, ctx: &mut DomCodegenContext) ->
             {
                 let #elem_var = __scope.create_element(#tag);
                 #(#attr_code)*
+                #style_code
                 #(#event_code)*
                 #shorthand_code
                 #(#children_code)*
@@ -388,7 +409,22 @@ pub fn generate_shorthand_code_reactive(
     quote! { #(#code)* }
 }
 
-/// Generate post-render style application code for a component.
+/// Generate style application code for a `style:` prop on a **stable** node.
+///
+/// Used for a component's root after `Component::render` (the static component
+/// path) and for a plain HTML element. Both are laid *over* whatever the node
+/// already carries rather than replacing it (issue #647): a component publishes
+/// its props as inline declarations on its root — every overlay's `z_index` is
+/// a custom property written there — and a style shorthand (`p:`, `mt:` …) is a
+/// second author on the same attribute, so a write of the whole `style`
+/// attribute erased one or both with nothing warning.
+///
+/// The node is stable here, so the reactive arms carry a [`StyleProp`] across
+/// fires: it takes its own previous declarations off before laying the new ones
+/// on, which is what stops a binding from accumulating properties it no longer
+/// declares — and restores whatever value each one displaced.
+///
+/// [`StyleProp`]: rinch_core::StyleProp
 pub fn generate_style_code(
     style_prop: Option<&RsxProp>,
     result_var: &syn::Ident,
@@ -401,30 +437,34 @@ pub fn generate_style_code(
     if is_literal_expr(value) {
         let value_str = crate::helpers::expr_to_string(value);
         quote! {
-            #result_var.set_attribute("style", #value_str);
+            #result_var.merge_style(#value_str);
         }
     } else if let Some(closure) = get_closure_expr(value) {
         let handle_var = ctx.next_var("style_handle");
+        let binding_var = ctx.next_var("style_prop");
         let (site, fire) = reactive_shadows(value, Some(closure), ctx);
         quote! {
             {
                 let #handle_var = #result_var.clone();
+                let mut #binding_var = rinch::core::StyleProp::default();
                 #site
                 __scope.create_effect(move || {
                     #fire
-                    #handle_var.set_attribute("style", &::std::string::ToString::to_string(&(#closure)()));
+                    #binding_var.apply(&#handle_var, &::std::string::ToString::to_string(&(#closure)()));
                 });
             }
         }
     } else {
         let handle_var = ctx.next_var("style_handle");
+        let binding_var = ctx.next_var("style_prop");
         let (site, _) = reactive_shadows(value, None, ctx);
         quote! {
             {
                 let #handle_var = #result_var.clone();
+                let mut #binding_var = rinch::core::StyleProp::default();
                 #site
                 __scope.create_effect(move || {
-                    #handle_var.set_attribute("style", &::std::string::ToString::to_string(&#value));
+                    #binding_var.apply(&#handle_var, &::std::string::ToString::to_string(&#value));
                 });
             }
         }
