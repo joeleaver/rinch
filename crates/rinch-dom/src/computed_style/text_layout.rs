@@ -117,17 +117,35 @@ impl ComputedStyle {
     /// reading `font-family: monospace` from its computed style while painting
     /// the sans-serif glyphs it was shaped with under the old one.
     ///
-    /// **The field list is the union of every style a text layout is built
-    /// from**, and it is one list with three consumers — this file's
-    /// [`Self::build_parley_layout`], `RinchDocument::build_inline_layout`'s
-    /// `root_text_style`, and the `TextMeasure` context
-    /// `RinchDocument::sync_text_contexts` fills. A property that reaches any of
-    /// those and is missing here is a style change that silently keeps the old
-    /// glyphs; **a property listed here that reaches none of them costs only a
-    /// spare rebuild**, so when in doubt, list it. `overflow_x` is in the list
-    /// for that reason and is not a typography property: it is half the
-    /// `text-overflow: ellipsis` condition, which decides whether the layout is
-    /// rebuilt truncated.
+    /// **The field list is the union of every style an `InlineLayout` is built
+    /// from**, enumerated against its five producers rather than assembled by
+    /// memory. A property one of them reads and this list misses is a style
+    /// change that silently keeps the old layout; **a property listed here that
+    /// none of them reads costs only a spare rebuild**, so when in doubt, list
+    /// it.
+    ///
+    /// | producer | what it reads |
+    /// |---|---|
+    /// | [`Self::build_parley_layout`] | `font_size`, `font_family`, `font_weight`, `font_style`, `line_height`, `letter_spacing`, `word_spacing`, `overflow_wrap` |
+    /// | `RinchDocument::build_inline_layout`'s `root_text_style` | the above plus `color`, `text_decoration`, `text_underline_offset`, `white_space` (both the collapse mode and whether `max_width` applies at all) and `text_align` |
+    /// | `RinchDocument::inline_style_props`, the per-span properties | `font_size`, `font_weight`, `font_style`, `color`, `text_decoration`, `text_underline_offset`, `line_height` |
+    /// | `RinchDocument::push_inline_background`, which builds `InlineLayout::background_spans` | `background_color()`, the four paddings, `border_radius_top_left` |
+    /// | the `TextMeasure` context `RinchDocument::sync_text_contexts` fills | `font_size`, `font_weight`, `font_family`, `line_height`, `color`, `white_space`, `overflow_wrap`, `text_overflow`, `overflow_x` |
+    ///
+    /// Plus `text_transform`, which `walk_inline_children` applies to the text
+    /// before it is pushed.
+    ///
+    /// Two entries are not typography and are here because a producer reads
+    /// them anyway. `overflow_x` is half the `text-overflow: ellipsis`
+    /// condition, which decides whether the layout is rebuilt truncated. The
+    /// background-span row is **gated on `display: inline`**, because only a
+    /// non-atomic inline box contributes a span — the two `push_inline_background`
+    /// call sites in `walk_inline_children` are both behind
+    /// `display_mode == DisplayMode::Inline`, and the split-inline bridge walks
+    /// the same elements. Without that gate a `:hover { background-color }` on a
+    /// block would re-shape its own label's glyphs on every hover, which is the
+    /// cost this predicate exists to avoid. The gate reads *either* side, so a
+    /// box that changes into or out of `display: inline` is compared too.
     ///
     /// Hand-written rather than `PartialEq` for the same reason
     /// `RinchDocument::same_inline_text_style` is —
@@ -135,7 +153,9 @@ impl ComputedStyle {
     /// it — and that neighbour is a **different, smaller** list (the properties
     /// an inline *span* contributes), not this one.
     pub fn same_text_layout_inputs(&self, other: &ComputedStyle) -> bool {
-        use super::values::LineHeightValue;
+        use super::values::{DisplayValue, LineHeightValue};
+        let inline_level =
+            self.display == DisplayValue::Inline || other.display == DisplayValue::Inline;
         let same_line_height = match (self.line_height, other.line_height) {
             (LineHeightValue::Normal, LineHeightValue::Normal) => true,
             (LineHeightValue::Absolute(x), LineHeightValue::Absolute(y)) => x == y,
@@ -159,5 +179,19 @@ impl ComputedStyle {
             && self.overflow_wrap == other.overflow_wrap
             && self.text_overflow == other.text_overflow
             && self.overflow_x == other.overflow_x
+            && (!inline_level || self.same_inline_background_inputs(other))
+    }
+
+    /// The `InlineBackgroundSpan` half of [`Self::same_text_layout_inputs`],
+    /// split out so the `display: inline` gate reads as the one condition it
+    /// is. See that function's table for why these six and not the rest of the
+    /// box model: `push_inline_background` reads exactly these.
+    fn same_inline_background_inputs(&self, other: &ComputedStyle) -> bool {
+        self.background_color() == other.background_color()
+            && self.padding_left.to_px() == other.padding_left.to_px()
+            && self.padding_right.to_px() == other.padding_right.to_px()
+            && self.padding_top.to_px() == other.padding_top.to_px()
+            && self.padding_bottom.to_px() == other.padding_bottom.to_px()
+            && self.border_radius_top_left.to_px() == other.border_radius_top_left.to_px()
     }
 }

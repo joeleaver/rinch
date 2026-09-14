@@ -720,14 +720,21 @@ impl RinchDocument {
             // acted on below — the assignment in between is what destroys the
             // evidence. See `ComputedStyle::same_text_layout_inputs`.
             //
-            // A node styled for the first time counts as changed: it has
-            // nothing derived yet, so the invalidation is free, and the
-            // alternative is comparing against `ComputedStyle::default()`,
-            // which is a coincidence away from answering "unchanged".
-            let text_layout_stale = !self.tree.nodes[node_id].has_been_styled
-                || !self.tree.nodes[node_id]
-                    .computed_style
-                    .same_text_layout_inputs(&new_style);
+            // There is deliberately **no `!has_been_styled` special case**. A
+            // node being styled for the first time compares against
+            // `ComputedStyle::default()`, and if that somehow matched, skipping
+            // would cost nothing: a node that has never been styled has no
+            // `text_layout` to drop and a Taffy node that was created moments
+            // ago and is already dirty. The one thing the invalidation would
+            // still do for it is `invalidate_ifc_for_node`'s ancestor-walk
+            // fallback, reaching up to whatever IFC root now contains it — and
+            // the `append_child` that put it there has already invalidated that
+            // root. An earlier revision carried the clause; it survived every
+            // one of the 1014 rinch-dom tests, and it costs an O(depth) walk per
+            // node on first build, so it is gone rather than pinned.
+            let text_layout_stale = !self.tree.nodes[node_id]
+                .computed_style
+                .same_text_layout_inputs(&new_style);
 
             // Extract transition specs from Stylo
             let transition_specs = TransitionSpec::extract_from_stylo(&computed_values);
@@ -836,8 +843,21 @@ impl RinchDocument {
             // the Taffy measurement taken from it (#654). `invalidate_ifc_for_node`
             // is the one place that knows which node actually holds the layout:
             // this node when it is the IFC root, its `ifc_root` when it is an
-            // inline inside one, and it also reaches the root's measure leaf,
-            // which a `mark_dirty` on the root does not (#466).
+            // inline inside one, and an ancestor walk for anything else.
+            //
+            // **It marks Taffy twice, and both marks are load-bearing on
+            // different shapes** — measured, because the obvious attribution is
+            // wrong. The plain `taffy.mark_dirty(root)` is what re-measures an
+            // atomic inline that shrink-wraps to its text
+            // (`a_moved_inline_block_is_remeasured_in_its_new_font`); deleting
+            // it alone kills that fixture and nothing else. The extra
+            // `mark_ifc_measure_dirty` reaches the #466 measure leaf, which a
+            // mark on the root does not, and matters only for an IFC root that
+            // *has* one — a root with an out-of-flow child — on a pass that
+            // recomputes Taffy without rebuilding the IFC structure, since a
+            // structural pass mints the leaf fresh and dirty anyway. Deleting
+            // it alone leaves every other test in the crate green and kills
+            // `an_ifc_root_with_a_measure_leaf_is_remeasured_in_its_new_font`.
             //
             // Gated on a real change, and that gate is load-bearing rather than
             // an optimisation: unconditionally invalidating here re-shapes every

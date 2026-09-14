@@ -224,8 +224,12 @@ fn a_subtree_moved_to_a_new_parent_reshapes_its_brush() {
 /// `append_child` marks only the node it is handed dirty, and Taffy dirt
 /// propagates up rather than down, so an `inline-block` inside a moved subtree
 /// kept the intrinsic width it was measured at under the old font. Clearing the
-/// layout alone does not fix this one — `invalidate_ifc_for_node` also marks
-/// the root's measure leaf (#466), which is what makes the box re-measure.
+/// layout alone does not fix this one: `invalidate_ifc_for_node`'s plain
+/// `taffy.mark_dirty(root)` is what makes the box re-measure, and deleting that
+/// one line kills this fixture and nothing else in the crate. It is **not** the
+/// `mark_ifc_measure_dirty` three lines below it — an atomic inline has no #466
+/// measure leaf; the fixture that witnesses *that* call is
+/// [`an_ifc_root_with_a_measure_leaf_is_remeasured_in_its_new_font`].
 #[test]
 fn a_moved_inline_block_is_remeasured_in_its_new_font() {
     let mut doc = RinchDocument::new();
@@ -351,17 +355,17 @@ fn a_branch_swapped_out_and_back_keeps_its_font() {
 }
 
 /// The gate itself, at the level it is written: two styles that differ only in
-/// a property a Parley layout is built from are not interchangeable.
+/// a property an `InlineLayout` is built from are not interchangeable, and two
+/// that differ only outside that list are.
 ///
 /// `apply_stylo_styles_to_taffy` invalidates **only** when this answers false,
-/// and that is load-bearing rather than an optimisation — invalidating
-/// unconditionally re-shapes every moved subtree's text on every DOM insertion,
-/// measured 2-9x slower on a 500-row keyed reversal where no typography changes
-/// at all. A field dropped from the predicate is therefore a silent return of
-/// this bug for that property, with nothing above it to notice.
+/// so a field dropped from the predicate is a silent return of this bug for
+/// that property with nothing above it to notice — and a predicate that always
+/// answers false has nothing *behavioural* above it to notice either, since it
+/// is merely correct and slower. This is that mutant's only pin.
 #[test]
-fn the_staleness_gate_sees_a_font_family_and_a_colour_change() {
-    use rinch_dom::computed_style::ComputedStyle;
+fn the_staleness_gate_lists_what_an_inline_layout_is_built_from() {
+    use rinch_dom::computed_style::{ComputedStyle, DisplayValue};
 
     let base = ComputedStyle::default();
 
@@ -391,15 +395,215 @@ fn the_staleness_gate_sees_a_font_family_and_a_colour_change() {
         "font-size reaches the shaped glyphs"
     );
 
-    // A property outside the list must NOT force a rebuild — without this the
-    // predicate could be `false` unconditionally and every fixture above would
-    // still pass, at the cost the gate exists to avoid.
-    let mut other_background = base.clone();
-    other_background.background = rinch_dom::computed_style::BackgroundValue::Color(
+    // `background-color` bakes into `InlineLayout::background_spans`, but only
+    // an inline box ever contributes one — so the same change is a rebuild on
+    // an inline and free on a block. Both halves are asserted: without the
+    // second, comparing the six span inputs unconditionally would pass.
+    let mut inline_base = base.clone();
+    inline_base.display = DisplayValue::Inline;
+    let mut inline_bg = inline_base.clone();
+    inline_bg.background = rinch_dom::computed_style::BackgroundValue::Color(
         peniko::color::AlphaColor::from_rgba8(1, 2, 3, 255),
     );
     assert!(
-        base.same_text_layout_inputs(&other_background),
-        "a background change bakes into no glyph and must not re-shape anything"
+        !inline_base.same_text_layout_inputs(&inline_bg),
+        "an inline box's background-color bakes into an InlineBackgroundSpan"
+    );
+
+    let mut block_base = base.clone();
+    block_base.display = DisplayValue::Block;
+    let mut block_bg = block_base.clone();
+    block_bg.background = rinch_dom::computed_style::BackgroundValue::Color(
+        peniko::color::AlphaColor::from_rgba8(1, 2, 3, 255),
+    );
+    assert!(
+        block_base.same_text_layout_inputs(&block_bg),
+        "a block's background reaches no span; re-shaping its label on every \
+         :hover is the cost the gate exists to avoid"
+    );
+
+    // And one property no producer reads at all, so the out-of-list side of the
+    // rule has a witness that is not about `display`.
+    let mut other_cursor = base.clone();
+    other_cursor.cursor = rinch_dom::computed_style::CursorValue::Pointer;
+    assert!(
+        base.same_text_layout_inputs(&other_cursor),
+        "cursor bakes into nothing"
+    );
+}
+
+/// An inline box's `background-color`, padding and `border-radius` are baked
+/// into `InlineLayout::background_spans`, so they go stale on a move exactly
+/// the way the glyphs do.
+///
+/// Found by this PR's reviewer, and **pre-existing** rather than a regression:
+/// it fails identically with `crates/rinch-dom/src` at `21fafff`. It is the
+/// same defect as the fixtures above reached through a different producer, so
+/// it is fixed and pinned here rather than filed.
+///
+/// Kills a `same_text_layout_inputs` that omits the background-span inputs, and
+/// one that compares them but only when neither style is `display: inline`.
+#[test]
+fn a_moved_inline_boxs_background_span_is_rebuilt() {
+    const SPAN_CSS: &str = "
+        .a { font-family: sans-serif; font-size: 16px; line-height: 20px; }
+        .b { font-family: sans-serif; font-size: 16px; line-height: 20px; }
+        .a span.hl { background-color: rgb(255, 0, 0); }
+        .b span.hl { background-color: rgb(0, 0, 255); }
+    ";
+
+    /// `panel > block > ("aa ", span.hl > "bb", " cc")`; returns the panel and
+    /// the IFC root that holds the spans.
+    fn panel_with_span(doc: &mut RinchDocument, parent: NodeId) -> (NodeId, NodeId) {
+        let panel = doc.create_element("div");
+        let block = doc.create_element("div");
+        let before = doc.create_text("aa ");
+        let span = doc.create_element("span");
+        doc.set_attribute(span, "class", "hl");
+        let inner = doc.create_text("bb");
+        doc.append_child(span, inner);
+        let after = doc.create_text(" cc");
+        doc.append_child(block, before);
+        doc.append_child(block, span);
+        doc.append_child(block, after);
+        doc.append_child(panel, block);
+        doc.append_child(parent, panel);
+        (panel, block)
+    }
+
+    fn span_colours(doc: &RinchDocument, ifc_root: NodeId) -> Vec<String> {
+        doc.tree
+            .get(ifc_root.0)
+            .expect("node is live")
+            .text_layout
+            .as_ref()
+            .expect("the IFC root holds a shaped layout")
+            .background_spans
+            .iter()
+            .map(|s| format!("{:?}", s.color))
+            .collect()
+    }
+
+    let mut doc = RinchDocument::new();
+    doc.load_css(SPAN_CSS);
+    let body = doc.body();
+
+    let a = doc.create_element("div");
+    doc.set_attribute(a, "class", "a");
+    doc.append_child(body, a);
+    let b = doc.create_element("div");
+    doc.set_attribute(b, "class", "b");
+    doc.append_child(body, b);
+
+    let (moved_panel, moved_block) = panel_with_span(&mut doc, a);
+    doc.resolve_layout(800.0, 600.0);
+    let under_a = span_colours(&doc, moved_block);
+    assert!(!under_a.is_empty(), "the inline box must produce a span");
+
+    doc.append_child(b, moved_panel);
+    let (_, b_oracle) = panel_with_span(&mut doc, b);
+    doc.resolve_layout(800.0, 600.0);
+
+    let under_b = span_colours(&doc, b_oracle);
+    assert_ne!(
+        under_a, under_b,
+        "counter-oracle: the two classes must paint different span colours"
+    );
+    assert_eq!(
+        span_colours(&doc, moved_block),
+        under_b,
+        "the moved subtree's inline background span must be the new one"
+    );
+}
+
+/// The witness for `invalidate_ifc_for_node`'s **second** Taffy mark, the one
+/// that reaches the #466 measure leaf.
+///
+/// An IFC root only owns a measure leaf when it has an out-of-flow child, and
+/// the leaf only survives a layout pass that does not rebuild the IFC structure
+/// (a structural pass tears the leaves down and mints them fresh and dirty). So
+/// the shape that needs the extra mark is: an IFC root with an absolutely
+/// positioned child, whose inherited font changes on a pass that recomputes
+/// Taffy but leaves `ifc_dirty` false. Deleting `mark_ifc_measure_dirty` from
+/// `invalidate_ifc_for_node` leaves every other test in the crate green and
+/// fails this one at 40 against 80; deleting the plain `taffy.mark_dirty` above
+/// it leaves *this* one green and fails the inline-block fixture instead.
+///
+/// **The restyle deliberately also changes `padding`.** A font change alone
+/// never sets `layout_dirty` — that flag is set when a *Taffy* style changes —
+/// so `resolve_layout` takes its text-only branch, rebuilds the Parley layout
+/// and never re-runs Taffy at all, leaving the box stale whatever this PR does.
+/// That is pre-existing and separate (see the PR body); the padding is what
+/// puts the pass on the branch where the measure leaf is the deciding factor.
+#[test]
+fn an_ifc_root_with_a_measure_leaf_is_remeasured_in_its_new_font() {
+    // 100px is chosen so `hello world` fits on one line in sans-serif and not
+    // in monospace, which is what makes the line count — and so the measured
+    // height — differ by font with `line-height` still declared.
+    const LEAF_CSS: &str = "
+        .sans { font-family: sans-serif; font-size: 16px; line-height: 20px; }
+        .mono { font-family: monospace;  font-size: 16px; line-height: 20px; padding: 1px; }
+        .ifc  { width: 100px; }
+        .oof  { position: absolute; top: 0; left: 0; width: 5px; height: 5px; }
+    ";
+
+    fn build(doc: &mut RinchDocument, root_class: &str) -> (NodeId, NodeId) {
+        let body = doc.body();
+        let root = doc.create_element("div");
+        doc.set_attribute(root, "class", root_class);
+        doc.append_child(body, root);
+        let ifc = doc.create_element("div");
+        doc.set_attribute(ifc, "class", "ifc");
+        doc.append_child(root, ifc);
+        // The out-of-flow child is what makes `setup_inline_formatting_contexts`
+        // give this root a measure leaf instead of measuring it directly.
+        let oof = doc.create_element("div");
+        doc.set_attribute(oof, "class", "oof");
+        doc.append_child(ifc, oof);
+        let text = doc.create_text("hello world hello world");
+        doc.append_child(ifc, text);
+        (root, ifc)
+    }
+
+    let mut doc = RinchDocument::new();
+    doc.load_css(LEAF_CSS);
+    let (root, ifc) = build(&mut doc, "sans");
+    doc.resolve_layout(800.0, 600.0);
+
+    assert!(
+        doc.tree.ifc_measure_leaves.contains_key(&ifc.0),
+        "positive control: this shape must actually own a measure leaf, or the \
+         fixture pins nothing"
+    );
+    let leaf_before = doc.tree.ifc_measure_leaves.get(&ifc.0).copied();
+    let under_sans = doc.tree.get(ifc.0).unwrap().layout.height;
+
+    // A restyle with no DOM mutation: `ifc_dirty` stays false, so the leaf is
+    // the same Taffy node afterwards and nothing but the mark can dirty it.
+    doc.set_attribute(root, "class", "mono");
+    doc.resolve_layout(800.0, 600.0);
+    assert_eq!(
+        doc.tree.ifc_measure_leaves.get(&ifc.0).copied(),
+        leaf_before,
+        "positive control: the leaf must survive the pass, or a fresh dirty leaf \
+         would pass this fixture for the wrong reason"
+    );
+
+    // Oracle: the same document built as monospace from the start.
+    let mut oracle_doc = RinchDocument::new();
+    oracle_doc.load_css(LEAF_CSS);
+    let (_, oracle_ifc) = build(&mut oracle_doc, "mono");
+    oracle_doc.resolve_layout(800.0, 600.0);
+    let under_mono = oracle_doc.tree.get(oracle_ifc.0).unwrap().layout.height;
+
+    assert_ne!(
+        under_sans, under_mono,
+        "counter-oracle: the two families must wrap to different line counts"
+    );
+    assert_eq!(
+        doc.tree.get(ifc.0).unwrap().layout.height,
+        under_mono,
+        "the restyled IFC root must be re-measured in its new font; \
+         {under_sans} would be the height it was measured at as sans-serif"
     );
 }
