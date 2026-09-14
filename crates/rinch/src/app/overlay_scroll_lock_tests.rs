@@ -394,9 +394,14 @@ impl Nested {
         }
     }
 
-    /// Unmount the inner modal: dispose its scope and take its subtree out of
-    /// the document, which is what `show_dom` does to a branch that stops
-    /// matching.
+    /// Unmount the inner modal: take its subtree out of the document and
+    /// dispose its scope, which is what happens to a `show_dom` branch that
+    /// stops matching.
+    ///
+    /// In the harsher order, deliberately: `show_dom` disposes *before* it
+    /// removes, so the release runs while the node is still in the tree. Here
+    /// it runs after, which is what a release that tried to look its own node
+    /// up would fail on.
     fn unmount_inner(&mut self) {
         let id = self.inner_modal_root.get().expect("the inner modal's root");
         {
