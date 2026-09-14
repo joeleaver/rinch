@@ -1122,6 +1122,14 @@ impl RinchApp {
                     let key_data = events::KeyEventData::new(ks.clone(), format!("{:?}", key))
                         .with_modifiers(ctrl, shift, alt, modifiers.meta);
                     if events::dispatch_keyboard_event(&key_data) {
+                        // #671: the open `<select>` popup's dismiss entry can
+                        // only ask — closing it needs `&mut self`, which a
+                        // dismiss handler does not have. Answer it here, the
+                        // moment the dispatch that set the flag returns.
+                        if self.select_dismiss_asked.replace(false) {
+                            self.close_select_popup_returning_focus();
+                            self.resolve_and_repaint(vp_w, vp_h);
+                        }
                         actions.push(AppAction::RequestRedraw);
                         return actions;
                     }

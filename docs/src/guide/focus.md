@@ -437,8 +437,12 @@ __scope.on_cleanup(move || drop(handle));
   when it drops, and an entry whose owning scope has been disposed is dropped
   as the scan passes it rather than run (issue #183 — its captured signals are
   already freed).
-- **It is scoped per document.** Two `RinchContext`s on one thread do not answer
-  each other's Escape (issues #134, #139).
+- **It is scoped per document, on desktop and embed.** Two `RinchContext`s on
+  one thread do not answer each other's Escape (issues #134, #139). On
+  `rinch-web` there is nothing to scope and nothing doing the scoping: a page
+  dispatches with no document marked, and the rule is deliberately permissive
+  when either side is unmarked, so every handler is reached. The explicit key
+  you pass at registration is what carries the distinction where one exists.
 - **Both backends, no branch.** Dispatch lives inside
   `dispatch_keyboard_event`, which desktop calls ahead of the focus arbiter and
   `rinch-web` calls from its document `keydown` listener.

@@ -282,6 +282,62 @@ mod tests {
         assert!(!dispatch_keyboard_event(&key("a")));
     }
 
+    /// **The interceptor wins over the dismiss stack** (#474).
+    ///
+    /// `dispatch_keyboard_event`'s own doc says so, and nothing tested it:
+    /// removing the `if intercepted { return true; }` early return left both
+    /// suites green, because every other fixture uses an Escape no interceptor
+    /// is registered for. An app that consumes Escape in its document-level
+    /// hook means to own it, and an open modal must not take it anyway.
+    ///
+    /// Both directions, because "the stack never runs" passes the first half
+    /// on its own.
+    #[test]
+    fn an_interceptor_that_consumes_escape_keeps_it_from_the_dismiss_stack() {
+        clear_keyboard_interceptor();
+        let reached = Rc::new(Cell::new(0u32));
+        let r = reached.clone();
+        let _entry = crate::events::push_dismiss_handler(0, move || {
+            r.set(r.get() + 1);
+            true
+        });
+
+        // Declining: the stack is consulted and consumes.
+        set_keyboard_interceptor(|_| false);
+        assert!(dispatch_keyboard_event(&key("Escape")));
+        assert_eq!(reached.get(), 1, "a declining interceptor falls through");
+
+        // Consuming: the stack is never reached.
+        set_keyboard_interceptor(|_| true);
+        assert!(dispatch_keyboard_event(&key("Escape")));
+        assert_eq!(
+            reached.get(),
+            1,
+            "an interceptor that consumes Escape must keep it from the stack"
+        );
+
+        clear_keyboard_interceptor();
+    }
+
+    /// And the stack only ever sees **Escape**: any other key an interceptor
+    /// declines falls through to the runtime untouched, as it always has.
+    #[test]
+    fn a_key_that_is_not_escape_never_reaches_the_dismiss_stack() {
+        clear_keyboard_interceptor();
+        let reached = Rc::new(Cell::new(0u32));
+        let r = reached.clone();
+        let _entry = crate::events::push_dismiss_handler(0, move || {
+            r.set(r.get() + 1);
+            true
+        });
+        assert!(!dispatch_keyboard_event(&key("a")));
+        assert!(!dispatch_keyboard_event(&key("Enter")));
+        assert_eq!(reached.get(), 0);
+        // Positive control: the instrument fires for the key it is meant to.
+        assert!(dispatch_keyboard_event(&key("Escape")));
+        assert_eq!(reached.get(), 1);
+    }
+
     /// Registering outside any render has no owner, so nothing releases it —
     /// the pre-existing app-lifetime behaviour.
     #[test]

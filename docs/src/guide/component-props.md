@@ -761,11 +761,13 @@ so it registers nothing and leaves the key or the click to the app.
 open overlay joins while it is mounted. The innermost open overlay answers the
 key and the ones beneath it do not, so nesting works; an overlay that is mounted
 but **closed** passes the key down rather than swallowing it; and a key nothing
-takes reaches the app unchanged. Two things beat it, both pre-existing and both
+takes reaches the app unchanged. Some things beat it, all pre-existing and all
 correct: a document-level
 [`set_keyboard_interceptor`](./focus.md#the-document-level-interceptor), which
 is the app saying it means to have Escape, and an in-progress drag, which
-Escape cancels. A custom overlay of your own joins the same stack with
+Escape cancels — both on either backend — plus, on `rinch-web` only, a focused
+`RenderSurface`, which swallows every key there. An open native `<select>`
+popup takes it too, but by joining this same stack rather than by beating it. A custom overlay of your own joins the same stack with
 [`push_dismiss_handler`](./focus.md#the-dismiss-stack) — reach for that rather
 than an interceptor, which is one slot per document and so cannot nest.
 

@@ -416,6 +416,20 @@ pub struct RinchApp {
     /// `focus_target == FocusTarget::Select(_)`. Holds the app-created popup DOM
     /// node ids and the keyboard highlight state (issue #121).
     pub(crate) open_select: Option<select_widget::OpenSelect>,
+    /// The flag the open `<select>` popup's dismiss handler sets, and the entry
+    /// it set it from (#671).
+    ///
+    /// A dismiss handler is an `Fn() -> bool` and closing the popup needs
+    /// `&mut RinchApp`, so the handler only *asks*: it sets the flag and
+    /// consumes the key. `handle_event` drains the flag the moment
+    /// `dispatch_keyboard_event` returns, which is the same deferred-work shape
+    /// as `PendingFocusWork`.
+    ///
+    /// The flag cannot be set and left undrained: it is only ever set by a
+    /// handler that also returns `true`, and `dispatch_keyboard_event` answering
+    /// `true` is exactly when the drain site runs.
+    pub(crate) select_dismiss_asked: Rc<std::cell::Cell<bool>>,
+    pub(crate) select_dismiss_handle: Option<rinch_core::DismissHandle>,
     /// Whether the native-select popup stylesheet has been injected (once).
     pub(crate) select_css_injected: bool,
     /// The "goal column" (a window-space x) preserved across consecutive vertical
@@ -499,6 +513,8 @@ impl RinchApp {
             window_focused: true,
             node_activation_held: None,
             open_select: None,
+            select_dismiss_asked: Rc::new(std::cell::Cell::new(false)),
+            select_dismiss_handle: None,
             select_css_injected: false,
             #[cfg(feature = "desktop")]
             editor_goal_x: None,

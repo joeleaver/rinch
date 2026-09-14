@@ -81,14 +81,6 @@ thread_local! {
               the overlay is mounted, e.g. `__scope.on_cleanup(move || drop(handle))`"]
 pub struct DismissHandle(u64);
 
-impl DismissHandle {
-    /// The entry's id, for diagnostics. Ids are monotonic and never reused.
-    #[doc(hidden)]
-    pub fn id(&self) -> u64 {
-        self.0
-    }
-}
-
 impl std::fmt::Debug for DismissHandle {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_tuple("DismissHandle").field(&self.0).finish()
@@ -142,6 +134,15 @@ pub fn push_dismiss_handler(doc_key: u64, f: impl Fn() -> bool + 'static) -> Dis
 /// Handlers run with **no borrow of the stack held**, because closing an overlay
 /// is very likely to unmount it, which drops its [`DismissHandle`] and mutates
 /// the stack from inside the handler.
+///
+/// The scan works from a **snapshot**, and re-checks liveness and the document
+/// per candidate but not *"is this entry still registered"*. So a handler that
+/// answers `false` and, as a side effect, releases another entry's handle would
+/// leave that released handler still reachable from the snapshot for the rest
+/// of this scan. No shipped handler can do it — every component's `false` path
+/// is a bare `opened_fn()` read with no side effect, and the `true` path stops
+/// the scan — but a handler that does real work on its `false` path should know
+/// the snapshot is not revalidated.
 pub fn dispatch_dismiss() -> bool {
     let caller = current_dispatching_doc();
 
@@ -210,6 +211,14 @@ pub fn dispatch_dismiss() -> bool {
 fn remove(id: u64) {
     let reaped = STACK.with(|s| {
         let Ok(mut stack) = s.try_borrow_mut() else {
+            // Unreachable today: every mutable borrow of `STACK` either runs no
+            // user code under it (`push`) or moves entries out rather than
+            // dropping them under it (the prune). Said out loud anyway, because
+            // failing here leaves a *released* handler in the stack, still
+            // answering Escape, and a silent no-op in a release path is the
+            // family this codebase keeps being bitten by.
+            debug_assert!(false, "dismiss stack borrowed while releasing entry {id}");
+            tracing::warn!("dismiss stack borrowed while releasing entry {id}; entry leaked");
             return None;
         };
         stack

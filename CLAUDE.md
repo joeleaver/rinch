@@ -1288,12 +1288,18 @@ register_focus_target(
   reaches controls behind a Modal/Drawer backdrop — their `trap_focus` prop is
   that gap, #474). *Dismissal* is separate and does work: see the dismiss stack
   above.
-- **Known precedence gap (#474):** an open `<select>` popup handles Escape at
-  the arbiter, which is step 2, while the dismiss stack is inside step 1 — so a
-  `<select>` opened inside a `Modal` loses Escape to the modal, where a browser
-  would close the popup. The fix is for the select to push a dismiss handler of
-  its own when it opens, which puts it on top of the stack and needs no
-  precedence special case — **issue #671**.
+- **An open `<select>` popup joins the dismiss stack** (#671). It is handled by
+  the arbiter, which is step 2, while the stack is inside step 1 — so once
+  `close_on_escape` started working, a `<select>` inside a `Modal` lost Escape
+  to the modal. It now pushes its own entry when it opens (`open_select_popup`,
+  released at `remove_select_popup_nodes`, the one place `open_select` becomes
+  `None`), and since the popup opens *after* the modal mounted, LIFO puts it on
+  top with no precedence special case anywhere. A dismiss handler is an
+  `Fn() -> bool` and closing the popup needs `&mut RinchApp`, so the handler
+  only sets a flag and consumes; `handle_event` drains it the moment
+  `dispatch_keyboard_event` returns — the `PendingFocusWork` shape. The flag
+  cannot be left set: only a handler that returns `true` sets it, and `true` is
+  exactly when the drain site runs.
 - **Web has no arbiter** — `register_focus_target` is desktop/Android/embed
   only; use a real `tabindex` and the DOM's own `focus`/`blur` there.
 

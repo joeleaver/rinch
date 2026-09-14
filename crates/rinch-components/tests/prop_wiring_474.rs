@@ -614,16 +614,33 @@ fn close_on_click_outside_renders_a_backdrop_that_carries_a_handler() {
 /// The sheet must actually style that class. A backdrop with no rule is
 /// `display: block`, `position: static` and zero-sized — the same bug one layer
 /// down.
+///
+/// The `position` assertion is scoped to **this rule's own body**, not to the
+/// whole sheet. `.rinch-modal__overlay` and `.rinch-drawer__overlay` are both
+/// `position: fixed`, so a whole-sheet `contains("position: fixed")` passes
+/// unchanged even if this backdrop were spelled `absolute` — a fixed point, and
+/// an assertion that cannot fail for the reason it names. (The behavioural pin
+/// is `rinch`'s `overlay_dismiss_tests::the_popover_backdrop_takes_its_geometry\
+/// _from_the_stylesheet`, which reads the *computed* value.)
 #[test]
 fn the_sheet_styles_the_popover_backdrop() {
     let css = sheet();
+    let start = css
+        .find(".rinch-popover__backdrop {")
+        .expect("no rule styles `.rinch-popover__backdrop`");
+    let body = &css[start..];
+    let body = &body[..body.find('}').expect("the rule is closed")];
+
     assert!(
-        css.contains(".rinch-popover__backdrop {"),
-        "no rule styles `.rinch-popover__backdrop`"
+        body.contains("position: fixed"),
+        "the backdrop must be fixed — an absolute one is clipped by whatever \
+         clips the popover, so \"outside\" stops at the enclosing panel. Rule \
+         body was: {body}"
     );
     assert!(
-        css.contains("position: fixed"),
-        "the backdrop must be fixed — an absolute one is clipped by whatever \
-         clips the popover, so \"outside\" stops at the enclosing panel"
+        body.contains("z-index: calc(var(--rinch-popover-z-index"),
+        "the backdrop's level must derive from the popover's own property, or \
+         `z_index` moves the panel and leaves the backdrop behind. Rule body \
+         was: {body}"
     );
 }

@@ -584,6 +584,136 @@ fn a_drag_in_progress_still_takes_escape_before_the_dismiss_stack() {
     assert_eq!(closes.get(), 1);
 }
 
+// ── 4b. A native <select> inside an overlay ──────────────────────────────────
+
+/// A `Modal` holding a native `<select>`, with the select's node id.
+fn mount_select_in_modal(open: Signal<bool>) -> (RinchApp, usize, Rc<Cell<usize>>) {
+    let (closes, onclose) = recorder();
+    let sel: Rc<Cell<Option<usize>>> = Rc::new(Cell::new(None));
+    let sel_in = sel.clone();
+
+    let app = mount(move |scope: &mut RenderScope| {
+        let select = scope.create_element("select");
+        select.set_attribute("style", "width: 200px; height: 30px");
+        for label in ["one", "two"] {
+            let opt = scope.create_element("option");
+            opt.set_attribute("value", label);
+            let t = scope.create_text(label);
+            opt.append_child(&t);
+            select.append_child(&opt);
+        }
+        sel_in.set(Some(select.node_id().0));
+        Modal {
+            opened_fn: Some(reactive(open)),
+            close_on_escape: true,
+            // Off, so a click in this fixture cannot be answered by the overlay
+            // and leave an assertion ambiguous.
+            close_on_click_outside: false,
+            onclose: Some(onclose),
+            ..Default::default()
+        }
+        .render(scope, &[select])
+    });
+
+    let id = sel.get().expect("the select's node id, captured at mount");
+    (app, id, closes)
+}
+
+/// **Issue #671.** Escape closes the `<select>` popup, not the modal under it.
+///
+/// This is the one shape where the dismiss stack made a working behaviour
+/// wrong. The popup is handled by the focus arbiter, which the runtime reaches
+/// *after* `dispatch_keyboard_event` — so once `close_on_escape` started
+/// working, a modal swallowed the key that belonged to the popup inside it, and
+/// the popup was left open and orphaned. A browser closes the popup.
+///
+/// The repair needs no precedence special case: the popup opens **after** the
+/// modal mounted, so it joins the stack above it and wins by exactly the LIFO
+/// rule that makes nested modals work.
+#[test]
+fn escape_closes_an_open_select_and_leaves_the_modal_around_it_standing() {
+    let open = Signal::new(true);
+    let (mut app, id, closes) = mount_select_in_modal(open);
+
+    app.open_select_popup(id, VIEWPORT.0, VIEWPORT.1);
+    assert!(app.is_select_open(), "precondition: the popup is open");
+
+    escape(&mut app);
+    assert!(
+        !app.is_select_open(),
+        "#671: Escape must close the <select> popup"
+    );
+    assert_eq!(
+        closes.get(),
+        0,
+        "#671: and must NOT close the modal underneath it"
+    );
+
+    // Positive control: with the popup closed, the very same keystroke closes
+    // the modal. Without this the fixture passes against a build where Escape
+    // does nothing at all.
+    escape(&mut app);
+    assert_eq!(closes.get(), 1, "the modal still answers its own Escape");
+}
+
+/// The ordering the LIFO rule promises, driven end to end: **one Escape each,
+/// innermost first**.
+///
+/// The case above proves the popup wins. This proves the modal is not merely
+/// skipped but still *there*, and that the popup's entry left the stack when it
+/// closed rather than going on answering for the rest of the session — which is
+/// what a handle that was never released would do.
+#[test]
+fn a_select_opened_inside_a_modal_takes_the_first_escape_and_the_modal_the_second() {
+    let open = Signal::new(true);
+    let (mut app, id, closes) = mount_select_in_modal(open);
+    app.open_select_popup(id, VIEWPORT.0, VIEWPORT.1);
+
+    escape(&mut app);
+    assert!(!app.is_select_open(), "first Escape: the select closes");
+    assert_eq!(closes.get(), 0, "and the modal does not");
+
+    escape(&mut app);
+    assert_eq!(closes.get(), 1, "second Escape: the modal closes");
+
+    // A third keystroke with nothing open must reach neither again — the
+    // popup's entry is gone from the stack, not merely inert.
+    open.set(false);
+    escape(&mut app);
+    assert_eq!(closes.get(), 1, "nothing left to dismiss");
+}
+
+/// A `<select>` with no dismissible overlay above it is untouched: the stack is
+/// empty, nothing consumes, and the key reaches the arbiter exactly as it did
+/// before any of this existed.
+#[test]
+fn a_bare_select_still_closes_on_escape_with_no_overlay_involved() {
+    let sel: Rc<Cell<Option<usize>>> = Rc::new(Cell::new(None));
+    let sel_in = sel.clone();
+    let mut app = mount(move |scope: &mut RenderScope| {
+        let root = scope.create_element("div");
+        let select = scope.create_element("select");
+        select.set_attribute("style", "width: 200px; height: 30px");
+        let opt = scope.create_element("option");
+        opt.set_attribute("value", "one");
+        let t = scope.create_text("one");
+        opt.append_child(&t);
+        select.append_child(&opt);
+        sel_in.set(Some(select.node_id().0));
+        root.append_child(&select);
+        root
+    });
+
+    let id = sel.get().expect("the select's node id");
+    app.open_select_popup(id, VIEWPORT.0, VIEWPORT.1);
+    assert!(app.is_select_open(), "precondition");
+    escape(&mut app);
+    assert!(
+        !app.is_select_open(),
+        "Escape closes a bare select as before"
+    );
+}
+
 // ── 5. Popover: outside clicks ───────────────────────────────────────────────
 
 struct Pop {
