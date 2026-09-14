@@ -171,6 +171,13 @@ jobs:
       - name: Run clippy
         run: cargo clippy --workspace --all-targets -- -D warnings
 
+      # `cargo clippy --workspace` above unifies `rinch/gpu` on (pulled in by the
+      # GPU examples), which turns `software_shell` off workspace-wide — so this
+      # is the only configuration in which `software_shell`-gated code is ever
+      # linted (#629).
+      - name: Run clippy (rinch, crate-scoped)
+        run: cargo clippy -p rinch --all-targets -- -D warnings
+
       # Feature combinations the workspace-wide default build never exercises.
       # desktop + embed carries BOTH painters since #140 (the winit shell drives
       # TinySkia while embed RinchContexts drive Vello) and broke silently before

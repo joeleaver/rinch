@@ -1002,7 +1002,6 @@ impl RinchDocument {
         }
     }
 
-    /// Recursively read Taffy layout results into node LayoutResult fields.
     /// Read one anonymous block box's Taffy layout back into its `layout`.
     ///
     /// The box is outside the element tree (#566), so
@@ -1057,6 +1056,7 @@ impl RinchDocument {
         }
     }
 
+    /// Recursively read Taffy layout results into node LayoutResult fields.
     pub(crate) fn read_layout_results(&mut self, node_id: usize) {
         let children: Vec<usize> = self.tree.nodes[node_id].children.clone();
 
@@ -1604,70 +1604,39 @@ impl RinchDocument {
         }
     }
 
-    /// **THE** answer to "which Taffy nodes are this DOM node's Taffy
-    /// children" — the effective list, in DOM order, with every
-    /// `display: contents` child replaced by the boxes it flattens (#476).
+    /// `node_id`'s parent as the **box tree** sees it — the companion to
+    /// [`Self::box_tree_children`], and required by exactly the same rule
+    /// (#566).
     ///
-    /// A `display: contents` element generates no box, so its own `taffy_id`
-    /// is never in the list and its grandchildren appear directly in the
-    /// ancestor's; the recursion handles wrappers nested to any depth. The
-    /// flattening key is `computed_style.display == Contents`, which selects
-    /// the same nodes [`crate::node::Node::inline_flow_role`] answers
-    /// `Contents` for — display before position, always (#366) — so for every
-    /// node that can carry a box the flattening and every IFC decision agree.
-    /// (`inline_flow_role` short-circuits on `is_comment()` *before* the
-    /// display match, so a comment declaring `display: contents` would be the
-    /// one node they classify differently. It cannot occur: a comment never
-    /// goes through style resolution, so its `computed_style.display` keeps
-    /// the default and its `taffy_id` is `None`.)
+    /// A run's member has the anonymous box as its box-tree parent even though
+    /// its DOM parent is the container. The box's own parent needs no
+    /// correction — it keeps a real upward edge to its container and is merely
+    /// absent from that container's `children`.
     ///
-    /// **Every whole-list rebuild must derive its order from here.** There
-    /// are four, and they run in this order inside `resolve_layout`'s
-    /// `ifc_dirty` block:
-    ///
-    /// 1. [`Self::sync_display_contents`] — departed wrappers
-    /// 2. [`Self::sync_display_contents`] — affected parents
-    /// 3. `cleanup_anonymous_block_boxes` (`ifc.rs`) — parents that held an
-    ///    anonymous box last pass
-    /// 4. `create_anonymous_block_boxes` (`ifc.rs`) — mixed-content block
-    ///    containers, and the anonymous boxes it mints
-    ///
-    /// 3 and 4 used to rebuild from **raw `nodes[parent].children`**, which
-    /// cannot see the flattening, so they ran right after 1/2 and undid it:
-    /// they re-added the wrapper's own boxless Taffy node and dropped the
-    /// grandchildren it stands for. Because a flattened grandchild is not a
-    /// DOM child of the parent, nothing re-added it anywhere — it was left
-    /// **orphaned** in Taffy, laid out `0x0` and painted not at all, stably,
-    /// on every subsequent pass (#476). What was spared is exactly what
-    /// `create_anonymous_block_boxes` skips — `DisplayMode::Flex` — which is
-    /// why the whole `display: contents` test suite, written over flex
-    /// containers, stayed green. That is narrower than "only plain blocks":
-    /// `display: grid` maps to `DisplayMode::Block` (`style_resolution`), so
-    /// grid containers were affected too.
-    ///
-    /// The IFC **measure-leaf canonicalization** (`ifc.rs`, #466 PR2) is a
-    /// deliberate exception and not a fifth *caller*: it is selecting the
-    /// *out-of-flow* children of one IFC root, which is a different question,
-    /// and it reads the DOM rather than the attachment on purpose (#477). It
-    /// does its own contents flattening through `collect_contents_out_of_flow`.
-    ///
-    /// It **is** a fifth whole-list `set_children`, and #477 counts it as one:
-    /// it is the pass that heals a late-inserted out-of-flow child, which is
-    /// why that issue's forecast about #466 PR2 came out inverted. "Four" here
-    /// means four rebuilds that must take their **order** from this function —
-    /// not four places that replace a Taffy child list.
-    ///
-    /// **"THE answer" is scoped to rebuilds, and one neighbour is deliberately
-    /// outside that scope**: [`Self::collect_taffy_contribution`], immediately
-    /// below, walks the same flattening with a **wider gate** (`Contents` **or**
-    /// `contents_spliced`). It is not a rival authority and not a bug — it
-    /// answers a different question, *"which ids might this node be occupying
-    /// right now"*, for the incremental insert index at **mutation time**
-    /// (#477), where this function's `Contents`-only gate is momentarily wrong:
-    /// a wrapper restyled away from `contents` between syncs still has its
-    /// children in the parent's list, and asking here would answer with the
-    /// wrapper's own detached id instead. Read the two together before changing
-    /// either gate.
+    /// **Every coordinate accumulation that walks upward must use this.** A
+    /// member's `layout` is positioned by the IFC *relative to the box*, so a
+    /// parent-chain sum that steps straight to the container drops the box's
+    /// own offset — the run lands at the container's origin instead of the
+    /// run's. That is invisible for a document's first run, whose box is at
+    /// `y = 0`, and wrong for every one after it: it was found by a focus test
+    /// clicking a toolbar `<input>` and hitting the node above it.
+    pub fn box_tree_parent(nodes: &slab::Slab<crate::node::Node>, node_id: usize) -> Option<usize> {
+        let node = nodes.get(node_id)?;
+        // A hoisted out-of-flow box is held by its host's lists, not its DOM
+        // parent's (#591): its `layout` is relative to the host, so every
+        // coordinate sum steps there. `Node::hoisted_out_of_flow_to`.
+        if let Some(host) = node.hoisted_out_of_flow_to {
+            return Some(host);
+        }
+        if let Some(b) = node.run_box {
+            return Some(b);
+        }
+        // A box needs no arm of its own: it keeps a real `parent` edge to its
+        // container (it is simply absent from that container's `children`), so
+        // the ordinary answer is already right.
+        node.parent
+    }
+
     /// `node_id`'s children as the **box tree** sees them: its DOM children,
     /// with each inline run replaced — at the position of its first member — by
     /// the anonymous block box that stands for it (#566).
@@ -1710,39 +1679,6 @@ impl RinchDocument {
     ///
     /// **Borrows** for the overwhelmingly common case of a node with no run
     /// among its children, so the per-frame walks that call it pay nothing.
-    /// `node_id`'s parent as the **box tree** sees it — the companion to
-    /// [`Self::box_tree_children`], and required by exactly the same rule
-    /// (#566).
-    ///
-    /// A run's member has the anonymous box as its box-tree parent even though
-    /// its DOM parent is the container. The box's own parent needs no
-    /// correction — it keeps a real upward edge to its container and is merely
-    /// absent from that container's `children`.
-    ///
-    /// **Every coordinate accumulation that walks upward must use this.** A
-    /// member's `layout` is positioned by the IFC *relative to the box*, so a
-    /// parent-chain sum that steps straight to the container drops the box's
-    /// own offset — the run lands at the container's origin instead of the
-    /// run's. That is invisible for a document's first run, whose box is at
-    /// `y = 0`, and wrong for every one after it: it was found by a focus test
-    /// clicking a toolbar `<input>` and hitting the node above it.
-    pub fn box_tree_parent(nodes: &slab::Slab<crate::node::Node>, node_id: usize) -> Option<usize> {
-        let node = nodes.get(node_id)?;
-        // A hoisted out-of-flow box is held by its host's lists, not its DOM
-        // parent's (#591): its `layout` is relative to the host, so every
-        // coordinate sum steps there. `Node::hoisted_out_of_flow_to`.
-        if let Some(host) = node.hoisted_out_of_flow_to {
-            return Some(host);
-        }
-        if let Some(b) = node.run_box {
-            return Some(b);
-        }
-        // A box needs no arm of its own: it keeps a real `parent` edge to its
-        // container (it is simply absent from that container's `children`), so
-        // the ordinary answer is already right.
-        node.parent
-    }
-
     pub fn box_tree_children(
         nodes: &slab::Slab<crate::node::Node>,
         node_id: usize,
@@ -1844,6 +1780,70 @@ impl RinchDocument {
         Cow::Owned(out)
     }
 
+    /// **THE** answer to "which Taffy nodes are this DOM node's Taffy
+    /// children" — the effective list, in DOM order, with every
+    /// `display: contents` child replaced by the boxes it flattens (#476).
+    ///
+    /// A `display: contents` element generates no box, so its own `taffy_id`
+    /// is never in the list and its grandchildren appear directly in the
+    /// ancestor's; the recursion handles wrappers nested to any depth. The
+    /// flattening key is `computed_style.display == Contents`, which selects
+    /// the same nodes [`crate::node::Node::inline_flow_role`] answers
+    /// `Contents` for — display before position, always (#366) — so for every
+    /// node that can carry a box the flattening and every IFC decision agree.
+    /// (`inline_flow_role` short-circuits on `is_comment()` *before* the
+    /// display match, so a comment declaring `display: contents` would be the
+    /// one node they classify differently. It cannot occur: a comment never
+    /// goes through style resolution, so its `computed_style.display` keeps
+    /// the default and its `taffy_id` is `None`.)
+    ///
+    /// **Every whole-list rebuild must derive its order from here.** There
+    /// are four, and they run in this order inside `resolve_layout`'s
+    /// `ifc_dirty` block:
+    ///
+    /// 1. [`Self::sync_display_contents`] — departed wrappers
+    /// 2. [`Self::sync_display_contents`] — affected parents
+    /// 3. `cleanup_anonymous_block_boxes` (`ifc.rs`) — parents that held an
+    ///    anonymous box last pass
+    /// 4. `create_anonymous_block_boxes` (`ifc.rs`) — mixed-content block
+    ///    containers, and the anonymous boxes it mints
+    ///
+    /// 3 and 4 used to rebuild from **raw `nodes[parent].children`**, which
+    /// cannot see the flattening, so they ran right after 1/2 and undid it:
+    /// they re-added the wrapper's own boxless Taffy node and dropped the
+    /// grandchildren it stands for. Because a flattened grandchild is not a
+    /// DOM child of the parent, nothing re-added it anywhere — it was left
+    /// **orphaned** in Taffy, laid out `0x0` and painted not at all, stably,
+    /// on every subsequent pass (#476). What was spared is exactly what
+    /// `create_anonymous_block_boxes` skips — `DisplayMode::Flex` — which is
+    /// why the whole `display: contents` test suite, written over flex
+    /// containers, stayed green. That is narrower than "only plain blocks":
+    /// `display: grid` maps to `DisplayMode::Block` (`style_resolution`), so
+    /// grid containers were affected too.
+    ///
+    /// The IFC **measure-leaf canonicalization** (`ifc.rs`, #466 PR2) is a
+    /// deliberate exception and not a fifth *caller*: it is selecting the
+    /// *out-of-flow* children of one IFC root, which is a different question,
+    /// and it reads the DOM rather than the attachment on purpose (#477). It
+    /// does its own contents flattening through `collect_contents_out_of_flow`.
+    ///
+    /// It **is** a fifth whole-list `set_children`, and #477 counts it as one:
+    /// it is the pass that heals a late-inserted out-of-flow child, which is
+    /// why that issue's forecast about #466 PR2 came out inverted. "Four" here
+    /// means four rebuilds that must take their **order** from this function —
+    /// not four places that replace a Taffy child list.
+    ///
+    /// **"THE answer" is scoped to rebuilds, and one neighbour is deliberately
+    /// outside that scope**: [`Self::collect_taffy_contribution`], immediately
+    /// below, walks the same flattening with a **wider gate** (`Contents` **or**
+    /// `contents_spliced`). It is not a rival authority and not a bug — it
+    /// answers a different question, *"which ids might this node be occupying
+    /// right now"*, for the incremental insert index at **mutation time**
+    /// (#477), where this function's `Contents`-only gate is momentarily wrong:
+    /// a wrapper restyled away from `contents` between syncs still has its
+    /// children in the parent's list, and asking here would answer with the
+    /// wrapper's own detached id instead. Read the two together before changing
+    /// either gate.
     pub(crate) fn collect_effective_taffy_children(
         nodes: &slab::Slab<crate::node::Node>,
         node_id: usize,
