@@ -1325,6 +1325,32 @@ register_focus_target(
   moves focus out of it. That matches a *non-modal* `<dialog>`; a browser's
   `showModal()` inerts the rest of the page and refuses even a scripted focus
   behind it (measured, Chrome 150), which rinch does not model.
+- **`lock_scroll` gates the gesture on desktop and the style on web** (#474).
+  `Modal`/`Drawer`'s prop reaches
+  `DomDocument::set_scroll_locked(locked, root)` through
+  `NodeHandle::set_scroll_locked`; it takes the overlay's **root node**, not
+  just a bool, because desktop has to know which subtree may still scroll.
+  Desktop records the locking roots on `NodeTree` and refuses a container
+  outside every one of them (`NodeTree::scroll_locked_out`) at two input sites:
+  the **wheel arm** in `event_dispatch.rs` (both axes, both the ancestor walk
+  and the geometric fallback — an open overlay is exactly the shape that
+  fallback exists for) and **`find_scrollbar_hit`**, so the page's #178 thumb
+  cannot be dragged either. Nothing is restyled: the page does not reflow and
+  keeps its `scroll_offset`. Web sets `overflow: hidden` on the real `<html>`
+  (page-global and counted in `web_document.rs`, previous inline value saved and
+  restored), because rinch cannot gate the browser's own wheel. **The
+  divergence to know:** web removes the page's *scrollbar* too, so a classic
+  (non-overlay) scrollbar there shifts the layout on open; on desktop a locked
+  page's bar stays painted and is simply inert. Locks are **counted** in both
+  backends, so an inner modal closing over an outer one leaves the page locked,
+  and `overlay_scroll_lock::arm_lock_scroll` releases on close *and* in
+  `on_cleanup` — an unmount while open would otherwise wedge the page for the
+  session. What it does **not** gate: programmatic scrolling
+  (`set_scroll_top`), and keyboard page-scrolling, which desktop does not have
+  at all. A touch scroll and the MCP `scroll` tool both arrive as
+  `PlatformEvent::MouseWheel`, so they are gated. `RenderScope::body_handle()`
+  is the trap the design avoids — on web it is `<div id="rinch-body">`, not the
+  page.
 - **An open `<select>` popup joins the dismiss stack** (#671). It is handled by
   the arbiter, which is step 2, while the stack is inside step 1 — so once
   `close_on_escape` started working, a `<select>` inside a `Modal` lost Escape

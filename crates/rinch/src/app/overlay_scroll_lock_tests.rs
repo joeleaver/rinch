@@ -260,6 +260,54 @@ fn closing_the_modal_releases_the_lock() {
     );
 }
 
+/// **The effect's edge guard.** An `opened_fn` is an arbitrary getter, so its
+/// effect re-runs whenever *anything* it read changes, not only when `opened`
+/// flips — a `Memo` recomputing, a sibling signal in the same closure. Each
+/// re-run while open would take another lock, and since a close only ever
+/// releases one, the page would be left locked for ever by a dialog that is
+/// visibly shut.
+///
+/// The nudge signal is read *inside* the getter, which is what makes the re-run
+/// happen without changing the answer — the shape a real `opened_fn` reading a
+/// store field has.
+#[test]
+fn reopening_the_effect_without_changing_opened_does_not_ratchet_the_lock() {
+    let open = Signal::new(true);
+    let nudge = Signal::new(0u32);
+    let mut f = mount_with_overlay(move |scope, children| {
+        Modal {
+            opened_fn: Some(Rc::new(move || {
+                nudge.get();
+                open.get()
+            })),
+            lock_scroll: true,
+            ..Default::default()
+        }
+        .render(scope, children)
+    });
+
+    // Re-run the effect three times over, `opened` unchanged at `true`.
+    for i in 1..=3 {
+        nudge.set(i);
+    }
+    f.app.resolve_and_repaint(VIEWPORT.0, VIEWPORT.1);
+    wheel(&mut f.app, AIM, 0.0, WHEEL_DY);
+    assert_eq!(
+        scroll_top(&f.app, f.page),
+        0.0,
+        "precondition: still open, still locked"
+    );
+
+    open.set(false);
+    f.app.resolve_and_repaint(VIEWPORT.0, VIEWPORT.1);
+    wheel(&mut f.app, AIM, 0.0, WHEEL_DY);
+    assert_eq!(
+        scroll_top(&f.app, f.page),
+        EXPECTED_PAGE_SCROLL,
+        "one close releases the one lock — four opens did not take four"
+    );
+}
+
 /// `Drawer` carries the same prop and must do the same thing.
 ///
 /// It shares `arm_lock_scroll` with `Modal`, and a test that only covered

@@ -549,6 +549,43 @@ the slot rather than restoring what it displaced.
 
 [`DismissHandle`]: https://docs.rs/rinch/latest/rinch/struct.DismissHandle.html
 
+## Locking the page behind an overlay
+
+The other thing an open dialog owes the page behind it is stillness. `Modal` and
+`Drawer` do it for you through their `lock_scroll` prop (default on, issue
+#474); a custom overlay takes the same lock on its own root:
+
+```rust
+// On open — the node matters: it names the subtree that stays scrollable.
+root.set_scroll_locked(true);
+// On close, and again on unmount, or the page never scrolls again.
+root.set_scroll_locked(false);
+```
+
+- **Locks are counted.** Two overlays open and the inner one closing leaves the
+  page locked. Every `true` must be matched by exactly one `false`.
+- **Release it on unmount as well as on close.** An overlay can be taken out of
+  the tree while still open, which is what `if show { Modal { .. } }` does. The
+  effect that would have unlocked it never runs again, so the release belongs in
+  an `on_cleanup` too. `Modal` and `Drawer` already do both.
+- **The two backends do different things**, and this is the one overlay
+  behaviour where that is visible. Desktop refuses the *gesture*: a wheel (which
+  is what a touch scroll arrives as too) and a scrollbar-thumb press are
+  rejected for any container that is not inside a locking overlay, so the
+  dialog's own `overflow: auto` body still scrolls. `rinch-web` sets
+  `overflow: hidden` on the real `<html>`, because rinch cannot gate the
+  browser's own wheel.
+- **So web also removes the page's scrollbar and desktop does not.** A web page
+  with a classic (non-overlay) scrollbar shifts sideways when an overlay opens.
+  Desktop's bars are overlays with no gutter, and a locked page's bar stays
+  painted — visible, and inert.
+- **Input only.** Programmatic scrolling (`set_scroll_top`, a list the app
+  scrolls itself) is untouched on both.
+
+Do **not** reach for `RenderScope::body_handle()` and set `overflow: hidden`
+there: on the web that handle is `<div id="rinch-body">`, a descendant of the
+real `<body>`, and styling it does not stop the page scrolling.
+
 ## Where this does *not* apply
 
 - **The browser backend (`rinch-web`).** There is no arbiter there because the
