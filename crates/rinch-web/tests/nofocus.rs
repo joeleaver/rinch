@@ -203,7 +203,7 @@ fn the_false_value_opts_out() {
     assert!(
         !ev.default_prevented(),
         "`data-nofocus=\"false\"` is the documented opt-out — one of rinch's own \
-         two attributes that have one, unlike the HTML `disabled` (#612)"
+         three attributes that have one, unlike the HTML `disabled` (#612)"
     );
     f.teardown();
 }

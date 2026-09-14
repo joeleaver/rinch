@@ -141,14 +141,15 @@ fn the_wider_set(flag: Signal<bool>) -> NodeHandle {
             p { hidden: {move || flag.get()}, "text" }
             option { selected: {move || flag.get()}, "A" }
             details { open: {move || flag.get()} }
-            // rinch's own two, read as boolean attributes by both backends.
+            // rinch's own three, read as boolean attributes by both backends.
             div { data-disabled: {move || flag.get()} }
             div { data-nofocus: {move || flag.get()} }
+            div { data-trap-focus: {move || flag.get()} }
         }
     }
 }
 
-/// Nine attributes from the set, each toggling both ways.
+/// Ten attributes from the set, each toggling both ways.
 ///
 /// Not one attribute: the fix is a name lookup, and a lookup that answered only
 /// for `disabled` would pass every test above.
@@ -164,6 +165,7 @@ fn every_boolean_attribute_in_the_set_toggles_both_ways() {
         "open",
         "data-disabled",
         "data-nofocus",
+        "data-trap-focus",
     ];
     let flag = Signal::new(true);
     let (_doc, _scope, root) = mount(|s| the_wider_set(s, flag));

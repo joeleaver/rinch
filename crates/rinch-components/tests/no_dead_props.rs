@@ -56,25 +56,20 @@ use std::path::Path;
 
 /// Props that are declared, documented, and still not wired — the debt #474
 /// catalogued, with the sub-cluster each belongs to. Every entry must name a
-/// live reason: this list may only shrink. It started at 31 and is 14; the
-/// seventeen that left were #474's whole `z_index` sub-cluster, its five dead
-/// `radius` props, `CloseButton::icon_size`, `Drawer::overlay_opacity`, and the
-/// five dismissal props of category A.
+/// live reason: this list may only shrink. It started at 31 and is 11; the
+/// twenty that left were #474's whole `z_index` sub-cluster, its five dead
+/// `radius` props, `CloseButton::icon_size`, `Drawer::overlay_opacity`, the
+/// five dismissal props of category A, and its three `trap_focus` props.
 ///
-/// What remains of the overlay-behaviour cluster (#474 category A) is the
-/// *focus and scroll* half: `trap_focus` and `lock_scroll`. Both are new
-/// interaction work against the focus arbiter and the wheel-routing path
-/// (CLAUDE.md lists backdrop modality as *not yet* implemented — those props
-/// are that gap, declared as if it were closed). The dismissal half —
-/// `close_on_escape`, `Popover::close_on_click_outside`,
-/// `Notification::auto_close` — landed with the dismiss stack.
+/// What remains of the overlay-behaviour cluster (#474 category A) is
+/// `lock_scroll`, which is new interaction work against the wheel-routing path.
+/// The dismissal half — `close_on_escape`, `Popover::close_on_click_outside`,
+/// `Notification::auto_close` — landed with the dismiss stack, and `trap_focus`
+/// with `data-trap-focus` and the two backends' Tab containment.
 const ALLOWLIST: &[(&str, &str)] = &[
     // #474 category A — overlay behaviour that does not exist yet.
     ("Modal::lock_scroll", "#474 A: scroll locking"),
-    ("Modal::trap_focus", "#474 A: focus arbiter work"),
     ("Drawer::lock_scroll", "#474 A: scroll locking"),
-    ("Drawer::trap_focus", "#474 A: focus arbiter work"),
-    ("Popover::trap_focus", "#474 A: focus arbiter work"),
     // #474 category C — a parent prop whose child's twin works.
     ("List::icon", "#474 C: not plumbed to ListItem"),
     (

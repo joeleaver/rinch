@@ -1814,8 +1814,9 @@ fn html_disabled_attribute_is_set(node: &Node) -> bool {
 /// rinch's convention, documented as "present unless the value is `false`" since
 /// it was written. `data-disabled` has no web reader at all — the browser does not
 /// know the attribute — so the escape's two-backend half is carried by its
-/// sibling `data-nofocus`, whose web selector is
-/// `[data-nofocus]:not([data-nofocus="false" i])`.
+/// siblings `data-nofocus` and `data-trap-focus`, whose web selectors are
+/// `[data-nofocus]:not([data-nofocus="false" i])` and
+/// `[data-trap-focus]:not([data-trap-focus="false" i])`.
 ///
 /// The rule itself is [`rinch_core::dom::data_attr_is_on`], shared with
 /// `RinchApp::node_is_nofocus` so the two spell one rule. Shared, not enforced:

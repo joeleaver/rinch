@@ -281,6 +281,16 @@ impl Component for Drawer {
             root.set_attribute("style", &format!("--rinch-drawer-z-index: {}", z));
         }
 
+        // trap_focus (#474): see the note in `modal.rs` — the two components
+        // share this shape too, down to the attribute's removal on close.
+        crate::overlay_focus::arm_trap_focus(
+            __scope,
+            &root,
+            self.trap_focus,
+            self.opened,
+            self.opened_fn.as_ref(),
+        );
+
         // close_on_escape (#474): see the note in `modal.rs` — the two
         // components share this shape, including the open check living at
         // dispatch time rather than here.

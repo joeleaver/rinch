@@ -40,11 +40,19 @@
 ///   `hidden="false"` hides. It fails exactly the way a boolean attribute
 ///   fails, so it is written the same way. (rinch honours it through
 ///   `.rinch-tabs__panel[hidden]`, a presence selector, so desktop agrees.)
-/// - **`data-disabled`** and **`data-nofocus`** are rinch's own boolean
-///   attributes, documented as "present unless the value is `false`" — desktop
-///   reads both that way, and the web reads `data-nofocus` that way (it has no
-///   `data-disabled` reader at all). Writing them by presence makes a reactive
-///   binding correct by construction instead of correct by that tolerance.
+/// - **`data-disabled`**, **`data-nofocus`** and **`data-trap-focus`** are
+///   rinch's own boolean attributes, documented as "present unless the value is
+///   `false`" — desktop reads all three that way, and the web reads
+///   `data-nofocus` and `data-trap-focus` that way (it has no `data-disabled`
+///   reader at all). Writing them by presence makes a reactive binding correct
+///   by construction instead of correct by that tolerance.
+///
+///   `data-trap-focus` (issue #474) is the one that most needs it: it is
+///   written from an overlay's *open* state, so it is the reactive case by
+///   construction, and the failure it avoids is not cosmetic. A closed overlay
+///   left carrying `data-trap-focus="false"` would be read as a live trap by
+///   anything that tests presence, and Tab would circle inside an invisible
+///   dialog for the rest of the session.
 pub fn is_boolean_attribute(name: &str) -> bool {
     matches!(
         name,
@@ -84,6 +92,7 @@ pub fn is_boolean_attribute(name: &str) -> bool {
             // ── rinch's own ──
             | "data-disabled"
             | "data-nofocus"
+            | "data-trap-focus"
     )
 }
 
@@ -122,14 +131,14 @@ pub fn attr_is_truthy(value: &str) -> bool {
 
 /// Whether one of **rinch's own** `data-` boolean attributes is on.
 ///
-/// `data-disabled` and `data-nofocus` are rinch inventions, not HTML, and rinch
-/// gives them an escape HTML has no equivalent of: present means on *unless* the
-/// value is the literal `false`, ASCII-case-insensitively. It is a rinch
-/// convention rather than a desktop quirk, and `data-nofocus` is what shows that:
-/// desktop reads it through this function and the web through
-/// `event_delegation.rs`'s `[data-nofocus]:not([data-nofocus="false" i])`.
-/// (`data-disabled` has no web reader, so there is nothing on that side to
-/// agree or disagree with.)
+/// `data-disabled`, `data-nofocus` and `data-trap-focus` are rinch inventions,
+/// not HTML, and rinch gives them an escape HTML has no equivalent of: present
+/// means on *unless* the value is the literal `false`, ASCII-case-insensitively.
+/// It is a rinch convention rather than a desktop quirk, and the latter two are
+/// what show that: desktop reads them through this function and the web through
+/// `event_delegation.rs`'s `[data-nofocus]:not([data-nofocus="false" i])` and
+/// `[data-trap-focus]:not([data-trap-focus="false" i])`. (`data-disabled` has no
+/// web reader, so there is nothing on that side to agree or disagree with.)
 ///
 /// The plain HTML `disabled` / `readonly` deliberately do **not** go through
 /// here: they are read by presence alone, the way a browser reads them (issue
@@ -198,11 +207,11 @@ mod tests {
         }
     }
 
-    /// The three deliberate additions, so removing one is a test failure rather
+    /// The four deliberate additions, so removing one is a test failure rather
     /// than a silent narrowing.
     #[test]
-    fn the_non_spec_additions_are_the_documented_three() {
-        for name in ["hidden", "data-disabled", "data-nofocus"] {
+    fn the_non_spec_additions_are_the_documented_four() {
+        for name in ["hidden", "data-disabled", "data-nofocus", "data-trap-focus"] {
             assert!(
                 is_boolean_attribute(name),
                 "{name} must be written by presence"

@@ -1443,6 +1443,153 @@ fn try_keyboard_activation(event: &web_sys::KeyboardEvent, key: &str) -> bool {
     dispatch_activation(&el, None, modifiers_from_key_event(event)).is_some()
 }
 
+// ── Tab containment (`data-trap-focus`, issue #474) ─────────────────────────
+
+/// A live focus trap. The `:not(…"false" i)` half is rinch's own boolean-attribute
+/// escape, spelled here exactly as `data-nofocus`'s is — desktop reads the same
+/// rule through `rinch_core::dom::data_attr_is_on`.
+const TRAP_SELECTOR: &str = "[data-trap-focus]:not([data-trap-focus=\"false\" i])";
+
+/// Everything that could be a Tab stop, before the per-element filtering in
+/// [`trap_focusables`].
+///
+/// `[tabindex]` catches an explicit one on any tag, and `[data-oninput]` a
+/// custom text control — both because desktop's `effective_tabindex` does. A
+/// negative `tabindex` is filtered below rather than excluded here, so an
+/// explicit `tabindex` beats the tag exactly as it does on desktop (issue #252).
+const FOCUSABLE_SELECTOR: &str =
+    "a[href], button, input, select, textarea, [tabindex], [data-oninput]";
+
+/// Whether an element occupies a box the user could reach.
+///
+/// Deliberately the same two questions desktop's `RinchApp::node_is_visible`
+/// asks — a non-zero box and a `visibility` that is not `hidden`/`collapse` —
+/// so a closed `Modal` (whose root is `display: none`) is skipped by both.
+fn element_is_visible(el: &web_sys::Element) -> bool {
+    let rect = el.get_bounding_client_rect();
+    if rect.width() <= 0.0 || rect.height() <= 0.0 {
+        return false;
+    }
+    let Some(win) = web_sys::window() else {
+        return true;
+    };
+    match win.get_computed_style(el) {
+        Ok(Some(style)) => !matches!(
+            style.get_property_value("visibility").as_deref(),
+            Ok("hidden") | Ok("collapse")
+        ),
+        _ => true,
+    }
+}
+
+/// The focus trap Tab is confined to, if any.
+///
+/// The same two rules, in the same order, as desktop's `RinchApp::tab_trap_root`
+/// — see that function for why nesting resolves innermost-first and why a
+/// fallback picks the *last* trap rather than the first.
+fn trap_root(browser_doc: &web_sys::Document) -> Option<web_sys::Element> {
+    // 1. The nearest visible trap the focus sits inside. The loop is what makes
+    //    "nearest *visible*" true: `closest` answers with the nearest match
+    //    whether or not it is showing, so a hidden one is stepped over rather
+    //    than accepted, which is how an outer trap takes back over the moment a
+    //    nested one closes.
+    let mut probe = browser_doc.active_element();
+    while let Some(el) = probe {
+        let Some(hit) = el.closest(TRAP_SELECTOR).ok().flatten() else {
+            break;
+        };
+        if element_is_visible(&hit) {
+            return Some(hit);
+        }
+        probe = hit.parent_element();
+    }
+
+    // 2. Otherwise the last one in document order. `query_selector_all` is in
+    //    document order, so walking it backwards finds the last.
+    let all = browser_doc.query_selector_all(TRAP_SELECTOR).ok()?;
+    (0..all.length()).rev().find_map(|i| {
+        let el = all.item(i)?.dyn_into::<web_sys::Element>().ok()?;
+        element_is_visible(&el).then_some(el)
+    })
+}
+
+/// The Tab stops inside `root`, in document order, `root` itself included.
+///
+/// **This is not desktop's collector, and cannot be.** It is a CSS selector
+/// plus a filter where desktop walks its own tree, so the two sets are computed
+/// by different code and agree only as far as they are each written to. Two
+/// differences are known and accepted: the browser's `:disabled` reaches the
+/// descendants of a `<fieldset disabled>` for form controls only, where
+/// desktop's `node_is_disabled` is tag-agnostic and would also take a
+/// `tabindex` div out; and rinch's own `data-disabled` is honoured here
+/// explicitly because no browser knows the attribute.
+fn trap_focusables(root: &web_sys::Element) -> Vec<web_sys::HtmlElement> {
+    let mut out = Vec::new();
+    let mut consider = |el: web_sys::Element| {
+        if el.has_attribute("disabled")
+            || el
+                .get_attribute("data-disabled")
+                .is_some_and(|v| rinch_core::dom::data_attr_is_on(&v))
+            || el
+                .get_attribute("tabindex")
+                .is_some_and(|v| v.trim().parse::<i32>().is_ok_and(|n| n < 0))
+            || !element_is_visible(&el)
+        {
+            return;
+        }
+        if let Ok(html) = el.dyn_into::<web_sys::HtmlElement>() {
+            out.push(html);
+        }
+    };
+
+    if root.matches(FOCUSABLE_SELECTOR).unwrap_or(false) {
+        consider(root.clone());
+    }
+    if let Ok(list) = root.query_selector_all(FOCUSABLE_SELECTOR) {
+        for i in 0..list.length() {
+            if let Some(el) = list.item(i).and_then(|n| n.dyn_into().ok()) {
+                consider(el);
+            }
+        }
+    }
+    out
+}
+
+/// Move focus within the live trap, if there is one. Returns whether the key
+/// was consumed.
+///
+/// A trap with nothing focusable inside it consumes the key and moves nothing:
+/// containment means Tab does not leave, and that is the one case where "does
+/// not leave" and "goes nowhere" are the same thing. Desktop's `handle_tab`
+/// returns on the same empty list for the same reason.
+fn handle_trapped_tab(browser_doc: &web_sys::Document, shift: bool) -> bool {
+    let Some(root) = trap_root(browser_doc) else {
+        return false;
+    };
+    let items = trap_focusables(&root);
+    if items.is_empty() {
+        return true;
+    }
+
+    let active = browser_doc.active_element();
+    let current = active.and_then(|a| {
+        items
+            .iter()
+            .position(|el| el.is_same_node(Some(a.unchecked_ref())))
+    });
+    // Identical arithmetic to desktop's `handle_tab`, including where focus
+    // starts outside the trap: Tab enters at the first stop, Shift+Tab at the
+    // last.
+    let target = match (current, shift) {
+        (Some(i), false) => (i + 1) % items.len(),
+        (Some(i), true) => i.checked_sub(1).unwrap_or(items.len() - 1),
+        (None, false) => 0,
+        (None, true) => items.len() - 1,
+    };
+    let _ = items[target].focus();
+    true
+}
+
 /// Set up global event listeners that delegate to rinch's event handler registry.
 ///
 /// Wires `pointerdown`/`pointermove`/`pointerup`/`pointercancel` (click dispatch,
@@ -1945,6 +2092,7 @@ pub fn setup_event_delegation(doc: &WebDocument) {
     dragstart_closure.forget();
 
     // Keyboard delegation: route to focused render surface or keyboard interceptor.
+    let browser_doc_for_tab = browser_doc.clone();
     let keydown_closure = Closure::wrap(Box::new(move |event: web_sys::KeyboardEvent| {
         // Escape cancels an in-progress element drag (consumed only if one was
         // actually active, so Escape otherwise reaches the app normally).
@@ -1989,6 +2137,20 @@ pub fn setup_event_delegation(doc: &WebDocument) {
         if events::dispatch_keyboard_event(&key_data) {
             event.prevent_default();
             event.stop_propagation();
+        } else if key_data.key == "Tab"
+            && handle_trapped_tab(&browser_doc_for_tab, event.shift_key())
+        {
+            // `trap_focus` (#474): an open overlay confines Tab to itself. The
+            // browser would otherwise walk straight out of the dialog and into
+            // the page behind it, so the move is made here and its own default
+            // suppressed. With no live trap this is false and the browser's Tab
+            // is left entirely alone — rinch does not otherwise manage web
+            // focus order.
+            //
+            // After the interceptor, so a document-level `set_keyboard_interceptor`
+            // still sees Tab first, and before the activation branch, which only
+            // ever answers Enter/Space.
+            event.prevent_default();
         } else if try_keyboard_activation(&event, &key_data.key) {
             // Enter/Space on a focused element the browser does not activate
             // itself (issue #240 — the `Tree` node shape). Consume the key:
