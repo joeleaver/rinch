@@ -111,9 +111,34 @@ rsx! {
 }
 ```
 
-A closure that yields a *string* into a boolean attribute follows the same
-truthiness rule the runtime's own readers use: everything is on except `"false"`
-(any case) and `"0"`, so the bare `""` that components write stays on.
+A closure that yields a *string* into a boolean attribute follows a writer's
+truthiness rule: everything is on except `"false"` (any case) and `"0"`, so the
+bare `""` that components write stays on. That rule belongs to the writer and to
+nothing else — no reader on either backend has a falsey string, because a browser
+has none.
+
+**Writing one by hand.** `set_attribute` is the *literal* primitive on both
+backends: it writes the string you give it, so `set_attribute("checked",
+"false")` leaves the attribute **present**, and a present boolean attribute is
+true. There are two spellings of off, and neither is a string:
+
+```rust
+// Rendering a bool you already have — presence or absence, chosen for you.
+node.write_attribute("checked", &flag.to_string());
+
+// Or say it outright.
+if flag { node.set_attribute("checked", "") } else { node.remove_attribute("checked") }
+```
+
+That was a real divergence until issue #622: the web backend mapped truthiness
+onto presence for `checked` and `selected` alone, so the same call unchecked a box
+in the browser and checked it on the desktop backend.
+
+On the web, `checked` and `<option selected>` also drive the control's live
+property, not only the attribute — a browser stops mirroring the attribute into
+the property once the user has toggled the control, and rinch has no such flag, so
+a programmatic write keeps winning. It follows the attribute's presence, matching
+what the desktop backend's `:checked` reads.
 
 Component props are unaffected — a component's `disabled: bool` is an ordinary
 typed field, and the component decides how to render it.

@@ -289,9 +289,12 @@ impl NodeHandle {
     ///
     /// [`Self::set_attribute`] stays the literal primitive: it writes exactly
     /// what it is given, and the fixtures that probe the `"false"` escape
-    /// (`node_is_disabled`, `data-nofocus`) depend on that. Reach for this one
+    /// (`node_is_disabled`, `data-nofocus`) depend on that. That holds on **both**
+    /// backends since issue #622 — the web backend used to presence-map `checked`
+    /// and `selected` there, so one call meant two things. Reach for this one
     /// from anything that renders a *value* into an attribute; reach for
-    /// `set_attribute` when you have already decided the markup.
+    /// `set_attribute` when you have already decided the markup, and for
+    /// [`Self::remove_attribute`] when you mean off.
     pub fn write_attribute(&self, name: &str, value: &str) {
         if !is_boolean_attribute(name) {
             self.set_attribute(name, value);
