@@ -14,14 +14,18 @@
 //! It works by rewriting the whole attribute from its own parsed contents,
 //! rather than by handing each declaration to
 //! [`set_style`](super::NodeHandle::set_style). That is one code path for both
-//! backends, and it is also the only one of the two that can carry
-//! `!important` — measured in Chrome 150, `el.style.setProperty("color",
-//! "red !important")` is a **no-op** (the value does not parse; the attribute
-//! stays absent), while `el.setAttribute("style", "color: red !important")`
-//! keeps it and `getPropertyPriority("color")` answers `"important"`. The same
-//! probe is where the web half of the bug was confirmed:
-//! `setAttribute("style", …)` replaces the whole declaration block there too,
-//! so `rinch-web` had this defect identically.
+//! backends, and it carries `!important` with no special handling, which the
+//! per-declaration route would need: measured in Chrome 150,
+//! `el.style.setProperty("color", "red !important")` is a **no-op** (the value
+//! does not parse; the attribute stays absent), while
+//! `el.setAttribute("style", "color: red !important")` keeps it and
+//! `getPropertyPriority("color")` answers `"important"`. A per-declaration
+//! route *can* carry a priority — `setProperty("color", "red", "important")`
+//! works, also measured — but only by splitting it out of the value first,
+//! which means a second CSS parser in the write path and a third rule about
+//! where priority lives. The same probe is where the web half of the bug was
+//! confirmed: `setAttribute("style", …)` replaces the whole declaration block
+//! there too, so `rinch-web` had this defect identically.
 
 use std::borrow::Cow;
 
@@ -35,9 +39,18 @@ use super::NodeHandle;
 /// url("data:image/svg+xml;base64,…")`, whose value carries both. `/* … */`
 /// comments are removed first, wherever they sit.
 ///
-/// A property declared twice collapses the way CSSOM collapses it: the last
-/// value, at the *first* declaration's position. A part with no top-level `:`,
-/// or an empty property name, is dropped — it is not a declaration.
+/// A property declared twice collapses to its last value, kept at the *first*
+/// declaration's position. **That position is a deviation from CSSOM**, not a
+/// match for it: measured in Chrome 150,
+/// `margin: 1px; color: red; gap: 2px; color: blue` serialises as
+/// `margin: 1px; gap: 2px; color: blue` — the *last* position. The difference
+/// is observable where a shorthand and one of its longhands are involved:
+/// Chrome computes `left` as `4px` for `inset: 0px; left: 25px; inset: 4px`,
+/// where re-serialising to `inset: 4px; left: 25px` computes `25px`. This
+/// mirrors `rinch-dom`'s own `parse_style_string`, which has always collapsed
+/// this way, so the two agree with each other; reconciling both with CSSOM is
+/// separate work. A part with no top-level `:`, or an empty property name, is
+/// dropped — it is not a declaration.
 ///
 /// Values are kept verbatim, `!important` included, so a round trip through
 /// [`serialize_declarations`] preserves what the author wrote.
@@ -208,14 +221,48 @@ fn top_level_colon(part: &str) -> Option<usize> {
     (0..bytes.len()).find(|&i| scanner.step(bytes, i) && bytes[i] == b':')
 }
 
+/// One declaration this author wrote, and what it has to know to take it back.
+#[derive(Debug, Clone)]
+struct Written {
+    property: String,
+    /// The value this author last wrote. If the property no longer holds it,
+    /// somebody else has written it since and it is not ours to take back.
+    value: String,
+    /// The value it displaced — `None` when it displaced nothing and the
+    /// declaration was a pure addition, so undoing it means removing it.
+    displaced: Option<String>,
+}
+
 /// One author's `style:` declarations, laid over an element's own inline style.
 ///
-/// `rsx!` emits one of these per reactive `style:` binding. The first `apply`
-/// merges the caller's declarations in; a later `apply` first *undoes* the
-/// previous one — restoring whatever value each declaration displaced, and
-/// removing the ones that displaced nothing — so a re-run replaces the caller's
-/// own declarations rather than stacking onto them, and leaves every
-/// declaration the component wrote exactly as it found it.
+/// `rsx!` emits one of these per reactive `style:` binding on a **stable** node.
+/// The first `apply` merges the caller's declarations in; a later `apply` first
+/// takes the previous one's declarations back, so a re-run replaces the
+/// caller's own declarations rather than stacking onto them.
+///
+/// Three rules make "takes them back" mean what it says, and each is a case the
+/// naive version got wrong:
+///
+/// - **A property this author still declares keeps its slot.** It is overwritten
+///   in place, never removed and re-added, because re-adding appends — and a
+///   declaration that moves to the end of the block changes which of two
+///   colliding declarations wins. `div { style: {|| …}, mt: "8px" }` lost its
+///   top margin on the first signal change that way: the caller's `margin`
+///   shorthand was removed and re-appended *after* the prop's `margin-top`.
+/// - **A property whose current value is not the one this author wrote is left
+///   alone.** Somebody else has written it since — a component effect, a
+///   `set_style`, the runtime — and reverting it to a value they never saw
+///   would be this author silently undoing their work.
+/// - **What a declaration reverts to is carried forward** across re-runs in
+///   which this author keeps declaring it, so the value it originally displaced
+///   is still what comes back when it finally stops.
+///
+/// What is deliberately *not* repaired: a genuine same-property collision with
+/// a style shorthand. `div { style: {|| …}, p: "12px" }` where the closure also
+/// names `padding` gives the shorthand at mount (it is applied last) and the
+/// closure's value from the first re-fire onward, because nothing re-asserts a
+/// shorthand after the fact. Declaring one property from two props on one
+/// element is the bug; making shorthands reactive is separate work.
 ///
 /// A binding whose node is rebuilt on every run (a reactive *component*, whose
 /// `render` returns a fresh element each time) must not carry state across runs
@@ -224,58 +271,98 @@ fn top_level_colon(part: &str) -> Option<usize> {
 /// sites use [`NodeHandle::merge_style`], which is this with no memory.
 #[derive(Debug, Default, Clone)]
 pub struct StyleProp {
-    /// The properties the last `apply` wrote, each with the value it displaced
-    /// (`None` when it displaced nothing and was a pure addition).
-    applied: Vec<(String, Option<String>)>,
+    /// What the last `apply` wrote, in the order it wrote it.
+    applied: Vec<Written>,
+    /// The exact string last written through the verbatim path, if the last
+    /// `apply` took it. While the attribute still reads back as this, the whole
+    /// attribute is known to be this author's and nobody else has touched it,
+    /// so the next `apply` can write verbatim again instead of re-serialising.
+    verbatim: Option<String>,
 }
 
 impl StyleProp {
     /// Lay `css` over the node's inline style, taking the previous `apply`'s
-    /// declarations off first.
+    /// declarations back first.
     pub fn apply(&mut self, node: &NodeHandle, css: &str) {
         let existing = node.get_attribute("style").unwrap_or_default();
 
-        // Nothing to merge with and nothing to undo: write the author's string
-        // through untouched. This is the overwhelmingly common case — an HTML
-        // element carries no inline style until `rsx!` gives it one — and
-        // keeping it verbatim means a `style:` prop still reads back exactly as
-        // written wherever there is no second author to compose with.
-        if existing.trim().is_empty() && self.applied.is_empty() {
+        // Nothing to compose with: write the author's string through untouched.
+        // This is the overwhelmingly common case — an HTML element carries no
+        // inline style until `rsx!` gives it one, and a reactive binding that
+        // is the element's only author stays in this arm on every fire — and
+        // keeping it verbatim means a `style:` prop reads back exactly as
+        // written wherever there is nobody to compose with.
+        let untouched = match &self.verbatim {
+            Some(last) => *last == existing,
+            None => existing.trim().is_empty() && self.applied.is_empty(),
+        };
+        if untouched {
             node.set_attribute("style", css);
             self.applied = split_declarations(css)
                 .into_iter()
-                .map(|(k, _)| (k, None))
+                .map(|(property, value)| Written {
+                    property,
+                    value,
+                    displaced: None,
+                })
                 .collect();
+            self.verbatim = Some(css.to_string());
             return;
         }
 
+        let incoming = split_declarations(css);
         let mut decls = split_declarations(&existing);
-        for (property, displaced) in &self.applied {
-            match displaced {
-                Some(value) => {
-                    if let Some(slot) = decls.iter_mut().find(|(k, _)| k == property) {
-                        slot.1 = value.clone();
-                    }
+
+        // 1. Take back the declarations this author is no longer making. One it
+        //    *is* still making keeps its slot — step 2 overwrites it where it
+        //    stands, which is what stops a re-run from reordering the block.
+        for previous in &self.applied {
+            if incoming.iter().any(|(k, _)| *k == previous.property) {
+                continue;
+            }
+            let Some(at) = decls.iter().position(|(k, _)| *k == previous.property) else {
+                continue;
+            };
+            if decls[at].1 != previous.value {
+                continue;
+            }
+            match &previous.displaced {
+                Some(value) => decls[at].1 = value.clone(),
+                None => {
+                    decls.remove(at);
                 }
-                None => decls.retain(|(k, _)| k != property),
             }
         }
 
-        let mut applied = Vec::new();
-        for (property, value) in split_declarations(css) {
-            match decls.iter_mut().find(|(k, _)| *k == property) {
+        // 2. Lay this author's declarations on, in place wherever the property
+        //    is already declared.
+        let mut applied = Vec::with_capacity(incoming.len());
+        for (property, value) in incoming {
+            let displaced = match decls.iter_mut().find(|(k, _)| *k == property) {
                 Some(slot) => {
-                    applied.push((property, Some(std::mem::replace(&mut slot.1, value))));
+                    let was = std::mem::replace(&mut slot.1, value.clone());
+                    match self.applied.iter().find(|w| w.property == property) {
+                        // Overwriting our own previous value: what this
+                        // declaration reverts to has not changed.
+                        Some(previous) if previous.value == was => previous.displaced.clone(),
+                        _ => Some(was),
+                    }
                 }
                 None => {
-                    applied.push((property.clone(), None));
-                    decls.push((property, value));
+                    decls.push((property.clone(), value.clone()));
+                    None
                 }
-            }
+            };
+            applied.push(Written {
+                property,
+                value,
+                displaced,
+            });
         }
 
         node.set_attribute("style", &serialize_declarations(&decls));
         self.applied = applied;
+        self.verbatim = None;
     }
 }
 
@@ -332,6 +419,20 @@ mod tests {
             value(&decls, "background"),
             Some("url(data:image/png;base64,AAA=) no-repeat")
         );
+    }
+
+    /// A `;` inside a **quoted** value is part of it. Separate from the
+    /// bracket cases above: every other fixture whose value carries a `;` is
+    /// inside `url(…)`, so deleting the scanner's quote arm left all of them
+    /// green while `content: "a;b"` split into `("content", "\"a")`.
+    #[test]
+    fn a_quoted_semicolon_is_not_a_separator() {
+        let decls = split_declarations(r#"content: "a;b"; color: red"#);
+        assert_eq!(names(&decls), ["content", "color"]);
+        assert_eq!(value(&decls, "content"), Some(r#""a;b""#));
+        // An escaped closing quote does not end the string either.
+        let decls = split_declarations(r#"content: "a\";b"; color: red"#);
+        assert_eq!(names(&decls), ["content", "color"]);
     }
 
     #[test]
@@ -439,6 +540,103 @@ mod tests {
             value(&decls, "--overlay-z"),
             Some("517"),
             "a property this author never declared is untouched throughout"
+        );
+    }
+
+    /// A property the author keeps declaring is overwritten **where it
+    /// stands**, never removed and re-appended.
+    ///
+    /// The position is the whole point: a longhand written by someone else
+    /// after this author's shorthand only wins while it stays after it, so a
+    /// re-apply that moved `margin` to the end would kill a `margin-top` that
+    /// had been applying since mount. Two declarations either side of it,
+    /// because a one-element list has no order to get wrong.
+    #[test]
+    fn a_property_the_author_keeps_declaring_holds_its_position() {
+        let (_doc, node) = node_with("");
+        let mut prop = StyleProp::default();
+        prop.apply(&node, "margin: 0");
+        // A second author adds a longhand after it, the way a `mt:` shorthand
+        // does. Spelled as an attribute write rather than `set_style` because
+        // `MockDomDocument::set_style` appends with no separator (#666); the
+        // string below is what a real backend's `set_style` produces, and the
+        // macro fixture `a_reactive_style_prop_does_not_demote_a_shorthand`
+        // drives the real one.
+        node.set_attribute("style", "margin: 0; margin-top: 8px");
+
+        prop.apply(&node, "margin: 0; color: red");
+        let decls = split_declarations(&node.get_attribute("style").unwrap());
+        assert_eq!(
+            names(&decls),
+            ["margin", "margin-top", "color"],
+            "`margin` must keep its slot, or `margin-top` stops winning"
+        );
+    }
+
+    /// A property somebody else has written since is not taken back. Reverting
+    /// it would be this author undoing a value they never saw.
+    #[test]
+    fn a_third_partys_write_is_not_taken_back() {
+        let (_doc, node) = node_with("");
+        let mut prop = StyleProp::default();
+        prop.apply(&node, "color: red");
+        // Somebody else restyles the same property (see #666 on why this is an
+        // attribute write and not `set_style`).
+        node.set_attribute("style", "color: green");
+
+        prop.apply(&node, "gap: 4px");
+        let decls = split_declarations(&node.get_attribute("style").unwrap());
+        assert_eq!(
+            value(&decls, "color"),
+            Some("green"),
+            "the author stopped declaring `color`, but the value there is no \
+             longer the one it wrote"
+        );
+        assert_eq!(value(&decls, "gap"), Some("4px"));
+    }
+
+    /// What a declaration reverts to survives re-runs that keep declaring it.
+    ///
+    /// Three applies, because two cannot tell "carried forward" from "recorded
+    /// on the first apply and never consulted again".
+    #[test]
+    fn the_displaced_value_is_carried_across_re_runs() {
+        let (_doc, node) = node_with("margin: 8px");
+        let mut prop = StyleProp::default();
+        prop.apply(&node, "margin: 0");
+        prop.apply(&node, "margin: 1px");
+        prop.apply(&node, "color: red");
+        let decls = split_declarations(&node.get_attribute("style").unwrap());
+        assert_eq!(
+            value(&decls, "margin"),
+            Some("8px"),
+            "the value the FIRST apply displaced is what comes back"
+        );
+    }
+
+    /// The verbatim path holds on a re-run too, while this author is still the
+    /// element's only one — so a reactive `style:` with nobody to compose with
+    /// reads back exactly as written on every fire, not just the first.
+    #[test]
+    fn a_re_run_with_no_second_author_is_still_verbatim() {
+        let (_doc, node) = node_with("");
+        let mut prop = StyleProp::default();
+        prop.apply(&node, "color:red;gap:4px");
+        prop.apply(&node, "color:blue;gap:4px");
+        assert_eq!(
+            node.get_attribute("style").as_deref(),
+            Some("color:blue;gap:4px")
+        );
+        // …and it stops as soon as there IS a second author.
+        node.set_attribute("style", "color:blue;gap:4px;margin: 0");
+        prop.apply(&node, "color:green");
+        let decls = split_declarations(&node.get_attribute("style").unwrap());
+        assert_eq!(value(&decls, "margin"), Some("0"));
+        assert_eq!(value(&decls, "color"), Some("green"));
+        assert_eq!(
+            value(&decls, "gap"),
+            None,
+            "gap was this author's, and it stopped declaring it"
         );
     }
 

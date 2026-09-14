@@ -291,3 +291,221 @@ fn a_style_prop_with_no_second_author_is_written_through_untouched() {
         Some("color:red;gap:4px")
     );
 }
+
+// ── 5. what a re-run must not do to a second author ─────────────────────────
+
+/// The shape that bites without a same-property collision: the caller declares
+/// a shorthand, a shorthand prop declares one of its longhands.
+#[component]
+fn html_reactive_margin_and_mt(css: Signal<String>) -> NodeHandle {
+    rsx! {
+        div { style: {move || css.get()}, mt: "8px" }
+    }
+}
+
+/// A reactive `style:` re-run must not demote a shorthand prop's declaration.
+///
+/// `margin-top: 8px` only beats `margin: 0` while it stays *after* it in the
+/// block. The first version of this fix removed the caller's `margin` during
+/// the undo and re-appended it, which put it last and silently killed the top
+/// margin from the first signal change onward. Neither existing fixture saw it:
+/// one uses properties that do not interact, the other a literal `style:` that
+/// never re-runs.
+///
+/// The signal is toggled **twice**, and the two fires are different cases: the
+/// first keeps declaring `margin` (the property must hold its slot), the second
+/// stops (the declaration must go, and the shorthand's must not go with it).
+#[test]
+fn a_reactive_style_prop_does_not_demote_a_shorthand() {
+    let css = Signal::new(String::from("margin: 0"));
+    let (_doc, _scope, div) = mount(|s| html_reactive_margin_and_mt(s, css));
+    let order =
+        |node: &NodeHandle| -> Vec<String> { decls(node).into_iter().map(|(k, _)| k).collect() };
+    assert_eq!(order(&div), ["margin", "margin-top"]);
+    assert_eq!(decl(&div, "margin-top").as_deref(), Some("8px"));
+
+    css.set(String::from("margin: 0; color: red"));
+    assert_eq!(
+        order(&div),
+        ["margin", "margin-top", "color"],
+        "`margin` must be overwritten where it stands: moved to the end it \
+         would beat the shorthand's `margin-top` and the element would lose \
+         its top margin"
+    );
+    assert_eq!(decl(&div, "margin").as_deref(), Some("0"));
+    assert_eq!(decl(&div, "margin-top").as_deref(), Some("8px"));
+
+    css.set(String::from("color: red"));
+    assert_eq!(
+        decl(&div, "margin"),
+        None,
+        "the caller stopped declaring it, so it goes"
+    );
+    assert_eq!(
+        decl(&div, "margin-top").as_deref(),
+        Some("8px"),
+        "…and the shorthand prop's declaration is not collateral"
+    );
+}
+
+/// The same claim as a **cascade** result rather than a declaration order: the
+/// element's computed `margin-top` is the shorthand's 8px after the re-run, not
+/// the caller's 0.
+///
+/// Declaration order is the mechanism; this is what a user sees. Both are here
+/// because the order assertion alone would pass against a fix that preserved
+/// the order and broke the parse.
+#[test]
+fn the_shorthands_longhand_still_wins_the_cascade_after_a_re_run() {
+    let css = Signal::new(String::from("margin: 0"));
+    let doc = Rc::new(RefCell::new(RinchDocument::new()));
+    let body = doc.borrow().body();
+    let mut scope = RenderScope::new(doc.clone(), body);
+    let div = html_reactive_margin_and_mt(&mut scope, css);
+    doc.borrow_mut().append_child(body, div.node_id());
+
+    css.set(String::from("margin: 0; color: red"));
+
+    doc.borrow_mut().recompute_all_styles_full();
+    doc.borrow_mut().resolve_layout(800.0, 600.0);
+    let d = doc.borrow();
+    let style = &d
+        .tree
+        .get(div.node_id().0)
+        .expect("the div is in the tree")
+        .computed_style;
+    assert_eq!(
+        format!("{:?}", style.margin_top),
+        "Length(8.0)",
+        "computed margin-top, after the style: closure re-fired"
+    );
+}
+
+/// The one case the merge deliberately does **not** settle, pinned because the
+/// guide states it: a genuine same-property collision between a *reactive*
+/// `style:` and a shorthand prop goes to the shorthand at mount and to the
+/// closure from its first re-fire onward.
+///
+/// The shorthand is applied once, after the style prop, and nothing re-asserts
+/// it; making shorthands reactive is separate work. If that ever changes, this
+/// fixture is what says the guide has to change with it.
+#[component]
+fn html_reactive_style_collides_with_shorthand(css: Signal<String>) -> NodeHandle {
+    rsx! {
+        div { style: {move || css.get()}, p: "12px" }
+    }
+}
+
+#[test]
+fn a_reactive_style_prop_wins_a_collision_from_its_first_re_fire() {
+    let css = Signal::new(String::from("padding: 0"));
+    let (_doc, _scope, div) = mount(|s| html_reactive_style_collides_with_shorthand(s, css));
+    assert_eq!(
+        decl(&div, "padding").as_deref(),
+        Some("12px"),
+        "at mount the shorthand is applied last, so it wins"
+    );
+
+    css.set(String::from("padding: 0; color: red"));
+    assert_eq!(
+        decl(&div, "padding").as_deref(),
+        Some("0"),
+        "from the first re-fire the closure wins, because nothing re-asserts \
+         the shorthand"
+    );
+}
+
+// ── 6. the arms and orders nothing else reaches ─────────────────────────────
+
+/// `style:` given a **non-closure, non-literal** expression is its own codegen
+/// arm, and nothing else here reaches it. There is a real caller:
+/// `examples/tree-demo/src/main.rs` passes `style: {icon_style.as_str()}`.
+#[component]
+fn html_style_dynamic_expr(css: String) -> NodeHandle {
+    rsx! {
+        div { style: {css.clone()}, p: "12px" }
+    }
+}
+
+#[test]
+fn the_non_closure_dynamic_style_arm_merges_too() {
+    let (_doc, _scope, div) = mount(|s| html_style_dynamic_expr(s, String::from("color: red")));
+    assert_eq!(decl(&div, "padding").as_deref(), Some("12px"));
+    assert_eq!(decl(&div, "color").as_deref(), Some("red"));
+}
+
+/// The component path emits `style:` and the shorthands in its own order, and
+/// `a_shorthand_prop_wins_a_collision_with_the_style_prop` only pins the HTML
+/// one — it uses a `div`. Swapping the two on the component path used to kill
+/// no test at all.
+#[component]
+fn component_style_collides_with_shorthand() -> NodeHandle {
+    rsx! {
+        Overlay { level: 517, style: "padding: 0; color: red", p: "12px" }
+    }
+}
+
+#[test]
+fn a_shorthand_prop_wins_a_collision_on_the_component_path_too() {
+    let (_doc, _scope, root) = mount(component_style_collides_with_shorthand);
+    assert_eq!(decl(&root, "padding").as_deref(), Some("12px"));
+    assert_eq!(decl(&root, "color").as_deref(), Some("red"));
+    assert_eq!(decl(&root, "--overlay-z").as_deref(), Some("517"));
+}
+
+// ── 7. the issue's own repro, end to end through `rsx!` ─────────────────────
+
+/// `Modal { z_index: 517, style: "margin: 0" }` computes 517.
+///
+/// This is the measurement issue #647 reported, run through the real macro, the
+/// real component, the real stylesheet and the real cascade — it computed 200,
+/// the pre-#474 default. `rinch`'s
+/// `app::overlay_z_index_tests::a_caller_style_prop_does_not_cost_the_overlay_its_level`
+/// is the same claim one layer down: it applies the merge by hand because
+/// `rsx!` cannot expand inside the `rinch` crate, so it pins the merge and
+/// **not** the codegen — with both codegen files reverted it stays green. This
+/// one does not.
+#[component]
+fn modal_with_a_caller_style() -> NodeHandle {
+    rsx! {
+        Modal { opened: true, z_index: 517, style: "margin: 0" }
+    }
+}
+
+#[test]
+fn the_issues_own_repro_still_computes_the_level_it_asked_for() {
+    let doc = Rc::new(RefCell::new(RinchDocument::new()));
+    let body = doc.borrow().body();
+    let mut scope = RenderScope::new(doc.clone(), body);
+    let root = modal_with_a_caller_style(&mut scope);
+    doc.borrow_mut().append_child(body, root.node_id());
+
+    doc.borrow_mut()
+        .load_css(&rinch::components::generate_component_css());
+    doc.borrow_mut().recompute_all_styles_full();
+    doc.borrow_mut().resolve_layout(800.0, 600.0);
+
+    let d = doc.borrow();
+    let overlay: Vec<usize> = d
+        .tree
+        .nodes
+        .iter()
+        .filter(|(_, n)| {
+            n.attributes
+                .get("class")
+                .is_some_and(|c| c.split_whitespace().any(|one| one == "rinch-modal__root"))
+        })
+        .map(|(id, _)| id)
+        .collect();
+    assert_eq!(overlay.len(), 1, "exactly one modal overlay is mounted");
+    assert_eq!(
+        d.tree
+            .get(overlay[0])
+            .expect("the overlay is in the tree")
+            .computed_style
+            .z_index,
+        Some(517),
+        "the caller's `style:` must not erase the custom property the modal \
+         publishes its level through"
+    );
+}

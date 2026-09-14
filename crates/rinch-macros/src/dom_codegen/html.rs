@@ -53,6 +53,12 @@ pub fn element_to_dom_html(element: &RsxElement, ctx: &mut DomCodegenContext) ->
     // over whatever is there, it is a set of declarations laid over them
     // (issue #647). A style shorthand is a second author on the same attribute,
     // and so is anything the runtime writes through `set_style`.
+    //
+    // A side effect worth knowing, since #154 makes effect registration order a
+    // contract: a reactive `style:`'s effect is now always created after every
+    // reactive *attribute* effect on the same element, where it used to follow
+    // prop order. Nothing observable rides on it today — they write different
+    // attributes — but it is an ordering change, not a no-op.
     let mut style_prop = None;
 
     for prop in &element.props {

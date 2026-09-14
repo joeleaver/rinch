@@ -1035,9 +1035,7 @@ div { p: "20px" }  // becomes: padding: 20px (passed through)
 
 ### Application Order
 
-Shorthands are applied via `set_style()` after component rendering and after the `style:` prop. This means shorthands win over conflicting properties in `style:`.
-
-`style:` itself is **merged, not assigned** (issue #647). Its declarations are laid over whatever is already on the element — a shorthand prop, something the runtime wrote through `set_style()`, and on a component every inline declaration the component's own `render` wrote — last-wins per property, so nothing but a genuine collision is disturbed:
+`style:` is **merged, not assigned** (issue #647). Its declarations are laid over whatever is already on the element — a shorthand prop, something the runtime wrote through `set_style()`, and on a component every inline declaration the component's own `render` wrote — last-wins per property:
 
 ```rust
 // The component publishes `--rinch-modal-z-index: 517` on its root from
@@ -1049,7 +1047,30 @@ Modal { z_index: 517, style: "margin: 0" }
 div { style: {|| format!("color: {}", tint.get())}, p: "md" }
 ```
 
-A **reactive** `style:` also takes its own previous declarations off before laying the new ones on, so it never accumulates: a property the closure has stopped naming is removed, and if it had been overriding a value, that value comes back. An element with no second author on its style attribute keeps the author's string verbatim.
+Shorthands are applied through `set_style()` after component rendering and after the `style:` prop, so **a shorthand wins a collision with `style:` at mount**:
+
+```rust
+div { style: "padding: 0", p: "12px" }   // padding is 12px
+```
+
+**A reactive `style:` takes that back on its first re-fire, and keeps it:**
+
+```rust
+let css = Signal::new(String::from("padding: 0"));
+div { style: {move || css.get()}, p: "12px" }
+// padding is 12px at mount, and 0 from the first `css.set(...)` onward
+```
+
+The shorthand is applied once, at mount; nothing re-asserts it. Declaring the same property from both props on one element is the mistake — pick one. Everything else composes:
+
+```rust
+let css = Signal::new(String::from("margin: 0"));
+div { style: {move || css.get()}, mt: "8px" }   // margin-top stays 8px, always
+```
+
+That second line is the shape the merge has to get right, and it is not a collision: `margin-top` beats `margin` only while it stays *after* it in the block, so a re-run must overwrite the closure's `margin` where it stands rather than removing and re-appending it. A reactive `style:` also never accumulates — a property the closure has stopped naming is removed, or restored to the value it had been overriding — and it leaves alone any property whose current value somebody else has written since, rather than reverting a value it never saw.
+
+An element with no second author on its style attribute keeps the author's string verbatim, on every fire.
 
 ## Styling
 
