@@ -362,6 +362,52 @@ and then jumps backwards on the next tick, which resumes writing the interpolate
 value. Any restyle that changes `transition-property` mid-transition reaches it.
 Both gaps are pre-existing; item 3 is tracked as issue #693.
 
+## The before-change style, and who has one
+
+Everything above assumes there *is* a before-change style to leave. §3 only runs
+for a node that has one, and in rinch that is one bool on the node:
+`has_been_styled`, set by `apply_stylo_styles_to_taffy` the first time the node
+is cascaded. With it clear, the resolved style is assigned wholesale and no
+transition is considered — which is what makes a freshly mounted element appear
+at its final size instead of animating to it.
+
+Two rules keep that flag honest, and they are the same rule read from the two
+ends:
+
+- **A node outside the document is never styled**, so it never acquires the flag
+  (#651/#668). `resolve_styles` drops a `style_roots` entry whose node is not
+  connected to `tree.root_id`.
+- **A subtree that leaves the document loses the flag**, and any transition
+  running on it is cancelled (#699). `RinchDocument::detach_subtree_styles` does
+  both, for the whole removed subtree, at the three routes that detach one:
+  `remove_node`, `remove_child`, and `replace_node`'s displaced `old`.
+
+Without the second, a node styled while it was connected, then detached, keeps
+the flag *and* the `computed_style` it had in the document. If an ancestor's
+class changes while it is out, its re-insertion resolves to a different value,
+§3 sees old ≠ new on an already-styled node, and the box animates in from a
+style the user never saw. A browser does not: a removed element is not rendered,
+it has no before-change style, and re-insertion is a first style.
+
+What the detach **does not** touch is the `computed_style` itself, or the shaped
+`text_layout`. A detached node still reads back as it last did in the document —
+`dom_tree(root_id: <a detached id>)` depends on that, and so do the staleness
+gates that decide whether a re-inserted subtree needs re-shaping. The flag is
+what the transition reads; the value is what everything else reads.
+
+A **move** is not a detach. `append_child`, `insert_before` and `insert_child`
+unlink a node from its old parent with the same lines `remove_child` uses, but
+the node is back in the document before the call returns, so it never stopped
+being rendered and a mid-flight transition goes on running — which is what a
+keyed `for` reorder depends on, since it moves rows with `insert_after`. The one
+shape that leaves the document under a move, appending a mounted node into a
+detached parent, is not covered (issue #702).
+
+`display: none` is not a detach either, and here rinch deviates from the spec:
+the node stays in the document, keeps its flag, and **does** start a transition
+if its style changes while it is hidden, where §3 starts none for an element
+that is not being rendered. Issue #703.
+
 ## Optimizations
 
 Current and planned improvements to the rendering pipeline:

@@ -155,6 +155,9 @@ impl DomDocument for RinchDocument {
         let c = child.0;
         // Clear IFC state on removed child
         self.clear_ifc_root_recursive(c);
+        // The subtree is leaving the document, so it has no before-change style
+        // to animate from if it ever comes back (#699).
+        self.detach_subtree_styles(c);
         self.tree.nodes[p].children.retain(|&x| x != c);
         self.tree.nodes[c].parent = None;
         // Sync taffy: remove the child's contribution — for a spliced
@@ -272,6 +275,9 @@ impl DomDocument for RinchDocument {
             }
             self.tree.nodes[new.0].parent = Some(parent_id);
             self.tree.nodes[old.0].parent = None;
+            // `old` has left the document (#699). `new` has not — it was
+            // spliced in, which is a move, and a move resets nothing.
+            self.detach_subtree_styles(old.0);
             self.invalidate_parent_ifc(parent_id);
             self.tree.layout_dirty = true; // Structural change needs full layout
             self.tree.ifc_dirty = true; // Tree structure changed
@@ -333,6 +339,11 @@ impl DomDocument for RinchDocument {
             self.push_dirty_flags(parent_id, DirtyFlags::LAYOUT | DirtyFlags::CHILDREN);
         }
         self.tree.nodes[node.0].parent = None;
+        // The whole removed subtree loses its before-change style, so a
+        // re-insertion under a changed ancestor is a first style rather than a
+        // change to animate (#699). Unconditional: `remove_node` on an already
+        // detached node is a no-op for a subtree that is already reset.
+        self.detach_subtree_styles(node.0);
         // Don't remove from slab yet — caller may still reference it
     }
 

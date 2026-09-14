@@ -71,12 +71,21 @@ impl RinchDocument {
         // the entry was pushed, so a node classed while detached and spliced in
         // before the next resolve is still carried by that same entry.
         //
-        // The list is not filtered on removal. `remove_node` could drop the
-        // subtree's entries eagerly, but it is one of four detach routes
-        // (`remove_child`, a reparenting `append_child`/`insert_before` and
+        // **The `style_roots` list is still not filtered on removal**, and that
+        // is unchanged by #699. `remove_node` could drop the subtree's entries
+        // eagerly, but it is one of three detach routes (`remove_child` and
         // `replace_node`'s implicit detach of `old` are the others), so an
-        // eager drop there would be a partial cure that reads as a complete
-        // one — and it can remove no work this skip does not already remove.
+        // eager drop there would be a partial cure that reads as a complete one
+        // — and it can remove no work this skip does not already remove.
+        //
+        // #699 does hook all three of those routes
+        // (`RinchDocument::detach_subtree_styles`), and it is a different
+        // question with a different answer: it resets `has_been_styled` and
+        // cancels running transitions, because a subtree that left the document
+        // has no *before-change style*. It touches neither this list nor the
+        // node's `computed_style`. A reparenting `append_child` /
+        // `insert_before` / `insert_child` is deliberately not hooked — those
+        // are moves, and the node is connected again before the call returns.
         //
         // Sort by depth (shallowest first) so that if both a parent and
         // child appear, the parent is resolved first and the child can

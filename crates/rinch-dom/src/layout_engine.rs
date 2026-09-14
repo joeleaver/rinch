@@ -2452,6 +2452,95 @@ impl RinchDocument {
         }
     }
 
+    /// A subtree that has just left the document has **no before-change
+    /// style** (issue #699).
+    ///
+    /// `has_been_styled` is the one thing a transition waits for: the cascade
+    /// starts one only when the node it is restyling has been styled before
+    /// (`apply_stylo_styles_to_taffy`). A node styled while it was *connected*,
+    /// then detached, keeps that flag and keeps the `computed_style` it had in
+    /// the document — so if an ancestor's class changes while it is out, its
+    /// re-insertion resolves to a different value, the cascade reads old ≠ new
+    /// on an already-styled node, and the box animates in from a style the user
+    /// never saw. A browser does not: a removed element is not rendered, it has
+    /// no before-change style, and re-insertion is a first style.
+    ///
+    /// #696 gave a node whose *first* resolution happened detached the same
+    /// property, by never styling it at all. This is the other half — a node
+    /// whose first life was connected — and it has to be answered where the
+    /// node leaves, because nothing at the re-insertion can tell a returning
+    /// subtree from one that never left.
+    ///
+    /// Two things are reset and a third deliberately is not.
+    ///
+    /// - **`has_been_styled`**, for the whole removed subtree. Not just its
+    ///   root: a descendant carries its own flag and its own `transition`
+    ///   declaration, and resolution reaches it by its own recursion.
+    /// - **Any running `ActiveTransition`**, for the same nodes. Without this
+    ///   the fix would not hold: `tick_transitions` walks
+    ///   `tree.active_transitions`, not the document, so a transition left
+    ///   behind by a detach keeps writing interpolated values into
+    ///   `computed_style` — and would go on doing so after the re-insertion,
+    ///   reinstating the very animation the flag reset removes. Cancelling on
+    ///   removal is also what CSS asks for, and it stops a detached node that is
+    ///   never re-inserted from marking the tree layout-dirty for 150ms.
+    /// - **`computed_style` is left exactly as it was**, and so is
+    ///   `text_layout`. Clearing either would be wrong twice over. #696 pinned
+    ///   a detached node as still readable —
+    ///   `detached_style_roots_tests::a_detached_node_is_still_readable` asserts
+    ///   `dom_tree(root_id: <detached id>)` reports the style the node last had
+    ///   *in* the document — and `a_detached_subtree_keeps_its_text_layout`
+    ///   pins the glyphs. They are also what the re-insertion's own staleness
+    ///   gates compare against: `same_text_layout_inputs` and
+    ///   `same_measured_text_inputs` read the old `computed_style` to decide
+    ///   whether to re-shape (#654, #661, #678), and against a cleared one they
+    ///   would answer "stale" for every re-inserted node forever. The flag is
+    ///   what the transition reads; the value is what everything else reads.
+    ///   Only the flag has to go.
+    ///
+    /// # Where this is called from
+    ///
+    /// The routes by which a subtree leaves the document, all in
+    /// `dom_impl/dom_document_impl.rs`:
+    ///
+    /// | route | who reaches it |
+    /// |---|---|
+    /// | `remove_node` | every reactive removal — `show_dom`, `match_dom`, `for_each_dom_typed`'s `Remove`, its re-render swap and `reclaim_displaced`, `virtual_list` — all funnel through `NodeHandle::remove` |
+    /// | `remove_child` | `NodeHandle::remove_child` and `RenderScope`'s batched `DomUpdate::RemoveChild` |
+    /// | `replace_node` | the displaced `old` subtree |
+    ///
+    /// **A reparenting `append_child` / `insert_before` / `insert_child` is
+    /// deliberately not on that list.** Those three are the *move* routes — a
+    /// keyed `for` reorder is `insert_after`, which is one of them — and a move
+    /// must not reset anything: the node is back in the document before the
+    /// call returns, so it never stopped being rendered, and a row that was
+    /// mid-transition when the list reordered goes on transitioning.
+    /// `a_reparenting_move_does_not_restart_a_running_transition` and
+    /// `a_keyed_for_reorder_does_not_restart_a_running_transition` are the
+    /// pins, and they are exactly the two fixtures that kill the mutant which
+    /// adds the reset there.
+    ///
+    /// The one shape that does leave the document under a move — appending a
+    /// *mounted* node into a *detached* parent — is therefore not covered. It
+    /// is not a `parent = None` detach, but it is disconnected, which #696
+    /// established is the question that matters; telling it apart from an
+    /// ordinary move needs a connectivity walk on the hottest DOM operation in
+    /// the framework, and no rinch code path produces the shape today. Issue
+    /// #702.
+    pub(crate) fn detach_subtree_styles(&mut self, node_id: usize) {
+        // Iterative, like `clear_ifc_root_recursive` — a deep subtree must not
+        // overflow the stack on its way out of the document.
+        let mut stack = vec![node_id];
+        while let Some(id) = stack.pop() {
+            let Some(node) = self.tree.nodes.get_mut(id) else {
+                continue;
+            };
+            node.has_been_styled = false;
+            stack.extend(node.children.iter().copied());
+            self.tree.active_transitions.remove(&id);
+        }
+    }
+
     /// Clear ifc_root on a node and all its descendants.
     pub(crate) fn clear_ifc_root_recursive(&mut self, node_id: usize) {
         // Use iterative approach to avoid stack overflow
