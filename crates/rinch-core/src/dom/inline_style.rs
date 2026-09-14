@@ -55,9 +55,11 @@ use super::NodeHandle;
 ///
 /// `rinch-dom`'s own `parse_style_string` still collapses at the first
 /// position, so an attribute that reaches a `set_style` while it still carries
-/// a duplicate is collapsed the other way. That is pre-existing and tracked
-/// separately; nothing this module writes carries a duplicate, because this
-/// function removed it.
+/// a duplicate is collapsed the other way — measured: `set_style("color",
+/// "red")` on a node whose attribute is `inset: 0px; left: 25px; inset: 4px`
+/// gives `inset: 4px; left: 25px; color: red`. That is pre-existing, and is
+/// **Refs #670**. Nothing this module writes carries a duplicate for it to
+/// see, because this function removed it.
 ///
 /// A part with no top-level `:`, or an empty property name, is dropped — it is
 /// not a declaration.
@@ -262,7 +264,14 @@ struct Written {
 /// - **A property whose current value is not the one this author wrote is left
 ///   alone.** Somebody else has written it since — a component effect, a
 ///   `set_style`, the runtime — and reverting it to a value they never saw
-///   would be this author silently undoing their work.
+///   would be this author silently undoing their work. The converse is the
+///   limit of the rule: a write that is **byte-identical** to this author's
+///   last value is indistinguishable from it, so it is taken to be this
+///   author's and taken back with the rest. Telling two authors apart when
+///   they wrote the same bytes for the same property needs a per-author shadow
+///   copy of the block, which this does not keep. In practice that lands
+///   inside the same-property collision described below, which is already the
+///   caller's mistake to make.
 /// - **What a declaration reverts to is carried forward** across re-runs in
 ///   which this author keeps declaring it, so the value it originally displaced
 ///   is still what comes back when it finally stops.
