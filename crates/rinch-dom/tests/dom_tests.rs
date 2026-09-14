@@ -406,7 +406,12 @@ fn set_styles_batch_keeps_its_own_order() {
 }
 
 /// A property declared twice in one authored attribute collapses the way CSSOM
-/// collapses it: the last value, at the first position.
+/// collapses it: the last value, at the **last** declaration's position — so
+/// the `color` here moves past the `gap` that sat between its two
+/// declarations. It said "at the first position" until #670; see
+/// `a_repeated_property_collapses_at_its_last_position` below for the Chrome
+/// measurement and `collapsing_at_the_last_position_is_what_the_cascade_
+/// resolves` for why the position is behaviour rather than spelling.
 #[test]
 fn parsing_an_attribute_collapses_a_repeated_property_in_place() {
     let mut doc = RinchDocument::new();
@@ -415,7 +420,7 @@ fn parsing_an_attribute_collapses_a_repeated_property_in_place() {
     doc.set_style(div, "gap", "8px");
     assert_eq!(
         doc.get_attribute(div, "style").unwrap(),
-        "color: green; gap: 8px"
+        "gap: 8px; color: green"
     );
 }
 
@@ -643,4 +648,247 @@ fn test_mixed_node_types_as_children() {
     assert_eq!(children[0], text);
     assert_eq!(children[1], comment);
     assert_eq!(children[2], span);
+}
+
+// === Inline style parsing: one parser, CSSOM's collapse position (#670) ===
+//
+// `set_style`/`set_styles` rewrite the whole `style` attribute from its own
+// parsed contents, so *every* declaration already there is re-serialised on
+// every write. Two properties of the parser are therefore load-bearing for
+// declarations the caller never touched:
+//
+//   1. a `;` or `:` inside `url(…)` or a quoted string is part of a value, not
+//      a separator — a parser that misses this destroys the value on the next
+//      unrelated `set_style`;
+//   2. a property declared twice collapses at the **last** declaration's
+//      position, the way CSSOM collapses it.
+//
+// Both come from `rinch_core::dom::split_declarations`, which `rinch-web`'s
+// `style:` prop path shares — one parser, one rule, both backends.
+
+/// A `url()` carrying a `;` and a `:` (every `data:` URI does) survives an
+/// unrelated `set_style` on the same node.
+///
+/// Splitting on a bare `;` cut this value in half: the attribute came back as
+/// `background-image: url(data:image/png` — a declaration Stylo cannot parse,
+/// so the image was gone — followed by a `base64,AAA=)` fragment.
+#[test]
+fn a_url_value_survives_the_next_set_style() {
+    let mut doc = RinchDocument::new();
+    let div = doc.create_element("div");
+    doc.set_attribute(
+        div,
+        "style",
+        "background-image: url(data:image/png;base64,AAA=); color: red",
+    );
+    doc.set_style(div, "padding", "12px");
+    assert_eq!(
+        doc.get_attribute(div, "style").unwrap(),
+        "background-image: url(data:image/png;base64,AAA=); color: red; padding: 12px"
+    );
+}
+
+/// The same for a `;` inside a quoted value, which no bracket depth would
+/// catch.
+#[test]
+fn a_semicolon_in_a_quoted_value_survives_the_next_set_style() {
+    let mut doc = RinchDocument::new();
+    let div = doc.create_element("div");
+    doc.set_attribute(div, "style", "content: \"a;b\"; color: red");
+    doc.set_style(div, "padding", "12px");
+    assert_eq!(
+        doc.get_attribute(div, "style").unwrap(),
+        "content: \"a;b\"; color: red; padding: 12px"
+    );
+}
+
+/// The end-to-end half of the `url()` case: the value has to survive as far as
+/// the *computed* style, not merely as far as the attribute string.
+///
+/// The declaration is the `background` shorthand — the spelling #670 reports —
+/// so this also covers a `;` inside a shorthand's value rather than a
+/// longhand's.
+#[test]
+fn a_background_url_still_paints_after_an_unrelated_set_style() {
+    use rinch_dom::computed_style::BackgroundValue;
+
+    let mut doc = RinchDocument::new();
+    let body = doc.body();
+    let div = doc.create_element("div");
+    doc.set_attribute(
+        div,
+        "style",
+        "width: 10px; height: 10px; background: url(data:image/png;base64,AAA=) no-repeat",
+    );
+    doc.append_child(body, div);
+    doc.set_style(div, "padding", "12px");
+    doc.resolve_layout(800.0, 600.0);
+
+    match &doc.tree.get(div.0).unwrap().computed_style.background {
+        BackgroundValue::Image { url } => assert_eq!(url, "data:image/png;base64,AAA="),
+        other => panic!("the data URI was destroyed before the cascade saw it: {other:?}"),
+    }
+}
+
+/// A property declared twice collapses to its **last** position, which is what
+/// Chrome 150 does: `margin: 1px; color: red; gap: 2px; color: blue` serialises
+/// as `margin: 1px; gap: 2px; color: blue`.
+#[test]
+fn a_repeated_property_collapses_at_its_last_position() {
+    let mut doc = RinchDocument::new();
+    let div = doc.create_element("div");
+    doc.set_attribute(
+        div,
+        "style",
+        "margin: 1px; color: red; gap: 2px; color: blue",
+    );
+    doc.set_style(div, "padding", "12px");
+    assert_eq!(
+        doc.get_attribute(div, "style").unwrap(),
+        "margin: 1px; gap: 2px; color: blue; padding: 12px"
+    );
+}
+
+/// Why the collapse position is behaviour and not cosmetics: with a shorthand
+/// involved, the two positions compute different values.
+///
+/// `inset: 0px; left: 25px; inset: 4px` gives Chrome a computed `left` of
+/// `4px`, because the surviving `inset` sits *after* the `left` it overrides.
+/// Collapsing at the first position re-serialises it as
+/// `inset: 4px; left: 25px` and computes `25px` instead.
+#[test]
+fn collapsing_at_the_last_position_is_what_the_cascade_resolves() {
+    use rinch_dom::computed_style::LengthPercentageAutoValue;
+
+    let mut doc = RinchDocument::new();
+    let body = doc.body();
+    let parent = doc.create_element("div");
+    doc.set_attribute(
+        parent,
+        "style",
+        "position: relative; width: 300px; height: 200px",
+    );
+    doc.append_child(body, parent);
+    let child = doc.create_element("div");
+    doc.set_attribute(
+        child,
+        "style",
+        "position: absolute; inset: 0px; left: 25px; inset: 4px",
+    );
+    doc.append_child(parent, child);
+    // Any declaration the node does not already carry: the point is that the
+    // *rewrite* is what collapses the duplicate, not this property.
+    doc.set_style(child, "color", "red");
+    doc.resolve_layout(800.0, 600.0);
+
+    assert!(
+        matches!(
+            doc.tree.get(child.0).unwrap().computed_style.left,
+            LengthPercentageAutoValue::Length(px) if px == 4.0
+        ),
+        "the surviving `inset` must keep the *last* duplicate's position, after \
+         the `left` it overrides; computed left is {:?}",
+        doc.tree.get(child.0).unwrap().computed_style.left
+    );
+    assert_eq!(
+        doc.tree.get(child.0).unwrap().layout.x,
+        4.0,
+        "and the box must actually be laid out there"
+    );
+}
+
+/// `!important` is part of the value and survives the round trip an unrelated
+/// `set_style` puts every other declaration through.
+///
+/// The attribute is re-serialised from parsed declarations, so a parser that
+/// split the priority off — or a join that dropped it — would silently demote
+/// an author's `!important` on the first `set_style` to touch the node. The
+/// computed assertion is what says the re-serialised string still *parses*:
+/// string equality alone cannot tell `red !important` from a value Stylo
+/// rejects.
+#[test]
+fn an_important_priority_survives_the_next_set_style() {
+    use rinch_dom::computed_style::BackgroundValue;
+
+    let mut doc = RinchDocument::new();
+    let body = doc.body();
+    let div = doc.create_element("div");
+    doc.set_attribute(
+        div,
+        "style",
+        "width: 10px; height: 10px; background-color: red !important",
+    );
+    doc.append_child(body, div);
+    doc.set_style(div, "padding", "12px");
+    assert_eq!(
+        doc.get_attribute(div, "style").unwrap(),
+        "width: 10px; height: 10px; background-color: red !important; padding: 12px"
+    );
+
+    doc.resolve_layout(800.0, 600.0);
+    match doc.tree.get(div.0).unwrap().computed_style.background {
+        BackgroundValue::Color(c) => assert_eq!(
+            (c.components[0], c.components[1], c.components[2]),
+            (1.0, 0.0, 0.0),
+            "the re-serialised `red !important` must still parse"
+        ),
+        ref other => panic!("the declaration did not survive re-serialisation: {other:?}"),
+    }
+}
+
+/// The inline `user-select` override — Stylo's servo build does not carry the
+/// property, so `style_resolution` reads it off the attribute itself — reads
+/// through the same parser as everything else (#670).
+///
+/// A bare `split(';')` fabricates a "declaration" out of the inside of a
+/// quoted value: `content: "a; user-select: none; b"` gives it the part
+/// `user-select: none`, which it then applies. Nothing in the document
+/// declares `user-select` here, so the box must keep the default.
+///
+/// The quoted value needs a `;` on *both* sides of the smuggled declaration,
+/// and that is the fixed-point trap in this fixture rather than a flourish:
+/// with `content: "a; user-select: none"` the fabricated part is
+/// `user-select: none"`, whose trailing quote `UserSelectValue::parse` does
+/// not recognise — so it falls back to `Auto` and the naive reader passes the
+/// fixture while still being wrong. Measured: that spelling let the mutant
+/// survive.
+#[test]
+fn a_user_select_inside_a_quoted_value_is_not_a_declaration() {
+    use rinch_dom::computed_style::UserSelectValue;
+
+    let mut doc = RinchDocument::new();
+    let body = doc.body();
+    let div = doc.create_element("div");
+    doc.set_attribute(
+        div,
+        "style",
+        "width: 10px; height: 10px; content: \"a; user-select: none; b\"",
+    );
+    doc.append_child(body, div);
+    doc.resolve_layout(800.0, 600.0);
+
+    assert!(
+        matches!(
+            doc.tree.get(div.0).unwrap().computed_style.user_select,
+            UserSelectValue::Auto
+        ),
+        "the `user-select` inside the quoted `content` value is not a \
+         declaration; got {:?}",
+        doc.tree.get(div.0).unwrap().computed_style.user_select
+    );
+
+    // Positive control: a real declaration still reaches the computed style,
+    // so a fixture that passes because the reader stopped working entirely
+    // cannot pass silently.
+    let other = doc.create_element("div");
+    doc.set_attribute(other, "style", "user-select: none");
+    doc.append_child(body, other);
+    doc.resolve_layout(801.0, 600.0);
+    assert!(
+        matches!(
+            doc.tree.get(other.0).unwrap().computed_style.user_select,
+            UserSelectValue::None
+        ),
+        "positive control: an actual `user-select: none` must still apply"
+    );
 }

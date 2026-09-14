@@ -53,23 +53,24 @@ use super::NodeHandle;
 /// `left` it overrides — where collapsing at the first position gives
 /// `inset: 4px; left: 25px` and a computed `left` of `25px`.
 ///
-/// `rinch-dom`'s own `parse_style_string` still collapses at the first
-/// position, so an attribute that reaches a `set_style` while it still carries
-/// a duplicate is collapsed the other way — measured: `set_style("color",
-/// "red")` on a node whose attribute is `inset: 0px; left: 25px; inset: 4px`
-/// gives `inset: 4px; left: 25px; color: red`. That is pre-existing, and is
-/// **Refs #670**.
+/// **This is the whole workspace's inline-style parser** (#670).
+/// `RinchDocument::set_styles` and `MockDomDocument::set_style` both split and
+/// re-join with this pair, so an attribute is collapsed the same way whoever
+/// rewrites it. `rinch-dom` used to keep its own `parse_style_string`, which
+/// split on a bare `;`/`:` and collapsed at the *first* position — so a
+/// `url(data:…)` already in the attribute was destroyed by the next unrelated
+/// `set_style`, and a duplicate that survived this module's **verbatim** path
+/// (which passes the author's string through unchanged) was collapsed the
+/// other way as soon as a second author touched the node. Both are gone;
+/// `rsx_style_prop::a_duplicate_in_a_style_prop_collapses_the_same_way_for_
+/// the_other_author` is what pins the two authors agreeing, at Chrome's value.
 ///
-/// Nothing this module writes **on its merge path** carries a duplicate,
-/// because this function removed it. Its **verbatim** path passes the author's
-/// string through unchanged, duplicate included, so a `style:` that itself
-/// declares a property twice does reach `parse_style_string` as soon as a
-/// second author's `set_style` touches the node — and is collapsed at the
-/// wrong position there. `rsx_style_prop::a_duplicate_in_a_style_prop_still_
-/// reaches_the_other_parser` pins that, at the value rinch computes rather
-/// than the browser's, so it is a named deviation and not a surprise. Desktop
-/// only: on the web the same verbatim `setAttribute` hands the duplicate to
-/// the browser, which collapses it correctly.
+/// Not every `;`-splitter in the workspace is this one: a few *read-only*
+/// lookups still scan a style string for one property
+/// (`rinch-editor-core`'s `serialize::html::parse_style`,
+/// `rinch-visual-test`'s `strip_css_variables`), in crates that do not depend
+/// on `rinch-core`. They cannot destroy a value — nothing round-trips through
+/// them — and are **Refs #705**.
 ///
 /// A part with no top-level `:`, or an empty property name, is dropped — it is
 /// not a declaration.
@@ -595,12 +596,19 @@ mod tests {
         let mut prop = StyleProp::default();
         prop.apply(&node, "margin: 0");
         // A second author adds a longhand after it, the way a `mt:` shorthand
-        // does. Spelled as an attribute write rather than `set_style` because
-        // `MockDomDocument::set_style` appends with no separator (#666); the
-        // string below is what a real backend's `set_style` produces, and the
-        // macro fixture `a_reactive_style_prop_does_not_demote_a_shorthand`
-        // drives the real one.
-        node.set_attribute("style", "margin: 0; margin-top: 8px");
+        // does. This used to be spelled as a hand-written attribute — the whole
+        // string, `margin: 0` included — because `MockDomDocument::set_style`
+        // appended with no separator and could not compose one (#666). It
+        // merges the way both real backends do now, so the second author is
+        // written as the call it actually is. The macro fixture
+        // `a_reactive_style_prop_does_not_demote_a_shorthand` drives the real
+        // backend.
+        node.set_style("margin-top", "8px");
+        assert_eq!(
+            node.get_attribute("style").as_deref(),
+            Some("margin: 0; margin-top: 8px"),
+            "the mock composes what a real backend's `set_style` produces"
+        );
 
         prop.apply(&node, "margin: 0; color: red");
         let decls = split_declarations(&node.get_attribute("style").unwrap());
@@ -618,9 +626,9 @@ mod tests {
         let (_doc, node) = node_with("");
         let mut prop = StyleProp::default();
         prop.apply(&node, "color: red");
-        // Somebody else restyles the same property (see #666 on why this is an
-        // attribute write and not `set_style`).
-        node.set_attribute("style", "color: green");
+        // Somebody else restyles the same property — through `set_style`,
+        // which the mock composes correctly since #666.
+        node.set_style("color", "green");
 
         prop.apply(&node, "gap: 4px");
         let decls = split_declarations(&node.get_attribute("style").unwrap());

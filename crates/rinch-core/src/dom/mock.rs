@@ -274,11 +274,34 @@ impl DomDocument for MockDomDocument {
         self.nodes.get(&node)?.attributes.get(name).cloned()
     }
 
+    /// Merge one declaration into the node's inline `style`, the way both real
+    /// backends do (#666).
+    ///
+    /// This used to append `"{property}: {value};"` to whatever string was
+    /// there, with no separator and no replacement: a node whose `style` said
+    /// `"color: red"` came out of `set_style("padding", "12px")` as
+    /// `"color: redpadding: 12px;"` — one declaration whose value is
+    /// `redpadding: 12px` — and setting the same property twice appended
+    /// twice. That made the mock unusable as an oracle for anything about
+    /// inline-style *composition*, which is the one thing a `style:` prop and
+    /// a style shorthand on the same element are about.
+    ///
+    /// The parse and the join are
+    /// [`split_declarations`](crate::dom::split_declarations)/[`serialize_declarations`](crate::dom::serialize_declarations),
+    /// which is also what `RinchDocument::set_styles` uses (#670) — so the mock
+    /// now agrees with desktop declaration for declaration, quoted and
+    /// bracketed values included. A property already declared is replaced
+    /// **where it stands**, matching CSSOM's `setProperty` and desktop's
+    /// `dom_tests::set_style_replaces_a_declaration_in_place`.
     fn set_style(&mut self, node: NodeId, property: &str, value: &str) {
         if let Some(n) = self.nodes.get_mut(&node) {
-            // Simple style handling - just append to style attribute
             let style = n.attributes.entry("style".to_string()).or_default();
-            style.push_str(&format!("{}: {};", property, value));
+            let mut decls = super::split_declarations(style);
+            match decls.iter_mut().find(|(k, _)| k == property) {
+                Some(slot) => slot.1 = value.to_string(),
+                None => decls.push((property.to_string(), value.to_string())),
+            }
+            *style = super::serialize_declarations(&decls);
         }
         self.mark_dirty(node);
     }
@@ -524,5 +547,81 @@ mod tests {
             !doc.take_dirty_nodes().contains(&node),
             "#184: a retired node must not be reported dirty"
         );
+    }
+
+    // === set_style composes an inline style (#666) ===
+    //
+    // The mock is the oracle two other layers are tested against — `StyleProp`
+    // in this crate, and every component test that renders onto a
+    // `MockDomDocument` — so its `style` attribute has to be the string a real
+    // backend would leave. It used to be `push_str("{prop}: {value};")` with no
+    // separator and no replacement, which is neither parseable CSS nor
+    // anything `RinchDocument` or a browser would produce.
+
+    fn style_of(doc: &MockDomDocument, node: NodeId) -> String {
+        doc.get_attribute(node, "style")
+            .expect("a style was written")
+    }
+
+    /// A `set_style` onto an attribute somebody else wrote joins it with the
+    /// separator that makes it a second declaration.
+    ///
+    /// Appending with none gave `"color: redpadding: 12px;"` — one declaration
+    /// whose value is `redpadding: 12px`.
+    #[test]
+    fn set_style_separates_itself_from_an_existing_declaration() {
+        let mut doc = MockDomDocument::new();
+        let div = doc.create_element("div");
+        doc.set_attribute(div, "style", "color: red");
+        doc.set_style(div, "padding", "12px");
+        assert_eq!(style_of(&doc, div), "color: red; padding: 12px");
+    }
+
+    /// Setting a property twice replaces it **where it stands**, which is what
+    /// CSSOM's `setProperty` does and what
+    /// `rinch-dom`'s `dom_tests::set_style_replaces_a_declaration_in_place`
+    /// pins for desktop. Appending instead left both declarations in the block.
+    ///
+    /// The `gap` between them is load-bearing: with only the two `color`
+    /// declarations, replace-in-place and remove-then-append give the same
+    /// string, so the fixture would sit on a fixed point and pass either way.
+    #[test]
+    fn set_style_replaces_a_declaration_in_place() {
+        let mut doc = MockDomDocument::new();
+        let div = doc.create_element("div");
+        doc.set_style(div, "color", "red");
+        doc.set_style(div, "gap", "4px");
+        doc.set_style(div, "color", "blue");
+        assert_eq!(style_of(&doc, div), "color: blue; gap: 4px");
+    }
+
+    /// And it goes through the workspace's one inline-style parser (#670), so a
+    /// `;` inside a `url()` already in the attribute is part of that value
+    /// here too — the mock diverging from desktop on this would make it an
+    /// oracle for the wrong thing.
+    #[test]
+    fn set_style_does_not_split_a_url_already_in_the_attribute() {
+        let mut doc = MockDomDocument::new();
+        let div = doc.create_element("div");
+        doc.set_attribute(
+            div,
+            "style",
+            "background-image: url(data:image/png;base64,AAA=)",
+        );
+        doc.set_style(div, "padding", "12px");
+        assert_eq!(
+            style_of(&doc, div),
+            "background-image: url(data:image/png;base64,AAA=); padding: 12px"
+        );
+    }
+
+    /// The first write onto a node with no style attribute is still just the
+    /// one declaration — no leading separator, no trailing `;`.
+    #[test]
+    fn the_first_set_style_writes_one_bare_declaration() {
+        let mut doc = MockDomDocument::new();
+        let div = doc.create_element("div");
+        doc.set_style(div, "color", "red");
+        assert_eq!(style_of(&doc, div), "color: red");
     }
 }

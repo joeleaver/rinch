@@ -1,6 +1,6 @@
 //! `DomDocument` trait implementation for `RinchDocument`.
 
-use rinch_core::dom::{DomDocument, NodeId};
+use rinch_core::dom::{DomDocument, NodeId, serialize_declarations, split_declarations};
 
 use peniko::color::{AlphaColor, Srgb};
 
@@ -13,7 +13,7 @@ use style::values::specified::{LengthPercentage, NoCalcLength};
 use crate::computed_style::{LengthPercentageAutoValue, PositionValue};
 use crate::node::{DirtyFlags, DisplayMode, Node, NodeContext, NodeKind, TextMeasure};
 
-use super::{RinchDocument, parse_inline_style, parse_style_string};
+use super::{RinchDocument, parse_inline_style};
 
 impl DomDocument for RinchDocument {
     fn doc_key(&self) -> u64 {
@@ -1070,6 +1070,21 @@ impl RinchDocument {
     /// later declaration of a property replaces the earlier one **in place**,
     /// keeping every other declaration where the author wrote it.
     ///
+    /// The parse and the join are
+    /// [`rinch_core::dom::split_declarations`]/[`serialize_declarations`], the
+    /// same pair `rsx!`'s `style:` prop composes with — one parser and one
+    /// rule for every author of an inline style (#670). `rinch-dom` had its own
+    /// `parse_style_string` until then, which split on a bare `;`/`:` and so
+    /// destroyed any value carrying either: a
+    /// `background-image: url(data:image/png;base64,…)` already in the
+    /// attribute came back out of an unrelated `set_style` as
+    /// `background-image: url(data:image/png`, i.e. gone. It also collapsed a
+    /// property declared twice at the **first** declaration's position where
+    /// CSSOM collapses at the last, which is behaviour rather than spelling as
+    /// soon as a shorthand is involved — Chrome 150 computes `left: 4px` for
+    /// `inset: 0px; left: 25px; inset: 4px`, and the first position gives
+    /// `25px`.
+    ///
     /// Order is load-bearing, not cosmetic (#265). `set_styles` parses this
     /// string into the declaration block Stylo cascades, so whatever order
     /// comes out here *is* the order two declarations of the same longhand —
@@ -1098,7 +1113,7 @@ impl RinchDocument {
         let mut decls: Vec<(String, String)> = self.tree.nodes[node_id]
             .attributes
             .get("style")
-            .map(|s| parse_style_string(s))
+            .map(|s| split_declarations(s))
             .unwrap_or_default();
         for &(property, value) in properties {
             match decls.iter_mut().find(|(k, _)| k == property) {
@@ -1106,11 +1121,7 @@ impl RinchDocument {
                 None => decls.push((property.to_string(), value.to_string())),
             }
         }
-        decls
-            .iter()
-            .map(|(k, v)| format!("{}: {}", k, v))
-            .collect::<Vec<_>>()
-            .join("; ")
+        serialize_declarations(&decls)
     }
 
     /// The normal path after an inline style change: drop the cached Stylo

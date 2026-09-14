@@ -696,16 +696,18 @@ impl RinchDocument {
 
             // Check inline style for user-select override (Stylo servo build
             // doesn't handle this property).
-            if let Some(style_str) = node.attributes.get("style") {
-                for part in style_str.split(';') {
-                    let part = part.trim();
-                    if let Some((key, value)) = part.split_once(':') {
-                        if key.trim() == "user-select" {
-                            new_style.user_select =
-                                crate::computed_style::UserSelectValue::parse(value);
-                        }
-                    }
-                }
+            //
+            // Through the one inline-style parser (#670), not a bare
+            // `split(';')`: a `content: "…;…"` or a `url(data:…;base64,…)`
+            // earlier in the attribute is one declaration, and splitting on the
+            // `;` inside it fabricates a fragment that can carry a `:` and be
+            // read as a declaration of its own.
+            if let Some(style_str) = node.attributes.get("style")
+                && let Some((_, value)) = rinch_core::dom::split_declarations(style_str)
+                    .iter()
+                    .find(|(key, _)| key == "user-select")
+            {
+                new_style.user_select = crate::computed_style::UserSelectValue::parse(value);
             }
 
             // Capture old display before transitions overwrite computed_style

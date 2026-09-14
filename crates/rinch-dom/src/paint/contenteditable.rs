@@ -131,33 +131,25 @@ pub(super) fn paint_text_selection_highlight(
 ///
 /// Parse an inline style property from a node's style attribute.
 /// Most properties should be read from `node.computed_style` directly.
+///
+/// Through `rinch_core::dom::split_declarations`, the workspace's one
+/// inline-style parser (#670), so a `;` or `:` inside a quoted or bracketed
+/// value is part of that value here too.
 #[allow(dead_code)]
 pub(super) fn get_style_property(node: &Node, property: &str) -> Option<String> {
-    // Check computed_style_str (used during style resolution)
-    if !node.computed_style_str.is_empty() {
-        for part in node.computed_style_str.split(';') {
-            let part = part.trim();
-            if let Some((key, value)) = part.split_once(':')
-                && key.trim() == property
-            {
-                return Some(value.trim().to_string());
-            }
-        }
-        return None;
-    }
-
-    // Fallback: parse inline style attribute directly
-    if let Some(style_str) = node.attributes.get("style") {
-        for part in style_str.split(';') {
-            let part = part.trim();
-            if let Some((key, value)) = part.split_once(':')
-                && key.trim() == property
-            {
-                return Some(value.trim().to_string());
-            }
-        }
-    }
-    None
+    // `computed_style_str` (used during style resolution) if there is one;
+    // otherwise the inline style attribute. An empty `computed_style_str` is
+    // "not resolved yet", not "no such property", which is why the first arm
+    // does not fall through to the second.
+    let source = if !node.computed_style_str.is_empty() {
+        &node.computed_style_str
+    } else {
+        node.attributes.get("style")?
+    };
+    rinch_core::dom::split_declarations(source)
+        .into_iter()
+        .find(|(key, _)| key == property)
+        .map(|(_, value)| value)
 }
 
 /// Parse a pixel value like "10px" or "10" to f32.
@@ -442,5 +434,52 @@ mod tests {
         assert_eq!(parse_px("10"), Some(10.0));
         assert_eq!(parse_px("0"), Some(0.0));
         assert_eq!(parse_px("abc"), None);
+    }
+
+    /// A `;` or `:` inside a quoted or bracketed value is part of that value,
+    /// here as everywhere else (#670): `get_style_property` reads through
+    /// `rinch_core::dom::split_declarations` rather than its own `split(';')`.
+    ///
+    /// The `padding` is what discriminates. Splitting on a bare `;` cuts the
+    /// `url()` in two and leaves `base64,AAA=) no-repeat` as a "part" with no
+    /// `:` — which is then skipped, so the *following* declaration is still
+    /// found and a fixture that only asked for `padding` would pass against
+    /// the naive reader. The `background` assertion is the one that fails.
+    #[test]
+    fn get_style_property_does_not_split_inside_a_url() {
+        let guard = style::shared_lock::SharedRwLock::new();
+        let mut node = Node::element(0, "div", guard);
+        node.attributes.insert(
+            "style".to_string(),
+            "background: url(data:image/png;base64,AAA=) no-repeat; padding: 4px".to_string(),
+        );
+
+        assert_eq!(
+            get_style_property(&node, "background").as_deref(),
+            Some("url(data:image/png;base64,AAA=) no-repeat")
+        );
+        assert_eq!(get_style_property(&node, "padding").as_deref(), Some("4px"));
+        assert_eq!(get_style_property(&node, "color"), None);
+    }
+
+    /// `computed_style_str` wins over the attribute when there is one, and an
+    /// empty one means "not resolved yet" rather than "no such property" — so
+    /// the attribute is read in that case and not before.
+    #[test]
+    fn get_style_property_prefers_the_resolved_string() {
+        let guard = style::shared_lock::SharedRwLock::new();
+        let mut node = Node::element(0, "div", guard);
+        node.attributes
+            .insert("style".to_string(), "color: red".to_string());
+        assert_eq!(get_style_property(&node, "color").as_deref(), Some("red"));
+
+        node.computed_style_str = "color: blue".to_string();
+        assert_eq!(get_style_property(&node, "color").as_deref(), Some("blue"));
+        assert_eq!(
+            get_style_property(&node, "padding"),
+            None,
+            "a resolved string that lacks the property answers None rather \
+             than falling back to the attribute"
+        );
     }
 }
