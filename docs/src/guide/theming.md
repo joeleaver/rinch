@@ -403,3 +403,66 @@ properties work there.
 | `orange` | `#fff4e6` | `#fd7e14` | |
 
 > **Gotcha:** `--rinch-color-gray-0` is `#f8f9fa`, which matches the default body background. If you use it as a card background, it'll be invisible. Use `gray-1` or higher for visible backgrounds.
+
+## CSS sizing keywords
+
+For `width`, `height`, `min-width`/`min-height`, `max-width`/`max-height` and
+`flex-basis`, rinch supports lengths, percentages, `calc()` mixing the two,
+`auto` and `none`. It supports **no intrinsic sizing keyword** on any of them
+(issue #626): every one parses and is then laid out as `auto`.
+
+| Value | What rinch does |
+|---|---|
+| `<length>` (`px`, `em`, `rem`, …) | Supported |
+| `<percentage>` | Supported |
+| `calc()` mixing a length and a percentage | Supported |
+| `auto`, `none` | Supported |
+| `max-content` | Laid out as `auto` |
+| `min-content` | Laid out as `auto` |
+| `fit-content` | Laid out as `auto` |
+| `fit-content(<length-percentage>)` | Laid out as `auto` |
+| `stretch`, `-webkit-fill-available` | Laid out as `auto` |
+| `anchor-size(…)` | Laid out as `auto` |
+
+rinch prints one line on stderr per property and keyword per process, so the
+substitution is visible rather than silent:
+
+```text
+[rinch] `width: max-content` is not implemented; it lays out as `auto`, which
+matches a browser only where `auto` already gives the same used size (issue
+#626). Reported once per property and value per process.
+```
+
+**Grid tracks are a different story and they do work.**
+`grid-template-columns: max-content` and `min-content` size a column the way a
+browser does — measured, an item whose content is 300px wide gets 300px in such
+a track and 800px in an `auto` one — because Taffy implements intrinsic sizing
+for track sizing functions. (`fit-content(<length-percentage>)` is converted for
+tracks too.) It is only a *box's own* `width`/`height`/`min-*`/`max-*` that
+cannot carry one, so this is not a missing line in a conversion table —
+implementing it needs a measurement pass of rinch's own.
+
+### When `auto` happens to be the right answer
+
+Whether the substitution changes anything depends on the box, and the two
+halves are mirror images. Measured against Chrome 150, for a box whose content
+is 300px wide inside an 800px containing block:
+
+| The box | `auto` gives | `max-content`/`min-content`/`fit-content` | `stretch` |
+|---|---|---|---|
+| block-level `width` | fills (800) | **wrong** — should shrink-wrap (300) | correct (800) |
+| `min-width` / `max-width` | no constraint | **wrong** — should constrain to 300 | correct |
+| `inline-block` or float `width` | shrink-wraps (300) | correct (300) | **wrong** — should fill (800) |
+| flex-row item `width` (main axis) | content (300) | correct (300) | **wrong** — should fill (800) |
+| flex-column or grid item `width` (cross axis) | stretches (800) | **wrong** — should be 300 | correct (800) |
+| block `height` | content height | correct | **wrong** — should fill the containing block |
+| `min-height` | none | correct | **wrong** — should fill the containing block |
+
+So the three intrinsic keywords are already right wherever `auto` is
+content-sized, and `stretch` is already right wherever `auto` fills.
+
+**The workaround in both directions is a declared length or percentage.** Where
+you reached for `width: fit-content` on a block, `display: inline-block` gives
+the same shrink-to-fit today; where you reached for `height: stretch`, `height:
+100%` gives the same used size as long as the box has no margin, border or
+padding on that axis.

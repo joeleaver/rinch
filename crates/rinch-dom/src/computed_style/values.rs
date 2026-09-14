@@ -172,6 +172,40 @@ impl PositionValue {
     }
 }
 
+/// A CSS **intrinsic sizing keyword** (css-sizing-3 §5, css-sizing-4 §4).
+///
+/// None of these lays out yet — see [`DimensionValue::Intrinsic`] for what
+/// happens to one and why. The keyword is carried this far rather than folded
+/// into `Auto` at style conversion so that a consumer can tell a declared
+/// `max-content` from an undeclared size (#626): `Auto` now means the author
+/// wrote `auto` (or nothing), which is what every reader of it already assumed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub enum IntrinsicSize {
+    /// `max-content` — the box's preferred size, laid out with no wrapping.
+    MaxContent,
+    /// `min-content` — the box's smallest size that avoids overflow.
+    MinContent,
+    /// `fit-content`, i.e. `min(max-content, max(min-content, stretch))`.
+    FitContent,
+    /// `stretch` — fill the containing block's remaining space, margin box
+    /// included. `-webkit-fill-available` lands here too: Chrome 150 computes
+    /// the prefixed spelling to `stretch` (measured — `getComputedStyle` on
+    /// `min-width: -webkit-fill-available` answers `stretch`).
+    Stretch,
+}
+
+impl IntrinsicSize {
+    /// The keyword as an author would write it, for diagnostics.
+    pub fn css_name(self) -> &'static str {
+        match self {
+            Self::MaxContent => "max-content",
+            Self::MinContent => "min-content",
+            Self::FitContent => "fit-content",
+            Self::Stretch => "stretch",
+        }
+    }
+}
+
 /// CSS dimension value (width, height, min-*, max-*).
 #[derive(Debug, Clone, Copy, Default, Serialize)]
 pub enum DimensionValue {
@@ -187,6 +221,40 @@ pub enum DimensionValue {
         px: f32,
         pct: f32,
     },
+    /// An intrinsic sizing keyword, which **does not lay out yet** (#626): it
+    /// reaches Taffy as `auto`, so the used size is whatever `auto` would give.
+    ///
+    /// Taffy 0.12 cannot be handed one. `taffy::Dimension` is a newtype over
+    /// `CompactLength`, and while that type does carry `MIN_CONTENT_TAG` /
+    /// `MAX_CONTENT_TAG` / `FIT_CONTENT_*_TAG`, only the **grid track sizing**
+    /// functions ever read them: `Dimension`'s own resolver
+    /// (`MaybeResolve for Dimension`, taffy-0.12.2 `src/util/resolve.rs:57`)
+    /// matches `AUTO`/`LENGTH`/`PERCENT`/calc and ends `_ => unreachable!()`,
+    /// and `Dimension` exposes no safe constructor for the intrinsic tags at
+    /// all. So a `size`/`min_size`/`max_size` carrying one **panics** in
+    /// layout rather than shrink-wrapping — pinned by
+    /// `tests/intrinsic_sizing_tests.rs`, which is what fails if a future
+    /// Taffy bump makes this representable.
+    ///
+    /// Implementing them therefore needs a rinch-side measurement pass, not a
+    /// mapping. In the meantime the declaration is at least *inspectable* —
+    /// the MCP's `GetComputedStyles` serializes this enum, so it now reports
+    /// `{"Intrinsic": "MaxContent"}` where it used to say `"Auto"` — and
+    /// `from_stylo` prints one line per property and keyword per process, so
+    /// the substitution is no longer silent.
+    ///
+    /// All four keywords reach this variant, `-webkit-fill-available` folding
+    /// into `Stretch`. `fit-content(<length-percentage>)` does not — it is
+    /// `clamp(min-content, <lp>, max-content)`, a different value from the bare
+    /// keyword, so it stays `Auto` and is reported separately.
+    ///
+    /// None of them is gated, which is less obvious than it looks: Stylo guards
+    /// `stretch`, `-webkit-fill-available` and `fit-content()` on
+    /// `static_prefs::pref!(…)`, which is **not** the runtime preference store
+    /// `RinchDocument::new` pokes (`stylo_config`, which answers `false` for
+    /// every unset key). It is a compile-time macro in `stylo_static_prefs`
+    /// that hard-codes those keys to `true`.
+    Intrinsic(IntrinsicSize),
 }
 
 impl DimensionValue {
@@ -200,18 +268,45 @@ impl DimensionValue {
     /// (`calc_layout.rs`) overwrites it with the resolved length before a
     /// layout result is read — on the converged path; a run that hits the
     /// fixpoint's iteration cap reads the last iterate (see `calc_layout.rs`).
+    /// An [`Intrinsic`](Self::Intrinsic) keyword has no Taffy representation
+    /// either, and unlike a `Calc` no later pass repairs it: it goes in as
+    /// `auto` and stays `auto` (#626). See that variant for why Taffy 0.12
+    /// cannot be handed one.
     pub fn to_taffy(&self) -> taffy::Dimension {
         match self {
             Self::Auto => taffy::Dimension::auto(),
             Self::Length(v) => taffy::Dimension::length(*v),
             Self::Percent(v) => taffy::Dimension::percent(*v),
             Self::Calc { px, .. } => taffy::Dimension::length(px.max(0.0)),
+            Self::Intrinsic(_) => taffy::Dimension::auto(),
         }
     }
 
-    /// Whether this is Auto.
+    /// Whether the author wrote `auto` (or nothing).
+    ///
+    /// This is the **specified** value. It answers `false` for an intrinsic
+    /// keyword even though one currently lays out as `auto` — ask
+    /// [`Self::lays_out_as_auto`] when the question is about the used size.
     pub fn is_auto(&self) -> bool {
         matches!(self, Self::Auto)
+    }
+
+    /// Whether this value reaches Taffy as `auto`.
+    ///
+    /// True for `auto` itself and for every intrinsic keyword, because none of
+    /// them lays out yet (#626). Every call site is a place that will need
+    /// revisiting when they do, which is why it is spelled separately from
+    /// [`Self::is_auto`] rather than folded into it.
+    pub fn lays_out_as_auto(&self) -> bool {
+        matches!(self, Self::Auto | Self::Intrinsic(_))
+    }
+
+    /// The intrinsic sizing keyword the author wrote, if any.
+    pub fn intrinsic(&self) -> Option<IntrinsicSize> {
+        match self {
+            Self::Intrinsic(k) => Some(*k),
+            _ => None,
+        }
     }
 
     /// The resolved length a `Calc` takes at `basis`, floored at zero the way
