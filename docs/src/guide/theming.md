@@ -122,10 +122,16 @@ These drive the `Title` component. A **bare** `<h1>`–`<h6>` does not read them
 it gets the browser's own user-agent typography instead — `2em` down to
 `0.67em`, `font-weight: bold`, and `em` block margins, exactly the values the
 HTML Standard's rendering section gives (issue #627). `<th>` likewise gets
-`font-weight: bold; text-align: center`. Those are UA-origin cascade rules, so
-any declaration of your own beats them, and `Title` (which declares its own
-size, weight and `margin: 0`) is unaffected. Reach for `Title` when you want the
+`font-weight: bold` and a centring. Those are UA-origin cascade rules, so any
+declaration of your own beats them, and `Title` (which declares its own size,
+weight and `margin: 0`) is unaffected. Reach for `Title` when you want the
 theme's scale and a plain heading tag when you want the browser's.
+
+The `<th>` centring is **conditional**, as it is in a browser: the spec's rule
+matches only a `th` whose parent's computed `text-align` is still the initial
+value, so a header cell inside a container you have aligned inherits that
+alignment rather than being re-centred. If you want a header cell centred
+regardless, say so on the cell — an author declaration always wins.
 
 #### Scaling the whole UI with `rem`
 

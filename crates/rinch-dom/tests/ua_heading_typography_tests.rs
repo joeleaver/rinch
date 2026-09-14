@@ -32,8 +32,22 @@
 //! `DisplayValue` has no `TableCell` variant, and the UA sheet leaves `tr`,
 //! `td`, `thead`, `tbody` at Stylo's default `inline` while giving `table`
 //! `display: block`. Declaring `display: table-cell` would be a lie the layout
-//! engine cannot honour, so the rule carries only `font-weight` and
-//! `text-align`, both of which are real.
+//! engine cannot honour, so the rule carries `font-weight` and `text-align`
+//! only.
+//!
+//! Of those two, `font-weight` is plainly real. `text-align` is real as a
+//! *computed* value in every configuration — which is what this file asserts —
+//! and takes visible effect wherever the cell is given a block display, as the
+//! rich-text editor's own stylesheet does (`td, th { display: block }`). On a
+//! **default** `<th>` it is inert, because rinch reads alignment from the IFC
+//! root and a `display: inline` cell establishes no inline formatting context.
+//!
+//! And the `<th>` centring is **conditional** on the parent's own computed
+//! alignment, which is why the UA rule spells it `-moz-center-or-inherit`
+//! rather than `center`. `a_th_inherits_an_alignment_its_parent_declares` and
+//! `the_th_alignment_condition_reads_the_parent_not_an_ancestor` are the two
+//! fixtures that hold that; every *other* `th` test here sits on the fixed
+//! point where the two spellings agree.
 
 use rinch_core::dom::{DomDocument, NodeId};
 use rinch_dom::RinchDocument;
@@ -125,6 +139,12 @@ fn a_bare_heading_carries_the_browser_ua_typography() {
 ///
 /// The `<td>` half is the discriminator: a rule written `th, td { … }`, or a
 /// selector typo landing on both, passes the `<th>` assertions alone.
+///
+/// This fixture's container declares no `text-align`, which is the *condition*
+/// under which the UA rule centres at all — so `center` and the conditional
+/// `-moz-center-or-inherit` agree here and it cannot tell them apart. That is
+/// what `a_th_inherits_an_alignment_its_parent_declares` is for; do not take
+/// this test as covering the spelling.
 #[test]
 fn th_is_bold_and_centred_and_td_is_not() {
     let mut doc = RinchDocument::new();
@@ -143,6 +163,141 @@ fn th_is_bold_and_centred_and_td_is_not() {
         align(&doc, td),
         TextAlignValue::Start,
         "<td> does not centre"
+    );
+}
+
+/// The `<th>` centring is **conditional**, and this is the fixture sampled off
+/// the fixed point every other `<th>` test sits on.
+///
+/// The HTML Standard's rule matches "th elements that have a parent node whose
+/// computed value for the 'text-align' property is its initial value" — so a
+/// `<th>` under an alignment its parent actually declares inherits that instead
+/// of being re-centred. The UA sheet spells it `-moz-center-or-inherit`, the
+/// value Stylo carries for exactly this rule; a plain `center` would centre
+/// unconditionally.
+///
+/// **Chrome 150, measured**, against which every row below is asserted:
+///
+/// | container | `<th>` | `<td>` |
+/// |---|---|---|
+/// | (none) | `center` | `start` |
+/// | `text-align: right` | `right` | `right` |
+/// | `text-align: left` | `left` | `left` |
+/// | `text-align: justify` | `justify` | `justify` |
+/// | `text-align: start` | `center` | `start` |
+///
+/// rinch folds the physical `left`/`right` onto `Start`/`End`
+/// (`text_align_from_stylo`), an LTR-only simplification that predates this
+/// change, so those two rows are asserted as `Start`/`End`.
+///
+/// The `start` row is not redundant: `start` **is** the initial value, so the
+/// condition still holds and the cell centres. It separates "the parent
+/// declared nothing" from "the parent's computed value is the initial one",
+/// which is what the spec actually says.
+#[test]
+fn a_th_inherits_an_alignment_its_parent_declares() {
+    // (container style, expected th, expected td)
+    let cases: [(&str, TextAlignValue, TextAlignValue); 5] = [
+        ("", TextAlignValue::Center, TextAlignValue::Start),
+        (
+            "text-align: right",
+            TextAlignValue::End,
+            TextAlignValue::End,
+        ),
+        (
+            "text-align: left",
+            TextAlignValue::Start,
+            TextAlignValue::Start,
+        ),
+        (
+            "text-align: justify",
+            TextAlignValue::Justify,
+            TextAlignValue::Justify,
+        ),
+        (
+            "text-align: start",
+            TextAlignValue::Center,
+            TextAlignValue::Start,
+        ),
+    ];
+
+    let mut doc = RinchDocument::new();
+    let body = doc.body();
+    let mut built = Vec::new();
+    for (style, want_th, want_td) in cases {
+        let c = el(&mut doc, body, "div", &format!("width: 400px; {style}"));
+        let table = el(&mut doc, c, "table", "");
+        let row = el(&mut doc, table, "tr", "");
+        let th = el(&mut doc, row, "th", "");
+        let td = el(&mut doc, row, "td", "");
+        built.push((style, th, td, want_th, want_td));
+    }
+    doc.resolve_layout(800.0, 600.0);
+
+    for (style, th, td, want_th, want_td) in built {
+        let shown = if style.is_empty() {
+            "(no alignment)"
+        } else {
+            style
+        };
+        assert_eq!(
+            align(&doc, th),
+            want_th,
+            "<th> under a container declaring `{shown}`"
+        );
+        assert_eq!(
+            align(&doc, td),
+            want_td,
+            "<td> under a container declaring `{shown}` (the control)"
+        );
+    }
+}
+
+/// The condition is on the **parent node**, not on any ancestor — and this is
+/// the case that pins that wording rather than merely restating it.
+///
+/// A `<th>` inside a `<table style="text-align: start">` inside a
+/// `text-align: right` div computes **`center`** in Chrome 150, because the
+/// alignment its parent `<tr>` inherits from the table is back to the initial
+/// value, so the UA rule's condition holds again. A rule that walked ancestors
+/// looking for any declared alignment would answer `End` here.
+///
+/// An author declaration on the `<th>` itself still wins in either context,
+/// which is the #616 handshake for this rule.
+#[test]
+fn the_th_alignment_condition_reads_the_parent_not_an_ancestor() {
+    let mut doc = RinchDocument::new();
+    let body = doc.body();
+
+    let outer = el(&mut doc, body, "div", "width: 400px; text-align: right");
+    let reset = el(&mut doc, outer, "table", "text-align: start");
+    let row = el(&mut doc, reset, "tr", "");
+    let th_reset = el(&mut doc, row, "th", "");
+
+    let outer2 = el(&mut doc, body, "div", "width: 400px; text-align: right");
+    let table2 = el(&mut doc, outer2, "table", "");
+    let row2 = el(&mut doc, table2, "tr", "");
+    let th_inherits = el(&mut doc, row2, "th", "");
+    let th_author = el(&mut doc, row2, "th", "text-align: left");
+
+    doc.resolve_layout(800.0, 600.0);
+
+    assert_eq!(
+        align(&doc, th_reset),
+        TextAlignValue::Center,
+        "a <th> whose parent chain is back at the initial value centres again, \
+         however the div above it is aligned (Chrome: center)"
+    );
+    assert_eq!(
+        align(&doc, th_inherits),
+        TextAlignValue::End,
+        "control: with nothing resetting it, the same <th> inherits the \
+         right-alignment (Chrome: right)"
+    );
+    assert_eq!(
+        align(&doc, th_author),
+        TextAlignValue::Start,
+        "an author declaration on the <th> beats the UA rule in either context"
     );
 }
 

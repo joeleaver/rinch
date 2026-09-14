@@ -277,12 +277,46 @@ impl RinchDocument {
                all — `DisplayValue` carries no table variant, `table` is
                `display: block` above, and `tr`/`td`/`th`/`thead` keep Stylo's
                default `inline`. Declaring a display the layout engine cannot
-               honour would buy nothing and mislead. `font-weight` and
-               `text-align` are real, so those are what is here.
-               `the_th_rule_does_not_claim_a_table_display` is the pin. */
+               honour would buy nothing and mislead.
+               `the_th_rule_does_not_claim_a_table_display` is the pin.
+
+               `font-weight` is plainly real. `text-align` is real as a computed
+               value everywhere, and takes visible effect wherever the cell is
+               given a block display — which the rich-text editor does
+               (`rinch-editor-view/src/styles.rs`: `td, th { display: block }`).
+               On a *default* `<th>` it is inert, because rinch reads alignment
+               from the IFC root and a `display: inline` cell establishes no
+               inline formatting context.
+
+               **`-moz-center-or-inherit`, not `center`, and the difference is
+               observable.** The HTML Standard makes this rule conditional — it
+               matches "th elements that have a parent node whose computed value
+               for the 'text-align' property is its initial value" — so a `<th>`
+               under an alignment its parent actually declares must *inherit*
+               that, not be re-centred. Chrome implements the condition as its
+               own private `-internal-center`; measured in Chrome 150, a `<th>`
+               under a `text-align: right` ancestor computes `right`, under
+               `justify` computes `justify`, and — the case that pins the wording
+               — a `<th>` in a `<table style="text-align: start">` inside a
+               `text-align: right` div computes `center` again, because the
+               condition is on the **parent node**, not on any ancestor.
+
+               Stylo 0.11 carries exactly this value (`MozCenterOrInherit`, whose
+               own doc comment quotes the same spec paragraph). It is not
+               gecko-gated, and it parses whenever `chrome_rules_enabled()` — i.e.
+               for any non-author origin, which this sheet is
+               (`Origin::UserAgent`, below). **An author stylesheet cannot use it**
+               and will have the declaration dropped; that asymmetry is the whole
+               reason the value exists.
+
+               Spelling it `center` instead is a silent, *unconditional* centring
+               that matches Chrome only where the parent declares no alignment —
+               which is every fixture that does not go looking, and was the
+               surviving mutant this rule shipped with. `a_th_inherits_an_alignment_its_parent_declares`
+               samples off that fixed point. */
             th {
                 font-weight: bold;
-                text-align: center;
+                text-align: -moz-center-or-inherit;
             }
 
             u, ins {
