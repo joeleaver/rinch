@@ -281,6 +281,18 @@ impl Component for Drawer {
             root.set_attribute("style", &format!("--rinch-drawer-z-index: {}", z));
         }
 
+        // close_on_escape (#474): see the note in `modal.rs` — the two
+        // components share this shape, including the open check living at
+        // dispatch time rather than here.
+        crate::overlay_dismiss::arm_close_on_escape(
+            __scope,
+            &root,
+            self.close_on_escape,
+            self.opened,
+            self.opened_fn.as_ref(),
+            self.onclose.as_ref(),
+        );
+
         // Build the overlay
         if self.with_overlay {
             let overlay = rinch_macros::rsx! { div { class: "rinch-drawer__overlay" } };

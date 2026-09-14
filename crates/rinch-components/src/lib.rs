@@ -157,6 +157,7 @@ pub mod modal;
 pub mod navlink;
 pub mod notification;
 pub mod number_input;
+pub mod overlay_dismiss;
 pub mod pagination;
 pub mod paper;
 pub mod password_input;

@@ -275,6 +275,18 @@ impl Component for Modal {
             });
         }
 
+        // close_on_escape (#474): join the dismiss stack for as long as this
+        // modal is mounted. The open check happens at dispatch, not here — a
+        // closed modal stays mounted and must leave Escape to the app.
+        crate::overlay_dismiss::arm_close_on_escape(
+            __scope,
+            &root,
+            self.close_on_escape,
+            self.opened,
+            self.opened_fn.as_ref(),
+            self.onclose.as_ref(),
+        );
+
         // Build the overlay
         if self.with_overlay {
             let overlay = rinch_macros::rsx! { div { class: "rinch-modal__overlay" } };

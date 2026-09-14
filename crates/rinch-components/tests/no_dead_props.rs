@@ -56,27 +56,25 @@ use std::path::Path;
 
 /// Props that are declared, documented, and still not wired — the debt #474
 /// catalogued, with the sub-cluster each belongs to. Every entry must name a
-/// live reason: this list may only shrink. It started at 31 and is 19; the
-/// twelve that left were #474's whole `z_index` sub-cluster, its five dead
-/// `radius` props, `CloseButton::icon_size` and `Drawer::overlay_opacity`.
+/// live reason: this list may only shrink. It started at 31 and is 14; the
+/// seventeen that left were #474's whole `z_index` sub-cluster, its five dead
+/// `radius` props, `CloseButton::icon_size`, `Drawer::overlay_opacity`, and the
+/// five dismissal props of category A.
 ///
-/// The overlay-behaviour cluster (#474 category A) is deliberately not wired:
-/// `close_on_escape`, `trap_focus` and `lock_scroll` are new interaction work
-/// against the focus arbiter (CLAUDE.md lists backdrop modality as *not yet*
-/// implemented — these props are that gap, declared as if it were closed), and
-/// `auto_close` is a timer.
+/// What remains of the overlay-behaviour cluster (#474 category A) is the
+/// *focus and scroll* half: `trap_focus` and `lock_scroll`. Both are new
+/// interaction work against the focus arbiter and the wheel-routing path
+/// (CLAUDE.md lists backdrop modality as *not yet* implemented — those props
+/// are that gap, declared as if it were closed). The dismissal half —
+/// `close_on_escape`, `Popover::close_on_click_outside`,
+/// `Notification::auto_close` — landed with the dismiss stack.
 const ALLOWLIST: &[(&str, &str)] = &[
     // #474 category A — overlay behaviour that does not exist yet.
-    ("Modal::close_on_escape", "#474 A: focus/key behaviour"),
     ("Modal::lock_scroll", "#474 A: scroll locking"),
     ("Modal::trap_focus", "#474 A: focus arbiter work"),
-    ("Drawer::close_on_escape", "#474 A: focus/key behaviour"),
     ("Drawer::lock_scroll", "#474 A: scroll locking"),
     ("Drawer::trap_focus", "#474 A: focus arbiter work"),
-    ("Popover::close_on_click_outside", "#474 A: no backdrop yet"),
-    ("Popover::close_on_escape", "#474 A: focus/key behaviour"),
     ("Popover::trap_focus", "#474 A: focus arbiter work"),
-    ("Notification::auto_close", "#474 A: dismiss timer"),
     // #474 category C — a parent prop whose child's twin works.
     ("List::icon", "#474 C: not plumbed to ListItem"),
     (

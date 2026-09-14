@@ -166,15 +166,38 @@ pub fn clear_keyboard_interceptor() {
 }
 
 /// Dispatch a keyboard event to the dispatching document's interceptor (or the
-/// thread-global fallback). Returns true if the event was handled.
+/// thread-global fallback), then — for an **Escape press** only — to the
+/// [dismiss stack](super::dispatch_dismiss). Returns true if the event was
+/// handled and should not reach the runtime.
 ///
 /// The `Rc` is cloned out before the call so the handler may re-enter (install a
 /// different interceptor, for instance) without a double borrow.
+///
+/// # Why the dismiss stack is dispatched from here
+///
+/// Both backends already call this, ahead of their own key handling — desktop
+/// in `RinchApp`'s `KeyDown` arm, before the focus arbiter, so Escape closes a
+/// modal while an `<input>` inside it holds the keyboard; rinch-web in its
+/// document `keydown` listener. Putting the scan here rather than at each call
+/// site is what lets overlays close on Escape on every backend with **no
+/// backend change at all**, and keeps the precedence question ("what beats
+/// Escape?") answered in one place.
+///
+/// The interceptor still wins: it is the document-level capture-phase hook, and
+/// an app that consumes Escape there means it. A **release** never dismisses —
+/// `KeyUp` comes through this same function and must not close anything.
 pub fn dispatch_keyboard_event(data: &KeyEventData) -> bool {
-    match crate::reactive::read_doc_scoped_slot(&KEYBOARD_INTERCEPTOR) {
+    let intercepted = match crate::reactive::read_doc_scoped_slot(&KEYBOARD_INTERCEPTOR) {
         Some(cb) => cb(data),
         None => false,
+    };
+    if intercepted {
+        return true;
     }
+    if data.key == "Escape" && data.is_down() {
+        return super::dispatch_dismiss();
+    }
+    false
 }
 
 #[cfg(test)]
