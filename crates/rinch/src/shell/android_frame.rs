@@ -486,7 +486,11 @@ pub(crate) fn retry_owed_frame(attempted: bool, presented: bool) -> bool {
 ///
 /// A present that keeps failing is now retried at the panel's rate rather than
 /// slept through (see `retry_owed_frame`), and every failing path in
-/// `android_runtime`'s two surfaces logs at `error`. Left alone that is **~120
+/// `android_runtime`'s two surfaces that logs anything logs at `error` — three
+/// of the four. (The fourth, `SoftSurface`'s `native.lock(None)` returning
+/// `Err`, logs nothing and is left alone: per issue #563's table that is the
+/// window going away, and `TerminateWindow` follows it through the looper.)
+/// Left alone that is **~120
 /// `log::error!` lines a second, for ever**, for a fault that by construction
 /// is not going to change on its own: `guard.lines()` answering `None` is a
 /// permanent window-format fault, and issue #563's own table calls it that.
@@ -910,8 +914,20 @@ mod pacing_tests {
     /// supposed to avoid, arriving through the repair. Restarting the frame
     /// clock beside the arm is what makes the whole frame real.
     ///
-    /// The second assertion is the counter-case, and it is what fails if anyone
-    /// deletes the `frame_start = Instant::now()` as a tidy-up.
+    /// **What each assertion actually protects**, since the two are not
+    /// symmetric. The *first* goes red if `iterate`'s `clock = BACK_EDGE`
+    /// beside the arm is removed — that is the model's half of the reset, and
+    /// it is the half a host test can observe. The *second* records what the
+    /// same arm answers without it, and passes either way by construction,
+    /// because it asserts the broken answer directly rather than through the
+    /// model.
+    ///
+    /// **The loop's own `frame_start = Instant::now()` is pinned by reading and
+    /// by nothing else.** `android_runtime` is
+    /// `cfg(all(feature = "android", target_os = "android"))`, so no host test
+    /// compiles it: delete that line and this module still answers 17 passed.
+    /// The comment beside it in the loop, and the one in `iterate` saying the
+    /// store and the reset are one action, are the whole of its protection.
     #[test]
     fn a_retry_after_an_overrunning_paint_still_sleeps_a_whole_frame() {
         let overran = Duration::from_millis(40);
