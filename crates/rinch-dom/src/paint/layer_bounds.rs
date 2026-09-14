@@ -205,11 +205,21 @@ pub const UNBOUNDED: Rect = Rect::new(-1e7, -1e7, 1e7, 1e7);
 /// How many nodes the walk will look at before it gives up and says
 /// [`Extent::Escapes`].
 ///
-/// This runs once per frame per translucent element — and, since #562, once per
-/// off-window stacking context the cull is deciding about, where the
-/// alternative is painting that subtree in full and the walk is therefore never
-/// the more expensive of the two — on a phone, in a frame budget of 8.3ms — cards K42 and K43 spent a lot of effort getting this app
+/// This runs once per frame per translucent element, on a phone, in a frame
+/// budget of 8.3ms — cards K42 and K43 spent a lot of effort getting this app
 /// to 120fps on a moto g stylus 5G and this must not be where it goes back.
+///
+/// Since #562 it also runs once per off-window stacking context the cull is
+/// deciding about. **That is not free, and it is not always a saving either.**
+/// On a definite answer the walk replaces the paint of a whole subtree, which
+/// is the case it is for. On a *not-knowing* it is paid on top: the walk runs,
+/// answers [`Extent::Unknown`] or [`Extent::Escapes`], and the subtree is
+/// painted in full anyway. Measured on the adverse shape — 60 off-window
+/// `opacity: 0.99` stacking contexts, each 200 plain children with a
+/// `position: sticky` box **last**, so the sibling loop measures all of them —
+/// that is 12,000 extra visits a frame, and it lands below the noise floor
+/// either way: 1.165 → 0.943ms against a no-op painter, 555.5 → 558.3ms with
+/// `TinySkiaPainter`. The cap below is what keeps it there.
 ///
 /// Measured on the developer laptop, in release, the walk costs about 20ns a
 /// node and allocates nothing: a 181-node subtree of rows, cells and labels —
@@ -561,9 +571,20 @@ pub(super) fn subtree_is_entirely_outside(
     match walk.node(node_id, offset_x, offset_y, Affine::IDENTITY, true, 0) {
         Extent::Within(r) => !region_hits(transform.transform_rect_bbox(r)),
         // Paint draws nothing at all in here, so it certainly draws nothing in
-        // the region. Unreachable from the one caller — it asks about a node
-        // with a box, and the walk unions the root's own box onto every answer
-        // — but it is the honest arm and not a fall-through.
+        // the region. It is the honest arm and not a fall-through, and it is
+        // unreachable from the one caller — but **not** because the walk unions
+        // the root's own box onto every answer, which it does not: the four
+        // early exits below (the tag list, `estimated_height`, `opacity <= 0.0`,
+        // `display: none`) return `Nothing` above that union, and the zero-area
+        // branch returns the children's extent with no root box on it at all.
+        //
+        // The reason is on the caller's side. `paint_node` makes those same four
+        // refusals, and takes its own zero-area branch, *above* the cull — so a
+        // node that would answer `Nothing` for any of those five reasons has
+        // already returned and never reaches this call. Worth stating precisely
+        // rather than plausibly: the wrong reason is the one a future editor
+        // would re-check when adding a fifth exit to `Walk::node`, and it would
+        // tell them the union covers it.
         Extent::Nothing => true,
         Extent::Unknown | Extent::Escapes => false,
     }

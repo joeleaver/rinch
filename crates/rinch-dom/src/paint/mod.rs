@@ -1507,13 +1507,17 @@ fn paint_node(
     // a pixel count catches.** It hands the non-clipping ones to the
     // skip-draw-and-recurse arm, which sits before every `push_layer` here, so
     // the sheet's on-screen fixed descendant still painted and came back at
-    // `[0, 200, 0, 255]` instead of `[0, 100, 0, 128]` — unfaded, with all 951
+    // `[0, 200, 0, 255]` instead of `[0, 100, 0, 128]` — unfaded, with all 1017
     // tests in the crate green.
     let may_own_hoisted_entries = !node.children.is_empty() && node.creates_stacking_context();
     if node_outside_dirty && may_own_hoisted_entries {
         // The walk is only ever asked about a subtree paint is otherwise about
-        // to draw in full, so it is never the more expensive of the two — and a
-        // `false` leaves this node exactly where #561 left it.
+        // to draw in full, so on a `true` it replaces that paint rather than
+        // adding to it. On a `false` it is an addition, not an alternative —
+        // the subtree is painted anyway and the walk was overhead — which is
+        // bounded by `MAX_VISITS` and measured at the adverse shape in that
+        // constant's own doc. A `false` otherwise leaves this node exactly where
+        // #561 left it.
         if subtree_is_entirely_outside(tree, node_id, scale, x, y, node_transform, |r| {
             intersects_dirty_region(r.x0, r.y0, r.width(), r.height())
         }) {

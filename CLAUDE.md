@@ -1558,9 +1558,14 @@ correct, and each has a fixture in
   #204 introduced. The module's **third** caller,
   `subtree_is_entirely_outside` (the off-window cull, #562), does **not** accept
   that hole and does not close it either: it answers `Escapes` for an absolute
-  whenever a clipping ancestor sits below the containing block, which is
-  whole-escape where partial would be exact — conservative in the direction that
-  costs an unpruned subtree rather than a deleted box. The asymmetry is
+  whenever a clipping ancestor **below the walk root** sits below the containing
+  block, which is whole-escape where partial would be exact — conservative in the
+  direction that costs an unpruned subtree rather than a deleted box. *Below the
+  walk root* is the whole qualification and not pedantry: the root's own clip is
+  one no absolute inside escapes, because paint opens that bracket around the
+  entire sequence (#549), so a clipping root that is not itself a containing
+  block answers `Within` and prunes —
+  `offscreen_cull_tests::a_clipping_non_containing_block_root_still_prunes`. The asymmetry is
   deliberate: a bounds under-measure costs content on the Vello path only, a
   cull under-measure costs it on every path. `layer_bounds.rs`'s module doc names
   all of this explicitly; read it before touching this.

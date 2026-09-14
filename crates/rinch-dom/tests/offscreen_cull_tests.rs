@@ -587,7 +587,7 @@ fn an_on_window_opacity_sheet_still_opens_its_group_layer() {
 /// #562's proposed `clips_overflow()` narrowing sends this node down the
 /// skip-draw-and-recurse arm, which sits before every `push_layer` in the
 /// function: the box still paints, at `[0, 200, 0, 255]` instead of
-/// `[0, 100, 0, 128]`. Every one of the 951 tests in this crate stayed green
+/// `[0, 100, 0, 128]`. Every one of the 1017 tests in this crate stayed green
 /// for it.
 #[test]
 fn an_off_window_opacity_layer_keeps_its_fixed_descendant_faded() {
@@ -857,5 +857,119 @@ fn the_subtree_extent_is_compared_in_screen_space_not_layout_space() {
         [0, 100, 0, 128],
         "the child lands at the top of the window once the sheet's transform is \
          applied; a cull that compares the untransformed extent loses it"
+    );
+}
+
+/// M8's pin. The walk root clips and does NOT establish a containing block, so an
+/// absolute inside it has its containing block above the root and `Collector::span`
+/// gives its entry an EMPTY chain — #549 says paint's own bracket around the sequence
+/// clips it anyway, which is why `scoped_children` clears the flag at the root. The
+/// picture is identical either way; only the layer count can see it.
+#[test]
+fn a_clipping_non_containing_block_root_still_prunes() {
+    let mut doc = RinchDocument::new();
+    let body = doc.body();
+    let sheet = doc.create_element("div");
+    doc.set_attribute(
+        sheet,
+        "style",
+        "margin-top: 3000px; width: 200px; height: 200px; opacity: 0.5; overflow: hidden",
+    );
+    doc.append_child(body, sheet);
+    let a = doc.create_element("div");
+    doc.set_attribute(
+        a,
+        "style",
+        "position: absolute; left: 40px; top: -2950px; width: 120px; height: 100px; \
+         background-color: rgb(0, 200, 0)",
+    );
+    doc.append_child(sheet, a);
+    doc.resolve_layout(VW, VH);
+    let counted = count_layers(&mut doc);
+    assert_eq!(
+        (counted.layers, counted.pops),
+        (0, 0),
+        "the collecting root's own clip is one no absolute inside escapes (#549)"
+    );
+}
+
+/// The same tree, from the **paint** side: the absolute really is clipped away, so
+/// the prune above discards nothing that would have been seen.
+///
+/// This is the only place in the suite that checks #549's claim from that direction,
+/// and it is what stops the fixture above from being a pin on a bug — a prune whose
+/// justification is "paint would have clipped it" is only as good as paint doing so.
+#[test]
+fn the_absolute_that_root_prunes_was_clipped_away_anyway() {
+    let mut doc = RinchDocument::new();
+    let body = doc.body();
+    let sheet = doc.create_element("div");
+    // On the window this time, so the cull plays no part and paint's own bracket
+    // is the only thing that can remove the box.
+    doc.set_attribute(
+        sheet,
+        "style",
+        "margin-top: 0px; width: 200px; height: 200px; opacity: 0.5; overflow: hidden",
+    );
+    doc.append_child(body, sheet);
+    let a = doc.create_element("div");
+    doc.set_attribute(
+        a,
+        "style",
+        "position: absolute; left: 40px; top: 250px; width: 120px; height: 100px; \
+         background-color: rgb(0, 200, 0)",
+    );
+    doc.append_child(sheet, a);
+    doc.resolve_layout(VW, VH);
+    // Taller than the window, so the box's own address is addressable and the
+    // off-window cull is not what removes it: at `y` 250..350 it is inside the
+    // cull rect (the window's 300 plus the 64px ink margin), so the clip is.
+    let mut p = TinySkiaPainter::new(VW as u32, 400);
+    paint(&mut doc, &mut p, 1.0);
+    assert_eq!(
+        ink(&p, 45, 155, 255, 345),
+        0,
+        "an absolute below a clipping collecting root is clipped by that root's own \
+         bracket, whatever its entry's chain says"
+    );
+}
+
+/// M10's pin. A clipping ancestor that IS a containing block clears the flag, so a
+/// sheet whose absolutely positioned content is genuinely bounded still prunes.
+#[test]
+fn an_absolute_bounded_by_a_clipping_containing_block_still_prunes() {
+    let mut doc = RinchDocument::new();
+    let body = doc.body();
+    let sheet = doc.create_element("div");
+    doc.set_attribute(
+        sheet,
+        "style",
+        "position: absolute; left: 0px; top: 3000px; width: 200px; height: 200px; opacity: 0.5",
+    );
+    doc.append_child(body, sheet);
+    let cb = doc.create_element("div");
+    doc.set_attribute(
+        cb,
+        "style",
+        "position: relative; width: 200px; height: 40px; overflow: hidden",
+    );
+    doc.append_child(sheet, cb);
+    let inner = doc.create_element("div");
+    doc.set_attribute(inner, "style", "width: 200px");
+    doc.append_child(cb, inner);
+    let a = doc.create_element("div");
+    doc.set_attribute(
+        a,
+        "style",
+        "position: absolute; left: 4px; top: 4px; width: 20px; height: 20px; \
+         background-color: rgb(255, 0, 0)",
+    );
+    doc.append_child(inner, a);
+    doc.resolve_layout(VW, VH);
+    let counted = count_layers(&mut doc);
+    assert_eq!(
+        (counted.layers, counted.pops),
+        (0, 0),
+        "a clipping containing block bounds its absolutes, so the prune survives"
     );
 }
