@@ -3169,16 +3169,6 @@ impl RinchApp {
     }
 }
 
-/// The drag ghost's contribution to the software renderer's dirty region (#173).
-///
-/// The ghost is blitted into the framebuffer after the document paint, so no
-/// DOM node owns its pixels and `compute_dirty_region` cannot see them. The
-/// frame that stops drawing the ghost therefore has to be told, by hand, to
-/// clear where it used to be.
-///
-/// Gated on `software_shell`, so these run under CI's `cargo test -p rinch
-/// --features embed,theme,clipboard` step — NOT under `cargo test --workspace`,
-/// which unifies `rinch/gpu` on from the GPU examples and turns the cfg off.
 #[cfg(all(test, software_shell))]
 mod resize_vs_scrollbar_tests {
     //! A borderless window's resize inset does not swallow the scrollbar
@@ -3579,6 +3569,16 @@ mod scrollbar_drag_pixel_tests {
     }
 }
 
+/// The drag ghost's contribution to the software renderer's dirty region (#173).
+///
+/// The ghost is blitted into the framebuffer after the document paint, so no
+/// DOM node owns its pixels and `compute_dirty_region` cannot see them. The
+/// frame that stops drawing the ghost therefore has to be told, by hand, to
+/// clear where it used to be.
+///
+/// Gated on `software_shell`, so these run under CI's `cargo test -p rinch
+/// --features embed,theme,clipboard` step — NOT under `cargo test --workspace`,
+/// which unifies `rinch/gpu` on from the GPU examples and turns the cfg off.
 #[cfg(all(test, software_shell))]
 mod drag_ghost_dirty_region_tests {
     use super::*;
