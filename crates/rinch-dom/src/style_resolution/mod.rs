@@ -837,56 +837,79 @@ impl RinchDocument {
             self.tree.nodes[node_id].animation_specs = animation_specs;
 
             if self.tree.transitions_enabled {
-                let anim_specs = self.tree.nodes[node_id].animation_specs.clone();
-                let base_style = self.tree.nodes[node_id].computed_style.clone();
-                let guard = self.tree.guard.read();
+                // css-animations-1 §3: an element that is **not being
+                // rendered** has no animation effect, so a `display: none`
+                // element — or anything inside one — runs nothing (issue
+                // #747). Asked here, where the answer can change an outcome,
+                // and only for a node that either declares an `animation` or
+                // has one running: a node with neither never walks its
+                // ancestor chain. See [`Self::animation_is_rendered`].
+                let has_active = self.tree.active_animations.contains_key(&node_id);
+                if !self.tree.nodes[node_id].animation_specs.is_empty() || has_active {
+                    if Self::animation_is_rendered(&self.tree, node_id, new_style.display) {
+                        let anim_specs = self.tree.nodes[node_id].animation_specs.clone();
+                        let base_style = self.tree.nodes[node_id].computed_style.clone();
+                        let guard = self.tree.guard.read();
 
-                // Extract active_animations temporarily to avoid borrow conflict
-                let mut active_animations = std::mem::take(&mut self.tree.active_animations);
-                crate::animation::start_animations(
-                    &mut active_animations,
-                    node_id,
-                    &anim_specs,
-                    &base_style,
-                    &self.stylist,
-                    &guard,
-                    &self.tree,
-                    current_time_ms,
-                );
-                self.tree.active_animations = active_animations;
-                drop(guard);
+                        // Extract active_animations temporarily to avoid borrow conflict
+                        let mut active_animations =
+                            std::mem::take(&mut self.tree.active_animations);
+                        crate::animation::start_animations(
+                            &mut active_animations,
+                            node_id,
+                            &anim_specs,
+                            &base_style,
+                            &self.stylist,
+                            &guard,
+                            &self.tree,
+                            current_time_ms,
+                        );
+                        self.tree.active_animations = active_animations;
+                        drop(guard);
 
-                // Apply current animation values on top of computed_style
-                if let Some(animations) = self.tree.active_animations.get(&node_id) {
-                    for anim in animations {
-                        if let crate::animation::AnimationResult::Values(values) =
-                            anim.values_at(current_time_ms)
-                        {
-                            for (prop, value) in &values {
-                                apply_value_to_style(
-                                    &mut self.tree.nodes[node_id].computed_style,
-                                    *prop,
-                                    value,
-                                );
+                        // Apply current animation values on top of computed_style
+                        if let Some(animations) = self.tree.active_animations.get(&node_id) {
+                            for anim in animations {
+                                if let crate::animation::AnimationResult::Values(values) =
+                                    anim.values_at(current_time_ms)
+                                {
+                                    for (prop, value) in &values {
+                                        apply_value_to_style(
+                                            &mut self.tree.nodes[node_id].computed_style,
+                                            *prop,
+                                            value,
+                                        );
+                                    }
+                                }
                             }
                         }
+                    } else {
+                        // Not rendered: nothing starts, and anything this node
+                        // was already running stops. The subtree walk below
+                        // catches descendants whose own cascade does not run.
+                        self.tree.active_animations.remove(&node_id);
                     }
                 }
             }
 
             // An element that **stops** being rendered has its transitions
             // cancelled, and so does everything under it (css-transitions-1 §3,
-            // issue #703). It has to descend: a descendant's own cascade need
+            // issue #703) — and its animations with them (css-animations-1 §3,
+            // issue #747). It has to descend: a descendant's own cascade need
             // not run at all when an ancestor is hidden — nothing about the
             // descendant's own style changed — so this cannot be a per-node
-            // check in the gate above. Guarded on the map being non-empty,
-            // which is the usual state, so an app with nothing transitioning
-            // pays nothing for the walk.
+            // check in the gate above. Each half is guarded on its own map
+            // being non-empty, which is the usual state, so an app with nothing
+            // running pays nothing for either walk.
             if !matches!(old_display, crate::computed_style::DisplayValue::None)
                 && matches!(new_style.display, crate::computed_style::DisplayValue::None)
-                && !self.tree.active_transitions.is_empty()
             {
-                self.cancel_transitions_in_subtree(node_id);
+                if !self.tree.active_transitions.is_empty() {
+                    self.cancel_transitions_in_subtree(node_id);
+                }
+                if !self.tree.active_animations.is_empty() {
+                    self.cancel_animations_in_subtree(node_id);
+                }
             }
 
             // Reset scroll offset when an element transitions from display:none
@@ -897,6 +920,22 @@ impl RinchDocument {
                 && !matches!(new_style.display, crate::computed_style::DisplayValue::None)
             {
                 self.tree.nodes[node_id].scroll_offset = (0.0, 0.0);
+
+                // …and a subtree that starts being rendered again gets its
+                // animations back, from t=0 (issue #747). This node's own were
+                // restarted by the block above — the walk is for its
+                // descendants, whose cascade this pass need not run at all: an
+                // inline `display` write invalidates only the node it was
+                // written to (`invalidate_inline_style`), so a panel un-hidden
+                // that way re-cascades the panel and nothing under it. Without
+                // this the drop above would be one-way and a `Loader` shown
+                // again would simply never spin. See
+                // [`Self::restart_animations_in_subtree`].
+                if self.tree.transitions_enabled
+                    && Self::ancestors_are_rendered(&self.tree, node_id, &[])
+                {
+                    self.restart_animations_in_subtree(node_id, current_time_ms);
+                }
             }
 
             // Mark node as styled so future changes can trigger transitions
@@ -1193,6 +1232,13 @@ impl RinchDocument {
     /// then look flat for the wrong reason. And the comparison has to be against
     /// the walk *stubbed*, not against `main`: deleting the gate changes which
     /// transitions start, which changes the work downstream of it.
+    ///
+    /// The numbers above were taken before the walk had a second caller. It is
+    /// [`Self::ancestors_are_rendered`] now, shared with
+    /// [`Self::animation_is_rendered`] (#747), which has its own site and its
+    /// own guard — a node that declares no `animation` and has none running
+    /// never walks either — so this function's own cost is unchanged; what the
+    /// *pass* costs is the sum of two independently guarded sets of nodes.
     fn is_rendered_for_transition(
         tree: &NodeTree,
         node_id: usize,
@@ -1204,6 +1250,28 @@ impl RinchDocument {
         if matches!(old_display, DisplayValue::None) || matches!(new_display, DisplayValue::None) {
             return false;
         }
+        Self::ancestors_are_rendered(tree, node_id, was_hidden)
+    }
+
+    /// Whether every ancestor of `node_id` is being rendered — the walk half of
+    /// [`Self::is_rendered_for_transition`], shared with the animation gate.
+    ///
+    /// `display` does not inherit, so this cannot be read off one field: a box
+    /// under a hidden wrapper computes `display: block` and says nothing about
+    /// it. The chain is read from `computed_style`, which for an ancestor
+    /// already restyled on this pass holds its **new** display (the cascade
+    /// pushes parents before children).
+    ///
+    /// `was_hidden` names the nodes this cascade found hidden **before** the
+    /// change, and it is what makes the two callers different questions rather
+    /// than one. A transition asks "was this being rendered *before* the
+    /// change", so an ancestor un-hidden on this same pass must still count as
+    /// hidden — pass the list. An animation asks "is this being rendered
+    /// *now*", which the ancestors' post-cascade `display` answers on its own —
+    /// pass `&[]`, or an ancestor that has just been shown would refuse the
+    /// animation it is meant to be restarting.
+    fn ancestors_are_rendered(tree: &NodeTree, node_id: usize, was_hidden: &[usize]) -> bool {
+        use crate::computed_style::DisplayValue;
         let mut current = tree.nodes.get(node_id).and_then(|n| n.parent);
         while let Some(id) = current {
             let Some(node) = tree.nodes.get(id) else {
@@ -1218,16 +1286,43 @@ impl RinchDocument {
         true
     }
 
+    /// Whether `node_id` may run a `@keyframes` animation after this cascade.
+    ///
+    /// css-animations-1 §3: "the element is not being rendered" means no
+    /// animation effect — the animation does not merely stop being *visible*,
+    /// it stops existing, and showing the element again starts a new one from
+    /// the beginning. That is `display: none` on the element itself or on any
+    /// ancestor; `visibility: hidden` is **not** it (such a box is generated,
+    /// laid out and rendered, merely invisible), and neither is a box scrolled
+    /// or clipped out of view.
+    ///
+    /// The question is asked of the state **after** the cascade — "is it
+    /// rendered now" — which is why there is no `old_display` parameter and no
+    /// `was_hidden` list. That is the whole difference from
+    /// [`Self::is_rendered_for_transition`], whose §3 clause is about the
+    /// before-change style and therefore about the state *before*.
+    fn animation_is_rendered(
+        tree: &NodeTree,
+        node_id: usize,
+        new_display: crate::computed_style::DisplayValue,
+    ) -> bool {
+        if matches!(new_display, crate::computed_style::DisplayValue::None) {
+            return false;
+        }
+        Self::ancestors_are_rendered(tree, node_id, &[])
+    }
+
     /// Cancel every transition running on `node_id` or anything below it.
     ///
     /// Iterative, like [`RinchDocument::detach_subtree_styles`] — a deep subtree
     /// must not overflow the stack. Unlike that helper this clears **only**
     /// `active_transitions`: `has_been_styled` is left alone because
     /// [`Self::is_rendered_for_transition`] is what refuses a hidden node's
-    /// transitions, and `active_animations` is left alone because a hidden
-    /// element's `@keyframes` animations are a separate deviation with a
-    /// separate blast radius — it decides restart semantics this does not have
-    /// to (issue #747).
+    /// transitions, and `active_animations` belongs to
+    /// [`Self::cancel_animations_in_subtree`], because the two are dropped
+    /// under different conditions — a transition is cancelled *and never restarted*,
+    /// an animation is cancelled and started afresh when the element is
+    /// rendered again.
     fn cancel_transitions_in_subtree(&mut self, node_id: usize) {
         let mut stack = vec![node_id];
         while let Some(id) = stack.pop() {
@@ -1236,6 +1331,144 @@ impl RinchDocument {
                 stack.extend(node.children.iter().copied());
             }
         }
+    }
+
+    /// Drop every animation running on `node_id` or anything below it, because
+    /// the subtree has stopped being rendered (issue #747).
+    ///
+    /// The whole subtree, unconditionally: everything under a `display: none`
+    /// box is not being rendered either, whatever its own `display` computes to.
+    ///
+    /// Dropping rather than parking is what the spec asks for — a hidden
+    /// element has no animation effect at all, and is shown again with a *new*
+    /// animation from t=0 — and it is also the only thing the desktop shell can
+    /// see: `rinch/src/app/event_dispatch.rs` decides whether to schedule
+    /// another frame from `!tree.active_animations.is_empty()`, so an entry
+    /// parked here would keep an app rendering at full rate with nothing on
+    /// screen moving. [`Self::restart_animations_in_subtree`] is the other half.
+    fn cancel_animations_in_subtree(&mut self, node_id: usize) {
+        let mut stack = vec![node_id];
+        while let Some(id) = stack.pop() {
+            self.tree.active_animations.remove(&id);
+            if let Some(node) = self.tree.nodes.get(id) {
+                stack.extend(node.children.iter().copied());
+            }
+        }
+    }
+
+    /// Start the animations of every **descendant** of `node_id` that is being
+    /// rendered again, from t=0 (issue #747).
+    ///
+    /// The mirror of [`Self::cancel_animations_in_subtree`], and it has to
+    /// exist rather than being left to the ordinary cascade, because a node
+    /// shown by an *ancestor* need not be re-cascaded at all: `set_style`'s
+    /// `invalidate_inline_style` drops the cached Stylo data of the node it was
+    /// written to and of nothing else, so a panel un-hidden with
+    /// `set_style("display", "block")` re-cascades the panel alone. Without
+    /// this the drop would be one-way — a `Loader` in a closed panel would stop
+    /// spinning on the way in and never start again on the way out.
+    ///
+    /// `node_id` itself is deliberately **not** walked: it is being cascaded
+    /// right now, and the animation block in `apply_stylo_styles_to_taffy` has
+    /// already restarted it by the time this runs.
+    ///
+    /// Restart, not resume: `start_animations` finds no existing entry of that
+    /// name (the hide dropped it) and mints one with `start_time_ms = now`,
+    /// which is what a browser does. An animation that is somehow *still*
+    /// running under here — a subtree hidden and shown within one cascade — is
+    /// found by name and kept at its own start time rather than jerked back to
+    /// zero.
+    ///
+    /// The walk stops at any box whose own `display` is `none`: that one is
+    /// still not being rendered, and neither is anything under it. It does
+    /// **descend** past the direct children, which needs saying because nothing
+    /// forces it to — a version that did not passed the whole suite until
+    /// `showing_a_panel_restarts_a_spinner_three_levels_down` was written for it,
+    /// and every real overlay is several levels deep.
+    ///
+    /// # A staleness this inherits rather than introduces
+    ///
+    /// The walk runs on the **parent's** cascade, and the cascade pushes parents
+    /// before children — so every descendant it visits is still carrying the
+    /// `computed_style` it had *before* this pass. `start_animations` extracts
+    /// keyframe stops from that, so an `em`, `rem` or `currentcolor` in a
+    /// keyframe resolves against the stale basis, and the find-by-name in
+    /// `start_animations` then keeps those stops when the descendant's own
+    /// cascade runs a moment later. Measured with `width: 1em` keyframes on a box
+    /// whose `font-size` goes 10px → 40px in the same class write that un-hides
+    /// its wrapper: stops come out `10..100` where `40..400` is right.
+    ///
+    /// It is not a regression — `main` was equally stale, by never dropping the
+    /// entry at all — but this walk does foreclose the correct answer the
+    /// per-node path would have reached on the `set_attribute` route. The root
+    /// cause is that `start_animations` never re-extracts stops for a name it
+    /// already knows, which is older and wider than this function.
+    ///
+    /// # Cost
+    ///
+    /// O(subtree), on a cascade that has just changed a box from `none` to
+    /// rendered — which forces a full layout and paint of that same subtree, so
+    /// the walk is not the expensive half of what this change costs. There is
+    /// deliberately no "does anything under here animate" guard, because there
+    /// is no answer to that question cheaper than the walk itself.
+    fn restart_animations_in_subtree(&mut self, node_id: usize, current_time_ms: f64) {
+        use crate::computed_style::DisplayValue;
+
+        let mut stack: Vec<usize> = match self.tree.nodes.get(node_id) {
+            Some(node) => node.children.to_vec(),
+            None => return,
+        };
+        let mut active_animations = std::mem::take(&mut self.tree.active_animations);
+
+        while let Some(id) = stack.pop() {
+            let Some(node) = self.tree.nodes.get(id) else {
+                continue;
+            };
+            if matches!(node.computed_style.display, DisplayValue::None) {
+                continue;
+            }
+            stack.extend(node.children.iter().copied());
+            if node.animation_specs.is_empty() {
+                continue;
+            }
+
+            let specs = self.tree.nodes[id].animation_specs.clone();
+            let base_style = self.tree.nodes[id].computed_style.clone();
+            {
+                let guard = self.tree.guard.read();
+                crate::animation::start_animations(
+                    &mut active_animations,
+                    id,
+                    &specs,
+                    &base_style,
+                    &self.stylist,
+                    &guard,
+                    &self.tree,
+                    current_time_ms,
+                );
+            }
+
+            // The same "apply the first sample now" the per-node path does, so
+            // the frame that shows the box shows it at the animation's t=0
+            // rather than at its base style for one tick.
+            if let Some(animations) = active_animations.get(&id) {
+                for anim in animations {
+                    if let crate::animation::AnimationResult::Values(values) =
+                        anim.values_at(current_time_ms)
+                    {
+                        for (prop, value) in &values {
+                            crate::transition::apply_value_to_style(
+                                &mut self.tree.nodes[id].computed_style,
+                                *prop,
+                                value,
+                            );
+                        }
+                    }
+                }
+            }
+        }
+
+        self.tree.active_animations = active_animations;
     }
 
     /// Get a monotonic timestamp in milliseconds for transition timing.
