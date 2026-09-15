@@ -15,6 +15,8 @@ mod component_class_717_tests;
 mod component_prop_707_tests;
 #[cfg(test)]
 mod component_radius_tests;
+#[cfg(test)]
+mod css_hook_760_tests;
 #[cfg(feature = "debug")]
 mod debug_commands;
 #[cfg(test)]

@@ -47,7 +47,7 @@
 //! # The overlays that cannot be opened by flipping a signal
 //!
 //! `Modal`, `Notification`, `DropdownMenu`, `Popover` and `Drawer` all take an
-//! `opened_fn` and toggle a class or an inline style from one effect. `Select`,
+//! `opened_fn` and toggle a class from one effect. `Select`,
 //! `Tabs` and `Tooltip` keep their open state in a `Signal` created *inside*
 //! `render` and never handed out, so a fixture has to go in through the handler
 //! the component registered — `dispatch_event` on the node's `data-rid` /
@@ -378,9 +378,16 @@ fn notification_refuses_nothing() {
     );
 }
 
-/// `DropdownMenu` reveals its panel by rewriting the panel's inline `style` to
-/// `display: block`, and its backdrop the same way. The `display` route is the
-/// one §3 refuses, whether it arrives from a class or an inline write.
+/// `DropdownMenu` reveals its panel — and its backdrop — by toggling
+/// `rinch-dropdown-menu--opened` on the root, which the sheet turns into
+/// `display: block` on both (issue #760; it was an inline `style` rewrite per
+/// panel before that). The `display` route is the one §3 refuses, whether it
+/// arrives from a class or an inline write, which is why moving it into the
+/// sheet changes nothing this fixture measures.
+///
+/// It is legitimate only while nothing on the panel declares a `transition`;
+/// `css_hook_760_tests::the_dropdown_panel_declares_no_transition_so_a_display_reveal_is_legitimate`
+/// is the assertion that says so, and fails the day one is added.
 #[test]
 fn dropdown_menu_refuses_nothing() {
     let opened = Signal::new(false);
@@ -510,12 +517,20 @@ fn select_animates_its_chevron() {
     );
 }
 
-/// `Tabs` reveals a panel with an inline `display` write, driven by an internal
-/// signal, so the fixture dispatches the tab button's handler.
+/// `Tabs` reveals a panel by taking the `hidden` attribute off it, driven by an
+/// internal signal, so the fixture dispatches the tab button's handler. (It was
+/// an inline `display` write until #760, which is when `.rinch-tabs__panel[hidden]`
+/// stopped being a rule nothing matched.)
 ///
 /// The panel itself declares no `transition`. The rule is what catches one being
 /// added later — a fade-in on `.rinch-tabs__panel` would be refused exactly as
 /// the Drawer's slide was.
+///
+/// This entry stopped being vacuous with #760: the same pass now moves the tab
+/// button's `color` and its underline's `background-color`, both of which the
+/// sheet declares a `transition` for, so the rule has something real to check.
+/// The positive half — that those transitions actually *run* — is
+/// `css_hook_760_tests::the_tab_indicator_transition_runs_on_a_switch`.
 #[test]
 fn tabs_refuses_nothing_when_a_panel_is_revealed() {
     let mut app = mount(move |scope| {
@@ -569,8 +584,10 @@ fn tabs_refuses_nothing_when_a_panel_is_revealed() {
     );
 }
 
-/// `Tooltip` shows its content with an inline `display: block`, driven by an
-/// internal `hovered` signal that only its own `data-onenter` handler writes.
+/// `Tooltip` shows its content by adding `rinch-tooltip--opened` to its root,
+/// driven by an internal `hovered` signal that only its own `data-onenter`
+/// handler writes. (It was an inline `display: block` on the content until
+/// #760, when the class stopped being one nothing matched.)
 ///
 /// `styles/tooltip.rs` declares **no** `transition` at all today, so the audit
 /// leans on the rest of the document for its vacuity guard and on the reveal
@@ -614,9 +631,9 @@ fn tooltip_refuses_nothing_when_it_is_revealed() {
          it so that adding one is a decision rather than an accident. If you are \
          adding one — a fade on `.rinch-tooltip__content` is the obvious \
          candidate — the content must stop being revealed with `display` first \
-         (`tooltip.rs` writes `display: none` / `display: block` inline), or \
-         css-transitions-1 §3 will refuse it exactly as it refused the Drawer's \
-         slide in #751. Then swap this assertion for \
+         (`styles/tooltip.rs` hides it and `.rinch-tooltip--opened` shows it), \
+         or css-transitions-1 §3 will refuse it exactly as it refused the \
+         Drawer's slide in #751. Then swap this assertion for \
          `assert_something_declares_a_transition`."
     );
 }

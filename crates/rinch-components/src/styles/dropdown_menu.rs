@@ -11,8 +11,21 @@ pub fn styles() -> String {
     display: inline-block;
 }
 
-/* Dropdown — visibility controlled by inline styles (Stylo limitation) */
+/* Dropdown.
+
+   Hidden here and shown by `.rinch-dropdown-menu--opened` below, which is the
+   class `DropdownMenu`'s `opened_fn` effect toggles on the root. Until #760 the
+   class matched nothing and the reveal was an inline `style` rewrite on every
+   child after the first; the class was emitted all along, so anyone who found
+   it in the class list and styled it got silence.
+
+   `display` rather than `visibility`/`opacity` because nothing on the panel
+   declares a `transition`: css-transitions-1 §3 starts nothing for a property
+   that retargets in the same pass its subtree stops being `display: none`, so
+   the day this sheet grows a fade the panel has to stay rendered first, the way
+   `styles/popover.rs` does it (#751). */
 .rinch-dropdown-menu__dropdown {
+    display: none;
     position: absolute;
     background-color: var(--rinch-color-body);
     border: 1px solid var(--rinch-color-border, var(--rinch-color-gray-3));
@@ -166,6 +179,51 @@ pub fn styles() -> String {
     bottom: 0;
     z-index: calc(var(--rinch-dropdown-menu-z-index, 100) - 1);
     display: none;
+}
+
+/* The open state (#760). One class on the root reveals both boxes, and it is
+   the class `class_string` has always emitted. Each of these outranks the
+   hidden rules above, so it wins whatever the source order.
+
+   The two boxes need two different selectors, because they are two different
+   shapes.
+
+   The **backdrop** is appended to the root by `DropdownMenu::render` itself, so
+   it is always a direct child and a child combinator reaches exactly this
+   menu's own. A descendant rule would also show the backdrop of a closed menu
+   nested in an open one's panel — fixed, hoisted above the outer items, taking
+   every tap meant for them and running the inner `on_close` (review of #774).
+
+   The **panel** is a caller's child, and it is NOT always a direct child.
+   `rsx!` puts a `display: contents` wrapper in front of it on its own for a
+   `{Option<NodeHandle>}` child, for every branch of an `if` after the first,
+   for a component with a reactive prop inside an `if`, and for a helper
+   component whose body is control flow — and a caller may wrap it in a `div`.
+   Spelled with `>`, a menu composed any of those ways never opened (second
+   review of #774, desktop and Chrome). So the panel rule is a descendant rule
+   with an exclusion: show a panel under an open root, **unless a closed menu
+   root sits between some open ancestor and the panel**. That keeps a closed
+   menu nested in an open one's panel closed, and opens a panel behind any
+   wrapper.
+
+   **Known limit, measured:** an open menu C inside the *target* (trigger) of a
+   closed menu B that is itself inside an open menu A stays hidden — B is
+   closed and sits between A and C's panel, though C's own root is open. The
+   exact alternative is a depth-bounded list of `>` chains, which is silent past
+   its depth instead. `css_hook_760_tests::known_limit_…` pins the limit.
+
+   "Inside A" is either half of A, its panel or its target, and a stack of
+   closed menus in triggers is the same limit (third review of #774).
+
+   Specificity: the panel rule is (0,6,0) — the `:not()` counts its argument —
+   and the hidden rule above is (0,1,0). So an author `display` on
+   `.rinch-dropdown-menu__dropdown` that beats (0,1,0) — a two-class rule, or an
+   inline `style:` — keeps the panel visible while the menu is **closed** (the
+   menu never hides), and loses to the open rule while it is open unless it is
+   more specific still. The guide tells callers to put layout on a child. */
+.rinch-dropdown-menu--opened .rinch-dropdown-menu__dropdown:not(.rinch-dropdown-menu--opened .rinch-dropdown-menu:not(.rinch-dropdown-menu--opened) .rinch-dropdown-menu__dropdown),
+.rinch-dropdown-menu--opened > .rinch-dropdown-menu__backdrop {
+    display: block;
 }
 
 /* Radius */

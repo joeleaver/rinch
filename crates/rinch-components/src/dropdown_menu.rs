@@ -11,6 +11,15 @@ use rinch_core::reactive::Effect;
 use rinch_tabler_icons::{TablerIcon, TablerIconStyle, render_tabler_icon};
 use std::rc::Rc;
 
+/// The one class the `opened_fn` effect owns.
+///
+/// `styles/dropdown_menu.rs` keeps `.rinch-dropdown-menu__dropdown` and
+/// `.rinch-dropdown-menu__backdrop` at `display: none` and shows both from
+/// `.rinch-dropdown-menu--opened`, so the class *is* the show/hide. It used to
+/// be emitted by [`DropdownMenu::class_string`] and matched by nothing at all,
+/// while the reveal was an inline `style` rewrite on each panel — issue #760.
+const OPENED_CLASS: &str = "rinch-dropdown-menu--opened";
+
 /// Thread-local signal that menu containers (ContextMenu, DropdownMenu) set
 /// before their children render. DropdownMenuItem reads it to close the menu
 /// on item click.
@@ -234,7 +243,7 @@ impl DropdownMenu {
         }
 
         if self.opened {
-            classes.push("rinch-dropdown-menu--opened");
+            classes.push(OPENED_CLASS);
         }
 
         classes.join(" ")
@@ -247,12 +256,6 @@ impl Component for DropdownMenu {
         // the thread-local so it doesn't leak to siblings or outer scopes.
         clear_menu_close_signal();
 
-        let is_opened = if let Some(ref opened_fn) = self.opened_fn {
-            opened_fn()
-        } else {
-            self.opened
-        };
-
         let mut style_parts = Vec::new();
         if let Some(offset) = self.offset {
             style_parts.push(format!("--rinch-dropdown-menu-offset: {}px", offset));
@@ -260,12 +263,17 @@ impl Component for DropdownMenu {
         if !self.width.is_empty() {
             style_parts.push(format!("--rinch-dropdown-menu-width: {}", self.width));
         }
-        // z_index (#474): an inherited custom property, for two reasons beyond
-        // the dropdown being a separate component — the backdrop's level is
-        // derived from the panel's in CSS, so one number moves both and keeps
-        // the backdrop below the items; and the inline `style` of both of them
-        // is rewritten wholesale by the visibility effects below, which would
-        // drop an inline `z-index` the first time the menu opened.
+        // z_index (#474): an inherited custom property, because the dropdown is a
+        // separate component and because the backdrop's level is derived from
+        // the panel's in CSS — one number moves both and keeps the backdrop
+        // below the items.
+        //
+        // It had a third reason until #760: the panel's and the backdrop's
+        // inline `style` were rewritten wholesale by the visibility effects, so
+        // an inline `z-index` on either would have been dropped the first time
+        // the menu opened. Those effects are gone — the reveal is a class on the
+        // root now — so that hazard is gone with them, and the custom property
+        // stays for the two reasons above.
         if let Some(z) = self.z_index {
             style_parts.push(format!("--rinch-dropdown-menu-z-index: {}", z));
         }
@@ -277,40 +285,43 @@ impl Component for DropdownMenu {
             root.set_attribute("style", &style_parts.join("; "));
         }
 
-        // Collect dropdown content children (everything after the first child/target)
-        let mut dropdown_handles = Vec::new();
-        for (i, child) in children.iter().enumerate() {
+        for child in children {
             root.append_child(child);
-            if i > 0 {
-                dropdown_handles.push(child.clone());
-            }
         }
 
-        // Set initial inline visibility on dropdown children.
-        // Use display:none to hide — visibility/pointer-events don't propagate
-        // reliably to descendants through Stylo's style recomputation.
-        let vis_style = if is_opened {
-            "display: block"
-        } else {
-            "display: none"
-        };
-        for handle in &dropdown_handles {
-            handle.set_attribute("style", vis_style);
-        }
-
-        // If reactive opened_fn is provided, create an Effect to toggle visibility
-        // and reposition near the viewport edge.
+        // If reactive opened_fn is provided, create an Effect to toggle the
+        // `--opened` class and reposition near the viewport edge.
+        //
+        // The class, not an inline `display` write per panel (issue #760):
+        // `styles/dropdown_menu.rs` hides `.rinch-dropdown-menu__dropdown` and
+        // `.rinch-dropdown-menu__backdrop` and shows both under
+        // `.rinch-dropdown-menu--opened`. What it costs is that "the dropdown"
+        // is now named by its class rather than by its position among the
+        // children — a caller who passes some *other* element as a second child
+        // gets an element that is always visible, where the positional write
+        // hid it. That is the documented composition (`DropdownMenuTarget` +
+        // `DropdownMenuDropdown`).
+        //
+        // The panel does not have to be a direct child of this root: `rsx!`
+        // often wraps it (an `{Option}`, an `else if` branch, a helper whose
+        // body is an `if`), and the sheet's panel rule reaches through any
+        // wrapper while still keeping a closed menu nested in this one's panel
+        // closed. Its one limit, and why it is spelled the way it is, are in
+        // the note above that rule. (This is no longer the shape `Popover` has:
+        // its rule is still a plain descendant one, wrapper-tolerant but opening
+        // nested popovers too — issue #778.)
+        //
+        // The effect adds and removes the one class rather than rewriting
+        // `class` (issue #717): the rsx `class:` prop is merged onto the
+        // returned handle *after* `render` returns.
         if let Some(ref opened_fn) = self.opened_fn {
             let opened_fn_vis = opened_fn.clone();
-            let dropdown_handles_vis = dropdown_handles.clone();
+            let root_vis = root.clone();
             Effect::new(move || {
-                let style = if opened_fn_vis() {
-                    "display: block"
+                if opened_fn_vis() {
+                    root_vis.add_class(OPENED_CLASS);
                 } else {
-                    "display: none"
-                };
-                for handle in &dropdown_handles_vis {
-                    handle.set_attribute("style", style);
+                    root_vis.remove_class(OPENED_CLASS);
                 }
             });
 
@@ -400,25 +411,10 @@ impl Component for DropdownMenu {
         // long note above `.rinch-dropdown-menu__backdrop` says why.
         if self.close_on_click_outside && self.on_close.is_some() {
             let backdrop = rinch_macros::rsx! { div { class: "rinch-dropdown-menu__backdrop" } };
-            let initial = if is_opened {
-                "display: block"
-            } else {
-                "display: none"
-            };
-            backdrop.set_attribute("style", initial);
-
-            if let Some(ref opened_fn) = self.opened_fn {
-                let backdrop_c = backdrop.clone();
-                let f = opened_fn.clone();
-                Effect::new(move || {
-                    let style = if f() {
-                        "display: block"
-                    } else {
-                        "display: none"
-                    };
-                    backdrop_c.set_attribute("style", style);
-                });
-            }
+            // No inline `display` here and no effect of its own: the sheet's
+            // `.rinch-dropdown-menu--opened > .rinch-dropdown-menu__backdrop`
+            // rule shows it from the root's class, which the effect above keeps
+            // in step with `opened_fn` (issue #760).
 
             let cb = self.on_close.clone().unwrap();
             let handler_id = __scope.register_handler(move || cb.invoke());
