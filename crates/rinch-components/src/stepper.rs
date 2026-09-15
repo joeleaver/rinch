@@ -486,7 +486,7 @@ fn settle_step_icon(
         // in the step's props, which no patch of the rendered tree can recover,
         // so it is parked under its own key against a later move (issue #716).
         if let Some(live) = &live {
-            if has.iter().any(|k| *k == live_key) {
+            if has.contains(&live_key) {
                 let parked = scope.create_element("span");
                 parked.set_attribute("class", ICON_ALT_CLASS);
                 parked.set_attribute(ICON_ALT_ATTR, &live_key);

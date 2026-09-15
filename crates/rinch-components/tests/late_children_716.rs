@@ -699,7 +699,7 @@ fn a_step_displaced_out_of_completed_gets_its_own_glyph_back() {
         rsx! {
             div {
                 Stepper { active: 1u32,
-                    for it in items.get() { StepperStep { key: it, icon: TablerIcon::Home } }
+                    for it in items.get() { StepperStep { key: it, label: it, icon: TablerIcon::Home } }
                 }
             }
         }

@@ -223,9 +223,11 @@ mod tests {
         NodeHandle::new(id, weak)
     }
 
-    /// A counter an observer bumps, with the ids it was handed.
-    fn recorder() -> (Rc<RefCell<Vec<NodeId>>>, Rc<RefCell<Vec<NodeId>>>) {
-        let seen = Rc::new(RefCell::new(Vec::new()));
+    /// The ids an observer was handed, shared between the test and the closure.
+    type Seen = Rc<RefCell<Vec<NodeId>>>;
+
+    fn recorder() -> (Seen, Seen) {
+        let seen: Seen = Rc::new(RefCell::new(Vec::new()));
         (seen.clone(), seen)
     }
 
