@@ -1426,6 +1426,48 @@ fn a_tooltip_behind_an_rsx_wrapper_still_opens() {
     );
 }
 
+/// An **open** menu nested in an open menu's panel shows its panel — a submenu.
+///
+/// The other half of the exclusion in the panel rule: only a *closed* menu root
+/// between an open ancestor and a panel hides it. Killed by an exclusion that
+/// forgets the `:not(.rinch-dropdown-menu--opened)` on that intermediate root,
+/// which hides every nested panel whatever state its own menu is in — and which
+/// every other fixture here survives, because each nests a closed menu or none.
+#[test]
+fn an_open_dropdown_menu_nested_in_an_open_ones_panel_is_shown() {
+    let app = mount(move |scope| {
+        let inner_target = DropdownMenuTarget.render(scope, &[]);
+        let inner_dropdown = DropdownMenuDropdown.render(scope, &[]);
+        let inner = DropdownMenu {
+            opened: true,
+            ..Default::default()
+        }
+        .render(scope, &[inner_target, inner_dropdown]);
+        inner.set_attribute("data-probe", "inner");
+        let outer_target = DropdownMenuTarget.render(scope, &[]);
+        let outer_dropdown = DropdownMenuDropdown.render(scope, &[inner]);
+        let outer = DropdownMenu {
+            opened: true,
+            ..Default::default()
+        }
+        .render(scope, &[outer_target, outer_dropdown]);
+        outer.set_attribute("data-probe", "outer");
+        outer
+    });
+    let outer = probe(&app, "outer");
+    let inner = probe(&app, "inner");
+    let outer_panel = child_with_class(&app, outer, "rinch-dropdown-menu__dropdown");
+    let inner_panel = child_with_class(&app, inner, "rinch-dropdown-menu__dropdown");
+    assert!(
+        rendered(&app, outer_panel),
+        "control: the outer menu is open"
+    );
+    assert!(
+        rendered(&app, inner_panel),
+        "an open menu inside an open menu's panel shows its own panel"
+    );
+}
+
 /// **The known limit of the panel rule, recorded.** The rule shows a panel under
 /// an open root unless a *closed* menu root sits between some open ancestor and
 /// the panel. That is exact for one level of nesting either way, and wrong in
