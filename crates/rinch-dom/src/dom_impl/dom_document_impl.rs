@@ -1115,6 +1115,10 @@ impl RinchDocument {
     /// later declaration of a property replaces the earlier one **in place**,
     /// keeping every other declaration where the author wrote it.
     ///
+    /// Property names are matched ASCII case-insensitively, and `properties`
+    /// names go through [`rinch_core::dom::normalize_property_name`] on the way
+    /// in so the caller's spelling meets the attribute's on equal terms (#711).
+    ///
     /// The parse and the join are
     /// [`rinch_core::dom::split_declarations`]/[`serialize_declarations`], the
     /// same pair `rsx!`'s `style:` prop composes with — one parser and one
@@ -1128,7 +1132,8 @@ impl RinchDocument {
     /// CSSOM collapses at the last, which is behaviour rather than spelling as
     /// soon as a shorthand is involved — Chrome 150 computes `left: 4px` for
     /// `inset: 0px; left: 25px; inset: 4px`, and the first position gives
-    /// `25px`.
+    /// `25px`. (The *position* is the last declaration's; the *value* that
+    /// survives is the `!important` one where the two disagree — #711.)
     ///
     /// Order is load-bearing, not cosmetic (#265). `set_styles` parses this
     /// string into the declaration block Stylo cascades, so whatever order
@@ -1161,9 +1166,14 @@ impl RinchDocument {
             .map(|s| split_declarations(s))
             .unwrap_or_default();
         for &(property, value) in properties {
-            match decls.iter_mut().find(|(k, _)| k == property) {
+            // The caller's name goes through the same rule the parsed ones did
+            // (#711): CSSOM lowercases a non-custom name at both ends, so
+            // `set_style("COLOR", …)` overwrites an existing `color` rather
+            // than declaring the property a second time.
+            let property = rinch_core::dom::normalize_property_name(property);
+            match decls.iter_mut().find(|(k, _)| k.as_str() == &*property) {
                 Some(slot) => slot.1 = value.to_string(),
-                None => decls.push((property.to_string(), value.to_string())),
+                None => decls.push((property.into_owned(), value.to_string())),
             }
         }
         serialize_declarations(&decls)

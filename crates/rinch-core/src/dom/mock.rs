@@ -292,14 +292,17 @@ impl DomDocument for MockDomDocument {
     /// now agrees with desktop declaration for declaration, quoted and
     /// bracketed values included. A property already declared is replaced
     /// **where it stands**, matching CSSOM's `setProperty` and desktop's
-    /// `dom_tests::set_style_replaces_a_declaration_in_place`.
+    /// `dom_tests::set_style_replaces_a_declaration_in_place`, and `property`
+    /// is matched ASCII case-insensitively unless it is a custom property
+    /// ([`normalize_property_name`](crate::dom::normalize_property_name), #711).
     fn set_style(&mut self, node: NodeId, property: &str, value: &str) {
         if let Some(n) = self.nodes.get_mut(&node) {
             let style = n.attributes.entry("style".to_string()).or_default();
             let mut decls = super::split_declarations(style);
-            match decls.iter_mut().find(|(k, _)| k == property) {
+            let property = super::normalize_property_name(property);
+            match decls.iter_mut().find(|(k, _)| k.as_str() == &*property) {
                 Some(slot) => slot.1 = value.to_string(),
-                None => decls.push((property.to_string(), value.to_string())),
+                None => decls.push((property.into_owned(), value.to_string())),
             }
             *style = super::serialize_declarations(&decls);
         }
@@ -593,6 +596,36 @@ mod tests {
         doc.set_style(div, "gap", "4px");
         doc.set_style(div, "color", "blue");
         assert_eq!(style_of(&doc, div), "color: blue; gap: 4px");
+    }
+
+    /// `property` is matched ASCII case-insensitively, so the mock composes an
+    /// inline style the way desktop and a browser do (#711). The `gap` is here
+    /// for the same reason as above — without it, folding and appending give
+    /// the same string.
+    ///
+    /// Kills the mutant that drops `normalize_property_name` from
+    /// `MockDomDocument::set_style`.
+    #[test]
+    fn set_style_matches_a_property_name_case_insensitively() {
+        let mut doc = MockDomDocument::new();
+        let div = doc.create_element("div");
+        doc.set_attribute(div, "style", "color: red; gap: 4px");
+        doc.set_style(div, "COLOR", "blue");
+        assert_eq!(style_of(&doc, div), "color: blue; gap: 4px");
+    }
+
+    /// …but a **custom** property is compared exactly, so these are two.
+    /// Chrome 150: `setProperty("--Foo", "3px")` on a block holding
+    /// `--foo: 2px` gives `cssText === "--foo: 2px; --Foo: 3px;"`.
+    ///
+    /// Kills the mutant that lowercases unconditionally.
+    #[test]
+    fn set_style_keeps_two_custom_properties_that_differ_only_in_case() {
+        let mut doc = MockDomDocument::new();
+        let div = doc.create_element("div");
+        doc.set_attribute(div, "style", "--foo: 2px");
+        doc.set_style(div, "--Foo", "3px");
+        assert_eq!(style_of(&doc, div), "--foo: 2px; --Foo: 3px");
     }
 
     /// And it goes through the workspace's one inline-style parser (#670), so a

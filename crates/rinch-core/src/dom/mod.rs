@@ -83,7 +83,9 @@ mod render_scope;
 pub mod traits;
 
 pub use bool_attr::{attr_is_truthy, data_attr_is_on, is_boolean_attribute};
-pub use inline_style::{StyleProp, serialize_declarations, split_declarations};
+pub use inline_style::{
+    StyleProp, normalize_property_name, serialize_declarations, split_declarations,
+};
 pub use render_scope::*;
 pub use traits::*;
 

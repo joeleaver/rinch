@@ -136,6 +136,11 @@ pub(super) fn paint_text_selection_highlight(
 /// inline-style parser (#670), so a `;` or `:` inside a quoted or bracketed
 /// value is part of that value here too.
 ///
+/// `property` is matched ASCII case-insensitively — unless it is a custom
+/// property, which CSS compares exactly — through the same
+/// [`rinch_core::dom::normalize_property_name`] the parser applies to the names
+/// it reads out (#711).
+///
 /// That also changed what a **duplicate** answers: this used to return the
 /// first matching declaration and now returns the **last**, because the parser
 /// collapses a repeated property there. The new answer is the browser's —
@@ -153,9 +158,10 @@ pub(super) fn get_style_property(node: &Node, property: &str) -> Option<String> 
     } else {
         node.attributes.get("style")?
     };
+    let property = rinch_core::dom::normalize_property_name(property);
     rinch_core::dom::split_declarations(source)
         .into_iter()
-        .find(|(key, _)| key == property)
+        .find(|(key, _)| key.as_str() == &*property)
         .map(|(_, value)| value)
 }
 
@@ -467,6 +473,34 @@ mod tests {
         );
         assert_eq!(get_style_property(&node, "padding").as_deref(), Some("4px"));
         assert_eq!(get_style_property(&node, "color"), None);
+    }
+
+    /// The name the caller asks for is matched ASCII case-insensitively, like
+    /// CSSOM's `getPropertyValue` — but a custom property is matched exactly
+    /// (#711). Both halves are needed: an unconditional lowercase passes the
+    /// first and fails the second.
+    ///
+    /// Kills the mutant that drops `normalize_property_name` from
+    /// `get_style_property`, and the one that applies it to every name.
+    #[test]
+    fn get_style_property_matches_a_name_the_way_css_compares_it() {
+        let guard = style::shared_lock::SharedRwLock::new();
+        let mut node = Node::element(0, "div", guard);
+        node.attributes.insert(
+            "style".to_string(),
+            "USER-SELECT: none; --Foo: 1px; --foo: 2px".to_string(),
+        );
+
+        assert_eq!(
+            get_style_property(&node, "user-select").as_deref(),
+            Some("none")
+        );
+        assert_eq!(
+            get_style_property(&node, "USER-select").as_deref(),
+            Some("none")
+        );
+        assert_eq!(get_style_property(&node, "--Foo").as_deref(), Some("1px"));
+        assert_eq!(get_style_property(&node, "--foo").as_deref(), Some("2px"));
     }
 
     /// A property declared twice answers its **last** value, which is CSSOM's

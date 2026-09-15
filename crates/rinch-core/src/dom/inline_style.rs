@@ -11,6 +11,22 @@
 //! there, last-wins per property, and remembers enough to take them off again
 //! on a re-run without disturbing anyone else's.
 //!
+//! "Per property" is CSS's own notion of one property, not a string match:
+//! names are folded with [`normalize_property_name`], so `COLOR` and `color`
+//! are one and `--Foo` and `--foo` are two (#711).
+//!
+//! **The fold reaches a name iff that name came through the parser.**
+//! `StyleProp`'s memory of what it wrote and the declarations already on the
+//! node both did, so neither restates the rule. A name a caller hands
+//! `set_style` did **not** — it never passes through [`split_declarations`] —
+//! so the three sites that compare one call [`normalize_property_name`]
+//! themselves: `RinchDocument::merged_inline_style`,
+//! `MockDomDocument::set_style` and
+//! `rinch-dom`'s `paint::contenteditable::get_style_property`. A new by-name
+//! consumer has to ask which side its name comes from, and call the function
+//! if the answer is "a caller". Dropping any one of those three calls is a
+//! mutant the suite kills, which is the same statement in a form that fails.
+//!
 //! It works by rewriting the whole attribute from its own parsed contents,
 //! rather than by handing each declaration to
 //! [`set_style`](super::NodeHandle::set_style). That is one code path for both
@@ -47,8 +63,36 @@ use super::NodeHandle;
 /// serialisation difference over an identical token stream). See
 /// [`strip_comments`].
 ///
+/// **Property names are compared ASCII case-insensitively** and come out
+/// lowercased, because that is what CSS does with them — `COLOR` and `color`
+/// are one property, and `MARGIN-left: 7px` serialises through Chrome 150's
+/// CSSOM as `margin-left: 7px` (#711). A **custom property** is the exception
+/// and stays exactly as written: `--Foo` and `--foo` are two properties, in
+/// Chrome and here. See [`normalize_property_name`].
+///
 /// A property declared twice collapses the way CSSOM collapses it: the earlier
-/// declaration is dropped and the **last** one keeps its own position.
+/// declaration is dropped and the **last** one keeps its own position — but
+/// the value that survives is the **important** one where the two disagree,
+/// which is not always the last. Both halves are measured in Chrome 150:
+/// `margin: 1px; color: red !important; gap: 2px; color: blue` serialises as
+/// `margin: 1px; gap: 2px; color: red !important`, so the slot moved to the
+/// end while the value stayed at the first declaration's. Two importants
+/// collapse to the last, as two plain ones do.
+///
+/// **Where that stops being CSSOM's rule (#722):** this collapse is *syntactic*
+/// and a browser's is *post-validity*. Blink drops an invalid declaration when it
+/// parses it, so the duplicate never competes — `color: notacolor !important;
+/// color: blue` and `color: red !important !important; color: blue` both
+/// compute blue in Chrome 150, where rinch keeps the important declaration,
+/// Stylo then rejects it, and the property falls to its initial value. The
+/// deviation is older than the priority arm (`color: blue; color: notacolor`
+/// has always diverged the same way) but the arm widened it, since the
+/// unconditional collapse used to discard those two for the wrong reason.
+/// Closing it means deciding validity here, which this parser deliberately does
+/// not do — it keeps values verbatim and leaves every question about them to
+/// Stylo, so it is **#722** rather than something to patch here. Pinned by
+/// `inline_style_case_tests::a_duplicate_collapses_before_validity_not_after`,
+/// which flips when #722 is closed.
 ///
 /// Measured in Chrome 150, because the position is not cosmetic. For
 /// `margin: 1px; color: red; gap: 2px; color: blue`, `style.cssText` is
@@ -97,16 +141,79 @@ pub fn split_declarations(css: &str) -> Vec<(String, String)> {
             continue;
         };
         let name = part[..colon].trim();
-        let value = part[colon + 1..].trim();
+        let mut value = part[colon + 1..].trim().to_string();
         if name.is_empty() {
             continue;
         }
-        if let Some(at) = out.iter().position(|(k, _)| k == name) {
-            out.remove(at);
+        let name = normalize_property_name(name);
+        if let Some(at) = out.iter().position(|(k, _)| k.as_str() == &*name) {
+            let (_, displaced) = out.remove(at);
+            // The slot moves to the last declaration's position either way;
+            // only the *value* is decided by priority.
+            if is_important(&displaced) && !is_important(&value) {
+                value = displaced;
+            }
         }
-        out.push((name.to_string(), value.to_string()));
+        out.push((name.into_owned(), value));
     }
     out
+}
+
+/// A property name as CSS compares it: ASCII-lowercased, unless it is a
+/// **custom property**.
+///
+/// CSS property names are ASCII case-insensitive (css-syntax-3 tokenises them
+/// as identifiers and every consumer matches them that way), so `COLOR` and
+/// `color` are one property and the two cannot both be declared. Custom
+/// properties are case-**sensitive** by css-variables-1 §2, which is not a
+/// quirk to be normalised away: a design system may legitimately publish
+/// `--Foo` and `--foo` as two variables. Measured in Chrome 150,
+/// `style="--Foo: 1px; --foo: 2px"` has `length === 2` and
+/// `setProperty("--Foo", …)` on a block already holding `--foo` adds a second
+/// entry rather than overwriting the first.
+///
+/// This is the rule for **both** ends of an inline style: the names
+/// [`split_declarations`] parses out of an attribute, and the name a caller
+/// hands `set_style`. CSSOM lowercases at both too — `setProperty("COLOR",
+/// "green")` on an empty block gives `cssText === "color: green;"` and
+/// `length === 1`, also measured — and if only one end normalised, a
+/// `set_style("COLOR", …)` would add a second declaration of a property the
+/// block already had.
+///
+/// The common case (already lowercase) borrows.
+pub fn normalize_property_name(name: &str) -> Cow<'_, str> {
+    if name.starts_with("--") || !name.bytes().any(|b| b.is_ascii_uppercase()) {
+        Cow::Borrowed(name)
+    } else {
+        Cow::Owned(name.to_ascii_lowercase())
+    }
+}
+
+/// Whether a declaration value ends in a **top-level** `!important`.
+///
+/// Only consulted when a property is declared twice, so the common path pays
+/// nothing for it.
+///
+/// "Top-level" is [`Scanner`]'s rule, and it is what keeps
+/// `content: "a !important"` an ordinary declaration — measured in Chrome 150,
+/// which serialises that pair back as `content: "a !important"; color: blue`
+/// with the `color` still overridable. `url(x)!important` is important, because
+/// the `!` is outside the brackets; `url(a!important)` is not.
+///
+/// The spelling is loose on both sides of the word, as CSS is: `red!important`,
+/// `red ! IMPORTANT` and `red !ImPoRtAnT` are all important (the last two
+/// measured). Comments are gone before this runs, and each left a space, so a
+/// `red /*c*/ !important` has already become `red   !important`.
+fn is_important(value: &str) -> bool {
+    let bytes = value.as_bytes();
+    let mut scanner = Scanner::new();
+    let mut bang = None;
+    for i in 0..bytes.len() {
+        if scanner.step(bytes, i) && bytes[i] == b'!' {
+            bang = Some(i);
+        }
+    }
+    bang.is_some_and(|at| value[at + 1..].trim().eq_ignore_ascii_case("important"))
 }
 
 /// Render declarations back into an inline-style string.
@@ -944,5 +1051,238 @@ mod tests {
             node.get_attribute("style").as_deref(),
             Some("--overlay-z: 517")
         );
+    }
+
+    // ===== #711: property names are ASCII case-insensitive =====
+
+    /// Two spellings of one property collapse, and the survivor comes out
+    /// lowercased. Measured in Chrome 150: `style="color: blue; COLOR: red"`
+    /// computes red and serialises as `color: red;`.
+    ///
+    /// Kills the mutant `let name = part[..colon].trim();` — the
+    /// `normalize_property_name` call dropped from `split_declarations`.
+    #[test]
+    fn a_property_name_is_ascii_case_insensitive() {
+        let decls = split_declarations("color: blue; COLOR: red");
+        assert_eq!(names(&decls), ["color"]);
+        assert_eq!(value(&decls, "color"), Some("red"));
+
+        // Every byte of the name, not just the first.
+        let decls = split_declarations("MARGIN-LEFT: 5px; margin-left: 9px");
+        assert_eq!(names(&decls), ["margin-left"]);
+        assert_eq!(value(&decls, "margin-left"), Some("9px"));
+    }
+
+    /// A **custom** property is case-sensitive, so these stay two. Measured in
+    /// Chrome 150: `style="--Foo: 1px; --foo: 2px"` has `length === 2` and
+    /// `getPropertyValue` answers `1px` and `2px` respectively.
+    ///
+    /// Kills the mutant that lowercases unconditionally — the
+    /// `starts_with("--")` arm of `normalize_property_name` removed.
+    #[test]
+    fn a_custom_property_name_is_case_sensitive() {
+        let decls = split_declarations("--Foo: 1px; --foo: 2px");
+        assert_eq!(names(&decls), ["--Foo", "--foo"]);
+        assert_eq!(value(&decls, "--Foo"), Some("1px"));
+        assert_eq!(value(&decls, "--foo"), Some("2px"));
+    }
+
+    /// A vendor prefix is an ordinary property name, not a custom one: a
+    /// single leading `-` does not opt out of the fold, only `--` does.
+    #[test]
+    fn one_leading_dash_is_not_a_custom_property() {
+        let decls = split_declarations("-WEBKIT-line-clamp: 2; -webkit-line-clamp: 3");
+        assert_eq!(names(&decls), ["-webkit-line-clamp"]);
+        assert_eq!(value(&decls, "-webkit-line-clamp"), Some("3"));
+    }
+
+    /// The **value** that survives a collapse is the important one; the
+    /// **slot** is still the last declaration's.
+    ///
+    /// Measured in Chrome 150, and the two halves disagree here on purpose:
+    /// `margin: 1px; color: red !important; gap: 2px; color: blue` serialises
+    /// as `margin: 1px; gap: 2px; color: red !important;` — `color` moved to
+    /// the end (the last declaration's position) carrying the first
+    /// declaration's value. A fixture with the duplicate already last could
+    /// not tell the two rules apart.
+    ///
+    /// Kills the mutant `out.remove(at);` — the unconditional last-wins
+    /// collapse, i.e. the `is_important` arm dropped.
+    #[test]
+    fn an_important_value_survives_a_later_plain_declaration() {
+        let decls = split_declarations("margin: 1px; color: red !important; gap: 2px; color: blue");
+        assert_eq!(names(&decls), ["margin", "gap", "color"]);
+        assert_eq!(value(&decls, "color"), Some("red !important"));
+
+        // Across cases, which is #711's own shape.
+        let decls = split_declarations("COLOR: red !important; color: blue");
+        assert_eq!(names(&decls), ["color"]);
+        assert_eq!(value(&decls, "color"), Some("red !important"));
+    }
+
+    /// Two importants collapse to the **last**, as two plain ones do — so the
+    /// rule is "important beats plain", not "the first important wins".
+    /// Chrome 150 serialises `color: red !important; color: blue !important`
+    /// as `color: blue !important;`.
+    ///
+    /// Kills the mutant `if is_important(&displaced)` — priority compared on
+    /// the displaced value alone, without `&& !is_important(&value)`.
+    #[test]
+    fn two_important_declarations_collapse_to_the_last() {
+        let decls = split_declarations("color: red !important; color: blue !important");
+        assert_eq!(value(&decls, "color"), Some("blue !important"));
+    }
+
+    /// …and a plain declaration does not resurrect an earlier plain one.
+    /// The positive control for the fixture above: without it, an
+    /// `is_important` that answered `true` for everything would pass both.
+    #[test]
+    fn two_plain_declarations_still_collapse_to_the_last() {
+        let decls = split_declarations("color: red; color: blue");
+        assert_eq!(value(&decls, "color"), Some("blue"));
+    }
+
+    /// `!important` is recognised the loose way CSS spells it, and **only at
+    /// the top level** — the case that matters, because everything here is on
+    /// the round trip an author's whole attribute takes.
+    ///
+    /// All four measured in Chrome 150: `red ! IMPORTANT` and `red !ImPoRtAnT`
+    /// both parse as important (`getPropertyPriority` answers `"important"`),
+    /// `content: "a !important"` does not (it serialises back intact beside an
+    /// overridable `color: blue`), and a custom property carries priority like
+    /// any other (`--x: 1 !important; --x: 2` keeps the `1`).
+    #[test]
+    fn an_important_flag_is_read_the_way_css_spells_it() {
+        let loose = split_declarations("color: red ! IMPORTANT; color: blue");
+        assert_eq!(value(&loose, "color"), Some("red ! IMPORTANT"));
+        let mixed = split_declarations("color: red !ImPoRtAnT; color: blue");
+        assert_eq!(value(&mixed, "color"), Some("red !ImPoRtAnT"));
+        let tight = split_declarations("color: red!important; color: blue");
+        assert_eq!(value(&tight, "color"), Some("red!important"));
+
+        // Inside a *closed* string or bracket it is text. These agree with
+        // Chrome but do not discriminate — see
+        // `important_is_read_only_at_the_top_level` for the reason and the
+        // fixture that does.
+        let quoted = split_declarations(r#"content: "a !important"; content: "b""#);
+        assert_eq!(value(&quoted, "content"), Some(r#""b""#));
+        // A `!` *after* the brackets counts, though.
+        let inside = split_declarations("background: url(a!important); background: none");
+        assert_eq!(value(&inside, "background"), Some("none"));
+        let outside = split_declarations("background: url(a)!important; background: none");
+        assert_eq!(value(&outside, "background"), Some("url(a)!important"));
+
+        // A custom property carries priority too.
+        let custom = split_declarations("--x: 1 !important; --x: 2");
+        assert_eq!(value(&custom, "--x"), Some("1 !important"));
+    }
+
+    /// The top-level rule, asserted **on [`is_important`] directly**, because
+    /// the collapse cannot see it.
+    ///
+    /// A `!` inside a *closed* string or bracket always has the delimiter
+    /// after it, so a naive "does the value end in `!important`" answers
+    /// `false` there by accident and passes every fixture above. An *un*closed
+    /// one is the case that separates them — and it can never be the earlier
+    /// half of a duplicate, because an unterminated string or `url(` swallows
+    /// the `;` and everything after it, so the declaration carrying it is
+    /// always the last one in the block. Measured in Chrome 150:
+    /// `style='font-family: A, "b !important; font-family: Z'` is **one**
+    /// declaration whose priority is `""`, not two.
+    ///
+    /// Kills the mutant `value.rfind('!')` — `is_important` without the
+    /// [`Scanner`]. The escaped case in
+    /// [`an_escaped_bang_is_not_a_priority_flag`] kills it through the
+    /// collapse as well, which is the only route that reaches a computed
+    /// value.
+    #[test]
+    fn important_is_read_only_at_the_top_level() {
+        assert!(is_important("red !important"));
+        assert!(is_important("url(a)!important"));
+        assert!(!is_important("red"));
+
+        // Closed delimiters — the naive suffix test agrees here, which is why
+        // these are not on their own enough.
+        assert!(!is_important(r#""a !important""#));
+        assert!(!is_important("url(a!important)"));
+
+        // Unclosed ones, where it does not.
+        assert!(!is_important(r#"A, "b !important"#));
+        assert!(!is_important("url(a!important"));
+        assert!(!is_important("calc(1px !important"));
+    }
+
+    /// A `\` escapes the `!`, so this is not a priority flag and the later
+    /// plain declaration wins — measured in Chrome 150, where
+    /// `color: red \!important; color: blue` computes **blue** while the
+    /// unescaped twin computes red.
+    ///
+    /// The escape is the one shape that is both non-top-level *and* able to
+    /// stand as the earlier half of a duplicate, since escaping a byte closes
+    /// nothing and swallows nothing. So this is the only fixture that kills
+    /// `value.rfind('!')` through an observable collapse.
+    #[test]
+    fn an_escaped_bang_is_not_a_priority_flag() {
+        let decls = split_declarations(r"color: red \!important; color: blue");
+        assert_eq!(value(&decls, "color"), Some("blue"));
+
+        let unescaped = split_declarations("color: red !important; color: blue");
+        assert_eq!(
+            value(&unescaped, "color"),
+            Some("red !important"),
+            "positive control: the same pair without the escape"
+        );
+    }
+
+    /// A comment between the value and its `!important` leaves the space that
+    /// keeps them two tokens, so the flag is still read. Chrome 150 agrees
+    /// (`color: red /*c*/ !important` has priority `"important"`).
+    #[test]
+    fn a_comment_before_important_does_not_hide_it() {
+        let decls = split_declarations("color: red /*c*/ !important; color: blue");
+        assert_eq!(value(&decls, "color"), Some("red   !important"));
+    }
+
+    /// `StyleProp` composes across cases too — every name it compares comes out
+    /// of the parser, so it inherits the rule rather than restating it.
+    ///
+    /// The **first** assertion is the discriminating one: without the fold, a
+    /// `style:` prop spelled `COLOR` lands *beside* the element's own `color`
+    /// instead of over it. The revert half is asserted after it because the
+    /// revert alone is a fixed point — an unfolded `COLOR` is taken back by
+    /// removing the declaration it added, which reaches the same string by a
+    /// different route.
+    #[test]
+    fn a_style_prop_overwrites_the_other_case_of_its_own_property() {
+        let (_doc, node) = node_with("color: red; gap: 4px");
+        let mut prop = StyleProp::default();
+        prop.apply(&node, "COLOR: blue");
+        assert_eq!(
+            node.get_attribute("style").as_deref(),
+            Some("color: blue; gap: 4px")
+        );
+        prop.apply(&node, "");
+        assert_eq!(
+            node.get_attribute("style").as_deref(),
+            Some("color: red; gap: 4px"),
+            "and the value it displaced comes back, under the element's own \
+             spelling"
+        );
+    }
+
+    /// `normalize_property_name` borrows when there is nothing to change,
+    /// which is the overwhelmingly common case and the reason it returns a
+    /// `Cow`.
+    #[test]
+    fn a_lowercase_name_is_not_reallocated() {
+        assert!(matches!(
+            normalize_property_name("margin-left"),
+            Cow::Borrowed(_)
+        ));
+        assert!(matches!(normalize_property_name("--Foo"), Cow::Borrowed(_)));
+        assert!(matches!(
+            normalize_property_name("MARGIN-left"),
+            Cow::Owned(_)
+        ));
     }
 }
