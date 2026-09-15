@@ -216,7 +216,7 @@ impl RinchDocument {
 
             html, body, div, section, article, aside, header, footer, main, nav,
             h1, h2, h3, h4, h5, h6, p, blockquote, pre, figure, figcaption,
-            ul, ol, li, dl, dt, dd, table, form, fieldset, legend, hr,
+            ul, ol, menu, dir, li, dl, dt, dd, table, form, fieldset, legend, hr,
             address, details, summary {
                 display: block;
             }
@@ -359,8 +359,17 @@ impl RinchDocument {
                 overflow: hidden;
             }
 
-            /* Default list indentation (matches browser default) */
-            ul, ol {
+            /* Default list indentation (matches browser default).
+
+               `menu` and `dir` are here, and in every list rule below, because
+               Chrome 150 gives them **exactly** `ul`'s treatment — measured:
+               `display: block`, `margin-block: 1em`, `padding-left: 40px`, and
+               the nested-list zero in both directions (a `<menu>` inside a
+               `<ul>` and a `<ul>` inside a `<menu>` are both 0). `dir` is
+               obsolete in HTML and `menu` is rare, but rinch named neither tag
+               in any rule at all, so both were `display: inline` — a silent
+               desktop/web divergence for one token per rule. */
+            ul, ol, menu, dir {
                 padding-left: 40px;
             }
 
@@ -376,7 +385,7 @@ impl RinchDocument {
                20px of margin, not 16. Invisible at the default root size,
                where 1em is exactly 16px — `ua_block_defaults_tests` samples
                off that fixed point with a 20px container throughout. */
-            p, blockquote, figure, ul, ol, pre {
+            p, blockquote, figure, ul, ol, menu, dir, pre {
                 margin-block: 1em;
             }
 
@@ -389,11 +398,17 @@ impl RinchDocument {
             }
 
             /* A list nested in a list carries **no** block margin — Chrome's
-               `:is(ul, ol) :is(ul, ol)` rule, and a *descendant* combinator,
+               own rule, spelled the same way, and a *descendant* combinator,
                not a child one: measured, a `<ul>` inside `<li>` inside `<ul>`
                (a grandchild) computes 0. Without it every nesting level of a
-               bulleted list would add 2em of dead space. */
-            ul ul, ul ol, ol ul, ol ol {
+               bulleted list would add 2em of dead space.
+
+               `:is()` rather than the sixteen pairs written out. Verified to
+               match in this Stylo build before it was used here — rinch's
+               selector surface has real gaps (`:has()` is silently dropped, see
+               `docs/src/guide/theming.md`), so a selector functional
+               pseudo-class is not something to assume. */
+            :is(ul, ol, menu, dir) :is(ul, ol, menu, dir) {
                 margin-block: 0;
             }
 

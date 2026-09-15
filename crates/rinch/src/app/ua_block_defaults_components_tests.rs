@@ -247,3 +247,73 @@ fn the_other_five_list_and_figure_components_are_unmoved() {
         );
     }
 }
+
+/// The computed `font-size` of the one element with `tag` in the tree.
+fn font_size_of_tag(app: &RinchApp, tag: &str) -> f32 {
+    let doc = app.doc.as_ref().unwrap();
+    let d = doc.borrow();
+    let matches: Vec<usize> = d
+        .tree
+        .nodes
+        .iter()
+        .filter(|(_, n)| n.tag() == Some(tag))
+        .map(|(id, _)| id)
+        .collect();
+    assert_eq!(
+        matches.len(),
+        1,
+        "expected exactly one <{tag}> in the tree, found {}",
+        matches.len()
+    );
+    d.tree.get(matches[0]).unwrap().computed_style.font_size
+}
+
+/// **The rich-text editor is NOT unmoved: its `<sub>` and `<sup>` shrink.**
+///
+/// The editor's `subscript`/`superscript` marks serialise to literal `<sub>` and
+/// `<sup>` elements (`rinch-editor-core`'s `MarkSpec::parse_html_tags`, consumed
+/// by `rinch-editor-view`'s `view.rs`), and `DEFAULT_EDITOR_CSS` declares no
+/// `font-size` for either tag — it covers `margin`, `font-family` and
+/// `white-space` for every other tag #674 touched, which is why everything else
+/// in the editor really is unmoved. So the new UA `small, sub, sup
+/// { font-size: smaller }` reaches editor content, and shipped subscripts and
+/// superscripts shrink by a factor of 1.2 on desktop.
+///
+/// That is **correct** — `rinch-web` has always rendered them that way, on the
+/// browser's own UA sheet — and it is the one place #674 changes what the
+/// editor draws. It had no test anywhere in the workspace, so a later change to
+/// the `smaller` rule would have moved shipped editor content in silence.
+///
+/// This mounts a **real** `Editor`, so the stylesheet under test is the shipped
+/// `DEFAULT_EDITOR_CSS` and not a paraphrase of it: adding a `sub`/`sup`
+/// `font-size` to that sheet turns this fixture red, which is the point.
+///
+/// The editor container is 16px, so `smaller` is 13.3333px. The tolerance is
+/// 0.005px, which is what separates the `smaller` keyword from a `0.83em`
+/// approximation (13.28px).
+#[test]
+fn the_editors_sub_and_sup_do_take_the_new_smaller_rule() {
+    let app = mount(|scope: &mut RenderScope| {
+        crate::editor::Editor {
+            content: "<p>x<sub>2</sub><sup>3</sup></p>".into(),
+            ..Default::default()
+        }
+        .render(scope, &[])
+    });
+
+    // Positive control: the editor's own container size, which its stylesheet
+    // does declare and the UA sheet must not disturb.
+    let paragraph = font_size_of_tag(&app, "p");
+    assert_eq!(
+        paragraph, 16.0,
+        "the editor's own `[data-pm-editor] {{ font-size: 16px }}` must still hold"
+    );
+
+    for tag in ["sub", "sup"] {
+        let got = font_size_of_tag(&app, tag);
+        assert!(
+            (got - 13.3333).abs() < 0.005,
+            "editor <{tag}> takes the UA `smaller` (Chrome's 13.3333px from 16px), got {got}"
+        );
+    }
+}

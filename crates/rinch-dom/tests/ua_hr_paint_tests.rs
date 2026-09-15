@@ -17,6 +17,11 @@
 //! Measured against this file at HEAD (the UA `hr` rule reverted): the grey
 //! pixel count is **0**, and `a_bare_hr_paints_a_grey_rule` fails on its first
 //! assertion.
+//!
+//! **The colours here are rinch's, not Chrome's.** Chrome paints `inset` as a
+//! bevel (154 over 238 at scale 1); rinch collapses every bevelled border style
+//! to `solid` in `border_style_from_stylo`, so both rows are the flat 128. See
+//! the comment on that assertion.
 
 use peniko::Brush;
 use rinch_core::dom::{DomDocument, NodeId};
@@ -159,6 +164,15 @@ fn a_bare_hr_paints_a_grey_rule() {
         "the <hr> must be the only thing painted, as two solid 800px rows"
     );
     assert_eq!(ink_count(&px), 1600);
+    // **This pins rinch's rendering of `inset`, not Chrome's.** Chrome paints a
+    // bevel — measured at scale 1, the top row is (154, 154, 154) and the bottom
+    // (238, 238, 238), so not one pixel of a default `<hr>` is actually `gray`.
+    // rinch paints the flat `solid` row twice because
+    // `computed_style/from_stylo/box_model.rs`'s `border_style_from_stylo` ends
+    // `_ => BorderStyleValue::Solid`, collapsing groove/ridge/inset/outset. That
+    // mapping is pre-existing and #674 is only what makes it visible, since an
+    // `<hr>` painted nothing at all before. If rinch ever grows a bevel painter
+    // this assertion is the one it will hit, and 154 over 238 is the target.
     assert!(
         (1590..=1600).contains(&n),
         "almost all of that ink is exactly gray; got {n} of 1600"

@@ -141,10 +141,11 @@ own declaration beats:
 
 | element | what it now gets |
 |---------|------------------|
-| `p`, `blockquote`, `figure`, `ul`, `ol`, `pre` | `margin-block: 1em` |
+| `p`, `blockquote`, `figure`, `ul`, `ol`, `menu`, `dir`, `pre` | `margin-block: 1em` |
 | `blockquote`, `figure` | `margin-inline: 40px` |
 | `dd` | `margin-inline-start: 40px` |
-| a `ul`/`ol` inside a `ul`/`ol` | `margin-block: 0` — no compounding gap per level |
+| `menu`, `dir` | the whole `ul` treatment — `display: block` and `padding-left: 40px` as well |
+| one of `ul`/`ol`/`menu`/`dir` inside another | `margin-block: 0` — no compounding gap per level |
 | `pre` | `white-space: pre`, so it preserves runs of spaces and newlines |
 | `code`, `kbd`, `samp`, `pre` | `font-family: monospace` |
 | `small`, `sub`, `sup` | `font-size: smaller` |
@@ -177,14 +178,25 @@ Four things about that set are worth knowing before they surprise you.
 `<li>` (issue #725) are **not** part of this: neither is a stylesheet line —
 `ComputedStyle` carries no `vertical_align` field and `DisplayValue` no
 `ListItem` — so both need property and layout work first. Until then a `<sub>`
-is smaller but not lowered, and a `<ul>` is indented but unbulleted. The `List`
-component and the rich-text editor draw their own bullets.
+is smaller but not lowered, and a bulleted list is indented but **unbulleted**:
+desktop draws no list marker at all, for a bare `<ul>`, for the `List`
+component (whose `list-style-type` is parsed and ignored) and for the
+rich-text editor alike. The editor's only marker is the task-list checkbox,
+which it draws itself as a `::before`.
 
-Components are unaffected. `Divider`, `List`, `Breadcrumbs`, `Tree`, `Image`,
-`Blockquote` and `Code` all declare `margin: 0`, and the editor's stylesheet
-declares its own spacing for every one of these tags, so the new rules change
-nothing you render through the component library — they change what a **bare**
-tag does, which is the point.
+**Components are unaffected**, and that is pinned rather than assumed —
+`Divider`, `List`, `Breadcrumbs`, `Tree`, `Image`, `Blockquote` and `Code` all
+declare `margin: 0`, so the author cascade beats every new rule and nothing you
+render through the component library moves.
+
+**The rich-text editor has one exception: its `<sub>` and `<sup>` shrink.** Its
+stylesheet declares its own `margin` for every block tag above, its own
+`font-family` for `code`/`pre` and `white-space: pre-wrap` on `pre`, so all of
+that is unmoved — but it declares no `font-size` for `sub`/`sup`, which it
+renders as literal elements. So editor subscripts and superscripts now take the
+browser's `smaller`, exactly as they always have in a browser and on
+`rinch-web`. Declare a `font-size` on them if you want the old desktop size
+back.
 
 #### Scaling the whole UI with `rem`
 

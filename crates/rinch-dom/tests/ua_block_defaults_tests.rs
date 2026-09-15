@@ -59,8 +59,8 @@
 use rinch_core::dom::{DomDocument, NodeId};
 use rinch_dom::RinchDocument;
 use rinch_dom::computed_style::values::{
-    BorderStyleValue, DimensionValue, LengthPercentageAutoValue, LengthPercentageValue,
-    OverflowValue, WhiteSpaceValue,
+    BorderStyleValue, DimensionValue, DisplayValue, LengthPercentageAutoValue,
+    LengthPercentageValue, OverflowValue, WhiteSpaceValue,
 };
 
 const VW: f32 = 800.0;
@@ -764,9 +764,18 @@ fn the_pre_rules_do_not_leak_to_other_blocks() {
 /// `rinch-dom`, which cannot depend on `rinch-components`.
 ///
 /// The UA `overflow: hidden` is **not** overridden by that CSS and therefore
-/// survives on a `Divider`, which is what the second half asserts: its labelled
-/// variant puts a child inside the rule, and a clipped child would be the
-/// regression this change could plausibly cause.
+/// survives on a `Divider`, which is what the second half asserts: an `<hr>`
+/// carrying a child, where a clipped child would be the regression this change
+/// could plausibly cause.
+///
+/// **That second tree is deliberately stronger than the component.** `Divider`
+/// renders an `<hr>` only for its plain horizontal form; the **labelled**
+/// variant is a `<div class="rinch-divider rinch-divider--with-label">` and the
+/// vertical one a `<div>` as well (`rinch-components/src/divider.rs:76-91`), so
+/// neither takes the UA `<hr>` rule at all. The fixture puts the label inside an
+/// `<hr>` anyway, because that is the configuration the new `overflow: hidden`
+/// could break and no component produces it — it is a guard against a future
+/// `Divider` that does, not a description of today's.
 #[test]
 fn the_divider_components_own_css_still_wins() {
     let mut doc = RinchDocument::new();
@@ -797,8 +806,10 @@ fn the_divider_components_own_css_still_wins() {
         "the component's own `margin: 0` must beat both UA <hr> margins"
     );
 
-    // The labelled variant grows to hold its label; the UA `overflow: hidden`
-    // it inherits from the new rule must not crop it.
+    // An <hr> carrying a label grows to hold it, and the UA `overflow: hidden`
+    // must not crop it. (Today's `Divider` renders its labelled variant as a
+    // <div>, so this is the stronger tree, not the component's — see the doc
+    // comment above.)
     let h = height_of(&doc, labelled);
     assert!(
         h >= 20.0,
@@ -850,5 +861,82 @@ fn an_undefined_var_inherits_rather_than_falling_through_to_the_ua_rule() {
         font_family(&doc, fallback),
         "monospace",
         "…and a fallback in the var() is what keeps a theme-less component monospace"
+    );
+}
+
+/// `<menu>` and `<dir>` are lists, exactly as `<ul>` is.
+///
+/// Measured in Chrome 150: both compute `display: block`, `margin-block: 1em`
+/// and `padding-left: 40px`, and the nested-list zero reaches them **in both
+/// directions** — a `<menu>` inside a `<ul>` is 0, and so is a `<ul>` inside a
+/// `<menu>`. rinch named neither tag in any UA rule at all before #674, so both
+/// were `display: inline`.
+///
+/// The nesting half is also the fixture that proves the `:is()` in the UA
+/// sheet's nested-list rule actually *matches* in this Stylo build. rinch's
+/// selector surface has real, silent gaps (`:has()` parses and matches
+/// nothing), so that is verified rather than assumed: a `:is()` Stylo dropped
+/// would leave every nested list at 1em and turn the four assertions below red.
+#[test]
+fn menu_and_dir_are_lists_like_ul() {
+    let mut doc = RinchDocument::new();
+    let body = doc.body();
+    let c = el(&mut doc, body, "div", ROOT);
+    let menu = el(&mut doc, c, "menu", "");
+    let dir = el(&mut doc, c, "dir", "");
+
+    // A menu under a ul, and a ul under a menu: Chrome zeroes both.
+    let outer_ul = el(&mut doc, c, "ul", "");
+    let li_a = el(&mut doc, outer_ul, "li", "");
+    let menu_in_ul = el(&mut doc, li_a, "menu", "");
+    let outer_menu = el(&mut doc, c, "menu", "");
+    let li_b = el(&mut doc, outer_menu, "li", "");
+    let ul_in_menu = el(&mut doc, li_b, "ul", "");
+    let outer_ol = el(&mut doc, c, "ol", "");
+    let li_c = el(&mut doc, outer_ol, "li", "");
+    let dir_in_ol = el(&mut doc, li_c, "dir", "");
+    doc.resolve_layout(VW, VH);
+
+    for (id, tag) in [(menu, "menu"), (dir, "dir")] {
+        let s = &doc.tree.get(id.0).unwrap().computed_style;
+        assert_eq!(
+            s.display,
+            DisplayValue::Block,
+            "<{tag}> is `display: block` in Chrome, not Stylo's inline default"
+        );
+        let padding = match s.padding_left {
+            LengthPercentageValue::Length(v) => v,
+            LengthPercentageValue::Zero => 0.0,
+            ref other => panic!("<{tag}> padding-left is not a length: {other:?}"),
+        };
+        assert!(
+            close(padding, 40.0),
+            "<{tag}> takes the 40px list indent, got {padding}"
+        );
+        let (top, bottom, _, _) = margins(&doc, id);
+        assert!(
+            close(top, 20.0) && close(bottom, 20.0),
+            "<{tag}> takes the 1em block margin (20px here), got ({top}, {bottom})"
+        );
+    }
+
+    for (id, what) in [
+        (menu_in_ul, "menu in ul"),
+        (ul_in_menu, "ul in menu"),
+        (dir_in_ol, "dir in ol"),
+    ] {
+        let (top, bottom, _, _) = margins(&doc, id);
+        assert!(
+            close(top, 0.0) && close(bottom, 0.0),
+            "a nested list ({what}) takes no block margin in Chrome, got ({top}, {bottom})"
+        );
+    }
+
+    // The outer menu keeps its own 1em — the discriminator against a rule that
+    // zeroed every menu rather than only a nested one.
+    let (top, bottom, _, _) = margins(&doc, outer_menu);
+    assert!(
+        close(top, 20.0) && close(bottom, 20.0),
+        "the outer <menu> keeps its 1em, got ({top}, {bottom})"
     );
 }
