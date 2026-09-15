@@ -2832,14 +2832,21 @@ Three things it deliberately does not do.
   transitions cancelled, and so does everything under it. `visibility: hidden`
   is **rendered** and still transitions. `@keyframes` is not covered: a hidden
   element's animations go on running and go on asking for frames (**#747**).
-  **This is visible in the component library**: any component that un-hides an
-  ancestor and retargets a transitioned property in the *same* style pass loses
-  its animation, and `Drawer` is one — its 300ms slide-in no longer runs
-  (**#751**), because its root toggles `display: none` while its panel
-  transitions `transform`. A browser does not animate that either, and the
-  drawer never animated on `rinch-web`, so this is desktop matching the web
-  rather than a new deviation; the cure is the component's, and `Popover`
-  already uses it (stay rendered, animate `opacity`).
+  **The rule this puts on the component library**: *an overlay that animates
+  must stay rendered — animate `opacity`, `visibility` or `transform`, never
+  toggle `display`* (**#751**). A `display` flip cannot transition on **either**
+  backend, because a browser refuses it for the same reason, which is what
+  `@starting-style` and `transition-behavior: allow-discrete` exist for.
+  `Drawer` was the one component that had it backwards: its root toggled
+  `display: none` while its panel transitioned `transform`, so the slide-in ran
+  on desktop only until #703 and had never run on `rinch-web` at all. Its closed
+  state is `visibility: hidden` now, like `Popover`'s — hidden, still rendered,
+  and still out of paint, hit testing and the Tab order on both backends.
+  `rinch/src/app/overlay_animation_audit_tests.rs` holds one fixture per overlay
+  and fails the moment a transitioned property starts changing on a reveal pass;
+  the *close* is deliberately instant on both backends, because animating it
+  would need a transition on `visibility` and `TransitionProperty` has no
+  variant for one (**#759**).
 - **A move is not a detach.** `append_child`, `insert_before` and `insert_child`
   unlink a node from its old parent with the same lines `remove_child` uses, but
   it is back in the document before the call returns — so a row that was

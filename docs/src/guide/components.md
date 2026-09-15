@@ -513,6 +513,18 @@ If you hand-roll a `position: fixed` overlay, offset it the same way
 viewport, so a bare `top: 0` renders underneath the chrome. See
 [Theming → Window Chrome Inset](./theming.md#window-chrome-inset).
 
+**An overlay that animates must stay rendered.** Hide it with `visibility` or
+`opacity` and animate `transform`; do not toggle `display`. An element that was
+not being rendered has no before-change style, so un-hiding it and retargeting a
+transitioned property in the same style pass animates nothing — on desktop *and*
+in the browser, which refuses the same shape (that is what `@starting-style` and
+`transition-behavior: allow-discrete` exist for). `Drawer` and `Popover` are the
+two worked examples: both keep their panel rendered while closed, `Drawer` slides
+its `transform` and `Popover` fades its `opacity`. A `visibility: hidden` subtree
+is still excluded from paint, from hit testing and from the Tab order, so nothing
+is given up. See [the transitions section of the rendering
+pipeline](../architecture/rendering-pipeline.md).
+
 ```rust
 // Modal
 let modal_open = Signal::new(false);

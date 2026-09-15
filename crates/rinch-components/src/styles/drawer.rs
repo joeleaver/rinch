@@ -40,7 +40,7 @@ pub fn styles() -> String {
    transition on `visibility` itself — `rinch_dom::transition::TransitionProperty`
    has no variant for it, so declaring one here would animate the close in a
    browser and snap on desktop. One behaviour on both backends is worth more
-   than the slide-out; see issue #756. */
+   than the slide-out; see issue #759. */
 .rinch-drawer__root--hidden {
     visibility: hidden !important;
 }
