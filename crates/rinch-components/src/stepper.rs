@@ -105,7 +105,8 @@ pub struct Stepper {
     /// `state` of its own keeps it. A step that arrives **later**, by a `for`
     /// reconcile or a `show_dom` branch, is stated as it lands — and so are the
     /// steps it displaced, since an insertion moves everything after it (issue
-    /// #716). A step *removed* does not renumber its siblings (issue #745).
+    /// #716). A step *removed*, or moved out to another stepper, renumbers and
+    /// restates the steps behind it the same way (issue #745).
     ///
     /// A closure — `active: {|| signal.get()}` — re-renders the whole stepper,
     /// children included, so the derivation runs again on every change.
@@ -271,13 +272,29 @@ impl Component for Stepper {
         crate::late_children::adopt_late_children(
             __scope,
             &steps_container,
-            &["rinch-stepper__step"],
+            STEP_BOUNDARY,
             move |_inserted, scope| {
                 // The subtree that landed is deliberately ignored. What has to
                 // be recomputed is every step's *position*, and only the whole
                 // list gives that — an insertion in front of a step renumbers
                 // it and can restate it, so patching the newcomer alone would
                 // leave the stepper saying two different things.
+                settle_steps(scope, &watched, derivation);
+            },
+        );
+
+        // And a step that *leaves* (issue #745). A removal is the same event
+        // read the other way: every step behind the one that went moves
+        // backwards, which renumbers it and can restate it. `List` and
+        // `RadioGroup` register no such observer, because neither of their
+        // defaults depends on a sibling's position; this stepper's whole
+        // derivation does.
+        let watched = steps_container.clone();
+        crate::late_children::adopt_child_removals(
+            __scope,
+            &steps_container,
+            STEP_BOUNDARY,
+            move |scope| {
                 settle_steps(scope, &watched, derivation);
             },
         );
@@ -318,12 +335,12 @@ impl Derivation {
 /// Give every step under `steps_container` the position, state, index and glyph
 /// `d` puts it in.
 ///
-/// **Idempotent, and that is load-bearing** (issue #716). It runs once at the
-/// stepper's own render and again every time a step lands beneath the container
-/// afterwards, because an insertion renumbers the steps after it and can move
-/// them between states.
+/// **Idempotent, and that is load-bearing** (issues #716 and #745). It runs once
+/// at the stepper's own render and again every time a step lands beneath the
+/// container or leaves it, because either one renumbers the steps after it and
+/// can move them between states.
 ///
-/// Re-deriving every step per insertion makes growing a stepper one step at a
+/// Re-deriving every step per change makes growing a stepper one step at a
 /// time quadratic — 10.6 ms for 100 steps, 0.11 ms for the ten a real stepper
 /// has (issue #748). The per-pass *writes* are all guarded against an unchanged
 /// value, so a step this pass does not move re-dirties no style; what is left is
@@ -358,8 +375,8 @@ fn settle_steps(scope: &mut RenderScope, steps_container: &NodeHandle, d: Deriva
         if numbered_here {
             // Compared before writing. `set_attribute` does not early-out on an
             // unchanged value, and this pass re-runs over *every* step each time
-            // one arrives, so an unguarded write re-dirties the whole stepper's
-            // style on every insertion.
+            // one arrives or leaves, so an unguarded write re-dirties the whole
+            // stepper's style on every change.
             let position = position.to_string();
             if step.get_attribute(STEP_ATTR).as_deref() != Some(position.as_str()) {
                 step.set_attribute(STEP_ATTR, &position);
@@ -385,15 +402,14 @@ fn settle_steps(scope: &mut RenderScope, steps_container: &NodeHandle, d: Deriva
                 // **All three come off, not just `--inactive`.** A step that
                 // named no state rendered as inactive, so dropping that one
                 // looks sufficient — but this walk reaches steps that are not
-                // freshly rendered by *this* stepper: it descends into a
-                // `StepperCompleted`, so a nested `Stepper` there has its steps
-                // re-derived at the outer stepper's positions, already carrying
-                // whatever their own stepper gave them. Measured: one such step
-                // ended up with `--progress` and `--inactive` at once. It is
-                // also what a *re-run* needs, since the class this pass is
-                // replacing is the one the last pass wrote. `remove_class`
-                // writes nothing when the class is absent (#730), so the two
-                // extra calls are free.
+                // freshly rendered by *this* stepper: a step moved in from
+                // another stepper arrives carrying whatever that one gave it,
+                // and a step already settled here is re-derived on every
+                // insertion and every removal. Measured: one such step ended up
+                // with `--progress` and `--inactive` at once. It is also what a
+                // *re-run* needs, since the class this pass is replacing is the
+                // one the last pass wrote. `remove_class` writes nothing when
+                // the class is absent (#730), so the two extra calls are free.
                 for state in [
                     StepState::Completed,
                     StepState::Progress,
@@ -581,13 +597,13 @@ fn settle_step_icon(
     }
 
     // The number, which the step could only have drawn as its own index plus
-    // one — and which an insertion in front of it changes.
+    // one — and which a step arriving or leaving in front of it changes.
     if live_key == KEY_BASE
         && !has.iter().any(|k| k == KEY_BASE)
         && let Some(live) = &live
     {
-        // Compared first: this pass re-runs over every step on every insertion,
-        // and `set_text` does not early-out on an unchanged value.
+        // Compared first: this pass re-runs over every step on every change to
+        // the list, and `set_text` does not early-out on an unchanged value.
         let number = number.to_string();
         if live.text_content().as_deref() != Some(number.as_str()) {
             live.set_text(&number);
@@ -597,9 +613,11 @@ fn settle_step_icon(
     // **Every parked alternate is kept**, for a step whose state this stepper
     // derives. It used to keep only the ones a *forward* move could want, on the
     // reasoning that this pass re-runs on an insertion and an insertion can only
-    // give a step more siblings in front of it. That is false: a keyed `for`
-    // **reorder** repositions a live node with `insert_before`, which is one of
-    // the four notifying verbs, and it moves that node *backwards*. Measured — a
+    // give a step more siblings in front of it. That is false twice over: a
+    // keyed `for` **reorder** repositions a live node with `insert_before`,
+    // which is one of the four notifying verbs, and it moves that node
+    // *backwards*; and since #745 a **removal** re-runs this pass too, which
+    // moves every step behind the one that went backwards as well. Measured — a
     // step carrying its own `completed_icon`, moved from position 2 to position
     // 0 — the pruned alternate was gone and the step drew the built-in tick, or
     // the *stepper's* default where it had one, inverting the rule that a step's
@@ -702,6 +720,12 @@ const ICON_ALT_CLASS: &str = "rinch-stepper__step-icon-alt";
 /// Which [content key](KEY_COMPLETED) an alternate icon is for.
 const ICON_ALT_ATTR: &str = "data-icon-for";
 
+/// One step of a stepper.
+const STEP_CLASS: &str = "rinch-stepper__step";
+
+/// A [`StepperCompleted`] block, which is terminal — see [`collect_steps`].
+const COMPLETED_CLASS: &str = "rinch-stepper__completed";
+
 /// Does `node` carry `class` as a whole class token?
 fn has_class(node: &NodeHandle, class: &str) -> bool {
     node.get_attribute("class")
@@ -710,6 +734,10 @@ fn has_class(node: &NodeHandle, class: &str) -> bool {
         .any(|c| c == class)
 }
 
+/// The classes [`collect_steps`] stops descending at, read back upwards by the
+/// late-child observers so the two halves name one boundary.
+const STEP_BOUNDARY: &[&str] = &[STEP_CLASS, COMPLETED_CLASS];
+
 /// Every step in `node`'s subtree, in document order.
 ///
 /// Steps are found by class rather than taken as `children` directly: a `for`
@@ -717,20 +745,29 @@ fn has_class(node: &NodeHandle, class: &str) -> bool {
 /// The walk stops at each step, so a nested stepper inside a step's content is
 /// not this one's to renumber.
 ///
-/// It descends into every *other* child, though — a [`StepperCompleted`]
-/// included — so a `Stepper` placed there does have its steps collected at this
-/// stepper's positions. That reach predates the derivation (it granted only the
-/// clickable class); the state swap above is written to survive it rather than
-/// to assume it away.
+/// It also stops — for good — at the first [`StepperCompleted`] (issue #741).
+/// That block is Mantine's terminal element: it is what a stepper shows *instead
+/// of* its steps once they are all done, so neither its content nor anything
+/// after it is a position of this stepper. The walk used to go straight past it
+/// and number whatever followed, which gave a trailing step a position it does
+/// not have and re-derived a nested stepper's steps at the outer stepper's
+/// indices.
 fn collect_steps(node: &NodeHandle) -> Vec<NodeHandle> {
-    fn walk(node: &NodeHandle, out: &mut Vec<NodeHandle>) {
-        if has_class(node, "rinch-stepper__step") {
+    /// `false` = stop the whole walk, not merely this subtree.
+    fn walk(node: &NodeHandle, out: &mut Vec<NodeHandle>) -> bool {
+        if has_class(node, COMPLETED_CLASS) {
+            return false;
+        }
+        if has_class(node, STEP_CLASS) {
             out.push(node.clone());
-            return;
+            return true;
         }
         for child in node.children() {
-            walk(&child, out);
+            if !walk(&child, out) {
+                return false;
+            }
         }
+        true
     }
     let mut out = Vec::new();
     walk(node, &mut out);
@@ -793,7 +830,7 @@ impl Component for StepperStep {
             ""
         };
 
-        let class = format!("rinch-stepper__step {state_class} {loading_class} {clickable}");
+        let class = format!("{STEP_CLASS} {state_class} {loading_class} {clickable}");
 
         let step_el = rinch_macros::rsx! { div { class: "rinch-stepper__step" } };
         step_el.set_attribute("class", &class);

@@ -254,7 +254,8 @@ selection family stays decorative: no step carries a `data-rid` and `Stepper`
 takes no callback (issue #737).
 
 **A container default reaches a child that arrives after the container rendered**
-(#716). The parent patch is still there and still runs first — a parent
+(#716), **and a container that counts positions is re-derived when one leaves**
+(#745). The parent patch is still there and still runs first — a parent
 component renders *after* its children, so nothing a container knows can travel
 as a prop — but the container also registers
 `rinch_core::dom::on_child_inserted` against its own root, and the four
@@ -265,6 +266,25 @@ first, synchronously. So a `for` reconcile, a `show_dom` branch and a hand-rolle
 with no deferred queue and no drain site in any host — which is what the
 alternative would have needed, since `queue_main_callback` takes a `Send`
 closure (a `NodeHandle` is `!Send`) and `rinch-web` drains it nowhere.
+
+`rinch_core::dom::on_child_removed` is the other half, fired by the four verbs
+that take a node **out** of a tree (`remove_child`, `remove`, `discard`, and
+`replace_with` for the node it displaces) plus the implicit detach an insertion
+verb performs when handed a node that already has a parent — which is the only
+thing that tells a container a child *moved away*. The two halves are separate
+registrations: `Stepper` takes both, `List` and `RadioGroup` only the first,
+since neither of their defaults can be changed by a row going away.
+
+**The removal half is handed the node the subtree LEFT — its former parent —
+not the node that went**, and that asymmetry is forced rather than chosen. A
+removed node is detached, so it has no ancestor chain for an observer's boundary
+test to walk, and after a `discard` the backend may have retired it (`remove`
+and `discard` are one verb to a `for` reconcile). Every removal verb therefore
+reads that parent *before* it mutates the document; a `Cell` counted separately
+from the insertion one keeps an app whose containers only care about arrivals
+from paying that read. A reorder **inside** one parent fires the insertion half
+only: the child set is unchanged, and firing both would make an idempotent
+container re-derive twice per moved row.
 
 The pieces that follow from it:
 - **The boundary is the observer's own question.** Every registered ancestor is
@@ -290,15 +310,25 @@ The pieces that follow from it:
   later insertion — or a keyed `for` **reorder**, which repositions a live node
   with `insert_before` and can move it *backwards* — can want it back. Every
   alternate is kept while the stepper owns the step's state; one that named its
-  own `state` keeps none. A *removal* notifies nobody, so it does not renumber
-  (issue #745).
-- **Cost:** one `Cell` read per insertion while **nothing on the thread** is
-  registered — `COUNT` is thread-local, not per document, so one live container
-  anywhere makes every insertion in every document on that thread pay an
-  ancestor walk. That walk is **0.12 µs** per insertion at depth 8 (0.16 µs at
+  own `state` keeps none. A **removal** runs the same whole pass for the same
+  reason, through `on_child_removed` (issue #745): a step that goes moves every
+  step behind it backwards, which renumbers it and can restate it.
+- **`StepperCompleted` is terminal** (issue #741). The step walk stops at the
+  first one: that block is what a stepper shows *instead of* its steps once they
+  are all done, so neither its content nor anything after it is a position. It
+  used to walk straight past, numbering a trailing step and re-deriving a nested
+  stepper's steps at the outer stepper's indices.
+- **Cost:** one `Cell` read per insertion (and one per removal) while **nothing
+  on the thread** is registered for that half — the counts are thread-local, not
+  per document, so one live container anywhere makes every insertion in every
+  document on that thread pay an ancestor walk. That walk is **0.12 µs** per insertion at depth 8 (0.16 µs at
   depth 1, 0.56 µs at depth 32 — roughly 0.013 µs per level), measured on 5000
-  appends, software build, best of 40. `Stepper` is the one container whose
-  own patch is O(n) per insertion, so growing one step at a time is quadratic:
+  appends, software build, best of 40. A registered **removal** observer costs
+  about the same per removal (+0.13 µs at depth 8, against a 0.54 µs
+  `MockDomDocument` detach) and adds **+0.02 µs to every insertion** on the
+  thread, for the parent read an insertion verb makes to find out whether it is
+  moving a node out of somewhere. `Stepper` is the one container whose own patch
+  is O(n) per change, so growing *or shrinking* one step at a time is quadratic:
   10.6 ms for 100 steps, against 0.11 ms for the ten a real stepper has (#748).
 
 `RadioGroup::size` and the `Stepper` props are the same shape.

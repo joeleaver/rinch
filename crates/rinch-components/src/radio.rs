@@ -388,7 +388,9 @@ impl Component for RadioGroup {
             && let Ok(size) = self.size.parse::<RadioSize>()
         {
             give_radios_a_default_size(&radios, size);
-            // And again for every radio that lands later (issue #716).
+            // And again for every radio that lands later (issue #716). Not
+            // for one that leaves: a group's size is positionless, so nothing
+            // is re-derived by a removal (issue #745).
             crate::late_children::adopt_late_children(
                 __scope,
                 &radios,
