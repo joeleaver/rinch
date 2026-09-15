@@ -168,28 +168,45 @@ impl Scrollbars {
 /// keeps a padded container from deciding it overflows when it does not.
 /// Measured against Chrome (issue #480, which is what pinned it): rinch works
 /// in the container's *content*-box frame where Chrome's
-/// `scrollWidth`/`clientWidth` work in its *padding*-box frame. For **in-flow**
-/// children the two agree on both the existence and the size of the overflow,
-/// because Chrome extends the scrollable area by the container's end padding
-/// and the pair of paddings on each side of that subtraction cancels.
+/// `scrollWidth`/`clientWidth` work in its *padding*-box frame. For a
+/// **non-positioned** (`static`) child the frame difference changes neither the
+/// existence nor the size of the overflow, because Chrome extends that child's
+/// contribution by the container's end padding and the pair of paddings on each
+/// side of the subtraction cancels.
 ///
-/// They do **not** cancel for a **positioned** child, and rinch over-reports
-/// its overflow by the container's **end padding** on each axis (not its
-/// border, which both frames exclude). Chrome extends nothing for a positioned
-/// box: its scrollable area is the union of the container's padding box and
-/// the box's own border box. Measured in Chrome 150 and 153, a `width: 200px;
-/// height: 100px; padding: 20px; overflow: auto; position: relative` container:
-/// a 210x50 in-flow child gives 50px of horizontal travel in both, while the
-/// same box at `position: absolute; left: 0` gives Chrome 10px and rinch 30px;
-/// a `position: absolute; inset: 0` child gives Chrome no overflow and rinch
-/// 20px on each axis, so rinch paints two bars Chrome does not. With a 5px
-/// border and `padding: 20px 30px 20px 10px` the `inset: 0` child gives rinch
-/// 30x20 — the right and bottom paddings — against Chrome's none (Chrome 153).
-/// This is older than the containing-block filter above and not fixed by it:
-/// the cure is to measure a positioned child against the container's padding
-/// box, which needs this function to know which frame each child is in. With
-/// no end padding the two answers are equal, which is why no fixture with a
-/// padding-less container shows it.
+/// A **positioned** child is measured differently from Chrome — `absolute`, or
+/// `relative` with an offset (every number below measured in Chrome 153):
+///
+/// * **`absolute`.** Chrome extends nothing: the scrollable area is the union
+///   of the container's padding box and the box's own border box. rinch adds
+///   the end padding anyway, so it over-reports by **up to** the container's
+///   end padding on each axis (not its border, which both frames exclude). In
+///   a `width: 200px; height: 100px; padding: 20px; overflow: auto; position:
+///   relative` container, a 210x50 static child gives 50px of horizontal travel
+///   in both; the same box at `absolute; left: 0` gives Chrome 10px and rinch
+///   30px; a 190x50 one gives Chrome none and rinch 10px; and an `absolute;
+///   inset: 0` child gives Chrome none and rinch 20px on each axis, so rinch
+///   paints two bars Chrome does not. With a 5px border and `padding: 20px 30px
+///   20px 10px` the `inset: 0` child gives rinch 30x20 — the right and bottom
+///   paddings — against Chrome's none.
+/// * **`relative` with an offset.** Chrome counts the box at its *static*
+///   position extended by the end padding, and at its *offset* position
+///   without it; rinch's layout rect is the offset one, and rinch extends it.
+///   Before clamping, rinch's answer is Chrome's plus the smaller of the offset
+///   and the end padding, per axis. An offset toward the end over-reports by
+///   up to the end padding: in the padded container above, a 210x50 child at
+///   `left: 10px` gives Chrome 50 and rinch 60, and at `left: 40px` Chrome 70
+///   and rinch 90. An offset toward the **start** *under*-reports by up to the
+///   offset's size, and needs no padding at all to do it: in a plain `width:
+///   200px; height: 100px; overflow: auto` container, a 240x50 child at
+///   `left: -40px` gives Chrome 40px of
+///   travel and rinch no bar, so content Chrome can scroll to is unreachable.
+///   A `relative` child with no offset is measured exactly like a `static` one.
+///
+/// Both are older than the containing-block filter above and not fixed by it.
+/// The cure needs this function to know how each child contributes: the
+/// padding box alone for an `absolute`, and for a `relative` the larger of the
+/// padded static rect and the unpadded offset rect.
 ///
 /// In logical pixels — this is layout's own unit, and every caller either wants
 /// it that way or scales the result itself.

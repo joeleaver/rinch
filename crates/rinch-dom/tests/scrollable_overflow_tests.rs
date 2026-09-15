@@ -16,10 +16,10 @@
 //! that rinch's overlay bars never take. `scrollWidth - clientWidth` is the
 //! quantity compared against `ScrollbarTrack::max_scroll`; Chrome measures both
 //! in the container's **padding**-box frame and rinch in its **content**-box
-//! frame, which cancels for **in-flow** children — every padded row below is
-//! one. It does not cancel for a positioned child of a padded container, where
-//! rinch over-reports by the end padding; `content_extents`' own doc has the
-//! numbers, and nothing here pins that case.
+//! frame, which cancels for a **non-positioned** child — every padded row below
+//! is a `static` one. A positioned child (`absolute`, or `relative` with an
+//! offset) is measured differently from Chrome; `content_extents`' own doc has
+//! the rule and the numbers, and nothing here pins that case.
 //!
 //! The Chrome numbers, for whoever re-derives these:
 //!
@@ -276,7 +276,8 @@ fn a_transformed_container_is_a_containing_block_too() {
 /// `<html>`'s box **is** the initial containing block in rinch, so an absolute
 /// child of it resolves against the box it is a child of and counts — the arm
 /// `out_of_flow::out_of_flow_kind` stops its walk on, mirrored here because the
-/// two must not drift apart (nothing but this suite holds them together).
+/// two must not drift apart. Nothing enforces that: this suite pins the scroll
+/// predicate against Chrome and never compares it with `out_of_flow_kind`.
 ///
 /// `<html>`'s own `overflow` is `visible`, so this is asserted on
 /// `content_extents` rather than on a bar: `scrollbars` returns early for a

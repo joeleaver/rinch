@@ -1579,7 +1579,8 @@ it.
 scroll range from the container's **direct children**, and only from those the
 container is the **containing block** of — `out_of_flow::contributes_to_scrollable_overflow`,
 which mirrors `out_of_flow_kind`'s walk. The two **must not drift apart**, and
-nothing but `scrollable_overflow_tests` holds them together: they share
+nothing enforces it — `scrollable_overflow_tests` pins this predicate against
+Chrome, but no test compares it with `out_of_flow_kind`. They share
 `Node::establishes_abs_containing_block`, but each spells its own `match` on
 `position` and its own initial-containing-block test, so a change to either —
 a transformed ancestor containing a fixed box (#386/#415), say — has to be made
@@ -1605,16 +1606,21 @@ wrong box, which is what grew the phantom bar (**#770**). And
 `find_vertical_scroll_container` compares the same extent against the
 container's **border**-box height where `scrollbars` compares it against the
 content box, so a padded container can paint and drag a thumb the wheel routes
-straight past (**#769**). A **positioned** child of a padded container is
-measured in the wrong frame: the paddings of rinch's content-box frame and
-Chrome's padding-box frame cancel for in-flow children only, so rinch
-over-reports a positioned child's overflow by the container's end padding — a
-`position: absolute; inset: 0` child (a `LoadingOverlay`) in a `padding: 20px;
-overflow: auto; position: relative` panel paints two bars with 20px of travel
-where Chrome paints none (`content_extents`' doc has the measurements). And the
-extent is each child's untransformed **border** box, so a child's `transform`,
-its end margins, and the children of a `display: contents` wrapper (whose own
-box is 0x0) add nothing, where Chrome counts all three.
+straight past (**#769**). A **positioned** child — `absolute`, or `relative`
+with an offset — is measured differently from Chrome. The paddings of rinch's
+content-box frame and Chrome's padding-box frame cancel for a **non-positioned**
+child only. An `absolute` child's overflow is over-reported by **up to** the
+container's end padding: a `position: absolute; inset: 0` child (a
+`LoadingOverlay`) in a `padding: 20px; overflow: auto; position: relative` panel
+paints two bars with 20px of travel where Chrome paints none. A `relative` child
+is read only at its offset position, where Chrome also counts its static one. An
+offset toward the end over-reports by up to the end padding; an offset toward
+the **start** under-reports by up to the offset, and needs no padding to do it —
+a 240x50 child at `left: -40px` in a plain 200x100 scroller gives Chrome 40px of
+travel and rinch no bar. `content_extents`' doc has the rule and the
+measurements. And the extent is each child's untransformed **border** box, so a
+child's `transform`, its end margins, and the children of a `display: contents`
+wrapper (whose own box is 0x0) add nothing, where Chrome counts all three.
 
 **Styling the bar (#416).** Two inherited custom properties:
 `--rinch-scrollbar-color: <thumb> [<track>]` and `--rinch-scrollbar-width: auto

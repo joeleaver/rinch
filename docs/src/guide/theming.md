@@ -472,12 +472,19 @@ has none.
 
 Where desktop still differs from a browser:
 
-- **A positioned child of a padded scroll container** can add up to the
+- **An `absolute` child of a padded scroll container** can add up to the
   container's right and bottom padding to its scroll range, which a browser
   does not. A `position: absolute; inset: 0` overlay — a `LoadingOverlay`, say —
   inside a `padding: 20px; overflow: auto; position: relative` panel gives the
   panel 20px of scroll travel on each axis and two scrollbars, where a browser
-  shows none. In-flow children of a padded container are measured correctly.
+  shows none.
+- **A `position: relative` child with an offset** counts only where the offset
+  puts it, while a browser also counts where it would have been. Shifted toward
+  the end of a padded container, it can add up to the container's right or
+  bottom padding; shifted toward the start, it can take away up to the offset,
+  padded container or not — a 240px-wide child at `left: -40px` in a 200px-wide
+  `overflow: auto` box gets no scrollbar, where a browser gives 40px of travel.
+  A `relative` child with no offset is measured like any other.
 - **An absolute whose containing block is further up than its parent** is
   counted by no scroll container at all; a browser counts it in that ancestor.
 - **A child's `transform` and its end margins** do not extend the scroll range,
