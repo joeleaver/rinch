@@ -83,7 +83,9 @@ pub mod mock;
 mod render_scope;
 pub mod traits;
 
-pub use bool_attr::{attr_is_truthy, data_attr_is_on, is_boolean_attribute};
+pub use bool_attr::{
+    attr_is_truthy, data_attr_is_on, is_boolean_attribute, is_presence_reflected_attribute,
+};
 pub use inline_style::{
     StyleProp, normalize_property_name, serialize_declarations, split_declarations,
 };
@@ -313,9 +315,21 @@ impl NodeHandle {
             // `checked=""` must be one state, or `[checked]`-style selectors and
             // a browser's attribute/property mirroring disagree with each other.
             self.set_attribute(name, "");
-        } else if self.get_attribute(name).is_some() {
+        } else if is_presence_reflected_attribute(name) || self.get_attribute(name).is_some() {
             // Guarded so the overwhelmingly common case — a static `false`, or an
             // effect re-firing while already off — costs no style invalidation.
+            //
+            // The guard asks "is the attribute already absent" as a proxy for
+            // "is the control already off", and for `checked` / `selected` that
+            // proxy is false on the web: a user toggle sets the browser's dirty
+            // checkedness flag and moves the live property alone, so the
+            // attribute reads absent while the box is checked, the write is
+            // skipped, and the binding never recovers (issue #687). Those two
+            // go to the backend unconditionally, which is the only layer that
+            // can see the property — `WebDocument::remove_attribute` mirrors the
+            // removal onto it. Desktop pays nothing for the extra call:
+            // `RinchDocument::remove_attribute` returns early for an attribute
+            // the node does not carry.
             self.remove_attribute(name);
         }
     }
@@ -1034,6 +1048,68 @@ where
 mod tests {
     use super::*;
     use mock::MockDomDocument;
+
+    /// A falsey write of `checked` / `selected` reaches the backend even when
+    /// the content attribute is already absent (issue #687).
+    ///
+    /// `write_attribute`'s removal is otherwise guarded on the attribute being
+    /// present, which reads as "already off" — true for every attribute whose
+    /// whole state is the attribute, and false for these two on the web, where
+    /// a user toggle moves the live IDL property and leaves the attribute
+    /// behind. Only the backend can see that property, so the writer must call
+    /// it; whether the call is worth making is not the writer's question.
+    ///
+    /// The mock records every mutation as a dirty node, so "did the call reach
+    /// the backend" is observable here without a browser. Three mutants die:
+    /// restoring the guard for the pair (row 1 and row 2), listing only
+    /// `checked` in it (row 2), and dropping the guard for *everything* (row 3,
+    /// which would restyle a node on every falsey write of any boolean
+    /// attribute).
+    #[test]
+    fn a_falsey_write_of_the_presence_pair_always_reaches_the_backend() {
+        let doc = Rc::new(RefCell::new(MockDomDocument::new()));
+        let body = doc.borrow().body();
+        let mut scope = RenderScope::new(doc.clone(), body);
+
+        let input = scope.create_element("input");
+        let option = scope.create_element("option");
+        let dirtied = |doc: &Rc<RefCell<MockDomDocument>>, n: &NodeHandle| {
+            doc.borrow_mut().take_dirty_nodes().contains(&n.node_id())
+        };
+        doc.borrow_mut().take_dirty_nodes(); // drop the creation noise
+
+        // Neither attribute is present, so the guard would skip both writes.
+        input.write_attribute("checked", "false");
+        assert!(
+            dirtied(&doc, &input),
+            "a falsey `checked` must reach the backend even with no attribute              to remove — on the web that call is the only thing that can clear              a user-toggled control (#687)"
+        );
+
+        option.write_attribute("selected", "false");
+        assert!(
+            dirtied(&doc, &option),
+            "`selected` is the other half of the pair — an option's selectedness              goes dirty the same way"
+        );
+
+        // The counter-case: every other boolean attribute keeps the guard, so a
+        // falsey write with nothing to remove costs no invalidation.
+        input.write_attribute("disabled", "false");
+        assert!(
+            !dirtied(&doc, &input),
+            "an ordinary boolean attribute must keep its guard: its state is the              attribute, so an absent one is already off"
+        );
+
+        // Positive control for that instrument — the same call, with something
+        // to remove, does reach the backend.
+        input.write_attribute("disabled", "true");
+        doc.borrow_mut().take_dirty_nodes();
+        input.write_attribute("disabled", "false");
+        assert!(
+            dirtied(&doc, &input),
+            "a falsey write that does erase an attribute must invalidate"
+        );
+        assert_eq!(input.get_attribute("disabled"), None);
+    }
 
     /// A component's own resources are attributed to the component's child
     /// scope, not to the effect that re-renders it (issue #141).

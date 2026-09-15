@@ -117,6 +117,36 @@ fn is_lowercase_boolean_attribute(name: &str) -> bool {
     )
 }
 
+/// Whether `name` is a boolean attribute whose state the **browser** can move
+/// behind the app's back, so that the content attribute stops describing it.
+///
+/// `checked` and `selected` are the whole set, and they are the two the web
+/// backend mirrors onto a live IDL property (`sync_presence_property`, issue
+/// #100). A browser sets a *dirty checkedness* / *dirty selectedness* flag on
+/// the first user toggle and from then on the content attribute is only the
+/// control's **default**: the box can read checked with no `checked` attribute
+/// anywhere, and `getAttribute` cannot tell.
+///
+/// That is what [`super::NodeHandle::write_attribute`] consults. Its removal is
+/// otherwise guarded by "is the attribute already absent", which is a sound
+/// proxy for "is it already off" for every attribute whose whole state *is* the
+/// attribute — and a false one for these two on the web, where a user click
+/// left the property on and the attribute off, so a binding writing `false`
+/// wrote nothing and the control stayed checked (issue #687).
+///
+/// Desktop has no such divergence: `:checked` (`stylo_impl.rs`) and `<option>`
+/// selectedness (`select.rs`) read the attribute and nothing else, and no
+/// desktop input path writes a raw `<input>`'s `checked`. The unguarded
+/// removal costs it nothing anyway — `RinchDocument::remove_attribute` returns
+/// early for an attribute the node does not carry.
+///
+/// `indeterminate` is deliberately **not** here: it is a property-only IDL flag
+/// with no content attribute at all, so it is not a boolean attribute either
+/// and `write_attribute` never maps it.
+pub fn is_presence_reflected_attribute(name: &str) -> bool {
+    name.eq_ignore_ascii_case("checked") || name.eq_ignore_ascii_case("selected")
+}
+
 /// Truthiness for a value **being written into** a boolean attribute.
 ///
 /// This is the *writer's* rule, and it is the only thing it is for: deciding

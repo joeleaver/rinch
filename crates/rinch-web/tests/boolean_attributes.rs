@@ -544,3 +544,117 @@ fn a_selected_write_after_the_option_went_dirty_still_wins() {
 
     f.teardown();
 }
+
+// ── #687: the guard that asked the wrong question ───────────────────────────
+
+/// A `checked` binding that reads a second signal, so the effect can re-run
+/// while the value it writes stays `false` — which is the only way an app sees
+/// #687 at all. A binding on one signal re-runs only when that signal changes,
+/// and a change would have corrected the control anyway.
+#[component]
+fn rebindable_checkbox(flag: Signal<bool>, rerun: Signal<u32>) -> NodeHandle {
+    rsx! {
+        div {
+            input {
+                id: "bound-chk",
+                r#type: "checkbox",
+                checked: {move || { rerun.get(); flag.get() }},
+            }
+        }
+    }
+}
+
+/// A user toggle leaves the box checked against a binding that says `false`,
+/// and the binding's next write must take it back (issue #687).
+///
+/// The browser sets *dirty checkedness* on the first user toggle and from then
+/// on the content attribute is only the control's default, so the attribute
+/// reads absent while the box reads checked. `write_attribute` guarded its
+/// removal on that attribute, saw "already off", and wrote nothing — the box
+/// stayed checked with the binding saying false, and stayed that way until the
+/// signal genuinely changed.
+///
+/// Red at `5f16cb0` on the final assertion: `.checked` was still `true` after
+/// the effect re-ran. The earlier assertions pass there too, and are the
+/// measurement that the browser really does hide the state from
+/// `getAttribute` — without them a failure here could be read as the click not
+/// having landed.
+#[wasm_bindgen_test]
+fn a_binding_that_says_false_takes_back_a_user_toggled_checkbox() {
+    let flag = Signal::new(false);
+    let rerun = Signal::new(0u32);
+    let f = Fixture::mount(move |scope: &mut RenderScope| rebindable_checkbox(scope, flag, rerun));
+
+    assert!(!f.prop("bound-chk", "checked"), "starts unchecked");
+    assert_eq!(
+        f.attr("bound-chk", "checked"),
+        None,
+        "and with no attribute"
+    );
+
+    // The user clicks. The property moves; the attribute does not.
+    f.el("bound-chk").click();
+    assert!(f.prop("bound-chk", "checked"), "the click checks the box");
+    assert_eq!(
+        f.attr("bound-chk", "checked"),
+        None,
+        "and leaves the content attribute absent — the state `get_attribute` \
+         cannot see, which is the whole of #687"
+    );
+
+    // The effect re-runs and writes the same `false` it has written all along.
+    rerun.set(1);
+    assert_eq!(
+        f.attr("bound-chk", "checked"),
+        None,
+        "still no attribute to remove"
+    );
+    assert!(
+        !f.prop("bound-chk", "checked"),
+        "a binding that says false must un-check a control the user toggled, \
+         even with no attribute to remove (#687)"
+    );
+
+    f.teardown();
+}
+
+/// The `<option>` half: a falsey `selected` write takes back an option whose
+/// selectedness went dirty.
+///
+/// `HTMLOptionElement.selected`'s setter sets the dirtiness flag exactly as a
+/// user pick does, so the fixture can reach the state without driving the
+/// popup. Off the fixed point on purpose: the option is left *selected* with no
+/// attribute, which is precisely where the content attribute stops describing
+/// the control.
+///
+/// This is the fixture that kills a fix listing only `checked` in the pair.
+#[wasm_bindgen_test]
+fn a_falsey_selected_write_takes_back_a_dirtied_option() {
+    let out = Rc::new(RefCell::new(None));
+    let f = Fixture::mount(checked_family_fixture(out.clone()));
+    let (_input, option) = out.borrow().clone().expect("fixture built");
+
+    let live: web_sys::HtmlOptionElement = f.el("lit-opt").dyn_into().unwrap();
+    live.set_selected(true);
+    assert!(f.prop("lit-opt", "selected"), "the option is selected …");
+    assert_eq!(
+        f.attr("lit-opt", "selected"),
+        None,
+        "… with no `selected` attribute anywhere"
+    );
+
+    option.write_attribute("selected", "false");
+    assert!(
+        !f.prop("lit-opt", "selected"),
+        "a falsey `selected` write must deselect a dirtied option (#687)"
+    );
+    let select: web_sys::HtmlSelectElement = f.el("lit-sel").dyn_into().unwrap();
+    assert_eq!(
+        select.selected_index(),
+        0,
+        "and the <select> falls back to its first option, as a browser does \
+         when nothing is selected"
+    );
+
+    f.teardown();
+}
