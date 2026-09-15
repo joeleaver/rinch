@@ -849,11 +849,13 @@ fn atomic_inline_reference(px: f32) -> (f32, f32) {
 /// is its end (64px) whatever the scheduler does, and showing the panel re-mints
 /// it paused at t=0, i.e. at 32px.
 ///
-/// Both show routes are asserted: an inline `display` write, which re-cascades
-/// the panel alone and reaches the span only through
-/// `restart_animations_in_subtree`, and a class, which re-cascades the subtree.
-#[test]
-fn a_paused_font_size_animation_in_a_shown_panel_resizes_its_inline_block() {
+/// **The two show routes are two tests on purpose.** They are not the same
+/// question: an inline `display` write re-cascades the panel alone, so the span
+/// is reached only by `restart_animations_in_subtree`, while a class re-cascades
+/// the subtree and the span's own cascade does the work. Deleting the walk's
+/// re-measure therefore fails one of them and not the other, and a single test
+/// looping over both routes could not say which — it stops at the first.
+fn shown_panel_case(inline_route: bool) {
     let small = atomic_inline_reference(32.0);
     let big = atomic_inline_reference(64.0);
     assert_ne!(
@@ -861,46 +863,57 @@ fn a_paused_font_size_animation_in_a_shown_panel_resizes_its_inline_block() {
         "precondition: the two fonts measure differently"
     );
 
-    for inline_route in [true, false] {
-        let (mut doc, panel, ib, span) = atomic_inline_panel("tb grows", "panel--here");
-        std::thread::sleep(std::time::Duration::from_millis(120));
-        frame(&mut doc);
-        doc.set_attribute(span, "class", "tb grows p");
-        doc.resolve_layout(VP.0, VP.1);
-        assert_eq!(
-            font_size(&doc, span),
-            64.0,
-            "precondition: paused at its fill"
-        );
-        assert_eq!(ib_size(&doc, ib), big, "precondition: measured at 64px");
+    let (mut doc, panel, ib, span) = atomic_inline_panel("tb grows", "panel--here");
+    std::thread::sleep(std::time::Duration::from_millis(120));
+    frame(&mut doc);
+    doc.set_attribute(span, "class", "tb grows p");
+    doc.resolve_layout(VP.0, VP.1);
+    assert_eq!(
+        font_size(&doc, span),
+        64.0,
+        "precondition: paused at its fill"
+    );
+    assert_eq!(ib_size(&doc, ib), big, "precondition: measured at 64px");
 
-        if inline_route {
-            doc.set_style(panel, "display", "none");
-        } else {
-            doc.set_attribute(panel, "class", "panel--gone");
-        }
-        doc.resolve_layout(VP.0, VP.1);
-        if inline_route {
-            doc.set_style(panel, "display", "block");
-        } else {
-            doc.set_attribute(panel, "class", "panel--here");
-        }
-        doc.resolve_layout(VP.0, VP.1);
-
-        assert_eq!(
-            font_size(&doc, span),
-            32.0,
-            "precondition: shown again, the animation is re-minted paused at t=0"
-        );
-        assert_eq!(
-            ib_size(&doc, ib),
-            small,
-            "inline route: {inline_route} — the inline-block is measured in the \
-             font its span shows"
-        );
-        quiet_frame(&mut doc, 0);
-        assert_eq!(ib_size(&doc, ib), small, "and stays");
+    if inline_route {
+        doc.set_style(panel, "display", "none");
+    } else {
+        doc.set_attribute(panel, "class", "panel--gone");
     }
+    doc.resolve_layout(VP.0, VP.1);
+    if inline_route {
+        doc.set_style(panel, "display", "block");
+    } else {
+        doc.set_attribute(panel, "class", "panel--here");
+    }
+    doc.resolve_layout(VP.0, VP.1);
+
+    assert_eq!(
+        font_size(&doc, span),
+        32.0,
+        "precondition: shown again, the animation is re-minted paused at t=0"
+    );
+    assert_eq!(
+        ib_size(&doc, ib),
+        small,
+        "the inline-block is measured in the font its span shows"
+    );
+    quiet_frame(&mut doc, 0);
+    assert_eq!(ib_size(&doc, ib), small, "and stays");
+}
+
+/// The **inline** `display` route: only the panel is re-cascaded, so the span is
+/// reached by `restart_animations_in_subtree` alone.
+#[test]
+fn a_paused_font_size_animation_in_a_panel_shown_inline_resizes_its_inline_block() {
+    shown_panel_case(true);
+}
+
+/// The **class** route: the subtree is re-cascaded, so the span's own cascade
+/// asks for the re-measure.
+#[test]
+fn a_paused_font_size_animation_in_a_panel_shown_by_class_resizes_its_inline_block() {
+    shown_panel_case(false);
 }
 
 /// The same freeze with no animation anywhere: the panel crosses `none` → block

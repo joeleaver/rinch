@@ -3382,6 +3382,12 @@ impl RinchDocument {
         // is not enough on its own (#784). A node can land in the set before
         // `ifc_dirty` is set: the cascade records it while resolving one node's
         // style and only then reaches the `display` change that sets the flag.
+        // The take is also the clear: a mark made *during* the measure below
+        // would be news, and clearing the set afterwards — which is what this
+        // did before #784 — would throw it away. Nothing records one today
+        // (`measure_inline_blocks` reaches none of `mark_atomic_inline_dirty`'s
+        // callers), so this is a statement about what the set means rather than
+        // a fix.
         for id in std::mem::take(&mut self.tree.dirty_atomic_inlines) {
             if let Some(taffy_id) = self.tree.nodes.get(id).and_then(|n| n.taffy_id) {
                 let _ = self.tree.taffy.mark_dirty(taffy_id);
@@ -3393,8 +3399,6 @@ impl RinchDocument {
             .map(|t| (t, None))
             .collect();
         self.measure_inline_blocks(&ib_taffy_ids);
-        // Everything pending is about to be measured by the line above.
-        self.tree.dirty_atomic_inlines.clear();
     }
 
     /// Record that `node_id`'s content or style changed, so every atomic inline
