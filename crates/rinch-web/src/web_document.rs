@@ -1202,6 +1202,15 @@ impl DomDocument for WebDocument {
         el.get_attribute(name)
     }
 
+    /// Straight to the browser's own CSSOM, which is why nothing here restates
+    /// the property-name rules desktop needs (#711): `setProperty` lowercases a
+    /// non-custom name and compares custom ones exactly, and no `rinch-web` code
+    /// compares a property name itself. The `style:` prop's merge is a
+    /// different path and *is* shared — [`StyleProp`] reads and writes the
+    /// whole `style` attribute through `rinch-core`'s parser on both backends,
+    /// so it takes the fold from there.
+    ///
+    /// [`StyleProp`]: rinch_core::dom::StyleProp
     fn set_style(&mut self, node: NodeId, property: &str, value: &str) {
         if let Some(n) = self.nodes.get(&node.0)
             && let Ok(el) = n.clone().dyn_into::<web_sys::HtmlElement>()
