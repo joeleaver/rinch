@@ -80,6 +80,27 @@ pub fn styles() -> String {
     white-space: nowrap;
 }
 
+/* Label + description column. Present whenever either is set, so a checkbox
+   with only a label is one span deeper than it used to be and looks the same:
+   a column of one is the row it replaced. */
+.rinch-checkbox__body {
+    display: flex;
+    flex-direction: column;
+    gap: 0.125rem;
+}
+
+.rinch-checkbox__description {
+    font-size: var(--rinch-font-size-xs);
+    color: var(--rinch-color-dimmed);
+}
+
+/* Only a checkbox that has a description changes its cross-axis alignment:
+   centring a 1.25rem box on a two-line body puts it beside the gap between the
+   lines. A label-only checkbox keeps the centring it has always had. */
+.rinch-checkbox--with-description {
+    align-items: flex-start;
+}
+
 /* Checkbox sizes - matches Mantine: xs=16px, sm=20px, md=24px, lg=30px */
 .rinch-checkbox--xs .rinch-checkbox__box { width: 1rem; height: 1rem; }
 .rinch-checkbox--xs .rinch-checkbox__icon { width: 0.625rem; height: 0.625rem; }

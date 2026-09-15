@@ -98,7 +98,14 @@ pub struct List {
     pub spacing: String,
     /// Whether to center list items.
     pub center: bool,
-    /// Custom icon for list items.
+    /// Default icon for this list's items.
+    ///
+    /// Applied to the [`ListItem`]s **present at this list's own render** that
+    /// set no `icon` of their own — the item's icon wins. Items are found and
+    /// restyled after they have rendered, since a parent component renders
+    /// *after* its children, and that patch runs once: an item appended later,
+    /// by a `for` reconcile or a `show_dom` branch, does not get the default
+    /// (issue #716).
     pub icon: Option<TablerIcon>,
     /// Whether to show list markers.
     pub with_padding: bool,
@@ -165,8 +172,58 @@ impl Component for List {
         for child in children {
             container.append_child(child);
         }
+
+        if let Some(icon) = self.icon {
+            give_items_a_default_icon(&container, icon, __scope);
+        }
+
         container
     }
+}
+
+/// Give every item in `node`'s subtree that has no icon of its own the list's
+/// `icon`, in the layout [`ListItem`] would have built for it.
+///
+/// The walk stops at each item rather than descending into it: an item's own
+/// content — including a nested `List`, which has already applied its own
+/// default — is not this list's to restyle.
+fn give_items_a_default_icon(node: &NodeHandle, icon: TablerIcon, scope: &mut RenderScope) {
+    let classes = node.get_attribute("class").unwrap_or_default();
+    let mut tokens = classes.split_whitespace();
+    if tokens.clone().any(|c| c == "rinch-list__item") {
+        // The item set an icon of its own; a child's value wins over the
+        // parent's default.
+        if !tokens.any(|c| c == "rinch-list__item--with-icon") {
+            adopt_icon(node, icon, scope);
+        }
+        return;
+    }
+
+    for child in node.children() {
+        give_items_a_default_icon(&child, icon, scope);
+    }
+}
+
+/// Rebuild `item` into the icon layout, moving whatever it already holds into
+/// the content span.
+fn adopt_icon(item: &NodeHandle, icon: TablerIcon, scope: &mut RenderScope) {
+    let existing = item.children();
+
+    let icon_span = scope.create_element("span");
+    icon_span.set_attribute("class", "rinch-list__item-icon");
+    let icon_el = render_tabler_icon(scope, icon, TablerIconStyle::Outline);
+    icon_span.append_child(&icon_el);
+
+    let content_span = scope.create_element("span");
+    content_span.set_attribute("class", "rinch-list__item-content");
+    // `append_child` detaches first, so this is a move out of `item`.
+    for child in &existing {
+        content_span.append_child(child);
+    }
+
+    item.add_class("rinch-list__item--with-icon");
+    item.append_child(&icon_span);
+    item.append_child(&content_span);
 }
 
 /// A list item.

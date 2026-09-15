@@ -78,12 +78,18 @@ impl std::str::FromStr for StepperOrientation {
 /// ```ignore
 /// rsx! {
 ///     Stepper { active: 1, completed_icon: TablerIcon::CircleCheck,
-///         StepperStep { label: "Step 1", description: "Create account" }
-///         StepperStep { label: "Step 2", description: "Verify email" }
-///         StepperStep { label: "Step 3", description: "Complete profile" }
+///         StepperStep { step: 0, state: "completed", label: "Step 1", description: "Create account" }
+///         StepperStep { step: 1, state: "progress", label: "Step 2", description: "Verify email" }
+///         StepperStep { step: 2, label: "Step 3", description: "Complete profile" }
 ///     }
 /// }
 /// ```
+///
+/// Each step's `state` and `step` are the **caller's** to set, despite what
+/// `StepperStep`'s own field docs say: this component publishes `active` as
+/// `data-active` and does not derive either (issue #709). Without a `state`
+/// every step is inactive, which is what made this example draw no custom
+/// completed icon whatever `completed_icon` said.
 #[derive(Debug, Default)]
 pub struct Stepper {
     /// Currently active step (0-indexed).
@@ -98,11 +104,34 @@ pub struct Stepper {
     pub radius: String,
     /// Icon size.
     pub icon_size: String,
-    /// Whether to allow clicking on completed steps.
+    /// Whether a step *after* the active one may be selected.
+    ///
+    /// When true, each step past [`Stepper::active`] **present at this
+    /// stepper's own render** that did not ask to be clickable itself is made
+    /// clickable; a step appended later is not (issue #716). A step that set
+    /// `allow_step_click` or `allow_step_select` of its own is already clickable
+    /// and is left alone, so this only ever grants — turning it off does not
+    /// take a step's own ask away.
+    ///
+    /// Clickable is currently **decorative**: the class carries a cursor and a
+    /// hover state, and this component registers no click handler and takes no
+    /// callback (issue #709), as `allow_step_click` and `allow_step_select`
+    /// already did.
     pub allow_next_steps_select: bool,
-    /// Custom completed step icon.
+    /// Default completed-step icon.
+    ///
+    /// Used by the [`StepperStep`]s in the completed state **present at this
+    /// stepper's own render** that set no `completed_icon` of their own — the
+    /// step's icon wins. Steps are patched after they have rendered, since a
+    /// parent component renders *after* its children, and that patch runs once:
+    /// a step appended later keeps the default tick (issue #716).
     pub completed_icon: Option<TablerIcon>,
-    /// Custom progress step icon.
+    /// Default in-progress-step icon.
+    ///
+    /// Used by the [`StepperStep`]s in the progress state **present at this
+    /// stepper's own render** that set no `progress_icon` of their own, in place
+    /// of that step's `icon` or its number. The step's own `progress_icon` wins,
+    /// and a step appended later keeps whatever it drew (issue #716).
     pub progress_icon: Option<TablerIcon>,
 }
 
@@ -160,10 +189,87 @@ impl Component for Stepper {
             steps_container.append_child(child);
         }
 
+        let steps = collect_steps(&steps_container);
+
+        if self.allow_next_steps_select {
+            for step in steps.iter().skip(self.active as usize + 1) {
+                // A step that asked to be clickable itself already carries the
+                // class; `add_class` does not deduplicate.
+                if !has_class(step, CLICKABLE_CLASS) {
+                    step.add_class(CLICKABLE_CLASS);
+                }
+            }
+        }
+
+        for step in &steps {
+            if let Some(icon_box) = step_icon_box(step) {
+                let fallback = icon_box.get_attribute(ICON_FALLBACK_ATTR);
+                let default_icon = match fallback.as_deref() {
+                    Some("completed") => self.completed_icon,
+                    Some("progress") => self.progress_icon,
+                    _ => None,
+                };
+                if let Some(icon) = default_icon {
+                    for child in icon_box.children() {
+                        child.remove();
+                    }
+                    let icon_el = render_tabler_icon(__scope, icon, TablerIconStyle::Outline);
+                    icon_box.append_child(&icon_el);
+                }
+            }
+        }
+
         container.append_child(&steps_container);
 
         container
     }
+}
+
+/// The class a clickable step carries.
+const CLICKABLE_CLASS: &str = "rinch-stepper__step--clickable";
+
+/// Set by [`StepperStep`] on its icon box to say which of the parent's default
+/// icons, if any, may replace what it drew there.
+///
+/// The step's own icon props are resolved before this is written, so a box that
+/// carries the attribute is one whose step supplied nothing for that state —
+/// which is exactly the case where the parent's default applies.
+const ICON_FALLBACK_ATTR: &str = "data-icon-fallback";
+
+/// Does `node` carry `class` as a whole class token?
+fn has_class(node: &NodeHandle, class: &str) -> bool {
+    node.get_attribute("class")
+        .unwrap_or_default()
+        .split_whitespace()
+        .any(|c| c == class)
+}
+
+/// Every step in `node`'s subtree, in document order.
+///
+/// Steps are found by class rather than taken as `children` directly: a `for`
+/// loop or a conditional puts wrapper nodes between the stepper and its steps.
+/// The walk stops at each step, so a nested stepper inside a step's content is
+/// not this one's to renumber.
+fn collect_steps(node: &NodeHandle) -> Vec<NodeHandle> {
+    fn walk(node: &NodeHandle, out: &mut Vec<NodeHandle>) {
+        if has_class(node, "rinch-stepper__step") {
+            out.push(node.clone());
+            return;
+        }
+        for child in node.children() {
+            walk(&child, out);
+        }
+    }
+    let mut out = Vec::new();
+    walk(node, &mut out);
+    out
+}
+
+/// A step's icon box, which is its first child.
+fn step_icon_box(step: &NodeHandle) -> Option<NodeHandle> {
+    step.children()
+        .into_iter()
+        .find(|child| has_class(child, "rinch-stepper__step-icon"))
 }
 
 /// Individual step in the stepper.
@@ -207,21 +313,18 @@ impl Component for StepperStep {
         };
 
         let loading_class = if self.loading {
-            " rinch-stepper__step--loading"
+            "rinch-stepper__step--loading"
         } else {
             ""
         };
 
         let clickable = if self.allow_step_click || self.allow_step_select {
-            " rinch-stepper__step--clickable"
+            CLICKABLE_CLASS
         } else {
             ""
         };
 
-        let class = format!(
-            "rinch-stepper__step {} {}{}",
-            state_class, loading_class, clickable
-        );
+        let class = format!("rinch-stepper__step {state_class} {loading_class} {clickable}");
 
         let step_el = rinch_macros::rsx! { div { class: "rinch-stepper__step" } };
         step_el.set_attribute("class", &class);
@@ -233,6 +336,19 @@ impl Component for StepperStep {
         // Step number/icon
         let step_number = self.step.map(|n| n + 1).unwrap_or(1);
         let icon_container = rinch_macros::rsx! { div { class: "rinch-stepper__step-icon" } };
+
+        // Which of the stepper's default icons, if any, may replace what this
+        // step is about to draw. Set only where the step supplied nothing of its
+        // own for the state it is in.
+        match state {
+            "completed" if !self.loading && self.completed_icon.is_none() => {
+                icon_container.set_attribute(ICON_FALLBACK_ATTR, "completed");
+            }
+            "progress" if !self.loading && self.progress_icon.is_none() => {
+                icon_container.set_attribute(ICON_FALLBACK_ATTR, "progress");
+            }
+            _ => {}
+        }
 
         let icon_content = if self.loading {
             rinch_macros::rsx! { span { class: "rinch-stepper__loader" } }

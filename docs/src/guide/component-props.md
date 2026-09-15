@@ -189,7 +189,7 @@ and no stylesheet in the workspace matches that class.
 | `required` | `bool` | `false` | |
 | `autosize` | `bool` | `false` | Auto-resize textarea |
 | `min_rows` | `Option<u32>` | `None` | Visible rows; sizes the control to that many lines. Defaults to 2 (HTML default) when unset. A larger CSS `min-height` wins |
-| `max_rows` | `Option<u32>` | `None` | Upper bound on rows when `autosize` is set |
+| `max_rows` | `Option<u32>` | `None` | **Declared and inert on desktop (#715).** A textarea has no content height, so its used height is exactly the `min-height` its `rows` and the sheet's 60–120px floor give it — and `min-height` beats `max-height`, so no cap can bind at any value. On the allowlist in `no_dead_props.rs` until a textarea's height can follow its content |
 | `value` | `String` | `""` | |
 | `value_fn` | `Option<ReactiveString>` | `None` | Reactive value binding (auto-wrapped) |
 | `oninput` | `Option<InputCallback>` | `None` | Receives `String` |
@@ -251,7 +251,7 @@ Custom Default: `toggle_visibility` defaults to `true`.
 | Prop | Type | Default | Description |
 |------|------|---------|-------------|
 | `label` | `String` | `""` | |
-| `description` | `String` | `""` | |
+| `description` | `String` | `""` | Secondary line under the label (#707). Puts both in a `.rinch-checkbox__body` column and aligns the box to the first line |
 | `size` | `String` | `""` | |
 | `disabled` | `bool` | `false` | |
 | `checked` | `bool` | `false` | Static checked state |
@@ -264,12 +264,12 @@ Custom Default: `toggle_visibility` defaults to `true`.
 | Prop | Type | Default | Description |
 |------|------|---------|-------------|
 | `label` | `String` | `""` | |
-| `description` | `String` | `""` | |
+| `description` | `String` | `""` | Secondary line under the label (#707). Puts both in a `.rinch-switch__body` column and aligns the track to the first line |
 | `size` | `String` | `""` | |
 | `disabled` | `bool` | `false` | |
 | `checked` | `bool` | `false` | |
 | `checked_fn` | `Option<ReactiveBool>` | `None` | Reactive checked binding (auto-wrapped) |
-| `label_position` | `String` | `""` | "left" or "right" |
+| `label_position` | `String` | `""` | `"start"` puts the label before the track; anything else leaves it after |
 | `onchange` | `Option<Callback>` | `None` | |
 
 ### Select
@@ -319,7 +319,7 @@ Enter and Space on it toggle the dropdown. Arrow/Enter/Escape navigation of the
 | `label` | `String` | `""` | |
 | `description` | `String` | `""` | |
 | `error` | `String` | `""` | |
-| `size` | `String` | `""` | |
+| `size` | `String` | `""` | Default size for the radios present at the group's render (#707); a `Radio`'s own `size` wins, and a radio records its ask as `data-size` so an explicit `"md"` is not mistaken for an unset one. A radio added later is not sized (#716) |
 | `orientation` | `String` | `""` | "horizontal" or "vertical" |
 
 ### Slider
@@ -666,10 +666,19 @@ Custom Default: `ignore_case` defaults to `true`.
 | `size` | `String` | `""` | |
 | `spacing` | `String` | `""` | |
 | `center` | `bool` | `false` | Center items with icons |
-| `icon` | `Option<TablerIcon>` | `None` | Default icon for all items |
+| `icon` | `Option<TablerIcon>` | `None` | Default icon for the items present at the list's render that set none (#707); a `ListItem`'s own `icon` wins, and an item added later does not get it (#716) |
 | `with_padding` | `bool` | `false` | |
 
-**ListItem:** `icon: Option<TablerIcon>` — per-item icon override.
+**ListItem:** `icon: Option<TablerIcon>` — per-item icon override, which beats
+`List::icon`.
+
+A `List` renders *after* its items, so its default cannot reach them as a prop:
+it finds each item that built no icon layout of its own and rebuilds that item
+into the same markup `ListItem` uses, moving the content it already held into
+the content span. That patch runs **once**, at the list's own render, so an item
+appended afterwards renders without the default (issue #716). This applies to
+every container default in the library — `RadioGroup::size` and the three
+`Stepper` props behave the same way.
 
 ---
 
@@ -1049,7 +1058,7 @@ Sub-components: **HoverCardTarget** (no props), **HoverCardDropdown** (no props)
 | `radius` | `String` | `""` | |
 | `multiple` | `bool` | `false` | Allow multiple open items |
 | `chevron_position` | `String` | `""` | "left", "right" |
-| `disable_chevron_rotation` | `bool` | `false` | |
+| `disable_chevron_rotation` | `bool` | `false` | Holds the chevron still while an item is open (#707), through `data-disable-chevron-rotation` on the root. The rotation is a class rather than an inline style so this can outrank it |
 
 **AccordionItem:** `value: String`.
 
@@ -1115,9 +1124,9 @@ Custom Default: `total`, `value`, `siblings`, `boundaries` default to `1`; `with
 | `color` | `String` | `""` | |
 | `radius` | `String` | `""` | |
 | `icon_size` | `String` | `""` | |
-| `allow_next_steps_select` | `bool` | `false` | |
-| `completed_icon` | `Option<TablerIcon>` | `None` | Default completed icon for all steps |
-| `progress_icon` | `Option<TablerIcon>` | `None` | Default in-progress icon |
+| `allow_next_steps_select` | `bool` | `false` | Makes each step past `active` clickable (#707), among those present at the stepper's render (#716). Grants only: a step's own `allow_step_click` / `allow_step_select` is never taken away. **Decorative** — `Stepper` registers no click handler and takes no callback (#709) |
+| `completed_icon` | `Option<TablerIcon>` | `None` | Default completed icon for the steps present at the stepper's render that set none (#707); the step's own wins, a step added later does not get it (#716) |
+| `progress_icon` | `Option<TablerIcon>` | `None` | Default in-progress icon for the steps present at the stepper's render that set none (#707). It stands in for the *`progress_icon`* the step did not set, so it outranks that step's plain `icon`. A step added later does not get it (#716) |
 
 **StepperStep:**
 
@@ -1131,7 +1140,7 @@ Custom Default: `total`, `value`, `siblings`, `boundaries` default to `1`; `with
 | `allow_step_click` | `bool` | `false` | |
 | `allow_step_select` | `bool` | `false` | |
 | `loading` | `bool` | `false` | |
-| `state` | `String` | `""` | "step-progress", "step-completed", "step-inactive" |
+| `state` | `String` | `""` | `"completed"` or `"progress"`; anything else, including unset, is inactive. Set it yourself — `Stepper` does not derive it from `active` |
 | `step` | `Option<u32>` | `None` | Step index |
 
 **StepperCompleted:** No props.

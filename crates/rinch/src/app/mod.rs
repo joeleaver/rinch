@@ -10,6 +10,8 @@
 mod blink_and_click_focus_tests;
 mod click_handling;
 #[cfg(test)]
+mod component_prop_707_tests;
+#[cfg(test)]
 mod component_radius_tests;
 #[cfg(feature = "debug")]
 mod debug_commands;

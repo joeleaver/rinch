@@ -207,17 +207,36 @@ Every one of these props is `Option<TablerIcon>`. The `rsx!` macro adds the `Som
 |--------|-----------|--------|
 | `ActionIcon` | `icon` | `action_icon.rs:122` |
 | `Alert` | `icon` | `alert.rs:161` |
-| `Notification` | `icon` | `notification.rs:112` |
-| `AccordionControl` | `icon` | `accordion.rs:242` |
+| `Notification` | `icon` | `notification.rs:113` |
+| `AccordionControl` | `icon` | `accordion.rs:251` |
 | `Blockquote` | `icon` | `blockquote.rs:25` |
-| `List`, `ListItem` | `icon` | `list.rs:102`, `list.rs:176` |
-| `Stepper` | `completed_icon`, `progress_icon` | `stepper.rs:104`, `:106` |
-| `StepperStep` | `icon`, `completed_icon`, `progress_icon` | `stepper.rs:185`, `:187`, `:189` |
+| `List`, `ListItem` | `icon` | `list.rs:109`, `list.rs:233` |
+| `Stepper` | `completed_icon`, `progress_icon` | `stepper.rs:128`, `:135` |
+| `StepperStep` | `icon`, `completed_icon`, `progress_icon` | `stepper.rs:283`, `:285`, `:287` |
 | `NavLink` | `left_section`, `right_section` | `navlink.rs:100`, `:102` |
-| `DropdownMenuItem` | `left_section`, `right_section` | `dropdown_menu.rs:484`, `:486` |
-| `Tab` | `left_section`, `right_section` | `tabs.rs:392`, `:394` |
+| `DropdownMenuItem` | `left_section`, `right_section` | `dropdown_menu.rs:483`, `:485` |
+| `Tab` | `left_section`, `right_section` | `tabs.rs:397`, `:399` |
 
 The `Tree` component takes its icons through data rather than a prop: `TreeNodeData::icon` (`tree.rs:56`), set with the `with_icon(TablerIcon)` builder.
+
+**`List::icon` and the two `Stepper` icons are container *defaults*, and they
+work by patching the rendered children** (#707). A parent component renders
+*after* its children — the rsx macro builds the children into a `<template>` and
+hands the finished nodes to `Component::render` — so nothing a container knows
+can reach an item as a prop. `List` therefore finds each `.rinch-list__item`
+that carries no icon of its own and rebuilds it into the layout `ListItem` would
+have built; `Stepper` replaces the glyph in each step icon box that its
+`StepperStep` marked `data-icon-fallback`. **The item's own icon always wins**,
+and `Stepper::progress_icon` stands in for the *`progress_icon`* a step did not
+set, which therefore outranks that step's plain `icon` exactly as its own
+`progress_icon` would have. All three were declared and read by nothing until
+#707; the doc example on `Stepper` (`completed_icon: TablerIcon::CircleCheck`)
+is one of the things that now does what it says — once its steps carry a
+`state`, which `Stepper` still does not derive from `active` (issue #709).
+**A container default reaches only the children present at the container's own
+render** — the patch runs once, so an item a later `for` reconcile appends gets
+nothing (issue #716); `RadioGroup::size` and the `Stepper` props are the same
+shape.
 
 Paths are relative to `crates/rinch-components/src/`. `ActionIcon`'s `icon` prop is a convenience that renders the icon for you as Outline, sized from the component's own `size` prop. It is **mutually exclusive with children** — `loading` wins, then `icon`, and children render only if neither is set — so pass a rendered icon as a child (not via `icon:`) when you need a filled or custom-sized glyph.
 
@@ -2843,7 +2862,7 @@ Text {
 }
 ```
 
-**All component props support reactive closures.** Pass `{|| expr}` to any component prop (`variant`, `color`, `size`, `disabled`, etc.) to make it reactive — when signals change, the component re-renders automatically:
+**All component props support reactive closures** — except the `icon` / `*_icon` family, whose values the macro wraps as `Some(expr)` before the arm that would invoke it, so a reactive icon is a **compile error** naming `TablerIcon` (issue #718). Pass `{|| expr}` to any other component prop (`variant`, `color`, `size`, `disabled`, etc.) to make it reactive — when signals change, the component re-renders automatically:
 
 ```rust
 let active = Signal::new(false);

@@ -81,6 +81,27 @@ pub fn styles() -> String {
     white-space: nowrap;
 }
 
+/* Label + description column. Present whenever either is set, so a switch with
+   only a label is one span deeper than it used to be and looks the same: a
+   column of one is the row it replaced. */
+.rinch-switch__body {
+    display: flex;
+    flex-direction: column;
+    gap: 0.125rem;
+}
+
+.rinch-switch__description {
+    font-size: var(--rinch-font-size-xs);
+    color: var(--rinch-color-dimmed);
+}
+
+/* Only a switch that has a description changes its cross-axis alignment:
+   centring a 1.5rem track on a two-line body puts it beside the gap between the
+   lines. A label-only switch keeps the centring it has always had. */
+.rinch-switch--with-description {
+    align-items: flex-start;
+}
+
 /* Switch sizes */
 .rinch-switch--xs .rinch-switch__track { width: 1.75rem; height: 1rem; }
 .rinch-switch--xs .rinch-switch__thumb { width: 0.75rem; height: 0.75rem; }

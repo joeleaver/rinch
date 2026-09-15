@@ -102,6 +102,19 @@ pub fn styles() -> String {
     color: var(--rinch-color-dimmed);
 }
 
+/* AccordionItem adds this while its panel is open. */
+.rinch-accordion__chevron--rotated {
+    transform: rotate(180deg);
+}
+
+/* Accordion { disable_chevron_rotation: true } holds it still. Two classes and
+   an attribute against one class, so this wins on specificity whatever the
+   source order — and the rotation is a class rather than an inline style for
+   exactly this reason. */
+.rinch-accordion[data-disable-chevron-rotation="true"] .rinch-accordion__chevron--rotated {
+    transform: none;
+}
+
 /* Accordion panel — visibility toggled via inline display:none by the component */
 .rinch-accordion__panel {
     overflow: hidden;

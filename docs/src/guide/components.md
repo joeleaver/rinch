@@ -1122,6 +1122,15 @@ write `icon: TablerIcon::Check`, not `icon: Some(TablerIcon::Check)`.
 `Tree` takes its icons through data instead: `TreeNodeData::icon`, set with the
 `with_icon(TablerIcon)` builder.
 
+`List::icon` and the two `Stepper` icons are container **defaults** for the items
+**present at the container's own render** that set none — the item's own icon
+always wins — and were declared but wired to nothing until #707. The container
+patches its items after they have rendered, and that patch runs once, so an item
+a later `for` reconcile appends gets no default (issue #716).
+`Stepper::progress_icon` stands in for the `progress_icon` a step did not set, so
+it outranks that step's plain `icon`, exactly as the step's own `progress_icon`
+would have.
+
 ### Examples
 
 ```rust
@@ -1156,11 +1165,13 @@ Blockquote { icon: TablerIcon::Quote, cite: "— Unknown",
     "The best code is no code at all."
 }
 
-// Stepper with custom icons
+// Stepper with custom icons. `state` is the caller's to set — `Stepper`
+// publishes `active` but does not derive each step's state from it (#709),
+// so without one every step is inactive and no custom icon is reached.
 Stepper { active: 1, completed_icon: TablerIcon::CircleCheck,
-    StepperStep { label: "Account" }
-    StepperStep { label: "Verify" }
-    StepperStep { label: "Complete" }
+    StepperStep { step: 0, state: "completed", label: "Account" }
+    StepperStep { step: 1, state: "progress", label: "Verify" }
+    StepperStep { step: 2, label: "Complete" }
 }
 ```
 

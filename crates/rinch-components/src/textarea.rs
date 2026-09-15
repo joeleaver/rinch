@@ -33,7 +33,21 @@ pub struct Textarea {
     /// lines (plus padding and border). Defaults to 2 rows when unset, matching
     /// HTML. A larger CSS `min-height` still wins.
     pub min_rows: Option<u32>,
-    /// Maximum number of rows.
+    /// Maximum number of visible text rows.
+    ///
+    /// **Declared and inert on desktop** (issue #715). It is not that nothing
+    /// reads it — a `max-height` cannot *bind* on a rinch `<textarea>` at all.
+    /// The control has no content height (it holds its value in an attribute,
+    /// not as a text child), so `style_resolution` gives it a `min-height` from
+    /// its `rows`, and the stylesheet declares a 60–120px floor besides. Its
+    /// used height is therefore exactly its `min-height`, and `min-height` beats
+    /// `max-height` in CSS. Measured: `min_rows: 20` with `max_rows: 2` lays out
+    /// at 446px either way, and a textarea holding 40 lines is the same 80px as
+    /// an empty one.
+    ///
+    /// This is the reason `tests/no_dead_props.rs` still allowlists it. Wiring
+    /// it is #715's job, not a component's: the control's height has to be able
+    /// to follow its content first.
     pub max_rows: Option<u32>,
     /// Current value.
     pub value: String,
