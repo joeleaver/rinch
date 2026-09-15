@@ -402,7 +402,7 @@ fn test_apply_value_background_color() {
 // ── #250: `@keyframes` colour stops use the same colour parser as everything else ──
 
 /// Build a document whose one div runs `animation: tint 1000ms linear` from the
-/// given `@keyframes` body, with animations enabled from the first layout on.
+/// given `@keyframes` body, laid out once.
 /// The body's `color` is `rgb(7, 8, 9)`, the div's own `rgb(10, 20, 30)`.
 fn animated_div(keyframes: &str) -> (rinch_dom::RinchDocument, rinch_core::dom::NodeId) {
     use rinch_core::dom::DomDocument;
@@ -424,9 +424,6 @@ fn animated_div(keyframes: &str) -> (rinch_dom::RinchDocument, rinch_core::dom::
     doc.set_attribute(div, "style", "color: rgb(10, 20, 30)");
     doc.append_child(body, div);
 
-    // Animations are held off until the first layout has completed (the
-    // page-load guard); this test wants the very first resolve to start them.
-    doc.tree.transitions_enabled = true;
     doc.resolve_layout(800.0, 600.0);
     (doc, div)
 }
@@ -1172,8 +1169,8 @@ fn a_finished_width_transition_reaches_the_layout() {
     );
 }
 
-/// A `<div class="grow">` with a text child, under `css`, laid out once with
-/// animations armed. Separate from [`animated_div`], which hard-codes a colour
+/// A `<div class="grow">` with a text child, under `css`, laid out once.
+/// Separate from [`animated_div`], which hard-codes a colour
 /// animation on a 10x10 box.
 fn animated_width_div(css: &str) -> (rinch_dom::RinchDocument, rinch_core::dom::NodeId) {
     use rinch_core::dom::DomDocument;
@@ -1189,7 +1186,6 @@ fn animated_width_div(css: &str) -> (rinch_dom::RinchDocument, rinch_core::dom::
     doc.set_attribute(div, "class", "grow");
     doc.append_child(body, div);
 
-    doc.tree.transitions_enabled = true;
     doc.resolve_layout(800.0, 600.0);
     (doc, div)
 }

@@ -392,9 +392,10 @@ impl RinchDocument {
         // animation keeps running and `currentTime` does not move, so long as
         // its declaration still names a live `@keyframes` rule; it is cancelled
         // when the declaration or the rule goes away. The re-cascade below
-        // reproduces both — `animation::start_animations` matches an existing
-        // animation by name and keeps its `start_time_ms`, and drops one whose
-        // declaration the new sheet no longer carries.
+        // reproduces all three — `animation::start_animations` matches an
+        // existing animation by name and keeps its `start_time_ms`, drops one
+        // whose declaration the new sheet no longer carries, and (through the
+        // refresh described below) drops one whose rule it no longer carries.
         //
         // Clearing here was the second half of #762: with the animation block
         // gated on the flag this function had just forced off, nothing
@@ -403,12 +404,31 @@ impl RinchDocument {
         // them instead of preserving them would be wrong in the smaller way —
         // every spinner in the window would jump back to 0° on a dark-mode
         // toggle.
+        //
+        // What the re-cascade keeps is the **clock**, and only the clock. A
+        // kept animation's keyframes, stops and timing were taken from the old
+        // sheet and the old base style, so while this pass runs
+        // `start_animations` looks the rule up again (dropping the animation if
+        // the new sheet no longer defines it — Chrome cancels it), re-extracts
+        // the stops from the new base style, and takes the new
+        // `animation-duration` / `animation-delay`. Chrome 153, measured under
+        // a seeked `currentTime`: a redefined `@keyframes` body plays at once on
+        // the kept clock, a 10s → 20s duration keeps `currentTime` and halves
+        // the progress, and an `em` stop follows the new font-size.
+        //
+        // This also repairs what #747's restart walk does on this pass. The
+        // walk runs on a shown panel's cascade, before its descendants', and
+        // mints their entries from their pre-restyle `computed_style`; each
+        // descendant's own cascade comes after it here — every node is
+        // re-cascaded — and re-extracts the stops.
         // Clear roots to force full tree walk
         self.tree.style_roots.clear();
         // Resolve styles using Stylo
         self.tree.styles_dirty = true;
+        self.tree.refreshing_animations = true;
         self.resolve_styles();
         self.apply_stylo_styles_to_taffy();
+        self.tree.refreshing_animations = false;
         self.tree.transitions_enabled = transitions_were_enabled;
         // Force IFC rebuild so text layouts pick up new colors/fonts from
         // the updated computed styles (text brush is baked into Parley layout).

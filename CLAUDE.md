@@ -2964,22 +2964,35 @@ document permanently, so toggling dark mode killed every `Loader`, `Skeleton`
 and `Progress` stripe in the app. The animation half of
 `apply_stylo_styles_to_taffy` now reads no flag at all, and
 `recompute_all_styles_full` no longer clears `tree.active_animations`: the
-re-cascade matches each running animation by name and **keeps its clock**.
-Measured in Chrome 150, replacing a `<style>` element's text under a running
-animation leaves `currentTime` untouched and cancels only an animation whose
-declaration the new sheet no longer carries — so preserving is right and
-restarting would be the smaller wrong answer. (What rinch does *not* do is
-re-read an edited `@keyframes` body into a running animation; Chrome updates the
-effect while keeping the clock. Pre-existing, true of every restyle, **#766**.)
+re-cascade matches each running animation by name and **keeps its clock**
+(`start_time_ms`, `paused_elapsed_ms`, `play_state`). Measured in Chrome, replacing
+a `<style>` element's text under a running animation leaves `currentTime`
+untouched — so preserving is right and restarting would be the smaller wrong
+answer. **The clock is all it keeps on that pass.** While
+`recompute_all_styles_full` runs, `NodeTree::refreshing_animations` (a flag of
+its own, not `!transitions_enabled`) makes a kept animation look its
+`@keyframes` rule up again — **dropping it if the new sheet no longer defines
+it**, which Chrome does and which keeping the entry whole got wrong, since a
+theme sheet can carry `@keyframes` — re-extract its stops from the new base
+style, and take the new duration and delay. A paused animation keeps its frozen
+elapsed *time* across a re-timing, as Chrome keeps `currentTime`. That is the
+theme path **only**: on a plain restyle an edited `@keyframes` body (**#766**),
+a changed duration or delay (**#780**) and a stop derived from the base style
+(**#781**) still stay stale, because a refresh per animated node per cascade is
+a cost a hover should not pay.
 #747's restart walk — the one that gives a subtree shown by an inline `display`
 write its animations back — reads no flag either; it shipped behind this one, so
 a panel shown by such a write on a cascade before the first layout completed
-kept a still spinner until something unrelated re-cascaded it. That exposure is
-narrower than the other two: the walk only matters where the descendants are not
-re-cascaded, and `recompute_all_styles_full` re-cascades everything, so of the
-flag-off passes only the pre-first-layout ones reach it.
-`crates/rinch-dom/tests/animation_start_gating_tests.rs` is the pin, with the
-Chrome measurement and a mutant-by-fixture table in its module doc.
+kept a still spinner until something unrelated re-cascaded it. The full restyle
+reaches the walk as well, and that half is **not** harmless without the refresh:
+the walk runs on a shown panel's cascade before its descendants' and mints their
+entries from their pre-restyle styles, so an `em`-sized spinner under a theme
+that also changed the font-size came out on the old basis. Each descendant's own
+cascade runs after the walk on that pass, and the refresh there re-extracts the
+stops.
+`crates/rinch-dom/tests/animation_start_gating_tests.rs` and
+`full_restyle_animation_refresh_tests.rs` are the pins, with the Chrome
+measurements and mutant-by-fixture tables in their module docs.
 
 ### Native Control Flow (if / for / match)
 

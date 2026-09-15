@@ -28,16 +28,17 @@
 //! clock as long as the declaration still names a live `@keyframes` rule, and
 //! cancels it when it does not.
 //!
-//! rinch matches rows 1 and 4, which are the two this file pins. Row 2 it does
-//! **not**: `animation::start_animations` matches a running animation by name
-//! and clones it whole, `keyframe_stops` included, so an edited `@keyframes`
-//! body never reaches it — measured, a theme sheet redeclaring `k` from
-//! black→white left a running `k` interpolating red→green. That is pre-existing
-//! and not about this gate at all: it is true of every restyle, not only a
-//! theme change. Filed as #766. Row 3 is not reachable through rinch's
-//! stylesheet API — the theme sheet is the only one that can be replaced, and
-//! it can add rules but not delete an author `@keyframes` — so it is neither
-//! matched nor diverged from here, merely absent.
+//! rinch matches rows 1 and 4, which are the two this file pins. Rows 2 and 3
+//! it matches **on this path only**, and they are pinned in
+//! `full_restyle_animation_refresh_tests.rs`: during `recompute_all_styles_full`
+//! a kept animation keeps its clock and takes its `@keyframes` rule, its stops
+//! and its duration and delay afresh, and is dropped when the rule is gone.
+//! Row 3 **is** reachable — an earlier revision of this doc said it was not, and
+//! was wrong: the theme sheet is replaceable and can carry `@keyframes`
+//! (`generate_theme_css_string` already puts component keyframes in it), so a
+//! new theme can drop one. Keeping the entry whole left that animation running;
+//! Chrome 153 cancels it. Outside the full restyle — a plain class change — an
+//! edited `@keyframes` body still never reaches a running animation (#766).
 //!
 //! # Which fixture kills which mutant
 //!
@@ -597,11 +598,19 @@ fn panel_document(panel_display: &str) -> (RinchDocument, NodeId, NodeId) {
 /// after the component has returned and lays out straight away, so an ordinary
 /// component tree is not expected to reach it through the shell; a node attached
 /// to the document *during* the render (a body portal) plausibly could. Neither
-/// has been built as a shell fixture. The one pass after the first layout that also runs with the flag off,
-/// `recompute_all_styles_full`, does **not** reach it at all: it drops every
-/// cached style, so the spinner's own cascade restarts it and the walk is
-/// redundant — measured, a hide followed by a full restyle that shows the panel
-/// again restarts the spinner with the guard kept.
+/// has been built as a shell fixture.
+///
+/// The other pass that runs with the flag off, `recompute_all_styles_full`,
+/// **does** reach the walk once the guard is gone, and not harmlessly: the walk
+/// runs on the shown panel's cascade, before the spinner's own, and mints the
+/// spinner's entry from its pre-restyle `computed_style`. On that pass this
+/// fixture's M9 changes nothing a count can see — every node is re-cascaded, so
+/// with the guard kept the spinner's own cascade starts it anyway — which is why
+/// round 2's probe, which checked only the count, read it as unreachable. What
+/// differs is the stops: an `em`-sized spinner came out on the old font-size.
+/// The refresh during the full restyle re-extracts them;
+/// `full_restyle_animation_refresh_tests::a_panel_shown_by_the_theme_starts_its_spinner_on_the_new_em_basis`
+/// is that pin.
 ///
 /// Kills **M9**, "keep `self.tree.transitions_enabled &&` in front of the
 /// restart walk" (the guard as #764 shipped it): the spinner stays still until

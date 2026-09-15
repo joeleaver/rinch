@@ -557,8 +557,12 @@ and two faults followed:
 So the animation block reads no flag, and `recompute_all_styles_full` no longer
 clears the map. The re-cascade it runs is what reconciles it:
 `animation::start_animations` matches a running animation **by name**, keeps its
-`start_time_ms`, and drops one whose declaration the new sheet no longer
-carries.
+clock — `start_time_ms`, `paused_elapsed_ms`, `play_state` — and drops one whose
+declaration the new sheet no longer carries. On this pass, and only this one
+(`NodeTree::refreshing_animations`, a flag of its own), a kept animation takes
+everything else afresh: the `@keyframes` rule is looked up again and the
+animation dropped if it is gone, the stops are re-extracted from the new base
+style, and the duration and delay come from the new declaration.
 
 Preserving rather than restarting is what a browser does, measured in Chrome
 150.0.7871.100 by replacing a `<style>` element's `textContent` under a running
@@ -571,12 +575,28 @@ Preserving rather than restarting is what a browser does, measured in Chrome
 | `@keyframes` deleted, declaration kept | **0** | — | back to the base style |
 | `animation` declaration deleted | **0** | — | back to the base style |
 
-rinch matches rows 1 and 4. Row 2 it does not — `start_animations` clones a
-running animation whole, `keyframe_stops` included, so an edited `@keyframes`
-body never reaches it; that is pre-existing, true of every restyle rather than
-of theme changes, and is issue **#766**. Row 3 is not reachable at all, since
-the theme sheet is the only replaceable one and it can add rules but not delete
-an author `@keyframes`.
+rinch matches all four on the theme path. Rows 2 and 3 took the refresh, and
+row 3 is worth a sentence because an earlier revision of this page called it
+unreachable: the theme sheet is replaceable and can carry `@keyframes` — rinch's
+own `generate_theme_css_string` puts component keyframes in it — so a new theme
+can drop one, and keeping the entry whole left that animation running where
+Chrome 153 cancels it. A later measurement in Chrome 153.0.8010.36, under a
+seeked `currentTime`, added three more rows the refresh also matches:
+
+| The swap | Chrome 153 |
+|---|---|
+| `animation-name` `k` → `k2` | a **new** animation, `currentTime` 0 |
+| `animation-duration` 10s → 20s | same animation, `currentTime` 3000, progress 0.15 |
+| a panel shown by the theme, which also moves `font-size` 10px → 40px under a `1em → 11em` spinner | width 80px at 1000ms |
+
+The refresh is scoped to the full restyle on purpose. Everywhere else — a class
+change, a hover — a kept animation still keeps its stops and its timing whole: an
+edited `@keyframes` body (issue **#766**), a changed duration or delay
+(**#780**), and a stop derived from the base style, such as the implicit `from`
+of a `to`-only rule carrying `color` (**#781**), stay stale. Refreshing there
+would cost a keyframes lookup and a stop extraction per animated node per
+cascade; a theme toggle can afford that and a hover cannot.
+`crates/rinch-dom/tests/full_restyle_animation_refresh_tests.rs` pins every row.
 
 One consequence comes with the first-frame start, and it is pre-existing rather
 than new: an animation's clock begins at the cascade that styles the node —
@@ -686,13 +706,19 @@ a separate decision rather than a consequence. The walk shipped behind the flag,
 and the flag is off for every cascade before the first layout completes — so a
 panel shown by an inline `display` write on one of those passes dropped its
 descendants' animations on the way out and did not start them again until
-something unrelated re-cascaded the subtree. The other flag-off pass,
-`recompute_all_styles_full`, never reached it: it drops every cached style, so
-each descendant's own cascade restarts it and the walk is redundant there —
-measured, with the guard kept, a panel hidden and then shown by a full restyle
-spins again. `animation_start_gating_tests.rs` pins the pre-first-layout shape
-twice, once for a spinner that never ran and once for one that did, whose clock
-must restart inside the show pass.
+something unrelated re-cascaded the subtree. `animation_start_gating_tests.rs`
+pins that shape twice, once for a spinner that never ran and once for one that
+did, whose clock must restart inside the show pass.
+
+The other flag-off pass, `recompute_all_styles_full`, reaches the walk too, and
+an earlier revision of this page said it did not. A theme that un-hides a panel
+runs the walk on the panel's cascade, **before** the descendants' own, so the
+walk mints their entries from their pre-restyle `computed_style` — for an
+`em`-sized spinner under a theme that also changes the font-size, stops on the
+old basis (20px where Chrome gives 80px). Counting running animations cannot see
+it, because every node is re-cascaded on that pass and the spinner runs either
+way. What repairs it is the refresh above: each descendant's own cascade comes
+after the walk and re-extracts the stops from its new style.
 
 ## Optimizations
 
