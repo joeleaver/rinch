@@ -1060,14 +1060,34 @@ in step with `opened_fn` by an effect. One class reveals both boxes —
 nothing and each box was revealed by an inline `style` rewrite. One consequence
 of the move: "the dropdown" is now named by its class rather than by its
 position among the children, so a child other than a `DropdownMenuDropdown`
-passed after the target is *not* hidden with the menu. Use the documented pair,
-and pass the `DropdownMenuDropdown` **directly** as a child: the reveal is
-`.rinch-dropdown-menu--opened > .rinch-dropdown-menu__dropdown`, a child
-combinator, so a panel wrapped in an element of your own stays hidden even while
-the menu is open. The child combinator is what keeps a closed `DropdownMenu`
-nested inside an open one's panel closed — a descendant rule would show its
-panel and its backdrop, and that backdrop would take the clicks meant for the
-outer menu's items.
+passed after the target is *not* hidden with the menu. Use the documented pair.
+
+The `DropdownMenuDropdown` does **not** have to be a direct child of the menu.
+`rsx!` often wraps it on its own — a `{Option<NodeHandle>}` child, an `else if`
+branch, a component with a reactive prop inside an `if`, a helper component
+whose body is an `if` — and a `div` of your own around it is fine too; the menu
+opens through any of them. Nesting is handled as well: a closed `DropdownMenu`
+inside an open one's panel stays closed (its panel and its backdrop, which would
+otherwise take the clicks meant for the outer menu's items), and an open one
+inside an open one's panel — a submenu — shows. The panel's open rule is a
+descendant rule that excludes any panel with a *closed* menu root between it and
+an open ancestor:
+
+```css
+.rinch-dropdown-menu--opened .rinch-dropdown-menu__dropdown:not(
+  .rinch-dropdown-menu--opened .rinch-dropdown-menu:not(.rinch-dropdown-menu--opened)
+  .rinch-dropdown-menu__dropdown)
+```
+
+Two consequences of that spelling:
+
+- **One nesting shape is wrong:** an open menu placed inside the *target*
+  (trigger) of a closed menu that is itself inside an open menu's panel keeps its
+  panel hidden. That is a menu in the trigger of a menu in a menu; the limit is
+  pinned by a test so it cannot change silently.
+- **Its specificity is (0,6,0)**, so a `display` of your own on
+  `.rinch-dropdown-menu__dropdown` loses to it while the menu is open unless
+  your selector is more specific still.
 
 | Prop | Type | Default | Description |
 |------|------|---------|-------------|

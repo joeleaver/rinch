@@ -355,7 +355,7 @@ fn opening_a_dropdown_menu_toggles_the_opened_class_and_reveals_panel_and_backdr
     assert_eq!(
         display_of(&app, panel),
         DisplayValue::Block,
-        "`.rinch-dropdown-menu--opened > .rinch-dropdown-menu__dropdown` reveals the panel"
+        "the `.rinch-dropdown-menu--opened` panel rule reveals the panel"
     );
     assert_eq!(
         display_of(&app, backdrop),
@@ -740,15 +740,18 @@ fn no_inline_style(app: &RinchApp, nodes: &[usize]) {
 // an open `DropdownMenu` would open every closed menu inside its panel, and an
 // opened `Tooltip` every tooltip inside its target. The inline writes never
 // had that problem — each touched only its own nodes — so the first cut of
-// #760 introduced it (review of #774, measured on both backends). The rules
-// are child combinators now, which matches exactly the nodes each component
-// builds: the panel, backdrop and tooltip content are direct children of their
-// root, and a tab is wired only when it is a direct child of a `TabsList` that
-// is a direct child of the `Tabs` root (`Tabs::render` walks exactly that).
+// #760 introduced it (review of #774, measured on both backends). Most of the
+// rules are child combinators now, which matches exactly the nodes each
+// component builds: the backdrop and the tooltip content are direct children
+// of their root, and a tab is wired only when it is a direct child of a
+// `TabsList` that is a direct child of the `Tabs` root (`Tabs::render` walks
+// exactly that). The DropdownMenu **panel** is the exception — a caller's child,
+// often behind an rsx wrapper — and its rule is a descendant rule with an
+// exclusion instead; section 6 has why.
 //
 // Every fixture below puts the two instances in **different** states. Nested
-// instances in the same state sit on the fixed point where the descendant and
-// the child combinator agree.
+// instances in the same state sit on the fixed point where a leaking rule and
+// a correct one agree.
 
 fn parent_of(app: &RinchApp, node: usize) -> Option<usize> {
     let doc = app.doc.as_ref().unwrap();
@@ -795,9 +798,9 @@ fn child_with_class(app: &RinchApp, parent: usize, class: &str) -> usize {
 /// A closed `DropdownMenu` inside an open one's panel stays closed — panel
 /// **and** backdrop.
 ///
-/// Kills a revert of either `.rinch-dropdown-menu--opened > …` selector to a
-/// descendant combinator: the outer root's class would match the inner panel
-/// or backdrop through the outer panel.
+/// Kills the panel rule without its `:not(…)` exclusion, and the backdrop rule
+/// respelled with a descendant combinator: either way the outer root's class
+/// matches the inner panel or backdrop through the outer panel.
 #[test]
 fn a_closed_dropdown_menu_nested_in_an_open_ones_panel_stays_closed() {
     let mut app = mount(move |scope| {

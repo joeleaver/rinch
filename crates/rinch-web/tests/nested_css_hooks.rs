@@ -7,12 +7,14 @@
 //! to both backends, so the combinator those rules use is a question Chrome
 //! answers exactly as desktop does: spelled as a *descendant* combinator, an
 //! open outer menu opened every closed menu inside its panel (in Chrome as on
-//! desktop, measured), and its nested backdrop covered the outer items. The rules
-//! are child combinators now. This is the browser twin of the nesting fixtures
-//! in `rinch/src/app/css_hook_760_tests.rs`.
+//! desktop, measured), and its nested backdrop covered the outer items. The
+//! rules are child combinators now, except the DropdownMenu panel's, which is a
+//! descendant rule with an exclusion so that it still reaches a panel behind an
+//! rsx wrapper (the last fixture here). This is the browser twin of the nesting
+//! and wrapper fixtures in `rinch/src/app/css_hook_760_tests.rs`.
 //!
-//! Every fixture nests two instances in **different** states: in the same state
-//! the descendant and the child combinator agree, and the fixture would pass
+//! Every nesting fixture nests two instances in **different** states: in the
+//! same state a leaking rule and a correct one agree, and the fixture would pass
 //! against the leak.
 //!
 //! **Mount through `rinch_web::mount_into`, not a hand-rolled `RenderScope`** —
