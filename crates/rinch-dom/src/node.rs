@@ -1632,10 +1632,18 @@ pub struct NodeTree {
     /// **A flag of its own, not `!transitions_enabled`.** That flag is also
     /// false for every cascade before the first layout, and the two questions
     /// have nothing to do with each other — asking one flag both is what #762
-    /// was. Scoped to the full restyle because that is the one pass that
-    /// re-cascades everything anyway and runs rarely (a theme change); a
-    /// refresh on every cascade would cost a keyframes lookup and a stop
-    /// extraction per animated node per hover.
+    /// was. Scoped to `recompute_all_styles_full` because that is the pass a
+    /// theme toggle takes and it runs rarely; a refresh on every cascade would
+    /// cost a keyframes lookup and a stop extraction per animated node per
+    /// hover.
+    ///
+    /// It is **not** the only pass that re-cascades the whole document. A
+    /// `<style>` append (`maybe_load_style_css`) and a viewport change in
+    /// `resolve_layout` drop every node's cached style too, and do not set this
+    /// flag, so a running animation keeps stale stops and timing across them —
+    /// measured, a `<style>` appended after the first layout that redefines a
+    /// running `@keyframes` leaves the animation on its old body. Tracked on
+    /// #781.
     pub refreshing_animations: bool,
     /// Cache of loaded and decoded images.
     pub image_cache: ImageCache,

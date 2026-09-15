@@ -29,11 +29,21 @@
 //! | a hidden panel shown by the theme, which also moves `font-size` 10px → 40px under a `1em → 11em` spinner | width **80px** at 1000ms |
 //! | a `to`-only `@keyframes`, `color: var(--fg)` changed by the theme | `color` follows the theme, clock kept |
 //!
-//! Scope: this is the **theme path only**. A plain restyle — a class change —
-//! still keeps a running animation's stops and timing whole (#766, #780, #781
-//! stay open for that route); refreshing there would cost a keyframes lookup
-//! and a stop extraction per animated node per cascade, which a theme toggle can
-//! afford and a hover cannot.
+//! Scope: this is **`recompute_all_styles_full` only** — the pass a theme toggle
+//! takes. A targeted restyle (a class change) still keeps a running animation's
+//! stops and timing whole (#766, #780, #781 stay open for that route);
+//! refreshing there would cost a keyframes lookup and a stop extraction per
+//! animated node per cascade, which a theme toggle can afford and a hover
+//! cannot. Nor is the full restyle the only pass that re-cascades the whole
+//! document: a `<style>` append and a viewport change do too, set no flag, and
+//! keep the same staleness (#781).
+//!
+//! Not fixed here, and not pinned: **a finished one-shot animation replays on a
+//! theme toggle.** `tick_animations` drops a completed animation that has no
+//! `forwards` fill, so the full restyle finds no entry of that name and mints a
+//! new one from t=0. Chrome does not replay it; neither did `main`, whose full
+//! restyle started nothing at all. That is #783's mechanism, reached through
+//! this path.
 //!
 //! # Which fixture kills which mutant
 //!

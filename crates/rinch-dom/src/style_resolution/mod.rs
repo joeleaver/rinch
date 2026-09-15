@@ -1445,17 +1445,24 @@ impl RinchDocument {
     /// before children — so every descendant it visits is still carrying the
     /// `computed_style` it had *before* this pass. `start_animations` extracts
     /// keyframe stops from that, so an `em`, `rem` or `currentcolor` in a
-    /// keyframe resolves against the stale basis, and the find-by-name in
-    /// `start_animations` then keeps those stops when the descendant's own
-    /// cascade runs a moment later. Measured with `width: 1em` keyframes on a box
-    /// whose `font-size` goes 10px → 40px in the same class write that un-hides
-    /// its wrapper: stops come out `10..100` where `40..400` is right.
+    /// keyframe resolves against the stale basis, and — **outside
+    /// `recompute_all_styles_full`** — the find-by-name in `start_animations`
+    /// then keeps those stops when the descendant's own cascade runs a moment
+    /// later. Measured with `width: 1em` keyframes on a box whose `font-size`
+    /// goes 10px → 40px in the same class write that un-hides its wrapper: stops
+    /// come out `10..100` where `40..400` is right.
     ///
     /// It is not a regression — `main` was equally stale, by never dropping the
     /// entry at all — but this walk does foreclose the correct answer the
     /// per-node path would have reached on the `set_attribute` route. The root
-    /// cause is that `start_animations` never re-extracts stops for a name it
-    /// already knows, which is older and wider than this function.
+    /// cause is that `start_animations` does not re-extract stops for a name it
+    /// already knows, which is older and wider than this function. The one
+    /// exception is the full restyle: there `NodeTree::refreshing_animations`
+    /// makes the descendant's own cascade, which follows this walk on that pass,
+    /// re-extract them from its new style, so a theme that un-hides a panel and
+    /// changes its font-size gets the right basis
+    /// (`full_restyle_animation_refresh_tests`). The `<style>`-append and
+    /// viewport-change passes do not set that flag.
     ///
     /// # Cost
     ///

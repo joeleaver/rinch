@@ -2975,11 +2975,20 @@ its own, not `!transitions_enabled`) makes a kept animation look its
 it**, which Chrome does and which keeping the entry whole got wrong, since a
 theme sheet can carry `@keyframes` — re-extract its stops from the new base
 style, and take the new duration and delay. A paused animation keeps its frozen
-elapsed *time* across a re-timing, as Chrome keeps `currentTime`. That is the
-theme path **only**: on a plain restyle an edited `@keyframes` body (**#766**),
-a changed duration or delay (**#780**) and a stop derived from the base style
+elapsed *time* across a re-timing, as Chrome keeps `currentTime`. That is
+`recompute_all_styles_full` **only**, and it is not the only pass that
+re-cascades the whole document: a `<style>` append (`maybe_load_style_css`) and
+a viewport change in `resolve_layout` do too, and set no flag — measured, a
+`<style>` appended after the first layout with a redefined `@keyframes` body
+leaves the running animation on its old one (tracked on **#781**). On those two
+passes and on every targeted restyle, an edited `@keyframes` body (**#766**), a
+changed duration or delay (**#780**) and a stop derived from the base style
 (**#781**) still stay stale, because a refresh per animated node per cascade is
-a cost a hover should not pay.
+a cost a hover should not pay. And one divergence the theme path now reaches,
+not fixed: **a finished one-shot animation replays on a theme toggle** — its
+entry was dropped when it completed, so the full restyle mints it again from
+t=0. Chrome does not, and neither did `main` (its map was cleared with the
+animation block gated off, right by accident). That is **#783**'s mechanism.
 #747's restart walk — the one that gives a subtree shown by an inline `display`
 write its animations back — reads no flag either; it shipped behind this one, so
 a panel shown by such a write on a cascade before the first layout completed

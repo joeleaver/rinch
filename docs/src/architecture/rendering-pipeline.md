@@ -589,14 +589,35 @@ seeked `currentTime`, added three more rows the refresh also matches:
 | `animation-duration` 10s → 20s | same animation, `currentTime` 3000, progress 0.15 |
 | a panel shown by the theme, which also moves `font-size` 10px → 40px under a `1em → 11em` spinner | width 80px at 1000ms |
 
-The refresh is scoped to the full restyle on purpose. Everywhere else — a class
-change, a hover — a kept animation still keeps its stops and its timing whole: an
-edited `@keyframes` body (issue **#766**), a changed duration or delay
-(**#780**), and a stop derived from the base style, such as the implicit `from`
-of a `to`-only rule carrying `color` (**#781**), stay stale. Refreshing there
-would cost a keyframes lookup and a stop extraction per animated node per
-cascade; a theme toggle can afford that and a hover cannot.
+The refresh is scoped to `recompute_all_styles_full` on purpose, and that is
+**not** the only pass that re-cascades the whole document. Two others drop every
+node's cached style too and do not set the flag: appending a `<style>` element
+(`maybe_load_style_css`), and a viewport change in `resolve_layout`. Measured
+after the first layout, a `<style>` appended with a redefined `@keyframes kk`
+leaves a running `kk` on its old body. Those two passes, and every targeted
+restyle — a class change, a hover — still keep a kept animation's stops and
+timing whole: an edited `@keyframes` body (issue **#766**), a changed duration or
+delay (**#780**), and a stop derived from the base style, such as the implicit
+`from` of a `to`-only rule carrying `color` (**#781**), stay stale. **#781**
+tracks the two whole-document passes. The full restyle is the pass a theme
+toggle takes, it runs rarely, and it can afford a keyframes lookup and a stop
+extraction per animated node; a targeted restyle runs per hover and should not
+pay that.
 `crates/rinch-dom/tests/full_restyle_animation_refresh_tests.rs` pins every row.
+
+**One divergence the theme path now reaches, not fixed here: a finished one-shot
+animation replays on a theme toggle.** An animation with a finite iteration
+count and no `forwards` fill is removed from `tree.active_animations` by
+`tick_animations` once it completes. The full restyle re-cascades its node,
+`start_animations` finds no entry of that name, and mints a new one from t=0.
+Chrome does not replay it, and neither did `main` before #762 — its full restyle
+cleared the map with the animation block gated off, so nothing was minted, which
+was right by accident. It is the mechanism of issue **#783** (a finished
+animation's entry is forgotten, so any later cascade of the node restarts it),
+reached through the theme path. Component CSS declares only `infinite`
+animations; the one finite iteration count rinch ships is the theme's
+`prefers-reduced-motion` rule (`animation-duration: 0.01ms;
+animation-iteration-count: 1`), whose replay would last 0.01ms.
 
 One consequence comes with the first-frame start, and it is pre-existing rather
 than new: an animation's clock begins at the cascade that styles the node —
