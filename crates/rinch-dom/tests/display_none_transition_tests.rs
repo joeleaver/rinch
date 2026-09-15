@@ -26,9 +26,17 @@
 //! site where the answer can change an outcome: **after** `diff_animatable` has
 //! found an animatable difference on a node that declares a `transition`. A
 //! node with no `transition` declaration, or with no animatable change on this
-//! cascade, never walks. The walk is O(depth) beside a full property diff that
-//! is already O(properties), on a set that is a small fraction of the dirty
-//! nodes.
+//! cascade, never walks.
+//!
+//! Measured, on the shape built to be worst for it — 500 boxes at depth 13,
+//! every one declaring `transition: width` and every one retargeted by a single
+//! class write on their common root, so every dirty node reaches the gate with a
+//! non-empty diff. Best of 40 resolves, release, four alternating runs each:
+//! **1.207ms with the walk against 1.229ms without it.** The walk does not
+//! register above this machine's run-to-run spread of about 4%; it is not
+//! *free*, it is below what can be measured at the size where it would show.
+//! (A tree-wide theme restyle is the same shape at whatever the app's node
+//! count is, since every node in it is dirty.)
 //!
 //! The chain is read from `computed_style`, which for an ancestor already
 //! restyled on this pass holds its **new** display — the cascade pushes parents
@@ -40,24 +48,40 @@
 //!
 //! # Mutants, and what kills each
 //!
-//! Each was applied to the committed source, this file plus
-//! `reinsertion_transition_tests` run against it, and the source reverted.
+//! Every attribution below is **measured**: each mutant was applied to the
+//! committed source, this file *and* `reinsertion_transition_tests` run against
+//! it with `--no-fail-fast` (without which the second binary never runs at all
+//! once the first has failed, and its column would be a silence), and the
+//! source reverted from the commit.
 //!
 //! | mutant | killed by |
 //! |---|---|
-//! | the gate's `is_rendered` clause deleted (i.e. `main` before this change) | `a_change_while_hidden_does_not_start_a_transition`, `a_change_under_a_hidden_ancestor_does_not_start_a_transition`, `showing_a_hidden_node_whose_target_changed_does_not_transition` |
+//! | the gate's `is_rendered_for_transition` clause deleted — i.e. `main` before this change | **5 of the 9 here** (everything but the positive control, the `display` measurement and the `visibility` pin) **and** `reinsertion_transition_tests::toggling_display_none_is_not_a_detach` |
 //! | the gate tests the **new** display only, not the old one | `showing_a_hidden_node_whose_target_changed_does_not_transition`, **alone** — every other fixture asks the question while the node is still hidden, where old and new agree |
-//! | the gate tests the node's **own** display only, no ancestor walk | `a_change_under_a_hidden_ancestor_does_not_start_a_transition`, **alone** |
-//! | the ancestor walk reads `computed_style` with no side list of old displays | `showing_a_hidden_ancestor_whose_descendant_is_retargeted_does_not_transition`, **alone** |
-//! | the cancel half deleted | `hiding_a_node_cancels_its_running_transition`, `hiding_an_ancestor_cancels_a_descendant_transition` |
+//! | the gate tests the node's **own** display only, no ancestor walk | `a_change_under_a_hidden_ancestor_does_not_start_a_transition`, `showing_a_hidden_ancestor_whose_descendant_is_retargeted_does_not_transition` and `hiding_an_ancestor_cancels_a_descendant_transition` |
+//! | the ancestor walk reads `computed_style` with no `was_hidden` side list | `showing_a_hidden_ancestor_whose_descendant_is_retargeted_does_not_transition`, **alone** |
+//! | the cancel half deleted | `hiding_a_node_cancels_its_running_transition` and `hiding_an_ancestor_cancels_a_descendant_transition` |
 //! | the cancel half does not descend (the node only) | `hiding_an_ancestor_cancels_a_descendant_transition`, **alone** |
 //! | the gate refuses whenever the node is not *visible* (`visibility` folded in) | `visibility_hidden_is_rendered_and_still_transitions`, **alone** |
 //!
-//! The last row is why `visibility: hidden` is here at all. It is the near
+//! Three rows are worth reading twice.
+//!
+//! **The first and fifth together say both halves are load-bearing.** Deleting
+//! the cancel leaves `hiding_a_node_cancels_its_running_transition` red, so the
+//! gate alone does not stop a transition already in flight. And deleting the
+//! *gate* leaves `hiding_an_ancestor_cancels_a_descendant_transition` red even
+//! though the cancel is untouched — which is not obvious, and is the third row's
+//! mechanism too. The pass that hides the wrapper also restyles the descendant,
+//! whose `computed_style` is carrying an **interpolated** width; the freshly
+//! resolved target differs from it, so without the gate a brand new transition
+//! starts immediately after the cancel removed the old one. A cancel that is not
+//! paired with a refusal does not stick.
+//!
+//! **The last row is why `visibility: hidden` is here at all.** It is the near
 //! neighbour that looks like the same thing and is not: a `visibility: hidden`
 //! box is generated, laid out and rendered — it is merely invisible — so it has
 //! a before-change style and its transitions run. Getting that wrong would be
-//! invisible in every fixture above.
+//! invisible in every other fixture in this file.
 
 #![cfg(feature = "software-renderer")]
 
