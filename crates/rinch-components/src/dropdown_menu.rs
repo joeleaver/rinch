@@ -404,7 +404,7 @@ impl Component for DropdownMenu {
         if self.close_on_click_outside && self.on_close.is_some() {
             let backdrop = rinch_macros::rsx! { div { class: "rinch-dropdown-menu__backdrop" } };
             // No inline `display` here and no effect of its own: the sheet's
-            // `.rinch-dropdown-menu--opened .rinch-dropdown-menu__backdrop`
+            // `.rinch-dropdown-menu--opened > .rinch-dropdown-menu__backdrop`
             // rule shows it from the root's class, which the effect above keeps
             // in step with `opened_fn` (issue #760).
 

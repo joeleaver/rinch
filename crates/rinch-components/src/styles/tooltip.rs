@@ -37,7 +37,11 @@ pub fn styles() -> String {
     display: none;
 }
 
-.rinch-tooltip--opened .rinch-tooltip__content {
+/* A **child** combinator, and so is the `--disabled` rule below: a tooltip
+   nested in this one's target is inside this root too, and a descendant rule
+   would open (or disable) it along with this one (review of #774). The content
+   is a direct child of the root by construction. */
+.rinch-tooltip--opened > .rinch-tooltip__content {
     display: block;
     /* Redundant against this sheet, which never sets `opacity` on the content —
        and kept anyway, because the inline write this rule replaced carried it
@@ -121,11 +125,11 @@ pub fn styles() -> String {
 
 /* Tooltip disabled.
 
-   Ties with `.rinch-tooltip--opened .rinch-tooltip__content` on specificity, so
+   Ties with `.rinch-tooltip--opened > .rinch-tooltip__content` on specificity, so
    it has to stay **after** it in this file to win. (The hover handlers refuse to
    set `hovered` on a disabled tooltip anyway, so the pair only meets when a
    caller passes `opened: true` and `disabled: true` together.) */
-.rinch-tooltip--disabled .rinch-tooltip__content {
+.rinch-tooltip--disabled > .rinch-tooltip__content {
     display: none;
 }
 "#

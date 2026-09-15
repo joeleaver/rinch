@@ -284,7 +284,7 @@ impl Component for Tabs {
         // (issue #760).
         //
         // The colour, the `outline` border, the `pills` fill and the underline
-        // were all written here as inline `set_style` calls, so the sheet's five
+        // were all written here as inline `set_style` calls, so the sheet's four
         // `[data-active="true"]` / `--active` rules matched nothing and the
         // `transition: color 150ms ease` on `.rinch-tabs__tab` — and the
         // `transition: background-color 150ms ease` on the underline — had

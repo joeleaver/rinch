@@ -252,7 +252,7 @@ fn hovering_a_tooltip_toggles_the_opened_class_and_the_cascade_reveals_it() {
     assert_eq!(
         display_of(&app, content),
         DisplayValue::Block,
-        "and `.rinch-tooltip--opened .rinch-tooltip__content` reveals it"
+        "and `.rinch-tooltip--opened > .rinch-tooltip__content` reveals it"
     );
     assert_eq!(
         attr(&app, content, "style"),
@@ -292,8 +292,8 @@ fn a_statically_opened_tooltip_is_shown_by_the_same_rule() {
 }
 
 /// `disabled` beats `opened`, which is a **source-order** fact rather than a
-/// specificity one: `.rinch-tooltip--disabled .rinch-tooltip__content` and
-/// `.rinch-tooltip--opened .rinch-tooltip__content` are both (0,2,0), so the
+/// specificity one: `.rinch-tooltip--disabled > .rinch-tooltip__content` and
+/// `.rinch-tooltip--opened > .rinch-tooltip__content` are both (0,2,0), so the
 /// disabled rule only wins because it is later in `styles/tooltip.rs`.
 ///
 /// Moving it above the `--opened` rule is the mutant this kills.
@@ -350,7 +350,7 @@ fn opening_a_dropdown_menu_toggles_the_opened_class_and_reveals_panel_and_backdr
     assert_eq!(
         display_of(&app, panel),
         DisplayValue::Block,
-        "`.rinch-dropdown-menu--opened .rinch-dropdown-menu__dropdown` reveals the panel"
+        "`.rinch-dropdown-menu--opened > .rinch-dropdown-menu__dropdown` reveals the panel"
     );
     assert_eq!(
         display_of(&app, backdrop),
@@ -661,7 +661,7 @@ fn the_pills_and_outline_variants_are_styled_by_the_same_hook() {
     assert_eq!(
         background_of(&app, m.tabs[0]),
         Some(ACTIVE),
-        "`.rinch-tabs--pills .rinch-tabs__tab[data-active=\"true\"]` fills the pill"
+        "`.rinch-tabs--pills > .rinch-tabs__list > .rinch-tabs__tab[data-active=\"true\"]` fills the pill"
     );
     no_inline_style(&app, &m.tabs);
     assert_ne!(background_of(&app, m.tabs[1]), Some(ACTIVE));
@@ -702,7 +702,7 @@ fn the_pills_and_outline_variants_are_styled_by_the_same_hook() {
                 .border_top_color
         },
         Some(border),
-        "`.rinch-tabs--outline .rinch-tabs__tab[data-active=\"true\"]` borders it"
+        "`.rinch-tabs--outline > .rinch-tabs__list > .rinch-tabs__tab[data-active=\"true\"]` borders it"
     );
     no_inline_style(&app, &m.tabs);
     fire(&app, m.tabs[1], "data-rid");

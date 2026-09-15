@@ -10,7 +10,7 @@ use rinch_core::reactive::{Effect, Signal};
 /// The one class the hover effect owns.
 ///
 /// `styles/tooltip.rs` keeps `.rinch-tooltip__content` at `display: none` and
-/// shows it from `.rinch-tooltip--opened .rinch-tooltip__content`, so the class
+/// shows it from `.rinch-tooltip--opened > .rinch-tooltip__content`, so the class
 /// *is* the show/hide. It used to be emitted by [`Tooltip::class_string`] and
 /// matched by nothing at all, while the reveal was an inline `style` rewrite on
 /// the content node — issue #760.

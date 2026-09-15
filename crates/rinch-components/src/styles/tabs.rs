@@ -118,7 +118,19 @@ pub fn styles() -> String {
     background-color: var(--rinch-tabs-color, var(--rinch-primary-color));
 }
 
-.rinch-tabs--vertical.rinch-tabs--default .rinch-tabs__tab-indicator {
+/* The variant- and orientation-specific rules that key off the active hook, or
+   that place the indicator, name the path from the root with child combinators:
+   `.rinch-tabs--X > .rinch-tabs__list > .rinch-tabs__tab`. A `Tabs` nested in
+   another's panel is inside that root as well, so a descendant rule would give
+   a nested `default` tab the outer `pills` fill, or a nested horizontal
+   underline the outer vertical side bar — rules that could leak nowhere before
+   #760, when the hook they key off was never set (review of #774). That path is
+   the one `Tabs::render` walks to find a tab to wire — a `TabsList` that is a
+   direct child of the root, and its direct children — so every tab it marks
+   active is still matched. (The non-active variant rules — border
+   shape, list border — are still descendant and still reach nested Tabs; that
+   is older than #760.) */
+.rinch-tabs--vertical.rinch-tabs--default > .rinch-tabs__list > .rinch-tabs__tab > .rinch-tabs__tab-indicator {
     bottom: auto;
     left: auto;
     right: -2px;
@@ -139,8 +151,8 @@ pub fn styles() -> String {
     border-radius: var(--rinch-radius-sm) var(--rinch-radius-sm) 0 0;
 }
 
-.rinch-tabs--outline .rinch-tabs__tab[data-active="true"],
-.rinch-tabs--outline .rinch-tabs__tab--active {
+.rinch-tabs--outline > .rinch-tabs__list > .rinch-tabs__tab[data-active="true"],
+.rinch-tabs--outline > .rinch-tabs__list > .rinch-tabs__tab--active {
     border-color: var(--rinch-color-border);
     background-color: var(--rinch-color-body);
 }
@@ -155,8 +167,8 @@ pub fn styles() -> String {
     border-radius: var(--rinch-radius-sm);
 }
 
-.rinch-tabs--pills .rinch-tabs__tab[data-active="true"],
-.rinch-tabs--pills .rinch-tabs__tab--active {
+.rinch-tabs--pills > .rinch-tabs__list > .rinch-tabs__tab[data-active="true"],
+.rinch-tabs--pills > .rinch-tabs__list > .rinch-tabs__tab--active {
     background-color: var(--rinch-tabs-color, var(--rinch-primary-color));
     color: white;
 }

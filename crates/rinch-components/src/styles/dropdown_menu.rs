@@ -183,9 +183,16 @@ pub fn styles() -> String {
 
 /* The open state (#760). One class on the root reveals both boxes, and it is
    the class `class_string` has always emitted. Each of these carries two class
-   selectors to the hidden rule's one, so it wins whatever the source order. */
-.rinch-dropdown-menu--opened .rinch-dropdown-menu__dropdown,
-.rinch-dropdown-menu--opened .rinch-dropdown-menu__backdrop {
+   selectors to the hidden rule's one, so it wins whatever the source order.
+
+   A **child** combinator, not a descendant one: a `DropdownMenu` nested in an
+   open one's panel is inside that root too, and a descendant rule would open
+   its panel and show its backdrop — which, fixed and hoisted above the outer
+   items, then takes every tap meant for them and runs the inner `on_close`
+   (review of #774). The panel and the backdrop are direct children of the root
+   by construction, so `>` reaches exactly this menu's own. */
+.rinch-dropdown-menu--opened > .rinch-dropdown-menu__dropdown,
+.rinch-dropdown-menu--opened > .rinch-dropdown-menu__backdrop {
     display: block;
 }
 
