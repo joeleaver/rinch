@@ -3429,10 +3429,13 @@ impl RinchDocument {
     /// pin on both halves — deleting the sort left the whole suite green until
     /// it existed.
     ///
-    /// O(depth) per call and only called from the two places that can dirty a
-    /// measure without dirtying the IFC structure — a restyle that changed
-    /// something, and `set_text_content`. Every *structural* mutation sets
-    /// `ifc_dirty` instead, which re-measures the lot; this must not be added to
+    /// O(depth) per call, and called only for the two *kinds* of change that can
+    /// dirty a measure without dirtying the IFC structure — a restyle that
+    /// changed something, and `set_text_content` — which between them are five
+    /// call sites (`dom_impl/mod.rs` twice, `style_resolution/mod.rs`,
+    /// `dom_document_impl.rs`, `layout_engine.rs`). Every *structural* mutation
+    /// sets `ifc_dirty` instead, which measures the lot — and re-measures
+    /// whatever this function marked, see the body; this must not be added to
     /// those paths, where it would cost an ancestor walk per `append_child` on
     /// first build and buy nothing.
     pub(crate) fn mark_atomic_inline_dirty(&mut self, node_id: usize) {

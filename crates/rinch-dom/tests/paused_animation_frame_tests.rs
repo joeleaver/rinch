@@ -919,10 +919,11 @@ fn a_paused_font_size_animation_in_a_panel_shown_by_class_resizes_its_inline_blo
 /// The same freeze with no animation anywhere: the panel crosses `none` → block
 /// **and** a descendant selector shrinks the span's font in one pass.
 ///
-/// `Refs #784` — the hole is the structural pass re-measuring an atomic inline
-/// against a Taffy cache nothing invalidated, and an animation is only one way
-/// to reach it. Pre-existing; it is here because the animated case's fix is the
-/// same fix, and because it is the half that says so.
+/// This is **#784**'s own repro, with no animation anywhere: the hole is the
+/// structural pass measuring an atomic inline against a Taffy cache nothing
+/// invalidated, and an animation is only one way to reach it. Pre-existing, and
+/// here because the animated case's fix is the same fix — and because it is the
+/// half that says so.
 #[test]
 fn showing_a_panel_that_also_shrinks_its_text_remeasures_the_inline_block() {
     let small = atomic_inline_reference(32.0);

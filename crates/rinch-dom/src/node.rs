@@ -1687,17 +1687,23 @@ pub struct NodeTree {
     ///
     /// An atomic inline is **detached from its parent's Taffy child list** so
     /// the enclosing IFC measures it as an `InlineBox`, which means the root
-    /// Taffy compute never reaches it: the only thing that ever gives it a size
-    /// is `compute_inline_block_layouts`, and that runs only on an `ifc_dirty`
-    /// pass. A style change or a text change sets neither flag, so the box was
-    /// measured once and frozen while paint re-laid its text at the new style.
+    /// Taffy compute never reaches it. Three passes give one a size, all through
+    /// `measure_inline_blocks`, and when #661 was found there was only one:
+    /// `compute_inline_block_layouts`, which runs on an `ifc_dirty` pass. A
+    /// style change or a text change sets no such flag, so the box was measured
+    /// once and frozen while paint re-laid its text at the new style. The other
+    /// two are this set's consumer, below, and
+    /// `resolve_percentage_inline_blocks`.
     ///
     /// This is the scoped repair: a **set**, not a flag, so a text change in one
     /// row of a 500-row document re-measures that row's atomic inlines and not
     /// the document's. Consumed (and emptied) by
     /// `RinchDocument::remeasure_dirty_atomic_inlines` on a pass that runs Taffy
-    /// without rebuilding the IFC structure; cleared unconsumed on an
-    /// `ifc_dirty` pass, which re-measures every atomic inline anyway.
+    /// without rebuilding the IFC structure. On an `ifc_dirty` pass it is
+    /// instead drained by `compute_inline_block_layouts`, which marks each
+    /// entry's Taffy node: that pass measures every atomic inline, but measures
+    /// it out of Taffy's cache, so an entry recorded before the flag was set
+    /// would otherwise be dropped unmeasured (#784).
     ///
     /// Entries are node ids and are **not** validated on insert — a node may be
     /// removed before the set is read, so the consumer `get`s and skips.
