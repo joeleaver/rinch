@@ -37,8 +37,31 @@
 //!
 //! # Which fixture kills which mutant
 //!
-//! The table is filled from runs, not reasoning; see the round-3 section of
-//! `reports/report-fix-762.md` for the runner.
+//! Every row was run: each mutant applied to the committed source, then
+//! `RINCH_TREE_CHECK=1 cargo test -p rinch-dom -p rinch --no-fail-fast`
+//! (86 binaries, 1820 tests), then the source restored from the commit. MR7 and
+//! MR8 fail nothing, which doubles as the unmutated control's count.
+//!
+//! | Mutant | Killed by |
+//! |---|---|
+//! | **MA** `start_animations` keeps by **index**, not by name | `a_theme_that_renames_the_animation_starts_a_new_one_from_zero`, `a_theme_that_reorders_two_animations_keeps_each_clock_with_its_name` — nothing else in the scope |
+//! | **MR1** a kept animation whose rule is gone is kept | `a_theme_that_drops_the_keyframes_rule_stops_the_animation`, alone |
+//! | **MR2** the stops are not re-extracted | `…redefines_the_keyframes_body…`, `…starts_its_spinner_on_the_new_em_basis`, `…implicit_from_stop` |
+//! | **MR3** duration and delay are not taken from the spec | `…changes_the_duration_re_times_around_the_kept_clock`, `a_paused_animation_keeps_its_frozen_time_across_a_theme_change` (its re-timing precondition) |
+//! | **MR4** `recompute_all_styles_full` never sets the flag | the six fixtures above that need the refresh |
+//! | **MR5** the refresh resets `paused_elapsed_ms` the way a fresh entry mints it | `a_paused_animation_keeps_its_frozen_time_across_a_theme_change`, alone |
+//! | **MR6** the refresh rescales a frozen time to the new duration | `a_paused_animation_keeps_its_frozen_time_across_a_theme_change`, alone |
+//! | **MR7** the refresh runs on **every** cascade, not only the full restyle | **survives**, by construction |
+//! | **MR8** the refresh keys on `!transitions_enabled` instead of its own flag | **survives**, by construction |
+//!
+//! The two survivors are scope decisions, not behaviour a fixture can hold
+//! without pinning a bug. MR7 is *more* Chrome-correct than the code — it fixes
+//! #766, #780 and #781 on a plain restyle too — and is refused on cost: a
+//! keyframes lookup and a stop extraction per animated node per cascade. MR8
+//! differs only on cascades before the first layout, where it would also
+//! refresh, and the only thing a fixture could observe there is the plain
+//! restyle's staleness — again a bug to pin. It is refused because it asks one
+//! flag two unrelated questions, which is what #762 was.
 
 use rinch_core::dom::{DomDocument, NodeId};
 use rinch_dom::RinchDocument;
