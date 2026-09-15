@@ -100,12 +100,14 @@ pub struct List {
     pub center: bool,
     /// Default icon for this list's items.
     ///
-    /// Applied to the [`ListItem`]s **present at this list's own render** that
-    /// set no `icon` of their own — the item's icon wins. Items are found and
-    /// restyled after they have rendered, since a parent component renders
-    /// *after* its children, and that patch runs once: an item appended later,
-    /// by a `for` reconcile or a `show_dom` branch, does not get the default
-    /// (issue #716).
+    /// Applied to every [`ListItem`] in this list that sets no `icon` of its own
+    /// — the item's icon wins. Items are found and restyled after they have
+    /// rendered, since a parent component renders *after* its children; an item
+    /// that arrives **later**, by a `for` reconcile, a `show_dom` branch or a
+    /// hand-rolled `append_child`, is restyled as it lands (issue #716).
+    ///
+    /// An item of a *nested* `List` belongs to that list, not this one, whether
+    /// the nested list sits inside a `ListItem` or directly inside this one.
     pub icon: Option<TablerIcon>,
     /// Whether to show list markers.
     pub with_padding: bool,
@@ -175,6 +177,15 @@ impl Component for List {
 
         if let Some(icon) = self.icon {
             give_items_a_default_icon(&container, icon, __scope);
+            // And again for every item that lands later — a `for` reconcile, a
+            // `show_dom` branch, a hand-rolled `append_child` (issue #716). The
+            // same function does both halves, so the two cannot drift.
+            crate::late_children::adopt_late_children(
+                __scope,
+                &container,
+                NOT_MINE,
+                move |inserted, scope| adopt_below(inserted, icon, scope),
+            );
         }
 
         container
@@ -187,21 +198,98 @@ impl Component for List {
 /// The walk stops at each item rather than descending into it: an item's own
 /// content — including a nested `List`, which has already applied its own
 /// default — is not this list's to restyle.
-fn give_items_a_default_icon(node: &NodeHandle, icon: TablerIcon, scope: &mut RenderScope) {
+///
+/// Called twice over: once on the container at render, and once per subtree
+/// that lands beneath it afterwards (issue #716). It is idempotent — an item
+/// that already carries `rinch-list__item--with-icon` is left alone — which is
+/// what lets the second caller hand it a subtree the first one already walked.
+fn give_items_a_default_icon(container: &NodeHandle, icon: TablerIcon, scope: &mut RenderScope) {
+    for child in container.children() {
+        adopt_below(&child, icon, scope);
+    }
+}
+
+/// The classes that end this list's business with a subtree: its own item, and a
+/// nested `List`.
+///
+/// Both halves read this — the walk downwards and [`crosses`] upwards — so a row
+/// cannot get one answer at render and the other one when it arrives late.
+///
+/// **`rinch-list` is load-bearing and not merely tidy.** A `List` placed
+/// *directly* inside another `List`, with no `ListItem` between them, is reached
+/// by the outer walk through the inner `<ul>`, and its rows are already iconed —
+/// so without this token the outer list rewrote them with its own icon, at
+/// render as well as late.
+///
+/// [`crosses`]: crate::late_children
+const NOT_MINE: &[&str] = &["rinch-list__item", "rinch-list"];
+
+/// Visit one node that is **not** this list's own root, and any item beneath it.
+fn adopt_below(node: &NodeHandle, icon: TablerIcon, scope: &mut RenderScope) {
     let classes = node.get_attribute("class").unwrap_or_default();
     let mut tokens = classes.split_whitespace();
     if tokens.clone().any(|c| c == "rinch-list__item") {
-        // The item set an icon of its own; a child's value wins over the
-        // parent's default.
         if !tokens.any(|c| c == "rinch-list__item--with-icon") {
             adopt_icon(node, icon, scope);
+        } else if node.get_attribute(DEFAULTED_ATTR).is_some() {
+            // The icon there is some list's default, not the item's own, so
+            // this list is free to replace it — which is what makes an item
+            // *moved* from one list into another take the new list's icon
+            // (issue #716). An item that set its own `icon` carries no marker
+            // and is left alone: a child's value wins over a parent's default,
+            // wherever the child ends up.
+            replace_icon(node, icon, scope);
         }
+        return;
+    }
+    if classes.split_whitespace().any(|c| c == "rinch-list") {
+        // A nested list owns its own rows, and has already given them its own
+        // default.
         return;
     }
 
     for child in node.children() {
-        give_items_a_default_icon(&child, icon, scope);
+        adopt_below(&child, icon, scope);
     }
+}
+
+/// Set on an item whose icon came from its list rather than from its own `icon`
+/// prop. Presence is the whole value.
+///
+/// The class alone cannot say it: `rinch-list__item--with-icon` is what both
+/// kinds of item carry, deliberately, because the stylesheet has one rule for
+/// both.
+const DEFAULTED_ATTR: &str = "data-list-icon";
+
+/// Swap the glyph in an item's existing icon box for `icon`.
+fn replace_icon(item: &NodeHandle, icon: TablerIcon, scope: &mut RenderScope) {
+    let Some(icon_span) = item
+        .children()
+        .into_iter()
+        .find(|c| class_tokens(c).any(|t| t == "rinch-list__item-icon"))
+    else {
+        return;
+    };
+    let glyph = render_tabler_icon(scope, icon, TablerIconStyle::Outline);
+    // Attach first, clear second, and by `discard` rather than `remove`: the old
+    // glyph is gone for good, and only `discard` releases `rinch-web`'s strong
+    // `web_sys::Node` (issue #719).
+    icon_span.append_child(&glyph);
+    for child in icon_span.children() {
+        if child.node_id() != glyph.node_id() {
+            child.discard();
+        }
+    }
+}
+
+/// `node`'s class attribute, as whole tokens.
+fn class_tokens(node: &NodeHandle) -> impl Iterator<Item = String> {
+    node.get_attribute("class")
+        .unwrap_or_default()
+        .split_whitespace()
+        .map(str::to_owned)
+        .collect::<Vec<_>>()
+        .into_iter()
 }
 
 /// Rebuild `item` into the icon layout, moving whatever it already holds into
@@ -222,6 +310,7 @@ fn adopt_icon(item: &NodeHandle, icon: TablerIcon, scope: &mut RenderScope) {
     }
 
     item.add_class("rinch-list__item--with-icon");
+    item.set_attribute(DEFAULTED_ATTR, "");
     item.append_child(&icon_span);
     item.append_child(&content_span);
 }

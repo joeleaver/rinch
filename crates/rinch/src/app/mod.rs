@@ -41,6 +41,8 @@ mod input_ime_tests;
 #[cfg(test)]
 mod key_event_data_tests;
 #[cfg(test)]
+mod late_children_716_tests;
+#[cfg(test)]
 mod node_ime_tests;
 #[cfg(all(test, feature = "desktop"))]
 mod nofocus_tests;

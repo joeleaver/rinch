@@ -323,7 +323,7 @@ Enter and Space on it toggle the dropdown. Arrow/Enter/Escape navigation of the
 | `label` | `String` | `""` | |
 | `description` | `String` | `""` | |
 | `error` | `String` | `""` | |
-| `size` | `String` | `""` | Default size for the radios present at the group's render (#707); a `Radio`'s own `size` wins, and a radio records its ask as `data-size` so an explicit `"md"` is not mistaken for an unset one. A radio added later is not sized (#716) |
+| `size` | `String` | `""` | Default size for this group's radios (#707); a `Radio`'s own `size` wins, and a radio records its ask as `data-size` so an explicit `"md"` is not mistaken for an unset one. A radio that arrives later, or moves in from another group, is sized as it lands (#716) |
 | `orientation` | `String` | `""` | "horizontal" or "vertical" |
 
 ### Slider
@@ -670,7 +670,7 @@ Custom Default: `ignore_case` defaults to `true`.
 | `size` | `String` | `""` | |
 | `spacing` | `String` | `""` | |
 | `center` | `bool` | `false` | Center items with icons |
-| `icon` | `Option<TablerIcon>` | `None` | Default icon for the items present at the list's render that set none (#707); a `ListItem`'s own `icon` wins, and an item added later does not get it (#716) |
+| `icon` | `Option<TablerIcon>` | `None` | Default icon for this list's items that set none (#707); a `ListItem`'s own `icon` wins, and an item that arrives later, or moves in from another list, takes it as it lands (#716) |
 | `with_padding` | `bool` | `false` | |
 
 **ListItem:** `icon: Option<TablerIcon>` — per-item icon override, which beats
@@ -679,19 +679,52 @@ Custom Default: `ignore_case` defaults to `true`.
 A `List` renders *after* its items, so its default cannot reach them as a prop:
 it finds each item that built no icon layout of its own and rebuilds that item
 into the same markup `ListItem` uses, moving the content it already held into
-the content span. That patch runs **once**, at the list's own render, so an item
-appended afterwards renders without the default (issue #716). This applies to
-every container default in the library — `RadioGroup::size` and the four
-`Stepper` props, `active` included, behave the same way.
+the content span.
+
+That patch runs at the list's own render **and again on whatever lands beneath
+the list afterwards** — a `for` reconcile, a `show_dom` branch, a hand-rolled
+`append_child` (issue #716). The second half rides
+`rinch_core::dom::on_child_inserted`, a DOM-level hook the four `NodeHandle`
+insertion verbs fire: the container registers against its own root and is told,
+synchronously, each time a subtree arrives. Synchronously matters — the default
+is in place before the frame that shows the new item is laid out, so nothing
+flashes.
+
+The same applies to every container default in the library: `RadioGroup::size`
+and the four `Stepper` props, `active` included. An item **moved** from one
+container into another re-resolves against the one it now belongs to, because a
+container marks the values it supplied as its own (`data-list-icon` on a list
+item) and will not touch a value the child asked for itself.
+
+The rule a container applies to a *nested* container is the same one its
+render-time walk applies downwards, read upwards: every registered ancestor is
+told about an insertion, and each declines a node whose chain up to it crosses
+one of its own items. So a `List` inside another list's item owns its own rows.
 
 `Stepper` is the one that has to hand something *back* down. A step's state
 decides which icon it draws, and a step draws its icon before its stepper
 exists — so a step with no `state` of its own renders the icons for the states
 it might be moved into and leaves them in its icon box, hidden, for the stepper
-to promote (issue #709). The stepper `discard()`s the ones it did not need — and
-promotes the one it wants out of its wrapper first, since a discard retires the
-whole subtree (issue #719) — so those alternates reach the screen only on a
-`StepperStep` with no `Stepper` above it, where they stay hidden.
+to promote (issue #709). Promotion re-parents the glyph out of its wrapper
+before the wrapper goes, since a `discard` retires the whole subtree (issue
+#719).
+
+**A glyph the step's props supplied is parked, not discarded, when the step
+stops drawing it** (issue #716). An insertion moves the steps after it and a
+keyed `for` **reorder** moves a step in either direction, so a step this stepper
+put into completed can be displaced back out of it — and its `icon` is a
+`TablerIcon` in props that no patch of the rendered tree could rebuild, so it
+goes back into a hidden wrapper under the content key it serves. A built-in —
+the tick, or the step number — is rebuildable from nothing and still leaves by
+`discard`. Every parked alternate is kept for as long as the stepper owns the
+step's state; a step that named its own `state` is in that state wherever it
+moves, so for it they are all dropped.
+
+The markers on a step's icon box are therefore records of the step's **props**
+rather than of what it last drew, which is what lets the pass re-run:
+`data-icon-has` names the content keys the box holds a real glyph for,
+`data-icon-live` names the key showing, and `data-step-derived` on the step says
+this stepper wrote its `data-step` rather than the caller.
 
 ---
 
@@ -1138,15 +1171,15 @@ Custom Default: `total`, `value`, `siblings`, `boundaries` default to `1`; `with
 
 | Prop | Type | Default | Description |
 |------|------|---------|-------------|
-| `active` | `u32` | `0` | Active step index. Every step **present at this stepper's render** takes its state from its position against this — before it completed, at it in progress, after it inactive (#709) — unless it named a `state` of its own. A step appended later keeps what it rendered as (#716). As a closure (`active: {\|\| sig.get()}`) it re-renders the stepper and re-derives |
+| `active` | `u32` | `0` | Active step index. Every step takes its state from its position against this — before it completed, at it in progress, after it inactive (#709) — unless it named a `state` of its own. A step that arrives later is stated as it lands, and so are the steps it displaced (#716); a step *removed* does not renumber its siblings (#745). As a closure (`active: {\|\| sig.get()}`) it re-renders the stepper and re-derives |
 | `size` | `String` | `""` | |
 | `orientation` | `String` | `""` | "horizontal", "vertical" |
 | `color` | `String` | `""` | |
 | `radius` | `String` | `""` | |
 | `icon_size` | `String` | `""` | |
-| `allow_next_steps_select` | `bool` | `false` | Makes each step past `active` clickable (#707), among those present at the stepper's render (#716). Grants only: a step's own `allow_step_click` / `allow_step_select` is never taken away. **Decorative** — `Stepper` registers no click handler and takes no callback (#737) |
-| `completed_icon` | `Option<TablerIcon>` | `None` | Default completed icon for the steps present at the stepper's render that set none (#707); the step's own wins, a step added later does not get it (#716) |
-| `progress_icon` | `Option<TablerIcon>` | `None` | Default in-progress icon for the steps present at the stepper's render that set none (#707). It stands in for the *`progress_icon`* the step did not set, so it outranks that step's plain `icon`. A step added later does not get it (#716) |
+| `allow_next_steps_select` | `bool` | `false` | Makes each step past `active` clickable (#707), a step that arrives later included (#716). Grants only: a step's own `allow_step_click` / `allow_step_select` is never taken away. **Decorative** — `Stepper` registers no click handler and takes no callback (#737) |
+| `completed_icon` | `Option<TablerIcon>` | `None` | Default completed icon for the steps that set none (#707); the step's own wins, and a step that arrives later takes this one as it lands (#716) |
+| `progress_icon` | `Option<TablerIcon>` | `None` | Default in-progress icon for the steps that set none (#707). It stands in for the *`progress_icon`* the step did not set, so it outranks that step's plain `icon`. A step that arrives later takes it as it lands (#716) |
 
 **StepperStep:**
 

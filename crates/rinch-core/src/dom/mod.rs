@@ -74,6 +74,7 @@ mod bool_attr;
 
 /// Declaration-level arithmetic on an inline `style` attribute (issue #647).
 mod inline_style;
+mod late_child;
 
 /// A headless [`DomDocument`](traits::DomDocument) implementation for tests.
 /// Available to downstream test code via the `test-util` feature.
@@ -86,6 +87,7 @@ pub use bool_attr::{attr_is_truthy, data_attr_is_on, is_boolean_attribute};
 pub use inline_style::{
     StyleProp, normalize_property_name, serialize_declarations, split_declarations,
 };
+pub use late_child::on_child_inserted;
 pub use render_scope::*;
 pub use traits::*;
 
@@ -337,6 +339,7 @@ impl NodeHandle {
         if let Some(doc) = self.doc.upgrade() {
             doc.borrow_mut().append_child(self.node_id, child.node_id);
         }
+        late_child::notify_inserted(self, child);
     }
 
     /// Remove a child node from this element.
@@ -352,13 +355,18 @@ impl NodeHandle {
             doc.borrow_mut()
                 .insert_before(self.node_id, child.node_id, reference.node_id);
         }
+        late_child::notify_inserted(self, child);
     }
 
     /// Replace this node with another node.
     pub fn replace_with(&self, replacement: &NodeHandle) {
+        let parent = self.parent_node();
         if let Some(doc) = self.doc.upgrade() {
             doc.borrow_mut()
                 .replace_node(self.node_id, replacement.node_id);
+        }
+        if let Some(parent) = parent {
+            late_child::notify_inserted(&parent, replacement);
         }
     }
 
@@ -392,6 +400,10 @@ impl NodeHandle {
     /// and the node still re-inserts (issue #723). See
     /// [`DomDocument::discard_node`] for the full contract.
     pub fn discard(&self) {
+        // Before the backend lets go: a discarded id may be handed to the next
+        // node the document mints, and an observer left behind under it would
+        // then fire for a container that no longer exists (issue #716).
+        late_child::forget_node(self);
         if let Some(doc) = self.doc.upgrade() {
             doc.borrow_mut().discard_node(self.node_id);
         }
@@ -481,6 +493,15 @@ impl NodeHandle {
         }
     }
 
+    /// The document this handle points into, if it is still alive.
+    ///
+    /// For code that walks several nodes at once and would otherwise upgrade the
+    /// same `Weak` once per step — [`late_child::notify_inserted`] does, on every
+    /// insertion.
+    pub(super) fn doc_upgrade(&self) -> Option<Rc<RefCell<dyn DomDocument>>> {
+        self.doc.upgrade()
+    }
+
     /// Get the parent node.
     pub fn parent_node(&self) -> Option<NodeHandle> {
         let doc = self.doc.upgrade()?;
@@ -497,6 +518,7 @@ impl NodeHandle {
 
     /// Insert a node after this node (as next sibling).
     pub fn insert_after(&self, new_node: &NodeHandle) {
+        let mut inserted_into = None;
         if let Some(doc) = self.doc.upgrade() {
             let parent_id = doc.borrow().parent_node(self.node_id);
             if let Some(parent_id) = parent_id {
@@ -507,7 +529,12 @@ impl NodeHandle {
                 } else {
                     doc.borrow_mut().append_child(parent_id, new_node.node_id);
                 }
+                inserted_into = Some(parent_id);
             }
+        }
+        if let Some(parent_id) = inserted_into {
+            let parent = NodeHandle::new(parent_id, self.doc.clone());
+            late_child::notify_inserted(&parent, new_node);
         }
     }
 
