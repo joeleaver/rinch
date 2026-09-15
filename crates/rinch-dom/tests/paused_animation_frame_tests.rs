@@ -26,17 +26,22 @@
 //!
 //! # Mutants, and what kills each
 //!
+//! Measured: each mutant applied to the committed source, `cargo test -p
+//! rinch-dom -p rinch --no-fail-fast` run against it (85 result lines, the
+//! unmutated control green), the source restored from the commit. "shell" names
+//! fixtures in `crates/rinch/src/app/paused_animation_frames_tests.rs`.
+//!
 //! | mutant | killed by |
 //! |---|---|
-//! | `main`: a paused entry counts as running | `a_paused_animation_asks_for_no_frames`, `resuming_a_paused_animation_asks_for_frames_again` (its first half) and the shell file |
-//! | a paused entry is **dropped** by the tick instead of kept quiet | `a_paused_animation_asks_for_no_frames` (the entry and its frozen width) |
-//! | the tick still re-applies a paused sample **and marks the node dirty** | `a_paused_animation_leaves_the_tree_clean_after_a_tick` |
-//! | the text-measure pre-pass is not narrowed to running animations | `a_paused_font_size_animation_does_not_invalidate_layout` |
-//! | the tick answers `false` whenever anything is paused | `a_running_animation_beside_a_paused_one_still_asks_for_frames` |
-//! | a node's entries are judged by its **first** animation only | `two_animations_on_one_node_one_paused_still_ask_for_frames` |
-//! | the tick **skips** a paused animation instead of re-applying its sample | `a_finished_transition_does_not_displace_a_paused_sample` |
-//! | resuming does not move the start time (the clock jumps the pause) | `a_resumed_animation_continues_from_where_it_was_paused` |
-//! | resuming restarts the animation from t=0 | `a_resumed_animation_continues_from_where_it_was_paused` |
+//! | `main`: a paused entry counts as running | 9: `a_paused_animation_asks_for_no_frames`, `a_paused_font_size_animation_does_not_invalidate_layout`, `resuming_a_paused_animation_asks_for_frames_again`, `a_resumed_animation_continues_from_where_it_was_paused`, `a_finished_transition_does_not_displace_a_paused_sample`, and 4 in the shell |
+//! | a paused entry is **dropped** by the tick instead of kept quiet | 4: `a_paused_animation_asks_for_no_frames`, `two_animations_on_one_node_one_paused_still_ask_for_frames`, `a_resumed_animation_continues_from_where_it_was_paused`, shell `a_paused_animation_lets_the_app_go_idle` |
+//! | the tick still re-applies a paused sample **and marks the node dirty** | 4: `a_paused_animation_leaves_the_tree_clean_after_a_tick` and 3 in the shell |
+//! | the text-measure pre-pass is not narrowed to running animations | 2: `a_paused_font_size_animation_does_not_invalidate_layout`, shell `a_paused_animation_owes_the_android_loop_no_frame` |
+//! | the tick answers `false` whenever anything is paused | 2: `a_running_animation_beside_a_paused_one_still_asks_for_frames`, `two_animations_on_one_node_one_paused_still_ask_for_frames` |
+//! | a node's entries are judged by its **first** animation only | 2: `two_animations_on_one_node_one_paused_still_ask_for_frames`, `a_finished_transition_does_not_displace_a_paused_sample` |
+//! | the tick **skips** a paused animation instead of re-applying its sample | `a_finished_transition_does_not_displace_a_paused_sample`, **alone** |
+//! | resuming does not move the start time (the clock jumps the pause) | `a_resumed_animation_continues_from_where_it_was_paused`, **alone** |
+//! | resuming restarts the animation from t=0 | `a_resumed_animation_continues_from_where_it_was_paused`, **alone** |
 
 #![cfg(feature = "software-renderer")]
 
