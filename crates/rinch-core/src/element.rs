@@ -350,6 +350,10 @@ fn render_element_to_dom(
 
             // Render component directly to DOM
             let handle = component.render(scope, &child_handles);
+            // The scratch container is in no subtree, so nothing else can ever
+            // reclaim it (issue #719). After the render, not before: the
+            // children it adopted have been re-parented out by then.
+            crate::dom::release_scratch_container(scope, &temp_container);
             parent.append_child(&handle);
         }
     }

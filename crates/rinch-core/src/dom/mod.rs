@@ -813,6 +813,37 @@ impl std::fmt::Debug for NodeHandle {
 /// generated `render_fn` does exactly that: prop closures tracked, children +
 /// `Component::render` untracked.
 ///
+/// Release the scratch container an `rsx!` component site builds its children
+/// in (issue #719).
+///
+/// A component site mints a `<template>`, renders the site's children into it,
+/// reads them back out with [`NodeHandle::children`] and hands them to
+/// [`Component::render`], which re-parents the ones it adopts into its own tree.
+/// The container is then dead — and it is dead in the one way scope ownership
+/// cannot see: **it is in no subtree**, never having been attached to anything,
+/// so the recursive discard of a branch's content root never reaches it. One
+/// orphan per component render, measured at `+100` over 200 toggles of
+/// `if open { Card {} }` on `rinch-web`.
+///
+/// Anything still under the container was **not** adopted, so it leaves with it —
+/// by the same ownership rule the reactive helpers use, applied one level down:
+/// a leftover the site built is discarded, a leftover the site was *handed*
+/// (`Card { {captured.clone()} }` where `Card` ignores its children) is only
+/// detached, so a caller's subtree is never retired out from under it.
+///
+/// Call it **after** `Component::render`, so the children it adopted have
+/// already been re-parented out.
+pub fn release_scratch_container(scope: &RenderScope, container: &NodeHandle) {
+    for leftover in container.children() {
+        if scope.created(leftover.node_id()) {
+            leftover.discard();
+        } else {
+            leftover.remove();
+        }
+    }
+    container.discard();
+}
+
 /// A `render_fn` that **memoises** — one that hands back a subtree it built
 /// once, rather than building afresh — is supported on both backends, and is the
 /// #654 shape. The previous output leaves by whichever verb its ownership says

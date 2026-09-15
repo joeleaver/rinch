@@ -42,6 +42,7 @@
 //! process-global, so every test here shares the counter and the registry.
 #![cfg(target_arch = "wasm32")]
 
+use rinch::prelude::*;
 use rinch_core::dom::{DomDocument, NodeHandle, NodeId, RenderScope};
 use rinch_core::reactive::Signal;
 use rinch_core::{for_each_dom_typed, match_dom, show_dom};
@@ -523,5 +524,50 @@ fn churning_a_for_loop_does_not_grow_the_registry() {
         doc.borrow().__node_count(),
         doc_baseline,
         "#184/#719: and the document map must not grow either"
+    );
+}
+
+// ── the scratch container a component site mints ────────────────────────────
+
+#[rinch::component]
+fn Card(label: String, children: &[NodeHandle]) -> NodeHandle {
+    rinch::rsx! {
+        div { class: "card", {label.clone()} }
+    }
+}
+
+#[rinch::component]
+fn card_branch(open: Signal<bool>) -> NodeHandle {
+    rinch::rsx! {
+        div {
+            if open.get() {
+                Card { label: "hi" }
+            }
+        }
+    }
+}
+
+/// A component **site** mints a scratch `<template>` to build its children in,
+/// and hands the children to `Component::render`, which re-parents the ones it
+/// adopts. The container is then dead — and dead in the one way scope ownership
+/// cannot see: **it is attached to nothing**, so the recursive discard of a
+/// branch's content root never reaches it.
+///
+/// Measured at **+100 over 200 toggles** of `if open { Card {} }` in Chrome 150
+/// during PR #728's second review, with every other fixture in this file green.
+/// One strong `web_sys::Node` per component render, for the life of the module.
+#[wasm_bindgen_test]
+fn a_component_site_in_a_branch_does_not_grow_the_registry() {
+    let (_doc, body, mut scope) = mounted();
+
+    let open = Signal::new(false);
+    let root = card_branch(&mut scope, open);
+    body.append_child(&root);
+
+    let delta = registry_growth(|i| open.set(i % 2 == 0), 200);
+    assert_eq!(
+        delta, 0,
+        "#719: a component site inside a branch must not strand its scratch \
+         container in NODE_REGISTRY — leaked {delta} entries"
     );
 }

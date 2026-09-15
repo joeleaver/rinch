@@ -79,6 +79,20 @@ impl RenderScope {
     /// after, and `a_captured_handle_nested_inside_fresh_markup_is_still_lost`
     /// pins it so a future fix is deliberate rather than accidental.
     ///
+    /// **The verb is chosen before the scope is disposed**, so a cleanup that
+    /// re-parents a scope-built node while disposal runs cannot rescue it: the
+    /// node was already recorded as the helper's and is released a moment later.
+    /// That ordering is deliberate — disposal runs user code, and the ownership
+    /// answer has to be the one that was true when the branch rendered — but it
+    /// means "move this node somewhere safe in `on_cleanup`" is not a supported
+    /// escape. Build it outside the closure and hand it in instead.
+    ///
+    /// And it answers for nodes **in a subtree**. A node this scope minted and
+    /// attached to nothing is reached by no walk at all — the `<template>` an
+    /// `rsx!` component site builds its children in is exactly that, which is
+    /// why [`release_scratch_container`](super::release_scratch_container)
+    /// exists.
+    ///
     /// Linear over the ids the scope minted. A branch scope holds one render's
     /// worth, and the root is almost always its first — this is not a hot-path
     /// lookup, it runs once per node per branch flip.

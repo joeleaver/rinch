@@ -2530,6 +2530,24 @@ Every other release site says the verb outright, because it knows: the editor's
 rects), `virtual_list`'s drained spacers, `Stepper`'s replaced default glyph,
 and DevTools' rebuilt panels all `discard`.
 
+**"Takes its whole subtree with it" is true of everything *in* a subtree, and a
+node in none is never reached.** An `rsx!` component site mints a scratch
+`<template>`, builds the site's children into it, and hands them to
+`Component::render`, which re-parents the ones it adopts; the container is then
+dead and attached to nothing, so no walk from a branch's content root can find
+it. That is `rinch_core::dom::release_scratch_container`, called at the three
+codegen sites and at `element.rs`'s `Element::Component` arm — one orphan per
+component render otherwise, measured at **+99 over 198 toggles** of
+`if open { Card {} }` in Chrome and on the mock alike. Anything still under the
+container was not adopted and leaves with it, by the same ownership rule one
+level down.
+
+Two ordering facts that fall out and are easy to get wrong: the verb is chosen
+**before** the branch scope is disposed, so a cleanup that re-parents a
+scope-built node during disposal cannot rescue it; and the scratch container is
+released **after** `Component::render`, so the children it adopted have been
+re-parented out by then.
+
 **Getting it wrong is silent either way**: `remove` where `discard` was meant
 costs memory on web, `discard` where `remove` was meant costs the subtree. The
 suite pins **both** directions for every helper — a re-show fixture and a

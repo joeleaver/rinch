@@ -265,6 +265,12 @@ item1.replace_with(&new_item);
 > `if open { p { "hi" } }` reclaims its markup on every hide while
 > `if open { {panel} }` keeps yours.
 >
+> Two edges of that rule. The verb is chosen **before** the scope is disposed, so
+> an `on_cleanup` that re-parents a scope-built node cannot rescue it — build it
+> outside the closure and hand it in instead. And ownership answers for nodes in
+> a subtree: a node attached to nothing is reached by no walk, which is what
+> `rinch_core::dom::release_scratch_container` exists for.
+>
 > **`remove()`'s post-condition is the same on both backends; `discard()`'s is
 > not.** `rinch-web` holds a strong `web_sys::Node` in two page-global maps, so a
 > `discard()` is what releases the browser node against GC (issue #184).

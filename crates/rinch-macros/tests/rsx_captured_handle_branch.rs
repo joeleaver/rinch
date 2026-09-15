@@ -148,3 +148,86 @@ fn a_match_arm_can_re_show_a_captured_handle() {
         "#719: and it must be the SAME node"
     );
 }
+
+// ── the scratch container a component site mints ────────────────────────────
+
+#[component]
+fn Card(label: String, children: &[NodeHandle]) -> NodeHandle {
+    rsx! {
+        div { class: "card", {label.clone()} }
+    }
+}
+
+#[component]
+fn card_branch(open: Signal<bool>) -> NodeHandle {
+    rsx! {
+        div {
+            if open.get() {
+                Card { label: "hi" }
+            }
+        }
+    }
+}
+
+/// A component **site** mints a scratch `<template>` to build its children in,
+/// and that container is in **no subtree** — it is never attached to anything.
+/// So the recursive discard of a branch's content root cannot reach it, and one
+/// orphan was stranded per component render (issue #719).
+///
+/// This is the counter-example to "a root this scope built takes its whole
+/// subtree with it": true for everything *in* a subtree, and a node in none is
+/// never reached. `release_scratch_container` is the site that knows.
+///
+/// Measured before the fix at **+100 over 200 toggles** on `rinch-web`; the same
+/// shape here, over `MockDomDocument`, which counts the same quantity.
+#[test]
+fn a_component_site_in_a_branch_does_not_grow_the_document() {
+    let doc = Rc::new(RefCell::new(MockDomDocument::new()));
+    let body = doc.borrow().body();
+    let mut scope = RenderScope::new(doc.clone(), body);
+
+    let open = Signal::new(false);
+    let _root = card_branch(&mut scope, open);
+
+    // Baselined after the first show/hide pair, so the initial mount is not
+    // counted as growth.
+    open.set(true);
+    open.set(false);
+    let baseline = doc.borrow().__node_count() as isize;
+    for i in 2..200 {
+        open.set(i % 2 == 0);
+    }
+    let delta = doc.borrow().__node_count() as isize - baseline;
+
+    assert_eq!(
+        delta, 0,
+        "#719: a component site inside a branch must not strand its scratch \
+         container — leaked {delta} nodes over 198 toggles"
+    );
+}
+
+/// The other half: the component's **children** still reach it. A growth
+/// fixture on its own is passed by a site that discards the children too.
+#[test]
+fn a_component_site_still_renders_its_children() {
+    let doc = Rc::new(RefCell::new(MockDomDocument::new()));
+    let body = doc.borrow().body();
+    let mut scope = RenderScope::new(doc.clone(), body);
+
+    let root = rsx_card(&mut scope);
+    assert_eq!(
+        text(&root),
+        "hi",
+        "#719: releasing the scratch container must not take the rendered \
+         content with it"
+    );
+}
+
+#[component]
+fn rsx_card() -> NodeHandle {
+    rsx! {
+        div {
+            Card { label: "hi" }
+        }
+    }
+}
