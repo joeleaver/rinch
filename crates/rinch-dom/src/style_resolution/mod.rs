@@ -1503,8 +1503,10 @@ impl RinchDocument {
         // because an atomic inline is measured out of Taffy's cache (#784). So
         // the rule it was said to rest on did not hold at all for text inside
         // an `inline-block`. With that hole closed in `ifc.rs`, deleting this
-        // loop fails `a_paused_font_size_animation_in_a_shown_panel_resizes_
-        // its_inline_block` — measured.
+        // loop fails `a_paused_font_size_animation_in_a_panel_shown_inline_
+        // resizes_its_inline_block` — measured, 318x80 against a 159x40
+        // reference — and **only** that one: the class route re-cascades the
+        // span itself and never needed this loop.
         let mut remeasure = Vec::new();
 
         while let Some(id) = stack.pop() {

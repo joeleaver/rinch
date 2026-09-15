@@ -51,7 +51,7 @@
 //! | the cascade does not re-measure an animated typography sample | 3: both block-text fixtures, `a_paused_font_size_animation_on_a_span_resizes_its_inline_block` |
 //! | …re-runs Taffy but does not invalidate the text measure | `a_paused_font_size_animation_on_a_span_resizes_its_inline_block`, **alone** |
 //! | …invalidates the text measure but does not re-run Taffy | 3: both block-text fixtures and the inline-block one |
-//! | `restart_animations_in_subtree` does not re-measure | `a_paused_font_size_animation_in_a_shown_panel_resizes_its_inline_block`, **alone** — it survived every fixture until #784's hole was closed, because until then neither branch re-measured text inside an atomic inline |
+//! | `restart_animations_in_subtree` does not re-measure | `a_paused_font_size_animation_in_a_panel_shown_inline_resizes_its_inline_block`, **alone**: measured, the inline route comes back 318x80 against a 159x40 reference while the **class** route stays green, because only the inline route reaches the span through the walk. It survived every fixture until #784's hole was closed, because until then neither route re-measured text inside an atomic inline |
 //! | `mark_atomic_inline_dirty` returns early on an `ifc_dirty` pass (#784, as found) | 2: that fixture and `showing_a_panel_that_also_shrinks_its_text_remeasures_the_inline_block` |
 //! | the tick answers `false` whenever anything is paused | round 1: 2 — `a_running_animation_beside_a_paused_one_still_asks_for_frames`, `two_animations_on_one_node_one_paused_still_ask_for_frames` |
 //! | a node's entries are judged by its **first** animation only | round 1: 2 — `two_animations_on_one_node_one_paused_still_ask_for_frames`, `a_finished_transition_does_not_displace_a_paused_sample` |
@@ -644,8 +644,8 @@ fn an_animation_paused_inside_its_delay_keeps_its_place() {
 /// re-measures everything, which was this doc's earlier (false) claim: it is
 /// because a block of text is reached by the structural pass, and text inside
 /// an atomic inline is not (#784).
-/// `a_paused_font_size_animation_in_a_shown_panel_resizes_its_inline_block` is
-/// the fixture that kills the deletion.
+/// `a_paused_font_size_animation_in_a_panel_shown_inline_resizes_its_inline_block`
+/// is the fixture that kills the deletion — the inline route, and only it.
 ///
 /// The text is laid out in its base 16px first, then the panel is hidden, the
 /// animation class is added while it is hidden (the node's own cascade runs, but
