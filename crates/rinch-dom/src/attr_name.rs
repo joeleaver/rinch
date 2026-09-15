@@ -55,9 +55,20 @@ use std::borrow::Cow;
 /// **Four SVG element names are deliberately absent** — `a`, `script`, `style`
 /// and `title`. Each is also an HTML element name, rinch has no namespace to
 /// tell the two apart, and the HTML reading is overwhelmingly the likely one
-/// (`<a ID="x">` is real markup; an `<a>` inside an `<svg>` is rare). Nothing
-/// is lost by the choice: none of the four carries a camelCase attribute in
-/// SVG, so folding their names changes no spelling that matters.
+/// (`<a ID="x">` is real markup; an `<a>` inside an `<svg>` is rare).
+///
+/// For **three** of them the choice is free: SVG's `script`, `style` and
+/// `title` carry no camelCase attribute, so folding their names changes no
+/// spelling that matters. **`a` is not free**, and saying otherwise would be a
+/// convenient falsehood: SVG's conditional-processing attributes
+/// `requiredExtensions` and `systemLanguage` apply to `<a>` along with every
+/// other container element, and inside an `<svg>` this folds them to
+/// `requiredextensions` / `systemlanguage`. It costs nothing *today* — nothing
+/// in the workspace reads either name, and `paint/svg.rs`'s child dispatch
+/// handles `path`, `rect`, `circle`, `line`, `polyline` and `polygon` and drops
+/// everything else (`a` included) through a `_ => {}` arm — but it is a real
+/// deviation to weigh again if conditional processing ever arrives, not an
+/// absence of one.
 ///
 /// `foreignObject` **is** here — the element itself is SVG — but its HTML
 /// descendants are not, and they fall out correctly without a special case,
@@ -180,6 +191,12 @@ mod tests {
     /// The four names left out, and the reason they are left out: each is an
     /// HTML element name too. This is a transcription pin — if one is ever
     /// added, this test is where the trade-off has to be re-argued.
+    ///
+    /// The trade-off is **not** uniform across the four, and `a` is the one
+    /// that costs something: SVG's `requiredExtensions` / `systemLanguage`
+    /// apply to it, so inside an `<svg>` those two names fold. Nothing reads
+    /// them and the SVG painter never descends into an `<a>`, so it is inert
+    /// rather than free — see [`is_svg_content_tag`].
     #[test]
     fn the_html_ambiguous_svg_names_are_absent() {
         for name in ["a", "script", "style", "title"] {
