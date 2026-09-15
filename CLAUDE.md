@@ -2706,9 +2706,17 @@ Three things it deliberately does not do.
   (`insert_after` is how a reorder moves rows). The one shape that *does* leave
   under a move — appending a mounted node into a **detached** parent — is not
   covered: **#702**.
-- **`display: none` is not a detach**, and rinch still starts a transition for a
-  style change made while an element is hidden, where css-transitions-1 §3 starts
-  none for an element that is not being rendered: **#703**.
+- **`display: none` is not a detach**, and does not need to be (**#703**). §3
+  asks whether an element is being *rendered*, not whether it is in the
+  document, so the cascade answers that half itself: before starting a
+  transition it checks the node's display **before** the change as well as
+  after, then walks its ancestors — `display` does not inherit, so a box under a
+  hidden wrapper computes `display: block` and its own style says nothing. A
+  change made while an element is hidden lands outright, so it is already at its
+  new value when shown; an element that stops being rendered has its
+  transitions cancelled, and so does everything under it. `visibility: hidden`
+  is **rendered** and still transitions. `@keyframes` is not covered: a hidden
+  element's animations go on running and go on asking for frames (**#747**).
 
 **The reactive helpers reach all of that, and `NodeHandle::clear_animations` is
 gone** (**#704**). It used to be called before `remove()` by `show_dom`,
