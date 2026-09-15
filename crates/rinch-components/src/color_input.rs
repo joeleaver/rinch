@@ -18,6 +18,9 @@ use crate::color_utils::{
 /// Reactive callback type for string state.
 pub type ReactiveString = Rc<dyn Fn() -> String>;
 
+/// The class the open dropdown adds to a color input's root.
+const OPENED_CLASS: &str = "rinch-color-input--opened";
+
 /// A text input with color preview swatch and dropdown ColorPicker.
 #[derive(Default)]
 pub struct ColorInput {
@@ -395,15 +398,19 @@ impl Component for ColorInput {
         // `opened`, and a coupled effect would rewrite the field while the
         // author's mid-typing text is still unparseable ("#33"), destroying
         // it without any colour change (GH #231).
+        //
+        // Adding and removing the one class, never rewriting the attribute
+        // (issue #717): a rewrite from `class_string()` drops the universal
+        // `class:` prop, which the rsx macro merges onto the returned handle
+        // *after* `render` returns (issue #647).
         {
             let root_clone = root.clone();
-            let base_class = root_class.clone();
             __scope.create_effect(move || {
-                let mut cls = base_class.clone();
                 if opened.get() {
-                    cls.push_str(" rinch-color-input--opened");
+                    root_clone.add_class(OPENED_CLASS);
+                } else {
+                    root_clone.remove_class(OPENED_CLASS);
                 }
-                root_clone.set_attribute("class", &cls);
             });
         }
 

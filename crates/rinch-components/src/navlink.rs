@@ -26,6 +26,9 @@ use std::rc::Rc;
 /// Reactive callback type for boolean state.
 pub type ReactiveBool = Rc<dyn Fn() -> bool>;
 
+/// The class the active state adds to a navlink's anchor or button.
+const ACTIVE_CLASS: &str = "rinch-navlink--active";
+
 /// NavLink variant style.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum NavLinkVariant {
@@ -290,24 +293,20 @@ impl Component for NavLink {
             a.set_attribute("class", &final_class);
 
             // Set up reactive effect for active state if active_fn is provided
+            // Adding and removing the one class, never rewriting the attribute
+            // (issue #717). `disabled` is not reactive and is already in the
+            // class string above, so the effect has exactly one class to own —
+            // and a rewrite would drop whatever a parent patched onto the
+            // anchor, which is how every #474 category C prop travels.
             if let Some(ref active_fn) = self.active_fn {
                 let active_fn = active_fn.clone();
-                let base_class = base_class.clone();
-                let disabled = self.disabled;
                 let a_handle = a.clone();
                 __scope.create_effect(move || {
-                    let is_active = active_fn();
-                    let class = if is_active {
-                        format!("{} rinch-navlink--active", base_class)
+                    if active_fn() {
+                        a_handle.add_class(ACTIVE_CLASS);
                     } else {
-                        base_class.clone()
-                    };
-                    let final_class = if disabled {
-                        format!("{} disabled", class)
-                    } else {
-                        class
-                    };
-                    a_handle.set_attribute("class", &final_class);
+                        a_handle.remove_class(ACTIVE_CLASS);
+                    }
                 });
             }
 
@@ -334,18 +333,17 @@ impl Component for NavLink {
             btn.set_attribute("class", &class);
 
             // Set up reactive effect for active state if active_fn is provided
+            // Adding and removing the one class, never rewriting the
+            // attribute — see the note on the anchor branch above (issue #717).
             if let Some(ref active_fn) = self.active_fn {
                 let active_fn = active_fn.clone();
-                let base_class = base_class.clone();
                 let btn_handle = btn.clone();
                 __scope.create_effect(move || {
-                    let is_active = active_fn();
-                    let class = if is_active {
-                        format!("{} rinch-navlink--active", base_class)
+                    if active_fn() {
+                        btn_handle.add_class(ACTIVE_CLASS);
                     } else {
-                        base_class.clone()
-                    };
-                    btn_handle.set_attribute("class", &class);
+                        btn_handle.remove_class(ACTIVE_CLASS);
+                    }
                 });
             }
 

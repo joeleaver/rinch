@@ -100,6 +100,11 @@ impl std::str::FromStr for DrawerSize {
 /// Reactive callback type for opened state.
 pub type ReactiveBool = Rc<dyn Fn() -> bool>;
 
+/// The class the *closed* state adds to a drawer's root.
+const ROOT_HIDDEN_CLASS: &str = "rinch-drawer__root--hidden";
+/// The class the open state adds to the drawer panel.
+const OPENED_CLASS: &str = "rinch-drawer--opened";
+
 /// A drawer (slide-out panel) overlay.
 ///
 /// Renders in a portal, sliding in from the specified edge.
@@ -375,20 +380,21 @@ impl Component for Drawer {
             let root_clone = root.clone();
             let drawer_clone = drawer_div.clone();
             let body_clone = body.clone();
-            let base_class = class.replace(" rinch-drawer--opened", "");
-
+            // Adding and removing the one class on each of the two nodes, never
+            // rewriting either attribute (issue #717): a rewrite drops the
+            // universal `class:` prop, which the rsx macro merges onto the
+            // returned handle *after* `render` returns (issue #647), and drops
+            // anything a parent patched onto the panel.
             __scope.create_effect(move || {
                 let is_open = opened_fn();
                 if is_open {
-                    root_clone.set_attribute("class", "rinch-drawer__root");
-                    drawer_clone
-                        .set_attribute("class", &format!("{} rinch-drawer--opened", base_class));
+                    root_clone.remove_class(ROOT_HIDDEN_CLASS);
+                    drawer_clone.add_class(OPENED_CLASS);
                     // Reset scroll position on drawer body when opening
                     body_clone.set_scroll_top(0.0);
                 } else {
-                    root_clone
-                        .set_attribute("class", "rinch-drawer__root rinch-drawer__root--hidden");
-                    drawer_clone.set_attribute("class", &base_class);
+                    root_clone.add_class(ROOT_HIDDEN_CLASS);
+                    drawer_clone.remove_class(OPENED_CLASS);
                 }
             });
         }
