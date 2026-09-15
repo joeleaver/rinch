@@ -4204,11 +4204,19 @@ impl RinchDocument {
     /// they are one list, and a field present there and missing here is a
     /// declaration that silently stops applying. Seven of the ten have a
     /// fixture in `contents_wrapper_inherited_style_tests` that dies when their
-    /// line is deleted; `text_underline_offset` is covered elsewhere, as below,
-    /// and the `letter_spacing`/`word_spacing` pair added by #698 is covered by
-    /// `letter_word_spacing_tests::a_span_scoped_letter_spacing_covers_only_its_own_run`,
-    /// where the span differs from its container in nothing else, so dropping
-    /// either line skips the span and loses the declaration.
+    /// line is deleted, `text_underline_offset` is covered elsewhere as below,
+    /// and the `letter_spacing`/`word_spacing` pair added by #698 is
+    /// `a_wrappers_letter_spacing_reaches_its_text` in that same file.
+    ///
+    /// That last one is worth a sentence, because the obvious fixture does
+    /// **not** cover it. This predicate gates only a boxless wrapper and the
+    /// split-inline bridge; a real `display: inline` span pushes its properties
+    /// unconditionally, so a span-scoped spacing test exercises
+    /// `inline_style_props` and never reaches here. Measured: a mutant deleting
+    /// both clauses survived the whole `rinch-dom` suite, #698's own fixtures
+    /// included, until a `display: contents` fixture was written for it. And it
+    /// had to measure the **line width** — spacing moves the same glyphs apart,
+    /// so this file's ink and colour oracles cannot see it.
     ///
     /// **`text_underline_offset` is inert but not untested** (#580). No CSS can
     /// make it `Some` — the property is gecko-only in this Stylo build, so the

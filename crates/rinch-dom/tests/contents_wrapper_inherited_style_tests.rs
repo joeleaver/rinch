@@ -312,6 +312,73 @@ fn a_wrappers_line_height_reaches_its_text() {
     );
 }
 
+/// **`letter-spacing`, and it is here for the same reason `line-height` is.**
+/// #698 gave `inline_style_props` a `letter-spacing` / `word-spacing` pair, so
+/// the skip comparison owes them a clause each — and a mutant deleting both
+/// clauses survived every fixture in the `rinch-dom` suite, this file included,
+/// until this one existed. Measured, not supposed.
+///
+/// It could not have been caught anywhere else. The skip only gates a boxless
+/// wrapper and the split-inline bridge; a real `display: inline` span pushes its
+/// properties unconditionally, so #698's own span fixture is blind to it. And
+/// the oracles above are blind too: spacing moves the same glyphs apart, so the
+/// ink count and the colour count barely change. The **line width** is what it
+/// changes.
+///
+/// `MIDDLE` is 6 characters at `letter-spacing: 8px`, so the line is 48px wider
+/// — css-text-3 puts a step after the last character as well, which Chrome 150
+/// does too.
+///
+/// Kills: dropping either clause from `RinchDocument::same_inline_text_style`.
+#[test]
+fn a_wrappers_letter_spacing_reaches_its_text() {
+    /// The width of the container's own inline line box, which is what spacing
+    /// changes.
+    fn line_width(host: Host) -> f32 {
+        let mut doc = RinchDocument::new();
+        let body = doc.body();
+        let c = el(
+            &mut doc,
+            body,
+            "div",
+            "width: 400px; line-height: 20px; font-size: 16px; color: black",
+        );
+        txt(&mut doc, c, "before ");
+        let style = match host {
+            Host::Wrapper => "display: contents; letter-spacing: 8px".to_string(),
+            Host::Span => "letter-spacing: 8px".to_string(),
+            Host::None => "display: contents".to_string(),
+        };
+        let w = el(&mut doc, c, "span", &style);
+        txt(&mut doc, w, "MIDDLE");
+        txt(&mut doc, c, " after");
+        doc.resolve_layout(VW, VH);
+        doc.tree
+            .get(c.0)
+            .unwrap()
+            .text_layout
+            .as_ref()
+            .expect("the container has no inline layout")
+            .layout
+            .width()
+    }
+
+    let wrapper = line_width(Host::Wrapper);
+    let span = line_width(Host::Span);
+    let none = line_width(Host::None);
+    assert!(
+        (span - none - 48.0).abs() < 0.5,
+        "the fixture is not discriminating: a real <span> at letter-spacing: \
+         8px over the 6 characters of MIDDLE must widen the line by 48px; \
+         got {none} -> {span}"
+    );
+    assert!(
+        (wrapper - span).abs() < 0.01,
+        "a boxless wrapper's letter-spacing must reach its text exactly as an \
+         inline box's does: wrapper={wrapper}, <span>={span}, undeclared={none}"
+    );
+}
+
 // ── the control that stops the fix over-reaching ──────────────────────────
 
 /// A wrapper that declares nothing must change nothing.
