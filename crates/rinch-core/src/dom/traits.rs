@@ -199,10 +199,17 @@ pub trait DomDocument {
     /// Remove a node **and release the backend's bookkeeping** for it and every
     /// descendant — the caller is finished with the subtree for good.
     ///
-    /// This is the only route that retires an id. Afterwards the ids may name
-    /// nothing: every operation on one is a **silent no-op**, never a panic and
-    /// never a write to some other node (ids are never re-issued — see below).
-    /// Build a fresh node instead of re-attaching a discarded one.
+    /// This is the only route on which a backend **may** retire an id. What it
+    /// is allowed to do is bounded from one side only: a `discard_node` is at
+    /// least a [`remove_node`](Self::remove_node), and may be as much as
+    /// dropping the subtree's bookkeeping entirely. Nothing stronger is
+    /// promised, and **nothing weaker may be relied on**: build a fresh node
+    /// rather than re-attaching a discarded one, because the backend that does
+    /// retire will make that a silent no-op.
+    ///
+    /// Where a backend does retire, it does so *silently*: every operation on a
+    /// retired id does nothing, never panics, and never writes to some other
+    /// node (no backend re-issues an id it retired — see below).
     ///
     /// # When to call it rather than [`remove_node`](Self::remove_node)
     ///
@@ -221,22 +228,40 @@ pub trait DomDocument {
     ///
     /// | backend | `remove_node` | `discard_node` |
     /// |---|---|---|
-    /// | `rinch-dom` (desktop) | detach; the slab entry stays | the same — the default below. Desktop's slab is per-document and dies with it, and freeing the entry would recycle the id (issue #304). That the slab therefore only grows is **issue #723**, not something this method promises to fix |
+    /// | `rinch-dom` (desktop) | detach; the slab entry stays | **the same** — the default below, which reclaims nothing. A discarded node there still re-inserts, still keeps its subtree, still takes writes |
     /// | `rinch-web` | detach; both node maps keep the node | drops the node and every descendant from the document map **and** the page-global registry (issue #184), releasing the `web_sys` node it was pinning against GC |
+    /// | `MockDomDocument` | detach | retires, like the browser |
     ///
-    /// The **post-condition** is identical on both (`remove_node` re-insertable,
-    /// `discard_node` retired); only how much each reclaims differs, because the
-    /// web maps hold strong `web_sys` references that outlive the document and
-    /// desktop's do not.
+    /// **`remove_node`'s post-condition is identical on both; `discard_node`'s
+    /// is not.** Desktop's is strictly weaker — measured, not argued: after
+    /// `discard_node(panel)` on a `RinchDocument`, `append_child` puts the panel
+    /// back with its children and `set_attribute` writes through. Its slab is
+    /// per-document and dies with the document, and freeing the entry would
+    /// recycle the id (issue #304); that the slab therefore only grows is
+    /// **issue #723**.
     ///
-    /// # Ids are never re-issued
+    /// So the contract above is deliberately one-sided, and this is the same
+    /// shape as issue #719 one verb along: a rule asserted once, honoured by one
+    /// backend, failing in the direction "works on desktop, dies on web". What
+    /// keeps that from being a trap is [`MockDomDocument`](super::mock), which
+    /// retires like the browser, so a caller that re-attaches a discarded handle
+    /// fails `cargo test` on the host rather than only in a browser.
     ///
-    /// Neither backend hands a discarded id to a later node — `rinch-web`'s
+    /// # A retired id is never re-issued
+    ///
+    /// No backend hands a **discarded** id to a later node: `rinch-web`'s
     /// counter is a monotonic `fetch_add` with no free list, and `rinch-dom`
-    /// does not free the slot at all — so a stale handle can only ever name
-    /// nothing, never somebody else. Registries keyed by node id (focus, the
-    /// mounted-editor registry) therefore cannot be aimed at the wrong node by a
-    /// discard.
+    /// frees nothing on this route. So a stale *discard* handle can only ever
+    /// name nothing, never somebody else, and registries keyed by node id
+    /// (focus, the mounted-editor registry) cannot be aimed at the wrong node by
+    /// a discard.
+    ///
+    /// That is a claim about **this route only**. `rinch-dom` does free slab
+    /// keys elsewhere — `set_inner_html` and pseudo-element pruning on restyle
+    /// both reach `NodeTree::remove_subtree` — and `slab::Slab` has a free list,
+    /// so an id freed *that* way is handed to a different node (measured:
+    /// `NodeId(4)`). #304's recycled-slot hazard is live on desktop today,
+    /// independently of this method, and belongs to #723's audit.
     ///
     /// The default is `remove_node`: correct but reclaiming nothing, which is
     /// what a backend whose bookkeeping dies with the document wants.

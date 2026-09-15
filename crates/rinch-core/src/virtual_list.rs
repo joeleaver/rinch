@@ -245,11 +245,21 @@ where
         let mut doomed: Vec<RenderScope> = Vec::new();
         for k in &to_remove {
             if let Some(item_state) = state.remove(k) {
+                // Ownership decides the verb (issue #719): a row the `view`
+                // closure built is gone for good — scrolling back to this key
+                // renders it afresh — so the backend lets go of it; a row a
+                // *memoising* `view` handed back is only detached. Read before
+                // the scope is parked.
+                if item_state
+                    .scope
+                    .as_ref()
+                    .is_some_and(|s| s.created(item_state.node.node_id()))
+                {
+                    item_state.node.discard();
+                } else {
+                    item_state.node.remove();
+                }
                 doomed.extend(item_state.scope);
-                // The whole `ItemState` leaves `rendered` here, so scrolling
-                // back to this key renders it afresh rather than re-showing this
-                // node: `discard`, not `remove` (issue #719).
-                item_state.node.discard();
             }
         }
 
@@ -342,9 +352,13 @@ where
         //
         // They leave the pool with the unmount, so `discard` rather than
         // `remove` (issue #719): nothing can show a drained spacer again, and
-        // `discard` is what lets the browser backend release it (issue #184). A
-        // pass that needs more spacers than the last one builds fresh ones,
-        // which is what the `gaps_used == pool.len()` arm above already does.
+        // `discard` is what lets the browser backend release it (issue #184).
+        // This is the one release site here that needs no ownership test, and
+        // by construction rather than by luck — a spacer is minted in a
+        // throwaway `RenderScope` that is dropped in the same statement (the
+        // `gaps_used == pool.len()` arm above), so no caller has ever been
+        // handed one and no `view` closure can memoise it. A pass that needs
+        // more spacers than the last one builds fresh ones.
         //
         // `drain` is what makes that safe. A pool that *kept* a discarded
         // handle would silently fail to fill the hole on a later pass, because

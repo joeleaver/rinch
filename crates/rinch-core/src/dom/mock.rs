@@ -34,6 +34,18 @@ impl Default for MockDomDocument {
 }
 
 impl MockDomDocument {
+    /// **Test-only.** How many nodes the table still holds (issues #184, #719).
+    ///
+    /// The mock's half of `rinch-web`'s `__node_registry_len`, and what makes an
+    /// unbounded-growth test runnable on the host: a helper that releases the
+    /// wrong way leaks here exactly as it leaks in a browser. Compare against a
+    /// baseline taken in the same test — `next_id` counts up for the life of the
+    /// document, so absolute numbers mean nothing.
+    #[doc(hidden)]
+    pub fn __node_count(&self) -> usize {
+        self.nodes.len()
+    }
+
     pub fn new() -> Self {
         let mut doc = Self {
             doc_key: crate::dom::next_doc_key(),

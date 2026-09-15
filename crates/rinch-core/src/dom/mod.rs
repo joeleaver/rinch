@@ -381,10 +381,16 @@ impl NodeHandle {
     /// Remove this node and **release the backend's bookkeeping** for it and
     /// every descendant — you are finished with the subtree for good.
     ///
-    /// Afterwards this handle (and every handle into the subtree) names nothing:
-    /// operations on it are silent no-ops, so do not re-attach it. Build a fresh
-    /// node instead. See [`DomDocument::discard_node`] for the full contract and
-    /// for what each backend actually reclaims.
+    /// Treat this handle, and every handle into the subtree, as **dead**: do not
+    /// re-attach it, build a fresh node instead. A backend that retires makes
+    /// every operation on it a silent no-op — `rinch-web` and
+    /// [`MockDomDocument`](mock::MockDomDocument) both do, so the mistake fails
+    /// `cargo test` as well as a browser.
+    ///
+    /// What a discard actually reclaims differs by backend and is **not**
+    /// guaranteed: on `rinch-dom` today it is exactly [`remove`](Self::remove)
+    /// and the node still re-inserts (issue #723). See
+    /// [`DomDocument::discard_node`] for the full contract.
     pub fn discard(&self) {
         if let Some(doc) = self.doc.upgrade() {
             doc.borrow_mut().discard_node(self.node_id);
@@ -807,12 +813,12 @@ impl std::fmt::Debug for NodeHandle {
 /// generated `render_fn` does exactly that: prop closures tracked, children +
 /// `Component::render` untracked.
 ///
-/// `render_fn` must **build** its subtree on every call. Its previous output is
-/// discarded outright (issue #719), so a `render_fn` that returns a captured
-/// [`NodeHandle`] instead of a fresh one loses that subtree on the first
-/// re-render. A branch that wants to re-show a captured handle wants
-/// [`show_dom`](crate::show_dom) or [`match_dom`](crate::match_dom), which
-/// detach rather than discard.
+/// A `render_fn` that **memoises** — one that hands back a subtree it built
+/// once, rather than building afresh — is supported on both backends, and is the
+/// #654 shape. The previous output leaves by whichever verb its ownership says
+/// (issue #719): built through this call's scope, it is discarded and the
+/// backend reclaims it; handed in from outside, it is only detached and comes
+/// back on the next run.
 ///
 /// Returns the marker comment node. The caller should NOT append it again.
 pub fn reactive_component_dom<R>(
@@ -841,16 +847,34 @@ where
         // `take()` on its own line so the `RefMut` is not held across the
         // dispose — see the matching note in `show_dom` (issue #141).
         let old = cs.borrow_mut().take();
+
+        // Ownership decides the verb, exactly as in `show_dom` (issue #719).
+        // A `render_fn` that *builds* its output — what `rsx!` generates —
+        // creates it through this scope, so the previous output is `discard`ed
+        // and the backend lets go of it. A `render_fn` that memoises and hands
+        // back a subtree it built once is supported too: that node is not this
+        // scope's, so it is only detached and the next run re-inserts it.
+        let doomed: Vec<(NodeHandle, bool)> = cc
+            .borrow_mut()
+            .drain(..)
+            .map(|node| {
+                let owned = old.as_ref().is_some_and(|s| s.created(node.node_id()));
+                (node, owned)
+            })
+            .collect();
+
         if let Some(old) = old {
             old.dispose();
         }
-        // Discard the old nodes: `render_fn` builds this component's output
-        // afresh on every run, so nothing here is ever shown again (issue #719).
-        // Removal — of either kind — cancels the subtree's transitions and
+        // Removal of either kind cancels the subtree's transitions and
         // animations in the document implementation (#699); stamping inline
         // `transition: none` here disarmed it permanently (#704).
-        for node in cc.borrow_mut().drain(..) {
-            node.discard();
+        for (node, owned) in doomed {
+            if owned {
+                node.discard();
+            } else {
+                node.remove();
+            }
         }
         // Render fresh
         if let Some(doc) = doc_weak.upgrade() {

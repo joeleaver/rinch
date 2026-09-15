@@ -181,9 +181,6 @@ where
         if new_showing != old_showing {
             *showing_clone.borrow_mut() = new_showing;
 
-            // DISPOSE old scope BEFORE removing DOM nodes
-            // This ensures all nested effects are cleaned up properly.
-            //
             // The `take()` is deliberately a separate statement: an `if let`
             // scrutinee's temporaries live through the then-block, so the
             // obvious one-liner holds `current_scope`'s `RefMut` across the
@@ -193,22 +190,47 @@ where
             // synchronously, re-entering this very closure and panicking on the
             // outstanding borrow.
             let old_scope = current_scope_clone.borrow_mut().take();
+
+            // Which verb each content node leaves by is decided by **who built
+            // it** (issue #719), and the branch's own scope is the only thing
+            // that knows. A root the closure built through that scope can never
+            // be shown again once the branch flips, so it is `discard`ed and the
+            // backend lets go of it — without this, an ordinary
+            // `if open { p { "hi" } }` stranded a fresh subtree in `rinch-web`'s
+            // two node maps on every toggle, which is #184's unbounded leak
+            // restored. A root the closure was *handed* — the captured
+            // `NodeHandle` of `if open { {panel} }` — is only detached, so the
+            // next show puts it back.
+            //
+            // Read before the dispose below, not after: `dispose` runs user
+            // code, and the ownership answer must be the one that was true when
+            // the branch rendered.
+            let doomed: Vec<(NodeHandle, bool)> = current_content_clone
+                .borrow_mut()
+                .drain(..)
+                .map(|node| {
+                    let owned = old_scope
+                        .as_ref()
+                        .is_some_and(|s| s.created(node.node_id()));
+                    (node, owned)
+                })
+                .collect();
+
+            // DISPOSE the old scope BEFORE touching the DOM nodes, so nested
+            // effects are cleaned up first.
             if let Some(old_scope) = old_scope {
                 old_scope.dispose();
             }
 
-            // Detach the old content — `remove`, deliberately **not**
-            // `discard`. A branch closure may hand back a *captured*
-            // `NodeHandle` rather than building a fresh subtree, which is
-            // exactly what `rsx!` generates for `if cond { {panel} }`, and the
-            // same id then comes back on the next show (issue #719). Discarding
-            // here would retire it on the first hide and every later show would
-            // insert nothing, silently.
-            for node in current_content_clone.borrow_mut().drain(..) {
-                // Removal cancels the subtree's transitions and animations
-                // in the document implementation (#699); stamping inline
-                // `transition: none` here disarmed it permanently (#704).
-                node.remove();
+            // Removal of either kind cancels the subtree's transitions and
+            // animations in the document implementation (#699); stamping inline
+            // `transition: none` here disarmed it permanently (#704).
+            for (node, owned) in doomed {
+                if owned {
+                    node.discard();
+                } else {
+                    node.remove();
+                }
             }
 
             // Render new content after marker. Wrapped in untracked so

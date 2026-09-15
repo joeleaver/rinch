@@ -210,8 +210,14 @@ impl Component for Stepper {
                     _ => None,
                 };
                 if let Some(icon) = default_icon {
+                    // `discard`, not `remove` (issue #719): the previous glyph
+                    // is replaced two lines below and nothing holds a handle to
+                    // it, so the backend should let go. `rinch-web` compiles
+                    // this crate, and a `Stepper` re-render happens per step per
+                    // signal change — a `remove` here strands the whole SVG
+                    // subtree in the browser backend's two node maps every time.
                     for child in icon_box.children() {
-                        child.remove();
+                        child.discard();
                     }
                     let icon_el = render_tabler_icon(__scope, icon, TablerIconStyle::Outline);
                     icon_box.append_child(&icon_el);

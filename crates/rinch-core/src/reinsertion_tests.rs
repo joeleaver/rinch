@@ -22,8 +22,23 @@
 //! A suite that only ever asserts "the subtree came back" is passed by a
 //! backend that retires nothing at all, which leaks without bound — the very
 //! thing #184 added the prune for. So each *re-show* fixture below has a
-//! *discard* twin asserting the opposite verb still retires. Only the pair
+//! *growth* twin asserting the opposite verb still retires. Only the pair
 //! distinguishes the fix from either degenerate backend.
+//!
+//! The growth half is **not** an assertion about `discard` being called: it
+//! counts nodes in the mock's table across many toggles, which is the same
+//! quantity `rinch-web`'s `__node_registry_len` counts in a browser. A helper
+//! that releases the wrong way fails here. PR #728's first round had exactly
+//! this hole — every re-show direction was pinned and no growth direction was,
+//! for `show_dom` and `match_dom`, and both leaked one subtree per toggle in
+//! real Chrome while the board stayed green.
+//!
+//! # The rule these helpers apply
+//!
+//! **Ownership**, not a guess about ids: a branch closure runs inside its own
+//! [`RenderScope`], and a node it *built* through that scope is discarded on the
+//! way out while a node it was *handed* is only detached. Same rule #141 PR4
+//! gave signals and effects, applied to nodes.
 
 use crate::dom::mock::MockDomDocument;
 use crate::dom::{DomDocument, NodeHandle, RenderScope};
@@ -103,11 +118,17 @@ fn a_removed_node_can_still_be_written_to() {
     );
 }
 
-/// The twin. Discarding is the only route that retires an id, and a retired id
-/// is a **silent no-op** everywhere — never a panic, and (since no backend
-/// re-issues an id) never a write aimed at somebody else.
+/// The twin. On a backend that **does** retire — this mock, and `rinch-web` —
+/// every operation on a discarded id does nothing: never a panic, and never a
+/// write aimed at somebody else, since no backend re-issues an id it retired.
+///
+/// Scoped to a retiring backend deliberately. `rinch-dom` reclaims nothing on
+/// this route (#723), so a discarded node there still re-inserts and still takes
+/// writes — which is exactly why this fixture matters: the mock retires like the
+/// browser, so re-attaching a discarded handle fails on the host instead of only
+/// in Chrome.
 #[test]
-fn a_discarded_node_is_a_silent_no_op_not_a_crash() {
+fn a_discarded_node_is_a_silent_no_op_on_a_retiring_backend() {
     let doc = doc();
     let body = doc.borrow().body();
     let node = doc.borrow_mut().create_element("div");
@@ -336,4 +357,286 @@ fn a_rerendered_component_discards_its_previous_output() {
         "#719: the previous output is discarded, so the backend can release it"
     );
     assert_eq!(body_tags(&doc), ["div"], "exactly one output is mounted");
+}
+
+// ── growth: the half PR #728's first round was missing ──────────────────────
+
+/// How many nodes a document holds after `toggles` rounds, and how many it held
+/// after the first — the shape every growth fixture below asserts on.
+///
+/// Taking the baseline **after** the first toggle pair matters: the first show
+/// mounts content that was not there before, so a baseline taken at zero would
+/// count that as growth and hide a real leak behind an expected one.
+fn growth(doc: &Rc<RefCell<MockDomDocument>>, drive: impl Fn(usize), toggles: usize) -> isize {
+    drive(0);
+    drive(1);
+    let baseline = doc.borrow().__node_count() as isize;
+    for i in 2..toggles {
+        drive(i);
+    }
+    doc.borrow().__node_count() as isize - baseline
+}
+
+/// A `show_dom` branch that **builds** its markup — the ordinary
+/// `if open.get() { p { "hi" } }` — must not grow the document without bound.
+///
+/// Every show mints a fresh subtree and every hide throws one away, so a helper
+/// that merely detached would strand one per toggle for the life of the page.
+#[test]
+fn a_fresh_show_branch_does_not_grow_the_document() {
+    let doc = doc();
+    let mut sc = scope(&doc);
+    let body = body_handle(&doc);
+
+    let visible = Signal::new(false);
+    show_dom(
+        &mut sc,
+        &body,
+        move || visible.get(),
+        |s: &mut RenderScope| {
+            // Three nodes per show, so a leak is unmistakable.
+            let wrap = s.create_element("section");
+            let inner = s.create_element("p");
+            let text = s.create_text("hi");
+            inner.append_child(&text);
+            wrap.append_child(&inner);
+            wrap
+        },
+        None::<fn(&mut RenderScope) -> NodeHandle>,
+    );
+
+    let delta = growth(&doc, |i| visible.set(i % 2 == 0), 200);
+    assert_eq!(
+        delta, 0,
+        "#719/#184: a fresh `show` branch must not grow the document — leaked {delta} nodes over 198 toggles"
+    );
+}
+
+/// The same for `match_dom`, whose arms both build.
+#[test]
+fn fresh_match_arms_do_not_grow_the_document() {
+    let doc = doc();
+    let mut sc = scope(&doc);
+    let body = body_handle(&doc);
+
+    let arm = Signal::new(0usize);
+    let build = |tag: &'static str| {
+        move |s: &mut RenderScope| {
+            let node = s.create_element(tag);
+            let text = s.create_text(tag);
+            node.append_child(&text);
+            node
+        }
+    };
+    match_dom(
+        &mut sc,
+        &body,
+        move || arm.get(),
+        vec![
+            Box::new(build("section")) as Box<dyn Fn(&mut RenderScope) -> NodeHandle>,
+            Box::new(build("aside")),
+        ],
+    );
+
+    let delta = growth(&doc, |i| arm.set(i % 2), 200);
+    assert_eq!(
+        delta, 0,
+        "#719/#184: fresh `match` arms must not grow the document — leaked {delta} nodes over 198 switches"
+    );
+}
+
+/// The same for `reactive_component_dom`, whose `render_fn` builds.
+#[test]
+fn a_rebuilding_component_does_not_grow_the_document() {
+    use crate::dom::reactive_component_dom;
+
+    let doc = doc();
+    let mut sc = scope(&doc);
+    let body = body_handle(&doc);
+
+    let version = Signal::new(0u32);
+    reactive_component_dom(&mut sc, &body, move |s: &mut RenderScope| {
+        let node = s.create_element("div");
+        let text = s.create_text(&version.get().to_string());
+        node.append_child(&text);
+        node
+    });
+
+    let delta = growth(&doc, |i| version.set(i as u32), 200);
+    assert_eq!(
+        delta, 0,
+        "#719/#184: a re-rendering component must not grow the document — leaked {delta} nodes"
+    );
+}
+
+/// The same for `for_each_dom_typed`, whose `view` builds. This one was already
+/// green before the ownership rule (the row was discarded outright); it is here
+/// so the four helpers are pinned by one shape rather than three plus an
+/// exception.
+#[test]
+fn a_churning_for_does_not_grow_the_document() {
+    let doc = doc();
+    let mut sc = scope(&doc);
+    let body = body_handle(&doc);
+
+    let rows = Signal::new(vec![0u32]);
+    for_each_dom_typed(
+        &mut sc,
+        &body,
+        move || rows.get(),
+        |n: &u32| n.to_string(),
+        |n: u32, s: &mut RenderScope| {
+            let row = s.create_element("div");
+            let text = s.create_text(&n.to_string());
+            row.append_child(&text);
+            row
+        },
+    );
+
+    let delta = growth(&doc, |i| rows.set(vec![i as u32]), 200);
+    assert_eq!(
+        delta, 0,
+        "#719/#184: a churning `for` must not grow the document — leaked {delta} nodes"
+    );
+}
+
+// ── the memoised shapes, which ownership makes work again ───────────────────
+
+/// A **memoising** `for` view — one that hands back a subtree it built once —
+/// keeps its rows across a remove/re-insert cycle (issue #719).
+///
+/// #719's own text names "a `for` view that memoises rows" as in scope, and an
+/// earlier round of PR #728 discarded the row outright, which broke it on
+/// `rinch-web`. Ownership fixes it without a special case: the row was not built
+/// through the row's scope, so it is detached rather than retired.
+///
+/// **Which flavour of memoisation this is matters.** The cached subtree here is
+/// built on the *outer* scope, before the `for`, and the view only ever hands it
+/// back — the supported shape. A view that builds **lazily through the row's own
+/// scope** and caches afterwards owns its row by this rule and loses it on the
+/// first removal; that is **#733**, and `rinch-dom`'s
+/// `branch_helper_transition_tests::a_for_row_reinserted_under_the_same_key_can_still_transition`
+/// is the fixture that models it and cannot see the loss.
+#[test]
+fn a_memoised_for_row_survives_leaving_the_list() {
+    let doc = doc();
+    let mut sc = scope(&doc);
+    let body = body_handle(&doc);
+
+    // Built once, outside any row scope.
+    let cached = sc.create_element("article");
+    let inner = sc.create_text("CACHED");
+    cached.append_child(&inner);
+    let cached_id = cached.node_id();
+
+    let rows = Signal::new(vec![1u32]);
+    let memo = cached.clone();
+    for_each_dom_typed(
+        &mut sc,
+        &body,
+        move || rows.get(),
+        |n: &u32| n.to_string(),
+        move |_n: u32, _s: &mut RenderScope| memo.clone(),
+    );
+    assert_eq!(body_tags(&doc), ["article"], "precondition: mounted");
+
+    rows.set(vec![]);
+    assert_eq!(
+        body_tags(&doc),
+        Vec::<String>::new(),
+        "precondition: removed"
+    );
+
+    rows.set(vec![1u32]);
+    assert_eq!(
+        doc.borrow().tag_name(cached_id).as_deref(),
+        Some("article"),
+        "#719: a memoised row must survive leaving the list"
+    );
+    assert_eq!(
+        body_tags(&doc),
+        ["article"],
+        "#719: and be re-insertable when its key comes back"
+    );
+}
+
+/// The same for `reactive_component_dom`: a `render_fn` that memoises is the
+/// #654 shape and is supported.
+#[test]
+fn a_memoising_component_render_fn_keeps_its_subtree() {
+    use crate::dom::reactive_component_dom;
+
+    let doc = doc();
+    let mut sc = scope(&doc);
+    let body = body_handle(&doc);
+
+    let cached = sc.create_element("article");
+    let cached_id = cached.node_id();
+
+    let version = Signal::new(0u32);
+    let memo = cached.clone();
+    reactive_component_dom(&mut sc, &body, move |_s: &mut RenderScope| {
+        let _ = version.get();
+        memo.clone()
+    });
+    assert_eq!(body_tags(&doc), ["article"], "precondition: mounted");
+
+    version.set(1);
+    assert_eq!(
+        doc.borrow().tag_name(cached_id).as_deref(),
+        Some("article"),
+        "#719: a memoising render_fn's subtree must survive a re-render"
+    );
+    assert_eq!(body_tags(&doc), ["article"], "#719: and be re-inserted");
+}
+
+// ── the documented gap ──────────────────────────────────────────────────────
+
+/// **Pins a known limitation, not a desired behaviour** (issue #732).
+///
+/// Ownership is asked of the **content root only**, because discarding is
+/// recursive: a root the branch built takes its whole subtree with it, which is
+/// what correctly reclaims a nested `for`'s rows and an inner branch's markup.
+/// The cost is that a *captured* handle nested inside branch-built markup —
+/// `if open { div { {panel} } }` — is inside that recursion and is retired with
+/// the wrapper.
+///
+/// This is the behaviour on both backends before #719 as well as after, so it is
+/// not a regression; the fixture exists so that closing #732 is a deliberate
+/// change with a test to update, rather than a silent side effect. The
+/// unwrapped form (`if open { {panel} }`) is the shape #654 reported and it
+/// works — `show_dom_can_re_show_a_captured_handle` is the contrast.
+#[test]
+fn a_captured_handle_nested_inside_fresh_markup_is_still_lost() {
+    let doc = doc();
+    let mut sc = scope(&doc);
+    let body = body_handle(&doc);
+
+    let panel = sc.create_element("section");
+    let panel_id = panel.node_id();
+
+    let visible = Signal::new(true);
+    let captured = panel.clone();
+    show_dom(
+        &mut sc,
+        &body,
+        move || visible.get(),
+        move |s: &mut RenderScope| {
+            // The wrapper is the branch's; the panel is not.
+            let wrap = s.create_element("div");
+            wrap.append_child(&captured);
+            wrap
+        },
+        None::<fn(&mut RenderScope) -> NodeHandle>,
+    );
+    assert_eq!(body_tags(&doc), ["div"], "precondition: shown");
+
+    visible.set(false);
+
+    assert_eq!(
+        doc.borrow().tag_name(panel_id),
+        None,
+        "#732: a captured handle inside branch-built markup goes with the wrapper. \
+         If this now answers Some(..), #732 is fixed — delete the fixture, do not relax it"
+    );
 }

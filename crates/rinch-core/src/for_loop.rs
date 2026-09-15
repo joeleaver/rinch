@@ -253,6 +253,24 @@ struct ItemState {
     scope: Option<RenderScope>,
 }
 
+/// Unmount a row, releasing the backend's bookkeeping only if the row's own
+/// render scope built it (issue #719).
+///
+/// The one rule every marker-based reactive helper applies, spelled once here
+/// because `for_each_dom_typed` reaches it from three places. `scope` is the
+/// [`RenderScope`] the `view` closure was called with; `None` (a row whose scope
+/// was already parked) is read as "not ours", which is the safe direction — it
+/// costs memory on `rinch-web`, where a missed `discard` leaks, rather than
+/// costing the subtree, where a wrong `discard` retires a node someone can still
+/// show.
+fn release_row(node: &NodeHandle, scope: Option<&RenderScope>) {
+    if scope.is_some_and(|s| s.created(node.node_id())) {
+        node.discard();
+    } else {
+        node.remove();
+    }
+}
+
 /// Tear down an [`ItemState`] that a duplicate key displaced out of `items_state`.
 ///
 /// Unreachable in practice — [`prepare_keys`] guarantees one `ItemState` per key,
@@ -275,13 +293,13 @@ fn reclaim_displaced(mut displaced: ItemState) -> Option<RenderScope> {
          please report it.",
         displaced.item.key
     );
-    // `discard`, not `remove`: nothing can reach this row again — it is
-    // unreachable from every data structure, which is the whole point of the
-    // warning above — so the backend should let go of it (issue #719). Either
-    // verb cancels the subtree's transitions and animations in the document
-    // implementation (#699); stamping inline `transition: none` here disarmed
-    // that permanently (#704).
-    displaced.node.discard();
+    // Ownership decides the verb (issue #719): a row the `view` closure built
+    // through this scope can never be shown again, so the backend lets go of
+    // it; a row a *memoising* `view` handed back is only detached, so the same
+    // key rendering again puts it back. Either verb cancels the subtree's
+    // transitions and animations in the document implementation (#699);
+    // stamping inline `transition: none` here disarmed that permanently (#704).
+    release_row(&displaced.node, displaced.scope.as_ref());
     displaced.scope.take()
 }
 
@@ -495,16 +513,15 @@ where
                 ListOp::Remove { key, .. } => {
                     // Remove the item's DOM node
                     if let Some(item_state) = state.remove(&key) {
+                        // Ownership decides the verb (issue #719). A row the
+                        // `view` closure *built* is gone for good — the key
+                        // coming back is rendered afresh by the `Insert` arm
+                        // below — so the backend lets go of it. A row a
+                        // *memoising* `view` handed back is only detached, so
+                        // that later `Insert` can put the same subtree in
+                        // place. Read before `item_state.scope` is parked.
+                        release_row(&item_state.node, item_state.scope.as_ref());
                         doomed.extend(item_state.scope);
-                        // The row leaves `items_state` in the same breath, so
-                        // nothing can show it again: `discard`, not `remove`
-                        // (issue #719). A key that comes back later is rendered
-                        // afresh by the `Insert` arm below. Either verb cancels
-                        // the subtree's transitions and animations in the
-                        // document implementation (#699); stamping inline
-                        // `transition: none` here disarmed that permanently
-                        // (#704).
-                        item_state.node.discard();
                     }
                     // Remove from keys order
                     if let Some(pos) = keys.iter().position(|k| k == &key) {
@@ -637,7 +654,7 @@ where
                     if !eq_fn(&old_state.item, item) {
                         // Data changed — re-render this item
                         if let Some(doc) = doc_weak_clone.upgrade() {
-                            doomed.extend(old_state.scope.take());
+                            let previous_scope = old_state.scope.take();
                             let mut child_scope = RenderScope::new(doc, parent_id);
                             // The re-rendered item owns its new resources
                             // (issue #141); the old scope was disposed above,
@@ -647,10 +664,13 @@ where
                                 crate::reactive::untracked(|| view_clone(item, &mut child_scope))
                             };
                             old_state.node.insert_after(&new_node);
-                            // `old_state.node` is overwritten on the next line
-                            // and the handle dies with it — discard, not remove
-                            // (issue #719).
-                            old_state.node.discard();
+                            // Ownership decides the verb (issue #719): the node
+                            // being replaced is released only if the render that
+                            // produced it built it. A memoising `view` that
+                            // returns one of a small set of cached subtrees may
+                            // hand this very node back later.
+                            release_row(&old_state.node, previous_scope.as_ref());
+                            doomed.extend(previous_scope);
                             old_state.node = new_node;
                             old_state.item = item.clone();
                             old_state.scope = Some(child_scope);

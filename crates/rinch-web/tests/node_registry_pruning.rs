@@ -43,8 +43,8 @@
 #![cfg(target_arch = "wasm32")]
 
 use rinch_core::dom::{DomDocument, NodeHandle, NodeId, RenderScope};
-use rinch_core::for_each_dom_typed;
 use rinch_core::reactive::Signal;
+use rinch_core::{for_each_dom_typed, match_dom, show_dom};
 use rinch_web::web_document::{__node_registry_contains, __node_registry_len, WebDocument};
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -383,6 +383,101 @@ fn set_inner_html_prunes_the_children_it_discards() {
     );
 }
 
+/// A mounted `WebDocument` plus the pieces a reactive helper needs to drive it.
+///
+/// Returned together because a `NodeHandle` holds only a `Weak` to the document:
+/// letting the `Rc` drop would leave every handle answering as if the tree were
+/// empty, and the registry assertions would pass for the wrong reason.
+fn mounted() -> (Rc<RefCell<WebDocument>>, NodeHandle, RenderScope) {
+    let doc: Rc<RefCell<WebDocument>> = Rc::new(RefCell::new(WebDocument::new_into(
+        browser_document(),
+        host(),
+    )));
+    let body = doc.borrow().body();
+    let body_handle = NodeHandle::new(body, Rc::downgrade(&doc) as _);
+    let dyn_doc: Rc<RefCell<dyn DomDocument>> = doc.clone();
+    let scope = RenderScope::new(dyn_doc, body);
+    (doc, body_handle, scope)
+}
+
+/// Registry growth over `toggles` rounds of `drive`, baselined **after** the
+/// first round so that the initial mount is not counted as a leak.
+fn registry_growth(drive: impl Fn(usize), toggles: usize) -> isize {
+    drive(0);
+    drive(1);
+    let baseline = __node_registry_len() as isize;
+    for i in 2..toggles {
+        drive(i);
+    }
+    __node_registry_len() as isize - baseline
+}
+
+/// **The `show_dom` growth guard**, in a real browser.
+///
+/// The ordinary `if open.get() { p { "hi" } }`: every show mints a fresh subtree
+/// and every hide throws one away. A helper that merely *detached* would strand
+/// one per toggle — three strong `web_sys::Node`s here — for the life of the
+/// wasm module. Measured at **+200 over 200 toggles** in Chrome 150 during PR
+/// #728's review, with every other fixture in this file green.
+#[wasm_bindgen_test]
+fn churning_a_show_branch_does_not_grow_the_registry() {
+    let (_doc, body, mut scope) = mounted();
+
+    let visible = Signal::new(false);
+    show_dom(
+        &mut scope,
+        &body,
+        move || visible.get(),
+        |s: &mut RenderScope| {
+            let wrap = s.create_element("section");
+            let inner = s.create_element("p");
+            let text = s.create_text("hi");
+            inner.append_child(&text);
+            wrap.append_child(&inner);
+            wrap
+        },
+        None::<fn(&mut RenderScope) -> NodeHandle>,
+    );
+
+    let delta = registry_growth(|i| visible.set(i % 2 == 0), 200);
+    assert_eq!(
+        delta, 0,
+        "#719/#184: a fresh `show` branch must not grow NODE_REGISTRY — leaked {delta} entries"
+    );
+}
+
+/// The same for `match_dom`, whose arms both build. Measured at **+398 over 200
+/// switches** during PR #728's review.
+#[wasm_bindgen_test]
+fn switching_match_arms_does_not_grow_the_registry() {
+    let (_doc, body, mut scope) = mounted();
+
+    let arm = Signal::new(0usize);
+    let build = |tag: &'static str| {
+        move |s: &mut RenderScope| {
+            let node = s.create_element(tag);
+            let text = s.create_text(tag);
+            node.append_child(&text);
+            node
+        }
+    };
+    match_dom(
+        &mut scope,
+        &body,
+        move || arm.get(),
+        vec![
+            Box::new(build("section")) as Box<dyn Fn(&mut RenderScope) -> NodeHandle>,
+            Box::new(build("aside")),
+        ],
+    );
+
+    let delta = registry_growth(|i| arm.set(i % 2), 200);
+    assert_eq!(
+        delta, 0,
+        "#719/#184: fresh `match` arms must not grow NODE_REGISTRY — leaked {delta} entries"
+    );
+}
+
 /// **The end-to-end guard.** Every other fixture here calls `discard_node`
 /// itself, so all of them stay green if a *reactive helper* calls `remove`
 /// where it meant `discard` — which since #719 is the way the leak comes back.
@@ -393,15 +488,7 @@ fn set_inner_html_prunes_the_children_it_discards() {
 /// detached would strand 180 entries.
 #[wasm_bindgen_test]
 fn churning_a_for_loop_does_not_grow_the_registry() {
-    let host = host();
-    let doc: Rc<RefCell<WebDocument>> = Rc::new(RefCell::new(WebDocument::new_into(
-        browser_document(),
-        host,
-    )));
-    let body = doc.borrow().body();
-    let body_handle = NodeHandle::new(body, Rc::downgrade(&doc) as _);
-    let dyn_doc: Rc<RefCell<dyn DomDocument>> = doc.clone();
-    let mut scope = RenderScope::new(dyn_doc, body);
+    let (doc, body_handle, mut scope) = mounted();
 
     let rows = Signal::new(vec![0u32, 1, 2]);
     for_each_dom_typed(

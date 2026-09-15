@@ -9,7 +9,12 @@
 //! (That shape only actually re-inserted on **both** backends from #719 on:
 //! `rinch-web` used to retire a removed node's bookkeeping, so the same toggle
 //! lost the subtree there outright. These fixtures run on `rinch-dom`, which
-//! always re-inserted, so they were blind to it.)
+//! always re-inserted, so they were blind to it — and two of them stay blind by
+//! construction, because `rinch-dom` reclaims nothing on a discard either
+//! (#723). `a_for_row_reinserted_under_the_same_key_can_still_transition` pins
+//! a shape that is still lost on the web, **#733**, and says so in its own doc;
+//! `a_rerendered_component_subtree_can_still_transition` pins one that #719
+//! fixed. Read each before assuming green here means green in a browser.)
 //!
 //! For the four of those that discard the subtree it was merely redundant. For
 //! a branch helper that keeps a `NodeHandle` and re-inserts the **same**
@@ -426,6 +431,23 @@ fn a_match_branch_switched_twice_can_still_transition() {
 ///
 /// Kills the "restore the inline write in the `Remove` arm" mutant, and it is
 /// the only fixture that does.
+///
+/// # This shape does not work on `rinch-web`, and this fixture cannot see that
+///
+/// The view below **builds through the row's own `RenderScope`** on the first
+/// call and caches afterwards. Since #719 that makes the row the row scope's to
+/// discard, and a discarded node is retired on `rinch-web` — so there the key
+/// coming back appends nothing and the row is silently lost. It passes here
+/// because `rinch-dom` still takes the trait default for `discard_node` and
+/// reclaims nothing (#723): a fixed point where the correct and the broken code
+/// agree, which is the repo's own recurring test failure.
+///
+/// Tracked as **#733**, which also records the three variants that do not fix
+/// it. It is not a regression — `rinch-web` pruned every removed subtree before
+/// #719 too — and the transition property this fixture is actually about is
+/// unaffected either way. The memoisation that *is* supported builds outside the
+/// `for` and only hands the node back; `rinch_core::reinsertion_tests::
+/// a_memoised_for_row_survives_leaving_the_list` pins it.
 #[test]
 fn a_for_row_reinserted_under_the_same_key_can_still_transition() {
     let (doc, mut scope, wrap) = harness();
@@ -482,6 +504,13 @@ fn a_for_row_reinserted_under_the_same_key_can_still_transition() {
 ///
 /// Kills the "restore the inline write in the component re-render effect"
 /// mutant, and it is the only fixture that does.
+///
+/// Unlike the `for` fixture above, this shape **is** supported on both backends
+/// since #719: the panel is built on the *outer* scope and the `render_fn` only
+/// ever hands it back, so scope ownership says it is the caller's and it is
+/// detached rather than discarded. `rinch_core::reinsertion_tests::
+/// a_memoising_component_render_fn_keeps_its_subtree` pins that directly, on
+/// the mock, where the two verbs are distinguishable.
 #[test]
 fn a_rerendered_component_subtree_can_still_transition() {
     let (doc, mut scope, wrap) = harness();

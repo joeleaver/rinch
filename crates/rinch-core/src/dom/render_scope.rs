@@ -24,6 +24,15 @@ pub struct RenderScope {
     doc: Weak<RefCell<dyn DomDocument>>,
     /// The parent node for new children.
     parent_id: NodeId,
+    /// Node ids this scope minted, in creation order (issue #719).
+    ///
+    /// This is **ownership of nodes**, the same rule #141 PR4 gave signals and
+    /// effects: a node the scope created belongs to it, and a node handed to the
+    /// scope from outside does not. It is what lets a branch helper tell a
+    /// subtree it built — which nothing can ever show again once the branch
+    /// flips — from a *captured* `NodeHandle` the caller may re-show, without
+    /// guessing. See [`RenderScope::created`].
+    created: Vec<NodeId>,
     /// Effects created within this scope (for future direct tracking).
     #[allow(dead_code)]
     effects: Vec<Effect>,
@@ -41,10 +50,46 @@ impl RenderScope {
         Self {
             doc: Rc::downgrade(&doc),
             parent_id,
+            created: Vec::new(),
             effects: Vec::new(),
             children: Vec::new(),
             reactive_scope: Scope::new(),
         }
+    }
+
+    /// Whether this scope minted `node` (issue #719).
+    ///
+    /// The question a reactive branch helper has to answer on a hide: **did my
+    /// branch closure build this, or was it handed to me?** A node this scope
+    /// created can never be shown again once the branch flips, so its
+    /// bookkeeping is released ([`NodeHandle::discard`]); one it did not create
+    /// is the caller's, may come back on the next show, and is only detached
+    /// ([`NodeHandle::remove`]).
+    ///
+    /// **Only the content root is asked**, and that is deliberate: discarding is
+    /// recursive, so a root this scope built takes its whole subtree with it —
+    /// including nodes minted by *nested* scopes (a `for`'s rows, an inner
+    /// branch), which is exactly right, since nothing outside can be holding
+    /// them either.
+    ///
+    /// The one shape it gets wrong is a captured handle nested **inside**
+    /// branch-built markup (`if open { div { {panel} } }`): the `div` is this
+    /// scope's, the recursion reaches `panel`, and `panel` is retired. That is
+    /// issue #732, it is the behaviour on both backends before #719 as well as
+    /// after, and `a_captured_handle_nested_inside_fresh_markup_is_still_lost`
+    /// pins it so a future fix is deliberate rather than accidental.
+    ///
+    /// Linear over the ids the scope minted. A branch scope holds one render's
+    /// worth, and the root is almost always its first — this is not a hot-path
+    /// lookup, it runs once per node per branch flip.
+    pub fn created(&self, node: NodeId) -> bool {
+        self.created.contains(&node)
+    }
+
+    /// Record a node this scope just minted. See [`created`](Self::created).
+    fn own(&mut self, id: NodeId) -> NodeId {
+        self.created.push(id);
+        id
     }
 
     /// Get the document reference.
@@ -57,7 +102,7 @@ impl RenderScope {
     pub fn create_element(&mut self, tag: &str) -> NodeHandle {
         let doc = self.doc().expect("Document dropped");
         let node_id = doc.borrow_mut().create_element(tag);
-        NodeHandle::new(node_id, self.doc.clone())
+        NodeHandle::new(self.own(node_id), self.doc.clone())
     }
 
     /// Create a new text node and return a handle to it.
@@ -65,7 +110,7 @@ impl RenderScope {
     pub fn create_text(&mut self, text: &str) -> NodeHandle {
         let doc = self.doc().expect("Document dropped");
         let node_id = doc.borrow_mut().create_text(text);
-        NodeHandle::new(node_id, self.doc.clone())
+        NodeHandle::new(self.own(node_id), self.doc.clone())
     }
 
     /// Create a reactive text node wrapped in a span with a tracking ID.
@@ -80,12 +125,13 @@ impl RenderScope {
 
         // Create a span wrapper with the reactive ID attribute
         let span_id = doc.borrow_mut().create_element("span");
-        let span = NodeHandle::new(span_id, self.doc.clone());
+        let span = NodeHandle::new(self.own(span_id), self.doc.clone());
         span.set_attribute("data-rid-reactive", &reactive_id.to_string());
         span.set_attribute("style", "display:contents"); // Invisible wrapper
 
         // Create the text node inside the span
         let text_id = doc.borrow_mut().create_text(initial_text);
+        self.own(text_id);
         doc.borrow_mut().append_child(span_id, text_id);
 
         tracing::debug!(
@@ -107,7 +153,7 @@ impl RenderScope {
     pub fn create_comment(&mut self, text: &str) -> NodeHandle {
         let doc = self.doc().expect("Document dropped");
         let node_id = doc.borrow_mut().create_comment(text);
-        NodeHandle::new(node_id, self.doc.clone())
+        NodeHandle::new(self.own(node_id), self.doc.clone())
     }
 
     /// Make this scope the ambient owner until the returned guard drops.
