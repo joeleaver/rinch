@@ -13,6 +13,12 @@
 //! - does a promoted alternate come out visible? It was rendered inside a
 //!   `display: none` wrapper, so promoting the *wrapper* instead of the glyph
 //!   inside it would pass every structural assertion and paint nothing.
+//!
+//! Since #716 a stepper also **parks** a glyph a step's props supplied when the
+//! step stops drawing it, against an insertion that moves the step back — so an
+//! alternate left on the tree is no longer proof that a promotion went wrong.
+//! The steps below set no icons of their own, which is what keeps the
+//! "every alternate is gone" assertion meaning what it says.
 
 use super::*;
 
@@ -141,8 +147,10 @@ fn a_promoted_alternate_is_not_promoted_inside_its_hiding_wrapper() {
     let app = three_steps(Some(TablerIcon::CircleCheck));
     assert!(
         nodes_with_class(&app, "rinch-stepper__step-icon-alt").is_empty(),
-        "every alternate is off the tree: the one the completed step needed was \
-         promoted out of its wrapper, and the rest were dropped"
+        "every alternate is off the tree for *these* steps: none of them set an \
+         icon of its own, so nothing here is a glyph the stepper would have to \
+         park against a later move (issue #716) — the one the completed step \
+         needed was promoted out of its wrapper and the rest were dropped"
     );
 
     let boxes = nodes_with_class(&app, "rinch-stepper__step-icon");

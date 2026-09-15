@@ -1124,10 +1124,13 @@ write `icon: TablerIcon::Check`, not `icon: Some(TablerIcon::Check)`.
 `with_icon(TablerIcon)` builder.
 
 `List::icon` and the two `Stepper` icons are container **defaults** for the items
-**present at the container's own render** that set none — the item's own icon
-always wins — and were declared but wired to nothing until #707. The container
-patches its items after they have rendered, and that patch runs once, so an item
-a later `for` reconcile appends gets no default (issue #716).
+that set none — the item's own icon always wins — and were declared but wired to
+nothing until #707. The container patches its items after they have rendered,
+because a parent component renders after its children, and it patches whatever
+lands beneath it afterwards too: an item a `for` reconcile appends, a
+`show_dom` branch reveals, or a hand-rolled `append_child` adds takes the
+default as it lands (issue #716). An item moved from one container into another
+re-resolves against the one it now belongs to.
 `Stepper::progress_icon` stands in for the `progress_icon` a step did not set, so
 it outranks that step's plain `icon`, exactly as the step's own `progress_icon`
 would have.

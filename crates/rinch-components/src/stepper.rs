@@ -100,10 +100,12 @@ impl std::str::FromStr for StepperOrientation {
 pub struct Stepper {
     /// Currently active step (0-indexed).
     ///
-    /// Each step **present at this stepper's own render** takes its state from
-    /// its position against this: before it completed, at it in progress, after
-    /// it inactive. A step that named a `state` of its own keeps it, and a step
-    /// appended later keeps whatever it rendered as (issue #716).
+    /// Each step takes its state from its position against this: before it
+    /// completed, at it in progress, after it inactive. A step that named a
+    /// `state` of its own keeps it. A step that arrives **later**, by a `for`
+    /// reconcile or a `show_dom` branch, is stated as it lands — and so are the
+    /// steps it displaced, since an insertion moves everything after it (issue
+    /// #716). A step *removed* does not renumber its siblings (issue #745).
     ///
     /// A closure — `active: {|| signal.get()}` — re-renders the whole stepper,
     /// children included, so the derivation runs again on every change.
@@ -120,9 +122,9 @@ pub struct Stepper {
     pub icon_size: String,
     /// Whether a step *after* the active one may be selected.
     ///
-    /// When true, each step past [`Stepper::active`] **present at this
-    /// stepper's own render** that did not ask to be clickable itself is made
-    /// clickable; a step appended later is not (issue #716). A step that set
+    /// When true, each step past [`Stepper::active`] that did not ask to be
+    /// clickable itself is made clickable, a step that arrives later included
+    /// (issue #716). A step that set
     /// `allow_step_click` or `allow_step_select` of its own is already clickable
     /// and is left alone, so this only ever grants — turning it off does not
     /// take a step's own ask away.
@@ -134,19 +136,23 @@ pub struct Stepper {
     pub allow_next_steps_select: bool,
     /// Default completed-step icon.
     ///
-    /// Used by the [`StepperStep`]s in the completed state **present at this
-    /// stepper's own render** that set no `completed_icon` of their own — the
-    /// step's icon wins, whether the step named its own state or this stepper
-    /// derived it. Steps are patched after they have rendered, since a parent
-    /// component renders *after* its children, and that patch runs once: a step
-    /// appended later keeps the default tick (issue #716).
+    /// Used by the [`StepperStep`]s in the completed state that set no
+    /// `completed_icon` of their own — the step's icon wins, whether the step
+    /// named its own state or this stepper derived it. Steps are patched after
+    /// they have rendered, since a parent component renders *after* its
+    /// children, and a step that arrives later is patched as it lands (issue
+    /// #716).
+    ///
+    /// A step **moved in from another stepper** keeps the icon that stepper gave
+    /// it: the box records that it holds a real glyph for the state, not which
+    /// stepper put it there (issue #745).
     pub completed_icon: Option<TablerIcon>,
     /// Default in-progress-step icon.
     ///
-    /// Used by the [`StepperStep`]s in the progress state **present at this
-    /// stepper's own render** that set no `progress_icon` of their own, in place
-    /// of that step's `icon` or its number. The step's own `progress_icon` wins,
-    /// and a step appended later keeps whatever it drew (issue #716).
+    /// Used by the [`StepperStep`]s in the progress state that set no
+    /// `progress_icon` of their own, in place of that step's `icon` or its
+    /// number. The step's own `progress_icon` wins, and a step that arrives
+    /// later takes this one as it lands (issue #716).
     pub progress_icon: Option<TablerIcon>,
 }
 
@@ -592,7 +598,7 @@ fn built_in_glyph(scope: &mut RenderScope, key: &str, number: u32) -> NodeHandle
 /// *insertion* and nothing else: a step gains siblings in front of it, never
 /// loses them. So state only moves forward — completed → progress → inactive —
 /// and an alternate for a state already behind the step is dead. A removal that
-/// shifts a step backwards would not re-run this pass at all (issue #741); if it
+/// shifts a step backwards would not re-run this pass at all (issue #745); if it
 /// ever does, every key has to be kept.
 fn reachable_keys(state: StepState) -> &'static [&'static str] {
     match state {

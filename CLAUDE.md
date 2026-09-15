@@ -245,18 +245,56 @@ for a state it was moved into is a `TablerIcon` in its props rather than anythin
 in its DOM. So a step with no `state` of its own renders those icons and leaves
 them in its icon box as **hidden alternates**
 (`.rinch-stepper__step-icon-alt`, `display: none` inline *and* from the sheet);
-the parent promotes the one it needs and drops the rest. Promotion re-parents
-**before** clearing the box, and the icon it replaces leaves by **`discard`**
-(#719) because it is gone for good and `rinch-web` compiles this crate. Those
+the parent promotes the one it needs. Promotion re-parents
+**before** clearing the box, and a glyph that is gone for good leaves by
+**`discard`** (#719) because `rinch-web` compiles this crate. Those
 two facts are one fact: a `discard` retires the whole subtree, so discarding a
 wrapper that still held the promoted glyph would retire the glyph with it. The
 selection family stays decorative: no step carries a `data-rid` and `Stepper`
 takes no callback (issue #737).
 
-**A container default reaches only the children present at the container's own
-render** — the patch runs once, so an item a later `for` reconcile appends gets
-nothing (issue #716); `RadioGroup::size` and the `Stepper` props are the same
-shape.
+**A container default reaches a child that arrives after the container rendered**
+(#716). The parent patch is still there and still runs first — a parent
+component renders *after* its children, so nothing a container knows can travel
+as a prop — but the container also registers
+`rinch_core::dom::on_child_inserted` against its own root, and the four
+`NodeHandle` verbs that put a node into a tree (`append_child`, `insert_before`,
+`insert_after`, `replace_with`) tell **every** registered ancestor, nearest
+first, synchronously. So a `for` reconcile, a `show_dom` branch and a hand-rolled
+`append_child` all land with the default in place before the frame is laid out,
+with no deferred queue and no drain site in any host — which is what the
+alternative would have needed, since `queue_main_callback` takes a `Send`
+closure (a `NodeHandle` is `!Send`) and `rinch-web` drains it nowhere.
+
+The pieces that follow from it:
+- **The boundary is the observer's own question.** Every registered ancestor is
+  told, because two containers of *different* kinds can nest; each declines a
+  node whose chain up to it crosses one of its own items, which is its
+  render-time walk's rule read upwards. A `List` inside another list's item owns
+  its own rows.
+- **A callback's own edits do not call it back.** Dispatch is suppressed for the
+  duration of a callback; without that, a container that patches the subtree it
+  watches recurses without bound (measured: stack overflow).
+- **An observer is released by the ambient scope's `on_cleanup`**, the #147
+  discipline, and by `NodeHandle::discard` on the container — a discarded id may
+  be reissued.
+- **A child moved between containers re-resolves**, because a container marks
+  what it supplied (`data-list-icon`) and never touches what the child asked for
+  itself.
+- **`Stepper` re-runs its whole pass, not just the newcomer**: an insertion
+  renumbers the steps after it and can restate them. That pass is idempotent by
+  construction — `data-step-derived` says who wrote an index, `data-icon-has`
+  records the step's icon *props* rather than what it drew, `data-icon-live`
+  names the content key showing — and a glyph the step's props supplied is
+  **parked** hidden rather than discarded when it stops being drawn, since a
+  later insertion can want it back. A *removal* notifies nobody, so it does not
+  renumber (issue #745).
+- **Cost:** one `Cell` read per insertion in a document where nothing is
+  registered (unmeasurable against the baseline). Once anything on the thread
+  is, an ancestor walk: **0.12 µs** per insertion at depth 8, measured on 5000
+  appends, software build, best of 40.
+
+`RadioGroup::size` and the `Stepper` props are the same shape.
 
 Paths are relative to `crates/rinch-components/src/`. `ActionIcon`'s `icon` prop is a convenience that renders the icon for you as Outline, sized from the component's own `size` prop. It is **mutually exclusive with children** — `loading` wins, then `icon`, and children render only if neither is set — so pass a rendered icon as a child (not via `icon:`) when you need a filled or custom-sized glyph.
 
