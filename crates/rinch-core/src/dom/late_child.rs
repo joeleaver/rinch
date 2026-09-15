@@ -49,6 +49,7 @@
 
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
+use std::hash::{BuildHasherDefault, Hasher};
 use std::rc::Rc;
 
 use super::{NodeHandle, NodeId};
@@ -56,10 +57,45 @@ use super::{NodeHandle, NodeId};
 /// What a container does with a subtree that landed beneath it.
 type Observer = Rc<dyn Fn(&NodeHandle)>;
 
+/// A multiply-xor hasher for the registry's `(doc_key, NodeId)` keys.
+///
+/// The default `SipHash` costs about as much per lookup as the rest of an
+/// ancestor step put together, and this walk runs on **every** insertion once
+/// anything on the thread is registered. The keys are integers this crate mints
+/// — a document counter and a slab index — not anything a document's author
+/// chooses, so there is no untrusted input here to need hash-flooding
+/// resistance.
+#[derive(Default)]
+struct IdHasher(u64);
+
+impl Hasher for IdHasher {
+    fn finish(&self) -> u64 {
+        // One last mix, so the low bits a `HashMap` buckets on see the high ones.
+        let h = self.0;
+        (h ^ (h >> 32)).wrapping_mul(0xD6E8_FEB8_6659_FD93)
+    }
+
+    fn write(&mut self, bytes: &[u8]) {
+        for byte in bytes {
+            self.write_u64(u64::from(*byte));
+        }
+    }
+
+    fn write_u64(&mut self, value: u64) {
+        self.0 = (self.0 ^ value).wrapping_mul(0x9E37_79B9_7F4A_7C15);
+    }
+
+    fn write_usize(&mut self, value: usize) {
+        self.write_u64(value as u64);
+    }
+}
+
+type Registry = HashMap<(u64, NodeId), Observer, BuildHasherDefault<IdHasher>>;
+
 thread_local! {
     /// Keyed by `(doc_key, node id)`: a node id is a per-document slab index, so
     /// keying by it alone collides across two documents on one thread (#134).
-    static OBSERVERS: RefCell<HashMap<(u64, NodeId), Observer>> = RefCell::new(HashMap::new());
+    static OBSERVERS: RefCell<Registry> = RefCell::new(Registry::default());
 
     /// `OBSERVERS.len()`, so the overwhelmingly common case — a document with no
     /// container that has a default to give — costs one `Cell` read per
@@ -126,22 +162,34 @@ pub(super) fn notify_inserted(parent: &NodeHandle, inserted: &NodeHandle) {
     if COUNT.with(|c| c.get()) == 0 || DISPATCHING.with(|d| d.get()) {
         return;
     }
-    let doc_key = parent.doc_key();
+    let Some(doc) = parent.doc_upgrade() else {
+        return;
+    };
+    let doc_key = doc.borrow().doc_key();
     if doc_key == 0 {
         return;
     }
 
-    // Collected before any callback runs: a callback may register or drop an
-    // observer, and it must not do so through a borrow this walk is holding.
+    // Walked as bare ids under one upgraded document, rather than as a chain of
+    // `NodeHandle`s: this runs on **every** insertion once anything on the
+    // thread is registered, and a handle per ancestor is a `Weak` clone and an
+    // upgrade per ancestor. Measured at depth 8, that was most of the cost.
+    //
+    // Collected before any callback runs: a callback edits the tree and may
+    // register or drop an observer, so neither the document borrow nor the
+    // registry borrow may still be held when one is called.
     let mut observers: Vec<Observer> = Vec::new();
-    let mut node = Some(parent.clone());
-    while let Some(current) = node {
-        let found = OBSERVERS.with(|map| map.borrow().get(&(doc_key, current.node_id())).cloned());
-        if let Some(observer) = found {
-            observers.push(observer);
+    OBSERVERS.with(|map| {
+        let map = map.borrow();
+        let tree = doc.borrow();
+        let mut node = Some(parent.node_id());
+        while let Some(current) = node {
+            if let Some(observer) = map.get(&(doc_key, current)) {
+                observers.push(observer.clone());
+            }
+            node = tree.parent_node(current);
         }
-        node = current.parent_node();
-    }
+    });
     if observers.is_empty() {
         return;
     }

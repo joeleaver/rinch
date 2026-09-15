@@ -451,6 +451,15 @@ impl NodeHandle {
         }
     }
 
+    /// The document this handle points into, if it is still alive.
+    ///
+    /// For code that walks several nodes at once and would otherwise upgrade the
+    /// same `Weak` once per step — [`late_child::notify_inserted`] does, on every
+    /// insertion.
+    pub(super) fn doc_upgrade(&self) -> Option<Rc<RefCell<dyn DomDocument>>> {
+        self.doc.upgrade()
+    }
+
     /// Get the parent node.
     pub fn parent_node(&self) -> Option<NodeHandle> {
         let doc = self.doc.upgrade()?;
