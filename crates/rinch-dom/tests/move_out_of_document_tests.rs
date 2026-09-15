@@ -27,26 +27,41 @@
 //!   container cannot change whether the child is connected — the child's
 //!   reachability *is* its parent's, and the parent has not changed. A keyed
 //!   reorder is that move, every time, so it pays one integer comparison.
-//! - **The child must already have a parent.** A freshly created node cannot be
-//!   a move, so the initial build of a tree pays nothing either.
+//! - **The child must already have a parent.** A node created moments ago cannot
+//!   be a move, so a node appended straight into its final parent never reaches
+//!   the helper.
 //!
 //! Only a **reparenting** move reaches `depth_if_connected`, one O(depth) walk
 //! on the new parent.
 //!
-//! **Counted, not argued** (a counter on the helper and on the walk inside it,
-//! instrumented on the committed source and reverted — the timing on a loaded
-//! host cannot resolve a difference this small, so the deterministic question
-//! is the one worth asking):
+//! **Counted, not argued** (counters on the helper, the walk, the reset and the
+//! nodes the reset visits, instrumented on the committed source and reverted —
+//! the timing on a loaded host cannot resolve a difference this small, so the
+//! deterministic question is the one worth asking):
 //!
-//! | 500-row workload | helper entered | ancestor walks |
-//! |---|---|---|
-//! | building the list (2000 appends of fresh nodes) | 0 | 0 |
-//! | keyed reorder, each row to the front | 499 | **0** |
-//! | reparenting every row into a second connected list | 500 | 500 |
+//! | workload | helper | walks | resets | nodes reset |
+//! |---|---|---|---|---|
+//! | 500 rows built straight into their final parent | 0 | 0 | 0 | 0 |
+//! | 500-row keyed reorder, each row to the front | 499 | **0** | 0 | 0 |
+//! | 500 rows reparented into a second connected list | 500 | 500 | 0 | 0 |
+//! | **500 `rsx!` component sites**, 20 nodes each | 500 | 500 | 500 | **10,000** |
 //!
-//! The middle row is the claim: the hot path does not walk, and the bottom row
-//! is its positive control — a counter reading 0 everywhere would say the
+//! The second row is the claim the hot path rests on. The third and fourth are
+//! its positive controls — a counter reading 0 everywhere would say the
 //! instrument never fired.
+//!
+//! **The fourth row is the one that corrects an earlier draft of this file**,
+//! which said the initial build of a tree pays nothing. That is true only of
+//! nodes appended straight into their final parent. `rsx!` does not build a
+//! component site that way: `component_codegen` puts the site's children into a
+//! `<template>` attached to nothing (#719) and `Component::render` adopts them
+//! into a root that is *also* still detached, so every adoption is a move into a
+//! detached parent — it walks, and it takes the whole subtree reset. The reset is
+//! semantically a no-op there (a node created moments ago is already unstyled
+//! with empty animation maps) and the cost does not show — best of 40, release,
+//! three alternated rounds, the build *with* the helper was the faster of the two
+//! every time, 1801–1825ms against 1809–1830ms — but the sentence was wrong about
+//! the framework's own render path and is now right about it.
 //!
 //! # Which routes there are
 //!

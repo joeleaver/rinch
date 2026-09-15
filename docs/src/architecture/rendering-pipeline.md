@@ -416,14 +416,42 @@ animates in from its pre-move style, which is #699's symptom by a fifth route.
 move verbs and `replace_node`, which splices its incoming `new` into `old`'s
 parent and is a move out whenever that parent is detached.
 
-Two guards keep it off the hot path, and the order matters. The destination must
-**differ from the old parent** — a move within one container cannot change
-whether the child is connected, because the child's reachability *is* its
-parent's — and the child must already **have** a parent, since a freshly created
-node cannot be a move. Only a reparenting move reaches `depth_if_connected`, the
-same O(depth) walk #696 filters `style_roots` with. Counted on 500 rows: building
-the list enters the helper 0 times, a keyed reorder enters it 499 times and walks
-**0**, and reparenting every row into a second list walks 500.
+Two guards decide, and the order matters. The destination must **differ from the
+old parent** — a move within one container cannot change whether the child is
+connected, because the child's reachability *is* its parent's — and the child
+must already **have** a parent, since a node created moments ago cannot be a
+move. Only a reparenting move reaches `depth_if_connected`, the same O(depth)
+walk #696 filters `style_roots` with.
+
+Counted, on 500 of each shape:
+
+| workload | helper | walks | resets | nodes reset |
+|---|---|---|---|---|
+| rows built straight into their final parent | 0 | 0 | 0 | 0 |
+| keyed reorder, each row to the front | 499 | **0** | 0 | 0 |
+| rows reparented into a second connected list | 500 | 500 | 0 | 0 |
+| **`rsx!` component sites**, 20 nodes each | 500 | 500 | 500 | **10,000** |
+
+The keyed reorder is the hot path and it never walks. The last row is the one to
+know about: `rsx!` does **not** build a component site by appending fresh nodes
+into their final parent. `component_codegen` puts a site's children into a
+`<template>` attached to nothing (#719) and `Component::render` adopts them into
+a root that is *also* still detached, so every adoption is a move into a detached
+parent — it walks, and it takes the whole subtree reset. The reset is
+semantically a no-op there (a node created moments ago is already unstyled, with
+empty transition and animation maps) and the cost does not show: best of 40,
+release, three alternated rounds, the build *with* the helper was the faster of
+the two every time. Say "a node appended straight into its final parent pays
+nothing", not "building a tree pays nothing".
+
+One behaviour change follows, and it is narrower than it looks. A node that is
+mounted and **still connected** when it is moved into a detached parent, and
+adopted straight back out in the same pass, loses its running transitions and
+restarts its animations — a browser never sees that intermediate state, because
+its style recalc is batched to the end of the task. The component *re-render*
+path does not reach it (`reactive_component_dom` removes the old output first, so
+#699 has already reset that subtree); handing a component a handle that is
+mounted elsewhere and still connected does.
 
 `display: none` is not a detach either, and it does not need to be. §3's
 question is not *is this node in the document* but *is it being rendered*, and

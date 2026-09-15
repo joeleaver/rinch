@@ -18,11 +18,21 @@
 //! the child is connected, because the child's reachability *is* its parent's.
 //! `detach_subtree_styles_if_moved_out` short-circuits on `old_parent !=
 //! new_parent` before it walks anything, so a reorder pays one integer
-//! comparison per row. A freshly created node has no old parent at all, so the
-//! initial build of a tree does not reach the helper either.
+//! comparison per row. A node appended **straight into its final parent** has no
+//! old parent at all, so it does not reach the helper.
 //!
 //! Only a **reparenting** move walks, and [`reparenting_500_rows`] is what that
 //! costs.
+//!
+//! **An `rsx!` component site is a reparenting move**, which is worth knowing
+//! before reading these two harnesses as covering the build path — they do not.
+//! `component_codegen` builds a site's children into a `<template>` attached to
+//! nothing (#719) and `Component::render` adopts them into a root that is also
+//! still detached, so each adoption walks *and* takes the subtree reset. Counted
+//! on 500 sites of 20 nodes: 500 walks, 500 resets, 10,000 nodes visited. The
+//! cost does not show (best of 40, release, three alternated rounds: the build
+//! with the helper was the faster of the two every time), but neither harness
+//! here measures it.
 //!
 //! # Measured
 //!

@@ -2815,12 +2815,27 @@ Three things it deliberately does not do.
   the `parent = None` test — and connectivity, not the parent field, is the
   question (#696). `detach_subtree_styles_if_moved_out` answers it at **four**
   sites: the three move verbs plus `replace_node`, which splices its incoming
-  `new` into `old`'s parent. Two guards keep it off the hot path — the
-  destination must differ from the old parent (a move within one container
-  cannot change connectivity), and the child must already have a parent (a fresh
-  node is not a move) — so only a *reparenting* move walks. Counted on 500 rows:
-  building the list enters the helper 0 times, a keyed reorder enters it 499
-  times and walks **0**, reparenting walks 500.
+  `new` into `old`'s parent. Two guards decide: the destination must differ from
+  the old parent (a move within one container cannot change connectivity), and
+  the child must already have a parent (a node created moments ago is not a
+  move). So a **keyed reorder never walks** — counted on 500 rows, it enters the
+  helper 499 times and walks 0 — and a reparenting move walks once each.
+  **An `rsx!` component site does walk**, which is the non-obvious part and is
+  not free of the reset either: the macro builds a site's children into a
+  detached `<template>` and `Component::render` then adopts them into a root
+  that is *also* still detached (#719), so each adoption is a move into a
+  detached parent. Counted on 500 sites of 20 nodes: 500 entries, 500 walks, 500
+  resets over 10,000 nodes. The reset is semantically a no-op there (a fresh node
+  is already unstyled with empty transition maps) and the cost does not show
+  above noise, but "building a tree pays nothing" is true only of nodes appended
+  straight into their final parent.
+  One narrow behaviour change comes with it: a **mounted** node round-tripped
+  out through a detached parent and back in the same pass loses its running
+  transitions and restarts its animations, where a browser — whose style recalc
+  is batched to the end of the task — never observes the intermediate state. The
+  component *re-render* path does not reach it (`reactive_component_dom` removes
+  the old output first, so #699 has already reset it); handing a component a
+  handle that is mounted elsewhere and still connected does.
 
 **The reactive helpers reach all of that, and `NodeHandle::clear_animations` is
 gone** (**#704**). It used to be called before `remove()` by `show_dom`,

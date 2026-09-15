@@ -2482,8 +2482,47 @@ impl RinchDocument {
     ///   "connected" means.
     ///
     /// The callers supply a third guard by construction: they only reach this
-    /// when the child **already had a parent**, since a freshly created node
-    /// cannot be a move. That is what keeps the initial build of a tree free.
+    /// when the child **already had a parent**, since a node created moments ago
+    /// cannot be a move.
+    ///
+    /// # What that does and does not make free
+    ///
+    /// A node appended **straight into its final parent** never reaches this at
+    /// all. An `rsx!` **component site** does reach it, once per child, and this
+    /// is the non-obvious part: `component_codegen` builds a site's children
+    /// into a `<template>` scratch container attached to nothing (#719), and
+    /// `Component::render` then adopts each one into the component's own root,
+    /// which is *also* still detached at that moment. So the adoption is a move
+    /// into a detached parent by this rule — it walks, and it takes the full
+    /// [`Self::detach_subtree_styles`] subtree walk.
+    ///
+    /// Counted on 500 component sites carrying a 20-node subtree each: **500
+    /// entries, 500 walks, 500 resets over 10,000 nodes**, against 0/0/0/0 for
+    /// the same nodes appended straight into their final parent. The reset is
+    /// semantically a no-op there — a node created moments ago is already
+    /// unstyled with empty transition and animation maps — and the cost does not
+    /// show: best of 40, release, three alternated rounds, the build *with* this
+    /// helper was the faster of the two every time (1801–1825ms against
+    /// 1809–1830ms), i.e. inside build-to-build noise. It is recorded because
+    /// "building a tree pays nothing" would otherwise read as covering the
+    /// framework's own render path, which it does not.
+    ///
+    /// # One behaviour change that follows, and is narrower than it looks
+    ///
+    /// A node that is mounted and **still connected** when it is moved into a
+    /// detached parent, and adopted straight back out in the same pass, loses
+    /// its running transitions and restarts its animations. A browser never
+    /// observes that intermediate state, because its style recalc is batched to
+    /// the end of the task; rinch's cascade is not, so the round trip is two
+    /// events here and one there.
+    ///
+    /// The component **re-render** path does not reach it:
+    /// `reactive_component_dom` removes the previous output *before* rendering
+    /// fresh, so #699 has already reset that subtree by the time the new
+    /// `<template>` sees it. What remains is handing a component a handle that
+    /// is mounted **elsewhere and still connected** — the #719 shape,
+    /// `Card { {captured.clone()} }` — at a render where the old subtree was not
+    /// the doomed one.
     ///
     /// # Where this is called from
     ///
