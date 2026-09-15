@@ -383,18 +383,22 @@ fn a_loader_in_a_closed_drawer_idles_once_the_app_pauses_it() {
         "closed again, idle again"
     );
 
-    let reopened_at = std::time::SystemTime::now()
+    opened.set(true);
+    app.resolve_and_repaint(SETTLED.0, SETTLED.1);
+    // Read *after* the reopening, so it is later than the cascade's own clock:
+    // a resumed start is `cascade - spent`, at most `after - spent`; a restarted
+    // one is `cascade`, which lies above that bound whenever the reopening pass
+    // took less than the time the spinner had already spent.
+    let after = std::time::SystemTime::now()
         .duration_since(std::time::SystemTime::UNIX_EPOCH)
         .unwrap()
         .as_secs_f64()
         * 1000.0;
-    opened.set(true);
-    app.resolve_and_repaint(SETTLED.0, SETTLED.1);
     let start = oval_animation(&app).start_time_ms;
     assert!(
-        start <= reopened_at - (spent - 10.0),
+        start <= after - spent + 1.0,
         "reopening resumed the spinner where it was paused: its start {start} \
-         lies {spent}ms before the reopening at {reopened_at}, not at it"
+         lies at least {spent}ms before {after}, the moment after the reopening"
     );
 }
 

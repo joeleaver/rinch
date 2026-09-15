@@ -606,18 +606,22 @@ fn an_animation_paused_inside_its_delay_keeps_its_place() {
         "and the entry is kept although, inside its delay, it has no value"
     );
 
-    let resumed_at = web_time::SystemTime::now()
+    doc.set_attribute(node, "class", "box dly");
+    doc.resolve_layout(VP.0, VP.1);
+    // Read *after* the resume, so it is later than the cascade's own clock: a
+    // resumed start is `cascade - spent`, at most `after - spent`; a re-minted
+    // one is `cascade`, above that bound whenever the resuming pass took less
+    // than the 140ms+ already spent.
+    let after = web_time::SystemTime::now()
         .duration_since(web_time::SystemTime::UNIX_EPOCH)
         .unwrap()
         .as_secs_f64()
         * 1000.0;
-    doc.set_attribute(node, "class", "box dly");
-    doc.resolve_layout(VP.0, VP.1);
     let start = doc.tree.active_animations[&node.0][0].start_time_ms;
     assert!(
-        start <= resumed_at - (spent - 10.0),
+        start <= after - spent + 1.0,
         "the resume kept the {spent}ms already spent in the delay: start \
-         {start} should lie that far before the resume at {resumed_at}"
+         {start} should lie at least that far before {after}"
     );
 }
 
