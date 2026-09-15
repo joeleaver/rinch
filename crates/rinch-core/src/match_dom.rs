@@ -131,7 +131,9 @@ where
 
             // Remove old content nodes
             for node in content_clone.borrow_mut().drain(..) {
-                node.clear_animations();
+                // Removal cancels the subtree's transitions and animations
+                // in the document implementation (#699); stamping inline
+                // `transition: none` here disarmed it permanently (#704).
                 node.remove();
             }
 

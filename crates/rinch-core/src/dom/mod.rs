@@ -635,26 +635,6 @@ impl NodeHandle {
         }
     }
 
-    /// Clear CSS animations and transitions on this node and all descendants.
-    ///
-    /// This should be called before removing nodes to ensure rinch-dom cleans up
-    /// its internal animation state. Without this, rinch-dom may crash when trying
-    /// to access deleted nodes during the next resolve() call.
-    pub fn clear_animations(&self) {
-        if let Some(doc) = self.doc.upgrade() {
-            // Clear on this node
-            {
-                let mut doc_ref = doc.borrow_mut();
-                doc_ref.set_style(self.node_id, "transition", "none");
-                doc_ref.set_style(self.node_id, "animation", "none");
-            }
-            // Recursively clear on children
-            for child in self.children() {
-                child.clear_animations();
-            }
-        }
-    }
-
     /// Query a single child node matching the selector.
     pub fn query_selector(&self, selector: &str) -> Option<NodeHandle> {
         let doc = self.doc.upgrade()?;
@@ -835,7 +815,9 @@ where
         }
         // Remove old nodes
         for node in cc.borrow_mut().drain(..) {
-            node.clear_animations();
+            // Removal cancels the subtree's transitions and animations in the
+            // document implementation (#699); stamping inline
+            // `transition: none` here disarmed it permanently (#704).
             node.remove();
         }
         // Render fresh

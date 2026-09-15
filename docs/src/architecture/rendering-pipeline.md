@@ -413,6 +413,19 @@ the node stays in the document, keeps its flag, and **does** start a transition
 if its style changes while it is hidden, where §3 starts none for an element
 that is not being rendered. Issue #703.
 
+**The reactive helpers rest on this and on nothing else.** `show_dom`,
+`match_dom`, `for_each_dom_typed` and the component re-render effect used to
+call `NodeHandle::clear_animations()` before `remove()`, which wrote an inline
+`transition: none; animation: none` over the whole subtree — and nothing ever
+took it off, so a branch hidden once could never animate again (issue #704). It
+also hid the detach reset: through one of those helpers, deleting
+`detach_subtree_styles` changed nothing observable. The method and all five call
+sites are gone. Every one of them was `clear_animations(); remove();` and
+`NodeHandle::remove` is `DomDocument::remove_node`, the first row above; on
+`rinch-web` the browser already cancels a removed element's transitions and
+treats re-insertion as a first style. **A removal path must not write styles**:
+the node outlives the removal, so anything stamped there is permanent.
+
 ## Optimizations
 
 Current and planned improvements to the rendering pipeline:
