@@ -480,9 +480,10 @@ NavLink { label: "Settings", description: "App configuration" }
 NavLink { label: "Disabled", disabled: true }
 NavLink { label: "With handler", onclick: move || navigate("/page") }
 
-// Stepper
+// Stepper. Each step's state follows its position against `active`, and
+// `{|| …}` makes the whole stepper follow the signal.
 let step = Signal::new(1u32);
-Stepper { active: step.get(),
+Stepper { active: {|| step.get()},
     StepperStep { label: "Account", description: "Create account" }
     StepperStep { label: "Verify", description: "Verify email" }
     StepperStep { label: "Complete", description: "Get started" }
@@ -1165,13 +1166,13 @@ Blockquote { icon: TablerIcon::Quote, cite: "— Unknown",
     "The best code is no code at all."
 }
 
-// Stepper with custom icons. `state` is the caller's to set — `Stepper`
-// publishes `active` but does not derive each step's state from it (#709),
-// so without one every step is inactive and no custom icon is reached.
+// Stepper with custom icons. Each step's state comes from its position
+// against `active`, so "Account" is completed and draws the CircleCheck,
+// "Verify" is in progress and draws `2`, and "Complete" draws `3`.
 Stepper { active: 1, completed_icon: TablerIcon::CircleCheck,
-    StepperStep { step: 0, state: "completed", label: "Account" }
-    StepperStep { step: 1, state: "progress", label: "Verify" }
-    StepperStep { step: 2, label: "Complete" }
+    StepperStep { label: "Account" }
+    StepperStep { label: "Verify" }
+    StepperStep { label: "Complete" }
 }
 ```
 

@@ -375,8 +375,14 @@ fn a_step_keeps_a_progress_icon_of_its_own() {
 #[test]
 fn neither_stepper_icon_touches_an_inactive_step() {
     let tree = stepper_of_one(
+        // `state` is named, not left to default. Since #709 a step that names
+        // none takes the state its position gives it, and the sole step of a
+        // stepper on the default `active: 0` is the *active* one — so leaving
+        // it unset here would be asking for a progress step and asserting about
+        // an inactive one.
         StepperStep {
             step: Some(2),
+            state: "inactive".into(),
             ..Default::default()
         },
         Stepper {

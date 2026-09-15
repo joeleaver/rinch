@@ -211,8 +211,8 @@ Every one of these props is `Option<TablerIcon>`. The `rsx!` macro adds the `Som
 | `AccordionControl` | `icon` | `accordion.rs:251` |
 | `Blockquote` | `icon` | `blockquote.rs:25` |
 | `List`, `ListItem` | `icon` | `list.rs:109`, `list.rs:233` |
-| `Stepper` | `completed_icon`, `progress_icon` | `stepper.rs:128`, `:135` |
-| `StepperStep` | `icon`, `completed_icon`, `progress_icon` | `stepper.rs:283`, `:285`, `:287` |
+| `Stepper` | `completed_icon`, `progress_icon` | `stepper.rs:143`, `:150` |
+| `StepperStep` | `icon`, `completed_icon`, `progress_icon` | `stepper.rs:511`, `:513`, `:515` |
 | `NavLink` | `left_section`, `right_section` | `navlink.rs:100`, `:102` |
 | `DropdownMenuItem` | `left_section`, `right_section` | `dropdown_menu.rs:483`, `:485` |
 | `Tab` | `left_section`, `right_section` | `tabs.rs:397`, `:399` |
@@ -231,8 +231,28 @@ and `Stepper::progress_icon` stands in for the *`progress_icon`* a step did not
 set, which therefore outranks that step's plain `icon` exactly as its own
 `progress_icon` would have. All three were declared and read by nothing until
 #707; the doc example on `Stepper` (`completed_icon: TablerIcon::CircleCheck`)
-is one of the things that now does what it says — once its steps carry a
-`state`, which `Stepper` still does not derive from `active` (issue #709).
+is one of the things that now does what it says.
+
+**`Stepper::active` travels the same way** (#709): one pass gives each step the
+index of its position and the state that position has against `active` — before
+it completed, at it in progress, after it inactive. A step that named a `state`
+or a `step` of its own keeps it, and `data-state` is what carries that ask,
+because `state: String` renders an explicit `"inactive"` and an unset field into
+the same class. A closure prop (`active: {|| sig.get()}`) re-renders the whole
+component, children included, so the derivation simply runs again. The delicate
+half is the icon: a step draws its icon *before* its parent exists, and the icon
+for a state it was moved into is a `TablerIcon` in its props rather than anything
+in its DOM. So a step with no `state` of its own renders those icons and leaves
+them in its icon box as **hidden alternates**
+(`.rinch-stepper__step-icon-alt`, `display: none` inline *and* from the sheet);
+the parent promotes the one it needs and drops the rest. Promotion re-parents
+**before** clearing the box, and the icon it replaces leaves by **`discard`**
+(#719) because it is gone for good and `rinch-web` compiles this crate. Those
+two facts are one fact: a `discard` retires the whole subtree, so discarding a
+wrapper that still held the promoted glyph would retire the glyph with it. The
+selection family stays decorative: no step carries a `data-rid` and `Stepper`
+takes no callback (issue #737).
+
 **A container default reaches only the children present at the container's own
 render** — the patch runs once, so an item a later `for` reconcile appends gets
 nothing (issue #716); `RadioGroup::size` and the `Stepper` props are the same

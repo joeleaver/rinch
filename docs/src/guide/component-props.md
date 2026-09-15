@@ -681,8 +681,17 @@ it finds each item that built no icon layout of its own and rebuilds that item
 into the same markup `ListItem` uses, moving the content it already held into
 the content span. That patch runs **once**, at the list's own render, so an item
 appended afterwards renders without the default (issue #716). This applies to
-every container default in the library — `RadioGroup::size` and the three
-`Stepper` props behave the same way.
+every container default in the library — `RadioGroup::size` and the four
+`Stepper` props, `active` included, behave the same way.
+
+`Stepper` is the one that has to hand something *back* down. A step's state
+decides which icon it draws, and a step draws its icon before its stepper
+exists — so a step with no `state` of its own renders the icons for the states
+it might be moved into and leaves them in its icon box, hidden, for the stepper
+to promote (issue #709). The stepper `discard()`s the ones it did not need — and
+promotes the one it wants out of its wrapper first, since a discard retires the
+whole subtree (issue #719) — so those alternates reach the screen only on a
+`StepperStep` with no `Stepper` above it, where they stay hidden.
 
 ---
 
@@ -1122,13 +1131,13 @@ Custom Default: `total`, `value`, `siblings`, `boundaries` default to `1`; `with
 
 | Prop | Type | Default | Description |
 |------|------|---------|-------------|
-| `active` | `u32` | `0` | Active step index |
+| `active` | `u32` | `0` | Active step index. Every step **present at this stepper's render** takes its state from its position against this — before it completed, at it in progress, after it inactive (#709) — unless it named a `state` of its own. A step appended later keeps what it rendered as (#716). As a closure (`active: {\|\| sig.get()}`) it re-renders the stepper and re-derives |
 | `size` | `String` | `""` | |
 | `orientation` | `String` | `""` | "horizontal", "vertical" |
 | `color` | `String` | `""` | |
 | `radius` | `String` | `""` | |
 | `icon_size` | `String` | `""` | |
-| `allow_next_steps_select` | `bool` | `false` | Makes each step past `active` clickable (#707), among those present at the stepper's render (#716). Grants only: a step's own `allow_step_click` / `allow_step_select` is never taken away. **Decorative** — `Stepper` registers no click handler and takes no callback (#709) |
+| `allow_next_steps_select` | `bool` | `false` | Makes each step past `active` clickable (#707), among those present at the stepper's render (#716). Grants only: a step's own `allow_step_click` / `allow_step_select` is never taken away. **Decorative** — `Stepper` registers no click handler and takes no callback (#737) |
 | `completed_icon` | `Option<TablerIcon>` | `None` | Default completed icon for the steps present at the stepper's render that set none (#707); the step's own wins, a step added later does not get it (#716) |
 | `progress_icon` | `Option<TablerIcon>` | `None` | Default in-progress icon for the steps present at the stepper's render that set none (#707). It stands in for the *`progress_icon`* the step did not set, so it outranks that step's plain `icon`. A step added later does not get it (#716) |
 
@@ -1144,8 +1153,8 @@ Custom Default: `total`, `value`, `siblings`, `boundaries` default to `1`; `with
 | `allow_step_click` | `bool` | `false` | |
 | `allow_step_select` | `bool` | `false` | |
 | `loading` | `bool` | `false` | |
-| `state` | `String` | `""` | `"completed"` or `"progress"`; anything else, including unset, is inactive. Set it yourself — `Stepper` does not derive it from `active` |
-| `step` | `Option<u32>` | `None` | Step index |
+| `state` | `String` | `""` | `"completed"` or `"progress"`; anything else is inactive. Leave it unset and the parent `Stepper` derives it from this step's position against `active` (#709). Set it to override that for this one step: what a step names, it keeps |
+| `step` | `Option<u32>` | `None` | Step index, 0-based. Set by the parent `Stepper` from this step's position unless named here, in which case that is the index shown — and the number in the icon box, one higher. An index named here changes the label, **not** the position the state derives from |
 
 **StepperCompleted:** No props.
 

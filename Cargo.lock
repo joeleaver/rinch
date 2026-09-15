@@ -4816,6 +4816,7 @@ dependencies = [
  "rinch-macros",
  "rinch-platform",
  "rinch-renderer",
+ "rinch-tabler-icons",
  "rinch-theme",
  "rinch-video",
  "serde_json",
