@@ -51,7 +51,8 @@
 //! | the cascade does not re-measure an animated typography sample | 3: both block-text fixtures, `a_paused_font_size_animation_on_a_span_resizes_its_inline_block` |
 //! | …re-runs Taffy but does not invalidate the text measure | `a_paused_font_size_animation_on_a_span_resizes_its_inline_block`, **alone** |
 //! | …invalidates the text measure but does not re-run Taffy | 3: both block-text fixtures and the inline-block one |
-//! | `restart_animations_in_subtree` does not re-measure | **survives — equivalent today**: see that fixture's doc |
+//! | `restart_animations_in_subtree` does not re-measure | `a_paused_font_size_animation_in_a_shown_panel_resizes_its_inline_block`, **alone** — it survived every fixture until #784's hole was closed, because until then neither branch re-measured text inside an atomic inline |
+//! | `mark_atomic_inline_dirty` returns early on an `ifc_dirty` pass (#784, as found) | 2: that fixture and `showing_a_panel_that_also_shrinks_its_text_remeasures_the_inline_block` |
 //! | the tick answers `false` whenever anything is paused | round 1: 2 — `a_running_animation_beside_a_paused_one_still_asks_for_frames`, `two_animations_on_one_node_one_paused_still_ask_for_frames` |
 //! | a node's entries are judged by its **first** animation only | round 1: 2 — `two_animations_on_one_node_one_paused_still_ask_for_frames`, `a_finished_transition_does_not_displace_a_paused_sample` |
 //! | the tick **skips** a paused animation instead of re-applying its sample | round 1: `a_finished_transition_does_not_displace_a_paused_sample`, **alone** |

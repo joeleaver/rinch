@@ -31,6 +31,7 @@
 //! | a restyle never clears `fill_settled` (a latch) | `a_restyle_that_extends_a_finished_animation_runs_it_again`, **alone** |
 //! | a restyle always clears `fill_settled` | `a_restyle_keeps_showing_the_fill`, **alone** |
 //! | the text-measure pre-pass re-measures a settled fill | `a_finished_font_size_fill_owes_no_layout`, **alone** |
+//! | `fill_settled` is recomputed **before** #771's refresh block (the naive rebase) | `a_theme_change_that_lengthens_a_finished_animation_runs_it_again`, **alone** |
 
 #![cfg(feature = "software-renderer")]
 
