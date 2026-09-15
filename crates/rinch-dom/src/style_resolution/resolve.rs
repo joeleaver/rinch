@@ -169,7 +169,7 @@ impl RinchDocument {
     /// A `None` also covers an id that is no longer in the slab, or whose
     /// ancestor chain leaves it — a `style_roots` entry outlives the node it
     /// names.
-    fn depth_if_connected(&self, node_id: usize) -> Option<usize> {
+    pub(crate) fn depth_if_connected(&self, node_id: usize) -> Option<usize> {
         if node_id == self.tree.root_id {
             return self.tree.nodes.get(node_id).map(|_| 0);
         }

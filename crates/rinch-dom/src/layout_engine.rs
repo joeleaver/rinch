@@ -2451,6 +2451,65 @@ impl RinchDocument {
         }
     }
 
+    /// A **move** that takes `child` out of the document is a detach too
+    /// (issue #702).
+    ///
+    /// [`Self::detach_subtree_styles`]'s own doc says a move is not a detach,
+    /// and that is true of every move whose destination is in the document —
+    /// which, before this, was assumed to be all of them. It is not: a mounted
+    /// node appended into a parent that is *not* connected to `tree.root_id`
+    /// has left the document while keeping a parent, so it fails the
+    /// `parent = None` test the four detach routes share. #696 established that
+    /// **connectivity** is the question that matters, not the parent field: a
+    /// node under a detached parent is not styled at all, so it keeps
+    /// `has_been_styled` and the `computed_style` it had where it was mounted,
+    /// and animates in from that style when its new parent is spliced in
+    /// somewhere else.
+    ///
+    /// # The two guards, and which one is for cost
+    ///
+    /// Both callers' conditions are here rather than at the four call sites, so
+    /// that the reasoning is in one place and the sites are one line.
+    ///
+    /// - **`old_parent != new_parent`** is a **cost** guard, not a correctness
+    ///   one. A move within one container cannot change whether the child is
+    ///   connected, because the child's reachability *is* its parent's and the
+    ///   parent has not changed — so walking would give the same answer more
+    ///   slowly. It matters because that move is the keyed `for` reorder, which
+    ///   is the hottest shape this code has: a reorder pays one integer
+    ///   comparison per row and never walks.
+    /// - **`depth_if_connected(new_parent).is_none()`** is the correctness one,
+    ///   and it is [`RinchDocument::depth_if_connected`] — the same walk #696
+    ///   filters `style_roots` with, so the two cannot disagree about what
+    ///   "connected" means.
+    ///
+    /// The callers supply a third guard by construction: they only reach this
+    /// when the child **already had a parent**, since a freshly created node
+    /// cannot be a move. That is what keeps the initial build of a tree free.
+    ///
+    /// # Where this is called from
+    ///
+    /// **Four places in `dom_impl/dom_document_impl.rs` write
+    /// `nodes[..].parent = Some(..)` for a node that may already be mounted**,
+    /// and all four call this: `append_child`, `insert_before`, `insert_child`,
+    /// and `replace_node` for its incoming `new`. `grep -n '\.parent = Some('`
+    /// is the check if a fifth ever appears; the other matches in that file and
+    /// in `pseudo.rs` / `ifc.rs` are nodes created moments earlier, which cannot
+    /// be moves. An unhooked route here is silent, which is how `replace_node`
+    /// was nearly missed — its own comment asserted "`new` has not [left the
+    /// document] — it was spliced in, which is a move, and a move resets
+    /// nothing", true of every destination but a detached one.
+    pub(crate) fn detach_subtree_styles_if_moved_out(
+        &mut self,
+        child: usize,
+        old_parent: usize,
+        new_parent: usize,
+    ) {
+        if old_parent != new_parent && self.depth_if_connected(new_parent).is_none() {
+            self.detach_subtree_styles(child);
+        }
+    }
+
     /// Clear ifc_root on a node and all its descendants.
     pub(crate) fn clear_ifc_root_recursive(&mut self, node_id: usize) {
         // Use iterative approach to avoid stack overflow

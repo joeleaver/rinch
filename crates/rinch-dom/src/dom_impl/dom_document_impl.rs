@@ -121,6 +121,8 @@ impl DomDocument for RinchDocument {
             if let Some(old_taffy_parent) = self.tree.nodes[old_parent].taffy_id {
                 self.taffy_detach_contribution(old_taffy_parent, c);
             }
+            // A move *out of* the document is a detach (#702).
+            self.detach_subtree_styles_if_moved_out(c, old_parent, p);
         }
         self.tree.nodes[c].parent = Some(p);
         self.tree.nodes[p].children.push(c);
@@ -189,6 +191,8 @@ impl DomDocument for RinchDocument {
             if let Some(old_taffy_parent) = self.tree.nodes[old_parent].taffy_id {
                 self.taffy_detach_contribution(old_taffy_parent, c);
             }
+            // A move *out of* the document is a detach (#702).
+            self.detach_subtree_styles_if_moved_out(c, old_parent, p);
         }
         self.tree.nodes[c].parent = Some(p);
         let insert_pos = if let Some(pos) = self.tree.nodes[p].children.iter().position(|&x| x == r)
@@ -249,6 +253,8 @@ impl DomDocument for RinchDocument {
                 if let Some(old_taffy_parent) = self.tree.nodes[old_parent].taffy_id {
                     self.taffy_detach_contribution(old_taffy_parent, new.0);
                 }
+                // A move *out of* the document is a detach (#702).
+                self.detach_subtree_styles_if_moved_out(new.0, old_parent, parent_id);
             }
             // Replace old with new in parent's children
             if let Some(pos) = self.tree.nodes[parent_id]
@@ -277,8 +283,10 @@ impl DomDocument for RinchDocument {
             }
             self.tree.nodes[new.0].parent = Some(parent_id);
             self.tree.nodes[old.0].parent = None;
-            // `old` has left the document (#699). `new` has not — it was
-            // spliced in, which is a move, and a move resets nothing.
+            // `old` has left the document (#699). `new` has left it only if
+            // the parent it was spliced into is itself detached, which
+            // `detach_subtree_styles_if_moved_out` decided above (#702); an
+            // ordinary splice is a move and a move resets nothing.
             self.detach_subtree_styles(old.0);
             self.invalidate_parent_ifc(parent_id);
             self.tree.layout_dirty = true; // Structural change needs full layout
@@ -661,6 +669,8 @@ impl DomDocument for RinchDocument {
             if let Some(old_taffy_parent) = self.tree.nodes[old_parent].taffy_id {
                 self.taffy_detach_contribution(old_taffy_parent, c);
             }
+            // A move *out of* the document is a detach (#702).
+            self.detach_subtree_styles_if_moved_out(c, old_parent, p);
         }
         self.tree.nodes[c].parent = Some(p);
         let len = self.tree.nodes[p].children.len();
