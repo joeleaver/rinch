@@ -156,9 +156,21 @@ impl Scrollbars {
 /// The content extent `(width, height)` along both axes, relative to the
 /// container's content box, from its direct children's layout rects.
 ///
+/// Only children the container is the **containing block** of are measured —
+/// [`crate::out_of_flow::contributes_to_scrollable_overflow`] is the rule, and
+/// its doc is where the CSS and the Chrome measurements live. A `position:
+/// fixed` child resolves against the viewport and a `position: absolute` one
+/// may resolve against an ancestor, and neither swells the scroll range of a
+/// box that merely happens to be its Taffy parent (issue #765).
+///
 /// Taffy's `child.layout.{x,y}` are relative to the **parent's border box**, so
 /// they include the leading padding and border; subtracting that offset is what
 /// keeps a padded container from deciding it overflows when it does not.
+/// Measured against Chrome (issue #480, which is what pinned it): rinch works
+/// in the container's *content*-box frame where Chrome's
+/// `scrollWidth`/`clientWidth` work in its *padding*-box frame, and the two
+/// agree on both the existence and the size of the overflow, because the pair
+/// of paddings Chrome adds to each side of that subtraction cancels.
 ///
 /// In logical pixels — this is layout's own unit, and every caller either wants
 /// it that way or scales the result itself.
@@ -179,6 +191,9 @@ pub fn content_extents(tree: &NodeTree, node_id: usize) -> (f64, f64) {
     let (mut width, mut height) = (0.0_f64, 0.0_f64);
     for &child_id in &node.children {
         if let Some(child) = tree.get(child_id) {
+            if !crate::out_of_flow::contributes_to_scrollable_overflow(tree, node_id, child) {
+                continue;
+            }
             let right = (child.layout.x + child.layout.width) as f64 - content_left;
             if right > width {
                 width = right;

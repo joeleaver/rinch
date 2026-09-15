@@ -91,6 +91,64 @@ pub(crate) fn out_of_flow_kind(tree: &NodeTree, node_id: RawNodeId) -> Option<Ou
     }
 }
 
+/// Whether `child` is part of `parent`'s **scrollable overflow area**
+/// (css-overflow-3 §3.1) — the question `paint::scrollbar::content_extents`
+/// asks of every direct child of a scroll container.
+///
+/// A box swells its parent's scroll range only when that parent is its
+/// containing block. The two out-of-flow positions therefore need the same walk
+/// [`out_of_flow_kind`] does, and for the same reason: Taffy laid the box out
+/// against its direct parent, which is not where CSS says it lives.
+///
+/// * **`position: fixed` never contributes.** It resolves against the viewport,
+///   so nothing below the viewport scrolls to reach it. Measured in Chrome: an
+///   `overflow: auto` div holding a viewport-filling fixed child reports
+///   `scrollWidth == clientWidth` and grows no bar. rinch counted it, so a
+///   closed `Drawer` — `position: fixed`, and since #751/#761 still rendered —
+///   made an `overflow: auto` ancestor paint two scrollbars (issue #765).
+/// * **`position: absolute` contributes only when `parent` is its containing
+///   block**: `parent` is positioned or transformed
+///   ([`Node::establishes_abs_containing_block`]), or *is* the initial
+///   containing block, which in rinch is the `<html>` box. Those are exactly
+///   [`out_of_flow_kind`]'s two stopping conditions, deliberately — an absolute
+///   whose containing block is further up escapes this box's scroll range in
+///   CSS (measured in Chrome: a static `overflow: auto` div inside a
+///   `position: relative` wrapper reports no overflow for an absolute child),
+///   and the two answers must not drift apart.
+/// * **Everything else contributes**, `visibility: hidden` included: it still
+///   generates a box, and Chrome still counts it (700×500 of
+///   `scrollWidth`/`scrollHeight`). `display: none` generates none, and its
+///   zeroed layout rect already contributes nothing without a special case.
+///
+/// Note this is *narrower* than "is the box in flow": a `relative` box is
+/// out of flow for nobody and contributes normally, and so does a float.
+///
+/// The caller walks one level, so a box skipped here is measured by **nobody**:
+/// the ancestor that really is its containing block never looks past its own
+/// direct children either. Chrome does give it to that ancestor (measured: a
+/// 700x1500 absolute under a static `overflow: auto` div reaches
+/// `documentElement.scrollHeight`), and closing that needs the recursive union
+/// css-overflow-3 describes rather than a one-level max — issue #770. It is not
+/// a regression: the box used to be measured by the *wrong* container, which is
+/// what grew the phantom bar #765 was filed for.
+pub(crate) fn contributes_to_scrollable_overflow(
+    tree: &NodeTree,
+    parent_id: RawNodeId,
+    child: &Node,
+) -> bool {
+    match child.computed_style.position {
+        PositionValue::Fixed => false,
+        PositionValue::Absolute => {
+            parent_id == tree.html_id
+                || parent_id == tree.root_id
+                || tree
+                    .get(parent_id)
+                    .is_some_and(Node::establishes_abs_containing_block)
+        }
+        _ => true,
+    }
+}
+
 /// Bake an out-of-flow box's Taffy **size** from its real containing block.
 ///
 /// Taffy would size the box against its direct parent, and the size has to be

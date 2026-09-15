@@ -23,6 +23,8 @@ mod device_pixel_ratio_tests;
 mod disabled_input_tests;
 #[cfg(test)]
 mod drawer_open_animation_tests;
+#[cfg(test)]
+mod drawer_scroll_overflow_tests;
 mod event_dispatch;
 mod focus;
 #[cfg(test)]

@@ -1575,6 +1575,33 @@ thumb's **travel** (`track_len - thumb_len`), not the track length. Anything new
 that needs to know where a bar is should ask that module rather than re-derive
 it.
 
+**What counts as scrollable content (#765).** `content_extents` measures the
+scroll range from the container's **direct children**, and only from those the
+container is the **containing block** of — `out_of_flow::contributes_to_scrollable_overflow`,
+which mirrors `out_of_flow_kind`'s walk so the two cannot drift. A `position:
+fixed` child resolves against the viewport, so it is no part of any scroll
+range below it; an `absolute` child counts only where the container is
+positioned or transformed (`Node::establishes_abs_containing_block`) or *is*
+the initial containing block, which in rinch is the `<html>` box. Taffy lays
+every out-of-flow box out against its direct parent whatever CSS says, so
+without that filter a closed `Drawer` — `position: fixed`, and still rendered
+since #751/#761 — made an `overflow: auto` ancestor report 800x600 of content
+and paint **both** bars over a div holding 100x50. `visibility: hidden` is not
+the rule and must not become it: a hidden box still has a box and still counts,
+in rinch as in Chrome. `display: none` generates none and its zeroed rect
+contributes nothing without a special case.
+
+Two limits, both pre-existing and neither introduced by that filter. The walk
+is one level deep, so an absolute whose containing block is a **non-parent**
+ancestor contributes to no box's range at all — Chrome gives it to that
+ancestor (measured: a 700x1500 absolute under a static `overflow: auto` div
+lands on `documentElement.scrollHeight`), and rinch used to give it to the
+wrong box, which is what grew the phantom bar (**#770**). And
+`find_vertical_scroll_container` compares the same extent against the
+container's **border**-box height where `scrollbars` compares it against the
+content box, so a padded container can paint and drag a thumb the wheel routes
+straight past (**#769**).
+
 **Styling the bar (#416).** Two inherited custom properties:
 `--rinch-scrollbar-color: <thumb> [<track>]` and `--rinch-scrollbar-width: auto
 | thin | none`. One declaration on `:root` restyles every scroll region.

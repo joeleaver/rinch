@@ -440,6 +440,18 @@ A desktop scroll container paints an overlay thumb on each axis that is
 scrollable and overflowing. Two custom properties style it, and both **inherit**
 — one declaration on a root node restyles every scroll region in the app.
 
+### What counts as overflowing
+
+The same content a browser counts. A `position: fixed` child is anchored to the
+viewport, so it never makes an ancestor scroll — a `Modal`, `Drawer` or
+`Notification` inside an `overflow: auto` region adds nothing to that region's
+scroll range, open or closed. A `position: absolute` child counts only where
+the container is its containing block, i.e. the container is itself positioned
+(or transformed); an absolute that resolves against something further up
+escapes, exactly as it does on the web. `visibility: hidden` content still
+counts, because it still occupies its box; `display: none` content does not,
+because it has none.
+
 ```css
 :root {
   --rinch-scrollbar-color: rgba(255, 255, 255, 0.35);              /* thumb */
