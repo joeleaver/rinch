@@ -1616,7 +1616,13 @@ pub struct NodeTree {
     pub active_transitions: HashMap<RawNodeId, HashMap<TransitionProperty, ActiveTransition>>,
     /// Active CSS animations per node.
     pub active_animations: HashMap<RawNodeId, Vec<ActiveAnimation>>,
-    /// Whether transitions are enabled (false until first layout completes).
+    /// Whether transitions are armed (false until the first layout completes).
+    ///
+    /// **Transitions only** (issue #762). `@keyframes` animations do not read
+    /// it: an animation has no before-change style to be wrong about, so it
+    /// runs on the very first frame the element exists, as in a browser.
+    /// `resolve_styles` also reads this as a "has the first layout happened"
+    /// proxy, to choose the full tree walk over the targeted one.
     pub transitions_enabled: bool,
     /// Cache of loaded and decoded images.
     pub image_cache: ImageCache,

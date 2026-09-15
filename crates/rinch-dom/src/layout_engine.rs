@@ -461,7 +461,23 @@ impl RinchDocument {
             );
         }
 
-        // Enable transitions after first layout completes (prevents transitions on page load)
+        // Arm transitions now that the first layout has completed, so nothing
+        // transitions into existence on page load.
+        //
+        // `Node::has_been_styled` is not enough on its own: a tree is cascaded
+        // more than once before its first layout — appending a `<style>`
+        // element re-resolves the whole document on the spot
+        // (`maybe_load_style_css`) — so a component that appends its own
+        // stylesheet after building its markup leaves every node already
+        // styled, and the next rule it loads is a *change* on an already-styled
+        // node.
+        //
+        // **This arms transitions and nothing else** (issue #762). A
+        // `@keyframes` animation has no before-change style to be wrong about
+        // and runs on the very first frame, exactly as in a browser; the
+        // animation half of `apply_stylo_styles_to_taffy` deliberately reads no
+        // flag. It used to read this one, and an animation present in the first
+        // frame therefore never started at all.
         if !self.tree.transitions_enabled {
             self.tree.transitions_enabled = true;
         }

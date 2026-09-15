@@ -7,6 +7,8 @@
 //! [`AppAction`]s.
 
 #[cfg(test)]
+mod animation_theme_change_tests;
+#[cfg(test)]
 mod blink_and_click_focus_tests;
 mod click_handling;
 #[cfg(test)]

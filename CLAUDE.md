@@ -2940,6 +2940,32 @@ fixtures over four of the five sites, three of them on `show_dom`.
 `debug_assert!(clobbered.is_none())` sits one line above the call, so a debug
 test panics on the assertion before it can get there.
 
+**Nothing transitions on load, and everything animates on load** (**#762**).
+`NodeTree::transitions_enabled` is set at the *end* of the first
+`resolve_layout`, so a freshly mounted tree cannot transition into existence —
+and `recompute_all_styles_full` forces it off again for its own re-cascade, so a
+theme change applies instantly instead of every element sliding from the old
+palette to the new one. Both are rules about **transitions**. A `@keyframes`
+animation has no before-change style to be wrong about: it plays its own
+timeline, and a browser runs one on the very first frame the element exists. The
+two questions used to be asked with one `if`, and the cost was two bugs — an
+animation present in the first frame never started at all (an embedded
+`RinchContext` at a fixed size, where no later event re-cascades the tree, kept
+a dead spinner for good), and a theme change stopped **every** animation in the
+document permanently, so toggling dark mode killed every `Loader`, `Skeleton`
+and `Progress` stripe in the app. The animation half of
+`apply_stylo_styles_to_taffy` now reads no flag at all, and
+`recompute_all_styles_full` no longer clears `tree.active_animations`: the
+re-cascade matches each running animation by name and **keeps its clock**.
+Measured in Chrome 150, replacing a `<style>` element's text under a running
+animation leaves `currentTime` untouched and cancels only an animation whose
+declaration the new sheet no longer carries — so preserving is right and
+restarting would be the smaller wrong answer. (What rinch does *not* do is
+re-read an edited `@keyframes` body into a running animation; Chrome updates the
+effect while keeping the clock. Pre-existing, true of every restyle, **#766**.)
+`crates/rinch-dom/tests/animation_start_gating_tests.rs` is the pin, with the
+Chrome measurement and a mutant-by-fixture table in its module doc.
+
 It was not free either, which is why a deprecated no-op shim would have been the
 wrong shape too: `set_style` re-merges the node's whole inline `style` string,
 re-parses it into a Stylo declaration block and invalidates the node's inline

@@ -386,7 +386,23 @@ impl RinchDocument {
         let transitions_were_enabled = self.tree.transitions_enabled;
         self.tree.transitions_enabled = false;
         self.tree.active_transitions.clear();
-        self.tree.active_animations.clear();
+        // `active_animations` is deliberately **not** cleared (issue #762).
+        // Measured in Chrome 150.0.7871.100, replacing a `<style>` element's
+        // text under a running `animation: … 10s linear infinite`: the
+        // animation keeps running and `currentTime` does not move, so long as
+        // its declaration still names a live `@keyframes` rule; it is cancelled
+        // when the declaration or the rule goes away. The re-cascade below
+        // reproduces both — `animation::start_animations` matches an existing
+        // animation by name and keeps its `start_time_ms`, and drops one whose
+        // declaration the new sheet no longer carries.
+        //
+        // Clearing here was the second half of #762: with the animation block
+        // gated on the flag this function had just forced off, nothing
+        // re-registered them, so a single theme change stopped every `Loader`,
+        // `Skeleton` and `Progress` stripe in the app permanently. Restarting
+        // them instead of preserving them would be wrong in the smaller way —
+        // every spinner in the window would jump back to 0° on a dark-mode
+        // toggle.
         // Clear roots to force full tree walk
         self.tree.style_roots.clear();
         // Resolve styles using Stylo
@@ -836,7 +852,19 @@ impl RinchDocument {
                 crate::animation::AnimationSpec::extract_from_stylo(&computed_values);
             self.tree.nodes[node_id].animation_specs = animation_specs;
 
-            if self.tree.transitions_enabled {
+            // **Not gated on `transitions_enabled`** (issue #762). That flag
+            // arms transitions, and a transition needs a *before-change style*
+            // — which the first cascade of a node does not have, so the first
+            // layout runs with it off and nothing animates into existence. A
+            // `@keyframes` animation has no such premise: it does not
+            // interpolate from a previous style, it plays its own, and a
+            // browser runs one on the very first frame the element exists.
+            // Asking one `if` for both meant an animation present in the first
+            // frame never started at all — a `Loader` that is the first thing
+            // on screen stayed still until some later event happened to
+            // re-cascade it, and an embedded `RinchContext` at a fixed size,
+            // where no such event ever comes, kept a dead spinner for good.
+            {
                 // css-animations-1 §3: an element that is **not being
                 // rendered** has no animation effect, so a `display: none`
                 // element — or anything inside one — runs nothing (issue
