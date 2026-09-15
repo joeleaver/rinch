@@ -913,6 +913,14 @@ that stays scrollable — and must release it on close *and* on unmount.
 
 ### Tooltip
 
+The open state is the class **`rinch-tooltip--opened`** on the root, added and
+removed by the hover effect. `.rinch-tooltip__content` is `display: none` and
+that class is what reveals it, so styling the open tooltip — or overriding how
+it appears — is a rule of your own against `.rinch-tooltip--opened`. Before
+[issue #760](https://github.com/joeleaver/rinch/issues/760) the class was
+emitted and matched by nothing, while the reveal was an inline `style` rewrite
+on the content node.
+
 | Prop | Type | Default | Description |
 |------|------|---------|-------------|
 | `label` | `String` | `""` | Tooltip text |
@@ -1037,6 +1045,16 @@ Use `DropdownMenuItem` and `DropdownMenuDivider` as children of `ContextMenuDrop
 
 Custom Default: `close_on_click_outside` and `close_on_item_click` default to `true`.
 
+The open state is the class **`rinch-dropdown-menu--opened`** on the root, kept
+in step with `opened_fn` by an effect. One class reveals both boxes —
+`.rinch-dropdown-menu__dropdown` and the outside-click
+`.rinch-dropdown-menu__backdrop` are `display: none` until it lands. Before
+[issue #760](https://github.com/joeleaver/rinch/issues/760) the class matched
+nothing and each box was revealed by an inline `style` rewrite. One consequence
+of the move: "the dropdown" is now named by its class rather than by its
+position among the children, so a child other than a `DropdownMenuDropdown`
+passed after the target is *not* hidden with the menu. Use the documented pair.
+
 | Prop | Type | Default | Description |
 |------|------|---------|-------------|
 | `opened` | `bool` | `false` | |
@@ -1120,6 +1138,22 @@ Sub-components: **HoverCardTarget** (no props), **HoverCardDropdown** (no props)
 | `onclick` | `Option<Callback>` | `None` | |
 
 **TabsPanel:** `value: String` — matches the Tab value.
+
+**The active tab and the hidden panel are both stylable.** The active tab
+carries **`data-active="true"`** *and* the class **`rinch-tabs__tab--active`**
+(inactive tabs carry `data-active="false"`), and the inactive panel carries the
+HTML **`hidden`** attribute, which `.rinch-tabs__panel[hidden]` turns into
+`display: none`. All three are what the shipped sheet styles against, so a rule
+of your own against any of them works. The `default` variant's underline is a
+real element, `.rinch-tabs__tab-indicator`, appended to each tab button; it
+carries `transition: background-color 150ms ease`, so switching tabs animates it.
+
+None of that was true before [issue
+#760](https://github.com/joeleaver/rinch/issues/760): the component set neither
+hook and wrote the active colour, the `pills` fill, the `outline` border and the
+underline inline, so all four of the sheet's `[data-active]`/`--active` rules
+(eight selectors) were unreachable and the underline's declared transition never
+ran.
 
 ### Accordion
 

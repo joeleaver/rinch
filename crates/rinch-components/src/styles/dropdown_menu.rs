@@ -11,8 +11,21 @@ pub fn styles() -> String {
     display: inline-block;
 }
 
-/* Dropdown — visibility controlled by inline styles (Stylo limitation) */
+/* Dropdown.
+
+   Hidden here and shown by `.rinch-dropdown-menu--opened` below, which is the
+   class `DropdownMenu`'s `opened_fn` effect toggles on the root. Until #760 the
+   class matched nothing and the reveal was an inline `style` rewrite on every
+   child after the first; the class was emitted all along, so anyone who found
+   it in the class list and styled it got silence.
+
+   `display` rather than `visibility`/`opacity` because nothing on the panel
+   declares a `transition`: css-transitions-1 §3 starts nothing for a property
+   that retargets in the same pass its subtree stops being `display: none`, so
+   the day this sheet grows a fade the panel has to stay rendered first, the way
+   `styles/popover.rs` does it (#751). */
 .rinch-dropdown-menu__dropdown {
+    display: none;
     position: absolute;
     background-color: var(--rinch-color-body);
     border: 1px solid var(--rinch-color-border, var(--rinch-color-gray-3));
@@ -166,6 +179,14 @@ pub fn styles() -> String {
     bottom: 0;
     z-index: calc(var(--rinch-dropdown-menu-z-index, 100) - 1);
     display: none;
+}
+
+/* The open state (#760). One class on the root reveals both boxes, and it is
+   the class `class_string` has always emitted. Each of these carries two class
+   selectors to the hidden rule's one, so it wins whatever the source order. */
+.rinch-dropdown-menu--opened .rinch-dropdown-menu__dropdown,
+.rinch-dropdown-menu--opened .rinch-dropdown-menu__backdrop {
+    display: block;
 }
 
 /* Radius */

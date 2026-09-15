@@ -11,7 +11,19 @@ pub fn styles() -> String {
     display: inline-block;
 }
 
-/* Tooltip content */
+/* Tooltip content.
+
+   Hidden here and shown by `.rinch-tooltip--opened` below, which is the class
+   `Tooltip`'s hover effect toggles on the root. Until #760 the class matched
+   nothing and the reveal was an inline `style` rewrite on this node instead;
+   the class was emitted all along, so anyone who found it in the class list and
+   styled it got silence.
+
+   `display` rather than `visibility`/`opacity` because nothing here declares a
+   `transition`: css-transitions-1 §3 starts nothing for a property that
+   retargets in the same pass its subtree stops being `display: none`, so the
+   day this sheet grows a fade the content has to stay rendered first, the way
+   `styles/popover.rs` does it. */
 .rinch-tooltip__content {
     position: absolute;
     z-index: 1000;
@@ -22,6 +34,18 @@ pub fn styles() -> String {
     border-radius: var(--rinch-radius-sm);
     white-space: nowrap;
     pointer-events: none;
+    display: none;
+}
+
+.rinch-tooltip--opened .rinch-tooltip__content {
+    display: block;
+    /* Redundant against this sheet, which never sets `opacity` on the content —
+       and kept anyway, because the inline write this rule replaced carried it
+       and so outranked a caller's own `opacity` on `.rinch-tooltip__content`.
+       Dropping it would change that caller's tooltip from opaque to whatever
+       they set. It is also where a fade would start from, if one is ever added
+       (see the note on the base rule for what that would take). */
+    opacity: 1;
 }
 
 /* Tooltip positions */
@@ -95,7 +119,12 @@ pub fn styles() -> String {
     text-align: center;
 }
 
-/* Tooltip disabled */
+/* Tooltip disabled.
+
+   Ties with `.rinch-tooltip--opened .rinch-tooltip__content` on specificity, so
+   it has to stay **after** it in this file to win. (The hover handlers refuse to
+   set `hovered` on a disabled tooltip anyway, so the pair only meets when a
+   caller passes `opened: true` and `disabled: true` together.) */
 .rinch-tooltip--disabled .rinch-tooltip__content {
     display: none;
 }

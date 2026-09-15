@@ -72,6 +72,10 @@ pub fn styles() -> String {
     background-color: var(--rinch-color-filled);
 }
 
+/* The active tab. `Tabs::render` sets `data-active="true"` and adds
+   `--active` together (#760); it used to set neither and write the colour
+   inline on the label span, which is why `transition: color` above never ran.
+   Both hooks are live, so either can be styled by a caller. */
 .rinch-tabs__tab[data-active="true"],
 .rinch-tabs__tab--active {
     color: var(--rinch-tabs-color, var(--rinch-primary-color));
@@ -83,9 +87,23 @@ pub fn styles() -> String {
     pointer-events: none;
 }
 
-/* Default variant - underline indicator */
-.rinch-tabs--default .rinch-tabs__tab::after {
-    content: '';
+/* Default variant — underline indicator.
+
+   A real element, `.rinch-tabs__tab-indicator`, appended by `Tabs::render` to
+   each tab button in the `default` variant. These three rules were written
+   against `.rinch-tabs__tab::after` until #760, and the underline did not
+   animate on either backend — for two different reasons, which is why one
+   element is the cure for both.
+
+   On desktop the pseudo-element was never created at all: rinch materialises
+   none whose `content` computes to the empty string, and `content: ''` is the
+   only spelling a decorative box wants (Refs #773 for that gap, which is not
+   specific to Tabs). In a browser it *was* created, and was simply never given
+   `data-active` — nothing set that hook — so it stayed `transparent` under the
+   opaque `<div>` the component drew for itself with inline styles. Either way
+   the `transition` declared here had nothing to interpolate, which is the one
+   user-visible half of #760. */
+.rinch-tabs--default .rinch-tabs__tab-indicator {
     position: absolute;
     bottom: -2px;
     left: 0;
@@ -95,12 +113,12 @@ pub fn styles() -> String {
     transition: background-color 150ms ease;
 }
 
-.rinch-tabs--default .rinch-tabs__tab[data-active="true"]::after,
-.rinch-tabs--default .rinch-tabs__tab--active::after {
+.rinch-tabs--default .rinch-tabs__tab[data-active="true"] .rinch-tabs__tab-indicator,
+.rinch-tabs--default .rinch-tabs__tab--active .rinch-tabs__tab-indicator {
     background-color: var(--rinch-tabs-color, var(--rinch-primary-color));
 }
 
-.rinch-tabs--vertical.rinch-tabs--default .rinch-tabs__tab::after {
+.rinch-tabs--vertical.rinch-tabs--default .rinch-tabs__tab-indicator {
     bottom: auto;
     left: auto;
     right: -2px;
@@ -161,6 +179,9 @@ pub fn styles() -> String {
     padding: var(--rinch-spacing-md) 0;
 }
 
+/* The inactive panel. `Tabs::render` sets and removes `hidden` by presence
+   (#760); it used to write an inline `display` instead and this rule matched
+   nothing. */
 .rinch-tabs__panel[hidden] {
     display: none;
 }

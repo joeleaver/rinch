@@ -7,6 +7,28 @@ use rinch_core::reactive::Signal;
 use rinch_core::{Callback, Component};
 use rinch_tabler_icons::{TablerIcon, TablerIconStyle, render_tabler_icon};
 
+/// The modifier class the switch effect owns, beside the `data-active`
+/// attribute it sets on the same node.
+///
+/// `styles/tabs.rs` declares **four** rules — eight selectors, each spelled
+/// once against `[data-active="true"]` and once against `--active` — for the
+/// colour, the underline, the `outline` border and the `pills` fill. Until #760
+/// the component set **neither** hook and did all four with inline `set_style`
+/// instead, so every one of those rules was unreachable and so was the 150ms
+/// transition the sheet declares beside them.
+const ACTIVE_CLASS: &str = "rinch-tabs__tab--active";
+
+/// The underline drawn under the active tab in the `default` variant.
+///
+/// A real element rather than the `::after` this sheet used to declare for it:
+/// rinch materialises no pseudo-element whose `content` computes to the empty
+/// string (`rinch-dom`'s `style_resolution/pseudo.rs` returns early on empty
+/// text), and `content: ''` is the only spelling a purely decorative box wants
+/// — so the `::after` indicator never existed on desktop at all. The element
+/// exists on both backends and carries the same declarations the `::after`
+/// rules did, transition included. Refs #773.
+const INDICATOR_CLASS: &str = "rinch-tabs__tab-indicator";
+
 /// Tab variant style.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum TabsVariant {
@@ -258,95 +280,65 @@ impl Component for Tabs {
             TabsVariant::Default
         };
 
-        // Reactive: update active tab styling via inline styles.
-        // We must set color on the label span (not the button) because the button
-        // is display:flex and set_style on it won't invalidate child text layouts.
+        // Reactive: mark the active tab, and let `styles/tabs.rs` style it
+        // (issue #760).
+        //
+        // The colour, the `outline` border, the `pills` fill and the underline
+        // were all written here as inline `set_style` calls, so the sheet's five
+        // `[data-active="true"]` / `--active` rules matched nothing and the
+        // `transition: color 150ms ease` on `.rinch-tabs__tab` — and the
+        // `transition: background-color 150ms ease` on the underline — had
+        // nothing to interpolate. Setting the hooks instead hands all four to
+        // the cascade and makes both transitions run on a switch.
+        //
+        // **Both** hooks, because the sheet declares both and a caller styling
+        // either one has a right to expect it. `data-active` is a valued
+        // attribute, not a boolean one — `"true"`/`"false"`, like `aria-*` —
+        // so it is written with `set_attribute` and the falsey spelling is a
+        // value rather than a removal (`rinch_core::dom::is_boolean_attribute`
+        // is keyed on the name and does not claim it).
         for (value, btn) in &tab_buttons {
             let val = value.clone();
             let btn = btn.clone();
             let active = active_tab;
 
-            // Find the label span inside the button
-            let label_span = btn.children().into_iter().find(|c| {
-                c.get_attribute("class")
-                    .is_some_and(|cls| cls.contains("rinch-tabs__tab-label"))
-            });
-
-            // Create underline indicator element for Default variant
-            let indicator = if variant == TabsVariant::Default {
+            // The underline, for the `default` variant only — the variant whose
+            // sheet rules draw one. See [`INDICATOR_CLASS`] for why it is an
+            // element and not the `::after` the sheet used to declare.
+            if variant == TabsVariant::Default {
                 let el = rinch_macros::rsx! { div {} };
-                el.set_attribute(
-                    "style",
-                    "position: absolute; bottom: -2px; left: 0; right: 0; height: 2px;",
-                );
+                el.set_attribute("class", INDICATOR_CLASS);
                 btn.append_child(&el);
-                Some(el)
-            } else {
-                None
-            };
+            }
 
             __scope.create_effect(move || {
                 let is_active = active.get() == val;
+                btn.set_attribute("data-active", if is_active { "true" } else { "false" });
+                // Add/remove the one class; never rewrite `class` (issue #717).
                 if is_active {
-                    // Set color on label span for proper text invalidation
-                    let active_color = match variant {
-                        TabsVariant::Pills => "white",
-                        _ => "var(--rinch-tabs-color, var(--rinch-primary-color))",
-                    };
-                    if let Some(ref span) = label_span {
-                        span.set_style("color", active_color);
-                    }
-                    match variant {
-                        TabsVariant::Pills => {
-                            btn.set_style(
-                                "background-color",
-                                "var(--rinch-tabs-color, var(--rinch-primary-color))",
-                            );
-                        }
-                        TabsVariant::Outline => {
-                            btn.set_style("border-color", "var(--rinch-color-border)");
-                            btn.set_style("background-color", "var(--rinch-color-body)");
-                        }
-                        _ => {}
-                    }
-                    if let Some(ref ind) = indicator {
-                        ind.set_style(
-                            "background-color",
-                            "var(--rinch-tabs-color, var(--rinch-primary-color))",
-                        );
-                    }
+                    btn.add_class(ACTIVE_CLASS);
                 } else {
-                    if let Some(ref span) = label_span {
-                        span.set_style("color", "");
-                    }
-                    match variant {
-                        TabsVariant::Pills => {
-                            btn.set_style("background-color", "");
-                        }
-                        TabsVariant::Outline => {
-                            btn.set_style("border-color", "transparent");
-                            btn.set_style("background-color", "");
-                        }
-                        _ => {}
-                    }
-                    if let Some(ref ind) = indicator {
-                        ind.set_style("background-color", "transparent");
-                    }
+                    btn.remove_class(ACTIVE_CLASS);
                 }
             });
         }
 
-        // Reactive: show/hide panels
+        // Reactive: show/hide panels through the `hidden` attribute, which is
+        // what `.rinch-tabs__panel[hidden]` in `styles/tabs.rs` has always been
+        // waiting for (issue #760).
+        //
+        // `hidden` is an HTML boolean attribute, so it is written by *presence*
+        // through `write_attribute` — `hidden="false"` hides, in rinch and in a
+        // browser alike (issue #551). That also retires the old show path,
+        // `set_style("display", "")`, which serialised the literal declaration
+        // `display: ` for the parser to throw away; it worked, but by way of an
+        // invalid declaration rather than by removing the property.
         for (value, panel) in &panels {
             let val = value.clone();
             let panel = panel.clone();
             let active = active_tab;
             __scope.create_effect(move || {
-                if active.get() == val {
-                    panel.set_style("display", "");
-                } else {
-                    panel.set_style("display", "none");
-                }
+                panel.write_attribute("hidden", if active.get() == val { "false" } else { "true" });
             });
         }
 

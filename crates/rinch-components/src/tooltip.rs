@@ -7,6 +7,15 @@ use rinch_core::Component;
 use rinch_core::dom::{NodeHandle, RenderScope};
 use rinch_core::reactive::{Effect, Signal};
 
+/// The one class the hover effect owns.
+///
+/// `styles/tooltip.rs` keeps `.rinch-tooltip__content` at `display: none` and
+/// shows it from `.rinch-tooltip--opened .rinch-tooltip__content`, so the class
+/// *is* the show/hide. It used to be emitted by [`Tooltip::class_string`] and
+/// matched by nothing at all, while the reveal was an inline `style` rewrite on
+/// the content node — issue #760.
+const OPENED_CLASS: &str = "rinch-tooltip--opened";
+
 /// Tooltip position.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum TooltipPosition {
@@ -92,7 +101,7 @@ impl Tooltip {
         }
 
         if self.opened {
-            classes.push("rinch-tooltip--opened");
+            classes.push(OPENED_CLASS);
         }
 
         if self.disabled {
@@ -168,16 +177,31 @@ impl Component for Tooltip {
         let label_str = label.to_string();
         let content = rinch_macros::rsx! { div { class: "rinch-tooltip__content", role: "tooltip", {label_str} } };
 
-        // Use an Effect to toggle inline display based on hover state.
-        // Use display:none to hide — visibility/pointer-events don't propagate
-        // reliably to descendants through Stylo's style recomputation.
+        // Toggle the `--opened` class on the **root** and let the stylesheet do
+        // the reveal (issue #760). It was an inline `style` rewrite on the
+        // content node, which worked but left the class this component
+        // advertises matching nothing — so a caller styling
+        // `.rinch-tooltip--opened` got silence, and the sheet's own reveal rule
+        // did not exist to be found.
+        //
+        // The reveal is still `display`, deliberately: `styles/tooltip.rs`
+        // declares no `transition` on the content, so there is nothing for
+        // css-transitions-1 §3 to refuse. A fade added later has to move the
+        // content off `display` first, the way `Popover` does — see
+        // `tooltip_refuses_nothing_when_it_is_revealed` in
+        // `rinch/src/app/overlay_animation_audit_tests.rs`, which records that
+        // and fails if it stops being true.
+        //
+        // The effect adds and removes the one class rather than rewriting
+        // `class` (issue #717): the rsx `class:` prop is merged onto the
+        // returned handle *after* `render` returns.
         {
-            let content = content.clone();
+            let root_c = root.clone();
             Effect::new(move || {
                 if hovered.get() {
-                    content.set_attribute("style", "opacity: 1; display: block");
+                    root_c.add_class(OPENED_CLASS);
                 } else {
-                    content.set_attribute("style", "display: none");
+                    root_c.remove_class(OPENED_CLASS);
                 }
             });
         }
