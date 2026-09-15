@@ -1122,11 +1122,14 @@ write `icon: TablerIcon::Check`, not `icon: Some(TablerIcon::Check)`.
 `Tree` takes its icons through data instead: `TreeNodeData::icon`, set with the
 `with_icon(TablerIcon)` builder.
 
-`List::icon` and the two `Stepper` icons are container **defaults** for items
-that set none — the item's own icon always wins — and were declared but wired to
-nothing until #707. `Stepper::progress_icon` stands in for the `progress_icon` a
-step did not set, so it outranks that step's plain `icon`, exactly as the step's
-own `progress_icon` would have.
+`List::icon` and the two `Stepper` icons are container **defaults** for the items
+**present at the container's own render** that set none — the item's own icon
+always wins — and were declared but wired to nothing until #707. The container
+patches its items after they have rendered, and that patch runs once, so an item
+a later `for` reconcile appends gets no default (issue #716).
+`Stepper::progress_icon` stands in for the `progress_icon` a step did not set, so
+it outranks that step's plain `icon`, exactly as the step's own `progress_icon`
+would have.
 
 ### Examples
 
