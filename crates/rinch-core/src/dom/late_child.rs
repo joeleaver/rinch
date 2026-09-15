@@ -57,6 +57,34 @@
 //! changes no container's child *set*, and the insertion half already tells
 //! every observer that something moved.
 //!
+//! # What bypasses this
+//!
+//! Both halves are fired from [`NodeHandle`] and nowhere else, so anything that
+//! reaches for [`DomDocument`](super::traits::DomDocument) directly changes the
+//! tree without telling anyone. Enumerated, because the useful thing to know is
+//! which of them *could* land in or take a node out of a registered container:
+//!
+//! - **Root mounts into `<body>`** — `rinch/src/app/mod.rs`, two in
+//!   `rinch-web/src/lib.rs` (one of them the teardown `remove_node`), four in
+//!   `rinch/src/menu/app_menu_bar.rs` — and one *detached* span/text pair in
+//!   `render_scope.rs`. None of these can reach inside a container: a container
+//!   is never the body, and the detached pair has no parent yet.
+//! - **`rinch/src/app/select_widget.rs`'s popup teardown**, which `remove_node`s
+//!   a panel and a backdrop it mounted into `<body>` itself. Same reason.
+//! - **[`UpdateBatch::apply`](super::UpdateBatch::apply)** — and this one *can*.
+//!   Its `AppendChild` / `InsertBefore` / `RemoveChild` / `ReplaceNode` arms take
+//!   arbitrary ids, and `UpdateBatch` is exported from the `rinch` prelude, so an
+//!   app can move a node anywhere through it and no observer hears about it.
+//!   Nothing in this workspace applies a structural arm — the one consumer is a
+//!   unit test that batches `SetText` and `SetAttribute` — and it cannot be
+//!   routed through the notifying verbs as it stands, because it is handed a
+//!   `&mut dyn DomDocument` and a notification needs the `Rc` a `NodeHandle`
+//!   holds a `Weak` of. Tracked as **#756**;
+//!   `an_update_batch_bypasses_both_halves` pins the hole so the claim cannot go
+//!   stale in either direction.
+//!
+//! A new direct call is the thing to watch for: it will silently not notify.
+//!
 //! # Re-entrancy
 //!
 //! An observer patches the tree — that is the point — and those edits land
@@ -291,12 +319,9 @@ impl Drop for DispatchGuard {
 ///
 /// Called from the four [`NodeHandle`] methods that put a node into a tree.
 /// Anything that reaches for [`super::traits::DomDocument`] directly bypasses
-/// it, and seven places in this workspace do — but every one of them is a
-/// **root mount into `<body>`** (`rinch/src/app/mod.rs`, `rinch-web/src/lib.rs`,
-/// four in `rinch/src/menu/app_menu_bar.rs`) or a *detached* span/text pair
-/// (`render_scope.rs`), so none of them can land a child inside a registered
-/// container. A new direct call that could is the thing to watch for: it will
-/// silently not notify.
+/// it — see **What bypasses this** in the module docs for the enumeration, and
+/// for the one entry there that can genuinely land a child inside a registered
+/// container ([`UpdateBatch::apply`](super::UpdateBatch::apply), #756).
 pub(super) fn notify_inserted(parent: &NodeHandle, inserted: &NodeHandle) {
     notify(parent, inserted, Half::Inserted);
 }
@@ -312,8 +337,10 @@ pub(super) fn notify_inserted(parent: &NodeHandle, inserted: &NodeHandle) {
 /// Called from the four [`NodeHandle`] methods that take a node out of a tree
 /// (`remove_child`, `remove`, `discard`, and `replace_with` for the node it
 /// displaces) plus the implicit detach an insertion verb performs when handed a
-/// node that already has a parent. The same direct-`DomDocument` caveat as
-/// above applies, and the same seven sites are the ones to watch.
+/// node that already has a parent. The same direct-`DomDocument` caveat applies
+/// — but **not** to the same list: the seven sites named for the insertion half
+/// are all insertions. The module docs' **What bypasses this** enumerates the
+/// removal ones separately.
 pub(super) fn notify_removed(parent: &NodeHandle) {
     notify(parent, parent, Half::Removed);
 }
@@ -872,5 +899,56 @@ mod tests {
              so `forget_node` has to release both halves and not only the one \
              it knew about before #745"
         );
+    }
+
+    #[test]
+    fn an_update_batch_bypasses_both_halves() {
+        // **This pins a documented hole, not a behaviour worth keeping** — see
+        // "What bypasses this" in the module docs and issue #756. `UpdateBatch`
+        // is prelude-exported and its four structural arms take arbitrary ids,
+        // so a node moved through one reaches no observer. If you route those
+        // arms through `NodeHandle`'s verbs, this test and those two doc
+        // paragraphs go together.
+        use crate::dom::{DomUpdate, UpdateBatch};
+
+        let (d, body) = doc();
+        let root = element(&d, "div");
+        body.append_child(&root);
+        let child = element(&d, "span");
+        root.append_child(&child);
+
+        let (inserted, sink) = recorder();
+        on_child_inserted(&root, move |node| sink.borrow_mut().push(node.node_id()));
+        let removed = watch_removals(&root);
+
+        let fresh = element(&d, "b");
+        let mut batch = UpdateBatch::new();
+        batch.push(DomUpdate::AppendChild {
+            parent: root.node_id(),
+            child: fresh.node_id(),
+        });
+        batch.push(DomUpdate::RemoveChild {
+            parent: root.node_id(),
+            child: child.node_id(),
+        });
+        {
+            let mut doc = d.borrow_mut();
+            batch.apply(&mut *doc);
+        }
+
+        assert_eq!(
+            root.children().len(),
+            1,
+            "positive control: the batch really did restructure the tree — \
+             without this the two zeroes below would be a test of nothing"
+        );
+        assert!(
+            inserted.borrow().is_empty() && removed.borrow().is_empty(),
+            "neither half hears a batch: it is handed a `&mut dyn DomDocument` \
+             and a notification needs the `Rc` a `NodeHandle` holds a `Weak` of"
+        );
+
+        forget((root.doc_key(), root.node_id()), Half::Inserted);
+        forget((root.doc_key(), root.node_id()), Half::Removed);
     }
 }

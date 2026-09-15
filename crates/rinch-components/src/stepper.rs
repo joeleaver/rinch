@@ -723,7 +723,8 @@ const ICON_ALT_ATTR: &str = "data-icon-for";
 /// One step of a stepper.
 const STEP_CLASS: &str = "rinch-stepper__step";
 
-/// A [`StepperCompleted`] block, which is terminal — see [`collect_steps`].
+/// A [`StepperCompleted`] block, which is **not a position** — see
+/// [`collect_steps`] for why it is skipped rather than stopped at.
 const COMPLETED_CLASS: &str = "rinch-stepper__completed";
 
 /// Does `node` carry `class` as a whole class token?
@@ -736,6 +737,13 @@ fn has_class(node: &NodeHandle, class: &str) -> bool {
 
 /// The classes [`collect_steps`] stops descending at, read back upwards by the
 /// late-child observers so the two halves name one boundary.
+///
+/// [`COMPLETED_CLASS`] is here as a **cost** rule, not a correctness one, and a
+/// mutant narrowing this back to `[STEP_CLASS]` therefore survives the suite: a
+/// change inside a completed block cannot alter any step's position, because
+/// `collect_steps` does not look in there, so the pass it declines would have
+/// re-derived identical answers over an identical list. It is here so that
+/// editing content inside a completed block does not re-walk the whole stepper.
 const STEP_BOUNDARY: &[&str] = &[STEP_CLASS, COMPLETED_CLASS];
 
 /// Every step in `node`'s subtree, in document order.
@@ -745,29 +753,33 @@ const STEP_BOUNDARY: &[&str] = &[STEP_CLASS, COMPLETED_CLASS];
 /// The walk stops at each step, so a nested stepper inside a step's content is
 /// not this one's to renumber.
 ///
-/// It also stops — for good — at the first [`StepperCompleted`] (issue #741).
-/// That block is Mantine's terminal element: it is what a stepper shows *instead
-/// of* its steps once they are all done, so neither its content nor anything
-/// after it is a position of this stepper. The walk used to go straight past it
-/// and number whatever followed, which gave a trailing step a position it does
-/// not have and re-derived a nested stepper's steps at the outer stepper's
-/// indices.
+/// It stops at a [`StepperCompleted`] too, and for the same reason (issue #741):
+/// that block is what a stepper shows *instead of* its steps once they are all
+/// done, so it is not a position and neither is anything inside it. The walk
+/// used to descend into it, which re-derived a nested stepper's steps at the
+/// outer stepper's indices.
+///
+/// **It is a skip, not a stop.** Mantine's `Stepper.Completed` is conventionally
+/// written last but is not required to be, and Mantine never stops counting
+/// steps at it. Reading #741 as "stop the walk" — which this did before review —
+/// makes a stepper whose completed block is written *first* derive nothing at
+/// all: no step numbered, every step inactive, and two steps both drawing the
+/// number `1`. So the block is skipped and the walk goes on, and a step after it
+/// is a position like any other.
 fn collect_steps(node: &NodeHandle) -> Vec<NodeHandle> {
-    /// `false` = stop the whole walk, not merely this subtree.
-    fn walk(node: &NodeHandle, out: &mut Vec<NodeHandle>) -> bool {
+    fn walk(node: &NodeHandle, out: &mut Vec<NodeHandle>) {
+        // Asked first, so a node somehow carrying both classes is not a
+        // position — the narrower answer.
         if has_class(node, COMPLETED_CLASS) {
-            return false;
+            return;
         }
         if has_class(node, STEP_CLASS) {
             out.push(node.clone());
-            return true;
+            return;
         }
         for child in node.children() {
-            if !walk(&child, out) {
-                return false;
-            }
+            walk(&child, out);
         }
-        true
     }
     let mut out = Vec::new();
     walk(node, &mut out);
@@ -972,6 +984,12 @@ impl Component for StepperStep {
 }
 
 /// Content shown for the completed state.
+///
+/// **Not a position** (issue #741): the parent [`Stepper`]'s derivation skips
+/// this block, so a [`StepperStep`] placed inside it keeps the index and state
+/// it rendered itself with, and a nested `Stepper` keeps its own. The skip does
+/// not stop the count — a step placed *after* this block is numbered like any
+/// other, so writing it first, last or between the steps all work.
 #[derive(Debug, Default)]
 pub struct StepperCompleted;
 

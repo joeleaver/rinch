@@ -477,6 +477,17 @@ impl UpdateBatch {
     }
 
     /// Apply all updates to a document.
+    ///
+    /// **The four structural arms bypass the late-child registry** — a node
+    /// appended, inserted, removed or replaced through this one tells no
+    /// registered container that its children changed, so a `List`, `RadioGroup`
+    /// or `Stepper` reached this way keeps the answers it last derived (issues
+    /// #716, #745). Nothing in this workspace applies a structural arm, and it
+    /// cannot be routed through [`NodeHandle`](super::NodeHandle)'s verbs as
+    /// this signature stands: a notification needs the `Rc<RefCell<..>>` a
+    /// `NodeHandle` holds a `Weak` of, and this is handed a `&mut dyn` borrowed
+    /// for the whole loop. Tracked as **#756**. Reach for `NodeHandle`'s verbs
+    /// instead when the nodes are inside a component library container.
     pub fn apply(self, doc: &mut dyn DomDocument) {
         for update in self.updates {
             match update {

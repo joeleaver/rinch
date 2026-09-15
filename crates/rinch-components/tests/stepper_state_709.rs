@@ -862,59 +862,95 @@ fn allow_next_steps_select_counts_positions_and_not_declared_indices() {
     );
 }
 
-// ------------------------- `StepperCompleted` is terminal (issue #741 §1)
+// ---------------- `StepperCompleted` is not a position (issue #741 §1)
 
-#[test]
-fn a_step_after_the_completed_block_is_not_a_position() {
-    // Mantine's `Stepper.Completed` is the terminal element: it is what the
-    // stepper shows *instead of* the steps once they are all done, so nothing
-    // after it is a step of this stepper. `collect_steps` used to walk straight
-    // past it and number whatever followed.
-    //
-    // `active: 5` is past every position, so a trailing step the walk reached
-    // would be derived `completed` — the opposite of the `inactive` it renders
-    // itself as. At `active: 0` the third position derives `inactive` too and
-    // nothing here would discriminate.
-    let tree = Tree::build(|scope| {
-        let front: Vec<NodeHandle> = (0..2)
+/// `[before…, StepperCompleted[inside…], after…]` under one `Stepper`.
+fn stepper_around_a_completed_block(
+    before: usize,
+    inside: usize,
+    after: usize,
+    active: u32,
+) -> Tree {
+    Tree::build(move |scope| {
+        let mut children: Vec<NodeHandle> = (0..before)
             .map(|_| StepperStep::default().render(scope, &[]))
             .collect();
-        let completed = StepperCompleted.render(scope, &[]);
-        let trailing = StepperStep {
-            label: "after".into(),
-            ..Default::default()
-        }
-        .render(scope, &[]);
-        let mut children = front;
-        children.push(completed);
-        children.push(trailing);
+        let held: Vec<NodeHandle> = (0..inside)
+            .map(|_| StepperStep::default().render(scope, &[]))
+            .collect();
+        children.push(StepperCompleted.render(scope, &held));
+        children.extend((0..after).map(|_| StepperStep::default().render(scope, &[])));
         Stepper {
-            active: 5,
+            active,
             ..Default::default()
         }
         .render(scope, &children)
-    });
+    })
+}
+
+#[test]
+fn a_completed_block_between_the_steps_is_not_a_position_and_does_not_stop_the_count() {
+    // One step, the block, one step — with a step *inside* the block, which is
+    // what makes this fixture discriminate in both directions at once:
+    //
+    //   - a walk that **descends** into the block (the behaviour before #741)
+    //     numbers the held step 1 and the trailing step 2;
+    //   - a walk that **stops** at the block (this PR's first cut) numbers the
+    //     trailing step not at all and leaves it inactive.
+    //
+    // `active: 1` puts the trailing step in progress, so its state is wrong
+    // under both. A block with nothing inside it would sit on a fixed point
+    // against the first of those.
+    let tree = stepper_around_a_completed_block(1, 1, 1, 1);
 
     assert_eq!(
         indices(&tree),
-        vec![Some("0".to_string()), Some("1".to_string()), None],
-        "#741: the two steps in front of the completed block are positions 0 \
-         and 1; the one after it is not a position at all, so it is left \
-         unnumbered"
+        vec![Some("0".to_string()), None, Some("1".to_string())],
+        "#741: the block is not a position, so the count runs straight across \
+         it — but the step it *holds* is not a position either, and keeps the \
+         absent `data-step` it rendered with"
     );
     assert_eq!(
         states(&tree),
-        vec!["completed", "completed", "inactive"],
-        "and not restated: it keeps the state it rendered itself with"
+        vec!["completed", "inactive", "progress"],
+        "the two real positions are 0 and 1 against `active: 1`; the held step \
+         keeps the state it rendered itself with"
     );
     assert_eq!(
         numbers(&tree),
-        vec!["", "", "1"],
-        "and draws what it rendered itself: the number `1`. The two the stepper \
-         does own draw no text at all — `active: 5` completes them, and a \
-         completed step with no icon of its own draws the built-in tick — so a \
-         trailing step the walk reached would read `\"\"` here, and one the \
-         walk reached and left inactive would read `3`"
+        vec!["", "1", "2"],
+        "position 0 is completed, so it draws the built-in tick rather than a \
+         number; the held step still draws the `1` it rendered; and the \
+         trailing step draws `2`, which is the reading that fails under both \
+         wrong walks"
+    );
+}
+
+#[test]
+fn a_completed_block_before_the_steps_derives_every_one_of_them() {
+    // The shape that made "stop the walk" untenable. Mantine writes
+    // `Stepper.Completed` last by convention but does not require it, and never
+    // stops counting steps at it — so a stepper whose block comes first used to
+    // derive nothing at all here: no step numbered, every step inactive, and
+    // both steps drawing the number `1`.
+    let tree = stepper_around_a_completed_block(0, 0, 2, 1);
+
+    assert_eq!(
+        indices(&tree),
+        vec![Some("0".to_string()), Some("1".to_string())],
+        "#741: a leading completed block is skipped, not a full stop"
+    );
+    assert_eq!(
+        states(&tree),
+        vec!["completed", "progress"],
+        "and the two steps behind it derive normally from `active: 1`"
+    );
+    assert_eq!(
+        numbers(&tree),
+        vec!["", "2"],
+        "a completed step draws the tick and the in-progress one draws `2`. \
+         Under the stopped walk both drew `1` — a visible duplicate, which is \
+         what a screenshot of the bug looks like"
     );
 }
 

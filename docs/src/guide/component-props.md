@@ -1216,12 +1216,15 @@ Custom Default: `total`, `value`, `siblings`, `boundaries` default to `1`; `with
 
 **StepperCompleted:** No props.
 
-`StepperCompleted` is **terminal** (issue #741), the way Mantine's
-`Stepper.Completed` is: it is what the stepper shows *instead of* its steps once
-they are all done. The parent's step walk stops at the first one, so neither its
-content nor anything placed after it is a position of this stepper — a
-`StepperStep` there keeps the index and state it rendered itself with, and a
-whole `Stepper` nested inside it keeps its own.
+`StepperCompleted` is **not a position** (issue #741): it is what the stepper
+shows *instead of* its steps once they are all done. The parent's step walk skips
+it, so a `StepperStep` placed **inside** it keeps the index and state it rendered
+itself with, and a whole `Stepper` nested inside it keeps its own.
+
+It is a skip and **not** a full stop, so the count runs straight across the block
+and a step placed *after* it is numbered like any other. Mantine writes
+`Stepper.Completed` last by convention but does not require it: a stepper whose
+completed block comes first still derives all of its steps.
 
 ### Tree
 

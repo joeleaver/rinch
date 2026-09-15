@@ -313,11 +313,16 @@ The pieces that follow from it:
   own `state` keeps none. A **removal** runs the same whole pass for the same
   reason, through `on_child_removed` (issue #745): a step that goes moves every
   step behind it backwards, which renumbers it and can restate it.
-- **`StepperCompleted` is terminal** (issue #741). The step walk stops at the
-  first one: that block is what a stepper shows *instead of* its steps once they
-  are all done, so neither its content nor anything after it is a position. It
-  used to walk straight past, numbering a trailing step and re-deriving a nested
-  stepper's steps at the outer stepper's indices.
+- **A `StepperCompleted` is not a position, and neither is anything inside it**
+  (issue #741). The step walk skips that block: it is what a stepper shows
+  *instead of* its steps once they are all done. It used to walk straight into
+  it, re-deriving a nested stepper's steps at the outer stepper's indices.
+  **A skip, not a stop** — Mantine writes `Stepper.Completed` last by convention
+  but does not require it and never stops counting at it, so the count runs
+  straight across the block and a step after it is a position like any other.
+  Reading it as terminal makes a stepper whose block is written *first* derive
+  nothing at all: no step numbered, every step inactive, two steps both drawing
+  the number `1`.
 - **Cost:** one `Cell` read per insertion (and one per removal) while **nothing
   on the thread** is registered for that half — the counts are thread-local, not
   per document, so one live container anywhere makes every insertion in every
