@@ -1495,6 +1495,12 @@ impl RinchDocument {
         // Nodes whose restarted sample can change their text measure. The
         // cascade of a node shown by an ancestor need not run, so its own
         // `animated_text_measure` check does not either (#763).
+        //
+        // **Redundant today, measured**: this walk runs only on a `none` →
+        // rendered crossing, whose Taffy `display` change sets `ifc_dirty`, and
+        // a structural pass rebuilds every IFC anyway — so deleting the loop
+        // below fails no test. It is kept so that the rule "a written
+        // typography sample is measured" does not rest on that coincidence.
         let mut remeasure = Vec::new();
 
         while let Some(id) = stack.pop() {

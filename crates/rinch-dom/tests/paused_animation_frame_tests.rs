@@ -34,21 +34,29 @@
 //! # Mutants, and what kills each
 //!
 //! Measured: each mutant applied to the committed source, `cargo test -p
-//! rinch-dom -p rinch --no-fail-fast` run against it (85 result lines, the
+//! rinch-dom -p rinch --no-fail-fast` run against it (86 result lines, the
 //! unmutated control green), the source restored from the commit. "shell" names
-//! fixtures in `crates/rinch/src/app/paused_animation_frames_tests.rs`.
+//! fixtures in `crates/rinch/src/app/paused_animation_frames_tests.rs`; "filled"
+//! names fixtures in `filled_animation_frame_tests.rs`. Round 1 is PR #779 as
+//! first opened; round 2 is its review.
 //!
 //! | mutant | killed by |
 //! |---|---|
-//! | `main`: a paused entry counts as running | 9: `a_paused_animation_asks_for_no_frames`, `a_paused_font_size_animation_does_not_invalidate_layout`, `resuming_a_paused_animation_asks_for_frames_again`, `a_resumed_animation_continues_from_where_it_was_paused`, `a_finished_transition_does_not_displace_a_paused_sample`, and 4 in the shell |
-//! | a paused entry is **dropped** by the tick instead of kept quiet | 4: `a_paused_animation_asks_for_no_frames`, `two_animations_on_one_node_one_paused_still_ask_for_frames`, `a_resumed_animation_continues_from_where_it_was_paused`, shell `a_paused_animation_lets_the_app_go_idle` |
-//! | the tick still re-applies a paused sample **and marks the node dirty** | 4: `a_paused_animation_leaves_the_tree_clean_after_a_tick` and 3 in the shell |
-//! | the text-measure pre-pass is not narrowed to running animations | 2: `a_paused_font_size_animation_does_not_invalidate_layout`, shell `a_paused_animation_owes_the_android_loop_no_frame` |
-//! | the tick answers `false` whenever anything is paused | 2: `a_running_animation_beside_a_paused_one_still_asks_for_frames`, `two_animations_on_one_node_one_paused_still_ask_for_frames` |
-//! | a node's entries are judged by its **first** animation only | 2: `two_animations_on_one_node_one_paused_still_ask_for_frames`, `a_finished_transition_does_not_displace_a_paused_sample` |
-//! | the tick **skips** a paused animation instead of re-applying its sample | `a_finished_transition_does_not_displace_a_paused_sample`, **alone** |
-//! | resuming does not move the start time (the clock jumps the pause) | `a_resumed_animation_continues_from_where_it_was_paused`, **alone** |
-//! | resuming restarts the animation from t=0 | `a_resumed_animation_continues_from_where_it_was_paused`, **alone** |
+//! | `main`: a paused entry counts as running | 13, including `a_paused_animation_asks_for_no_frames`, `resuming_a_paused_animation_asks_for_frames_again`, `a_resumed_animation_continues_from_where_it_was_paused`, `an_animation_paused_inside_its_delay_keeps_its_place`, and 4 in the shell |
+//! | a paused entry is **dropped** by the tick instead of kept quiet | round 1: 4 — `a_paused_animation_asks_for_no_frames`, `two_animations_on_one_node_one_paused_still_ask_for_frames`, `a_resumed_animation_continues_from_where_it_was_paused`, shell `a_paused_animation_lets_the_app_go_idle` |
+//! | a paused entry is kept **only while it yields values** | `an_animation_paused_inside_its_delay_keeps_its_place`, **alone** |
+//! | the tick still re-applies a paused sample **and marks the node dirty** | round 1: 4 — `a_paused_animation_leaves_the_tree_clean_after_a_tick` and 3 in the shell |
+//! | the text-measure pre-pass re-measures paused animations | 5: `a_paused_font_size_animation_does_not_invalidate_layout`, both block-text fixtures, the panel fixture, shell `a_paused_animation_owes_the_android_loop_no_frame` |
+//! | **heal the measure by spinning**: that pre-pass, and no re-measure in the cascade | 6 (run before the inline-block fixture existed): `a_class_that_adds_a_paused_font_size_animation_measures_its_text`, `pausing_after_a_tick_that_sampled_the_base_size_measures_the_paused_size`, the panel fixture, `a_paused_font_size_animation_does_not_invalidate_layout`, shell `a_paused_animation_owes_the_android_loop_no_frame`, filled `a_finished_font_size_fill_owes_no_layout` |
+//! | the cascade does not re-measure an animated typography sample | 3: both block-text fixtures, `a_paused_font_size_animation_on_a_span_resizes_its_inline_block` |
+//! | …re-runs Taffy but does not invalidate the text measure | `a_paused_font_size_animation_on_a_span_resizes_its_inline_block`, **alone** |
+//! | …invalidates the text measure but does not re-run Taffy | 3: both block-text fixtures and the inline-block one |
+//! | `restart_animations_in_subtree` does not re-measure | **survives — equivalent today**: see that fixture's doc |
+//! | the tick answers `false` whenever anything is paused | round 1: 2 — `a_running_animation_beside_a_paused_one_still_asks_for_frames`, `two_animations_on_one_node_one_paused_still_ask_for_frames` |
+//! | a node's entries are judged by its **first** animation only | round 1: 2 — `two_animations_on_one_node_one_paused_still_ask_for_frames`, `a_finished_transition_does_not_displace_a_paused_sample` |
+//! | the tick **skips** a paused animation instead of re-applying its sample | round 1: `a_finished_transition_does_not_displace_a_paused_sample`, **alone** |
+//! | resuming does not move the start time (the clock jumps the pause) | round 1: `a_resumed_animation_continues_from_where_it_was_paused`, **alone** |
+//! | resuming restarts the animation from t=0 | 3: `a_resumed_animation_continues_from_where_it_was_paused`, `an_animation_paused_inside_its_delay_keeps_its_place`, shell `a_loader_in_a_closed_drawer_idles_once_the_app_pauses_it` |
 
 #![cfg(feature = "software-renderer")]
 
@@ -625,10 +633,14 @@ fn an_animation_paused_inside_its_delay_keeps_its_place() {
     );
 }
 
-/// The restart walk's half of the same rule. A panel un-hidden by an **inline**
-/// `display` re-cascades the panel alone, so the paused animation inside it is
-/// started by `restart_animations_in_subtree` rather than by its own cascade —
-/// and that walk has to ask for the text to be measured in the sample it writes.
+/// The restart walk's route to the same rule. A panel un-hidden by an
+/// **inline** `display` re-cascades the panel alone, so the paused animation
+/// inside it is started by `restart_animations_in_subtree` rather than by its
+/// own cascade, and its text has to be measured in the sample that walk writes.
+///
+/// **This pins the outcome, not the walk's own re-measure**, and says so: the
+/// `none` → rendered crossing sets `ifc_dirty`, which rebuilds every IFC, so the
+/// walk's re-measure can be deleted without failing it (measured).
 ///
 /// The text is laid out in its base 16px first, then the panel is hidden, the
 /// animation class is added while it is hidden (the node's own cascade runs, but

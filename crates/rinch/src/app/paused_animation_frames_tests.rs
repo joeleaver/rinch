@@ -22,7 +22,7 @@
 //! # Mutants, and what kills each
 //!
 //! Measured over `cargo test -p rinch-dom -p rinch --no-fail-fast` — see the
-//! rinch-dom file's table for the full set; these are the rows this file
+//! two rinch-dom files' tables for the full sets; these are the rows this file
 //! participates in, with the fixtures here that kill each.
 //!
 //! | mutant | killed here by |
@@ -30,7 +30,9 @@
 //! | `main`: a paused entry counts as running in `tick_animations` | `a_paused_animation_lets_the_app_go_idle`, `a_paused_animation_owes_the_android_loop_no_frame`, `resuming_a_paused_animation_restarts_the_frame_clock`, `a_loader_in_a_closed_drawer_idles_once_the_app_pauses_it` |
 //! | `had_running` still reads `!active_animations.is_empty()` | `a_paused_animation_owes_the_android_loop_no_frame`, **alone in the whole scope** — the desktop redraw request never reads it |
 //! | the tick re-applies a paused sample and marks the node dirty | `a_paused_animation_lets_the_app_go_idle`, `a_paused_animation_owes_the_android_loop_no_frame`, `resuming_a_paused_animation_restarts_the_frame_clock` |
-//! | the text-measure pre-pass is not narrowed to running animations | `a_paused_animation_owes_the_android_loop_no_frame` |
+//! | the text-measure pre-pass re-measures paused animations | `a_paused_animation_owes_the_android_loop_no_frame` |
+//! | resuming restarts the animation from t=0 | `a_loader_in_a_closed_drawer_idles_once_the_app_pauses_it` |
+//! | a finished `forwards` animation is counted, dirtied, or counted by `has_running_animations` (#782) | `a_finished_forwards_animation_lets_the_app_go_idle` |
 //! | `has_running_animations` answers `false` for everything | **nothing here** — `android_frame_clock_tests::the_tick_that_finishes_an_animation_asks_to_be_presented` is its only killer, because a running animation's own tick answer asks for the frame on every tick but the one that finishes it |
 //!
 //! `a_running_animation_keeps_the_clock_running` and

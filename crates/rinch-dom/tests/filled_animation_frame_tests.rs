@@ -15,6 +15,22 @@
 //!
 //! `crates/rinch/src/app/paused_animation_frames_tests.rs` pins the frame clock
 //! itself for this shape too.
+//!
+//! # Mutants, and what kills each
+//!
+//! Measured over `cargo test -p rinch-dom -p rinch --no-fail-fast` (86 result
+//! lines, control green); "shell" is
+//! `app::paused_animation_frames_tests::a_finished_forwards_animation_lets_the_app_go_idle`.
+//!
+//! | mutant | killed by |
+//! |---|---|
+//! | `main`: a filling entry is counted and dirtied every tick | 6: every fixture here, and the shell |
+//! | a filling entry is counted (but settled) | 6: every fixture here, and the shell |
+//! | the finishing tick does not dirty the node | 5: the four fixtures that go through `finished`, and the shell |
+//! | `has_running_animations` counts a settled fill | 3: `a_finished_forwards_animation_asks_for_no_frames`, `a_restyle_keeps_showing_the_fill`, the shell |
+//! | a restyle never clears `fill_settled` (a latch) | `a_restyle_that_extends_a_finished_animation_runs_it_again`, **alone** |
+//! | a restyle always clears `fill_settled` | `a_restyle_keeps_showing_the_fill`, **alone** |
+//! | the text-measure pre-pass re-measures a settled fill | `a_finished_font_size_fill_owes_no_layout`, **alone** |
 
 #![cfg(feature = "software-renderer")]
 
