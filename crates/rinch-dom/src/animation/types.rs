@@ -82,6 +82,18 @@ pub struct ActiveAnimation {
     pub start_time_ms: f64,
     /// When paused, stores the elapsed time at the moment of pause.
     pub paused_elapsed_ms: Option<f64>,
+    /// Whether the fill of a **finished** `forwards`/`both` animation has been
+    /// written by a tick (#782).
+    ///
+    /// The tick that finishes such an animation writes its fill and marks the
+    /// node dirty — that frame changes what the box looks like — and sets this.
+    /// From then on its sample is constant, like a paused one's: later ticks
+    /// re-apply it without dirtying anything and do not count it, and
+    /// [`crate::node::NodeTree::has_running_animations`] does not count it.
+    /// `start_animations` clears it again when a restyle leaves the animation
+    /// no longer filling (more iterations, say), so it describes the timing the
+    /// animation has now rather than a latch set once.
+    pub fill_settled: bool,
 }
 
 /// Result of computing animation values at a given time.
@@ -157,6 +169,14 @@ impl ActiveAnimation {
     /// time, so a tick cannot move it. `start_animations` sets the two together.
     pub fn is_paused(&self) -> bool {
         self.paused_elapsed_ms.is_some()
+    }
+
+    /// Whether any keyframe of this animation sets a property that changes how
+    /// text is measured (`TransitionProperty::changes_text_measure`, #678).
+    pub fn changes_text_measure(&self) -> bool {
+        self.keyframe_stops
+            .iter()
+            .any(|k| k.values.iter().any(|(p, _)| p.changes_text_measure()))
     }
 
     /// Whether this animation has completed all iterations.

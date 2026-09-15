@@ -130,6 +130,18 @@ pub fn start_animations(
                 existing_anim.delay_ms = spec.delay_ms;
             }
 
+            // A restyle can leave a finished animation running again (#782), so
+            // ask whether it is *still* filling — **after** the refresh block
+            // above, or the question is asked against the timing the animation
+            // had before this restyle. A full restyle that lengthens a finished
+            // animation is exactly that case: it runs again, and a stale
+            // `fill_settled` would leave `has_running_animations()` answering
+            // `false` for it and the tick that finishes it a second time not
+            // dirtying its node (measured: the box keeps the last running
+            // sample instead of the fill).
+            existing_anim.fill_settled =
+                existing_anim.fill_settled && existing_anim.is_filling(current_time_ms);
+
             new_active.push(existing_anim);
         } else {
             // New animation — look up keyframes and create
@@ -150,6 +162,7 @@ pub fn start_animations(
                     } else {
                         None
                     },
+                    fill_settled: false,
                 });
             }
         }
@@ -170,7 +183,9 @@ pub fn start_animations(
 /// 4. Remove completed animations (unless filling)
 ///
 /// **A paused animation is kept, and is not counted and not marked dirty**
-/// (#763). Its elapsed time is frozen, so its sample is the one the cascade
+/// (#763), and neither is a finished `forwards`/`both` animation once the tick
+/// that finished it has written its fill (#782) — see
+/// [`ActiveAnimation::fill_settled`]. Its elapsed time is frozen, so its sample is the one the cascade
 /// already wrote into `computed_style` when it paused, and the tick has nothing
 /// to advance. Counting it made the frame clock schedule a frame every frame,
 /// forever; marking its node dirty did the same by a second route, since a
@@ -209,6 +224,31 @@ pub fn tick_animations(tree: &mut NodeTree, current_time_ms: f64) -> bool {
                 continue;
             }
 
+            // A finished animation that fills has a constant sample, exactly
+            // like a paused one (#782). The tick that finishes it writes the
+            // fill and dirties the node, because that frame shows the end;
+            // every later tick re-applies it quietly. It is never counted: the
+            // finishing tick is presented through K23's "was there anything to
+            // tick" guard, as a finishing animation without a fill is.
+            if anim.is_filling(current_time_ms) {
+                let newly_finished = !anim.fill_settled;
+                if let AnimationResult::Values(values) = anim.values_at(current_time_ms) {
+                    for (prop, value) in &values {
+                        apply_value_to_style(&mut tree.nodes[node_id].computed_style, *prop, value);
+                        if newly_finished {
+                            needs_paint = true;
+                            if prop.affects_layout() {
+                                needs_layout = true;
+                            }
+                        }
+                    }
+                }
+                let mut settled = anim.clone();
+                settled.fill_settled = true;
+                kept_animations.push(settled);
+                continue;
+            }
+
             let result = anim.values_at(current_time_ms);
 
             match result {
@@ -221,8 +261,9 @@ pub fn tick_animations(tree: &mut NodeTree, current_time_ms: f64) -> bool {
                         }
                     }
 
-                    // Keep this animation if it's not complete or is filling
-                    if !anim.is_complete(current_time_ms) || anim.is_filling(current_time_ms) {
+                    // Keep this animation if it's not complete (a filling one
+                    // was handled above)
+                    if !anim.is_complete(current_time_ms) {
                         kept_animations.push(anim.clone());
                         any_active = true;
                     }

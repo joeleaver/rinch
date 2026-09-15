@@ -722,9 +722,26 @@ nothing to advance: `tick_animations` neither counts it nor marks its node dirty
 and `AboutToWait`'s "was there anything to tick" guard asks
 `NodeTree::has_running_animations()` instead of whether `active_animations` is
 empty. So a paused spinner schedules no frame, and resuming it continues from the
-time it was paused at. `Drawer`'s closed rule does not declare the pause itself
-yet; an app that wants a closed drawer holding a `Loader` to idle can add
-`.rinch-drawer__root--hidden .rinch-loader__oval { animation-play-state: paused; }`.
+time it was paused at. A paused `font-size` (or any other text-measure) animation
+is measured once, by the cascade that writes its sample, and never per tick.
+
+A finished animation with `animation-fill-mode: forwards` or `both` is the same
+shape (issue **#782**): its fill is as constant as a paused sample. The tick that
+finishes it writes the fill and marks the node dirty — that frame shows the end —
+and records it in `ActiveAnimation::fill_settled`; later ticks re-apply it
+without dirtying anything, and neither `tick_animations` nor
+`has_running_animations()` counts it.
+
+`Drawer`'s closed rule does not declare the pause itself yet. An app that wants a
+closed drawer holding a `Loader` to idle can add the rule below; the three
+`Loader` variants animate `__oval`, `__bar` and `__dot` respectively, so it names
+all three:
+
+```css
+.rinch-drawer__root--hidden .rinch-loader__oval,
+.rinch-drawer__root--hidden .rinch-loader__bar,
+.rinch-drawer__root--hidden .rinch-loader__dot { animation-play-state: paused; }
+```
 
 None of the three sites reads `transitions_enabled` (see "The page-load guard
 arms transitions, and only transitions" above), and for the restart walk that is

@@ -1614,10 +1614,11 @@ pub struct NodeTree {
     pub ifc_measure_leaves: HashMap<RawNodeId, taffy::NodeId>,
     /// Active CSS transitions per node, keyed by property.
     pub active_transitions: HashMap<RawNodeId, HashMap<TransitionProperty, ActiveTransition>>,
-    /// Active CSS animations per node — **paused ones included**, because a
-    /// paused animation's frozen sample is still written into `computed_style`
+    /// Active CSS animations per node — **paused and filling ones included**,
+    /// because their constant samples are still written into `computed_style`
     /// on every cascade. So "is this map non-empty" is not "does anything need
-    /// another frame"; that is [`NodeTree::has_running_animations`] (#763).
+    /// another frame"; that is [`NodeTree::has_running_animations`] (#763,
+    /// #782).
     pub active_animations: HashMap<RawNodeId, Vec<ActiveAnimation>>,
     /// Whether transitions are armed (false until the first layout completes).
     ///
@@ -1951,20 +1952,26 @@ impl NodeTree {
         self.nodes.get_mut(id)
     }
 
-    /// Whether any `@keyframes` animation has a clock that is moving — i.e. one
-    /// that the next tick would advance.
+    /// Whether any registered `@keyframes` animation is neither paused nor
+    /// settled into its fill.
     ///
-    /// A paused animation is registered in [`NodeTree::active_animations`] and
-    /// is not counted here: its elapsed time is frozen, so a tick has nothing to
-    /// move and it is no reason for the frame clock to schedule another frame
-    /// (#763). This is the question the `AboutToWait` arm's "was there anything
-    /// to tick" guard asks of animations, and it has to be asked of *this* rather
-    /// than of the map's emptiness, or a paused spinner keeps every frame dirty.
+    /// Two kinds of entry in [`NodeTree::active_animations`] are not counted,
+    /// because a tick has nothing left to move for either: a **paused**
+    /// animation, whose elapsed time is frozen (#763), and a **finished
+    /// `forwards`/`both`** animation whose fill a tick has already written
+    /// ([`crate::animation::ActiveAnimation::fill_settled`], #782). A finished
+    /// animation *is* counted until that tick runs, which is what lets the
+    /// frame that shows its end be presented.
+    ///
+    /// This is the question the `AboutToWait` arm's "was there anything to
+    /// tick" guard asks of animations, and it has to be asked of *this* rather
+    /// than of the map's emptiness, or a paused or filled box keeps every frame
+    /// dirty.
     pub fn has_running_animations(&self) -> bool {
         self.active_animations
             .values()
             .flatten()
-            .any(|anim| !anim.is_paused())
+            .any(|anim| !anim.is_paused() && !anim.fill_settled)
     }
 
     /// Push a node ID to the dirty list (deduplicated).

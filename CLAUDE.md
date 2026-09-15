@@ -2930,11 +2930,18 @@ Three things it deliberately does not do.
   neither counts it nor marks its node dirty, and the `AboutToWait` guard asks
   `NodeTree::has_running_animations()` rather than whether the map is empty —
   so it schedules no frame, on desktop or through the Android loop. Resuming
-  continues from the frozen time. `Drawer`'s own closed rule does **not**
-  declare the pause yet, so a `Loader` in a closed `Drawer` still keeps the app
-  rendering unless the app adds
-  `.rinch-drawer__root--hidden .rinch-loader__oval { animation-play-state: paused; }`
-  itself (`app/paused_animation_frames_tests.rs` pins exactly that).
+  continues from the frozen time. A paused *typography* animation is measured
+  once, by the cascade that writes its sample, never per tick. A finished
+  `forwards`/`both` animation is the same shape (**#782**): the tick that
+  finishes it writes the fill and dirties the node once
+  (`ActiveAnimation::fill_settled`), and after that it is kept, re-applied and
+  not counted. `Drawer`'s own closed rule does **not** declare the pause yet, so
+  a `Loader` in a closed `Drawer` still keeps the app rendering unless the app
+  pauses it. The three `Loader` variants animate three different elements, so
+  the rule has to name all of them —
+  `.rinch-drawer__root--hidden .rinch-loader__oval, .rinch-drawer__root--hidden .rinch-loader__bar, .rinch-drawer__root--hidden .rinch-loader__dot { animation-play-state: paused; }`
+  (`app/paused_animation_frames_tests.rs` installs exactly that list and
+  mounts the default oval).
 - **A move is not a detach.** `append_child`, `insert_before` and `insert_child`
   unlink a node from its old parent with the same lines `remove_child` uses, but
   it is back in the document before the call returns — so a row that was

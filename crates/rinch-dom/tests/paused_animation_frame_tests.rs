@@ -18,8 +18,15 @@
 //! pins the frame clock itself, both of its readers (the redraw request and
 //! K23's "was there anything to tick").
 //!
-//! Every animation here runs for 1000s or longer, so nothing below can stop
-//! asking for frames by expiring — every `false` is the pause, never a timeout.
+//! Every animation whose tick answer is asserted `false` is paused before it
+//! could end, so every `false` is the pause, never a timeout.
+//!
+//! The pre-pass narrowing has a price this file also pins: the tick used to be
+//! the only thing that re-measured a paused typography animation's text, by
+//! re-measuring it every frame. The cascade that writes a paused sample now does
+//! it once (`a_class_that_adds_a_paused_font_size_animation_measures_its_text`,
+//! `pausing_after_a_tick_that_sampled_the_base_size_measures_the_paused_size`,
+//! both found by the review of #779).
 //! Every resolve runs at one viewport size: a change of more than half a pixel
 //! re-cascades the whole document, which is a second route to every answer
 //! here (see `display_none_animation_tests::VP`).
@@ -389,5 +396,214 @@ fn a_finished_transition_does_not_displace_a_paused_sample() {
         Some(40.0),
         "a paused animation's tick put its sample back over the transition's \
          end value, as the cascade has it"
+    );
+}
+
+// ── A paused typography animation is measured in the font it shows ───────────
+
+/// Eight words in a 120px box, so a font-size change re-wraps them into a very
+/// different number of lines. `line-height` is a **number**, so the line box
+/// scales with the font and a stale measure shows up as a stale height.
+const TEXT_CSS: &str = "
+    @keyframes k763-big { from { font-size: 32px; } to { font-size: 48px; } }
+    @keyframes k763-hold { 0%, 30% { font-size: 16px; } 100% { font-size: 48px; } }
+    body { margin: 0; }
+    .tb { width: 120px; font-size: 16px; line-height: 1.25; }
+    .bigheld { animation: k763-big 1000s linear infinite paused; }
+    .hold { animation: k763-hold 1000ms linear 1 forwards; }
+    .hold.p { animation-play-state: paused; }
+";
+const WORDS: &str = "aaaa bbbb cccc dddd eeee ffff gggg hhhh";
+
+fn text_box(classes: &str, inline_font_size: Option<f32>) -> (RinchDocument, NodeId) {
+    let mut doc = RinchDocument::new();
+    doc.load_css(TEXT_CSS);
+    let body = doc.body();
+    let node = doc.create_element("div");
+    doc.set_attribute(node, "class", classes);
+    if let Some(px) = inline_font_size {
+        doc.set_attribute(node, "style", &format!("font-size: {px}px"));
+    }
+    let text = doc.create_text(WORDS);
+    doc.append_child(node, text);
+    doc.append_child(body, node);
+    doc.tree.transitions_enabled = true;
+    doc.resolve_layout(VP.0, VP.1);
+    (doc, node)
+}
+
+fn font_size(doc: &RinchDocument, node: NodeId) -> f32 {
+    doc.tree.get(node.0).unwrap().computed_style.font_size
+}
+
+fn box_height(doc: &RinchDocument, node: NodeId) -> f32 {
+    doc.tree.get(node.0).unwrap().layout.height
+}
+
+/// The height the same box has when its font size is simply *declared* at
+/// `px` — built in this process, so the comparison pins no font set.
+fn reference_height(px: f32) -> f32 {
+    let (doc, node) = text_box("tb", Some(px));
+    box_height(&doc, node)
+}
+
+/// One frame the way the shell runs it: tick, hand off the dirty set, resolve.
+fn frame(doc: &mut RinchDocument) -> bool {
+    let answer = doc.tick_animations();
+    let _ = doc.take_dirty_nodes();
+    doc.resolve_layout(VP.0, VP.1);
+    answer
+}
+
+/// A class adds a **paused** `font-size` animation to a box that is already laid
+/// out, and the text has to be measured in the font the box now shows.
+///
+/// The cascade decides whether the text measure is stale by comparing the old
+/// style with the style *before* the animation writes its sample, so an
+/// animated typography value never takes part. Before #763 the tick's
+/// text-measure pre-pass re-measured every `font-size` animation on every tick,
+/// which hid that — by spinning. With the pre-pass narrowed to running
+/// animations, nothing measured a paused one at all: 16px text laid out under a
+/// 32px style, for good.
+///
+/// Both halves are asserted, because each has a mutant that passes the other:
+/// healing the measure by re-measuring paused animations on every tick gives
+/// the right height and asks for frames forever; not measuring gives an idle
+/// clock and the wrong height.
+#[test]
+fn a_class_that_adds_a_paused_font_size_animation_measures_its_text() {
+    let (mut doc, node) = text_box("tb", None);
+    let base = box_height(&doc, node);
+    let reference = reference_height(32.0);
+    assert!(
+        (base - reference).abs() > 20.0,
+        "precondition: 32px text wraps to a different height than 16px \
+         ({base} vs {reference}), or this fixture tells nothing apart"
+    );
+
+    doc.set_attribute(node, "class", "tb bigheld");
+    doc.resolve_layout(VP.0, VP.1);
+    assert_eq!(
+        font_size(&doc, node),
+        32.0,
+        "precondition: the sample is 32px"
+    );
+    assert_eq!(
+        box_height(&doc, node),
+        reference,
+        "measured in the font it shows, on the very pass that paused it in"
+    );
+
+    for round in 0..3 {
+        assert!(
+            !frame(&mut doc),
+            "round {round}: and measured without asking for another frame"
+        );
+        assert_eq!(
+            box_height(&doc, node),
+            reference,
+            "round {round}: and it stays"
+        );
+    }
+}
+
+/// The coincidence route: the last tick before the pause sampled exactly the
+/// base font size, so the style the cascade compares against and the style it
+/// resolves to agree — and the paused sample, taken later, does not.
+///
+/// `k763-hold` holds 16px (the base) for its first 300ms. The first tick lands
+/// inside the hold, the pause lands at least 500ms in, so its sample is above
+/// 16px whatever the scheduler does: past the end, `forwards` holds 48px.
+#[test]
+fn pausing_after_a_tick_that_sampled_the_base_size_measures_the_paused_size() {
+    let (mut doc, node) = text_box("tb hold", None);
+    frame(&mut doc);
+    assert_eq!(
+        font_size(&doc, node),
+        16.0,
+        "precondition: the last tick before the pause sampled the base size"
+    );
+
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    doc.set_attribute(node, "class", "tb hold p");
+    doc.resolve_layout(VP.0, VP.1);
+    let paused = font_size(&doc, node);
+    assert!(
+        paused > 20.0,
+        "precondition: paused off the base, at {paused}px"
+    );
+
+    let reference = reference_height(paused);
+    assert_eq!(box_height(&doc, node), reference, "measured at {paused}px");
+    for round in 0..3 {
+        assert!(!frame(&mut doc), "round {round}: without spinning");
+        assert_eq!(
+            box_height(&doc, node),
+            reference,
+            "round {round}: and it stays"
+        );
+    }
+}
+
+// ── Paused inside its delay ──────────────────────────────────────────────────
+
+/// An animation paused **inside its delay** yields no values (there is no
+/// backwards fill), and must still be kept.
+///
+/// A tick that kept a paused entry only while it produced values would drop
+/// this one, and the resume would mint a new animation whose delay starts over
+/// — measured by the review of #779: 10px against 85px, 330ms after a resume.
+/// The entry's start time is the deterministic spelling of the same thing: a
+/// resumed animation's start is the resume minus the time it had already
+/// spent, so it lies well before the resume; a re-minted one starts at it.
+#[test]
+fn an_animation_paused_inside_its_delay_keeps_its_place() {
+    let mut doc = RinchDocument::new();
+    doc.load_css(
+        "
+        @keyframes k763-slide { from { width: 0px; } to { width: 10000px; } }
+        .box { width: 10px; height: 10px; font-size: 16px; line-height: 20px; }
+        .dly { animation: k763-slide 10000ms linear 1 400ms; }
+        .dly.p { animation-play-state: paused; }
+    ",
+    );
+    let body = doc.body();
+    let node = doc.create_element("div");
+    doc.set_attribute(node, "class", "box dly");
+    doc.append_child(body, node);
+    doc.tree.transitions_enabled = true;
+    doc.resolve_layout(VP.0, VP.1);
+
+    std::thread::sleep(std::time::Duration::from_millis(150));
+    doc.set_attribute(node, "class", "box dly p");
+    doc.resolve_layout(VP.0, VP.1);
+    let spent = doc.tree.active_animations[&node.0][0]
+        .paused_elapsed_ms
+        .expect("precondition: paused");
+    assert!(
+        (140.0..400.0).contains(&spent),
+        "precondition: paused inside the 400ms delay, {spent}ms in"
+    );
+
+    assert!(!doc.tick_animations(), "paused, so no frame");
+    assert!(!doc.tick_animations(), "still none");
+    assert_eq!(
+        animations(&doc, node),
+        1,
+        "and the entry is kept although, inside its delay, it has no value"
+    );
+
+    let resumed_at = web_time::SystemTime::now()
+        .duration_since(web_time::SystemTime::UNIX_EPOCH)
+        .unwrap()
+        .as_secs_f64()
+        * 1000.0;
+    doc.set_attribute(node, "class", "box dly");
+    doc.resolve_layout(VP.0, VP.1);
+    let start = doc.tree.active_animations[&node.0][0].start_time_ms;
+    assert!(
+        start <= resumed_at - (spent - 10.0),
+        "the resume kept the {spent}ms already spent in the delay: start \
+         {start} should lie that far before the resume at {resumed_at}"
     );
 }

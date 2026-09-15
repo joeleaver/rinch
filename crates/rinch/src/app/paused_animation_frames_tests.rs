@@ -15,7 +15,9 @@
 //!   a paused entry kept every Android frame presented and the loop paced at
 //!   the panel's rate with nothing moving.
 //!
-//! A paused animation has nothing to advance, so it is neither.
+//! A paused animation has nothing to advance, so it is neither — and neither is
+//! a finished `forwards` animation once its fill is written (#782,
+//! `a_finished_forwards_animation_lets_the_app_go_idle`).
 //!
 //! # Mutants, and what kills each
 //!
@@ -272,8 +274,11 @@ const SETTLED_PHYSICAL: (u32, u32) = (804, 600);
 /// `visibility: hidden` (#751), which is rendered, so a `Loader` inside it keeps
 /// animating. Pausing it is what makes the closed drawer cheap, and it only does
 /// anything now that a paused animation stops asking for frames.
-const PAUSE_WHEN_CLOSED: &str =
-    ".rinch-drawer__root--hidden .rinch-loader__oval { animation-play-state: paused; }";
+/// All three `Loader` variants animate their own elements (`__oval`, `__bar`,
+/// `__dot`), so the rule names all three; the fixture mounts the default oval.
+const PAUSE_WHEN_CLOSED: &str = ".rinch-drawer__root--hidden .rinch-loader__oval,
+     .rinch-drawer__root--hidden .rinch-loader__bar,
+     .rinch-drawer__root--hidden .rinch-loader__dot { animation-play-state: paused; }";
 
 /// A `Loader` inside a `Drawer`, with the app rule above, settled the way
 /// `hidden_animation_frames_tests::settle` settles (and for its reasons — the
@@ -328,6 +333,11 @@ fn drawer_idle_frames(app: &mut RinchApp, n: usize) -> usize {
 /// a `Loader`. This is the cure that fixture's doc names, applied by the app:
 /// pause the spinner while the drawer is closed, and the app idles — and opening
 /// the drawer resumes it rather than dropping or restarting it.
+///
+/// The resume is asserted off its fixed point. A spinner paused at mount has
+/// spent 0ms, where "resumed" and "restarted" start at the same instant; so the
+/// drawer is opened, left running, closed again, and only the *second* opening
+/// is checked against the time the spinner had already spent.
 #[test]
 fn a_loader_in_a_closed_drawer_idles_once_the_app_pauses_it() {
     let (mut app, opened) = mount_loader_in_drawer();
@@ -355,4 +365,100 @@ fn a_loader_in_a_closed_drawer_idles_once_the_app_pauses_it() {
         4,
         "and the clock runs while it is on screen"
     );
+
+    std::thread::sleep(std::time::Duration::from_millis(60));
+    opened.set(false);
+    app.resolve_and_repaint(SETTLED.0, SETTLED.1);
+    let spent = oval_animation(&app)
+        .paused_elapsed_ms
+        .expect("closing the drawer pauses the spinner again");
+    assert!(spent >= 50.0, "precondition: it ran for a while, {spent}ms");
+    // Closing slides the panel back through its 300ms `transform` transition,
+    // which asks for frames of its own; let it finish before counting.
+    std::thread::sleep(std::time::Duration::from_millis(400));
+    drawer_idle_frames(&mut app, 2);
+    assert_eq!(
+        drawer_idle_frames(&mut app, 4),
+        0,
+        "closed again, idle again"
+    );
+
+    let reopened_at = std::time::SystemTime::now()
+        .duration_since(std::time::SystemTime::UNIX_EPOCH)
+        .unwrap()
+        .as_secs_f64()
+        * 1000.0;
+    opened.set(true);
+    app.resolve_and_repaint(SETTLED.0, SETTLED.1);
+    let start = oval_animation(&app).start_time_ms;
+    assert!(
+        start <= reopened_at - (spent - 10.0),
+        "reopening resumed the spinner where it was paused: its start {start} \
+         lies {spent}ms before the reopening at {reopened_at}, not at it"
+    );
+}
+
+/// The one animation registered in the document.
+fn oval_animation(app: &RinchApp) -> rinch_dom::animation::ActiveAnimation {
+    let doc = app.doc.as_ref().unwrap();
+    let d = doc.borrow();
+    let all: Vec<_> = d.tree.active_animations.values().flatten().collect();
+    assert_eq!(all.len(), 1, "this helper assumes exactly one animation");
+    all[0].clone()
+}
+
+// ── A finished `forwards` animation (#782) ───────────────────────────────────
+
+/// A box that gains `animation: … 50ms forwards` on a signal.
+fn mount_filler() -> (RinchApp, Signal<bool>) {
+    let on = Signal::new(false);
+    let mut app = RinchApp::new(move |__scope: &mut RenderScope| {
+        rsx! {
+            div {
+                style { {"@keyframes k782-grow { from { width: 40px; } to { width: 100px; } }
+                         .box { width: 10px; height: 10px; }
+                         .once-fwd { animation: k782-grow 50ms linear 1 forwards; }"} }
+                div { class: {move || if on.get() { "box once-fwd" } else { "box" }} }
+            }
+        }
+    });
+    app.mount_component(VIEWPORT.0, VIEWPORT.1);
+    app.resolve_and_repaint(VIEWPORT.0, VIEWPORT.1);
+    (app, on)
+}
+
+/// #782 at the shell: once a `forwards` animation has finished, the app sleeps.
+///
+/// The frame that finishes it still has to be presented — that is K23's
+/// finishing tick, and it is the only frame that shows the animation's end — so
+/// the first frame after the end is asserted as well as the idle ones after it.
+#[test]
+fn a_finished_forwards_animation_lets_the_app_go_idle() {
+    let (mut app, on) = mount_filler();
+    on.set(true);
+    app.resolve_and_repaint(VIEWPORT.0, VIEWPORT.1);
+    assert_eq!(registered(&app), (1, 0), "precondition: running");
+    std::thread::sleep(std::time::Duration::from_millis(150));
+
+    app.scene_dirty = false;
+    let finishing = android_frame::pump_frame(&mut app, PHYSICAL, 1.0);
+    assert!(
+        finishing.needs_paint,
+        "the frame that finishes the animation shows its end, so it is presented"
+    );
+
+    assert_eq!(
+        idle_frames_requesting_redraw(&mut app, 6),
+        0,
+        "after that nothing moves, so no frame may ask to be redrawn"
+    );
+    for round in 0..3 {
+        app.scene_dirty = false;
+        let frame = android_frame::pump_frame(&mut app, PHYSICAL, 1.0);
+        assert!(
+            !frame.needs_paint && !frame.pending_layout,
+            "round {round}: nor may it owe the Android loop a frame"
+        );
+    }
+    assert_eq!(registered(&app), (1, 0), "and the fill is still registered");
 }

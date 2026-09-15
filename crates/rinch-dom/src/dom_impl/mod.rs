@@ -824,8 +824,8 @@ impl RinchDocument {
 
     /// Advance all active CSS animations by one frame.
     /// Returns true if any **running** animation is still active (caller should
-    /// keep polling). A paused one is kept but not counted (#763) — see
-    /// [`crate::animation::tick_animations`].
+    /// keep polling). A paused one, and a finished one that fills, is kept but
+    /// not counted (#763, #782) — see [`crate::animation::tick_animations`].
     pub fn tick_animations(&mut self) -> bool {
         use web_time::SystemTime;
         let current_time_ms = SystemTime::now()
@@ -836,22 +836,24 @@ impl RinchDocument {
 
         // The animation twin of the pre-pass in `tick_transitions` — same reason,
         // same issue (#678). An animation's property set lives in its keyframes
-        // rather than in a map key, so the question is asked of those. A paused
-        // animation is not asked at all (#763): its frozen sample was written by
-        // the cascade, which invalidated the measure itself, and re-measuring
-        // on every tick sets `layout_dirty` — which the desktop wake and the
-        // Android loop both read as a frame owed.
+        // rather than in a map key, so the question is asked of those.
+        //
+        // Only of animations a tick can move (#763, #782). A paused animation's
+        // sample and a settled fill are constant: the cascade that wrote them
+        // invalidated the measure (see `animated_text_measure` in
+        // `apply_stylo_styles_to_taffy` and `restart_animations_in_subtree`),
+        // and re-measuring on every tick would set `layout_dirty` every tick —
+        // which the desktop wake and the Android loop both read as a frame owed.
+        // A filling animation that has *not* settled is still asked: the tick
+        // below is the one that writes its fill.
         let text_measure_nodes: Vec<usize> = self
             .tree
             .active_animations
             .iter()
             .filter(|(_, anims)| {
-                anims.iter().any(|a| {
-                    !a.is_paused()
-                        && a.keyframe_stops
-                            .iter()
-                            .any(|k| k.values.iter().any(|(p, _)| p.changes_text_measure()))
-                })
+                anims
+                    .iter()
+                    .any(|a| !a.is_paused() && !a.fill_settled && a.changes_text_measure())
             })
             .map(|(id, _)| *id)
             .collect();

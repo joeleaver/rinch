@@ -867,6 +867,17 @@ impl RinchDocument {
             }
 
             // --- Animation logic ---
+            //
+            // Whether a sample this cascade writes can change how the node's
+            // text is measured. The staleness checks above compare against the
+            // style **before** the animation block writes its sample, so an
+            // animated typography value never takes part in them; this is the
+            // other half, acted on beside them below. Once per cascade and
+            // never per tick: a paused sample is constant and the tick does not
+            // re-measure it (#763), so without this a class that adds a paused
+            // `font-size` animation leaves the text measured in the old font.
+            let mut animated_text_measure = false;
+
             // Extract animation specs from Stylo
             let animation_specs =
                 crate::animation::AnimationSpec::extract_from_stylo(&computed_values);
@@ -917,6 +928,8 @@ impl RinchDocument {
 
                         // Apply current animation values on top of computed_style
                         if let Some(animations) = self.tree.active_animations.get(&node_id) {
+                            animated_text_measure =
+                                animations.iter().any(|a| a.changes_text_measure());
                             for anim in animations {
                                 if let crate::animation::AnimationResult::Values(values) =
                                     anim.values_at(current_time_ms)
@@ -1032,7 +1045,7 @@ impl RinchDocument {
             // behavioural can tell them apart — `the_staleness_gate_lists_what_
             // an_inline_layout_is_built_from` is the only pin on the predicate's
             // contents.
-            if text_layout_stale {
+            if text_layout_stale || animated_text_measure {
                 self.invalidate_text_measure_for_node(node_id);
             }
 
@@ -1058,7 +1071,7 @@ impl RinchDocument {
             // Narrower than `text_layout_stale` on purpose: a `:hover { color }`
             // must still take the cheap path, which is what the early return in
             // `resolve_layout` exists for.
-            if measured_size_stale {
+            if measured_size_stale || animated_text_measure {
                 self.tree.layout_dirty = true;
             }
 
@@ -1479,6 +1492,10 @@ impl RinchDocument {
             None => return,
         };
         let mut active_animations = std::mem::take(&mut self.tree.active_animations);
+        // Nodes whose restarted sample can change their text measure. The
+        // cascade of a node shown by an ancestor need not run, so its own
+        // `animated_text_measure` check does not either (#763).
+        let mut remeasure = Vec::new();
 
         while let Some(id) = stack.pop() {
             let Some(node) = self.tree.nodes.get(id) else {
@@ -1512,6 +1529,9 @@ impl RinchDocument {
             // the frame that shows the box shows it at the animation's t=0
             // rather than at its base style for one tick.
             if let Some(animations) = active_animations.get(&id) {
+                if animations.iter().any(|a| a.changes_text_measure()) {
+                    remeasure.push(id);
+                }
                 for anim in animations {
                     if let crate::animation::AnimationResult::Values(values) =
                         anim.values_at(current_time_ms)
@@ -1529,6 +1549,10 @@ impl RinchDocument {
         }
 
         self.tree.active_animations = active_animations;
+        for id in remeasure {
+            self.invalidate_text_measure_for_node(id);
+            self.tree.layout_dirty = true;
+        }
     }
 
     /// Get a monotonic timestamp in milliseconds for transition timing.
