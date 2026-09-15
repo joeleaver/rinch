@@ -2830,8 +2830,7 @@ Three things it deliberately does not do.
   change made while an element is hidden lands outright, so it is already at its
   new value when shown; an element that stops being rendered has its
   transitions cancelled, and so does everything under it. `visibility: hidden`
-  is **rendered** and still transitions. `@keyframes` is not covered: a hidden
-  element's animations go on running and go on asking for frames (**#747**).
+  is **rendered** and still transitions.
   **The rule this puts on the component library**: *an overlay that animates
   must stay rendered — animate `opacity`, `visibility` or `transform`, never
   toggle `display`* (**#751**). A `display` flip cannot transition on **either**
@@ -2847,6 +2846,41 @@ Three things it deliberately does not do.
   the *close* is deliberately instant on both backends, because animating it
   would need a transition on `visibility` and `TransitionProperty` has no
   variant for one (**#759**).
+- **A `@keyframes` animation on a hidden element does not run either**
+  (**#747**), and that one is not only a paint question: the desktop frame clock
+  schedules another frame whenever `tree.active_animations` is non-empty
+  (`app/event_dispatch.rs`), so a `Loader` in a `display: none` panel kept an app
+  rendering at full rate with nothing on screen moving. css-animations-1 §3 is
+  stricter than the transition rule it sits beside — an element that is not
+  being rendered has no animation *effect* at all, and is shown again with a
+  **new** animation from t=0 rather than the one it had. So the entries are
+  dropped rather than parked (parking them would leave the frame clock running,
+  which is the whole complaint), and three things happen in the cascade:
+  nothing **starts** on a node that is not rendered, everything under a subtree
+  that **stops** being rendered is dropped, and everything under one that
+  **starts** being rendered again is started afresh. The last is not
+  symmetry for its own sake — a node shown by an *ancestor* need not be
+  re-cascaded at all, because `set_style` invalidates the one node it was
+  written to, so without the walk a panel un-hidden that way would come back
+  with its spinner permanently still. Two neighbouring faults are **not** fixed
+  and are not this: an animation present in the very first frame never starts
+  (**#762**) and a full restyle stops every animation in the document for good
+  (the same issue), both because `transitions_enabled` gates animation starts as
+  well as transition starts.
+- **`visibility: hidden` runs an animation, and that costs a frame clock.** It
+  is the same answer the transition rule gives — such a box is rendered — and it
+  is what a browser does, measured in Chrome. But an animation has no duration to
+  expire, so the cost is not a one-off: after #751 made the closed `Drawer`
+  `visibility: hidden`, a `Loader` inside a **closed** drawer keeps animating and
+  keeps the app rendering. Measured on the software backend at 804x600, closed
+  drawer, 20 idle frames: **20/20 asked for a redraw at 2.53ms per tick+paint**,
+  where the `display: none` spelling asked for 0. That is accepted, not
+  overlooked — the two rules cannot disagree without desktop diverging from the
+  web — and the cure belongs to the component: `animation-play-state: paused`
+  on a closed overlay's subtree, which does nothing yet because a paused
+  animation still asks for frames (**#763**). Until that lands, do not put a
+  `Loader` inside an overlay that is merely `visibility: hidden` while closed
+  and expect the app to idle.
 - **A move is not a detach.** `append_child`, `insert_before` and `insert_child`
   unlink a node from its old parent with the same lines `remove_child` uses, but
   it is back in the document before the call returns — so a row that was

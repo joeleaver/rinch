@@ -480,9 +480,7 @@ Three things about that are worth knowing.
 
 The walk is O(depth) and sits at the last gate before a transition starts —
 after `diff_animatable` has found an animatable change on a node that declares a
-`transition` — so a node with neither never pays for it. What is **not** covered
-is `@keyframes`: a hidden element's animations go on running and go on asking
-the shell for frames (issue #747).
+`transition` — so a node with neither never pays for it.
 
 **This caught a shipped component, and the rule it puts on the library is worth
 stating on its own: an overlay that animates must stay rendered.** Animate
@@ -522,6 +520,101 @@ method and all five call sites are gone. Every one of them was
 `rinch-web` the browser already cancels a removed element's transitions and
 treats re-insertion as a first style. **A removal path must not write styles**:
 the node outlives the removal, so anything stamped there is permanent.
+
+## A hidden element's `@keyframes` animations
+
+`@keyframes` is the same question with a stricter answer and a second consumer,
+and it took its own change (issue #747).
+
+The answer is stricter because css-animations-1 §3 does not merely refuse to
+*start* something on an element that is not being rendered: such an element has
+no animation effect at all, and showing it again starts a **new** animation from
+the beginning rather than resuming the one it had. So rinch drops the
+`ActiveAnimation` entries rather than parking them, and starts fresh ones on the
+way back.
+
+The second consumer is the frame clock. A transition self-limits — it has a
+declared duration and dies after it — but `animation: … infinite` does not, and
+`AboutToWait` schedules another frame whenever `tree.active_animations` is
+non-empty. An animation left running on something nobody paints therefore keeps
+a desktop app rendering at full rate indefinitely: a `Loader` in a closed panel
+or an inactive tab, with nothing on screen moving. That is why parking the
+entries was not an option, and it is the same symptom #699 fixed for a *removed*
+`Loader`.
+
+Three sites do it, all in `apply_stylo_styles_to_taffy`:
+
+- **Nothing starts on a node that is not rendered.** `animation_is_rendered` is
+  the transition gate's ancestor walk asked of the state *after* the cascade —
+  "is it rendered now" — so it takes no old display and no `was_hidden` list.
+  Reusing the transition gate here would be wrong in a way nothing else notices:
+  `was_hidden` names the nodes that were hidden *before* the change, so an
+  ancestor un-hidden on this same pass is on it, and an inner wrapper shown
+  beneath it would refuse its own restart. The gate also **takes away** what the
+  node was already running, which the subtree walks cannot: a node *moved* into
+  a hidden panel changes nobody's `display`, so the only thing that runs is its
+  own re-cascade.
+- **A subtree that stops being rendered loses its animations**, whole, whatever
+  each box's own `display` computes to — `cancel_animations_in_subtree`, beside
+  the transition cancel and under its own guard.
+- **A subtree that starts being rendered again gets them back, from t=0** —
+  `restart_animations_in_subtree`, at the same site that resets the scroll
+  offset. This is the half that has no counterpart on the transition side, and
+  it is not symmetry for its own sake: a node shown by an **ancestor** need not
+  be re-cascaded at all. `set_style` drops the cached Stylo data of the node it
+  was written to and of nothing else, so a panel un-hidden with
+  `set_style("display", "block")` re-cascades the panel alone; without the walk
+  its spinner would stop on the way in and never start again. A `class` write
+  invalidates the subtree and so restarts descendants through the ordinary
+  per-node path — the two routes differ, and the fixtures say which is which.
+  The walk stops at any box whose own `display` is `none`, and skips the node it
+  was called on, whose own cascade has already restarted it.
+
+It costs O(subtree) on a change from `none` to rendered, which forces a full
+layout and paint of that same subtree anyway; there is deliberately no "does
+anything under here animate" guard, because there is no answer to that cheaper
+than the walk. Measured on the worst case that can be built for it — hiding and
+showing a 4000-node, animation-free panel, debug build — the walk costs **+4.2%**
+of the cycle (21.06 → 21.95ms).
+
+### `visibility: hidden` animates, and that is a frame clock nobody switches off
+
+`visibility` is rendered here for exactly the reason it is rendered for a
+transition: the box is generated, laid out and takes up space. It is also what a
+browser does — a `visibility: hidden` element's animation runs in Chrome, it is
+merely not painted.
+
+The cost is worth stating plainly, because it is not the one-off a transition's
+would be. An `animation: … infinite` has no duration to expire, so a rendered-
+but-invisible spinner asks for a frame forever. That is now reachable through a
+shipped component: #751 made the closed `Drawer`'s root `visibility: hidden`
+precisely so its panel could transition, so a `Loader` placed inside a **closed**
+drawer keeps the app rendering. Measured, software backend, 804x600, closed
+drawer, 20 idle frames:
+
+| closed-state spelling | `active_animations` | idle frames asking to redraw | ms per tick+paint |
+|---|---|---|---|
+| `display: none` | 0 | 0 / 20 | 0.001 |
+| `visibility: hidden` (today) | 1 | 20 / 20 | 2.53 |
+| open drawer, either spelling | 1 | 20 / 20 | 8.8 – 9.7 |
+
+This is accepted rather than overlooked. Refusing an animation to a
+`visibility: hidden` box would put desktop at odds with both the browser and the
+transition rule next to it, for one component's benefit. The cure belongs to the
+component — `animation-play-state: paused` on a closed overlay's subtree — and it
+does nothing yet, because a paused animation still answers `true` from
+`tick_animations` (issue **#763**). Until that lands, an overlay that is only
+`visibility: hidden` while closed should not contain a `Loader` if the app is
+expected to idle.
+
+Two neighbouring faults are **not** fixed by any of this, and both are
+`transitions_enabled` gating animation *starts* as well as transition starts: an
+animation present in the very first frame never starts, because the first
+cascade runs with the flag still `false`, and
+`recompute_all_styles_full` — the theme-change path — clears
+`active_animations` and re-cascades with the flag forced `false`, stopping every
+animation in the document permanently. Both are issue #762, both predate #747 and both
+are measured.
 
 ## Optimizations
 
