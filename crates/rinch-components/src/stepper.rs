@@ -184,14 +184,6 @@ impl StepState {
         }
     }
 
-    fn as_str(self) -> &'static str {
-        match self {
-            StepState::Completed => "completed",
-            StepState::Progress => "progress",
-            StepState::Inactive => "inactive",
-        }
-    }
-
     fn class_name(self) -> &'static str {
         match self {
             StepState::Completed => "rinch-stepper__step--completed",
@@ -255,76 +247,34 @@ impl Component for Stepper {
             steps_container.append_child(child);
         }
 
-        let steps = collect_steps(&steps_container);
+        let derivation = Derivation {
+            active: self.active,
+            allow_next_steps_select: self.allow_next_steps_select,
+            completed_icon: self.completed_icon,
+            progress_icon: self.progress_icon,
+        };
+        settle_steps(__scope, &steps_container, derivation);
 
-        // Everything a step cannot know about itself, in one pass in document
-        // order: which position it sits at, and therefore which state `active`
-        // puts it in (issue #709). A step renders before this component does, so
-        // none of it could have travelled as a prop.
-        for (position, step) in steps.iter().enumerate() {
-            let position = position as u32;
-
-            if self.allow_next_steps_select && position > self.active {
-                // A step that asked to be clickable itself already carries the
-                // class. `add_class` is idempotent since #717, so the guard is
-                // belt and braces rather than load-bearing.
-                if !has_class(step, CLICKABLE_CLASS) {
-                    step.add_class(CLICKABLE_CLASS);
-                }
-            }
-
-            // The index the step shows. Its own wins, so a caller may number a
-            // stepper however they like; that changes the *label*, not the
-            // position the state derives from — `allow_next_steps_select` counts
-            // positions, and a second notion of index would disagree with it.
-            let numbered_here = step.get_attribute(STEP_ATTR).is_none();
-            if numbered_here {
-                step.set_attribute(STEP_ATTR, &position.to_string());
-            }
-
-            // The state. Its own wins here too, and `data-state` is the only
-            // thing that can say it named one: `state: String` renders an
-            // explicit `"inactive"` and an unset field into the same class.
-            let named_state = step.get_attribute(STATE_ATTR);
-            let state = match named_state.as_deref() {
-                Some(named) => StepState::parse(named),
-                None => {
-                    let derived = StepState::derive(position, self.active);
-                    // Swap the state class rather than rewriting `class`: the
-                    // clickable grant above, and the rsx `class:` prop the macro
-                    // merges onto a component's root, are both already on this
-                    // node (issue #717).
-                    //
-                    // **All three come off, not just `--inactive`.** A step that
-                    // named no state rendered as inactive, so dropping that one
-                    // looks sufficient — but this walk reaches steps that are
-                    // not freshly rendered by *this* stepper: it descends into a
-                    // `StepperCompleted`, so a nested `Stepper` there has its
-                    // steps re-derived at the outer stepper's positions, already
-                    // carrying whatever their own stepper gave them. Measured:
-                    // one such step ended up with `--progress` and `--inactive`
-                    // at once. `remove_class` writes nothing when the class is
-                    // absent (#730), so the two extra calls are free.
-                    for state in [
-                        StepState::Completed,
-                        StepState::Progress,
-                        StepState::Inactive,
-                    ] {
-                        step.remove_class(state.class_name());
-                    }
-                    step.add_class(derived.class_name());
-                    derived
-                }
-            };
-
-            self.settle_step_icon(
-                __scope,
-                step,
-                state,
-                named_state.is_some(),
-                numbered_here.then_some(position + 1),
-            );
-        }
+        // A step that arrives *after* this render — a `for` reconcile, a
+        // `show_dom` branch, a hand-rolled `append_child` — needs the same pass,
+        // and so do the steps it displaces: an insertion in front of a step
+        // moves it, which changes its number and can change its state (issue
+        // #716). So the whole pass runs again, over every step, and it is
+        // written to be idempotent for exactly that reason.
+        let watched = steps_container.clone();
+        crate::late_children::adopt_late_children(
+            __scope,
+            &steps_container,
+            "rinch-stepper__step",
+            move |_inserted, scope| {
+                // The subtree that landed is deliberately ignored. What has to
+                // be recomputed is every step's *position*, and only the whole
+                // list gives that — an insertion in front of a step renumbers
+                // it and can restate it, so patching the newcomer alone would
+                // leave the stepper saying two different things.
+                settle_steps(scope, &watched, derivation);
+            },
+        );
 
         container.append_child(&steps_container);
 
@@ -332,120 +282,323 @@ impl Component for Stepper {
     }
 }
 
-impl Stepper {
-    /// Bring one step's icon box into line with the state and index it has just
-    /// been given.
-    ///
-    /// Three things can be wrong with what the step drew, and only this
-    /// component knows about any of them:
-    ///
-    /// - it drew the glyph for its *own* state, which may not be the state it is
-    ///   now in;
-    /// - it drew the built-in default for a state this stepper has an icon for
-    ///   (`data-icon-fallback`, issue #707);
-    /// - it drew the number `1`, because it had no index to draw.
-    ///
-    /// A step it did not put into a new state is left exactly where #707 left
-    /// it, bar the number.
-    fn settle_step_icon(
-        &self,
-        __scope: &mut RenderScope,
-        step: &NodeHandle,
-        state: StepState,
-        named_its_own_state: bool,
-        number: Option<u32>,
-    ) {
-        let Some(icon_box) = step_icon_box(step) else {
-            return;
-        };
+/// Everything a [`Stepper`] tells its steps that a step cannot know about
+/// itself.
+///
+/// `Copy` and prop-shaped rather than a borrow of the component, because the
+/// late-arrival observer outlives the `render` call that installed it (issue
+/// #716).
+#[derive(Debug, Clone, Copy)]
+struct Derivation {
+    active: u32,
+    allow_next_steps_select: bool,
+    completed_icon: Option<TablerIcon>,
+    progress_icon: Option<TablerIcon>,
+}
 
-        // A loading step draws a spinner, which is the right content in every
-        // state and carries no number. It leaves no alternates and marks no
-        // fallback, so there is nothing here that could apply to it.
-        if has_class(step, LOADING_CLASS) {
-            return;
+impl Derivation {
+    /// This stepper's default glyph for a content key, if it has one.
+    fn default_for(&self, key: &str) -> Option<TablerIcon> {
+        match key {
+            KEY_COMPLETED => self.completed_icon,
+            KEY_PROGRESS => self.progress_icon,
+            // There is no stepper-wide default for the base glyph: a step's
+            // `icon`, or its number, is the step's own business.
+            _ => None,
+        }
+    }
+}
+
+/// Give every step under `steps_container` the position, state, index and glyph
+/// `d` puts it in.
+///
+/// **Idempotent, and that is load-bearing** (issue #716). It runs once at the
+/// stepper's own render and again every time a step lands beneath the container
+/// afterwards, because an insertion renumbers the steps after it and can move
+/// them between states. Everything it reads is therefore a *stable* record of
+/// what the caller asked for — `data-state` for a named state,
+/// [`STEP_DERIVED_ATTR`] for an index this pass assigned, [`ICON_HAS_ATTR`] for
+/// the glyphs the box holds — never a record of what the last pass happened to
+/// draw.
+fn settle_steps(scope: &mut RenderScope, steps_container: &NodeHandle, d: Derivation) {
+    for (position, step) in collect_steps(steps_container).iter().enumerate() {
+        let position = position as u32;
+
+        if d.allow_next_steps_select && position > d.active {
+            // A step that asked to be clickable itself already carries the
+            // class. `add_class` is idempotent since #717, so the guard is
+            // belt and braces rather than load-bearing.
+            if !has_class(step, CLICKABLE_CLASS) {
+                step.add_class(CLICKABLE_CLASS);
+            }
         }
 
-        // The alternates a step with no state of its own left behind, for the
-        // states it could be moved into but did not draw. Nothing goes yet —
-        // see the note on `discard` below for why the order matters.
-        let mut alternate = None;
-        let mut alternates = Vec::new();
-        for child in icon_box.children() {
-            if !has_class(&child, ICON_ALT_CLASS) {
-                continue;
-            }
-            if child.get_attribute(ICON_ALT_ATTR).as_deref() == Some(state.as_str()) {
-                alternate = child.children().into_iter().next();
-            }
-            alternates.push(child);
-        }
-
-        // The stepper's own default for this state, which applies only where the
-        // step supplied nothing of its own — `data-icon-fallback` says so for a
-        // step that drew this state itself, and an absent alternate says so for
-        // one this component moved here.
-        let stepper_default = match state {
-            StepState::Completed => self.completed_icon,
-            StepState::Progress => self.progress_icon,
-            StepState::Inactive => None,
-        };
-        let step_asked_for_the_default = if named_its_own_state {
-            icon_box.get_attribute(ICON_FALLBACK_ATTR).as_deref() == Some(state.as_str())
-        } else {
-            alternate.is_none()
-        };
-
-        let replacement: Option<NodeHandle> = if let Some(glyph) = alternate {
-            Some(glyph)
-        } else if let Some(icon) = stepper_default.filter(|_| step_asked_for_the_default) {
-            Some(render_tabler_icon(__scope, icon, TablerIconStyle::Outline))
-        } else if named_its_own_state || state != StepState::Completed {
-            // Whatever the step drew still stands — except the number, which it
-            // could only have drawn as `1`.
-            number
-                .filter(|_| icon_box.get_attribute(ICON_NUMBER_ATTR).is_some())
-                .map(|n| rinch_core::IntoNode::into_node(n.to_string(), __scope))
-        } else {
-            // Moved to completed with no icon anywhere: the built-in tick, which
-            // is what a step that had rendered completed would have drawn.
-            Some(crate::icons::check_dom(__scope))
-        };
-
-        let Some(replacement) = replacement else {
-            // Nothing to redraw, but the alternates are markup nobody will look
-            // at again. `discard`, as below.
-            for alternate in alternates {
-                alternate.discard();
-            }
-            return;
-        };
-
-        // **Attach first, clear second**, and this order is load-bearing rather
-        // than tidy. What goes here goes for good — the icon this step drew for
-        // a state it is no longer in, and every alternate it is not using — so
-        // it leaves by `discard` and not by `remove` (issue #719): `remove` is a
-        // detach that keeps a subtree re-insertable on both backends, while
-        // `discard` is what releases `rinch-web`'s strong `web_sys::Node` from
-        // its two page-global maps. `rinch-web` compiles this crate, and a
-        // `Stepper` re-renders per step per signal change, so a `remove` here
-        // would strand an SVG subtree in the browser every time.
+        // The index the step shows. Its own wins, so a caller may number a
+        // stepper however they like; that changes the *label*, not the position
+        // the state derives from — `allow_next_steps_select` counts positions,
+        // and a second notion of index would disagree with it.
         //
-        // That is exactly why the promoted alternate has to leave its wrapper
-        // *before* the wrapper is discarded: `discard` retires the whole
-        // subtree, so discarding a wrapper that still held the glyph would
-        // retire the glyph with it. `append_child` re-parents, so promoting
-        // first takes the glyph out of reach of the loop below.
-        icon_box.append_child(&replacement);
-        for child in icon_box.children() {
-            if child.node_id() != replacement.node_id() {
-                child.discard();
+        // `STEP_DERIVED_ATTR` is what keeps this re-runnable: after the first
+        // pass every step carries `data-step`, so its presence alone can no
+        // longer say who wrote it.
+        let numbered_here = step.get_attribute(STEP_ATTR).is_none()
+            || step.get_attribute(STEP_DERIVED_ATTR).is_some();
+        if numbered_here {
+            step.set_attribute(STEP_ATTR, &position.to_string());
+            step.set_attribute(STEP_DERIVED_ATTR, "");
+        }
+
+        // The state. Its own wins here too, and `data-state` is the only thing
+        // that can say it named one: `state: String` renders an explicit
+        // `"inactive"` and an unset field into the same class.
+        let named_state = step.get_attribute(STATE_ATTR);
+        let state = match named_state.as_deref() {
+            Some(named) => StepState::parse(named),
+            None => {
+                let derived = StepState::derive(position, d.active);
+                // Swap the state class rather than rewriting `class`: the
+                // clickable grant above, and the rsx `class:` prop the macro
+                // merges onto a component's root, are both already on this node
+                // (issue #717).
+                //
+                // **All three come off, not just `--inactive`.** A step that
+                // named no state rendered as inactive, so dropping that one
+                // looks sufficient — but this walk reaches steps that are not
+                // freshly rendered by *this* stepper: it descends into a
+                // `StepperCompleted`, so a nested `Stepper` there has its steps
+                // re-derived at the outer stepper's positions, already carrying
+                // whatever their own stepper gave them. Measured: one such step
+                // ended up with `--progress` and `--inactive` at once. It is
+                // also what a *re-run* needs, since the class this pass is
+                // replacing is the one the last pass wrote. `remove_class`
+                // writes nothing when the class is absent (#730), so the two
+                // extra calls are free.
+                for state in [
+                    StepState::Completed,
+                    StepState::Progress,
+                    StepState::Inactive,
+                ] {
+                    step.remove_class(state.class_name());
+                }
+                step.add_class(derived.class_name());
+                derived
+            }
+        };
+
+        // The number a step draws is one higher than its index, whoever set it.
+        let number = step
+            .get_attribute(STEP_ATTR)
+            .and_then(|s| s.parse::<u32>().ok())
+            .unwrap_or(position)
+            + 1;
+
+        settle_step_icon(scope, step, state, named_state.is_some(), number, d);
+    }
+}
+
+/// Bring one step's icon box into line with the state and index it has just been
+/// given.
+///
+/// The box holds exactly one **live** glyph plus zero or more hidden
+/// *alternates*, each labelled with the [content key](KEY_BASE) it stands for.
+/// [`ICON_LIVE_ATTR`] says which key the live one is, so this function's whole
+/// job is: work out which key the step's current state wants, put that glyph
+/// live, and park the outgoing one as an alternate in case the step moves again.
+///
+/// Parking rather than discarding is what makes a late arrival work (issue
+/// #716): a step's `icon` prop is not recoverable from the rendered tree, so a
+/// step that was moved to completed and is later displaced back out of it has
+/// nowhere else to get its own glyph from. Only the alternates a *forward* move
+/// could still need are kept — see [`reachable_keys`].
+fn settle_step_icon(
+    scope: &mut RenderScope,
+    step: &NodeHandle,
+    state: StepState,
+    named_its_own_state: bool,
+    number: u32,
+    d: Derivation,
+) {
+    let Some(icon_box) = step_icon_box(step) else {
+        return;
+    };
+
+    // A loading step draws a spinner, which is the right content in every state
+    // and carries no number. It leaves no alternates and claims no key, so there
+    // is nothing here that could apply to it.
+    if has_class(step, LOADING_CLASS) {
+        return;
+    }
+
+    // A box built by something other than `StepperStep` says nothing about what
+    // it holds, and guessing would mean appending a second glyph beside the
+    // first. Leave it exactly as it is.
+    let Some(mut live_key) = icon_box.get_attribute(ICON_LIVE_ATTR) else {
+        return;
+    };
+
+    let mut has: Vec<String> = icon_box
+        .get_attribute(ICON_HAS_ATTR)
+        .unwrap_or_default()
+        .split_whitespace()
+        .map(str::to_owned)
+        .collect();
+
+    let mut live = None;
+    let mut alternates: Vec<(String, NodeHandle)> = Vec::new();
+    for child in icon_box.children() {
+        if has_class(&child, ICON_ALT_CLASS) {
+            alternates.push((
+                child.get_attribute(ICON_ALT_ATTR).unwrap_or_default(),
+                child,
+            ));
+        } else {
+            live = Some(child);
+        }
+    }
+
+    // Which glyph this state wants. `progress` is the only key whose answer
+    // depends on the stepper as well as the step: a step with no progress icon
+    // of its own draws its base glyph there *unless* this stepper supplies one.
+    let target = match state {
+        StepState::Completed => KEY_COMPLETED,
+        StepState::Progress => {
+            if has.iter().any(|k| k == KEY_PROGRESS) || d.progress_icon.is_some() {
+                KEY_PROGRESS
+            } else {
+                KEY_BASE
             }
         }
-        // The two markers described what the step drew, and it no longer does.
-        // Leaving them would be a lie in the rendered DOM.
-        icon_box.remove_attribute(ICON_FALLBACK_ATTR);
-        icon_box.remove_attribute(ICON_NUMBER_ATTR);
+        StepState::Inactive => KEY_BASE,
+    };
+
+    if live_key != target {
+        // What happens to the outgoing glyph turns on whether it can be built
+        // again. A **built-in** — the tick, or the step number — is recoverable
+        // from nothing at all, so it goes for good, by `discard` and not
+        // `remove` (issue #719): `rinch-web` keeps a strong `web_sys::Node` for
+        // a merely-detached subtree. A **real** glyph came from a `TablerIcon`
+        // in the step's props, which no patch of the rendered tree can recover,
+        // so it is parked under its own key against a later move (issue #716).
+        if let Some(live) = &live {
+            if has.iter().any(|k| *k == live_key) {
+                let parked = scope.create_element("span");
+                parked.set_attribute("class", ICON_ALT_CLASS);
+                parked.set_attribute(ICON_ALT_ATTR, &live_key);
+                parked.set_style("display", "none");
+                parked.append_child(live);
+                icon_box.append_child(&parked);
+                alternates.push((live_key.clone(), parked));
+            } else {
+                live.discard();
+            }
+        }
+
+        let wanted = match alternates.iter().position(|(key, _)| key == target) {
+            Some(index) => {
+                let (_, wrapper) = alternates.remove(index);
+                // **Out of the wrapper before the wrapper goes.** `discard`
+                // retires a whole subtree, so discarding a wrapper that still
+                // held the glyph would retire the glyph with it (issue #719).
+                let glyph = wrapper.children().into_iter().next();
+                if let Some(glyph) = &glyph {
+                    icon_box.append_child(glyph);
+                }
+                wrapper.discard();
+                glyph
+            }
+            None => match d.default_for(target) {
+                Some(icon) => {
+                    // The stepper's own default fills a key the step supplied
+                    // nothing for, and the box now holds a real glyph there —
+                    // which is what stops a later pass filling it twice.
+                    has.push(target.to_owned());
+                    let glyph = render_tabler_icon(scope, icon, TablerIconStyle::Outline);
+                    icon_box.append_child(&glyph);
+                    Some(glyph)
+                }
+                None => {
+                    let glyph = built_in_glyph(scope, target, number);
+                    icon_box.append_child(&glyph);
+                    Some(glyph)
+                }
+            },
+        };
+        live = wanted;
+        live_key = target.to_owned();
+        icon_box.set_attribute(ICON_LIVE_ATTR, target);
+    } else if !has.iter().any(|k| k == target)
+        && let Some(icon) = d.default_for(target)
+    {
+        // The right key already, but what is showing there is the built-in
+        // placeholder — the tick a step with no completed icon draws — and this
+        // stepper has something better. That is #707's case, and it is the one
+        // path that does not change key.
+        let glyph = render_tabler_icon(scope, icon, TablerIconStyle::Outline);
+        icon_box.append_child(&glyph);
+        if let Some(old) = &live {
+            // Gone for good, so it leaves by `discard` and not by `remove`
+            // (issue #719): `rinch-web` keeps a strong `web_sys::Node` for a
+            // merely-removed subtree, and a `Stepper` re-renders per signal
+            // change.
+            old.discard();
+        }
+        has.push(target.to_owned());
+        live = Some(glyph);
+    }
+
+    // The number, which the step could only have drawn as its own index plus
+    // one — and which an insertion in front of it changes.
+    if live_key == KEY_BASE
+        && !has.iter().any(|k| k == KEY_BASE)
+        && let Some(live) = &live
+    {
+        live.set_text(&number.to_string());
+    }
+
+    // Alternates a forward move could still want are kept; the rest are markup
+    // nobody will look at again. A step that named its own state is in the state
+    // it will stay in, so for it that is *every* alternate.
+    let keep: &[&str] = if named_its_own_state {
+        &[]
+    } else {
+        reachable_keys(state)
+    };
+    for (key, wrapper) in alternates {
+        if !keep.contains(&key.as_str()) {
+            wrapper.discard();
+        }
+    }
+
+    if has.is_empty() {
+        icon_box.remove_attribute(ICON_HAS_ATTR);
+    } else {
+        icon_box.set_attribute(ICON_HAS_ATTR, &has.join(" "));
+    }
+}
+
+/// The built-in glyph for a content key: the tick for completed, the step number
+/// for anything else.
+fn built_in_glyph(scope: &mut RenderScope, key: &str, number: u32) -> NodeHandle {
+    if key == KEY_COMPLETED {
+        crate::icons::check_dom(scope)
+    } else {
+        rinch_core::IntoNode::into_node(number.to_string(), scope)
+    }
+}
+
+/// The content keys a step in `state` could still be moved into.
+///
+/// **A step's position only ever grows**, because this pass is re-run on an
+/// *insertion* and nothing else: a step gains siblings in front of it, never
+/// loses them. So state only moves forward — completed → progress → inactive —
+/// and an alternate for a state already behind the step is dead. A removal that
+/// shifts a step backwards would not re-run this pass at all (issue #741); if it
+/// ever does, every key has to be kept.
+fn reachable_keys(state: StepState) -> &'static [&'static str] {
+    match state {
+        StepState::Completed => &[KEY_COMPLETED, KEY_PROGRESS, KEY_BASE],
+        StepState::Progress => &[KEY_PROGRESS, KEY_BASE],
+        StepState::Inactive => &[KEY_BASE],
     }
 }
 
@@ -455,13 +608,36 @@ const CLICKABLE_CLASS: &str = "rinch-stepper__step--clickable";
 /// The class a loading step carries.
 const LOADING_CLASS: &str = "rinch-stepper__step--loading";
 
-/// Set by [`StepperStep`] on its icon box to say which of the parent's default
-/// icons, if any, may replace what it drew there.
+/// The three **content keys** a step's icon box deals in.
 ///
-/// The step's own icon props are resolved before this is written, so a box that
-/// carries the attribute is one whose step supplied nothing for that state —
-/// which is exactly the case where the parent's default applies.
-const ICON_FALLBACK_ATTR: &str = "data-icon-fallback";
+/// A key is not a state: `completed` and `progress` name the two glyphs a step
+/// (or its [`Stepper`]) can supply for a particular state, and `base` names the
+/// one glyph that serves every state neither of those covers — the step's own
+/// `icon`, or failing that its number. Two states therefore share a key
+/// whenever the step has no progress icon, which is the common case, and moving
+/// such a step between them costs nothing but a renumber.
+const KEY_COMPLETED: &str = "completed";
+/// See [`KEY_COMPLETED`].
+const KEY_PROGRESS: &str = "progress";
+/// See [`KEY_COMPLETED`].
+const KEY_BASE: &str = "base";
+
+/// Set on a step's icon box: the content keys the box holds a **real** glyph
+/// for, space separated.
+///
+/// Written by [`StepperStep`] from its own icon props. A key that is absent is
+/// one where what is showing (or parked) is a built-in placeholder — the tick, or
+/// the number — which a [`Stepper`]'s own default for that key may replace;
+/// [`Stepper`] then adds the key, so the substitution happens once however many
+/// times the pass re-runs (issue #716).
+const ICON_HAS_ATTR: &str = "data-icon-has";
+
+/// Set on a step's icon box: which content key the live glyph stands for.
+///
+/// The box's other children are hidden alternates, each labelled by
+/// [`ICON_ALT_ATTR`]. A box with no `data-icon-live` was not built by
+/// [`StepperStep`] and [`Stepper`] leaves its contents alone.
+const ICON_LIVE_ATTR: &str = "data-icon-live";
 
 /// Set by [`StepperStep`] on itself when the caller named a `state`.
 ///
@@ -476,19 +652,18 @@ const STATE_ATTR: &str = "data-state";
 /// [`Stepper`] from the step's position otherwise.
 const STEP_ATTR: &str = "data-step";
 
-/// Set by [`StepperStep`] on its icon box when what it drew there is the plain
-/// step number.
+/// Set by [`Stepper`] beside [`STEP_ATTR`] on a step it numbered itself.
 ///
-/// A step with no index of its own can only draw `1`, so [`Stepper`] has to
-/// redraw it once it has numbered the step. This says whether there is a number
-/// there to redraw: a glyph and a number are both "whatever the step drew", and
-/// nothing shallower than sniffing the node type tells them apart.
-const ICON_NUMBER_ATTR: &str = "data-icon-number";
+/// Presence is the whole value, and the derivation cannot re-run without it:
+/// once the first pass has numbered a step, `data-step` is present whoever wrote
+/// it, so a later pass would read a caller's ask where there was none and leave
+/// the step at a position it no longer occupies (issue #716).
+const STEP_DERIVED_ATTR: &str = "data-step-derived";
 
-/// The wrapper class of an alternate icon left in a step's icon box.
+/// The wrapper class of an alternate icon parked in a step's icon box.
 const ICON_ALT_CLASS: &str = "rinch-stepper__step-icon-alt";
 
-/// Which state an alternate icon is for.
+/// Which [content key](KEY_COMPLETED) an alternate icon is for.
 const ICON_ALT_ATTR: &str = "data-icon-for";
 
 /// Does `node` carry `class` as a whole class token?
@@ -601,54 +776,70 @@ impl Component for StepperStep {
         let step_number = self.step.map(|n| n + 1).unwrap_or(1);
         let icon_container = rinch_macros::rsx! { div { class: "rinch-stepper__step-icon" } };
 
-        // Which of the stepper's default icons, if any, may replace what this
-        // step is about to draw. Set only where the step supplied nothing of its
-        // own for the state it is in.
-        match state {
-            StepState::Completed if !self.loading && self.completed_icon.is_none() => {
-                icon_container.set_attribute(ICON_FALLBACK_ATTR, "completed");
+        // Which content keys this step supplies a glyph of its own for. Every
+        // other key the box ever shows is a built-in placeholder, which a parent
+        // `Stepper`'s own default may replace (issue #707). This is a record of
+        // the step's *props*, not of what it happens to be drawing, which is what
+        // lets the parent's pass re-run over it (issue #716).
+        let mut has: Vec<&str> = Vec::new();
+        if !self.loading {
+            if self.completed_icon.is_some() {
+                has.push(KEY_COMPLETED);
             }
-            StepState::Progress if !self.loading && self.progress_icon.is_none() => {
-                icon_container.set_attribute(ICON_FALLBACK_ATTR, "progress");
+            if self.progress_icon.is_some() {
+                has.push(KEY_PROGRESS);
             }
-            _ => {}
+            if self.icon.is_some() {
+                has.push(KEY_BASE);
+            }
         }
 
-        let mut drew_the_number = false;
-        let icon_content = if self.loading {
-            rinch_macros::rsx! { span { class: "rinch-stepper__loader" } }
-        } else if state == StepState::Completed {
-            if let Some(custom_icon) = self.completed_icon {
-                render_tabler_icon(__scope, custom_icon, TablerIconStyle::Outline)
-            } else {
-                crate::icons::check_dom(__scope)
+        // The key this step draws live. `base` covers every state the two
+        // specific keys do not, so a step with no progress icon draws its base
+        // glyph while in progress.
+        let live_key = match state {
+            _ if self.loading => None,
+            StepState::Completed => Some(KEY_COMPLETED),
+            StepState::Progress if self.progress_icon.is_some() => Some(KEY_PROGRESS),
+            _ => Some(KEY_BASE),
+        };
+
+        let icon_content = match live_key {
+            None => rinch_macros::rsx! { span { class: "rinch-stepper__loader" } },
+            Some(KEY_COMPLETED) => match self.completed_icon {
+                Some(custom_icon) => {
+                    render_tabler_icon(__scope, custom_icon, TablerIconStyle::Outline)
+                }
+                None => crate::icons::check_dom(__scope),
+            },
+            Some(KEY_PROGRESS) => {
+                let icon = self
+                    .progress_icon
+                    .expect("KEY_PROGRESS implies a progress icon");
+                render_tabler_icon(__scope, icon, TablerIconStyle::Outline)
             }
-        } else if state == StepState::Progress {
-            if let Some(custom_icon) = self.progress_icon {
-                render_tabler_icon(__scope, custom_icon, TablerIconStyle::Outline)
-            } else if let Some(custom_icon) = self.icon {
-                render_tabler_icon(__scope, custom_icon, TablerIconStyle::Outline)
-            } else {
-                drew_the_number = true;
-                rinch_core::IntoNode::into_node(step_number.to_string(), __scope)
-            }
-        } else if let Some(custom_icon) = self.icon {
-            render_tabler_icon(__scope, custom_icon, TablerIconStyle::Outline)
-        } else {
-            drew_the_number = true;
-            rinch_core::IntoNode::into_node(step_number.to_string(), __scope)
+            Some(_) => match self.icon {
+                Some(custom_icon) => {
+                    render_tabler_icon(__scope, custom_icon, TablerIconStyle::Outline)
+                }
+                None => rinch_core::IntoNode::into_node(step_number.to_string(), __scope),
+            },
         };
 
         icon_container.append_child(&icon_content);
-        if drew_the_number {
-            icon_container.set_attribute(ICON_NUMBER_ATTR, "");
+        if let Some(live_key) = live_key {
+            icon_container.set_attribute(ICON_LIVE_ATTR, live_key);
+        }
+        if !has.is_empty() {
+            icon_container.set_attribute(ICON_HAS_ATTR, &has.join(" "));
         }
 
         // A parent `Stepper` may put this step in a state it did not render, and
         // the icon for that state is a `TablerIcon` in this step's props — not
         // something a patch of the rendered tree could recover. So render it now
         // and leave it in the box, hidden, for the parent to promote; the parent
-        // drops every alternate it did not need (issue #709).
+        // parks the live glyph in its place and drops only the alternates no
+        // later move could want (issues #709, #716).
         //
         // Only where a parent could act on one: a step that named its own state
         // is already in the state it will stay in, and a loading step draws a
@@ -657,13 +848,13 @@ impl Component for StepperStep {
         // `Stepper` has nobody to take these away and must not show them even if
         // the sheet never loads.
         if self.state.is_empty() && !self.loading {
-            for (which, icon) in [
-                (StepState::Completed, self.completed_icon),
-                (StepState::Progress, self.progress_icon),
+            for (key, icon) in [
+                (KEY_COMPLETED, self.completed_icon),
+                (KEY_PROGRESS, self.progress_icon),
             ] {
                 let Some(icon) = icon else { continue };
                 let alt = rinch_macros::rsx! { span { class: "rinch-stepper__step-icon-alt" } };
-                alt.set_attribute(ICON_ALT_ATTR, which.as_str());
+                alt.set_attribute(ICON_ALT_ATTR, key);
                 alt.set_style("display", "none");
                 alt.append_child(&render_tabler_icon(__scope, icon, TablerIconStyle::Outline));
                 icon_container.append_child(&alt);
