@@ -546,6 +546,27 @@ impl DomDocument for RinchDocument {
         let folded = crate::attr_name::fold_attribute_name(self.tree.nodes[node.0].tag(), name);
         let name: &str = &folded;
 
+        // Removing an attribute the node does not carry changes nothing, so it
+        // costs nothing: everything below invalidates this node's style and its
+        // whole subtree's, and paying that for a write that erases nothing is
+        // exactly what `NodeHandle::write_attribute`'s removal guard used to
+        // avoid by not calling in at all. Since #687 that guard lets `checked` /
+        // `selected` through unconditionally — on the web their live state sits
+        // in an IDL property the content attribute stopped describing the moment
+        // the user toggled the control, so only the backend can see it — and the
+        // saving moves here, where it covers every other caller too. A browser
+        // agrees: `removeAttribute` for an absent attribute mutates nothing and
+        // schedules no invalidation.
+        //
+        // Nothing below has an effect on a node without the attribute. The
+        // `style` arm is the one worth stating: `style_attribute_cache` is
+        // written only by `set_attribute("style", …)` and `set_styles`, and both
+        // put the `style` attribute in the map first, so a cache with no
+        // attribute cannot exist.
+        if !self.tree.nodes[node.0].attributes.contains_key(name) {
+            return;
+        }
+
         self.tree.nodes[node.0].erase_attribute(name);
         if name == "style" {
             self.tree.nodes[node.0].style_attribute_cache = None;
