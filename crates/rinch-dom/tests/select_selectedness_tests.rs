@@ -248,6 +248,47 @@ fn an_option_inserted_before_an_already_selected_one_takes_the_selection() {
     );
 }
 
+/// A whole `<optgroup>` arriving at once: the **last** selected option in it
+/// takes the selection, which is what each of its options running its own
+/// insertion steps in tree order leaves.
+///
+/// Chrome 150, appending an `<optgroup>` holding two `selected` options to a
+/// select whose only option was selected: `selectedIndex == 2`, the group's
+/// second option, with `.selected` true on it alone.
+///
+/// Kills the mutant that walks the inserted subtree's options in reverse
+/// (which answers 1) — the single-option fixtures cannot, since reversing a
+/// one-element list changes nothing.
+#[test]
+fn the_last_selected_option_of_an_inserted_optgroup_takes_the_selection() {
+    let mut doc = RinchDocument::new();
+    let body = doc.body();
+    let sel = doc.create_element("select");
+    doc.append_child(body, sel);
+    let first = doc.create_element("option");
+    doc.set_attribute(first, "value", "a");
+    doc.append_child(sel, first);
+    assert_eq!(selected(&doc, sel), Some(0), "precondition");
+
+    // The group is built whole, detached, and appended in one go.
+    let group = doc.create_element("optgroup");
+    for v in ["b", "c"] {
+        let o = doc.create_element("option");
+        doc.set_attribute(o, "value", v);
+        doc.set_attribute(o, "selected", "");
+        doc.append_child(group, o);
+    }
+    doc.append_child(sel, group);
+
+    let model = resolve_select_model(&doc.tree, sel.0);
+    assert_eq!(model.options.len(), 3, "the group is flattened");
+    assert_eq!(
+        model.selected_index,
+        Some(2),
+        "the group's last selected option wins (Chrome 150: 2)"
+    );
+}
+
 /// The same rule reaches an option inside an `<optgroup>`, whose select is its
 /// grandparent.
 ///

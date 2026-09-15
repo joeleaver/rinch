@@ -256,7 +256,9 @@ pub(crate) fn set_option_selectedness(tree: &mut NodeTree, option_id: RawNodeId,
 ///
 /// Applied per option in tree order, so the last selected option of an inserted
 /// `<optgroup>` wins, the way each of them running its own insertion steps would
-/// leave it.
+/// leave it — Chrome 150, appending a group of two `selected` options to a
+/// select whose only option was selected: `selectedIndex == 2`, the group's
+/// second option.
 pub(crate) fn options_inserted(tree: &mut NodeTree, inserted: RawNodeId) {
     // The cheap gate: `append_child` runs for every node in the document, and
     // only an `<option>` or a group of them can carry selectedness.
@@ -265,14 +267,22 @@ pub(crate) fn options_inserted(tree: &mut NodeTree, inserted: RawNodeId) {
         _ => return,
     }
     let mut ids = Vec::new();
-    collect_option_ids(tree, inserted, &mut ids);
     if tree.get(inserted).and_then(|n| n.tag()) == Some("option") {
         ids.push(inserted);
+    } else {
+        collect_option_ids(tree, inserted, &mut ids);
     }
-    for id in ids {
-        if tree.get(id).and_then(|n| n.selectedness) == Some(true) {
-            set_option_selectedness(tree, id, true);
-        }
+    // Read the whole subtree's selectedness **first**. Applying the rule to one
+    // option clears every other option of the select, its own not-yet-applied
+    // siblings included, so a loop that re-read the flag as it went would let
+    // the first selected option of an inserted `<optgroup>` wipe the rest and
+    // then keep the selection itself — the reverse of what a browser does.
+    let pending: Vec<RawNodeId> = ids
+        .into_iter()
+        .filter(|&id| tree.get(id).and_then(|n| n.selectedness) == Some(true))
+        .collect();
+    for id in pending {
+        set_option_selectedness(tree, id, true);
     }
 }
 
