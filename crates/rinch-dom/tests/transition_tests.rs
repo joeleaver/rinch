@@ -1384,6 +1384,19 @@ const LINEAR_20_TO_30: &str = ".slider { width: 20px; height: 40px; \
      transition: width 150ms linear; } \
      .slider.wide { width: 30px; }";
 
+/// [`LINEAR_20_TO_30`] with its timeline scaled by 1000 — the same ramp, in
+/// seconds instead of milliseconds.
+///
+/// For the one fixture that reads an **interpolated value** after a second
+/// `resolve_layout`. That resolve reads `SystemTime::now()` itself, so the
+/// progress it interpolates at is `back-dated elapsed + δ` for a δ of real wall
+/// time; scaling the ramp by 1000 divides what δ is worth by 1000. See
+/// [`a_reversals_delay_still_holds_the_box_still`] for the measurement (issue
+/// #710).
+const LINEAR_20_TO_30_SECONDS: &str = ".slider { width: 20px; height: 40px; \
+     transition: width 150s linear; } \
+     .slider.wide { width: 30px; }";
+
 // `150ms` is `0.15s`, which does not survive an f32 round trip: the spec comes
 // back as 150.00000596ms. So "at the declared duration" is read one millisecond
 // past it rather than on the nose — an assertion sitting exactly on 150.0 fails
@@ -1496,16 +1509,22 @@ fn an_unrelated_restyle_leaves_a_running_transition_alone() {
 fn the_leave_alone_path_keeps_the_interpolated_value_in_the_computed_style() {
     use rinch_core::dom::DomDocument;
 
-    let (mut doc, div, _start) = running_width_transition(LINEAR_20_TO_30, 50.0);
+    let (mut doc, div, _start) = running_width_transition(LINEAR_20_TO_30_SECONDS, 50_000.0);
 
     doc.set_attribute(div, "data-probe", "1");
     doc.resolve_layout(800.0, 600.0);
 
-    // ~50ms into 150ms of 20 → 30 is ~23.3px; the restyle itself costs a few ms
-    // of wall clock, so allow a little more progress but nothing near 30.
+    // 50s into 150s of 20 → 30 is 23.333px. The restyle costs wall clock the
+    // test cannot control — `resolve_layout` reads the real clock to start and
+    // interpolate transitions — so the value drifts up by 10px per 150s of it.
+    // On the millisecond timings this fixture used to carry that was 10px per
+    // 150ms, and the old `(23.0..24.5)` bound tolerated only ~17.5ms of it;
+    // measured, a loaded host reaches 15.6ms. In seconds the same drift costs a
+    // thousandth as much, so the tolerance below is both **tighter** than the
+    // range it replaces and worth ~750ms of slack (issue #710).
     let w = computed_width_px(&doc, div);
     assert!(
-        (23.0..24.5).contains(&w),
+        (w - 23.3333).abs() < 0.05,
         "the restyle must leave the interpolated width in place, not the 30px \
          target it resolved, got {w}"
     );
@@ -1934,26 +1953,57 @@ fn a_reversal_does_shorten_a_negative_delay() {
 /// reads the box. 75ms into a reversal whose delay is 100ms, nothing may have
 /// moved yet.
 ///
-/// With the delay wrongly scaled to 50ms the box is already 25ms down a 75ms
-/// ramp, at ~23.36px. This is the fixture that would have caught the inverted
-/// rule through behaviour rather than through a field.
+/// With the delay wrongly scaled to a tenth of the ramp the box is already a
+/// sixth of the way down it, at ~23.36px on the old 150ms/100ms timings. This
+/// is the fixture that would have caught the inverted rule through behaviour
+/// rather than through a field.
+///
+/// # Why the timings are in seconds (issue #710)
+///
+/// Every other transition fixture here drives a manual clock, but this one
+/// cannot drive the whole path: the **reversal** is started by
+/// `resolve_layout`, which reads `SystemTime::now()` itself
+/// (`style_resolution::current_time_ms`). So the running transition's progress
+/// at the moment it is reversed is `175ms + δ`, where δ is however long the
+/// host took to get from the first `resolve_layout` to the second — and that
+/// is wall time, not test time.
+///
+/// On the original 150ms/100ms timings δ moved the box by 10px/150ms, so the
+/// 0.3px tolerance bought **4.5ms** of slack, and a loaded host exceeded it: 60
+/// runs against 48 busy-loop spinners on a 24-core box gave δ over 4.5ms **4
+/// times**, peaking at 15.6ms, and the fixture itself failed 1 time in 60 at
+/// `got 25.323631`.
+///
+/// Scaling the whole timeline by 1000 — the same 1:1.5:1.75 shape, in seconds
+/// instead of milliseconds — leaves the geometry, the ratios and the mutant
+/// identical while making δ cost a thousandth as much: the same 0.3px tolerance
+/// now buys **4.5 seconds**, 288x the worst δ measured under that load. The
+/// scaling also lands the durations on exact `f32`s (150s and 100s are exact
+/// where 0.15s and 0.1s are not), so unlike [`JUST_PAST_150`] nothing here has
+/// to be read a millisecond late.
+///
+/// The assertion that actually pins the behaviour carries no δ at all: during
+/// its delay a transition reports `from` **verbatim** (`ActiveTransition::value_at`),
+/// so the box is compared against the reversal's own recorded start value
+/// rather than against a constant. The 25px check below is a separate, loose
+/// check that the reversal happened where the fixture meant it to.
 #[test]
 fn a_reversals_delay_still_holds_the_box_still() {
     use rinch_core::dom::DomDocument;
 
     let (mut doc, div, start) = running_width_transition(
         ".slider { width: 20px; height: 40px; \
-         transition: width 150ms linear 100ms; } \
+         transition: width 150s linear 100s; } \
          .slider.wide { width: 30px; }",
-        175.0,
+        175_000.0,
     );
 
     // Tick the back-dated clock so the interpolated value is actually in the
-    // computed style: 175ms in is 100ms of delay then half of the 150ms ramp,
-    // so the box is at 25px. Without this the style still holds the 20px the
-    // first resolve wrote, the reversal's target is also 20, and the differ
-    // reports no change at all — the fixture would pass on a vacuum.
-    rinch_dom::transition::tick_transitions(&mut doc.tree, start + 175.0);
+    // computed style: 175s in is 100s of delay then half of the 150s ramp, so
+    // the box is at 25px. Without this the style still holds the 20px the first
+    // resolve wrote, the reversal's target is also 20, and the differ reports no
+    // change at all — the fixture would pass on a vacuum.
+    rinch_dom::transition::tick_transitions(&mut doc.tree, start + 175_000.0);
     assert!(
         (computed_width_px(&doc, div) - 25.0).abs() < 0.001,
         "the box should be half way up the ramp before the reversal"
@@ -1963,16 +2013,26 @@ fn a_reversals_delay_still_holds_the_box_still() {
     doc.set_attribute(div, "class", "slider");
     doc.resolve_layout(800.0, 600.0);
 
-    let reversal_start = width_transition(&doc, div)
-        .expect("the class change back should have started a reversal")
-        .start_time_ms;
+    let reversal =
+        width_transition(&doc, div).expect("the class change back should have started a reversal");
+    let reversal_start = reversal.start_time_ms;
+    let reversed_at = px_of(&reversal.from);
 
-    rinch_dom::transition::tick_transitions(&mut doc.tree, reversal_start + 75.0);
+    // The regime check: the reversal really did happen half way up the ramp,
+    // and not at an endpoint where a held box and a moving one agree. This is
+    // the one assertion δ can reach, and at these timings it has 4.5s of room.
+    assert!(
+        (reversed_at - 25.0).abs() < 0.3,
+        "the reversal should have been taken half way up the ramp, at 25px, \
+         got {reversed_at}"
+    );
+
+    rinch_dom::transition::tick_transitions(&mut doc.tree, reversal_start + 75_000.0);
     let w = computed_width_px(&doc, div);
     assert!(
-        (w - 25.0).abs() < 0.3,
-        "75ms into a reversal whose delay is 100ms the box must not have moved \
-         from the 25px it reversed at, got {w}"
+        (w - reversed_at).abs() < 0.001,
+        "75s into a reversal whose delay is 100s the box must not have moved \
+         from the {reversed_at}px it reversed at, got {w}"
     );
 }
 
