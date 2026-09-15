@@ -223,3 +223,57 @@ fn a_finished_font_size_fill_owes_no_layout() {
         );
     }
 }
+
+/// A **full restyle** — a theme change — that lengthens a finished animation
+/// makes it run again, and `fill_settled` has to be recomputed against the
+/// timing that restyle just gave it.
+///
+/// #771 refreshes a kept animation's keyframes, duration and delay inside
+/// `recompute_all_styles_full` (outside it a new duration is ignored, #780).
+/// Asking "is it still filling?" *before* that refresh asks against the old
+/// timing, which for this shape answers "yes": the entry stays settled, so
+/// `has_running_animations()` says `false` for an animation that is running,
+/// and the tick that finishes it a second time does not dirty its node — the
+/// box keeps the last running sample instead of the fill. Measured by the
+/// review of #779 on the trial merge: 41px against a 100px fill.
+#[test]
+fn a_theme_change_that_lengthens_a_finished_animation_runs_it_again() {
+    let (mut doc, node) = finished("box once-fwd");
+    hand_off(&mut doc, node);
+    assert!(!doc.tree.has_running_animations(), "precondition: settled");
+
+    // The theme: the same animation, eight times longer. The clock is kept, so
+    // the ~150ms already spent is now a fraction of the run rather than past
+    // its end.
+    doc.load_css(".once-fwd { animation: k782-grow 400ms linear 1 forwards; }");
+    doc.recompute_all_styles_full();
+    doc.resolve_layout(VP.0, VP.1);
+
+    assert_eq!(animations(&doc, node), 1, "the same entry, re-timed");
+    assert!(
+        doc.tree.has_running_animations(),
+        "it is running again, so the frame clock has to run again — this is \
+         what a stale `fill_settled` gets wrong"
+    );
+    hand_off(&mut doc, node);
+    assert!(doc.tick_animations(), "and the tick advances it");
+    let mid = width_px(&doc, node).expect("a length");
+    assert!(
+        (40.0..100.0).contains(&mid),
+        "precondition: mid-run, not at the fill — read {mid}px"
+    );
+
+    // …and it finishes a second time, properly: that tick dirties the node and
+    // writes the fill, and the entry settles again.
+    std::thread::sleep(std::time::Duration::from_millis(400));
+    hand_off(&mut doc, node);
+    doc.tick_animations();
+    assert!(
+        doc.tree.dirty_nodes.contains(&node.0),
+        "the tick that finishes it again shows its end, so it dirties"
+    );
+    assert_eq!(width_px(&doc, node), Some(100.0), "at the fill");
+    hand_off(&mut doc, node);
+    assert!(!doc.tick_animations(), "and then it is quiet again");
+    assert!(!doc.tree.has_running_animations(), "and settled again");
+}
