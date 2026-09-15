@@ -508,12 +508,32 @@ impl NodeHandle {
     }
 
     /// Remove a class from the element's class list.
+    ///
+    /// Symmetric with [`add_class`](Self::add_class): a class that is **not** on
+    /// the element is not removed a second time, and the attribute is left
+    /// untouched (issue #730). #717 made that the common path rather than a rare
+    /// one — ten components' effects call this on every run whose answer is
+    /// `false`, and an effect re-runs whenever anything it read changes, not only
+    /// when its own answer flips.
+    ///
+    /// The early return also means an elided removal no longer *tidies* the
+    /// attribute: this rebuilds the class list by splitting on whitespace and
+    /// joining with single spaces, so padding and double spaces used to be
+    /// normalised away by a removal that took nothing off, and now survive.
+    /// Everything that *matches* a class splits on whitespace — Stylo's
+    /// selector matching, `query_selector`, `rinch-components`' list walk, the
+    /// menu bar's — so the spelling reaches neither styling nor hit testing.
+    /// It does reach `html_serializer`, which writes every attribute through
+    /// verbatim: a padded `class` now serialises padded.
     #[doc(hidden)]
     pub fn remove_class(&self, class: &str) {
         if let Some(doc) = self.doc.upgrade() {
             // Get current class attribute (borrow ends here)
             let existing = doc.borrow().get_attribute(self.node_id, "class");
             if let Some(existing) = existing {
+                if !existing.split_whitespace().any(|c| c == class) {
+                    return;
+                }
                 let new_class: String = existing
                     .split_whitespace()
                     .filter(|c| *c != class)
@@ -978,6 +998,133 @@ mod tests {
         assert_eq!(
             doc.borrow().get_attribute(div.node_id(), "class"),
             Some("bar ba".to_string())
+        );
+    }
+
+    /// `remove_class` of a class that is **not** there must not write the
+    /// attribute at all (issue #730).
+    ///
+    /// The assertion is about the *write*, not about the resulting string: a
+    /// string-only check cannot tell an elided write from a rewritten-identical
+    /// one, which is the fixed point this class of test hides in. `set_attribute`
+    /// on [`MockDomDocument`] marks the node dirty, so a drained dirty set that
+    /// stays empty is the evidence — and the positive control below proves the
+    /// instrument fires.
+    #[test]
+    fn remove_class_of_an_absent_class_writes_nothing() {
+        let doc = Rc::new(RefCell::new(MockDomDocument::new()));
+        let mut scope = RenderScope::new(doc.clone(), doc.borrow().body());
+
+        let div = scope.create_element("div");
+        div.set_class("foo bar");
+
+        // Positive control: removing a class that IS present writes, so the
+        // dirty set is a live instrument and not a constant `empty`.
+        doc.borrow_mut().take_dirty_nodes();
+        div.remove_class("bar");
+        assert_eq!(
+            doc.borrow_mut().take_dirty_nodes(),
+            vec![div.node_id()],
+            "removing a class that is present must write the attribute"
+        );
+        assert_eq!(
+            doc.borrow().get_attribute(div.node_id(), "class"),
+            Some("foo".to_string())
+        );
+
+        // The case #730 is about. #717 made this the common path: ten
+        // components' effects call `remove_class` on every run whose answer is
+        // `false`, and an effect re-runs whenever anything it read changes, not
+        // only when its own answer flips.
+        div.remove_class("bar");
+        assert!(
+            doc.borrow_mut().take_dirty_nodes().is_empty(),
+            "removing a class that is absent must not write the attribute"
+        );
+
+        // A prefix of a present class is a different class, so the elision is a
+        // whitespace-word comparison and not a `contains` — `fo` is absent even
+        // though `foo` is there.
+        div.remove_class("fo");
+        assert!(
+            doc.borrow_mut().take_dirty_nodes().is_empty(),
+            "a prefix of a present class is absent, so its removal writes nothing"
+        );
+        assert_eq!(
+            doc.borrow().get_attribute(div.node_id(), "class"),
+            Some("foo".to_string())
+        );
+
+        // A node with no `class` attribute at all was already write-free, and
+        // stays that way.
+        let bare = scope.create_element("div");
+        doc.borrow_mut().take_dirty_nodes();
+        bare.remove_class("anything");
+        assert!(
+            doc.borrow_mut().take_dirty_nodes().is_empty(),
+            "a node with no class attribute must not gain one"
+        );
+        assert_eq!(doc.borrow().get_attribute(bare.node_id(), "class"), None);
+    }
+
+    /// Eliding the write of an absent class must not weaken the removal of a
+    /// present one: a doubled class loses **every** copy.
+    ///
+    /// Measured by #726's reviewer on the pre-#730 code and kept deliberately —
+    /// the early return is a guard on `any`, so it must not become a guard that
+    /// stops after the first match.
+    #[test]
+    fn remove_class_removes_every_copy_of_a_doubled_class() {
+        let doc = Rc::new(RefCell::new(MockDomDocument::new()));
+        let mut scope = RenderScope::new(doc.clone(), doc.borrow().body());
+
+        let div = scope.create_element("div");
+        div.set_class("a  a");
+        div.remove_class("a");
+        assert_eq!(
+            doc.borrow().get_attribute(div.node_id(), "class"),
+            Some(String::new()),
+            "every whitespace-delimited copy of the class comes off"
+        );
+
+        let other = scope.create_element("div");
+        other.set_class("keep dup keep2 dup");
+        other.remove_class("dup");
+        assert_eq!(
+            doc.borrow().get_attribute(other.node_id(), "class"),
+            Some("keep keep2".to_string())
+        );
+    }
+
+    /// The elided write keeps the attribute's **spelling**, which the rewriting
+    /// one did not (issue #730's own note).
+    ///
+    /// `remove_class` normalises whitespace as a side effect of its split/join,
+    /// so a node whose `class` carries padding or double spaces used to be tidied
+    /// by a removal that took nothing off. It is no longer. Nothing that
+    /// *matches* a class reads it byte-wise — both backends split on
+    /// whitespace — so this pins the new spelling rather than defending a
+    /// consumer. `html_serializer` does write it through verbatim, so a padded
+    /// `class` serialises padded; the workspace suite is green with that.
+    #[test]
+    fn an_elided_removal_leaves_the_attributes_spelling_alone() {
+        let doc = Rc::new(RefCell::new(MockDomDocument::new()));
+        let mut scope = RenderScope::new(doc.clone(), doc.borrow().body());
+
+        let div = scope.create_element("div");
+        div.set_class("  foo   bar ");
+        div.remove_class("baz");
+        assert_eq!(
+            doc.borrow().get_attribute(div.node_id(), "class"),
+            Some("  foo   bar ".to_string()),
+            "an elided removal writes nothing, so it tidies nothing either"
+        );
+
+        // A removal that does take a word off still normalises, as it always has.
+        div.remove_class("foo");
+        assert_eq!(
+            doc.borrow().get_attribute(div.node_id(), "class"),
+            Some("bar".to_string())
         );
     }
 
