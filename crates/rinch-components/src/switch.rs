@@ -100,10 +100,13 @@ impl Switch {
             classes.push("rinch-switch--label-start");
         }
 
-        // A two-line body wants the track aligned to its first line. This
-        // belongs in the *base* class string rather than being added after
-        // render: the reactive-checked effect rebuilds the attribute from this
-        // method, and would drop anything added outside it.
+        // A two-line body wants the track aligned to its first line. It is
+        // derived from a non-reactive prop, so it belongs in the *base* class
+        // string: nothing has to put it back later. (Until #717 there was a
+        // second, sharper reason — the reactive-checked effect rebuilt the whole
+        // attribute from this method and dropped anything added outside it.
+        // That effect now owns only `--checked`, so a class added after render
+        // survives; this one still belongs here.)
         if !self.description.is_empty() {
             classes.push("rinch-switch--with-description");
         }

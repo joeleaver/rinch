@@ -14,6 +14,10 @@ Both **merge** with what the component itself put on that root rather than repla
 
 A reactive `style:` takes its *own* previous declarations back on each re-run, so it never accumulates: a property the closure has stopped naming is removed, or restored to the value it had been overriding. It overwrites a property it still names where that property stands rather than re-appending it, and it leaves alone one whose current value somebody else has since written. The one case it does not settle is a same-property collision with a style shorthand — see [Application Order](./rsx-syntax.md#application-order).
 
+A reactive `class:` has the same memory: it takes off the words it last wrote before adding the new ones, so it neither accumulates its own old values nor disturbs a class it did not write.
+
+**The merge only holds if the component keeps its side of it.** A `class:` prop is applied to the handle `Component::render` *returned*, which is after the component has built its tree and registered its effects. A component effect that then rewrote the whole `class` attribute — from a base string captured during `render` — therefore discarded the caller's class on its first run, and there was no way to get it back short of a re-render. `Checkbox { class: "compact", checked_fn: … }` styled correctly until the user clicked it once ([issue #717](https://github.com/joeleaver/rinch/issues/717)). So **a component effect adds and removes the one class it is responsible for** (`NodeHandle::add_class` / `remove_class`) and never writes `class` wholesale. `add_class` is idempotent, as `DOMTokenList.add` is, so an effect that re-runs without changing its answer leaves the attribute alone.
+
 **Style shorthands:** All elements and components support CSS shorthand props like `w`, `h`, `m`, `p`, `maw`, etc. These expand to `set_style()` calls and compose with component styles. Spacing scale values (`xs`, `sm`, `md`, `lg`, `xl`) auto-resolve to `var(--rinch-spacing-{value})`:
 
 ```rust

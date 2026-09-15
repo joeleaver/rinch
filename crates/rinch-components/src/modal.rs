@@ -256,8 +256,8 @@ impl Component for Modal {
         // it for both layers and keeps the panel exactly one above the
         // full-viewport root, which is what the hard-coded 200/201 pair did.
         // Writing it here rather than as two inline `z-index` declarations also
-        // reaches the panel, whose class string is rewritten by the
-        // `opened_fn` effect below.
+        // reaches the panel, which inherits the custom property from the root
+        // and reads it from the stylesheet.
         if let Some(z) = self.z_index {
             root.set_attribute("style", &format!("--rinch-modal-z-index: {}", z));
         }

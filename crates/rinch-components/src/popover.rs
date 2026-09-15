@@ -178,9 +178,11 @@ impl Default for Popover {
 impl Popover {
     /// The root's classes for the **closed** state.
     ///
-    /// Split out from [`class_string`](Self::class_string) so the `opened_fn`
-    /// effect can rebuild the class list without re-deriving position, radius
-    /// and shadow on every toggle.
+    /// Split out from [`class_string`](Self::class_string), which adds
+    /// `rinch-popover--opened` to it. The `opened_fn` effect used to rebuild the
+    /// class list from this method on every toggle; since #717 it adds and
+    /// removes `rinch-popover--opened` alone, so this is now only
+    /// `class_string`'s closed half.
     pub fn class_string_closed(&self) -> String {
         let mut classes = vec!["rinch-popover"];
 
