@@ -248,6 +248,77 @@ fn an_option_inserted_before_an_already_selected_one_takes_the_selection() {
     );
 }
 
+/// `insert_before` is a third insertion path, and it is the one a **keyed
+/// `for`** places a row through: `rinch_core::for_loop` calls
+/// `NodeHandle::insert_after`, which routes here whenever the anchor has a next
+/// sibling and to `append_child` only when it does not. So an
+/// `<option selected>` rendered in a list arrives this way for every position
+/// but the last.
+///
+/// Chrome 150, `insertBefore` of a `selected` option ahead of an
+/// already-selected one: `selectedIndex == 0`, with both attributes present.
+///
+/// This path was **unhooked in this PR's first two commits** and the fixtures
+/// could not see it: they used `insert_child`, which is a different method on
+/// the same trait. Found by the review pushing on whether two options can be
+/// selected at once.
+#[test]
+fn an_option_inserted_before_a_sibling_takes_the_selection() {
+    let (mut doc, sel, o) = select_with(2, &[]);
+    doc.set_attribute(o[1], "selected", "");
+    assert_eq!(selected(&doc, sel), Some(1), "precondition");
+
+    let fresh = doc.create_element("option");
+    doc.set_attribute(fresh, "value", "vz");
+    doc.set_attribute(fresh, "selected", "");
+    doc.insert_before(sel, fresh, o[0]);
+
+    let model = resolve_select_model(&doc.tree, sel.0);
+    assert_eq!(model.options.len(), 3);
+    assert_eq!(
+        model.selected_index,
+        Some(0),
+        "the inserted option takes the selection (Chrome 150: 0)"
+    );
+    assert_eq!(
+        doc.get_attribute(o[1], "selected").as_deref(),
+        Some(""),
+        "and the option it took it from keeps its attribute — so an answer of 2          here would be the tie-break papering over a missing hook"
+    );
+}
+
+/// `replace_node` is the fourth, and the last: it parents the arriving node.
+///
+/// Chrome 150, `replaceChild` of a `selected` option over option 0 while option
+/// 1 is selected: `selectedIndex == 0`. The node *leaving* needs no rule — it is
+/// detached, drops out of the option list, and the select falls back to its
+/// first enabled option, measured the same way.
+#[test]
+fn a_replacement_option_that_is_selected_takes_the_selection() {
+    let (mut doc, sel, o) = select_with(2, &[]);
+    doc.set_attribute(o[1], "selected", "");
+    assert_eq!(selected(&doc, sel), Some(1), "precondition");
+
+    let fresh = doc.create_element("option");
+    doc.set_attribute(fresh, "value", "vz");
+    doc.set_attribute(fresh, "selected", "");
+    doc.replace_node(o[0], fresh);
+    assert_eq!(
+        selected(&doc, sel),
+        Some(0),
+        "the replacement takes the selection (Chrome 150: 0)"
+    );
+
+    // The other direction: replacing the *selected* option with an unselected
+    // one leaves nothing selected, so the select falls back (Chrome 150: 0).
+    let (mut doc, sel, o) = select_with(3, &[]);
+    doc.set_attribute(o[1], "selected", "");
+    let plain = doc.create_element("option");
+    doc.set_attribute(plain, "value", "vy");
+    doc.replace_node(o[1], plain);
+    assert_eq!(selected(&doc, sel), Some(0));
+}
+
 /// A whole `<optgroup>` arriving at once: the **last** selected option in it
 /// takes the selection, which is what each of its options running its own
 /// insertion steps in tree order leaves.
@@ -322,6 +393,39 @@ fn the_rule_reaches_an_option_inside_an_optgroup() {
         selected(&doc, sel),
         Some(1),
         "the option set last wins inside an <optgroup> too"
+    );
+}
+
+/// The degenerate state the resolver's `rposition` exists for: two options
+/// selected at once, which resolves to the **last in tree order**.
+///
+/// That is the browser's answer — `<option selected>a<option selected>b`
+/// selects `b`, Chrome 150 — and it is unreachable through the DOM API, since
+/// the exclusivity rule runs on every path that writes the attribute or parents
+/// an option. So it is constructed here by writing `Node::selectedness`
+/// directly, the only way in, and that is the whole reason this fixture exists:
+/// with every hook in place `position` and `rposition` agree on every reachable
+/// state, so no ordinary fixture can tell them apart.
+///
+/// The spelling is not cosmetic. Measured on this tree: with `position` in the
+/// resolver, deleting the `insert_before` and `replace_node` hooks leaves all
+/// the other fixtures **green** — an option inserted at the front is both the
+/// newly selected one and the first in tree order, so `position` returns the
+/// right index for the wrong reason. With `rposition` two of them fail, which
+/// is how those two hooks came to be written.
+#[test]
+fn two_options_selected_at_once_resolve_to_the_last_in_tree_order() {
+    let (mut doc, sel, o) = select_with(3, &[]);
+    doc.set_attribute(o[0], "selected", "");
+    assert_eq!(selected(&doc, sel), Some(0), "precondition");
+
+    // Behind the API: the rule would have cleared option 0 on the way in.
+    doc.tree.get_mut(o[2].0).unwrap().selectedness = Some(true);
+    assert_eq!(
+        selected(&doc, sel),
+        Some(2),
+        "two selected options resolve to the last in tree order, as a browser's \
+         markup does"
     );
 }
 

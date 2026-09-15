@@ -482,11 +482,16 @@ pub struct Node {
     pub children: Vec<RawNodeId>,
     /// Attributes (name → value).
     ///
-    /// Read freely. Any write of the **`id`** key must go through
-    /// [`Node::write_attribute`] / [`Node::erase_attribute`], which keep
-    /// [`Node::id_atom`] in step. Other keys may be written directly and
-    /// several sites under `crates/rinch/src/app/` do (`value`, `data-preedit`,
-    /// the `data-text-sel*` trio, …); none of them writes `id`.
+    /// Read freely. Two keys must go through the document API rather than this
+    /// map: **`id`**, whose write must use [`Node::write_attribute`] /
+    /// [`Node::erase_attribute`] so that [`Node::id_atom`] stays in step, and
+    /// **`selected`**, whose write must use `RinchDocument::set_attribute` /
+    /// `::remove_attribute` so that [`Node::selectedness`] does (#692) — a
+    /// `selected` inserted here would leave the option's live selectedness
+    /// untouched and the `<select>` would not see it. Other keys may be written
+    /// directly and several sites under `crates/rinch/src/app/` do (`value`,
+    /// `data-preedit`, the `data-text-sel*` trio, …); none of them writes
+    /// either of those two.
     pub attributes: HashMap<String, String>,
     /// The `id` attribute, interned (#675).
     ///
@@ -766,10 +771,19 @@ pub struct Node {
     /// option 1 and then option 0 leaves *option 0* selected with both
     /// attributes present.
     ///
-    /// `None` means nothing has set it and the attribute still speaks for the
-    /// option, which is what keeps a subtree built straight into `attributes`
-    /// (the HTML parser behind `set_inner_html`) resolving exactly as it always
-    /// did. `crate::select` owns every write; see `resolve_select_model`.
+    /// `None` is the state of an element nothing has ever written `selected` to
+    /// — every `<option>` that does not carry the attribute, and every element
+    /// that is not one. It has **no producer in combination with a present
+    /// `selected` attribute**: `RinchDocument::set_attribute` seeds this on the
+    /// attribute's absent→present transition and is the only path that writes
+    /// the `selected` key, `set_inner_html` included (it parses and then calls
+    /// `set_attribute` / `append_child` per node, `style_resolution/mod.rs`'s
+    /// `create_node_from_parsed`). So `collect_options` reads this alone and
+    /// never falls back to the attribute — a direct write into
+    /// [`Node::attributes`] would not be seen, which is why `selected` joins
+    /// `id` in that field's "go through the document API" rule.
+    ///
+    /// `crate::select` owns every write; see `resolve_select_model`.
     pub selectedness: Option<bool>,
     /// Set during Stylo selector matching when a `:hover` pseudo-class is
     /// evaluated against this node. Nodes without this flag can skip style

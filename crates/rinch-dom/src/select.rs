@@ -12,7 +12,8 @@
 //!    select has one (this is what the app writes back when the user picks an
 //!    option, and what the `value:` rsx prop sets — HTML has no `value` content
 //!    attribute on `<select>` at all, so this step is rinch's own);
-//! 2. otherwise the option whose **selectedness** is set — see
+//! 2. otherwise the option whose **selectedness** is set — the live state, not
+//!    the `selected` attribute, which is only its default; see
 //!    [`set_option_selectedness`];
 //! 3. otherwise the first non-disabled option — a single `<select>` always has a
 //!    selected option in a browser, defaulting to the first. This is also what
@@ -24,7 +25,7 @@
 //! *default* selectedness; the live state moves with the last option **set**, and
 //! the two part company as soon as two options carry the attribute at once. See
 //! [`set_option_selectedness`] for the rule and the Chrome 150 measurements
-//! behind it.
+//! behind it, and [`options_inserted`] for the four DOM paths that apply it.
 //!
 //! `<optgroup>`s are flattened: their `<option>` children are collected in
 //! document order as if the group weren't there. (Rendering the group *labels*
@@ -129,17 +130,17 @@ fn collect_options(tree: &NodeTree, parent_id: RawNodeId, out: &mut Vec<SelectOp
                     .get("value")
                     .cloned()
                     .unwrap_or_else(|| label_text.trim().to_string());
-                let selected_attr = child.attributes.contains_key("selected");
                 out.push(SelectOption {
                     node_id: child_id,
                     value,
                     label,
-                    selected_attr,
-                    // Nothing has set this option's selectedness, so its
-                    // attribute still speaks for it — the state every option is
-                    // in until something writes `selected` or the option is
-                    // inserted into a select already carrying it.
-                    selectedness: child.selectedness.unwrap_or(selected_attr),
+                    selected_attr: child.attributes.contains_key("selected"),
+                    // The live state alone. It is seeded from the attribute at
+                    // the write (`RinchDocument::set_attribute`), so there is no
+                    // fallback to the attribute here and none is reachable:
+                    // that write is the only path into the `selected` key,
+                    // `set_inner_html` included.
+                    selectedness: child.selectedness == Some(true),
                     disabled: child.attributes.contains_key("disabled"),
                 });
             }
@@ -175,13 +176,21 @@ fn resolve_selected_index(options: &[SelectOption], select_value: Option<&str>) 
     {
         return Some(i);
     }
-    // 2. The option whose selectedness is set (#692). At most one is, wherever
-    //    `set_option_selectedness` has run — it clears the others, as HTML does
-    //    — so the `rposition` is a tie-break for the one state it does not
-    //    reach: a subtree built straight into `Node::attributes` and never
-    //    inserted option-by-option, where several options fall back to their
-    //    attributes at once. Last in tree order is the browser's answer there
-    //    (`<option selected>a<option selected>b` selects `b`, measured).
+    // 2. The option whose selectedness is set (#692). At most one is: HTML's
+    //    exclusivity rule clears the others, and `set_option_selectedness` runs
+    //    it on every path that writes the attribute or parents an option.
+    //
+    //    `rposition` rather than `position`, and that is load-bearing rather
+    //    than tidy. Last-in-tree-order is what a browser answers if a list ever
+    //    does hold two selected options (`<option selected>a<option
+    //    selected>b` selects `b`, measured), and — the reason it stays —
+    //    **`position` would hide a missing insertion hook.** An option inserted
+    //    at the front is both the newly selected one and the first in tree
+    //    order, so `position` returns the right index for the wrong reason:
+    //    measured on this tree, deleting the `insert_before` and `replace_node`
+    //    hooks with `position` here leaves all 10 fixtures green, and with
+    //    `rposition` two of them fail. That is how the two hooks came to be
+    //    written at all.
     if let Some(i) = options.iter().rposition(|o| o.selectedness) {
         return Some(i);
     }
@@ -209,7 +218,8 @@ fn resolve_selected_index(options: &[SelectOption], select_value: Option<&str>) 
 /// |---|---|---|
 /// | write `selected` on option 1, then option 0 | **0** | 1 |
 /// | write on 0, then 1, then 0 again | 1 | 1 |
-/// | remove `selected` from the selected option 1 | 0 | 0 |
+/// | remove `selected` from the selected option 1 (option 0 **enabled**) | 0 | 0 |
+/// | the same with option 0 **disabled** | **1** | 0 |
 ///
 /// Row 2 is why this runs on the **transition** into the attribute rather than
 /// on every write: re-writing an attribute that is already present changes
@@ -217,6 +227,18 @@ fn resolve_selected_index(options: &[SelectOption], select_value: Option<&str>) 
 /// and it changed nothing here before either. Row 3 needs no rule of its own —
 /// deselecting the last selected option leaves `resolve_selected_index` at step
 /// 3, which is what HTML's "ask for a reset" does.
+///
+/// Row 3's two halves are the same removal with a different neighbour, and they
+/// are what force the clear to be **eager**: deselecting leaves nothing
+/// selected, so the select falls back to its first *enabled* option rather than
+/// to whichever earlier option still carries the attribute.
+///
+/// **Every write of the `selected` key goes through
+/// `RinchDocument::set_attribute` / `::remove_attribute`**, which is what lets
+/// [`collect_options`] read `Node::selectedness` alone. `set_inner_html` is not
+/// an exception — it parses and then calls `set_attribute` and `append_child`
+/// per node (`style_resolution/mod.rs`'s `create_node_from_parsed`), so a
+/// parsed `<option selected>` is seeded like any other.
 ///
 /// `multiple` is not honoured: rinch's `<select>` model is single-selection
 /// throughout (`selected_index` is one `Option<usize>`), so a `multiple` select
@@ -247,6 +269,15 @@ pub(crate) fn set_option_selectedness(tree: &mut NodeTree, option_id: RawNodeId,
 }
 
 /// Apply the same rule for a subtree that has just been inserted (#692).
+///
+/// Called from **all four** `DomDocument` methods that parent a node —
+/// `append_child`, `insert_child`, `insert_before` and `replace_node`. All four,
+/// not the obvious two: a keyed `for` places its rows with
+/// `NodeHandle::insert_after`, which routes to `insert_before` for every
+/// position but the last, and a branch swap uses `replace_node` — so an
+/// `<option selected>` built by `rsx!` commonly arrives through one of those.
+/// Anything new that parents a node has to call this too, and the resolver's
+/// `rposition` is what will make forgetting visible.
 ///
 /// An option carrying selectedness joins its select's list when it is inserted,
 /// and takes the selection with it — Chrome 150, measured: appending a

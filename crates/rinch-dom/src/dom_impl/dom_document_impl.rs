@@ -231,6 +231,14 @@ impl DomDocument for RinchDocument {
 
         // Recompute styles for the inserted subtree to pick up ancestor-based selectors
         self.recompute_node_styles_recursive(c);
+
+        // The insertion rule (#692), as in `append_child`. This is the path a
+        // keyed `for` row arrives through: `rinch_core::for_loop` places each
+        // row with `NodeHandle::insert_after`, which routes here whenever the
+        // anchor has a next sibling and to `append_child` only when it does
+        // not. So an `<option selected>` rendered in a list reaches its select
+        // through this method for every position but the last.
+        crate::select::options_inserted(&mut self.tree, c);
     }
 
     fn replace_node(&mut self, old: NodeId, new: NodeId) {
@@ -299,6 +307,15 @@ impl DomDocument for RinchDocument {
 
             // Recompute styles for the new subtree to pick up ancestor-based selectors
             self.recompute_node_styles_recursive(new.0);
+
+            // A replacement is an insertion for the node arriving (#692).
+            // Measured in Chrome 150: `replaceChild` of a `selected` option
+            // over option 0, while option 1 is selected, gives
+            // `selectedIndex == 0`. The node *leaving* needs nothing — it is
+            // detached, so it drops out of the select's option list and
+            // `resolve_select_model` falls back to the first enabled option,
+            // which is what a browser does too.
+            crate::select::options_inserted(&mut self.tree, new.0);
         }
     }
 
