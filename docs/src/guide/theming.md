@@ -440,18 +440,6 @@ A desktop scroll container paints an overlay thumb on each axis that is
 scrollable and overflowing. Two custom properties style it, and both **inherit**
 — one declaration on a root node restyles every scroll region in the app.
 
-### What counts as overflowing
-
-The same content a browser counts. A `position: fixed` child is anchored to the
-viewport, so it never makes an ancestor scroll — a `Modal`, `Drawer` or
-`Notification` inside an `overflow: auto` region adds nothing to that region's
-scroll range, open or closed. A `position: absolute` child counts only where
-the container is its containing block, i.e. the container is itself positioned
-(or transformed); an absolute that resolves against something further up
-escapes, exactly as it does on the web. `visibility: hidden` content still
-counts, because it still occupies its box; `display: none` content does not,
-because it has none.
-
 ```css
 :root {
   --rinch-scrollbar-color: rgba(255, 255, 255, 0.35);              /* thumb */
@@ -468,6 +456,33 @@ because it has none.
   `thin` a 4px one. **`none` removes the bar entirely**: nothing is painted and
   nothing is hit-tested either, so an app drawing its own scrollbar can switch
   rinch's off rather than covering it up.
+
+### What counts as overflowing
+
+For the cases in this paragraph, rinch counts the same content a browser does.
+A `position: fixed` child is anchored to the viewport, so it never makes an
+ancestor scroll — a `Modal`, `Drawer` or `Notification` inside an
+`overflow: auto` region adds nothing to that region's scroll range, open or
+closed. A `position: absolute` child counts only where the container is its
+containing block, i.e. the container is itself positioned (or transformed); an
+absolute that resolves against something further up escapes that container,
+exactly as it does on the web. `visibility: hidden` content still counts,
+because it still occupies its box; `display: none` content does not, because it
+has none.
+
+Where desktop still differs from a browser:
+
+- **A positioned child of a padded scroll container** can add up to the
+  container's right and bottom padding to its scroll range, which a browser
+  does not. A `position: absolute; inset: 0` overlay — a `LoadingOverlay`, say —
+  inside a `padding: 20px; overflow: auto; position: relative` panel gives the
+  panel 20px of scroll travel on each axis and two scrollbars, where a browser
+  shows none. In-flow children of a padded container are measured correctly.
+- **An absolute whose containing block is further up than its parent** is
+  counted by no scroll container at all; a browser counts it in that ancestor.
+- **A child's `transform` and its end margins** do not extend the scroll range,
+  and neither do the children of a `display: contents` wrapper; a browser's
+  scroll range includes all three.
 
 ### Why not `scrollbar-color` / `scrollbar-width`?
 

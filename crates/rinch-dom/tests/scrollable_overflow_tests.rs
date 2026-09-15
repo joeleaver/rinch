@@ -16,7 +16,10 @@
 //! that rinch's overlay bars never take. `scrollWidth - clientWidth` is the
 //! quantity compared against `ScrollbarTrack::max_scroll`; Chrome measures both
 //! in the container's **padding**-box frame and rinch in its **content**-box
-//! frame, which cancels (see `content_extents`' own doc).
+//! frame, which cancels for **in-flow** children — every padded row below is
+//! one. It does not cancel for a positioned child of a padded container, where
+//! rinch over-reports by the end padding; `content_extents`' own doc has the
+//! numbers, and nothing here pins that case.
 //!
 //! The Chrome numbers, for whoever re-derives these:
 //!
