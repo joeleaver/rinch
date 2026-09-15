@@ -472,6 +472,14 @@ impl DomDocument for RinchDocument {
     }
 
     fn set_attribute(&mut self, node: NodeId, name: &str, value: &str) {
+        // #688: in HTML content the name is ASCII case-insensitive, so it is
+        // stored folded — every reader below and in `stylo_impl` looks an
+        // attribute up by a lowercase literal (`"style"`, `"class"`, `"id"`,
+        // `"src"`), and Stylo hands `attr_matches` an already-lowercased
+        // selector name. In SVG content it is case-sensitive and kept verbatim.
+        let folded = crate::attr_name::fold_attribute_name(self.tree.nodes[node.0].tag(), name);
+        let name: &str = &folded;
+
         self.tree.nodes[node.0].write_attribute(name, value);
 
         // Parse inline style into Stylo PropertyDeclarationBlock
@@ -527,6 +535,13 @@ impl DomDocument for RinchDocument {
     }
 
     fn remove_attribute(&mut self, node: NodeId, name: &str) {
+        // Folded exactly as the write was (#688) — `NodeHandle::write_attribute`
+        // turns a falsey boolean attribute into a `remove_attribute` with the
+        // caller's own spelling, so a fold on one side and not the other could
+        // never turn one off again.
+        let folded = crate::attr_name::fold_attribute_name(self.tree.nodes[node.0].tag(), name);
+        let name: &str = &folded;
+
         self.tree.nodes[node.0].erase_attribute(name);
         if name == "style" {
             self.tree.nodes[node.0].style_attribute_cache = None;
@@ -560,7 +575,11 @@ impl DomDocument for RinchDocument {
     }
 
     fn get_attribute(&self, node: NodeId, name: &str) -> Option<String> {
-        self.tree.nodes.get(node.0)?.attributes.get(name).cloned()
+        let n = self.tree.nodes.get(node.0)?;
+        // Folded like the write (#688), so `getAttribute("ID")` answers for an
+        // element written with `id=` and vice versa, as in a browser.
+        let folded = crate::attr_name::fold_attribute_name(n.tag(), name);
+        n.attributes.get(folded.as_ref()).cloned()
     }
 
     fn set_style(&mut self, node: NodeId, property: &str, value: &str) {

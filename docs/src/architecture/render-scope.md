@@ -166,6 +166,21 @@ let label = button.get_attribute("aria-label"); // Some("Submit form")
 button.remove_attribute("disabled");
 ```
 
+**Attribute names are ASCII case-insensitive in HTML content and case-sensitive
+in SVG content** (issue #688), as in a browser. `set_attribute("ID", …)` on a
+`<div>` stores `id`, so `#up`, `[id]`, `getAttribute("id")` and an uppercase
+`STYLE=` (which has to reach the inline-style cache) all agree; `get_attribute`
+and `remove_attribute` fold their own name the same way, so either spelling
+finds what either spelling wrote. On an element whose tag is an SVG one the
+author's spelling is kept, because `viewBox`, `preserveAspectRatio`,
+`gradientUnits` and their kind are distinct names in SVG.
+
+The decision is made from the element's **tag**, not from an `<svg>` ancestor,
+because `rsx!` and the `Element::Html` parser both write an element's attributes
+before appending it to its parent — at the write there is no ancestor to walk.
+`crates/rinch-dom/src/attr_name.rs` holds the tag list. The attribute **value**
+is never folded: an `id` still matches `#CamelId` case-sensitively.
+
 ### Styles
 
 ```rust
@@ -246,9 +261,9 @@ input.focus();  // Give focus to this element
 | Method | Description |
 |--------|-------------|
 | `set_text(content: &str)` | Set text content (for text nodes) |
-| `set_attribute(name: &str, value: &str)` | Set an attribute |
-| `get_attribute(name: &str) -> Option<String>` | Get an attribute value |
-| `remove_attribute(name: &str)` | Remove an attribute |
+| `set_attribute(name: &str, value: &str)` | Set an attribute — the name folds to lowercase in HTML content, verbatim in SVG (#688) |
+| `get_attribute(name: &str) -> Option<String>` | Get an attribute value (same fold) |
+| `remove_attribute(name: &str)` | Remove an attribute (same fold) |
 | `set_style(property: &str, value: &str)` | Set a CSS style property |
 | `set_class(class: &str)` | Set the class attribute |
 | `add_class(name: &str)` | Add a CSS class |

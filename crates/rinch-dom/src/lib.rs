@@ -5,6 +5,7 @@
 //! Implements the [`DomDocument`] trait from rinch-core.
 
 pub mod animation;
+pub mod attr_name;
 mod calc_layout;
 pub mod computed_style;
 mod dom_impl;
