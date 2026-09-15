@@ -1081,13 +1081,25 @@ an open ancestor:
 
 Two consequences of that spelling:
 
-- **One nesting shape is wrong:** an open menu placed inside the *target*
-  (trigger) of a closed menu that is itself inside an open menu's panel keeps its
-  panel hidden. That is a menu in the trigger of a menu in a menu; the limit is
-  pinned by a test so it cannot change silently.
-- **Its specificity is (0,6,0)**, so a `display` of your own on
-  `.rinch-dropdown-menu__dropdown` loses to it while the menu is open unless
-  your selector is more specific still.
+- **A nesting limit:** an open menu C inside the *target* (trigger) of a closed
+  menu B that is itself inside an open menu A keeps its panel hidden — B is
+  closed and sits between A and C's panel, though C's own root is open. "Inside
+  A" means either half of A, its panel **or** its target, and the same holds
+  however many closed menus are stacked in triggers between them. (An open menu
+  in a closed menu's *panel* is hidden anyway, correctly.) This is a menu in the
+  trigger of a menu in a menu; it opened before #760, and the limit is pinned by
+  a test so it cannot change silently.
+- **Do not put a `display` on a `DropdownMenuDropdown`.** The panel is hidden by
+  a single-class rule, (0,1,0), and shown by the open rule, (0,6,0). A `display`
+  of your own that beats the hidden rule — a two-class rule such as
+  `.my-menu .rinch-dropdown-menu__dropdown { display: flex }`, or an inline
+  `style: "display: flex"` — keeps the panel **visible while the menu is
+  closed**, so the menu never hides (measured for the two-class rule on desktop
+  and in Chrome, and for the inline `style:` on desktop). While
+  the menu is open the same declaration loses to the open rule unless it is more
+  specific still. Put the layout (`display: flex`, a `gap`) on a child of the
+  `DropdownMenuDropdown` instead, as with `TabsPanel`. A `style:` on the panel
+  that sets anything *other* than `display` is kept.
 
 | Prop | Type | Default | Description |
 |------|------|---------|-------------|

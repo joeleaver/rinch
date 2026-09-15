@@ -212,9 +212,15 @@ pub fn styles() -> String {
    exact alternative is a depth-bounded list of `>` chains, which is silent past
    its depth instead. `css_hook_760_tests::known_limit_…` pins the limit.
 
+   "Inside A" is either half of A, its panel or its target, and a stack of
+   closed menus in triggers is the same limit (third review of #774).
+
    Specificity: the panel rule is (0,6,0) — the `:not()` counts its argument —
-   so an author `display` on `.rinch-dropdown-menu__dropdown` loses to it while
-   the menu is open unless it is more specific still. */
+   and the hidden rule above is (0,1,0). So an author `display` on
+   `.rinch-dropdown-menu__dropdown` that beats (0,1,0) — a two-class rule, or an
+   inline `style:` — keeps the panel visible while the menu is **closed** (the
+   menu never hides), and loses to the open rule while it is open unless it is
+   more specific still. The guide tells callers to put layout on a child. */
 .rinch-dropdown-menu--opened .rinch-dropdown-menu__dropdown:not(.rinch-dropdown-menu--opened .rinch-dropdown-menu:not(.rinch-dropdown-menu--opened) .rinch-dropdown-menu__dropdown),
 .rinch-dropdown-menu--opened > .rinch-dropdown-menu__backdrop {
     display: block;
