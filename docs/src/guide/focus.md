@@ -516,7 +516,7 @@ __scope.on_cleanup(move || drop(handle));
   asked first, so two nested modals close innermost-first. The first handler
   that returns `true` consumes the key and the ones beneath it are never asked.
 - **Answer `false` while you are closed.** An overlay usually stays *mounted*
-  when it closes — `opened_fn` only rewrites a class — so the check belongs
+  when it closes — `opened_fn` only toggles a class — so the check belongs
   inside the handler, at dispatch time, not at registration. A handler that
   always returns `true` swallows Escape for the rest of the session.
 - **It is released on unmount**, twice over: the [`DismissHandle`] releases it

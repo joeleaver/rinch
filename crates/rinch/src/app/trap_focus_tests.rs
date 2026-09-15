@@ -191,9 +191,9 @@ fn modal_page(open: Signal<bool>, trap_focus: bool) -> (RinchApp, Ids) {
 }
 
 /// Re-run layout after a signal write, so a `display: none` toggle is in the
-/// tree the collector walks. The class rewrite dirties style, so this is not
-/// the no-op `resolve_layout`'s `!layout_dirty` early-return makes of a
-/// re-resolve at an unchanged viewport.
+/// tree the collector walks. Adding or removing the modal's `--hidden` class
+/// dirties style, so this is not the no-op `resolve_layout`'s `!layout_dirty`
+/// early-return makes of a re-resolve at an unchanged viewport.
 fn settle(app: &mut RinchApp) {
     app.resolve_and_repaint(W, H);
 }
@@ -346,7 +346,7 @@ fn trap_focus_false_leaves_tab_to_the_whole_document() {
 
 /// A closed-but-mounted modal traps nothing, and Tab reaches the page.
 ///
-/// `Modal::render` runs *once* — `opened_fn` only rewrites a class — so a closed
+/// `Modal::render` runs *once* — `opened_fn` only toggles a class — so a closed
 /// modal stays mounted with its root in the tree. Note this fixture alone kills
 /// no single *guard*, because a closed modal is protected twice over (the
 /// attribute is removed *and* the root is `display: none`); the two guards have

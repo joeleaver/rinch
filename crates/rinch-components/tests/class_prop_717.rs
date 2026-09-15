@@ -454,3 +454,49 @@ fn a_re_run_that_changes_nothing_does_not_grow_the_attribute() {
     );
     assert!(has_class(&mounted.root, CALLER));
 }
+
+/// The `Tree` **chevron**, which the first pass of this sweep missed.
+///
+/// It had both faults at once, twenty lines below the row this file already
+/// covered: the expand effect wrote the whole `class` attribute, and that write
+/// was also the only thing that ever gave the chevron its base class — the
+/// static sibling `render_tree_node_static` has always written it at creation.
+#[test]
+fn a_tree_chevron_keeps_a_class_added_after_render() {
+    let state = UseTreeReturn::new(UseTreeOptions::default());
+    let mounted = Mounted::build(move |scope| {
+        TreeComponent {
+            data: vec![
+                TreeNodeData::new("a", "A").with_children(vec![TreeNodeData::new("b", "B")]),
+            ],
+            tree: Some(state),
+            ..Default::default()
+        }
+        .render(scope, &[])
+    });
+
+    let chevron = mounted.find("rinch-tree__chevron");
+    chevron.add_class(CALLER);
+
+    assert!(!has_class(&chevron, "rinch-tree__chevron--expanded"));
+    state
+        .expanded
+        .set(std::iter::once("a".to_string()).collect());
+    assert!(
+        has_class(&chevron, "rinch-tree__chevron--expanded"),
+        "positive control: expanding writes the modifier"
+    );
+    assert!(
+        has_class(&chevron, CALLER),
+        "#717: got `{}`",
+        chevron.get_attribute("class").unwrap_or_default()
+    );
+
+    state.expanded.set(Default::default());
+    assert!(!has_class(&chevron, "rinch-tree__chevron--expanded"));
+    assert!(has_class(&chevron, CALLER), "#717, collapsing");
+    assert!(
+        has_class(&chevron, "rinch-tree__chevron"),
+        "the base class is written at creation, not by the effect"
+    );
+}

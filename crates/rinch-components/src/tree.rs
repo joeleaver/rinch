@@ -39,6 +39,8 @@ use rinch_tabler_icons::{TablerIcon, TablerIconStyle, render_tabler_icon};
 
 /// The class selection adds to a tree row's content box.
 const SELECTED_CLASS: &str = "rinch-tree__node-content--selected";
+/// The class the expanded state adds to a tree row's chevron.
+const CHEVRON_EXPANDED_CLASS: &str = "rinch-tree__chevron--expanded";
 
 // =============================================================================
 // TreeNodeData
@@ -583,23 +585,23 @@ fn render_tree_node(
 
     // Chevron (for expandable nodes)
     if has_children {
-        let chevron = rinch_macros::rsx! { span {} };
+        // The base class is written here, not by the effect below — the same
+        // repair the content box above took (issue #717), and what the static
+        // sibling `render_tree_node_static` has always done.
+        let chevron = rinch_macros::rsx! { span { class: "rinch-tree__chevron" } };
         let icon = crate::icons::chevron_right_dom(__scope);
         chevron.append_child(&icon);
 
-        // Reactive chevron class
+        // Reactive chevron class: adds and removes the one modifier, never
+        // rewriting the attribute (issue #717).
         let chevron_clone = chevron.clone();
         let nv = node_value.clone();
         __scope.create_effect(move || {
-            let is_expanded = expanded_signal.get().contains(&nv);
-            chevron_clone.set_attribute(
-                "class",
-                if is_expanded {
-                    "rinch-tree__chevron rinch-tree__chevron--expanded"
-                } else {
-                    "rinch-tree__chevron"
-                },
-            );
+            if expanded_signal.get().contains(&nv) {
+                chevron_clone.add_class(CHEVRON_EXPANDED_CLASS);
+            } else {
+                chevron_clone.remove_class(CHEVRON_EXPANDED_CLASS);
+            }
         });
 
         // Dedicated click handler on chevron — always toggles expand/collapse

@@ -16,7 +16,7 @@
 //! ## The three rules, and why each is here
 //!
 //! - **The open check happens at dispatch, not at registration.** `Modal::render`
-//!   runs *once*; `opened_fn` only rewrites a class. A closed modal stays
+//!   runs *once*; `opened_fn` only toggles a class. A closed modal stays
 //!   mounted, so an entry registered "because the modal is open" would go on
 //!   swallowing Escape long after it closed. Every handler is asked afresh.
 //! - **Liveness beside the callback, checked at dispatch.** This registry is

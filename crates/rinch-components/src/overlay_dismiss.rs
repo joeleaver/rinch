@@ -5,7 +5,7 @@
 //! module exists to make impossible — in particular the **open check**, which
 //! belongs at dispatch and not here:
 //!
-//! `render` runs *once*. `opened_fn` only rewrites a class, so a closed overlay
+//! `render` runs *once*. `opened_fn` only toggles a class, so a closed overlay
 //! stays mounted with its handler in place. Deciding "register only when open"
 //! would arm the handler forever the first time the overlay opened, and Escape
 //! would go on being swallowed by an invisible dialog. So the handler is armed
