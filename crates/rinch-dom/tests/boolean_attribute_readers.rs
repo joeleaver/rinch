@@ -8,7 +8,7 @@
 //! | reader | site |
 //! |---|---|
 //! | CSS `:checked` | `stylo_impl.rs`, `NonTSPseudoClass::Checked` |
-//! | an `<option>`'s selectedness | `select.rs`, `collect_options` |
+//! | an `<option>`'s selectedness (seeded from it — #692) | `select.rs`, `collect_options` |
 //! | an `<option>`'s disabledness | the same |
 //!
 //! and all three are **right** to: in HTML a present boolean attribute is true

@@ -482,11 +482,16 @@ pub struct Node {
     pub children: Vec<RawNodeId>,
     /// Attributes (name → value).
     ///
-    /// Read freely. Any write of the **`id`** key must go through
-    /// [`Node::write_attribute`] / [`Node::erase_attribute`], which keep
-    /// [`Node::id_atom`] in step. Other keys may be written directly and
-    /// several sites under `crates/rinch/src/app/` do (`value`, `data-preedit`,
-    /// the `data-text-sel*` trio, …); none of them writes `id`.
+    /// Read freely. Two keys must go through the document API rather than this
+    /// map: **`id`**, whose write must use [`Node::write_attribute`] /
+    /// [`Node::erase_attribute`] so that [`Node::id_atom`] stays in step, and
+    /// **`selected`**, whose write must use `RinchDocument::set_attribute` /
+    /// `::remove_attribute` so that [`Node::selectedness`] does (#692) — a
+    /// `selected` inserted here would leave the option's live selectedness
+    /// untouched and the `<select>` would not see it. Other keys may be written
+    /// directly and several sites under `crates/rinch/src/app/` do (`value`,
+    /// `data-preedit`, the `data-text-sel*` trio, …); none of them writes
+    /// either of those two.
     pub attributes: HashMap<String, String>,
     /// The `id` attribute, interned (#675).
     ///
@@ -754,6 +759,32 @@ pub struct Node {
     /// Cached parsed inline style attribute (Stylo PropertyDeclarationBlock).
     /// Populated when style attribute is set, used by Stylo for cascade.
     pub style_attribute_cache: Option<ServoArc<Locked<PropertyDeclarationBlock>>>,
+    /// An `<option>`'s **live selectedness**, once something has set it (#692).
+    ///
+    /// HTML gives an `<option>` two states, and they come apart. The `selected`
+    /// content attribute is the option's *default* selectedness
+    /// (`defaultSelected`); its live selectedness is what the `<select>` reports,
+    /// and the rule that moves it is "whenever an option's selectedness is set
+    /// to true, every other option of its select is set to false". So the last
+    /// option **set** is the selected one, which is not in general the last one
+    /// carrying the attribute — measured in Chrome 150, writing `selected` on
+    /// option 1 and then option 0 leaves *option 0* selected with both
+    /// attributes present.
+    ///
+    /// `None` is the state of an element nothing has ever written `selected` to
+    /// — every `<option>` that does not carry the attribute, and every element
+    /// that is not one. It has **no producer in combination with a present
+    /// `selected` attribute**: `RinchDocument::set_attribute` seeds this on the
+    /// attribute's absent→present transition and is the only path that writes
+    /// the `selected` key, `set_inner_html` included (it parses and then calls
+    /// `set_attribute` / `append_child` per node, `style_resolution/mod.rs`'s
+    /// `create_node_from_parsed`). So `collect_options` reads this alone and
+    /// never falls back to the attribute — a direct write into
+    /// [`Node::attributes`] would not be seen, which is why `selected` joins
+    /// `id` in that field's "go through the document API" rule.
+    ///
+    /// `crate::select` owns every write; see `resolve_select_model`.
+    pub selectedness: Option<bool>,
     /// Set during Stylo selector matching when a `:hover` pseudo-class is
     /// evaluated against this node. Nodes without this flag can skip style
     /// invalidation on hover changes because no CSS rule depends on their
@@ -889,6 +920,7 @@ impl Node {
             snapshot_handled: AtomicBool::new(false),
             guard,
             style_attribute_cache: None,
+            selectedness: None,
             hover_sensitive: Cell::new(false),
             active_sensitive: Cell::new(false),
             focus_sensitive: Cell::new(false),
@@ -943,6 +975,7 @@ impl Node {
             snapshot_handled: AtomicBool::new(false),
             guard,
             style_attribute_cache: None,
+            selectedness: None,
             hover_sensitive: Cell::new(false),
             active_sensitive: Cell::new(false),
             focus_sensitive: Cell::new(false),
@@ -996,6 +1029,7 @@ impl Node {
             snapshot_handled: AtomicBool::new(false),
             guard,
             style_attribute_cache: None,
+            selectedness: None,
             hover_sensitive: Cell::new(false),
             active_sensitive: Cell::new(false),
             focus_sensitive: Cell::new(false),
@@ -1047,6 +1081,7 @@ impl Node {
             snapshot_handled: AtomicBool::new(false),
             guard,
             style_attribute_cache: None,
+            selectedness: None,
             hover_sensitive: Cell::new(false),
             active_sensitive: Cell::new(false),
             focus_sensitive: Cell::new(false),

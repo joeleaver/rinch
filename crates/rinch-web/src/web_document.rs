@@ -433,10 +433,12 @@ fn sync_reflected_property(node: &web_sys::Node, name: &str, value: &str) {
 /// The content attribute is only the control's *default*: the browser sets a
 /// dirty checkedness / selectedness flag on the first user toggle and stops
 /// mirroring the attribute into the property from then on. rinch has no such
-/// flag — desktop's `:checked` (`stylo_impl.rs`) and `<option>` selectedness
-/// (`select.rs`) read the attribute and nothing else — so the app's write has to
-/// win on both backends, which is why the property is written here at all
-/// (issue #100).
+/// flag: desktop's `:checked` (`stylo_impl.rs`) reads the attribute and nothing
+/// else, and an `<option>`'s selectedness (`select.rs`) is *seeded* from the
+/// attribute and then moved only by rinch's own writes of it (#692) — never by
+/// a user's pick, which the desktop popup records on the `<select>`'s own
+/// `value`. So the app's write has to win on both backends, which is why the
+/// property is written here at all (issue #100).
 ///
 /// What it is told is the attribute's **presence**, never its string. A present
 /// `checked` checks the box whatever it holds, `"false"` included — the

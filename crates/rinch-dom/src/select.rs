@@ -10,10 +10,22 @@
 //! Selection follows HTML semantics, resolved in this order:
 //! 1. the option whose value equals the select's own `value` attribute, if the
 //!    select has one (this is what the app writes back when the user picks an
-//!    option, and what the `value:` rsx prop sets);
-//! 2. otherwise the last option carrying a `selected` attribute;
+//!    option, and what the `value:` rsx prop sets — HTML has no `value` content
+//!    attribute on `<select>` at all, so this step is rinch's own);
+//! 2. otherwise the option whose **selectedness** is set — the live state, not
+//!    the `selected` attribute, which is only its default; see
+//!    [`set_option_selectedness`];
 //! 3. otherwise the first non-disabled option — a single `<select>` always has a
-//!    selected option in a browser, defaulting to the first.
+//!    selected option in a browser, defaulting to the first. This is also what
+//!    stands in for HTML's "ask for a reset": deselect the selected option and
+//!    the select falls back here, exactly as a browser does.
+//!
+//! Step 2 used to read "the last option carrying a `selected` attribute", which
+//! is not what a browser tracks (issue #692). The attribute is only an option's
+//! *default* selectedness; the live state moves with the last option **set**, and
+//! the two part company as soon as two options carry the attribute at once. See
+//! [`set_option_selectedness`] for the rule and the Chrome 150 measurements
+//! behind it, and [`options_inserted`] for the four DOM paths that apply it.
 //!
 //! `<optgroup>`s are flattened: their `<option>` children are collected in
 //! document order as if the group weren't there. (Rendering the group *labels*
@@ -32,8 +44,16 @@ pub struct SelectOption {
     /// Display label: the `label` attribute if present, else the trimmed text
     /// content.
     pub label: String,
-    /// Whether the option carries a `selected` attribute.
+    /// Whether the option carries a `selected` attribute — its *default*
+    /// selectedness (`defaultSelected` in the IDL), which is not in general the
+    /// live state. [`SelectOption::selectedness`] is what the selection is
+    /// resolved from.
     pub selected_attr: bool,
+    /// The option's **live selectedness**: [`Node::selectedness`] where
+    /// something has set it, and the attribute's presence where nothing has.
+    ///
+    /// [`Node::selectedness`]: crate::node::Node::selectedness
+    pub selectedness: bool,
     /// Whether the option is `disabled`.
     pub disabled: bool,
 }
@@ -115,6 +135,12 @@ fn collect_options(tree: &NodeTree, parent_id: RawNodeId, out: &mut Vec<SelectOp
                     value,
                     label,
                     selected_attr: child.attributes.contains_key("selected"),
+                    // The live state alone. It is seeded from the attribute at
+                    // the write (`RinchDocument::set_attribute`), so there is no
+                    // fallback to the attribute here and none is reachable:
+                    // that write is the only path into the `selected` key,
+                    // `set_inner_html` included.
+                    selectedness: child.selectedness == Some(true),
                     disabled: child.attributes.contains_key("disabled"),
                 });
             }
@@ -150,11 +176,181 @@ fn resolve_selected_index(options: &[SelectOption], select_value: Option<&str>) 
     {
         return Some(i);
     }
-    // 2. Last option with a `selected` attribute (a single select keeps the last
-    //    one when markup mistakenly marks several).
-    if let Some(i) = options.iter().rposition(|o| o.selected_attr) {
+    // 2. The option whose selectedness is set (#692). At most one is: HTML's
+    //    exclusivity rule clears the others, and `set_option_selectedness` runs
+    //    it on every path that writes the attribute or parents an option.
+    //
+    //    `rposition` rather than `position`, and that is load-bearing rather
+    //    than tidy. Last-in-tree-order is what a browser answers if a list ever
+    //    does hold two selected options (`<option selected>a<option
+    //    selected>b` selects `b`, measured), and — the reason it stays —
+    //    **`position` would hide a missing insertion hook.** An option inserted
+    //    at the front is both the newly selected one and the first in tree
+    //    order, so `position` returns the right index for the wrong reason.
+    //    Measured on this tree: with `position` here and the `insert_before` /
+    //    `replace_node` hooks deleted, **ten of the eleven** fixtures in
+    //    `select_selectedness_tests.rs` stay green — every fixture that asserts
+    //    a *behaviour*, the two that catch those hooks included. The eleventh is
+    //    `two_options_selected_at_once_resolve_to_the_last_in_tree_order`, the
+    //    pin for this spelling: it fails under `position` with or without the
+    //    hooks, so it is the instrument rather than a witness and is excluded
+    //    from the claim. With `rposition` the two hook fixtures fail, which is
+    //    how those hooks came to be written at all.
+    if let Some(i) = options.iter().rposition(|o| o.selectedness) {
         return Some(i);
     }
     // 3. First non-disabled option, else the first option.
     options.iter().position(|o| !o.disabled).or(Some(0))
+}
+
+// ── the live half: who is selected, and when that moves ──────────────────────
+
+/// Set `option_id`'s selectedness, applying HTML's exclusivity rule (#692).
+///
+/// > Whenever an option element's selectedness is set to true, if its nearest
+/// > ancestor `select` element has the `multiple` attribute absent, the user
+/// > agent must set the selectedness of all the other option elements in its
+/// > list of options to false.
+///
+/// So the selected option is the last one **set**, not the last one carrying a
+/// `selected` attribute — the attribute is only the option's default. The two
+/// agree until two options carry it at once, which is the whole of #692.
+///
+/// Measured in Chrome 150 (`selectedIndex` after each step, three options, none
+/// selected in the markup):
+///
+/// | sequence | Chrome | desktop before #692 |
+/// |---|---|---|
+/// | write `selected` on option 1, then option 0 | **0** | 1 |
+/// | write on 0, then 1, then 0 again | 1 | 1 |
+/// | remove `selected` from the selected option 1 (option 0 **enabled**) | 0 | 0 |
+/// | the same with option 0 **disabled** | **1** | 0 |
+///
+/// Row 2 is why this runs on the **transition** into the attribute rather than
+/// on every write: re-writing an attribute that is already present changes
+/// nothing in a browser (Blink gates on `old_value.IsNull() != new_value.IsNull()`),
+/// and it changed nothing here before either. Row 3 needs no rule of its own —
+/// deselecting the last selected option leaves `resolve_selected_index` at step
+/// 3, which is what HTML's "ask for a reset" does.
+///
+/// Row 3's two halves are the same removal with a different neighbour, and they
+/// are what force the clear to be **eager**: deselecting leaves nothing
+/// selected, so the select falls back to its first *enabled* option rather than
+/// to whichever earlier option still carries the attribute.
+///
+/// **Every write of the `selected` key goes through
+/// `RinchDocument::set_attribute` / `::remove_attribute`**, which is what lets
+/// [`collect_options`] read `Node::selectedness` alone. `set_inner_html` is not
+/// an exception — it parses and then calls `set_attribute` and `append_child`
+/// per node (`style_resolution/mod.rs`'s `create_node_from_parsed`), so a
+/// parsed `<option selected>` is seeded like any other.
+///
+/// `multiple` is not honoured: rinch's `<select>` model is single-selection
+/// throughout (`selected_index` is one `Option<usize>`), so a `multiple` select
+/// already collapsed to one selected option before this existed.
+pub(crate) fn set_option_selectedness(tree: &mut NodeTree, option_id: RawNodeId, on: bool) {
+    let Some(node) = tree.get_mut(option_id) else {
+        return;
+    };
+    node.selectedness = Some(on);
+    if !on {
+        return;
+    }
+    // An option set while it is detached — which is every option `rsx!` builds,
+    // since it writes the attributes before appending — has no select to clear.
+    // `options_inserted` runs the same rule when it arrives in one.
+    let Some(select_id) = owning_select(tree, option_id) else {
+        return;
+    };
+    let mut others = Vec::new();
+    collect_option_ids(tree, select_id, &mut others);
+    for id in others {
+        if id != option_id
+            && let Some(other) = tree.get_mut(id)
+        {
+            other.selectedness = Some(false);
+        }
+    }
+}
+
+/// Apply the same rule for a subtree that has just been inserted (#692).
+///
+/// Called from **all four** `DomDocument` methods that parent a node —
+/// `append_child`, `insert_child`, `insert_before` and `replace_node`. All four,
+/// not the obvious two: a keyed `for` places its rows with
+/// `NodeHandle::insert_after`, which routes to `insert_before` for every
+/// position but the last, and a branch swap uses `replace_node` — so an
+/// `<option selected>` built by `rsx!` commonly arrives through one of those.
+/// Anything new that parents a node has to call this too, and the resolver's
+/// `rposition` is what will make forgetting visible.
+///
+/// An option carrying selectedness joins its select's list when it is inserted,
+/// and takes the selection with it — Chrome 150, measured: appending a
+/// `selected` option to a select that already has one selects the appended one,
+/// and so does *inserting it first*, which is what says the rule is "last
+/// inserted" rather than "last in tree order".
+///
+/// Applied per option in tree order, so the last selected option of an inserted
+/// `<optgroup>` wins, the way each of them running its own insertion steps would
+/// leave it — Chrome 150, appending a group of two `selected` options to a
+/// select whose only option was selected: `selectedIndex == 2`, the group's
+/// second option.
+pub(crate) fn options_inserted(tree: &mut NodeTree, inserted: RawNodeId) {
+    // The cheap gate: `append_child` runs for every node in the document, and
+    // only an `<option>` or a group of them can carry selectedness.
+    match tree.get(inserted).and_then(|n| n.tag()) {
+        Some("option") | Some("optgroup") => {}
+        _ => return,
+    }
+    let mut ids = Vec::new();
+    if tree.get(inserted).and_then(|n| n.tag()) == Some("option") {
+        ids.push(inserted);
+    } else {
+        collect_option_ids(tree, inserted, &mut ids);
+    }
+    // Read the whole subtree's selectedness **first**. Applying the rule to one
+    // option clears every other option of the select, its own not-yet-applied
+    // siblings included, so a loop that re-read the flag as it went would let
+    // the first selected option of an inserted `<optgroup>` wipe the rest and
+    // then keep the selection itself — the reverse of what a browser does.
+    let pending: Vec<RawNodeId> = ids
+        .into_iter()
+        .filter(|&id| tree.get(id).and_then(|n| n.selectedness) == Some(true))
+        .collect();
+    for id in pending {
+        set_option_selectedness(tree, id, true);
+    }
+}
+
+/// The `<select>` whose list of options `option_id` belongs to: its parent, or
+/// its `<optgroup>`'s parent. `None` while the option is detached, or parented
+/// anywhere else.
+fn owning_select(tree: &NodeTree, option_id: RawNodeId) -> Option<RawNodeId> {
+    let parent = tree.get(option_id)?.parent?;
+    match tree.get(parent)?.tag() {
+        Some("select") => Some(parent),
+        Some("optgroup") => {
+            let grandparent = tree.get(parent)?.parent?;
+            (tree.get(grandparent)?.tag() == Some("select")).then_some(grandparent)
+        }
+        _ => None,
+    }
+}
+
+/// The ids of `parent`'s `<option>` descendants in document order, flattening
+/// `<optgroup>` exactly as [`collect_options`] does.
+fn collect_option_ids(tree: &NodeTree, parent_id: RawNodeId, out: &mut Vec<RawNodeId>) {
+    let Some(parent) = tree.get(parent_id) else {
+        return;
+    };
+    for &child_id in &parent.children {
+        let Some(child) = tree.get(child_id) else {
+            continue;
+        };
+        match child.tag() {
+            Some("option") => out.push(child_id),
+            Some("optgroup") => collect_option_ids(tree, child_id, out),
+            _ => {}
+        }
+    }
 }
