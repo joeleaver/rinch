@@ -183,9 +183,7 @@ pub fn start_animations(
 /// 4. Remove completed animations (unless filling)
 ///
 /// **A paused animation is kept, and is not counted and not marked dirty**
-/// (#763), and neither is a finished `forwards`/`both` animation once the tick
-/// that finished it has written its fill (#782) — see
-/// [`ActiveAnimation::fill_settled`]. Its elapsed time is frozen, so its sample is the one the cascade
+/// (#763). Its elapsed time is frozen, so its sample is the one the cascade
 /// already wrote into `computed_style` when it paused, and the tick has nothing
 /// to advance. Counting it made the frame clock schedule a frame every frame,
 /// forever; marking its node dirty did the same by a second route, since a
@@ -194,6 +192,11 @@ pub fn start_animations(
 /// transition on the same property that a running one has: a transition that
 /// finishes on this tick writes its end value first, and has marked the node
 /// dirty itself.
+///
+/// **A finished `forwards`/`both` animation is the same shape once its fill is
+/// written** (#782): the tick that finishes it writes the fill and dirties the
+/// node, and every later tick re-applies it the same quiet way — see
+/// [`ActiveAnimation::fill_settled`].
 pub fn tick_animations(tree: &mut NodeTree, current_time_ms: f64) -> bool {
     let node_ids: Vec<RawNodeId> = tree.active_animations.keys().copied().collect();
     let mut any_active = false;
