@@ -455,6 +455,22 @@ fn frame(doc: &mut RinchDocument) -> bool {
     answer
 }
 
+/// A frame that must owe the shell nothing: the tick answers `false` **and**
+/// leaves no layout pending. The second half is what a measure healed by
+/// re-measuring on every tick fails — its tick answer is `false` too, but it
+/// sets `layout_dirty` each time, which the desktop wake and the Android loop
+/// both present for.
+fn quiet_frame(doc: &mut RinchDocument, round: usize) {
+    assert!(!doc.tick_animations(), "round {round}: no frame asked for");
+    assert!(
+        !doc.tree.layout_dirty,
+        "round {round}: and no layout left owing — the tick re-measured a paused \
+         sample"
+    );
+    let _ = doc.take_dirty_nodes();
+    doc.resolve_layout(VP.0, VP.1);
+}
+
 /// A class adds a **paused** `font-size` animation to a box that is already laid
 /// out, and the text has to be measured in the font the box now shows.
 ///
@@ -495,10 +511,7 @@ fn a_class_that_adds_a_paused_font_size_animation_measures_its_text() {
     );
 
     for round in 0..3 {
-        assert!(
-            !frame(&mut doc),
-            "round {round}: and measured without asking for another frame"
-        );
+        quiet_frame(&mut doc, round);
         assert_eq!(
             box_height(&doc, node),
             reference,
@@ -536,7 +549,7 @@ fn pausing_after_a_tick_that_sampled_the_base_size_measures_the_paused_size() {
     let reference = reference_height(paused);
     assert_eq!(box_height(&doc, node), reference, "measured at {paused}px");
     for round in 0..3 {
-        assert!(!frame(&mut doc), "round {round}: without spinning");
+        quiet_frame(&mut doc, round);
         assert_eq!(
             box_height(&doc, node),
             reference,
@@ -606,4 +619,70 @@ fn an_animation_paused_inside_its_delay_keeps_its_place() {
         "the resume kept the {spent}ms already spent in the delay: start \
          {start} should lie that far before the resume at {resumed_at}"
     );
+}
+
+/// The restart walk's half of the same rule. A panel un-hidden by an **inline**
+/// `display` re-cascades the panel alone, so the paused animation inside it is
+/// started by `restart_animations_in_subtree` rather than by its own cascade —
+/// and that walk has to ask for the text to be measured in the sample it writes.
+///
+/// The text is laid out in its base 16px first, then the panel is hidden, the
+/// animation class is added while it is hidden (the node's own cascade runs, but
+/// a hidden node starts nothing), and the panel is shown by an inline write.
+#[test]
+fn a_paused_font_size_animation_restarted_by_showing_its_panel_measures_its_text() {
+    let mut doc = RinchDocument::new();
+    doc.load_css(TEXT_CSS);
+    let body = doc.body();
+    let panel = doc.create_element("div");
+    doc.append_child(body, panel);
+    let node = doc.create_element("div");
+    doc.set_attribute(node, "class", "tb");
+    let text = doc.create_text(WORDS);
+    doc.append_child(node, text);
+    doc.append_child(panel, node);
+    doc.tree.transitions_enabled = true;
+    doc.resolve_layout(VP.0, VP.1);
+    let reference = reference_height(32.0);
+    assert_ne!(
+        box_height(&doc, node),
+        reference,
+        "precondition: laid out at 16px"
+    );
+
+    doc.set_style(panel, "display", "none");
+    doc.resolve_layout(VP.0, VP.1);
+    doc.set_attribute(node, "class", "tb bigheld");
+    doc.resolve_layout(VP.0, VP.1);
+    assert_eq!(
+        animations(&doc, node),
+        0,
+        "precondition: hidden, so not started"
+    );
+
+    doc.set_style(panel, "display", "block");
+    doc.resolve_layout(VP.0, VP.1);
+    assert_eq!(
+        animations(&doc, node),
+        1,
+        "precondition: the walk restarted it"
+    );
+    assert_eq!(
+        font_size(&doc, node),
+        32.0,
+        "precondition: at its 32px sample"
+    );
+    assert_eq!(
+        box_height(&doc, node),
+        reference,
+        "and the text is measured in that sample on the pass that showed it"
+    );
+    for round in 0..2 {
+        quiet_frame(&mut doc, round);
+        assert_eq!(
+            box_height(&doc, node),
+            reference,
+            "round {round}: and it stays"
+        );
+    }
 }

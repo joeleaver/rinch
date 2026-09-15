@@ -26,6 +26,8 @@ const CSS: &str = "
     .box { width: 10px; height: 10px; font-size: 16px; line-height: 20px; }
     .once-fwd { animation: k782-grow 50ms linear 1 forwards; }
     .once-both { animation: k782-grow 50ms linear 1 both; }
+    @keyframes k782-type { from { font-size: 20px; } to { font-size: 30px; } }
+    .once-type { animation: k782-type 50ms linear 1 forwards; }
     .again { animation-iteration-count: 1000000; }
     .other { color: red; }
 ";
@@ -178,4 +180,30 @@ fn a_restyle_that_extends_a_finished_animation_runs_it_again() {
         "a million iterations of 50ms is running, not filling"
     );
     assert!(doc.tick_animations(), "so the clock runs again");
+}
+
+/// A filled **typography** animation. The tick's text-measure pre-pass
+/// re-measures every animation it can still move; a settled fill is not one of
+/// them, or it would set `layout_dirty` on every tick — a frame owed, forever,
+/// by a route the redraw request never sees.
+#[test]
+fn a_finished_font_size_fill_owes_no_layout() {
+    let (mut doc, node) = mount("box once-type");
+    std::thread::sleep(std::time::Duration::from_millis(150));
+    hand_off(&mut doc, node);
+    doc.tick_animations();
+    assert_eq!(
+        doc.tree.get(node.0).unwrap().computed_style.font_size,
+        30.0,
+        "precondition: the finishing tick wrote the 30px fill"
+    );
+
+    for round in 0..3 {
+        hand_off(&mut doc, node);
+        assert!(!doc.tick_animations(), "round {round}: no frame");
+        assert!(
+            !doc.tree.layout_dirty,
+            "round {round}: and no re-measure of a font size that cannot change"
+        );
+    }
 }
