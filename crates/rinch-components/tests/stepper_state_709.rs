@@ -620,16 +620,14 @@ fn a_built_in_a_step_no_longer_draws_is_discarded_not_merely_removed() {
 }
 
 #[test]
-fn an_alternate_the_stepper_did_not_use_is_discarded_not_merely_removed() {
+fn an_alternate_the_stepper_does_not_need_yet_is_kept_hidden() {
     let (tree, alternate) = tree_with_probe(|scope, probe| {
         let steps: Vec<NodeHandle> = (0..3)
             .map(|_| {
                 StepperStep {
                     // A named index, so the parent has no number to redraw, and
                     // an `icon`, so what it drew is not a number either. Between
-                    // them the last step needs no new content at all — which is
-                    // the branch that drops the alternates on its own rather
-                    // than by clearing the box.
+                    // them the last step needs no new content at all.
                     step: Some(9),
                     icon: Some(TablerIcon::Home),
                     completed_icon: Some(TablerIcon::X),
@@ -656,9 +654,65 @@ fn an_alternate_the_stepper_did_not_use_is_discarded_not_merely_removed() {
         "precondition: the last step is inactive and keeps exactly what it drew"
     );
     assert!(
-        !still_live(&alternate),
-        "and the completed alternate it turned out not to need is discarded, \
-         not merely detached"
+        still_live(&alternate),
+        "the completed alternate it does not need *yet* is kept. #709 discarded \
+         it, on the reasoning that a step's position only ever grows — a keyed \
+         `for` reorder moves a step backwards with `insert_before`, so this step \
+         can be moved into completed later and its own `X` is the only place \
+         that glyph exists (issue #716)"
+    );
+    let parked = parked_at(&tree, 2);
+    assert_eq!(
+        parked.iter().map(|(k, _)| k.as_str()).collect::<Vec<_>>(),
+        vec!["completed"],
+        "one alternate, under the key it serves"
+    );
+    assert_eq!(
+        parked[0].1.get_attribute("style").as_deref(),
+        Some("display: none"),
+        "hidden, or the step would draw two glyphs at once"
+    );
+}
+
+#[test]
+fn a_named_state_steps_parked_glyph_is_discarded_not_merely_removed() {
+    // A step that named its own state is in that state wherever it is moved to,
+    // so what the stepper displaces there really is dead — and dead markup
+    // leaves by `discard`, not by `remove` (issue #719).
+    let (tree, drew) = tree_with_probe(|scope, probe| {
+        let step = StepperStep {
+            state: "progress".into(),
+            step: Some(1),
+            icon: Some(TablerIcon::Home),
+            ..Default::default()
+        }
+        .render(scope, &[]);
+        let icon_box = find_by_class(&step, "rinch-stepper__step-icon").expect("an icon box");
+        *probe = icon_box.children().into_iter().next();
+        Stepper {
+            active: 0,
+            progress_icon: Some(TablerIcon::X),
+            ..Default::default()
+        }
+        .render(scope, &[step])
+    });
+
+    assert_eq!(
+        glyph_at(&tree, 0),
+        glyph_of(TablerIcon::X),
+        "precondition: the stepper's `progress_icon` stands in for the one the \
+         step did not set, so it displaces the step's plain `icon`"
+    );
+    assert!(
+        parked_at(&tree, 0).is_empty(),
+        "nothing is parked for a step whose state is its own"
+    );
+    assert!(
+        !still_live(&drew),
+        "and the glyph it displaced is gone for good. `remove` is a detach that \
+         keeps a subtree re-insertable; only `discard` releases `rinch-web`'s \
+         strong `web_sys::Node` from its two page-global maps, and `rinch-web` \
+         compiles this crate"
     );
 }
 

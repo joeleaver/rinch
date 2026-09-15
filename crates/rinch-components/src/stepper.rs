@@ -271,7 +271,7 @@ impl Component for Stepper {
         crate::late_children::adopt_late_children(
             __scope,
             &steps_container,
-            "rinch-stepper__step",
+            &["rinch-stepper__step"],
             move |_inserted, scope| {
                 // The subtree that landed is deliberately ignored. What has to
                 // be recomputed is every step's *position*, and only the whole
@@ -350,8 +350,17 @@ fn settle_steps(scope: &mut RenderScope, steps_container: &NodeHandle, d: Deriva
         let numbered_here = step.get_attribute(STEP_ATTR).is_none()
             || step.get_attribute(STEP_DERIVED_ATTR).is_some();
         if numbered_here {
-            step.set_attribute(STEP_ATTR, &position.to_string());
-            step.set_attribute(STEP_DERIVED_ATTR, "");
+            // Compared before writing. `set_attribute` does not early-out on an
+            // unchanged value, and this pass re-runs over *every* step each time
+            // one arrives, so an unguarded write re-dirties the whole stepper's
+            // style on every insertion.
+            let position = position.to_string();
+            if step.get_attribute(STEP_ATTR).as_deref() != Some(position.as_str()) {
+                step.set_attribute(STEP_ATTR, &position);
+            }
+            if step.get_attribute(STEP_DERIVED_ATTR).is_none() {
+                step.set_attribute(STEP_DERIVED_ATTR, "");
+            }
         }
 
         // The state. Its own wins here too, and `data-state` is the only thing
@@ -414,8 +423,9 @@ fn settle_steps(scope: &mut RenderScope, steps_container: &NodeHandle, d: Deriva
 /// Parking rather than discarding is what makes a late arrival work (issue
 /// #716): a step's `icon` prop is not recoverable from the rendered tree, so a
 /// step that was moved to completed and is later displaced back out of it has
-/// nowhere else to get its own glyph from. Only the alternates a *forward* move
-/// could still need are kept — see [`reachable_keys`].
+/// nowhere else to get its own glyph from. **Every** alternate is kept for as
+/// long as the step's state is this stepper's to derive, because a keyed `for`
+/// reorder can move a step in either direction.
 fn settle_step_icon(
     scope: &mut RenderScope,
     step: &NodeHandle,
@@ -517,7 +527,11 @@ fn settle_step_icon(
                     // The stepper's own default fills a key the step supplied
                     // nothing for, and the box now holds a real glyph there —
                     // which is what stops a later pass filling it twice.
-                    has.push(target.to_owned());
+                    //
+                    // Guarded, because this attribute is rendered DOM and an
+                    // unguarded push made it grow without bound across repeated
+                    // moves (`"completed base completed"`).
+                    push_key(&mut has, target);
                     let glyph = render_tabler_icon(scope, icon, TablerIconStyle::Outline);
                     icon_box.append_child(&glyph);
                     Some(glyph)
@@ -548,7 +562,7 @@ fn settle_step_icon(
             // change.
             old.discard();
         }
-        has.push(target.to_owned());
+        push_key(&mut has, target);
         live = Some(glyph);
     }
 
@@ -558,27 +572,45 @@ fn settle_step_icon(
         && !has.iter().any(|k| k == KEY_BASE)
         && let Some(live) = &live
     {
-        live.set_text(&number.to_string());
+        // Compared first: this pass re-runs over every step on every insertion,
+        // and `set_text` does not early-out on an unchanged value.
+        let number = number.to_string();
+        if live.text_content().as_deref() != Some(number.as_str()) {
+            live.set_text(&number);
+        }
     }
 
-    // Alternates a forward move could still want are kept; the rest are markup
-    // nobody will look at again. A step that named its own state is in the state
-    // it will stay in, so for it that is *every* alternate.
-    let keep: &[&str] = if named_its_own_state {
-        &[]
-    } else {
-        reachable_keys(state)
-    };
-    for (key, wrapper) in alternates {
-        if !keep.contains(&key.as_str()) {
+    // **Every parked alternate is kept**, for a step whose state this stepper
+    // derives. It used to keep only the ones a *forward* move could want, on the
+    // reasoning that this pass re-runs on an insertion and an insertion can only
+    // give a step more siblings in front of it. That is false: a keyed `for`
+    // **reorder** repositions a live node with `insert_before`, which is one of
+    // the four notifying verbs, and it moves that node *backwards*. Measured — a
+    // step carrying its own `completed_icon`, moved from position 2 to position
+    // 0 — the pruned alternate was gone and the step drew the built-in tick, or
+    // the *stepper's* default where it had one, inverting the rule that a step's
+    // own icon wins.
+    //
+    // A step that named its own state is in the state it will stay in wherever
+    // it is moved to, so for it every alternate really is dead.
+    if named_its_own_state {
+        for (_, wrapper) in alternates {
             wrapper.discard();
         }
     }
 
+    let has = has.join(" ");
     if has.is_empty() {
         icon_box.remove_attribute(ICON_HAS_ATTR);
-    } else {
-        icon_box.set_attribute(ICON_HAS_ATTR, &has.join(" "));
+    } else if icon_box.get_attribute(ICON_HAS_ATTR).as_deref() != Some(has.as_str()) {
+        icon_box.set_attribute(ICON_HAS_ATTR, &has);
+    }
+}
+
+/// Record that the box holds a real glyph for `key`, once.
+fn push_key(has: &mut Vec<String>, key: &str) {
+    if !has.iter().any(|k| k == key) {
+        has.push(key.to_owned());
     }
 }
 
@@ -589,22 +621,6 @@ fn built_in_glyph(scope: &mut RenderScope, key: &str, number: u32) -> NodeHandle
         crate::icons::check_dom(scope)
     } else {
         rinch_core::IntoNode::into_node(number.to_string(), scope)
-    }
-}
-
-/// The content keys a step in `state` could still be moved into.
-///
-/// **A step's position only ever grows**, because this pass is re-run on an
-/// *insertion* and nothing else: a step gains siblings in front of it, never
-/// loses them. So state only moves forward — completed → progress → inactive —
-/// and an alternate for a state already behind the step is dead. A removal that
-/// shifts a step backwards would not re-run this pass at all (issue #745); if it
-/// ever does, every key has to be kept.
-fn reachable_keys(state: StepState) -> &'static [&'static str] {
-    match state {
-        StepState::Completed => &[KEY_COMPLETED, KEY_PROGRESS, KEY_BASE],
-        StepState::Progress => &[KEY_PROGRESS, KEY_BASE],
-        StepState::Inactive => &[KEY_BASE],
     }
 }
 

@@ -735,3 +735,140 @@ fn a_step_displaced_out_of_completed_gets_its_own_glyph_back() {
          it when it moved the step *into* completed"
     );
 }
+
+// ------------------------------------------------ a keyed reorder moves backwards
+
+/// The live (unwrapped) glyph in step `n`'s icon box, and the keys the box says
+/// it holds a real glyph for.
+fn step_icon(tree: &Tree, n: usize) -> (Vec<String>, String) {
+    let steps = tree.find_all("rinch-stepper__step");
+    let icon_box =
+        find_by_class(&steps[n], "rinch-stepper__step-icon").expect("the step has an icon box");
+    let live = icon_box
+        .children()
+        .into_iter()
+        .find(|c| !has_class(c, "rinch-stepper__step-icon-alt"))
+        .expect("the step draws something");
+    (
+        glyph(&live),
+        icon_box.get_attribute("data-icon-has").unwrap_or_default(),
+    )
+}
+
+#[test]
+fn a_step_a_keyed_reorder_moves_backwards_keeps_its_own_completed_icon() {
+    for icon in [TablerIcon::Star, TablerIcon::Bell, TablerIcon::Home] {
+        assert!(!glyph_of(icon).is_empty());
+    }
+    assert_ne!(glyph_of(TablerIcon::Star), glyph_of(TablerIcon::Bell));
+
+    let items = Signal::new(vec!["a", "b", "c"]);
+    let tree = Tree::build(move |__scope| {
+        rsx! {
+            div {
+                Stepper { active: 1u32, completed_icon: TablerIcon::Bell,
+                    for it in items.get() {
+                        StepperStep {
+                            key: it, label: it,
+                            icon: TablerIcon::Home,
+                            completed_icon: TablerIcon::Star,
+                        }
+                    }
+                }
+            }
+        }
+    });
+
+    assert_eq!(
+        step_icon(&tree, 0).0,
+        glyph_of(TablerIcon::Star),
+        "precondition: the step at 0 is completed and draws its own completed icon"
+    );
+    assert_eq!(
+        step_icon(&tree, 2).0,
+        glyph_of(TablerIcon::Home),
+        "precondition: the step at 2 is inactive and draws its own plain icon"
+    );
+
+    // A keyed reorder. The reconcile repositions the live node for "c" with
+    // `insert_before`, which is one of the four notifying verbs — and it moves
+    // that node *backwards*, which the first cut of this pass assumed could not
+    // happen.
+    items.set(vec!["c", "a", "b"]);
+
+    let (live, has) = step_icon(&tree, 0);
+    assert_eq!(
+        live,
+        glyph_of(TablerIcon::Star),
+        "#716: \"c\" is completed now and draws the completed icon *it* set. \
+         Pruning its parked alternate left the built-in tick here, or — with a \
+         `Stepper::completed_icon` set, as here — the stepper's own {:?}, which \
+         inverts the rule that a step's icon wins",
+        glyph_of(TablerIcon::Bell)
+    );
+
+    let mut tokens: Vec<&str> = has.split_whitespace().collect();
+    let before = tokens.len();
+    tokens.sort_unstable();
+    tokens.dedup();
+    assert_eq!(
+        tokens.len(),
+        before,
+        "and `data-icon-has` holds each key once. It is rendered DOM, and an \
+         unguarded push grew it by one token on every backwards move: {has:?}"
+    );
+}
+
+// ------------------------------------------- a List directly inside a List
+
+#[test]
+fn a_list_directly_inside_a_list_keeps_its_own_rows() {
+    assert_ne!(glyph_of(TablerIcon::Check), glyph_of(TablerIcon::X));
+
+    let inner_items = Signal::new(vec!["one"]);
+    let tree = Tree::build(move |__scope| {
+        rsx! {
+            div {
+                List { icon: TablerIcon::Check,
+                    List { icon: TablerIcon::X,
+                        for it in inner_items.get() { ListItem { key: it, {it} } }
+                    }
+                }
+            }
+        }
+    });
+
+    let inner_rows = |tree: &Tree| -> Vec<NodeHandle> {
+        let inner = tree.find_all("rinch-list").remove(1);
+        let mut out = Vec::new();
+        collect_by_class(&inner, "rinch-list__item", &mut out);
+        out
+    };
+
+    for row in inner_rows(&tree) {
+        let icon_box = find_by_class(&row, "rinch-list__item-icon").expect("an icon box");
+        assert_eq!(
+            glyph(&icon_box),
+            glyph_of(TablerIcon::X),
+            "#716: a `List` placed *directly* inside another — no `ListItem` \
+             between them — owns its own rows at the outer list's render. The \
+             outer walk reaches them through the inner `<ul>`, so it has to stop \
+             at a nested list as well as at its own items"
+        );
+    }
+
+    inner_items.update(|v| v.push("two"));
+
+    let rows = inner_rows(&tree);
+    assert_eq!(rows.len(), 2, "precondition: the inner list grew");
+    for row in rows {
+        let icon_box = find_by_class(&row, "rinch-list__item-icon").expect("an icon box");
+        assert_eq!(
+            glyph(&icon_box),
+            glyph_of(TablerIcon::X),
+            "and again for a row that arrives later: the upward boundary names \
+             the same classes the downward walk stops at, or a row gets one \
+             answer at render and the other one here"
+        );
+    }
+}

@@ -392,7 +392,7 @@ impl Component for RadioGroup {
             crate::late_children::adopt_late_children(
                 __scope,
                 &radios,
-                "rinch-radio",
+                &["rinch-radio"],
                 move |inserted, _scope| give_radios_a_default_size(inserted, size),
             );
         }

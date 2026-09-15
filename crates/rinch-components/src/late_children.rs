@@ -16,12 +16,12 @@ use rinch_core::dom::{NodeHandle, RenderScope, on_child_inserted};
 
 /// Re-run `patch` on every subtree inserted beneath `root` from now on.
 ///
-/// `boundary` is the class of the container's own item — the node its
-/// render-time walk stops descending at. A subtree that landed *inside* one of
-/// those belongs to whatever is nested there, not to this container, so it is
-/// declined. That is the render-time walk's rule read upwards, which is what
-/// keeps a list nested inside another list's item from having its rows restyled
-/// by the outer list.
+/// `boundary` names the classes the container's render-time walk stops
+/// descending at — its own item, and any class that marks a nested container of
+/// the same kind. A subtree that landed *inside* one of those belongs to
+/// whatever is nested there, not to this container, so it is declined. That is
+/// the render-time walk's rule read upwards, and the two halves have to name the
+/// same classes or a row gets one answer at render and the other one later.
 ///
 /// `patch` gets a **fresh** [`RenderScope`] rooted at `root`, because the
 /// container's own scope is a `&mut` borrow that ended when `render` returned.
@@ -31,7 +31,7 @@ use rinch_core::dom::{NodeHandle, RenderScope, on_child_inserted};
 pub fn adopt_late_children(
     scope: &RenderScope,
     root: &NodeHandle,
-    boundary: &'static str,
+    boundary: &'static [&'static str],
     patch: impl Fn(&NodeHandle, &mut RenderScope) + 'static,
 ) {
     let doc = scope.doc_weak();
@@ -49,19 +49,22 @@ pub fn adopt_late_children(
     });
 }
 
-/// Does the chain from `node` up to `root` cross a node carrying `class`?
+/// Does the chain from `node` up to `root` cross a node carrying any of
+/// `classes`?
 ///
 /// `node` itself is not asked — it may well *be* the item the container is
-/// looking for. A chain that never reaches `root` answers `true`: the caller's
-/// only use for this is to decline, and declining is the safe answer for a node
-/// whose relationship to `root` cannot be established.
-fn crosses(node: &NodeHandle, root: &NodeHandle, class: &str) -> bool {
+/// looking for. `root` is reached before it is asked, so a container's own class
+/// appearing in `classes` does not make it decline its own children. A chain
+/// that never reaches `root` answers `true`: the caller's only use for this is
+/// to decline, and declining is the safe answer for a node whose relationship to
+/// `root` cannot be established.
+fn crosses(node: &NodeHandle, root: &NodeHandle, classes: &[&str]) -> bool {
     let mut current = node.parent_node();
     while let Some(here) = current {
         if here.node_id() == root.node_id() {
             return false;
         }
-        if has_class(&here, class) {
+        if classes.iter().any(|class| has_class(&here, class)) {
             return true;
         }
         current = here.parent_node();
