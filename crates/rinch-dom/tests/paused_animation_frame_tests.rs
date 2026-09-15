@@ -686,3 +686,74 @@ fn a_paused_font_size_animation_restarted_by_showing_its_panel_measures_its_text
         );
     }
 }
+
+/// The half of the cascade's rule a block of text does not need: a paused
+/// `font-size` animation on a `<span>` inside an `inline-block`.
+///
+/// The `inline-block` is an atomic inline, detached from its parent's Taffy
+/// child list and sized by its own measure pass (#661), so neither a
+/// `layout_dirty` compute on its own nor a text-measure invalidation on its own
+/// resizes it — measured, each half alone leaves it at its 16px `79x20` against
+/// a `159x40` reference. The block-text fixtures above cannot tell those halves
+/// apart; this one needs both.
+#[test]
+fn a_paused_font_size_animation_on_a_span_resizes_its_inline_block() {
+    const CSS: &str = "
+        @keyframes k763-big { from { font-size: 32px; } to { font-size: 48px; } }
+        body { margin: 0; }
+        .ib { display: inline-block; }
+        .tb { font-size: 16px; line-height: 1.25; }
+        .tb.bigheld { animation: k763-big 1000s linear infinite paused; }
+    ";
+    fn build(inline: Option<&str>) -> (RinchDocument, NodeId, NodeId) {
+        let mut doc = RinchDocument::new();
+        doc.load_css(CSS);
+        let body = doc.body();
+        let ib = doc.create_element("div");
+        doc.set_attribute(ib, "class", "ib");
+        doc.append_child(body, ib);
+        let span = doc.create_element("span");
+        doc.set_attribute(span, "class", "tb");
+        if let Some(style) = inline {
+            doc.set_attribute(span, "style", style);
+        }
+        let text = doc.create_text("aaaa bbbb");
+        doc.append_child(span, text);
+        doc.append_child(ib, span);
+        doc.tree.transitions_enabled = true;
+        doc.resolve_layout(VP.0, VP.1);
+        (doc, ib, span)
+    }
+    fn size(doc: &RinchDocument, node: NodeId) -> (f32, f32) {
+        let n = doc.tree.get(node.0).unwrap();
+        (n.layout.width, n.layout.height)
+    }
+
+    let reference = {
+        let (doc, ib, _) = build(Some("font-size: 32px"));
+        size(&doc, ib)
+    };
+    let (mut doc, ib, span) = build(None);
+    assert_ne!(
+        size(&doc, ib),
+        reference,
+        "precondition: 16px is a smaller box"
+    );
+
+    doc.set_attribute(span, "class", "tb bigheld");
+    doc.resolve_layout(VP.0, VP.1);
+    assert_eq!(
+        font_size(&doc, span),
+        32.0,
+        "precondition: at its 32px sample"
+    );
+    assert_eq!(
+        size(&doc, ib),
+        reference,
+        "the inline-block is re-measured around the paused sample"
+    );
+    for round in 0..2 {
+        quiet_frame(&mut doc, round);
+        assert_eq!(size(&doc, ib), reference, "round {round}: and stays");
+    }
+}
