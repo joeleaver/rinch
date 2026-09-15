@@ -62,6 +62,12 @@ pub fn navigation_section() -> NodeHandle {
                             Badge { color: "blue", variant: "light", {|| tabs_value.get()} }
                         }
                         Divider {}
+                        // `value` here is the *initial* tab, not a binding:
+                        // `Tabs` keeps its own `Signal` for the active one and
+                        // switches panels from that. A reactive spelling would
+                        // rebuild the whole tab tree on every click. The
+                        // stepper and pagination controls below are the
+                        // opposite case (issue #741).
                         Tabs { value: tabs_value.get(),
                             TabsList {
                                 Tab { value: "gallery", onclick: move || tabs_value.set("gallery".to_string()), "Gallery" }
@@ -95,6 +101,7 @@ pub fn navigation_section() -> NodeHandle {
                             Badge { color: "violet", variant: "light", {|| tabs_pills_value.get()} }
                         }
                         Divider {}
+                        // Initial tab, not a binding — see the note above.
                         Tabs { variant: "pills", value: tabs_pills_value.get(),
                             TabsList {
                                 Tab { value: "one", onclick: move || tabs_pills_value.set("one".to_string()), "First" }
@@ -224,7 +231,7 @@ pub fn navigation_section() -> NodeHandle {
                         Divider {}
                         Pagination {
                             total: {10_u32},
-                            value: pagination_page.get(),
+                            value: {|| pagination_page.get()},
                             siblings: {1_u32},
                             onchange: move |page| pagination_page.set(page)
                         }
@@ -241,7 +248,7 @@ pub fn navigation_section() -> NodeHandle {
                         Divider {}
                         Pagination {
                             total: {20_u32},
-                            value: pagination_with_edges_page.get(),
+                            value: {|| pagination_with_edges_page.get()},
                             siblings: {2_u32},
                             with_edges: true,
                             onchange: move |page| pagination_with_edges_page.set(page)
@@ -275,12 +282,12 @@ pub fn navigation_section() -> NodeHandle {
                     Group { justify: "center", gap: "sm",
                         Button {
                             variant: "outline",
-                            disabled: stepper_active.get() == 0,
+                            disabled: {|| stepper_active.get() == 0},
                             onclick: move || stepper_active.update(|v| *v = v.saturating_sub(1)),
                             "Previous"
                         }
                         Button {
-                            disabled: stepper_active.get() >= 2,
+                            disabled: {|| stepper_active.get() >= 2},
                             onclick: move || stepper_active.update(|v| *v = (*v + 1).min(2)),
                             "Next Step"
                         }
