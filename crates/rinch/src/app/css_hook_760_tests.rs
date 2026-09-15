@@ -62,6 +62,7 @@ const THEME: &str = ":root { --rinch-tabs-color: rgb(20, 90, 200); \
                     --rinch-color-body: rgb(250, 250, 250); }";
 
 const ACTIVE: peniko::Color = peniko::Color::from_rgb8(20, 90, 200);
+const WHITE: peniko::Color = peniko::Color::from_rgb8(255, 255, 255);
 
 // ── harness ──────────────────────────────────────────────────────────────
 
@@ -585,10 +586,18 @@ fn the_tab_indicator_transition_runs_on_a_switch() {
         1,
         "and so does the leaving one"
     );
+    // What this does NOT show: that the label *text* fades. The text lives in
+    // the label span, and on desktop a transition on an inherited property
+    // reaches no descendant — `tick_transitions` writes only the button's own
+    // `computed_style`, so the span resolves the end colour at once and the text
+    // snaps (review of #774). In a browser the span inherits the animated value
+    // and fades. The assertion is about the button's `ActiveTransition` only.
     assert!(
         running(&app, m.tabs[1]) > 0,
-        "the tab button's own `transition: color` runs too — it never could \
-         before, because the active colour was written inline on the label span"
+        "the tab button's own `transition: color` is started — it never could \
+         be before, because the active colour was written inline on the label \
+         span. (On desktop the label text still snaps: an inherited transition \
+         does not reach descendants there. On web it fades.)"
     );
 }
 
@@ -656,6 +665,16 @@ fn the_pills_and_outline_variants_are_styled_by_the_same_hook() {
     );
     no_inline_style(&app, &m.tabs);
     assert_ne!(background_of(&app, m.tabs[1]), Some(ACTIVE));
+    // The pill's label is white, and that is the `pills` rule's `color: white`
+    // and nothing else: the generic active rule alone would make it the tab
+    // colour, which is what it reads with that declaration deleted. The inline
+    // code this replaced set the white by hand on the label span.
+    assert_eq!(
+        color_of(&app, m.labels[0]),
+        Some(WHITE),
+        "`.rinch-tabs--pills … [data-active=\"true\"]` makes the active pill's text white"
+    );
+    assert_ne!(color_of(&app, m.labels[1]), Some(WHITE));
     fire(&app, m.tabs[1], "data-rid");
     settle(&mut app, 1.0);
     // `.rinch-tabs__tab` declares `transition: background-color`, so read the
@@ -663,6 +682,8 @@ fn the_pills_and_outline_variants_are_styled_by_the_same_hook() {
     finish_transitions(&mut app);
     assert_eq!(background_of(&app, m.tabs[1]), Some(ACTIVE));
     assert_ne!(background_of(&app, m.tabs[0]), Some(ACTIVE));
+    assert_eq!(color_of(&app, m.labels[1]), Some(WHITE));
+    assert_ne!(color_of(&app, m.labels[0]), Some(WHITE));
     no_inline_style(&app, &m.tabs);
 
     let m = tabs_app("outline");
@@ -704,6 +725,430 @@ fn no_inline_style(app: &RinchApp, nodes: &[usize]) {
              sheet's, not `set_style`'s"
         );
     }
+}
+
+// ── 5. Nesting: one instance's state is not its descendants' ─────────────
+//
+// Moving a reveal from an inline write on the instance's own node to a sheet
+// rule keyed off a class on its root changes who the rule can reach. A
+// *descendant* combinator matches through any ancestor carrying the class, so
+// an open `DropdownMenu` would open every closed menu inside its panel, and an
+// opened `Tooltip` every tooltip inside its target. The inline writes never
+// had that problem — each touched only its own nodes — so the first cut of
+// #760 introduced it (review of #774, measured on both backends). The rules
+// are child combinators now, which matches exactly the nodes each component
+// builds: the panel, backdrop and tooltip content are direct children of their
+// root, and a tab is wired only when it is a direct child of a `TabsList` that
+// is a direct child of the `Tabs` root (`Tabs::render` walks exactly that).
+//
+// Every fixture below puts the two instances in **different** states. Nested
+// instances in the same state sit on the fixed point where the descendant and
+// the child combinator agree.
+
+fn parent_of(app: &RinchApp, node: usize) -> Option<usize> {
+    let doc = app.doc.as_ref().unwrap();
+    let d = doc.borrow();
+    d.tree.get(node).and_then(|n| n.parent)
+}
+
+fn is_inside(app: &RinchApp, node: usize, ancestor: usize) -> bool {
+    let mut cur = parent_of(app, node);
+    while let Some(p) = cur {
+        if p == ancestor {
+            return true;
+        }
+        cur = parent_of(app, p);
+    }
+    false
+}
+
+/// The one node carrying `data-probe="{marker}"`.
+fn probe(app: &RinchApp, marker: &str) -> usize {
+    let doc = app.doc.as_ref().unwrap();
+    let d = doc.borrow();
+    let found: Vec<usize> = d
+        .tree
+        .nodes
+        .iter()
+        .filter(|(_, n)| n.attributes.get("data-probe").is_some_and(|v| v == marker))
+        .map(|(id, _)| id)
+        .collect();
+    assert_eq!(found.len(), 1, "expected one `[data-probe={marker}]`");
+    found[0]
+}
+
+/// The one node with `class` whose parent is `parent`.
+fn child_with_class(app: &RinchApp, parent: usize, class: &str) -> usize {
+    let found: Vec<usize> = nodes_with_class(app, class)
+        .into_iter()
+        .filter(|n| parent_of(app, *n) == Some(parent))
+        .collect();
+    assert_eq!(found.len(), 1, "expected one `{class}` under node {parent}");
+    found[0]
+}
+
+/// A closed `DropdownMenu` inside an open one's panel stays closed — panel
+/// **and** backdrop.
+///
+/// Kills a revert of either `.rinch-dropdown-menu--opened > …` selector to a
+/// descendant combinator: the outer root's class would match the inner panel
+/// or backdrop through the outer panel.
+#[test]
+fn a_closed_dropdown_menu_nested_in_an_open_ones_panel_stays_closed() {
+    let mut app = mount(move |scope| {
+        let inner_target = DropdownMenuTarget.render(scope, &[]);
+        let inner_dropdown = DropdownMenuDropdown.render(scope, &[]);
+        let inner = DropdownMenu {
+            opened_fn: Some(Rc::new(|| false)),
+            on_close: Some(Callback::new(|| {})),
+            ..Default::default()
+        }
+        .render(scope, &[inner_target, inner_dropdown]);
+        inner.set_attribute("data-probe", "inner");
+
+        let outer_target = DropdownMenuTarget.render(scope, &[]);
+        let outer_dropdown = DropdownMenuDropdown.render(scope, &[inner]);
+        let outer = DropdownMenu {
+            opened_fn: Some(Rc::new(|| true)),
+            on_close: Some(Callback::new(|| {})),
+            ..Default::default()
+        }
+        .render(scope, &[outer_target, outer_dropdown]);
+        outer.set_attribute("data-probe", "outer");
+        outer
+    });
+    settle(&mut app, 1.0);
+
+    let outer = probe(&app, "outer");
+    let inner = probe(&app, "inner");
+    assert!(
+        is_inside(&app, inner, outer),
+        "the fixture really nests them"
+    );
+    let outer_panel = child_with_class(&app, outer, "rinch-dropdown-menu__dropdown");
+    let outer_backdrop = child_with_class(&app, outer, "rinch-dropdown-menu__backdrop");
+    let inner_panel = child_with_class(&app, inner, "rinch-dropdown-menu__dropdown");
+    let inner_backdrop = child_with_class(&app, inner, "rinch-dropdown-menu__backdrop");
+
+    assert_eq!(
+        (
+            display_of(&app, outer_panel),
+            display_of(&app, outer_backdrop)
+        ),
+        (DisplayValue::Block, DisplayValue::Block),
+        "control: the outer menu is open"
+    );
+    assert!(!has_class(&app, inner, "rinch-dropdown-menu--opened"));
+    assert_eq!(
+        display_of(&app, inner_panel),
+        DisplayValue::None,
+        "the outer menu's `--opened` does not reach the inner menu's panel"
+    );
+    assert_eq!(
+        display_of(&app, inner_backdrop),
+        DisplayValue::None,
+        "nor its backdrop"
+    );
+}
+
+/// **The sharp end of the leak.** A tap on the outer menu's item runs the item,
+/// not the closed inner menu's `on_close`.
+///
+/// A leaked inner backdrop is `position: fixed` at `z-index: 99`, hoisted
+/// (#545) into the outer panel's stacking context above the outer items, so it
+/// covers the whole window inside that context and takes the tap: measured at
+/// the first cut of #760 as item 0 / inner `on_close` 1. Driven through
+/// `handle_event` with a real press and release at the item's painted centre,
+/// so hit testing and stacking decide, not a direct dispatch.
+///
+/// Kills a revert of `.rinch-dropdown-menu--opened > .rinch-dropdown-menu__backdrop`
+/// to a descendant combinator.
+#[test]
+fn a_tap_on_an_outer_menu_item_is_not_taken_by_a_closed_nested_menus_backdrop() {
+    use std::cell::Cell;
+    let item_clicks = Rc::new(Cell::new(0));
+    let inner_closes = Rc::new(Cell::new(0));
+    let (ic, cc) = (item_clicks.clone(), inner_closes.clone());
+    let mut app = mount(move |scope| {
+        let ic = ic.clone();
+        let cc = cc.clone();
+        let text = scope.create_text("Outer item");
+        let item = DropdownMenuItem {
+            onclick: Some(Callback::new(move || ic.set(ic.get() + 1))),
+            ..Default::default()
+        }
+        .render(scope, &[text]);
+        item.set_attribute("data-probe", "outer-item");
+
+        let inner_target = DropdownMenuTarget.render(scope, &[]);
+        let inner_dropdown = DropdownMenuDropdown.render(scope, &[]);
+        let inner = DropdownMenu {
+            opened_fn: Some(Rc::new(|| false)),
+            on_close: Some(Callback::new(move || cc.set(cc.get() + 1))),
+            close_on_item_click: false,
+            ..Default::default()
+        }
+        .render(scope, &[inner_target, inner_dropdown]);
+
+        let outer_target = DropdownMenuTarget.render(scope, &[]);
+        let outer_dropdown = DropdownMenuDropdown.render(scope, &[item, inner]);
+        DropdownMenu {
+            opened_fn: Some(Rc::new(|| true)),
+            on_close: Some(Callback::new(|| {})),
+            close_on_item_click: false,
+            ..Default::default()
+        }
+        .render(scope, &[outer_target, outer_dropdown])
+    });
+    settle(&mut app, 1.0);
+
+    let item = probe(&app, "outer-item");
+    let (x, y) = {
+        let doc = app.doc.as_ref().unwrap();
+        let d = doc.borrow();
+        let (x, y, w, h) = super::hit_testing::painted_element_box(&d.tree, item);
+        assert!(w > 0.0 && h > 0.0, "the outer item is laid out and visible");
+        (x + w / 2.0, y + h / 2.0)
+    };
+    for event in [
+        PlatformEvent::MouseDown {
+            x,
+            y,
+            button: MouseButton::Left,
+        },
+        PlatformEvent::MouseUp {
+            x,
+            y,
+            button: MouseButton::Left,
+        },
+    ] {
+        app.handle_event(event, (VIEWPORT.0 as u32, VIEWPORT.1 as u32), 1.0);
+    }
+
+    assert_eq!(
+        inner_closes.get(),
+        0,
+        "the closed inner menu's backdrop took the tap — it is shown by the \
+         outer menu's `--opened` class"
+    );
+    assert_eq!(item_clicks.get(), 1, "the outer item ran");
+}
+
+fn nested_tooltips(outer_opened: bool, outer_disabled: bool, inner_opened: bool) -> RinchApp {
+    mount(move |scope| {
+        let inner_target = scope.create_element("span");
+        let inner = Tooltip {
+            label: "inner".to_string(),
+            opened: inner_opened,
+            ..Default::default()
+        }
+        .render(scope, &[inner_target]);
+        inner.set_attribute("data-probe", "inner");
+        let outer = Tooltip {
+            label: "outer".to_string(),
+            opened: outer_opened,
+            disabled: outer_disabled,
+            ..Default::default()
+        }
+        .render(scope, &[inner]);
+        outer.set_attribute("data-probe", "outer");
+        outer
+    })
+}
+
+/// Hovering a tooltip shows **its** content, not that of an un-hovered tooltip
+/// inside its target.
+///
+/// Opened by hover (the effect path), not statically, so the fixture exercises
+/// the class the effect adds. Kills a revert of
+/// `.rinch-tooltip--opened > .rinch-tooltip__content` to a descendant
+/// combinator.
+#[test]
+fn hovering_a_tooltip_does_not_open_a_tooltip_nested_in_it() {
+    let mut app = nested_tooltips(false, false, false);
+    let outer = probe(&app, "outer");
+    let inner = probe(&app, "inner");
+    assert!(
+        is_inside(&app, inner, outer),
+        "the fixture really nests them"
+    );
+    let outer_content = child_with_class(&app, outer, "rinch-tooltip__content");
+    let inner_content = child_with_class(&app, inner, "rinch-tooltip__content");
+
+    fire(&app, outer, "data-onenter");
+    settle(&mut app, 1.0);
+
+    assert_eq!(
+        display_of(&app, outer_content),
+        DisplayValue::Block,
+        "control: the hovered tooltip is open"
+    );
+    assert!(!has_class(&app, inner, "rinch-tooltip--opened"));
+    assert_eq!(
+        display_of(&app, inner_content),
+        DisplayValue::None,
+        "the outer tooltip's `--opened` does not reach the inner tooltip's content"
+    );
+}
+
+/// An `opened` tooltip inside a `disabled` one is still shown.
+///
+/// Kills a revert of `.rinch-tooltip--disabled > .rinch-tooltip__content` to a
+/// descendant combinator — a rule that is older than #760 but had no effect
+/// while the reveal was an inline `display: block`, which outranked it.
+#[test]
+fn a_disabled_tooltip_does_not_hide_an_opened_tooltip_nested_in_it() {
+    let app = nested_tooltips(false, true, true);
+    let outer = probe(&app, "outer");
+    let inner = probe(&app, "inner");
+    let outer_content = child_with_class(&app, outer, "rinch-tooltip__content");
+    let inner_content = child_with_class(&app, inner, "rinch-tooltip__content");
+
+    assert_eq!(
+        display_of(&app, outer_content),
+        DisplayValue::None,
+        "control: the disabled tooltip is closed"
+    );
+    assert_eq!(
+        display_of(&app, inner_content),
+        DisplayValue::Block,
+        "the outer tooltip's `--disabled` does not hide the inner tooltip's content"
+    );
+}
+
+/// A two-tab `Tabs` (value "a") tagged `data-probe="{marker}"`, whose panel "a"
+/// holds `panel_a_kids`.
+fn probe_tabs(
+    scope: &mut RenderScope,
+    variant: &str,
+    orientation: &str,
+    marker: &str,
+    panel_a_kids: &[NodeHandle],
+) -> NodeHandle {
+    fn tab(scope: &mut RenderScope, value: &str) -> NodeHandle {
+        let label = scope.create_text(value);
+        Tab {
+            value: value.to_string(),
+            ..Default::default()
+        }
+        .render(scope, &[label])
+    }
+    let a = tab(scope, "a");
+    let b = tab(scope, "b");
+    let list = TabsList::default().render(scope, &[a, b]);
+    let panel_a = TabsPanel {
+        value: "a".to_string(),
+    }
+    .render(scope, panel_a_kids);
+    let panel_b = TabsPanel {
+        value: "b".to_string(),
+    }
+    .render(scope, &[]);
+    let tabs = Tabs {
+        value: "a".to_string(),
+        variant: variant.to_string(),
+        orientation: orientation.to_string(),
+        ..Default::default()
+    }
+    .render(scope, &[list, panel_a, panel_b]);
+    tabs.set_attribute("data-probe", marker);
+    tabs
+}
+
+/// `default` Tabs inside a `pills` or an `outline` Tabs' panel keep the
+/// `default` look on their active tab: no pill fill, no white text, no outline
+/// box.
+///
+/// Before #760 the variant rules keyed off `[data-active="true"]` matched
+/// nothing, so they could leak nowhere; wiring the hook made them reachable
+/// from every nested `Tabs`. Kills a revert of either selector of the `pills`
+/// or the `outline` active rule to a descendant combinator (both hooks are set
+/// on every active tab, so one leaking selector is enough to show).
+#[test]
+fn nested_default_tabs_do_not_take_the_outer_variants_active_styling() {
+    let body = peniko::Color::from_rgb8(250, 250, 250);
+    for (outer_variant, outer_active_bg) in [("pills", ACTIVE), ("outline", body)] {
+        let app = mount(move |scope| {
+            let inner = probe_tabs(scope, "default", "", "inner", &[]);
+            probe_tabs(scope, outer_variant, "", "outer", &[inner])
+        });
+        let outer = probe(&app, "outer");
+        let inner = probe(&app, "inner");
+        assert!(
+            is_inside(&app, inner, outer),
+            "the fixture really nests them"
+        );
+        let active: Vec<usize> = nodes_with_class(&app, "rinch-tabs__tab")
+            .into_iter()
+            .filter(|t| attr(&app, *t, "data-active").as_deref() == Some("true"))
+            .collect();
+        assert_eq!(active.len(), 2, "one active tab per Tabs");
+        let outer_active = *active
+            .iter()
+            .find(|t| !is_inside(&app, **t, inner))
+            .unwrap();
+        let inner_active = *active.iter().find(|t| is_inside(&app, **t, inner)).unwrap();
+        let inner_label = child_with_class(&app, inner_active, "rinch-tabs__tab-label");
+
+        assert_eq!(
+            background_of(&app, outer_active),
+            Some(outer_active_bg),
+            "control: the outer `{outer_variant}` active tab is styled"
+        );
+        assert_ne!(
+            background_of(&app, inner_active),
+            Some(outer_active_bg),
+            "the outer `{outer_variant}` active rule reached a nested `default` tab"
+        );
+        assert_eq!(
+            color_of(&app, inner_label),
+            Some(ACTIVE),
+            "the nested active `default` tab's text is the tab colour, not the \
+             outer `{outer_variant}` rule's"
+        );
+    }
+}
+
+/// A horizontal `default` Tabs inside a **vertical** `default` Tabs' panel
+/// keeps a horizontal underline, not the outer orientation's side bar.
+///
+/// Kills a revert of `.rinch-tabs--vertical.rinch-tabs--default > … >
+/// .rinch-tabs__tab-indicator` to a descendant combinator, which measured a
+/// 2 x 46 bar on the inner tab. The control is the outer indicator, which *is*
+/// the side bar — so the two readings differ, and neither is a fixed point.
+#[test]
+fn nested_horizontal_tabs_keep_an_underline_inside_vertical_tabs() {
+    let app = mount(move |scope| {
+        let inner = probe_tabs(scope, "default", "", "inner", &[]);
+        probe_tabs(scope, "default", "vertical", "outer", &[inner])
+    });
+    let inner = probe(&app, "inner");
+    let indicators = nodes_with_class(&app, "rinch-tabs__tab-indicator");
+    let size = |node: usize| {
+        let doc = app.doc.as_ref().unwrap();
+        let d = doc.borrow();
+        let l = d.tree.get(node).unwrap().layout;
+        (l.width, l.height)
+    };
+    let outer_indicator = *indicators
+        .iter()
+        .find(|n| !is_inside(&app, **n, inner))
+        .unwrap();
+    let inner_indicator = *indicators
+        .iter()
+        .find(|n| is_inside(&app, **n, inner))
+        .unwrap();
+
+    let (ow, oh) = size(outer_indicator);
+    assert!(
+        ow == 2.0 && oh > 2.0,
+        "control: the vertical Tabs' indicator is a 2px-wide side bar, got {ow}x{oh}"
+    );
+    let (iw, ih) = size(inner_indicator);
+    assert!(
+        ih == 2.0 && iw > 2.0,
+        "the nested horizontal Tabs' indicator is a 2px-tall underline, got {iw}x{ih}"
+    );
 }
 
 // ── the gap this fix had to work around ──────────────────────────────────
