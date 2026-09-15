@@ -1091,6 +1091,20 @@ mod tests {
             "`selected` is the other half of the pair — an option's selectedness              goes dirty the same way"
         );
 
+        // The name is ASCII case-insensitive, like every HTML attribute name
+        // (#688). `is_boolean_attribute` folds, so an uppercase spelling reaches
+        // the falsey branch; the pair check has to fold with it or `CHECKED:
+        // {|| false}` keeps the bug. Sampled off the fixed point on purpose —
+        // with the attribute *present* the guard finds it either way, because
+        // `get_attribute` folds too.
+        doc.borrow_mut().take_dirty_nodes();
+        input.write_attribute("CHECKED", "false");
+        assert!(
+            dirtied(&doc, &input),
+            "`CHECKED` is the same attribute as `checked`, and must reach the \
+             backend the same way"
+        );
+
         // The counter-case: every other boolean attribute keeps the guard, so a
         // falsey write with nothing to remove costs no invalidation.
         input.write_attribute("disabled", "false");

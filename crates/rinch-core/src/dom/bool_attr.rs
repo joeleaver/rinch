@@ -300,6 +300,39 @@ mod tests {
         }
     }
 
+    /// The pair whose live state the browser can move on its own, and which
+    /// therefore cannot have its falsey write skipped (#687).
+    ///
+    /// Case-folded like every HTML attribute name (#688), and sampled off the
+    /// fixed point: each accepted name is checked in a spelling that needs the
+    /// fold, and beside a rejected neighbour. `indeterminate` is the pointed
+    /// rejection — it is the third member of the web backend's *reflected*
+    /// family, and the one with no content attribute at all, so it is not a
+    /// boolean attribute and `write_attribute` never maps it.
+    #[test]
+    fn the_presence_reflected_pair_is_checked_and_selected_in_any_case() {
+        for name in ["checked", "CHECKED", "Selected", "selected"] {
+            assert!(
+                is_presence_reflected_attribute(name),
+                "{name}'s live state can move without its attribute"
+            );
+        }
+        for name in [
+            "indeterminate",
+            "disabled",
+            "readonly",
+            "hidden",
+            "open",
+            "multiple",
+            "data-disabled",
+        ] {
+            assert!(
+                !is_presence_reflected_attribute(name),
+                "{name}'s state is its attribute, so its falsey write stays guarded"
+            );
+        }
+    }
+
     /// The enumerated look-alikes must stay out: each has a meaningful
     /// `"false"`, and removing the attribute changes or inverts what it says.
     #[test]
