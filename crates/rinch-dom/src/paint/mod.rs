@@ -2504,6 +2504,15 @@ fn paint_node(
             if let Some(lh) = parent_computed.and_then(|s| s.line_height.to_parley()) {
                 builder.push_default(parley::style::StyleProperty::LineHeight(lh));
             }
+            // letter-/word-spacing (#698) — in CSS pixels, like everything else
+            // on this builder, which was made at scale 1.0 for the reason above.
+            // Without these two the box this fallback paints into was measured
+            // with the spacing and the glyphs would be drawn without it.
+            let (letter_spacing, word_spacing) = parent_computed
+                .map(|s| (s.letter_spacing, s.word_spacing))
+                .unwrap_or((0.0, 0.0));
+            builder.push_default(parley::style::StyleProperty::LetterSpacing(letter_spacing));
+            builder.push_default(parley::style::StyleProperty::WordSpacing(word_spacing));
 
             let mut text_layout = builder.build(&text_data.content);
 

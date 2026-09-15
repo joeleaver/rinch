@@ -198,6 +198,43 @@ browser's `smaller`, exactly as they always have in a browser and on
 `rinch-web`. Declare a `font-size` on them if you want the old desktop size
 back.
 
+#### Letter and word spacing
+
+`letter-spacing` and `word-spacing` apply to laid-out and painted text on
+desktop (issue #698). Both inherit, both take a length, and both follow
+css-text-3: the extra advance is added after **every** typographic character
+unit, the last one included, so `letter-spacing: 4px` over five characters
+widens the line by 20px rather than 16. `word-spacing` adds its length to every
+space and no-break space. Measured against Chrome 150, rinch and the browser
+agree on all three numbers.
+
+A declaration on an inline element covers that element's own characters only:
+
+```rust
+rsx! {
+    p { style: "letter-spacing: 0.08em",
+        "Spaced out, "
+        span { style: "letter-spacing: normal", "but not here." }
+    }
+}
+```
+
+**A percentage is dropped, and that is a divergence.** rinch keeps only the
+length part of `letter-spacing` / `word-spacing`, so `50%` spaces by nothing and
+`calc(5px + 50%)` spaces by 5px. Chrome 150 resolves the percentage against the
+element's own font-size — measured, `letter-spacing: 50%` at `font-size: 20px`
+adds 10px per character — so a percentage that works in a browser does nothing
+here. Use `px`, `em` or `rem`, all of which are exact. Tracked as issue #743.
+
+`normal` is zero, as in CSS, and it is a genuine reset: an inline element
+declaring it inside a spaced ancestor gets no spacing on its own characters,
+which is what the `span` above relies on.
+
+**Form controls are the exception.** An `<input>`, `<textarea>` or `<select>`
+shapes its own value through a separate text path that does not read either
+property yet, so a spacing declared on one has no effect on the text inside it.
+Tracked as issue #320, which unifies that path with the rest.
+
 #### Scaling the whole UI with `rem`
 
 `rem` lengths resolve against the computed font-size of the root (`<html>`)

@@ -157,6 +157,52 @@ fn a_span_scoped_letter_spacing_covers_only_its_own_run() {
     );
 }
 
+/// `normal` is a **reset**, not an absence, and it is the case a `!= 0.0` guard
+/// on the push would lose.
+///
+/// Both properties inherit, so a span inside a spaced container carries the
+/// container's value; declaring `normal` computes it back to 0, and parley only
+/// hears about that if the 0 is actually pushed. Chrome 150, `20px/40px
+/// monospace`, container at `letter-spacing: 7px`, content
+/// `ab<span>cd</span>ef`: 114.25 with the span inheriting, 100.28125 with the
+/// span at `normal` — **-14**, exactly the span's own two characters.
+///
+/// Every other fixture in this file sits on the fixed point where "push it" and
+/// "push it only when non-zero" agree, because their spacing is non-zero
+/// everywhere it is declared.
+#[test]
+fn a_span_declaring_normal_resets_an_inherited_letter_spacing() {
+    fn width(span_style: &str) -> f32 {
+        let mut doc = RinchDocument::new();
+        let body = doc.body();
+        let c = el(
+            &mut doc,
+            body,
+            "div",
+            &format!("width: 380px; white-space: pre; letter-spacing: 7px; {BASE}"),
+        );
+        txt(&mut doc, c, "ab");
+        let s = el(&mut doc, c, "span", span_style);
+        txt(&mut doc, s, "cd");
+        txt(&mut doc, c, "ef");
+        doc.resolve_layout(VW, VH);
+        doc.tree.nodes[c.0]
+            .text_layout
+            .as_ref()
+            .expect("no inline layout")
+            .layout
+            .width()
+    }
+    let inherited = width("");
+    let reset = width("letter-spacing: normal");
+    assert!(
+        (reset - inherited + 14.0).abs() < 0.5,
+        "a span at letter-spacing: normal inside a 7px container must lose the \
+         spacing on its own 2 characters, so -14px \
+         (Chrome 150: 114.25 -> 100.28125); got {inherited} -> {reset}"
+    );
+}
+
 #[test]
 fn an_atomic_inlines_measured_box_follows_letter_spacing() {
     fn box_width(extra: &str) -> f32 {
