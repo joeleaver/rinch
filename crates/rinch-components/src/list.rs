@@ -206,10 +206,16 @@ fn give_items_a_default_icon(node: &NodeHandle, icon: TablerIcon, scope: &mut Re
     let classes = node.get_attribute("class").unwrap_or_default();
     let mut tokens = classes.split_whitespace();
     if tokens.clone().any(|c| c == "rinch-list__item") {
-        // The item set an icon of its own; a child's value wins over the
-        // parent's default.
         if !tokens.any(|c| c == "rinch-list__item--with-icon") {
             adopt_icon(node, icon, scope);
+        } else if node.get_attribute(DEFAULTED_ATTR).is_some() {
+            // The icon there is some list's default, not the item's own, so
+            // this list is free to replace it — which is what makes an item
+            // *moved* from one list into another take the new list's icon
+            // (issue #716). An item that set its own `icon` carries no marker
+            // and is left alone: a child's value wins over a parent's default,
+            // wherever the child ends up.
+            replace_icon(node, icon, scope);
         }
         return;
     }
@@ -217,6 +223,45 @@ fn give_items_a_default_icon(node: &NodeHandle, icon: TablerIcon, scope: &mut Re
     for child in node.children() {
         give_items_a_default_icon(&child, icon, scope);
     }
+}
+
+/// Set on an item whose icon came from its list rather than from its own `icon`
+/// prop. Presence is the whole value.
+///
+/// The class alone cannot say it: `rinch-list__item--with-icon` is what both
+/// kinds of item carry, deliberately, because the stylesheet has one rule for
+/// both.
+const DEFAULTED_ATTR: &str = "data-list-icon";
+
+/// Swap the glyph in an item's existing icon box for `icon`.
+fn replace_icon(item: &NodeHandle, icon: TablerIcon, scope: &mut RenderScope) {
+    let Some(icon_span) = item
+        .children()
+        .into_iter()
+        .find(|c| class_tokens(c).any(|t| t == "rinch-list__item-icon"))
+    else {
+        return;
+    };
+    let glyph = render_tabler_icon(scope, icon, TablerIconStyle::Outline);
+    // Attach first, clear second, and by `discard` rather than `remove`: the old
+    // glyph is gone for good, and only `discard` releases `rinch-web`'s strong
+    // `web_sys::Node` (issue #719).
+    icon_span.append_child(&glyph);
+    for child in icon_span.children() {
+        if child.node_id() != glyph.node_id() {
+            child.discard();
+        }
+    }
+}
+
+/// `node`'s class attribute, as whole tokens.
+fn class_tokens(node: &NodeHandle) -> impl Iterator<Item = String> {
+    node.get_attribute("class")
+        .unwrap_or_default()
+        .split_whitespace()
+        .map(str::to_owned)
+        .collect::<Vec<_>>()
+        .into_iter()
 }
 
 /// Rebuild `item` into the icon layout, moving whatever it already holds into
@@ -237,6 +282,7 @@ fn adopt_icon(item: &NodeHandle, icon: TablerIcon, scope: &mut RenderScope) {
     }
 
     item.add_class("rinch-list__item--with-icon");
+    item.set_attribute(DEFAULTED_ATTR, "");
     item.append_child(&icon_span);
     item.append_child(&content_span);
 }

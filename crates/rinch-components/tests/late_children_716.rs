@@ -421,3 +421,227 @@ fn a_row_a_branch_reveals_later_takes_the_lists_icon() {
         "#716: a row a branch reveals is a late arrival like a reconciled one"
     );
 }
+
+// ------------------------------------------- moved between two containers
+
+#[test]
+fn a_row_moved_into_another_list_takes_the_new_lists_icon() {
+    assert_ne!(glyph_of(TablerIcon::Check), glyph_of(TablerIcon::X));
+
+    let tree = Tree::build(|scope| {
+        let text = scope.create_text("One");
+        let item = ListItem::default().render(scope, &[text]);
+        let first = List {
+            icon: Some(TablerIcon::Check),
+            ..Default::default()
+        }
+        .render(scope, &[item]);
+        let second = List {
+            icon: Some(TablerIcon::X),
+            ..Default::default()
+        }
+        .render(scope, &[]);
+        let root = scope.create_element("div");
+        root.append_child(&first);
+        root.append_child(&second);
+        root
+    });
+
+    let lists = tree.find_all("rinch-list");
+    assert_eq!(lists.len(), 2);
+    let item = tree.find_all("rinch-list__item").remove(0);
+    assert_eq!(
+        glyph(&item),
+        glyph_of(TablerIcon::Check),
+        "precondition: the row starts in the first list"
+    );
+
+    lists[1].append_child(&item);
+
+    assert_eq!(
+        glyph(&item),
+        glyph_of(TablerIcon::X),
+        "#716: the row re-resolves against the list it now belongs to. The icon \
+         it was carrying was the first list's default, not its own"
+    );
+    assert_eq!(
+        tree.find_all("rinch-list__item-icon").len(),
+        1,
+        "and it has one icon box, not two"
+    );
+}
+
+#[test]
+fn a_row_with_its_own_icon_keeps_it_across_a_move() {
+    let tree = Tree::build(|scope| {
+        let text = scope.create_text("One");
+        let item = ListItem {
+            icon: Some(TablerIcon::Home),
+        }
+        .render(scope, &[text]);
+        let first = List {
+            icon: Some(TablerIcon::Check),
+            ..Default::default()
+        }
+        .render(scope, &[item]);
+        let second = List {
+            icon: Some(TablerIcon::X),
+            ..Default::default()
+        }
+        .render(scope, &[]);
+        let root = scope.create_element("div");
+        root.append_child(&first);
+        root.append_child(&second);
+        root
+    });
+
+    let lists = tree.find_all("rinch-list");
+    let item = tree.find_all("rinch-list__item").remove(0);
+    lists[1].append_child(&item);
+
+    assert_eq!(
+        glyph(&item),
+        glyph_of(TablerIcon::Home),
+        "a child's value wins over a parent's default wherever the child ends up"
+    );
+}
+
+#[test]
+fn a_radio_moved_into_another_group_takes_the_new_groups_size() {
+    let tree = Tree::build(|scope| {
+        let radio = Radio {
+            value: "a".into(),
+            ..Default::default()
+        }
+        .render(scope, &[]);
+        let first = RadioGroup {
+            size: "lg".into(),
+            ..Default::default()
+        }
+        .render(scope, &[radio]);
+        let second = RadioGroup {
+            size: "xs".into(),
+            ..Default::default()
+        }
+        .render(scope, &[]);
+        let root = scope.create_element("div");
+        root.append_child(&first);
+        root.append_child(&second);
+        root
+    });
+
+    let wrappers = tree.find_all("rinch-radio-group__radios");
+    let radio = tree.find_all("rinch-radio").remove(0);
+    assert!(has_class(&radio, "rinch-radio--lg"), "precondition");
+
+    wrappers[1].append_child(&radio);
+
+    assert!(
+        has_class(&radio, "rinch-radio--xs"),
+        "#716: the radio re-resolves against the group it now belongs to; it \
+         read {:?}",
+        radio.get_attribute("class")
+    );
+    assert!(!has_class(&radio, "rinch-radio--lg"));
+}
+
+#[test]
+fn a_step_moved_into_another_stepper_is_restated_from_its_new_position() {
+    let tree = Tree::build(|scope| {
+        let a = StepperStep {
+            label: "a".into(),
+            ..Default::default()
+        }
+        .render(scope, &[]);
+        let b = StepperStep {
+            label: "b".into(),
+            ..Default::default()
+        }
+        .render(scope, &[]);
+        // The first stepper is on step 0, so `a` is in progress and `b` is not
+        // yet reached.
+        let first = Stepper {
+            active: 0,
+            ..Default::default()
+        }
+        .render(scope, &[a, b]);
+        // The second is past its only step, so anything landing in it at
+        // position 0 is completed.
+        let second = Stepper {
+            active: 1,
+            ..Default::default()
+        }
+        .render(scope, &[]);
+        let root = scope.create_element("div");
+        root.append_child(&first);
+        root.append_child(&second);
+        root
+    });
+
+    let containers = tree.find_all("rinch-stepper__steps");
+    let steps = tree.find_all("rinch-stepper__step");
+    assert!(
+        has_class(&steps[1], "rinch-stepper__step--inactive"),
+        "precondition: the second step of the first stepper is not reached yet"
+    );
+
+    containers[1].append_child(&steps[1]);
+
+    assert_eq!(
+        steps[1].get_attribute("data-step").as_deref(),
+        Some("0"),
+        "#716: the step is renumbered from its position in its new stepper"
+    );
+    assert!(
+        has_class(&steps[1], "rinch-stepper__step--completed"),
+        "and restated: position 0 against `active: 1` is completed. It read {:?}",
+        steps[1].get_attribute("class")
+    );
+    assert!(
+        !has_class(&steps[1], "rinch-stepper__step--inactive"),
+        "a step carries exactly one state class"
+    );
+}
+
+// -------------------------------- a reactive container prop, then more growth
+
+#[test]
+fn a_late_radio_takes_the_groups_current_size_after_a_reactive_change() {
+    let size = Signal::new("lg".to_string());
+    let items = Signal::new(vec!["one"]);
+    let tree = Tree::build(move |__scope| {
+        rsx! {
+            div {
+                RadioGroup { size: {move || size.get()},
+                    for it in items.get() { Radio { key: it, value: it } }
+                }
+            }
+        }
+    });
+
+    items.update(|v| v.push("two"));
+    for radio in tree.find_all("rinch-radio") {
+        assert!(
+            has_class(&radio, "rinch-radio--lg"),
+            "precondition: both radios carry the group's first size"
+        );
+    }
+
+    // The reactive prop rebuilds the component, children and all — which also
+    // retires the observer the old wrapper registered, and installs one for the
+    // new group.
+    size.set("xs".to_string());
+    items.update(|v| v.push("three"));
+
+    let radios = tree.find_all("rinch-radio");
+    assert_eq!(radios.len(), 3, "three radios");
+    for radio in &radios {
+        assert!(
+            has_class(radio, "rinch-radio--xs"),
+            "#716: the radio added after the prop changed takes the group's \
+             *current* size, and so do the ones the rebuild re-rendered. It \
+             read {:?}",
+            radio.get_attribute("class")
+        );
+    }
+}
