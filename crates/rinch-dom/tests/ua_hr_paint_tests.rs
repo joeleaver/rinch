@@ -99,8 +99,14 @@ fn near_bbox(px: &[u8], rgb: (u8, u8, u8), tol: i32) -> Option<(u32, u32, u32, u
 }
 
 /// Any pixel at all that is not fully transparent.
+///
+/// `as_chunks::<4>` rather than `chunks_exact(4)`: the pixmap is RGBA8, so the
+/// stride is a constant and the array form lets the compiler see it. (It is
+/// also what `clippy::chunks_exact_to_as_chunks` asks for from Rust 1.98, which
+/// is what CI runs.) The remainder is discarded on purpose — a pixmap is always
+/// a whole number of pixels.
 fn ink_count(px: &[u8]) -> u32 {
-    px.chunks_exact(4).filter(|p| p[3] != 0).count() as u32
+    px.as_chunks::<4>().0.iter().filter(|p| p[3] != 0).count() as u32
 }
 
 /// How many non-transparent pixels each row holds, rows with none omitted.
@@ -109,7 +115,7 @@ fn ink_count(px: &[u8]) -> u32 {
 /// background, so a row that holds ink holds the rule and nothing else.
 fn ink_rows(px: &[u8]) -> std::collections::BTreeMap<u32, u32> {
     let mut rows = std::collections::BTreeMap::new();
-    for (i, p) in px.chunks_exact(4).enumerate() {
+    for (i, p) in px.as_chunks::<4>().0.iter().enumerate() {
         if p[3] != 0 {
             *rows.entry(i as u32 / VW as u32).or_insert(0u32) += 1;
         }
