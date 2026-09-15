@@ -149,6 +149,15 @@ the property once the user has toggled the control, and rinch has no such flag, 
 a programmatic write keeps winning. It follows the attribute's presence, matching
 what the desktop backend's `:checked` reads.
 
+Those two are also the reason a falsey write of them is never skipped. Turning a
+boolean attribute off is otherwise a no-op when the attribute is already gone,
+and `write_attribute` skips it to save a restyle — but on the web a user's
+toggle leaves the *property* on with the attribute absent, so the skip was
+exactly the write that would have corrected it, and a box the user clicked
+stayed checked against a binding that said `false` (issue #687). `checked` and
+`selected` now always reach the backend, which is the only layer that can see
+the property.
+
 Component props are unaffected — a component's `disabled: bool` is an ordinary
 typed field, and the component decides how to render it.
 
