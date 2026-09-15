@@ -499,3 +499,77 @@ fn a_rerendered_component_subtree_can_still_transition() {
         "a re-rendered component subtree can still animate"
     );
 }
+
+/// A spinner inside a hidden branch stops asking the shell for frames.
+///
+/// A transition self-limits — it has a declared duration and dies after it. A
+/// `@keyframes` animation does not, and the desktop shell decides whether to
+/// schedule another frame from `!tree.active_animations.is_empty()`
+/// (`rinch/src/app/event_dispatch.rs`), so a `Loader` left running on a removed
+/// node keeps an app rendering at full rate with nothing on screen to show for
+/// it.
+///
+/// `reinsertion_transition_tests::a_detached_animation_stops_asking_for_frames`
+/// pins that for the raw `DomDocument` API. This fixture is the reactive-route
+/// twin, and it exists because the property's *witness* changed rather than the
+/// mechanism: the inline `animation: none` that `clear_animations` stamped was
+/// a second, independent thing stopping the frames on exactly these three
+/// helpers, and with it gone `detach_subtree_styles` dropping
+/// `active_animations` is the only one left. A `Loader` in a reactive `if` is
+/// the commonest shape in the component library, so the claim wants its own
+/// pin rather than an inference from a fixture that drives `remove_node`
+/// directly.
+///
+/// Kills a mutant that drops `active_transitions` but not `active_animations`,
+/// which every other fixture in this file is happy with — a transition's
+/// 150ms bound hides it.
+#[test]
+fn a_spinner_in_a_hidden_branch_stops_asking_for_frames() {
+    let doc = Rc::new(RefCell::new(RinchDocument::new()));
+    doc.borrow_mut().load_css(
+        "@keyframes sp { from { width: 10px; } to { width: 100px; } } \
+         .spin { animation: sp 1000s linear infinite; width: 10px; height: 10px; \
+                 font-size: 16px; line-height: 20px; }",
+    );
+    doc.borrow_mut().tree.transitions_enabled = true;
+    let body = doc.borrow().body();
+    let dyn_doc: Rc<RefCell<dyn DomDocument>> = doc.clone();
+    let mut scope = RenderScope::new(dyn_doc, body);
+    let wrap = scope.create_element("div");
+    scope.parent().append_child(&wrap);
+
+    let spinner = scope.create_element("div");
+    spinner.set_attribute("class", "spin");
+    let spinner_id = spinner.node_id();
+
+    let showing = Signal::new(true);
+    let branch = spinner.clone();
+    let _marker = rinch_core::show::show_dom(
+        &mut scope,
+        &wrap,
+        move || showing.get(),
+        move |_: &mut RenderScope| branch.clone(),
+        None::<fn(&mut RenderScope) -> NodeHandle>,
+    );
+    doc.borrow_mut().resolve_layout(800.0, 600.0);
+    assert!(
+        !doc.borrow().tree.active_animations.is_empty(),
+        "precondition: the shell is being asked for frames"
+    );
+
+    showing.set(false);
+    assert!(
+        doc.borrow().tree.active_animations.is_empty(),
+        "hiding the branch must stop the frames — the animation has no duration \
+         to expire and nothing else ever clears it"
+    );
+    assert!(
+        !doc.borrow_mut().tick_animations(),
+        "and the tick must agree there is nothing left to advance"
+    );
+    assert_eq!(
+        inline_style(&doc.borrow(), spinner_id),
+        None,
+        "stopped by the detach, not by an inline `animation: none`"
+    );
+}
