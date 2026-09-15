@@ -60,12 +60,20 @@ impl ComputedStyle {
             builder.push_default(StyleProperty::LineHeight(line_height));
         }
 
-        // Set letter spacing if not zero
+        // Set letter/word spacing if not zero.
+        //
+        // **The `!= 0.0` guard is right here and wrong at every other producer
+        // in the table below**, so do not port it. This builder shapes one text
+        // node under one style: there is no enclosing span whose inherited
+        // spacing a zero would have to override, so skipping the push and
+        // pushing parley's own default are the same thing. The IFC producers
+        // push a style span *inside* an inherited one, where
+        // `letter-spacing: normal` computes to 0 and that 0 is the whole of the
+        // reset — guarding there drops it (#698).
         if self.letter_spacing != 0.0 {
             builder.push_default(StyleProperty::LetterSpacing(self.letter_spacing));
         }
 
-        // Set word spacing if not zero
         if self.word_spacing != 0.0 {
             builder.push_default(StyleProperty::WordSpacing(self.word_spacing));
         }

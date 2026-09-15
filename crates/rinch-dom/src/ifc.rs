@@ -4206,9 +4206,11 @@ impl RinchDocument {
     /// fixture in `contents_wrapper_inherited_style_tests` that dies when their
     /// line is deleted, `text_underline_offset` is covered elsewhere as below,
     /// and the `letter_spacing`/`word_spacing` pair added by #698 is
-    /// `a_wrappers_letter_spacing_reaches_its_text` in that same file.
+    /// `a_wrappers_letter_and_word_spacing_reach_its_text` in that same file —
+    /// which covers **each clause separately**, over content the property under
+    /// test can actually move.
     ///
-    /// That last one is worth a sentence, because the obvious fixture does
+    /// That last one is worth a paragraph, because two obvious fixtures do
     /// **not** cover it. This predicate gates only a boxless wrapper and the
     /// split-inline bridge; a real `display: inline` span pushes its properties
     /// unconditionally, so a span-scoped spacing test exercises
@@ -4217,6 +4219,12 @@ impl RinchDocument {
     /// included, until a `display: contents` fixture was written for it. And it
     /// had to measure the **line width** — spacing moves the same glyphs apart,
     /// so this file's ink and colour oracles cannot see it.
+    ///
+    /// Then the same trap a second time, one level down: with a single
+    /// `letter-spacing` row the *word* clause was still unwitnessed across all
+    /// 78 test binaries, because deleting it changes nothing in text that
+    /// declares only the other property. Adjacent clauses invite a mutant that
+    /// deletes both and dies on either; each needs content of its own.
     ///
     /// **`text_underline_offset` is inert but not untested** (#580). No CSS can
     /// make it `Some` — the property is gecko-only in this Stylo build, so the
