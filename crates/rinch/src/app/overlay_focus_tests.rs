@@ -756,10 +756,13 @@ fn enter_on_the_opener_moves_focus_into_the_modal() {
 /// while it works ("Saving…"), or a form section that goes disabled underneath.
 ///
 /// **Mutant: the `node_is_disabled_in_tree` arm of `node_can_take_focus_now`
-/// deleted.** `focus_element` then refuses the disabled node on its own and the
-/// verify-after catches it — so this fixture *also* pins the verify. Delete
-/// both and the claim stays on `in-first`, inside a `display: none` subtree,
-/// which is precisely the pre-#695 state this feature removes.
+/// deleted.** The claim then stays on `in-first`, inside a `display: none`
+/// subtree, which is precisely the pre-#695 state this feature removes.
+///
+/// It does **not** pin the verify-after, which an earlier version of this
+/// comment claimed: with the predicate intact the restore never attempts the
+/// focus, so nothing reaches the verify to be checked. The verify has its own
+/// fixture below, and it needed a constructed one.
 #[test]
 fn a_disabled_opener_is_not_restored_and_the_claim_is_released() {
     let open = Signal::new(false);
@@ -792,6 +795,102 @@ fn a_disabled_opener_is_not_restored_and_the_claim_is_released() {
         "a disabled opener ({}) cannot take the keyboard, so it is released \
          rather than left on {}",
         ids.opener,
+        ids.inside_first
+    );
+}
+
+/// A restore the arbiter **refuses** releases the claim rather than stranding
+/// it — the verify-after, which `node_can_take_focus_now` cannot stand in for.
+///
+/// The two are not the same question. The predicate asks what the tree says
+/// (attached, has a box, not disabled, focusable); `try_focus_input` asks what
+/// the *engine* can install, and it has one silent refusal the tree cannot
+/// show: an `<input>` whose `data-oninput` does not parse. It takes the text
+/// branch on its tag, fails the parse, and returns having claimed nothing —
+/// while the predicate, reading the same node, says yes.
+///
+/// **Mutant: the verify deleted** (`apply_focus_restore` returning
+/// unconditionally after `focus_element`). The restore then believes a focus
+/// that never happened and skips the release, leaving the keyboard on
+/// `in-first` inside the closed modal. Measured: the whole `rinch` lib suite
+/// passes with the verify gone, and this is the fixture that stops it.
+///
+/// **Constructed, and deliberately so.** The handler is broken *while the
+/// dialog is open*, because the opener has to be focusable at open time to be
+/// remembered at all. No in-tree writer produces an unparseable
+/// `data-oninput`, so nothing natural opens this gap — but the gap is between
+/// two predicates that will go on drifting, and something has to hold them
+/// together.
+#[test]
+fn a_restore_the_arbiter_refuses_releases_the_claim() {
+    let ids: Rc<Cell<Ids>> = Rc::new(Cell::new(Ids::default()));
+    let handle: Rc<RefCell<Option<NodeHandle>>> = Rc::new(RefCell::new(None));
+    let open = Signal::new(false);
+    let out = ids.clone();
+    let out_handle = handle.clone();
+    let mut app = mount(move |scope: &mut RenderScope| {
+        let page = scope.create_element("div");
+
+        // A real text control, so the focus routes through the text engine.
+        let opener = scope.create_element("input");
+        opener.set_attribute("id", "opener");
+        opener.set_attribute("type", "text");
+        opener.set_attribute("style", "display: block; width: 200px; height: 28px");
+        let oninput = scope.register_input_handler(|_: String| {});
+        opener.set_attribute("data-oninput", &oninput.0.to_string());
+        page.append_child(&opener);
+
+        let in_first = button(scope, "in-first");
+        let modal = Modal {
+            opened_fn: Some(Rc::new(move || open.get())),
+            trap_focus: true,
+            with_close_button: false,
+            ..Default::default()
+        }
+        .render(scope, std::slice::from_ref(&in_first));
+        page.append_child(&modal);
+
+        out.set(Ids {
+            opener: opener.node_id().0,
+            inside_first: in_first.node_id().0,
+            ..Default::default()
+        });
+        *out_handle.borrow_mut() = Some(opener);
+        page
+    });
+    let ids = ids.get();
+
+    app.focus_element(ids.opener);
+    assert_eq!(
+        app.focus_target,
+        FocusTarget::Input(ids.opener),
+        "precondition: the opener holds the keyboard as a text target"
+    );
+
+    open.set(true);
+    settle(&mut app);
+    assert_eq!(
+        focused(&app),
+        Some(ids.inside_first),
+        "precondition: the modal took it, remembering {}",
+        ids.opener
+    );
+
+    // The opener's handler id stops parsing while the dialog is open. Every
+    // check `node_can_take_focus_now` makes still passes — it is attached, it
+    // has a box, it is not disabled, and `<input>` is focusable by tag.
+    handle
+        .borrow()
+        .as_ref()
+        .expect("the opener handle")
+        .set_attribute("data-oninput", "not-a-handler-id");
+
+    open.set(false);
+    settle(&mut app);
+    assert_eq!(
+        focused(&app),
+        None,
+        "the focus was refused, so the claim is released rather than left on {}",
         ids.inside_first
     );
 }
