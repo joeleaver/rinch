@@ -1616,8 +1616,35 @@ pub struct NodeTree {
     pub active_transitions: HashMap<RawNodeId, HashMap<TransitionProperty, ActiveTransition>>,
     /// Active CSS animations per node.
     pub active_animations: HashMap<RawNodeId, Vec<ActiveAnimation>>,
-    /// Whether transitions are enabled (false until first layout completes).
+    /// Whether transitions are armed (false until the first layout completes).
+    ///
+    /// **Transitions only** (issue #762). `@keyframes` animations do not read
+    /// it: an animation has no before-change style to be wrong about, so it
+    /// runs on the very first frame the element exists, as in a browser.
+    /// `resolve_styles` also reads this as a "has the first layout happened"
+    /// proxy, to choose the full tree walk over the targeted one.
     pub transitions_enabled: bool,
+    /// Whether `recompute_all_styles_full` is re-cascading the document, so a
+    /// running animation that survives the cascade by name takes its keyframes,
+    /// stops and timing afresh and keeps only its clock (see
+    /// `animation::start_animations`).
+    ///
+    /// **A flag of its own, not `!transitions_enabled`.** That flag is also
+    /// false for every cascade before the first layout, and the two questions
+    /// have nothing to do with each other — asking one flag both is what #762
+    /// was. Scoped to `recompute_all_styles_full` because that is the pass a
+    /// theme toggle takes and it runs rarely; a refresh on every cascade would
+    /// cost a keyframes lookup and a stop extraction per animated node per
+    /// hover.
+    ///
+    /// It is **not** the only pass that re-cascades the whole document. A
+    /// `<style>` append (`maybe_load_style_css`) and a viewport change in
+    /// `resolve_layout` drop every node's cached style too, and do not set this
+    /// flag, so a running animation keeps stale stops and timing across them —
+    /// measured, a `<style>` appended after the first layout that redefines a
+    /// running `@keyframes` leaves the animation on its old body. Tracked on
+    /// #781.
+    pub refreshing_animations: bool,
     /// Cache of loaded and decoded images.
     pub image_cache: ImageCache,
     /// Image loader for fetching image data (file, network, etc.).
@@ -1843,6 +1870,7 @@ impl NodeTree {
             active_transitions: HashMap::new(),
             active_animations: HashMap::new(),
             transitions_enabled: false,
+            refreshing_animations: false,
             image_cache: ImageCache::new(),
             image_loader: None,
             dirty_ifc_text_roots: HashSet::new(),

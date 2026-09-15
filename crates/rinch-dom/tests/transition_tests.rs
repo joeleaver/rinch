@@ -402,7 +402,7 @@ fn test_apply_value_background_color() {
 // ── #250: `@keyframes` colour stops use the same colour parser as everything else ──
 
 /// Build a document whose one div runs `animation: tint 1000ms linear` from the
-/// given `@keyframes` body, with animations enabled from the first layout on.
+/// given `@keyframes` body, laid out once.
 /// The body's `color` is `rgb(7, 8, 9)`, the div's own `rgb(10, 20, 30)`.
 fn animated_div(keyframes: &str) -> (rinch_dom::RinchDocument, rinch_core::dom::NodeId) {
     use rinch_core::dom::DomDocument;
@@ -424,9 +424,6 @@ fn animated_div(keyframes: &str) -> (rinch_dom::RinchDocument, rinch_core::dom::
     doc.set_attribute(div, "style", "color: rgb(10, 20, 30)");
     doc.append_child(body, div);
 
-    // Animations are held off until the first layout has completed (the
-    // page-load guard); this test wants the very first resolve to start them.
-    doc.tree.transitions_enabled = true;
     doc.resolve_layout(800.0, 600.0);
     (doc, div)
 }
@@ -1172,8 +1169,8 @@ fn a_finished_width_transition_reaches_the_layout() {
     );
 }
 
-/// A `<div class="grow">` with a text child, under `css`, laid out once with
-/// animations armed. Separate from [`animated_div`], which hard-codes a colour
+/// A `<div class="grow">` with a text child, under `css`, laid out once.
+/// Separate from [`animated_div`], which hard-codes a colour
 /// animation on a 10x10 box.
 fn animated_width_div(css: &str) -> (rinch_dom::RinchDocument, rinch_core::dom::NodeId) {
     use rinch_core::dom::DomDocument;
@@ -1189,7 +1186,6 @@ fn animated_width_div(css: &str) -> (rinch_dom::RinchDocument, rinch_core::dom::
     doc.set_attribute(div, "class", "grow");
     doc.append_child(body, div);
 
-    doc.tree.transitions_enabled = true;
     doc.resolve_layout(800.0, 600.0);
     (doc, div)
 }
@@ -1201,16 +1197,29 @@ fn animated_width_div(css: &str) -> (rinch_dom::RinchDocument, rinch_core::dom::
 ///
 /// `forwards` is what makes the end state observable — without a fill mode the
 /// completed animation is dropped having applied nothing.
+///
+/// **The duration is 100s and the opening assertion is a range, deliberately.**
+/// An animation's clock starts at the cascade that first styles the node, which
+/// for a freshly appended element is `append_child`, not the layout pass — so a
+/// few milliseconds of DOM construction have already elapsed by the time the
+/// first layout measures the box. That was invisible here until #762, because
+/// the first cascade did not start animations at all and the clock began inside
+/// `resolve_layout`; it is how every *post*-mount insertion has always
+/// behaved. Over the 150ms this fixture used to declare, the gap measured 4px
+/// on an idle machine, and on a loaded one it could run a 150ms animation out
+/// entirely before the first assertion — a fixture flaky by construction.
+/// Issue #768.
 #[test]
 fn a_finished_width_animation_reaches_the_layout() {
     let (mut doc, div) = animated_width_div(
         "@keyframes grow { from { width: 100px; } to { width: 200px; } } \
-         .grow { animation: grow 150ms linear forwards; width: 100px; height: 40px; }",
+         .grow { animation: grow 100000ms linear forwards; width: 100px; height: 40px; }",
     );
-    assert_eq!(
-        doc.tree.get(div.0).unwrap().layout.width,
-        100.0,
-        "at the start of the animation the box should be at the `from` width"
+    let start_width = doc.tree.get(div.0).unwrap().layout.width;
+    assert!(
+        (100.0..101.0).contains(&start_width),
+        "near the start of a 100s animation the box should still be at (or a \
+         hair past) the `from` width, got {start_width}"
     );
 
     // Back-date past the duration so the next tick lands in the `forwards`
@@ -1222,7 +1231,7 @@ fn a_finished_width_animation_reaches_the_layout() {
         .get_mut(&div.0)
         .expect("the first layout should have started the animation")
     {
-        anim.start_time_ms -= 10_000.0;
+        anim.start_time_ms -= 200_000.0;
     }
 
     doc.tick_animations();

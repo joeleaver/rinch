@@ -386,13 +386,49 @@ impl RinchDocument {
         let transitions_were_enabled = self.tree.transitions_enabled;
         self.tree.transitions_enabled = false;
         self.tree.active_transitions.clear();
-        self.tree.active_animations.clear();
+        // `active_animations` is deliberately **not** cleared (issue #762).
+        // Measured in Chrome 150.0.7871.100, replacing a `<style>` element's
+        // text under a running `animation: … 10s linear infinite`: the
+        // animation keeps running and `currentTime` does not move, so long as
+        // its declaration still names a live `@keyframes` rule; it is cancelled
+        // when the declaration or the rule goes away. The re-cascade below
+        // reproduces all three — `animation::start_animations` matches an
+        // existing animation by name and keeps its `start_time_ms`, drops one
+        // whose declaration the new sheet no longer carries, and (through the
+        // refresh described below) drops one whose rule it no longer carries.
+        //
+        // Clearing here was the second half of #762: with the animation block
+        // gated on the flag this function had just forced off, nothing
+        // re-registered them, so a single theme change stopped every `Loader`,
+        // `Skeleton` and `Progress` stripe in the app permanently. Restarting
+        // them instead of preserving them would be wrong in the smaller way —
+        // every spinner in the window would jump back to 0° on a dark-mode
+        // toggle.
+        //
+        // What the re-cascade keeps is the **clock**, and only the clock. A
+        // kept animation's keyframes, stops and timing were taken from the old
+        // sheet and the old base style, so while this pass runs
+        // `start_animations` looks the rule up again (dropping the animation if
+        // the new sheet no longer defines it — Chrome cancels it), re-extracts
+        // the stops from the new base style, and takes the new
+        // `animation-duration` / `animation-delay`. Chrome 153, measured under
+        // a seeked `currentTime`: a redefined `@keyframes` body plays at once on
+        // the kept clock, a 10s → 20s duration keeps `currentTime` and halves
+        // the progress, and an `em` stop follows the new font-size.
+        //
+        // This also repairs what #747's restart walk does on this pass. The
+        // walk runs on a shown panel's cascade, before its descendants', and
+        // mints their entries from their pre-restyle `computed_style`; each
+        // descendant's own cascade comes after it here — every node is
+        // re-cascaded — and re-extracts the stops.
         // Clear roots to force full tree walk
         self.tree.style_roots.clear();
         // Resolve styles using Stylo
         self.tree.styles_dirty = true;
+        self.tree.refreshing_animations = true;
         self.resolve_styles();
         self.apply_stylo_styles_to_taffy();
+        self.tree.refreshing_animations = false;
         self.tree.transitions_enabled = transitions_were_enabled;
         // Force IFC rebuild so text layouts pick up new colors/fonts from
         // the updated computed styles (text brush is baked into Parley layout).
@@ -836,7 +872,19 @@ impl RinchDocument {
                 crate::animation::AnimationSpec::extract_from_stylo(&computed_values);
             self.tree.nodes[node_id].animation_specs = animation_specs;
 
-            if self.tree.transitions_enabled {
+            // **Not gated on `transitions_enabled`** (issue #762). That flag
+            // arms transitions, and a transition needs a *before-change style*
+            // — which the first cascade of a node does not have, so the first
+            // layout runs with it off and nothing animates into existence. A
+            // `@keyframes` animation has no such premise: it does not
+            // interpolate from a previous style, it plays its own, and a
+            // browser runs one on the very first frame the element exists.
+            // Asking one `if` for both meant an animation present in the first
+            // frame never started at all — a `Loader` that is the first thing
+            // on screen stayed still until some later event happened to
+            // re-cascade it, and an embedded `RinchContext` at a fixed size,
+            // where no such event ever comes, kept a dead spinner for good.
+            {
                 // css-animations-1 §3: an element that is **not being
                 // rendered** has no animation effect, so a `display: none`
                 // element — or anything inside one — runs nothing (issue
@@ -931,9 +979,14 @@ impl RinchDocument {
                 // this the drop above would be one-way and a `Loader` shown
                 // again would simply never spin. See
                 // [`Self::restart_animations_in_subtree`].
-                if self.tree.transitions_enabled
-                    && Self::ancestors_are_rendered(&self.tree, node_id, &[])
-                {
+                //
+                // Not gated on `transitions_enabled`, for the reason the
+                // animation block above is not (issue #762). The flag is off for
+                // every cascade before the first layout completes, and a panel
+                // shown on one of those passes by an inline write would drop its
+                // descendants' animations on the way out and never start them
+                // again.
+                if Self::ancestors_are_rendered(&self.tree, node_id, &[]) {
                     self.restart_animations_in_subtree(node_id, current_time_ms);
                 }
             }
@@ -1392,17 +1445,24 @@ impl RinchDocument {
     /// before children — so every descendant it visits is still carrying the
     /// `computed_style` it had *before* this pass. `start_animations` extracts
     /// keyframe stops from that, so an `em`, `rem` or `currentcolor` in a
-    /// keyframe resolves against the stale basis, and the find-by-name in
-    /// `start_animations` then keeps those stops when the descendant's own
-    /// cascade runs a moment later. Measured with `width: 1em` keyframes on a box
-    /// whose `font-size` goes 10px → 40px in the same class write that un-hides
-    /// its wrapper: stops come out `10..100` where `40..400` is right.
+    /// keyframe resolves against the stale basis, and — **outside
+    /// `recompute_all_styles_full`** — the find-by-name in `start_animations`
+    /// then keeps those stops when the descendant's own cascade runs a moment
+    /// later. Measured with `width: 1em` keyframes on a box whose `font-size`
+    /// goes 10px → 40px in the same class write that un-hides its wrapper: stops
+    /// come out `10..100` where `40..400` is right.
     ///
     /// It is not a regression — `main` was equally stale, by never dropping the
     /// entry at all — but this walk does foreclose the correct answer the
     /// per-node path would have reached on the `set_attribute` route. The root
-    /// cause is that `start_animations` never re-extracts stops for a name it
-    /// already knows, which is older and wider than this function.
+    /// cause is that `start_animations` does not re-extract stops for a name it
+    /// already knows, which is older and wider than this function. The one
+    /// exception is the full restyle: there `NodeTree::refreshing_animations`
+    /// makes the descendant's own cascade, which follows this walk on that pass,
+    /// re-extract them from its new style, so a theme that un-hides a panel and
+    /// changes its font-size gets the right basis
+    /// (`full_restyle_animation_refresh_tests`). The `<style>`-append and
+    /// viewport-change passes do not set that flag.
     ///
     /// # Cost
     ///

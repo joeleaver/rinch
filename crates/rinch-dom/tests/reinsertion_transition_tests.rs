@@ -711,8 +711,14 @@ fn set_text_content_is_a_detach_too() {
 /// it. The helper drops `active_animations` beside `active_transitions`, which
 /// is also what `NodeTree::remove_subtree` does when it frees a subtree — so
 /// `set_inner_html`, which frees rather than detaches, stops the frames without
-/// this helper. So does a blanket restyle: `recompute_all_styles_full` clears
-/// every entry whether the node is connected or not.
+/// this helper. A blanket restyle used to as well — `recompute_all_styles_full`
+/// cleared every entry, connected or not — but it no longer clears
+/// `active_animations` at all (**#762**: doing so stopped every spinner in the
+/// app on a theme change, permanently). Its full walk starts at `html_id` and
+/// so never reaches a detached node anyway, which is why that belt-and-braces
+/// clear could only ever have masked a missing detach, never substituted for
+/// one. This helper is the only thing standing between a detached spinner and
+/// an app rendering forever.
 /// Kills the "drop `active_transitions` only" mutant; no other fixture does,
 /// because an animation writes `computed_style` without consulting
 /// `has_been_styled`, so #699's own symptom cannot see it.

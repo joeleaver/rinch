@@ -2909,11 +2909,10 @@ Three things it deliberately does not do.
   symmetry for its own sake — a node shown by an *ancestor* need not be
   re-cascaded at all, because `set_style` invalidates the one node it was
   written to, so without the walk a panel un-hidden that way would come back
-  with its spinner permanently still. Two neighbouring faults are **not** fixed
-  and are not this: an animation present in the very first frame never starts
-  (**#762**) and a full restyle stops every animation in the document for good
-  (the same issue), both because `transitions_enabled` gates animation starts as
-  well as transition starts.
+  with its spinner permanently still. None of the three reads
+  `transitions_enabled` (**#762**, below): the walk ran behind that flag when
+  #747 landed, so a panel shown by an inline write on a cascade before the first
+  layout completed kept its spinner still until something re-cascaded it.
 - **`visibility: hidden` runs an animation, and that costs a frame clock.** It
   is the same answer the transition rule gives — such a box is rendered — and it
   is what a browser does, measured in Chrome. But an animation has no duration to
@@ -2995,6 +2994,61 @@ Measured on a 500-row list unmounted one row at a time, best of 200 alternated
 rounds in one release binary: 340us without the stamp, 5541us with it —
 **16x**, about 3.5us per node against the ~11ns per node #699's reset costs
 (`crates/rinch-dom/tests/detach_reset_bench.rs`, both harnesses `#[ignore]`d).
+
+**Nothing transitions on load, and everything animates on load** (**#762**).
+`NodeTree::transitions_enabled` is set at the *end* of the first
+`resolve_layout`, so a freshly mounted tree cannot transition into existence —
+and `recompute_all_styles_full` forces it off again for its own re-cascade, so a
+theme change applies instantly instead of every element sliding from the old
+palette to the new one. Both are rules about **transitions**. A `@keyframes`
+animation has no before-change style to be wrong about: it plays its own
+timeline, and a browser runs one on the very first frame the element exists. The
+two questions used to be asked with one `if`, and the cost was two bugs — an
+animation present in the first frame never started at all (an embedded
+`RinchContext` at a fixed size, where no later event re-cascades the tree, kept
+a dead spinner for good), and a theme change stopped **every** animation in the
+document permanently, so toggling dark mode killed every `Loader`, `Skeleton`
+and `Progress` stripe in the app. The animation half of
+`apply_stylo_styles_to_taffy` now reads no flag at all, and
+`recompute_all_styles_full` no longer clears `tree.active_animations`: the
+re-cascade matches each running animation by name and **keeps its clock**
+(`start_time_ms`, `paused_elapsed_ms`, `play_state`). Measured in Chrome, replacing
+a `<style>` element's text under a running animation leaves `currentTime`
+untouched — so preserving is right and restarting would be the smaller wrong
+answer. **The clock is all it keeps on that pass.** While
+`recompute_all_styles_full` runs, `NodeTree::refreshing_animations` (a flag of
+its own, not `!transitions_enabled`) makes a kept animation look its
+`@keyframes` rule up again — **dropping it if the new sheet no longer defines
+it**, which Chrome does and which keeping the entry whole got wrong, since a
+theme sheet can carry `@keyframes` — re-extract its stops from the new base
+style, and take the new duration and delay. A paused animation keeps its frozen
+elapsed *time* across a re-timing, as Chrome keeps `currentTime`. That is
+`recompute_all_styles_full` **only**, and it is not the only pass that
+re-cascades the whole document: a `<style>` append (`maybe_load_style_css`) and
+a viewport change in `resolve_layout` do too, and set no flag — measured, a
+`<style>` appended after the first layout with a redefined `@keyframes` body
+leaves the running animation on its old one (tracked on **#781**). On those two
+passes and on every targeted restyle, an edited `@keyframes` body (**#766**), a
+changed duration or delay (**#780**) and a stop derived from the base style
+(**#781**) still stay stale, because a refresh per animated node per cascade is
+a cost a hover should not pay. And one divergence the theme path now reaches,
+not fixed: **a finished one-shot animation replays on a theme toggle** — its
+entry was dropped when it completed, so the full restyle mints it again from
+t=0. Chrome does not, and neither did `main` (its map was cleared with the
+animation block gated off, right by accident). That is **#783**'s mechanism.
+#747's restart walk — the one that gives a subtree shown by an inline `display`
+write its animations back — reads no flag either; it shipped behind this one, so
+a panel shown by such a write on a cascade before the first layout completed
+kept a still spinner until something unrelated re-cascaded it. The full restyle
+reaches the walk as well, and that half is **not** harmless without the refresh:
+the walk runs on a shown panel's cascade before its descendants' and mints their
+entries from their pre-restyle styles, so an `em`-sized spinner under a theme
+that also changed the font-size came out on the old basis. Each descendant's own
+cascade runs after the walk on that pass, and the refresh there re-extracts the
+stops.
+`crates/rinch-dom/tests/animation_start_gating_tests.rs` and
+`full_restyle_animation_refresh_tests.rs` are the pins, with the Chrome
+measurements and mutant-by-fixture tables in their module docs.
 
 ### Native Control Flow (if / for / match)
 
