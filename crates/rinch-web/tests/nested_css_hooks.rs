@@ -31,8 +31,9 @@ use rinch::components::{
     DropdownMenu, DropdownMenuDropdown, DropdownMenuItem, DropdownMenuTarget, Tab, Tabs, TabsList,
     TabsPanel, Tooltip,
 };
-use rinch_core::element::ThemeProviderProps;
-use rinch_core::{Callback, Component};
+use rinch::prelude::rsx;
+use rinch_core::element::{IntoEventHandler, ThemeProviderProps};
+use rinch_core::{Callback, Component, Signal};
 use rinch_web::RootHandle;
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -276,5 +277,83 @@ fn nested_default_tabs_do_not_take_the_pill_fill_in_chrome() {
         computed(&inner_active, "color"),
         "rgb(255, 255, 255)",
         "nor given the pill's white text"
+    );
+}
+
+/// The panel opens when `rsx!` has put a wrapper in front of it — the other half
+/// of the trade the nesting fixture above makes (second review of #774).
+///
+/// Spelled `.rinch-dropdown-menu--opened > .rinch-dropdown-menu__dropdown`, the
+/// open rule kept a nested closed menu closed and also never opened a menu whose
+/// panel reached the root through the `display: contents` wrapper `rsx!` inserts
+/// for an `{Option<NodeHandle>}` child or an `else if` branch. Written with real
+/// `rsx!` for that reason: a hand-built `Component::render` tree has no wrapper.
+#[wasm_bindgen_test]
+fn a_dropdown_menu_opens_behind_an_rsx_wrapper_in_chrome() {
+    fn panel_display(doc: &web_sys::Document) -> String {
+        computed(&one(doc, ".rinch-dropdown-menu__dropdown"), "display")
+    }
+
+    // `{Option<NodeHandle>}`.
+    let opened = Signal::new(false);
+    let doc = mount(move |__scope| {
+        let dropdown: Option<rinch_core::dom::NodeHandle> =
+            Some(rsx! { DropdownMenuDropdown { DropdownMenuItem { "One" } } });
+        rsx! {
+            DropdownMenu { opened_fn: move || opened.get(), on_close: || {},
+                DropdownMenuTarget { button { "t" } }
+                {dropdown}
+            }
+        }
+    });
+    let wrapper_is_contents = |doc: &web_sys::Document, shape: &str| {
+        let parent = one(doc, ".rinch-dropdown-menu__dropdown")
+            .parent_element()
+            .unwrap();
+        assert!(
+            !parent
+                .get_attribute("class")
+                .is_some_and(|c| c.split_whitespace().any(|w| w == "rinch-dropdown-menu")),
+            "precondition ({shape}): the panel is not a direct child of the menu root"
+        );
+        assert_eq!(
+            computed(&parent, "display"),
+            "contents",
+            "precondition ({shape}): rsx's own `display: contents` wrapper"
+        );
+    };
+    wrapper_is_contents(&doc, "{Option}");
+    assert_eq!(panel_display(&doc), "none", "{{Option}}: closed");
+    opened.set(true);
+    assert_eq!(
+        panel_display(&doc),
+        "block",
+        "{{Option}}: the open menu's panel is shown"
+    );
+    opened.set(false);
+    assert_eq!(panel_display(&doc), "none", "{{Option}}: closed again");
+
+    // An `else if` branch.
+    let opened = Signal::new(false);
+    let mode = Signal::new(2u32);
+    let doc = mount(move |__scope| {
+        rsx! {
+            DropdownMenu { opened_fn: move || opened.get(), on_close: || {},
+                DropdownMenuTarget { button { "t" } }
+                if mode.get() == 1 {
+                    span { "loading" }
+                } else if mode.get() == 2 {
+                    DropdownMenuDropdown { DropdownMenuItem { "One" } }
+                }
+            }
+        }
+    });
+    wrapper_is_contents(&doc, "else if");
+    assert_eq!(panel_display(&doc), "none", "else if: closed");
+    opened.set(true);
+    assert_eq!(
+        panel_display(&doc),
+        "block",
+        "else if: the open menu's panel is shown"
     );
 }
