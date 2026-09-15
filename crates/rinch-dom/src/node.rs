@@ -1614,7 +1614,11 @@ pub struct NodeTree {
     pub ifc_measure_leaves: HashMap<RawNodeId, taffy::NodeId>,
     /// Active CSS transitions per node, keyed by property.
     pub active_transitions: HashMap<RawNodeId, HashMap<TransitionProperty, ActiveTransition>>,
-    /// Active CSS animations per node.
+    /// Active CSS animations per node — **paused and filling ones included**,
+    /// because their constant samples are still written into `computed_style`
+    /// on every cascade. So "is this map non-empty" is not "does anything need
+    /// another frame"; that is [`NodeTree::has_running_animations`] (#763,
+    /// #782).
     pub active_animations: HashMap<RawNodeId, Vec<ActiveAnimation>>,
     /// Whether transitions are armed (false until the first layout completes).
     ///
@@ -1683,17 +1687,23 @@ pub struct NodeTree {
     ///
     /// An atomic inline is **detached from its parent's Taffy child list** so
     /// the enclosing IFC measures it as an `InlineBox`, which means the root
-    /// Taffy compute never reaches it: the only thing that ever gives it a size
-    /// is `compute_inline_block_layouts`, and that runs only on an `ifc_dirty`
-    /// pass. A style change or a text change sets neither flag, so the box was
-    /// measured once and frozen while paint re-laid its text at the new style.
+    /// Taffy compute never reaches it. Three passes give one a size, all through
+    /// `measure_inline_blocks`, and when #661 was found there was only one:
+    /// `compute_inline_block_layouts`, which runs on an `ifc_dirty` pass. A
+    /// style change or a text change sets no such flag, so the box was measured
+    /// once and frozen while paint re-laid its text at the new style. The other
+    /// two are this set's consumer, below, and
+    /// `resolve_percentage_inline_blocks`.
     ///
     /// This is the scoped repair: a **set**, not a flag, so a text change in one
     /// row of a 500-row document re-measures that row's atomic inlines and not
     /// the document's. Consumed (and emptied) by
     /// `RinchDocument::remeasure_dirty_atomic_inlines` on a pass that runs Taffy
-    /// without rebuilding the IFC structure; cleared unconsumed on an
-    /// `ifc_dirty` pass, which re-measures every atomic inline anyway.
+    /// without rebuilding the IFC structure. On an `ifc_dirty` pass it is
+    /// instead drained by `compute_inline_block_layouts`, which marks each
+    /// entry's Taffy node: that pass measures every atomic inline, but measures
+    /// it out of Taffy's cache, so an entry recorded before the flag was set
+    /// would otherwise be dropped unmeasured (#784).
     ///
     /// Entries are node ids and are **not** validated on insert — a node may be
     /// removed before the set is read, so the consumer `get`s and skips.
@@ -1946,6 +1956,28 @@ impl NodeTree {
     /// Get a mutable reference to a node.
     pub fn get_mut(&mut self, id: RawNodeId) -> Option<&mut Node> {
         self.nodes.get_mut(id)
+    }
+
+    /// Whether any registered `@keyframes` animation is neither paused nor
+    /// settled into its fill.
+    ///
+    /// Two kinds of entry in [`NodeTree::active_animations`] are not counted,
+    /// because a tick has nothing left to move for either: a **paused**
+    /// animation, whose elapsed time is frozen (#763), and a **finished
+    /// `forwards`/`both`** animation whose fill a tick has already written
+    /// ([`crate::animation::ActiveAnimation::fill_settled`], #782). A finished
+    /// animation *is* counted until that tick runs, which is what lets the
+    /// frame that shows its end be presented.
+    ///
+    /// This is the question the `AboutToWait` arm's "was there anything to
+    /// tick" guard asks of animations, and it has to be asked of *this* rather
+    /// than of the map's emptiness, or a paused or filled box keeps every frame
+    /// dirty.
+    pub fn has_running_animations(&self) -> bool {
+        self.active_animations
+            .values()
+            .flatten()
+            .any(|anim| !anim.is_paused() && !anim.fill_settled)
     }
 
     /// Push a node ID to the dirty list (deduplicated).

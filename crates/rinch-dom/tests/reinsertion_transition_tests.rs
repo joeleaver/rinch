@@ -700,7 +700,8 @@ fn set_text_content_is_a_detach_too() {
 /// duration and dies after it. An **animation** does not: `animation: spin 1s
 /// linear infinite` on a removed-but-not-freed node runs forever, and the
 /// desktop shell decides whether to schedule another frame from
-/// `!tree.active_animations.is_empty()` (`rinch/src/app/event_dispatch.rs`), so a
+/// whether `tree.active_animations` holds a running (not paused, #763) animation
+/// (`rinch/src/app/event_dispatch.rs`), so a
 /// removed `Loader` kept a desktop app rendering at full rate with nothing on
 /// screen to show for it. Since #704 deleted `NodeHandle::clear_animations`,
 /// whose inline `animation: none` stopped the frames at its five call sites (at

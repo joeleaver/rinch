@@ -867,6 +867,17 @@ impl RinchDocument {
             }
 
             // --- Animation logic ---
+            //
+            // Whether a sample this cascade writes can change how the node's
+            // text is measured. The staleness checks above compare against the
+            // style **before** the animation block writes its sample, so an
+            // animated typography value never takes part in them; this is the
+            // other half, acted on beside them below. Once per cascade and
+            // never per tick: a paused sample is constant and the tick does not
+            // re-measure it (#763), so without this a class that adds a paused
+            // `font-size` animation leaves the text measured in the old font.
+            let mut animated_text_measure = false;
+
             // Extract animation specs from Stylo
             let animation_specs =
                 crate::animation::AnimationSpec::extract_from_stylo(&computed_values);
@@ -917,6 +928,8 @@ impl RinchDocument {
 
                         // Apply current animation values on top of computed_style
                         if let Some(animations) = self.tree.active_animations.get(&node_id) {
+                            animated_text_measure =
+                                animations.iter().any(|a| a.changes_text_measure());
                             for anim in animations {
                                 if let crate::animation::AnimationResult::Values(values) =
                                     anim.values_at(current_time_ms)
@@ -1032,7 +1045,7 @@ impl RinchDocument {
             // behavioural can tell them apart — `the_staleness_gate_lists_what_
             // an_inline_layout_is_built_from` is the only pin on the predicate's
             // contents.
-            if text_layout_stale {
+            if text_layout_stale || animated_text_measure {
                 self.invalidate_text_measure_for_node(node_id);
             }
 
@@ -1058,7 +1071,7 @@ impl RinchDocument {
             // Narrower than `text_layout_stale` on purpose: a `:hover { color }`
             // must still take the cheap path, which is what the early return in
             // `resolve_layout` exists for.
-            if measured_size_stale {
+            if measured_size_stale || animated_text_measure {
                 self.tree.layout_dirty = true;
             }
 
@@ -1396,9 +1409,9 @@ impl RinchDocument {
     /// element has no animation effect at all, and is shown again with a *new*
     /// animation from t=0 — and it is also the only thing the desktop shell can
     /// see: `rinch/src/app/event_dispatch.rs` decides whether to schedule
-    /// another frame from `!tree.active_animations.is_empty()`, so an entry
-    /// parked here would keep an app rendering at full rate with nothing on
-    /// screen moving. [`Self::restart_animations_in_subtree`] is the other half.
+    /// another frame from whether `tree.active_animations` holds a running
+    /// animation, so a running entry parked here would keep an app rendering
+    /// at full rate with nothing on screen moving. [`Self::restart_animations_in_subtree`] is the other half.
     fn cancel_animations_in_subtree(&mut self, node_id: usize) {
         let mut stack = vec![node_id];
         while let Some(id) = stack.pop() {
@@ -1479,6 +1492,22 @@ impl RinchDocument {
             None => return,
         };
         let mut active_animations = std::mem::take(&mut self.tree.active_animations);
+        // Nodes whose restarted sample can change their text measure. The
+        // cascade of a node shown by an ancestor need not run, so its own
+        // `animated_text_measure` check does not either (#763).
+        //
+        // An earlier revision of this comment called the loop below
+        // "redundant, measured", because deleting it failed no test. That was
+        // true and the reason given for it was false: the structural pass a
+        // `none` → rendered crossing runs does **not** re-measure everything,
+        // because an atomic inline is measured out of Taffy's cache (#784). So
+        // the rule it was said to rest on did not hold at all for text inside
+        // an `inline-block`. With that hole closed in `ifc.rs`, deleting this
+        // loop fails `a_paused_font_size_animation_in_a_panel_shown_inline_
+        // resizes_its_inline_block` — measured, 318x80 against a 159x40
+        // reference — and **only** that one: the class route re-cascades the
+        // span itself and never needed this loop.
+        let mut remeasure = Vec::new();
 
         while let Some(id) = stack.pop() {
             let Some(node) = self.tree.nodes.get(id) else {
@@ -1512,6 +1541,9 @@ impl RinchDocument {
             // the frame that shows the box shows it at the animation's t=0
             // rather than at its base style for one tick.
             if let Some(animations) = active_animations.get(&id) {
+                if animations.iter().any(|a| a.changes_text_measure()) {
+                    remeasure.push(id);
+                }
                 for anim in animations {
                     if let crate::animation::AnimationResult::Values(values) =
                         anim.values_at(current_time_ms)
@@ -1529,6 +1561,10 @@ impl RinchDocument {
         }
 
         self.tree.active_animations = active_animations;
+        for id in remeasure {
+            self.invalidate_text_measure_for_node(id);
+            self.tree.layout_dirty = true;
+        }
     }
 
     /// Get a monotonic timestamp in milliseconds for transition timing.

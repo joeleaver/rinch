@@ -649,9 +649,9 @@ way back.
 
 The second consumer is the frame clock. A transition self-limits — it has a
 declared duration and dies after it — but `animation: … infinite` does not, and
-`AboutToWait` schedules another frame whenever `tree.active_animations` is
-non-empty. An animation left running on something nobody paints therefore keeps
-a desktop app rendering at full rate indefinitely: a `Loader` in a closed panel
+`AboutToWait` schedules another frame whenever `tree.active_animations` holds an
+animation that is not paused. An animation left running on something nobody
+paints therefore keeps a desktop app rendering at full rate indefinitely: a `Loader` in a closed panel
 or an inactive tab, with nothing on screen moving. That is why parking the
 entries was not an option, and it is the same symptom #699 fixed for a *removed*
 `Loader`.
@@ -715,11 +715,57 @@ drawer, 20 idle frames:
 This is accepted rather than overlooked. Refusing an animation to a
 `visibility: hidden` box would put desktop at odds with both the browser and the
 transition rule next to it, for one component's benefit. The cure belongs to the
-component — `animation-play-state: paused` on a closed overlay's subtree — and it
-does nothing yet, because a paused animation still answers `true` from
-`tick_animations` (issue **#763**). Until that lands, an overlay that is only
-`visibility: hidden` while closed should not contain a `Loader` if the app is
-expected to idle.
+component — `animation-play-state: paused` on a closed overlay's subtree — and
+since issue **#763** it works. A paused animation keeps its entry, because its
+frozen sample still has to reach `computed_style` on each cascade, but it has
+nothing to advance: `tick_animations` neither counts it nor marks its node dirty,
+and `AboutToWait`'s "was there anything to tick" guard asks
+`NodeTree::has_running_animations()` instead of whether `active_animations` is
+empty. So a paused spinner schedules no frame, and resuming it continues from the
+time it was paused at. A paused `font-size` (or any other text-measure) animation
+is measured by **each cascade that writes its sample, and never per tick**.
+
+That is the one cost this change adds, so it is stated with numbers: every
+cascade of a node carrying a text-measure animation re-measures its text and
+re-runs Taffy, whether or not the sample moved. Measured on 500 rows, release,
+min of 20 (hover) / 12 (restyle):
+
+| workload | no animation | with a paused `font-size` animation |
+|---|---|---|
+| one-row colour-only hover on that row | 0.143ms, 0 Taffy computes | 0.679ms, 1 compute |
+| whole-document colour-only restyle | 16.1ms | 45.1ms (all 500 rows animated) |
+
+It is bounded by how many nodes carry such an animation, which is rare, and the
+behaviour it replaces paid a compute on *every frame* for the same node. The
+narrowing is available and deliberately **not** done here: compare the node's
+old `computed_style` against the post-animation style, rather than asking only
+whether one of its animations has a `font-size` stop. That would make a hover
+over an unchanged paused sample free.
+
+The invalidation is also the **whole** of the guarantee, which is why issue
+**#784** mattered: `compute_inline_block_layouts` measures an atomic inline out
+of Taffy's cache, so text inside an `inline-block` was re-measured by nothing
+when a `none` → rendered crossing changed it, and a paused sample stayed frozen
+in the old font for good. `mark_atomic_inline_dirty` now marks those Taffy nodes
+on an `ifc_dirty` pass instead of returning early.
+
+A finished animation with `animation-fill-mode: forwards` or `both` is the same
+shape (issue **#782**): its fill is as constant as a paused sample. The tick that
+finishes it writes the fill and marks the node dirty — that frame shows the end —
+and records it in `ActiveAnimation::fill_settled`; later ticks re-apply it
+without dirtying anything, and neither `tick_animations` nor
+`has_running_animations()` counts it.
+
+`Drawer`'s closed rule does not declare the pause itself yet. An app that wants a
+closed drawer holding a `Loader` to idle can add the rule below; the three
+`Loader` variants animate `__oval`, `__bar` and `__dot` respectively, so it names
+all three:
+
+```css
+.rinch-drawer__root--hidden .rinch-loader__oval,
+.rinch-drawer__root--hidden .rinch-loader__bar,
+.rinch-drawer__root--hidden .rinch-loader__dot { animation-play-state: paused; }
+```
 
 None of the three sites reads `transitions_enabled` (see "The page-load guard
 arms transitions, and only transitions" above), and for the restart walk that is

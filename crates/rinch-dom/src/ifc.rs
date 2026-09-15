@@ -3377,14 +3377,28 @@ impl RinchDocument {
     /// uses InlineRoot measurement), but they still need their own subtree computed
     /// so `walk_inline_children` can read their width/height for Parley InlineBox.
     pub(crate) fn compute_inline_block_layouts(&mut self) {
+        // Anything recorded before this pass has a *stale* Taffy measure, and
+        // this pass measures against Taffy's cache — so "measure everything"
+        // is not enough on its own (#784). A node can land in the set before
+        // `ifc_dirty` is set: the cascade records it while resolving one node's
+        // style and only then reaches the `display` change that sets the flag.
+        // The take is also the clear: a mark made *during* the measure below
+        // would be news, and clearing the set afterwards — which is what this
+        // did before #784 — would throw it away. Nothing records one today
+        // (`measure_inline_blocks` reaches none of `mark_atomic_inline_dirty`'s
+        // callers), so this is a statement about what the set means rather than
+        // a fix.
+        for id in std::mem::take(&mut self.tree.dirty_atomic_inlines) {
+            if let Some(taffy_id) = self.tree.nodes.get(id).and_then(|n| n.taffy_id) {
+                let _ = self.tree.taffy.mark_dirty(taffy_id);
+            }
+        }
         let ib_taffy_ids: Vec<(taffy::NodeId, Option<f32>)> = self
             .inline_block_measure_roots()
             .into_iter()
             .map(|t| (t, None))
             .collect();
         self.measure_inline_blocks(&ib_taffy_ids);
-        // Everything pending is about to be measured by the line above.
-        self.tree.dirty_atomic_inlines.clear();
     }
 
     /// Record that `node_id`'s content or style changed, so every atomic inline
@@ -3415,25 +3429,40 @@ impl RinchDocument {
     /// pin on both halves — deleting the sort left the whole suite green until
     /// it existed.
     ///
-    /// O(depth) per call and only called from the two places that can dirty a
-    /// measure without dirtying the IFC structure — a restyle that changed
-    /// something, and `set_text_content`. Every *structural* mutation sets
-    /// `ifc_dirty` instead, which re-measures the lot; this must not be added to
+    /// O(depth) per call, and called only for the two *kinds* of change that can
+    /// dirty a measure without dirtying the IFC structure — a restyle that
+    /// changed something, and `set_text_content` — which between them are five
+    /// call sites (`dom_impl/mod.rs` twice, `style_resolution/mod.rs`,
+    /// `dom_document_impl.rs`, `layout_engine.rs`). Every *structural* mutation
+    /// sets `ifc_dirty` instead, which measures the lot — and re-measures
+    /// whatever this function marked, see the body; this must not be added to
     /// those paths, where it would cost an ancestor walk per `append_child` on
     /// first build and buy nothing.
     pub(crate) fn mark_atomic_inline_dirty(&mut self, node_id: usize) {
-        // Nothing to accumulate: the `ifc_dirty` pass measures every atomic
-        // inline in the document, and clears this set when it does.
-        if self.tree.ifc_dirty {
-            return;
-        }
+        // On an `ifc_dirty` pass there is nothing to accumulate — that pass
+        // measures every atomic inline in the document — but **measuring is not
+        // re-measuring** (#784). `measure_inline_blocks` asks Taffy, and an
+        // atomic inline's measure is cached against a root detached from its
+        // parent's child list, which the root compute never reaches; so a box
+        // whose content changed in this very pass is "measured" straight out of
+        // the cache, at the font it last had. That is the freeze a panel
+        // crossing `none` → rendered shows: the crossing is always an
+        // `ifc_dirty` pass. Marking the Taffy node instead of returning is what
+        // makes the pass re-measure it.
+        let ifc_dirty = self.tree.ifc_dirty;
         let mut cur = Some(node_id);
         while let Some(id) = cur {
             let Some(node) = self.tree.nodes.get(id) else {
                 break;
             };
             if node.display_mode.is_atomic_inline() {
-                self.tree.dirty_atomic_inlines.insert(id);
+                if ifc_dirty {
+                    if let Some(taffy_id) = node.taffy_id {
+                        let _ = self.tree.taffy.mark_dirty(taffy_id);
+                    }
+                } else {
+                    self.tree.dirty_atomic_inlines.insert(id);
+                }
             }
             cur = node.parent;
         }
