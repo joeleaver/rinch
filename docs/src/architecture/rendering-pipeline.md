@@ -484,25 +484,30 @@ after `diff_animatable` has found an animatable change on a node that declares a
 is `@keyframes`: a hidden element's animations go on running and go on asking
 the shell for frames (issue #747).
 
-**This changes a shipped component, and the change is visible.** The `Drawer`'s
-300ms slide-in no longer runs: its root carries `display: none` while closed and
-its panel carries `transition: transform`, and one reactive effect un-hides the
-root and retargets the panel in a single pass — exactly the shape above. The
-panel now appears at its open position instantly. A browser does not animate
-that shape either (it is why `@starting-style` and `transition-behavior:
-allow-discrete` exist), and `rinch-components` ships one stylesheet to both
-backends, so the drawer has never animated on `rinch-web`; what this exposed is
-that the component was relying on a rinch-only deviation. The cure is the
-component's, and `Popover` already uses it — stay rendered and animate
-`opacity`/`visibility` rather than toggling `display`. Issue **#751**, pinned
-meanwhile by `crates/rinch/src/app/drawer_open_animation_tests.rs`.
+**This caught a shipped component, and the rule it puts on the library is worth
+stating on its own: an overlay that animates must stay rendered.** Animate
+`opacity`, `visibility` or `transform`; never toggle `display`. A `display` flip
+cannot transition on **either** backend — a browser refuses it for the same
+reason, which is why `@starting-style` and `transition-behavior:
+allow-discrete` exist — and `rinch-components` ships one stylesheet to both.
 
-The blast radius is therefore wider than "a control restyled in an inactive
-tab": **any component that un-hides an ancestor and retargets a transitioned
-property in the same style pass** loses its animation. `Modal`, `Notification`,
-`Tooltip`, `Select`, `DropdownMenu`, `Tabs` and `Stepper` were scanned and none
-of them has that shape, but that is a scan and not a proof — #751 carries the
-audit.
+The `Drawer` was the one component with it backwards (issue **#751**): its root
+carried `display: none` while closed and its panel carried
+`transition: transform`, and one reactive effect un-hid the root and retargeted
+the panel in a single pass, exactly the shape above. So its 300ms slide-in ran
+on desktop only until this change, and had never run on `rinch-web` at all. Its
+closed state is `visibility: hidden` now, which is where `Popover` already was —
+hidden, still **rendered**, and still out of paint, hit testing and the Tab
+order on both backends.
+
+The blast radius is wider than "a control restyled in an inactive tab":
+**any component that un-hides an ancestor and retargets a transitioned property
+in the same style pass** loses its animation. `Modal`, `Notification`,
+`Tooltip`, `Select`, `DropdownMenu`, `Tabs` and `Stepper` are audited one
+fixture each in `crates/rinch/src/app/overlay_animation_audit_tests.rs`, against
+the rule "a transitioned property that changes on the reveal pass must have a
+transition running" — which is the only form of the assertion that
+discriminates, since "zero transitions ran" is what the *bug* looks like.
 
 **The reactive helpers rest on this now, and no longer on a second mechanism of
 their own.** `show_dom`, `match_dom`, `for_each_dom_typed` and the component

@@ -49,6 +49,8 @@ mod node_ime_tests;
 #[cfg(all(test, feature = "desktop"))]
 mod nofocus_tests;
 #[cfg(test)]
+mod overlay_animation_audit_tests;
+#[cfg(test)]
 mod overlay_dismiss_tests;
 #[cfg(test)]
 mod overlay_focus_tests;

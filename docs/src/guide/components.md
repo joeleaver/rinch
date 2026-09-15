@@ -513,6 +513,36 @@ If you hand-roll a `position: fixed` overlay, offset it the same way
 viewport, so a bare `top: 0` renders underneath the chrome. See
 [Theming → Window Chrome Inset](./theming.md#window-chrome-inset).
 
+**An overlay that animates must stay rendered.** Hide it with `visibility` or
+`opacity` and animate `transform`; do not toggle `display`. An element that was
+not being rendered has no before-change style, so un-hiding it and retargeting a
+transitioned property in the same style pass animates nothing — on desktop *and*
+in the browser, which refuses the same shape (that is what `@starting-style` and
+`transition-behavior: allow-discrete` exist for). `Drawer` and `Popover` are the
+two worked examples: both keep their panel rendered while closed, `Drawer` slides
+its `transform` and `Popover` fades its `opacity`. See [the transitions section
+of the rendering pipeline](../architecture/rendering-pipeline.md).
+
+A `visibility: hidden` subtree is excluded from paint, from hit testing and from
+the Tab order, which is most of what `display: none` was doing — but not all of
+it, and the difference is that the box is still **there**. Two consequences to
+know before you reach for it:
+
+- **It still takes part in layout**, so a hidden overlay that is a direct child
+  of an `overflow: auto` container contributes its box to that container's
+  scrollable extent, and the container grows a scrollbar for content nobody can
+  see. `position: fixed` does not exempt it: `paint::scrollbar::content_extents`
+  measures every child's border box, out-of-flow ones included.
+- **A descendant may declare `visibility: visible`**, and the three readers do
+  not agree about what that means. Paint honours it (the node is drawn), the Tab
+  order honours it (`collect_focusable_nodes_from` tests each node on its own),
+  and hit testing does **not** — it rejects the whole subtree at the hidden
+  ancestor before it ever reaches the descendant. So such a node is painted and
+  tabbable but not clickable.
+
+Neither is a reason to go back to `display`, which cannot animate at all. They
+are the two places to look when a closed overlay misbehaves.
+
 ```rust
 // Modal
 let modal_open = Signal::new(false);
