@@ -83,8 +83,9 @@ struct Boxes {
 /// signal.
 ///
 /// The animations are declared by a class change *after* mount rather than
-/// from the first frame, so nothing here depends on #762 (an animation present
-/// in the very first frame never starts).
+/// from the first frame. That was once load-bearing (#762: an animation present
+/// in the first frame never started); #771 fixed it, and the shape is kept
+/// because it is also how an app turns a spinner on.
 fn mount() -> Boxes {
     let phase = Signal::new(Phase::Still);
     let mut app = RinchApp::new(move |__scope: &mut RenderScope| {
@@ -283,9 +284,11 @@ const PAUSE_WHEN_CLOSED: &str = ".rinch-drawer__root--hidden .rinch-loader__oval
      .rinch-drawer__root--hidden .rinch-loader__dot { animation-play-state: paused; }";
 
 /// A `Loader` inside a `Drawer`, with the app rule above, settled the way
-/// `hidden_animation_frames_tests::settle` settles (and for its reasons — the
-/// component stylesheet has to be installed, and #762 means the viewport bump
-/// is what actually starts the animations).
+/// `hidden_animation_frames_tests::settle` settles: the component stylesheet
+/// has to be installed and the document re-cascaded against it. The viewport
+/// bump at the end used to be what *started* the animations (#762, fixed by
+/// #771); it now only settles the layout at the size the frame pump runs at,
+/// so that no frame it drives re-cascades anything.
 fn mount_loader_in_drawer() -> (RinchApp, Signal<bool>) {
     let opened = Signal::new(false);
     let mut app = RinchApp::new(move |scope: &mut RenderScope| {

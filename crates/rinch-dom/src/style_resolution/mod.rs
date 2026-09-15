@@ -1496,11 +1496,15 @@ impl RinchDocument {
         // cascade of a node shown by an ancestor need not run, so its own
         // `animated_text_measure` check does not either (#763).
         //
-        // **Redundant today, measured**: this walk runs only on a `none` →
-        // rendered crossing, whose Taffy `display` change sets `ifc_dirty`, and
-        // a structural pass rebuilds every IFC anyway — so deleting the loop
-        // below fails no test. It is kept so that the rule "a written
-        // typography sample is measured" does not rest on that coincidence.
+        // An earlier revision of this comment called the loop below
+        // "redundant, measured", because deleting it failed no test. That was
+        // true and the reason given for it was false: the structural pass a
+        // `none` → rendered crossing runs does **not** re-measure everything,
+        // because an atomic inline is measured out of Taffy's cache (#784). So
+        // the rule it was said to rest on did not hold at all for text inside
+        // an `inline-block`. With that hole closed in `ifc.rs`, deleting this
+        // loop fails `a_paused_font_size_animation_in_a_shown_panel_resizes_
+        // its_inline_block` — measured.
         let mut remeasure = Vec::new();
 
         while let Some(id) = stack.pop() {

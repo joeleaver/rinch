@@ -2931,7 +2931,17 @@ Three things it deliberately does not do.
   `NodeTree::has_running_animations()` rather than whether the map is empty —
   so it schedules no frame, on desktop or through the Android loop. Resuming
   continues from the frozen time. A paused *typography* animation is measured
-  once, by the cascade that writes its sample, never per tick. A finished
+  **by each cascade that writes its sample, and never per tick** — and that is
+  not free, because a cascade of such a node now always re-measures and re-runs
+  Taffy, whether or not the sample moved. Measured, release, 500 rows: a
+  one-row colour-only hover goes **0.143 → 0.679ms** when that row carries a
+  paused `font-size` animation (one extra Taffy compute per hover), and a
+  whole-document colour-only restyle **16.1 → 45.1ms** with all 500 rows
+  animated. It is bounded by "nodes carrying a text-measure animation", which
+  is rare, and `main` paid a compute *every frame* for the same node. The
+  narrowing is available and **not done**: compare the node's old
+  `computed_style` with the post-animation style instead of asking only whether
+  an animation has a `font-size` stop. A finished
   `forwards`/`both` animation is the same shape (**#782**): the tick that
   finishes it writes the fill and dirties the node once
   (`ActiveAnimation::fill_settled`), and after that it is kept, re-applied and

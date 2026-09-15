@@ -638,9 +638,13 @@ fn an_animation_paused_inside_its_delay_keeps_its_place() {
 /// inside it is started by `restart_animations_in_subtree` rather than by its
 /// own cascade, and its text has to be measured in the sample that walk writes.
 ///
-/// **This pins the outcome, not the walk's own re-measure**, and says so: the
-/// `none` → rendered crossing sets `ifc_dirty`, which rebuilds every IFC, so the
-/// walk's re-measure can be deleted without failing it (measured).
+/// **This block of text does not discriminate the walk's own re-measure** —
+/// deleting that loop leaves it green. That is not because the crossing
+/// re-measures everything, which was this doc's earlier (false) claim: it is
+/// because a block of text is reached by the structural pass, and text inside
+/// an atomic inline is not (#784).
+/// `a_paused_font_size_animation_in_a_shown_panel_resizes_its_inline_block` is
+/// the fixture that kills the deletion.
 ///
 /// The text is laid out in its base 16px first, then the panel is hidden, the
 /// animation class is added while it is hidden (the node's own cascade runs, but

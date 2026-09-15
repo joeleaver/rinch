@@ -841,7 +841,10 @@ impl RinchDocument {
         // Only of animations a tick can move (#763, #782). A paused animation's
         // sample and a settled fill are constant: the cascade that wrote them
         // invalidated the measure (see `animated_text_measure` in
-        // `apply_stylo_styles_to_taffy` and `restart_animations_in_subtree`),
+        // `apply_stylo_styles_to_taffy` and `restart_animations_in_subtree`) —
+        // which is the whole of the guarantee, so a hole in *that*
+        // invalidation is a freeze nothing later repairs, as #784 was until the
+        // `ifc.rs` repair beside it,
         // and re-measuring on every tick would set `layout_dirty` every tick —
         // which the desktop wake and the Android loop both read as a frame owed.
         // A filling animation that has *not* settled is still asked: the tick
