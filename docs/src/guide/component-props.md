@@ -916,10 +916,17 @@ that stays scrollable — and must release it on close *and* on unmount.
 The open state is the class **`rinch-tooltip--opened`** on the root, added and
 removed by the hover effect. `.rinch-tooltip__content` is `display: none` and
 that class is what reveals it, so styling the open tooltip — or overriding how
-it appears — is a rule of your own against `.rinch-tooltip--opened`. Before
+it appears — is a rule of your own against `.rinch-tooltip--opened`. Spell it
+with a **child** combinator, `.rinch-tooltip--opened > .rinch-tooltip__content`,
+as the shipped sheet does: the content is a direct child of the root, and a
+descendant rule also reaches any tooltip nested inside this one's target. Before
 [issue #760](https://github.com/joeleaver/rinch/issues/760) the class was
 emitted and matched by nothing, while the reveal was an inline `style` rewrite
 on the content node.
+
+`disabled` wins over `opened`: `Tooltip { opened: true, disabled: true }` shows
+nothing. Before #760 it showed the content, because the inline reveal outranked
+the sheet's `.rinch-tooltip--disabled` rule.
 
 | Prop | Type | Default | Description |
 |------|------|---------|-------------|
@@ -1053,7 +1060,14 @@ in step with `opened_fn` by an effect. One class reveals both boxes —
 nothing and each box was revealed by an inline `style` rewrite. One consequence
 of the move: "the dropdown" is now named by its class rather than by its
 position among the children, so a child other than a `DropdownMenuDropdown`
-passed after the target is *not* hidden with the menu. Use the documented pair.
+passed after the target is *not* hidden with the menu. Use the documented pair,
+and pass the `DropdownMenuDropdown` **directly** as a child: the reveal is
+`.rinch-dropdown-menu--opened > .rinch-dropdown-menu__dropdown`, a child
+combinator, so a panel wrapped in an element of your own stays hidden even while
+the menu is open. The child combinator is what keeps a closed `DropdownMenu`
+nested inside an open one's panel closed — a descendant rule would show its
+panel and its backdrop, and that backdrop would take the clicks meant for the
+outer menu's items.
 
 | Prop | Type | Default | Description |
 |------|------|---------|-------------|
@@ -1143,17 +1157,38 @@ Sub-components: **HoverCardTarget** (no props), **HoverCardDropdown** (no props)
 carries **`data-active="true"`** *and* the class **`rinch-tabs__tab--active`**
 (inactive tabs carry `data-active="false"`), and the inactive panel carries the
 HTML **`hidden`** attribute, which `.rinch-tabs__panel[hidden]` turns into
-`display: none`. All three are what the shipped sheet styles against, so a rule
-of your own against any of them works. The `default` variant's underline is a
-real element, `.rinch-tabs__tab-indicator`, appended to each tab button; it
-carries `transition: background-color 150ms ease`, so switching tabs animates it.
+`display: none`. All three are what the shipped sheet styles against, and you
+can style against them too, with two things to know:
 
-None of that was true before [issue
+- **Do not put a `display` on a `TabsPanel`.** `hidden` hides a panel only
+  through that one rule — desktop has no UA `[hidden]` rule, and a browser's
+  loses to any author `display` — so a `display` of your own on the panel that
+  wins against `.rinch-tabs__panel[hidden]` (an inline `style: "display: flex"`
+  always does) keeps the inactive panel showing, on desktop and in the browser
+  alike. Put the layout on a child of the panel instead.
+- **Spell a variant rule from the root with child combinators** —
+  `.rinch-tabs--pills > .rinch-tabs__list > .rinch-tabs__tab--active`, as the
+  shipped sheet does for the active `pills` and `outline` styling and the
+  vertical indicator — if your `Tabs` can nest. A `Tabs` inside another's panel
+  is inside that root too, so a descendant rule reaches the nested tabs.
+
+The `default` variant's underline is a real element, `.rinch-tabs__tab-indicator`,
+appended to each tab button; it carries `transition: background-color 150ms
+ease`, so switching tabs animates it. The tab button's own `transition: color`
+starts on a switch as well, but what it animates differs by backend: in a
+browser the label text inherits the animated colour and fades, while on desktop
+a transition on an inherited property does not reach descendants, so the label
+text — which lives in a child span — snaps to its new colour.
+
+None of these hooks was live before [issue
 #760](https://github.com/joeleaver/rinch/issues/760): the component set neither
 hook and wrote the active colour, the `pills` fill, the `outline` border and the
 underline inline, so all four of the sheet's `[data-active]`/`--active` rules
 (eight selectors) were unreachable and the underline's declared transition never
-ran.
+ran. One visible consequence of handing the indicator to the sheet: a
+**vertical** `default` Tabs draws its indicator as a 2px bar down the tab's
+right edge, which is what the sheet always declared, where before #760 it drew
+the horizontal underline along the tab's bottom edge.
 
 ### Accordion
 

@@ -289,7 +289,11 @@ impl Component for Tabs {
         // `transition: color 150ms ease` on `.rinch-tabs__tab` — and the
         // `transition: background-color 150ms ease` on the underline — had
         // nothing to interpolate. Setting the hooks instead hands all four to
-        // the cascade and makes both transitions run on a switch.
+        // the cascade and starts both transitions on a switch. (The underline's
+        // is visible on both backends. The button's `color` one is visible only
+        // in a browser: the label text is in a child span, and on desktop a
+        // transition on an inherited property does not reach descendants, so
+        // the text snaps.)
         //
         // **Both** hooks, because the sheet declares both and a caller styling
         // either one has a right to expect it. `data-active` is a valued
