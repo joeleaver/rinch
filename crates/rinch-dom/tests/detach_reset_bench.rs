@@ -104,3 +104,86 @@ fn removing_500_rows() {
         best / ROWS as f64
     );
 }
+
+/// What the *deleted* hammer cost on the same removal (#704).
+///
+/// `NodeHandle::clear_animations()` walked the subtree writing
+/// `transition: none` and `animation: none` as two separate `set_style` calls
+/// per node, and `rinch-dom`'s `set_style` is not a field write: it re-merges
+/// the node's whole inline `style` string, re-parses it into a Stylo
+/// declaration block, and invalidates the node's inline style. Five call sites
+/// ran it immediately before `remove()`.
+///
+/// Unlike [`removing_500_rows`] this needs no second binary, because the thing
+/// being measured is an extra call at the **caller**, not a change inside
+/// `remove_node` — so both arms run in one process, alternated round by round,
+/// which removes the build-to-build drift that harness has to live with.
+///
+/// # Measured
+///
+/// Release, best of 200 alternated rounds, the same 500 rows of 3 nodes. Two
+/// runs of the one binary, on a host with other work on it:
+///
+/// | run | `remove_node` alone | stamp, then `remove_node` |
+/// |---|---|---|
+/// | 1 | 343.2us (0.686us/row) | 5559.1us (11.118us/row) |
+/// | 2 | 340.1us (0.680us/row) | 5541.2us (11.082us/row) |
+///
+/// **About 16x**, or +10.4us per row over 3 nodes — roughly 3.5us per node for
+/// the two `set_style` calls, against the ~11ns per node the #699 reset costs,
+/// which is a factor of 300. That is the difference between re-merging and
+/// re-parsing a declaration block twice and writing a bool. Correctness was the
+/// reason to delete the call; this is why a deprecated no-op shim would have
+/// been the wrong shape too, and why `set_style` is the wrong tool for anything
+/// a removal path wants to do.
+///
+/// The `stamped` control is printed for the same reason the other harness
+/// prints its own: it says the stamping arm actually stamped.
+#[test]
+#[ignore = "timing harness"]
+fn stamping_transition_none_before_removing_500_rows() {
+    const ROWS: usize = 500;
+    const ROUNDS: usize = 200;
+
+    /// `NodeHandle::clear_animations()` as it stood at `main` `c717500`.
+    fn stamp_none(doc: &mut RinchDocument, node: rinch_core::dom::NodeId) {
+        let mut stack = vec![node.0];
+        while let Some(id) = stack.pop() {
+            doc.set_style(rinch_core::dom::NodeId(id), "transition", "none");
+            doc.set_style(rinch_core::dom::NodeId(id), "animation", "none");
+            stack.extend(doc.tree.nodes[id].children.iter().copied());
+        }
+    }
+
+    let mut best = [f64::MAX; 2];
+    let mut stamped = false;
+    for _ in 0..ROUNDS {
+        for (arm, stamping) in [false, true].into_iter().enumerate() {
+            let (mut doc, rows) = built_list(ROWS);
+            let t0 = std::time::Instant::now();
+            for row in &rows {
+                if stamping {
+                    stamp_none(&mut doc, *row);
+                }
+                doc.remove_node(*row);
+            }
+            let us = t0.elapsed().as_secs_f64() * 1e6;
+            best[arm] = best[arm].min(us);
+            if stamping {
+                let deep = doc.tree.get(rows[0].0).unwrap().children[0];
+                stamped = doc.tree.nodes[deep]
+                    .attributes
+                    .get("style")
+                    .is_some_and(|s| s.contains("transition: none"));
+            }
+        }
+    }
+    println!(
+        "remove_node x {ROWS}: plain best {:.1}us ({:.3}us/row), stamped best \
+         {:.1}us ({:.3}us/row) [deep node stamped: {stamped}]",
+        best[0],
+        best[0] / ROWS as f64,
+        best[1],
+        best[1] / ROWS as f64
+    );
+}

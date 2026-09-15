@@ -31,7 +31,7 @@
 //!
 //! | mutant | killed by |
 //! |---|---|
-//! | no reset anywhere (`main` at `cbdfc5a`) | 9 of the 14 — everything but the two move fixtures, the unchanged-ancestor control, the `display: none` pin and the `clear_animations` counter-oracle |
+//! | no reset anywhere (`main` at `cbdfc5a`; re-measured for #704 as `detach_subtree_styles` made a no-op) | 10 of the 14 — everything but the two move fixtures, the unchanged-ancestor control and the `display: none` pin. It was 9 until #704 removed the inline `transition: none` the reactive helpers stamped; `the_reactive_branch_helpers_reach_this_fix_too` was blind to this mutant while that hammer stood, and is the tenth now |
 //! | reset the detach root only, not the subtree | `a_deep_node_in_a_reinserted_subtree_does_not_animate_either`, **alone** |
 //! | reset `has_been_styled`, leave `active_transitions` | `a_transition_running_when_the_subtree_is_detached_does_not_resume` and `set_text_content_is_a_detach_too` |
 //! | drop `active_transitions` but not `active_animations` | `a_detached_animation_stops_asking_for_frames`, **alone** |
@@ -83,22 +83,28 @@
 //!
 //! # Which routes are live
 //!
-//! The defect is in `rinch-dom`'s `DomDocument` implementation, so every
-//! tree-mutation caller reaches it — **except** the three reactive branch
-//! helpers, and not because of this fix. `show_dom`, `match_dom` and
-//! `for_each_dom_typed` each call `NodeHandle::clear_animations()` before
-//! `remove()`, which stamps an inline `transition: none; animation: none` on
-//! the whole subtree and never takes it off again. That is a bigger hammer with
-//! a defect of its own (a branch hidden once can never transition again,
-//! issue #704), and it is why the fixtures below drive the DOM API directly:
-//! through a reactive helper, the mutant that removes this entire fix still
-//! passes. `the_reactive_branch_helpers_are_neutralised_by_clear_animations_not_by_this_fix`
-//! is the measurement, and the standing note for whoever fixes #704.
+//! The defect is in `rinch-dom`'s `DomDocument` implementation, so **every**
+//! tree-mutation caller reaches it. `NodeHandle::remove_child`, `RenderScope`'s
+//! batched `DomUpdate::RemoveChild`, `NodeHandle::replace_with` (which
+//! `rinch-editor-view`'s `ViewDesc` diff uses), any component that stashes a
+//! `NodeHandle` and re-attaches it — the pattern #654 was reported from — and,
+//! since #704, the three reactive branch helpers as well.
 //!
-//! What is live today: `NodeHandle::remove_child`, `RenderScope`'s batched
-//! `DomUpdate::RemoveChild`, `NodeHandle::replace_with` (which
-//! `rinch-editor-view`'s `ViewDesc` diff uses), and any component that stashes
-//! a `NodeHandle` and re-attaches it — the pattern #654 was reported from.
+//! Those three were the exception for one round, and not because of this fix.
+//! `show_dom`, `match_dom` and `for_each_dom_typed` each called
+//! `NodeHandle::clear_animations()` before `remove()`, which stamped an inline
+//! `transition: none; animation: none` on the whole subtree and never took it
+//! off again — a bigger hammer with a defect of its own (a branch hidden once
+//! could never transition again, issue #704), and the reason the fixtures below
+//! drive the DOM API directly: through a reactive helper, the mutant that
+//! removes this entire fix used to pass. #704 deleted the method and all five
+//! of its call sites, every one of which was `clear_animations(); remove();`
+//! over a `NodeHandle::remove` that is `DomDocument::remove_node`.
+//! `the_reactive_branch_helpers_reach_this_fix_too` is the same sequence turned
+//! into a positive pin, and `branch_helper_transition_tests` is #704's own
+//! file. Nothing below was rewritten to use a helper: driving the raw API keeps
+//! each fixture's mutant attribution about *this* code rather than about five
+//! call sites in `rinch-core`.
 //!
 //! # `display: none` is not a detach, and this file does not make it one
 //!
@@ -666,12 +672,18 @@ fn set_text_content_is_a_detach_too() {
 /// linear infinite` on a removed-but-not-freed node runs forever, and the
 /// desktop shell decides whether to schedule another frame from
 /// `!tree.active_animations.is_empty()` (`rinch/src/app/event_dispatch.rs`), so a
-/// `Loader` removed through a route without `NodeHandle::clear_animations` —
-/// `remove_child`, `replace_with`, a direct `NodeHandle::remove` — kept a
-/// desktop app rendering at full rate with nothing on screen to show for it.
+/// removed `Loader` kept a desktop app rendering at full rate with nothing on
+/// screen to show for it. Since #704 deleted `NodeHandle::clear_animations`,
+/// whose inline `animation: none` stopped the frames at its five call sites (at
+/// the cost of disarming those subtrees forever), the reset is what stops them
+/// on every removal route that leaves the subtree **alive**.
 ///
-/// This is why the helper drops `active_animations` beside `active_transitions`,
-/// which is also what `NodeTree::remove_subtree` does when it frees a subtree.
+/// That qualifier is the whole of it, and the next sentence is the reason for
+/// it. The helper drops `active_animations` beside `active_transitions`, which
+/// is also what `NodeTree::remove_subtree` does when it frees a subtree — so
+/// `set_inner_html`, which frees rather than detaches, stops the frames without
+/// this helper. So does a blanket restyle: `recompute_all_styles_full` clears
+/// every entry whether the node is connected or not.
 /// Kills the "drop `active_transitions` only" mutant; no other fixture does,
 /// because an animation writes `computed_style` without consulting
 /// `has_been_styled`, so #699's own symptom cannot see it.
@@ -756,29 +768,36 @@ fn a_subtree_that_has_been_round_tripped_can_still_transition() {
     );
 }
 
-/// **Counter-oracle: the three reactive helpers do not reach this defect, and
-/// the reason is not this fix.**
+/// **The reactive branch helpers reach this fix too** (issue #704 closed the
+/// gap).
 ///
-/// `show_dom`, `match_dom` and `for_each_dom_typed` all call
-/// `NodeHandle::clear_animations()` immediately before `remove()`, and that
-/// stamps a literal inline `transition: none; animation: none` on every node of
-/// the subtree. Nothing ever takes it off again — measured below — so a branch
-/// that has been hidden once cannot transition on its way back **or ever
-/// after**. That is a far blunter instrument than the flag reset, and a
-/// separate defect of its own (issue #704).
+/// This fixture used to be a counter-oracle. `show_dom`, `match_dom` and
+/// `for_each_dom_typed` called `NodeHandle::clear_animations()` immediately
+/// before `remove()`, which stamped a literal inline
+/// `transition: none; animation: none` on every node of the subtree and never
+/// took it off again — so a branch hidden once could not transition on its way
+/// back **or ever after**, and through one of those helpers the mutant that
+/// removes this whole fix still passed. That hammer is gone: all five of its
+/// call sites were `clear_animations(); remove();`, and `NodeHandle::remove` is
+/// `DomDocument::remove_node`, which is the first row of the table in
+/// `detach_subtree_styles`' own doc.
 ///
-/// It is pinned here for two reasons. It is why every fixture above drives the
-/// `DomDocument` API directly instead of a reactive helper: through one of
-/// them, the mutant that removes the whole fix still passes. And it is the
-/// standing evidence that #699's live routes are the ones *without* that
-/// hammer — `NodeHandle::remove_child`, `RenderScope`'s batched
-/// `DomUpdate::RemoveChild`, `NodeHandle::replace_with` (which
-/// `rinch-editor-view`'s `ViewDesc` diff uses), and any component that stashes
-/// a handle and re-attaches it. If #704 is ever fixed by deleting
-/// `clear_animations`, this fixture is what says #699's cure has to already be
-/// in place underneath it.
+/// So the same sequence now measures the real cure. The box goes out under
+/// `.w--a`, the ancestor changes to `.w--b` while it is out, and it comes back
+/// at 30px with nothing running — for the reason every fixture above states,
+/// not because CSS was written over it. The last two steps are #704's own
+/// defect read as a positive: an ordinary in-document class change afterwards
+/// **animates**.
+///
+/// Keep the `style` assertions. They are what says the snap came from the flag
+/// reset rather than from a stamp, and restoring the inline write in `show_dom`
+/// alone fails this fixture on the first of them.
+/// `branch_helper_transition_tests` covers the other four call sites and the
+/// per-helper mutants; this one stays here because it is the bridge between the
+/// two files — the fixture that says #699's cure is what the reactive routes
+/// now rest on.
 #[test]
-fn the_reactive_branch_helpers_are_neutralised_by_clear_animations_not_by_this_fix() {
+fn the_reactive_branch_helpers_reach_this_fix_too() {
     let doc = Rc::new(RefCell::new(RinchDocument::new()));
     doc.borrow_mut().load_css(CSS);
     doc.borrow_mut().tree.transitions_enabled = true;
@@ -823,37 +842,45 @@ fn the_reactive_branch_helpers_are_neutralised_by_clear_animations_not_by_this_f
     showing.set(false);
     doc.borrow_mut().resolve_layout(801.0, 600.0);
     assert_eq!(
-        doc.borrow().get_attribute(boxed_id, "style").as_deref(),
-        Some("transition: none; animation: none"),
-        "the hammer: `show_dom` disables the branch's transitions inline on the \
-         way out"
+        doc.borrow().get_attribute(boxed_id, "style"),
+        None,
+        "hiding a branch cancels its transitions at the detach, without \
+         writing anything onto the element"
+    );
+    assert!(
+        !styled(&doc.borrow(), boxed_id),
+        "and it is the flag that was cleared — this is the same reset every \
+         fixture above drives through the raw API"
     );
 
     wrap.set_attribute("class", "w--b");
     doc.borrow_mut().resolve_layout(802.0, 600.0);
     showing.set(true);
     doc.borrow_mut().resolve_layout(803.0, 600.0);
-    assert_eq!(width_px(&doc.borrow(), boxed_id), Some(30.0));
+    assert_eq!(
+        width_px(&doc.borrow(), boxed_id),
+        Some(30.0),
+        "the branch arrives at its new width rather than approaching it"
+    );
     assert_eq!(running(&doc.borrow(), boxed_id), 0);
 
-    // And the part that makes it a defect rather than a cure: the inline
-    // declaration is still there, so an ordinary in-document class change —
-    // nothing detached, nothing re-inserted — cannot animate either.
+    // #704's defect, read as a positive: an ordinary in-document class change,
+    // nothing detached, must animate.
     wrap.set_attribute("class", "w--a");
     doc.borrow_mut().resolve_layout(804.0, 600.0);
     assert_eq!(
-        doc.borrow().get_attribute(boxed_id, "style").as_deref(),
-        Some("transition: none; animation: none"),
-        "nothing ever takes it off again"
+        doc.borrow().get_attribute(boxed_id, "style"),
+        None,
+        "still nothing inline to disarm it"
     );
     assert_eq!(
         running(&doc.borrow(), boxed_id),
-        0,
-        "so a branch that was hidden once can never transition again (#704)"
+        1,
+        "a branch that was hidden once can transition again (#704)"
     );
-    assert_eq!(
+    assert_ne!(
         width_px(&doc.borrow(), boxed_id),
         Some(20.0),
-        "it snaps, where an untouched box would have animated"
+        "it crawls toward 20 from 30, where the stamped branch snapped"
     );
 }

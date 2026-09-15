@@ -2493,9 +2493,20 @@ impl RinchDocument {
     ///   150ms bound to self-limit against, and the desktop shell decides
     ///   whether to keep asking for frames from
     ///   `!tree.active_animations.is_empty()` (`rinch/src/app/event_dispatch.rs`).
-    ///   A `Loader` removed through a route without `NodeHandle::clear_animations`
-    ///   — `remove_child`, `replace_with`, a direct `NodeHandle::remove` — kept a
-    ///   desktop app rendering forever.
+    ///   A removed `Loader` kept a desktop app rendering forever, and on **every
+    ///   removal route that leaves the subtree alive** this is now what stops
+    ///   it. Not every route: `set_inner_html` stops it by destruction (below),
+    ///   and a blanket restyle clears every entry
+    ///   (`recompute_all_styles_full`) whether the node is in the document or
+    ///   not, so a theme change happens to stop a removed `Loader` with this
+    ///   helper uninvolved.
+    ///   It used not to be that either: `NodeHandle::clear_animations` stamped
+    ///   an inline `animation: none` over a subtree on its way out at **five
+    ///   call sites** — `show_dom`, `match_dom`, two of `for_each_dom_typed`'s
+    ///   three remove sites, and the component re-render effect — which both
+    ///   stopped the frames and permanently disarmed the subtree, at all five
+    ///   (#704). That method is gone; every reactive removal reaches this
+    ///   helper instead.
     ///   `a_detached_animation_stops_asking_for_frames` is the pin.
     /// - **`computed_style` is left exactly as it was**, and so is
     ///   `text_layout`. Clearing either would be wrong twice over. #696 pinned

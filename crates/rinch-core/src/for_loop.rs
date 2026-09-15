@@ -275,7 +275,9 @@ fn reclaim_displaced(mut displaced: ItemState) -> Option<RenderScope> {
          please report it.",
         displaced.item.key
     );
-    displaced.node.clear_animations();
+    // Removal cancels the subtree's transitions and animations in the
+    // document implementation (#699); stamping inline `transition: none` here
+    // disarmed it permanently (#704).
     displaced.node.remove();
     displaced.scope.take()
 }
@@ -491,7 +493,10 @@ where
                     // Remove the item's DOM node
                     if let Some(item_state) = state.remove(&key) {
                         doomed.extend(item_state.scope);
-                        item_state.node.clear_animations();
+                        // Removal cancels the subtree's transitions and
+                        // animations in the document implementation (#699);
+                        // stamping inline `transition: none` here disarmed it
+                        // permanently (#704).
                         item_state.node.remove();
                     }
                     // Remove from keys order

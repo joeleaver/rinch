@@ -2548,8 +2548,8 @@ subtree**. Cancelling the transition is not optional — `tick_transitions` walk
 writing interpolated values straight through the re-insertion. Cancelling the
 *animation* is a separate repair riding along: an animation has no declared
 duration to expire, and the desktop shell keeps asking for frames while
-`tree.active_animations` is non-empty, so a `Loader` removed through a route
-without `NodeHandle::clear_animations` kept an app rendering forever.
+`tree.active_animations` is non-empty, so a removed `Loader` kept an app
+rendering forever.
 
 **Five places in `dom_impl/dom_document_impl.rs` write `parent = None`; four
 call the helper.** `remove_node` (every reactive removal funnels through
@@ -2582,17 +2582,41 @@ Three things it deliberately does not do.
   style change made while an element is hidden, where css-transitions-1 §3 starts
   none for an element that is not being rendered: **#703**.
 
-Worth knowing about the reactive helpers: `show_dom`, `match_dom` and
-`for_each_dom_typed` call `NodeHandle::clear_animations()` before `remove()`
-(all but `for_each_dom_typed`'s `Changed` arm, which re-renders a row in place
-and does not — no exposure, the node is replaced, but the sentence is not a
-universal),
-which stamps a literal inline `transition: none; animation: none` over the whole
-subtree and **never takes it off again** — so a branch hidden once can never
-transition again, for any reason. That is a bigger hammer than #699's and a
-defect of its own (**#704**), and it is why #699's fixtures drive the
-`DomDocument` API directly: through one of those helpers, removing the whole fix
-changes nothing.
+**The reactive helpers reach all of that, and `NodeHandle::clear_animations` is
+gone** (**#704**). It used to be called before `remove()` by `show_dom`,
+`match_dom`, `for_each_dom_typed`'s `Remove` arm and `reclaim_displaced`, and
+the component re-render effect, and it stamped a literal inline
+`transition: none; animation: none` over the whole subtree and **never took it
+off again** — so a branch hidden once could never transition again, for any
+reason, which is what a reactive `if` returning a captured `NodeHandle` (the
+#654 shape) does on its first hide. It also masked #699 completely: through one
+of those helpers, removing that whole fix changed nothing, which is why its
+fixtures drive the `DomDocument` API directly.
+
+Deleting the method was safe because every one of the five call sites was
+`clear_animations(); remove();`, and `NodeHandle::remove` is
+`DomDocument::remove_node` — the first of the five routes listed above. The cheapest
+evidence was already in the tree: `for_each_dom_typed`'s **`Changed` arm** never
+called it, and had no defect. On `rinch-web` the browser cancels a removed
+element's transitions itself and treats a re-insertion as a first style, so the
+inline write there was redundant at best. (A CSS *animation* does restart on
+re-insertion in a browser — that is spec behaviour, not something the stamp was
+guarding.) **Do not add a `set_style` of any kind to a removal path**: the node
+survives the removal, so anything written there is permanent.
+`crates/rinch-dom/tests/branch_helper_transition_tests.rs` is the pin: seven
+fixtures over four of the five sites, three of them on `show_dom`.
+`reclaim_displaced` is the fifth and has none — a
+`debug_assert!(clobbered.is_none())` sits one line above the call, so a debug
+test panics on the assertion before it can get there.
+
+It was not free either, which is why a deprecated no-op shim would have been the
+wrong shape too: `set_style` re-merges the node's whole inline `style` string,
+re-parses it into a Stylo declaration block and invalidates the node's inline
+style, and `clear_animations` called it **twice per node** over the subtree.
+Measured on a 500-row list unmounted one row at a time, best of 200 alternated
+rounds in one release binary: 340us without the stamp, 5541us with it —
+**16x**, about 3.5us per node against the ~11ns per node #699's reset costs
+(`crates/rinch-dom/tests/detach_reset_bench.rs`, both harnesses `#[ignore]`d).
 
 ### Native Control Flow (if / for / match)
 
