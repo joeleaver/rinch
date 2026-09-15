@@ -87,6 +87,10 @@ rinch-theme = { workspace = true }
 # the optional `components` feature: the test then runs under `cargo test -p
 # rinch` with no flags, which is how it will actually be run.
 rinch-components = { workspace = true }
+# Test-only: `app::stepper_state_709_tests` needs a `TablerIcon` to name a
+# per-step icon with. The facade deliberately does not depend on this crate — the
+# icon enum is not in the prelude — so it is a dev-dependency.
+rinch-tabler-icons = { workspace = true }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 gtk = { version = "0.18", optional = true }

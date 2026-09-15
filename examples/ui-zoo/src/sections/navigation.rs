@@ -266,7 +266,7 @@ pub fn navigation_section() -> NodeHandle {
                         Text { weight: "600", "Interactive Stepper" }
                         Badge { color: "green", variant: "light", {|| format!("Step {}", stepper_active.get() + 1)} }
                     }
-                    Stepper { active: stepper_active.get(),
+                    Stepper { active: {|| stepper_active.get()},
                         StepperStep { label: "Account", description: "Create your account" }
                         StepperStep { label: "Verify", description: "Verify your email" }
                         StepperStep { label: "Complete", description: "Get started" }

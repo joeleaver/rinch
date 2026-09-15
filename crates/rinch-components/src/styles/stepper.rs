@@ -66,6 +66,15 @@ pub fn styles() -> String {
     height: 60%;
 }
 
+/* An icon a step rendered for a state its parent Stepper might move it into,
+   left in the box for the parent to promote (issue #709). The parent drops
+   every one it did not need, so this only ever paints for a StepperStep with
+   no Stepper above it; it carries `display: none` inline as well, so such a
+   step is right even where this sheet is not loaded. */
+.rinch-stepper__step-icon-alt {
+    display: none;
+}
+
 /* Completed step */
 .rinch-stepper__step--completed .rinch-stepper__step-icon {
     background-color: var(--rinch-stepper-color, var(--rinch-primary-color));
