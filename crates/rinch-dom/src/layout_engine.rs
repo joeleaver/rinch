@@ -2429,13 +2429,11 @@ impl RinchDocument {
     /// pins, and they are exactly the two fixtures that kill the mutant which
     /// adds the reset there.
     ///
-    /// The one shape that does leave the document under a move — appending a
-    /// *mounted* node into a *detached* parent — is therefore not covered. It
-    /// is not a `parent = None` detach, but it is disconnected, which #696
-    /// established is the question that matters; telling it apart from an
-    /// ordinary move needs a connectivity walk on the hottest DOM operation in
-    /// the framework, and no rinch code path produces the shape today. Issue
-    /// #702.
+    /// The one shape that *does* leave the document under a move — a **mounted**
+    /// node moved into a **detached** parent — is not this helper's business
+    /// either, and has its own: [`Self::detach_subtree_styles_if_moved_out`]
+    /// (#702). It is not a `parent = None` detach, but it is disconnected,
+    /// which #696 established is the question that matters.
     pub(crate) fn detach_subtree_styles(&mut self, node_id: usize) {
         // Iterative, like `clear_ifc_root_recursive` — a deep subtree must not
         // overflow the stack on its way out of the document.
@@ -2448,6 +2446,104 @@ impl RinchDocument {
             stack.extend(node.children.iter().copied());
             self.tree.active_transitions.remove(&id);
             self.tree.active_animations.remove(&id);
+        }
+    }
+
+    /// A **move** that takes `child` out of the document is a detach too
+    /// (issue #702).
+    ///
+    /// [`Self::detach_subtree_styles`]'s own doc says a move is not a detach,
+    /// and that is true of every move whose destination is in the document —
+    /// which, before this, was assumed to be all of them. It is not: a mounted
+    /// node appended into a parent that is *not* connected to `tree.root_id`
+    /// has left the document while keeping a parent, so it fails the
+    /// `parent = None` test the four detach routes share. #696 established that
+    /// **connectivity** is the question that matters, not the parent field: a
+    /// node under a detached parent is not styled at all, so it keeps
+    /// `has_been_styled` and the `computed_style` it had where it was mounted,
+    /// and animates in from that style when its new parent is spliced in
+    /// somewhere else.
+    ///
+    /// # The two guards, and which one is for cost
+    ///
+    /// Both callers' conditions are here rather than at the four call sites, so
+    /// that the reasoning is in one place and the sites are one line.
+    ///
+    /// - **`old_parent != new_parent`** is a **cost** guard, not a correctness
+    ///   one. A move within one container cannot change whether the child is
+    ///   connected, because the child's reachability *is* its parent's and the
+    ///   parent has not changed — so walking would give the same answer more
+    ///   slowly. It matters because that move is the keyed `for` reorder, which
+    ///   is the hottest shape this code has: a reorder pays one integer
+    ///   comparison per row and never walks.
+    /// - **`depth_if_connected(new_parent).is_none()`** is the correctness one,
+    ///   and it is [`RinchDocument::depth_if_connected`] — the same walk #696
+    ///   filters `style_roots` with, so the two cannot disagree about what
+    ///   "connected" means.
+    ///
+    /// The callers supply a third guard by construction: they only reach this
+    /// when the child **already had a parent**, since a node created moments ago
+    /// cannot be a move.
+    ///
+    /// # What that does and does not make free
+    ///
+    /// A node appended **straight into its final parent** never reaches this at
+    /// all. An `rsx!` **component site** does reach it, once per child, and this
+    /// is the non-obvious part: `component_codegen` builds a site's children
+    /// into a `<template>` scratch container attached to nothing (#719), and
+    /// `Component::render` then adopts each one into the component's own root,
+    /// which is *also* still detached at that moment. So the adoption is a move
+    /// into a detached parent by this rule — it walks, and it takes the full
+    /// [`Self::detach_subtree_styles`] subtree walk.
+    ///
+    /// Counted on 500 component sites carrying a 20-node subtree each: **500
+    /// entries, 500 walks, 500 resets over 10,000 nodes**, against 0/0/0/0 for
+    /// the same nodes appended straight into their final parent. The reset is
+    /// semantically a no-op there — a node created moments ago is already
+    /// unstyled with empty transition and animation maps — and the cost does not
+    /// show: best of 40, release, three alternated rounds, the build *with* this
+    /// helper was the faster of the two every time (1801–1825ms against
+    /// 1809–1830ms), i.e. inside build-to-build noise. It is recorded because
+    /// "building a tree pays nothing" would otherwise read as covering the
+    /// framework's own render path, which it does not.
+    ///
+    /// # One behaviour change that follows, and is narrower than it looks
+    ///
+    /// A node that is mounted and **still connected** when it is moved into a
+    /// detached parent, and adopted straight back out in the same pass, loses
+    /// its running transitions and restarts its animations. A browser never
+    /// observes that intermediate state, because its style recalc is batched to
+    /// the end of the task; rinch's cascade is not, so the round trip is two
+    /// events here and one there.
+    ///
+    /// The component **re-render** path does not reach it:
+    /// `reactive_component_dom` removes the previous output *before* rendering
+    /// fresh, so #699 has already reset that subtree by the time the new
+    /// `<template>` sees it. What remains is handing a component a handle that
+    /// is mounted **elsewhere and still connected** — the #719 shape,
+    /// `Card { {captured.clone()} }` — at a render where the old subtree was not
+    /// the doomed one.
+    ///
+    /// # Where this is called from
+    ///
+    /// **Four places in `dom_impl/dom_document_impl.rs` write
+    /// `nodes[..].parent = Some(..)` for a node that may already be mounted**,
+    /// and all four call this: `append_child`, `insert_before`, `insert_child`,
+    /// and `replace_node` for its incoming `new`. `grep -n '\.parent = Some('`
+    /// is the check if a fifth ever appears; the other matches in that file and
+    /// in `pseudo.rs` / `ifc.rs` are nodes created moments earlier, which cannot
+    /// be moves. An unhooked route here is silent, which is how `replace_node`
+    /// was nearly missed — its own comment asserted "`new` has not [left the
+    /// document] — it was spliced in, which is a move, and a move resets
+    /// nothing", true of every destination but a detached one.
+    pub(crate) fn detach_subtree_styles_if_moved_out(
+        &mut self,
+        child: usize,
+        old_parent: usize,
+        new_parent: usize,
+    ) {
+        if old_parent != new_parent && self.depth_if_connected(new_parent).is_none() {
+            self.detach_subtree_styles(child);
         }
     }
 

@@ -357,6 +357,14 @@ fn an_unchanged_ancestor_still_means_no_transition_and_the_same_style() {
 ///
 /// Kills the "also reset on a reparenting `append_child`/`insert_before`"
 /// over-reach mutant.
+///
+/// The destination being **in the document** is load-bearing and not incidental.
+/// A move into a *detached* parent does leave the document and does reset, which
+/// is #702 and is answered by a different helper
+/// (`detach_subtree_styles_if_moved_out`); this fixture is one half of the pair
+/// that tells the two apart, `move_out_of_document_tests::
+/// a_reparenting_move_between_two_connected_parents_resets_nothing` being the
+/// other.
 #[test]
 fn a_reparenting_move_does_not_restart_a_running_transition() {
     let (mut doc, wrap, boxed) = mounted_box();

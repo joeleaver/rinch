@@ -87,7 +87,12 @@ impl RinchDocument {
         // this list nor the node's `computed_style`. A reparenting
         // `append_child` / `insert_before` / `insert_child` is deliberately not
         // hooked — those are moves, and the node is connected again before the
-        // call returns.
+        // call returns. **Unless the destination is detached**, in which case it
+        // is not: #702 hooks those three and `replace_node` through
+        // `detach_subtree_styles_if_moved_out`, which asks exactly the
+        // connectivity question this skip asks, through
+        // `depth_if_connected` — the same walk, so the two cannot disagree
+        // about what "connected" means.
         //
         // Sort by depth (shallowest first) so that if both a parent and
         // child appear, the parent is resolved first and the child can
@@ -169,7 +174,7 @@ impl RinchDocument {
     /// A `None` also covers an id that is no longer in the slab, or whose
     /// ancestor chain leaves it — a `style_roots` entry outlives the node it
     /// names.
-    fn depth_if_connected(&self, node_id: usize) -> Option<usize> {
+    pub(crate) fn depth_if_connected(&self, node_id: usize) -> Option<usize> {
         if node_id == self.tree.root_id {
             return self.tree.nodes.get(node_id).map(|_| 0);
         }
