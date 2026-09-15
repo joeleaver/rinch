@@ -53,7 +53,28 @@
 ///   left carrying `data-trap-focus="false"` would be read as a live trap by
 ///   anything that tests presence, and Tab would circle inside an invisible
 ///   dialog for the rest of the session.
+///
+/// The name is matched **ASCII case-insensitively** (issue #688), because an
+/// HTML attribute name is. It has to be: this predicate is the gate on
+/// [`super::NodeHandle::write_attribute`]'s presence/absence mapping, and a
+/// `CHECKED` that fell through it would be written as the literal
+/// `checked="false"` — a present boolean attribute, and so #551 again under a
+/// different spelling. The fold on the desktop store (`RinchDocument::set_attribute`)
+/// is what makes that reachable rather than merely theoretical; on the web the
+/// browser folds the name itself and it always was.
 pub fn is_boolean_attribute(name: &str) -> bool {
+    // Nothing to fold in any name rinch itself writes, so the scan is the whole
+    // cost in the common case and an uppercase name is the only one that allocates.
+    if name.bytes().any(|b| b.is_ascii_uppercase()) {
+        return is_lowercase_boolean_attribute(&name.to_ascii_lowercase());
+    }
+    is_lowercase_boolean_attribute(name)
+}
+
+/// The set itself, over an already-lowercased name. Split out so the
+/// spec-transcribed list lives in exactly one place — see
+/// [`is_boolean_attribute`] for what is in it and why.
+fn is_lowercase_boolean_attribute(name: &str) -> bool {
     matches!(
         name,
         // ── WHATWG HTML, "Attributes" index, Value = "Boolean attribute" ──
@@ -215,6 +236,36 @@ mod tests {
             assert!(
                 is_boolean_attribute(name),
                 "{name} must be written by presence"
+            );
+        }
+    }
+
+    /// The name is ASCII case-insensitive, like every HTML attribute name
+    /// (#688). Both halves matter: the fold must reach the set, and it must not
+    /// drag a non-boolean name into it.
+    ///
+    /// Sampled **off** the fixed point — an all-lowercase name answers the same
+    /// whether or not the fold exists, so every name here carries at least one
+    /// uppercase letter, and a rejected one is checked beside an accepted one.
+    #[test]
+    fn a_boolean_attribute_name_is_matched_case_insensitively() {
+        for name in [
+            "CHECKED",
+            "Disabled",
+            "readOnly",
+            "HIDDEN",
+            "Data-Nofocus",
+            "SHADOWROOTSERIALIZABLE",
+        ] {
+            assert!(
+                is_boolean_attribute(name),
+                "{name} is the same attribute as its lowercase spelling"
+            );
+        }
+        for name in ["DRAGGABLE", "Aria-Hidden", "CLASS", "Data-Viewport-Ready"] {
+            assert!(
+                !is_boolean_attribute(name),
+                "{name} still takes a real value in any case"
             );
         }
     }
