@@ -307,8 +307,9 @@ impl Component for DropdownMenu {
         // body is an `if`), and the sheet's panel rule reaches through any
         // wrapper while still keeping a closed menu nested in this one's panel
         // closed. Its one limit, and why it is spelled the way it is, are in
-        // the note above that rule. (`Popover`'s rule is a plain descendant
-        // one: wrapper-tolerant, but it opens nested popovers too.)
+        // the note above that rule. (This is no longer the shape `Popover` has:
+        // its rule is still a plain descendant one, wrapper-tolerant but opening
+        // nested popovers too — issue #778.)
         //
         // The effect adds and removes the one class rather than rewriting
         // `class` (issue #717): the rsx `class:` prop is merged onto the
