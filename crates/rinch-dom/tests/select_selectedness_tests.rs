@@ -408,11 +408,13 @@ fn the_rule_reaches_an_option_inside_an_optgroup() {
 /// state, so no ordinary fixture can tell them apart.
 ///
 /// The spelling is not cosmetic. Measured on this tree: with `position` in the
-/// resolver, deleting the `insert_before` and `replace_node` hooks leaves all
-/// the other fixtures **green** — an option inserted at the front is both the
-/// newly selected one and the first in tree order, so `position` returns the
-/// right index for the wrong reason. With `rposition` two of them fail, which
-/// is how those two hooks came to be written.
+/// resolver and the `insert_before` / `replace_node` hooks deleted, the other
+/// **ten** fixtures in this file all stay green — an option inserted at the
+/// front is both the newly selected one and the first in tree order, so
+/// `position` returns the right index for the wrong reason. This fixture is the
+/// one that fails, and it fails under `position` whether or not those hooks are
+/// there. With `rposition` the two hook fixtures fail as well, which is how
+/// they came to be written.
 #[test]
 fn two_options_selected_at_once_resolve_to_the_last_in_tree_order() {
     let (mut doc, sel, o) = select_with(3, &[]);

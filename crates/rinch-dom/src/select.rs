@@ -186,11 +186,16 @@ fn resolve_selected_index(options: &[SelectOption], select_value: Option<&str>) 
     //    selected>b` selects `b`, measured), and — the reason it stays —
     //    **`position` would hide a missing insertion hook.** An option inserted
     //    at the front is both the newly selected one and the first in tree
-    //    order, so `position` returns the right index for the wrong reason:
-    //    measured on this tree, deleting the `insert_before` and `replace_node`
-    //    hooks with `position` here leaves all 10 fixtures green, and with
-    //    `rposition` two of them fail. That is how the two hooks came to be
-    //    written at all.
+    //    order, so `position` returns the right index for the wrong reason.
+    //    Measured on this tree: with `position` here and the `insert_before` /
+    //    `replace_node` hooks deleted, **ten of the eleven** fixtures in
+    //    `select_selectedness_tests.rs` stay green — every fixture that asserts
+    //    a *behaviour*, the two that catch those hooks included. The eleventh is
+    //    `two_options_selected_at_once_resolve_to_the_last_in_tree_order`, the
+    //    pin for this spelling: it fails under `position` with or without the
+    //    hooks, so it is the instrument rather than a witness and is excluded
+    //    from the claim. With `rposition` the two hook fixtures fail, which is
+    //    how those hooks came to be written at all.
     if let Some(i) = options.iter().rposition(|o| o.selectedness) {
         return Some(i);
     }
