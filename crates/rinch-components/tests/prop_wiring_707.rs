@@ -1,5 +1,11 @@
-//! The nine props #707 wired: #474's category **C** (a parent prop whose
-//! child's twin works) and category **D** (content and input props).
+//! The eight props #707 wired: #474's category **C** (a parent prop whose
+//! child's twin works) and two of category **D**'s three.
+//!
+//! The third, `Textarea::max_rows`, is **not** here. It was wired and reverted:
+//! a `max-height` cannot bind on a rinch `<textarea>`, whose used height is
+//! exactly the `min-height` its `rows` and the sheet's floor give it, so the
+//! prop stays on `no_dead_props.rs`'s allowlist against #715 rather than being
+//! read into an effect nobody can see.
 //!
 //! `tests/no_dead_props.rs` is the ratchet that says a prop is *read*; these say
 //! the read has the effect its doc comment promises. They are different claims,
@@ -21,10 +27,10 @@
 //! ones — a default of `md` against a child of `md`, or one icon against itself,
 //! is a fixed point where the wired and the unwired code agree.
 //!
-//! The two props whose effect is a **cascade** rather than a DOM edit —
-//! `Accordion::disable_chevron_rotation` and `Textarea::max_rows` — are pinned
-//! here only as far as the markup and the stylesheet go. What a real Stylo
-//! cascade computes from them lives in `rinch`'s `app::component_prop_707_tests`.
+//! The one prop whose effect is a **cascade** rather than a DOM edit —
+//! `Accordion::disable_chevron_rotation` — is pinned here only as far as the
+//! markup and the stylesheet go. What a real Stylo cascade computes from it
+//! lives in `rinch`'s `app::component_prop_707_tests`.
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -35,7 +41,6 @@ use rinch_components::list::{List, ListItem};
 use rinch_components::radio::{Radio, RadioGroup};
 use rinch_components::stepper::{Stepper, StepperStep};
 use rinch_components::switch::Switch;
-use rinch_components::textarea::Textarea;
 use rinch_core::dom::traits::DomDocument;
 use rinch_core::dom::{NodeHandle, RenderScope, mock::MockDomDocument};
 use rinch_core::events::{EventHandlerId, dispatch_event};
@@ -761,57 +766,4 @@ fn the_sheet_styles_both_descriptions() {
             "and the alignment a two-line body needs"
         );
     }
-}
-
-// ================================================= D: Textarea::max_rows
-
-#[test]
-fn max_rows_publishes_the_count_the_sheet_spends() {
-    let tree = Tree::build(|scope| {
-        Textarea {
-            max_rows: Some(6),
-            ..Default::default()
-        }
-        .render(scope, &[])
-    });
-
-    assert!(has_class(&tree.root, "rinch-textarea--max-rows"));
-    let style = tree.root.get_attribute("style").unwrap_or_default();
-    assert!(
-        style.contains("--rinch-textarea-max-rows: 6"),
-        "the count itself travels as a custom property, not as a class per \
-         value: got {style:?}"
-    );
-}
-
-#[test]
-fn a_textarea_with_no_max_rows_publishes_nothing() {
-    let tree = Tree::build(|scope| Textarea::default().render(scope, &[]));
-    assert!(!has_class(&tree.root, "rinch-textarea--max-rows"));
-    assert!(
-        !tree
-            .root
-            .get_attribute("style")
-            .unwrap_or_default()
-            .contains("--rinch-textarea-max-rows"),
-        "an unset cap must leave `max-height` alone entirely"
-    );
-}
-
-#[test]
-fn the_sheet_turns_the_row_count_into_a_height() {
-    let css = sheet();
-    assert!(
-        css.contains(".rinch-textarea__input {") && css.contains("line-height: 1.5;"),
-        "a row is only a known height while the line-height is declared"
-    );
-    assert!(
-        css.contains(
-            "max-height: calc(var(--rinch-textarea-max-rows) * 1.5em + \
-             2 * var(--rinch-spacing-sm) + 2px);"
-        ),
-        "the cap counts rows at the declared line-height, then adds the padding \
-         and border the theme's `box-sizing: border-box` folds into the box it \
-         caps"
-    );
 }

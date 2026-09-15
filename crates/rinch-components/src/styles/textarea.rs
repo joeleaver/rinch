@@ -23,9 +23,6 @@ pub fn styles() -> String {
     padding: var(--rinch-spacing-sm);
     resize: vertical;
     min-height: 80px;
-    /* Declared, not inherited: `max_rows` below counts rows in `em`, and a row
-       is only a known height while this is a declaration a reader can check. */
-    line-height: 1.5;
     transition: border-color 150ms ease;
 }
 
@@ -68,14 +65,6 @@ pub fn styles() -> String {
 /* Auto resize (no resize handle) */
 .rinch-textarea--autosize .rinch-textarea__input {
     resize: none;
-}
-
-/* Row cap. `--rinch-textarea-max-rows` is the count, published inline by the
-   component. The theme's reset makes every box `border-box`, so the padding and
-   the 1px border on each side are part of the height this caps. */
-.rinch-textarea--max-rows .rinch-textarea__input {
-    max-height: calc(var(--rinch-textarea-max-rows) * 1.5em + 2 * var(--rinch-spacing-sm) + 2px);
-    overflow-y: auto;
 }
 "#.to_string()
 }

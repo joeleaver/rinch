@@ -210,9 +210,9 @@ Every one of these props is `Option<TablerIcon>`. The `rsx!` macro adds the `Som
 | `Notification` | `icon` | `notification.rs:113` |
 | `AccordionControl` | `icon` | `accordion.rs:251` |
 | `Blockquote` | `icon` | `blockquote.rs:25` |
-| `List`, `ListItem` | `icon` | `list.rs:106`, `list.rs:230` |
-| `Stepper` | `completed_icon`, `progress_icon` | `stepper.rs:121`, `:127` |
-| `StepperStep` | `icon`, `completed_icon`, `progress_icon` | `stepper.rs:275`, `:277`, `:279` |
+| `List`, `ListItem` | `icon` | `list.rs:109`, `list.rs:233` |
+| `Stepper` | `completed_icon`, `progress_icon` | `stepper.rs:128`, `:135` |
+| `StepperStep` | `icon`, `completed_icon`, `progress_icon` | `stepper.rs:283`, `:285`, `:287` |
 | `NavLink` | `left_section`, `right_section` | `navlink.rs:100`, `:102` |
 | `DropdownMenuItem` | `left_section`, `right_section` | `dropdown_menu.rs:483`, `:485` |
 | `Tab` | `left_section`, `right_section` | `tabs.rs:397`, `:399` |
@@ -233,6 +233,10 @@ set, which therefore outranks that step's plain `icon` exactly as its own
 #707; the doc example on `Stepper` (`completed_icon: TablerIcon::CircleCheck`)
 is one of the things that now does what it says — once its steps carry a
 `state`, which `Stepper` still does not derive from `active` (issue #709).
+**A container default reaches only the children present at the container's own
+render** — the patch runs once, so an item a later `for` reconcile appends gets
+nothing (issue #716); `RadioGroup::size` and the `Stepper` props are the same
+shape.
 
 Paths are relative to `crates/rinch-components/src/`. `ActionIcon`'s `icon` prop is a convenience that renders the icon for you as Outline, sized from the component's own `size` prop. It is **mutually exclusive with children** — `loading` wins, then `icon`, and children render only if neither is set — so pass a rendered icon as a child (not via `icon:`) when you need a filled or custom-sized glyph.
 
@@ -2797,7 +2801,7 @@ Text {
 }
 ```
 
-**All component props support reactive closures.** Pass `{|| expr}` to any component prop (`variant`, `color`, `size`, `disabled`, etc.) to make it reactive — when signals change, the component re-renders automatically:
+**All component props support reactive closures** — except the `icon` / `*_icon` family, whose values the macro wraps as `Some(expr)` before it can notice a closure, so a reactive icon is a **compile error** naming `TablerIcon` (issue #718). Pass `{|| expr}` to any other component prop (`variant`, `color`, `size`, `disabled`, etc.) to make it reactive — when signals change, the component re-renders automatically:
 
 ```rust
 let active = Signal::new(false);

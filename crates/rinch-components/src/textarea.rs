@@ -35,15 +35,19 @@ pub struct Textarea {
     pub min_rows: Option<u32>,
     /// Maximum number of visible text rows.
     ///
-    /// Caps the control at that many lines and scrolls past them, as a
-    /// `max-height` on the border box: the rows themselves plus the padding and
-    /// border the theme's `box-sizing: border-box` folds into that box. The row
-    /// height is the declared `line-height: 1.5` of `.rinch-textarea__input`, so
-    /// the cap is a declaration rather than a measurement.
+    /// **Declared and inert on desktop** (issue #715). It is not that nothing
+    /// reads it — a `max-height` cannot *bind* on a rinch `<textarea>` at all.
+    /// The control has no content height (it holds its value in an attribute,
+    /// not as a text child), so `style_resolution` gives it a `min-height` from
+    /// its `rows`, and the stylesheet declares a 60–120px floor besides. Its
+    /// used height is therefore exactly its `min-height`, and `min-height` beats
+    /// `max-height` in CSS. Measured: `min_rows: 20` with `max_rows: 2` lays out
+    /// at 446px either way, and a textarea holding 40 lines is the same 80px as
+    /// an empty one.
     ///
-    /// Independent of [`Textarea::autosize`] — it bounds a control the user
-    /// drags taller just as it bounds one that grows on its own. A `min_rows`
-    /// larger than this wins, as `min-height` beats `max-height` in CSS.
+    /// This is the reason `tests/no_dead_props.rs` still allowlists it. Wiring
+    /// it is #715's job, not a component's: the control's height has to be able
+    /// to follow its content first.
     pub max_rows: Option<u32>,
     /// Current value.
     pub value: String,
@@ -105,12 +109,6 @@ impl Textarea {
             classes.push("rinch-textarea--autosize");
         }
 
-        // Row cap. The count itself travels as a custom property, set in
-        // `render`; this class is what lets the sheet spend it.
-        if self.max_rows.is_some() {
-            classes.push("rinch-textarea--max-rows");
-        }
-
         classes.join(" ")
     }
 }
@@ -119,10 +117,6 @@ impl Component for Textarea {
     fn render(&self, __scope: &mut RenderScope, _children: &[NodeHandle]) -> NodeHandle {
         let container = rinch_macros::rsx! { div { class: "rinch-textarea" } };
         container.set_attribute("class", &self.class_string());
-
-        if let Some(rows) = self.max_rows {
-            container.set_style("--rinch-textarea-max-rows", &rows.to_string());
-        }
 
         // Label
         if !self.label.is_empty() {

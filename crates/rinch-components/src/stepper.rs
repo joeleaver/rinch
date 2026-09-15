@@ -106,24 +106,32 @@ pub struct Stepper {
     pub icon_size: String,
     /// Whether a step *after* the active one may be selected.
     ///
-    /// When true, every step past [`Stepper::active`] that did not ask to be
-    /// clickable itself is made clickable. A step that set `allow_step_click` or
-    /// `allow_step_select` of its own is already clickable and is left alone, so
-    /// this only ever grants — turning it off does not take a step's own ask
-    /// away.
+    /// When true, each step past [`Stepper::active`] **present at this
+    /// stepper's own render** that did not ask to be clickable itself is made
+    /// clickable; a step appended later is not (issue #716). A step that set
+    /// `allow_step_click` or `allow_step_select` of its own is already clickable
+    /// and is left alone, so this only ever grants — turning it off does not
+    /// take a step's own ask away.
+    ///
+    /// Clickable is currently **decorative**: the class carries a cursor and a
+    /// hover state, and this component registers no click handler and takes no
+    /// callback (issue #709), as `allow_step_click` and `allow_step_select`
+    /// already did.
     pub allow_next_steps_select: bool,
     /// Default completed-step icon.
     ///
-    /// Used by every [`StepperStep`] in the completed state that set no
-    /// `completed_icon` of its own — the step's icon wins. Steps are patched
-    /// after they have rendered, since a parent component renders *after* its
-    /// children.
+    /// Used by the [`StepperStep`]s in the completed state **present at this
+    /// stepper's own render** that set no `completed_icon` of their own — the
+    /// step's icon wins. Steps are patched after they have rendered, since a
+    /// parent component renders *after* its children, and that patch runs once:
+    /// a step appended later keeps the default tick (issue #716).
     pub completed_icon: Option<TablerIcon>,
     /// Default in-progress-step icon.
     ///
-    /// Used by every [`StepperStep`] in the progress state that set no
-    /// `progress_icon` of its own, in place of that step's `icon` or its number.
-    /// The step's own `progress_icon` wins.
+    /// Used by the [`StepperStep`]s in the progress state **present at this
+    /// stepper's own render** that set no `progress_icon` of their own, in place
+    /// of that step's `icon` or its number. The step's own `progress_icon` wins,
+    /// and a step appended later keeps whatever it drew (issue #716).
     pub progress_icon: Option<TablerIcon>,
 }
 

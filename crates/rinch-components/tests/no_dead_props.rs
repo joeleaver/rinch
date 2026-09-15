@@ -26,7 +26,7 @@
 //! for *user* components — and destructuring `self` in `render` without `..`,
 //! which is compiler-enforced but is 59 files of churn and fights the `Debug`
 //! impls. So: source text, today, with the debt visible in `ALLOWLIST` — which
-//! #707 emptied.
+//! #707 took from nine entries to one.
 //!
 //! ## Known limits (this is a floor, not a ceiling)
 //!
@@ -57,23 +57,34 @@ use std::path::Path;
 
 /// Props that are declared, documented, and still not wired — the debt #474
 /// catalogued, with the sub-cluster each belongs to. Every entry must name a
-/// live reason: **this list may only shrink**, and it is now empty. It started
-/// at 31, stood at 9 after #474's own three PRs, and #707 took the last nine.
+/// live reason: **this list may only shrink**. It started at 31, stood at 9
+/// after #474's own three PRs, and #707 took eight of those nine.
 ///
-/// All four of #474's categories are closed. **A** (overlay behaviour) landed
+/// Three of #474's four categories are closed. **A** (overlay behaviour) landed
 /// with the dismiss stack, `data-trap-focus` and `DomDocument::set_scroll_locked`;
 /// **B** (styling) with the five `radius` props, `CloseButton::icon_size` and
 /// the two `overlay_opacity`; **C** (a parent prop whose child's twin works)
 /// with `List::icon`, the two `Stepper` icons, `Stepper::allow_next_steps_select`,
-/// `RadioGroup::size` and `Accordion::disable_chevron_rotation`; **D** (content
-/// and input props) with the two `description`s and `Textarea::max_rows`.
+/// `RadioGroup::size` and `Accordion::disable_chevron_rotation`. **D** (content
+/// and input props) is all but one: the two `description`s landed.
 ///
-/// An empty list is the point of the ratchet, not the end of it: adding an entry
-/// is admitting a new dead prop, which is what #474 asked to be made visible
-/// rather than impossible. Nothing about the scan changes when it is empty —
-/// [`every_component_prop_is_read_or_allowlisted`] now fails on any unread prop
-/// at all.
-const ALLOWLIST: &[(&str, &str)] = &[];
+/// The one below is a different kind of entry from any that came before it, and
+/// worth reading as the exception it is. Every earlier entry was *missing
+/// wiring* — a `render` that never looked at a field, curable inside the
+/// component. `Textarea::max_rows` was wired during #707 and **reverted**,
+/// because a `max-height` cannot bind on a rinch `<textarea>` at any value: the
+/// control has no content height, so its used height is exactly the `min-height`
+/// that `rows` and the sheet's floor give it, and `min-height` beats
+/// `max-height`. Reading the prop was easy and would have been a lie. The
+/// ratchet's whole purpose is to keep that visible rather than let an empty list
+/// assert something untrue, which is why the prop is here rather than read.
+const ALLOWLIST: &[(&str, &str)] = &[
+    // #474 category D — blocked below the component, on #715.
+    (
+        "Textarea::max_rows",
+        "#715: no max-height can bind on a textarea whose height is its min-height",
+    ),
+];
 
 /// One top-level item: the header line that opens it plus its whole text.
 struct Item {

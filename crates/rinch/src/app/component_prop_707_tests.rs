@@ -1,32 +1,24 @@
-//! The two props #707 wired whose effect is a **cascade**, read as computed
-//! style rather than as markup.
+//! `Accordion::disable_chevron_rotation` — the one prop #707 wired whose effect
+//! is a **cascade** — read as computed style rather than as markup.
 //!
-//! `rinch-components`' `prop_wiring_707` says the attribute is published and
-//! the sheet carries a rule for it. Neither can see what Stylo makes of the
-//! two together, and for these two that is the whole question:
+//! `rinch-components`' `prop_wiring_707` says the attribute is published and the
+//! sheet carries a rule for it. Neither can see what Stylo makes of the two
+//! together, and that is the whole question here: the prop has to *beat* the
+//! rotation, not merely coexist with it. Both declarations set `transform` on
+//! the same element, so which one applies is decided by specificity — and the
+//! rotation moved off an inline style precisely because an inline style would
+//! have won whatever the sheet said.
 //!
-//! - `Accordion::disable_chevron_rotation` has to *beat* the rotation, not
-//!   merely coexist with it. Both declarations set `transform` on the same
-//!   element, so which one applies is decided by specificity — and the rotation
-//!   moved off an inline style precisely because an inline style would have won.
-//! - `Textarea::max_rows` is a `calc()` over a custom property, a declared
-//!   `line-height` in `em`, the theme's spacing scale and the border. A
-//!   stylesheet `contains()` check cannot tell that from a `max-height` Stylo
-//!   throws away as invalid at computed-value time, which is what an unresolved
-//!   `var()` produces — silently, and with no `max-height` at all.
-//!
-//! The theme sheet is loaded beside the component sheet for that last reason:
-//! `var(--rinch-spacing-sm)` is the theme's, and without it the whole `calc()`
-//! is invalid and every reading here is `Auto` — including the ones that would
-//! otherwise fail.
+//! The theme sheet is loaded beside the component sheet because these rules
+//! resolve theme `var()`s, and an unresolved one makes a whole declaration
+//! invalid at computed-value time — silently, and in a direction that makes a
+//! failing assertion pass.
 
 use super::*;
 
 use rinch_components::accordion::{Accordion, AccordionControl, AccordionItem, AccordionPanel};
-use rinch_components::textarea::Textarea;
 use rinch_core::Component;
 use rinch_core::events::{EventHandlerId, dispatch_event};
-use rinch_dom::computed_style::DimensionValue;
 
 const VIEWPORT: (f32, f32) = (800.0, 600.0);
 
@@ -149,71 +141,5 @@ fn disable_chevron_rotation_beats_the_rotation() {
         "`transform: none` on two classes and an attribute has to beat \
          `rotate(180deg)` on one class — and it only can because the rotation \
          is a class rather than the inline style it used to be"
-    );
-}
-
-// ================================================ Textarea::max_rows
-
-/// A textarea capped at `rows`, and the `max-height` the cascade gives it.
-fn max_height(rows: Option<u32>) -> (DimensionValue, f32) {
-    let app = mount(move |scope: &mut RenderScope| {
-        Textarea {
-            max_rows: rows,
-            ..Default::default()
-        }
-        .render(scope, &[])
-    });
-    let id = node_with_class(&app, "rinch-textarea__input");
-    let doc = app.doc.as_ref().expect("a mounted document");
-    let d = doc.borrow();
-    let style = &d
-        .tree
-        .get(id)
-        .expect("the node is in the tree")
-        .computed_style;
-    (style.max_height, style.font_size)
-}
-
-fn px(rows: u32) -> f32 {
-    match max_height(Some(rows)) {
-        (DimensionValue::Length(px), _) => px,
-        other => panic!("a {rows}-row cap computed to {other:?}, not a length"),
-    }
-}
-
-#[test]
-fn an_uncapped_textarea_has_no_max_height() {
-    let (value, _) = max_height(None);
-    assert!(
-        matches!(value, DimensionValue::Auto),
-        "a textarea nobody capped must be free to grow — got {value:?}"
-    );
-}
-
-#[test]
-fn each_capped_row_is_one_declared_line_box() {
-    let (_, font_size) = max_height(Some(6));
-    let line = 1.5 * font_size;
-    assert!(
-        line > 1.0,
-        "precondition: the input has a real font size to count lines in"
-    );
-
-    // Sampled at 2 and 6 rather than at 0 and 1: the difference between two
-    // caps cancels the padding and border they share, so this reads the *slope*
-    // — a cap that ignored the row count entirely, or counted in some other
-    // unit, moves it. Neither sample is the count at which the formula would
-    // agree with a constant.
-    let slope = (px(6) - px(2)) / 4.0;
-    assert!(
-        (slope - line).abs() < 0.5,
-        "four more rows must be four more line boxes: {} px per row against a \
-         {line} px line",
-        slope
-    );
-    assert!(
-        px(2) > line * 2.0,
-        "and the cap is the *border* box, so it holds the padding and border \
-         as well as the rows"
     );
 }

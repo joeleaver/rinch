@@ -324,9 +324,11 @@ pub struct RadioGroup {
     pub error: String,
     /// Default size for the radios in this group.
     ///
-    /// Applied to every [`Radio`] in the group that did not set a `size` of its
-    /// own — the radio's size wins. A radio records its own ask as `data-size`,
-    /// which is what tells an unset `size` from an explicit `"md"`.
+    /// Applied to the [`Radio`]s **present at this group's own render** that set
+    /// no `size` of their own — the radio's size wins. A radio records its own
+    /// ask as `data-size`, which is what tells an unset `size` from an explicit
+    /// `"md"`. The patch runs once, so a radio appended later keeps its own
+    /// default step (issue #716).
     pub size: String,
     /// Orientation (horizontal or vertical).
     pub orientation: String,

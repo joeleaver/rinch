@@ -189,7 +189,7 @@ and no stylesheet in the workspace matches that class.
 | `required` | `bool` | `false` | |
 | `autosize` | `bool` | `false` | Auto-resize textarea |
 | `min_rows` | `Option<u32>` | `None` | Visible rows; sizes the control to that many lines. Defaults to 2 (HTML default) when unset. A larger CSS `min-height` wins |
-| `max_rows` | `Option<u32>` | `None` | Caps the control at that many lines and scrolls past them (#707). A `max-height` on the border box, counted at the declared `line-height: 1.5`. Independent of `autosize` — it bounds a dragged control too. A larger `min_rows` wins, as `min-height` beats `max-height` |
+| `max_rows` | `Option<u32>` | `None` | **Declared and inert on desktop (#715).** A textarea has no content height, so its used height is exactly the `min-height` its `rows` and the sheet's 60–120px floor give it — and `min-height` beats `max-height`, so no cap can bind at any value. On the allowlist in `no_dead_props.rs` until a textarea's height can follow its content |
 | `value` | `String` | `""` | |
 | `value_fn` | `Option<ReactiveString>` | `None` | Reactive value binding (auto-wrapped) |
 | `oninput` | `Option<InputCallback>` | `None` | Receives `String` |
@@ -319,7 +319,7 @@ Enter and Space on it toggle the dropdown. Arrow/Enter/Escape navigation of the
 | `label` | `String` | `""` | |
 | `description` | `String` | `""` | |
 | `error` | `String` | `""` | |
-| `size` | `String` | `""` | Default size for the group's radios (#707); a `Radio`'s own `size` wins, and a radio records its ask as `data-size` so an explicit `"md"` is not mistaken for an unset one |
+| `size` | `String` | `""` | Default size for the radios present at the group's render (#707); a `Radio`'s own `size` wins, and a radio records its ask as `data-size` so an explicit `"md"` is not mistaken for an unset one. A radio added later is not sized (#716) |
 | `orientation` | `String` | `""` | "horizontal" or "vertical" |
 
 ### Slider
@@ -666,7 +666,7 @@ Custom Default: `ignore_case` defaults to `true`.
 | `size` | `String` | `""` | |
 | `spacing` | `String` | `""` | |
 | `center` | `bool` | `false` | Center items with icons |
-| `icon` | `Option<TablerIcon>` | `None` | Default icon for items that set none (#707); a `ListItem`'s own `icon` wins |
+| `icon` | `Option<TablerIcon>` | `None` | Default icon for the items present at the list's render that set none (#707); a `ListItem`'s own `icon` wins, and an item added later does not get it (#716) |
 | `with_padding` | `bool` | `false` | |
 
 **ListItem:** `icon: Option<TablerIcon>` — per-item icon override, which beats
@@ -675,7 +675,10 @@ Custom Default: `ignore_case` defaults to `true`.
 A `List` renders *after* its items, so its default cannot reach them as a prop:
 it finds each item that built no icon layout of its own and rebuilds that item
 into the same markup `ListItem` uses, moving the content it already held into
-the content span.
+the content span. That patch runs **once**, at the list's own render, so an item
+appended afterwards renders without the default (issue #716). This applies to
+every container default in the library — `RadioGroup::size` and the three
+`Stepper` props behave the same way.
 
 ---
 
@@ -1121,9 +1124,9 @@ Custom Default: `total`, `value`, `siblings`, `boundaries` default to `1`; `with
 | `color` | `String` | `""` | |
 | `radius` | `String` | `""` | |
 | `icon_size` | `String` | `""` | |
-| `allow_next_steps_select` | `bool` | `false` | Makes every step past `active` clickable (#707). Grants only: a step's own `allow_step_click` / `allow_step_select` is never taken away |
-| `completed_icon` | `Option<TablerIcon>` | `None` | Default completed icon for steps that set none (#707); the step's own wins |
-| `progress_icon` | `Option<TablerIcon>` | `None` | Default in-progress icon for steps that set none (#707). It stands in for the *`progress_icon`* the step did not set, so it outranks that step's plain `icon` |
+| `allow_next_steps_select` | `bool` | `false` | Makes each step past `active` clickable (#707), among those present at the stepper's render (#716). Grants only: a step's own `allow_step_click` / `allow_step_select` is never taken away. **Decorative** — `Stepper` registers no click handler and takes no callback (#709) |
+| `completed_icon` | `Option<TablerIcon>` | `None` | Default completed icon for the steps present at the stepper's render that set none (#707); the step's own wins, a step added later does not get it (#716) |
+| `progress_icon` | `Option<TablerIcon>` | `None` | Default in-progress icon for the steps present at the stepper's render that set none (#707). It stands in for the *`progress_icon`* the step did not set, so it outranks that step's plain `icon`. A step added later does not get it (#716) |
 
 **StepperStep:**
 

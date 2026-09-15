@@ -100,9 +100,12 @@ pub struct List {
     pub center: bool,
     /// Default icon for this list's items.
     ///
-    /// Applied to every [`ListItem`] that did not set an `icon` of its own —
-    /// the item's icon wins. Items are found and restyled after they have
-    /// rendered, since a parent component renders *after* its children.
+    /// Applied to the [`ListItem`]s **present at this list's own render** that
+    /// set no `icon` of their own — the item's icon wins. Items are found and
+    /// restyled after they have rendered, since a parent component renders
+    /// *after* its children, and that patch runs once: an item appended later,
+    /// by a `for` reconcile or a `show_dom` branch, does not get the default
+    /// (issue #716).
     pub icon: Option<TablerIcon>,
     /// Whether to show list markers.
     pub with_padding: bool,
