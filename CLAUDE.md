@@ -2862,11 +2862,10 @@ Three things it deliberately does not do.
   symmetry for its own sake — a node shown by an *ancestor* need not be
   re-cascaded at all, because `set_style` invalidates the one node it was
   written to, so without the walk a panel un-hidden that way would come back
-  with its spinner permanently still. Two neighbouring faults are **not** fixed
-  and are not this: an animation present in the very first frame never starts
-  (**#762**) and a full restyle stops every animation in the document for good
-  (the same issue), both because `transitions_enabled` gates animation starts as
-  well as transition starts.
+  with its spinner permanently still. None of the three reads
+  `transitions_enabled` (**#762**, below): the walk ran behind that flag when
+  #747 landed, so a panel shown by an inline write on a cascade before the first
+  layout completed kept its spinner still until something re-cascaded it.
 - **`visibility: hidden` runs an animation, and that costs a frame clock.** It
   is the same answer the transition rule gives — such a box is rendered — and it
   is what a browser does, measured in Chrome. But an animation has no duration to
@@ -2940,6 +2939,15 @@ fixtures over four of the five sites, three of them on `show_dom`.
 `debug_assert!(clobbered.is_none())` sits one line above the call, so a debug
 test panics on the assertion before it can get there.
 
+It was not free either, which is why a deprecated no-op shim would have been the
+wrong shape too: `set_style` re-merges the node's whole inline `style` string,
+re-parses it into a Stylo declaration block and invalidates the node's inline
+style, and `clear_animations` called it **twice per node** over the subtree.
+Measured on a 500-row list unmounted one row at a time, best of 200 alternated
+rounds in one release binary: 340us without the stamp, 5541us with it —
+**16x**, about 3.5us per node against the ~11ns per node #699's reset costs
+(`crates/rinch-dom/tests/detach_reset_bench.rs`, both harnesses `#[ignore]`d).
+
 **Nothing transitions on load, and everything animates on load** (**#762**).
 `NodeTree::transitions_enabled` is set at the *end* of the first
 `resolve_layout`, so a freshly mounted tree cannot transition into existence —
@@ -2963,17 +2971,15 @@ declaration the new sheet no longer carries — so preserving is right and
 restarting would be the smaller wrong answer. (What rinch does *not* do is
 re-read an edited `@keyframes` body into a running animation; Chrome updates the
 effect while keeping the clock. Pre-existing, true of every restyle, **#766**.)
+#747's restart walk — the one that gives a subtree shown by an inline `display`
+write its animations back — reads no flag either; it shipped behind this one, so
+a panel shown by such a write on a cascade before the first layout completed
+kept a still spinner until something unrelated re-cascaded it. That exposure is
+narrower than the other two: the walk only matters where the descendants are not
+re-cascaded, and `recompute_all_styles_full` re-cascades everything, so of the
+flag-off passes only the pre-first-layout ones reach it.
 `crates/rinch-dom/tests/animation_start_gating_tests.rs` is the pin, with the
 Chrome measurement and a mutant-by-fixture table in its module doc.
-
-It was not free either, which is why a deprecated no-op shim would have been the
-wrong shape too: `set_style` re-merges the node's whole inline `style` string,
-re-parses it into a Stylo declaration block and invalidates the node's inline
-style, and `clear_animations` called it **twice per node** over the subtree.
-Measured on a 500-row list unmounted one row at a time, best of 200 alternated
-rounds in one release binary: 340us without the stamp, 5541us with it —
-**16x**, about 3.5us per node against the ~11ns per node #699's reset costs
-(`crates/rinch-dom/tests/detach_reset_bench.rs`, both harnesses `#[ignore]`d).
 
 ### Native Control Flow (if / for / match)
 

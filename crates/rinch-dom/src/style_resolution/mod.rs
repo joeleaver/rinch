@@ -959,9 +959,14 @@ impl RinchDocument {
                 // this the drop above would be one-way and a `Loader` shown
                 // again would simply never spin. See
                 // [`Self::restart_animations_in_subtree`].
-                if self.tree.transitions_enabled
-                    && Self::ancestors_are_rendered(&self.tree, node_id, &[])
-                {
+                //
+                // Not gated on `transitions_enabled`, for the reason the
+                // animation block above is not (issue #762). The flag is off for
+                // every cascade before the first layout completes, and a panel
+                // shown on one of those passes by an inline write would drop its
+                // descendants' animations on the way out and never start them
+                // again.
+                if Self::ancestors_are_rendered(&self.tree, node_id, &[]) {
                     self.restart_animations_in_subtree(node_id, current_time_ms);
                 }
             }

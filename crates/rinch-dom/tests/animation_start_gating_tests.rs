@@ -52,6 +52,7 @@
 //! | **M5** the `transitions_enabled = false` bracket dropped from `recompute_all_styles_full` | `a_theme_change_starts_no_transitions` |
 //! | **M7** `transitions_enabled` initialised `true` | `a_stylesheet_appended_during_construction_does_not_transition` |
 //! | **M8** the first layout never arms the flag | `a_transition_declared_before_the_first_layout_does_not_run` |
+//! | **M9** `self.tree.transitions_enabled &&` kept in front of #747's restart walk | `a_panel_shown_before_the_first_layout_starts_its_spinner`, `a_spinner_hidden_and_shown_before_the_first_layout_restarts_from_zero` |
 //!
 //! # One consequence, and it is pre-existing
 //!
@@ -522,5 +523,175 @@ fn a_theme_change_starts_no_transitions() {
         doc.tree.active_transitions.is_empty(),
         "a theme change applies instantly — no element transitions from the old \
          palette to the new one"
+    );
+}
+
+// ── (f) a subtree shown on a pass the flag is off for gets its animations back ──
+
+/// Wall-clock milliseconds, on the same clock `ActiveAnimation::start_time_ms`
+/// is written from.
+fn now_ms() -> f64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs_f64()
+        * 1000.0
+}
+
+/// `body > div.panel > div > div.spin`, **not laid out**, with the panel's
+/// `display` written inline — the route `restart_animations_in_subtree` exists
+/// for, since an inline write re-cascades the node it was written to and
+/// nothing under it.
+///
+/// The spinner is the panel's *grandchild*, so nothing here passes merely
+/// because a walk reached the direct children.
+///
+/// **The viewport is set before anything is built, and that is load-bearing.**
+/// It is what `RinchApp::mount_component` does (so `vh`/`vw` resolve during
+/// DOM construction), and it means the first `resolve_layout` at that same size
+/// is not a viewport *change*. A change of more than half a pixel drops every
+/// cached style, re-cascades the whole document and restarts the spinner
+/// through its own per-node cascade — which is exactly what hides the walk.
+/// Measured: without this line both fixtures below pass with the guard kept.
+///
+/// Returns `(doc, panel, spinner)`.
+fn panel_document(panel_display: &str) -> (RinchDocument, NodeId, NodeId) {
+    let mut doc = RinchDocument::new();
+    doc.set_viewport(VIEWPORT.0, VIEWPORT.1);
+    doc.load_css(&format!(
+        "@keyframes spin {{ \
+           from {{ background-color: rgb({}, {}, {}); }} \
+           to {{ background-color: rgb({}, {}, {}); }} \
+         }} \
+         .spin {{ \
+           background-color: rgb({}, {}, {}); \
+           width: 10px; height: 10px; line-height: 10px; \
+           animation: spin {DURATION_MS}ms linear infinite; \
+         }}",
+        FROM.0, FROM.1, FROM.2, TO.0, TO.1, TO.2, BASE.0, BASE.1, BASE.2,
+    ));
+    let body = doc.body();
+    let panel = doc.create_element("div");
+    doc.set_style(panel, "display", panel_display);
+    doc.append_child(body, panel);
+    let inner = doc.create_element("div");
+    doc.append_child(panel, inner);
+    let spinner = doc.create_element("div");
+    doc.set_attribute(spinner, "class", "spin");
+    doc.append_child(inner, spinner);
+    (doc, panel, spinner)
+}
+
+/// **The restart walk is not gated on `transitions_enabled` either** — the
+/// #747 half of #762.
+///
+/// The spinner was appended into a hidden panel, so its own cascade started
+/// nothing. The inline `display` write re-cascades the panel alone, so the only
+/// thing that can start the spinner on the first layout is
+/// `restart_animations_in_subtree` — and that layout runs with the flag still
+/// `false`, as does every cascade before it.
+///
+/// **What this does not claim.** The shape is a subtree that is connected,
+/// cascaded hidden, and shown again, all before the first layout completes.
+/// `RinchApp::mount_component` appends the component's root to `<body>` only
+/// after the component has returned and lays out straight away, so an ordinary
+/// component tree is not expected to reach it through the shell; a node attached
+/// to the document *during* the render (a body portal) plausibly could. Neither
+/// has been built as a shell fixture. The one pass after the first layout that also runs with the flag off,
+/// `recompute_all_styles_full`, does **not** reach it at all: it drops every
+/// cached style, so the spinner's own cascade restarts it and the walk is
+/// redundant — measured, a hide followed by a full restyle that shows the panel
+/// again restarts the spinner with the guard kept.
+///
+/// Kills **M9**, "keep `self.tree.transitions_enabled &&` in front of the
+/// restart walk" (the guard as #764 shipped it): the spinner stays still until
+/// something unrelated re-cascades it, which at a fixed viewport is never.
+#[test]
+fn a_panel_shown_before_the_first_layout_starts_its_spinner() {
+    let (mut doc, panel, spinner) = panel_document("none");
+    assert_eq!(
+        doc.tree.get(spinner.0).unwrap().animation_specs.len(),
+        1,
+        "precondition: the cascade found the spinner's `animation` declaration"
+    );
+    assert_eq!(
+        running(&doc, spinner),
+        0,
+        "precondition: a spinner appended into a hidden panel starts nothing"
+    );
+
+    doc.set_style(panel, "display", "block");
+    assert!(
+        !doc.tree.transitions_enabled,
+        "precondition: the pass below is the first layout, with the flag off"
+    );
+    doc.resolve_layout(VIEWPORT.0, VIEWPORT.1);
+
+    assert!(
+        matches!(
+            doc.tree.get(panel.0).unwrap().computed_style.display,
+            rinch_dom::computed_style::DisplayValue::Block
+        ),
+        "precondition: the panel really was shown on that pass"
+    );
+    assert_eq!(
+        running(&doc, spinner),
+        1,
+        "a subtree shown on the first layout gets its animations, like one shown \
+         on any later pass"
+    );
+}
+
+/// The same pass, reached from a spinner that **was** running: shown, hidden
+/// and shown again, all before the first layout. What comes back is a **new**
+/// animation from t=0 (css-animations-1 §3), not the old one resumed.
+///
+/// Off the fixed point twice over. The original clock is backdated 400ms, so a
+/// resurrected entry and a restarted one carry timestamps 400ms apart rather
+/// than a wall-clock tie; and the assertion is that the new clock started
+/// **inside** the show pass, which a stale entry cannot satisfy.
+///
+/// Kills M9 as well — measured — so it is not the fixture above twice: that one
+/// never had a clock to be wrong about.
+#[test]
+fn a_spinner_hidden_and_shown_before_the_first_layout_restarts_from_zero() {
+    let (mut doc, panel, spinner) = panel_document("block");
+    assert_eq!(
+        running(&doc, spinner),
+        1,
+        "precondition: a spinner appended into a rendered panel runs at once (#762)"
+    );
+    let old_start = backdate(&mut doc, spinner, 400.0);
+
+    // Hide it, and let the tree be cascaded before any layout: any append
+    // re-resolves on the spot, which is how a mounting component reaches this.
+    doc.set_style(panel, "display", "none");
+    let body = doc.body();
+    let unrelated = doc.create_element("div");
+    doc.append_child(body, unrelated);
+    assert_eq!(
+        running(&doc, spinner),
+        0,
+        "precondition: the hide dropped the spinner's animation (#747)"
+    );
+
+    doc.set_style(panel, "display", "block");
+    assert!(
+        !doc.tree.transitions_enabled,
+        "precondition: the pass below is the first layout, with the flag off"
+    );
+    let show_started = now_ms();
+    doc.resolve_layout(VIEWPORT.0, VIEWPORT.1);
+
+    assert_eq!(
+        running(&doc, spinner),
+        1,
+        "a spinner shown again on the first layout spins again"
+    );
+    let new_start = start_time(&doc, spinner);
+    assert!(
+        new_start >= show_started,
+        "…from a clock started by the show ({new_start} < {show_started}), \
+         not the one it had before the hide ({old_start})"
     );
 }

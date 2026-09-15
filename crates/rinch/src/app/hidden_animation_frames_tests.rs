@@ -73,8 +73,9 @@ use rinch_macros::rsx;
 
 /// The size the app is mounted at.
 const MOUNT: (f32, f32) = (800.0, 600.0);
-/// The size it settles at, and the size the frame clock is pumped at. It has to
-/// differ from [`MOUNT`] by more than half a pixel — see `settle`.
+/// The size it settles at, and the size the frame clock is pumped at. It
+/// differs from [`MOUNT`] by more than half a pixel — see `settle` for why that
+/// was once necessary and no longer is.
 const SETTLED: (f32, f32) = (804.0, 600.0);
 const PHYSICAL: (u32, u32) = (804, 600);
 
@@ -146,16 +147,18 @@ fn display_of(app: &RinchApp, node: usize) -> rinch_dom::computed_style::Display
 /// Load the shipped component stylesheet, settle, and get the animations
 /// actually registered.
 ///
-/// **Two pre-existing faults, neither of them #747's, make the last step
-/// necessary**, and both are `transitions_enabled` gating animation *starts* as
-/// well as transition starts. The first layout cascades with the flag still
-/// `false` and only sets it at the end, so an animation present in the first
-/// frame never starts; `recompute_all_styles_full`, which is how a theme change
-/// and this harness install a stylesheet, clears `active_animations` and
-/// re-cascades with the flag forced `false`, so it stops every animation in the
-/// document permanently. Both are issue **#762**. A viewport change of more than
-/// half a pixel invalidates every cached style (`resolve_layout`), so the final
-/// resolve is the re-cascade that starts them, with the flag now `true`.
+/// **The last step was written for two faults that are fixed now.** When #747
+/// landed, `transitions_enabled` gated animation *starts* as well as transition
+/// starts: the first layout cascades with the flag still `false`, and
+/// `recompute_all_styles_full` — how a theme change and this harness install a
+/// stylesheet — cleared `active_animations` and re-cascaded with it forced
+/// `false`. So no animation was running after the first two steps, and the
+/// resize to [`SETTLED`] (more than half a pixel, so `resolve_layout` drops
+/// every cached style) was the re-cascade that started them. That was issue
+/// **#762**; since it was fixed, the first two steps start them on their own.
+/// Measured: with `SETTLED` set equal to `MOUNT`, so the last resolve re-cascades
+/// nothing, all five fixtures here still pass. The resize is kept rather than
+/// deleted because the mutant table above was measured through it.
 ///
 /// It goes straight to the document because `RinchApp::resolve_and_repaint`
 /// short-circuits on a clean tree, and the tree *is* clean by here: the resize is

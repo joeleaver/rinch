@@ -680,6 +680,20 @@ does nothing yet, because a paused animation still answers `true` from
 `visibility: hidden` while closed should not contain a `Loader` if the app is
 expected to idle.
 
+None of the three sites reads `transitions_enabled` (see "The page-load guard
+arms transitions, and only transitions" above), and for the restart walk that is
+a separate decision rather than a consequence. The walk shipped behind the flag,
+and the flag is off for every cascade before the first layout completes — so a
+panel shown by an inline `display` write on one of those passes dropped its
+descendants' animations on the way out and did not start them again until
+something unrelated re-cascaded the subtree. The other flag-off pass,
+`recompute_all_styles_full`, never reached it: it drops every cached style, so
+each descendant's own cascade restarts it and the walk is redundant there —
+measured, with the guard kept, a panel hidden and then shown by a full restyle
+spins again. `animation_start_gating_tests.rs` pins the pre-first-layout shape
+twice, once for a spinner that never ran and once for one that did, whose clock
+must restart inside the show pass.
+
 ## Optimizations
 
 Current and planned improvements to the rendering pipeline:
