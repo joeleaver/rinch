@@ -773,3 +773,155 @@ fn a_paused_font_size_animation_on_a_span_resizes_its_inline_block() {
         assert_eq!(size(&doc, ib), reference, "round {round}: and stays");
     }
 }
+
+// ── Text inside an atomic inline, reached by a `none` → rendered crossing ────
+
+/// `panel > div.ib > span.tb`, the span's text inside an `inline-block`.
+const ATOMIC_CSS: &str = "
+    @keyframes k763-shrinkable { from { font-size: 32px; } to { font-size: 64px; } }
+    body { margin: 0; }
+    .panel--gone { display: none; }
+    .panel--here { display: block; }
+    .ib { display: inline-block; }
+    .tb { font-size: 16px; line-height: 1.25; }
+    .grows { animation: k763-shrinkable 60ms linear 1 forwards; }
+    .p { animation-play-state: paused; }
+    .big .tb { font-size: 64px; }
+    .small .tb { font-size: 32px; }
+";
+
+fn atomic_inline_panel(
+    span_class: &str,
+    panel_class: &str,
+) -> (RinchDocument, NodeId, NodeId, NodeId) {
+    let mut doc = RinchDocument::new();
+    doc.load_css(ATOMIC_CSS);
+    let body = doc.body();
+    let panel = doc.create_element("div");
+    doc.set_attribute(panel, "class", panel_class);
+    doc.append_child(body, panel);
+    let ib = doc.create_element("div");
+    doc.set_attribute(ib, "class", "ib");
+    doc.append_child(panel, ib);
+    let span = doc.create_element("span");
+    doc.set_attribute(span, "class", span_class);
+    let text = doc.create_text("aaaa bbbb");
+    doc.append_child(span, text);
+    doc.append_child(ib, span);
+    doc.tree.transitions_enabled = true;
+    doc.resolve_layout(VP.0, VP.1);
+    (doc, panel, ib, span)
+}
+
+fn ib_size(doc: &RinchDocument, node: NodeId) -> (f32, f32) {
+    let n = doc.tree.get(node.0).unwrap();
+    (n.layout.width, n.layout.height)
+}
+
+/// The size that `inline-block` has when the span's font size is declared.
+fn atomic_inline_reference(px: f32) -> (f32, f32) {
+    let (mut doc, _panel, ib, span) = atomic_inline_panel("tb", "panel--here");
+    doc.set_attribute(span, "style", &format!("font-size: {px}px"));
+    doc.resolve_layout(VP.0, VP.1);
+    ib_size(&doc, ib)
+}
+
+/// A paused `font-size` animation on a span inside an `inline-block`, in a panel
+/// that is hidden and shown again — the box has to be measured in the font the
+/// show pass gives it, which is **smaller** than the one it was measured in.
+///
+/// The measure of an atomic inline is Taffy's, cached against a root detached
+/// from its parent's Taffy child list, and the `ifc_dirty` pass that a `none` →
+/// rendered crossing runs re-measures it *against that cache*. Nothing
+/// invalidated it, so the box kept the font it was last measured in — and,
+/// since the tick no longer re-measures a paused sample, kept it for good.
+/// `main` healed it on the next frame by spinning, which is what makes this a
+/// regression rather than only an old hole; the hole is #784, and
+/// `showing_a_panel_that_also_shrinks_its_text_remeasures_the_inline_block` is
+/// its non-animated twin.
+///
+/// The animation is finite with a `forwards` fill, so the size it is paused at
+/// is its end (64px) whatever the scheduler does, and showing the panel re-mints
+/// it paused at t=0, i.e. at 32px.
+///
+/// Both show routes are asserted: an inline `display` write, which re-cascades
+/// the panel alone and reaches the span only through
+/// `restart_animations_in_subtree`, and a class, which re-cascades the subtree.
+#[test]
+fn a_paused_font_size_animation_in_a_shown_panel_resizes_its_inline_block() {
+    let small = atomic_inline_reference(32.0);
+    let big = atomic_inline_reference(64.0);
+    assert_ne!(
+        small, big,
+        "precondition: the two fonts measure differently"
+    );
+
+    for inline_route in [true, false] {
+        let (mut doc, panel, ib, span) = atomic_inline_panel("tb grows", "panel--here");
+        std::thread::sleep(std::time::Duration::from_millis(120));
+        frame(&mut doc);
+        doc.set_attribute(span, "class", "tb grows p");
+        doc.resolve_layout(VP.0, VP.1);
+        assert_eq!(
+            font_size(&doc, span),
+            64.0,
+            "precondition: paused at its fill"
+        );
+        assert_eq!(ib_size(&doc, ib), big, "precondition: measured at 64px");
+
+        if inline_route {
+            doc.set_style(panel, "display", "none");
+        } else {
+            doc.set_attribute(panel, "class", "panel--gone");
+        }
+        doc.resolve_layout(VP.0, VP.1);
+        if inline_route {
+            doc.set_style(panel, "display", "block");
+        } else {
+            doc.set_attribute(panel, "class", "panel--here");
+        }
+        doc.resolve_layout(VP.0, VP.1);
+
+        assert_eq!(
+            font_size(&doc, span),
+            32.0,
+            "precondition: shown again, the animation is re-minted paused at t=0"
+        );
+        assert_eq!(
+            ib_size(&doc, ib),
+            small,
+            "inline route: {inline_route} — the inline-block is measured in the \
+             font its span shows"
+        );
+        quiet_frame(&mut doc, 0);
+        assert_eq!(ib_size(&doc, ib), small, "and stays");
+    }
+}
+
+/// The same freeze with no animation anywhere: the panel crosses `none` → block
+/// **and** a descendant selector shrinks the span's font in one pass.
+///
+/// `Refs #784` — the hole is the structural pass re-measuring an atomic inline
+/// against a Taffy cache nothing invalidated, and an animation is only one way
+/// to reach it. Pre-existing; it is here because the animated case's fix is the
+/// same fix, and because it is the half that says so.
+#[test]
+fn showing_a_panel_that_also_shrinks_its_text_remeasures_the_inline_block() {
+    let small = atomic_inline_reference(32.0);
+    let big = atomic_inline_reference(64.0);
+
+    let (mut doc, panel, ib, _span) = atomic_inline_panel("tb", "panel--here big");
+    assert_eq!(ib_size(&doc, ib), big, "precondition: 64px, shown");
+
+    doc.set_attribute(panel, "class", "panel--gone big");
+    doc.resolve_layout(VP.0, VP.1);
+
+    // One pass: shown again, and shrunk to 32px.
+    doc.set_attribute(panel, "class", "panel--here small");
+    doc.resolve_layout(VP.0, VP.1);
+    assert_eq!(
+        ib_size(&doc, ib),
+        small,
+        "the box is measured in the font the pass that showed it gave the span"
+    );
+}
