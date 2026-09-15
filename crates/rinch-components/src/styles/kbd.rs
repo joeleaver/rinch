@@ -6,7 +6,11 @@ pub fn styles() -> String {
     align-items: center;
     justify-content: center;
     align-self: center;
-    font-family: var(--rinch-font-family-monospace);
+    /* Fallback for a `components`-without-`theme` build: an undefined custom
+       property makes the declaration invalid at computed-value time, which
+       computes to `inherit` rather than falling through to the UA sheet's
+       `kbd { font-family: monospace }` (#674). */
+    font-family: var(--rinch-font-family-monospace, monospace);
     font-size: var(--rinch-font-size-xs);
     font-weight: 700;
     background-color: var(--rinch-color-default);

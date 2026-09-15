@@ -58,6 +58,8 @@ mod text_selection;
 mod textarea_newline_tests;
 #[cfg(test)]
 mod trap_focus_tests;
+#[cfg(test)]
+mod ua_block_defaults_components_tests;
 
 pub(crate) use hit_testing::*;
 

@@ -216,7 +216,7 @@ impl RinchDocument {
 
             html, body, div, section, article, aside, header, footer, main, nav,
             h1, h2, h3, h4, h5, h6, p, blockquote, pre, figure, figcaption,
-            ul, ol, li, dl, dt, dd, table, form, fieldset, legend, hr,
+            ul, ol, menu, dir, li, dl, dt, dd, table, form, fieldset, legend, hr,
             address, details, summary {
                 display: block;
             }
@@ -359,9 +359,142 @@ impl RinchDocument {
                 overflow: hidden;
             }
 
-            /* Default list indentation (matches browser default) */
-            ul, ol {
+            /* Default list indentation (matches browser default).
+
+               `menu` and `dir` are here, and in every list rule below, because
+               Chrome 150 gives them **exactly** `ul`'s treatment — measured:
+               `display: block`, `margin-block: 1em`, `padding-left: 40px`, and
+               the nested-list zero in both directions (a `<menu>` inside a
+               `<ul>` and a `<ul>` inside a `<menu>` are both 0). `dir` is
+               obsolete in HTML and `menu` is rare, but rinch named neither tag
+               in any rule at all, so both were `display: inline` — a silent
+               desktop/web divergence for one token per rule. */
+            ul, ol, menu, dir {
                 padding-left: 40px;
+            }
+
+            /* The block-level default margins, from the HTML Standard's
+               rendering section and measured in Chrome 150 (issue #674).
+               rinch had the list *indentation* above but none of the spacing,
+               so runs of `<p>` butted together and lists sat flush against
+               their neighbours — while `rinch-web`, running on the browser's
+               own UA sheet, spaced them. Same divergence class as #627.
+
+               `1em`, and an `em` in `margin` resolves against the element's
+               **own** computed font-size: a `<p>` in a 20px container carries
+               20px of margin, not 16. Invisible at the default root size,
+               where 1em is exactly 16px — `ua_block_defaults_tests` samples
+               off that fixed point with a 20px container throughout. */
+            p, blockquote, figure, ul, ol, menu, dir, pre {
+                margin-block: 1em;
+            }
+
+            blockquote, figure {
+                margin-inline: 40px;
+            }
+
+            dd {
+                margin-inline-start: 40px;
+            }
+
+            /* A list nested in a list carries **no** block margin — Chrome's
+               own rule, spelled the same way, and a *descendant* combinator,
+               not a child one: measured, a `<ul>` inside `<li>` inside `<ul>`
+               (a grandchild) computes 0. Without it every nesting level of a
+               bulleted list would add 2em of dead space.
+
+               `:is()` rather than the sixteen pairs written out. Verified to
+               match in this Stylo build before it was used here — rinch's
+               selector surface has real gaps (`:has()` is silently dropped, see
+               `docs/src/guide/theming.md`), so a selector functional
+               pseudo-class is not something to assume. */
+            :is(ul, ol, menu, dir) :is(ul, ol, menu, dir) {
+                margin-block: 0;
+            }
+
+            /* Preserving whitespace is the entire point of `<pre>`, and rinch
+               honours `white-space: pre` in the IFC already (`ifc.rs` maps it
+               to parley's `WhiteSpaceCollapse::Preserve` and drops the wrap
+               width) — the UA sheet simply never asked for it, so a bare
+               `<pre>` collapsed its runs of spaces and its newlines onto one
+               line. This is a real rule, not a rule that pretends: measured,
+               `<pre>a  b\nc</pre>` lays out as **two** lines with it and one
+               without. */
+            pre {
+                white-space: pre;
+            }
+
+            /* Monospace belongs in the UA sheet, not only in the theme.
+               `rinch-theme` ships `code, pre, kbd, samp { font-family:
+               var(--rinch-font-family-monospace) }`, so a themed build was
+               already right and a **theme-less** one computed `serif` for a
+               bare `<code>`. An author declaration still wins, so this changes
+               nothing where the theme is loaded.
+
+               rinch does **not** reproduce Chrome's monospace font-size quirk:
+               Chrome renders a `medium`-sized monospace element at 13px rather
+               than 16px (measured: a bare `<code>` is 13px, and 16px once an
+               ancestor declares a size). That is a font-preference behaviour,
+               not a stylesheet line, and nothing in rinch carries a per-family
+               default size — so rinch's `<code>` stays at the inherited size.
+               Deliberate, and the reason no fixture here pins 13px. */
+            code, kbd, samp, pre {
+                font-family: monospace;
+            }
+
+            /* `<hr>` rendered *nothing* before this (issue #674): the
+               `* { border-width: 0 }` reset at the top of this sheet — which is
+               here to undo Stylo's `medium` initial — applied to `<hr>` too,
+               and nothing put it back, so it was a zero-height box with no
+               border. The `hr` selector's specificity beats `*`, so this wins
+               wherever it is placed in the sheet.
+
+               Every value is Chrome 150's, measured. Two of them are easy to
+               get subtly wrong:
+
+               - **`color: gray`, not `border-color: gray`.** The border colour
+                 is `currentcolor`; the UA sheet colours the *element*. Measured:
+                 `<hr style="color: red">` computes a red border in Chrome, which
+                 `an_authored_color_repaints_the_hr_border` pins. Writing
+                 `border-color` instead would sit on the fixed point — identical
+                 for every `<hr>` that does not declare a `color`.
+               - **`margin-inline: auto`.** With `width: auto` it resolves to 0
+                 and is invisible; give the rule a width and it centres
+                 (`<hr style="width: 100px">` measures margin-left = margin-right
+                 = 331px in a 762px body).
+
+               `border-style: inset` is the spec's word and Stylo parses it, but
+               rinch's `border_style_from_stylo` maps `groove`/`ridge`/`inset`/
+               `outset` to `Solid` — a pre-existing mapping this change does not
+               touch. So the *computed* box matches Chrome exactly (1px on each
+               side, height 0, total 2px) while the paint is a flat grey rule
+               rather than Chrome's shaded one. */
+            hr {
+                color: gray;
+                border-style: inset;
+                border-width: 1px;
+                margin-block: 0.5em;
+                margin-inline: auto;
+                height: 0;
+                overflow: hidden;
+            }
+
+            /* Chrome computes `smaller` as a 1.2 divisor in this range:
+               13.3333px from a 16px parent, 16.6667px from a 20px one, and it
+               compounds through nesting (a `<small>` in a `<small>` is
+               11.1111px). Stylo implements the keyword — verified before it was
+               used here, by declaring `font-size: smaller` as an author style
+               and reading back 16.6667 from a 20px parent — so this is the
+               keyword rather than the `0.83em` approximation the audit
+               suggested, which would have given 13.28px and missed Chrome by
+               0.05px at every level.
+
+               `vertical-align: sub`/`super` is the other half of `<sub>`/`<sup>`
+               and is **not** here: `ComputedStyle` carries no `vertical_align`
+               field at all, so it needs property plumbing before a rule could
+               mean anything. Tracked separately as issue #724 (#674 §5). */
+            small, sub, sup {
+                font-size: smaller;
             }
 
             /* Default body margin - set to 0 for GUI apps */
