@@ -2587,6 +2587,15 @@ survives the removal, so anything written there is permanent.
 `crates/rinch-dom/tests/branch_helper_transition_tests.rs` is the pin, one
 fixture per surviving call site.
 
+It was not free either, which is why a deprecated no-op shim would have been the
+wrong shape too: `set_style` re-merges the node's whole inline `style` string,
+re-parses it into a Stylo declaration block and invalidates the node's inline
+style, and `clear_animations` called it **twice per node** over the subtree.
+Measured on a 500-row list unmounted one row at a time, best of 200 alternated
+rounds in one release binary: 340us without the stamp, 5541us with it —
+**16x**, about 3.5us per node against the ~11ns per node #699's reset costs
+(`crates/rinch-dom/tests/detach_reset_bench.rs`, both harnesses `#[ignore]`d).
+
 ### Native Control Flow (if / for / match)
 
 The `rsx!` macro supports native Rust control flow. All control flow is **always reactive** — conditions, iterators, and scrutinees are automatically wrapped in closures and tracked by Effects.

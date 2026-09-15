@@ -30,21 +30,31 @@
 //! committed source, this file plus `reinsertion_transition_tests` run against
 //! it, and the source reverted.
 //!
+//! Each mutant re-adds `clear_animations` to `NodeHandle` and the call at **one**
+//! call site, so the four rows are independent. Scope:
+//! `cargo test -p rinch-dom -p rinch-core --no-fail-fast`, which is the pair
+//! this change touches — the call sites are `rinch-core`, the reset is
+//! `rinch-dom`. The unmutated control over that scope is green, which is what
+//! says a zero below would mean something.
+//!
 //! | mutant | killed by |
 //! |---|---|
-//! | restore the inline write in `show_dom` | `a_branch_hidden_once_can_still_transition_afterwards`, `a_reinserted_show_branch_snaps_to_its_new_style`, `a_transition_running_when_a_branch_is_hidden_does_not_resume` |
-//! | restore it in `match_dom` only | `a_match_branch_switched_twice_can_still_transition`, alone |
-//! | restore it in `for_each_dom_typed`'s `Remove` arm only | `a_for_row_reinserted_under_the_same_key_can_still_transition`, alone |
-//! | restore it in the component re-render effect only | `a_rerendered_component_subtree_can_still_transition`, alone |
-//! | remove the write **and** #699's `detach_subtree_styles` | `a_reinserted_show_branch_snaps_to_its_new_style`, `a_transition_running_when_a_branch_is_hidden_does_not_resume`, and most of `reinsertion_transition_tests` |
+//! | restore the inline write in `show_dom` | 5: the three `show_dom` fixtures, `a_spinner_in_a_hidden_branch_stops_asking_for_frames`, and `the_reactive_branch_helpers_reach_this_fix_too` in the other file |
+//! | restore it in `match_dom` only | `a_match_branch_switched_twice_can_still_transition`, **alone** |
+//! | restore it in `for_each_dom_typed`'s `Remove` arm only | `a_for_row_reinserted_under_the_same_key_can_still_transition`, **alone** |
+//! | restore it in the component re-render effect only | `a_rerendered_component_subtree_can_still_transition`, **alone** |
+//! | `detach_subtree_styles` made a no-op | 13 — three here, ten of the fourteen in `reinsertion_transition_tests` |
+//! | drop `active_transitions` but not `active_animations` | 2: `a_spinner_in_a_hidden_branch_stops_asking_for_frames` here and `a_detached_animation_stops_asking_for_frames` there, and nothing else |
 //!
-//! The last row is the one that matters for reading this file as a whole. The
+//! The last two rows are what matters for reading this file as a whole. The
 //! inline write was a hammer that hid #699's defect from every reactive route:
-//! with it in place, deleting `detach_subtree_styles` changed nothing a branch
-//! helper could see. Taking the hammer away is what puts those routes on the
-//! real cure, so the fixtures below pin **both** halves — that a re-inserted
-//! branch does not animate in from a style the user never saw, and that it can
-//! still animate afterwards.
+//! with it in place, neutering `detach_subtree_styles` changed nothing a branch
+//! helper could see, and `reinsertion_transition_tests`' reactive fixture was a
+//! counter-oracle saying exactly that. Taking the hammer away is what puts
+//! those routes on the real cure — it is why that fixture is now the tenth to
+//! die with the reset, and why the fixtures below pin **both** halves: that a
+//! re-inserted branch does not animate in from a style the user never saw, and
+//! that it can still animate afterwards.
 //!
 //! `reclaim_displaced` (`for_loop.rs`) is the one of the five call sites with no
 //! fixture here, and it is unreachable rather than untested: it runs only when

@@ -31,7 +31,7 @@
 //!
 //! | mutant | killed by |
 //! |---|---|
-//! | no reset anywhere (`main` at `cbdfc5a`) | 10 of the 14 — everything but the two move fixtures, the unchanged-ancestor control and the `display: none` pin. It was 9 until #704 removed the inline `transition: none` the reactive helpers stamped; `the_reactive_branch_helpers_reach_this_fix_too` was blind to this mutant while that hammer stood, and is the tenth now |
+//! | no reset anywhere (`main` at `cbdfc5a`; re-measured for #704 as `detach_subtree_styles` made a no-op) | 10 of the 14 — everything but the two move fixtures, the unchanged-ancestor control and the `display: none` pin. It was 9 until #704 removed the inline `transition: none` the reactive helpers stamped; `the_reactive_branch_helpers_reach_this_fix_too` was blind to this mutant while that hammer stood, and is the tenth now |
 //! | reset the detach root only, not the subtree | `a_deep_node_in_a_reinserted_subtree_does_not_animate_either`, **alone** |
 //! | reset `has_been_styled`, leave `active_transitions` | `a_transition_running_when_the_subtree_is_detached_does_not_resume` and `set_text_content_is_a_detach_too` |
 //! | drop `active_transitions` but not `active_animations` | `a_detached_animation_stops_asking_for_frames`, **alone** |
