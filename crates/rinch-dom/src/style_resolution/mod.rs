@@ -1176,8 +1176,23 @@ impl RinchDocument {
     /// O(depth), and only at the one site where the answer can change an
     /// outcome: after `diff_animatable` has found an animatable difference on a
     /// node that declares a `transition`. A node with neither never walks.
-    /// `was_hidden` is a linear scan of the nodes hidden on this pass, which is
-    /// almost always none.
+    ///
+    /// `was_hidden` is a linear `Vec::contains` per ancestor step, so the pass
+    /// as a whole is O(transitioning dirty nodes x depth x hidden dirty nodes).
+    /// That product is the one shape worth naming, since "almost always none"
+    /// says nothing about what happens when it is not: measured at **depth 50
+    /// with 2000 hidden nodes restyled in the same pass** — 54,027,000
+    /// comparisons over 27,000 ancestor steps — 6.560ms against 6.549ms with the
+    /// walk stubbed out, i.e. still inside the noise. A `HashSet` would trade
+    /// that for an allocation on every cascade that hides anything, which is the
+    /// common case; the `Vec` is the right shape until a profile says otherwise.
+    ///
+    /// Two notes for anyone re-measuring. The hidden nodes must come **first in
+    /// document order**, or DFS leaves `was_hidden` empty while the visible
+    /// boxes are processed and the scan is never exercised at all — the numbers
+    /// then look flat for the wrong reason. And the comparison has to be against
+    /// the walk *stubbed*, not against `main`: deleting the gate changes which
+    /// transitions start, which changes the work downstream of it.
     fn is_rendered_for_transition(
         tree: &NodeTree,
         node_id: usize,

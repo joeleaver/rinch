@@ -898,6 +898,8 @@ Custom Default: `with_overlay`, `close_on_click_outside`, `close_on_escape`, `wi
 
 Positioned with `top: var(--rinch-window-top-inset, 0px)`, so it clears any window chrome rinch draws (the Linux in-app menu bar, the `BorderlessWindow` titlebar) and is flush with the top of a plain window. See [Theming](./theming.md#window-chrome-inset).
 
+**The 300ms slide-in does not currently run (issue #751).** Opening the drawer removes `display: none` from its root and retargets the panel's `transform` in the same style pass, and no transition starts for an element that was not being rendered before the change — see [The before-change style, and who has one](../architecture/rendering-pipeline.md). The panel appears at its open position instantly. That is what a browser does with the same CSS, and the drawer has never animated on `rinch-web`, which ships the same stylesheet; desktop stopped deviating from it in #703. `crates/rinch/src/app/drawer_open_animation_tests.rs` pins the current behaviour and is replaced by a positive fixture when #751 lands.
+
 | Prop | Type | Default | Description |
 |------|------|---------|-------------|
 | `opened` | `bool` | `false` | |

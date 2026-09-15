@@ -59,6 +59,7 @@
 //! | the gate's `is_rendered_for_transition` clause deleted — i.e. `main` before this change | **5 of the 9 here** (everything but the positive control, the `display` measurement and the `visibility` pin) **and** `reinsertion_transition_tests::toggling_display_none_is_not_a_detach` |
 //! | the gate tests the **new** display only, not the old one | `showing_a_hidden_node_whose_target_changed_does_not_transition`, **alone** — every other fixture asks the question while the node is still hidden, where old and new agree |
 //! | the gate tests the node's **own** display only, no ancestor walk | `a_change_under_a_hidden_ancestor_does_not_start_a_transition`, `showing_a_hidden_ancestor_whose_descendant_is_retargeted_does_not_transition` and `hiding_an_ancestor_cancels_a_descendant_transition` |
+//! | the walk is replaced by a check of the **immediate parent only** | `a_change_two_levels_under_a_hidden_ancestor_does_not_start_a_transition`, **alone** — and before that fixture existed this mutant survived all 68 `-p rinch-dom` binaries, because every other fixture here puts the hidden ancestor at the direct parent. A walk whose walking had no witness |
 //! | the ancestor walk reads `computed_style` with no `was_hidden` side list | `showing_a_hidden_ancestor_whose_descendant_is_retargeted_does_not_transition`, **alone** |
 //! | the cancel half deleted | `hiding_a_node_cancels_its_running_transition` and `hiding_an_ancestor_cancels_a_descendant_transition` |
 //! | the cancel half does not descend (the node only) | `hiding_an_ancestor_cancels_a_descendant_transition`, **alone** |
@@ -304,6 +305,61 @@ fn a_change_under_a_hidden_ancestor_does_not_start_a_transition() {
     assert_eq!(width_px(&doc, boxed), Some(30.0), "shown at 30px");
 }
 
+/// The ancestor case **two levels up**, which is what makes the walk a walk.
+///
+/// Every other fixture here puts the hidden ancestor at the box's direct
+/// parent, and a `is_rendered_for_transition` that checked only the immediate
+/// parent instead of looping passes all of them — measured: that mutant survives
+/// all 68 `-p rinch-dom` binaries. This is the one that fails against it.
+///
+/// The middle assertion is the load-bearing one. Without a node *between* that
+/// is itself rendered, the fixture would sit on the same fixed point as its
+/// neighbours and a one-step check would answer it correctly by accident.
+#[test]
+fn a_change_two_levels_under_a_hidden_ancestor_does_not_start_a_transition() {
+    let mut doc = RinchDocument::new();
+    doc.load_css(CSS);
+    let body = doc.body();
+
+    // body > div.w--a[outer] > div[mid, no class of its own] > div.box
+    let outer = doc.create_element("div");
+    doc.set_attribute(outer, "class", "w--a");
+    doc.append_child(body, outer);
+    let mid = doc.create_element("div");
+    doc.append_child(outer, mid);
+    let boxed = doc.create_element("div");
+    doc.set_attribute(boxed, "class", "box");
+    doc.append_child(mid, boxed);
+
+    doc.tree.transitions_enabled = true;
+    doc.resolve_layout(800.0, 600.0);
+    assert_eq!(width_px(&doc, boxed), Some(20.0), "precondition: 20px");
+    assert_eq!(running(&doc, boxed), 0, "precondition: nothing running");
+
+    doc.set_attribute(outer, "class", "w--a gone");
+    doc.resolve_layout(801.0, 600.0);
+    assert_eq!(
+        display_of(&doc, mid),
+        rinch_dom::computed_style::DisplayValue::Block,
+        "the node between is NOT itself hidden — only the grandparent is, which \
+         is what a one-step parent check would miss"
+    );
+
+    doc.set_attribute(outer, "class", "w--b gone");
+    doc.resolve_layout(802.0, 600.0);
+
+    assert_eq!(
+        running(&doc, boxed),
+        0,
+        "hidden two levels up is still not rendered"
+    );
+    assert_eq!(
+        width_px(&doc, boxed),
+        Some(30.0),
+        "and the new value is taken directly"
+    );
+}
+
 /// The one-step ancestor case: the wrapper is shown and the box retargeted by a
 /// single class write.
 ///
@@ -366,8 +422,19 @@ fn hiding_a_node_cancels_its_running_transition() {
 /// The cancel half descends: hiding an **ancestor** cancels the descendant's
 /// transition too.
 ///
-/// The descendant is not restyled by this class change at all — nothing in its
-/// own cascade changes — so the cancel cannot be a per-node check in the gate.
+/// The cancel has to descend because a descendant's cascade **need not run** —
+/// a class change that hides a wrapper and matches nothing on its children
+/// restyles only the wrapper, and the gate above is per-node. That is the
+/// general reason, and it is why the walk lives where it does.
+///
+/// It is not what happens *here*, and the difference is worth stating because an
+/// earlier draft of this doc got it backwards. `.gone` is on the wrapper, but
+/// `.w--b .box` still matches the box, so this pass re-cascades the box as well —
+/// measured: its computed width lands at exactly 30.0, which only its own
+/// cascade can write, since `cancel_transitions_in_subtree` touches
+/// `active_transitions` and nothing else. That is also why the gate-deleted
+/// mutant kills this fixture: the re-cascade starts a *fresh* transition
+/// immediately after the cancel removed the old one. See the module doc.
 #[test]
 fn hiding_an_ancestor_cancels_a_descendant_transition() {
     let (mut doc, wrap, boxed) = mounted_box();

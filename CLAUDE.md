@@ -2717,6 +2717,14 @@ Three things it deliberately does not do.
   transitions cancelled, and so does everything under it. `visibility: hidden`
   is **rendered** and still transitions. `@keyframes` is not covered: a hidden
   element's animations go on running and go on asking for frames (**#747**).
+  **This is visible in the component library**: any component that un-hides an
+  ancestor and retargets a transitioned property in the *same* style pass loses
+  its animation, and `Drawer` is one — its 300ms slide-in no longer runs
+  (**#751**), because its root toggles `display: none` while its panel
+  transitions `transform`. A browser does not animate that either, and the
+  drawer never animated on `rinch-web`, so this is desktop matching the web
+  rather than a new deviation; the cure is the component's, and `Popover`
+  already uses it (stay rendered, animate `opacity`).
 
 **The reactive helpers reach all of that, and `NodeHandle::clear_animations` is
 gone** (**#704**). It used to be called before `remove()` by `show_dom`,

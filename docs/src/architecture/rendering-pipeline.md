@@ -439,6 +439,26 @@ after `diff_animatable` has found an animatable change on a node that declares a
 is `@keyframes`: a hidden element's animations go on running and go on asking
 the shell for frames (issue #747).
 
+**This changes a shipped component, and the change is visible.** The `Drawer`'s
+300ms slide-in no longer runs: its root carries `display: none` while closed and
+its panel carries `transition: transform`, and one reactive effect un-hides the
+root and retargets the panel in a single pass — exactly the shape above. The
+panel now appears at its open position instantly. A browser does not animate
+that shape either (it is why `@starting-style` and `transition-behavior:
+allow-discrete` exist), and `rinch-components` ships one stylesheet to both
+backends, so the drawer has never animated on `rinch-web`; what this exposed is
+that the component was relying on a rinch-only deviation. The cure is the
+component's, and `Popover` already uses it — stay rendered and animate
+`opacity`/`visibility` rather than toggling `display`. Issue **#751**, pinned
+meanwhile by `crates/rinch/src/app/drawer_open_animation_tests.rs`.
+
+The blast radius is therefore wider than "a control restyled in an inactive
+tab": **any component that un-hides an ancestor and retargets a transitioned
+property in the same style pass** loses its animation. `Modal`, `Notification`,
+`Tooltip`, `Select`, `DropdownMenu`, `Tabs` and `Stepper` were scanned and none
+of them has that shape, but that is a scan and not a proof — #751 carries the
+audit.
+
 **The reactive helpers rest on this now, and no longer on a second mechanism of
 their own.** `show_dom`, `match_dom`, `for_each_dom_typed` and the component
 re-render effect used to call `NodeHandle::clear_animations()` before
