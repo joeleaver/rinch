@@ -89,7 +89,7 @@ pub use bool_attr::{
 pub use inline_style::{
     StyleProp, normalize_property_name, serialize_declarations, split_declarations,
 };
-pub use late_child::on_child_inserted;
+pub use late_child::{on_child_inserted, on_child_removed};
 pub use render_scope::*;
 pub use traits::*;
 
@@ -350,9 +350,14 @@ impl NodeHandle {
     /// Append a child node to this element.
     #[doc(hidden)]
     pub fn append_child(&self, child: &NodeHandle) {
+        // A child that already has a parent is *moved*, and the parent it came
+        // from has lost a child (issue #745). Read before the document changes,
+        // and `None` unless something on the thread is watching for removals.
+        let vacated = late_child::vacated_parent(child);
         if let Some(doc) = self.doc.upgrade() {
             doc.borrow_mut().append_child(self.node_id, child.node_id);
         }
+        late_child::notify_vacated(vacated.as_ref(), self);
         late_child::notify_inserted(self, child);
     }
 
@@ -361,25 +366,38 @@ impl NodeHandle {
         if let Some(doc) = self.doc.upgrade() {
             doc.borrow_mut().remove_child(self.node_id, child.node_id);
         }
+        // This node *is* the parent that lost a child, so there is nothing to
+        // capture beforehand (issue #745).
+        late_child::notify_removed(self);
     }
 
     /// Insert a child before a reference node.
     pub fn insert_before(&self, child: &NodeHandle, reference: &NodeHandle) {
+        let vacated = late_child::vacated_parent(child);
         if let Some(doc) = self.doc.upgrade() {
             doc.borrow_mut()
                 .insert_before(self.node_id, child.node_id, reference.node_id);
         }
+        // A keyed `for` reorder relocates a row with this verb, and the row's
+        // parent does not change; `notify_vacated` declines that case, so a
+        // reorder still fires one notification and not two (issue #745).
+        late_child::notify_vacated(vacated.as_ref(), self);
         late_child::notify_inserted(self, child);
     }
 
     /// Replace this node with another node.
     pub fn replace_with(&self, replacement: &NodeHandle) {
         let parent = self.parent_node();
+        let vacated = late_child::vacated_parent(replacement);
         if let Some(doc) = self.doc.upgrade() {
             doc.borrow_mut()
                 .replace_node(self.node_id, replacement.node_id);
         }
         if let Some(parent) = parent {
+            // Two nodes move: this one is displaced out of `parent`, and the
+            // replacement may have come from somewhere else (issue #745).
+            late_child::notify_removed(&parent);
+            late_child::notify_vacated(vacated.as_ref(), &parent);
             late_child::notify_inserted(&parent, replacement);
         }
     }
@@ -395,8 +413,12 @@ impl NodeHandle {
     /// life of the document. See [`DomDocument::remove_node`] and
     /// [`DomDocument::discard_node`] for what each backend reclaims.
     pub fn remove(&self) {
+        let vacated = late_child::vacated_parent(self);
         if let Some(doc) = self.doc.upgrade() {
             doc.borrow_mut().remove_node(self.node_id);
+        }
+        if let Some(vacated) = vacated {
+            late_child::notify_removed(&vacated);
         }
     }
 
@@ -416,10 +438,16 @@ impl NodeHandle {
     pub fn discard(&self) {
         // Before the backend lets go: a discarded id may be handed to the next
         // node the document mints, and an observer left behind under it would
-        // then fire for a container that no longer exists (issue #716).
+        // then fire for a container that no longer exists (issue #716). Read the
+        // parent here too, for the same reason — afterwards this node is
+        // detached and may be retired (issue #745).
         late_child::forget_node(self);
+        let vacated = late_child::vacated_parent(self);
         if let Some(doc) = self.doc.upgrade() {
             doc.borrow_mut().discard_node(self.node_id);
+        }
+        if let Some(vacated) = vacated {
+            late_child::notify_removed(&vacated);
         }
     }
 
@@ -532,6 +560,7 @@ impl NodeHandle {
 
     /// Insert a node after this node (as next sibling).
     pub fn insert_after(&self, new_node: &NodeHandle) {
+        let vacated = late_child::vacated_parent(new_node);
         let mut inserted_into = None;
         if let Some(doc) = self.doc.upgrade() {
             let parent_id = doc.borrow().parent_node(self.node_id);
@@ -548,6 +577,7 @@ impl NodeHandle {
         }
         if let Some(parent_id) = inserted_into {
             let parent = NodeHandle::new(parent_id, self.doc.clone());
+            late_child::notify_vacated(vacated.as_ref(), &parent);
             late_child::notify_inserted(&parent, new_node);
         }
     }

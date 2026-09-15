@@ -363,6 +363,32 @@ describes the behaviour it builds.
 | `node_id() -> NodeId` | Get the internal node ID |
 | `clone() -> NodeHandle` | Clone the handle (same underlying node) |
 
+### Watching a subtree change
+
+A container whose prop is a default for its items renders **after** them, so it
+cannot hand the default over as a prop — it patches the rendered items instead.
+Two free functions in `rinch_core::dom` let it do that again when the items
+change afterwards:
+
+| Function | Told about | Handed |
+|----------|-----------|--------|
+| `on_child_inserted(root, f)` | a subtree landing anywhere beneath `root` (issue #716) | the node that landed |
+| `on_child_removed(root, f)` | a subtree leaving anywhere beneath `root` (issue #745) | the node it **left** — its former parent |
+
+Both call **every** registered ancestor, nearest first, synchronously with the
+mutation, so a patch is in place before the frame that shows the change is laid
+out. Both are released by the ambient scope's `on_cleanup` and by
+`discard()` on the container, and dispatch is suppressed for the duration of a
+callback so a container's own edits do not call it back.
+
+The removal half is handed the parent rather than the node that went because
+that node is detached by then, and after a `discard()` the backend may have
+retired it — there is nothing left to walk. A **move** fires both halves, unless
+it is a reorder inside one parent, which fires only the insertion.
+
+`crates/rinch-components/src/late_children.rs` wraps both with the
+boundary rule a nested container of the same kind needs.
+
 ## DomDocument Trait
 
 `DomDocument` is the trait that abstracts DOM operations. The primary desktop implementation is `RinchDocument` which uses Taffy + Parley + Vello. The web implementation is `WebDocument` which uses browser-native DOM via `web_sys`.

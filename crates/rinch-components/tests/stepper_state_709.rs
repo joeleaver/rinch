@@ -756,48 +756,66 @@ fn a_step_that_named_only_its_state_is_still_numbered_by_its_parent() {
 
 #[test]
 fn a_step_the_walk_reaches_twice_ends_up_with_one_state_class() {
-    // A `Stepper` inside the `StepperCompleted` of another one. `collect_steps`
-    // stops at a step, so it never descends into a step's *content* — but a
-    // completed block is a sibling of the steps, not inside one, so the outer
-    // stepper does reach these and re-derives them at its own positions. They
-    // arrive carrying the class their own stepper already gave them.
+    // A step moved from one stepper into another. The receiving stepper's pass
+    // reaches a step it did not render, already carrying the class its own
+    // stepper gave it — so the state swap has to take *all three* classes off,
+    // not only `--inactive`.
+    //
+    // This used to be reached a shorter way, through a `Stepper` inside another
+    // one's `StepperCompleted`; #741 made that block terminal, so the walk stops
+    // there and a cross-stepper move is what reaches a pre-classed step now.
+    // `a_stepper_inside_a_completed_block_keeps_its_own_positions` pins the
+    // other half.
     let tree = Tree::build(|scope| {
-        let inner: Vec<NodeHandle> = (0..2)
+        // One step each, so the stepper the step *leaves* has nothing left to
+        // renumber: this fixture is about the receiving stepper's class swap
+        // and must not also depend on the removal half of #745.
+        let first_steps: Vec<NodeHandle> = (0..1)
             .map(|_| StepperStep::default().render(scope, &[]))
             .collect();
-        let inner_stepper = Stepper {
-            active: 1,
+        let first = Stepper {
+            active: 0,
             ..Default::default()
         }
-        .render(scope, &inner);
-        let completed = StepperCompleted.render(scope, &[inner_stepper]);
-        let outer: Vec<NodeHandle> = (0..2)
+        .render(scope, &first_steps);
+        let second_steps: Vec<NodeHandle> = (0..1)
             .map(|_| StepperStep::default().render(scope, &[]))
             .collect();
-        let mut children = outer;
-        children.push(completed);
-        Stepper {
-            active: 1,
+        let second = Stepper {
+            active: 0,
             ..Default::default()
         }
-        .render(scope, &children)
+        .render(scope, &second_steps);
+        let root = scope.create_element("div");
+        root.append_child(&first);
+        root.append_child(&second);
+        root
     });
+
+    assert_eq!(
+        states(&tree),
+        vec!["progress", "progress"],
+        "precondition: each stepper is on its only step, so both are in progress"
+    );
+
+    let receiving = {
+        let mut containers = Vec::new();
+        collect_by_class(&tree.root, "rinch-stepper__steps", &mut containers);
+        containers.remove(1)
+    };
+    let moving = tree.steps().remove(0);
+    receiving.append_child(&moving);
 
     // `state_of` panics unless a step carries exactly one of the three, which is
     // the whole assertion; reading every step is what makes it total.
     let all: Vec<&'static str> = states(&tree);
     assert_eq!(
-        all.len(),
-        4,
-        "two steps of the outer stepper plus the two the walk reached inside \
-         its completed block"
-    );
-    assert_eq!(
         all,
-        vec!["completed", "progress", "inactive", "inactive"],
-        "the outer stepper re-derives all four at its own positions, and each \
-         one is left in exactly one state — a swap that took off only \
-         `--inactive` left the third step carrying `--progress` as well"
+        vec!["progress", "inactive"],
+        "the moved step lands at position 1 of a stepper on `active: 0`, so it \
+         is inactive there — and it arrived carrying the `--progress` its own \
+         stepper gave it. A swap that took off only `--inactive` would leave it \
+         carrying both, which `state_of` refuses to name"
     );
 }
 
@@ -841,5 +859,145 @@ fn allow_next_steps_select_counts_positions_and_not_declared_indices() {
         states(&tree),
         vec!["completed", "progress", "inactive", "inactive"],
         "and the state follows the same count, so the two never disagree"
+    );
+}
+
+// ---------------- `StepperCompleted` is not a position (issue #741 §1)
+
+/// `[before…, StepperCompleted[inside…], after…]` under one `Stepper`.
+fn stepper_around_a_completed_block(
+    before: usize,
+    inside: usize,
+    after: usize,
+    active: u32,
+) -> Tree {
+    Tree::build(move |scope| {
+        let mut children: Vec<NodeHandle> = (0..before)
+            .map(|_| StepperStep::default().render(scope, &[]))
+            .collect();
+        let held: Vec<NodeHandle> = (0..inside)
+            .map(|_| StepperStep::default().render(scope, &[]))
+            .collect();
+        children.push(StepperCompleted.render(scope, &held));
+        children.extend((0..after).map(|_| StepperStep::default().render(scope, &[])));
+        Stepper {
+            active,
+            ..Default::default()
+        }
+        .render(scope, &children)
+    })
+}
+
+#[test]
+fn a_completed_block_between_the_steps_is_not_a_position_and_does_not_stop_the_count() {
+    // One step, the block, one step — with a step *inside* the block, which is
+    // what makes this fixture discriminate in both directions at once:
+    //
+    //   - a walk that **descends** into the block (the behaviour before #741)
+    //     numbers the held step 1 and the trailing step 2;
+    //   - a walk that **stops** at the block (this PR's first cut) numbers the
+    //     trailing step not at all and leaves it inactive.
+    //
+    // `active: 1` puts the trailing step in progress, so its state is wrong
+    // under both. A block with nothing inside it would sit on a fixed point
+    // against the first of those.
+    let tree = stepper_around_a_completed_block(1, 1, 1, 1);
+
+    assert_eq!(
+        indices(&tree),
+        vec![Some("0".to_string()), None, Some("1".to_string())],
+        "#741: the block is not a position, so the count runs straight across \
+         it — but the step it *holds* is not a position either, and keeps the \
+         absent `data-step` it rendered with"
+    );
+    assert_eq!(
+        states(&tree),
+        vec!["completed", "inactive", "progress"],
+        "the two real positions are 0 and 1 against `active: 1`; the held step \
+         keeps the state it rendered itself with"
+    );
+    assert_eq!(
+        numbers(&tree),
+        vec!["", "1", "2"],
+        "position 0 is completed, so it draws the built-in tick rather than a \
+         number; the held step still draws the `1` it rendered; and the \
+         trailing step draws `2`, which is the reading that fails under both \
+         wrong walks"
+    );
+}
+
+#[test]
+fn a_completed_block_before_the_steps_derives_every_one_of_them() {
+    // The shape that made "stop the walk" untenable. Mantine writes
+    // `Stepper.Completed` last by convention but does not require it, and never
+    // stops counting steps at it — so a stepper whose block comes first used to
+    // derive nothing at all here: no step numbered, every step inactive, and
+    // both steps drawing the number `1`.
+    let tree = stepper_around_a_completed_block(0, 0, 2, 1);
+
+    assert_eq!(
+        indices(&tree),
+        vec![Some("0".to_string()), Some("1".to_string())],
+        "#741: a leading completed block is skipped, not a full stop"
+    );
+    assert_eq!(
+        states(&tree),
+        vec!["completed", "progress"],
+        "and the two steps behind it derive normally from `active: 1`"
+    );
+    assert_eq!(
+        numbers(&tree),
+        vec!["", "2"],
+        "a completed step draws the tick and the in-progress one draws `2`. \
+         Under the stopped walk both drew `1` — a visible duplicate, which is \
+         what a screenshot of the bug looks like"
+    );
+}
+
+#[test]
+fn a_stepper_inside_a_completed_block_keeps_its_own_positions() {
+    // The same rule read one level down. A `Stepper` placed inside the
+    // completed block is content of the terminal element, so the outer stepper
+    // does not reach past the block to renumber it.
+    let tree = Tree::build(|scope| {
+        let inner: Vec<NodeHandle> = (0..2)
+            .map(|_| StepperStep::default().render(scope, &[]))
+            .collect();
+        let inner_stepper = Stepper {
+            active: 1,
+            ..Default::default()
+        }
+        .render(scope, &inner);
+        let completed = StepperCompleted.render(scope, &[inner_stepper]);
+        let outer: Vec<NodeHandle> = (0..2)
+            .map(|_| StepperStep::default().render(scope, &[]))
+            .collect();
+        let mut children = outer;
+        children.push(completed);
+        Stepper {
+            active: 0,
+            ..Default::default()
+        }
+        .render(scope, &children)
+    });
+
+    assert_eq!(
+        states(&tree),
+        vec!["progress", "inactive", "completed", "progress"],
+        "#741: the outer stepper's own two derive from `active: 0`; the inner \
+         stepper's two keep what `active: 1` gave them. The outer stepper used \
+         to re-derive all four at its own positions, which made the inner pair \
+         `inactive`/`inactive`"
+    );
+    assert_eq!(
+        indices(&tree),
+        vec![
+            Some("0".to_string()),
+            Some("1".to_string()),
+            Some("0".to_string()),
+            Some("1".to_string()),
+        ],
+        "and the inner pair is numbered from 0 by its own stepper, not from 2 \
+         by the outer one"
     );
 }

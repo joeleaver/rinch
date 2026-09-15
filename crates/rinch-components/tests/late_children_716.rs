@@ -874,3 +874,274 @@ fn a_list_directly_inside_a_list_keeps_its_own_rows() {
         );
     }
 }
+
+// -------------------------------------------- a step that LEAVES (issue #745)
+
+/// Each step's `data-step`, paired with its state as a bare word.
+///
+/// Reading both is what makes a removal fixture discriminating: a stepper that
+/// renumbered but did not restate, or restated but did not renumber, fails here
+/// rather than in half the assertions.
+fn steps_now(tree: &Tree) -> Vec<(String, &'static str)> {
+    tree.find_all("rinch-stepper__step")
+        .iter()
+        .map(|s| {
+            let index = s.get_attribute("data-step").unwrap_or_default();
+            let completed = has_class(s, "rinch-stepper__step--completed");
+            let progress = has_class(s, "rinch-stepper__step--progress");
+            let inactive = has_class(s, "rinch-stepper__step--inactive");
+            let state = match (completed, progress, inactive) {
+                (true, false, false) => "completed",
+                (false, true, false) => "progress",
+                (false, false, true) => "inactive",
+                _ => panic!(
+                    "a step carries exactly one state class, this one has {:?}",
+                    s.get_attribute("class")
+                ),
+            };
+            (index, state)
+        })
+        .collect()
+}
+
+fn at(index: &str, state: &'static str) -> (String, &'static str) {
+    (index.to_string(), state)
+}
+
+#[test]
+fn a_step_a_for_loop_drops_renumbers_and_restates_the_ones_after_it() {
+    // Four steps at `active: 2`, so dropping the first moves a step *into*
+    // progress and another *out* of it. Three steps at `active: 2` would leave
+    // both survivors completed — a state fixed point where a stepper that
+    // renumbers without restating passes.
+    let items = Signal::new(vec!["a", "b", "c", "d"]);
+    let tree = Tree::build(move |__scope| {
+        rsx! {
+            div {
+                Stepper { active: 2u32,
+                    for it in items.get() { StepperStep { key: it, label: it } }
+                }
+            }
+        }
+    });
+
+    assert_eq!(
+        steps_now(&tree),
+        vec![
+            at("0", "completed"),
+            at("1", "completed"),
+            at("2", "progress"),
+            at("3", "inactive"),
+        ],
+        "precondition"
+    );
+
+    items.update(|v| {
+        v.remove(0);
+    });
+
+    assert_eq!(
+        steps_now(&tree),
+        vec![
+            at("0", "completed"),
+            at("1", "completed"),
+            at("2", "progress"),
+        ],
+        "#745: dropping a step moves every step after it *backwards*, which \
+         renumbers it and can restate it. Nothing told the stepper before, so \
+         the survivors kept the number and the state they had one position \
+         later — 1/2/3 with \"d\" still inactive"
+    );
+}
+
+#[test]
+fn dropping_the_step_that_is_active_hands_progress_to_the_one_behind_it() {
+    // The step that leaves is the one `active` names, so no survivor keeps its
+    // own state and the stepper cannot answer by doing nothing to them.
+    let items = Signal::new(vec!["a", "b", "c"]);
+    let tree = Tree::build(move |__scope| {
+        rsx! {
+            div {
+                Stepper { active: 1u32,
+                    for it in items.get() { StepperStep { key: it, label: it } }
+                }
+            }
+        }
+    });
+
+    assert_eq!(
+        steps_now(&tree),
+        vec![
+            at("0", "completed"),
+            at("1", "progress"),
+            at("2", "inactive"),
+        ],
+        "precondition: \"b\" is the in-progress one"
+    );
+
+    items.update(|v| {
+        v.remove(1);
+    });
+
+    assert_eq!(
+        steps_now(&tree),
+        vec![at("0", "completed"), at("1", "progress")],
+        "#745: \"c\" inherits position 1, which is `active`, so it is the \
+         in-progress step now"
+    );
+}
+
+#[test]
+fn the_number_a_surviving_step_draws_follows_it_backwards() {
+    // `data-step` is an attribute; the number in the icon box is rendered text.
+    // A stepper that renumbered the attribute and left the text alone would pass
+    // every assertion above.
+    let items = Signal::new(vec!["a", "b", "c"]);
+    let tree = Tree::build(move |__scope| {
+        rsx! {
+            div {
+                Stepper { active: 0u32,
+                    for it in items.get() { StepperStep { key: it, label: it } }
+                }
+            }
+        }
+    });
+
+    let numbers = |tree: &Tree| -> Vec<String> {
+        tree.find_all("rinch-stepper__step")
+            .iter()
+            .map(|s| {
+                find_by_class(s, "rinch-stepper__step-icon")
+                    .expect("every step has an icon box")
+                    .text_content()
+                    .unwrap_or_default()
+            })
+            .collect()
+    };
+
+    assert_eq!(
+        numbers(&tree),
+        vec!["1".to_string(), "2".to_string(), "3".to_string()],
+        "precondition"
+    );
+
+    items.update(|v| {
+        v.remove(0);
+    });
+
+    assert_eq!(
+        numbers(&tree),
+        vec!["1".to_string(), "2".to_string()],
+        "#745: the survivors draw 1 and 2, not the 2 and 3 they drew before"
+    );
+}
+
+#[test]
+fn a_step_removed_and_put_back_is_derived_from_where_it_lands() {
+    // Removal then re-insertion, which is the pair a `show_dom` branch toggles.
+    // The re-derivation has to be idempotent across both, or the second pass
+    // leaves the stepper saying something the first did not.
+    let shown = Signal::new(true);
+    let tree = Tree::build(move |__scope| {
+        rsx! {
+            div {
+                Stepper { active: 1u32,
+                    StepperStep { label: "a" }
+                    if shown.get() { StepperStep { label: "b" } }
+                    StepperStep { label: "c" }
+                }
+            }
+        }
+    });
+
+    assert_eq!(
+        steps_now(&tree),
+        vec![
+            at("0", "completed"),
+            at("1", "progress"),
+            at("2", "inactive"),
+        ],
+        "precondition"
+    );
+
+    shown.set(false);
+    assert_eq!(
+        steps_now(&tree),
+        vec![at("0", "completed"), at("1", "progress")],
+        "#745: the branch closing is a removal, and \"c\" takes position 1"
+    );
+
+    shown.set(true);
+    assert_eq!(
+        steps_now(&tree),
+        vec![
+            at("0", "completed"),
+            at("1", "progress"),
+            at("2", "inactive"),
+        ],
+        "and the branch opening puts it back exactly where it was — the pass is \
+         idempotent across a removal as well as an insertion"
+    );
+}
+
+#[test]
+fn a_step_moved_out_of_a_stepper_renumbers_the_ones_it_left_behind() {
+    // A move is an insertion for the receiving container and a removal for the
+    // one it came from. The receiving half is
+    // `a_step_moved_into_another_stepper_is_restated_from_its_new_position`;
+    // this is the other half, and only an *implicit* detach — `append_child` of
+    // a node that already has a parent — reaches it.
+    let tree = Tree::build(|scope| {
+        let steps: Vec<NodeHandle> = ["a", "b", "c"]
+            .iter()
+            .map(|label| {
+                StepperStep {
+                    label: (*label).into(),
+                    ..Default::default()
+                }
+                .render(scope, &[])
+            })
+            .collect();
+        let first = Stepper {
+            active: 1,
+            ..Default::default()
+        }
+        .render(scope, &steps);
+        let second = Stepper {
+            active: 0,
+            ..Default::default()
+        }
+        .render(scope, &[]);
+        let root = scope.create_element("div");
+        root.append_child(&first);
+        root.append_child(&second);
+        root
+    });
+
+    assert_eq!(
+        steps_now(&tree),
+        vec![
+            at("0", "completed"),
+            at("1", "progress"),
+            at("2", "inactive"),
+        ],
+        "precondition: three steps in the first stepper, none in the second"
+    );
+
+    let receiving = tree.find_all("rinch-stepper__steps").remove(1);
+    let leaving = tree.find_all("rinch-stepper__step").remove(0);
+    receiving.append_child(&leaving);
+
+    assert_eq!(
+        steps_now(&tree),
+        vec![
+            at("0", "completed"),
+            at("1", "progress"),
+            at("0", "progress"),
+        ],
+        "#745: \"b\" and \"c\" slide down to 0 and 1 in the stepper they are \
+         still in — so \"b\" leaves progress for completed and \"c\" arrives \
+         in it — and \"a\", now last in document order, is position 0 of the \
+         second stepper, whose `active: 0` makes it the in-progress one there"
+    );
+}

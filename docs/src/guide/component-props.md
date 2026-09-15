@@ -696,10 +696,27 @@ container into another re-resolves against the one it now belongs to, because a
 container marks the values it supplied as its own (`data-list-icon` on a list
 item) and will not touch a value the child asked for itself.
 
+`rinch_core::dom::on_child_removed` is the other half, and a container takes it
+only if its per-item answer depends on a sibling's **position** (issue #745).
+`Stepper` does — a step that goes moves every step behind it backwards, which
+renumbers it and can restate it — so it registers both; `List` and `RadioGroup`
+register only the insertion half, since no row going away can change the icon or
+the size the next one should have. It is fired by the four verbs that take a
+node out of a tree (`remove_child`, `remove`, `discard`, and `replace_with` for
+the node it displaces) and by the implicit detach an insertion verb performs when
+handed a node that already has a parent, which is what tells the container a
+child **moved away**.
+
+The removal half is handed the node the subtree *left* — its former parent —
+rather than the node that went, because a removed node is detached and after a
+`discard` may have been retired by the backend. A reorder inside one parent
+fires the insertion half only: the child set did not change.
+
 The rule a container applies to a *nested* container is the same one its
 render-time walk applies downwards, read upwards: every registered ancestor is
 told about an insertion, and each declines a node whose chain up to it crosses
 one of its own items. So a `List` inside another list's item owns its own rows.
+A removal is tested against the same chain, starting at the parent it left.
 
 `Stepper` is the one that has to hand something *back* down. A step's state
 decides which icon it draws, and a step draws its icon before its stepper
@@ -710,9 +727,10 @@ before the wrapper goes, since a `discard` retires the whole subtree (issue
 #719).
 
 **A glyph the step's props supplied is parked, not discarded, when the step
-stops drawing it** (issue #716). An insertion moves the steps after it and a
-keyed `for` **reorder** moves a step in either direction, so a step this stepper
-put into completed can be displaced back out of it — and its `icon` is a
+stops drawing it** (issue #716). An insertion moves the steps after it, a
+removal moves them the other way (issue #745), and a keyed `for` **reorder**
+moves a step in either direction, so a step this stepper put into completed can
+be displaced back out of it — and its `icon` is a
 `TablerIcon` in props that no patch of the rendered tree could rebuild, so it
 goes back into a hidden wrapper under the content key it serves. A built-in —
 the tick, or the step number — is rebuildable from nothing and still leaves by
@@ -1173,7 +1191,7 @@ Custom Default: `total`, `value`, `siblings`, `boundaries` default to `1`; `with
 
 | Prop | Type | Default | Description |
 |------|------|---------|-------------|
-| `active` | `u32` | `0` | Active step index. Every step takes its state from its position against this — before it completed, at it in progress, after it inactive (#709) — unless it named a `state` of its own. A step that arrives later is stated as it lands, and so are the steps it displaced (#716); a step *removed* does not renumber its siblings (#745). As a closure (`active: {\|\| sig.get()}`) it re-renders the stepper and re-derives |
+| `active` | `u32` | `0` | Active step index. Every step takes its state from its position against this — before it completed, at it in progress, after it inactive (#709) — unless it named a `state` of its own. A step that arrives later is stated as it lands, and so are the steps it displaced (#716); a step *removed*, or moved out to another stepper, renumbers and restates the ones behind it too (#745). As a closure (`active: {\|\| sig.get()}`) it re-renders the stepper and re-derives |
 | `size` | `String` | `""` | |
 | `orientation` | `String` | `""` | "horizontal", "vertical" |
 | `color` | `String` | `""` | |
@@ -1199,6 +1217,16 @@ Custom Default: `total`, `value`, `siblings`, `boundaries` default to `1`; `with
 | `step` | `Option<u32>` | `None` | Step index, 0-based. Set by the parent `Stepper` from this step's position unless named here, in which case that is the index shown — and the number in the icon box, one higher. An index named here changes the label, **not** the position the state derives from |
 
 **StepperCompleted:** No props.
+
+`StepperCompleted` is **not a position** (issue #741): it is what the stepper
+shows *instead of* its steps once they are all done. The parent's step walk skips
+it, so a `StepperStep` placed **inside** it keeps the index and state it rendered
+itself with, and a whole `Stepper` nested inside it keeps its own.
+
+It is a skip and **not** a full stop, so the count runs straight across the block
+and a step placed *after* it is numbered like any other. Mantine writes
+`Stepper.Completed` last by convention but does not require it: a stepper whose
+completed block comes first still derives all of its steps.
 
 ### Tree
 

@@ -180,6 +180,11 @@ impl Component for List {
             // And again for every item that lands later — a `for` reconcile, a
             // `show_dom` branch, a hand-rolled `append_child` (issue #716). The
             // same function does both halves, so the two cannot drift.
+            //
+            // Not `adopt_child_removals`: the icon a row should have does not
+            // depend on where the row sits, so a row going away changes nothing
+            // for the ones left. `Stepper` is the container that needs the other
+            // half (issue #745).
             crate::late_children::adopt_late_children(
                 __scope,
                 &container,

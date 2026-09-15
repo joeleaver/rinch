@@ -1130,7 +1130,10 @@ because a parent component renders after its children, and it patches whatever
 lands beneath it afterwards too: an item a `for` reconcile appends, a
 `show_dom` branch reveals, or a hand-rolled `append_child` adds takes the
 default as it lands (issue #716). An item moved from one container into another
-re-resolves against the one it now belongs to.
+re-resolves against the one it now belongs to. `Stepper` goes one further and
+re-derives when an item **leaves** as well (issue #745), because its answer is a
+step's position: dropping a step, or moving one out, renumbers and restates every
+step behind it.
 `Stepper::progress_icon` stands in for the `progress_icon` a step did not set, so
 it outranks that step's plain `icon`, exactly as the step's own `progress_icon`
 would have.
