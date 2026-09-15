@@ -295,13 +295,20 @@ impl Component for DropdownMenu {
         // The class, not an inline `display` write per panel (issue #760):
         // `styles/dropdown_menu.rs` hides `.rinch-dropdown-menu__dropdown` and
         // `.rinch-dropdown-menu__backdrop` and shows both under
-        // `.rinch-dropdown-menu--opened`, which is the same shape `Popover`
-        // already had. What it costs is that "the dropdown" is now named by its
-        // class rather than by its position among the children — a caller who
-        // passes some *other* element as a second child gets an element that is
-        // always visible, where the positional write hid it. That is the
-        // documented composition (`DropdownMenuTarget` + `DropdownMenuDropdown`)
-        // and the one `Popover` has always had.
+        // `.rinch-dropdown-menu--opened`. What it costs is that "the dropdown"
+        // is now named by its class rather than by its position among the
+        // children — a caller who passes some *other* element as a second child
+        // gets an element that is always visible, where the positional write
+        // hid it. That is the documented composition (`DropdownMenuTarget` +
+        // `DropdownMenuDropdown`).
+        //
+        // The panel does not have to be a direct child of this root: `rsx!`
+        // often wraps it (an `{Option}`, an `else if` branch, a helper whose
+        // body is an `if`), and the sheet's panel rule reaches through any
+        // wrapper while still keeping a closed menu nested in this one's panel
+        // closed. Its one limit, and why it is spelled the way it is, are in
+        // the note above that rule. (`Popover`'s rule is a plain descendant
+        // one: wrapper-tolerant, but it opens nested popovers too.)
         //
         // The effect adds and removes the one class rather than rewriting
         // `class` (issue #717): the rsx `class:` prop is merged onto the
