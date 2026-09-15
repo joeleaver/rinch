@@ -188,7 +188,7 @@ fn the_page_scrolls_behind_an_open_modal_when_lock_scroll_is_off() {
 
 /// A modal that is mounted but **closed** locks nothing.
 ///
-/// `Modal::render` runs once and `opened_fn` only rewrites a class, so a closed
+/// `Modal::render` runs once and `opened_fn` only toggles a class, so a closed
 /// modal stays in the tree. A lock taken at render rather than on the open edge
 /// would make the page unscrollable from first paint, for every app that mounts
 /// a dialog it has not shown yet — which is every app.

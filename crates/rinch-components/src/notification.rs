@@ -28,6 +28,9 @@ use std::rc::Rc;
 /// Reactive callback type for opened state.
 pub type ReactiveBool = Rc<dyn Fn() -> bool>;
 
+/// The class the *closed* state adds to a notification's root.
+const HIDDEN_CLASS: &str = "rinch-notification--hidden";
+
 /// Notification position.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum NotificationPosition {
@@ -239,17 +242,16 @@ impl Component for Notification {
         if let Some(ref opened_fn) = self.opened_fn {
             let opened_fn = opened_fn.clone();
             let root_clone = root.clone();
-            let base_class_clone = base_class;
-
+            // Adding and removing the one class, never rewriting the attribute
+            // (issue #717): a rewrite from a string captured during `render`
+            // drops the universal `class:` prop, which the rsx macro merges onto
+            // the returned handle *after* `render` returns (issue #647).
             __scope.create_effect(move || {
                 let is_open = opened_fn();
                 if is_open {
-                    root_clone.set_attribute("class", &base_class_clone);
+                    root_clone.remove_class(HIDDEN_CLASS);
                 } else {
-                    root_clone.set_attribute(
-                        "class",
-                        &format!("{} rinch-notification--hidden", base_class_clone),
-                    );
+                    root_clone.add_class(HIDDEN_CLASS);
                 }
             });
         }

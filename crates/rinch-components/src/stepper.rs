@@ -194,7 +194,8 @@ impl Component for Stepper {
         if self.allow_next_steps_select {
             for step in steps.iter().skip(self.active as usize + 1) {
                 // A step that asked to be clickable itself already carries the
-                // class; `add_class` does not deduplicate.
+                // class. `add_class` is idempotent since #717, so the guard is
+                // belt and braces rather than load-bearing.
                 if !has_class(step, CLICKABLE_CLASS) {
                     step.add_class(CLICKABLE_CLASS);
                 }

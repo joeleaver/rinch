@@ -12,6 +12,9 @@ use rinch_core::reactive::Effect;
 /// spell theirs.
 pub type ReactiveBool = Rc<dyn Fn() -> bool>;
 
+/// The class the open state adds to a popover's root.
+const OPENED_CLASS: &str = "rinch-popover--opened";
+
 /// Popover position.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum PopoverPosition {
@@ -175,9 +178,11 @@ impl Default for Popover {
 impl Popover {
     /// The root's classes for the **closed** state.
     ///
-    /// Split out from [`class_string`](Self::class_string) so the `opened_fn`
-    /// effect can rebuild the class list without re-deriving position, radius
-    /// and shadow on every toggle.
+    /// Split out from [`class_string`](Self::class_string), which adds
+    /// `rinch-popover--opened` to it. The `opened_fn` effect used to rebuild the
+    /// class list from this method on every toggle; since #717 it adds and
+    /// removes `rinch-popover--opened` alone, so this is now only
+    /// `class_string`'s closed half.
     pub fn class_string_closed(&self) -> String {
         let mut classes = vec!["rinch-popover"];
 
@@ -258,14 +263,18 @@ impl Component for Popover {
 
         // opened_fn (#474): keep the `--opened` class in step with the signal,
         // surgically, without re-rendering the component.
+        //
+        // Adding and removing the one class, never rewriting the attribute
+        // (issue #717): a rewrite from a string captured during `render` drops
+        // the universal `class:` prop, which the rsx macro merges onto the
+        // returned handle *after* `render` returns (issue #647).
         if let Some(opened_fn) = self.opened_fn.clone() {
             let root_c = root.clone();
-            let base = self.class_string_closed();
             __scope.create_effect(move || {
                 if opened_fn() {
-                    root_c.set_attribute("class", &format!("{base} rinch-popover--opened"));
+                    root_c.add_class(OPENED_CLASS);
                 } else {
-                    root_c.set_attribute("class", &base);
+                    root_c.remove_class(OPENED_CLASS);
                 }
             });
         }

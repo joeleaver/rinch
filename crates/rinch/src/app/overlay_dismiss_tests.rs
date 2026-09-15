@@ -199,7 +199,7 @@ fn a_release_does_not_dismiss() {
 
 /// **The open check is at dispatch, not at registration.**
 ///
-/// `Modal::render` runs once and `opened_fn` only rewrites a class, so a closed
+/// `Modal::render` runs once and `opened_fn` only toggles a class, so a closed
 /// modal stays mounted. A handler armed "because it was open at mount" would
 /// swallow Escape for the rest of the session; one armed only when open at
 /// mount would never fire for a modal that starts closed — which is every

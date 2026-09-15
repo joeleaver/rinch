@@ -25,6 +25,9 @@ use std::rc::Rc;
 /// Reactive callback type for boolean state.
 pub type ReactiveBool = Rc<dyn Fn() -> bool>;
 
+/// The class the checked state adds to a checkbox's root.
+const CHECKED_CLASS: &str = "rinch-checkbox--checked";
+
 /// A checkbox input with optional label.
 #[derive(Default)]
 pub struct Checkbox {
@@ -91,10 +94,13 @@ impl Checkbox {
             classes.push("rinch-checkbox--disabled");
         }
 
-        // A two-line body wants the box aligned to its first line. This belongs
-        // in the *base* class string rather than being added after render: the
-        // reactive-checked effect rebuilds the attribute from this method, and
-        // would drop anything added outside it.
+        // A two-line body wants the box aligned to its first line. It is
+        // derived from a non-reactive prop, so it belongs in the *base* class
+        // string: nothing has to put it back later. (Until #717 there was a
+        // second, sharper reason — the reactive-checked effect rebuilt the whole
+        // attribute from this method and dropped anything added outside it.
+        // That effect now owns only `--checked`, so a class added after render
+        // survives; this one still belongs here.)
         if !self.description.is_empty() {
             classes.push("rinch-checkbox--with-description");
         }
@@ -106,7 +112,8 @@ impl Checkbox {
     pub fn class_string(&self) -> String {
         let mut class = self.base_class_string();
         if self.checked {
-            class.push_str(" rinch-checkbox--checked");
+            class.push(' ');
+            class.push_str(CHECKED_CLASS);
         }
         class
     }
@@ -125,7 +132,7 @@ impl Component for Checkbox {
 
         // Build the class string
         let class = if is_checked {
-            format!("{} rinch-checkbox--checked", base_class)
+            format!("{base_class} {CHECKED_CLASS}")
         } else {
             base_class
         };
@@ -195,26 +202,31 @@ impl Component for Checkbox {
         }
 
         // If reactive checked_fn is provided, create an Effect that toggles both
-        // the label's checked class AND the native <input>'s `checked` state. The
-        // input is toggled by *presence* (set "" / remove) so it stays correct on
-        // both backends: on web `set_attribute` mirrors it onto the live `.checked`
-        // property (issue #100) — without this, the accessible/native checked
-        // state (and `:checked`, native form submission) goes stale on a
-        // programmatic update; on desktop the attribute drives `:checked`.
+        // the label's checked class AND the native <input>'s `checked` state.
+        //
+        // It adds and removes the one class rather than rewriting the whole
+        // `class` attribute from `base_class_string()` (issue #717). A rewrite
+        // drops every class put on the node *after* render — above all the
+        // universal `class:` prop, which the rsx macro merges onto the handle a
+        // component *returned* (issue #647) — so the first toggle would silently
+        // undo them. The input is toggled by *presence* (set "" / remove) so it
+        // stays correct on both backends: on web `set_attribute` mirrors it onto
+        // the live `.checked` property (issue #100) — without this, the
+        // accessible/native checked state (and `:checked`, native form
+        // submission) goes stale on a programmatic update; on desktop the
+        // attribute drives `:checked`.
         if let Some(ref checked_fn) = self.checked_fn {
             let checked_fn = checked_fn.clone();
             let label_clone = label_node.clone();
             let input_clone = input.clone();
-            let base_class = self.base_class_string();
 
             __scope.create_effect(move || {
                 let is_checked = checked_fn();
                 if is_checked {
-                    label_clone
-                        .set_attribute("class", &format!("{} rinch-checkbox--checked", base_class));
+                    label_clone.add_class(CHECKED_CLASS);
                     input_clone.set_attribute("checked", "");
                 } else {
-                    label_clone.set_attribute("class", &base_class);
+                    label_clone.remove_class(CHECKED_CLASS);
                     input_clone.remove_attribute("checked");
                 }
             });

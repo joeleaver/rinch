@@ -10,6 +10,11 @@ use std::rc::Rc;
 
 pub type ReactiveString = Rc<dyn Fn() -> String>;
 
+/// The class an unset value adds to the trigger's display span.
+const PLACEHOLDER_CLASS: &str = "rinch-select__display--placeholder";
+/// The class the selected option carries in the dropdown list.
+const SELECTED_CLASS: &str = "rinch-select__option--selected";
+
 /// An option in a Select dropdown.
 #[derive(Debug, Clone, PartialEq)]
 pub struct SelectOption {
@@ -204,15 +209,15 @@ impl Component for Select {
         // Placeholder styling
         let placeholder_empty = placeholder.is_empty();
         let display_span_c = display_span.clone();
+        // Adding and removing the one class, never rewriting the attribute
+        // (issue #717) — a rewrite drops whatever a parent patched onto the
+        // span, which is how every #474 category C prop travels.
         __scope.create_effect(move || {
             let val = selected_value.get();
             if val.is_empty() && !placeholder_empty {
-                display_span_c.set_attribute(
-                    "class",
-                    "rinch-select__display rinch-select__display--placeholder",
-                );
+                display_span_c.add_class(PLACEHOLDER_CLASS);
             } else {
-                display_span_c.set_attribute("class", "rinch-select__display");
+                display_span_c.remove_class(PLACEHOLDER_CLASS);
             }
         });
 
@@ -286,15 +291,14 @@ impl Component for Select {
             let opt_value = opt.value.clone();
             let opt_value2 = opt_value.clone();
             let item_c = item.clone();
+            // Adding and removing the one class, never rewriting the attribute
+            // — see the note on the display span above (issue #717).
             __scope.create_effect(move || {
                 let val = selected_value.get();
                 if val == opt_value2 {
-                    item_c.set_attribute(
-                        "class",
-                        "rinch-select__option rinch-select__option--selected",
-                    );
+                    item_c.add_class(SELECTED_CLASS);
                 } else {
-                    item_c.set_attribute("class", "rinch-select__option");
+                    item_c.remove_class(SELECTED_CLASS);
                 }
             });
 

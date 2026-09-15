@@ -66,6 +66,9 @@ impl std::str::FromStr for ModalSize {
 /// Reactive callback type for opened state.
 pub type ReactiveBool = Rc<dyn Fn() -> bool>;
 
+/// The class the *closed* state adds to a modal's root.
+const HIDDEN_CLASS: &str = "rinch-modal__root--hidden";
+
 /// A modal dialog overlay.
 ///
 /// Renders in a portal above all other content with an overlay backdrop.
@@ -253,8 +256,8 @@ impl Component for Modal {
         // it for both layers and keeps the panel exactly one above the
         // full-viewport root, which is what the hard-coded 200/201 pair did.
         // Writing it here rather than as two inline `z-index` declarations also
-        // reaches the panel, whose class string is rewritten by the
-        // `opened_fn` effect below.
+        // reaches the panel, which inherits the custom property from the root
+        // and reads it from the stylesheet.
         if let Some(z) = self.z_index {
             root.set_attribute("style", &format!("--rinch-modal-z-index: {}", z));
         }
@@ -264,13 +267,16 @@ impl Component for Modal {
             let opened_fn = opened_fn.clone();
             let root_clone = root.clone();
 
+            // Adding and removing the one class, never rewriting the attribute
+            // (issue #717): a rewrite drops the universal `class:` prop, which
+            // the rsx macro merges onto the returned handle *after* `render`
+            // returns (issue #647).
             __scope.create_effect(move || {
                 let is_open = opened_fn();
                 if is_open {
-                    root_clone.set_attribute("class", "rinch-modal__root");
+                    root_clone.remove_class(HIDDEN_CLASS);
                 } else {
-                    root_clone
-                        .set_attribute("class", "rinch-modal__root rinch-modal__root--hidden");
+                    root_clone.add_class(HIDDEN_CLASS);
                 }
             });
         }

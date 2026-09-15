@@ -37,6 +37,11 @@ use rinch_core::for_each_dom_typed;
 use rinch_core::reactive::Signal;
 use rinch_tabler_icons::{TablerIcon, TablerIconStyle, render_tabler_icon};
 
+/// The class selection adds to a tree row's content box.
+const SELECTED_CLASS: &str = "rinch-tree__node-content--selected";
+/// The class the expanded state adds to a tree row's chevron.
+const CHEVRON_EXPANDED_CLASS: &str = "rinch-tree__chevron--expanded";
+
 // =============================================================================
 // TreeNodeData
 // =============================================================================
@@ -537,55 +542,66 @@ fn render_tree_node(
         });
     }
 
-    // Create content wrapper
+    // Create content wrapper.
+    //
+    // The base class is written **here**, not by the effect below. It used to
+    // be the effect's job — the effect rewrote the whole `class` attribute on
+    // every run, so its first run was also what established the node's identity
+    // — and that is exactly the coupling issue #717 is about. The static
+    // sibling path (`render_tree_node_static`) has always written it at
+    // creation; this path now matches it.
     let content = rinch_macros::rsx! { div {} };
+    content.set_attribute(
+        "class",
+        if node.disabled {
+            "rinch-tree__node-content rinch-tree__node-content--disabled"
+        } else {
+            "rinch-tree__node-content"
+        },
+    );
     content.set_attribute("tabindex", "0");
     content.set_attribute(
         "style",
         &format!("padding-left: calc(var(--tree-level-offset) * {})", level),
     );
 
-    // Reactive class for content (selected + disabled)
+    // Reactive class for content (selection only — `disabled` is not reactive)
     {
         let content_clone = content.clone();
         let nv = node_value.clone();
-        let is_disabled = node.disabled;
+        // Adding and removing the one class, never rewriting the attribute
+        // (issue #717): `disabled` and the base class are written above and are
+        // not this effect's business, so selection owns exactly one class — and
+        // a rewrite would drop whatever a parent patched onto the row, which is
+        // how every #474 category C prop travels.
         __scope.create_effect(move || {
-            let is_selected = selected_signal.get().contains(&nv);
-            let class = if is_selected {
-                if is_disabled {
-                    "rinch-tree__node-content rinch-tree__node-content--disabled rinch-tree__node-content--selected"
-                } else {
-                    "rinch-tree__node-content rinch-tree__node-content--selected"
-                }
-            } else if is_disabled {
-                "rinch-tree__node-content rinch-tree__node-content--disabled"
+            if selected_signal.get().contains(&nv) {
+                content_clone.add_class(SELECTED_CLASS);
             } else {
-                "rinch-tree__node-content"
-            };
-            content_clone.set_attribute("class", class);
+                content_clone.remove_class(SELECTED_CLASS);
+            }
         });
     }
 
     // Chevron (for expandable nodes)
     if has_children {
-        let chevron = rinch_macros::rsx! { span {} };
+        // The base class is written here, not by the effect below — the same
+        // repair the content box above took (issue #717), and what the static
+        // sibling `render_tree_node_static` has always done.
+        let chevron = rinch_macros::rsx! { span { class: "rinch-tree__chevron" } };
         let icon = crate::icons::chevron_right_dom(__scope);
         chevron.append_child(&icon);
 
-        // Reactive chevron class
+        // Reactive chevron class: adds and removes the one modifier, never
+        // rewriting the attribute (issue #717).
         let chevron_clone = chevron.clone();
         let nv = node_value.clone();
         __scope.create_effect(move || {
-            let is_expanded = expanded_signal.get().contains(&nv);
-            chevron_clone.set_attribute(
-                "class",
-                if is_expanded {
-                    "rinch-tree__chevron rinch-tree__chevron--expanded"
-                } else {
-                    "rinch-tree__chevron"
-                },
-            );
+            if expanded_signal.get().contains(&nv) {
+                chevron_clone.add_class(CHEVRON_EXPANDED_CLASS);
+            } else {
+                chevron_clone.remove_class(CHEVRON_EXPANDED_CLASS);
+            }
         });
 
         // Dedicated click handler on chevron — always toggles expand/collapse

@@ -482,12 +482,22 @@ impl NodeHandle {
     }
 
     /// Add a class to the element's class list.
+    ///
+    /// **Idempotent**, as `DOMTokenList.add` is: a class already on the element
+    /// is not added a second time, and the attribute is left untouched. That
+    /// matters because a reactive effect that owns one modifier class (issue
+    /// #717) re-runs whenever anything it read changes, not only when its own
+    /// answer flips — `Signal::set` notifies on every write, equal value or not
+    /// (`set_if_changed` is the other method) — so a non-idempotent `add_class`
+    /// grew the attribute by one word per write and healed only when the class
+    /// came off again.
     #[doc(hidden)]
     pub fn add_class(&self, class: &str) {
         if let Some(doc) = self.doc.upgrade() {
             // Get current class attribute (borrow ends here)
             let current = doc.borrow().get_attribute(self.node_id, "class");
             let new_class = match current {
+                Some(existing) if existing.split_whitespace().any(|c| c == class) => return,
                 Some(existing) if !existing.is_empty() => format!("{} {}", existing, class),
                 _ => class.to_string(),
             };
@@ -945,10 +955,29 @@ mod tests {
             Some("foo bar".to_string())
         );
 
+        // Idempotent, as `DOMTokenList.add` is (issue #717): a reactive effect
+        // that owns one modifier class calls this on every run, and `Signal::set`
+        // notifies on every write, not only on a change.
+        div.add_class("bar");
+        div.add_class("bar");
+        assert_eq!(
+            doc.borrow().get_attribute(div.node_id(), "class"),
+            Some("foo bar".to_string()),
+            "a class already present must not be added again"
+        );
+
         div.remove_class("foo");
         assert_eq!(
             doc.borrow().get_attribute(div.node_id(), "class"),
             Some("bar".to_string())
+        );
+
+        // A prefix of an existing class is a different class, so the
+        // whitespace-word comparison above is not a `contains`.
+        div.add_class("ba");
+        assert_eq!(
+            doc.borrow().get_attribute(div.node_id(), "class"),
+            Some("bar ba".to_string())
         );
     }
 
