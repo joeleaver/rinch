@@ -46,7 +46,7 @@
 //!
 //! | Mutant | Killed by |
 //! |---|---|
-//! | **M1** `if self.tree.transitions_enabled` back around the animation block | `an_animation_declared_before_the_first_layout_runs_in_the_first_frame`, `the_first_frames_computed_style_carries_the_animated_value`, both `rinch` fixtures (and, transitively, both theme fixtures below, which can no longer reach their subject) |
+//! | **M1** `if self.tree.transitions_enabled` back around the animation block | `an_animation_declared_before_the_first_layout_runs_in_the_first_frame`, `the_first_frames_computed_style_carries_the_animated_value`, both `rinch` fixtures, and — through a failed precondition rather than their subject — `a_theme_change_keeps_a_running_animation_and_its_clock`, `a_theme_change_that_removes_the_declaration_stops_the_animation` and `a_spinner_hidden_and_shown_before_the_first_layout_restarts_from_zero` (7; re-measured after the rebase over #764) |
 //! | **M2** `active_animations.clear()` back in `recompute_all_styles_full` | `a_theme_change_keeps_a_running_animation_and_its_clock`, `a_theme_restyle_keeps_the_loader_spinning_without_restarting_it` |
 //! | **M4** `self.tree.transitions_enabled &&` dropped from the *transition* gate | `a_stylesheet_appended_during_construction_does_not_transition`, `a_theme_change_starts_no_transitions` |
 //! | **M5** the `transitions_enabled = false` bracket dropped from `recompute_all_styles_full` | `a_theme_change_starts_no_transitions` |
