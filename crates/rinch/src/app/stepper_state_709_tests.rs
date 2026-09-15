@@ -15,10 +15,10 @@
 //!   inside it would pass every structural assertion and paint nothing.
 //!
 //! Since #716 a stepper also **parks** a glyph a step's props supplied when the
-//! step stops drawing it, against an insertion that moves the step back — so an
-//! alternate left on the tree is no longer proof that a promotion went wrong.
-//! The steps below set no icons of their own, which is what keeps the
-//! "every alternate is gone" assertion meaning what it says.
+//! step stops drawing it, against an insertion or a keyed reorder moving the
+//! step back — so an alternate left on the tree is no longer proof that a
+//! promotion went wrong. What still discriminates is whether a *visible* one is
+//! left, which is what the promotion test below asks.
 
 use super::*;
 
@@ -145,13 +145,23 @@ fn a_derived_state_class_reaches_the_cascade() {
 #[test]
 fn a_promoted_alternate_is_not_promoted_inside_its_hiding_wrapper() {
     let app = three_steps(Some(TablerIcon::CircleCheck));
-    assert!(
-        nodes_with_class(&app, "rinch-stepper__step-icon-alt").is_empty(),
-        "every alternate is off the tree for *these* steps: none of them set an \
-         icon of its own, so nothing here is a glyph the stepper would have to \
-         park against a later move (issue #716) — the one the completed step \
-         needed was promoted out of its wrapper and the rest were dropped"
+    let alts = nodes_with_class(&app, "rinch-stepper__step-icon-alt");
+    assert_eq!(
+        alts.len(),
+        2,
+        "the completed step's alternate was promoted out of its wrapper and the \
+         wrapper went; the two steps that are *not* completed keep theirs, \
+         parked against a later insertion or reorder moving them into completed \
+         (issue #716). #709 dropped those two"
     );
+    for alt in alts {
+        assert_eq!(
+            display_of(&app, alt),
+            DisplayValue::None,
+            "and a parked alternate must not paint — it is an offer to the \
+             parent, not content"
+        );
+    }
 
     let boxes = nodes_with_class(&app, "rinch-stepper__step-icon");
     let icon = {

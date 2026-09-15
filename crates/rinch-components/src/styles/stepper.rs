@@ -69,10 +69,11 @@ pub fn styles() -> String {
 /* An icon a step rendered for a state its parent Stepper might move it into,
    left in the box for the parent to promote (issue #709) — and, since #716,
    also where the parent parks a glyph the step stopped drawing, against a
-   later insertion moving it back. The parent keeps only the ones a further
-   move could want and drops the rest, so what remains here never paints; it
-   carries `display: none` inline as well, so a StepperStep with no Stepper
-   above it is right even where this sheet is not loaded. */
+   later insertion or reorder moving it back. The parent keeps every one of
+   them while the step's state is its to derive, and drops them all for a step
+   that named its own state, so what remains here never paints; it carries
+   `display: none` inline as well, so a StepperStep with no Stepper above it is
+   right even where this sheet is not loaded. */
 .rinch-stepper__step-icon-alt {
     display: none;
 }

@@ -814,8 +814,10 @@ fn a_step_a_keyed_reorder_moves_backwards_keeps_its_own_completed_icon() {
     assert_eq!(
         tokens.len(),
         before,
-        "and `data-icon-has` holds each key once. It is rendered DOM, and an \
-         unguarded push grew it by one token on every backwards move: {has:?}"
+        "and `data-icon-has` holds each key once — rendered DOM, so a key twice \
+         is a lie about the box. Keeping the alternates is what closed the path \
+         that grew it, so this assertion no longer discriminates the `contains` \
+         guard in `push_key`; it stands against a future one. It read {has:?}"
     );
 }
 

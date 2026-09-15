@@ -287,12 +287,19 @@ The pieces that follow from it:
   records the step's icon *props* rather than what it drew, `data-icon-live`
   names the content key showing — and a glyph the step's props supplied is
   **parked** hidden rather than discarded when it stops being drawn, since a
-  later insertion can want it back. A *removal* notifies nobody, so it does not
-  renumber (issue #745).
-- **Cost:** one `Cell` read per insertion in a document where nothing is
-  registered (unmeasurable against the baseline). Once anything on the thread
-  is, an ancestor walk: **0.12 µs** per insertion at depth 8, measured on 5000
-  appends, software build, best of 40.
+  later insertion — or a keyed `for` **reorder**, which repositions a live node
+  with `insert_before` and can move it *backwards* — can want it back. Every
+  alternate is kept while the stepper owns the step's state; one that named its
+  own `state` keeps none. A *removal* notifies nobody, so it does not renumber
+  (issue #745).
+- **Cost:** one `Cell` read per insertion while **nothing on the thread** is
+  registered — `COUNT` is thread-local, not per document, so one live container
+  anywhere makes every insertion in every document on that thread pay an
+  ancestor walk. That walk is **0.12 µs** per insertion at depth 8 (0.16 µs at
+  depth 1, 0.56 µs at depth 32 — roughly 0.013 µs per level), measured on 5000
+  appends, software build, best of 40. `Stepper` is the one container whose
+  own patch is O(n) per insertion, so growing one step at a time is quadratic:
+  10.6 ms for 100 steps, against 0.11 ms for the ten a real stepper has (#748).
 
 `RadioGroup::size` and the `Stepper` props are the same shape.
 

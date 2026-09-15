@@ -157,7 +157,12 @@ impl Drop for DispatchGuard {
 ///
 /// Called from the four [`NodeHandle`] methods that put a node into a tree.
 /// Anything that reaches for [`super::traits::DomDocument`] directly bypasses
-/// it; inside this workspace nothing outside `NodeHandle` does.
+/// it, and seven places in this workspace do — but every one of them is a
+/// **root mount into `<body>`** (`rinch/src/app/mod.rs`, `rinch-web/src/lib.rs`,
+/// four in `rinch/src/menu/app_menu_bar.rs`) or a *detached* span/text pair
+/// (`render_scope.rs`), so none of them can land a child inside a registered
+/// container. A new direct call that could is the thing to watch for: it will
+/// silently not notify.
 pub(super) fn notify_inserted(parent: &NodeHandle, inserted: &NodeHandle) {
     if COUNT.with(|c| c.get()) == 0 || DISPATCHING.with(|d| d.get()) {
         return;
@@ -321,6 +326,47 @@ mod tests {
              itself — the alternative is an unbounded loop, not a missed patch"
         );
         forget((root.doc_key(), root.node_id()));
+    }
+
+    #[test]
+    fn unmounting_the_container_releases_its_observer() {
+        let (d, body) = doc();
+        let root = element(&d, "div");
+        body.append_child(&root);
+
+        let runs = Rc::new(RefCell::new(0));
+        {
+            // A scope of the shape a component renders under. Registration ties
+            // itself to the ambient owner, so dropping the scope has to take the
+            // observer with it.
+            let scope = crate::dom::RenderScope::new(
+                d.clone() as Rc<RefCell<dyn DomDocument>>,
+                body.node_id(),
+            );
+            let owner = scope.push_owner();
+            let sink = runs.clone();
+            on_child_inserted(&root, move |_| *sink.borrow_mut() += 1);
+            drop(owner);
+
+            root.append_child(&element(&d, "i"));
+            assert_eq!(
+                *runs.borrow(),
+                1,
+                "positive control: the observer fires while its scope is alive"
+            );
+        }
+
+        root.append_child(&element(&d, "b"));
+        assert_eq!(
+            *runs.borrow(),
+            1,
+            "and not after it is gone. `on_child_inserted` is public, so a \
+             third-party container may capture a `Signal` its scope owns — \
+             firing an observer whose scope has been disposed is the #141 PR4 \
+             use-after-free, and nothing else in this module catches it: \
+             `discarding_the_container_drops_its_observer` pins the other \
+             release path"
+        );
     }
 
     #[test]

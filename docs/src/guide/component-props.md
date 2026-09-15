@@ -710,13 +710,15 @@ before the wrapper goes, since a `discard` retires the whole subtree (issue
 #719).
 
 **A glyph the step's props supplied is parked, not discarded, when the step
-stops drawing it** (issue #716). An insertion moves the steps after it, so a step
-this stepper put into completed can be displaced back out of it, and its `icon`
-is a `TablerIcon` in props that no patch of the rendered tree could rebuild — so
-it goes back into a hidden wrapper under the content key it serves. A built-in —
+stops drawing it** (issue #716). An insertion moves the steps after it and a
+keyed `for` **reorder** moves a step in either direction, so a step this stepper
+put into completed can be displaced back out of it — and its `icon` is a
+`TablerIcon` in props that no patch of the rendered tree could rebuild, so it
+goes back into a hidden wrapper under the content key it serves. A built-in —
 the tick, or the step number — is rebuildable from nothing and still leaves by
-`discard`. Only the alternates a *forward* move could still want are kept, which
-is why an inactive step (the last state there is) keeps none.
+`discard`. Every parked alternate is kept for as long as the stepper owns the
+step's state; a step that named its own `state` is in that state wherever it
+moves, so for it they are all dropped.
 
 The markers on a step's icon box are therefore records of the step's **props**
 rather than of what it last drew, which is what lets the pass re-run:

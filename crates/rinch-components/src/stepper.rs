@@ -321,7 +321,13 @@ impl Derivation {
 /// **Idempotent, and that is load-bearing** (issue #716). It runs once at the
 /// stepper's own render and again every time a step lands beneath the container
 /// afterwards, because an insertion renumbers the steps after it and can move
-/// them between states. Everything it reads is therefore a *stable* record of
+/// them between states.
+///
+/// Re-deriving every step per insertion makes growing a stepper one step at a
+/// time quadratic — 10.6 ms for 100 steps, 0.11 ms for the ten a real stepper
+/// has (issue #748). The per-pass *writes* are all guarded against an unchanged
+/// value, so a step this pass does not move re-dirties no style; what is left is
+/// the reads. Everything it reads is therefore a *stable* record of
 /// what the caller asked for — `data-state` for a named state,
 /// [`STEP_DERIVED_ATTR`] for an index this pass assigned, [`ICON_HAS_ATTR`] for
 /// the glyphs the box holds — never a record of what the last pass happened to
@@ -528,9 +534,17 @@ fn settle_step_icon(
                     // nothing for, and the box now holds a real glyph there —
                     // which is what stops a later pass filling it twice.
                     //
-                    // Guarded, because this attribute is rendered DOM and an
-                    // unguarded push made it grow without bound across repeated
-                    // moves (`"completed base completed"`).
+                    // Guarded because this attribute is rendered DOM. An
+                    // unguarded push grew it by a token on every backwards move
+                    // (`"completed base completed"`) while alternates were being
+                    // pruned; **keeping them closed that path**, since a glyph
+                    // whose key is in `has` is always parked, so this branch can
+                    // no longer find a key both absent from the box and present
+                    // in `has`. No fixture kills the guard for that reason — the
+                    // dedupe assertion in
+                    // `a_step_a_keyed_reorder_moves_backwards_keeps_its_own_completed_icon`
+                    // passes either way now, and is there to catch a future
+                    // path, not this one.
                     push_key(&mut has, target);
                     let glyph = render_tabler_icon(scope, icon, TablerIconStyle::Outline);
                     icon_box.append_child(&glyph);
