@@ -290,11 +290,28 @@ impl Component for Stepper {
                 Some(named) => StepState::parse(named),
                 None => {
                     let derived = StepState::derive(position, self.active);
-                    // Swap the one class rather than rewriting `class`: the
+                    // Swap the state class rather than rewriting `class`: the
                     // clickable grant above, and the rsx `class:` prop the macro
                     // merges onto a component's root, are both already on this
                     // node (issue #717).
-                    step.remove_class(StepState::Inactive.class_name());
+                    //
+                    // **All three come off, not just `--inactive`.** A step that
+                    // named no state rendered as inactive, so dropping that one
+                    // looks sufficient — but this walk reaches steps that are
+                    // not freshly rendered by *this* stepper: it descends into a
+                    // `StepperCompleted`, so a nested `Stepper` there has its
+                    // steps re-derived at the outer stepper's positions, already
+                    // carrying whatever their own stepper gave them. Measured:
+                    // one such step ended up with `--progress` and `--inactive`
+                    // at once. `remove_class` writes nothing when the class is
+                    // absent (#730), so the two extra calls are free.
+                    for state in [
+                        StepState::Completed,
+                        StepState::Progress,
+                        StepState::Inactive,
+                    ] {
+                        step.remove_class(state.class_name());
+                    }
                     step.add_class(derived.class_name());
                     derived
                 }
@@ -488,6 +505,12 @@ fn has_class(node: &NodeHandle, class: &str) -> bool {
 /// loop or a conditional puts wrapper nodes between the stepper and its steps.
 /// The walk stops at each step, so a nested stepper inside a step's content is
 /// not this one's to renumber.
+///
+/// It descends into every *other* child, though — a [`StepperCompleted`]
+/// included — so a `Stepper` placed there does have its steps collected at this
+/// stepper's positions. That reach predates the derivation (it granted only the
+/// clickable class); the state swap above is written to survive it rather than
+/// to assume it away.
 fn collect_steps(node: &NodeHandle) -> Vec<NodeHandle> {
     fn walk(node: &NodeHandle, out: &mut Vec<NodeHandle>) {
         if has_class(node, "rinch-stepper__step") {

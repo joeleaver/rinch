@@ -212,7 +212,7 @@ Every one of these props is `Option<TablerIcon>`. The `rsx!` macro adds the `Som
 | `Blockquote` | `icon` | `blockquote.rs:25` |
 | `List`, `ListItem` | `icon` | `list.rs:109`, `list.rs:233` |
 | `Stepper` | `completed_icon`, `progress_icon` | `stepper.rs:143`, `:150` |
-| `StepperStep` | `icon`, `completed_icon`, `progress_icon` | `stepper.rs:511`, `:513`, `:515` |
+| `StepperStep` | `icon`, `completed_icon`, `progress_icon` | `stepper.rs:544`, `:546`, `:548` |
 | `NavLink` | `left_section`, `right_section` | `navlink.rs:100`, `:102` |
 | `DropdownMenuItem` | `left_section`, `right_section` | `dropdown_menu.rs:483`, `:485` |
 | `Tab` | `left_section`, `right_section` | `tabs.rs:397`, `:399` |

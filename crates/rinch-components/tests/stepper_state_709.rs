@@ -26,7 +26,7 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use rinch_components::stepper::{Stepper, StepperStep};
+use rinch_components::stepper::{Stepper, StepperCompleted, StepperStep};
 use rinch_core::dom::traits::DomDocument;
 use rinch_core::dom::{NodeHandle, RenderScope, mock::MockDomDocument};
 use rinch_core::{Component, Signal};
@@ -580,5 +580,133 @@ fn an_alternate_the_stepper_did_not_use_is_discarded_not_merely_removed() {
         !still_live(&alternate),
         "and the completed alternate it turned out not to need is discarded, \
          not merely detached"
+    );
+}
+
+// ------------------ the three things a first pass at this left unpinned (#740)
+
+#[test]
+fn a_step_that_named_only_its_state_is_still_numbered_by_its_parent() {
+    let tree = three_steps_of(
+        Stepper {
+            active: 1,
+            ..Default::default()
+        },
+        || StepperStep {
+            state: "inactive".into(),
+            ..Default::default()
+        },
+    );
+    assert_eq!(
+        states(&tree),
+        vec!["inactive"; 3],
+        "precondition: all three named a state, so none of them derives one"
+    );
+    assert_eq!(
+        indices(&tree),
+        vec![
+            Some("0".to_string()),
+            Some("1".to_string()),
+            Some("2".to_string())
+        ],
+        "the two asks are separate: naming a `state` says nothing about the \
+         index, so the parent still numbers a step that named no `step`"
+    );
+    assert_eq!(
+        numbers(&tree),
+        vec!["1", "2", "3"],
+        "and redraws the number, which each of them had drawn as `1`. Position \
+         0 is the fixed point here — it drew `1` and should draw `1` — so the \
+         claim rests on the other two"
+    );
+}
+
+#[test]
+fn a_step_the_walk_reaches_twice_ends_up_with_one_state_class() {
+    // A `Stepper` inside the `StepperCompleted` of another one. `collect_steps`
+    // stops at a step, so it never descends into a step's *content* — but a
+    // completed block is a sibling of the steps, not inside one, so the outer
+    // stepper does reach these and re-derives them at its own positions. They
+    // arrive carrying the class their own stepper already gave them.
+    let tree = Tree::build(|scope| {
+        let inner: Vec<NodeHandle> = (0..2)
+            .map(|_| StepperStep::default().render(scope, &[]))
+            .collect();
+        let inner_stepper = Stepper {
+            active: 1,
+            ..Default::default()
+        }
+        .render(scope, &inner);
+        let completed = StepperCompleted.render(scope, &[inner_stepper]);
+        let outer: Vec<NodeHandle> = (0..2)
+            .map(|_| StepperStep::default().render(scope, &[]))
+            .collect();
+        let mut children = outer;
+        children.push(completed);
+        Stepper {
+            active: 1,
+            ..Default::default()
+        }
+        .render(scope, &children)
+    });
+
+    // `state_of` panics unless a step carries exactly one of the three, which is
+    // the whole assertion; reading every step is what makes it total.
+    let all: Vec<&'static str> = states(&tree);
+    assert_eq!(
+        all.len(),
+        4,
+        "two steps of the outer stepper plus the two the walk reached inside \
+         its completed block"
+    );
+    assert_eq!(
+        all,
+        vec!["completed", "progress", "inactive", "inactive"],
+        "the outer stepper re-derives all four at its own positions, and each \
+         one is left in exactly one state — a swap that took off only \
+         `--inactive` left the third step carrying `--progress` as well"
+    );
+}
+
+#[test]
+fn allow_next_steps_select_counts_positions_and_not_declared_indices() {
+    // Declared indices that run *backwards*, so "position" and "declared index"
+    // pick opposite halves of the list. `four_steps` in `prop_wiring_707` gives
+    // step `i` the index `i`, where the two agree and nothing discriminates.
+    let tree = Tree::build(|scope| {
+        let steps: Vec<NodeHandle> = (0..4)
+            .map(|i| {
+                StepperStep {
+                    step: Some(3 - i),
+                    ..Default::default()
+                }
+                .render(scope, &[])
+            })
+            .collect();
+        Stepper {
+            active: 1,
+            allow_next_steps_select: true,
+            ..Default::default()
+        }
+        .render(scope, &steps)
+    });
+
+    let clickable: Vec<bool> = tree
+        .steps()
+        .iter()
+        .map(|s| has_class(s, "rinch-stepper__step--clickable"))
+        .collect();
+    assert_eq!(
+        clickable,
+        vec![false, false, true, true],
+        "the last two steps sit past `active: 1` and are the ones granted the \
+         class. Reading their declared indices instead would grant it to the \
+         first two — 3 and 2 are the indices above 1 — which is the exact \
+         inverse, and is why the state derivation counts positions too"
+    );
+    assert_eq!(
+        states(&tree),
+        vec!["completed", "progress", "inactive", "inactive"],
+        "and the state follows the same count, so the two never disagree"
     );
 }
