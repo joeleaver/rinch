@@ -823,7 +823,9 @@ impl RinchDocument {
     }
 
     /// Advance all active CSS animations by one frame.
-    /// Returns true if any animations are still active (caller should keep polling).
+    /// Returns true if any **running** animation is still active (caller should
+    /// keep polling). A paused one is kept but not counted (#763) — see
+    /// [`crate::animation::tick_animations`].
     pub fn tick_animations(&mut self) -> bool {
         use web_time::SystemTime;
         let current_time_ms = SystemTime::now()
@@ -834,16 +836,21 @@ impl RinchDocument {
 
         // The animation twin of the pre-pass in `tick_transitions` — same reason,
         // same issue (#678). An animation's property set lives in its keyframes
-        // rather than in a map key, so the question is asked of those.
+        // rather than in a map key, so the question is asked of those. A paused
+        // animation is not asked at all (#763): its frozen sample was written by
+        // the cascade, which invalidated the measure itself, and re-measuring
+        // on every tick sets `layout_dirty` — which the desktop wake and the
+        // Android loop both read as a frame owed.
         let text_measure_nodes: Vec<usize> = self
             .tree
             .active_animations
             .iter()
             .filter(|(_, anims)| {
                 anims.iter().any(|a| {
-                    a.keyframe_stops
-                        .iter()
-                        .any(|k| k.values.iter().any(|(p, _)| p.changes_text_measure()))
+                    !a.is_paused()
+                        && a.keyframe_stops
+                            .iter()
+                            .any(|k| k.values.iter().any(|(p, _)| p.changes_text_measure()))
                 })
             })
             .map(|(id, _)| *id)

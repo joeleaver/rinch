@@ -1614,7 +1614,10 @@ pub struct NodeTree {
     pub ifc_measure_leaves: HashMap<RawNodeId, taffy::NodeId>,
     /// Active CSS transitions per node, keyed by property.
     pub active_transitions: HashMap<RawNodeId, HashMap<TransitionProperty, ActiveTransition>>,
-    /// Active CSS animations per node.
+    /// Active CSS animations per node — **paused ones included**, because a
+    /// paused animation's frozen sample is still written into `computed_style`
+    /// on every cascade. So "is this map non-empty" is not "does anything need
+    /// another frame"; that is [`NodeTree::has_running_animations`] (#763).
     pub active_animations: HashMap<RawNodeId, Vec<ActiveAnimation>>,
     /// Whether transitions are armed (false until the first layout completes).
     ///
@@ -1946,6 +1949,22 @@ impl NodeTree {
     /// Get a mutable reference to a node.
     pub fn get_mut(&mut self, id: RawNodeId) -> Option<&mut Node> {
         self.nodes.get_mut(id)
+    }
+
+    /// Whether any `@keyframes` animation has a clock that is moving — i.e. one
+    /// that the next tick would advance.
+    ///
+    /// A paused animation is registered in [`NodeTree::active_animations`] and
+    /// is not counted here: its elapsed time is frozen, so a tick has nothing to
+    /// move and it is no reason for the frame clock to schedule another frame
+    /// (#763). This is the question the `AboutToWait` arm's "was there anything
+    /// to tick" guard asks of animations, and it has to be asked of *this* rather
+    /// than of the map's emptiness, or a paused spinner keeps every frame dirty.
+    pub fn has_running_animations(&self) -> bool {
+        self.active_animations
+            .values()
+            .flatten()
+            .any(|anim| !anim.is_paused())
     }
 
     /// Push a node ID to the dirty list (deduplicated).

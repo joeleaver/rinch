@@ -649,9 +649,9 @@ way back.
 
 The second consumer is the frame clock. A transition self-limits — it has a
 declared duration and dies after it — but `animation: … infinite` does not, and
-`AboutToWait` schedules another frame whenever `tree.active_animations` is
-non-empty. An animation left running on something nobody paints therefore keeps
-a desktop app rendering at full rate indefinitely: a `Loader` in a closed panel
+`AboutToWait` schedules another frame whenever `tree.active_animations` holds an
+animation that is not paused. An animation left running on something nobody
+paints therefore keeps a desktop app rendering at full rate indefinitely: a `Loader` in a closed panel
 or an inactive tab, with nothing on screen moving. That is why parking the
 entries was not an option, and it is the same symptom #699 fixed for a *removed*
 `Loader`.
@@ -715,11 +715,16 @@ drawer, 20 idle frames:
 This is accepted rather than overlooked. Refusing an animation to a
 `visibility: hidden` box would put desktop at odds with both the browser and the
 transition rule next to it, for one component's benefit. The cure belongs to the
-component — `animation-play-state: paused` on a closed overlay's subtree — and it
-does nothing yet, because a paused animation still answers `true` from
-`tick_animations` (issue **#763**). Until that lands, an overlay that is only
-`visibility: hidden` while closed should not contain a `Loader` if the app is
-expected to idle.
+component — `animation-play-state: paused` on a closed overlay's subtree — and
+since issue **#763** it works. A paused animation keeps its entry, because its
+frozen sample still has to reach `computed_style` on each cascade, but it has
+nothing to advance: `tick_animations` neither counts it nor marks its node dirty,
+and `AboutToWait`'s "was there anything to tick" guard asks
+`NodeTree::has_running_animations()` instead of whether `active_animations` is
+empty. So a paused spinner schedules no frame, and resuming it continues from the
+time it was paused at. `Drawer`'s closed rule does not declare the pause itself
+yet; an app that wants a closed drawer holding a `Loader` to idle can add
+`.rinch-drawer__root--hidden .rinch-loader__oval { animation-play-state: paused; }`.
 
 None of the three sites reads `transitions_enabled` (see "The page-load guard
 arms transitions, and only transitions" above), and for the restart walk that is

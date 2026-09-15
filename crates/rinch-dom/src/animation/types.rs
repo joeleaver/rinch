@@ -149,6 +149,16 @@ impl ActiveAnimation {
         self.values_at_progress(directed_progress)
     }
 
+    /// Whether this animation's clock is frozen (`animation-play-state: paused`).
+    ///
+    /// Keyed on `paused_elapsed_ms` rather than `play_state` because that is the
+    /// field [`Self::values_at`] and [`Self::is_complete`] read: a paused
+    /// animation is exactly one whose elapsed time does not depend on the current
+    /// time, so a tick cannot move it. `start_animations` sets the two together.
+    pub fn is_paused(&self) -> bool {
+        self.paused_elapsed_ms.is_some()
+    }
+
     /// Whether this animation has completed all iterations.
     pub fn is_complete(&self, current_time_ms: f64) -> bool {
         if self.paused_elapsed_ms.is_some() {

@@ -12,7 +12,8 @@
 //! rinch ran them. A `display: none` element's `ActiveAnimation` entries stayed
 //! alive across the hide, interpolating into a `computed_style` nobody paints —
 //! and, worse, the desktop frame clock schedules another frame whenever
-//! `tree.active_animations` is non-empty (`rinch/src/app/event_dispatch.rs`),
+//! `tree.active_animations` holds a running (not paused, #763) animation
+//! (`rinch/src/app/event_dispatch.rs`),
 //! so a `Loader` in a closed panel or an inactive tab kept an app rendering at
 //! full rate with nothing on screen moving. `a_spinner_in_a_hidden_branch_stops_
 //! asking_for_frames` and `a_detached_animation_stops_asking_for_frames` are
@@ -592,8 +593,8 @@ fn visibility_hidden_is_rendered_and_keeps_animating() {
 ///
 /// A paused animation on a rendered box keeps its entry across an unrelated
 /// restyle — the gate asks about rendering, not about whether the clock is
-/// moving. (It also keeps asking the shell for frames, which it arguably should
-/// not; that is **#763**, not this.)
+/// moving. (Since **#763** it no longer asks the shell for frames while it
+/// stays paused — `paused_animation_frame_tests` pins that.)
 #[test]
 fn a_paused_animation_on_a_rendered_box_is_untouched() {
     let mut doc = RinchDocument::new();

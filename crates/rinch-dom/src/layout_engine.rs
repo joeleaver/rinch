@@ -2384,7 +2384,8 @@ impl RinchDocument {
     ///   `has_been_styled` either way — but a `@keyframes` animation has no
     ///   150ms bound to self-limit against, and the desktop shell decides
     ///   whether to keep asking for frames from
-    ///   `!tree.active_animations.is_empty()` (`rinch/src/app/event_dispatch.rs`).
+    ///   whether `tree.active_animations` holds a running (not paused, #763)
+    ///   animation (`rinch/src/app/event_dispatch.rs`).
     ///   A removed `Loader` kept a desktop app rendering forever, and on **every
     ///   removal route that leaves the subtree alive** this is now what stops
     ///   it. Not every route: `set_inner_html` stops it by destruction (below),

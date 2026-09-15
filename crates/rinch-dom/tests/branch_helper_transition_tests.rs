@@ -548,8 +548,8 @@ fn a_rerendered_component_subtree_can_still_transition() {
 ///
 /// A transition self-limits — it has a declared duration and dies after it. A
 /// `@keyframes` animation does not, and the desktop shell decides whether to
-/// schedule another frame from `!tree.active_animations.is_empty()`
-/// (`rinch/src/app/event_dispatch.rs`), so a `Loader` left running on a removed
+/// schedule another frame from whether `tree.active_animations` holds a running
+/// (not paused, #763) animation (`rinch/src/app/event_dispatch.rs`), so a `Loader` left running on a removed
 /// node keeps an app rendering at full rate with nothing on screen to show for
 /// it.
 ///

@@ -1607,9 +1607,16 @@ impl RinchApp {
                 // 220ms slide — it is the *only* tick the transition ever gets,
                 // so gating the repaint on "still running" drops every frame
                 // there was.
+                //
+                // "Anything to tick" means anything the tick can *move*. A
+                // paused animation stays in `active_animations` — its frozen
+                // sample still has to reach `computed_style` on each cascade —
+                // but it has nothing to advance, and counting it here marked
+                // the scene dirty on every pass, which the Android loop reads
+                // as a frame to present (#763).
                 let had_running = self.doc.as_ref().is_some_and(|doc| {
                     let d = doc.borrow();
-                    !d.tree.active_transitions.is_empty() || !d.tree.active_animations.is_empty()
+                    !d.tree.active_transitions.is_empty() || d.tree.has_running_animations()
                 });
 
                 // Tick active CSS transitions — this updates interpolated values

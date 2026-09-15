@@ -1396,9 +1396,9 @@ impl RinchDocument {
     /// element has no animation effect at all, and is shown again with a *new*
     /// animation from t=0 — and it is also the only thing the desktop shell can
     /// see: `rinch/src/app/event_dispatch.rs` decides whether to schedule
-    /// another frame from `!tree.active_animations.is_empty()`, so an entry
-    /// parked here would keep an app rendering at full rate with nothing on
-    /// screen moving. [`Self::restart_animations_in_subtree`] is the other half.
+    /// another frame from whether `tree.active_animations` holds a running
+    /// animation, so a running entry parked here would keep an app rendering
+    /// at full rate with nothing on screen moving. [`Self::restart_animations_in_subtree`] is the other half.
     fn cancel_animations_in_subtree(&mut self, node_id: usize) {
         let mut stack = vec![node_id];
         while let Some(id) = stack.pop() {

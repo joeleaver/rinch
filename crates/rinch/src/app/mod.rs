@@ -68,6 +68,8 @@ mod overlay_opacity_tests;
 mod overlay_scroll_lock_tests;
 #[cfg(test)]
 mod overlay_z_index_tests;
+#[cfg(test)]
+mod paused_animation_frames_tests;
 mod select_widget;
 #[cfg(test)]
 mod stepper_state_709_tests;

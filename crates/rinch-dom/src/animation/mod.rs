@@ -160,13 +160,25 @@ pub fn start_animations(
     }
 }
 
-/// Advance all active animations by one frame. Returns true if any are still active.
+/// Advance all active animations by one frame. Returns true if any running
+/// animation is still active — i.e. whether the caller should keep polling.
 ///
 /// For each active animation:
 /// 1. Compute interpolated values
 /// 2. Write to node's computed_style
 /// 3. Mark node dirty (PAINT, and LAYOUT if layout-affecting)
 /// 4. Remove completed animations (unless filling)
+///
+/// **A paused animation is kept, and is not counted and not marked dirty**
+/// (#763). Its elapsed time is frozen, so its sample is the one the cascade
+/// already wrote into `computed_style` when it paused, and the tick has nothing
+/// to advance. Counting it made the frame clock schedule a frame every frame,
+/// forever; marking its node dirty did the same by a second route, since a
+/// `LAYOUT`-dirty node is resolved and repainted. The sample is still
+/// re-applied, so a paused animation keeps the same precedence over a
+/// transition on the same property that a running one has: a transition that
+/// finishes on this tick writes its end value first, and has marked the node
+/// dirty itself.
 pub fn tick_animations(tree: &mut NodeTree, current_time_ms: f64) -> bool {
     let node_ids: Vec<RawNodeId> = tree.active_animations.keys().copied().collect();
     let mut any_active = false;
@@ -187,6 +199,16 @@ pub fn tick_animations(tree: &mut NodeTree, current_time_ms: f64) -> bool {
         let mut kept_animations = Vec::new();
 
         for anim in &animations {
+            if anim.is_paused() {
+                if let AnimationResult::Values(values) = anim.values_at(current_time_ms) {
+                    for (prop, value) in &values {
+                        apply_value_to_style(&mut tree.nodes[node_id].computed_style, *prop, value);
+                    }
+                }
+                kept_animations.push(anim.clone());
+                continue;
+            }
+
             let result = anim.values_at(current_time_ms);
 
             match result {

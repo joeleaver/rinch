@@ -5,7 +5,8 @@
 //! `active_animations` and on `tick_animations`. This file asserts the thing
 //! those two decide, which is the reason the issue was filed: the desktop frame
 //! clock's `AboutToWait` arm schedules another frame whenever
-//! `!tree.active_animations.is_empty()` (`app/event_dispatch.rs`), so an
+//! `tree.active_animations` holds a running (not paused, #763) animation
+//! (`app/event_dispatch.rs`), so an
 //! animation running on something nobody paints keeps a desktop app rendering
 //! at full rate, indefinitely, with nothing on screen moving.
 //!
@@ -41,9 +42,10 @@
 //! `visibility: hidden` box would put desktop at odds with both the browser and
 //! the transition rule next to it, for one component's benefit. The cure belongs
 //! to the component — `animation-play-state: paused` on a closed overlay's
-//! subtree — and it does nothing yet, because a paused animation still answers
-//! `true` from `tick_animations` (**#763**). When that lands, `Drawer`'s closed
-//! rule can take the paused declaration and
+//! subtree — and since **#763** it works: a paused animation asks for no frames.
+//! `paused_animation_frames_tests::a_loader_in_a_closed_drawer_idles_once_the_app_pauses_it`
+//! applies it from the app. `Drawer`'s own closed rule does not declare it yet;
+//! when it does,
 //! `a_loader_in_a_closed_drawer_keeps_animating_because_the_drawer_is_rendered`
 //! becomes the fixture that has to change.
 //!
@@ -356,9 +358,10 @@ fn a_loader_in_an_open_drawer_keeps_asking_for_frames() {
 /// `Loader` asks for a redraw on every idle frame, forever, because an
 /// `animation: … infinite` has no duration to expire. That is accepted rather
 /// than fixed here; the cure is `animation-play-state: paused` on the closed
-/// rule, which does nothing until **#763**. **When #763 lands and `Drawer` takes
-/// that declaration, this fixture is the one that has to change** — and it
-/// should change to assert the idle, not be deleted.
+/// rule, which works since **#763** (an app can add it today — see
+/// `paused_animation_frames_tests`). **When `Drawer` takes that declaration
+/// itself, this fixture is the one that has to change** — and it should change
+/// to assert the idle, not be deleted.
 #[test]
 fn a_loader_in_a_closed_drawer_keeps_animating_because_the_drawer_is_rendered() {
     let (mut app, _opened) = mount_loader_in_drawer(false);
@@ -384,7 +387,7 @@ fn a_loader_in_a_closed_drawer_keeps_animating_because_the_drawer_is_rendered() 
         idle_frames_requesting_redraw(&mut app, 4),
         4,
         "so the app does not idle while a closed drawer holds a `Loader` — an \
-         accepted cost, cured by `animation-play-state: paused` once #763 lands"
+         accepted cost, curable by `animation-play-state: paused` since #763"
     );
 }
 

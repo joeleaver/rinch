@@ -2845,8 +2845,8 @@ subtree**. Cancelling the transition is not optional — `tick_transitions` walk
 writing interpolated values straight through the re-insertion. Cancelling the
 *animation* is a separate repair riding along: an animation has no declared
 duration to expire, and the desktop shell keeps asking for frames while
-`tree.active_animations` is non-empty, so a removed `Loader` kept an app
-rendering forever.
+`tree.active_animations` holds a running (not paused) animation, so a removed
+`Loader` kept an app rendering forever.
 
 **Five places in `dom_impl/dom_document_impl.rs` write `parent = None`; four
 call the helper.** `remove_node` (every reactive removal funnels through
@@ -2895,9 +2895,10 @@ Three things it deliberately does not do.
   variant for one (**#759**).
 - **A `@keyframes` animation on a hidden element does not run either**
   (**#747**), and that one is not only a paint question: the desktop frame clock
-  schedules another frame whenever `tree.active_animations` is non-empty
-  (`app/event_dispatch.rs`), so a `Loader` in a `display: none` panel kept an app
-  rendering at full rate with nothing on screen moving. css-animations-1 §3 is
+  schedules another frame whenever `tree.active_animations` holds a running
+  (not paused) animation (`app/event_dispatch.rs`), so a `Loader` in a
+  `display: none` panel kept an app rendering at full rate with nothing on
+  screen moving. css-animations-1 §3 is
   stricter than the transition rule it sits beside — an element that is not
   being rendered has no animation *effect* at all, and is shown again with a
   **new** animation from t=0 rather than the one it had. So the entries are
@@ -2923,10 +2924,17 @@ Three things it deliberately does not do.
   where the `display: none` spelling asked for 0. That is accepted, not
   overlooked — the two rules cannot disagree without desktop diverging from the
   web — and the cure belongs to the component: `animation-play-state: paused`
-  on a closed overlay's subtree, which does nothing yet because a paused
-  animation still asks for frames (**#763**). Until that lands, do not put a
-  `Loader` inside an overlay that is merely `visibility: hidden` while closed
-  and expect the app to idle.
+  on a closed overlay's subtree. **That cure works since #763.** A paused
+  animation keeps its `ActiveAnimation` entry (its frozen sample is still
+  written into `computed_style` on every cascade), but `tick_animations`
+  neither counts it nor marks its node dirty, and the `AboutToWait` guard asks
+  `NodeTree::has_running_animations()` rather than whether the map is empty —
+  so it schedules no frame, on desktop or through the Android loop. Resuming
+  continues from the frozen time. `Drawer`'s own closed rule does **not**
+  declare the pause yet, so a `Loader` in a closed `Drawer` still keeps the app
+  rendering unless the app adds
+  `.rinch-drawer__root--hidden .rinch-loader__oval { animation-play-state: paused; }`
+  itself (`app/paused_animation_frames_tests.rs` pins exactly that).
 - **A move is not a detach.** `append_child`, `insert_before` and `insert_child`
   unlink a node from its old parent with the same lines `remove_child` uses, but
   it is back in the document before the call returns — so a row that was
