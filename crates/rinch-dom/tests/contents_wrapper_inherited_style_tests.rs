@@ -312,6 +312,88 @@ fn a_wrappers_line_height_reaches_its_text() {
     );
 }
 
+/// **`letter-spacing` and `word-spacing`, and they are here for the same reason
+/// `line-height` is.** #698 gave `inline_style_props` the pair, so the skip
+/// comparison owes them a clause each — and a mutant deleting both clauses
+/// survived every fixture in the `rinch-dom` suite, this file included, until
+/// this one existed. Measured, not supposed.
+///
+/// It could not have been caught anywhere else. The skip only gates a boxless
+/// wrapper and the split-inline bridge; a real `display: inline` span pushes its
+/// properties unconditionally, so #698's own span fixture is blind to it. And
+/// the oracles above are blind too: spacing moves the same glyphs apart, so the
+/// ink count and the colour count barely change. The **line width** is what it
+/// changes.
+///
+/// **Both properties, because one of them is not the other.** The clauses are
+/// adjacent lines and the obvious mutant deletes both, which either one alone
+/// would kill; PR #744's reviewer split them and found the word clause
+/// unwitnessed across all 78 test binaries while its letter twin died. So each
+/// row below carries content the property under test can actually move.
+///
+/// Chrome 150, `16px/20px` in a 400px container, `before <HOST>…</HOST> after`,
+/// width of the host's text range:
+///
+/// | declaration | content | wrapper | real `<span>` |
+/// |---|---|---|---|
+/// | `letter-spacing: 8px` | `MIDDLE` (6 characters) | +48 | +48 |
+/// | `word-spacing: 9px` | `M I D` (2 spaces) | +18 | +18 |
+///
+/// Kills: dropping **either** clause from `RinchDocument::same_inline_text_style`.
+#[test]
+fn a_wrappers_letter_and_word_spacing_reach_its_text() {
+    /// The width of the container's own inline line box, which is what spacing
+    /// changes.
+    fn line_width(host: Host, decl: &str, content: &str) -> f32 {
+        let mut doc = RinchDocument::new();
+        let body = doc.body();
+        let c = el(
+            &mut doc,
+            body,
+            "div",
+            "width: 400px; line-height: 20px; font-size: 16px; color: black",
+        );
+        txt(&mut doc, c, "before ");
+        let style = match host {
+            Host::Wrapper => format!("display: contents; {decl}"),
+            Host::Span => decl.to_string(),
+            Host::None => "display: contents".to_string(),
+        };
+        let w = el(&mut doc, c, "span", &style);
+        txt(&mut doc, w, content);
+        txt(&mut doc, c, " after");
+        doc.resolve_layout(VW, VH);
+        doc.tree
+            .get(c.0)
+            .unwrap()
+            .text_layout
+            .as_ref()
+            .expect("the container has no inline layout")
+            .layout
+            .width()
+    }
+
+    for (decl, content, delta) in [
+        ("letter-spacing: 8px", "MIDDLE", 48.0_f32),
+        ("word-spacing: 9px", "M I D", 18.0),
+    ] {
+        let wrapper = line_width(Host::Wrapper, decl, content);
+        let span = line_width(Host::Span, decl, content);
+        let none = line_width(Host::None, decl, content);
+        assert!(
+            (span - none - delta).abs() < 0.5,
+            "the fixture is not discriminating: a real <span> at {decl} over \
+             {content:?} must widen the line by {delta}px; got {none} -> {span}"
+        );
+        assert!(
+            (wrapper - span).abs() < 0.01,
+            "a boxless wrapper's {decl} must reach its text exactly as an \
+             inline box's does: wrapper={wrapper}, <span>={span}, \
+             undeclared={none}"
+        );
+    }
+}
+
 // ── the control that stops the fix over-reaching ──────────────────────────
 
 /// A wrapper that declares nothing must change nothing.

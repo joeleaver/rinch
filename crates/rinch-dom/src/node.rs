@@ -136,6 +136,12 @@ pub struct TextMeasure {
     pub color: AlphaColor<Srgb>,
     /// Whether text wrapping is disabled (white-space: nowrap/pre).
     pub no_wrap: bool,
+    /// Extra advance after every typographic character unit, in CSS pixels
+    /// (inherited from parent; 0 is `normal`).
+    pub letter_spacing: f32,
+    /// Extra advance after every space and no-break space, in CSS pixels
+    /// (inherited from parent; 0 is `normal`).
+    pub word_spacing: f32,
     /// Overflow wrap mode (controls emergency line-breaking).
     pub overflow_wrap: crate::computed_style::OverflowWrapValue,
     /// Text overflow mode (clip or ellipsis).

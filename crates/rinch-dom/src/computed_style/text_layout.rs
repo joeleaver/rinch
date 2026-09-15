@@ -60,12 +60,20 @@ impl ComputedStyle {
             builder.push_default(StyleProperty::LineHeight(line_height));
         }
 
-        // Set letter spacing if not zero
+        // Set letter/word spacing if not zero.
+        //
+        // **The `!= 0.0` guard is right here and wrong at every other producer
+        // in the table below**, so do not port it. This builder shapes one text
+        // node under one style: there is no enclosing span whose inherited
+        // spacing a zero would have to override, so skipping the push and
+        // pushing parley's own default are the same thing. The IFC producers
+        // push a style span *inside* an inherited one, where
+        // `letter-spacing: normal` computes to 0 and that 0 is the whole of the
+        // reset — guarding there drops it (#698).
         if self.letter_spacing != 0.0 {
             builder.push_default(StyleProperty::LetterSpacing(self.letter_spacing));
         }
 
-        // Set word spacing if not zero
         if self.word_spacing != 0.0 {
             builder.push_default(StyleProperty::WordSpacing(self.word_spacing));
         }
@@ -128,9 +136,24 @@ impl ComputedStyle {
     /// |---|---|
     /// | [`Self::build_parley_layout`] | `font_size`, `font_family`, `font_weight`, `font_style`, `line_height`, `letter_spacing`, `word_spacing`, `overflow_wrap` |
     /// | `RinchDocument::build_inline_layout`'s `root_text_style` | the above plus `color`, `text_decoration`, `text_underline_offset`, `white_space` (both the collapse mode and whether `max_width` applies at all) and `text_align` |
-    /// | `RinchDocument::inline_style_props`, the per-span properties | `font_size`, `font_weight`, `font_style`, `color`, `text_decoration`, `text_underline_offset`, `line_height` |
+    /// | `RinchDocument::inline_style_props`, the per-span properties | `font_size`, `font_weight`, `font_style`, `color`, `text_decoration`, `text_underline_offset`, `line_height`, `letter_spacing`, `word_spacing` |
     /// | `RinchDocument::push_inline_background`, which builds `InlineLayout::background_spans` | `background_color()`, the four paddings, `border_radius_top_left` |
-    /// | the `TextMeasure` context `RinchDocument::sync_text_contexts` fills | `font_size`, `font_weight`, `font_family`, `line_height`, `color`, `white_space`, `overflow_wrap`, `text_overflow`, `overflow_x` |
+    /// | the `TextMeasure` context `RinchDocument::sync_text_contexts` fills | `font_size`, `font_weight`, `font_family`, `line_height`, `color`, `white_space`, `letter_spacing`, `word_spacing`, `overflow_wrap`, `text_overflow`, `overflow_x` |
+    ///
+    /// `letter_spacing` and `word_spacing` reached only the first of those rows
+    /// until #698, whose one caller pair is the MCP debug tools — so both
+    /// properties parsed, inherited and compared here while changing nothing
+    /// anyone could see. They are now on every row that shapes text, which is
+    /// what makes their presence in this list mean something.
+    ///
+    /// Four producers are **not** on this list and must not be added to it:
+    /// `paint::contenteditable`'s text, `paint::select`'s label, and the two
+    /// input hit-test builders in `crates/rinch/src/app/`. Those are the
+    /// form-control text engine, which shapes an `<input>`/`<textarea>`/
+    /// `<select>`'s own value rather than an inline formatting context, keeps
+    /// no `InlineLayout` for this predicate to invalidate, and must move as one
+    /// piece because paint and hit testing have to agree glyph for glyph.
+    /// Unifying it onto `build_parley_layout` is #320.
     ///
     /// Plus `text_transform`, which `walk_inline_children` applies to the text
     /// before it is pushed.

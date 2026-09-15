@@ -124,6 +124,24 @@ pub struct TreeCheckVerdict {
     pub fatal: Vec<String>,
 }
 
+/// Push the inherited `letter-spacing` / `word-spacing` onto a ranged builder,
+/// in CSS pixels (#698).
+///
+/// The `text-overflow: ellipsis` paths build **three** throwaway layouts per
+/// truncation — the ellipsis glyph's width, each binary-search prefix, and the
+/// final truncated line — and all three have to shape the text the way the
+/// untruncated line was shaped, or the prefix that "fits" is measured under one
+/// set of advances and painted under another. One call site each, so they
+/// cannot drift apart.
+///
+/// Unconditional, like the sibling pushes in
+/// [`RinchDocument::inline_style_props`]: 0 is parley's own default, so a zero
+/// push costs nothing and there is no guard to forget.
+fn push_spacing(b: &mut parley::RangedBuilder<'_, Brush>, letter_spacing: f32, word_spacing: f32) {
+    b.push_default(parley::style::StyleProperty::LetterSpacing(letter_spacing));
+    b.push_default(parley::style::StyleProperty::WordSpacing(word_spacing));
+}
+
 impl RinchDocument {
     /// Build inline layouts for all IFC roots after Taffy layout.
     ///
@@ -460,6 +478,14 @@ impl RinchDocument {
                     peniko::color::AlphaColor::<peniko::color::Srgb>::from_rgba8(0, 0, 0, 255)
                 });
             let line_height = parent.and_then(|p| p.computed_style.line_height.to_parley());
+            let (letter_spacing, word_spacing) = parent
+                .map(|p| {
+                    (
+                        p.computed_style.letter_spacing,
+                        p.computed_style.word_spacing,
+                    )
+                })
+                .unwrap_or((0.0, 0.0));
             let alignment = parent
                 .map(|p| p.computed_style.text_align.to_parley())
                 .unwrap_or(parley::layout::Alignment::Start);
@@ -479,6 +505,7 @@ impl RinchDocument {
                 builder.push_default(parley::style::StyleProperty::FontFamily(
                     parley::style::FontFamily::Source(std::borrow::Cow::Owned(font_family.clone())),
                 ));
+                push_spacing(&mut builder, letter_spacing, word_spacing);
                 let mut layout = builder.build(ellipsis);
                 layout.break_all_lines(None);
                 layout.width()
@@ -503,6 +530,7 @@ impl RinchDocument {
                 if let Some(lh) = line_height {
                     builder.push_default(parley::style::StyleProperty::LineHeight(lh));
                 }
+                push_spacing(&mut builder, letter_spacing, word_spacing);
                 let mut layout = builder.build(ellipsis);
                 layout.break_all_lines(None);
                 layout.align(alignment, parley::layout::AlignmentOptions::default());
@@ -535,6 +563,7 @@ impl RinchDocument {
                 builder.push_default(parley::style::StyleProperty::FontFamily(
                     parley::style::FontFamily::Source(std::borrow::Cow::Owned(font_family.clone())),
                 ));
+                push_spacing(&mut builder, letter_spacing, word_spacing);
                 let mut layout = builder.build(&prefix);
                 layout.break_all_lines(None);
 
@@ -572,6 +601,7 @@ impl RinchDocument {
             if let Some(lh) = line_height {
                 builder.push_default(parley::style::StyleProperty::LineHeight(lh));
             }
+            push_spacing(&mut builder, letter_spacing, word_spacing);
             let mut layout = builder.build(&truncated);
             layout.break_all_lines(None);
             layout.align(alignment, parley::layout::AlignmentOptions::default());
@@ -3592,6 +3622,14 @@ impl RinchDocument {
                         builder.push_default(parley::style::StyleProperty::OverflowWrap(
                             text.overflow_wrap.to_parley(),
                         ));
+                        // letter-/word-spacing (#698). The builder's scale is
+                        // 1.0 here, so these are CSS pixels either way.
+                        builder.push_default(parley::style::StyleProperty::LetterSpacing(
+                            text.letter_spacing,
+                        ));
+                        builder.push_default(parley::style::StyleProperty::WordSpacing(
+                            text.word_spacing,
+                        ));
                         let mut layout = builder.build(&text.content);
                         // If no_wrap is set (white-space: nowrap), don't constrain width
                         let wrap_width = if text.no_wrap {
@@ -3940,6 +3978,25 @@ impl RinchDocument {
         // Apply overflow-wrap from computed style
         root_text_style.overflow_wrap = root_computed.overflow_wrap.to_parley();
 
+        // Apply letter-/word-spacing from computed style (#698).
+        //
+        // **In CSS pixels, not scaled here.** `LayoutContext::tree_builder`
+        // resolves the root `TextStyle` through `resolve_entire_style_set`,
+        // which multiplies `letter_spacing` and `word_spacing` by the `scale`
+        // it was handed — so pre-scaling them the way `root_font_size` above is
+        // pre-scaled would apply the factor twice. Every caller of this function
+        // passes `scale == 1.0` (layout happens in logical pixels; paint
+        // re-applies the DPI factor), so the two spellings agree today and only
+        // this one keeps agreeing if that ever changes.
+        //
+        // Both are pushed unconditionally rather than behind a `!= 0.0` test:
+        // the default is exactly parley's own default, so a zero costs nothing,
+        // and a conditional here would have to be mirrored in
+        // `inline_style_props` to let a span reset an inherited spacing back to
+        // zero.
+        root_text_style.letter_spacing = root_computed.letter_spacing;
+        root_text_style.word_spacing = root_computed.word_spacing;
+
         let mut builder = layout_cx.tree_builder(font_cx, scale, true, &root_text_style);
 
         // Apply white-space mode from computed style.
@@ -4038,6 +4095,8 @@ impl RinchDocument {
             peniko::color::AlphaColor::<peniko::color::Srgb>::from_rgba8(0, 0, 0, 255)
         });
         let line_height = root_computed.line_height.to_parley();
+        let letter_spacing = root_computed.letter_spacing;
+        let word_spacing = root_computed.word_spacing;
         let alignment = root_computed.text_align.to_parley();
 
         let ellipsis = "\u{2026}";
@@ -4050,6 +4109,7 @@ impl RinchDocument {
             b.push_default(parley::style::StyleProperty::FontFamily(
                 parley::style::FontFamily::Source(font_family.clone()),
             ));
+            push_spacing(&mut b, letter_spacing, word_spacing);
             let mut l = b.build(ellipsis);
             l.break_all_lines(None);
             l.width()
@@ -4075,6 +4135,7 @@ impl RinchDocument {
                 b.push_default(parley::style::StyleProperty::FontFamily(
                     parley::style::FontFamily::Source(font_family.clone()),
                 ));
+                push_spacing(&mut b, letter_spacing, word_spacing);
                 let mut l = b.build(&prefix);
                 l.break_all_lines(None);
                 if l.width() <= target_width {
@@ -4107,6 +4168,7 @@ impl RinchDocument {
         if let Some(lh) = line_height {
             b.push_default(parley::style::StyleProperty::LineHeight(lh));
         }
+        push_spacing(&mut b, letter_spacing, word_spacing);
         let mut layout = b.build(&truncated);
         layout.break_all_lines(None);
         layout.align(alignment, parley::layout::AlignmentOptions::default());
@@ -4137,12 +4199,32 @@ impl RinchDocument {
     /// Hand-written rather than `PartialEq`, because
     /// [`crate::computed_style::values::LineHeightValue`] does not derive it
     /// and giving an f32-carrying enum a derived equality is a worse trade than
-    /// spelling out the eight fields that matter here. **If
+    /// spelling out the ten fields that matter here. **If
     /// `inline_style_props` gains a property, it must gain one here too** —
     /// they are one list, and a field present there and missing here is a
-    /// declaration that silently stops applying. Seven of the eight have a
+    /// declaration that silently stops applying. Seven of the ten have a
     /// fixture in `contents_wrapper_inherited_style_tests` that dies when their
-    /// line is deleted; the eighth is covered elsewhere, as below.
+    /// line is deleted, `text_underline_offset` is covered elsewhere as below,
+    /// and the `letter_spacing`/`word_spacing` pair added by #698 is
+    /// `a_wrappers_letter_and_word_spacing_reach_its_text` in that same file —
+    /// which covers **each clause separately**, over content the property under
+    /// test can actually move.
+    ///
+    /// That last one is worth a paragraph, because two obvious fixtures do
+    /// **not** cover it. This predicate gates only a boxless wrapper and the
+    /// split-inline bridge; a real `display: inline` span pushes its properties
+    /// unconditionally, so a span-scoped spacing test exercises
+    /// `inline_style_props` and never reaches here. Measured: a mutant deleting
+    /// both clauses survived the whole `rinch-dom` suite, #698's own fixtures
+    /// included, until a `display: contents` fixture was written for it. And it
+    /// had to measure the **line width** — spacing moves the same glyphs apart,
+    /// so this file's ink and colour oracles cannot see it.
+    ///
+    /// Then the same trap a second time, one level down: with a single
+    /// `letter-spacing` row the *word* clause was still unwitnessed across all
+    /// 78 test binaries, because deleting it changes nothing in text that
+    /// declares only the other property. Adjacent clauses invite a mutant that
+    /// deletes both and dies on either; each needs content of its own.
     ///
     /// **`text_underline_offset` is inert but not untested** (#580). No CSS can
     /// make it `Some` — the property is gecko-only in this Stylo build, so the
@@ -4189,6 +4271,8 @@ impl RinchDocument {
             && a.text_decoration.strikethrough == b.text_decoration.strikethrough
             && a.text_underline_offset == b.text_underline_offset
             && same_line_height
+            && a.letter_spacing == b.letter_spacing
+            && a.word_spacing == b.word_spacing
     }
 
     /// The Parley style span an element contributes to the inline formatting
@@ -4249,6 +4333,22 @@ impl RinchDocument {
             };
             props.push(parley::style::StyleProperty::LineHeight(scaled_lh));
         }
+        // letter-/word-spacing (#698), in CSS pixels — parley scales a pushed
+        // `LetterSpacing`/`WordSpacing` by the builder's own factor, so this is
+        // the sibling of the unscaled assignment in `build_inline_layout` and
+        // not of the pre-scaled `FontSize` above.
+        //
+        // Unconditional, and that is the point: both properties inherit, so a
+        // span nested in a spaced ancestor carries the ancestor's value and
+        // pushing it changes nothing — while a span that declares
+        // `letter-spacing: normal` inside one carries 0 and must push it to get
+        // the reset CSS promises. A `!= 0.0` guard would drop exactly that push.
+        props.push(parley::style::StyleProperty::LetterSpacing(
+            computed.letter_spacing,
+        ));
+        props.push(parley::style::StyleProperty::WordSpacing(
+            computed.word_spacing,
+        ));
         props
     }
 

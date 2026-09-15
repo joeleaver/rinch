@@ -9,6 +9,104 @@ use crate::RinchDocument;
 use crate::layout;
 use crate::node::{LayoutResult, NodeContext, NodeKind};
 
+/// The parent-inherited text properties a text node's [`TextMeasure`] carries.
+///
+/// A named struct rather than the wide tuple this used to be, because **two
+/// functions fill it and they must agree field for field**:
+/// [`RinchDocument::sync_text_contexts`] refreshes every text node and
+/// [`RinchDocument::sync_dirty_text_contexts`] refreshes the ones a DOM
+/// mutation or a restyle touched. As eleven positional elements spelled out
+/// twice, a property added to one and not the other was a silent disagreement
+/// between a full relayout and an incremental one — and #698 had to add two.
+///
+/// The list is the `TextMeasure` half of the "one list" documented at
+/// [`crate::computed_style::ComputedStyle::same_text_layout_inputs`]: a
+/// property read here must be listed there too, or a restyle that changes it
+/// keeps the layout it invalidated.
+struct TextContextFields {
+    font_size: f32,
+    font_weight: f32,
+    font_family: String,
+    line_height_css: String,
+    color: AlphaColor<Srgb>,
+    no_wrap: bool,
+    letter_spacing: f32,
+    word_spacing: f32,
+    overflow_wrap: crate::computed_style::OverflowWrapValue,
+    text_overflow: crate::computed_style::TextOverflowValue,
+    parent_overflow_hidden: bool,
+}
+
+impl TextContextFields {
+    /// Read them off the text node's parent element, or fall back to the
+    /// document defaults when it has none.
+    fn from_parent(parent: Option<&crate::node::Node>) -> Self {
+        use crate::computed_style::{OverflowValue, WhiteSpaceValue};
+        let Some(parent) = parent else {
+            return Self {
+                font_size: 16.0,
+                font_weight: 400.0,
+                font_family: "sans-serif".to_string(),
+                line_height_css: String::new(),
+                color: AlphaColor::<Srgb>::from_rgba8(0, 0, 0, 255),
+                no_wrap: false,
+                letter_spacing: 0.0,
+                word_spacing: 0.0,
+                overflow_wrap: crate::computed_style::OverflowWrapValue::default(),
+                text_overflow: crate::computed_style::TextOverflowValue::default(),
+                parent_overflow_hidden: false,
+            };
+        };
+        let cs = &parent.computed_style;
+        Self {
+            font_size: cs.font_size,
+            font_weight: cs.font_weight,
+            font_family: if cs.font_family.is_empty() {
+                "sans-serif".to_string()
+            } else {
+                cs.font_family.clone()
+            },
+            line_height_css: match &cs.line_height {
+                crate::computed_style::LineHeightValue::Normal => String::new(),
+                crate::computed_style::LineHeightValue::Absolute(v) => format!("{}px", v),
+                crate::computed_style::LineHeightValue::Relative(v) => v.to_string(),
+            },
+            color: cs
+                .color
+                .unwrap_or_else(|| AlphaColor::<Srgb>::from_rgba8(0, 0, 0, 255)),
+            // Whether white-space prevents wrapping.
+            no_wrap: matches!(
+                cs.white_space,
+                WhiteSpaceValue::NoWrap | WhiteSpaceValue::Pre
+            ),
+            letter_spacing: cs.letter_spacing,
+            word_spacing: cs.word_spacing,
+            overflow_wrap: cs.overflow_wrap,
+            text_overflow: cs.text_overflow,
+            parent_overflow_hidden: matches!(
+                cs.overflow_x,
+                OverflowValue::Hidden | OverflowValue::Clip
+            ),
+        }
+    }
+
+    /// Write them into the Taffy node context a text node measures out of.
+    fn apply_to(self, tm: &mut crate::node::TextMeasure, node_id: usize) {
+        tm.font_size = self.font_size;
+        tm.font_weight = self.font_weight;
+        tm.font_family = self.font_family;
+        tm.line_height_css = self.line_height_css;
+        tm.node_id = node_id;
+        tm.color = self.color;
+        tm.no_wrap = self.no_wrap;
+        tm.letter_spacing = self.letter_spacing;
+        tm.word_spacing = self.word_spacing;
+        tm.overflow_wrap = self.overflow_wrap;
+        tm.text_overflow = self.text_overflow;
+        tm.parent_overflow_hidden = self.parent_overflow_hidden;
+    }
+}
+
 /// How `RINCH_TREE_CHECK` makes the post-layout sweep behave (#584).
 ///
 /// The sweep is a debug-build invariant check, so `Off` is the whole cost in a
@@ -542,6 +640,14 @@ impl RinchDocument {
                             builder.push_default(parley::style::StyleProperty::OverflowWrap(
                                 text.overflow_wrap.to_parley(),
                             ));
+                            // letter-/word-spacing (#698). The builder's scale
+                            // is 1.0 here, so these are CSS pixels either way.
+                            builder.push_default(parley::style::StyleProperty::LetterSpacing(
+                                text.letter_spacing,
+                            ));
+                            builder.push_default(parley::style::StyleProperty::WordSpacing(
+                                text.word_spacing,
+                            ));
                             let mut layout = builder.build(&text.content);
                             // If no_wrap is set (white-space: nowrap), don't constrain width
                             let wrap_width = if text.no_wrap {
@@ -682,22 +788,8 @@ impl RinchDocument {
     /// records DOM mutations, and a recascade is not one, so a text node whose
     /// parent's `font-size` changed was measured out of a context built from the
     /// old one. See `NodeTree::dirty_text_contexts`.
-    #[allow(clippy::type_complexity)]
     pub(crate) fn sync_dirty_text_contexts(&mut self) {
-        use crate::computed_style::{OverflowValue, WhiteSpaceValue};
-        let mut updates: Vec<(
-            taffy::NodeId,
-            usize,
-            f32,
-            f32,
-            String,
-            String,
-            AlphaColor<Srgb>,
-            bool,
-            crate::computed_style::OverflowWrapValue,
-            crate::computed_style::TextOverflowValue,
-            bool,
-        )> = Vec::new();
+        let mut updates: Vec<(taffy::NodeId, usize, TextContextFields)> = Vec::new();
 
         for id in self
             .tree
@@ -706,272 +798,56 @@ impl RinchDocument {
             .copied()
             .chain(self.tree.dirty_text_contexts.iter().copied())
         {
-            let node = match self.tree.nodes.get(id) {
-                Some(n) => n,
-                None => continue,
+            let Some(node) = self.tree.nodes.get(id) else {
+                continue;
             };
             if !matches!(&node.kind, NodeKind::Text(_)) {
                 continue;
             }
-            let taffy_id = match node.taffy_id {
-                Some(t) => t,
-                None => continue,
+            let Some(taffy_id) = node.taffy_id else {
+                continue;
             };
-
-            let (
-                font_size,
-                font_weight,
-                font_family,
-                line_height_css,
-                color,
-                no_wrap,
-                overflow_wrap,
-                text_overflow,
-                parent_overflow_hidden,
-            ) = node
-                .parent
-                .and_then(|p| self.tree.nodes.get(p))
-                .map(|parent| {
-                    let font_size = parent.computed_style.font_size;
-                    let font_weight = parent.computed_style.font_weight;
-                    let font_family = if parent.computed_style.font_family.is_empty() {
-                        "sans-serif".to_string()
-                    } else {
-                        parent.computed_style.font_family.clone()
-                    };
-                    let line_height_css = match &parent.computed_style.line_height {
-                        crate::computed_style::LineHeightValue::Normal => String::new(),
-                        crate::computed_style::LineHeightValue::Absolute(v) => {
-                            format!("{}px", v)
-                        }
-                        crate::computed_style::LineHeightValue::Relative(v) => v.to_string(),
-                    };
-                    let color = parent
-                        .computed_style
-                        .color
-                        .unwrap_or_else(|| AlphaColor::<Srgb>::from_rgba8(0, 0, 0, 255));
-                    let no_wrap = matches!(
-                        parent.computed_style.white_space,
-                        WhiteSpaceValue::NoWrap | WhiteSpaceValue::Pre
-                    );
-                    let overflow_wrap = parent.computed_style.overflow_wrap;
-                    let text_overflow = parent.computed_style.text_overflow;
-                    let parent_overflow_hidden = matches!(
-                        parent.computed_style.overflow_x,
-                        OverflowValue::Hidden | OverflowValue::Clip
-                    );
-                    (
-                        font_size,
-                        font_weight,
-                        font_family,
-                        line_height_css,
-                        color,
-                        no_wrap,
-                        overflow_wrap,
-                        text_overflow,
-                        parent_overflow_hidden,
-                    )
-                })
-                .unwrap_or((
-                    16.0,
-                    400.0,
-                    "sans-serif".to_string(),
-                    String::new(),
-                    AlphaColor::<Srgb>::from_rgba8(0, 0, 0, 255),
-                    false,
-                    crate::computed_style::OverflowWrapValue::default(),
-                    crate::computed_style::TextOverflowValue::default(),
-                    false,
-                ));
-
-            updates.push((
-                taffy_id,
-                id,
-                font_size,
-                font_weight,
-                font_family,
-                line_height_css,
-                color,
-                no_wrap,
-                overflow_wrap,
-                text_overflow,
-                parent_overflow_hidden,
-            ));
+            let parent = node.parent.and_then(|p| self.tree.nodes.get(p));
+            updates.push((taffy_id, id, TextContextFields::from_parent(parent)));
         }
         self.tree.dirty_text_contexts.clear();
 
-        for (
-            taffy_id,
-            node_id,
-            font_size,
-            font_weight,
-            font_family,
-            line_height_css,
-            color,
-            no_wrap,
-            overflow_wrap,
-            text_overflow,
-            parent_overflow_hidden,
-        ) in updates
-        {
+        for (taffy_id, node_id, fields) in updates {
             if let Some(ctx) = self.tree.taffy.get_node_context_mut(taffy_id)
                 && let NodeContext::Text(tm) = ctx
             {
-                tm.font_size = font_size;
-                tm.font_weight = font_weight;
-                tm.font_family = font_family;
-                tm.line_height_css = line_height_css;
-                tm.node_id = node_id;
-                tm.color = color;
-                tm.no_wrap = no_wrap;
-                tm.overflow_wrap = overflow_wrap;
-                tm.text_overflow = text_overflow;
-                tm.parent_overflow_hidden = parent_overflow_hidden;
+                fields.apply_to(tm, node_id);
             }
         }
     }
 
-    /// Sync font-size from parent elements into text node contexts.
+    /// Refresh every text node's [`TextMeasure`] from its parent's computed
+    /// style — the full pass, run when the IFC structure changed.
     ///
-    /// Walks all text nodes and updates their `TextMeasure.font_size`
-    /// from the parent element's computed style.
-    #[allow(clippy::type_complexity)]
+    /// [`TextContextFields`] is the property list, shared with
+    /// [`Self::sync_dirty_text_contexts`] so the full and incremental passes
+    /// cannot disagree about what a text node is measured with.
     pub(crate) fn sync_text_contexts(&mut self) {
-        use crate::computed_style::{OverflowValue, WhiteSpaceValue};
         // Every text node is refreshed below, so nothing stays owed.
         self.tree.dirty_text_contexts.clear();
-        let mut updates: Vec<(
-            taffy::NodeId,
-            usize,
-            f32,
-            f32,
-            String,
-            String,
-            AlphaColor<Srgb>,
-            bool,
-            crate::computed_style::OverflowWrapValue,
-            crate::computed_style::TextOverflowValue,
-            bool,
-        )> = Vec::new();
+        let mut updates: Vec<(taffy::NodeId, usize, TextContextFields)> = Vec::new();
 
         for (id, node) in &self.tree.nodes {
             if let NodeKind::Text(_) = &node.kind {
-                let taffy_id = match node.taffy_id {
-                    Some(t) => t,
-                    None => continue,
+                let Some(taffy_id) = node.taffy_id else {
+                    continue;
                 };
-
-                // Read from parent's parsed computed_style instead of parsing CSS strings
-                let (
-                    font_size,
-                    font_weight,
-                    font_family,
-                    line_height_css,
-                    color,
-                    no_wrap,
-                    overflow_wrap,
-                    text_overflow,
-                    parent_overflow_hidden,
-                ) = node
-                    .parent
-                    .and_then(|p| self.tree.nodes.get(p))
-                    .map(|parent| {
-                        let font_size = parent.computed_style.font_size;
-                        let font_weight = parent.computed_style.font_weight;
-                        let font_family = if parent.computed_style.font_family.is_empty() {
-                            "sans-serif".to_string()
-                        } else {
-                            parent.computed_style.font_family.clone()
-                        };
-                        let line_height_css = match &parent.computed_style.line_height {
-                            crate::computed_style::LineHeightValue::Normal => String::new(),
-                            crate::computed_style::LineHeightValue::Absolute(v) => {
-                                format!("{}px", v)
-                            }
-                            crate::computed_style::LineHeightValue::Relative(v) => v.to_string(),
-                        };
-                        let color = parent
-                            .computed_style
-                            .color
-                            .unwrap_or_else(|| AlphaColor::<Srgb>::from_rgba8(0, 0, 0, 255));
-                        // Check if white-space prevents wrapping
-                        let no_wrap = matches!(
-                            parent.computed_style.white_space,
-                            WhiteSpaceValue::NoWrap | WhiteSpaceValue::Pre
-                        );
-                        let overflow_wrap = parent.computed_style.overflow_wrap;
-                        let text_overflow = parent.computed_style.text_overflow;
-                        let parent_overflow_hidden = matches!(
-                            parent.computed_style.overflow_x,
-                            OverflowValue::Hidden | OverflowValue::Clip
-                        );
-                        (
-                            font_size,
-                            font_weight,
-                            font_family,
-                            line_height_css,
-                            color,
-                            no_wrap,
-                            overflow_wrap,
-                            text_overflow,
-                            parent_overflow_hidden,
-                        )
-                    })
-                    .unwrap_or((
-                        16.0,
-                        400.0,
-                        "sans-serif".to_string(),
-                        String::new(),
-                        AlphaColor::<Srgb>::from_rgba8(0, 0, 0, 255),
-                        false,
-                        crate::computed_style::OverflowWrapValue::default(),
-                        crate::computed_style::TextOverflowValue::default(),
-                        false,
-                    ));
-
-                updates.push((
-                    taffy_id,
-                    id,
-                    font_size,
-                    font_weight,
-                    font_family,
-                    line_height_css,
-                    color,
-                    no_wrap,
-                    overflow_wrap,
-                    text_overflow,
-                    parent_overflow_hidden,
-                ));
+                // Read from the parent's parsed computed_style, not from CSS strings.
+                let parent = node.parent.and_then(|p| self.tree.nodes.get(p));
+                updates.push((taffy_id, id, TextContextFields::from_parent(parent)));
             }
         }
 
-        for (
-            taffy_id,
-            node_id,
-            font_size,
-            font_weight,
-            font_family,
-            line_height_css,
-            color,
-            no_wrap,
-            overflow_wrap,
-            text_overflow,
-            parent_overflow_hidden,
-        ) in updates
-        {
+        for (taffy_id, node_id, fields) in updates {
             if let Some(ctx) = self.tree.taffy.get_node_context_mut(taffy_id)
                 && let NodeContext::Text(tm) = ctx
             {
-                tm.font_size = font_size;
-                tm.font_weight = font_weight;
-                tm.font_family = font_family;
-                tm.line_height_css = line_height_css;
-                tm.node_id = node_id;
-                tm.color = color;
-                tm.no_wrap = no_wrap;
-                tm.overflow_wrap = overflow_wrap;
-                tm.text_overflow = text_overflow;
-                tm.parent_overflow_hidden = parent_overflow_hidden;
+                fields.apply_to(tm, node_id);
             }
         }
     }
