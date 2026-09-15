@@ -37,6 +37,11 @@ pub mod show;
 pub mod timer;
 pub mod virtual_list;
 
+/// The post-condition of `remove` vs `discard` across the reactive helpers
+/// (issue #719). Needs `MockDomDocument`, which is `cfg(test)` here.
+#[cfg(test)]
+mod reinsertion_tests;
+
 // Re-export image loading types
 pub use component_prop::DefaultProp;
 pub use image::{ImageLoadResult, ImageLoader};

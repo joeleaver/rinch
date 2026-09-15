@@ -34,6 +34,18 @@ impl Default for MockDomDocument {
 }
 
 impl MockDomDocument {
+    /// **Test-only.** How many nodes the table still holds (issues #184, #719).
+    ///
+    /// The mock's half of `rinch-web`'s `__node_registry_len`, and what makes an
+    /// unbounded-growth test runnable on the host: a helper that releases the
+    /// wrong way leaks here exactly as it leaks in a browser. Compare against a
+    /// baseline taken in the same test — `next_id` counts up for the life of the
+    /// document, so absolute numbers mean nothing.
+    #[doc(hidden)]
+    pub fn __node_count(&self) -> usize {
+        self.nodes.len()
+    }
+
     pub fn new() -> Self {
         let mut doc = Self {
             doc_key: crate::dom::next_doc_key(),
@@ -73,7 +85,7 @@ impl MockDomDocument {
     }
 
     /// Drop `node` and its whole subtree from the node table — what
-    /// [`DomDocument::remove_node`] means by *retiring* a node.
+    /// [`DomDocument::discard_node`] means by *retiring* a node.
     ///
     /// Ids are never recycled here (`next_id` only counts up), so a retired id
     /// can never name a different node later; a stale handle just resolves to
@@ -96,11 +108,14 @@ impl MockDomDocument {
     /// Whether `child` still names a node — the guard every structural mutation
     /// applies before listing it under a parent.
     ///
-    /// Re-attaching a **retired** child (one a previous `remove_node` dropped) is
-    /// a silent no-op on the web backend, whose `self.nodes.get(&child.0)` simply
-    /// misses. It has to be one here too, or the parent lists an id that resolves
-    /// to nothing and the caller's bug hides behind a plausible child count
-    /// (issue #184).
+    /// Re-attaching a **discarded** child (one a previous `discard_node`
+    /// dropped) is a silent no-op on the web backend, whose
+    /// `self.nodes.get(&child.0)` simply misses. It has to be one here too, or
+    /// the parent lists an id that resolves to nothing and the caller's bug
+    /// hides behind a plausible child count (issues #184, #719).
+    ///
+    /// A merely **removed** child is still live and still re-insertable — that
+    /// is the other half of the same oracle (issue #719).
     fn is_live(&self, child: NodeId) -> bool {
         self.nodes.contains_key(&child)
     }
@@ -188,8 +203,8 @@ impl DomDocument for MockDomDocument {
 
     fn insert_before(&mut self, parent: NodeId, child: NodeId, reference: NodeId) {
         self.detach(child);
-        // Same retired-child guard as `append_child` — the web backend's
-        // `if let (Some(p), Some(c), Some(r)) = …` misses on a retired `child`
+        // Same discarded-child guard as `append_child` — the web backend's
+        // `if let (Some(p), Some(c), Some(r)) = …` misses on a discarded `child`
         // too. `NodeHandle::insert_after` routes here when the anchor has a next
         // sibling and to `append_child` when it does not, so without this the
         // mock would answer the *same* operation differently depending on where
@@ -211,7 +226,7 @@ impl DomDocument for MockDomDocument {
     fn replace_node(&mut self, old: NodeId, new: NodeId) {
         // Replacing a node with itself is a no-op the browser accepts (the DOM
         // spec re-inserts `node` before its own next sibling), so it must not
-        // retire the node that is still in the tree.
+        // report the node that is still in the tree as displaced.
         if old == new {
             return;
         }
@@ -226,13 +241,13 @@ impl DomDocument for MockDomDocument {
                 node.parent = Some(parent_id);
             }
             self.mark_dirty(parent_id);
-            // The swap orphans `old`, and the web backend retires it and its
-            // subtree there (issue #184) so it can release the browser node it
-            // was pinning. Retire it here too, or a caller that re-attaches a
-            // replaced handle passes every test in this workspace and breaks
-            // only on the web — the same trap the `remove_node` retirement below
-            // closes.
-            self.forget_subtree(old);
+            // `old` is **detached**, not retired — it stays in the table and a
+            // caller may insert it again, which is what both real backends do
+            // (issue #719). A caller that is finished with it says so with
+            // `discard_node`.
+            if let Some(node) = self.nodes.get_mut(&old) {
+                node.parent = None;
+            }
         }
     }
 
@@ -241,11 +256,25 @@ impl DomDocument for MockDomDocument {
         if let Some(parent_id) = parent {
             self.remove_child(parent_id, node);
         }
-        // Retire the node and its subtree, per the trait contract: a removed
-        // handle must not be re-attached. The browser backend has to enforce
-        // this to release the DOM node it was pinning (issue #184), so the mock
-        // enforces it too — otherwise a caller that re-appends a removed node
-        // passes every test here and breaks only on the web.
+        // Detach only. The node and its subtree stay in the table and stay
+        // re-insertable, per the trait contract (issue #719) — that is the
+        // post-condition both real backends owe, so a caller that toggles a
+        // captured handle must pass here too.
+    }
+
+    /// Detach and **retire**: the node and its subtree leave the table, so every
+    /// later operation on those ids is a silent no-op.
+    ///
+    /// This is the half of the oracle that catches the *other* mistake (issues
+    /// #184, #719): the web backend releases a discarded subtree from its maps,
+    /// so a caller that discards a node and then re-attaches it would pass every
+    /// test in this workspace and break only on the web. Retiring here makes
+    /// that a failure on the host.
+    fn discard_node(&mut self, node: NodeId) {
+        let parent = self.nodes.get(&node).and_then(|n| n.parent);
+        if let Some(parent_id) = parent {
+            self.remove_child(parent_id, node);
+        }
         self.forget_subtree(node);
     }
 
@@ -345,7 +374,7 @@ impl DomDocument for MockDomDocument {
     }
 
     fn insert_child(&mut self, parent: NodeId, child: NodeId, index: usize) {
-        // Retired children are not listed — see [`MockDomDocument::is_live`].
+        // Discarded children are not listed — see [`MockDomDocument::is_live`].
         if !self.is_live(child) {
             return;
         }
@@ -453,8 +482,8 @@ impl DomDocument for MockDomDocument {
 mod tests {
     use super::*;
 
-    /// Every structural mutation refuses a retired child, not just `append_child`
-    /// (issue #184).
+    /// Every structural mutation refuses a **discarded** child, not just
+    /// `append_child` (issue #184).
     ///
     /// `NodeHandle::insert_after` routes to `insert_before` when the anchor has a
     /// next sibling and to `append_child` when it does not, so a mock that guarded
@@ -462,7 +491,7 @@ mod tests {
     /// where in the list it landed — and would list an id that resolves to nothing,
     /// hiding the caller's bug behind a plausible child count.
     #[test]
-    fn a_retired_child_is_refused_by_every_insertion_path() {
+    fn a_discarded_child_is_refused_by_every_insertion_path() {
         type Relist = fn(&mut MockDomDocument, NodeId, NodeId, NodeId);
         let paths: [Relist; 3] = [
             |doc, parent, child, _anchor| doc.append_child(parent, child),
@@ -477,12 +506,12 @@ mod tests {
             let child = doc.create_element("div");
             doc.append_child(body, child);
 
-            doc.remove_node(child);
+            doc.discard_node(child);
             relist(&mut doc, body, child, anchor);
 
             assert!(
                 !doc.get_children(body).contains(&child),
-                "#184: a retired child must not be relisted under its parent"
+                "#184: a discarded child must not be relisted under its parent"
             );
             for id in doc.get_children(body) {
                 assert!(
@@ -493,11 +522,57 @@ mod tests {
         }
     }
 
-    /// `replace_node` retires the node it orphaned, like the browser backend
-    /// (issue #184) — otherwise a caller that re-attaches a replaced handle passes
-    /// every test here and breaks only on the web.
+    /// The other half: every one of those paths **accepts** a merely *removed*
+    /// child, because `remove_node` is a detach and the subtree must come back
+    /// (issue #719).
+    ///
+    /// The pair is what makes this mock an oracle for both mistakes rather than
+    /// one. Sitting on `remove_node` alone — the shape before #719 — a mock that
+    /// retires everything and a mock that retires nothing are both "consistent";
+    /// only testing the two verbs against each other tells them apart.
     #[test]
-    fn replacing_a_node_retires_it_and_its_subtree() {
+    fn a_removed_child_is_accepted_by_every_insertion_path() {
+        type Relist = fn(&mut MockDomDocument, NodeId, NodeId, NodeId);
+        let paths: [Relist; 3] = [
+            |doc, parent, child, _anchor| doc.append_child(parent, child),
+            |doc, parent, child, anchor| doc.insert_before(parent, child, anchor),
+            |doc, parent, child, _anchor| doc.insert_child(parent, child, 0),
+        ];
+        for relist in paths {
+            let mut doc = MockDomDocument::new();
+            let body = doc.body();
+            let anchor = doc.create_element("div");
+            doc.append_child(body, anchor);
+            let child = doc.create_element("div");
+            let grandchild = doc.create_element("span");
+            doc.append_child(child, grandchild);
+            doc.append_child(body, child);
+
+            doc.remove_node(child);
+            assert!(
+                !doc.get_children(body).contains(&child),
+                "precondition: remove_node unlinks the child"
+            );
+
+            relist(&mut doc, body, child, anchor);
+
+            assert!(
+                doc.get_children(body).contains(&child),
+                "#719: a removed child must be re-insertable"
+            );
+            assert_eq!(
+                doc.get_children(child),
+                vec![grandchild],
+                "#719: its subtree must come back with it"
+            );
+        }
+    }
+
+    /// `replace_node` **detaches** the node it displaced, like both real backends
+    /// (issue #719): it keeps its identity and its subtree, and can be inserted
+    /// again.
+    #[test]
+    fn replacing_a_node_detaches_it_and_keeps_its_subtree() {
         let mut doc = MockDomDocument::new();
         let body = doc.body();
         let old = doc.create_element("div");
@@ -509,6 +584,40 @@ mod tests {
         doc.replace_node(old, new);
 
         assert_eq!(doc.get_children(body), vec![new]);
+        assert!(doc.tag_name(old).is_some(), "#719: `old` must stay live");
+        assert_eq!(
+            doc.parent_node(old),
+            None,
+            "#719: but it must be unlinked from its parent"
+        );
+        assert_eq!(
+            doc.get_children(old),
+            vec![grandchild],
+            "#719: `old` keeps its own subtree"
+        );
+
+        doc.append_child(body, old);
+        assert_eq!(
+            doc.get_children(body),
+            vec![new, old],
+            "#719: a displaced node can be inserted again"
+        );
+    }
+
+    /// `discard_node` is the route that retires: the subtree leaves the table
+    /// (issue #184).
+    #[test]
+    fn discarding_a_node_retires_it_and_its_subtree() {
+        let mut doc = MockDomDocument::new();
+        let body = doc.body();
+        let old = doc.create_element("div");
+        doc.append_child(body, old);
+        let grandchild = doc.create_element("span");
+        doc.append_child(old, grandchild);
+
+        doc.discard_node(old);
+
+        assert!(doc.get_children(body).is_empty());
         assert!(doc.tag_name(old).is_none(), "#184: `old` must be retired");
         assert!(
             doc.tag_name(grandchild).is_none(),
@@ -517,9 +626,9 @@ mod tests {
     }
 
     /// Replacing a node with itself is a no-op the browser accepts, so it must not
-    /// retire a node that is still in the tree (issue #184).
+    /// unlink a node that is still in the tree (issue #184).
     #[test]
-    fn replacing_a_node_with_itself_does_not_retire_it() {
+    fn replacing_a_node_with_itself_does_not_unlink_it() {
         let mut doc = MockDomDocument::new();
         let body = doc.body();
         let node = doc.create_element("div");
@@ -528,27 +637,28 @@ mod tests {
         doc.replace_node(node, node);
 
         assert_eq!(doc.get_children(body), vec![node]);
-        assert!(
-            doc.tag_name(node).is_some(),
-            "#184: a self-replace must leave the node live"
+        assert_eq!(
+            doc.parent_node(node),
+            Some(body),
+            "#184: a self-replace must leave the node in its parent"
         );
     }
 
     /// A retired id must not resurface from `take_dirty_nodes` — a consumer that
     /// resolves what it is handed would find nothing there (issue #184).
     #[test]
-    fn a_retired_node_leaves_the_dirty_list() {
+    fn a_discarded_node_leaves_the_dirty_list() {
         let mut doc = MockDomDocument::new();
         let body = doc.body();
         let node = doc.create_element("div");
         doc.append_child(body, node);
         doc.set_attribute(node, "class", "x");
 
-        doc.remove_node(node);
+        doc.discard_node(node);
 
         assert!(
             !doc.take_dirty_nodes().contains(&node),
-            "#184: a retired node must not be reported dirty"
+            "#184: a discarded node must not be reported dirty"
         );
     }
 

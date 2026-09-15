@@ -125,16 +125,36 @@ where
             // `take()` on its own line so the `RefMut` is not held across the
             // dispose — see the matching note in `show_dom` (issue #141).
             let old_scope = scope_clone.borrow_mut().take();
+
+            // Ownership decides the verb, exactly as in `show_dom` (issue
+            // #719): an arm's own markup is `discard`ed so the backend can let
+            // go of it, a *captured* `NodeHandle` the arm merely returned is
+            // detached so switching back puts the same subtree in place. Read
+            // before the dispose — see the matching note in `show_dom`.
+            let doomed: Vec<(NodeHandle, bool)> = content_clone
+                .borrow_mut()
+                .drain(..)
+                .map(|node| {
+                    let owned = old_scope
+                        .as_ref()
+                        .is_some_and(|s| s.created(node.node_id()));
+                    (node, owned)
+                })
+                .collect();
+
             if let Some(old_scope) = old_scope {
                 old_scope.dispose();
             }
 
-            // Remove old content nodes
-            for node in content_clone.borrow_mut().drain(..) {
-                // Removal cancels the subtree's transitions and animations
-                // in the document implementation (#699); stamping inline
-                // `transition: none` here disarmed it permanently (#704).
-                node.remove();
+            // Removal of either kind cancels the subtree's transitions and
+            // animations in the document implementation (#699); stamping inline
+            // `transition: none` here disarmed it permanently (#704).
+            for (node, owned) in doomed {
+                if owned {
+                    node.discard();
+                } else {
+                    node.remove();
+                }
             }
 
             // Render new branch. Wrapped in untracked so signal reads

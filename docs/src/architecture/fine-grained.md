@@ -164,8 +164,15 @@ node.remove_class("dimmed");
 // Tree manipulation
 node.append_child(&child_node);
 node.insert_before(&new_node, &reference_node);
-node.remove();
+node.remove();   // detach — the subtree can be inserted again
+node.discard();  // finished with it — the backend may let go
 ```
+
+`remove()` and `discard()` are not synonyms. A removed node stays re-insertable
+on every backend (issue #719), which is what lets a reactive branch re-show a
+captured handle; `discard()` is how you tell the backend you are finished, and
+after it the ids name nothing. See
+[RenderScope & NodeHandle](./render-scope.md#nodehandle-api-reference).
 
 ### Reactive DOM Updates
 

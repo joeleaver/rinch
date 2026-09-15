@@ -227,12 +227,59 @@ let new_item = __scope.create_element("li");
 item1.replace_with(&new_item);
 ```
 
-> **Removal retires a handle.** `remove()` and `replace_with()` end the node's
-> life, along with its whole subtree: the backend is free to drop its bookkeeping
-> for those ids, so re-attaching or writing to the handle afterwards is not
-> guaranteed to do anything. On the browser backend it silently no-ops — that is
-> what lets the backend let go of the DOM node it was pinning (issue #184). Build
-> a fresh node instead of reviving a removed one.
+> **Removal is a detach; `discard()` is the end of a node's life.** `remove()`
+> and `replace_with()` take a node out of the tree and leave it **re-insertable**
+> on every backend: append the handle again and the whole subtree comes back,
+> and you may read, style or restructure it while it is out. That is what a
+> reactive branch re-showing a *captured* handle rests on (issue #719).
+>
+> Because a removed node is still the backend's to keep, tell it when you are
+> finished with the subtree for good:
+>
+> ```rust
+> panel.remove();    // hidden for now — I may show it again
+> row.discard();     // gone for good — let go of it
+> ```
+>
+> Treat a discarded handle as **dead**: build a fresh node rather than reviving
+> one. A backend that retires makes every operation on it a silent no-op, and
+> `rinch-web` and the test `MockDomDocument` both do, so the mistake fails
+> `cargo test` as well as a browser. A **discarded** id is never handed to a
+> different node on either backend, so a stale discard handle can only name
+> nothing. (That is a claim about `discard` alone: `rinch-dom` frees slab keys
+> through `set_inner_html` and pseudo-element pruning, and those *are* recycled —
+> issue #304, live today and independent of this API.)
+>
+> **Which to use.** If the same handle can be inserted again, `remove()`. If it
+> cannot — a pool shrunk, a glyph replaced, a panel rebuilt — `discard()`.
+> Reaching for `remove()` where you meant `discard()` costs memory; reaching for
+> `discard()` where you meant `remove()` costs the subtree. Neither is reported,
+> so choose deliberately.
+>
+> **The reactive helpers do not choose by hand.** `show_dom`, `match_dom`,
+> `reactive_component_dom` and `for`/`virtual_list` rows each run their user
+> closure inside a `RenderScope` of their own, and go by **ownership**: a node
+> that scope minted is the helper's to discard, a node the closure was handed is
+> the caller's and is only detached. `RenderScope::created` is the whole rule,
+> and it is the rule #141 gave signals and effects, applied to nodes. It is why
+> `if open { p { "hi" } }` reclaims its markup on every hide while
+> `if open { {panel} }` keeps yours.
+>
+> Two edges of that rule. The verb is chosen **before** the scope is disposed, so
+> an `on_cleanup` that re-parents a scope-built node cannot rescue it — build it
+> outside the closure and hand it in instead. And ownership answers for nodes in
+> a subtree: a node attached to nothing is reached by no walk, which is what
+> `rinch_core::dom::release_scratch_container` exists for.
+>
+> **`remove()`'s post-condition is the same on both backends; `discard()`'s is
+> not.** `rinch-web` holds a strong `web_sys::Node` in two page-global maps, so a
+> `discard()` is what releases the browser node against GC (issue #184).
+> `rinch-dom` reclaims nothing: a discarded node there still re-inserts, still
+> keeps its subtree and still takes writes, because its slab is per-document and
+> freeing the slot would recycle the id (issue #304) — so the desktop slab only
+> grows, which is issue #723. The contract is therefore one-sided: a `discard()`
+> is *at least* a `remove()` and may be much more, and you may not rely on it
+> being less.
 
 ### Focus
 
@@ -256,8 +303,9 @@ input.focus();  // Give focus to this element
 | `toggle_class(name: &str)` | Toggle a CSS class |
 | `append_child(child: &NodeHandle)` | Append a child node |
 | `insert_before(node: &NodeHandle, reference: &NodeHandle)` | Insert before reference |
-| `remove()` | Remove this node from its parent — **retires** the handle and its subtree |
-| `replace_with(new_node: &NodeHandle)` | Replace this node with another — **retires** this handle and its subtree |
+| `remove()` | Remove this node from its parent — a **detach**; the handle and its subtree stay re-insertable |
+| `replace_with(new_node: &NodeHandle)` | Replace this node with another — also a detach; the displaced handle stays re-insertable |
+| `discard()` | Remove this node and release the backend's bookkeeping for its whole subtree — **retires** the ids |
 | `focus()` | Give focus to this element |
 | `children() -> Vec<NodeHandle>` | Get child nodes as NodeHandles |
 | `is_valid() -> bool` | Check if this handle still points to a valid node |

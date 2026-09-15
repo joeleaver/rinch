@@ -168,7 +168,12 @@ pub fn generate_reactive_component_stmt(
             #(#children_code)*
             let #children_var: Vec<rinch::core::NodeHandle> = #temp_var.children();
 
-            rinch::core::Component::render(&#comp_var, __scope, &#children_var)
+            let __rendered = rinch::core::Component::render(&#comp_var, __scope, &#children_var);
+            // The scratch container is attached to nothing, so no subtree walk
+            // can ever reclaim it (issue #719). After the render: the children
+            // the component adopted have been re-parented out by then.
+            rinch::core::dom::release_scratch_container(__scope, &#temp_var);
+            __rendered
         });
         #style_code
         #class_code
@@ -268,6 +273,10 @@ pub fn element_to_dom_component(element: &RsxElement, ctx: &mut DomCodegenContex
 
             // Render component directly
             let #result_var = rinch::core::Component::render(&#comp_var, __scope, &#children_var);
+            // The scratch container is attached to nothing, so no subtree walk
+            // can ever reclaim it (issue #719). After the render: the children
+            // the component adopted have been re-parented out by then.
+            rinch::core::dom::release_scratch_container(__scope, &#temp_var);
 
             // Apply style/class/shorthand props to the rendered NodeHandle
             #style_code
@@ -396,7 +405,12 @@ pub fn element_to_dom_component_reactive(
             #(#children_code)*
             let #children_var: Vec<rinch::core::NodeHandle> = #temp_var.children();
 
-            rinch::core::Component::render(&#comp_var, __scope, &#children_var)
+            let __rendered = rinch::core::Component::render(&#comp_var, __scope, &#children_var);
+            // The scratch container is attached to nothing, so no subtree walk
+            // can ever reclaim it (issue #719). After the render: the children
+            // the component adopted have been re-parented out by then.
+            rinch::core::dom::release_scratch_container(__scope, &#temp_var);
+            __rendered
         });
         #style_code
         #class_code

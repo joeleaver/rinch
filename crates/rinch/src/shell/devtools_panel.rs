@@ -567,9 +567,10 @@ fn render_elements_panel(scope: &mut RenderScope, store: DevToolsStore) -> NodeH
             let rows = flatten_tree(&tree_data, &exp);
             drop(exp);
 
-            // Remove all existing children
+            // Discard, not remove (issue #719): these rows are rebuilt from
+            // scratch below and nothing keeps a handle to the old ones.
             for child in container.children() {
-                child.remove();
+                child.discard();
             }
 
             // Build rows
@@ -718,8 +719,9 @@ fn render_styles_panel(scope: &mut RenderScope, store: DevToolsStore) -> NodeHan
         let main_doc = main_doc.clone();
         move || {
             let _version = doc_version.get(); // subscribe to doc changes
+            // Discard, not remove (issue #719): the panel is rebuilt below.
             for child in container.children() {
-                child.remove();
+                child.discard();
             }
 
             let node_id = selected_node_id.get();

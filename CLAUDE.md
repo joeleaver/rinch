@@ -2455,6 +2455,114 @@ Signal.set() → Effect runs → NodeHandle.set_text() → Minimal re-layout
 | `RinchDocument` | `rinch-dom/src/lib.rs` | DOM implementation using Taffy + Parley + Vello |
 | `rsx!` | `rinch-macros/src/lib.rs` | Macro generating DOM construction code |
 
+### Taking a node out: `remove()` vs `discard()`
+
+**`NodeHandle::remove()` is a detach, on every backend** (issue #719). The node
+and its whole subtree keep their identity: append the handle again and the
+subtree comes back exactly as it was, and you may read, style or restructure it
+while it is out. `replace_with()` leaves the node it displaced in the same
+state. That post-condition is what a reactive branch re-showing a **captured**
+handle rests on — `rsx!`'s `if cond { {panel} }` desugars to `show_dom` with a
+branch closure returning that same `NodeHandle` every toggle, and `match` arms
+and a memoised `for` row are the same shape.
+
+**`NodeHandle::discard()` says the caller is finished with the subtree for
+good.** Treat a discarded handle as dead — build a fresh node rather than
+re-attaching one — because a backend is then free to drop its bookkeeping and
+make every operation on it a silent no-op. `rinch-web` and the test
+`MockDomDocument` both do, so re-attaching a discarded node fails `cargo test`
+as well as a browser.
+
+**The contract is one-sided on purpose.** A `discard()` is *at least* a
+`remove()` and may be much more; you may not rely on it being less. On
+`rinch-dom` today it is exactly a `remove()` — a discarded node still
+re-inserts, still keeps its subtree and still takes writes — and that is #723,
+not a promise. Writing code that depends on desktop's inertness is the #719
+mistake one verb along: right on desktop, dead on web, with nothing in the app's
+own tests to say so. The mock is what closes that.
+
+**A discarded id is never re-issued** on either backend, so a stale discard
+handle names nothing rather than somebody else: `rinch-web`'s counter is a
+monotonic `fetch_add` with no free list, and `rinch-dom` frees nothing on this
+route. That is a claim about **`discard` alone** — `rinch-dom` does free slab
+keys through `set_inner_html` and pseudo-element pruning on restyle, and
+`slab::Slab` recycles them (measured: `NodeId(4)` handed to a second node), so
+#304's recycled-slot hazard is live on desktop today, independently of this API.
+
+### Who picks the verb: **scope ownership**, not a judgement call
+
+The four marker-based reactive helpers — `show_dom`, `match_dom`,
+`reactive_component_dom`, and `for_each_dom_typed` / `virtual_list` rows —
+cannot know whether a subtree will be wanted again, so they do not guess. Each
+runs its user closure inside its own `RenderScope`, and **a node that scope
+minted is the helper's to discard; a node the closure was handed is the
+caller's, and is only detached**. That is the rule #141 PR4 gave signals and
+effects (`RenderScope::created`), applied to nodes.
+
+It falls out of that, with no special cases:
+
+| shape | verb | why |
+|---|---|---|
+| `if open { p { "hi" } }` — fresh markup | `discard` | the branch built it; nothing can show it again |
+| `if open { {panel} }` — a captured handle (the #654 shape) | `remove` | the closure was handed it; the next show puts it back |
+| a `render_fn`, branch closure or `for` view that **memoises a subtree built outside it** | `remove` | same reason: the closure was handed the node, so it is the caller's |
+| a nested `for`'s rows inside a discarded branch | reclaimed | the discard is recursive, and nothing outside minted them either |
+
+Ownership is asked of the **content root only**. That is what makes the nested
+case above right, and it costs one shape: a captured handle *inside*
+branch-built markup (`if open { div { {panel} } }`) is inside the recursion and
+goes with the wrapper. That is **#732**, it behaved the same way before #719,
+and `reinsertion_tests::a_captured_handle_nested_inside_fresh_markup_is_still_lost`
+pins it.
+
+**One more shape is lost on web, and only `for` can reach it: #733.** A `view`
+closure that builds *lazily through the row's own scope* and caches afterwards
+owns its row by this rule, so the first removal discards it. A branch closure or
+a `render_fn` can build its cached subtree outside itself and capture it; a `for`
+view is only ever handed the row's scope, so lazy-build-then-cache is the only
+way to write it there. Both were equally lost before #719 —
+`rinch-web` pruned every removed subtree — and `branch_helper_transition_tests`
+passes on both because `rinch-dom` reclaims nothing (#723), which is a fixed
+point worth remembering when reading that file.
+
+Every other release site says the verb outright, because it knows: the editor's
+`ViewDesc` diff (popped children, kind-changed blocks, placeholder, selection
+rects), `virtual_list`'s drained spacers, `Stepper`'s replaced default glyph,
+and DevTools' rebuilt panels all `discard`.
+
+**"Takes its whole subtree with it" is true of everything *in* a subtree, and a
+node in none is never reached.** An `rsx!` component site mints a scratch
+`<template>`, builds the site's children into it, and hands them to
+`Component::render`, which re-parents the ones it adopts; the container is then
+dead and attached to nothing, so no walk from a branch's content root can find
+it. That is `rinch_core::dom::release_scratch_container`, called at the three
+codegen sites and at `element.rs`'s `Element::Component` arm — one orphan per
+component render otherwise, measured at **+99 over 198 toggles** of
+`if open { Card {} }` in Chrome and on the mock alike. Anything still under the
+container was not adopted and leaves with it, by the same ownership rule one
+level down.
+
+Two ordering facts that fall out and are easy to get wrong: the verb is chosen
+**before** the branch scope is disposed, so a cleanup that re-parents a
+scope-built node during disposal cannot rescue it; and the scratch container is
+released **after** `Component::render`, so the children it adopted have been
+re-parented out by then.
+
+**Getting it wrong is silent either way**: `remove` where `discard` was meant
+costs memory on web, `discard` where `remove` was meant costs the subtree. The
+suite pins **both** directions for every helper — a re-show fixture and a
+node-count-over-200-toggles growth fixture, on the host through the mock and in
+real Chrome through `NODE_REGISTRY`. A round of PR #728 had only the re-show
+half for `show_dom`/`match_dom` and leaked one subtree per toggle in a browser
+with the board green.
+
+This divergence is what #719 was. `rinch-web`'s `remove_node` used to prune both
+maps, so on that backend alone the first hide retired the id and every later show
+inserted nothing — reproduced in Chrome 150, silent, no error anywhere.
+`crates/rinch-core/src/dom/mock.rs` is the host-runnable oracle for both verbs
+(it retires a discard and keeps a remove), which is why a `remove`/`discard`
+mistake now fails `cargo test` rather than only a browser.
+
 ### Usage
 
 Components use `#[component]` and return a `NodeHandle`:

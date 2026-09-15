@@ -46,21 +46,37 @@ thread_local! {
     /// node id back to its DOM node for caret/selection geometry.
     ///
     /// The value is a **strong** `web_sys::Node`, so an entry pins its browser
-    /// node against GC. Entries are therefore pruned at every *unbounded* point
-    /// the backend stops owning a node: by [`forget_subtree`]/[`forget_children`]
-    /// from `remove_node`, `replace_node` and `set_inner_html`, and by
-    /// [`Drop for WebDocument`](WebDocument) for whatever a dying document still
-    /// holds (issue #184). Node *creation* is not structural — a keyed `for`, a
+    /// node against GC. Node *creation* is not structural — a keyed `for`, a
     /// `show`, or the editor's per-keystroke `ViewDesc` churn creates and destroys
     /// nodes forever within one mounted root — so without pruning this map grows
     /// without bound for the life of the page.
     ///
-    /// One site is deliberately **not** pruned: `set_text_content` on an element
-    /// discards its children too, but the browser replaces them with an untagged
-    /// text node, so only the *first* call on a given element can strand anything
-    /// — at most one entry per element, which is bounded by the DOM rather than by
-    /// churn. Pruning there would retire nodes in the reactive-text hot path and
-    /// needs its own caller audit.
+    /// # Where it is pruned, and where it deliberately is not (issues #184, #719)
+    ///
+    /// Entries leave by [`forget_subtree`]/[`forget_children`] from
+    /// [`DomDocument::discard_node`] and `set_inner_html`, and by
+    /// [`Drop for WebDocument`](WebDocument) for whatever a dying document still
+    /// holds.
+    ///
+    /// **`remove_node` and `replace_node` are not on that list**, and used to be.
+    /// They are *detaches*: the node keeps both entries so a `NodeHandle` can put
+    /// it back, which is the post-condition desktop has always had and the one a
+    /// reactive branch re-showing a *captured* handle rests on (issue #719).
+    /// Pruning there is what made that silently lose the subtree on this backend
+    /// alone. So the bound on this map is no longer "everything removed" but
+    /// "everything a caller has not said it is finished with" — and every
+    /// unbounded churn source in the workspace says so: `for_each_dom_typed`,
+    /// `virtual_list`, `reactive_component_dom` and the editor's `ViewDesc` diff
+    /// all call `discard_node`. `crates/rinch-web/tests/node_registry_pruning.rs`
+    /// is the pin, `churning_a_for_loop_does_not_grow_the_registry` the
+    /// end-to-end one.
+    ///
+    /// `set_text_content` on an element is the other non-pruning site, for a
+    /// different reason: it discards its children too, but the browser replaces
+    /// them with an untagged text node, so only the *first* call on a given
+    /// element can strand anything — at most one entry per element, which is
+    /// bounded by the DOM rather than by churn. Pruning there would retire nodes
+    /// in the reactive-text hot path and needs its own caller audit.
     ///
     /// [`node_by_nid`] additionally returns `None` for a node that is present but
     /// detached, so its callers cannot tell a pruned id from a detached one.
@@ -202,6 +218,9 @@ fn set_nid(node: &web_sys::Node, id: NodeId) {
 
 /// Drop `node` and every `__nid`-tagged descendant of it from both node maps —
 /// the document's own `nodes` and the page-global [`NODE_REGISTRY`] (#184).
+///
+/// Reached only from [`DomDocument::discard_node`] and `set_inner_html`, the two
+/// routes on which the caller has said it is finished with the subtree (#719).
 ///
 /// Retiring an id is safe because `NEXT_NODE_ID` is a monotonic `fetch_add` with
 /// no free list: a retired id can never be re-issued to a different node, so this
@@ -1032,9 +1051,8 @@ impl DomDocument for WebDocument {
 
     fn replace_node(&mut self, old: NodeId, new: NodeId) {
         // `replaceChild(n, n)` succeeds — the DOM spec re-inserts `n` before its
-        // own next sibling — so without this guard the prune below would retire a
-        // node that is still in the tree, silently deadening every later write to
-        // it (issue #184).
+        // own next sibling — so guard it rather than let the detach below
+        // report a node as displaced when it is still exactly where it was.
         if old == new {
             return;
         }
@@ -1046,27 +1064,53 @@ impl DomDocument for WebDocument {
         let Some(parent) = old_node.parent_node() else {
             return;
         };
-        if parent.replace_child(new_node, &old_node).is_ok() {
-            // `old` is orphaned here and every caller drops its handle in the
-            // same breath (the editor's `ViewDesc` diff is a per-keystroke churn
-            // path), so holding its entries would leak it for the life of the
-            // page (#184). Gated on success: a rejected swap leaves `old` in the
-            // tree, and a node still in the tree must keep its entries.
-            forget_subtree(&mut self.nodes, &old_node);
-        }
+        // `old` is **detached**, not retired: it keeps both map entries and a
+        // handle to it can be inserted again, exactly as on desktop (issue
+        // #719). The callers that are finished with it — the editor's
+        // `ViewDesc` diff, a per-keystroke path — say so with `discard_node`,
+        // which is what releases it (issue #184).
+        parent.replace_child(new_node, &old_node).ok();
     }
 
     fn remove_node(&mut self, node: NodeId) {
+        // No `cloned()`, unlike `discard_node` below: nothing here mutates
+        // `self.nodes`, so the borrow can live across the detach.
+        let Some(n) = self.nodes.get(&node.0) else {
+            return;
+        };
+        if let Some(parent) = n.parent_node() {
+            parent.remove_child(n).ok();
+        }
+        // Both map entries stay. A removed node must be re-insertable — append
+        // its handle again and the whole subtree comes back, which is the
+        // post-condition desktop has always had and the one a reactive branch
+        // re-showing a *captured* handle rests on (issue #719). Pruning here is
+        // what made that silently lose the subtree on this backend.
+        //
+        // The bookkeeping is released by `discard_node` instead, which every
+        // caller that throws a subtree away calls (issue #184).
+    }
+
+    /// Detach `node` and drop it and every `__nid`-tagged descendant from both
+    /// node maps (issues #184, #719).
+    ///
+    /// This is where the browser backend actually lets go: both maps hold a
+    /// *strong* `web_sys::Node`, so an entry pins its browser node against GC
+    /// for the life of the wasm module, and node creation is not structural —
+    /// a keyed `for`, a `show`, or the editor's per-keystroke `ViewDesc` churn
+    /// creates and destroys nodes forever within one mounted root.
+    fn discard_node(&mut self, node: NodeId) {
         let Some(n) = self.nodes.get(&node.0).cloned() else {
             return;
         };
         if let Some(parent) = n.parent_node() {
             parent.remove_child(&n).ok();
         }
-        // Prune *unconditionally*, outside the `parent_node()` guard: a node that
-        // was built and never appended (or is already detached) is stranded just
-        // as hard as an attached one. Descendants stay attached to `n` when `n`
-        // leaves its parent, so the sweep works either side of the detach.
+        // Prune *unconditionally*, outside the `parent_node()` guard: a node
+        // that was built and never appended (or is already detached — every
+        // `discard` after a `replace_node` is) is stranded just as hard as an
+        // attached one. Descendants stay attached to `n` when `n` leaves its
+        // parent, so the sweep works either side of the detach.
         forget_subtree(&mut self.nodes, &n);
     }
 

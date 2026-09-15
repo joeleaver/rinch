@@ -362,10 +362,38 @@ impl NodeHandle {
         }
     }
 
-    /// Remove this node from its parent.
+    /// Remove this node from its parent, **leaving it re-insertable**.
+    ///
+    /// The subtree keeps its identity on every backend: append this handle again
+    /// and the whole thing comes back (issue #719). Use it when the node may be
+    /// shown again — a branch that toggles a captured handle.
+    ///
+    /// When you are finished with the subtree for good, call
+    /// [`discard`](Self::discard) instead, or the backend keeps it alive for the
+    /// life of the document. See [`DomDocument::remove_node`] and
+    /// [`DomDocument::discard_node`] for what each backend reclaims.
     pub fn remove(&self) {
         if let Some(doc) = self.doc.upgrade() {
             doc.borrow_mut().remove_node(self.node_id);
+        }
+    }
+
+    /// Remove this node and **release the backend's bookkeeping** for it and
+    /// every descendant — you are finished with the subtree for good.
+    ///
+    /// Treat this handle, and every handle into the subtree, as **dead**: do not
+    /// re-attach it, build a fresh node instead. A backend that retires makes
+    /// every operation on it a silent no-op — `rinch-web` and
+    /// [`MockDomDocument`](mock::MockDomDocument) both do, so the mistake fails
+    /// `cargo test` as well as a browser.
+    ///
+    /// What a discard actually reclaims differs by backend and is **not**
+    /// guaranteed: on `rinch-dom` today it is exactly [`remove`](Self::remove)
+    /// and the node still re-inserts (issue #723). See
+    /// [`DomDocument::discard_node`] for the full contract.
+    pub fn discard(&self) {
+        if let Some(doc) = self.doc.upgrade() {
+            doc.borrow_mut().discard_node(self.node_id);
         }
     }
 
@@ -815,6 +843,44 @@ impl std::fmt::Debug for NodeHandle {
 /// generated `render_fn` does exactly that: prop closures tracked, children +
 /// `Component::render` untracked.
 ///
+/// Release the scratch container an `rsx!` component site builds its children
+/// in (issue #719).
+///
+/// A component site mints a `<template>`, renders the site's children into it,
+/// reads them back out with [`NodeHandle::children`] and hands them to
+/// [`Component::render`], which re-parents the ones it adopts into its own tree.
+/// The container is then dead — and it is dead in the one way scope ownership
+/// cannot see: **it is in no subtree**, never having been attached to anything,
+/// so the recursive discard of a branch's content root never reaches it. One
+/// orphan per component render, measured at `+100` over 200 toggles of
+/// `if open { Card {} }` on `rinch-web`.
+///
+/// Anything still under the container was **not** adopted, so it leaves with it —
+/// by the same ownership rule the reactive helpers use, applied one level down:
+/// a leftover the site built is discarded, a leftover the site was *handed*
+/// (`Card { {captured.clone()} }` where `Card` ignores its children) is only
+/// detached, so a caller's subtree is never retired out from under it.
+///
+/// Call it **after** `Component::render`, so the children it adopted have
+/// already been re-parented out.
+pub fn release_scratch_container(scope: &RenderScope, container: &NodeHandle) {
+    for leftover in container.children() {
+        if scope.created(leftover.node_id()) {
+            leftover.discard();
+        } else {
+            leftover.remove();
+        }
+    }
+    container.discard();
+}
+
+/// A `render_fn` that **memoises** — one that hands back a subtree it built
+/// once, rather than building afresh — is supported on both backends, and is the
+/// #654 shape. The previous output leaves by whichever verb its ownership says
+/// (issue #719): built through this call's scope, it is discarded and the
+/// backend reclaims it; handed in from outside, it is only detached and comes
+/// back on the next run.
+///
 /// Returns the marker comment node. The caller should NOT append it again.
 pub fn reactive_component_dom<R>(
     scope: &mut RenderScope,
@@ -842,15 +908,34 @@ where
         // `take()` on its own line so the `RefMut` is not held across the
         // dispose — see the matching note in `show_dom` (issue #141).
         let old = cs.borrow_mut().take();
+
+        // Ownership decides the verb, exactly as in `show_dom` (issue #719).
+        // A `render_fn` that *builds* its output — what `rsx!` generates —
+        // creates it through this scope, so the previous output is `discard`ed
+        // and the backend lets go of it. A `render_fn` that memoises and hands
+        // back a subtree it built once is supported too: that node is not this
+        // scope's, so it is only detached and the next run re-inserts it.
+        let doomed: Vec<(NodeHandle, bool)> = cc
+            .borrow_mut()
+            .drain(..)
+            .map(|node| {
+                let owned = old.as_ref().is_some_and(|s| s.created(node.node_id()));
+                (node, owned)
+            })
+            .collect();
+
         if let Some(old) = old {
             old.dispose();
         }
-        // Remove old nodes
-        for node in cc.borrow_mut().drain(..) {
-            // Removal cancels the subtree's transitions and animations in the
-            // document implementation (#699); stamping inline
-            // `transition: none` here disarmed it permanently (#704).
-            node.remove();
+        // Removal of either kind cancels the subtree's transitions and
+        // animations in the document implementation (#699); stamping inline
+        // `transition: none` here disarmed it permanently (#704).
+        for (node, owned) in doomed {
+            if owned {
+                node.discard();
+            } else {
+                node.remove();
+            }
         }
         // Render fresh
         if let Some(doc) = doc_weak.upgrade() {
