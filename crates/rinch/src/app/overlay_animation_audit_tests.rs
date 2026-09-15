@@ -532,12 +532,10 @@ fn tabs_refuses_nothing_when_a_panel_is_revealed() {
         let list = TabsList::default().render(scope, &[tab_a, tab_b]);
         let panel_a = TabsPanel {
             value: "a".to_string(),
-            ..Default::default()
         }
         .render(scope, &[]);
         let panel_b = TabsPanel {
             value: "b".to_string(),
-            ..Default::default()
         }
         .render(scope, &[]);
         Tabs {
