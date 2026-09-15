@@ -150,6 +150,10 @@ impl DomDocument for RinchDocument {
             self.recompute_node_styles_recursive(c);
         }
 
+        // An inserted `<option>` carrying selectedness takes the selection with
+        // it, as it does in a browser (#692).
+        crate::select::options_inserted(&mut self.tree, c);
+
         // If a text node is appended to a <style> element, load its content as CSS
         self.maybe_load_style_css(p);
     }
@@ -492,7 +496,18 @@ impl DomDocument for RinchDocument {
         let folded = crate::attr_name::fold_attribute_name(self.tree.nodes[node.0].tag(), name);
         let name: &str = &folded;
 
+        // An `<option>`'s selectedness moves on the *transition* into the
+        // `selected` attribute, never on a re-write of one already there — the
+        // browser's own gate, and what makes the selected option the last one
+        // **set** rather than the last one carrying the attribute (#692).
+        let selects_this_option = name == "selected"
+            && self.tree.nodes[node.0].tag() == Some("option")
+            && !self.tree.nodes[node.0].attributes.contains_key(name);
+
         self.tree.nodes[node.0].write_attribute(name, value);
+        if selects_this_option {
+            crate::select::set_option_selectedness(&mut self.tree, node.0, true);
+        }
 
         // Parse inline style into Stylo PropertyDeclarationBlock
         if name == "style" {
@@ -574,8 +589,19 @@ impl DomDocument for RinchDocument {
         if !self.tree.nodes[node.0].attributes.contains_key(name) {
             return;
         }
+        // The option is losing a `selected` it really carries (#692). The early
+        // return above already guarantees the attribute is present, so this
+        // clause only has to decide that the node is an `<option>`.
+        let deselects_this_option =
+            name == "selected" && self.tree.nodes[node.0].tag() == Some("option");
 
         self.tree.nodes[node.0].erase_attribute(name);
+        // Losing the attribute deselects the option (#692). Nothing takes its
+        // place: with no option selected, `resolve_select_model` falls to its
+        // first non-disabled option, which is HTML's "ask for a reset".
+        if deselects_this_option {
+            crate::select::set_option_selectedness(&mut self.tree, node.0, false);
+        }
         if name == "style" {
             self.tree.nodes[node.0].style_attribute_cache = None;
         }
@@ -719,6 +745,12 @@ impl DomDocument for RinchDocument {
 
         // Recompute styles for the inserted subtree to pick up ancestor-based selectors
         self.recompute_node_styles_recursive(c);
+
+        // The same insertion rule as `append_child` (#692) — and the one that
+        // shows it is "last inserted" rather than "last in tree order": Chrome
+        // 150 hands the selection to a `selected` option inserted *before* an
+        // already-selected one.
+        crate::select::options_inserted(&mut self.tree, c);
     }
 
     fn parent_node(&self, node: NodeId) -> Option<NodeId> {

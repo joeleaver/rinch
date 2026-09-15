@@ -754,6 +754,23 @@ pub struct Node {
     /// Cached parsed inline style attribute (Stylo PropertyDeclarationBlock).
     /// Populated when style attribute is set, used by Stylo for cascade.
     pub style_attribute_cache: Option<ServoArc<Locked<PropertyDeclarationBlock>>>,
+    /// An `<option>`'s **live selectedness**, once something has set it (#692).
+    ///
+    /// HTML gives an `<option>` two states, and they come apart. The `selected`
+    /// content attribute is the option's *default* selectedness
+    /// (`defaultSelected`); its live selectedness is what the `<select>` reports,
+    /// and the rule that moves it is "whenever an option's selectedness is set
+    /// to true, every other option of its select is set to false". So the last
+    /// option **set** is the selected one, which is not in general the last one
+    /// carrying the attribute — measured in Chrome 150, writing `selected` on
+    /// option 1 and then option 0 leaves *option 0* selected with both
+    /// attributes present.
+    ///
+    /// `None` means nothing has set it and the attribute still speaks for the
+    /// option, which is what keeps a subtree built straight into `attributes`
+    /// (the HTML parser behind `set_inner_html`) resolving exactly as it always
+    /// did. `crate::select` owns every write; see `resolve_select_model`.
+    pub selectedness: Option<bool>,
     /// Set during Stylo selector matching when a `:hover` pseudo-class is
     /// evaluated against this node. Nodes without this flag can skip style
     /// invalidation on hover changes because no CSS rule depends on their
@@ -889,6 +906,7 @@ impl Node {
             snapshot_handled: AtomicBool::new(false),
             guard,
             style_attribute_cache: None,
+            selectedness: None,
             hover_sensitive: Cell::new(false),
             active_sensitive: Cell::new(false),
             focus_sensitive: Cell::new(false),
@@ -943,6 +961,7 @@ impl Node {
             snapshot_handled: AtomicBool::new(false),
             guard,
             style_attribute_cache: None,
+            selectedness: None,
             hover_sensitive: Cell::new(false),
             active_sensitive: Cell::new(false),
             focus_sensitive: Cell::new(false),
@@ -996,6 +1015,7 @@ impl Node {
             snapshot_handled: AtomicBool::new(false),
             guard,
             style_attribute_cache: None,
+            selectedness: None,
             hover_sensitive: Cell::new(false),
             active_sensitive: Cell::new(false),
             focus_sensitive: Cell::new(false),
@@ -1047,6 +1067,7 @@ impl Node {
             snapshot_handled: AtomicBool::new(false),
             guard,
             style_attribute_cache: None,
+            selectedness: None,
             hover_sensitive: Cell::new(false),
             active_sensitive: Cell::new(false),
             focus_sensitive: Cell::new(false),
