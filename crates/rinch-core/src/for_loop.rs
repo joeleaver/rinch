@@ -275,10 +275,13 @@ fn reclaim_displaced(mut displaced: ItemState) -> Option<RenderScope> {
          please report it.",
         displaced.item.key
     );
-    // Removal cancels the subtree's transitions and animations in the
-    // document implementation (#699); stamping inline `transition: none` here
-    // disarmed it permanently (#704).
-    displaced.node.remove();
+    // `discard`, not `remove`: nothing can reach this row again — it is
+    // unreachable from every data structure, which is the whole point of the
+    // warning above — so the backend should let go of it (issue #719). Either
+    // verb cancels the subtree's transitions and animations in the document
+    // implementation (#699); stamping inline `transition: none` here disarmed
+    // that permanently (#704).
+    displaced.node.discard();
     displaced.scope.take()
 }
 
@@ -493,11 +496,15 @@ where
                     // Remove the item's DOM node
                     if let Some(item_state) = state.remove(&key) {
                         doomed.extend(item_state.scope);
-                        // Removal cancels the subtree's transitions and
-                        // animations in the document implementation (#699);
-                        // stamping inline `transition: none` here disarmed it
-                        // permanently (#704).
-                        item_state.node.remove();
+                        // The row leaves `items_state` in the same breath, so
+                        // nothing can show it again: `discard`, not `remove`
+                        // (issue #719). A key that comes back later is rendered
+                        // afresh by the `Insert` arm below. Either verb cancels
+                        // the subtree's transitions and animations in the
+                        // document implementation (#699); stamping inline
+                        // `transition: none` here disarmed that permanently
+                        // (#704).
+                        item_state.node.discard();
                     }
                     // Remove from keys order
                     if let Some(pos) = keys.iter().position(|k| k == &key) {
@@ -640,7 +647,10 @@ where
                                 crate::reactive::untracked(|| view_clone(item, &mut child_scope))
                             };
                             old_state.node.insert_after(&new_node);
-                            old_state.node.remove();
+                            // `old_state.node` is overwritten on the next line
+                            // and the handle dies with it — discard, not remove
+                            // (issue #719).
+                            old_state.node.discard();
                             old_state.node = new_node;
                             old_state.item = item.clone();
                             old_state.scope = Some(child_scope);

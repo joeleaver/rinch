@@ -13,20 +13,41 @@
 //! `web_sys::Node`, so a stranded entry pins the detached browser node against
 //! GC for the life of the wasm module.
 //!
-//! Every removal path is covered, because each one strands entries on its own:
-//! `remove_node` (the `for`/`show`/`match`/`virtual_list` churn path and the
-//! editor's `ViewDesc` removals), `replace_node` (a per-keystroke editor path),
-//! `set_inner_html` (which discards its element's existing children), and
-//! `Drop for WebDocument` (the root/body wrappers, which no `remove_node` ever
-//! reaches).
+//! # Which verb releases, since #719
+//!
+//! `remove_node` used to be the release point. It is not any more: it is a
+//! **detach**, and the node stays in both maps so a handle can put it back —
+//! the post-condition desktop always had, and the one a reactive branch
+//! re-showing a *captured* handle rests on (issue #719). What releases is
+//! [`DomDocument::discard_node`], which every caller that throws a subtree away
+//! calls instead.
+//!
+//! So this file now tests a **pair** at each site: `discard_node` prunes and
+//! `remove_node` does not. Asserting only the prune would be passed by a
+//! backend that retires everything, which is exactly what #719 was.
+//!
+//! Every releasing path is covered, because each one strands entries on its own:
+//! `discard_node` (the `for`/`virtual_list`/component-re-render churn paths and
+//! the editor's `ViewDesc` removals), `set_inner_html` (which destroys its
+//! element's existing children), and `Drop for WebDocument` (the root/body
+//! wrappers, which no removal ever reaches). `replace_node` is no longer one of
+//! them — it detaches, and its callers discard afterwards.
+//!
+//! The end-to-end guard is `churning_a_for_loop_does_not_grow_the_registry`:
+//! the primitive tests below would all stay green if a reactive helper called
+//! `remove` where it meant `discard`, and that fixture is what would not.
 //!
 //! **Measure deltas and specific ids, never an absolute registry length.** The
 //! whole file runs in one wasm module on one page and `NEXT_NODE_ID` is
 //! process-global, so every test here shares the counter and the registry.
 #![cfg(target_arch = "wasm32")]
 
-use rinch_core::dom::{DomDocument, NodeId};
+use rinch_core::dom::{DomDocument, NodeHandle, NodeId, RenderScope};
+use rinch_core::for_each_dom_typed;
+use rinch_core::reactive::Signal;
 use rinch_web::web_document::{__node_registry_contains, __node_registry_len, WebDocument};
+use std::cell::RefCell;
+use std::rc::Rc;
 use wasm_bindgen_test::*;
 
 wasm_bindgen_test_configure!(run_in_browser);
@@ -75,7 +96,7 @@ fn child_div(doc: &mut WebDocument, parent: NodeId) -> NodeId {
 }
 
 #[wasm_bindgen_test]
-fn removing_a_node_drops_it_from_the_registry() {
+fn discarding_a_node_drops_it_from_the_registry() {
     let mut doc = doc();
     let body = doc.body();
     let id = child_div(&mut doc, body);
@@ -85,16 +106,36 @@ fn removing_a_node_drops_it_from_the_registry() {
         "precondition: a freshly created node is in the registry"
     );
 
-    doc.remove_node(id);
+    doc.discard_node(id);
 
     assert!(
         !__node_registry_contains(id.0),
-        "#184: remove_node must drop the node's NODE_REGISTRY entry"
+        "#184: discard_node must drop the node's NODE_REGISTRY entry"
+    );
+}
+
+/// The twin, and the whole of #719: `remove_node` must **keep** both entries,
+/// because the caller may put the node back.
+#[wasm_bindgen_test]
+fn removing_a_node_keeps_it_in_both_maps() {
+    let mut doc = doc();
+    let body = doc.body();
+    let id = child_div(&mut doc, body);
+
+    doc.remove_node(id);
+
+    assert!(
+        __node_registry_contains(id.0),
+        "#719: remove_node is a detach — the NODE_REGISTRY entry must survive"
+    );
+    assert!(
+        doc.__contains(id.0),
+        "#719: and so must the WebDocument::nodes entry"
     );
 }
 
 #[wasm_bindgen_test]
-fn removing_a_node_drops_it_from_the_document_map() {
+fn discarding_a_node_drops_it_from_the_document_map() {
     let mut doc = doc();
     let body = doc.body();
     let before = doc.__node_count();
@@ -103,11 +144,11 @@ fn removing_a_node_drops_it_from_the_document_map() {
     assert!(doc.__contains(id.0), "precondition: node is in the doc map");
     assert_eq!(doc.__node_count(), before + 1);
 
-    doc.remove_node(id);
+    doc.discard_node(id);
 
     assert!(
         !doc.__contains(id.0),
-        "#184: remove_node must drop the node's WebDocument::nodes entry"
+        "#184: discard_node must drop the node's WebDocument::nodes entry"
     );
     assert_eq!(
         doc.__node_count(),
@@ -117,7 +158,7 @@ fn removing_a_node_drops_it_from_the_document_map() {
 }
 
 #[wasm_bindgen_test]
-fn removing_a_subtree_drops_every_descendant() {
+fn discarding_a_subtree_drops_every_descendant() {
     let mut doc = doc();
     let body = doc.body();
 
@@ -133,33 +174,35 @@ fn removing_a_subtree_drops_every_descendant() {
         );
     }
 
-    doc.remove_node(parent);
+    doc.discard_node(parent);
 
-    // remove_node only detaches the top node from its parent; the descendants
+    // The detach only unlinks the top node from its parent; the descendants
     // stay attached to it, which is exactly why a naive one-line prune of the
     // top id alone is not enough.
     for id in [parent, child, text] {
         assert!(
             !__node_registry_contains(id.0),
-            "#184: {id:?} must be gone from NODE_REGISTRY after its ancestor is removed"
+            "#184: {id:?} must be gone from NODE_REGISTRY after its ancestor is discarded"
         );
         assert!(
             !doc.__contains(id.0),
-            "#184: {id:?} must be gone from the doc map after its ancestor is removed"
+            "#184: {id:?} must be gone from the doc map after its ancestor is discarded"
         );
     }
 }
 
 #[wasm_bindgen_test]
-fn an_unattached_node_is_still_pruned_by_remove() {
+fn an_unattached_node_is_still_pruned_by_discard() {
     let mut doc = doc();
 
-    // Built and never appended: `remove_node`'s `parent_node()` guard does not
+    // Built and never appended: `discard_node`'s `parent_node()` guard does not
     // hold, so a prune written *inside* that guard would keep leaking this.
+    // Every discard that follows a `replace_node` is in this state too, since
+    // the replace already unlinked the node.
     let id = doc.create_element("div");
     assert!(__node_registry_contains(id.0));
 
-    doc.remove_node(id);
+    doc.discard_node(id);
 
     assert!(
         !__node_registry_contains(id.0),
@@ -179,14 +222,15 @@ fn churning_a_list_does_not_grow_the_registry() {
     let registry_baseline = __node_registry_len();
     let doc_baseline = doc.__node_count();
 
-    // 50 rounds of "render a row, then drop it" — the `for`/`show`/`match` churn
-    // shape. Today each round strands 3 entries per map, forever.
+    // 50 rounds of "render a row, then drop it" — the `for`/`virtual_list`
+    // churn shape. Without the prune each round strands 3 entries per map,
+    // forever.
     for _ in 0..50 {
         let row = child_div(&mut doc, body);
         let label = child_div(&mut doc, row);
         let text = doc.create_text("row");
         doc.append_child(label, text);
-        doc.remove_node(row);
+        doc.discard_node(row);
     }
 
     assert_eq!(
@@ -249,8 +293,14 @@ fn dropping_a_document_releases_its_root_wrappers() {
     }
 }
 
+/// `replace_node` **detaches** the node it displaced (issue #719) — and the
+/// caller's follow-up `discard_node` is what releases it, on a node that is
+/// already unlinked.
+///
+/// This pair is the editor's `diff_children` shape, the highest-churn user of
+/// `replace_node` in the workspace (once per kind-changed block per keystroke).
 #[wasm_bindgen_test]
-fn replacing_a_node_prunes_the_replaced_subtree() {
+fn replacing_a_node_detaches_it_and_a_later_discard_prunes_it() {
     let mut doc = doc();
     let body = doc.body();
 
@@ -262,22 +312,29 @@ fn replacing_a_node_prunes_the_replaced_subtree() {
     doc.replace_node(old, new);
 
     assert!(
-        !__node_registry_contains(old.0) && !doc.__contains(old.0),
-        "#184: replace_node must prune the node it orphaned"
-    );
-    assert!(
-        !__node_registry_contains(old_child.0) && !doc.__contains(old_child.0),
-        "#184: replace_node must prune the orphaned node's descendants too"
+        __node_registry_contains(old.0) && doc.__contains(old.0),
+        "#719: replace_node must leave the displaced node re-insertable"
     );
     assert!(
         __node_registry_contains(new.0) && doc.__contains(new.0),
         "the replacement must survive"
     );
+
+    doc.discard_node(old);
+
+    assert!(
+        !__node_registry_contains(old.0) && !doc.__contains(old.0),
+        "#184: discarding a displaced node must prune it"
+    );
+    assert!(
+        !__node_registry_contains(old_child.0) && !doc.__contains(old_child.0),
+        "#184: and its descendants too, though the node is already unlinked"
+    );
 }
 
 /// `replaceChild(n, n)` succeeds — the DOM spec re-inserts `n` before its own
-/// next sibling — so a self-replace must not retire a node that is still in the
-/// tree (issue #184).
+/// next sibling — so a self-replace must not report a node that is still in the
+/// tree as displaced (issue #184).
 #[wasm_bindgen_test]
 fn replacing_a_node_with_itself_keeps_it_registered() {
     let mut doc = doc();
@@ -323,5 +380,61 @@ fn set_inner_html_prunes_the_children_it_discards() {
     assert!(
         !doc.get_children(container).is_empty(),
         "precondition: the new markup was registered"
+    );
+}
+
+/// **The end-to-end guard.** Every other fixture here calls `discard_node`
+/// itself, so all of them stay green if a *reactive helper* calls `remove`
+/// where it meant `discard` — which since #719 is the way the leak comes back.
+///
+/// This one drives the real `for_each_dom_typed` over a real `WebDocument` and
+/// watches the page-global registry across 30 rounds of replacing the whole
+/// list. Each round drops three rows of two nodes each, so a helper that merely
+/// detached would strand 180 entries.
+#[wasm_bindgen_test]
+fn churning_a_for_loop_does_not_grow_the_registry() {
+    let host = host();
+    let doc: Rc<RefCell<WebDocument>> = Rc::new(RefCell::new(WebDocument::new_into(
+        browser_document(),
+        host,
+    )));
+    let body = doc.borrow().body();
+    let body_handle = NodeHandle::new(body, Rc::downgrade(&doc) as _);
+    let dyn_doc: Rc<RefCell<dyn DomDocument>> = doc.clone();
+    let mut scope = RenderScope::new(dyn_doc, body);
+
+    let rows = Signal::new(vec![0u32, 1, 2]);
+    for_each_dom_typed(
+        &mut scope,
+        &body_handle,
+        move || rows.get(),
+        |n: &u32| n.to_string(),
+        |n: u32, s: &mut RenderScope| {
+            let row = s.create_element("div");
+            let label = s.create_text(&n.to_string());
+            row.append_child(&label);
+            row
+        },
+    );
+
+    // Measure *after* the first render, so the baseline is a mounted list and
+    // the delta is churn alone.
+    let registry_baseline = __node_registry_len();
+    let doc_baseline = doc.borrow().__node_count();
+
+    for round in 1..=30u32 {
+        let base = round * 3;
+        rows.set(vec![base, base + 1, base + 2]);
+    }
+
+    assert_eq!(
+        __node_registry_len(),
+        registry_baseline,
+        "#184/#719: a churning `for` must discard its dropped rows, not merely remove them"
+    );
+    assert_eq!(
+        doc.borrow().__node_count(),
+        doc_baseline,
+        "#184/#719: and the document map must not grow either"
     );
 }

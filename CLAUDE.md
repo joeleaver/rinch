@@ -2455,6 +2455,57 @@ Signal.set() → Effect runs → NodeHandle.set_text() → Minimal re-layout
 | `RinchDocument` | `rinch-dom/src/lib.rs` | DOM implementation using Taffy + Parley + Vello |
 | `rsx!` | `rinch-macros/src/lib.rs` | Macro generating DOM construction code |
 
+### Taking a node out: `remove()` vs `discard()`
+
+**`NodeHandle::remove()` is a detach, on every backend** (issue #719). The node
+and its whole subtree keep their identity: append the handle again and the
+subtree comes back exactly as it was, and you may read, style or restructure it
+while it is out. `replace_with()` leaves the node it displaced in the same
+state. That post-condition is what a reactive branch re-showing a **captured**
+handle rests on — `rsx!`'s `if cond { {panel} }` desugars to `show_dom` with a
+branch closure returning that same `NodeHandle` every toggle, and `match` arms
+and a memoised `for` row are the same shape.
+
+**`NodeHandle::discard()` is the end of a node's life.** It removes the node and
+releases the backend's bookkeeping for it and every descendant. Afterwards the
+ids name nothing and every operation on them is a **silent no-op** — never a
+panic, and never a write aimed at some other node, because neither backend
+re-issues an id (`rinch-web`'s counter is a monotonic `fetch_add` with no free
+list; `rinch-dom` does not free the slab slot at all, so #304's recycled-slot
+hazard cannot be reached this way).
+
+A caller picks by what it knows about the subtree's future, and **the reactive
+helpers are split down that line**:
+
+| helper | verb | why |
+|---|---|---|
+| `show_dom`, `match_dom` | `remove` | a branch closure may return a captured handle, so the same subtree can come back |
+| `for_each_dom_typed` — `Remove` and `Changed` arms, `reclaim_displaced` | `discard` | the row leaves `items_state` in the same breath |
+| `reactive_component_dom` | `discard` | `render_fn` builds afresh every run — that is its contract |
+| `virtual_list` — out-of-range rows, drained spacers | `discard` | both leave their pool/state with the unmount |
+| the editor's `ViewDesc` diff (popped children, kind-changed blocks), placeholder, selection-rect pool | `discard` | per-keystroke churn, and every handle dies on the next line |
+
+Getting it wrong is silent either way: `remove` where `discard` was meant costs
+memory, `discard` where `remove` was meant costs the subtree. A new removal site
+must choose deliberately, and there is no warning for either.
+
+**What each backend actually reclaims is not the same, and does not have to
+be**, because the post-condition above is. `rinch-web` keeps a *strong*
+`web_sys::Node` in the document map **and** a page-global registry, which pins
+the browser node against GC for the life of the wasm module — so `discard_node`
+is what releases it, and that is what issue #184 added. `rinch-dom` reclaims
+nothing: `discard_node` is the trait default there (plain `remove_node`), its
+slab is per-document and dies with the document, and freeing the slot would
+recycle the id. That leaves desktop with a per-document slab that only grows,
+which is **#723** and is not something `discard()` promises to fix.
+
+This divergence is what #719 was. `rinch-web`'s `remove_node` used to prune both
+maps, so on that backend alone the first hide retired the id and every later show
+inserted nothing — reproduced in Chrome 150, silent, no error anywhere.
+`crates/rinch-core/src/dom/mock.rs` is the host-runnable oracle for both verbs
+(it retires a discard and keeps a remove), which is why a `remove`/`discard`
+mistake now fails `cargo test` rather than only a browser.
+
 ### Usage
 
 Components use `#[component]` and return a `NodeHandle`:

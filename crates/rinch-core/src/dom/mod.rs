@@ -362,10 +362,32 @@ impl NodeHandle {
         }
     }
 
-    /// Remove this node from its parent.
+    /// Remove this node from its parent, **leaving it re-insertable**.
+    ///
+    /// The subtree keeps its identity on every backend: append this handle again
+    /// and the whole thing comes back (issue #719). Use it when the node may be
+    /// shown again — a branch that toggles a captured handle.
+    ///
+    /// When you are finished with the subtree for good, call
+    /// [`discard`](Self::discard) instead, or the backend keeps it alive for the
+    /// life of the document. See [`DomDocument::remove_node`] and
+    /// [`DomDocument::discard_node`] for what each backend reclaims.
     pub fn remove(&self) {
         if let Some(doc) = self.doc.upgrade() {
             doc.borrow_mut().remove_node(self.node_id);
+        }
+    }
+
+    /// Remove this node and **release the backend's bookkeeping** for it and
+    /// every descendant — you are finished with the subtree for good.
+    ///
+    /// Afterwards this handle (and every handle into the subtree) names nothing:
+    /// operations on it are silent no-ops, so do not re-attach it. Build a fresh
+    /// node instead. See [`DomDocument::discard_node`] for the full contract and
+    /// for what each backend actually reclaims.
+    pub fn discard(&self) {
+        if let Some(doc) = self.doc.upgrade() {
+            doc.borrow_mut().discard_node(self.node_id);
         }
     }
 
@@ -785,6 +807,13 @@ impl std::fmt::Debug for NodeHandle {
 /// generated `render_fn` does exactly that: prop closures tracked, children +
 /// `Component::render` untracked.
 ///
+/// `render_fn` must **build** its subtree on every call. Its previous output is
+/// discarded outright (issue #719), so a `render_fn` that returns a captured
+/// [`NodeHandle`] instead of a fresh one loses that subtree on the first
+/// re-render. A branch that wants to re-show a captured handle wants
+/// [`show_dom`](crate::show_dom) or [`match_dom`](crate::match_dom), which
+/// detach rather than discard.
+///
 /// Returns the marker comment node. The caller should NOT append it again.
 pub fn reactive_component_dom<R>(
     scope: &mut RenderScope,
@@ -815,12 +844,13 @@ where
         if let Some(old) = old {
             old.dispose();
         }
-        // Remove old nodes
+        // Discard the old nodes: `render_fn` builds this component's output
+        // afresh on every run, so nothing here is ever shown again (issue #719).
+        // Removal — of either kind — cancels the subtree's transitions and
+        // animations in the document implementation (#699); stamping inline
+        // `transition: none` here disarmed it permanently (#704).
         for node in cc.borrow_mut().drain(..) {
-            // Removal cancels the subtree's transitions and animations in the
-            // document implementation (#699); stamping inline
-            // `transition: none` here disarmed it permanently (#704).
-            node.remove();
+            node.discard();
         }
         // Render fresh
         if let Some(doc) = doc_weak.upgrade() {

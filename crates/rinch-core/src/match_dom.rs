@@ -129,7 +129,9 @@ where
                 old_scope.dispose();
             }
 
-            // Remove old content nodes
+            // Detach, not discard: an arm may return a *captured*
+            // `NodeHandle`, and switching back to it must put the same subtree
+            // back — see the matching note in `show_dom` (issue #719).
             for node in content_clone.borrow_mut().drain(..) {
                 // Removal cancels the subtree's transitions and animations
                 // in the document implementation (#699); stamping inline

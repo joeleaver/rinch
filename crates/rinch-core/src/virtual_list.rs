@@ -246,7 +246,10 @@ where
         for k in &to_remove {
             if let Some(item_state) = state.remove(k) {
                 doomed.extend(item_state.scope);
-                item_state.node.remove();
+                // The whole `ItemState` leaves `rendered` here, so scrolling
+                // back to this key renders it afresh rather than re-showing this
+                // node: `discard`, not `remove` (issue #719).
+                item_state.node.discard();
             }
         }
 
@@ -337,14 +340,17 @@ where
         // previous pass do need unmounting: `append_child` re-parents, so an
         // unused one would otherwise stay where the last pass put it.
         //
-        // They leave the pool with the unmount. `remove_node` *retires* a node
-        // (issue #184) — the browser backend drops its bookkeeping, so a retired
-        // handle can no longer be appended or styled — and a pool that kept one
-        // would silently fail to fill the hole on a later pass. A pass that needs
-        // more spacers than the last one builds fresh ones, which is what the
-        // `gaps_used == pool.len()` arm above already does.
+        // They leave the pool with the unmount, so `discard` rather than
+        // `remove` (issue #719): nothing can show a drained spacer again, and
+        // `discard` is what lets the browser backend release it (issue #184). A
+        // pass that needs more spacers than the last one builds fresh ones,
+        // which is what the `gaps_used == pool.len()` arm above already does.
+        //
+        // `drain` is what makes that safe. A pool that *kept* a discarded
+        // handle would silently fail to fill the hole on a later pass, because
+        // a discarded id can no longer be appended.
         for gap in gap_nodes.borrow_mut().drain(gaps_used..) {
-            gap.remove();
+            gap.discard();
         }
 
         // Update the window transform
@@ -385,7 +391,7 @@ where
 #[cfg(test)]
 mod tests {
     use crate::dom::traits::DomDocument;
-    use crate::dom::{RenderScope, mock::MockDomDocument};
+    use crate::dom::{NodeHandle, RenderScope, mock::MockDomDocument};
     use crate::reactive::{Owner, Signal, current_owner};
     use std::cell::RefCell;
     use std::rc::Rc;
@@ -582,14 +588,14 @@ mod tests {
         assert_eq!(row_names(&window), ["A1", "C", "B"]);
     }
 
-    /// A hole that comes back gets a *live* filler, not the retired one the last
-    /// hole used (issue #184).
+    /// A hole that comes back gets a *live* filler, not the discarded one the
+    /// last hole used (issues #184, #719).
     ///
-    /// Fillers are pooled across passes, and an unused one is unmounted at the
-    /// end of a pass. But `remove_node` **retires** a node — the browser backend
-    /// drops its bookkeeping so it can release the DOM node it was pinning — so a
-    /// pool that kept the handle would hand back something that can no longer be
-    /// appended or styled, and the hole would silently collapse.
+    /// Fillers are pooled across passes, and an unused one is `drain`ed out of
+    /// the pool and **discarded** at the end of a pass — which is what lets the
+    /// browser backend release the DOM node it was pinning, and which retires
+    /// the id. So a pool that kept the handle would hand back something that can
+    /// no longer be appended or styled, and the hole would silently collapse.
     #[test]
     fn a_filler_is_not_reused_after_it_has_been_unmounted() {
         let doc = Rc::new(RefCell::new(MockDomDocument::new()));
@@ -617,7 +623,7 @@ mod tests {
         );
         let window = list.children().remove(1);
 
-        // Pass 2: unique keys, so the filler from pass 1 is unmounted (retired).
+        // Pass 2: unique keys, so the filler from pass 1 is drained and discarded.
         items.set(vec![
             (1u32, "A1".to_string()),
             (3u32, "C".to_string()),
@@ -636,14 +642,105 @@ mod tests {
         assert_eq!(
             children[1].get_attribute("class").as_deref(),
             Some("rinch-vlist__gap"),
-            "#184: slot 1 is held open by a fresh filler, not a retired handle"
+            "#184: slot 1 is held open by a fresh filler, not a discarded handle"
         );
         assert_eq!(
             children[1].get_attribute("style").as_deref(),
             Some("height:20px"),
-            "#184: a retired handle would swallow the style write too"
+            "#184: a discarded handle would swallow the style write too"
         );
         assert_eq!(row_names(&window), ["A1", "B"]);
+    }
+
+    /// A spacer drained out of the pool is **discarded**, not merely removed
+    /// (issue #719) — the browser backend can only release it if the helper says
+    /// so, and a virtual list is an unbounded churn source by construction.
+    ///
+    /// The mock retires a discarded subtree and keeps a removed one, so the two
+    /// verbs are distinguishable on the host: `tag_name` answers `None` only for
+    /// the discard. `a_filler_is_not_reused_after_it_has_been_unmounted` above
+    /// cannot tell them apart — it passes either way, because `drain` is what
+    /// keeps the stale handle out of the pool.
+    #[test]
+    fn a_drained_spacer_is_discarded() {
+        let doc = Rc::new(RefCell::new(MockDomDocument::new()));
+        let body = doc.borrow().body();
+        let mut scope = RenderScope::new(doc.clone(), body);
+
+        let items = Signal::new(vec![
+            (1u32, "A1".to_string()),
+            (1u32, "A2".to_string()),
+            (2u32, "B".to_string()),
+        ]);
+        let list = super::virtual_list(
+            &mut scope,
+            20.0,
+            move || items.get(),
+            |item: &(u32, String)| item.0,
+            1,
+            |item: (u32, String), s: &mut RenderScope| {
+                let node = s.create_element("div");
+                node.set_attribute("data-name", &item.1);
+                node
+            },
+        );
+        let window = list.children().remove(1);
+        let spacer = window.children().remove(1);
+        assert_eq!(
+            spacer.get_attribute("class").as_deref(),
+            Some("rinch-vlist__gap"),
+            "precondition: the duplicate left a hole filled by a spacer"
+        );
+
+        // Unique keys: no hole, so the spacer is drained out of the pool.
+        items.set(vec![
+            (1u32, "A1".to_string()),
+            (3u32, "C".to_string()),
+            (2u32, "B".to_string()),
+        ]);
+
+        assert_eq!(
+            doc.borrow().tag_name(spacer.node_id()),
+            None,
+            "#719: a drained spacer must be discarded, so the backend can release it"
+        );
+    }
+
+    /// A row scrolled out of the range is discarded too: its whole `ItemState`
+    /// leaves `rendered`, so scrolling back renders it afresh (issue #719).
+    #[test]
+    fn a_row_that_leaves_the_range_is_discarded() {
+        let doc = Rc::new(RefCell::new(MockDomDocument::new()));
+        let body = doc.borrow().body();
+        let mut scope = RenderScope::new(doc.clone(), body);
+
+        let items = Signal::new(vec![(1u32, "A".to_string()), (2u32, "B".to_string())]);
+        let built: Rc<RefCell<Vec<NodeHandle>>> = Rc::new(RefCell::new(Vec::new()));
+        let seen = built.clone();
+        super::virtual_list(
+            &mut scope,
+            20.0,
+            move || items.get(),
+            |item: &(u32, String)| item.0,
+            1,
+            move |item: (u32, String), s: &mut RenderScope| {
+                let node = s.create_element("div");
+                node.set_attribute("data-name", &item.1);
+                seen.borrow_mut().push(node.clone());
+                node
+            },
+        );
+        assert_eq!(built.borrow().len(), 2, "precondition: both rows rendered");
+        let doomed = built.borrow()[1].clone();
+
+        // Drop the second key entirely, so its row leaves the rendered set.
+        items.set(vec![(1u32, "A".to_string())]);
+
+        assert_eq!(
+            doc.borrow().tag_name(doomed.node_id()),
+            None,
+            "#719: a row that leaves the range must be discarded"
+        );
     }
 
     /// A duplicate-free list allocates no filler at all — the common case pays

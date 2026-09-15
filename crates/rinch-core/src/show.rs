@@ -197,7 +197,13 @@ where
                 old_scope.dispose();
             }
 
-            // Remove old content nodes
+            // Detach the old content — `remove`, deliberately **not**
+            // `discard`. A branch closure may hand back a *captured*
+            // `NodeHandle` rather than building a fresh subtree, which is
+            // exactly what `rsx!` generates for `if cond { {panel} }`, and the
+            // same id then comes back on the next show (issue #719). Discarding
+            // here would retire it on the first hide and every later show would
+            // insert nothing, silently.
             for node in current_content_clone.borrow_mut().drain(..) {
                 // Removal cancels the subtree's transitions and animations
                 // in the document implementation (#699); stamping inline

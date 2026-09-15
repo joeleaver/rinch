@@ -279,6 +279,12 @@ impl ViewDesc {
                 // mark-wrapped run).
                 if let Some(replacement) = ViewDesc::build(new_child, doc) {
                     self.children[i].outer.replace_with(&replacement.outer);
+                    // `replace_with` *detaches* the node it displaces (issue
+                    // #719); the `ViewDesc` holding it is overwritten on the
+                    // next line, so nothing can show it again. Say so, or the
+                    // browser backend pins it for the life of the page — this
+                    // is a per-keystroke path.
+                    self.children[i].outer.discard();
                     self.children[i] = replacement;
                 }
             } else if let Some(new_desc) = ViewDesc::build(new_child, doc) {
@@ -289,7 +295,9 @@ impl ViewDesc {
         while self.children.len() > new_count {
             // `pop` keeps removal O(1) and order-independent (host removal is by id).
             if let Some(extra) = self.children.pop() {
-                extra.outer.remove();
+                // Popped off the end and dropped — `discard`, not `remove`
+                // (issue #719).
+                extra.outer.discard();
             }
         }
     }
@@ -444,7 +452,9 @@ impl RinchDomEditorView {
             }
             (None, true) => {
                 if let Some(node) = self.placeholder.take() {
-                    node.remove();
+                    // `take`n, so the handle is gone: discard (issue #719). The
+                    // arm above builds a fresh placeholder when one is needed.
+                    node.discard();
                 }
             }
             // (Some, true): placeholder stays (its text is fixed per editor).
@@ -751,7 +761,9 @@ impl RinchDomEditorView {
         }
         while self.selection_rects.len() > rects.len() {
             if let Some(div) = self.selection_rects.pop() {
-                div.remove();
+                // Out of the pool for good — discard (issue #719). The grow loop
+                // above builds fresh divs, so no later pass wants this one.
+                div.discard();
             }
         }
         for (div, (x, y, w, h)) in self.selection_rects.iter().zip(rects) {
@@ -777,7 +789,7 @@ impl RinchDomEditorView {
         self.overlay_dirty = true;
         self.last_selection = None;
         for div in self.selection_rects.drain(..) {
-            div.remove();
+            div.discard();
         }
     }
 
@@ -1466,6 +1478,92 @@ mod tests {
         assert_eq!(text(&h, p_id_after).as_deref(), Some("abX"));
     }
 
+    /// A block the `ViewDesc` diff drops is **discarded**, not merely removed
+    /// (issue #719).
+    ///
+    /// Every removal in this file is a discard, and the reason is churn rate:
+    /// this diff runs on every keystroke and every selection change, and on the
+    /// browser backend a merely-removed node keeps a strong `web_sys::Node` in
+    /// two page-global maps for the life of the module (issue #184). `remove`
+    /// here would leak one entry per block the user ever deletes.
+    ///
+    /// The mock retires a discarded subtree and keeps a removed one, so the two
+    /// verbs are distinguishable on the host: `tag_name` answers `None` only for
+    /// the discard.
+    #[test]
+    fn a_dropped_block_is_discarded_not_merely_removed() {
+        let h = harness();
+        let s = schema();
+        let st = state(
+            s.clone(),
+            doc_node(&s, vec![para(&s, "keep"), para(&s, "drop")]),
+        );
+        let mut view = RinchDomEditorView::new(h.container.clone(), doc_ref(&h), &st);
+
+        let blocks = children(&h, h.container_id);
+        assert_eq!(blocks.len(), 2, "precondition: two blocks are mounted");
+        let doomed = blocks[1];
+        let doomed_text = children(&h, doomed)[0];
+
+        // Delete the whole second block, so `diff_children` pops its ViewDesc.
+        let mut tr = st.tr();
+        tr.delete(6, 12).unwrap();
+        let next = st.apply(tr);
+        view.update_dom(&st, &next);
+
+        assert_eq!(
+            children(&h, h.container_id).len(),
+            1,
+            "precondition: one block is left"
+        );
+        assert_eq!(
+            tag(&h, doomed),
+            None,
+            "#719: the dropped block must be discarded, so the backend can release it"
+        );
+        assert_eq!(
+            tag(&h, doomed_text),
+            None,
+            "#184: and its whole subtree with it"
+        );
+    }
+
+    /// A block whose **kind** changes goes through `replace_with`, and the
+    /// `ViewDesc` it displaces must be discarded (issue #719).
+    ///
+    /// This is the other editor removal route, and the one with no `remove()`
+    /// in it at all: `replace_with` *detaches* the node it displaces, so
+    /// without a following `discard` the old block and its whole subtree stay
+    /// in the browser backend's two maps forever. It fires once per
+    /// kind-changed block per keystroke.
+    #[test]
+    fn a_block_whose_kind_changes_discards_the_one_it_replaced() {
+        let h = harness();
+        let s = schema();
+        let mut st = state(s.clone(), doc_node(&s, vec![para(&s, "title")]));
+        let mut view = RinchDomEditorView::new(h.container.clone(), doc_ref(&h), &st);
+
+        let before = children(&h, h.container_id)[0];
+        assert_eq!(tag(&h, before).as_deref(), Some("p"), "precondition");
+
+        st.selection = Selection::cursor(rinch_editor_core::Pos(2));
+        let next = st.run("setHeading1").expect("setHeading1 applies");
+        view.update_dom(&st, &next);
+
+        let after = children(&h, h.container_id)[0];
+        assert_eq!(
+            tag(&h, after).as_deref(),
+            Some("h1"),
+            "precondition: the block is a heading now"
+        );
+        assert_ne!(before, after, "precondition: it was rebuilt, not patched");
+        assert_eq!(
+            tag(&h, before),
+            None,
+            "#719: the displaced block must be discarded, not left detached"
+        );
+    }
+
     #[test]
     fn split_block_adds_a_paragraph_and_keeps_the_first() {
         let h = harness();
@@ -1573,6 +1671,44 @@ mod tests {
         assert!(
             !has_placeholder(&h),
             "placeholder removed once content exists"
+        );
+    }
+
+    /// The placeholder is **discarded** when it goes away, not merely removed
+    /// (issue #719): `self.placeholder.take()` drops the handle in the same
+    /// breath, and a fresh one is built the next time the doc goes empty.
+    #[test]
+    fn a_dismissed_placeholder_is_discarded() {
+        let h = harness();
+        let s = schema();
+        let empty = doc_node(&s, vec![s.branch("paragraph", Fragment::empty()).unwrap()]);
+        let st = EditorState::create(
+            s.clone(),
+            empty,
+            vec![Rc::new(PlaceholderPlugin::new("Write something…"))],
+        );
+        let mut view = RinchDomEditorView::new(h.container.clone(), doc_ref(&h), &st);
+
+        let placeholder = *children(&h, h.container_id)
+            .iter()
+            .find(|&&id| {
+                h.doc
+                    .borrow()
+                    .get_attribute(id, "data-pm-placeholder")
+                    .is_some()
+            })
+            .expect("precondition: the placeholder is mounted");
+
+        let mut tr = st.tr();
+        tr.set_selection(Selection::cursor(rinch_editor_core::Pos(1)));
+        tr.insert_text("x").unwrap();
+        let next = st.apply(tr);
+        view.update_dom(&st, &next);
+
+        assert_eq!(
+            tag(&h, placeholder),
+            None,
+            "#719: the dismissed placeholder must be discarded, so the backend can release it"
         );
     }
 

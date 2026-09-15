@@ -6,6 +6,11 @@
 //! `remove()`: `show_dom`, `match_dom`, `for_each_dom_typed`'s `Remove` arm and
 //! `reclaim_displaced`, and the component re-render effect.
 //!
+//! (That shape only actually re-inserted on **both** backends from #719 on:
+//! `rinch-web` used to retire a removed node's bookkeeping, so the same toggle
+//! lost the subtree there outright. These fixtures run on `rinch-dom`, which
+//! always re-inserted, so they were blind to it.)
+//!
 //! For the four of those that discard the subtree it was merely redundant. For
 //! a branch helper that keeps a `NodeHandle` and re-inserts the **same**
 //! subtree — a reactive `if` whose branch closure returns a captured handle,

@@ -227,12 +227,37 @@ let new_item = __scope.create_element("li");
 item1.replace_with(&new_item);
 ```
 
-> **Removal retires a handle.** `remove()` and `replace_with()` end the node's
-> life, along with its whole subtree: the backend is free to drop its bookkeeping
-> for those ids, so re-attaching or writing to the handle afterwards is not
-> guaranteed to do anything. On the browser backend it silently no-ops — that is
-> what lets the backend let go of the DOM node it was pinning (issue #184). Build
-> a fresh node instead of reviving a removed one.
+> **Removal is a detach; `discard()` is the end of a node's life.** `remove()`
+> and `replace_with()` take a node out of the tree and leave it **re-insertable**
+> on every backend: append the handle again and the whole subtree comes back,
+> and you may read, style or restructure it while it is out. That is what a
+> reactive branch re-showing a *captured* handle rests on (issue #719).
+>
+> Because a removed node is still the backend's to keep, tell it when you are
+> finished with the subtree for good:
+>
+> ```rust
+> panel.remove();    // hidden for now — I may show it again
+> row.discard();     // gone for good — let go of it
+> ```
+>
+> After a `discard()` the ids name nothing: every operation on them is a silent
+> no-op, so build a fresh node rather than reviving one. Ids are never re-issued
+> on either backend, so a stale handle can only ever name nothing, never somebody
+> else.
+>
+> **Which to use.** If the same handle can be inserted again, `remove()`. If it
+> cannot — a list row dropped, a pool shrunk, a component re-rendering its own
+> output — `discard()`. Reaching for `remove()` where you meant `discard()` costs
+> memory; reaching for `discard()` where you meant `remove()` costs the subtree.
+> Neither is reported, so choose deliberately.
+>
+> **What each backend reclaims** differs, even though the post-condition does
+> not. `rinch-web` holds a strong `web_sys::Node` in two page-global maps, so a
+> `discard()` is what releases the browser node against GC (issue #184).
+> `rinch-dom` reclaims nothing yet: its slab is per-document and dies with the
+> document, and freeing the slot would recycle the id (issue #304) — so the
+> desktop slab only grows, which is issue #723.
 
 ### Focus
 
@@ -256,8 +281,9 @@ input.focus();  // Give focus to this element
 | `toggle_class(name: &str)` | Toggle a CSS class |
 | `append_child(child: &NodeHandle)` | Append a child node |
 | `insert_before(node: &NodeHandle, reference: &NodeHandle)` | Insert before reference |
-| `remove()` | Remove this node from its parent — **retires** the handle and its subtree |
-| `replace_with(new_node: &NodeHandle)` | Replace this node with another — **retires** this handle and its subtree |
+| `remove()` | Remove this node from its parent — a **detach**; the handle and its subtree stay re-insertable |
+| `replace_with(new_node: &NodeHandle)` | Replace this node with another — also a detach; the displaced handle stays re-insertable |
+| `discard()` | Remove this node and release the backend's bookkeeping for its whole subtree — **retires** the ids |
 | `focus()` | Give focus to this element |
 | `children() -> Vec<NodeHandle>` | Get child nodes as NodeHandles |
 | `is_valid() -> bool` | Check if this handle still points to a valid node |

@@ -172,21 +172,77 @@ pub trait DomDocument {
 
     /// Replace a node with another node.
     ///
-    /// The swap **retires** `old` and its whole subtree, exactly as
-    /// [`remove_node`](Self::remove_node) does: the ids may name nothing
-    /// afterwards, and an `old` handle must not be re-attached or written to.
-    /// Build a fresh node instead.
+    /// `old` is **detached**, not retired: it keeps its identity and its own
+    /// subtree, and a handle to it may be inserted again. Say you are finished
+    /// with it by calling [`discard_node`](Self::discard_node) — see the
+    /// post-condition table there.
     fn replace_node(&mut self, old: NodeId, new: NodeId);
 
-    /// Remove a node from its parent.
+    /// Remove a node from its parent, **leaving it re-insertable**.
     ///
-    /// This **retires** the node and its whole subtree: a backend is free to drop
-    /// their bookkeeping, so the ids may name nothing afterwards. A `NodeHandle`
-    /// for a removed node must not be re-attached — appending it again is not
-    /// guaranteed to do anything (on the browser backend it silently no-ops, and
-    /// it is what lets that backend release the node it was pinning, issue #184).
-    /// Build a fresh node instead.
+    /// The node and its whole subtree keep their identity: a [`NodeHandle`] for
+    /// any of them may be appended, inserted, read or styled afterwards, and
+    /// appending the removed node again puts the whole subtree back exactly as
+    /// it was. That is the post-condition every backend owes (issue #719), and
+    /// it is what a reactive branch that re-shows a **captured** handle rests on
+    /// — `show_dom` and `match_dom` both do, and so does app code that stashes a
+    /// `NodeHandle` and toggles it.
+    ///
+    /// The backend therefore still owns this node's bookkeeping. A caller that
+    /// is finished with the subtree for good must say so with
+    /// [`discard_node`](Self::discard_node), or it is kept alive for the life of
+    /// the document.
+    ///
+    /// [`NodeHandle`]: super::NodeHandle
     fn remove_node(&mut self, node: NodeId);
+
+    /// Remove a node **and release the backend's bookkeeping** for it and every
+    /// descendant — the caller is finished with the subtree for good.
+    ///
+    /// This is the only route that retires an id. Afterwards the ids may name
+    /// nothing: every operation on one is a **silent no-op**, never a panic and
+    /// never a write to some other node (ids are never re-issued — see below).
+    /// Build a fresh node instead of re-attaching a discarded one.
+    ///
+    /// # When to call it rather than [`remove_node`](Self::remove_node)
+    ///
+    /// Call it wherever the caller *knows* it is throwing the subtree away and
+    /// the handle dies in the same breath: a keyed list dropping a row, a pool
+    /// shrinking, a component re-render replacing its own output. Do **not**
+    /// call it where the same handle may be shown again — a branch helper
+    /// toggling a captured node — which is the whole of issue #719.
+    ///
+    /// Reaching for `remove_node` when `discard_node` was meant costs memory;
+    /// reaching for `discard_node` when `remove_node` was meant costs the
+    /// subtree. Neither is reported, so the choice is the caller's to make
+    /// deliberately.
+    ///
+    /// # What each backend actually reclaims
+    ///
+    /// | backend | `remove_node` | `discard_node` |
+    /// |---|---|---|
+    /// | `rinch-dom` (desktop) | detach; the slab entry stays | the same — the default below. Desktop's slab is per-document and dies with it, and freeing the entry would recycle the id (issue #304). That the slab therefore only grows is **issue #723**, not something this method promises to fix |
+    /// | `rinch-web` | detach; both node maps keep the node | drops the node and every descendant from the document map **and** the page-global registry (issue #184), releasing the `web_sys` node it was pinning against GC |
+    ///
+    /// The **post-condition** is identical on both (`remove_node` re-insertable,
+    /// `discard_node` retired); only how much each reclaims differs, because the
+    /// web maps hold strong `web_sys` references that outlive the document and
+    /// desktop's do not.
+    ///
+    /// # Ids are never re-issued
+    ///
+    /// Neither backend hands a discarded id to a later node — `rinch-web`'s
+    /// counter is a monotonic `fetch_add` with no free list, and `rinch-dom`
+    /// does not free the slot at all — so a stale handle can only ever name
+    /// nothing, never somebody else. Registries keyed by node id (focus, the
+    /// mounted-editor registry) therefore cannot be aimed at the wrong node by a
+    /// discard.
+    ///
+    /// The default is `remove_node`: correct but reclaiming nothing, which is
+    /// what a backend whose bookkeeping dies with the document wants.
+    fn discard_node(&mut self, node: NodeId) {
+        self.remove_node(node);
+    }
 
     /// Set the text content of a node.
     fn set_text_content(&mut self, node: NodeId, text: &str);
