@@ -180,8 +180,10 @@ fn id_keyed_child_and_descendant_combinators_match() {
     );
     assert_eq!(
         margin_top(&doc, other_p),
-        0.0,
-        "…and only under that ancestor"
+        16.0,
+        "…and only under that ancestor — 16px is the UA sheet's own \
+         `p` block-margin rule (#674, `margin-block: 1em`) at the default 16px root, i.e. the \
+         rule did not match, not that the element has no margin"
     );
     assert_eq!(
         margin_top(&doc, b),

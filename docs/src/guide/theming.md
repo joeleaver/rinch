@@ -133,6 +133,59 @@ value, so a header cell inside a container you have aligned inherits that
 alignment rather than being re-centred. If you want a header cell centred
 regardless, say so on the cell — an author declaration always wins.
 
+#### The rest of the browser's defaults
+
+The same audit (issue #674) finished the job for the elements around a heading,
+every value measured in Chrome 150 and every one a UA-origin cascade rule your
+own declaration beats:
+
+| element | what it now gets |
+|---------|------------------|
+| `p`, `blockquote`, `figure`, `ul`, `ol`, `pre` | `margin-block: 1em` |
+| `blockquote`, `figure` | `margin-inline: 40px` |
+| `dd` | `margin-inline-start: 40px` |
+| a `ul`/`ol` inside a `ul`/`ol` | `margin-block: 0` — no compounding gap per level |
+| `pre` | `white-space: pre`, so it preserves runs of spaces and newlines |
+| `code`, `kbd`, `samp`, `pre` | `font-family: monospace` |
+| `small`, `sub`, `sup` | `font-size: smaller` |
+| `hr` | `color: gray`, a 1px `inset` border, `margin-block: 0.5em`, `margin-inline: auto`, `height: 0`, `overflow: hidden` |
+
+Before this an `<hr>` rendered **nothing at all** — the UA sheet's own
+`* { border-width: 0 }` reset, which is there to undo Stylo's `medium` initial,
+applied to `<hr>` too and nothing put the border back.
+
+Four things about that set are worth knowing before they surprise you.
+
+- **The `<hr>` rule is coloured through `color`, not `border-color`.** The
+  border is `currentcolor`, so `<hr style="color: #c00">` gives you a red rule
+  and there is no need to restate the border. `border: none` removes it
+  outright, which is what the `Divider` component does.
+- **A bare `<hr>` in a `Stack` collapses to a dot.** `margin-inline: auto` are
+  auto cross-axis margins on a flex item, and those suppress the stretch that
+  would otherwise give it the container's width — so it shrinks to its content
+  width, which for an `<hr>` is nothing, and centres. A browser does exactly the
+  same. Use `Divider`, or give the rule a `width: 100%`.
+- **Whitespace in `<pre>` is preserved now**, which means a `<pre>` whose source
+  was indented in your `rsx!` will show that indentation. That is the element
+  doing its job; `white-space: normal` on it opts out.
+- **rinch does not copy Chrome's monospace font-*size* quirk.** Chrome renders a
+  `medium`-sized monospace element at 13px rather than 16px; rinch has no
+  per-family default size, so `<code>` keeps the size it inherits. Only the
+  family comes from the UA sheet.
+
+`vertical-align: sub`/`super` on `<sub>`/`<sup>` (issue #724) and list markers on
+`<li>` (issue #725) are **not** part of this: neither is a stylesheet line —
+`ComputedStyle` carries no `vertical_align` field and `DisplayValue` no
+`ListItem` — so both need property and layout work first. Until then a `<sub>`
+is smaller but not lowered, and a `<ul>` is indented but unbulleted. The `List`
+component and the rich-text editor draw their own bullets.
+
+Components are unaffected. `Divider`, `List`, `Breadcrumbs`, `Tree`, `Image`,
+`Blockquote` and `Code` all declare `margin: 0`, and the editor's stylesheet
+declares its own spacing for every one of these tags, so the new rules change
+nothing you render through the component library — they change what a **bare**
+tag does, which is the point.
+
 #### Scaling the whole UI with `rem`
 
 `rem` lengths resolve against the computed font-size of the root (`<html>`)
