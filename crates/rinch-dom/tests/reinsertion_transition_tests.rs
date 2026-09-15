@@ -108,14 +108,14 @@
 //!
 //! # `display: none` is not a detach, and this file does not make it one
 //!
-//! `toggling_display_none_is_not_a_detach` pins today's behaviour rather than
-//! the browser's: a node hidden with `display: none` stays in the document,
-//! keeps `has_been_styled`, and **does** start a transition if its style
-//! changes while it is hidden — which css-transitions-1 §3 does not, because a
-//! non-rendered element has no before-change style either. That is a real
-//! deviation and a separate one (issue #703); the pin is here so that a future
-//! fix for it is a deliberate change with a test to update, not a silent
-//! side-effect of this one.
+//! `toggling_display_none_is_not_a_detach` says what a hidden node is *not*. A
+//! node hidden with `display: none` stays in the document and keeps
+//! `has_been_styled`, so none of this file's mechanism touches it — and it
+//! still starts no transition, because the cascade answers the §3 question for
+//! it a different way. That was a real deviation when this file was written
+//! and it is fixed under issue #703, whose own fixtures (and the ancestor,
+//! `visibility` and one-step-show cases the distinction needs) are in
+//! `display_none_transition_tests`.
 
 #![cfg(feature = "software-renderer")]
 
@@ -567,15 +567,25 @@ fn a_detached_subtree_keeps_the_style_it_last_had() {
     }
 }
 
-/// `display: none` is **not** a detach, and this change must not make it one.
+/// `display: none` is **not** a detach, and neither #699 nor #703 made it one.
 ///
-/// This pins today's behaviour, which is not the browser's: the hidden node
-/// keeps `has_been_styled`, so a style change while it is hidden starts a
-/// transition, and it is still running when the node is shown again.
-/// css-transitions-1 §3 starts no transition for an element that is not being
-/// rendered, and `display: none` is one — but that is a separate deviation
-/// (issue #703) with a separate cure, and conflating the two here would have
-/// made this change's blast radius impossible to attribute.
+/// The two are separate mechanisms answering the same css-transitions-1 §3
+/// question — *is there a before-change style to leave?* — at two different
+/// places, and this fixture is where the difference is visible. A **detached**
+/// node loses `has_been_styled`, because nothing at the re-insertion could tell
+/// a returning subtree from one that never left. A **hidden** node keeps it:
+/// it never left the document, and the cascade can see for itself that it is
+/// not being rendered, every time it is asked. So the flag still says `true`
+/// here, and no transition starts anyway.
+///
+/// That distinction is worth a fixture because it is the thing a later
+/// simplification would flatten — "a hidden node is not rendered, so give it
+/// the detach treatment" is a plausible-looking edit that would clear the flag
+/// and lose the reason there are two mechanisms.
+///
+/// The transition behaviour itself belongs to #703 and lives in
+/// `display_none_transition_tests`, which has the ancestor, `visibility` and
+/// one-step-show cases as well.
 #[test]
 fn toggling_display_none_is_not_a_detach() {
     let (mut doc, wrap, boxed) = mounted_box();
@@ -584,23 +594,34 @@ fn toggling_display_none_is_not_a_detach() {
     doc.resolve_layout(801.0, 600.0);
     assert!(
         styled(&doc, boxed),
-        "a hidden node is still in the document, so it keeps its before-change style"
+        "a hidden node never left the document, so it is not given the detach reset"
     );
 
     doc.set_attribute(wrap, "class", "w--b hidden");
     doc.resolve_layout(802.0, 600.0);
+    assert!(
+        styled(&doc, boxed),
+        "restyling it while hidden does not change that either"
+    );
     assert_eq!(
         running(&doc, boxed),
-        1,
-        "today rinch starts a transition on a non-rendered element (#703)"
+        0,
+        "and §3 still starts nothing, because the cascade asks whether the node \
+         is being rendered rather than whether it is in the document (#703)"
     );
 
     doc.set_attribute(wrap, "class", "w--b");
     doc.resolve_layout(803.0, 600.0);
     assert_eq!(
         running(&doc, boxed),
-        1,
-        "and it is still running when the node is shown — unchanged by #699"
+        0,
+        "nothing starts when it is shown, so the box appears at its new value"
+    );
+    assert_eq!(
+        width_px(&doc, boxed),
+        Some(30.0),
+        "which is the value it resolved to while it was hidden — the hidden \
+         node kept being styled, unlike a detached one"
     );
 }
 

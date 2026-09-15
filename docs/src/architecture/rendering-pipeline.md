@@ -408,10 +408,56 @@ keyed `for` reorder depends on, since it moves rows with `insert_after`. The one
 shape that leaves the document under a move, appending a mounted node into a
 detached parent, is not covered (issue #702).
 
-`display: none` is not a detach either, and here rinch deviates from the spec:
-the node stays in the document, keeps its flag, and **does** start a transition
-if its style changes while it is hidden, where §3 starts none for an element
-that is not being rendered. Issue #703.
+`display: none` is not a detach either, and it does not need to be. §3's
+question is not *is this node in the document* but *is it being rendered*, and
+a hidden node is not — nor is anything inside one, since `display` does not
+inherit and a box under a hidden wrapper computes `display: block`. So the flag
+is only half the answer, and the cascade asks the other half directly (#703):
+before starting a transition, `is_rendered_for_transition` checks the node's
+display **before** the change as well as after, then walks its ancestors. A
+style change made while an element is hidden lands on it outright, the way a
+browser applies one, so the element is already at its new value when it is
+shown. In the other direction, an element that stops being rendered has its
+transitions cancelled, and so does everything under it — a descendant's own
+cascade need not run at all when an ancestor is hidden.
+
+Three things about that are worth knowing.
+
+- **It reads the old display, not just the new one.** A single class write can
+  un-hide a box and retarget it at once. At that cascade the new display is
+  already `block`; only the old one says there was nothing to transition from.
+- **`was_hidden` exists because parents cascade first.** An ancestor restyled on
+  the same pass is carrying its *new* display by the time a descendant is
+  reached, so the pass records the nodes it found hidden as it goes.
+- **`visibility: hidden` is rendered.** The box is generated, laid out and takes
+  up space; it has a before-change style and its transitions run. Folding it in
+  here would be wrong, and invisible in every `display` fixture.
+
+The walk is O(depth) and sits at the last gate before a transition starts —
+after `diff_animatable` has found an animatable change on a node that declares a
+`transition` — so a node with neither never pays for it. What is **not** covered
+is `@keyframes`: a hidden element's animations go on running and go on asking
+the shell for frames (issue #747).
+
+**This changes a shipped component, and the change is visible.** The `Drawer`'s
+300ms slide-in no longer runs: its root carries `display: none` while closed and
+its panel carries `transition: transform`, and one reactive effect un-hides the
+root and retargets the panel in a single pass — exactly the shape above. The
+panel now appears at its open position instantly. A browser does not animate
+that shape either (it is why `@starting-style` and `transition-behavior:
+allow-discrete` exist), and `rinch-components` ships one stylesheet to both
+backends, so the drawer has never animated on `rinch-web`; what this exposed is
+that the component was relying on a rinch-only deviation. The cure is the
+component's, and `Popover` already uses it — stay rendered and animate
+`opacity`/`visibility` rather than toggling `display`. Issue **#751**, pinned
+meanwhile by `crates/rinch/src/app/drawer_open_animation_tests.rs`.
+
+The blast radius is therefore wider than "a control restyled in an inactive
+tab": **any component that un-hides an ancestor and retargets a transitioned
+property in the same style pass** loses its animation. `Modal`, `Notification`,
+`Tooltip`, `Select`, `DropdownMenu`, `Tabs` and `Stepper` were scanned and none
+of them has that shape, but that is a scan and not a proof — #751 carries the
+audit.
 
 **The reactive helpers rest on this now, and no longer on a second mechanism of
 their own.** `show_dom`, `match_dom`, `for_each_dom_typed` and the component

@@ -1,0 +1,491 @@
+//! #703 — a transition does not start on an element that is not being rendered.
+//!
+//! css-transitions-1 §3 defines the before-change style only for an element
+//! that is being rendered, so no transition starts for one that is not, and any
+//! transition running on one that stops being rendered is cancelled. A
+//! `display: none` element is not being rendered, and neither is any descendant
+//! of one — `display` is not inherited, so the descendant's own computed
+//! `display` stays `block` and says nothing about it.
+//!
+//! rinch started them. `apply_stylo_styles_to_taffy`'s gate asked only
+//! `has_been_styled`, which a hidden node keeps: hiding is not a detach (#699),
+//! the node stays in the document with the `computed_style` it had when it was
+//! last visible. So a control hidden in an inactive tab, restyled by a theme or
+//! a breakpoint change while it was hidden, animated from its old value when
+//! the tab was shown.
+//!
+//! # The predicate, and what it costs
+//!
+//! "Not rendered" is `self or any ancestor has `display: none``, and it is
+//! **not** derivable from the node's own `ComputedStyle` — measured:
+//! `a_descendant_of_a_hidden_ancestor_still_computes_display_block` is the pin.
+//! rinch caches no rendered bit either; `read_layout_results` learns it by
+//! recursion (`zero_subtree_layout`) and its own comment says so ("*ancestor has
+//! display:none — the node's own display may be Block but it's inside a hidden
+//! subtree*"). So the cascade walks the ancestor chain — but only at the one
+//! site where the answer can change an outcome: **after** `diff_animatable` has
+//! found an animatable difference on a node that declares a `transition`. A
+//! node with no `transition` declaration, or with no animatable change on this
+//! cascade, never walks.
+//!
+//! Measured, on the shape built to be worst for it — 500 boxes at depth 13,
+//! every one declaring `transition: width` and every one retargeted by a single
+//! class write on their common root, so every dirty node reaches the gate with a
+//! non-empty diff. Best of 40 resolves, release, four alternating runs each:
+//! **1.207ms with the walk against 1.229ms without it.** The walk does not
+//! register above this machine's run-to-run spread of about 4%; it is not
+//! *free*, it is below what can be measured at the size where it would show.
+//! (A tree-wide theme restyle is the same shape at whatever the app's node
+//! count is, since every node in it is dirty.)
+//!
+//! The chain is read from `computed_style`, which for an ancestor already
+//! restyled on this pass holds its **new** display — the cascade pushes parents
+//! before children. A node whose old display was `none` is therefore recorded
+//! in a side list as it is processed, so an ancestor shown *in the same pass*
+//! that retargets its descendant is still known to have been hidden before the
+//! change. That list is a `Vec` that stays empty on every pass with nothing
+//! hidden in it.
+//!
+//! # Mutants, and what kills each
+//!
+//! Every attribution below is **measured**: each mutant was applied to the
+//! committed source, this file *and* `reinsertion_transition_tests` run against
+//! it with `--no-fail-fast` (without which the second binary never runs at all
+//! once the first has failed, and its column would be a silence), and the
+//! source reverted from the commit.
+//!
+//! | mutant | killed by |
+//! |---|---|
+//! | the gate's `is_rendered_for_transition` clause deleted — i.e. `main` before this change | **5 of the 9 here** (everything but the positive control, the `display` measurement and the `visibility` pin) **and** `reinsertion_transition_tests::toggling_display_none_is_not_a_detach` |
+//! | the gate tests the **new** display only, not the old one | `showing_a_hidden_node_whose_target_changed_does_not_transition`, **alone** — every other fixture asks the question while the node is still hidden, where old and new agree |
+//! | the gate tests the node's **own** display only, no ancestor walk | `a_change_under_a_hidden_ancestor_does_not_start_a_transition`, `showing_a_hidden_ancestor_whose_descendant_is_retargeted_does_not_transition` and `hiding_an_ancestor_cancels_a_descendant_transition` |
+//! | the walk is replaced by a check of the **immediate parent only** | `a_change_two_levels_under_a_hidden_ancestor_does_not_start_a_transition`, **alone** — and before that fixture existed this mutant survived all 68 `-p rinch-dom` binaries, because every other fixture here puts the hidden ancestor at the direct parent. A walk whose walking had no witness |
+//! | the ancestor walk reads `computed_style` with no `was_hidden` side list | `showing_a_hidden_ancestor_whose_descendant_is_retargeted_does_not_transition`, **alone** |
+//! | the cancel half deleted | `hiding_a_node_cancels_its_running_transition` and `hiding_an_ancestor_cancels_a_descendant_transition` |
+//! | the cancel half does not descend (the node only) | `hiding_an_ancestor_cancels_a_descendant_transition`, **alone** |
+//! | the gate refuses whenever the node is not *visible* (`visibility` folded in) | `visibility_hidden_is_rendered_and_still_transitions`, **alone** |
+//!
+//! Three rows are worth reading twice.
+//!
+//! **The first and fifth together say both halves are load-bearing.** Deleting
+//! the cancel leaves `hiding_a_node_cancels_its_running_transition` red, so the
+//! gate alone does not stop a transition already in flight. And deleting the
+//! *gate* leaves `hiding_an_ancestor_cancels_a_descendant_transition` red even
+//! though the cancel is untouched — which is not obvious, and is the third row's
+//! mechanism too. The pass that hides the wrapper also restyles the descendant,
+//! whose `computed_style` is carrying an **interpolated** width; the freshly
+//! resolved target differs from it, so without the gate a brand new transition
+//! starts immediately after the cancel removed the old one. A cancel that is not
+//! paired with a refusal does not stick.
+//!
+//! **The last row is why `visibility: hidden` is here at all.** It is the near
+//! neighbour that looks like the same thing and is not: a `visibility: hidden`
+//! box is generated, laid out and rendered — it is merely invisible — so it has
+//! a before-change style and its transitions run. Getting that wrong would be
+//! invisible in every other fixture in this file.
+
+#![cfg(feature = "software-renderer")]
+
+use rinch_core::dom::{DomDocument, NodeId};
+use rinch_dom::RinchDocument;
+
+/// `font-size` and `line-height` are declared so that no box below is derived
+/// from a font metric, and every width is a declaration a reader can check.
+///
+/// `.hidden` hides the **box**; `.gone` hides the **wrapper**, which is the
+/// ancestor case — the box's own `display` stays `block` under it.
+const CSS: &str = "
+    .box  { width: 10px; height: 10px; font-size: 16px; line-height: 20px;
+            transition: width 150ms linear; }
+    .w--a .box { width: 20px; }
+    .w--b .box { width: 30px; }
+    .hidden .box { display: none; }
+    .invisible .box { visibility: hidden; }
+    .gone { display: none; }
+";
+
+/// The node's computed `width` in px, or `None` when it is not a length.
+fn width_px(doc: &RinchDocument, node: NodeId) -> Option<f32> {
+    match doc.tree.get(node.0)?.computed_style.width {
+        rinch_dom::computed_style::DimensionValue::Length(px) => Some(px),
+        _ => None,
+    }
+}
+
+/// How many transitions are running on a node.
+fn running(doc: &RinchDocument, node: NodeId) -> usize {
+    doc.tree
+        .active_transitions
+        .get(&node.0)
+        .map(|m| m.len())
+        .unwrap_or(0)
+}
+
+fn display_of(doc: &RinchDocument, node: NodeId) -> rinch_dom::computed_style::DisplayValue {
+    doc.tree.get(node.0).unwrap().computed_style.display
+}
+
+/// `body > div.w--a > div.box`, laid out once with transitions armed.
+///
+/// Returns `(doc, wrapper, box)`.
+fn mounted_box() -> (RinchDocument, NodeId, NodeId) {
+    let mut doc = RinchDocument::new();
+    doc.load_css(CSS);
+    let body = doc.body();
+    let wrap = doc.create_element("div");
+    doc.set_attribute(wrap, "class", "w--a");
+    doc.append_child(body, wrap);
+    let boxed = doc.create_element("div");
+    doc.set_attribute(boxed, "class", "box");
+    doc.append_child(wrap, boxed);
+    doc.tree.transitions_enabled = true;
+    doc.resolve_layout(800.0, 600.0);
+    assert_eq!(
+        width_px(&doc, boxed),
+        Some(20.0),
+        "precondition: the mounted box takes its width from the wrapper's class"
+    );
+    assert_eq!(running(&doc, boxed), 0, "precondition: nothing running");
+    (doc, wrap, boxed)
+}
+
+/// The control the whole file rests on: a change on a **rendered** box does
+/// start a transition.
+///
+/// Without this every "0 transitions" assertion below would also pass against a
+/// build where transitions never start at all.
+#[test]
+fn a_change_on_a_rendered_box_does_start_a_transition() {
+    let (mut doc, wrap, boxed) = mounted_box();
+
+    doc.set_attribute(wrap, "class", "w--b");
+    doc.resolve_layout(801.0, 600.0);
+
+    assert_eq!(
+        running(&doc, boxed),
+        1,
+        "positive control: a visible box transitions"
+    );
+}
+
+/// The issue's own table, rows 2 and 3.
+///
+/// Hide the box, retarget it while it is hidden. A browser starts nothing: the
+/// box is not being rendered, so it has no before-change style.
+#[test]
+fn a_change_while_hidden_does_not_start_a_transition() {
+    let (mut doc, wrap, boxed) = mounted_box();
+
+    doc.set_attribute(wrap, "class", "w--a hidden");
+    doc.resolve_layout(801.0, 600.0);
+    assert_eq!(
+        display_of(&doc, boxed),
+        rinch_dom::computed_style::DisplayValue::None,
+        "precondition: the box is hidden by its own computed display"
+    );
+    assert_eq!(running(&doc, boxed), 0, "precondition: nothing running");
+
+    doc.set_attribute(wrap, "class", "w--b hidden");
+    doc.resolve_layout(802.0, 600.0);
+
+    assert_eq!(
+        running(&doc, boxed),
+        0,
+        "a non-rendered element has no before-change style (css-transitions-1 §3)"
+    );
+    assert_eq!(
+        width_px(&doc, boxed),
+        Some(30.0),
+        "and the new value is taken directly, not interpolated towards"
+    );
+
+    // Row 4: shown again, at the new value, with nothing running.
+    doc.set_attribute(wrap, "class", "w--b");
+    doc.resolve_layout(803.0, 600.0);
+    assert_eq!(
+        running(&doc, boxed),
+        0,
+        "and nothing starts when it is shown"
+    );
+    assert_eq!(
+        width_px(&doc, boxed),
+        Some(30.0),
+        "the box appears at 30px, the way a browser shows it"
+    );
+}
+
+/// The same question asked in **one** step, which is the only one the old
+/// display answers.
+///
+/// Hide first, then show and retarget with a single class write. At that
+/// cascade the box's *new* display is `block`; only its *old* display says it
+/// was not rendered before the change, and the before-change style of an
+/// unrendered element is its after-change style, so nothing transitions.
+#[test]
+fn showing_a_hidden_node_whose_target_changed_does_not_transition() {
+    let (mut doc, wrap, boxed) = mounted_box();
+
+    doc.set_attribute(wrap, "class", "w--a hidden");
+    doc.resolve_layout(801.0, 600.0);
+    assert_eq!(
+        display_of(&doc, boxed),
+        rinch_dom::computed_style::DisplayValue::None,
+        "precondition: hidden"
+    );
+
+    // One write: un-hides *and* retargets.
+    doc.set_attribute(wrap, "class", "w--b");
+    doc.resolve_layout(802.0, 600.0);
+
+    assert_eq!(
+        display_of(&doc, boxed),
+        rinch_dom::computed_style::DisplayValue::Block,
+        "precondition: the box is rendered again"
+    );
+    assert_eq!(
+        running(&doc, boxed),
+        0,
+        "the before-change style of an element that was not rendered is its \
+         after-change style, so there is nothing to transition"
+    );
+    assert_eq!(width_px(&doc, boxed), Some(30.0), "it appears at 30px");
+}
+
+/// `display` is not inherited, so the box under a hidden wrapper computes
+/// `display: block` and its own style cannot tell you it is not rendered.
+///
+/// This is a measurement, not a wish: it is the reason the gate walks the
+/// ancestor chain rather than reading one field.
+#[test]
+fn a_descendant_of_a_hidden_ancestor_still_computes_display_block() {
+    let (mut doc, wrap, boxed) = mounted_box();
+
+    doc.set_attribute(wrap, "class", "w--a gone");
+    doc.resolve_layout(801.0, 600.0);
+
+    assert_eq!(
+        display_of(&doc, wrap),
+        rinch_dom::computed_style::DisplayValue::None,
+        "the wrapper is the one that is hidden"
+    );
+    assert_eq!(
+        display_of(&doc, boxed),
+        rinch_dom::computed_style::DisplayValue::Block,
+        "and the descendant's own display says nothing about it"
+    );
+}
+
+/// The ancestor case of the issue: hidden by the wrapper, retargeted while
+/// hidden.
+#[test]
+fn a_change_under_a_hidden_ancestor_does_not_start_a_transition() {
+    let (mut doc, wrap, boxed) = mounted_box();
+
+    doc.set_attribute(wrap, "class", "w--a gone");
+    doc.resolve_layout(801.0, 600.0);
+    assert_eq!(running(&doc, boxed), 0, "precondition: nothing running");
+
+    doc.set_attribute(wrap, "class", "w--b gone");
+    doc.resolve_layout(802.0, 600.0);
+
+    assert_eq!(
+        running(&doc, boxed),
+        0,
+        "a descendant of a `display: none` element is not being rendered either"
+    );
+    assert_eq!(
+        width_px(&doc, boxed),
+        Some(30.0),
+        "and it takes the new value directly"
+    );
+
+    doc.set_attribute(wrap, "class", "w--b");
+    doc.resolve_layout(803.0, 600.0);
+    assert_eq!(running(&doc, boxed), 0, "nothing starts when it is shown");
+    assert_eq!(width_px(&doc, boxed), Some(30.0), "shown at 30px");
+}
+
+/// The ancestor case **two levels up**, which is what makes the walk a walk.
+///
+/// Every other fixture here puts the hidden ancestor at the box's direct
+/// parent, and a `is_rendered_for_transition` that checked only the immediate
+/// parent instead of looping passes all of them — measured: that mutant survives
+/// all 68 `-p rinch-dom` binaries. This is the one that fails against it.
+///
+/// The middle assertion is the load-bearing one. Without a node *between* that
+/// is itself rendered, the fixture would sit on the same fixed point as its
+/// neighbours and a one-step check would answer it correctly by accident.
+#[test]
+fn a_change_two_levels_under_a_hidden_ancestor_does_not_start_a_transition() {
+    let mut doc = RinchDocument::new();
+    doc.load_css(CSS);
+    let body = doc.body();
+
+    // body > div.w--a[outer] > div[mid, no class of its own] > div.box
+    let outer = doc.create_element("div");
+    doc.set_attribute(outer, "class", "w--a");
+    doc.append_child(body, outer);
+    let mid = doc.create_element("div");
+    doc.append_child(outer, mid);
+    let boxed = doc.create_element("div");
+    doc.set_attribute(boxed, "class", "box");
+    doc.append_child(mid, boxed);
+
+    doc.tree.transitions_enabled = true;
+    doc.resolve_layout(800.0, 600.0);
+    assert_eq!(width_px(&doc, boxed), Some(20.0), "precondition: 20px");
+    assert_eq!(running(&doc, boxed), 0, "precondition: nothing running");
+
+    doc.set_attribute(outer, "class", "w--a gone");
+    doc.resolve_layout(801.0, 600.0);
+    assert_eq!(
+        display_of(&doc, mid),
+        rinch_dom::computed_style::DisplayValue::Block,
+        "the node between is NOT itself hidden — only the grandparent is, which \
+         is what a one-step parent check would miss"
+    );
+
+    doc.set_attribute(outer, "class", "w--b gone");
+    doc.resolve_layout(802.0, 600.0);
+
+    assert_eq!(
+        running(&doc, boxed),
+        0,
+        "hidden two levels up is still not rendered"
+    );
+    assert_eq!(
+        width_px(&doc, boxed),
+        Some(30.0),
+        "and the new value is taken directly"
+    );
+}
+
+/// The one-step ancestor case: the wrapper is shown and the box retargeted by a
+/// single class write.
+///
+/// The wrapper is restyled **before** the box on the same pass (the cascade
+/// pushes parents first), so by the time the box is reached the wrapper's
+/// `computed_style.display` already reads `block`. Only a record of what it was
+/// before the change answers this one.
+#[test]
+fn showing_a_hidden_ancestor_whose_descendant_is_retargeted_does_not_transition() {
+    let (mut doc, wrap, boxed) = mounted_box();
+
+    doc.set_attribute(wrap, "class", "w--a gone");
+    doc.resolve_layout(801.0, 600.0);
+    assert_eq!(
+        display_of(&doc, wrap),
+        rinch_dom::computed_style::DisplayValue::None,
+        "precondition: the ancestor is hidden"
+    );
+
+    // One write: un-hides the ancestor *and* retargets the descendant.
+    doc.set_attribute(wrap, "class", "w--b");
+    doc.resolve_layout(802.0, 600.0);
+
+    assert_eq!(
+        display_of(&doc, wrap),
+        rinch_dom::computed_style::DisplayValue::Block,
+        "precondition: the ancestor is rendered again"
+    );
+    assert_eq!(
+        running(&doc, boxed),
+        0,
+        "the descendant was not rendered before the change either"
+    );
+    assert_eq!(width_px(&doc, boxed), Some(30.0), "it appears at 30px");
+}
+
+/// The cancel half: a transition running when the box is hidden stops.
+#[test]
+fn hiding_a_node_cancels_its_running_transition() {
+    let (mut doc, wrap, boxed) = mounted_box();
+
+    doc.set_attribute(wrap, "class", "w--b");
+    doc.resolve_layout(801.0, 600.0);
+    assert_eq!(
+        running(&doc, boxed),
+        1,
+        "precondition: a transition is in flight"
+    );
+
+    doc.set_attribute(wrap, "class", "w--b hidden");
+    doc.resolve_layout(802.0, 600.0);
+
+    assert_eq!(
+        running(&doc, boxed),
+        0,
+        "an element that stops being rendered has its transitions cancelled"
+    );
+}
+
+/// The cancel half descends: hiding an **ancestor** cancels the descendant's
+/// transition too.
+///
+/// The cancel has to descend because a descendant's cascade **need not run** —
+/// a class change that hides a wrapper and matches nothing on its children
+/// restyles only the wrapper, and the gate above is per-node. That is the
+/// general reason, and it is why the walk lives where it does.
+///
+/// It is not what happens *here*, and the difference is worth stating because an
+/// earlier draft of this doc got it backwards. `.gone` is on the wrapper, but
+/// `.w--b .box` still matches the box, so this pass re-cascades the box as well —
+/// measured: its computed width lands at exactly 30.0, which only its own
+/// cascade can write, since `cancel_transitions_in_subtree` touches
+/// `active_transitions` and nothing else. That is also why the gate-deleted
+/// mutant kills this fixture: the re-cascade starts a *fresh* transition
+/// immediately after the cancel removed the old one. See the module doc.
+#[test]
+fn hiding_an_ancestor_cancels_a_descendant_transition() {
+    let (mut doc, wrap, boxed) = mounted_box();
+
+    doc.set_attribute(wrap, "class", "w--b");
+    doc.resolve_layout(801.0, 600.0);
+    assert_eq!(
+        running(&doc, boxed),
+        1,
+        "precondition: a transition is in flight"
+    );
+
+    doc.set_attribute(wrap, "class", "w--b gone");
+    doc.resolve_layout(802.0, 600.0);
+
+    assert_eq!(
+        running(&doc, boxed),
+        0,
+        "the descendant of a hidden element is not being rendered either"
+    );
+}
+
+/// `visibility: hidden` is **rendered**, and this is the opposite pin.
+///
+/// The box is generated, laid out and takes up space — it is merely not
+/// painted. It has a before-change style and its transitions run, exactly as
+/// they do while it is visible.
+#[test]
+fn visibility_hidden_is_rendered_and_still_transitions() {
+    let (mut doc, wrap, boxed) = mounted_box();
+
+    doc.set_attribute(wrap, "class", "w--a invisible");
+    doc.resolve_layout(801.0, 600.0);
+    assert_eq!(
+        doc.tree.get(boxed.0).unwrap().computed_style.visibility,
+        rinch_dom::computed_style::VisibilityValue::Hidden,
+        "precondition: the box is invisible"
+    );
+    assert_eq!(
+        display_of(&doc, boxed),
+        rinch_dom::computed_style::DisplayValue::Block,
+        "precondition: and it still generates a box"
+    );
+
+    doc.set_attribute(wrap, "class", "w--b invisible");
+    doc.resolve_layout(802.0, 600.0);
+
+    assert_eq!(
+        running(&doc, boxed),
+        1,
+        "`visibility: hidden` is not `display: none` — the element is rendered, \
+         so it transitions"
+    );
+}

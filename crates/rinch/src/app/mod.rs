@@ -21,6 +21,8 @@ mod debug_commands;
 mod device_pixel_ratio_tests;
 #[cfg(test)]
 mod disabled_input_tests;
+#[cfg(test)]
+mod drawer_open_animation_tests;
 mod event_dispatch;
 mod focus;
 #[cfg(test)]
