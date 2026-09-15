@@ -389,8 +389,9 @@ fn set_attribute_writes_the_checked_family_literally() {
     assert_eq!(f.attr("lit-chk", "checked").as_deref(), Some(""));
     assert!(f.prop("lit-chk", "checked"));
 
-    // Same for `<option selected>`, which desktop's `collect_options` also reads
-    // by presence.
+    // Same for `<option selected>`, whose selectedness desktop also seeds from
+    // the attribute's presence (`collect_options`; #692 is what moves it
+    // afterwards).
     option.set_attribute("selected", "false");
     assert_eq!(
         f.attr("lit-opt", "selected").as_deref(),
@@ -533,7 +534,7 @@ fn a_selected_write_after_the_option_went_dirty_still_wins() {
     assert!(
         f.prop("lit-opt", "selected"),
         "a programmatic write must re-select a dirtied option (#100), because \
-         desktop's `collect_options` reads the attribute and nothing else"
+         desktop seeds an option's selectedness from the attribute's presence"
     );
     let select: web_sys::HtmlSelectElement = f.el("lit-sel").dyn_into().unwrap();
     assert_eq!(select.selected_index(), 1, "and the <select> follows");

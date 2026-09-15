@@ -163,6 +163,61 @@ fn deselecting_falls_back_to_the_first_enabled_option_not_to_a_stale_attribute()
     assert_eq!(selected(&doc, sel), Some(0), "Chrome 150: 0");
 }
 
+/// An option **appended** while it already carries selectedness takes the
+/// selection from the option that had it — the order `rsx!` builds in, and a
+/// browser's `createElement` + `setAttribute` + `appendChild`.
+///
+/// Chrome 150, markup `<option disabled selected>a<option selected>b<option>c`:
+/// `selectedIndex` is 1, and removing option 1's attribute leaves it at 1.
+///
+/// The first assertion alone would sit on a fixed point: with no insertion rule
+/// at all both options keep their selectedness and the tie-break answers the
+/// last one in tree order — the same index. What tells the two apart is
+/// deselecting the winner afterwards, and a **disabled** first option, so that
+/// "fall back to the first enabled option" and "option 0's stale selectedness
+/// resurfaces" are different answers. Measured: without it this fixture passes
+/// against a build that applies no insertion rule at all.
+///
+/// Kills the mutant that drops `options_inserted` from `append_child`.
+#[test]
+fn an_option_appended_already_selected_takes_the_selection_from_the_one_there() {
+    let mut doc = RinchDocument::new();
+    let body = doc.body();
+    let sel = doc.create_element("select");
+    doc.append_child(body, sel);
+    let mut o = Vec::new();
+    for i in 0..3 {
+        let opt = doc.create_element("option");
+        doc.set_attribute(opt, "value", &format!("v{i}"));
+        if i == 0 {
+            doc.set_attribute(opt, "disabled", "");
+        }
+        if i < 2 {
+            // Set while the option is still detached, as markup and `rsx!` do.
+            doc.set_attribute(opt, "selected", "");
+        }
+        doc.append_child(sel, opt);
+        o.push(opt);
+    }
+    assert_eq!(
+        selected(&doc, sel),
+        Some(1),
+        "the option appended last with selectedness wins (Chrome 150: 1)"
+    );
+
+    doc.remove_attribute(o[1], "selected");
+    assert_eq!(
+        doc.get_attribute(o[0], "selected").as_deref(),
+        Some(""),
+        "option 0 still carries its attribute"
+    );
+    assert_eq!(
+        selected(&doc, sel),
+        Some(1),
+        "but it lost its selectedness when option 1 arrived, so the fallback is          the first enabled option and not option 0 (Chrome 150: 1)"
+    );
+}
+
 /// An option carrying selectedness takes the selection with it when it is
 /// **inserted**, even ahead of an option that already has it.
 ///
