@@ -17,9 +17,32 @@ pub fn styles() -> String {
     z-index: var(--rinch-drawer-z-index, 200);
 }
 
-/* Hidden state - use class instead of inline style for reliability */
+/* Hidden state (#751).
+
+   `visibility`, NOT `display`. The panel below carries `transition: transform
+   300ms ease`, and the component's one effect removes this class and adds the
+   panel's `--opened` class in a single batch — so the panel's `transform`
+   retargets in the very pass that its ancestor stops being hidden. Under
+   `display: none` css-transitions-1 §3 starts nothing there: an element that
+   was not being rendered has no before-change style to animate from, so the
+   panel snapped to its open position. A browser refuses it for the same reason
+   — which is why `@starting-style` and `transition-behavior: allow-discrete`
+   exist — so the Drawer had never animated on rinch-web either.
+
+   A `visibility: hidden` element **is** being rendered: it keeps its box, it
+   transitions, and it is still excluded from paint, from hit testing and from
+   the Tab order on both backends. `Popover` reaches the same place from the
+   other side (`styles/popover.rs`) — it has never touched `display` on the
+   panel it animates.
+
+   The close is deliberately instant on both backends, exactly as it was. Making
+   the panel slide *out* needs the root to stay visible for the 300ms, i.e. a
+   transition on `visibility` itself — `rinch_dom::transition::TransitionProperty`
+   has no variant for it, so declaring one here would animate the close in a
+   browser and snap on desktop. One behaviour on both backends is worth more
+   than the slide-out; see issue #756. */
 .rinch-drawer__root--hidden {
-    display: none !important;
+    visibility: hidden !important;
 }
 
 /* Drawer overlay — absolute within the fixed root */
