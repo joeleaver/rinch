@@ -2429,13 +2429,11 @@ impl RinchDocument {
     /// pins, and they are exactly the two fixtures that kill the mutant which
     /// adds the reset there.
     ///
-    /// The one shape that does leave the document under a move — appending a
-    /// *mounted* node into a *detached* parent — is therefore not covered. It
-    /// is not a `parent = None` detach, but it is disconnected, which #696
-    /// established is the question that matters; telling it apart from an
-    /// ordinary move needs a connectivity walk on the hottest DOM operation in
-    /// the framework, and no rinch code path produces the shape today. Issue
-    /// #702.
+    /// The one shape that *does* leave the document under a move — a **mounted**
+    /// node moved into a **detached** parent — is not this helper's business
+    /// either, and has its own: [`Self::detach_subtree_styles_if_moved_out`]
+    /// (#702). It is not a `parent = None` detach, but it is disconnected,
+    /// which #696 established is the question that matters.
     pub(crate) fn detach_subtree_styles(&mut self, node_id: usize) {
         // Iterative, like `clear_ifc_root_recursive` — a deep subtree must not
         // overflow the stack on its way out of the document.

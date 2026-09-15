@@ -404,9 +404,26 @@ A **move** is not a detach. `append_child`, `insert_before` and `insert_child`
 unlink a node from its old parent with the same lines `remove_child` uses, but
 the node is back in the document before the call returns, so it never stopped
 being rendered and a mid-flight transition goes on running — which is what a
-keyed `for` reorder depends on, since it moves rows with `insert_after`. The one
-shape that leaves the document under a move, appending a mounted node into a
-detached parent, is not covered (issue #702).
+keyed `for` reorder depends on, since it moves rows with `insert_after`.
+
+**Unless the destination is itself detached** (#702). A mounted node moved into
+a parent that is not connected to `tree.root_id` has left the document while
+keeping a parent, so it fails the `parent = None` test the four detach routes
+share — and #696 established that connectivity, not the parent field, is the
+question that matters. Splice that parent in somewhere else later and the node
+animates in from its pre-move style, which is #699's symptom by a fifth route.
+`detach_subtree_styles_if_moved_out` is the answer, at **four** sites: the three
+move verbs and `replace_node`, which splices its incoming `new` into `old`'s
+parent and is a move out whenever that parent is detached.
+
+Two guards keep it off the hot path, and the order matters. The destination must
+**differ from the old parent** — a move within one container cannot change
+whether the child is connected, because the child's reachability *is* its
+parent's — and the child must already **have** a parent, since a freshly created
+node cannot be a move. Only a reparenting move reaches `depth_if_connected`, the
+same O(depth) walk #696 filters `style_roots` with. Counted on 500 rows: building
+the list enters the helper 0 times, a keyed reorder enters it 499 times and walks
+**0**, and reparenting every row into a second list walks 500.
 
 `display: none` is not a detach either, and it does not need to be. §3's
 question is not *is this node in the document* but *is it being rendered*, and

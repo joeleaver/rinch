@@ -33,18 +33,51 @@
 //! Only a **reparenting** move reaches `depth_if_connected`, one O(depth) walk
 //! on the new parent.
 //!
+//! **Counted, not argued** (a counter on the helper and on the walk inside it,
+//! instrumented on the committed source and reverted — the timing on a loaded
+//! host cannot resolve a difference this small, so the deterministic question
+//! is the one worth asking):
+//!
+//! | 500-row workload | helper entered | ancestor walks |
+//! |---|---|---|
+//! | building the list (2000 appends of fresh nodes) | 0 | 0 |
+//! | keyed reorder, each row to the front | 499 | **0** |
+//! | reparenting every row into a second connected list | 500 | 500 |
+//!
+//! The middle row is the claim: the hot path does not walk, and the bottom row
+//! is its positive control — a counter reading 0 everywhere would say the
+//! instrument never fired.
+//!
+//! # Which routes there are
+//!
+//! **Four**, not the three the issue names. `replace_node` splices an incoming
+//! `new` into `old`'s parent, and when that parent is detached a mounted `new`
+//! leaves the document by exactly this shape — the function's own comment
+//! asserted the opposite ("`new` has not [left the document] — it was spliced
+//! in, which is a move, and a move resets nothing"), which is true of every
+//! destination but a detached one. `grep -n '\.parent = Some('` over
+//! `dom_impl/dom_document_impl.rs` is the count to re-check; the other matches
+//! there and in `pseudo.rs` / `ifc.rs` are nodes created moments earlier, which
+//! cannot be moves.
+//!
 //! # Mutants, and what kills each
 //!
-//! Measured: each applied to the committed source, this file plus
-//! `reinsertion_transition_tests` run with `--no-fail-fast`, source reverted.
+//! Every attribution is **measured**: each mutant applied to the committed
+//! source, this file *and* `reinsertion_transition_tests` run with
+//! `--no-fail-fast` (without which the second binary never runs once the first
+//! has failed, and its column would be a silence), source reverted from the
+//! commit.
 //!
 //! | mutant | killed by |
 //! |---|---|
-//! | the reset deleted (i.e. `main` before this change) | the three route fixtures |
-//! | the reset also runs when the new parent **is** connected (over-reach) | the two move pins in `reinsertion_transition_tests` |
-//! | the `old_parent != new_parent` short-circuit dropped | nothing — it is a **cost** guard, not a correctness one, and this is recorded rather than hidden. A same-parent move cannot change connectivity, so answering it by walking gives the same answer more slowly. The bench is what defends it |
-//! | the reset applies to the moved node only, not its subtree | `a_deep_node_moved_out_under_its_parent_does_not_animate_either` |
-//! | `insert_before` / `insert_child` left unhooked | `insert_before_into_a_detached_parent_is_a_detach_too` / `insert_child_into_a_detached_parent_is_a_detach_too` |
+//! | the reset deleted — i.e. `main` before this change | **7 of the 8 here**; only `a_reparenting_move_between_two_connected_parents_resets_nothing` survives, which is what that control is for |
+//! | over-reach: reset on every **reparenting** move, connected or not | `a_reparenting_move_between_two_connected_parents_resets_nothing` **and** `reinsertion_transition_tests::a_reparenting_move_does_not_restart_a_running_transition` |
+//! | over-reach: reset on **every** move, same-parent included | those two **and** `a_keyed_for_reorder_does_not_restart_a_running_transition` — the reorder pin is what the third one adds |
+//! | the `old_parent != new_parent` short-circuit dropped | **nothing, and that is recorded rather than hidden.** It is a *cost* guard, not a correctness one: a same-parent move cannot change connectivity, so walking gives the same answer more slowly. The counted table above is what defends it, and `move_reorder_bench` is where it is timed |
+//! | the reset applies to the moved node only, not its subtree | `a_deep_node_moved_out_under_its_parent_does_not_animate_either`, **alone** |
+//! | `append_child` unhooked | 4 of the 8 |
+//! | `insert_before` + `insert_child` unhooked | `insert_before_into_a_detached_parent_is_a_detach_too` and `insert_child_into_a_detached_parent_is_a_detach_too`, exclusively |
+//! | `replace_node` unhooked | `replace_node_into_a_detached_parent_is_a_detach_too`, **alone** — the fourth route, and the one no fixture would have covered if the issue's list of three had been taken as complete |
 
 #![cfg(feature = "software-renderer")]
 

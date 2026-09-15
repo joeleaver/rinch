@@ -2786,13 +2786,6 @@ Three things it deliberately does not do.
   staleness gates compare against that same style to decide whether to re-shape
   the text (#654, #661, #678). The flag is what the transition reads; the value
   is what everything else reads.
-- **A move is not a detach.** `append_child`, `insert_before` and `insert_child`
-  unlink a node from its old parent with the same lines `remove_child` uses, but
-  it is back in the document before the call returns — so a row that was
-  mid-transition when a keyed `for` reordered the list goes on transitioning
-  (`insert_after` is how a reorder moves rows). The one shape that *does* leave
-  under a move — appending a mounted node into a **detached** parent — is not
-  covered: **#702**.
 - **`display: none` is not a detach**, and does not need to be (**#703**). §3
   asks whether an element is being *rendered*, not whether it is in the
   document, so the cascade answers that half itself: before starting a
@@ -2812,6 +2805,22 @@ Three things it deliberately does not do.
   drawer never animated on `rinch-web`, so this is desktop matching the web
   rather than a new deviation; the cure is the component's, and `Popover`
   already uses it (stay rendered, animate `opacity`).
+- **A move is not a detach.** `append_child`, `insert_before` and `insert_child`
+  unlink a node from its old parent with the same lines `remove_child` uses, but
+  it is back in the document before the call returns — so a row that was
+  mid-transition when a keyed `for` reordered the list goes on transitioning
+  (`insert_after` is how a reorder moves rows). **Unless the destination is
+  itself detached** (**#702**): a mounted node moved into a parent not connected
+  to `tree.root_id` has left the document while keeping a parent, so it fails
+  the `parent = None` test — and connectivity, not the parent field, is the
+  question (#696). `detach_subtree_styles_if_moved_out` answers it at **four**
+  sites: the three move verbs plus `replace_node`, which splices its incoming
+  `new` into `old`'s parent. Two guards keep it off the hot path — the
+  destination must differ from the old parent (a move within one container
+  cannot change connectivity), and the child must already have a parent (a fresh
+  node is not a move) — so only a *reparenting* move walks. Counted on 500 rows:
+  building the list enters the helper 0 times, a keyed reorder enters it 499
+  times and walks **0**, reparenting walks 500.
 
 **The reactive helpers reach all of that, and `NodeHandle::clear_animations` is
 gone** (**#704**). It used to be called before `remove()` by `show_dom`,
