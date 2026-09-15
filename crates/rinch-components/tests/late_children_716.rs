@@ -645,3 +645,93 @@ fn a_late_radio_takes_the_groups_current_size_after_a_reactive_change() {
         );
     }
 }
+
+// ------------------------------------------------ the nesting boundary
+
+#[test]
+fn a_row_added_to_a_nested_list_takes_the_inner_lists_icon() {
+    assert_ne!(glyph_of(TablerIcon::Check), glyph_of(TablerIcon::X));
+
+    let inner_items = Signal::new(vec!["one"]);
+    let tree = Tree::build(move |__scope| {
+        rsx! {
+            div {
+                List { icon: TablerIcon::Check,
+                    ListItem {
+                        List { icon: TablerIcon::X,
+                            for it in inner_items.get() { ListItem { key: it, {it} } }
+                        }
+                    }
+                }
+            }
+        }
+    });
+
+    inner_items.update(|v| v.push("two"));
+
+    let inner = tree.find_all("rinch-list").remove(1);
+    let rows: Vec<NodeHandle> = {
+        let mut out = Vec::new();
+        collect_by_class(&inner, "rinch-list__item", &mut out);
+        out
+    };
+    assert_eq!(rows.len(), 2, "precondition: the inner list grew");
+    for row in &rows {
+        let icon_box =
+            find_by_class(row, "rinch-list__item-icon").expect("the inner row has an icon box");
+        assert_eq!(
+            glyph(&icon_box),
+            glyph_of(TablerIcon::X),
+            "#716: a row of a *nested* list belongs to that list. The outer list \
+             is told about the insertion too — two containers of different kinds \
+             can nest — and declines because the chain up to it crosses one of \
+             its own items"
+        );
+    }
+}
+
+// ------------------------------------ a glyph the step's props supplied comes back
+
+#[test]
+fn a_step_displaced_out_of_completed_gets_its_own_glyph_back() {
+    let items = Signal::new(vec!["b"]);
+    let tree = Tree::build(move |__scope| {
+        rsx! {
+            div {
+                Stepper { active: 1u32,
+                    for it in items.get() { StepperStep { key: it, icon: TablerIcon::Home } }
+                }
+            }
+        }
+    });
+
+    let live = |n: usize| -> Vec<String> {
+        let steps = tree.find_all("rinch-stepper__step");
+        let icon_box = find_by_class(&steps[n], "rinch-stepper__step-icon").expect("an icon box");
+        let live = icon_box
+            .children()
+            .into_iter()
+            .find(|c| !has_class(c, "rinch-stepper__step-icon-alt"))
+            .expect("the step draws something");
+        glyph(&live)
+    };
+
+    assert_eq!(
+        live(0),
+        Vec::<String>::new(),
+        "precondition: the only step sits before `active`, so it is completed \
+         and draws the built-in tick, which contributes no path data"
+    );
+
+    items.update(|v| v.insert(0, "a"));
+
+    assert_eq!(
+        live(1),
+        glyph_of(TablerIcon::Home),
+        "#716: the insertion moved the step to `active`, out of completed, and \
+         its own `icon` is what it draws there. That glyph came from a \
+         `TablerIcon` in the step's props — no patch of the rendered tree could \
+         rebuild it, so the stepper had to have parked it rather than discarded \
+         it when it moved the step *into* completed"
+    );
+}
