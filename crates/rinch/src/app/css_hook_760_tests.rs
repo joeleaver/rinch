@@ -1429,6 +1429,92 @@ fn a_tooltip_behind_an_rsx_wrapper_still_opens() {
     );
 }
 
+/// An open `DropdownMenu` inside a **closed** one's target shows its panel.
+///
+/// Kills the exclusion without its leading `.rinch-dropdown-menu--opened`
+/// (`:not(.rinch-dropdown-menu:not(.rinch-dropdown-menu--opened) .rinch-dropdown-menu__dropdown)`),
+/// which hides a panel behind **any** closed menu root, open ancestor or not —
+/// so a menu in a closed menu's trigger never opens. Every other fixture here
+/// survives that mutant (third review of #774).
+#[test]
+fn an_open_dropdown_menu_in_a_closed_ones_target_is_shown() {
+    let outer_open = Signal::new(false);
+    let inner_open = Signal::new(false);
+    let mut app = mount(move |__scope: &mut RenderScope| {
+        rsx! {
+            DropdownMenu { opened_fn: move || outer_open.get(), on_close: || {},
+                DropdownMenuTarget {
+                    DropdownMenu { opened_fn: move || inner_open.get(), on_close: || {},
+                        DropdownMenuTarget { button { "inner" } }
+                        DropdownMenuDropdown { class: "probe-inner", DropdownMenuItem { "i" } }
+                    }
+                }
+                DropdownMenuDropdown { class: "probe-outer", DropdownMenuItem { "o" } }
+            }
+        }
+    });
+    let inner = live_node_with_class(&app, "probe-inner");
+    let outer = live_node_with_class(&app, "probe-outer");
+    assert!(
+        !rendered(&app, inner),
+        "the closed inner menu's panel is hidden"
+    );
+    inner_open.set(true);
+    settle(&mut app, 1.0);
+    assert!(!rendered(&app, outer), "control: the outer menu is closed");
+    assert!(
+        rendered(&app, inner),
+        "a menu in a closed menu's trigger opens"
+    );
+}
+
+/// A **closed** menu whose own panel sits behind an rsx wrapper, nested in an
+/// open menu's panel, stays closed — and opens with its own menu.
+///
+/// Kills the exclusion spelled with `>` before the panel
+/// (`:not(.rinch-dropdown-menu--opened .rinch-dropdown-menu:not(.rinch-dropdown-menu--opened) > .rinch-dropdown-menu__dropdown)`).
+/// That spelling is the obvious way to make the known limit exact, and it turns
+/// the limit pin red; this fixture is what says it also brings back round 1's
+/// leak for a wrapped nested panel. Without it only the limit pin caught that
+/// mutant (third review of #774).
+#[test]
+fn a_closed_menu_with_a_wrapped_panel_nested_in_an_open_ones_panel_stays_closed() {
+    let outer_open = Signal::new(false);
+    let inner_open = Signal::new(false);
+    let mut app = mount(move |__scope: &mut RenderScope| {
+        let inner_panel: Option<NodeHandle> =
+            Some(rsx! { DropdownMenuDropdown { class: "probe-inner", DropdownMenuItem { "i" } } });
+        rsx! {
+            DropdownMenu { opened_fn: move || outer_open.get(), on_close: || {},
+                DropdownMenuTarget { button { "outer" } }
+                DropdownMenuDropdown { class: "probe-outer",
+                    DropdownMenu { opened_fn: move || inner_open.get(), on_close: || {},
+                        DropdownMenuTarget { button { "inner" } }
+                        {inner_panel}
+                    }
+                }
+            }
+        }
+    });
+    outer_open.set(true);
+    settle(&mut app, 1.0);
+    let inner = live_node_with_class(&app, "probe-inner");
+    let outer = live_node_with_class(&app, "probe-outer");
+    let wrapper = parent_of(&app, inner).unwrap();
+    assert!(
+        attr(&app, wrapper, "style").is_some_and(|s| s.contains("contents")),
+        "precondition: the inner panel sits behind rsx's `display: contents` wrapper"
+    );
+    assert!(rendered(&app, outer), "control: the outer menu is open");
+    assert!(
+        !rendered(&app, inner),
+        "the closed inner menu's wrapped panel stays hidden"
+    );
+    inner_open.set(true);
+    settle(&mut app, 2.0);
+    assert!(rendered(&app, inner), "and opens with its own menu");
+}
+
 /// An **open** menu nested in an open menu's panel shows its panel — a submenu.
 ///
 /// The other half of the exclusion in the panel rule: only a *closed* menu root
@@ -1473,62 +1559,92 @@ fn an_open_dropdown_menu_nested_in_an_open_ones_panel_is_shown() {
 
 /// **The known limit of the panel rule, recorded.** The rule shows a panel under
 /// an open root unless a *closed* menu root sits between some open ancestor and
-/// the panel. That is exact for one level of nesting either way, and wrong in
-/// one shape: an **open** menu C inside the *target* of a **closed** menu B that
-/// is itself inside an **open** menu A's panel. C's panel stays hidden, because B
-/// is closed and sits between A and C's panel, even though C's own root is open.
+/// the panel. The limit, in the words of the note on that rule in
+/// `styles/dropdown_menu.rs`: an open menu C inside the *target* (trigger) of a
+/// closed menu B that is itself inside an open menu A stays hidden — B is closed
+/// and sits between A and C's panel, though C's own root is open.
+///
+/// "Inside A" means **either** half of A: B in A's panel **or** in A's target.
+/// Both shapes are pinned, because a spelling that repaired only one of them
+/// would otherwise pass (third review of #774 measured both, and a deeper stack
+/// of closed menus in triggers, as this same limit). All of them opened on
+/// `main`.
 ///
 /// A menu in the trigger of a menu in a menu is not a composition anything in the
-/// repo builds. This fixture is here so the day the selector is made exact (a
-/// depth-bounded enumeration is one way) it goes red and gets flipped, rather than
-/// the limit being fixed silently and its documentation left behind.
+/// repo builds. This fixture is here so a change to the limit cannot land without
+/// someone reading the note on the rule first.
 #[test]
 fn known_limit_an_open_menu_in_a_closed_menus_target_inside_an_open_menu_stays_hidden() {
-    let app = mount(move |scope| {
-        let c_target = DropdownMenuTarget.render(scope, &[]);
-        let c_dropdown = DropdownMenuDropdown.render(scope, &[]);
-        let c = DropdownMenu {
-            opened: true,
-            ..Default::default()
-        }
-        .render(scope, &[c_target, c_dropdown]);
-        c.set_attribute("data-probe", "c");
-        let b_target = DropdownMenuTarget.render(scope, &[c]);
-        let b_dropdown = DropdownMenuDropdown.render(scope, &[]);
-        let b = DropdownMenu {
-            opened: false,
-            ..Default::default()
-        }
-        .render(scope, &[b_target, b_dropdown]);
-        b.set_attribute("data-probe", "b");
-        let a_target = DropdownMenuTarget.render(scope, &[]);
-        let a_dropdown = DropdownMenuDropdown.render(scope, &[b]);
-        let a = DropdownMenu {
-            opened: true,
-            ..Default::default()
-        }
-        .render(scope, &[a_target, a_dropdown]);
-        a.set_attribute("data-probe", "a");
-        a
-    });
-    let a = probe(&app, "a");
-    let b = probe(&app, "b");
-    let c = probe(&app, "c");
-    let a_panel = child_with_class(&app, a, "rinch-dropdown-menu__dropdown");
-    let b_panel = child_with_class(&app, b, "rinch-dropdown-menu__dropdown");
-    let c_panel = child_with_class(&app, c, "rinch-dropdown-menu__dropdown");
-    assert!(rendered(&app, a_panel), "control: A is open");
-    assert!(!rendered(&app, b_panel), "control: B is closed");
-    assert!(
-        has_class(&app, c, "rinch-dropdown-menu--opened"),
-        "C is open"
-    );
-    assert!(
-        !rendered(&app, c_panel),
-        "the documented limit: C's panel is hidden. If this fails the selector got \
-         exact — flip this assertion and delete the limit from `styles/dropdown_menu.rs` \
-         and `component-props.md`"
-    );
+    for b_in_a_target in [false, true] {
+        let app = mount(move |scope| {
+            let c_target = DropdownMenuTarget.render(scope, &[]);
+            let c_dropdown = DropdownMenuDropdown.render(scope, &[]);
+            let c = DropdownMenu {
+                opened: true,
+                ..Default::default()
+            }
+            .render(scope, &[c_target, c_dropdown]);
+            c.set_attribute("data-probe", "c");
+            let b_target = DropdownMenuTarget.render(scope, &[c]);
+            let b_dropdown = DropdownMenuDropdown.render(scope, &[]);
+            let b = DropdownMenu {
+                opened: false,
+                ..Default::default()
+            }
+            .render(scope, &[b_target, b_dropdown]);
+            b.set_attribute("data-probe", "b");
+            let (a_target, a_dropdown) = if b_in_a_target {
+                (
+                    DropdownMenuTarget.render(scope, &[b]),
+                    DropdownMenuDropdown.render(scope, &[]),
+                )
+            } else {
+                (
+                    DropdownMenuTarget.render(scope, &[]),
+                    DropdownMenuDropdown.render(scope, &[b]),
+                )
+            };
+            let a = DropdownMenu {
+                opened: true,
+                ..Default::default()
+            }
+            .render(scope, &[a_target, a_dropdown]);
+            a.set_attribute("data-probe", "a");
+            a
+        });
+        let shape = if b_in_a_target {
+            "B in A's target"
+        } else {
+            "B in A's panel"
+        };
+        let a = probe(&app, "a");
+        let b = probe(&app, "b");
+        let c = probe(&app, "c");
+        let a_panel = child_with_class(&app, a, "rinch-dropdown-menu__dropdown");
+        let b_panel = child_with_class(&app, b, "rinch-dropdown-menu__dropdown");
+        let c_panel = child_with_class(&app, c, "rinch-dropdown-menu__dropdown");
+        let c_target = child_with_class(&app, b, "rinch-dropdown-menu__target");
+        assert!(rendered(&app, a_panel), "control ({shape}): A is open");
+        assert!(!rendered(&app, b_panel), "control ({shape}): B is closed");
+        assert!(
+            rendered(&app, c_target),
+            "control ({shape}): B's target, which holds C, is on screen"
+        );
+        assert!(
+            has_class(&app, c, "rinch-dropdown-menu--opened"),
+            "C is open"
+        );
+        assert!(
+            !rendered(&app, c_panel),
+            "the documented limit ({shape}): C's panel is hidden. If this has gone red, \
+             the panel rule changed — and the obvious edit that makes this shape exact \
+             (`> .rinch-dropdown-menu__dropdown` inside the `:not()`) also brings back \
+             the nesting leak for a closed menu whose panel sits behind an rsx wrapper. \
+             Re-check `a_closed_menu_with_a_wrapped_panel_nested_in_an_open_ones_panel_stays_closed` \
+             before touching this pin; only if that is still green, flip this and update \
+             the limit in `styles/dropdown_menu.rs` and `component-props.md`"
+        );
+    }
 }
 
 // ── the gap this fix had to work around ──────────────────────────────────
