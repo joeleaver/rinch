@@ -100,12 +100,13 @@ pub struct List {
     pub center: bool,
     /// Default icon for this list's items.
     ///
-    /// Applied to the [`ListItem`]s **present at this list's own render** that
-    /// set no `icon` of their own — the item's icon wins. Items are found and
-    /// restyled after they have rendered, since a parent component renders
-    /// *after* its children, and that patch runs once: an item appended later,
-    /// by a `for` reconcile or a `show_dom` branch, does not get the default
-    /// (issue #716).
+    /// Applied to every [`ListItem`] in this list that sets no `icon` of its own
+    /// — the item's icon wins. Items are found and restyled after they have
+    /// rendered, since a parent component renders *after* its children; an item
+    /// that arrives **later**, by a `for` reconcile, a `show_dom` branch or a
+    /// hand-rolled `append_child`, is restyled as it lands (issue #716).
+    ///
+    /// An item inside a *nested* `List` belongs to that list, not this one.
     pub icon: Option<TablerIcon>,
     /// Whether to show list markers.
     pub with_padding: bool,
@@ -175,6 +176,15 @@ impl Component for List {
 
         if let Some(icon) = self.icon {
             give_items_a_default_icon(&container, icon, __scope);
+            // And again for every item that lands later — a `for` reconcile, a
+            // `show_dom` branch, a hand-rolled `append_child` (issue #716). The
+            // same function does both halves, so the two cannot drift.
+            crate::late_children::adopt_late_children(
+                __scope,
+                &container,
+                "rinch-list__item",
+                move |inserted, scope| give_items_a_default_icon(inserted, icon, scope),
+            );
         }
 
         container
@@ -187,6 +197,11 @@ impl Component for List {
 /// The walk stops at each item rather than descending into it: an item's own
 /// content — including a nested `List`, which has already applied its own
 /// default — is not this list's to restyle.
+///
+/// Called twice over: once on the container at render, and once per subtree
+/// that lands beneath it afterwards (issue #716). It is idempotent — an item
+/// that already carries `rinch-list__item--with-icon` is left alone — which is
+/// what lets the second caller hand it a subtree the first one already walked.
 fn give_items_a_default_icon(node: &NodeHandle, icon: TablerIcon, scope: &mut RenderScope) {
     let classes = node.get_attribute("class").unwrap_or_default();
     let mut tokens = classes.split_whitespace();

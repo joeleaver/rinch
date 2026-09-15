@@ -324,11 +324,11 @@ pub struct RadioGroup {
     pub error: String,
     /// Default size for the radios in this group.
     ///
-    /// Applied to the [`Radio`]s **present at this group's own render** that set
-    /// no `size` of their own — the radio's size wins. A radio records its own
-    /// ask as `data-size`, which is what tells an unset `size` from an explicit
-    /// `"md"`. The patch runs once, so a radio appended later keeps its own
-    /// default step (issue #716).
+    /// Applied to every [`Radio`] in this group that sets no `size` of its own —
+    /// the radio's size wins. A radio records its own ask as `data-size`, which
+    /// is what tells an unset `size` from an explicit `"md"`. A radio that
+    /// arrives **later**, by a `for` reconcile, a `show_dom` branch or a
+    /// hand-rolled `append_child`, is resized as it lands (issue #716).
     pub size: String,
     /// Orientation (horizontal or vertical).
     pub orientation: String,
@@ -388,6 +388,13 @@ impl Component for RadioGroup {
             && let Ok(size) = self.size.parse::<RadioSize>()
         {
             give_radios_a_default_size(&radios, size);
+            // And again for every radio that lands later (issue #716).
+            crate::late_children::adopt_late_children(
+                __scope,
+                &radios,
+                "rinch-radio",
+                move |inserted, _scope| give_radios_a_default_size(inserted, size),
+            );
         }
 
         container.append_child(&radios);
@@ -409,6 +416,10 @@ impl Component for RadioGroup {
 /// A radio always carries exactly one size class, so applying the group's means
 /// removing whichever one the radio defaulted to. The other modifier classes —
 /// `--checked`, `--disabled`, `--error` — are left alone.
+///
+/// Called on the group's radios wrapper at render, and again on every subtree
+/// that lands in it afterwards (issue #716). Idempotent: a radio already at the
+/// group's size is rewritten to the same class.
 fn give_radios_a_default_size(node: &NodeHandle, size: RadioSize) {
     let classes = node.get_attribute("class").unwrap_or_default();
     if classes.split_whitespace().any(|c| c == "rinch-radio") {

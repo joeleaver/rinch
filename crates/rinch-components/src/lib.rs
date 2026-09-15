@@ -149,6 +149,7 @@ pub mod hover_card;
 pub mod icons;
 pub mod image;
 pub mod kbd;
+pub mod late_children;
 pub mod list;
 pub mod loader;
 pub mod loading_overlay;
