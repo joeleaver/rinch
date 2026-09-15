@@ -156,9 +156,57 @@ impl Scrollbars {
 /// The content extent `(width, height)` along both axes, relative to the
 /// container's content box, from its direct children's layout rects.
 ///
+/// Only children the container is the **containing block** of are measured —
+/// `crate::out_of_flow::contributes_to_scrollable_overflow` is the rule, and
+/// its doc is where the CSS and the Chrome measurements live. A `position:
+/// fixed` child resolves against the viewport and a `position: absolute` one
+/// may resolve against an ancestor, and neither swells the scroll range of a
+/// box that merely happens to be its Taffy parent (issue #765).
+///
 /// Taffy's `child.layout.{x,y}` are relative to the **parent's border box**, so
 /// they include the leading padding and border; subtracting that offset is what
 /// keeps a padded container from deciding it overflows when it does not.
+/// Measured against Chrome (issue #480, which is what pinned it): rinch works
+/// in the container's *content*-box frame where Chrome's
+/// `scrollWidth`/`clientWidth` work in its *padding*-box frame. For a
+/// **non-positioned** (`static`) child the frame difference changes neither the
+/// existence nor the size of the overflow, because Chrome extends that child's
+/// contribution by the container's end padding and the pair of paddings on each
+/// side of the subtraction cancels.
+///
+/// A **positioned** child is measured differently from Chrome — `absolute`, or
+/// `relative` with an offset (every number below measured in Chrome 153):
+///
+/// * **`absolute`.** Chrome extends nothing: the scrollable area is the union
+///   of the container's padding box and the box's own border box. rinch adds
+///   the end padding anyway, so it over-reports by **up to** the container's
+///   end padding on each axis (not its border, which both frames exclude). In
+///   a `width: 200px; height: 100px; padding: 20px; overflow: auto; position:
+///   relative` container, a 210x50 static child gives 50px of horizontal travel
+///   in both; the same box at `absolute; left: 0` gives Chrome 10px and rinch
+///   30px; a 190x50 one gives Chrome none and rinch 10px; and an `absolute;
+///   inset: 0` child gives Chrome none and rinch 20px on each axis, so rinch
+///   paints two bars Chrome does not. With a 5px border and `padding: 20px 30px
+///   20px 10px` the `inset: 0` child gives rinch 30x20 — the right and bottom
+///   paddings — against Chrome's none.
+/// * **`relative` with an offset.** Chrome counts the box at its *static*
+///   position extended by the end padding, and at its *offset* position
+///   without it; rinch's layout rect is the offset one, and rinch extends it.
+///   Before clamping, rinch's answer is Chrome's plus the smaller of the offset
+///   and the end padding, per axis. An offset toward the end over-reports by
+///   up to the end padding: in the padded container above, a 210x50 child at
+///   `left: 10px` gives Chrome 50 and rinch 60, and at `left: 40px` Chrome 70
+///   and rinch 90. An offset toward the **start** *under*-reports by up to the
+///   offset's size, and needs no padding at all to do it: in a plain `width:
+///   200px; height: 100px; overflow: auto` container, a 240x50 child at
+///   `left: -40px` gives Chrome 40px of
+///   travel and rinch no bar, so content Chrome can scroll to is unreachable.
+///   A `relative` child with no offset is measured exactly like a `static` one.
+///
+/// Both are older than the containing-block filter above and not fixed by it.
+/// The cure needs this function to know how each child contributes: the
+/// padding box alone for an `absolute`, and for a `relative` the larger of the
+/// padded static rect and the unpadded offset rect.
 ///
 /// In logical pixels — this is layout's own unit, and every caller either wants
 /// it that way or scales the result itself.
@@ -179,6 +227,9 @@ pub fn content_extents(tree: &NodeTree, node_id: usize) -> (f64, f64) {
     let (mut width, mut height) = (0.0_f64, 0.0_f64);
     for &child_id in &node.children {
         if let Some(child) = tree.get(child_id) {
+            if !crate::out_of_flow::contributes_to_scrollable_overflow(tree, node_id, child) {
+                continue;
+            }
             let right = (child.layout.x + child.layout.width) as f64 - content_left;
             if right > width {
                 width = right;
