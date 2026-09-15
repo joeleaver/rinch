@@ -43,6 +43,16 @@
 //!   Chrome's 13.3333/16.6667 to 0.005px and checks the nested compounding,
 //!   where the two spellings diverge by 0.09px.
 //!
+//! ## One mutant this file deliberately cannot kill
+//!
+//! Spelling the `<hr>` rule `border-style: solid` instead of the spec's `inset`
+//! changes nothing observable: `border_style_from_stylo` maps `groove`,
+//! `ridge`, `inset` and `outset` all to `BorderStyleValue::Solid`, so the two
+//! spellings produce identical computed values and identical pixels. Run and
+//! confirmed survivable, not overlooked. `inset` stays because it is what the
+//! HTML Standard says and what a future shaded-border painter would need; if
+//! rinch ever grows one, this is the fixture to extend.
+//!
 //! `<hr>`'s paint — that the border row is real ink and not merely a computed
 //! value — lives in `ua_hr_paint_tests.rs`.
 
