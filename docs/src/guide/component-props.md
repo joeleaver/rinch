@@ -802,10 +802,16 @@ that is shown again gets a fresh delay. `0` is off.
 *`trap_focus`* contains **Tab** inside the overlay while it is open: the
 component stamps `data-trap-focus` on its root, and both backends cycle Tab and
 Shift+Tab within that element instead of walking the page. A *click* outside is
-untouched — the pointer is not trapped, as a *non-modal* dialog's is not — and focus is neither
-moved into the overlay on open nor restored on close
-([issue #695](https://github.com/joeleaver/rinch/issues/695)). Details and the
-nesting rule are in the [focus guide](focus.md#containing-tab-inside-an-overlay).
+untouched — the pointer is not trapped, as a *non-modal* dialog's is not.
+
+It also **moves focus into the overlay when it opens and gives it back when it
+closes**, because it is the prop that says the overlay is modal. `Modal` and
+`Drawer` focus their first control (or an `autofocus` one); `Popover` moves
+focus only for an `autofocus` child, which is the HTML popover API's rule rather
+than the dialog's. Closing restores the element that held the keyboard when the
+overlay opened, if it is still in the document, and unmounting while open does
+the same. Details, the nesting rule and the backend timing are in the
+[focus guide](focus.md#containing-tab-inside-an-overlay).
 
 *`lock_scroll`* holds the page still while the overlay is open, and this is the
 one overlay behaviour that **works differently on the two backends**. Desktop

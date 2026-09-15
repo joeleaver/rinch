@@ -772,6 +772,45 @@ impl DomDocument for RinchDocument {
         rinch_core::request_focus(self.doc_key, node_id.0);
     }
 
+    /// The DOM mirror of the focus arbiter's claim (issue #695).
+    ///
+    /// `focused_node` is what `RinchApp::set_focus_target` and its teardown keep
+    /// in step with `FocusTarget`, and it is already the fallback
+    /// `RinchApp::tab_trap_root` consults for a claim the arbiter does not model
+    /// as a node id. Reading it here means the *document* can answer "who has
+    /// focus" without the runtime having to publish its enum.
+    fn active_element(&self) -> Option<NodeId> {
+        self.tree.focused_node.map(NodeId)
+    }
+
+    /// `element.blur()` (issue #695): a request the runtime applies, and only if
+    /// `node_id` is still the node holding focus when it does.
+    ///
+    /// The "is it focused" test is made **here** as well, against the DOM mirror,
+    /// so a blur posted for a node that plainly does not have the keyboard never
+    /// occupies the single request slot and displaces a real one.
+    fn blur_element(&mut self, node_id: NodeId) {
+        if self.tree.focused_node == Some(node_id.0) {
+            rinch_core::post_focus_request(self.doc_key, rinch_core::FocusRequest::Blur(node_id.0));
+        }
+    }
+
+    /// `showModal()`'s focusing steps (issue #695), parked for the runtime.
+    ///
+    /// **Parked rather than answered**, because the answer is not knowable yet:
+    /// an overlay opening is a class removal in the same effect flush, so at
+    /// this instant every node inside `root` still has the zero-size box a
+    /// `display: none` ancestor gave it, and every visibility filter — the one
+    /// `RinchApp::collect_focusable_nodes_from` applies included — would reject
+    /// the lot. The runtime consumes the request after the next
+    /// `resolve_and_repaint`, when the boxes are real.
+    fn focus_into(&mut self, root: NodeId, policy: rinch_core::dom::FocusIntoPolicy) {
+        rinch_core::post_focus_request(
+            self.doc_key,
+            rinch_core::FocusRequest::Into(root.0, policy),
+        );
+    }
+
     /// Desktop's half of `lock_scroll` (#474): record the locking overlay's root
     /// so the wheel and scrollbar paths can refuse a gesture outside it.
     ///

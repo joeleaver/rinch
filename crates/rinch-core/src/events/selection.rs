@@ -200,29 +200,55 @@ pub fn fire_selection_sync() {
 // Allows the document/editor to request that a specific element be focused.
 // The runtime checks for and applies focus requests during event processing.
 
+/// What a parked focus request asks the runtime to do (issue #695).
+///
+/// One slot, so the **last** request posted before the runtime next looks is
+/// the one that happens. That is deliberate and it is why an overlay's close
+/// path posts exactly one of these rather than a blur followed by a hopeful
+/// focus: two writes would silently discard the first.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FocusRequest {
+    /// Focus this node — [`DomDocument::focus_element`](crate::dom::DomDocument::focus_element).
+    Node(usize),
+    /// Move focus into this subtree —
+    /// [`DomDocument::focus_into`](crate::dom::DomDocument::focus_into). Resolved
+    /// by the runtime *after* the next layout, which is the whole reason it is
+    /// parked rather than answered on the spot: an overlay's children have no
+    /// box yet at the moment it opens.
+    Into(usize, crate::dom::FocusIntoPolicy),
+    /// Release the keyboard, if `usize` is still the node holding it —
+    /// [`DomDocument::blur_element`](crate::dom::DomDocument::blur_element).
+    Blur(usize),
+}
+
 thread_local! {
-    /// `(doc_key, node_id)` — the document key scopes the request so a runtime
+    /// `(doc_key, request)` — the document key scopes the request so a runtime
     /// driving one document never consumes (and misapplies) a focus request
     /// posted by another document on the same thread (issue #134).
-    static PENDING_FOCUS_REQUEST: Cell<Option<(u64, usize)>> = const { Cell::new(None) };
+    static PENDING_FOCUS_REQUEST: Cell<Option<(u64, FocusRequest)>> = const { Cell::new(None) };
 }
 
 /// Request that a specific element be focused, identified by its document's
 /// [`doc_key`](crate::dom::DomDocument::doc_key) and node id.
 /// The runtime will apply this focus before the next event processing cycle.
 pub fn request_focus(doc_key: u64, node_id: usize) {
-    PENDING_FOCUS_REQUEST.with(|c| c.set(Some((doc_key, node_id))));
+    post_focus_request(doc_key, FocusRequest::Node(node_id));
+}
+
+/// Park any [`FocusRequest`] for `doc_key`, replacing whatever was parked.
+pub fn post_focus_request(doc_key: u64, request: FocusRequest) {
+    PENDING_FOCUS_REQUEST.with(|c| c.set(Some((doc_key, request))));
 }
 
 /// Consume the pending focus request **if it targets the given document**.
 /// Called by the runtime during event processing with its own document's key;
 /// a request posted by a different document is left in place for that
 /// document's runtime to pick up.
-pub fn take_pending_focus_request(doc_key: u64) -> Option<usize> {
+pub fn take_pending_focus_request(doc_key: u64) -> Option<FocusRequest> {
     PENDING_FOCUS_REQUEST.with(|c| match c.get() {
-        Some((key, node_id)) if key == doc_key => {
+        Some((key, request)) if key == doc_key => {
             c.set(None);
-            Some(node_id)
+            Some(request)
         }
         _ => None,
     })

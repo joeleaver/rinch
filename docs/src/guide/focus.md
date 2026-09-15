@@ -132,9 +132,7 @@ behave like a button — and what makes Space on a `Checkbox`'s visually hidden
 > **Still not matched to the web.** A positive `tabindex` does not order ahead
 > of DOM order — the collector is a plain pre-order walk (issue #435).
 > Arrow/Enter/Escape navigation of the `Select` component's open option list is
-> issue #434. An overlay does not move focus *into* itself when it opens, or
-> give it back when it closes (issue #695) — Tab is contained, but the first
-> press is the user's.
+> issue #434.
 
 ### Taking the click without the keyboard
 
@@ -228,8 +226,8 @@ The rules:
   the page `inert`, so even a scripted focus behind it is refused — measured in
   Chrome 150. rinch has no `inert` and no `showModal` semantics, so `trap_focus`
   is a Tab rule, not a modality barrier. The backdrop's `close_on_click_outside`
-  is what an outside click is for; full modality is [issue
-  #695](https://github.com/joeleaver/rinch/issues/695)'s territory.
+  is what an outside click is for; full modality would need `inert`, which rinch
+  does not have.
 - **A trap with nothing focusable inside it swallows Tab.** That is what
   containment means when there is nowhere to go — and on the web the same is
   true of a trap whose every control the *browser* refuses to focus (all of them
@@ -255,9 +253,53 @@ The rules:
   focusable set's shape rather than something trapping introduces. Give such an
   element an explicit `tabindex="0"` if it has to be reachable.
 
-**Not done yet (issue #695):** focus is not moved *into* an overlay when it
-opens, and not restored when it closes. The first Tab after opening enters the
-trap, which covers the gap but is not what a browser `<dialog>` does.
+### Moving focus in, and giving it back
+
+Containment is half of what a dialog does. The other half is that opening one
+*takes* the keyboard and closing it *gives it back* (issue #695), and both are
+tied to the same `trap_focus` prop — `trap_focus` is rinch's spelling of "this
+overlay is modal", and a browser moves focus for `showModal()` and not for
+`show()`. An overlay that wants one without the other cannot ask for it.
+
+**On open**, the overlay remembers whatever holds the keyboard — usually the
+button that was clicked — and then focuses inside itself:
+
+| Component | What it focuses |
+|---|---|
+| `Modal`, `Drawer` | the `autofocus` descendant, else the **first** focusable |
+| `Popover` | the `autofocus` descendant, and **nothing** without one |
+
+`Popover`'s rule is the HTML popover API's, not the dialog's: an `auto` popover
+runs its focusing steps only for an element that asked. A popover that grabbed
+the keyboard on every open would interrupt whatever the user was typing in.
+
+**On close** — and on unmount while still open, which is what
+`if show { Modal { … } }` does — the keyboard goes back to the remembered
+element, if it is *still in the document*. An opener the dialog itself deleted
+is not focused back into; the claim is released instead. Focus the user moved
+out of the overlay before it closed is left alone.
+
+Nesting needs no special case: an inner overlay remembers whatever the outer one
+focused, so closing the inner restores into the outer and closing the outer
+restores to the page.
+
+Two things to know about the machinery:
+
+- **Desktop applies the move one turn later.** An overlay opening is a class
+  removal in the same effect flush, so at that instant its children still have
+  the zero-size boxes their `display: none` ancestor gave them. The desktop
+  backend therefore parks the request and resolves it after the next layout,
+  which is the turn a signal write already triggers. `rinch-web` answers on the
+  spot, because the browser lays out on demand.
+- **A remembered element is checked for attachment, not identity.** A node id
+  that was freed and handed to a different, attached node would still be
+  focused — the recycled-slot hazard of issue #304, which desktop has
+  independently of this.
+
+The portable API this rests on is four `DomDocument` methods, reachable on any
+`NodeHandle`: `active_element()`, `blur()`, `is_connected()` and
+`focus_into(policy)`. A component that builds its own overlay can use them
+directly.
 
 ## Registering a focus target
 

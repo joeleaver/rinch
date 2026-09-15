@@ -1465,7 +1465,7 @@ const FOCUSABLE_SELECTOR: &str =
 /// Deliberately the same two questions desktop's `RinchApp::node_is_visible`
 /// asks — a non-zero box and a `visibility` that is not `hidden`/`collapse` —
 /// so a closed `Modal` (whose root is `display: none`) is skipped by both.
-fn element_is_visible(el: &web_sys::Element) -> bool {
+pub(crate) fn element_is_visible(el: &web_sys::Element) -> bool {
     let rect = el.get_bounding_client_rect();
     if rect.width() <= 0.0 || rect.height() <= 0.0 {
         return false;
@@ -1543,7 +1543,7 @@ fn trap_root(browser_doc: &web_sys::Document) -> Option<web_sys::Element> {
 /// `<area href>` are browser Tab stops and are in neither backend's set, so an
 /// overlay containing one loses it while trapped. Consistent between backends,
 /// divergent from the browser, and noted in `docs/src/guide/focus.md`.
-fn trap_focusables(root: &web_sys::Element) -> Vec<web_sys::HtmlElement> {
+pub(crate) fn trap_focusables(root: &web_sys::Element) -> Vec<web_sys::HtmlElement> {
     let mut out = Vec::new();
     let mut consider = |el: web_sys::Element| {
         // `:disabled` is the browser's own rule, and it is the one that reaches

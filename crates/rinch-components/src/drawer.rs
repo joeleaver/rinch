@@ -296,6 +296,19 @@ impl Component for Drawer {
             self.opened_fn.as_ref(),
         );
 
+        // Overlay focus (#695): move the keyboard in on open and give it back
+        // on close — a drawer is a modal dialog in a
+        // different shape, so it focuses its first stop on open and restores the
+        // opener on close, exactly as `Modal` does.
+        crate::overlay_focus::arm_overlay_focus(
+            __scope,
+            &root,
+            self.trap_focus,
+            self.opened,
+            self.opened_fn.as_ref(),
+            rinch_core::dom::FocusIntoPolicy::FirstFocusable,
+        );
+
         // close_on_escape (#474): see the note in `modal.rs` — the two
         // components share this shape, including the open check living at
         // dispatch time rather than here.

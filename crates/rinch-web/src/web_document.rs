@@ -1491,6 +1491,79 @@ impl DomDocument for WebDocument {
         }
     }
 
+    /// `document.activeElement`, mapped back through the `__nid` expando
+    /// (issue #695).
+    ///
+    /// An element rinch did not create carries no `__nid`, so focus sitting
+    /// outside the mounted root — the page around an island mount, `<body>`
+    /// itself — answers `None`. That is the documented meaning of `None`
+    /// (*unknown*, not *nothing*), and it is the honest answer: this document
+    /// cannot name that node.
+    fn active_element(&self) -> Option<NodeId> {
+        let active = self.browser_doc.active_element()?;
+        get_nid(&active)
+    }
+
+    /// `HTMLElement.blur()` (issue #695) — which the browser already defines as
+    /// "only if this element is the focused one", so there is nothing to guard.
+    fn blur_element(&mut self, node_id: NodeId) {
+        if let Some(n) = self.nodes.get(&node_id.0)
+            && let Ok(el) = n.clone().dyn_into::<web_sys::HtmlElement>()
+        {
+            el.blur().ok();
+        }
+    }
+
+    /// The browser's own `isConnected` (issue #695), rather than the trait's
+    /// parent walk: it is one property read, and it knows about shadow trees and
+    /// about the document this node actually belongs to.
+    fn is_connected(&self, node_id: NodeId) -> bool {
+        self.nodes.get(&node_id.0).is_some_and(|n| n.is_connected())
+    }
+
+    /// `showModal()`'s focusing steps (issue #695), answered on the spot —
+    /// unlike desktop, which must wait for a layout, the browser lays out on
+    /// demand for `getBoundingClientRect` inside the filter below.
+    ///
+    /// The candidate set is [`trap_focusables`], the **same** set `Tab`
+    /// containment cycles, so where an opening dialog puts the keyboard and
+    /// where Tab can take it afterwards cannot disagree. `autofocus` is read by
+    /// presence, HTML's rule for a boolean attribute, and looked for *within*
+    /// that set so an `autofocus` on a hidden or disabled node falls through to
+    /// the first real stop.
+    ///
+    /// The move is **verified** and a refusal steps on, for the reason
+    /// `handle_trapped_tab` documents at length: `focus()` is a request the
+    /// browser may decline for anything the filter does not know about, and
+    /// taking the first candidate on trust would leave an opening dialog with
+    /// focus still outside it.
+    fn focus_into(&mut self, root: NodeId, policy: rinch_core::dom::FocusIntoPolicy) {
+        let Some(root_el) = self
+            .nodes
+            .get(&root.0)
+            .and_then(|n| n.clone().dyn_into::<web_sys::Element>().ok())
+        else {
+            return;
+        };
+        let items = crate::event_delegation::trap_focusables(&root_el);
+        let autofocus = items.iter().position(|el| el.has_attribute("autofocus"));
+        let start = match (autofocus, policy) {
+            (Some(i), _) => i,
+            (None, rinch_core::dom::FocusIntoPolicy::FirstFocusable) => 0,
+            (None, rinch_core::dom::FocusIntoPolicy::AutofocusOnly) => return,
+        };
+        for el in items.iter().skip(start) {
+            let _ = el.focus();
+            if self
+                .browser_doc
+                .active_element()
+                .is_some_and(|a| el.is_same_node(Some(a.unchecked_ref())))
+            {
+                return;
+            }
+        }
+    }
+
     /// `root` is ignored here: the browser owns the wheel, so there is nothing to
     /// gate per-subtree. See [`set_page_scroll_locked`].
     fn set_scroll_locked(&mut self, locked: bool, _root: NodeId) {

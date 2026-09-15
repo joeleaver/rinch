@@ -346,6 +346,21 @@ impl Component for Popover {
             self.opened_fn.as_ref(),
         );
 
+        // Overlay focus (#695): move the keyboard in on open and give it back
+        // on close — `AutofocusOnly`, because a popover is not a
+        // dialog: the HTML popover API moves focus into an `auto` popover only
+        // when something inside asks for it with `autofocus`. The restore on
+        // close still applies — a popover that did take focus must give it
+        // back.
+        crate::overlay_focus::arm_overlay_focus(
+            __scope,
+            &root,
+            self.trap_focus,
+            self.opened,
+            self.opened_fn.as_ref(),
+            rinch_core::dom::FocusIntoPolicy::AutofocusOnly,
+        );
+
         root
     }
 }

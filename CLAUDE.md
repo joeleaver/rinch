@@ -1223,7 +1223,7 @@ each, because a closed `Modal` satisfies both: the attribute is removed (hence
 `"false"`), **and** a trap with no box is skipped. **Only Tab is contained** — a
 click or a scripted `focus()` outside still moves focus out, which is a
 *non-modal* `<dialog>`'s behaviour; `showModal()` inerts the page and refuses
-both, and rinch models neither (#695). On the web the **browser** is the
+both, and rinch models neither. On the web the **browser** is the
 authority on focusability, not `trap_focusables`' selector: `handle_trapped_tab`
 checks `activeElement` after each `focus()` and steps on when the browser
 declines, because a filter cannot be closed over `<fieldset disabled>`, a
@@ -1238,9 +1238,33 @@ the focused element inside a dialog is normally an `<input>`.
 since the focusable set is a tree walk on one backend and a CSS selector on the
 other.
 
+**`trap_focus` also moves focus in and gives it back** (issue #695) — the half
+#474 deferred, and the same prop, because `trap_focus` is rinch's spelling of
+"this overlay is modal". Opening remembers whatever holds the keyboard and
+focuses inside: an `autofocus` descendant wherever it sits, else the first
+focusable (`Modal`/`Drawer`) or nothing at all (`Popover`, matching the HTML
+popover API rather than the dialog). Closing — and unmounting while still open,
+which `if show { Modal { … } }` does — hands it back if that element is **still
+connected**, and otherwise releases the claim rather than focusing into a
+detached subtree; focus the user moved outside the overlay is left alone. The
+memory is per-overlay, which is the whole of nesting: the inner remembers what
+the outer focused. `rinch-components`' `overlay_focus::arm_overlay_focus` is the
+policy and it is the *only* copy; what it rests on is four `DomDocument` methods
+— `active_element`, `blur_element`, `is_connected`, `focus_into` — reachable on
+any `NodeHandle`, defaulted so `MockDomDocument` keeps compiling. **Desktop
+applies the move a layout later**, parked as a `rinch_core::FocusRequest` in the
+same single slot `request_focus` has always used: an opening overlay is a class
+removal in the same effect flush, so at that instant every node inside it still
+has a zero-size box and any visibility filter would reject the lot. `rinch-web`
+answers on the spot. The check on a remembered element is **attachment, not
+identity**, so a recycled node id (issue #304, live on desktop through
+`NodeTree::remove_subtree`) would still be focused.
+`crates/rinch/src/app/overlay_focus_tests.rs` and
+`crates/rinch-web/tests/overlay_focus.rs` are the pins, twins like the
+containment pair.
+
 Still unmatched to the web: a positive `tabindex` does not order ahead of DOM
-order (issue #435), and an overlay neither moves focus into itself on open nor
-restores it on close (issue #695).
+order (issue #435).
 
 **`data-nofocus` takes the click without the keyboard** (issue #312) — the
 `preventDefault()`-on-mousedown mechanism browsers converged on, which an editor
@@ -1336,12 +1360,11 @@ register_focus_target(
   `on_focus_lost`. `ImeEvent::DeleteSurrounding` stays inert on desktop
   (`sync_ime` requests only `with_cursor_area()`).
 - Not yet: the Android soft keyboard for a registered target (the shell still
-  watches for a focused `<input>`/editor), and moving focus *into* an overlay on
-  open or restoring it on close (#695). **Tab containment does work** — see
-  `data-trap-focus` above — as does *dismissal*, via the dismiss stack. What
-  remains unmatched is **modality**: a click still reaches a control the backdrop
-  does not cover, and a click — or a scripted `focus()` — outside an overlay
-  moves focus out of it. That matches a *non-modal* `<dialog>`; a browser's
+  watches for a focused `<input>`/editor). **Tab containment does work** — see
+  `data-trap-focus` above — as do *dismissal* (the dismiss stack) and the
+  focus move/restore (#695). What remains unmatched is **modality**: a click
+  still reaches a control the backdrop does not cover, and a click — or a
+  scripted `focus()` — outside an overlay moves focus out of it. That matches a *non-modal* `<dialog>`; a browser's
   `showModal()` inerts the rest of the page and refuses even a scripted focus
   behind it (measured, Chrome 150), which rinch does not model.
 - **`lock_scroll` gates the gesture on desktop and the style on web** (#474).

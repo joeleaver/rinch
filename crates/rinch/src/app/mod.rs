@@ -47,6 +47,8 @@ mod nofocus_tests;
 #[cfg(test)]
 mod overlay_dismiss_tests;
 #[cfg(test)]
+mod overlay_focus_tests;
+#[cfg(test)]
 mod overlay_opacity_tests;
 #[cfg(test)]
 mod overlay_scroll_lock_tests;
@@ -2621,6 +2623,90 @@ impl RinchApp {
         result
     }
 
+    /// Apply a parked [`FocusRequest`] (issue #695).
+    ///
+    /// The one place the three request kinds are turned into arbiter
+    /// transitions, so every consumer — the tick, the re-render, both click
+    /// paths — behaves identically. Called with no outstanding borrow of
+    /// `self.doc`: everything below can run user code through the arbiter's
+    /// teardown.
+    pub(crate) fn apply_focus_request(&mut self, request: rinch_core::FocusRequest) {
+        match request {
+            rinch_core::FocusRequest::Node(node_id) => self.try_focus_input(node_id),
+            rinch_core::FocusRequest::Into(root, policy) => self.focus_into_subtree(root, policy),
+            rinch_core::FocusRequest::Blur(node_id) => self.blur_node(node_id),
+        }
+    }
+
+    /// `element.blur()`: release the keyboard **only if `node_id` still holds
+    /// it** (issue #695).
+    ///
+    /// Re-checked here and not only where the request was posted, because the
+    /// request is applied a layout later and focus may have moved in between —
+    /// a click, a `data-onchange` commit that refocused, another overlay
+    /// opening. Blurring on the stale belief would take the keyboard away from
+    /// whoever has it now.
+    fn blur_node(&mut self, node_id: usize) {
+        let holds = match self.focus_target {
+            FocusTarget::Input(id) | FocusTarget::Node(id) | FocusTarget::Select(id) => {
+                id == node_id
+            }
+            #[cfg(feature = "desktop")]
+            FocusTarget::Editor(id) => id == node_id,
+            _ => false,
+        };
+        if !holds {
+            return;
+        }
+        self.set_focus_target(FocusTarget::None);
+        if let Some(doc) = &self.doc {
+            let mut d = doc.borrow_mut();
+            d.set_focus_visible(node_id, false);
+            if d.tree.focused_node == Some(node_id) {
+                d.update_focus(None);
+            }
+        }
+        self.scene_dirty = true;
+    }
+
+    /// `showModal()`'s focusing steps over the subtree at `root` (issue #695):
+    /// the `autofocus` descendant if there is one, else — under
+    /// [`FocusIntoPolicy::FirstFocusable`] — the first Tab stop inside.
+    ///
+    /// **The focusable set is `collect_focusable_nodes_from`'s**, the same one
+    /// `trap_focus` confines Tab to, so "where an opening dialog puts the
+    /// keyboard" and "where Tab can take it afterwards" cannot disagree. That
+    /// also buys the visibility and `disabled` filtering for free — including
+    /// the `<fieldset disabled>` inheritance seeded from above `root`.
+    ///
+    /// `autofocus` is read by **presence**, HTML's rule for a boolean attribute
+    /// (issue #612) and the rule `NodeHandle::write_attribute` writes for. It is
+    /// looked for *within the focusable set* rather than in the raw tree, so
+    /// `autofocus` on a hidden or disabled node falls through to the first real
+    /// stop instead of moving focus nowhere.
+    fn focus_into_subtree(&mut self, root: usize, policy: rinch_core::dom::FocusIntoPolicy) {
+        let candidates = self.collect_focusable_nodes_from(root);
+        let target = {
+            let Some(doc) = &self.doc else { return };
+            let d = doc.borrow();
+            let autofocus = candidates.iter().copied().find(|&id| {
+                d.tree
+                    .get(id)
+                    .is_some_and(|n| n.attributes.contains_key("autofocus"))
+            });
+            match (autofocus, policy) {
+                (Some(id), _) => Some(id),
+                (None, rinch_core::dom::FocusIntoPolicy::FirstFocusable) => {
+                    candidates.first().copied()
+                }
+                (None, rinch_core::dom::FocusIntoPolicy::AutofocusOnly) => None,
+            }
+        };
+        if let Some(id) = target {
+            self.focus_element(id);
+        }
+    }
+
     /// Focus a specific element by node ID via Tab: an `<input>`/`<textarea>`,
     /// or a generic `tabindex >= 0` node (issue #228). Keyboard-driven, so the
     /// focused node gets the `:focus-visible` ring either way.
@@ -2750,9 +2836,8 @@ impl RinchApp {
                 events::dispatch_event(events::EventHandlerId(handler_id));
                 // The handler may have requested focus (e.g. opening a dialog
                 // that focuses an input) — honor it like the pointer path does.
-                if let Some(focus_node_id) = rinch_core::take_pending_focus_request(self.doc_key())
-                {
-                    self.try_focus_input(focus_node_id);
+                if let Some(request) = rinch_core::take_pending_focus_request(self.doc_key()) {
+                    self.apply_focus_request(request);
                 }
                 self.scene_dirty = true;
                 return;

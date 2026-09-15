@@ -194,8 +194,25 @@ fn modal_page(open: Signal<bool>, trap_focus: bool) -> (RinchApp, Ids) {
 /// tree the collector walks. Adding or removing the modal's `--hidden` class
 /// dirties style, so this is not the no-op `resolve_layout`'s `!layout_dirty`
 /// early-return makes of a re-resolve at an unchanged viewport.
+///
+/// **Deliberately not a full runtime turn.** Since #695 an overlay's open and
+/// close also *park* a focus request, which only a `UserEvent::ReRender` turn
+/// applies ([`turn`]). Leaving that out here is what keeps these fixtures about
+/// containment alone: the claim is wherever the fixture put it, and Tab's
+/// answer is not entangled with the overlay having moved focus itself.
+/// `overlay_focus_tests` is where the move and the restore are asserted.
 fn settle(app: &mut RinchApp) {
     app.resolve_and_repaint(W, H);
+}
+
+/// A full runtime turn: [`settle`] plus applying whatever focus request the
+/// effects parked (#695) — the turn a signal write triggers in a running app.
+fn turn(app: &mut RinchApp) {
+    app.handle_event(
+        PlatformEvent::UserEvent(UserEvent::ReRender),
+        (W as u32, H as u32),
+        1.0,
+    );
 }
 
 // ── 1. containment ──────────────────────────────────────────────────────────
@@ -613,9 +630,12 @@ fn with_two_traps_open_and_nothing_focused_the_innermost_wins() {
 /// which `focus_inside_one_of_two_sibling_traps_stays_in_that_one` covers.
 ///
 /// It stays because it is the user-facing round trip #474 is about, and because
-/// it pins something no other fixture does: an overlay closing **does not move
-/// the claim**, so containment has to recover around a claim left pointing into
-/// a subtree that no longer has a box.
+/// it pins something no other fixture does: an overlay closing leaves the claim
+/// exactly where it was **until the runtime takes its next turn**, so
+/// containment has to recover around a claim pointing into a subtree that no
+/// longer has a box. Since #695 that turn does arrive (the close parks a focus
+/// request), and the last assertion here is what it does when Tab has already
+/// moved the claim on: nothing.
 #[test]
 fn closing_a_nested_trap_hands_containment_back_to_the_outer_one() {
     let outer = Signal::new(true);
@@ -631,14 +651,13 @@ fn closing_a_nested_trap_hands_containment_back_to_the_outer_one() {
 
     inner.set(false);
     settle(&mut app);
-
-    // Focus has not moved — closing an overlay does not blur, which is #474's
-    // deferred half. So the claim now points into a subtree with no box at all,
-    // and containment has to carry on around it.
+    // Focus is still inside the closed subtree until the runtime takes its next
+    // turn — the request is parked, not applied — and containment already has
+    // to be right in that window.
     assert_eq!(
         focused(&app),
         Some(ids.inner_a),
-        "closing must not move the claim"
+        "the claim is untouched until the parked request is applied"
     );
 
     let tour = tab_tour(&mut app, 3);
@@ -646,6 +665,19 @@ fn closing_a_nested_trap_hands_containment_back_to_the_outer_one() {
         tour,
         vec![Some(ids.outer_a), Some(ids.outer_b), Some(ids.outer_a)],
         "the outer modal traps again"
+    );
+
+    // And the turn the running app would take on that same signal write (#695)
+    // changes nothing here, because Tab has moved the claim since: the release
+    // the inner overlay parked names `inner_a`, which no longer holds the
+    // keyboard, so it is refused rather than applied to whoever does. Where the
+    // claim has *not* moved, it is applied — `overlay_focus_tests` asserts both
+    // halves.
+    turn(&mut app);
+    assert_eq!(
+        focused(&app),
+        Some(ids.outer_a),
+        "a parked release must not take the keyboard off the trap that has it"
     );
 }
 
