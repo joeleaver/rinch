@@ -523,9 +523,9 @@ fn a_rerendered_component_subtree_can_still_transition() {
 /// pins that for the raw `DomDocument` API. This fixture is the reactive-route
 /// twin, and it exists because the property's *witness* changed rather than the
 /// mechanism: the inline `animation: none` that `clear_animations` stamped was
-/// a second, independent thing stopping the frames on exactly these three
-/// helpers, and with it gone `detach_subtree_styles` dropping
-/// `active_animations` is the only one left. A `Loader` in a reactive `if` is
+/// a second, independent thing stopping the frames at its five call sites, and
+/// with it gone `detach_subtree_styles` dropping `active_animations` is what
+/// those routes have. A `Loader` in a reactive `if` is
 /// the commonest shape in the component library, so the claim wants its own
 /// pin rather than an inference from a fixture that drives `remove_node`
 /// directly.

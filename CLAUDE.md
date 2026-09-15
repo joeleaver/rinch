@@ -2576,7 +2576,7 @@ fixtures drive the `DomDocument` API directly.
 
 Deleting the method was safe because every one of the five call sites was
 `clear_animations(); remove();`, and `NodeHandle::remove` is
-`DomDocument::remove_node` — the first row of the table above. The cheapest
+`DomDocument::remove_node` — the first of the five routes listed above. The cheapest
 evidence was already in the tree: `for_each_dom_typed`'s **`Changed` arm** never
 called it, and had no defect. On `rinch-web` the browser cancels a removed
 element's transitions itself and treats a re-insertion as a first style, so the
@@ -2584,8 +2584,11 @@ inline write there was redundant at best. (A CSS *animation* does restart on
 re-insertion in a browser — that is spec behaviour, not something the stamp was
 guarding.) **Do not add a `set_style` of any kind to a removal path**: the node
 survives the removal, so anything written there is permanent.
-`crates/rinch-dom/tests/branch_helper_transition_tests.rs` is the pin, one
-fixture per surviving call site.
+`crates/rinch-dom/tests/branch_helper_transition_tests.rs` is the pin: seven
+fixtures over four of the five sites, three of them on `show_dom`.
+`reclaim_displaced` is the fifth and has none — a
+`debug_assert!(clobbered.is_none())` sits one line above the call, so a debug
+test panics on the assertion before it can get there.
 
 It was not free either, which is why a deprecated no-op shim would have been the
 wrong shape too: `set_style` re-merges the node's whole inline `style` string,

@@ -674,12 +674,16 @@ fn set_text_content_is_a_detach_too() {
 /// `!tree.active_animations.is_empty()` (`rinch/src/app/event_dispatch.rs`), so a
 /// removed `Loader` kept a desktop app rendering at full rate with nothing on
 /// screen to show for it. Since #704 deleted `NodeHandle::clear_animations`,
-/// whose inline `animation: none` stopped the frames for the three reactive
-/// helpers (at the cost of disarming the subtree forever), this is the only
-/// thing that stops them on any route at all.
+/// whose inline `animation: none` stopped the frames at its five call sites (at
+/// the cost of disarming those subtrees forever), the reset is what stops them
+/// on every removal route that leaves the subtree **alive**.
 ///
-/// This is why the helper drops `active_animations` beside `active_transitions`,
-/// which is also what `NodeTree::remove_subtree` does when it frees a subtree.
+/// That qualifier is the whole of it, and the next sentence is the reason for
+/// it. The helper drops `active_animations` beside `active_transitions`, which
+/// is also what `NodeTree::remove_subtree` does when it frees a subtree — so
+/// `set_inner_html`, which frees rather than detaches, stops the frames without
+/// this helper. So does a blanket restyle: `recompute_all_styles_full` clears
+/// every entry whether the node is connected or not.
 /// Kills the "drop `active_transitions` only" mutant; no other fixture does,
 /// because an animation writes `computed_style` without consulting
 /// `has_been_styled`, so #699's own symptom cannot see it.
