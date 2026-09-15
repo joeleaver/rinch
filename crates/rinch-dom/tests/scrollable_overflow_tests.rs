@@ -128,6 +128,47 @@ fn a_fixed_child_does_not_give_the_body_a_scrollbar() {
     );
 }
 
+/// A `position: absolute` direct child of `<body>` belongs to the initial
+/// containing block, not to `<body>`, so it gives `<body>` no scroll range.
+///
+/// `<body>` is `static` under the UA sheet, so it is not the box's containing
+/// block, and it is not the initial containing block either — in rinch that is
+/// `<html>`, the arm `an_absolute_child_of_html_resolves_against_html_and_counts`
+/// pins from the positive side. Nothing pinned the negative side, and an
+/// overlay mounted straight under `<body>` is the shape #765 is about. Chrome
+/// 150, same markup: `<body>` reports `scrollHeight == clientHeight`, and the
+/// 1500px lands on `documentElement.scrollHeight` instead.
+///
+/// Off the fixed point by construction: the box is 1500px tall against a 600px
+/// viewport, so counting it would give the body a bar with 900px of travel.
+///
+/// Kills the mutant that widens the initial-containing-block arm of
+/// `out_of_flow::contributes_to_scrollable_overflow` with `|| parent_id ==
+/// tree.body_id` (measured: content 700x1500, vertical `max_scroll` 900), which
+/// every other fixture here passes.
+#[test]
+fn an_absolute_child_of_body_gives_the_body_no_scroll_range() {
+    let mut doc = RinchDocument::new();
+    let body = doc.body();
+    let child = doc.create_element("div");
+    doc.set_attribute(
+        child,
+        "style",
+        "position: absolute; left: 0; top: 0; width: 700px; height: 1500px",
+    );
+    doc.append_child(body, child);
+    doc.resolve_layout(VIEWPORT.0, VIEWPORT.1);
+    assert_eq!(
+        content_extents(&doc.tree, body.0),
+        (0.0, 0.0),
+        "a static <body> is not the containing block of its absolute child"
+    );
+    assert!(
+        scrollbars(&doc.tree, body.0, 1.0).vertical.is_none(),
+        "Chrome: body scrollHeight == clientHeight; the box is <html>'s"
+    );
+}
+
 /// A `position: absolute` child counts only where the container is its
 /// containing block. Here the container is `static`, so the box resolves
 /// against the initial containing block (#204) and escapes.
@@ -231,8 +272,8 @@ fn a_transformed_container_is_a_containing_block_too() {
 
 /// `<html>`'s box **is** the initial containing block in rinch, so an absolute
 /// child of it resolves against the box it is a child of and counts — the arm
-/// `out_of_flow::out_of_flow_kind` stops its walk on, mirrored here so the two
-/// cannot drift.
+/// `out_of_flow::out_of_flow_kind` stops its walk on, mirrored here because the
+/// two must not drift apart (nothing but this suite holds them together).
 ///
 /// `<html>`'s own `overflow` is `visible`, so this is asserted on
 /// `content_extents` rather than on a bar: `scrollbars` returns early for a
