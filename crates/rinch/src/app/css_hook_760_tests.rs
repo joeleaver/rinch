@@ -42,6 +42,11 @@
 
 use super::*;
 
+// `rsx!` writes absolute `rinch::` paths, and this *is* the rinch crate.
+use crate as rinch;
+use rinch_core::element::IntoEventHandler;
+use rinch_macros::rsx;
+
 use rinch_components::{
     DropdownMenu, DropdownMenuDropdown, DropdownMenuItem, DropdownMenuTarget, Tab, Tabs, TabsList,
     TabsPanel, Tooltip,
@@ -1148,6 +1153,336 @@ fn nested_horizontal_tabs_keep_an_underline_inside_vertical_tabs() {
     assert!(
         ih == 2.0 && iw > 2.0,
         "the nested horizontal Tabs' indicator is a 2px-tall underline, got {iw}x{ih}"
+    );
+}
+
+// ── 6. Wrappers: the panel is not always a direct child ──────────────────
+//
+// Round 2 answered the nesting leak with a child combinator on the panel too,
+// `.rinch-dropdown-menu--opened > .rinch-dropdown-menu__dropdown`, and that
+// broke compositions `main` handles, most of them through a wrapper the caller
+// never wrote (second review of #774). `rsx!` puts a `display: contents`
+// `<div>` between the menu root and the panel for a `{Option<NodeHandle>}`
+// child, for every branch of an `if` after the first, for a component with a
+// reactive prop inside an `if`, and for a helper component whose body is an
+// `if`. Behind any of those the menu never opened.
+//
+// These fixtures are written with **real `rsx!`**, not `Component::render`:
+// every other fixture in this file hand-builds its tree, which is exactly why
+// none of them could see a wrapper the macro inserts. Each first asserts the
+// wrapper is really there — without one it would be the direct-child control,
+// on the fixed point where `>` and the descendant rule agree.
+
+/// Whether `node` is attached to the document.
+fn connected(app: &RinchApp, node: usize) -> bool {
+    let doc = app.doc.as_ref().unwrap();
+    let d = doc.borrow();
+    let mut cur = Some(node);
+    while let Some(c) = cur {
+        if c == d.tree.root_id {
+            return true;
+        }
+        cur = d.tree.get(c).and_then(|n| n.parent);
+    }
+    false
+}
+
+/// The one **attached** node with `class` — a branch that was swapped out can
+/// leave a detached one in the arena.
+fn live_node_with_class(app: &RinchApp, class: &str) -> usize {
+    let found: Vec<usize> = nodes_with_class(app, class)
+        .into_iter()
+        .filter(|n| connected(app, *n))
+        .collect();
+    assert_eq!(
+        found.len(),
+        1,
+        "expected one attached `{class}`, found {found:?}"
+    );
+    found[0]
+}
+
+/// Whether `node` is rendered: neither it nor any ancestor computes
+/// `display: none`. A `display` read on the panel alone is not enough — on
+/// `main` the positional inline write landed on the wrapper, not the panel.
+fn rendered(app: &RinchApp, node: usize) -> bool {
+    let doc = app.doc.as_ref().unwrap();
+    let d = doc.borrow();
+    let mut cur = Some(node);
+    while let Some(c) = cur {
+        let n = d.tree.get(c).unwrap();
+        if n.computed_style.display == DisplayValue::None {
+            return false;
+        }
+        cur = n.parent;
+    }
+    true
+}
+
+/// The menu opens and closes with its panel behind whatever `shape` put between
+/// them: hidden, shown, hidden again.
+fn assert_the_menu_opens_through(mut app: RinchApp, opened: Signal<bool>, shape: &str) {
+    let menu = live_node_with_class(&app, "rinch-dropdown-menu");
+    let panel = live_node_with_class(&app, "rinch-dropdown-menu__dropdown");
+    assert!(
+        is_inside(&app, panel, menu),
+        "{shape}: the panel is in the menu"
+    );
+    assert_ne!(
+        parent_of(&app, panel),
+        Some(menu),
+        "precondition ({shape}): something sits between the menu root and the panel — \
+         without a wrapper this fixture is the direct-child control"
+    );
+
+    assert!(
+        !rendered(&app, panel),
+        "{shape}: the closed menu's panel is hidden"
+    );
+    opened.set(true);
+    settle(&mut app, 1.0);
+    assert_eq!(
+        live_node_with_class(&app, "rinch-dropdown-menu__dropdown"),
+        panel,
+        "{shape}: opening does not rebuild the panel"
+    );
+    assert!(
+        rendered(&app, panel),
+        "{shape}: the open menu's panel is shown — `.rinch-dropdown-menu--opened` has \
+         to reach a panel that is not a direct child of the root"
+    );
+    opened.set(false);
+    settle(&mut app, 2.0);
+    assert!(
+        !rendered(&app, panel),
+        "{shape}: and closing hides it again"
+    );
+}
+
+/// A `DropdownMenuDropdown` passed as `{Option<NodeHandle>}`.
+///
+/// `IntoNode for Option<NodeHandle>` inserts a `display: contents` wrapper.
+/// Killed by the panel rule respelled `--opened > __dropdown`.
+#[test]
+fn a_dropdown_passed_as_an_option_opens() {
+    let opened = Signal::new(false);
+    let app = mount(move |__scope: &mut RenderScope| {
+        let dropdown: Option<NodeHandle> =
+            Some(rsx! { DropdownMenuDropdown { DropdownMenuItem { "One" } } });
+        rsx! {
+            DropdownMenu { opened_fn: move || opened.get(), on_close: || {},
+                DropdownMenuTarget { button { "t" } }
+                {dropdown}
+            }
+        }
+    });
+    assert_the_menu_opens_through(app, opened, "{Option<NodeHandle>}");
+}
+
+/// A `DropdownMenuDropdown` in the `else if` branch of an `if` — so the second
+/// of `if loading { … } else if empty { … }` and every branch after it.
+///
+/// Killed by the panel rule respelled `--opened > __dropdown`.
+#[test]
+fn a_dropdown_in_an_else_if_branch_opens() {
+    let opened = Signal::new(false);
+    let mode = Signal::new(2u32);
+    let app = mount(move |__scope: &mut RenderScope| {
+        rsx! {
+            DropdownMenu { opened_fn: move || opened.get(), on_close: || {},
+                DropdownMenuTarget { button { "t" } }
+                if mode.get() == 1 {
+                    span { "loading" }
+                } else if mode.get() == 2 {
+                    DropdownMenuDropdown { DropdownMenuItem { "One" } }
+                }
+            }
+        }
+    });
+    assert_the_menu_opens_through(app, opened, "else-if branch");
+}
+
+/// A helper component that builds the dropdown, used with a **reactive** prop.
+#[derive(Debug, Default)]
+struct MenuItems {
+    label: String,
+}
+
+impl Component for MenuItems {
+    fn render(&self, __scope: &mut RenderScope, _children: &[NodeHandle]) -> NodeHandle {
+        let label = self.label.clone();
+        rsx! { DropdownMenuDropdown { DropdownMenuItem { {label} } } }
+    }
+}
+
+/// A component with a reactive prop as the body of an `if` branch.
+///
+/// Killed by the panel rule respelled `--opened > __dropdown`.
+#[test]
+fn a_reactive_prop_component_in_an_if_opens() {
+    let opened = Signal::new(false);
+    let label = Signal::new("One".to_string());
+    let app = mount(move |__scope: &mut RenderScope| {
+        rsx! {
+            DropdownMenu { opened_fn: move || opened.get(), on_close: || {},
+                DropdownMenuTarget { button { "t" } }
+                if true { MenuItems { label: {move || label.get()} } }
+            }
+        }
+    });
+    assert_the_menu_opens_through(app, opened, "reactive-prop component in an `if`");
+}
+
+/// A helper component whose whole rsx body is an `if`.
+#[derive(Debug, Default)]
+struct MaybeMenuItems {
+    show: bool,
+}
+
+impl Component for MaybeMenuItems {
+    fn render(&self, __scope: &mut RenderScope, _children: &[NodeHandle]) -> NodeHandle {
+        let show = self.show;
+        rsx! { if show { DropdownMenuDropdown { DropdownMenuItem { "One" } } } }
+    }
+}
+
+/// A helper component whose body is control flow.
+///
+/// Killed by the panel rule respelled `--opened > __dropdown`.
+#[test]
+fn a_helper_whose_body_is_an_if_opens() {
+    let opened = Signal::new(false);
+    let app = mount(move |__scope: &mut RenderScope| {
+        rsx! {
+            DropdownMenu { opened_fn: move || opened.get(), on_close: || {},
+                DropdownMenuTarget { button { "t" } }
+                MaybeMenuItems { show: true }
+            }
+        }
+    });
+    assert_the_menu_opens_through(app, opened, "helper whose body is an `if`");
+}
+
+/// A plain author `<div>` around the panel opens too.
+///
+/// Round 2 documented the opposite ("a panel wrapped in an element of your own
+/// stays hidden"), which was true of the `>` rule and is not of this one. Kept
+/// as a fixture so that sentence cannot come back without a red test.
+#[test]
+fn a_dropdown_wrapped_in_an_author_div_opens() {
+    let opened = Signal::new(false);
+    let app = mount(move |__scope: &mut RenderScope| {
+        rsx! {
+            DropdownMenu { opened_fn: move || opened.get(), on_close: || {},
+                DropdownMenuTarget { button { "t" } }
+                div { DropdownMenuDropdown { DropdownMenuItem { "One" } } }
+            }
+        }
+    });
+    assert_the_menu_opens_through(app, opened, "author `div`");
+}
+
+/// The same wrapper shapes cannot reach `Tooltip`'s content: `Tooltip::render`
+/// appends it to the root itself, so the `>` rule is safe there however the
+/// tooltip is composed. Here the tooltip is behind an `else if` wrapper and
+/// still opens on hover.
+#[test]
+fn a_tooltip_behind_an_rsx_wrapper_still_opens() {
+    let mode = Signal::new(2u32);
+    let mut app = mount(move |__scope: &mut RenderScope| {
+        rsx! {
+            div {
+                if mode.get() == 1 {
+                    span { "none" }
+                } else if mode.get() == 2 {
+                    Tooltip { label: "hi", button { "b" } }
+                }
+            }
+        }
+    });
+    let root = live_node_with_class(&app, "rinch-tooltip");
+    let content = live_node_with_class(&app, "rinch-tooltip__content");
+    let wrapper = parent_of(&app, root).unwrap();
+    assert_eq!(
+        attr(&app, wrapper, "class"),
+        None,
+        "precondition: the tooltip sits in rsx's classless `else if` wrapper"
+    );
+    assert!(
+        attr(&app, wrapper, "style").is_some_and(|s| s.contains("contents")),
+        "precondition: and that wrapper is `display: contents`"
+    );
+    assert_eq!(
+        parent_of(&app, content),
+        Some(root),
+        "the content is the root's own child"
+    );
+    assert!(!rendered(&app, content));
+    fire(&app, root, "data-onenter");
+    settle(&mut app, 1.0);
+    assert!(
+        rendered(&app, content),
+        "hovering reveals the content through the wrapper"
+    );
+}
+
+/// **The known limit of the panel rule, recorded.** The rule shows a panel under
+/// an open root unless a *closed* menu root sits between some open ancestor and
+/// the panel. That is exact for one level of nesting either way, and wrong in
+/// one shape: an **open** menu C inside the *target* of a **closed** menu B that
+/// is itself inside an **open** menu A's panel. C's panel stays hidden, because B
+/// is closed and sits between A and C's panel, even though C's own root is open.
+///
+/// A menu in the trigger of a menu in a menu is not a composition anything in the
+/// repo builds. This fixture is here so the day the selector is made exact (a
+/// depth-bounded enumeration is one way) it goes red and gets flipped, rather than
+/// the limit being fixed silently and its documentation left behind.
+#[test]
+fn known_limit_an_open_menu_in_a_closed_menus_target_inside_an_open_menu_stays_hidden() {
+    let app = mount(move |scope| {
+        let c_target = DropdownMenuTarget.render(scope, &[]);
+        let c_dropdown = DropdownMenuDropdown.render(scope, &[]);
+        let c = DropdownMenu {
+            opened: true,
+            ..Default::default()
+        }
+        .render(scope, &[c_target, c_dropdown]);
+        c.set_attribute("data-probe", "c");
+        let b_target = DropdownMenuTarget.render(scope, &[c]);
+        let b_dropdown = DropdownMenuDropdown.render(scope, &[]);
+        let b = DropdownMenu {
+            opened: false,
+            ..Default::default()
+        }
+        .render(scope, &[b_target, b_dropdown]);
+        b.set_attribute("data-probe", "b");
+        let a_target = DropdownMenuTarget.render(scope, &[]);
+        let a_dropdown = DropdownMenuDropdown.render(scope, &[b]);
+        let a = DropdownMenu {
+            opened: true,
+            ..Default::default()
+        }
+        .render(scope, &[a_target, a_dropdown]);
+        a.set_attribute("data-probe", "a");
+        a
+    });
+    let a = probe(&app, "a");
+    let b = probe(&app, "b");
+    let c = probe(&app, "c");
+    let a_panel = child_with_class(&app, a, "rinch-dropdown-menu__dropdown");
+    let b_panel = child_with_class(&app, b, "rinch-dropdown-menu__dropdown");
+    let c_panel = child_with_class(&app, c, "rinch-dropdown-menu__dropdown");
+    assert!(rendered(&app, a_panel), "control: A is open");
+    assert!(!rendered(&app, b_panel), "control: B is closed");
+    assert!(
+        has_class(&app, c, "rinch-dropdown-menu--opened"),
+        "C is open"
+    );
+    assert!(
+        !rendered(&app, c_panel),
+        "the documented limit: C's panel is hidden. If this fails the selector got \
+         exact — flip this assertion and delete the limit from `styles/dropdown_menu.rs` \
+         and `component-props.md`"
     );
 }
 
