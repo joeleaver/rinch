@@ -414,3 +414,43 @@ fn a_tree_row_keeps_a_class_added_after_render() {
     assert!(!has_class(&row, "rinch-tree__node-content--selected"));
     assert!(has_class(&row, CALLER), "#717, deselecting");
 }
+/// The other half of "an effect owns one class": it must not own it *twice*.
+///
+/// An effect re-runs whenever anything it read changes, and `Signal::set`
+/// notifies on every write whether or not the value changed (`set_if_changed`
+/// is the other method). Measured before `add_class` was made idempotent, three
+/// `set(true)` calls left `rinch-checkbox mine rinch-checkbox--checked
+/// rinch-checkbox--checked rinch-checkbox--checked` — unbounded growth that
+/// healed only when the class next came off.
+#[test]
+fn a_re_run_that_changes_nothing_does_not_grow_the_attribute() {
+    let checked = Signal::new(false);
+    let mounted = Mounted::build(move |scope| {
+        Checkbox {
+            checked_fn: Some(Rc::new(move || checked.get())),
+            ..Default::default()
+        }
+        .render(scope, &[])
+    });
+    mounted.root.add_class(CALLER);
+
+    checked.set(true);
+    let once = mounted.root.get_attribute("class").unwrap_or_default();
+    checked.set(true);
+    checked.set(true);
+    let thrice = mounted.root.get_attribute("class").unwrap_or_default();
+
+    assert_eq!(
+        once, thrice,
+        "two further writes of the same value must leave the attribute alone"
+    );
+    assert_eq!(
+        thrice
+            .split_whitespace()
+            .filter(|c| *c == "rinch-checkbox--checked")
+            .count(),
+        1,
+        "got `{thrice}`"
+    );
+    assert!(has_class(&mounted.root, CALLER));
+}
