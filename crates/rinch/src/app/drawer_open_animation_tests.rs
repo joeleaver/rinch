@@ -36,6 +36,9 @@
 //! 2. The four things `display: none` used to buy, which `visibility: hidden`
 //!    now has to buy instead: not painted, not hit-testable, not focusable, and
 //!    no live focus trap.
+//! 3. That closing puts all four back — reached by the effect's `else` branch
+//!    rather than by the initial render, which is a different path through a
+//!    class attribute that has been rewritten twice by then.
 //!
 //! The un-hide pass is audited for every other overlay in
 //! `overlay_animation_audit_tests`, which shares the "a transitioned property
@@ -382,19 +385,20 @@ fn a_closed_drawer_traps_no_focus() {
 /// that painted would darken **every** pixel. The `visibility: hidden` root has
 /// a real box now, so "no ink" is a claim about paint's visibility skip rather
 /// than about an empty layout.
+/// One pixel out of a full software frame, through the shell's own rasteriser —
+/// `transparent: true` so an unpainted pixel is a zero alpha rather than a
+/// window background.
+#[cfg(software_shell)]
+fn pixel(app: &mut RinchApp, x: u32, y: u32) -> [u8; 4] {
+    app.scene_dirty = true;
+    let (px, w, _h) = app.build_pixels(1.0, (VIEWPORT.0 as u32, VIEWPORT.1 as u32), true);
+    let idx = ((y * w + x) * 4) as usize;
+    [px[idx], px[idx + 1], px[idx + 2], px[idx + 3]]
+}
+
 #[cfg(software_shell)]
 #[test]
 fn the_closed_drawer_paints_nothing() {
-    /// One pixel out of a full software frame, through the shell's own
-    /// rasteriser — `transparent: true` so an unpainted pixel is a zero alpha
-    /// rather than a window background.
-    fn pixel(app: &mut RinchApp, x: u32, y: u32) -> [u8; 4] {
-        app.scene_dirty = true;
-        let (px, w, _h) = app.build_pixels(1.0, (VIEWPORT.0 as u32, VIEWPORT.1 as u32), true);
-        let idx = ((y * w + x) * 4) as usize;
-        [px[idx], px[idx + 1], px[idx + 2], px[idx + 3]]
-    }
-
     let (mut app, opened) = mount_closed();
 
     // Sampled away from the panel's own 380px width so the only thing that can
@@ -415,4 +419,138 @@ fn the_closed_drawer_paints_nothing() {
         "the closed drawer paints nothing at (600, 300): got {closed_px:?}, \
          while the open one paints {open_px:?}"
     );
+}
+
+/// Closing again puts everything back: hidden, unpainted, unclickable, out of
+/// the Tab order.
+///
+/// **Not a restatement of the four fixtures above.** Those measure the state the
+/// component *renders into* — `Drawer::render` bakes
+/// `rinch-drawer__root--hidden` straight into the root's class string when
+/// `opened_fn()` is false at mount. This measures the state the component
+/// *returns to*, which is reached by a different path: the effect's `else`
+/// branch, `root.add_class(HIDDEN)` + `drawer.remove_class(OPENED)`, on a node
+/// whose class attribute has been rewritten twice since. An effect that removed
+/// the panel's `--opened` class but forgot to re-add the root's hidden one
+/// would leave a fully opaque 800x600 backdrop over the app with every one of
+/// the other fixtures still green.
+///
+/// Measured, not argued: delete `root_clone.add_class(ROOT_HIDDEN_CLASS)` from
+/// that `else` branch in `rinch-components/src/drawer.rs` and this is the
+/// **only** test in the file that fails — 5 passed, 1 failed, at `the root is
+/// hidden again`.
+///
+/// It also witnesses the one cost the #751 cure has, and is the **only** place
+/// that does: the close starts a `transform` transition that runs its full
+/// 300ms with the root already hidden, so roughly eighteen frames are
+/// interpolated and thrown away. That is what a browser does with this CSS too
+/// — `visibility` flips discretely, the transform goes on animating — and it is
+/// the same close path issue **#759** is about. When `visibility` becomes
+/// transitionable and the drawer slides *out*, the `running` assertion here is
+/// the one that should change; the four hidden-state assertions should not.
+#[test]
+fn closing_the_drawer_puts_it_back_out_of_the_way() {
+    let (mut app, opened) = mount_closed();
+
+    let root = node_with_class(&app, ROOT);
+    let panel = node_with_class(&app, PANEL);
+    let close = node_with_class(&app, CLOSE);
+
+    // Open, and check it really did open — otherwise "closed again" is the
+    // fixed point where the drawer simply never moved and every assertion below
+    // holds for nothing.
+    opened.set(true);
+    app.resolve_and_repaint(VIEWPORT.0 + 1.0, VIEWPORT.1);
+    assert_eq!(
+        visibility_of(&app, root),
+        rinch_dom::computed_style::VisibilityValue::Visible,
+        "precondition: it opened"
+    );
+    assert!(
+        app.collect_focusable_nodes().contains(&close),
+        "precondition: its close button is reachable while open"
+    );
+    let hit_open = {
+        let doc = app.doc.as_ref().unwrap();
+        let d = doc.borrow();
+        hit_test(&d.tree, 40.0, 300.0)
+    };
+    assert!(
+        hit_open.is_some(),
+        "precondition: the open drawer takes clicks"
+    );
+
+    // Let the slide finish, so the close is a retarget of a settled box rather
+    // than a reversal — the ordinary case, and the one where a `transform`
+    // left behind would be most visible.
+    {
+        let doc = app.doc.as_ref().unwrap();
+        let mut d = doc.borrow_mut();
+        let start = d.tree.active_transitions[&panel][&TransitionProperty::Transform].start_time_ms;
+        rinch_dom::transition::tick_transitions(&mut d.tree, start + 400.0);
+    }
+    assert_eq!(
+        transform_of(&app, panel).1,
+        [0.0, 0.0],
+        "precondition: the slide finished, so the panel is at its open position"
+    );
+
+    opened.set(false);
+    app.resolve_and_repaint(VIEWPORT.0 + 2.0, VIEWPORT.1);
+
+    // The four things the closed state has to buy, now reached by the effect's
+    // `else` branch rather than by the initial render.
+    assert_eq!(
+        visibility_of(&app, root),
+        rinch_dom::computed_style::VisibilityValue::Hidden,
+        "the root is hidden again"
+    );
+    assert_ne!(
+        display_of(&app, root),
+        rinch_dom::computed_style::DisplayValue::None,
+        "and still rendered — the closed state is `visibility`, not `display`,          whichever path reached it"
+    );
+
+    let hit_closed = {
+        let doc = app.doc.as_ref().unwrap();
+        let d = doc.borrow();
+        hit_test(&d.tree, 40.0, 300.0)
+    };
+    assert!(
+        hit_closed != Some(root) && hit_closed != Some(panel),
+        "it takes no clicks again, got {hit_closed:?}"
+    );
+    assert!(
+        !app.collect_focusable_nodes().contains(&close),
+        "its close button has left the Tab order again"
+    );
+    assert!(
+        !app.doc
+            .as_ref()
+            .unwrap()
+            .borrow()
+            .tree
+            .get(root)
+            .unwrap()
+            .attributes
+            .contains_key("data-trap-focus"),
+        "and it traps no focus again"
+    );
+
+    // The cost, witnessed. The panel is heading back to `translateX(-100%)`
+    // over 300ms behind a root nobody can see — see this fixture's doc and #759.
+    assert!(
+        running(&app, panel) > 0,
+        "closing starts a transform transition that paints nothing (#759)"
+    );
+
+    #[cfg(software_shell)]
+    {
+        let px = pixel(&mut app, 600, 300);
+        assert_eq!(
+            px[3], 0,
+            "and none of those frames reaches the screen: (600, 300) is empty \
+             again, got {px:?}"
+        );
+    }
 }
