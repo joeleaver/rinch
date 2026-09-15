@@ -1513,9 +1513,8 @@ impl RinchApp {
                 }
                 // Process any pending input focus request (e.g., from an Effect
                 // triggered by run_on_main_thread that called request_focus).
-                if let Some(focus_node_id) = rinch_core::take_pending_focus_request(self.doc_key())
-                {
-                    self.try_focus_input(focus_node_id);
+                if let Some(request) = rinch_core::take_pending_focus_request(self.doc_key()) {
+                    self.apply_focus_request(request);
                     actions.push(AppAction::RequestRedraw);
                 }
             }
@@ -1640,9 +1639,8 @@ impl RinchApp {
                 }
 
                 // Process any pending input focus request from effects
-                if let Some(focus_node_id) = rinch_core::take_pending_focus_request(self.doc_key())
-                {
-                    self.try_focus_input(focus_node_id);
+                if let Some(request) = rinch_core::take_pending_focus_request(self.doc_key()) {
+                    self.apply_focus_request(request);
                     actions.push(AppAction::RequestRedraw);
                 }
 

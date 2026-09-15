@@ -47,6 +47,8 @@ mod nofocus_tests;
 #[cfg(test)]
 mod overlay_dismiss_tests;
 #[cfg(test)]
+mod overlay_focus_tests;
+#[cfg(test)]
 mod overlay_opacity_tests;
 #[cfg(test)]
 mod overlay_scroll_lock_tests;
@@ -2623,6 +2625,215 @@ impl RinchApp {
         result
     }
 
+    /// Apply a parked [`FocusRequest`] (issue #695), **after a layout pass**.
+    ///
+    /// The one place the request kinds are turned into arbiter transitions, so
+    /// every consumer that can promise a fresh layout behaves identically.
+    /// Called with no outstanding borrow of `self.doc`: everything below can run
+    /// user code through the arbiter's teardown.
+    ///
+    /// A consumer that *cannot* promise a fresh layout must call
+    /// [`Self::apply_or_repark_focus_request`] instead.
+    pub(crate) fn apply_focus_request(&mut self, request: rinch_core::FocusRequest) {
+        match request {
+            rinch_core::FocusRequest::Node(node_id) => self.try_focus_input(node_id),
+            rinch_core::FocusRequest::Into(root, policy) => self.focus_into_subtree(root, policy),
+            rinch_core::FocusRequest::Restore { opener, root } => {
+                self.apply_focus_restore(opener, root)
+            }
+        }
+    }
+
+    /// Apply a parked request from a consumer that has **not** run a layout —
+    /// the two synchronous drains that sit directly after `dispatch_event`.
+    ///
+    /// A request that needs a layout is **put back**, not answered: resolving an
+    /// `Into` against the pre-open tree finds every child still boxless, focuses
+    /// nothing, and — because the slot has been emptied — the post-layout turn
+    /// that follows finds nothing to do. The move is lost for good rather than
+    /// delayed, which is what happened to every overlay opened by a **mouse
+    /// click** (`click_handling`) or by **Enter/Space** (`activate_focused_node`),
+    /// i.e. essentially all of them. The `AboutToWait` arm runs every loop
+    /// iteration, so a re-parked request is always picked up.
+    ///
+    /// `Node` is applied as before: it is the pre-#695 `request_focus`, whose
+    /// target is a node the handler already has in hand, and deferring it would
+    /// change behaviour that predates this.
+    pub(crate) fn apply_or_repark_focus_request(&mut self, request: rinch_core::FocusRequest) {
+        if request.needs_layout() {
+            rinch_core::post_focus_request(self.doc_key(), request);
+        } else {
+            self.apply_focus_request(request);
+        }
+    }
+
+    /// Give the keyboard back now that the overlay rooted at `root` has closed,
+    /// or let it go (issue #695) — the apply-time half of
+    /// [`DomDocument::restore_focus`](rinch_core::dom::DomDocument::restore_focus),
+    /// where the boxes are current.
+    ///
+    /// Three rules, in order, none of which the component that posted this could
+    /// have applied itself:
+    ///
+    /// 1. **A claim outside `root` is the user's.** They moved the keyboard out
+    ///    of the overlay before it closed, so nothing happens — HTML's dialog
+    ///    rule, which returns focus only when the dialog contained it, or when
+    ///    nothing did.
+    /// 2. **Hand it back only if `opener` can take it now.** Attachment is not
+    ///    enough: an opener that went `disabled` while the dialog worked, or one
+    ///    that lives inside an *outer* overlay which has since closed, is
+    ///    connected and unfocusable. `try_focus_input` silently refuses the
+    ///    first and silently *accepts* the second — it has no visibility test —
+    ///    so committing on attachment leaves the claim in a `display: none`
+    ///    subtree either way. The focus is **verified** afterwards, as
+    ///    `rinch-web` and `handle_trapped_tab` verify theirs, so a refusal the
+    ///    predicate did not anticipate still falls through to rule 3.
+    /// 3. **Otherwise release the claim**, which by rule 1 is inside `root`.
+    fn apply_focus_restore(&mut self, opener: Option<usize>, root: usize) {
+        let restorable = opener.filter(|&id| self.node_can_take_focus_now(id));
+        let Some(claim) = self.claim_node_or_dom_focus() else {
+            // Nothing holds the keyboard. Rule 1 counts that as the overlay's to
+            // return — a browser restores from `<body>` too — so the hand-back
+            // still runs and rule 3 has nothing to release.
+            if let Some(id) = restorable {
+                self.focus_element(id);
+            }
+            return;
+        };
+        if !self.node_is_self_or_descendant(claim, root) {
+            return;
+        }
+        if let Some(id) = restorable {
+            self.focus_element(id);
+            if matches!(
+                self.focus_target,
+                FocusTarget::Input(cur) | FocusTarget::Node(cur) if cur == id
+            ) {
+                return;
+            }
+        }
+        self.blur_node(claim);
+    }
+
+    /// The node the keyboard claim names, falling back to the DOM's own focused
+    /// node for a claim the arbiter does not model as a node id.
+    fn claim_node_or_dom_focus(&self) -> Option<usize> {
+        let from_arbiter = match self.focus_target {
+            FocusTarget::Input(id) | FocusTarget::Node(id) | FocusTarget::Select(id) => Some(id),
+            #[cfg(feature = "desktop")]
+            FocusTarget::Editor(id) => Some(id),
+            _ => None,
+        };
+        from_arbiter.or_else(|| self.doc.as_ref()?.borrow().tree.focused_node)
+    }
+
+    /// Whether `node` is `root` or sits under it.
+    fn node_is_self_or_descendant(&self, node: usize, root: usize) -> bool {
+        let Some(doc) = &self.doc else { return false };
+        let d = doc.borrow();
+        let mut cur = Some(node);
+        while let Some(id) = cur {
+            if id == root {
+                return true;
+            }
+            cur = d.tree.get(id).and_then(|n| n.parent);
+        }
+        false
+    }
+
+    /// Whether `node` could take the keyboard **right now** — the question
+    /// `try_focus_input` does not ask before answering (issue #695).
+    ///
+    /// Its own acceptance rule (not disabled, and either an effective tabindex
+    /// or a text control carrying `data-oninput`) plus the two facts it omits:
+    /// the node is still **attached**, and it still has a **box**. A detached
+    /// node keeps its last layout, so a visibility test alone would accept one;
+    /// a node inside a closed overlay is attached with a zero box, so an
+    /// attachment test alone would accept that. Both are ordinary at the moment
+    /// an overlay closes.
+    fn node_can_take_focus_now(&self, node_id: usize) -> bool {
+        let Some(doc) = &self.doc else { return false };
+        let d = doc.borrow();
+        let Some(node) = d.tree.get(node_id) else {
+            return false;
+        };
+        if !rinch_core::dom::DomDocument::is_connected(&*d, rinch_core::dom::NodeId(node_id)) {
+            return false;
+        }
+        if !Self::node_is_visible(node) || Self::node_is_disabled_in_tree(&d.tree, node_id) {
+            return false;
+        }
+        Self::effective_tabindex(node).is_some()
+            || (Self::node_takes_text_focus(node) && node.attributes.contains_key("data-oninput"))
+    }
+
+    /// Release the keyboard from `node_id`, if it still holds it.
+    ///
+    /// The `holds` re-check is not ceremony: this runs a layout after the close
+    /// that asked for it, and focus can move in between by a route that never
+    /// touches the request slot — a pointer press claims its node immediately.
+    /// The DOM's own `:focus` is cleared either way, so a closed overlay never
+    /// keeps painting a focus ring.
+    fn blur_node(&mut self, node_id: usize) {
+        let holds = match self.focus_target {
+            FocusTarget::Input(id) | FocusTarget::Node(id) | FocusTarget::Select(id) => {
+                id == node_id
+            }
+            #[cfg(feature = "desktop")]
+            FocusTarget::Editor(id) => id == node_id,
+            _ => false,
+        };
+        if holds {
+            self.set_focus_target(FocusTarget::None);
+        }
+        if let Some(doc) = &self.doc {
+            let mut d = doc.borrow_mut();
+            if d.tree.focused_node == Some(node_id) {
+                d.set_focus_visible(node_id, false);
+                d.update_focus(None);
+            }
+        }
+        self.scene_dirty = true;
+    }
+
+    /// `showModal()`'s focusing steps over the subtree at `root` (issue #695):
+    /// the `autofocus` descendant if there is one, else — under
+    /// [`FocusIntoPolicy::FirstFocusable`] — the first Tab stop inside.
+    ///
+    /// **The focusable set is `collect_focusable_nodes_from`'s**, the same one
+    /// `trap_focus` confines Tab to, so "where an opening dialog puts the
+    /// keyboard" and "where Tab can take it afterwards" cannot disagree. That
+    /// also buys the visibility and `disabled` filtering for free — including
+    /// the `<fieldset disabled>` inheritance seeded from above `root`.
+    ///
+    /// `autofocus` is read by **presence**, HTML's rule for a boolean attribute
+    /// (issue #612) and the rule `NodeHandle::write_attribute` writes for. It is
+    /// looked for *within the focusable set* rather than in the raw tree, so
+    /// `autofocus` on a hidden or disabled node falls through to the first real
+    /// stop instead of moving focus nowhere.
+    fn focus_into_subtree(&mut self, root: usize, policy: rinch_core::dom::FocusIntoPolicy) {
+        let candidates = self.collect_focusable_nodes_from(root);
+        let target = {
+            let Some(doc) = &self.doc else { return };
+            let d = doc.borrow();
+            let autofocus = candidates.iter().copied().find(|&id| {
+                d.tree
+                    .get(id)
+                    .is_some_and(|n| n.attributes.contains_key("autofocus"))
+            });
+            match (autofocus, policy) {
+                (Some(id), _) => Some(id),
+                (None, rinch_core::dom::FocusIntoPolicy::FirstFocusable) => {
+                    candidates.first().copied()
+                }
+                (None, rinch_core::dom::FocusIntoPolicy::AutofocusOnly) => None,
+            }
+        };
+        if let Some(id) = target {
+            self.focus_element(id);
+        }
+    }
+
     /// Focus a specific element by node ID via Tab: an `<input>`/`<textarea>`,
     /// or a generic `tabindex >= 0` node (issue #228). Keyboard-driven, so the
     /// focused node gets the `:focus-visible` ring either way.
@@ -2690,12 +2901,6 @@ impl RinchApp {
         }
     }
 
-    /// Enter/Space on a keyboard-focused generic node (issue #228): dispatch
-    /// the click handler of the nearest ancestor-or-self carrying a **live**
-    /// `data-rid` (the same liveness probe as the pointer path — a freed
-    /// handler must not swallow the key), with a `ClickContext` synthesized
-    /// from the handler node's absolute rect, cursor at its center. A node with
-    /// no live handler anywhere in its chain is a quiet no-op.
     /// Whether the generic node currently holding the keyboard is a
     /// `<select>` — the one focusable whose Enter/Space/Alt+Down opens a popup
     /// instead of dispatching a `data-rid` (issue #314).
@@ -2708,6 +2913,12 @@ impl RinchApp {
             .is_some_and(|doc| doc.borrow().tree.get(id).and_then(|n| n.tag()) == Some("select"))
     }
 
+    /// Enter/Space on a keyboard-focused generic node (issue #228): dispatch
+    /// the click handler of the nearest ancestor-or-self carrying a **live**
+    /// `data-rid` (the same liveness probe as the pointer path — a freed
+    /// handler must not swallow the key), with a `ClickContext` synthesized
+    /// from the handler node's absolute rect, cursor at its center. A node with
+    /// no live handler anywhere in its chain is a quiet no-op.
     fn activate_focused_node(&mut self, node_id: usize, vp_w: f32, vp_h: f32) {
         let Some(doc) = self.doc.clone() else {
             return;
@@ -2752,9 +2963,10 @@ impl RinchApp {
                 events::dispatch_event(events::EventHandlerId(handler_id));
                 // The handler may have requested focus (e.g. opening a dialog
                 // that focuses an input) — honor it like the pointer path does.
-                if let Some(focus_node_id) = rinch_core::take_pending_focus_request(self.doc_key())
-                {
-                    self.try_focus_input(focus_node_id);
+                // No layout has run since, so an overlay request is re-parked
+                // rather than resolved against the pre-open tree (issue #695).
+                if let Some(request) = rinch_core::take_pending_focus_request(self.doc_key()) {
+                    self.apply_or_repark_focus_request(request);
                 }
                 self.scene_dirty = true;
                 return;

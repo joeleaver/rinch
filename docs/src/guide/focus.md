@@ -132,9 +132,7 @@ behave like a button — and what makes Space on a `Checkbox`'s visually hidden
 > **Still not matched to the web.** A positive `tabindex` does not order ahead
 > of DOM order — the collector is a plain pre-order walk (issue #435).
 > Arrow/Enter/Escape navigation of the `Select` component's open option list is
-> issue #434. An overlay does not move focus *into* itself when it opens, or
-> give it back when it closes (issue #695) — Tab is contained, but the first
-> press is the user's.
+> issue #434.
 
 ### Taking the click without the keyboard
 
@@ -228,8 +226,8 @@ The rules:
   the page `inert`, so even a scripted focus behind it is refused — measured in
   Chrome 150. rinch has no `inert` and no `showModal` semantics, so `trap_focus`
   is a Tab rule, not a modality barrier. The backdrop's `close_on_click_outside`
-  is what an outside click is for; full modality is [issue
-  #695](https://github.com/joeleaver/rinch/issues/695)'s territory.
+  is what an outside click is for; full modality would need `inert`, which rinch
+  does not have.
 - **A trap with nothing focusable inside it swallows Tab.** That is what
   containment means when there is nowhere to go — and on the web the same is
   true of a trap whose every control the *browser* refuses to focus (all of them
@@ -255,9 +253,65 @@ The rules:
   focusable set's shape rather than something trapping introduces. Give such an
   element an explicit `tabindex="0"` if it has to be reachable.
 
-**Not done yet (issue #695):** focus is not moved *into* an overlay when it
-opens, and not restored when it closes. The first Tab after opening enters the
-trap, which covers the gap but is not what a browser `<dialog>` does.
+### Moving focus in, and giving it back
+
+Containment is half of what a dialog does. The other half is that opening one
+*takes* the keyboard and closing it *gives it back* (issue #695), and both are
+tied to the same `trap_focus` prop — `trap_focus` is rinch's spelling of "this
+overlay is modal", and a browser moves focus for `showModal()` and not for
+`show()`. An overlay that wants one without the other cannot ask for it.
+
+**On open**, the overlay remembers whatever holds the keyboard — usually the
+button that was clicked — and then focuses inside itself:
+
+| Component | What it focuses |
+|---|---|
+| `Modal`, `Drawer` | the `autofocus` descendant, else the **first** focusable |
+| `Popover` | the `autofocus` descendant, and **nothing** without one |
+
+`Popover`'s rule is the HTML popover API's, not the dialog's: an `auto` popover
+runs its focusing steps only for an element that asked. A popover that grabbed
+the keyboard on every open would interrupt whatever the user was typing in.
+
+**On close** — and on unmount while still open, which is what
+`if show { Modal { … } }` does — the keyboard goes back to the remembered
+element, provided it can still *take* it (see below). If it cannot, the claim is
+released rather than left inside the overlay that has just gone. Focus the user
+moved out of the overlay before it closed is left alone entirely: neither
+released nor restored over, which is HTML's own dialog rule.
+
+Nesting needs no special case: an inner overlay remembers whatever the outer one
+focused, so closing the inner restores into the outer and closing the outer
+restores to the page.
+
+Three things to know about the machinery:
+
+- **Desktop decides both a turn later.** An overlay opening or closing is a class
+  change in the same effect flush, so at that instant its children still carry
+  the zero-size boxes their `display: none` ancestor gave them — and on a close,
+  whether the remembered opener can still take the keyboard is the same kind of
+  question about boxes. The desktop backend therefore parks the request and
+  resolves it after the next layout, which is the turn a signal write already
+  triggers. `rinch-web` answers on the spot, because the browser lays out on
+  demand and refuses a `focus()` it should refuse.
+- **"Still there" means it can still take focus**, not merely that it is
+  attached. An opener that went `disabled` while the dialog worked, or one that
+  lives inside an *outer* overlay closed before this one, is connected and
+  unreachable; the keyboard is released instead. What is *not* checked is
+  identity: a node id freed and handed to a different, attached node would still
+  be focused — the recycled-slot hazard of issue #304, which desktop has
+  independently of this.
+- **A `Popover` that declines the move is still a Tab trap** when `trap_focus` is
+  on. Focus stays where it was, and the next Tab enters the popover and is
+  contained there. That is containment's own rule (the last visible trap wins),
+  not a consequence of the move policy.
+
+The portable API this rests on is three `DomDocument` methods, reachable on any
+`NodeHandle`: `active_element()`, `focus_into(policy)` and `restore_focus(opener)`.
+A component that builds its own overlay can use them directly. There is
+deliberately no bare `blur()`: releasing the keyboard is never the whole answer,
+only the fallback half of a restore, and a caller that could only blur would have
+to make the decision `restore_focus` exists to make.
 
 ## Registering a focus target
 

@@ -1491,6 +1491,128 @@ impl DomDocument for WebDocument {
         }
     }
 
+    /// `document.activeElement`, mapped back through the `__nid` expando
+    /// (issue #695).
+    ///
+    /// An element rinch did not create carries no `__nid`, so focus sitting
+    /// outside the mounted root — the page around an island mount, `<body>`
+    /// itself — answers `None`. That is the documented meaning of `None`
+    /// (*unknown*, not *nothing*), and it is the honest answer: this document
+    /// cannot name that node.
+    fn active_element(&self) -> Option<NodeId> {
+        let active = self.browser_doc.active_element()?;
+        get_nid(&active)
+    }
+
+    /// `showModal()`'s focusing steps (issue #695), answered on the spot —
+    /// unlike desktop, which must wait for a layout, the browser lays out on
+    /// demand for `getBoundingClientRect` inside the filter below.
+    ///
+    /// The candidate set is [`trap_focusables`], the **same** set `Tab`
+    /// containment cycles, so where an opening dialog puts the keyboard and
+    /// where Tab can take it afterwards cannot disagree. `autofocus` is read by
+    /// presence, HTML's rule for a boolean attribute, and looked for *within*
+    /// that set so an `autofocus` on a hidden or disabled node falls through to
+    /// the first real stop.
+    ///
+    /// The move is **verified** and a refusal steps on, for the reason
+    /// `handle_trapped_tab` documents at length: `focus()` is a request the
+    /// browser may decline for anything the filter does not know about, and
+    /// taking the first candidate on trust would leave an opening dialog with
+    /// focus still outside it.
+    fn focus_into(&mut self, root: NodeId, policy: rinch_core::dom::FocusIntoPolicy) {
+        let Some(root_el) = self
+            .nodes
+            .get(&root.0)
+            .and_then(|n| n.clone().dyn_into::<web_sys::Element>().ok())
+        else {
+            return;
+        };
+        let items = crate::event_delegation::trap_focusables(&root_el);
+        let autofocus = items.iter().position(|el| el.has_attribute("autofocus"));
+        let start = match (autofocus, policy) {
+            (Some(i), _) => i,
+            (None, rinch_core::dom::FocusIntoPolicy::FirstFocusable) => 0,
+            (None, rinch_core::dom::FocusIntoPolicy::AutofocusOnly) => return,
+        };
+        // Stepping on past a refusal is right for a dialog, which wants *some*
+        // stop, and wrong for a popover, which wants that **one** element or
+        // none: moving focus to a neighbouring control the author never pointed
+        // at is not what `autofocus` asked for, and desktop would not do it.
+        let limit = match policy {
+            rinch_core::dom::FocusIntoPolicy::FirstFocusable => items.len(),
+            rinch_core::dom::FocusIntoPolicy::AutofocusOnly => start + 1,
+        };
+        for el in items[..limit].iter().skip(start) {
+            let _ = el.focus();
+            if self
+                .browser_doc
+                .active_element()
+                .is_some_and(|a| el.is_same_node(Some(a.unchecked_ref())))
+            {
+                return;
+            }
+        }
+    }
+
+    /// The close half (issue #695): hand the keyboard back to `opener`, or let
+    /// it go — with the **browser** as the authority on whether the hand-back
+    /// can happen.
+    ///
+    /// Desktop has to predicate this (is it attached, does it have a box, is it
+    /// disabled) because `try_focus_input` answers without asking. Here the same
+    /// three refusals — detached, `display: none`, `disabled` — are already the
+    /// browser's: `HTMLElement.focus()` on any of them does nothing. So the
+    /// shape is focus-then-verify, which is `handle_trapped_tab`'s rule in this
+    /// file's sibling module and needs no enumeration to be right.
+    ///
+    /// The bounding rule is the same on both backends and is *not* the
+    /// browser's to give: a claim that has moved **outside** `root` belongs to
+    /// the user, and this returns without touching it.
+    fn restore_focus(&mut self, opener: Option<NodeId>, root: NodeId) {
+        let Some(root_el) = self
+            .nodes
+            .get(&root.0)
+            .and_then(|n| n.clone().dyn_into::<web_sys::Element>().ok())
+        else {
+            return;
+        };
+        let active = self.browser_doc.active_element();
+        // `<body>` is the browser's spelling of "nothing is focused", and a
+        // browser restores from it too, so it counts as inside.
+        let body = self.browser_doc.body();
+        let nowhere = match (&active, &body) {
+            (None, _) => true,
+            (Some(a), Some(b)) => a.is_same_node(Some(b.unchecked_ref())),
+            (Some(_), None) => false,
+        };
+        let inside = nowhere
+            || active
+                .as_ref()
+                .is_some_and(|a| root_el.contains(Some(a.unchecked_ref())));
+        if !inside {
+            return;
+        }
+
+        if let Some(el) = opener
+            .and_then(|o| self.nodes.get(&o.0))
+            .and_then(|n| n.clone().dyn_into::<web_sys::HtmlElement>().ok())
+        {
+            let _ = el.focus();
+            if self
+                .browser_doc
+                .active_element()
+                .is_some_and(|a| el.is_same_node(Some(a.unchecked_ref())))
+            {
+                return;
+            }
+        }
+
+        if let Some(el) = active.and_then(|a| a.dyn_into::<web_sys::HtmlElement>().ok()) {
+            el.blur().ok();
+        }
+    }
+
     /// `root` is ignored here: the browser owns the wheel, so there is nothing to
     /// gate per-subtree. See [`set_page_scroll_locked`].
     fn set_scroll_locked(&mut self, locked: bool, _root: NodeId) {

@@ -115,6 +115,23 @@ pub struct NodeFont {
     pub style: String,
 }
 
+/// What [`DomDocument::focus_into`] should do when the subtree has no
+/// `autofocus` descendant (issue #695).
+///
+/// The two values are the two things browsers actually do, and rinch's three
+/// overlays are split between them: a `<dialog>` opened with `showModal()`
+/// focuses its first focusable whether or not anything asked for it, while an
+/// `auto` popover moves focus **only** for an `autofocus` element and otherwise
+/// leaves the keyboard where it is. `Modal` and `Drawer` take the first;
+/// `Popover` takes the second.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FocusIntoPolicy {
+    /// Fall back to the first focusable descendant — a modal dialog.
+    FirstFocusable,
+    /// Move nothing unless something inside asked for focus — a popover.
+    AutofocusOnly,
+}
+
 /// Allocate a fresh process-unique document key for [`DomDocument::doc_key`].
 ///
 /// Call once per document at construction and store the result. Monotonic and
@@ -378,6 +395,116 @@ pub trait DomDocument {
     /// # Arguments
     /// * `node_id` - The ID of the element to focus
     fn focus_element(&mut self, node_id: NodeId);
+
+    /// The node that currently holds keyboard focus in this document, if any
+    /// (issue #695).
+    ///
+    /// The portable read [`focus_element`](Self::focus_element) had no
+    /// counterpart: an overlay could *give* focus and never find out who had it
+    /// first, which is the whole of "restore it on close".
+    ///
+    /// - **Desktop** answers with the document's own `focused_node`, the DOM
+    ///   mirror the focus arbiter keeps in step with `FocusTarget`.
+    /// - **Web** answers with `document.activeElement` mapped back through the
+    ///   `__nid` expando, so an element the browser focused that rinch did not
+    ///   create (anything outside the mounted root) reads as `None` rather than
+    ///   as somebody else's node.
+    ///
+    /// Defaulted to `None` — "this backend does not model focus" — so
+    /// `MockDomDocument` and any other impl keep compiling. A caller must treat
+    /// `None` as *unknown*, not as *nothing is focused*.
+    fn active_element(&self) -> Option<NodeId> {
+        None
+    }
+
+    /// Whether `node` is still attached to this document's tree (issue #695).
+    ///
+    /// Part of the close half of an overlay's focus restore: a `Modal` opened
+    /// from a row the dialog itself deleted must not hand focus back into a
+    /// detached subtree. It is only *part* of it — being attached is not being
+    /// focusable, and [`restore_focus`](Self::restore_focus) asks both.
+    ///
+    /// One implementation, the default: a walk from `node` up
+    /// [`parent_node`](Self::parent_node) to [`root`](Self::root). Both backends
+    /// use it — on `rinch-web` the walk stops at the first parent with no
+    /// `__nid`, so a detached subtree and the page outside the mounted root both
+    /// answer `false`, which is what the browser's own `isConnected` would say
+    /// for anything rinch can name.
+    ///
+    /// **This is a liveness test, not an identity test.** A node id that was
+    /// freed and handed to a *different*, attached node answers `true` — the
+    /// recycled-slot hazard of issue #304, which is live on desktop through
+    /// `NodeTree::remove_subtree` and is not created or cured here.
+    fn is_connected(&self, node: NodeId) -> bool {
+        let root = self.root();
+        let mut cur = Some(node);
+        while let Some(id) = cur {
+            if id == root {
+                return true;
+            }
+            cur = self.parent_node(id);
+        }
+        false
+    }
+
+    /// Move keyboard focus *into* the subtree at `root`, the way a browser's
+    /// `showModal()` does (issue #695).
+    ///
+    /// The element chosen is the first **focusable** descendant in DOM order,
+    /// except that a descendant carrying `autofocus` wins wherever it sits —
+    /// HTML's own rule. `policy` decides what happens when there is no
+    /// `autofocus`: [`FocusIntoPolicy::FirstFocusable`] falls back to the first
+    /// stop (a modal dialog), [`FocusIntoPolicy::AutofocusOnly`] moves nothing
+    /// (the HTML popover API, which focuses an `auto` popover only when it asks
+    /// to be focused).
+    ///
+    /// **Why this is a backend method and not a walk in the component.**
+    /// "Focusable" is each backend's own computation and the two already differ
+    /// by construction — desktop walks its tree with
+    /// `RinchApp::collect_focusable_nodes_from`, `rinch-web` runs a CSS
+    /// selector and then asks the browser. A third rule written in
+    /// `rinch-components` would be wrong on both.
+    ///
+    /// **Desktop resolves this after the next layout, not now.** An overlay
+    /// opening is a class removal in the same effect flush, so at call time its
+    /// children still have zero-size boxes and every visibility filter would
+    /// reject them. The desktop implementation therefore posts a request the
+    /// runtime applies once layout has run, exactly as
+    /// [`focus_element`](Self::focus_element) already does.
+    ///
+    /// Defaulted to a no-op.
+    fn focus_into(&mut self, _root: NodeId, _policy: FocusIntoPolicy) {}
+
+    /// The close half: give the keyboard back to `opener` now that the overlay
+    /// rooted at `root` has closed, or let it go (issue #695).
+    ///
+    /// Three decisions, and **none of them can be made by the caller**, which is
+    /// why this is one method and not a blur plus a hopeful focus:
+    ///
+    /// 1. **Is the claim this overlay's to return?** If the keyboard has moved
+    ///    outside `root` since — the user clicked something on the page — it is
+    ///    theirs and nothing happens at all. HTML's dialog rule, which returns
+    ///    focus only when the dialog contained it (or nothing did).
+    /// 2. **Can `opener` still take it?** Not merely "is it attached": an opener
+    ///    that went `disabled` while the dialog worked, or that now sits inside
+    ///    another overlay that has since closed, is connected and cannot be
+    ///    focused. A caller that committed on attachment alone would leave the
+    ///    claim inside the subtree that just went `display: none` — the state
+    ///    this whole feature removes.
+    /// 3. **If not, release** — but only the claim inside `root`, by rule 1.
+    ///
+    /// Both facts are a **layout** old in the caller's hands, because the close
+    /// is a class change in the same effect flush. Desktop therefore parks this
+    /// and answers it after the next layout pass; `rinch-web` answers now and
+    /// lets the browser arbitrate, by focusing and then checking whether the
+    /// focus took.
+    ///
+    /// `opener` is `None` when nothing held the keyboard at open time, which is
+    /// a real answer and not a missing one: it means "there is nothing to hand
+    /// back to", i.e. go straight to rule 3.
+    ///
+    /// Defaulted to a no-op.
+    fn restore_focus(&mut self, _opener: Option<NodeId>, _root: NodeId) {}
 
     /// Lock or unlock document-level scrolling on behalf of `root` (issue #474).
     ///

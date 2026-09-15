@@ -293,6 +293,19 @@ impl Component for Modal {
             self.opened_fn.as_ref(),
         );
 
+        // Overlay focus (#695): move the keyboard in on open and give it back
+        // on close — a browser's `showModal()` focuses the first
+        // focusable inside the dialog, and hands the keyboard back to the opener
+        // when it closes.
+        crate::overlay_focus::arm_overlay_focus(
+            __scope,
+            &root,
+            self.trap_focus,
+            self.opened,
+            self.opened_fn.as_ref(),
+            rinch_core::dom::FocusIntoPolicy::FirstFocusable,
+        );
+
         // close_on_escape (#474): join the dismiss stack for as long as this
         // modal is mounted. The open check happens at dispatch, not here — a
         // closed modal stays mounted and must leave Escape to the app.

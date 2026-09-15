@@ -200,29 +200,87 @@ pub fn fire_selection_sync() {
 // Allows the document/editor to request that a specific element be focused.
 // The runtime checks for and applies focus requests during event processing.
 
+/// What a parked focus request asks the runtime to do (issue #695).
+///
+/// One slot, so the **last** request posted before the runtime next looks is
+/// the one that happens. That is why an overlay's close posts a single
+/// [`Restore`](Self::Restore) carrying everything the decision needs, rather
+/// than deciding in the component and posting one of two things: two writes
+/// would silently discard the first, and the component cannot see the facts
+/// anyway — see [`needs_layout`](Self::needs_layout).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FocusRequest {
+    /// Focus this node — [`DomDocument::focus_element`](crate::dom::DomDocument::focus_element).
+    Node(usize),
+    /// Move focus into this subtree —
+    /// [`DomDocument::focus_into`](crate::dom::DomDocument::focus_into).
+    Into(usize, crate::dom::FocusIntoPolicy),
+    /// Give the keyboard back to `opener` now that the overlay rooted at `root`
+    /// has closed, or release it — the decision is the runtime's, at apply
+    /// time. [`DomDocument::restore_focus`](crate::dom::DomDocument::restore_focus).
+    Restore {
+        /// Whoever held the keyboard when the overlay opened, if anyone.
+        opener: Option<usize>,
+        /// The closing overlay's root, which bounds the release: a claim that
+        /// has moved *outside* it belongs to the user and is left alone.
+        root: usize,
+    },
+}
+
+impl FocusRequest {
+    /// Whether resolving this needs a **fresh layout**, and so must not be
+    /// answered inside the event dispatch that posted it (issue #695).
+    ///
+    /// Both of the overlay requests do, for the same reason and in opposite
+    /// directions. An overlay opening is a class removal in the same effect
+    /// flush, so its children still carry the zero-size boxes a `display: none`
+    /// ancestor gave them and every "is this reachable" filter rejects the lot.
+    /// An overlay *closing* is the mirror image: the opener it wants to hand the
+    /// keyboard back to may itself have gone away or gone dark, and the box that
+    /// says so is a layout behind.
+    ///
+    /// [`Node`](Self::Node) does not — it is the pre-#695 `request_focus`, whose
+    /// target is a node the caller already has in hand, and answering it
+    /// immediately after a click handler is behaviour this must not change.
+    ///
+    /// A consumer that cannot promise a fresh layout **re-parks** these instead
+    /// of applying them; taking one and resolving it against the stale tree
+    /// consumes the slot and loses the move for good, which is what
+    /// `click_handling` and `activate_focused_node` did to every
+    /// click-opened and Enter-opened overlay.
+    pub fn needs_layout(&self) -> bool {
+        matches!(self, Self::Into(..) | Self::Restore { .. })
+    }
+}
+
 thread_local! {
-    /// `(doc_key, node_id)` — the document key scopes the request so a runtime
+    /// `(doc_key, request)` — the document key scopes the request so a runtime
     /// driving one document never consumes (and misapplies) a focus request
     /// posted by another document on the same thread (issue #134).
-    static PENDING_FOCUS_REQUEST: Cell<Option<(u64, usize)>> = const { Cell::new(None) };
+    static PENDING_FOCUS_REQUEST: Cell<Option<(u64, FocusRequest)>> = const { Cell::new(None) };
 }
 
 /// Request that a specific element be focused, identified by its document's
 /// [`doc_key`](crate::dom::DomDocument::doc_key) and node id.
 /// The runtime will apply this focus before the next event processing cycle.
 pub fn request_focus(doc_key: u64, node_id: usize) {
-    PENDING_FOCUS_REQUEST.with(|c| c.set(Some((doc_key, node_id))));
+    post_focus_request(doc_key, FocusRequest::Node(node_id));
+}
+
+/// Park any [`FocusRequest`] for `doc_key`, replacing whatever was parked.
+pub fn post_focus_request(doc_key: u64, request: FocusRequest) {
+    PENDING_FOCUS_REQUEST.with(|c| c.set(Some((doc_key, request))));
 }
 
 /// Consume the pending focus request **if it targets the given document**.
 /// Called by the runtime during event processing with its own document's key;
 /// a request posted by a different document is left in place for that
 /// document's runtime to pick up.
-pub fn take_pending_focus_request(doc_key: u64) -> Option<usize> {
+pub fn take_pending_focus_request(doc_key: u64) -> Option<FocusRequest> {
     PENDING_FOCUS_REQUEST.with(|c| match c.get() {
-        Some((key, node_id)) if key == doc_key => {
+        Some((key, request)) if key == doc_key => {
             c.set(None);
-            Some(node_id)
+            Some(request)
         }
         _ => None,
     })
