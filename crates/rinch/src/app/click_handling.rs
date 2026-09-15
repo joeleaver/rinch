@@ -463,8 +463,11 @@ impl RinchApp {
                 events::dispatch_event(events::EventHandlerId(handler_id));
                 // Process any pending focus request from the event handler
                 // (e.g., a handler may call request_focus on an input element).
+                // No layout has run since the handler mutated state, so an
+                // overlay request is re-parked rather than resolved against the
+                // pre-open tree (issue #695).
                 if let Some(request) = rinch_core::take_pending_focus_request(self.doc_key()) {
-                    self.apply_focus_request(request);
+                    self.apply_or_repark_focus_request(request);
                 }
                 actions.push(AppAction::RequestRedraw);
                 return actions;

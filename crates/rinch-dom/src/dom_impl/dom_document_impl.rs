@@ -783,18 +783,6 @@ impl DomDocument for RinchDocument {
         self.tree.focused_node.map(NodeId)
     }
 
-    /// `element.blur()` (issue #695): a request the runtime applies, and only if
-    /// `node_id` is still the node holding focus when it does.
-    ///
-    /// The "is it focused" test is made **here** as well, against the DOM mirror,
-    /// so a blur posted for a node that plainly does not have the keyboard never
-    /// occupies the single request slot and displaces a real one.
-    fn blur_element(&mut self, node_id: NodeId) {
-        if self.tree.focused_node == Some(node_id.0) {
-            rinch_core::post_focus_request(self.doc_key, rinch_core::FocusRequest::Blur(node_id.0));
-        }
-    }
-
     /// `showModal()`'s focusing steps (issue #695), parked for the runtime.
     ///
     /// **Parked rather than answered**, because the answer is not knowable yet:
@@ -808,6 +796,20 @@ impl DomDocument for RinchDocument {
         rinch_core::post_focus_request(
             self.doc_key,
             rinch_core::FocusRequest::Into(root.0, policy),
+        );
+    }
+
+    /// The close half (issue #695), parked for the same reason as
+    /// [`focus_into`](Self::focus_into) and the mirror image of it: whether the
+    /// remembered opener can still take the keyboard is a question about boxes,
+    /// and the boxes are a layout behind at the moment the overlay's effect runs.
+    fn restore_focus(&mut self, opener: Option<NodeId>, root: NodeId) {
+        rinch_core::post_focus_request(
+            self.doc_key,
+            rinch_core::FocusRequest::Restore {
+                opener: opener.map(|o| o.0),
+                root: root.0,
+            },
         );
     }
 

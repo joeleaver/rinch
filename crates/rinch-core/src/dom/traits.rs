@@ -417,30 +417,19 @@ pub trait DomDocument {
         None
     }
 
-    /// Release keyboard focus from `node`, **if `node` is the one holding it**
-    /// (issue #695).
-    ///
-    /// Deliberately the browser's `element.blur()` and not a document-wide
-    /// "blur whatever is focused": an overlay closing must not take the
-    /// keyboard away from a control the user had already moved to. Both
-    /// backends check first — desktop against its `focused_node`, web because
-    /// `HTMLElement.blur()` is specified that way.
-    ///
-    /// Defaulted to a no-op, like [`active_element`](Self::active_element).
-    fn blur_element(&mut self, _node: NodeId) {}
-
     /// Whether `node` is still attached to this document's tree (issue #695).
     ///
-    /// The close half of an overlay's focus restore has to decide between
-    /// "give the keyboard back" and "let it go", and the deciding fact is
-    /// whether the remembered opener is still in the document: a `Modal` opened
-    /// from a row that the dialog itself deleted must not hand focus back into
-    /// a detached subtree.
+    /// Part of the close half of an overlay's focus restore: a `Modal` opened
+    /// from a row the dialog itself deleted must not hand focus back into a
+    /// detached subtree. It is only *part* of it — being attached is not being
+    /// focusable, and [`restore_focus`](Self::restore_focus) asks both.
     ///
-    /// The default walks [`parent_node`](Self::parent_node) up to
-    /// [`root`](Self::root), which is the right answer for every tree-backed
-    /// backend; `rinch-web` overrides it with the browser's own `isConnected`,
-    /// which also knows about shadow trees and about nodes rinch never made.
+    /// One implementation, the default: a walk from `node` up
+    /// [`parent_node`](Self::parent_node) to [`root`](Self::root). Both backends
+    /// use it — on `rinch-web` the walk stops at the first parent with no
+    /// `__nid`, so a detached subtree and the page outside the mounted root both
+    /// answer `false`, which is what the browser's own `isConnected` would say
+    /// for anything rinch can name.
     ///
     /// **This is a liveness test, not an identity test.** A node id that was
     /// freed and handed to a *different*, attached node answers `true` — the
@@ -485,6 +474,37 @@ pub trait DomDocument {
     ///
     /// Defaulted to a no-op.
     fn focus_into(&mut self, _root: NodeId, _policy: FocusIntoPolicy) {}
+
+    /// The close half: give the keyboard back to `opener` now that the overlay
+    /// rooted at `root` has closed, or let it go (issue #695).
+    ///
+    /// Three decisions, and **none of them can be made by the caller**, which is
+    /// why this is one method and not a blur plus a hopeful focus:
+    ///
+    /// 1. **Is the claim this overlay's to return?** If the keyboard has moved
+    ///    outside `root` since — the user clicked something on the page — it is
+    ///    theirs and nothing happens at all. HTML's dialog rule, which returns
+    ///    focus only when the dialog contained it (or nothing did).
+    /// 2. **Can `opener` still take it?** Not merely "is it attached": an opener
+    ///    that went `disabled` while the dialog worked, or that now sits inside
+    ///    another overlay that has since closed, is connected and cannot be
+    ///    focused. A caller that committed on attachment alone would leave the
+    ///    claim inside the subtree that just went `display: none` — the state
+    ///    this whole feature removes.
+    /// 3. **If not, release** — but only the claim inside `root`, by rule 1.
+    ///
+    /// Both facts are a **layout** old in the caller's hands, because the close
+    /// is a class change in the same effect flush. Desktop therefore parks this
+    /// and answers it after the next layout pass; `rinch-web` answers now and
+    /// lets the browser arbitrate, by focusing and then checking whether the
+    /// focus took.
+    ///
+    /// `opener` is `None` when nothing held the keyboard at open time, which is
+    /// a real answer and not a missing one: it means "there is nothing to hand
+    /// back to", i.e. go straight to rule 3.
+    ///
+    /// Defaulted to a no-op.
+    fn restore_focus(&mut self, _opener: Option<NodeId>, _root: NodeId) {}
 
     /// Lock or unlock document-level scrolling on behalf of `root` (issue #474).
     ///

@@ -246,14 +246,18 @@ fn an_opener_removed_while_the_modal_was_open_is_not_restored() {
     f.teardown();
 }
 
-/// Focus the user moved out of the overlay before it closed is theirs.
+/// Focus the user moved out of the overlay before it closed is theirs: neither
+/// released nor restored over.
 ///
-/// **Mutant: `restore`'s `is_self_or_descendant` guard deleted**, so the close
-/// blurs whatever holds the keyboard — here a control on the page.
+/// **Mutant: `WebDocument::restore_focus`'s `inside` gate deleted.** With a
+/// restorable opener present the close yanks the keyboard back to it, off the
+/// control the user chose — and with no opener it blurs instead. The opener is
+/// focused first here so both halves of the gate are covered.
 #[wasm_bindgen_test]
 fn closing_does_not_release_a_claim_outside_the_overlay() {
     let open = Signal::new(false);
     let f = modal_page(open, true, false);
+    f.focus("opener");
 
     open.set(true);
     assert_eq!(f.active(), "in-first", "precondition: inside");
@@ -261,6 +265,145 @@ fn closing_does_not_release_a_claim_outside_the_overlay() {
     f.focus("elsewhere");
     open.set(false);
     assert_eq!(f.active(), "elsewhere");
+    f.teardown();
+}
+
+/// An opener that went `disabled` while the dialog was open is not restored,
+/// and the claim is released rather than left inside the closed overlay.
+///
+/// **Mutant: `restore_focus` returning after `focus()` without verifying.** The
+/// browser refuses a disabled element, so `activeElement` stays on the control
+/// inside a `display: none` subtree. Desktop needs an explicit predicate for
+/// this; here the browser is the authority and the verify is what consults it.
+#[wasm_bindgen_test]
+fn a_disabled_opener_is_not_restored_and_the_claim_is_released() {
+    let open = Signal::new(false);
+    let f = modal_page(open, true, false);
+    f.focus("opener");
+
+    open.set(true);
+    assert_eq!(f.active(), "in-first", "precondition: inside");
+
+    document()
+        .get_element_by_id("opener")
+        .unwrap()
+        .set_attribute("disabled", "")
+        .unwrap();
+    open.set(false);
+    assert_eq!(f.active(), "<body>");
+    f.teardown();
+}
+
+/// Closing the **outer** of two open overlays restores the page, and closing
+/// the inner afterwards does not put the keyboard back inside the closed outer.
+///
+/// **Mutant: `restore_focus` never handing back.** Both steps leave
+/// `activeElement` where it was, inside a dialog that is gone.
+#[wasm_bindgen_test]
+fn closing_the_outer_overlay_first_still_restores_the_page() {
+    let outer = Signal::new(false);
+    let inner = Signal::new(false);
+    let f = Fixture::mount(move |scope| {
+        let page = scope.create_element("div");
+        page.append_child(&button(scope, "opener"));
+
+        let inner_a = button(scope, "inner-a");
+        let inner_modal = Modal {
+            opened_fn: Some(Rc::new(move || inner.get())),
+            trap_focus: true,
+            with_close_button: false,
+            ..Default::default()
+        }
+        .render(scope, std::slice::from_ref(&inner_a));
+
+        let outer_a = button(scope, "outer-a");
+        let outer_modal = Modal {
+            opened_fn: Some(Rc::new(move || outer.get())),
+            trap_focus: true,
+            with_close_button: false,
+            ..Default::default()
+        }
+        .render(scope, &[outer_a, inner_modal]);
+        page.append_child(&outer_modal);
+        page
+    });
+
+    f.focus("opener");
+    outer.set(true);
+    inner.set(true);
+    assert_eq!(f.active(), "inner-a", "precondition: inner has it");
+
+    outer.set(false);
+    assert_eq!(f.active(), "opener", "the outer restores to the page");
+
+    inner.set(false);
+    assert_eq!(
+        f.active(),
+        "opener",
+        "and the inner must not hand it to a control inside the closed outer"
+    );
+    f.teardown();
+}
+
+/// An opener that is still attached but sits inside an overlay that has
+/// **already** closed is not restored: the keyboard is released instead.
+///
+/// **Mutant: `restore_focus` returning after `focus()` without verifying.** The
+/// browser refuses a `display: none` element, so `activeElement` stays on the
+/// control inside the closed inner and the release never runs.
+///
+/// **The outer traps nothing on purpose**, exactly as in the desktop twin: with
+/// `trap_focus` on it, the outer's own restore moves focus out to the page
+/// first and the inner's containment gate then returns before the opener is
+/// examined at all.
+#[wasm_bindgen_test]
+fn an_opener_inside_an_already_closed_overlay_is_not_restored() {
+    let outer = Signal::new(false);
+    let inner = Signal::new(false);
+    let f = Fixture::mount(move |scope| {
+        let page = scope.create_element("div");
+
+        let inner_a = button(scope, "inner-a");
+        let inner_modal = Modal {
+            opened_fn: Some(Rc::new(move || inner.get())),
+            trap_focus: true,
+            with_close_button: false,
+            ..Default::default()
+        }
+        .render(scope, std::slice::from_ref(&inner_a));
+
+        let outer_a = button(scope, "outer-a");
+        let outer_modal = Modal {
+            opened_fn: Some(Rc::new(move || outer.get())),
+            trap_focus: false,
+            with_close_button: false,
+            ..Default::default()
+        }
+        .render(scope, &[outer_a, inner_modal]);
+        page.append_child(&outer_modal);
+        page
+    });
+
+    outer.set(true);
+    f.focus("outer-a");
+    assert_eq!(f.active(), "outer-a", "precondition: in the outer");
+
+    inner.set(true);
+    assert_eq!(f.active(), "inner-a", "precondition: the inner took it");
+
+    outer.set(false);
+    assert_eq!(
+        f.active(),
+        "inner-a",
+        "precondition: the claim is still inside the inner"
+    );
+
+    inner.set(false);
+    assert_eq!(
+        f.active(),
+        "<body>",
+        "outer-a is connected but has no box, so the keyboard is released"
+    );
     f.teardown();
 }
 
@@ -414,4 +557,51 @@ fn a_popover_takes_focus_only_for_an_autofocus_child() {
         );
         f.teardown();
     }
+}
+
+/// A `Popover` whose `autofocus` element the **browser** refuses does not settle
+/// for a neighbour.
+///
+/// `inert` is a refusal rinch's own filter does not know about — the selector
+/// and the visibility test both pass, and `focus()` still does nothing. For a
+/// dialog, stepping on to the next stop is right: it wants *some* control. For a
+/// popover it is wrong: `autofocus` named one element, and moving the keyboard
+/// to a different one is not what was asked for. Desktop does not step on at
+/// all, so this is also where the two backends are made to agree.
+///
+/// **Mutant: `focus_into`'s `limit` deleted** (the loop running to `items.len()`
+/// under either policy). Focus then lands on `plain`, inside a popover the user
+/// never asked to enter.
+#[wasm_bindgen_test]
+fn a_popover_does_not_settle_for_a_neighbour_when_autofocus_is_refused() {
+    let open = Signal::new(false);
+    let f = Fixture::mount(move |scope| {
+        let page = scope.create_element("div");
+        page.append_child(&button(scope, "outside"));
+
+        let wrapper = scope.create_element("div");
+        wrapper.set_attribute("inert", "");
+        let wanted = button(scope, "wanted");
+        wanted.set_attribute("autofocus", "");
+        wrapper.append_child(&wanted);
+
+        let plain = button(scope, "plain");
+        let popover = Popover {
+            opened_fn: Some(Rc::new(move || open.get())),
+            trap_focus: true,
+            ..Default::default()
+        }
+        .render(scope, &[wrapper, plain]);
+        page.append_child(&popover);
+        page
+    });
+
+    f.focus("outside");
+    open.set(true);
+    assert_eq!(
+        f.active(),
+        "outside",
+        "a refused `autofocus` must move nothing in a popover"
+    );
+    f.teardown();
 }

@@ -1249,15 +1249,23 @@ connected**, and otherwise releases the claim rather than focusing into a
 detached subtree; focus the user moved outside the overlay is left alone. The
 memory is per-overlay, which is the whole of nesting: the inner remembers what
 the outer focused. `rinch-components`' `overlay_focus::arm_overlay_focus` is the
-policy and it is the *only* copy; what it rests on is four `DomDocument` methods
-— `active_element`, `blur_element`, `is_connected`, `focus_into` — reachable on
-any `NodeHandle`, defaulted so `MockDomDocument` keeps compiling. **Desktop
-applies the move a layout later**, parked as a `rinch_core::FocusRequest` in the
-same single slot `request_focus` has always used: an opening overlay is a class
-removal in the same effect flush, so at that instant every node inside it still
-has a zero-size box and any visibility filter would reject the lot. `rinch-web`
-answers on the spot. The check on a remembered element is **attachment, not
-identity**, so a recycled node id (issue #304, live on desktop through
+policy and it is the *only* copy; what it rests on is three `DomDocument`
+methods — `active_element`, `focus_into`, `restore_focus` — reachable on any
+`NodeHandle` and defaulted so `MockDomDocument` keeps compiling. There is no
+bare `blur()`: releasing the keyboard is only ever the fallback half of a
+restore, and the decision belongs where the facts are. **Desktop resolves both
+overlay calls a layout later**, parked as a `rinch_core::FocusRequest` in the
+same single slot `request_focus` has always used, because an overlay opening or
+closing is a class change in the same effect flush and every node inside it
+still carries a zero-size box. `FocusRequest::needs_layout` says which kinds
+that applies to, and **a consumer that has not run a layout re-parks them** —
+the two synchronous drains after `dispatch_event` (`click_handling` and
+`activate_focused_node`) otherwise consumed the slot and lost the move for good,
+which is every overlay opened by a click or by Enter. `rinch-web` answers on the
+spot and lets the browser refuse what it should refuse. "Still there" means
+**can still take focus**, not merely attached: a `disabled` opener, or one
+inside an outer overlay closed first, releases the keyboard instead. Identity is
+not checked, so a recycled node id (issue #304, live on desktop through
 `NodeTree::remove_subtree`) would still be focused.
 `crates/rinch/src/app/overlay_focus_tests.rs` and
 `crates/rinch-web/tests/overlay_focus.rs` are the pins, twins like the

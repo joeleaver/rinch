@@ -407,18 +407,6 @@ impl NodeHandle {
         }
     }
 
-    /// Release keyboard focus from this element, if it is the element holding
-    /// it (issue #695).
-    ///
-    /// The browser's `element.blur()`, and deliberately not "blur whatever is
-    /// focused": a node that does not hold the keyboard takes nothing away from
-    /// the node that does. See [`DomDocument::blur_element`].
-    pub fn blur(&self) {
-        if let Some(doc) = self.doc.upgrade() {
-            doc.borrow_mut().blur_element(self.node_id);
-        }
-    }
-
     /// The element currently holding keyboard focus **in this node's document**
     /// (issue #695).
     ///
@@ -436,16 +424,6 @@ impl NodeHandle {
         Some(NodeHandle::new(id, self.doc.clone()))
     }
 
-    /// Whether this node is still attached to its document (issue #695).
-    ///
-    /// A liveness test, not an identity one — see
-    /// [`DomDocument::is_connected`] for the recycled-id caveat.
-    pub fn is_connected(&self) -> bool {
-        self.doc
-            .upgrade()
-            .is_some_and(|doc| doc.borrow().is_connected(self.node_id))
-    }
-
     /// Move keyboard focus into this subtree the way a browser's `showModal()`
     /// does (issue #695): the `autofocus` descendant if there is one, else —
     /// under [`FocusIntoPolicy::FirstFocusable`] — the first focusable one.
@@ -455,6 +433,19 @@ impl NodeHandle {
     pub fn focus_into(&self, policy: FocusIntoPolicy) {
         if let Some(doc) = self.doc.upgrade() {
             doc.borrow_mut().focus_into(self.node_id, policy);
+        }
+    }
+
+    /// Give the keyboard back now that this overlay has closed, or let it go
+    /// (issue #695) — with **this node as the closing overlay's root**.
+    ///
+    /// The backend decides which, because neither answer is knowable at the
+    /// moment an effect calls this: see [`DomDocument::restore_focus`] for the
+    /// three questions and why a `blur()` verb would not have been enough.
+    pub fn restore_focus(&self, opener: Option<&NodeHandle>) {
+        if let Some(doc) = self.doc.upgrade() {
+            doc.borrow_mut()
+                .restore_focus(opener.map(|o| o.node_id), self.node_id);
         }
     }
 

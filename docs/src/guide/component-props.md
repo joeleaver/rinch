@@ -809,8 +809,9 @@ closes**, because it is the prop that says the overlay is modal. `Modal` and
 `Drawer` focus their first control (or an `autofocus` one); `Popover` moves
 focus only for an `autofocus` child, which is the HTML popover API's rule rather
 than the dialog's. Closing restores the element that held the keyboard when the
-overlay opened, if it is still in the document, and unmounting while open does
-the same. Details, the nesting rule and the backend timing are in the
+overlay opened, provided that element can still take focus, and unmounting while
+open does the same. A claim the user had already moved outside the overlay is
+left alone. Details, the nesting rule and the backend timing are in the
 [focus guide](focus.md#containing-tab-inside-an-overlay).
 
 *`lock_scroll`* holds the page still while the overlay is open, and this is the

@@ -203,22 +203,54 @@ pub fn fire_selection_sync() {
 /// What a parked focus request asks the runtime to do (issue #695).
 ///
 /// One slot, so the **last** request posted before the runtime next looks is
-/// the one that happens. That is deliberate and it is why an overlay's close
-/// path posts exactly one of these rather than a blur followed by a hopeful
-/// focus: two writes would silently discard the first.
+/// the one that happens. That is why an overlay's close posts a single
+/// [`Restore`](Self::Restore) carrying everything the decision needs, rather
+/// than deciding in the component and posting one of two things: two writes
+/// would silently discard the first, and the component cannot see the facts
+/// anyway — see [`needs_layout`](Self::needs_layout).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FocusRequest {
     /// Focus this node — [`DomDocument::focus_element`](crate::dom::DomDocument::focus_element).
     Node(usize),
     /// Move focus into this subtree —
-    /// [`DomDocument::focus_into`](crate::dom::DomDocument::focus_into). Resolved
-    /// by the runtime *after* the next layout, which is the whole reason it is
-    /// parked rather than answered on the spot: an overlay's children have no
-    /// box yet at the moment it opens.
+    /// [`DomDocument::focus_into`](crate::dom::DomDocument::focus_into).
     Into(usize, crate::dom::FocusIntoPolicy),
-    /// Release the keyboard, if `usize` is still the node holding it —
-    /// [`DomDocument::blur_element`](crate::dom::DomDocument::blur_element).
-    Blur(usize),
+    /// Give the keyboard back to `opener` now that the overlay rooted at `root`
+    /// has closed, or release it — the decision is the runtime's, at apply
+    /// time. [`DomDocument::restore_focus`](crate::dom::DomDocument::restore_focus).
+    Restore {
+        /// Whoever held the keyboard when the overlay opened, if anyone.
+        opener: Option<usize>,
+        /// The closing overlay's root, which bounds the release: a claim that
+        /// has moved *outside* it belongs to the user and is left alone.
+        root: usize,
+    },
+}
+
+impl FocusRequest {
+    /// Whether resolving this needs a **fresh layout**, and so must not be
+    /// answered inside the event dispatch that posted it (issue #695).
+    ///
+    /// Both of the overlay requests do, for the same reason and in opposite
+    /// directions. An overlay opening is a class removal in the same effect
+    /// flush, so its children still carry the zero-size boxes a `display: none`
+    /// ancestor gave them and every "is this reachable" filter rejects the lot.
+    /// An overlay *closing* is the mirror image: the opener it wants to hand the
+    /// keyboard back to may itself have gone away or gone dark, and the box that
+    /// says so is a layout behind.
+    ///
+    /// [`Node`](Self::Node) does not — it is the pre-#695 `request_focus`, whose
+    /// target is a node the caller already has in hand, and answering it
+    /// immediately after a click handler is behaviour this must not change.
+    ///
+    /// A consumer that cannot promise a fresh layout **re-parks** these instead
+    /// of applying them; taking one and resolving it against the stale tree
+    /// consumes the slot and loses the move for good, which is what
+    /// `click_handling` and `activate_focused_node` did to every
+    /// click-opened and Enter-opened overlay.
+    pub fn needs_layout(&self) -> bool {
+        matches!(self, Self::Into(..) | Self::Restore { .. })
+    }
 }
 
 thread_local! {

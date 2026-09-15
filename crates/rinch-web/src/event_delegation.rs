@@ -1465,7 +1465,7 @@ const FOCUSABLE_SELECTOR: &str =
 /// Deliberately the same two questions desktop's `RinchApp::node_is_visible`
 /// asks — a non-zero box and a `visibility` that is not `hidden`/`collapse` —
 /// so a closed `Modal` (whose root is `display: none`) is skipped by both.
-pub(crate) fn element_is_visible(el: &web_sys::Element) -> bool {
+fn element_is_visible(el: &web_sys::Element) -> bool {
     let rect = el.get_bounding_client_rect();
     if rect.width() <= 0.0 || rect.height() <= 0.0 {
         return false;

@@ -306,18 +306,23 @@ fn an_opener_removed_while_the_modal_was_open_is_not_restored() {
     );
 }
 
-/// Focus the user moved out of the overlay before it closed is theirs, and
-/// closing neither restores over it nor releases it.
+/// Focus the user moved out of the overlay before it closed is theirs: the
+/// close neither restores over it nor releases it.
 ///
-/// **Mutant: `restore`'s `is_self_or_descendant` guard deleted**, so the close
-/// blurs whatever holds the keyboard. Here that is a control on the page, and
-/// the user loses it for no reason. (The restore arm cannot cover this: it is
-/// only reached when there *is* a connected opener, and this fixture opens with
-/// nothing focused so there is none.)
+/// HTML's dialog rule — focus is returned only when the dialog contained it, or
+/// when nothing did — and it is rule 1 of `apply_focus_restore`.
+///
+/// **Mutant: that rule deleted** (`apply_focus_restore` skipping the
+/// `node_is_self_or_descendant` gate). There *is* a restorable opener here, so
+/// the close yanks the keyboard back to it off a control the user had chosen —
+/// which is why the opener is focused first rather than leaving it `None` as
+/// this fixture used to: with no opener the deleted gate only ever caused a
+/// spurious blur, and half the rule went untested.
 #[test]
 fn closing_does_not_release_a_claim_outside_the_overlay() {
     let open = Signal::new(false);
     let Page { mut app, ids, .. } = modal_page(open, true, false);
+    app.focus_element(ids.opener);
 
     open.set(true);
     settle(&mut app);
@@ -334,7 +339,8 @@ fn closing_does_not_release_a_claim_outside_the_overlay() {
     assert_eq!(
         focused(&app),
         Some(ids.elsewhere),
-        "a claim outside the closing overlay is left alone"
+        "a claim outside the closing overlay is left alone — not released, and          not restored to {}",
+        ids.opener
     );
 }
 
@@ -421,19 +427,21 @@ fn unmounting_an_open_modal_restores_the_opener() {
     );
 }
 
-/// A parked blur is refused if the keyboard moved on before it was applied.
+/// A parked restore is refused if the keyboard moved on before it was applied.
 ///
-/// Desktop applies a focus request a layout *after* it is posted, and focus can
-/// change in between by a route that never touches the request slot — a
-/// pointer press claims its node immediately. An overlay that closed with
-/// nothing to restore must not then take the keyboard off whatever the user
-/// clicked next.
+/// Desktop answers a focus request a layout *after* it is posted, and focus can
+/// change in between by a route that never touches the request slot — a pointer
+/// press claims its node immediately. An overlay that closed with nothing to
+/// restore must not then take the keyboard off whatever the user clicked next.
 ///
-/// **Mutant: `blur_node`'s `holds` check deleted.** The parked blur then
-/// releases a claim that is no longer the one it was posted for, and the click
-/// silently loses its focus one turn later.
+/// **Mutant: `apply_focus_restore`'s containment gate deleted.** The release
+/// then reaches a claim that is no longer inside the overlay it was posted for,
+/// and the click silently loses its focus one turn later. This differs from
+/// `closing_does_not_release_a_claim_outside_the_overlay` in *when* the claim
+/// moves: there, before the close; here, after the request is parked and before
+/// it is applied — the window only the deferral opens.
 #[test]
-fn a_parked_blur_is_refused_if_focus_moved_since() {
+fn a_parked_restore_is_refused_if_focus_moved_since() {
     let open = Signal::new(false);
     let Page { mut app, ids, .. } = modal_page(open, true, false);
 
@@ -445,8 +453,7 @@ fn a_parked_blur_is_refused_if_focus_moved_since() {
         "precondition: inside"
     );
 
-    // Nothing was focused when it opened, so closing releases rather than
-    // restores — that is the blur this fixture is about.
+    // Nothing was focused when it opened, so closing has nothing to hand back.
     open.set(false);
     // …and the keyboard moves on before the runtime looks, the way a pointer
     // press claims its node without going through the request slot.
@@ -456,7 +463,7 @@ fn a_parked_blur_is_refused_if_focus_moved_since() {
     assert_eq!(
         focused(&app),
         Some(ids.elsewhere),
-        "a blur parked for {} must not release a claim held by someone else",
+        "a restore parked for the overlay holding {} must not release a claim          held by someone else",
         ids.inside_first
     );
 }
@@ -598,4 +605,377 @@ fn a_popover_takes_focus_only_for_an_autofocus_child() {
             "autofocus: {autofocus} — a popover moves focus only when asked"
         );
     }
+}
+
+// ── 5. how overlays are actually opened ─────────────────────────────────────
+
+/// The centre of a node's painted box, in the logical space `click()` speaks.
+fn centre(app: &RinchApp, id: usize) -> (f32, f32) {
+    let d = app.doc.as_ref().unwrap().borrow();
+    let (x, y, w, h) = crate::app::hit_testing::painted_element_box(&d.tree, id);
+    (x + w / 2.0, y + h / 2.0)
+}
+
+/// A real left press and release on a node, so the `data-rid` dispatch runs on
+/// the path a pointer takes.
+fn click_node(app: &mut RinchApp, id: usize) {
+    let (x, y) = centre(app, id);
+    for ev in [
+        PlatformEvent::MouseDown {
+            x,
+            y,
+            button: MouseButton::Left,
+        },
+        PlatformEvent::MouseUp {
+            x,
+            y,
+            button: MouseButton::Left,
+        },
+    ] {
+        app.handle_event(ev, (W as u32, H as u32), 1.0);
+    }
+}
+
+/// A page whose opener button carries a `data-rid` that opens the modal, which
+/// is how an overlay is opened outside a test.
+fn modal_page_with_live_opener(open: Signal<bool>) -> Page {
+    let ids: Rc<Cell<Ids>> = Rc::new(Cell::new(Ids::default()));
+    let opener_handle: Rc<RefCell<Option<NodeHandle>>> = Rc::new(RefCell::new(None));
+    let out = ids.clone();
+    let out_handle = opener_handle.clone();
+    let app = mount(move |scope: &mut RenderScope| {
+        let page = scope.create_element("div");
+        let opener = button(scope, "opener");
+        let handler = scope.register_handler(move || open.set(true));
+        opener.set_attribute("data-rid", &handler.0.to_string());
+        page.append_child(&opener);
+
+        let in_first = button(scope, "in-first");
+        let in_last = button(scope, "in-last");
+        let modal = Modal {
+            opened_fn: Some(Rc::new(move || open.get())),
+            trap_focus: true,
+            with_close_button: false,
+            ..Default::default()
+        }
+        .render(scope, &[in_first.clone(), in_last.clone()]);
+        page.append_child(&modal);
+
+        let elsewhere = button(scope, "elsewhere");
+        page.append_child(&elsewhere);
+
+        out.set(Ids {
+            opener: opener.node_id().0,
+            elsewhere: elsewhere.node_id().0,
+            inside_first: in_first.node_id().0,
+            inside_last: in_last.node_id().0,
+        });
+        *out_handle.borrow_mut() = Some(opener);
+        page
+    });
+    let ids = ids.get();
+    Page {
+        app,
+        ids,
+        opener_handle,
+    }
+}
+
+/// Clicking the opener moves focus into the modal it opens.
+///
+/// **This is how overlays are opened**, and the first ten fixtures in this file
+/// all miss it: they write `opened` from outside any dispatch, so the parked
+/// request is answered by a `UserEvent::ReRender` turn, which is one of the two
+/// consumers that runs a layout first. The pointer path
+/// (`click_handling.rs`) and the Enter path (`activate_focused_node`) drain the
+/// slot **synchronously after `dispatch_event`**, with no layout in between.
+///
+/// **Mutant: `FocusRequest::needs_layout` returning `false`** (equivalently,
+/// the two synchronous consumers calling `apply_focus_request` again). The
+/// request is then resolved against the pre-open tree, where every child of the
+/// modal still has the zero box its `display: none` ancestor gave it, so
+/// nothing is focused — and because the slot has been emptied the later
+/// post-layout turns find nothing to do. Measured: focus stays on the opener
+/// through two further `settle`s. The move is lost, not delayed.
+#[test]
+fn clicking_the_opener_moves_focus_into_the_modal() {
+    let open = Signal::new(false);
+    let Page { mut app, ids, .. } = modal_page_with_live_opener(open);
+
+    click_node(&mut app, ids.opener);
+    settle(&mut app);
+
+    assert_eq!(
+        focused(&app),
+        Some(ids.inside_first),
+        "a click-opened modal must take the keyboard; it is still on the \
+         opener ({})",
+        ids.opener
+    );
+}
+
+/// Enter on the focused opener does the same, through the other synchronous
+/// consumer.
+///
+/// **Mutant: as above.** Two fixtures rather than one because the two drains
+/// are two call sites — `click_handling.rs` and `activate_focused_node` — and a
+/// fix applied to only one of them leaves the other silently broken, which is
+/// how this survived the first round.
+#[test]
+fn enter_on_the_opener_moves_focus_into_the_modal() {
+    let open = Signal::new(false);
+    let Page { mut app, ids, .. } = modal_page_with_live_opener(open);
+    app.focus_element(ids.opener);
+    assert_eq!(focused(&app), Some(ids.opener), "precondition");
+
+    app.handle_event(
+        PlatformEvent::KeyDown {
+            key: KeyCode::Enter,
+            logical_key: None,
+            text: None,
+            modifiers: Modifiers::default(),
+        },
+        (W as u32, H as u32),
+        1.0,
+    );
+    settle(&mut app);
+
+    assert_eq!(
+        focused(&app),
+        Some(ids.inside_first),
+        "an Enter-opened modal must take the keyboard too"
+    );
+}
+
+// ── 6. an opener that is there but cannot take it ───────────────────────────
+
+/// An opener that went `disabled` while the dialog was open is not restored,
+/// and the claim is released rather than left inside the closed overlay.
+///
+/// The realistic shape is a dialog that disables the control that opened it
+/// while it works ("Saving…"), or a form section that goes disabled underneath.
+///
+/// **Mutant: the `node_is_disabled_in_tree` arm of `node_can_take_focus_now`
+/// deleted.** `focus_element` then refuses the disabled node on its own and the
+/// verify-after catches it — so this fixture *also* pins the verify. Delete
+/// both and the claim stays on `in-first`, inside a `display: none` subtree,
+/// which is precisely the pre-#695 state this feature removes.
+#[test]
+fn a_disabled_opener_is_not_restored_and_the_claim_is_released() {
+    let open = Signal::new(false);
+    let Page {
+        mut app,
+        ids,
+        opener_handle,
+    } = modal_page(open, true, false);
+    app.focus_element(ids.opener);
+
+    open.set(true);
+    settle(&mut app);
+    assert_eq!(
+        focused(&app),
+        Some(ids.inside_first),
+        "precondition: inside"
+    );
+
+    opener_handle
+        .borrow()
+        .as_ref()
+        .expect("the opener handle")
+        .set_attribute("disabled", "");
+
+    open.set(false);
+    settle(&mut app);
+    assert_eq!(
+        focused(&app),
+        None,
+        "a disabled opener ({}) cannot take the keyboard, so it is released \
+         rather than left on {}",
+        ids.opener,
+        ids.inside_first
+    );
+}
+
+/// Closing the **outer** of two open overlays restores the page, and closing
+/// the inner afterwards does not put the keyboard back inside the closed outer.
+///
+/// The order an app closes everything in, or a route change.
+///
+/// **Mutant: the restore deleted** (`arm_overlay_focus` never calling
+/// `restore_focus`). Both steps then leave the claim where it was, inside a
+/// dialog that is gone. What this fixture does **not** discriminate is the
+/// *reason* the second step is safe: the outer's own restore has already moved
+/// the claim out to the page, so the inner's rule 1 returns before rule 2 is
+/// consulted at all. The fixture below removes that cover.
+#[test]
+fn closing_the_outer_overlay_first_still_restores_the_page() {
+    #[derive(Clone, Copy, Default)]
+    struct Nested {
+        opener: usize,
+        outer_a: usize,
+        inner_a: usize,
+    }
+
+    let ids: Rc<Cell<Nested>> = Rc::new(Cell::new(Nested::default()));
+    let out = ids.clone();
+    let outer = Signal::new(false);
+    let inner = Signal::new(false);
+    let mut app = mount(move |scope: &mut RenderScope| {
+        let page = scope.create_element("div");
+        let opener = button(scope, "opener");
+        page.append_child(&opener);
+
+        let inner_a = button(scope, "inner-a");
+        let inner_modal = Modal {
+            opened_fn: Some(Rc::new(move || inner.get())),
+            trap_focus: true,
+            with_close_button: false,
+            ..Default::default()
+        }
+        .render(scope, std::slice::from_ref(&inner_a));
+
+        let outer_a = button(scope, "outer-a");
+        let outer_modal = Modal {
+            opened_fn: Some(Rc::new(move || outer.get())),
+            trap_focus: true,
+            with_close_button: false,
+            ..Default::default()
+        }
+        .render(scope, &[outer_a.clone(), inner_modal.clone()]);
+        page.append_child(&outer_modal);
+
+        out.set(Nested {
+            opener: opener.node_id().0,
+            outer_a: outer_a.node_id().0,
+            inner_a: inner_a.node_id().0,
+        });
+        page
+    });
+    let ids = ids.get();
+
+    app.focus_element(ids.opener);
+    outer.set(true);
+    settle(&mut app);
+    inner.set(true);
+    settle(&mut app);
+    assert_eq!(
+        focused(&app),
+        Some(ids.inner_a),
+        "precondition: inner has it"
+    );
+
+    outer.set(false);
+    settle(&mut app);
+    assert_eq!(
+        focused(&app),
+        Some(ids.opener),
+        "the outer restores to the page even though the inner is still open"
+    );
+
+    inner.set(false);
+    settle(&mut app);
+    assert_eq!(
+        focused(&app),
+        Some(ids.opener),
+        "and the inner must not hand the keyboard to {} inside the closed outer",
+        ids.outer_a
+    );
+}
+
+/// An opener that is still attached but sits inside an overlay that has
+/// **already** closed is not restored: the keyboard is released instead.
+///
+/// **Mutant: the `node_is_visible` arm of `node_can_take_focus_now` deleted.**
+/// `try_focus_input` has no visibility test at all, so the focus *succeeds* and
+/// the claim ends up inside a closed dialog — the failure the verify-after
+/// cannot catch, because the arbiter really did take it.
+///
+/// **The outer traps nothing on purpose.** With `trap_focus` on it, the outer's
+/// own restore moves the claim out to the page first, and the inner's rule 1
+/// then returns before rule 2 is reached — so the visibility arm is never
+/// consulted and the mutant survives. Measured: it did. Turning the outer's
+/// focus management off leaves the claim inside the inner, which is inside the
+/// closed outer, which is the only state where "connected but unreachable" is
+/// the deciding fact.
+#[test]
+fn an_opener_inside_an_already_closed_overlay_is_not_restored() {
+    #[derive(Clone, Copy, Default)]
+    struct Nested {
+        outer_a: usize,
+        inner_a: usize,
+    }
+
+    let ids: Rc<Cell<Nested>> = Rc::new(Cell::new(Nested::default()));
+    let out = ids.clone();
+    let outer = Signal::new(false);
+    let inner = Signal::new(false);
+    let mut app = mount(move |scope: &mut RenderScope| {
+        let page = scope.create_element("div");
+
+        let inner_a = button(scope, "inner-a");
+        let inner_modal = Modal {
+            opened_fn: Some(Rc::new(move || inner.get())),
+            trap_focus: true,
+            with_close_button: false,
+            ..Default::default()
+        }
+        .render(scope, std::slice::from_ref(&inner_a));
+
+        let outer_a = button(scope, "outer-a");
+        let outer_modal = Modal {
+            opened_fn: Some(Rc::new(move || outer.get())),
+            // Off, so the outer neither takes the keyboard nor gives it back —
+            // see the note above.
+            trap_focus: false,
+            with_close_button: false,
+            ..Default::default()
+        }
+        .render(scope, &[outer_a.clone(), inner_modal.clone()]);
+        page.append_child(&outer_modal);
+
+        out.set(Nested {
+            outer_a: outer_a.node_id().0,
+            inner_a: inner_a.node_id().0,
+        });
+        page
+    });
+    let ids = ids.get();
+
+    outer.set(true);
+    settle(&mut app);
+    app.focus_element(ids.outer_a);
+    assert_eq!(
+        focused(&app),
+        Some(ids.outer_a),
+        "precondition: in the outer"
+    );
+
+    inner.set(true);
+    settle(&mut app);
+    assert_eq!(
+        focused(&app),
+        Some(ids.inner_a),
+        "precondition: the inner took it, remembering {}",
+        ids.outer_a
+    );
+
+    // The outer closes without restoring anything, leaving the inner's
+    // remembered opener attached and boxless.
+    outer.set(false);
+    settle(&mut app);
+    assert_eq!(
+        focused(&app),
+        Some(ids.inner_a),
+        "precondition: the claim is still inside the inner"
+    );
+
+    inner.set(false);
+    settle(&mut app);
+    assert_eq!(
+        focused(&app),
+        None,
+        "{} is connected but has no box, so the keyboard is released rather \
+         than handed into a closed dialog",
+        ids.outer_a
+    );
 }

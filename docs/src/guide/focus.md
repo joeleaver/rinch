@@ -275,31 +275,43 @@ the keyboard on every open would interrupt whatever the user was typing in.
 
 **On close** — and on unmount while still open, which is what
 `if show { Modal { … } }` does — the keyboard goes back to the remembered
-element, if it is *still in the document*. An opener the dialog itself deleted
-is not focused back into; the claim is released instead. Focus the user moved
-out of the overlay before it closed is left alone.
+element, provided it can still *take* it (see below). If it cannot, the claim is
+released rather than left inside the overlay that has just gone. Focus the user
+moved out of the overlay before it closed is left alone entirely: neither
+released nor restored over, which is HTML's own dialog rule.
 
 Nesting needs no special case: an inner overlay remembers whatever the outer one
 focused, so closing the inner restores into the outer and closing the outer
 restores to the page.
 
-Two things to know about the machinery:
+Three things to know about the machinery:
 
-- **Desktop applies the move one turn later.** An overlay opening is a class
-  removal in the same effect flush, so at that instant its children still have
-  the zero-size boxes their `display: none` ancestor gave them. The desktop
-  backend therefore parks the request and resolves it after the next layout,
-  which is the turn a signal write already triggers. `rinch-web` answers on the
-  spot, because the browser lays out on demand.
-- **A remembered element is checked for attachment, not identity.** A node id
-  that was freed and handed to a different, attached node would still be
-  focused — the recycled-slot hazard of issue #304, which desktop has
+- **Desktop decides both a turn later.** An overlay opening or closing is a class
+  change in the same effect flush, so at that instant its children still carry
+  the zero-size boxes their `display: none` ancestor gave them — and on a close,
+  whether the remembered opener can still take the keyboard is the same kind of
+  question about boxes. The desktop backend therefore parks the request and
+  resolves it after the next layout, which is the turn a signal write already
+  triggers. `rinch-web` answers on the spot, because the browser lays out on
+  demand and refuses a `focus()` it should refuse.
+- **"Still there" means it can still take focus**, not merely that it is
+  attached. An opener that went `disabled` while the dialog worked, or one that
+  lives inside an *outer* overlay closed before this one, is connected and
+  unreachable; the keyboard is released instead. What is *not* checked is
+  identity: a node id freed and handed to a different, attached node would still
+  be focused — the recycled-slot hazard of issue #304, which desktop has
   independently of this.
+- **A `Popover` that declines the move is still a Tab trap** when `trap_focus` is
+  on. Focus stays where it was, and the next Tab enters the popover and is
+  contained there. That is containment's own rule (the last visible trap wins),
+  not a consequence of the move policy.
 
-The portable API this rests on is four `DomDocument` methods, reachable on any
-`NodeHandle`: `active_element()`, `blur()`, `is_connected()` and
-`focus_into(policy)`. A component that builds its own overlay can use them
-directly.
+The portable API this rests on is three `DomDocument` methods, reachable on any
+`NodeHandle`: `active_element()`, `focus_into(policy)` and `restore_focus(opener)`.
+A component that builds its own overlay can use them directly. There is
+deliberately no bare `blur()`: releasing the keyboard is never the whole answer,
+only the fallback half of a restore, and a caller that could only blur would have
+to make the decision `restore_focus` exists to make.
 
 ## Registering a focus target
 

@@ -1504,23 +1504,6 @@ impl DomDocument for WebDocument {
         get_nid(&active)
     }
 
-    /// `HTMLElement.blur()` (issue #695) — which the browser already defines as
-    /// "only if this element is the focused one", so there is nothing to guard.
-    fn blur_element(&mut self, node_id: NodeId) {
-        if let Some(n) = self.nodes.get(&node_id.0)
-            && let Ok(el) = n.clone().dyn_into::<web_sys::HtmlElement>()
-        {
-            el.blur().ok();
-        }
-    }
-
-    /// The browser's own `isConnected` (issue #695), rather than the trait's
-    /// parent walk: it is one property read, and it knows about shadow trees and
-    /// about the document this node actually belongs to.
-    fn is_connected(&self, node_id: NodeId) -> bool {
-        self.nodes.get(&node_id.0).is_some_and(|n| n.is_connected())
-    }
-
     /// `showModal()`'s focusing steps (issue #695), answered on the spot —
     /// unlike desktop, which must wait for a layout, the browser lays out on
     /// demand for `getBoundingClientRect` inside the filter below.
@@ -1552,7 +1535,15 @@ impl DomDocument for WebDocument {
             (None, rinch_core::dom::FocusIntoPolicy::FirstFocusable) => 0,
             (None, rinch_core::dom::FocusIntoPolicy::AutofocusOnly) => return,
         };
-        for el in items.iter().skip(start) {
+        // Stepping on past a refusal is right for a dialog, which wants *some*
+        // stop, and wrong for a popover, which wants that **one** element or
+        // none: moving focus to a neighbouring control the author never pointed
+        // at is not what `autofocus` asked for, and desktop would not do it.
+        let limit = match policy {
+            rinch_core::dom::FocusIntoPolicy::FirstFocusable => items.len(),
+            rinch_core::dom::FocusIntoPolicy::AutofocusOnly => start + 1,
+        };
+        for el in items[..limit].iter().skip(start) {
             let _ = el.focus();
             if self
                 .browser_doc
@@ -1561,6 +1552,64 @@ impl DomDocument for WebDocument {
             {
                 return;
             }
+        }
+    }
+
+    /// The close half (issue #695): hand the keyboard back to `opener`, or let
+    /// it go — with the **browser** as the authority on whether the hand-back
+    /// can happen.
+    ///
+    /// Desktop has to predicate this (is it attached, does it have a box, is it
+    /// disabled) because `try_focus_input` answers without asking. Here the same
+    /// three refusals — detached, `display: none`, `disabled` — are already the
+    /// browser's: `HTMLElement.focus()` on any of them does nothing. So the
+    /// shape is focus-then-verify, which is `handle_trapped_tab`'s rule in this
+    /// file's sibling module and needs no enumeration to be right.
+    ///
+    /// The bounding rule is the same on both backends and is *not* the
+    /// browser's to give: a claim that has moved **outside** `root` belongs to
+    /// the user, and this returns without touching it.
+    fn restore_focus(&mut self, opener: Option<NodeId>, root: NodeId) {
+        let Some(root_el) = self
+            .nodes
+            .get(&root.0)
+            .and_then(|n| n.clone().dyn_into::<web_sys::Element>().ok())
+        else {
+            return;
+        };
+        let active = self.browser_doc.active_element();
+        // `<body>` is the browser's spelling of "nothing is focused", and a
+        // browser restores from it too, so it counts as inside.
+        let body = self.browser_doc.body();
+        let nowhere = match (&active, &body) {
+            (None, _) => true,
+            (Some(a), Some(b)) => a.is_same_node(Some(b.unchecked_ref())),
+            (Some(_), None) => false,
+        };
+        let inside = nowhere
+            || active
+                .as_ref()
+                .is_some_and(|a| root_el.contains(Some(a.unchecked_ref())));
+        if !inside {
+            return;
+        }
+
+        if let Some(el) = opener
+            .and_then(|o| self.nodes.get(&o.0))
+            .and_then(|n| n.clone().dyn_into::<web_sys::HtmlElement>().ok())
+        {
+            let _ = el.focus();
+            if self
+                .browser_doc
+                .active_element()
+                .is_some_and(|a| el.is_same_node(Some(a.unchecked_ref())))
+            {
+                return;
+            }
+        }
+
+        if let Some(el) = active.and_then(|a| a.dyn_into::<web_sys::HtmlElement>().ok()) {
+            el.blur().ok();
         }
     }
 

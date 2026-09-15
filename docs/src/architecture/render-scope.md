@@ -288,34 +288,34 @@ let input = __scope.create_element("input");
 input.focus();  // Give focus to this element
 ```
 
-An overlay also has to *read* the current focus and give it back later, so four
+An overlay also has to *read* the current focus and give it back later, so three
 more handle methods answer the questions `focus()` alone cannot (issue #695):
 
 ```rust
-let opener = panel.active_element();      // who holds the keyboard right now
-panel.focus_into(FocusIntoPolicy::FirstFocusable);  // showModal()'s focusing steps
+let opener = panel.active_element();                 // who holds it right now
+panel.focus_into(FocusIntoPolicy::FirstFocusable);   // showModal()'s focusing steps
 // …later, when the overlay closes:
-match opener {
-    Some(o) if o.is_connected() => o.focus(),   // still in the document
-    _ => panel.active_element().unwrap().blur(),
-}
+panel.restore_focus(opener.as_ref());                // give it back, or let it go
 ```
 
 - `active_element()` is a **document-level** question reached through a handle,
   like `set_scroll_locked`. `None` means *unknown* — on the web, an element
   rinch did not create carries no `__nid` and cannot be named — not *nothing is
   focused*.
-- `blur()` is the browser's `element.blur()`: it releases the keyboard only if
-  *this* element holds it.
-- `is_connected()` is a liveness test, not an identity one. A node id that was
-  freed and handed to a different, attached node answers `true` (issue #304).
 - `focus_into(policy)` moves focus into this subtree the way `showModal()` does —
   the `autofocus` descendant if there is one, else the first focusable under
   `FocusIntoPolicy::FirstFocusable` and nothing under `AutofocusOnly`. "The first
   focusable" is each backend's own computation, which is why this is a backend
-  method rather than a walk a component could write. **Desktop resolves it after
-  the next layout**, since a just-opened overlay's children have no box yet; the
-  web answers immediately.
+  method rather than a walk a component could write.
+- `restore_focus(opener)` is the close half, and it is one call rather than a
+  blur plus a hopeful focus because the caller cannot make the decision: whether
+  the keyboard is even this overlay's to return, and whether `opener` can still
+  take it, are both questions about boxes.
+
+**Desktop resolves both overlay calls after the next layout**, since the boxes
+are a layout out of date at the moment an effect makes them; the web answers
+immediately and lets the browser arbitrate. There is no bare `blur()`: releasing
+the keyboard is only ever the fallback half of a restore.
 
 `rinch-components`' `overlay_focus::arm_overlay_focus` is the one in-tree caller,
 and the [focus guide](../guide/focus.md#moving-focus-in-and-giving-it-back)
@@ -340,10 +340,9 @@ describes the behaviour it builds.
 | `replace_with(new_node: &NodeHandle)` | Replace this node with another — also a detach; the displaced handle stays re-insertable |
 | `discard()` | Remove this node and release the backend's bookkeeping for its whole subtree — **retires** the ids |
 | `focus()` | Give focus to this element |
-| `blur()` | Release the keyboard, if this element holds it |
 | `active_element() -> Option<NodeHandle>` | Who holds the keyboard in this node's document |
-| `is_connected() -> bool` | Whether this node is still attached to the document |
 | `focus_into(policy: FocusIntoPolicy)` | Move focus into this subtree (`showModal()`'s focusing steps) |
+| `restore_focus(opener: Option<&NodeHandle>)` | This overlay has closed: hand the keyboard back, or release it |
 | `children() -> Vec<NodeHandle>` | Get child nodes as NodeHandles |
 | `is_valid() -> bool` | Check if this handle still points to a valid node |
 | `node_id() -> NodeId` | Get the internal node ID |

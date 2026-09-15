@@ -35,12 +35,20 @@
 //! the move-in and the restore, and it needed portable API that did not exist:
 //! [`DomDocument::active_element`](rinch_core::dom::DomDocument::active_element)
 //! to read the current focus,
-//! [`blur_element`](rinch_core::dom::DomDocument::blur_element) to release it,
-//! [`is_connected`](rinch_core::dom::DomDocument::is_connected) to tell an
-//! opener that is still there from one the dialog deleted, and
-//! [`focus_into`](rinch_core::dom::DomDocument::focus_into) because "the first
-//! focusable" is each backend's own computation and a third answer written here
-//! would be wrong on both.
+//! [`focus_into`](rinch_core::dom::DomDocument::focus_into) to move it in
+//! (because "the first focusable" is each backend's own computation and a third
+//! answer written here would be wrong on both), and
+//! [`restore_focus`](rinch_core::dom::DomDocument::restore_focus) to give it
+//! back or let it go.
+//!
+//! **Why the close is one call and not a decision made here.** Whether the
+//! keyboard is even this overlay's to return, and whether the remembered opener
+//! can still take it, are both questions about *boxes* — and the boxes are a
+//! layout out of date at the moment this effect runs, because the close is a
+//! class change in this very flush. A `blur()` verb would not have helped: a
+//! caller that could only blur would still have to decide, and a caller that
+//! guessed and then corrected itself would lose one of its two writes to the
+//! single request slot.
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -195,32 +203,12 @@ struct Capture {
 }
 
 /// Give the keyboard back, or let it go — see [`arm_overlay_focus`].
+///
+/// One call, and the backend decides. It has to: whether the opener can still
+/// take the keyboard, and whether the keyboard is even this overlay's to return,
+/// are both questions about boxes, and the boxes here are a layout out of date —
+/// the close is a class change in this very effect flush. See
+/// [`DomDocument::restore_focus`](rinch_core::dom::DomDocument::restore_focus).
 fn restore(root: &NodeHandle, captured: Capture) {
-    if let Some(opener) = captured.opener
-        && opener.is_connected()
-    {
-        opener.focus();
-        return;
-    }
-    // Nothing to hand back to. Release the claim only if it is still inside
-    // this overlay: focus the user moved out on their own is theirs.
-    if let Some(active) = root.active_element()
-        && is_self_or_descendant(root, &active)
-    {
-        active.blur();
-    }
-}
-
-/// Whether `node` is `root` or sits under it, by walking up. Portable, and the
-/// walk is short: an overlay is a handful of levels deep.
-fn is_self_or_descendant(root: &NodeHandle, node: &NodeHandle) -> bool {
-    let root_id = root.node_id();
-    let mut cur = Some(node.clone());
-    while let Some(n) = cur {
-        if n.node_id() == root_id {
-            return true;
-        }
-        cur = n.parent_node();
-    }
-    false
+    root.restore_focus(captured.opener.as_ref());
 }
