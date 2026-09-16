@@ -503,9 +503,9 @@ async fn the_textarea_goes_back_off_screen_after_the_contextmenu_dispatch() {
 }
 
 /// On Linux and macOS the menu opens at the press, and the release usually
-/// goes to the menu window rather than the page — so the `contextmenu`
-/// dispatch alone, with no `mouseup` ever seen, must be enough to send the
-/// textarea back. Kills: unparking only from the right-button release.
+/// goes to the menu window rather than the page — so with the `contextmenu`
+/// dispatched and no `mouseup` ever seen, the textarea must still go back.
+/// Kills: a park that lasts until the right-button release.
 #[wasm_bindgen_test]
 async fn a_held_right_press_still_unparks_after_the_contextmenu_dispatch() {
     let f = Fixture::mount();
