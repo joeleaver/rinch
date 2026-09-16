@@ -48,7 +48,7 @@ web-sys = { version = "0.3", features = [
     "PointerEvent",
     # Event constructors, so the browser-driven tests (tests/) can synthesise
     # the pointerdown/click/keydown sequences the delegation gates on (#240).
-    "MouseEventInit", "KeyboardEventInit", "PointerEventInit",
+    "EventInit", "MouseEventInit", "KeyboardEventInit", "PointerEventInit",
     "EventTarget", "FocusOptions", "FocusEvent",
     "Range",
     # `window.getSelection()`, so a copy/cut of ordinary page content mirrors
