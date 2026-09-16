@@ -630,7 +630,7 @@ fn with_the_flag_selected_text_outside_a_field_is_still_suppressed() {
     selection.remove_all_ranges().unwrap();
     selection.add_range(&range).unwrap();
     assert!(
-        !selection.is_collapsed() && String::from(selection.to_string()) == "target",
+        !selection.is_collapsed() && selection.to_string() == "target",
         "precondition: the div's text must be selected"
     );
 

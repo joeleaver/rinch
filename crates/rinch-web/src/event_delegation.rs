@@ -1423,12 +1423,13 @@ const TEXT_LIKE_INPUT_TYPES: &[&str] = &[
 /// [`set_suppress_native_context_menu`] leaves alone (issue #812): a
 /// `<textarea>`, a text-like `<input>`, or editable content.
 ///
-/// The control is found with `closest` from the target, so a label or an icon
-/// *beside* a field in its wrapper is not the field. `readonly` and `disabled`
-/// are deliberately not read: a read-only field's menu still offers Copy, and a
-/// disabled one's is the browser's business. `<select>` and the rich-text
-/// editor's container are not here — neither has an editing menu to keep — but
-/// the editor's hidden capture `<textarea>` is, whenever it is the target.
+/// The control is the target or an ancestor of it, never a sibling: a label or
+/// an icon beside a field in its wrapper is not the field. `readonly` and
+/// `disabled` are deliberately not read: a read-only field's menu still offers
+/// Copy, and a disabled one's is the browser's business. `<select>` and the
+/// rich-text editor's container are not here — neither has an editing menu to
+/// keep — but the editor's hidden capture `<textarea>` is, whenever it is the
+/// target.
 fn in_native_editing_context(el: &web_sys::Element) -> bool {
     if el.closest("textarea").ok().flatten().is_some() {
         return true;
