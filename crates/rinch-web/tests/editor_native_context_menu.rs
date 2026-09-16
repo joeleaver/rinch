@@ -34,14 +34,13 @@
 //! into an unmounted page would exercise no rinch listener at all.
 #![cfg(target_arch = "wasm32")]
 
-use rinch_core::dom::{NodeHandle, RenderScope};
+use rinch_core::dom::RenderScope;
 use rinch_core::element::ThemeProviderProps;
 use rinch_editor_core::{Pos, Selection};
 use rinch_web::{EditorHandle, RootHandle, create_editor};
 use std::cell::Cell;
 use std::rc::Rc;
 use wasm_bindgen::JsCast;
-use wasm_bindgen::prelude::*;
 use wasm_bindgen_test::*;
 
 wasm_bindgen_test_configure!(run_in_browser);
@@ -676,7 +675,7 @@ fn an_ime_composition_after_a_menu_cycle_still_lands_in_the_document() {
     // The IME's commit: it rewrites the field, then `compositionend` says what it composed.
     composition(&ta, "compositionstart", "");
     let mut value = ta.value();
-    value.insert_str(caret as usize, "ö");
+    value.insert(caret as usize, 'ö');
     ta.set_value(&value);
     composition(&ta, "compositionend", "ö");
 
