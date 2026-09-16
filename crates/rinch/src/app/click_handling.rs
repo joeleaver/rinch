@@ -556,7 +556,7 @@ impl RinchApp {
     /// glyph, and so do the coordinate spaces: the click arrives in layout
     /// pixels, and the box's painted origin is where paint and hit testing say
     /// it is, IFC content-box offset included.
-    fn compute_input_cursor_from_click(
+    pub(super) fn compute_input_cursor_from_click(
         tree: &rinch_dom::NodeTree,
         font_cx: &mut parley::FontContext,
         layout_cx: &mut parley::LayoutContext<peniko::Brush>,

@@ -112,6 +112,22 @@ impl RinchApp {
         // `resolve_and_repaint` below.
         let (vp_w, vp_h) = Self::layout_viewport(window_size, scale_factor);
 
+        // The built-in text context menu (issue #813) lives exactly as long as
+        // its target holds the keyboard and is in the document. Checked on
+        // every event rather than cleared by a second one — a removal, a
+        // programmatic focus move or a replaced document would otherwise
+        // leave it armed with nothing to act on (the #189/#463 shape).
+        if !self.text_menu_target_is_live() {
+            self.close_text_context_menu();
+            actions.push(AppAction::RequestRedraw);
+        }
+        // While it is open the pointer belongs to the menu: an item press runs
+        // it, any other press closes it unacted and is swallowed.
+        if let Some(menu_actions) = self.text_menu_intercept_pointer(&event, vp_w, vp_h) {
+            actions.extend(menu_actions);
+            return actions;
+        }
+
         match event {
             PlatformEvent::Resumed => {
                 // Handled by the shell (window creation)
@@ -825,6 +841,16 @@ impl RinchApp {
                         }
                     }
                 }
+                // Nothing handled a right press: on a text target it is the
+                // built-in Cut / Copy / Paste / Select all menu's gesture
+                // (issue #813), which runs the click path itself and reports
+                // so. A `data-oncontextmenu` above the field keeps winning.
+                if !handled
+                    && button == MouseButton::Right
+                    && self.text_context_menu_gesture(x, y, vp_w, vp_h, &mut actions)
+                {
+                    handled = true;
+                }
                 if !handled {
                     // Non-left button clicks (or right-click with no contextmenu handler):
                     // use handle_click_with_button so the surface gets focus.
@@ -1117,6 +1143,10 @@ impl RinchApp {
                 if self.window_focused != focused {
                     self.window_focused = focused;
                     if !focused {
+                        // A native menu closes when its window loses the
+                        // keyboard; so does the built-in text menu (#813). The
+                        // field's claim itself is kept, as below.
+                        self.close_text_context_menu();
                         // The matching `KeyUp` of anything held across the blur
                         // goes to the window that took the keyboard, so the
                         // Enter/Space activation latch (issue #228) would stay
@@ -1193,9 +1223,25 @@ impl RinchApp {
                             self.close_select_popup_returning_focus();
                             self.resolve_and_repaint(vp_w, vp_h);
                         }
+                        // The text context menu's entry asks the same way
+                        // (#813); the field keeps the keyboard, so there is
+                        // no focus to return.
+                        if self.text_menu_dismiss_asked.replace(false) {
+                            self.close_text_context_menu();
+                            self.resolve_and_repaint(vp_w, vp_h);
+                        }
                         actions.push(AppAction::RequestRedraw);
                         return actions;
                     }
+                }
+
+                // 1.5. The built-in text context menu owns the keyboard while
+                //      it is open (#813): navigate / run / close. Its target
+                //      keeps the *claim* — the arbiter is untouched — so this
+                //      sits ahead of the routing below rather than in it.
+                if self.open_text_menu.is_some() && self.handle_text_menu_key(key, vp_w, vp_h) {
+                    actions.push(AppAction::RequestRedraw);
+                    return actions;
                 }
 
                 // 2. Route by the focus arbiter (design A10): exactly one target
@@ -2993,7 +3039,7 @@ impl RinchApp {
     /// would put Ctrl+C behind whatever the worker is doing — including a paste
     /// stalled on a hung selection owner (issue #149).
     #[cfg(feature = "clipboard")]
-    fn editor_copy(&self, handle: &crate::editor::EditorHandle) {
+    pub(super) fn editor_copy(&self, handle: &crate::editor::EditorHandle) {
         if let Some((html, text)) = handle.selection_clipboard() {
             crate::clipboard::copy_html_async(&html, Some(&text));
         }
@@ -3002,7 +3048,7 @@ impl RinchApp {
     /// Cut: copy the selection to the clipboard, then delete it. Returns whether the
     /// document changed.
     #[cfg(feature = "clipboard")]
-    fn editor_cut(&self, handle: &crate::editor::EditorHandle) -> bool {
+    pub(super) fn editor_cut(&self, handle: &crate::editor::EditorHandle) -> bool {
         match handle.selection_clipboard() {
             Some((html, text)) => {
                 crate::clipboard::copy_html_async(&html, Some(&text));
@@ -3023,7 +3069,7 @@ impl RinchApp {
     /// nothing has changed yet, and the completion drives its own repaint by dirtying
     /// the document.
     #[cfg(feature = "clipboard")]
-    fn editor_paste(&self, handle: &crate::editor::EditorHandle) -> bool {
+    pub(super) fn editor_paste(&self, handle: &crate::editor::EditorHandle) -> bool {
         Self::dispatch_editor_paste(handle, false);
         false
     }
@@ -3442,7 +3488,7 @@ impl RinchApp {
     /// from the hit node, recording the first leaf seen, and returns it only once
     /// the walk reaches the `data-pm-editor` container (so a leaf outside any editor,
     /// or a click on a non-leaf block, yields `None`). The click→node-select path.
-    fn editor_leaf_at(&self, x: f32, y: f32) -> Option<usize> {
+    pub(super) fn editor_leaf_at(&self, x: f32, y: f32) -> Option<usize> {
         let doc = self.doc.clone()?;
         let d = doc.borrow();
         let hit = hit_test(&d.tree, x, y)?;

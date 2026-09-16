@@ -280,6 +280,15 @@ pub enum AppAction {
     SetVisible(bool),
     /// Initiate a window drag (for custom titlebars).
     DragWindow,
+    /// A context-menu gesture landed on a text target — an `<input>`,
+    /// `<textarea>` or the rich-text editor — its caret and selection are
+    /// prepared, and the shell asked to present the Cut / Copy / Paste /
+    /// Select all choice itself (issue #813). Emitted only under
+    /// `TextContextMenuPresentation::Shell`; the default presentation is the
+    /// runtime's own DOM menu, which emits nothing. The shell reads
+    /// `RinchApp::text_edit_state` for the enabled states and the anchor, and
+    /// runs a chosen item through `RinchApp::perform_text_edit`.
+    ShowTextContextMenu,
     /// Initiate a window resize drag from an edge or corner.
     DragResizeWindow(ResizeDirection),
     /// Set the mouse cursor icon. Values match CSS cursor keywords.
