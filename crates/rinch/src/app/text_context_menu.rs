@@ -257,6 +257,12 @@ impl RinchApp {
     pub fn text_edit_state(&mut self) -> Option<TextEditState> {
         match self.focus_target {
             FocusTarget::Input(node_id) => {
+                // An app write since the last frame (a timer, a drained
+                // `Signal::send`) is in the DOM's `value` but not yet in the
+                // editable state, whose offsets would then index the old text
+                // while the layout below is built from the new one — slicing a
+                // password value at them panicked. Adopt first, as a frame does.
+                self.adopt_focused_input_value_from_dom();
                 let doc = self.doc.clone()?;
                 let state = self.focused_input_state.as_ref()?;
                 let (has_selection, writable, password, has_content) = {
@@ -284,9 +290,11 @@ impl RinchApp {
                             offset,
                         )
                     };
-                    // Clipped to the field's own box, as its text is: a line box
-                    // can overhang the content box by a pixel, and a toolbar
-                    // anchored to it should not.
+                    // Clipped to the field's own box. Paint does not clip there:
+                    // it draws a `<textarea>`'s first-line caret 1px above the
+                    // box (measured: caret top y 24, box top 25), and a long
+                    // `<input>` value wraps and overflows the box (#827). A
+                    // toolbar anchored to the field should not overhang it.
                     match (caret(start), caret(end)) {
                         (Some(a), Some(b)) => Some(clip_rect(
                             union_of_caret_rects(a, b),
@@ -524,7 +532,14 @@ impl RinchApp {
             TextTarget::Input(node_id) => {
                 // The press offset, and the selection it may land inside,
                 // captured BEFORE the click path rebuilds the field's state
-                // with a collapsed caret at the press.
+                // with a collapsed caret at the press. Both must index the
+                // same text: the offset is measured on the DOM's `value`, so an
+                // app write the focused field has not adopted yet is adopted
+                // first — otherwise a stale selection is compared with, and
+                // restored onto, text it does not index.
+                if self.focus_target == FocusTarget::Input(node_id) {
+                    self.adopt_focused_input_value_from_dom();
+                }
                 let saved = (self.focus_target == FocusTarget::Input(node_id))
                     .then(|| {
                         self.focused_input_state

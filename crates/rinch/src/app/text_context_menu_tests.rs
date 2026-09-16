@@ -1145,6 +1145,70 @@ fn a_closed_panel_is_out_of_hit_testing_and_layout() {
     assert_eq!(dismiss_handler_count(), base);
 }
 
+/// The reused panel keeps its nodes, so an open must rewrite everything the
+/// last one left on them. A highlight left by the previous open is gone.
+/// (The review's `k3`.)
+#[test]
+fn reopening_clears_the_previous_opens_highlight() {
+    let (mut app, ids, _log) = page("hello world", &[]);
+    focus_and_select(&mut app, ids.input);
+    assert!(app.open_text_context_menu(400.0, 300.0, 800.0, 600.0));
+    let (cx, cy) = row_center(&app, TextEditAction::SelectAll);
+    ev(&mut app, PlatformEvent::MouseMove { x: cx, y: cy });
+    assert_eq!(highlighted(&app), Some(TextEditAction::SelectAll));
+    key(&mut app, KeyCode::Escape);
+    assert!(app.open_text_context_menu(400.0, 300.0, 800.0, 600.0));
+    let lit: Vec<TextEditAction> = app
+        .open_text_menu
+        .as_ref()
+        .unwrap()
+        .items
+        .iter()
+        .filter(|r| attr(&app, r.node_id, "data-highlighted").is_some())
+        .map(|r| r.action)
+        .collect();
+    assert_eq!(lit, vec![], "no row carries a stale highlight");
+}
+
+/// And a row greyed last time and enabled now loses its `data-disabled`:
+/// Copy, greyed over a collapsed caret, then over a selection. (The review's
+/// `k4`.) Without a clipboard Copy stays greyed and the attribute stays, which
+/// is the same rule read the other way.
+#[test]
+fn reopening_follows_a_rows_new_enabled_state() {
+    let (mut app, ids, _log) = page("hello world", &[]);
+    let (bx, by, _, bh) = abs_box(&app, ids.input);
+    left_press(&mut app, bx + 1.0, by + bh / 2.0);
+    assert!(app.open_text_context_menu(400.0, 300.0, 800.0, 600.0));
+    let copy = app
+        .open_text_menu
+        .as_ref()
+        .unwrap()
+        .items
+        .iter()
+        .find(|r| r.action == TextEditAction::Copy)
+        .unwrap()
+        .node_id;
+    assert!(
+        attr(&app, copy, "data-disabled").is_some(),
+        "precondition: Copy greyed with no selection"
+    );
+    key(&mut app, KeyCode::Escape);
+    select_2_to_5(&mut app);
+    assert!(app.open_text_context_menu(400.0, 300.0, 800.0, 600.0));
+    let enabled = rows(&app)
+        .iter()
+        .find(|r| r.0 == TextEditAction::Copy)
+        .unwrap()
+        .1;
+    assert_eq!(enabled, cfg!(feature = "clipboard"));
+    assert_eq!(
+        attr(&app, copy, "data-disabled").is_some(),
+        !enabled,
+        "the attribute follows the state"
+    );
+}
+
 // ── The anchor: the real selection rect ──────────────────────────────────────
 
 mod anchor {
@@ -1288,6 +1352,276 @@ mod anchor {
     }
 }
 
+// ── A `value` the field has not adopted yet ──────────────────────────────────
+
+/// An app write to the focused field from outside any keystroke — a timer, a
+/// drained `Signal::send`, a `data-onmousedown` handler — lands in the DOM at
+/// once and in the field's editable state only at the next adoption (issue
+/// #238), which every frame makes. Until then the engine's offsets index the
+/// old text and the DOM's `value` the new one. Both halves of the seam can be
+/// reached in that window: a shell polls the state between frames, and a
+/// right press arrives as an event, before any frame.
+mod unadopted_write {
+    use super::*;
+
+    /// A focused field the user typed `typed` into, through the real key path.
+    fn typed_field(kind: &'static str, typed: &str) -> (RinchApp, NodeHandle) {
+        let node: Rc<RefCell<Option<NodeHandle>>> = Rc::new(RefCell::new(None));
+        let h = register_input_handler(InputCallback::new(|_| {}));
+        let node_in = node.clone();
+        let mut app = RinchApp::new(move |scope: &mut RenderScope| {
+            let root = scope.create_element("div");
+            root.set_attribute("style", "padding-left: 40px; padding-top: 25px");
+            let f = scope.create_element("input");
+            f.set_attribute("type", kind);
+            f.set_attribute("style", FIELD_STYLE);
+            f.set_attribute("value", "");
+            f.set_attribute("data-oninput", &h.0.to_string());
+            root.append_child(&f);
+            *node_in.borrow_mut() = Some(f.clone());
+            root
+        });
+        app.mount_component(800.0, 600.0);
+        app.resolve_and_repaint(800.0, 600.0);
+        let f = node.borrow_mut().take().expect("captured at mount");
+        let id = f.node_id().0;
+        let (bx, by, _, bh) = abs_box(&app, id);
+        left_press(&mut app, bx + 2.0, by + bh / 2.0);
+        assert_eq!(app.focus_target, FocusTarget::Input(id));
+        for ch in typed.chars() {
+            let s = ch.to_string();
+            key_with(&mut app, KeyCode::KeyA, Some(&s), Modifiers::default());
+        }
+        app.resolve_and_repaint(800.0, 600.0);
+        assert_eq!(attr(&app, id, "value").as_deref(), Some(typed));
+        (app, f)
+    }
+
+    /// The review's `k7`: `hello` typed into a password field (caret at byte
+    /// 5), then `€€` written from outside an event (6 bytes, byte 5 inside the
+    /// second `€`), then the state polled before the next frame. It used to
+    /// slice the new value at the engine's old offset and panic.
+    #[test]
+    fn polling_a_password_field_after_an_unadopted_multibyte_write_does_not_panic() {
+        let (mut app, f) = typed_field("password", "hello");
+        f.set_attribute("value", "\u{20ac}\u{20ac}");
+        let s = app
+            .text_edit_state()
+            .expect("the field still holds the keyboard");
+        assert!(s.can_select_all, "it answers for the new value");
+        assert!(!s.can_cut && !s.can_copy, "a write leaves no selection");
+    }
+
+    /// The non-panicking half of the same window: a plain field reports the
+    /// caret for the text it displays, so a poll before the frame answers what
+    /// a poll after it does. `hello` → `hello, world` keeps the typed prefix,
+    /// so the adopted caret stays at 5 while the engine's is also 5 — the two
+    /// would agree by accident — hence `xyhello`, which moves it to 7.
+    #[test]
+    fn a_poll_before_the_frame_answers_what_a_poll_after_it_does() {
+        let (mut app, f) = typed_field("text", "hello");
+        f.set_attribute("value", "xyhello");
+        let before_frame = app.text_edit_state().unwrap();
+        app.resolve_and_repaint(800.0, 600.0);
+        let after_frame = app.text_edit_state().unwrap();
+        assert_eq!(before_frame, after_frame);
+        assert_eq!(
+            attr(&app, f.node_id().0, "data-cursor-pos").as_deref(),
+            Some("7"),
+            "precondition: the adopted caret moved off the typed one"
+        );
+    }
+
+    /// The gesture's caret rule compares the selection it saved against the
+    /// press offset. Saved from an unadopted state, the selection indexed the
+    /// old text while the offset indexed the new one, and a press "inside" it
+    /// restored `2..5` onto a value whose bytes 2 and 5 are inside a `€`.
+    #[test]
+    fn a_right_press_after_an_unadopted_write_does_not_restore_stale_offsets() {
+        let (mut app, f) = typed_field("text", "hello world");
+        let id = f.node_id().0;
+        select_2_to_5(&mut app);
+        assert_eq!(
+            field_state(&app, id),
+            ("hello world".into(), "2".into(), "5".into()),
+            "precondition: bytes 2..5 selected"
+        );
+        f.set_attribute("value", "\u{20ac}\u{20ac}\u{20ac}\u{20ac}");
+        // Byte 3 is inside the stale 2..5 — and a boundary of the new value.
+        let x = x_for_offset(&mut app, id, 3);
+        let (_, by, _, bh) = abs_box(&app, id);
+        right_press(&mut app, x, by + bh / 2.0);
+        assert!(app.is_text_context_menu_open());
+        assert_eq!(
+            field_state(&app, id),
+            (
+                "\u{20ac}\u{20ac}\u{20ac}\u{20ac}".into(),
+                "3".into(),
+                "3".into()
+            ),
+            "the write collapsed the selection, so the press moved the caret"
+        );
+    }
+}
+
+// ── The anchor against the pixels paint draws ────────────────────────────────
+
+/// The `anchor` fixtures above bracket the anchor with the press map, on
+/// fields with `padding: 0` and a line that fills the box — where an anchor
+/// that forgot the padding, the single-line centring or the line height still
+/// passes. These compare it with the caret **paint** draws: two full software
+/// frames that differ only in `data-cursor-visible`, diffed. (The review's
+/// `k1`/`k2`.)
+///
+/// `software_shell` only, like every `build_pixels` oracle: `--workspace`
+/// unifies `rinch/gpu` on, so these run in CI's `-p rinch --features …` step.
+#[cfg(software_shell)]
+mod anchor_against_paint {
+    use super::*;
+
+    /// A full, non-incremental software frame at scale 1.
+    fn frame(app: &mut RinchApp) -> (Vec<u8>, u32, u32) {
+        app.scene_dirty = true;
+        app.has_previous_frame = false;
+        let (p, w, h) = app.build_pixels(1.0, VP, false);
+        (p.to_vec(), w, h)
+    }
+
+    /// The `(x0, y0, x1, y1)` box, in logical px at scale 1, of every pixel
+    /// that differs between two frames.
+    fn diff_box(a: &[u8], b: &[u8], w: u32, h: u32) -> Option<(f32, f32, f32, f32)> {
+        let mut bb: Option<(u32, u32, u32, u32)> = None;
+        for y in 0..h {
+            for x in 0..w {
+                let i = ((y * w + x) * 4) as usize;
+                if (0..4).any(|k| (a[i + k] as i32 - b[i + k] as i32).abs() > 8) {
+                    bb = Some(match bb {
+                        None => (x, y, x, y),
+                        Some((x0, y0, x1, y1)) => (x0.min(x), y0.min(y), x1.max(x), y1.max(y)),
+                    });
+                }
+            }
+        }
+        bb.map(|(x0, y0, x1, y1)| (x0 as f32, y0 as f32, (x1 + 1) as f32, (y1 + 1) as f32))
+    }
+
+    fn set_selection(app: &mut RinchApp, anchor: usize, head: usize) {
+        app.focused_input_state.as_mut().unwrap().selection =
+            rinch_editable::Selection::new(anchor, head);
+        app.sync_input_cursor_to_dom();
+    }
+
+    fn caret_visible(app: &RinchApp, id: usize, visible: bool) {
+        app.doc
+            .as_ref()
+            .unwrap()
+            .borrow_mut()
+            .tree
+            .get_mut(id)
+            .unwrap()
+            .attributes
+            .insert("data-cursor-visible".into(), visible.to_string());
+    }
+
+    /// The box paint draws the collapsed caret at `offset` in.
+    fn painted_caret(app: &mut RinchApp, id: usize, offset: usize) -> (f32, f32, f32, f32) {
+        set_selection(app, offset, offset);
+        caret_visible(app, id, true);
+        let (on, w, h) = frame(app);
+        caret_visible(app, id, false);
+        let (off, _, _) = frame(app);
+        diff_box(&on, &off, w, h).expect("paint drew a caret")
+    }
+
+    /// A focused field 40px from the left and 25px from the top.
+    fn focused_field(
+        tag: &'static str,
+        value: &'static str,
+        style: &'static str,
+    ) -> (RinchApp, usize) {
+        let h = register_input_handler(InputCallback::new(|_| {}));
+        let id: Rc<Cell<Option<usize>>> = Rc::new(Cell::new(None));
+        let id_in = id.clone();
+        let mut app = RinchApp::new(move |scope: &mut RenderScope| {
+            let root = scope.create_element("div");
+            root.set_attribute("style", "padding-left: 40px; padding-top: 25px");
+            let f = scope.create_element(tag);
+            f.set_attribute("style", style);
+            f.set_attribute("value", value);
+            f.set_attribute("data-oninput", &h.0.to_string());
+            root.append_child(&f);
+            id_in.set(Some(f.node_id().0));
+            root
+        });
+        app.mount_component(800.0, 600.0);
+        app.resolve_and_repaint(800.0, 600.0);
+        let f = id.get().unwrap();
+        let (bx, by, _, bh) = abs_box(&app, f);
+        left_press(&mut app, bx + 2.0, by + bh.min(20.0) / 2.0);
+        assert_eq!(app.focus_target, FocusTarget::Input(f));
+        (app, f)
+    }
+
+    /// A tall, padded single-line input — the shape every styled `TextInput`
+    /// has: the anchor sits where paint draws the caret on both axes, and is
+    /// about as tall. Kills an anchor without `padding_left`, without the
+    /// single-line centring, and a 1px-tall one.
+    #[test]
+    fn a_padded_tall_inputs_caret_anchor_is_where_paint_draws_the_caret() {
+        let (mut app, f) = focused_field(
+            "input",
+            "hello  world  again",
+            "width: 300px; height: 80px; padding: 5px 12px; margin: 0; \
+             box-sizing: border-box; font-size: 16px; line-height: 20px; \
+             font-family: sans-serif",
+        );
+        set_selection(&mut app, 9, 9);
+        let (ax, ay, _, ah) = app.text_edit_state().unwrap().anchor;
+        let (px, py, _, py1) = painted_caret(&mut app, f, 9);
+        assert!((ax - px).abs() <= 1.5, "x: anchor {ax}, paint {px}");
+        assert!((ay - py).abs() <= 2.0, "y: anchor {ay}, paint {py}");
+        assert!(
+            ah >= 0.8 * (py1 - py),
+            "height: anchor {ah}, paint {}",
+            py1 - py
+        );
+    }
+
+    /// A `<textarea>` selection across two lines: the anchor box runs from
+    /// the start caret paint draws to the end caret paint draws.
+    #[test]
+    fn a_two_line_textarea_selections_anchor_is_the_box_of_the_painted_carets() {
+        let (mut app, f) = focused_field(
+            "textarea",
+            "the quick brown fox jumps over the lazy dog and keeps running far",
+            "width: 300px; height: 80px; padding: 0; margin: 0; font-size: 16px; \
+             line-height: 20px; font-family: sans-serif",
+        );
+        let c1 = painted_caret(&mut app, f, 7);
+        let c2 = painted_caret(&mut app, f, 52);
+        assert!(c2.1 > c1.1 + 10.0, "different lines: {c1:?} {c2:?}");
+        set_selection(&mut app, 7, 52);
+        let (ax, ay, aw, ah) = app.text_edit_state().unwrap().anchor;
+        assert!(
+            (ax - c1.0.min(c2.0)).abs() <= 1.5,
+            "left: {ax} vs {c1:?} {c2:?}"
+        );
+        assert!(
+            ((ax + aw - 1.0) - c1.0.max(c2.0)).abs() <= 1.5,
+            "right: {} vs {c1:?} {c2:?}",
+            ax + aw - 1.0
+        );
+        // Paint draws the first line's caret 1px above the field's box; the
+        // anchor is clipped to the box, hence 2px.
+        assert!((ay - c1.1).abs() <= 2.0, "top: {ay} vs {c1:?}");
+        assert!(
+            (ay + ah - c2.3).abs() <= 4.0,
+            "bottom: {} vs {c2:?}",
+            ay + ah
+        );
+    }
+}
+
 // ── The rich-text editor ─────────────────────────────────────────────────────
 
 #[cfg(feature = "desktop")]
@@ -1399,6 +1733,17 @@ mod editor {
         let after = p.handle.selection();
         assert!(after.is_empty(), "collapsed: {after:?}");
         assert_eq!(after.head(), Pos(18));
+    }
+
+    /// An empty editor is one empty paragraph: nothing to select, so Select
+    /// all is greyed. (The review's `k5`; kills a `content_size() > 0` rule.)
+    #[test]
+    fn an_empty_editor_greys_select_all() {
+        let mut p = editor_page("<p></p>");
+        let (bx, by, _, _) = abs_box(&p.app, p.container);
+        right_press(&mut p.app, bx + 20.0, by + 10.0);
+        assert!(p.app.is_text_context_menu_open());
+        assert!(!p.app.text_edit_state().unwrap().can_select_all);
     }
 
     #[test]
