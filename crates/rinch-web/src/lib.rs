@@ -16,6 +16,8 @@
 //!   [`RootHandle`] that can later [`unmount`](RootHandle::unmount) that root.
 //! - [`mount_with_menu_bar`] and its `_into` / `_selector` twins — the same,
 //!   under a menu bar built from [`Menu`] / [`MenuItem`].
+//! - [`set_suppress_native_context_menu`] — for a whole-page app that renders
+//!   its own right-click menus.
 //!
 //! ## Menu bar
 //!
@@ -73,8 +75,12 @@ use rinch_core::element::ThemeProviderProps;
 use rinch_core::events;
 
 pub use event_delegation::setup_event_delegation;
+// Whether a right-click anywhere suppresses the browser's own menu. Off by
+// default: an island mounted into somebody else's page must not take the
+// right-click away from the rest of it.
 #[doc(hidden)]
 pub use event_delegation::{__force_trusted_clicks, __reset_activation_state};
+pub use event_delegation::{set_suppress_native_context_menu, suppresses_native_context_menu};
 /// The menu declaration types, re-exported so a web app names them in one place
 /// (`rinch_web::{Menu, MenuItem}`) while its desktop twin builds the very same
 /// values from `rinch::menu`. They are the same types, not a parallel set.
