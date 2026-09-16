@@ -703,12 +703,13 @@ fn with_the_flag_a_stale_handler_does_not_take_an_editable_targets_menu() {
 ///
 /// The surface here is a hand-built `[data-pm-editor]` div, and the event is
 /// dispatched straight on it and on its `<p>`, with no pointer press first.
-/// Issue #814 plans to move the editor's hidden capture `<textarea>` under the
-/// pointer on a right-button press, so that the browser's own hit test targets
-/// the textarea — which this predicate already carves out. That changes what a
-/// real right-click hits, not what the surface element itself is, so #814
-/// should leave this fixture passing; if #814 instead carves the surface out in
-/// the predicate, this is the fixture to revisit.
+/// Issue #814 moves the editor's hidden capture `<textarea>` under the pointer
+/// on a right-button press, so that the browser's own hit test targets the
+/// textarea — which this predicate already carves out. That changes what a real
+/// right-click hits, not what the surface element itself is, so this fixture
+/// still passes; `editor_native_context_menu.rs` pins the parked path. If the
+/// surface is ever carved out in the predicate instead, this is the fixture to
+/// revisit.
 #[wasm_bindgen_test]
 fn with_the_flag_a_select_and_the_editor_surface_are_still_suppressed() {
     let fixture = Fixture::mount(|scope, _| {

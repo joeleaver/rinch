@@ -276,8 +276,11 @@ the editor parks it at the caret on that key, so the `contextmenu` the browser
 places at the focused element's box lands at the caret rather than at the
 textarea's resting corner. A `contextmenu` dispatched at the
 surface itself with nothing parked — by script, or by a touch long-press (#821) —
-is still suppressed with the flag on. What the menu's items do is described in
-[the editor guide](contenteditable.md).
+is still suppressed with the flag on. So is a right-click on a link or an image in
+the editor outside the selection: the editor parks nothing there, so that the
+browser's own link or image menu can open, and a link or an image is not an editing
+context, so the flag takes that menu away as it does on any other link or image.
+What the menu's items do is described in [the editor guide](contenteditable.md).
 
 ## Building
 

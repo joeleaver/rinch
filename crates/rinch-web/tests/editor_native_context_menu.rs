@@ -1107,6 +1107,17 @@ fn a_right_press_on_a_link_with_nothing_selected_there_keeps_the_link_menu() {
             "{elsewhere:?}: and no menu cycle took the field"
         );
     }
+
+    // A link is not an editing context, so the page-wide suppression flag takes
+    // its menu away here as it does on any other link (issue #812).
+    rinch_web::set_suppress_native_context_menu(true);
+    f.handle.set_selection(Selection::cursor(Pos(3)));
+    let (ev, tag) = f.right_press(on_link);
+    assert_eq!(tag, "A", "with the flag on nothing is parked either");
+    assert!(
+        ev.default_prevented(),
+        "and the flag suppresses the link menu"
+    );
     f.teardown();
 }
 

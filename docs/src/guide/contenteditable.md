@@ -341,30 +341,57 @@ editor's key handler (and never reach the textarea); only IME composition flows
 through it. This mirrors the CodeMirror / ProseMirror hidden-input technique.
 
 **Right-click gets the browser's own editing menu** (issue #814) — Paste, Cut, Copy,
-Select All, and whatever else the platform adds (spelling, emoji, extensions).
-rinch draws no context menu of its own on the web: a page's paste needs
+Select All, and whatever else the browser puts there (emoji, extensions; the hidden
+field has spellcheck off, so there are no spelling suggestions). The editor draws no
+context menu of its own on the web: a page's paste needs
 `navigator.clipboard.readText()`, which prompts. Instead, the same hidden textarea
 is what the browser's menu is built for. The editor's surface is not editable as
 far as the browser is concerned, so a right-click there used to open the menu for a
 plain element, with no Paste; now a right-button press parks the capture textarea
 under the pointer — invisible, but hittable — for the instant the browser needs to
 fire `contextmenu` and hit-test the point for its menu (CodeMirror 5's technique),
-then sends it back off-screen. The menu's items fire the ordinary `paste` / `cut` /
-`copy` events on the focused textarea and are answered from the editor's model: a
-paste lands at the editor's selection, Cut and Copy act on the editor's selection
-even when it spans blocks, and Select All — which the browser can only apply to the
-textarea — is detected and becomes the editor's `selectAll`. A right press inside the
-selection keeps it (so Cut and Copy act on it); outside, it moves the caret first.
-The menu's Undo is the editor's undo (its `beforeinput` arrives as `historyUndo`),
-not the textarea's. The keyboard's menu key and Shift+F10 open the same menu at
-the caret: the browser sends their `contextmenu` to the focused element, which is
-the textarea, and the editor parks it at the caret first.
-An element up the chain carrying a live `data-oncontextmenu` still wins, as it does
-over any other element it wraps. What was measured, in Chrome 153: a real right
-press makes Chrome's own `contextmenu` target the parked textarea, unprevented,
-where before it targeted the paragraph — Chrome builds its menu for the element its
-hit test finds there, so the editing menu follows from that. Firefox and Safari are
-unverified.
+then sends it back off-screen a moment later, whether or not a menu came, so it
+never takes a click meant for the page. The menu's items fire the ordinary `paste` /
+`cut` / `copy` events on the focused textarea and are answered from the editor's
+model: a paste lands at the editor's selection, Cut and Copy act on the editor's
+selection even when it spans blocks, and Select All — which the browser can only
+apply to the textarea — is detected and becomes the editor's `selectAll`, however
+long the menu stayed open before it was chosen.
+
+Where the right press lands decides the rest:
+
+- **Inside a non-empty selection** — on its text, a link or an image in it — the
+  selection is kept and the menu is the editing one, so Cut, Copy and Paste act on
+  the selection.
+- **On a link or an image outside the selection** (or with only a caret) nothing is
+  parked, so the browser's own link or image menu opens — Open link, Copy link
+  address, Save image, Copy image — and there is no Paste at that spot. The caret
+  moves onto the link, and over an image the selection stays where it was: that is
+  what a native `contenteditable` does in Chrome.
+- **On a horizontal rule** outside the selection, the rule is selected, and the
+  menu's Copy and Cut act on it.
+- **Anywhere else** outside the selection, the caret moves to the press point first.
+
+**Undo and Redo in the menu act on the editor**, but Chrome enables them only when
+its own page-wide undo stack has a step — after an IME commit in the editor, or
+after typing into another field on the page — so they are usually greyed out, and
+Redo stays greyed after a menu Undo. Use Ctrl+Z and Ctrl+Y. (Chrome aims the menu's
+Undo at whichever field owns that step; the editor takes it back while it has
+focus, so the other field is not undone.)
+
+The keyboard's menu key and Shift+F10 open the same menu at the caret: the browser
+sends their `contextmenu` to the focused element, which is the textarea, and the
+editor parks it with its left edge at the caret first — at a selected horizontal
+rule, which has no caret, it parks at the rule. On macOS a Control-click opens the
+menu like a right press, and the word a Mac right-click selects under the pointer is
+not mistaken for Select All; neither is verified on a Mac. An element up the chain
+carrying a live `data-oncontextmenu` still wins — over the whole editor, links and
+images included, and for the menu key — as it does over any other element it
+wraps. What was measured, in Chrome 153: a real right press makes Chrome's own
+`contextmenu` target the parked textarea, unprevented, where before it targeted the
+paragraph (outside a selection it still targets the `<a>` or `<img>`) — Chrome
+builds its menu for the element its hit test finds there, so the editing menu
+follows from that. Firefox and Safari are unverified.
 
 ## Collaboration (optional, `collaboration` feature)
 
