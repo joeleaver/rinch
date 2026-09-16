@@ -775,6 +775,10 @@ fn clipboard_lock() -> std::sync::MutexGuard<'static, ()> {
     LOCK.lock().unwrap_or_else(|e| e.into_inner())
 }
 
+/// A field's `(value, selection start, cursor)` plus the clipboard text after it.
+#[cfg(feature = "clipboard")]
+type FieldAndClip = ((String, String, String), String);
+
 /// Run `action` on a fresh page with `2..5` selected, by the chord and by the
 /// menu item, and answer both `(field state, clipboard text)`.
 #[cfg(feature = "clipboard")]
@@ -782,12 +786,7 @@ fn by_chord_and_by_item(
     action: TextEditAction,
     chord: KeyCode,
     preload: Option<&str>,
-) -> (
-    (String, String, String),
-    String,
-    (String, String, String),
-    String,
-) {
+) -> (FieldAndClip, FieldAndClip) {
     let run = |via_menu: bool| {
         let (mut app, ids, _log) = page("hello world", &[]);
         focus_and_select(&mut app, ids.input);
@@ -810,16 +809,14 @@ fn by_chord_and_by_item(
         let clip = rinch_clipboard::paste_text().unwrap_or_default();
         (field_state(&app, ids.input), clip)
     };
-    let (chord_state, chord_clip) = run(false);
-    let (item_state, item_clip) = run(true);
-    (chord_state, chord_clip, item_state, item_clip)
+    (run(false), run(true))
 }
 
 #[cfg(feature = "clipboard")]
 #[test]
 fn cut_by_item_equals_cut_by_chord() {
     let _lock = clipboard_lock();
-    let (cs, cc, is, ic) = by_chord_and_by_item(TextEditAction::Cut, KeyCode::KeyX, None);
+    let ((cs, cc), (is, ic)) = by_chord_and_by_item(TextEditAction::Cut, KeyCode::KeyX, None);
     assert_eq!(
         cs,
         ("he world".into(), "2".into(), "2".into()),
@@ -833,7 +830,7 @@ fn cut_by_item_equals_cut_by_chord() {
 #[test]
 fn copy_by_item_equals_copy_by_chord() {
     let _lock = clipboard_lock();
-    let (cs, cc, is, ic) = by_chord_and_by_item(TextEditAction::Copy, KeyCode::KeyC, None);
+    let ((cs, cc), (is, ic)) = by_chord_and_by_item(TextEditAction::Copy, KeyCode::KeyC, None);
     assert_eq!(
         cs,
         ("hello world".into(), "2".into(), "5".into()),
@@ -847,7 +844,8 @@ fn copy_by_item_equals_copy_by_chord() {
 #[test]
 fn paste_by_item_equals_paste_by_chord() {
     let _lock = clipboard_lock();
-    let (cs, cc, is, ic) = by_chord_and_by_item(TextEditAction::Paste, KeyCode::KeyV, Some("XY"));
+    let ((cs, cc), (is, ic)) =
+        by_chord_and_by_item(TextEditAction::Paste, KeyCode::KeyV, Some("XY"));
     assert_eq!(
         cs,
         ("heXY world".into(), "4".into(), "4".into()),
@@ -861,7 +859,7 @@ fn paste_by_item_equals_paste_by_chord() {
 #[test]
 fn select_all_by_item_equals_select_all_by_chord() {
     let _lock = clipboard_lock();
-    let (cs, cc, is, ic) = by_chord_and_by_item(TextEditAction::SelectAll, KeyCode::KeyA, None);
+    let ((cs, cc), (is, ic)) = by_chord_and_by_item(TextEditAction::SelectAll, KeyCode::KeyA, None);
     assert_eq!(cs, ("hello world".into(), "0".into(), "11".into()));
     assert_eq!(cc, "", "select all touches no clipboard");
     assert_eq!((is, ic), (cs, cc));
