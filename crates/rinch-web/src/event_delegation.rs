@@ -80,9 +80,10 @@ thread_local! {
     /// [`__force_trusted_clicks`]).
     static FORCE_TRUSTED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 
-    /// Whether a right-click anywhere on the page suppresses the browser's own
-    /// menu, whether or not rinch has a handler for it. See
-    /// [`set_suppress_native_context_menu`].
+    /// Whether a right-click outside an editing context suppresses the
+    /// browser's own menu, whether or not rinch has a handler for it. See
+    /// [`set_suppress_native_context_menu`] for what counts as an editing
+    /// context.
     static SUPPRESS_NATIVE_CONTEXT_MENU: std::cell::Cell<bool> =
         const { std::cell::Cell::new(false) };
 }
@@ -112,9 +113,11 @@ thread_local! {
 /// user's cut, copy and paste, spelling suggestions, autofill and password
 /// manager, and a page cannot rebuild it: reading the clipboard asks the user
 /// for permission first, and spelling suggestions and autofill entries are not
-/// offered to page script. The carve-out is for editing, not for text: selected
-/// text outside a field, a checkbox, a label beside a field and a
-/// `contenteditable="false"` island are still suppressed.
+/// offered to page script. The carve-out is for editing, not for text: outside
+/// editable content, selected text, a checkbox, a `<select>` and a label beside
+/// a field are still suppressed, and so is a `contenteditable="false"` island.
+/// *Inside* editable content the browser reports a checkbox, a `<select>` or a
+/// label as editable too (`isContentEditable`), so they keep its menu there.
 ///
 /// **A live `data-oncontextmenu` handler still wins**, in a field as anywhere
 /// else: it is dispatched and the browser's menu is suppressed, whether this

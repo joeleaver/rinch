@@ -248,10 +248,10 @@ page as well:
 rinch_web::set_suppress_native_context_menu(true);
 ```
 
-`ContextMenu` needs this to look native: its dropdown is portalled to `<body>`,
-outside the element carrying the handler, so without the flag a right-click
-inside the open menu opens the browser's on top of it. The flag is page-global
-and can be flipped at any time.
+`ContextMenu` needs this to look native: its dropdown is portalled out of the
+element carrying the handler, so without the flag a right-click inside the open
+menu opens the browser's on top of it. The flag is page-global and can be flipped
+at any time.
 
 **It leaves text fields alone.** With the flag on, a right-click on a
 `<textarea>`, on an `<input>` of type `text`, `search`, `url`, `tel`, `email`,
@@ -259,10 +259,18 @@ and can be flipped at any time.
 opens the browser's menu, `readonly` and `disabled` fields included. That menu is
 the user's cut, copy and paste, spelling suggestions and autofill, and a page
 cannot rebuild it. A live handler still wins: to show your own menu in a field,
-put `oncontextmenu` on the field or an ancestor of it. Selected text outside a
-field, a checkbox, a label next to a field and a `contenteditable="false"` island
-are still suppressed. So is the rich-text `Editor`, whose surface is not
-`contenteditable`; its right-click menu is tracked in issue #814.
+put `oncontextmenu` on the field or an ancestor of it. Outside `contenteditable`
+content, selected text, a checkbox, a `<select>` and a label next to a field are
+still suppressed, and so is a `contenteditable="false"` island. Inside editable
+content the browser reports those as editable too, so they keep its menu.
+
+The rich-text `Editor` is between the two, and issue #814 is changing it. Its
+surface is not `contenteditable`, so while #814 is open a right-click on the
+surface is suppressed. The keyboard's menu key and Shift+F10 are different: the
+browser aims them at the focused element, which in a focused editor is the
+hidden `<textarea>` the editor takes its input through, so they open the
+browser's text-field menu. That menu appears wherever the textarea sits, which
+before #814 is the top-left corner of the viewport rather than the caret.
 
 ## Building
 

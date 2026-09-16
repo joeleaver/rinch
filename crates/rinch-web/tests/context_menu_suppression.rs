@@ -24,9 +24,11 @@
 //! right-click in an editable context — a `<textarea>`, a text-like `<input>`,
 //! or content whose `isContentEditable` is true — keeps the browser's menu,
 //! because that menu is the user's cut, copy, paste and spelling suggestions and
-//! a page cannot rebuild it. A live handler still wins there; a checkbox, a
-//! label beside a field, a `contenteditable="false"` island and selected text
-//! outside any field are still suppressed.
+//! a page cannot rebuild it. A live handler still wins there, and a stale one
+//! is no handler there either. Outside editable content, a checkbox, a
+//! `<select>`, a label beside a field, the rich-text editor's surface and
+//! selected text are still suppressed, and so is a `contenteditable="false"`
+//! island.
 //!
 //! `defaultPrevented` on a synthetic, cancelable `contextmenu` event is the
 //! observable: it is what decides whether the browser goes on to open its menu.
@@ -211,16 +213,11 @@ fn with_the_flag_an_unhandled_right_click_is_suppressed_and_still_dispatches_not
     fixture.teardown();
 }
 
-/// A stale `data-oncontextmenu` is not a handler. The attribute outlives the
-/// scope that registered it (issue #141), and before the liveness check it both
-/// swallowed the browser's menu and dispatched nothing — a right-click that did
-/// precisely nothing. The desktop's `dispatch_oncontextmenu` has always filtered
-/// on `has_click_handler`; this is the web catching up.
-#[wasm_bindgen_test]
-fn a_stale_handler_attribute_neither_fires_nor_suppresses() {
-    // The real shape rather than an invented id: a root registers a handler and
-    // is then unmounted, which deregisters it, while an attribute naming that id
-    // lives on somewhere else.
+/// The id of a handler that was registered and is now dead: the real shape
+/// rather than an invented id. A root registers a handler and is then
+/// unmounted, which deregisters it, while an attribute naming that id can live
+/// on somewhere else.
+fn dead_handler_id() -> EventHandlerId {
     let dead_id = Rc::new(Cell::new(0usize));
     let sink = dead_id.clone();
     let doomed_host = document().create_element("div").unwrap();
@@ -247,6 +244,17 @@ fn a_stale_handler_attribute_neither_fires_nor_suppresses() {
         !has_click_handler(dead),
         "precondition: unmounting the root must have deregistered the handler"
     );
+    dead
+}
+
+/// A stale `data-oncontextmenu` is not a handler. The attribute outlives the
+/// scope that registered it (issue #141), and before the liveness check it both
+/// swallowed the browser's menu and dispatched nothing — a right-click that did
+/// precisely nothing. The desktop's `dispatch_oncontextmenu` has always filtered
+/// on `has_click_handler`; this is the web catching up.
+#[wasm_bindgen_test]
+fn a_stale_handler_attribute_neither_fires_nor_suppresses() {
+    let dead = dead_handler_id();
 
     let fixture = Fixture::mount(move |scope, _| {
         div(
@@ -640,5 +648,96 @@ fn with_the_flag_selected_text_outside_a_field_is_still_suppressed() {
         "a selection outside any field is not an editing context"
     );
     selection.remove_all_ranges().unwrap();
+    fixture.teardown();
+}
+
+/// A stale handler is no handler inside an editing context either. With the
+/// flag on, an editable target under an ancestor whose `data-oncontextmenu`
+/// names a dead handler keeps the browser's menu, and a plain div beside it is
+/// suppressed by the flag. The existing stale fixture runs with the flag off,
+/// where the carve-out is never asked, so it cannot tell whether the carve-out
+/// reads the *live* handler or merely the nearest attribute — this one does.
+#[wasm_bindgen_test]
+fn with_the_flag_a_stale_handler_does_not_take_an_editable_targets_menu() {
+    let dead = dead_handler_id();
+    let fixture = Fixture::mount(move |scope, _| {
+        let wrapper = scope.create_element("div");
+        wrapper.append_child(&div(scope, "ctx-control", &[]));
+        let stale = element(
+            scope,
+            "div",
+            "ctx-stale-fields",
+            &[("data-oncontextmenu", &dead.0.to_string())],
+        );
+        stale.append_child(&element(scope, "input", "ctx-stale-input", &[]));
+        stale.append_child(&element(scope, "textarea", "ctx-stale-textarea", &[]));
+        let editable = element(scope, "div", "ctx-stale-ce", &[("contenteditable", "true")]);
+        editable.append_child(&element(scope, "span", "ctx-stale-ce-span", &[]));
+        stale.append_child(&editable);
+        stale.append_child(&div(scope, "ctx-stale-plain", &[]));
+        wrapper.append_child(&stale);
+        wrapper
+    });
+
+    rinch_web::set_suppress_native_context_menu(true);
+    assert_control_is_suppressed(&fixture);
+
+    for id in ["ctx-stale-input", "ctx-stale-textarea", "ctx-stale-ce-span"] {
+        assert!(
+            !right_click(&fixture.el(id)),
+            "#{id} is editable and its only `data-oncontextmenu` is dead: a stale \
+             handler is no handler, so the field keeps the browser's menu"
+        );
+    }
+    assert!(
+        right_click(&fixture.el("ctx-stale-plain")),
+        "a plain div under the same stale handler is suppressed by the flag"
+    );
+    assert_eq!(fixture.dispatches(), 0);
+    fixture.teardown();
+}
+
+/// Neither a `<select>` nor the rich-text editor's surface has an editing menu,
+/// so the flag suppresses both — the predicate's `<textarea>` and `<input>`
+/// branches must not grow to take them in.
+///
+/// The surface here is a hand-built `[data-pm-editor]` div, and the event is
+/// dispatched straight on it and on its `<p>`, with no pointer press first.
+/// Issue #814 plans to move the editor's hidden capture `<textarea>` under the
+/// pointer on a right-button press, so that the browser's own hit test targets
+/// the textarea — which this predicate already carves out. That changes what a
+/// real right-click hits, not what the surface element itself is, so #814
+/// should leave this fixture passing; if #814 instead carves the surface out in
+/// the predicate, this is the fixture to revisit.
+#[wasm_bindgen_test]
+fn with_the_flag_a_select_and_the_editor_surface_are_still_suppressed() {
+    let fixture = Fixture::mount(|scope, _| {
+        let wrapper = scope.create_element("div");
+        let select = element(scope, "select", "ctx-select", &[]);
+        let option = element(scope, "option", "ctx-select-option", &[]);
+        option.append_child(&scope.create_text("one"));
+        select.append_child(&option);
+        wrapper.append_child(&select);
+        let surface = element(scope, "div", "ctx-pm-surface", &[("data-pm-editor", "")]);
+        let paragraph = element(scope, "p", "ctx-pm-paragraph", &[]);
+        paragraph.append_child(&scope.create_text("text"));
+        surface.append_child(&paragraph);
+        wrapper.append_child(&surface);
+        wrapper
+    });
+
+    rinch_web::set_suppress_native_context_menu(true);
+    for id in [
+        "ctx-select",
+        "ctx-select-option",
+        "ctx-pm-surface",
+        "ctx-pm-paragraph",
+    ] {
+        assert!(
+            right_click(&fixture.el(id)),
+            "#{id} has no editing menu: the flag suppresses it"
+        );
+    }
+    assert_eq!(fixture.dispatches(), 0);
     fixture.teardown();
 }
