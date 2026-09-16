@@ -355,6 +355,10 @@ paste lands at the editor's selection, Cut and Copy act on the editor's selectio
 even when it spans blocks, and Select All — which the browser can only apply to the
 textarea — is detected and becomes the editor's `selectAll`. A right press inside the
 selection keeps it (so Cut and Copy act on it); outside, it moves the caret first.
+The menu's Undo is the editor's undo (its `beforeinput` arrives as `historyUndo`),
+not the textarea's. The keyboard's menu key and Shift+F10 open the same menu at
+the caret: the browser sends their `contextmenu` to the focused element, which is
+the textarea, and the editor parks it at the caret first.
 An element up the chain carrying a live `data-oncontextmenu` still wins, as it does
 over any other element it wraps. What was measured, in Chrome 153: a real right
 press makes Chrome's own `contextmenu` target the parked textarea, unprevented,

@@ -264,13 +264,20 @@ label next to a field are still suppressed, and so is a `contenteditable="false"
 island. Inside editable content the browser reports a checkbox, a `<select>` or a
 label as editable too, so they keep its menu there.
 
-The rich-text `Editor` is between the two, and issue #814 is changing it. Its
-surface is not `contenteditable`, so with the flag on, and while #814 is open, a
-right-click on the surface is suppressed. The keyboard's menu key and Shift+F10
-are different, flag or no flag: Chrome aims them at the focused element, which in
-a focused editor is the hidden `<textarea>` the editor takes its input through, so
-they open the browser's text-field menu. Chrome places that event at the textarea,
-which rests at the top-left corner of the viewport, not at the caret.
+The rich-text `Editor` keeps the browser's editing menu too, flag or no flag
+(issue #814). Its surface is not `contenteditable`, so a right-click on it is not
+an editing context by itself — but a right-button press parks the hidden
+`<textarea>` the editor takes its input through under the pointer for the instant
+the browser needs to hit-test the point, so the `contextmenu` the browser fires
+targets that textarea, which the carve-out covers (measured in Chrome 153: a real
+right press dispatches `contextmenu` at the textarea, not prevented). The
+keyboard's menu key and Shift+F10 go to the focused element, that same textarea;
+the editor parks it at the caret on that key, so the `contextmenu` the browser
+places at the focused element's box lands at the caret rather than at the
+textarea's resting corner. A `contextmenu` dispatched at the
+surface itself with nothing parked — by script, or by a touch long-press (#821) —
+is still suppressed with the flag on. What the menu's items do is described in
+[the editor guide](contenteditable.md).
 
 ## Building
 

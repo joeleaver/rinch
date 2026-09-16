@@ -443,6 +443,98 @@ fn a_left_press_on_the_parked_textarea_still_places_the_caret() {
     f.teardown();
 }
 
+// ── The keyboard path ───────────────────────────────────────────────────────
+
+/// The menu key and Shift+F10 make the browser fire `contextmenu` at the
+/// focused element — the capture textarea — and open the menu at its box,
+/// which used to be the viewport's top-left corner. On that key the textarea
+/// is parked at the caret, so the menu opens there; the key itself is left to
+/// the browser. Kills: not parking on the key; consuming the key.
+#[wasm_bindgen_test]
+async fn the_menu_key_parks_the_textarea_at_the_caret() {
+    let f = Fixture::mount();
+    f.focus_at(f.point(0, 1));
+    f.handle.set_selection(Selection::cursor(Pos(21)));
+    // Where the caret is: paragraph 2, before character 3.
+    let (cx, cy) = f.point(1, 3);
+    let caret_edge = (cx - 4.0, cy);
+    let ta = f.capture();
+    assert!(
+        !is_capture(&under(caret_edge.0, caret_edge.1)),
+        "positive control: nothing parked before the key"
+    );
+
+    for key in ["ContextMenu", "F10"] {
+        let init = web_sys::KeyboardEventInit::new();
+        init.set_bubbles(true);
+        init.set_cancelable(true);
+        init.set_key(key);
+        init.set_code(key);
+        init.set_shift_key(key == "F10");
+        let ev =
+            web_sys::KeyboardEvent::new_with_keyboard_event_init_dict("keydown", &init).unwrap();
+        ta.dispatch_event(&ev).unwrap();
+
+        assert!(
+            !ev.default_prevented(),
+            "{key}: the key must reach the browser, which is what opens the menu"
+        );
+        let hit = under(caret_edge.0, caret_edge.1);
+        assert!(
+            is_capture(&hit),
+            "{key}: the textarea is parked at the caret, found <{}>",
+            hit.tag_name()
+        );
+        // The browser's `contextmenu` for the key, at the textarea.
+        mouse_on(&hit, "contextmenu", caret_edge.0, caret_edge.1, 0);
+        sleep(150).await;
+        assert!(
+            !is_capture(&under(caret_edge.0, caret_edge.1)),
+            "{key}: and back off-screen after the dispatch"
+        );
+    }
+    f.teardown();
+}
+
+// ── Undo from the menu ──────────────────────────────────────────────────────
+
+/// The menu's Undo fires `beforeinput` with `historyUndo` on the textarea. It
+/// is the editor's undo, not the textarea's: the document reverts and the
+/// field is left alone. Kills: mapping `historyUndo` to nothing.
+#[wasm_bindgen_test]
+fn undo_from_the_menu_is_the_editors_undo() {
+    let f = Fixture::mount();
+    f.focus_at(f.point(1, 6));
+    f.handle.set_selection(Selection::cursor(Pos(24)));
+    assert!(f.handle.insert_text("!!"));
+    assert_eq!(
+        f.text(),
+        "Hello world one|Second!! paragraph here",
+        "positive control: the edit to undo"
+    );
+
+    f.right_press(f.point(1, 2));
+    let ta = f.capture();
+    let init = web_sys::InputEventInit::new();
+    init.set_bubbles(true);
+    init.set_cancelable(true);
+    init.set_input_type("historyUndo");
+    let ev = web_sys::InputEvent::new_with_event_init_dict("beforeinput", &init).unwrap();
+    ta.dispatch_event(&ev).unwrap();
+
+    assert!(
+        ev.default_prevented(),
+        "the textarea's own undo is cancelled"
+    );
+    assert_eq!(f.text(), "Hello world one|Second paragraph here");
+    assert_eq!(
+        ta.value(),
+        "Second paragraph here",
+        "the mirror follows the undo"
+    );
+    f.teardown();
+}
+
 // ── The right-press caret rule ──────────────────────────────────────────────
 
 /// A right press inside the selection keeps it (that is what the menu's Cut and

@@ -1371,6 +1371,18 @@ fn handle_keydown(event: &web_sys::KeyboardEvent, doc: &web_sys::Document) -> bo
         set_goal_x(None);
     }
 
+    // The keyboard's menu key, and Shift+F10: the browser fires `contextmenu` at the
+    // focused element — this textarea — as the key's default action, and places the
+    // menu at the element's box. Parked at the caret first, the menu opens at the
+    // caret rather than at the textarea's resting corner (issue #814). The key is
+    // left to the browser, or no menu would open at all.
+    if key == "ContextMenu" || (key == "F10" && shift) {
+        if let Some((x, y, h)) = head_screen_rect(&handle, doc, handle.selection().head()) {
+            park_capture_for_context_menu(&handle, x, y + h / 2.0);
+        }
+        return false;
+    }
+
     let handled = match key.as_str() {
         // 1. Cursor movement / selection extension — geometry-dependent (browser layout),
         //    so it stays view-owned and never touches the keymap.
