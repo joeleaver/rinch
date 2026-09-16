@@ -641,12 +641,27 @@ async fn a_park_no_menu_answers_never_intercepts_a_click_on_page_content() {
 /// right button and for the menu key (by reading Chromium; not measured here) —
 /// a press held longer than the park must still give the editing menu: the
 /// release parks the textarea again when no `contextmenu` has come for the press
-/// yet. Kills: no re-park at a right-button release; none at the menu key's.
+/// yet, and only then. Kills: no re-park at a right-button release; none at the
+/// menu key's; a release re-parking after the menu already came.
 #[wasm_bindgen_test]
 async fn a_menu_that_follows_the_release_still_finds_the_textarea() {
     let f = Fixture::mount();
     let at = f.point(0, 8);
     f.focus_at(at);
+
+    // Where the menu came at the press, a release somewhere else parks nothing.
+    mouse("mousedown", at.0, at.1, 2);
+    let target = under(at.0, at.1);
+    assert!(is_capture(&target), "precondition: parked at the press");
+    mouse_on(&target, "contextmenu", at.0, at.1, 2);
+    let away = f.point(1, 10);
+    mouse("mouseup", away.0, away.1, 2);
+    assert!(
+        !is_capture(&under(away.0, away.1)),
+        "a release after the menu came does not park the textarea again"
+    );
+    sleep(250).await;
+
     mouse("mousedown", at.0, at.1, 2);
     sleep(250).await;
     assert!(
