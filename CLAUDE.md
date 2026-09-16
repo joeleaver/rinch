@@ -1573,7 +1573,7 @@ a tie-break.
 Not carried to `KeyEventData`, so a registered node's `on_key` still cannot tell
 a repeat from a press: the honest field is the same three-state one, and
 `rinch-core` depends on neither `rinch-platform` nor the browser, so it needs a
-home for the type first.
+home for the type first (**#797**).
 
 Guide: `docs/src/guide/focus.md`.
 

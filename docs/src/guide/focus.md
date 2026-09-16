@@ -380,8 +380,8 @@ yet distinguish it from a fresh press. The *platform* event does, since issue
 Enter/Space activation reads. Surfacing it to `on_key` needs the same
 three-state answer (a plain `bool` would report a held key as fresh wherever a
 backend cannot see, which is the divergence a document-level hook exists to
-avoid) and so needs a home for the type that `rinch-core` can reach; tracked
-separately.
+avoid) and so needs a home for the type that `rinch-core` can reach. Tracked as
+[#797](https://github.com/joeleaver/rinch/issues/797).
 
 A press and its release are spelled by the same rule, from the same fields, so
 **pairing them by `k.key` works by construction** — which is what "is W still

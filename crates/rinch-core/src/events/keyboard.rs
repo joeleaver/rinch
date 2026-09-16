@@ -25,7 +25,7 @@ pub enum KeyEventKind {
     /// cannot see, which is the divergence a document-level hook exists to
     /// avoid — and `rinch-core` depends on neither `rinch-platform` (where the
     /// enum lives) nor the browser, so it needs a home for the type first.
-    /// Tracked separately.
+    /// Tracked as issue #797.
     #[default]
     Down,
     /// The key came up.
