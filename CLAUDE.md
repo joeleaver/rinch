@@ -916,23 +916,51 @@ component; an ownerless one runs `unowned`. Built outside any render — from
 `main`, before the event loop, which is what every example does — there is no
 owner and the callback keeps **app lifetime**, unchanged. Every activation path
 goes through one `invoke_menu_callback`, so the rule holds for a muda click, a
-tray click, the Linux in-app menu bar (which fires the `Rc` straight out of the
-`Menu`, not through the registry) and the keyboard shortcut alike.
+tray click, the DOM menu bar — on Linux *and* in the browser, which fires the
+`Rc` straight out of the `Menu`, not through the registry — and the keyboard
+shortcut alike.
+
+**`rinch::menu` needs no windowing at all.** The declaration types and the DOM
+bar (`render_with_menu_bar`) build with `default-features = false`; only the
+`muda` and `winit` halves are `#[cfg(feature = "desktop")]`. That is what lets
+`rinch_web::mount_with_menu_bar` render the *same* bar from the *same* `Menu`
+values a desktop build hands `App::menu` — see `docs/src/guide/wasm.md`. CI's
+`cargo test -p rinch --no-default-features --features components,theme` is the
+decoupling gate; the tests it runs also run under `--workspace`.
 
 A **shortcut consumes the keystroke only when a callback actually runs.** A chord
 whose item is disabled, has no `on_click`, or belongs to an unmounted component
 falls through to the app rather than being swallowed, and every chord matching
 the key is tried in registration order — so a dead duplicate cannot shadow a live
-one.
+one. On the desktop the shell `return`s on a match, so no input target sees the
+key; the web says the same thing with a **`window`**-capture `keydown` listener
+whose `preventDefault` + `stopPropagation` stop the event before it reaches
+`document` — where `editor_input`'s keymap and the bubble delegate sit. `document`
+capture was not enough: `stopPropagation` aborts the walk to the *next* node and
+leaves same-node listeners running, so a focused editor acted on `Ctrl+Z` twice
+(issue #806). The pointer-gesture observer is on `window` for the other half of
+that reason — it must go on seeing a consumed chord.
 
-**The Linux in-app bar's dismiss overlay is `position: fixed`**, a full-window
+**The chords a web bar arms come back down when its root unmounts** (issue #805).
+`register_menu_shortcuts` returns a `MenuBarChords` token that
+`rinch-web`'s `menu_bar::wrap` holds through `scope.on_cleanup`; dropping it
+releases the build **only while `MENU_BAR_REGISTRATION` still holds that build**,
+because two islands on one page share one chord registry and the later one to arm
+wins. Nothing else ever took a build out — only a *replacement* did — which is
+fine for a desktop bar with the app's lifetime and was a page-global leak for an
+island: measured in Chrome 153, an unmounted root's `Ctrl+K` still ran its item
+and still came back `defaultPrevented`.
+
+**The DOM bar's dismiss overlay is `position: fixed`**, a full-window
 box at `z-index: 199` under the bar's `201`. Fixed is what makes it independent
 of its parent: the three menu-bar layouts put it in three different containing
 blocks, one of which (`render_menu_bar_standalone`'s container) starts
 `top_offset` px down the window. **`build_overlay` therefore takes no offset,
 and must not grow one back** — an offset on a viewport-anchored box lands it off
 the top of the window, which
-`the_below_titlebar_overlay_covers_the_whole_window` fails on.
+`the_below_titlebar_overlay_covers_the_whole_window` fails on. In a browser the
+same `100vw`/`100vh` box covers the whole **page**, not an app window, which is
+one more reason an island's bar is the page's business and not only its own.
 
 That deviation is **gone** (#324 stage B): `overflow` creates no stacking
 context. Two things had to be true for the `fixed` spelling to order correctly
@@ -1433,7 +1461,9 @@ register_focus_target(
   owner-checked at dispatch, dispatched from inside
   `dispatch_keyboard_event` for an Escape *press* after the interceptor (so
   both backends get it with no edit). `Modal`/`Drawer`/`Popover`'s
-  `close_on_escape` rides it; a custom overlay should too — **and there are two
+  `close_on_escape` rides it, and so does the **DOM menu bar**, which is the
+  stack's first non-component member and registers on both backends from one
+  `build_overlay`; a custom overlay should too — **and there are two
   registration policies, not one** (#465). Those three register at *mount* and
   answer `opened_fn` at dispatch, because `render` runs once and a closed
   overlay stays mounted. That is wrong for an overlay **statically nested inside
@@ -2370,7 +2400,9 @@ face for either).
 
 **Window chrome inset (not ThemeProvider-generated).** `--rinch-window-top-inset`
 is published at runtime by whatever chrome rinch draws above your content — the
-Linux in-app menu bar (28px) and the `BorderlessWindow` titlebar (36px, +28 when
+DOM menu bar (28px, on Linux and in the browser alike: `render_with_menu_bar`
+publishes it on its own wrapper *and* on `scope.body_handle()`) and the
+`BorderlessWindow` titlebar (36px, +28 when
 the menu bar sits below it). That chrome reserves space with in-document padding,
 so normal flow content clears it automatically; a `position: fixed` element does
 **not**, because fixed resolves against the real viewport (matching browsers and
@@ -2381,8 +2413,8 @@ div { style: "position: fixed; top: var(--rinch-window-top-inset, 0px); bottom: 
 ```
 
 `Drawer`, `Modal`, and the top-anchored `Notification` positions already do this.
-`DropdownMenu`'s and `Select`'s click-catching backdrops, and the Linux in-app
-menu bar's dismiss overlay (`.rinch-app-menu-bar__overlay`), are fixed at
+`DropdownMenu`'s and `Select`'s click-catching backdrops, and the DOM menu
+bar's dismiss overlay (`.rinch-app-menu-bar__overlay`), are fixed at
 `top: 0` and deliberately do **not** take the inset: a dismiss region has to
 cover the chrome, or clicking the title bar leaves the menu open. Do **not**
 "fix" an overlay of your own by insetting the fixed containing block — that

@@ -15,6 +15,14 @@
 //!   browser's;
 //! * click anywhere outside an open menu, or press Escape, to dismiss it.
 //!
+//! **File > New declares `Ctrl+N` on purpose, and in a browser you should click
+//! it rather than press it.** A handful of chords — `Ctrl+N`, `Ctrl+T`,
+//! `Ctrl+W`, `Ctrl+Q` and their `Shift` variants — are the browser's own, handled
+//! by its chrome before the page: `preventDefault` does not reach them, and the
+//! page may not be sent the keystroke at all. The declaration is still the right
+//! one, because the same `Menu` value drives a desktop build where `Ctrl+N` is
+//! exactly what "New" should be.
+//!
 //! Build it the way the other web examples are built:
 //!
 //! ```bash
@@ -120,6 +128,9 @@ pub fn start() {
     };
 
     let file_menu = Menu::new()
+        // One of the browser's own chords (see the module docs): click the item
+        // here, press it on the desktop. Left declared because this is the same
+        // `Menu` value both targets get.
         .item(MenuItem::new("New").shortcut("Ctrl+N").on_click({
             let record = record.clone();
             move || record("File > New  (Ctrl+N)")

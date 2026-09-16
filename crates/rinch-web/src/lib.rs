@@ -35,9 +35,14 @@
 //! ```
 //!
 //! Clicks, hover-to-switch and click-outside dismissal come from the shared
-//! renderer; the shortcuts are matched on a capture-phase document `keydown`,
-//! and a chord the menus claim is consumed (`preventDefault`) so the browser's
-//! own Ctrl+N does not fire alongside the app's.
+//! renderer; the shortcuts are matched on a capture-phase `window` `keydown`,
+//! and a chord the menus claim is consumed — `preventDefault`, so the browser's
+//! own handling of `Ctrl+K` does not run alongside the app's, and the event is
+//! stopped before it reaches anything else in the app, which is what the desktop
+//! does by returning ahead of the event loop. A handful of chords (`Ctrl+N`,
+//! `Ctrl+T`, `Ctrl+W`, `Ctrl+Q` and their `Shift` variants) are the browser's
+//! alone and cannot be claimed; see the [WASM
+//! guide](https://github.com/joeleaver/rinch/blob/main/docs/src/guide/wasm.md).
 //!
 //! ## Whole-page app
 //!
@@ -75,11 +80,11 @@ use rinch_core::element::ThemeProviderProps;
 use rinch_core::events;
 
 pub use event_delegation::setup_event_delegation;
+#[doc(hidden)]
+pub use event_delegation::{__force_trusted_clicks, __reset_activation_state};
 // Whether a right-click anywhere suppresses the browser's own menu. Off by
 // default: an island mounted into somebody else's page must not take the
 // right-click away from the rest of it.
-#[doc(hidden)]
-pub use event_delegation::{__force_trusted_clicks, __reset_activation_state};
 pub use event_delegation::{set_suppress_native_context_menu, suppresses_native_context_menu};
 /// The menu declaration types, re-exported so a web app names them in one place
 /// (`rinch_web::{Menu, MenuItem}`) while its desktop twin builds the very same
@@ -152,6 +157,11 @@ impl RootHandle {
     /// Unmount this root: remove its component subtree from the host element and
     /// deregister the event handlers it created at build time. The host element
     /// itself is left in place. A no-op if the root was already unmounted.
+    ///
+    /// Disposing the scope is also what releases what the build registered
+    /// *page-globally* — a menu bar's Escape handler and its keyboard chords —
+    /// so an island can be taken out of somebody else's page without leaving
+    /// anything of its own behind.
     pub fn unmount(self) {
         let root = MOUNTED_ROOTS.with(|m| m.borrow_mut().remove(&self.id));
         if let Some(r) = root {
@@ -366,10 +376,18 @@ where
 /// uses — and the menus are the same [`Menu`] / [`MenuItem`] values a desktop
 /// build hands to `App::menu`, so one declaration serves both targets.
 ///
-/// Every item's `shortcut` is armed against the document: pressing it runs the
-/// item's `on_click` and consumes the keystroke, so a chord the app claimed does
-/// not also trigger the browser's own. Arming replaces whatever a previous call
-/// armed, so remounting does not accumulate chords.
+/// Every item's `shortcut` is armed against the page: pressing it runs the
+/// item's `on_click` and consumes the keystroke, so neither the browser's own
+/// handling of that combination nor anything else in the app also acts on it.
+/// Arming replaces whatever a previous call armed, so remounting does not
+/// accumulate chords. A handful of chords — `Ctrl+N`, `Ctrl+T`, `Ctrl+W`,
+/// `Ctrl+Q` and their `Shift` variants — are the browser's own and cannot be
+/// claimed at all; declare them anyway if the same `Menu` drives a desktop
+/// build, just do not rely on them here.
+///
+/// The bar is laid out above the content *inside* the page, and the content
+/// wrapper is `height: 100%` — so `html, body` want a height, or everything
+/// below the bar collapses.
 ///
 /// The menus are read during this call and nothing is kept borrowed afterwards,
 /// which is why the labels may be borrowed `&str`.
@@ -394,13 +412,20 @@ where
 ///
 /// The bar fills the host element's width and the content sits below it, so the
 /// host wants a height of its own — the bar is laid out inside the island, not
-/// over the page.
+/// over the page, and the content wrapper below it is `height: 100%`, which
+/// collapses without one.
 ///
 /// **One page, one set of chords.** Clicks are per-bar, but keyboard shortcuts
 /// are matched against a single page-global registry, and arming a bar releases
 /// whatever the previous one armed. So two islands that each declare menus will
 /// find only the second one's shortcuts live. Give one island the shortcuts, or
 /// declare the chords in a single bar.
+///
+/// [`unmount`](RootHandle::unmount) takes this island's chords back down —
+/// they are armed against the whole page, and an island removed from somebody
+/// else's page must not go on eating a key combination from it. Release is
+/// "only if these are still the live ones", so an island unmounting after a
+/// *later* one armed leaves the later one's chords alone.
 pub fn mount_into_with_menu_bar<F>(
     host: &web_sys::Element,
     theme: ThemeProviderProps,

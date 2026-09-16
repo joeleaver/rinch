@@ -191,6 +191,9 @@ MenuItem::new("Find Next").shortcut("F3")
 
 Shortcuts work across platforms - `Cmd` and `Ctrl` are automatically mapped to the platform-appropriate modifier.
 
+In a browser a few of them are the browser's own and cannot be claimed — see
+[Running on WASM](./wasm.md#mounting-with-a-menu-bar). It changes nothing about the declaration; the desktop build still gets the chord.
+
 ## Platform Behavior
 
 ### macOS
@@ -224,7 +227,12 @@ div { style: "position: fixed; top: var(--rinch-window-top-inset, 0px); bottom: 
 The bar behaves like a native one: click a top-level label to open its menu,
 then move across the bar to switch between menus without clicking again. Hover
 or click a submenu row to open its flyout, click an item to run it, and click
-anywhere else in the window to dismiss.
+anywhere else in the window — or press Escape — to dismiss.
+
+Escape rides the same dismiss stack every other rinch overlay uses, so it is
+LIFO against `Modal`, `Drawer`, `Popover` and an open `<select>`: the bar
+registers at mount, which puts every later overlay above it, and its handler
+declines the key outright while no menu is open.
 
 That last one is a full-window overlay rinch renders under the open menu, at
 `z-index: 199` against the bar's `201`. It is `position: fixed`, so it covers

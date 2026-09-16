@@ -193,13 +193,38 @@ opens it; moving the pointer across the bar switches to the next menu without a
 second click; clicking outside or pressing Escape dismisses it. Separators and
 submenus render as flyouts.
 
-**Shortcuts are armed against the document.** Every item's `shortcut` string is
-matched on a capture-phase `keydown`, before the app sees the key, and a chord
-the menus claim is consumed with `preventDefault` — so your Ctrl+N does not also
-open a browser window. `Ctrl` and `Cmd` are interchangeable in the string, as on
-the desktop, so `"Ctrl+K"` is Cmd+K on a Mac. A chord nothing is listening to
-falls through to the page: an item with a `shortcut` but no `on_click`, or a
-disabled one, arms nothing.
+The bar is laid out *inside* whatever it is mounted into, above the content,
+and the content wrapper is `height: 100%`. For a whole-page app that means
+`html, body { height: 100% }` in your stylesheet (as `examples/menu-bar-web`
+does) — without a height to be a percentage of, the content below the bar
+collapses. For an island, the same applies to the host element.
+
+**Shortcuts are armed against the page.** Every item's `shortcut` string is
+matched on a capture-phase `keydown` on `window`, before the app sees the key,
+and a chord the menus claim is consumed: `preventDefault`, so the browser does
+not also act on it, and the event is stopped before it reaches anything else in
+the app — the same thing the desktop does by returning before a matched chord
+becomes an event. `Ctrl` and `Cmd` are interchangeable in the string, as on the
+desktop, so `"Ctrl+K"` is Cmd+K on a Mac. A chord nothing is listening to falls
+through to the page: an item with a `shortcut` but no `on_click`, or a disabled
+one, arms nothing.
+
+**A few chords are the browser's own and cannot be taken.** `Ctrl+N`, `Ctrl+T`,
+`Ctrl+W`, `Ctrl+Q` and their `Shift` variants open and close browser windows and
+tabs; the browser's chrome handles them ahead of the page, so `preventDefault`
+does not reach them and the page may not be sent the keystroke at all. Declaring
+them is still right when the same `Menu` drives a desktop build — `Ctrl+N` is
+what "New" should be there — just do not rely on the chord in the browser. The
+browser's *page-level* shortcuts are a different case and are claimable:
+`Ctrl+S` is measured reaching the page here (rinch sees the keydown and declines
+it when nothing has claimed it), and a cancelable keydown the page receives is
+one `preventDefault` can take.
+
+**Unmounting gives the chords back.** They are page-global, so an island mounted
+into somebody else's page arms them against the whole document;
+`RootHandle::unmount` releases exactly the ones that island armed. Two islands
+that each declare menus still share one registry — the later one to arm wins, and
+the earlier one unmounting leaves the winner alone.
 
 Nothing about this needs the `desktop` feature. `rinch::menu`'s declaration types
 and the DOM renderer build with `default-features = false`; only the `muda`
