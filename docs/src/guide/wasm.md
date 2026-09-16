@@ -259,18 +259,18 @@ at any time.
 opens the browser's menu, `readonly` and `disabled` fields included. That menu is
 the user's cut, copy and paste, spelling suggestions and autofill, and a page
 cannot rebuild it. A live handler still wins: to show your own menu in a field,
-put `oncontextmenu` on the field or an ancestor of it. Outside `contenteditable`
-content, selected text, a checkbox, a `<select>` and a label next to a field are
-still suppressed, and so is a `contenteditable="false"` island. Inside editable
-content the browser reports those as editable too, so they keep its menu.
+put `oncontextmenu` on the field or an ancestor of it. Outside `contenteditable` content, selected text, a checkbox, a `<select>` and a
+label next to a field are still suppressed, and so is a `contenteditable="false"`
+island. Inside editable content the browser reports a checkbox, a `<select>` or a
+label as editable too, so they keep its menu there.
 
 The rich-text `Editor` is between the two, and issue #814 is changing it. Its
-surface is not `contenteditable`, so while #814 is open a right-click on the
-surface is suppressed. The keyboard's menu key and Shift+F10 are different: the
-browser aims them at the focused element, which in a focused editor is the
-hidden `<textarea>` the editor takes its input through, so they open the
-browser's text-field menu. That menu appears wherever the textarea sits, which
-before #814 is the top-left corner of the viewport rather than the caret.
+surface is not `contenteditable`, so with the flag on, and while #814 is open, a
+right-click on the surface is suppressed. The keyboard's menu key and Shift+F10
+are different, flag or no flag: Chrome aims them at the focused element, which in
+a focused editor is the hidden `<textarea>` the editor takes its input through, so
+they open the browser's text-field menu. Chrome places that event at the textarea,
+which rests at the top-left corner of the viewport, not at the caret.
 
 ## Building
 
