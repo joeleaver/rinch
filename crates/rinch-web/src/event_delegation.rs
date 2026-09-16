@@ -1761,7 +1761,17 @@ pub fn setup_event_delegation(doc: &WebDocument) {
     // Pointerdown delegation: find nearest [data-rid] ancestor and dispatch.
     // We use pointerdown (not click) so drag operations (sliders, element DnD)
     // can begin tracking movement immediately, on mouse and touch alike.
-    let pointerdown_closure = Closure::wrap(Box::new(move |event: web_sys::PointerEvent| {
+    let pointerdown_closure = Closure::wrap(Box::new(move |event: web_sys::Event| {
+        // Registered by hand, so the cast wasm-bindgen makes into a typed
+        // closure parameter was unchecked here too — see the keydown listener
+        // below. A plain `Event` or a `MouseEvent` named "pointerdown" bubbling
+        // from an element read `undefined` for `pointerType` and threw the same
+        // TypeError. Not a pointer event, not a press: the capture-phase
+        // pointerdown listeners registered through `add_capture` already ignore
+        // it, and so does this.
+        let Some(event) = event.dyn_ref::<web_sys::PointerEvent>() else {
+            return;
+        };
         // A drag is owned by a single pointer. A *primary* pointerdown means no
         // primary contact is currently down, so any drag still recorded is stale
         // — its pointerup/pointercancel was missed (e.g. a dropped mobile
@@ -1821,7 +1831,7 @@ pub fn setup_event_delegation(doc: &WebDocument) {
 
             // Additive: fire data-onmousedown before the click dispatch below,
             // matching DOM order (down precedes click) and the desktop arm.
-            dispatch_mouse_attr(&el, "data-onmousedown", &event);
+            dispatch_mouse_attr(&el, "data-onmousedown", event);
 
             // Element drag-and-drop: a pointerdown on a `draggable="true"` element
             // starts a pending drag (primary pointer only). Its click is deferred
@@ -1907,7 +1917,7 @@ pub fn setup_event_delegation(doc: &WebDocument) {
                         });
                     });
                 } else {
-                    dispatch_click_at(&el, &browser_doc_for_click, &event);
+                    dispatch_click_at(&el, &browser_doc_for_click, event);
 
                     // If that click armed a pointer-capture `Drag` (slider, panel,
                     // resize handle — started from the handler via `Drag::start()`),
@@ -2205,7 +2215,32 @@ pub fn setup_event_delegation(doc: &WebDocument) {
 
     // Keyboard delegation: route to focused render surface or keyboard interceptor.
     let browser_doc_for_tab = browser_doc.clone();
-    let keydown_closure = Closure::wrap(Box::new(move |event: web_sys::KeyboardEvent| {
+    let keydown_closure = Closure::wrap(Box::new(move |event: web_sys::Event| {
+        // Anything at all can be dispatched at `document` under the name
+        // "keydown" — `document.dispatchEvent(new Event("keydown"))` from page
+        // script, a polyfill, an extension, a test harness. wasm-bindgen hands a
+        // `Closure<dyn FnMut(web_sys::KeyboardEvent)>` whatever arrives, cast
+        // **unchecked**, so on a plain `Event` the very first `event.key()`
+        // returned `undefined` and the string marshaller threw `Cannot read
+        // properties of undefined (reading 'length')` out of a document
+        // listener — a console full of TypeErrors from a page that had done
+        // nothing wrong.
+        //
+        // `dyn_ref` is the instanceof check that was missing. `add_capture` does
+        // the same for the listeners registered through it; this one is
+        // registered by hand, as are `keyup` and `pointerdown`, which carry the
+        // same guard. The other hand-registered listeners in this function that
+        // still take a typed parameter are #811.
+        //
+        // Because it is `instanceof`, a `KeyboardEvent` built from another
+        // realm's constructor (an iframe's `KeyboardEvent`, dispatched on this
+        // document by script) is now ignored where it used to reach the
+        // delegation — exactly as `add_capture` already ignores it. A trusted
+        // key press inside an iframe goes to the iframe's own document.
+        let Some(event) = event.dyn_ref::<web_sys::KeyboardEvent>() else {
+            return;
+        };
+
         // Escape cancels an in-progress element drag (consumed only if one was
         // actually active, so Escape otherwise reaches the app normally).
         if event.key() == "Escape" && cancel_web_drag() {
@@ -2263,7 +2298,7 @@ pub fn setup_event_delegation(doc: &WebDocument) {
             // still sees Tab first, and before the activation branch, which only
             // ever answers Enter/Space.
             event.prevent_default();
-        } else if try_keyboard_activation(&event, &key_data.key) {
+        } else if try_keyboard_activation(event, &key_data.key) {
             // Enter/Space on a focused element the browser does not activate
             // itself (issue #240 — the `Tree` node shape). Consume the key:
             // this is what stops Space from also scrolling the page, on the
@@ -2329,7 +2364,12 @@ pub fn setup_event_delegation(doc: &WebDocument) {
     // Its return value is ignored, matching desktop: there is nothing
     // downstream of a release to suppress, and `prevent_default` on a keyup
     // suppresses nothing a browser would have done anyway.
-    let keyup_closure = Closure::wrap(Box::new(move |event: web_sys::KeyboardEvent| {
+    let keyup_closure = Closure::wrap(Box::new(move |event: web_sys::Event| {
+        // See the keydown listener: the cast is unchecked, so a plain
+        // `Event("keyup")` would read `undefined` for `key` and throw.
+        let Some(event) = event.dyn_ref::<web_sys::KeyboardEvent>() else {
+            return;
+        };
         let key_data = events::KeyEventData::new(event.key(), event.code())
             .with_modifiers(
                 event.ctrl_key() || event.meta_key(),
