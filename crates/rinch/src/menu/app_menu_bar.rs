@@ -1,9 +1,21 @@
-//! In-app menu bar for Linux.
+//! The in-app DOM menu bar.
 //!
-//! On Linux, native menu bars don't work (muda needs a GTK window, winit uses
-//! raw X11/Wayland). This module renders a DOM-based menu bar using the same
-//! `Menu`/`MenuItem` API. Hover-to-switch uses `data-onenter` handlers
-//! dispatched by the event loop when the hovered node changes.
+//! Two platforms have no native menu bar to attach a [`Menu`] to. On Linux muda
+//! needs a GTK window and winit gives it raw X11/Wayland; in a browser there is
+//! no window menu at all. Both get this instead: the same `Menu`/`MenuItem` an
+//! app already declares, rendered out of DOM nodes. Hover-to-switch uses
+//! `data-onenter` handlers, dispatched by the desktop event loop when the
+//! hovered node changes and by `rinch-web`'s pointer delegation in the browser —
+//! one renderer, because both backends speak the same `RenderScope`. Dismissal
+//! is the same story: a click lands on the overlay's `data-rid`, and Escape
+//! arrives through `rinch_core`'s dismiss stack, which both backends already
+//! feed.
+//!
+//! Nothing here touches muda, winit or any windowing stack, so the module builds
+//! with `default-features = false`. What it does *not* carry is chord matching:
+//! a keystroke arrives with no menu in sight, so the desktop event loop and the
+//! browser's keydown listener both go through the registry in
+//! [`super::match_shortcut_code`] instead.
 
 // `MenuEntryInner`, not the public `MenuEntryRef`: this module is a descendant
 // of `menu`, so it can read the private fields — and it needs
@@ -15,14 +27,22 @@ use rinch_core::reactive::{Effect, Signal};
 use std::rc::Rc;
 
 /// Menu bar height in pixels (labels + padding).
-pub(crate) const MENU_BAR_HEIGHT: u32 = 28;
+pub const MENU_BAR_HEIGHT: u32 = 28;
 
 /// Wrap `content` with an in-app menu bar rendered from the given menu data.
 ///
 /// `top_offset` is the vertical offset (in px) for the menu bar. For borderless
 /// windows with a custom title bar, pass the title bar height (typically 36) so
-/// the menu bar appears below it. For regular windows, pass 0.
-pub(crate) fn render_with_menu_bar(
+/// the menu bar appears below it. For regular windows — and for a page in the
+/// browser — pass 0.
+///
+/// Clicking an entry runs its callback straight from the [`Menu`]; it never goes
+/// through the callback registry. Keyboard shortcuts do, so a caller that wants
+/// the declared chords to work must also call
+/// [`register_menu_shortcuts`](super::register_menu_shortcuts) — which is what
+/// `rinch_web::mount_with_menu_bar` does, and what `App::menu` does for the
+/// desktop by way of `build_native_menu_bar`.
+pub fn render_with_menu_bar(
     scope: &mut RenderScope,
     menus: &[(&str, &Menu)],
     content: NodeHandle,
@@ -122,7 +142,9 @@ pub(crate) fn render_with_menu_bar(
 /// `MENU_BAR_HEIGHT` to leave space for the bar.
 ///
 /// `top_offset` is the vertical position for the bar (e.g., 36 for titlebar height).
-pub(crate) fn render_menu_bar_standalone(
+///
+/// Shortcuts are the caller's job here too — see [`render_with_menu_bar`].
+pub fn render_menu_bar_standalone(
     scope: &mut RenderScope,
     menus: &[(&str, &Menu)],
     top_offset: u32,
@@ -177,6 +199,10 @@ pub(crate) fn render_menu_bar_standalone(
 ///
 /// Returns a flex container with the top-level menu items. Uses a shared
 /// `active_menu` signal so the overlay and items stay in sync.
+///
+/// Only the borderless desktop window lays a menu bar out this way, so unlike
+/// the two renderers above this one stays crate-internal.
+#[cfg(all(feature = "desktop", target_os = "linux"))]
 pub(crate) fn render_menu_items_inline(
     scope: &mut RenderScope,
     menus: &[(&str, &Menu)],
@@ -207,6 +233,7 @@ pub(crate) fn render_menu_items_inline(
 /// Render just the click-outside overlay (for inline titlebar layout).
 ///
 /// Uses a shared `active_menu` signal so clicking the overlay closes menus.
+#[cfg(all(feature = "desktop", target_os = "linux"))]
 pub(crate) fn render_inline_overlay(
     scope: &mut RenderScope,
     active_menu: Signal<i32>,
@@ -259,6 +286,29 @@ pub(crate) fn render_inline_overlay(
 fn build_overlay(scope: &mut RenderScope, active_menu: Signal<i32>) -> NodeHandle {
     let overlay = scope.create_element("div");
     overlay.set_attribute("class", "rinch-app-menu-bar__overlay");
+    // Escape closes the open menu, the way it closes every other overlay in
+    // rinch (issue #474). The dismiss stack rather than a keyboard interceptor,
+    // for the reason the prelude gives: an interceptor is one slot per document,
+    // so a menu bar taking it would silently disable a `Modal`'s Escape — and a
+    // menu can perfectly well be open over one.
+    //
+    // The handler answers `false` while no menu is open, so Escape falls through
+    // to whatever is underneath rather than being swallowed by a bar that is
+    // merely *present*. It is dispatched by
+    // `rinch_core::events::dispatch_keyboard_event`, which the desktop shell and
+    // rinch-web both already call, so this works on both backends unchanged.
+    {
+        let handle = rinch_core::events::push_dismiss_handler(overlay.doc_key(), move || {
+            if active_menu.get() < 0 {
+                return false;
+            }
+            active_menu.set(-1);
+            true
+        });
+        // Released when the bar unmounts; held until then, or the registration
+        // above is a no-op (see `DismissHandle`).
+        scope.on_cleanup(move || drop(handle));
+    }
     {
         let overlay_handle = overlay.clone();
         Effect::new(move || {
@@ -552,7 +602,17 @@ fn build_menu_entries_with_flyouts(
     }
 }
 
-#[cfg(all(test, feature = "components", feature = "theme"))]
+// The fixtures below mount the real renderers against the real stylesheet
+// through `RinchDocument` and hit-test them with the desktop dispatcher's own
+// walk, so they need the desktop backend — and the inline layout they cover is
+// the borderless Linux window's.
+#[cfg(all(
+    test,
+    feature = "desktop",
+    feature = "components",
+    feature = "theme",
+    target_os = "linux"
+))]
 mod tests {
     use super::{MENU_BAR_HEIGHT, render_inline_overlay, render_menu_items_inline};
     use crate::menu::{Menu, MenuItem};
@@ -1135,5 +1195,156 @@ mod tests {
             [false, true],
             "hovering the second submenu trigger must open the second flyout"
         );
+    }
+}
+
+// ── The renderer with no desktop backend under it ───────────────────────────
+//
+// The suite above mounts the real stylesheet through `RinchDocument` and so
+// needs `desktop`. These do not: they drive the renderer against rinch-core's
+// headless document double, which is the configuration a `rinch-web` build
+// compiles — `--no-default-features --features components,theme`. If the module
+// ever re-acquires a dependency on muda, winit or rinch-dom, these stop
+// compiling, which is the point of them.
+#[cfg(test)]
+mod portable_tests {
+    use super::*;
+    use crate::menu::{Menu, MenuItem};
+    use rinch_core::dom::mock::MockDomDocument;
+    use rinch_core::dom::{DomDocument, NodeId};
+    use rinch_core::events::{KeyEventData, dispatch_keyboard_event};
+    use std::cell::{Cell, RefCell};
+
+    struct Harness {
+        doc: Rc<RefCell<dyn DomDocument>>,
+        scope: RenderScope,
+    }
+
+    fn harness() -> Harness {
+        let doc: Rc<RefCell<dyn DomDocument>> = Rc::new(RefCell::new(MockDomDocument::new()));
+        let body = doc.borrow_mut().create_element("div");
+        let scope = RenderScope::new(doc.clone(), body);
+        Harness { doc, scope }
+    }
+
+    /// Every node carrying `class` exactly, in tree order.
+    fn nodes_with_class(h: &Harness, root: NodeId, class: &str) -> Vec<NodeId> {
+        let mut out = Vec::new();
+        let mut stack = vec![root];
+        while let Some(id) = stack.pop() {
+            let doc = h.doc.borrow();
+            if doc
+                .get_attribute(id, "class")
+                .is_some_and(|c| c.split_whitespace().any(|c| c == class))
+            {
+                out.push(id);
+            }
+            let mut kids = doc.get_children(id);
+            kids.reverse();
+            drop(doc);
+            stack.extend(kids);
+        }
+        out
+    }
+
+    /// Run a node's own `data-rid` handler, as a click dispatcher would.
+    fn click(h: &Harness, id: NodeId) {
+        let rid: usize = h
+            .doc
+            .borrow()
+            .get_attribute(id, "data-rid")
+            .unwrap_or_else(|| panic!("node {id:?} carries no data-rid"))
+            .parse()
+            .unwrap();
+        rinch_core::events::dispatch_event(rinch_core::events::EventHandlerId(rid));
+    }
+
+    fn escape() -> bool {
+        dispatch_keyboard_event(&KeyEventData::new("Escape", "Escape"))
+    }
+
+    fn demo_menu(fired: Rc<Cell<u32>>) -> Menu {
+        Menu::new()
+            .item(MenuItem::new("New").shortcut("Ctrl+N").on_click(move || {
+                fired.set(fired.get() + 1);
+            }))
+            .separator()
+            .item(MenuItem::new("Save").enabled(false))
+    }
+
+    /// The whole click path, with no desktop backend anywhere: open the menu,
+    /// run an entry, and watch the menu close behind it.
+    #[test]
+    fn a_click_opens_a_menu_and_an_entry_runs_its_callback() {
+        let mut h = harness();
+        let fired = Rc::new(Cell::new(0u32));
+        let menu = demo_menu(fired.clone());
+        let content = h.scope.create_element("div");
+        let root = render_with_menu_bar(&mut h.scope, &[("File", &menu)], content, 0);
+
+        let visible = |h: &Harness| {
+            nodes_with_class(h, root.node_id(), "rinch-app-menu-item__dropdown--visible").len()
+        };
+        assert_eq!(visible(&h), 0, "no menu is open before anything is clicked");
+
+        let label = nodes_with_class(&h, root.node_id(), "rinch-app-menu-item__label")[0];
+        click(&h, label);
+        assert_eq!(visible(&h), 1, "clicking the label opens its dropdown");
+
+        let entry = nodes_with_class(&h, root.node_id(), "rinch-app-menu-entry")[0];
+        click(&h, entry);
+        assert_eq!(fired.get(), 1, "the entry ran its callback");
+        assert_eq!(visible(&h), 0, "and the menu closed behind it");
+    }
+
+    /// A disabled entry carries no handler at all, so it cannot be clicked into
+    /// running — the greyed-out rendering is not the only thing stopping it.
+    #[test]
+    fn a_disabled_entry_carries_no_click_handler() {
+        let mut h = harness();
+        let menu = demo_menu(Rc::new(Cell::new(0)));
+        let content = h.scope.create_element("div");
+        let root = render_with_menu_bar(&mut h.scope, &[("File", &menu)], content, 0);
+
+        let disabled = nodes_with_class(&h, root.node_id(), "rinch-app-menu-entry--disabled");
+        assert_eq!(disabled.len(), 1);
+        assert!(
+            h.doc
+                .borrow()
+                .get_attribute(disabled[0], "data-rid")
+                .is_none(),
+            "a disabled entry must not be clickable"
+        );
+    }
+
+    /// Escape closes the open menu, through the dismiss stack both backends
+    /// already feed — and, when no menu is open, falls through untouched rather
+    /// than being swallowed by a bar that is merely on screen.
+    #[test]
+    fn escape_closes_an_open_menu_and_otherwise_falls_through() {
+        let mut h = harness();
+        let menu = demo_menu(Rc::new(Cell::new(0)));
+        let content = h.scope.create_element("div");
+        let root = render_with_menu_bar(&mut h.scope, &[("File", &menu)], content, 0);
+
+        assert!(
+            !escape(),
+            "with no menu open, Escape belongs to whatever is underneath"
+        );
+
+        let label = nodes_with_class(&h, root.node_id(), "rinch-app-menu-item__label")[0];
+        click(&h, label);
+        assert_eq!(
+            nodes_with_class(&h, root.node_id(), "rinch-app-menu-item__dropdown--visible").len(),
+            1
+        );
+
+        assert!(escape(), "an open menu consumes the key");
+        assert_eq!(
+            nodes_with_class(&h, root.node_id(), "rinch-app-menu-item__dropdown--visible").len(),
+            0,
+            "Escape closed the menu"
+        );
+        assert!(!escape(), "and the bar goes back to passing Escape through");
     }
 }

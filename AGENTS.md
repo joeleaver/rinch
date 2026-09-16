@@ -87,8 +87,8 @@ list if something looks off.
 
 **Examples.** `ui-zoo-desktop` (+ the shared `ui-zoo` library) is the primary
 development target. The `*-web` examples (`ui-zoo-web`, `paint-web`, `editor-web`,
-`collab-editor-web`, `events-web`, `islands-web`, `webgpu-surface-web`) are **excluded
-from the workspace** — build them with `--target wasm32-unknown-unknown` or from their
+`collab-editor-web`, `events-web`, `islands-web`, `menu-bar-web`,
+`webgpu-surface-web`) are **excluded from the workspace** — build them with `--target wasm32-unknown-unknown` or from their
 own directory. Others of note: `markdown-editor`, `collab-editor-demo`, `game-embed`,
 `gpu-device-config`, `todo-app`, `hello-android`.
 

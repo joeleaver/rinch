@@ -14,6 +14,30 @@
 //! - [`mount_into`] / [`mount_selector`] — mount one or more **independent**
 //!   component trees ("islands") into existing page elements. Each returns a
 //!   [`RootHandle`] that can later [`unmount`](RootHandle::unmount) that root.
+//! - [`mount_with_menu_bar`] and its `_into` / `_selector` twins — the same,
+//!   under a menu bar built from [`Menu`] / [`MenuItem`].
+//! - [`set_suppress_native_context_menu`] — for a whole-page app that renders
+//!   its own right-click menus.
+//!
+//! ## Menu bar
+//!
+//! An app that declares menus for the desktop gets the same bar in the browser
+//! from the same declaration — no second code path, and no native menu bar to
+//! fall back to:
+//!
+//! ```ignore
+//! let file = Menu::new()
+//!     .item(MenuItem::new("New").shortcut("Ctrl+N").on_click(|| new_doc()))
+//!     .separator()
+//!     .item(MenuItem::new("Close").on_click(|| close_doc()));
+//!
+//! rinch_web::mount_with_menu_bar(theme, vec![("File", file)], app);
+//! ```
+//!
+//! Clicks, hover-to-switch and click-outside dismissal come from the shared
+//! renderer; the shortcuts are matched on a capture-phase document `keydown`,
+//! and a chord the menus claim is consumed (`preventDefault`) so the browser's
+//! own Ctrl+N does not fire alongside the app's.
 //!
 //! ## Whole-page app
 //!
@@ -39,6 +63,7 @@
 
 mod editor_input;
 mod event_delegation;
+mod menu_bar;
 pub mod web_document;
 
 use std::cell::{Cell, RefCell};
@@ -50,8 +75,16 @@ use rinch_core::element::ThemeProviderProps;
 use rinch_core::events;
 
 pub use event_delegation::setup_event_delegation;
+// Whether a right-click anywhere suppresses the browser's own menu. Off by
+// default: an island mounted into somebody else's page must not take the
+// right-click away from the rest of it.
 #[doc(hidden)]
 pub use event_delegation::{__force_trusted_clicks, __reset_activation_state};
+pub use event_delegation::{set_suppress_native_context_menu, suppresses_native_context_menu};
+/// The menu declaration types, re-exported so a web app names them in one place
+/// (`rinch_web::{Menu, MenuItem}`) while its desktop twin builds the very same
+/// values from `rinch::menu`. They are the same types, not a parallel set.
+pub use rinch::menu::{Menu, MenuEntryRef, MenuItem};
 pub use web_document::WebDocument;
 /// Test-only handles on the page scroll lock (#474), so a fixture that fails
 /// between a lock and its unlock cannot leave `<html>` hidden for every test
@@ -319,4 +352,91 @@ where
     let doc = web_sys::window()?.document()?;
     let host = doc.query_selector(selector).ok().flatten()?;
     Some(mount_into(&host, theme, build))
+}
+
+// ============================================================================
+// Mount entry points, under a menu bar
+// ============================================================================
+
+/// Mount a whole-page app under a menu bar built from `menus`.
+///
+/// [`mount`], plus the DOM menu bar above the app: each `(label, menu)` pair
+/// becomes one top-level menu, in order. The bar is
+/// [`rinch::menu::render_with_menu_bar`] — the same renderer the Linux desktop
+/// uses — and the menus are the same [`Menu`] / [`MenuItem`] values a desktop
+/// build hands to `App::menu`, so one declaration serves both targets.
+///
+/// Every item's `shortcut` is armed against the document: pressing it runs the
+/// item's `on_click` and consumes the keystroke, so a chord the app claimed does
+/// not also trigger the browser's own. Arming replaces whatever a previous call
+/// armed, so remounting does not accumulate chords.
+///
+/// The menus are read during this call and nothing is kept borrowed afterwards,
+/// which is why the labels may be borrowed `&str`.
+pub fn mount_with_menu_bar<F>(theme: ThemeProviderProps, menus: Vec<(&str, Menu)>, build: F)
+where
+    F: FnOnce(&mut RenderScope) -> NodeHandle,
+{
+    ensure_global_init();
+    rinch::setup_theme_css(&theme);
+
+    let browser_doc = web_sys::window().unwrap().document().unwrap();
+    let web_doc = Rc::new(RefCell::new(WebDocument::new(browser_doc)));
+
+    let _ = mount_tree(web_doc, move |scope| {
+        let content = build(scope);
+        menu_bar::wrap(scope, &menus, content)
+    });
+}
+
+/// Mount an island into `host` under a menu bar. See [`mount_into`] and
+/// [`mount_with_menu_bar`].
+///
+/// The bar fills the host element's width and the content sits below it, so the
+/// host wants a height of its own — the bar is laid out inside the island, not
+/// over the page.
+///
+/// **One page, one set of chords.** Clicks are per-bar, but keyboard shortcuts
+/// are matched against a single page-global registry, and arming a bar releases
+/// whatever the previous one armed. So two islands that each declare menus will
+/// find only the second one's shortcuts live. Give one island the shortcuts, or
+/// declare the chords in a single bar.
+pub fn mount_into_with_menu_bar<F>(
+    host: &web_sys::Element,
+    theme: ThemeProviderProps,
+    menus: Vec<(&str, Menu)>,
+    build: F,
+) -> RootHandle
+where
+    F: FnOnce(&mut RenderScope) -> NodeHandle,
+{
+    ensure_global_init();
+    rinch::setup_theme_css(&theme);
+
+    let browser_doc = web_sys::window().unwrap().document().unwrap();
+    let web_doc = Rc::new(RefCell::new(WebDocument::new_into(
+        browser_doc,
+        host.clone(),
+    )));
+
+    mount_tree(web_doc, move |scope| {
+        let content = build(scope);
+        menu_bar::wrap(scope, &menus, content)
+    })
+}
+
+/// Mount an island under a menu bar into the first element matching `selector`.
+/// Returns `None` if no element matches. See [`mount_selector`].
+pub fn mount_selector_with_menu_bar<F>(
+    selector: &str,
+    theme: ThemeProviderProps,
+    menus: Vec<(&str, Menu)>,
+    build: F,
+) -> Option<RootHandle>
+where
+    F: FnOnce(&mut RenderScope) -> NodeHandle,
+{
+    let doc = web_sys::window()?.document()?;
+    let host = doc.query_selector(selector).ok().flatten()?;
+    Some(mount_into_with_menu_bar(&host, theme, menus, build))
 }
