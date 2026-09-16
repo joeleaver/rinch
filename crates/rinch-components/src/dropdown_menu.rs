@@ -528,7 +528,24 @@ impl Component for DropdownMenuItem {
                 move || {
                     cb.invoke();
                     if let Some(signal) = close_signal {
-                        signal.set(false);
+                        // `is_alive` because the callback above may have
+                        // disposed the scope that owns this signal — an item
+                        // whose action rebuilds or removes the very row the menu
+                        // hangs off is an ordinary thing to write, and the menu
+                        // goes with it.
+                        //
+                        // Writing anyway is not unsound: `Signal::set` drops the
+                        // write and warns once per call site, and that warning
+                        // names *this* line ("Signal::set() on a freed signal at
+                        // dropdown_menu.rs:…"), so it reads as a defect in the
+                        // menu rather than as the ordinary end of an
+                        // interaction. It also tells the caller what to do —
+                        // "check `signal.is_alive()` before writing if the write
+                        // matters" — and here it does not: there is nothing left
+                        // to close.
+                        if signal.is_alive() {
+                            signal.set(false);
+                        }
                     }
                 }
             });
@@ -586,5 +603,105 @@ pub struct DropdownMenuDivider;
 impl Component for DropdownMenuDivider {
     fn render(&self, __scope: &mut RenderScope, _children: &[NodeHandle]) -> NodeHandle {
         rinch_macros::rsx! { div { class: "rinch-dropdown-menu__divider" } }
+    }
+}
+
+#[cfg(test)]
+mod close_signal_tests {
+    use super::*;
+    use rinch_core::dom::mock::MockDomDocument;
+    use rinch_core::dom::{DomDocument, RenderScope};
+    use rinch_core::events::{EventHandlerId, dispatch_event};
+    use rinch_core::reactive::Scope;
+    use std::cell::{Cell, RefCell};
+    use std::rc::Rc;
+
+    /// An item whose action removes the very row the menu hangs off.
+    ///
+    /// That is an ordinary thing to write — "Delete", "Close tab", anything that
+    /// rebuilds the list — and the menu goes with the row: the scope that owns
+    /// the close signal is disposed inside the callback, so the close write that
+    /// follows has nothing to write to.
+    ///
+    /// This characterises the shape rather than catching a crash, and it is
+    /// worth being exact about which: `Signal::set` on a freed signal **drops
+    /// the write and warns**, it does not panic, so this test passes with or
+    /// without the `is_alive` guard. What the guard removes is that warning,
+    /// which names the menu's own line and reads like a defect in it. The
+    /// regression risk the guard introduces — that it stops closing menus that
+    /// are still there — is what the test below pins.
+    #[test]
+    fn an_item_whose_action_disposes_the_menus_scope_leaves_nothing_to_close() {
+        let doc: Rc<RefCell<dyn DomDocument>> = Rc::new(RefCell::new(MockDomDocument::new()));
+        let body = doc.borrow().body();
+        // `RenderScope` holds only a `Weak`, so the strong handle has to outlive
+        // it or every `create_element` panics with "Document dropped".
+        let mut scope = RenderScope::new(doc.clone(), body);
+        let _doc = doc;
+
+        // The signal belongs to the menu's own scope, as it does in a real tree.
+        let menu_scope = Scope::new();
+        let opened = menu_scope.run(|| Signal::new(true));
+        set_menu_close_signal(opened);
+
+        let ran = Rc::new(Cell::new(false));
+        let fired = ran.clone();
+        // `Scope` is not `Clone`, and the callback must outlive this frame, so
+        // the scope is shared rather than copied.
+        let doomed = Rc::new(menu_scope);
+        let doomed_in_callback = doomed.clone();
+        let item = DropdownMenuItem {
+            onclick: Some(rinch_core::Callback::new(move || {
+                fired.set(true);
+                // The action takes the row, and the menu with it.
+                doomed_in_callback.dispose();
+            })),
+            ..Default::default()
+        };
+        let node = item.render(&mut scope, &[]);
+        clear_menu_close_signal();
+
+        let rid: usize = node
+            .get_attribute("data-rid")
+            .expect("an item with an onclick carries a handler")
+            .parse()
+            .unwrap();
+
+        dispatch_event(EventHandlerId(rid));
+
+        assert!(ran.get(), "the item's own action runs to completion");
+        assert!(
+            !opened.is_alive(),
+            "and the menu it belonged to is gone, so there is nothing to close"
+        );
+    }
+
+    /// The ordinary case, and the one that actually bites: the guard must not
+    /// quietly stop closing menus that are still there.
+    #[test]
+    fn an_ordinary_item_still_closes_its_menu() {
+        let doc: Rc<RefCell<dyn DomDocument>> = Rc::new(RefCell::new(MockDomDocument::new()));
+        let body = doc.borrow().body();
+        // `RenderScope` holds only a `Weak`, so the strong handle has to outlive
+        // it or every `create_element` panics with "Document dropped".
+        let mut scope = RenderScope::new(doc.clone(), body);
+        let _doc = doc;
+
+        let menu_scope = Scope::new();
+        let opened = menu_scope.run(|| Signal::new(true));
+        set_menu_close_signal(opened);
+
+        let item = DropdownMenuItem {
+            onclick: Some(rinch_core::Callback::new(|| {})),
+            ..Default::default()
+        };
+        let node = item.render(&mut scope, &[]);
+        clear_menu_close_signal();
+
+        let rid: usize = node.get_attribute("data-rid").unwrap().parse().unwrap();
+        dispatch_event(EventHandlerId(rid));
+
+        assert_eq!(opened.try_get(), Some(false), "the menu closed");
+        menu_scope.dispose();
     }
 }
