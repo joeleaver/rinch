@@ -236,6 +236,42 @@ and the DOM renderer build with `default-features = false`; only the `muda`
 builders behind them are desktop-gated. See `examples/menu-bar-web` for a
 runnable demo.
 
+## Right-click menus
+
+`oncontextmenu` and `ContextMenu` behave as they do on the desktop: a right-click
+on an element with a live handler dispatches it, and the browser's own menu does
+not open. Everywhere else it does, which is what an island in somebody else's
+page must do. A whole-page app that draws its own menus can take the rest of the
+page as well:
+
+```rust
+rinch_web::set_suppress_native_context_menu(true);
+```
+
+`ContextMenu` needs this to look native: its dropdown is portalled out of the
+element carrying the handler, so without the flag a right-click inside the open
+menu opens the browser's on top of it. The flag is page-global and can be flipped
+at any time.
+
+**It leaves text fields alone.** With the flag on, a right-click on a
+`<textarea>`, on an `<input>` of type `text`, `search`, `url`, `tel`, `email`,
+`password` or `number` (or no `type`), or on `contenteditable` content still
+opens the browser's menu, `readonly` and `disabled` fields included. That menu is
+the user's cut, copy and paste, spelling suggestions and autofill, and a page
+cannot rebuild it. A live handler still wins: to show your own menu in a field,
+put `oncontextmenu` on the field or an ancestor of it. Outside `contenteditable` content, selected text, a checkbox, a `<select>` and a
+label next to a field are still suppressed, and so is a `contenteditable="false"`
+island. Inside editable content the browser reports a checkbox, a `<select>` or a
+label as editable too, so they keep its menu there.
+
+The rich-text `Editor` is between the two, and issue #814 is changing it. Its
+surface is not `contenteditable`, so with the flag on, and while #814 is open, a
+right-click on the surface is suppressed. The keyboard's menu key and Shift+F10
+are different, flag or no flag: Chrome aims them at the focused element, which in
+a focused editor is the hidden `<textarea>` the editor takes its input through, so
+they open the browser's text-field menu. Chrome places that event at the textarea,
+which rests at the top-left corner of the viewport, not at the caret.
+
 ## Building
 
 ### With Trunk (Recommended)

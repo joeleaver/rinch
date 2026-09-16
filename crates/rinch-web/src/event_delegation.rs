@@ -80,15 +80,17 @@ thread_local! {
     /// [`__force_trusted_clicks`]).
     static FORCE_TRUSTED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 
-    /// Whether a right-click anywhere on the page suppresses the browser's own
-    /// menu, whether or not rinch has a handler for it. See
-    /// [`set_suppress_native_context_menu`].
+    /// Whether a right-click outside an editing context suppresses the
+    /// browser's own menu, whether or not rinch has a handler for it. See
+    /// [`set_suppress_native_context_menu`] for what counts as an editing
+    /// context.
     static SUPPRESS_NATIVE_CONTEXT_MENU: std::cell::Cell<bool> =
         const { std::cell::Cell::new(false) };
 }
 
-/// Suppress the browser's native context menu on every right-click, not only on
-/// an element carrying a `data-oncontextmenu` handler.
+/// Suppress the browser's native context menu on every right-click outside an
+/// editing context, not only on an element carrying a `data-oncontextmenu`
+/// handler.
 ///
 /// **Default off, and opt-in on purpose.** `mount_into` / `mount_selector`
 /// hydrate an island into a page somebody else wrote, and a widget that took the
@@ -102,6 +104,25 @@ thread_local! {
 /// its overlay to `body`, outside the subtree the handler lives on, so a
 /// right-click *inside the open menu* finds no `data-oncontextmenu` at all —
 /// that overlay is precisely where the page's default was still firing.
+///
+/// **What it leaves alone: text fields and editable content** (issue #812). A
+/// right-click on a `<textarea>`, on an `<input>` of type `text`, `search`,
+/// `url`, `tel`, `email`, `password` or `number` (a missing or unknown `type`
+/// is `text`), or on content whose `isContentEditable` is true keeps the
+/// browser's menu, `readonly` and `disabled` fields included. That menu is the
+/// user's cut, copy and paste, spelling suggestions, autofill and password
+/// manager, and a page cannot rebuild it: reading the clipboard asks the user
+/// for permission first, and spelling suggestions and autofill entries are not
+/// offered to page script. The carve-out is for editing, not for text: outside
+/// editable content, selected text, a checkbox, a `<select>` and a label beside
+/// a field are still suppressed, and so is a `contenteditable="false"` island.
+/// *Inside* editable content the browser reports a checkbox, a `<select>` or a
+/// label as editable too (`isContentEditable`), so they keep its menu there.
+///
+/// **A live `data-oncontextmenu` handler still wins**, in a field as anywhere
+/// else: it is dispatched and the browser's menu is suppressed, whether this
+/// flag is on or not. An app that wants its own menu inside a field attaches
+/// one there.
 ///
 /// Page-global and immediate: it applies to every mounted root on the page, and
 /// can be flipped at any time (an app that suppresses only while its own menu is
@@ -1373,15 +1394,16 @@ const SELF_HANDLED_SELECTOR: &str = "[data-pm-editor], [data-render-surface]";
 
 /// Whether keys at `el` belong to a text control or the rich-text editor (the
 /// guard `editor_input` uses): Enter there is a submit/newline/commit, never an
-/// activation of a surrounding clickable. Editability is read from
-/// `isContentEditable` — the *effective* state, so a `contenteditable="false"`
-/// island opts out, which a `[contenteditable]` attribute selector would not
-/// — on the nearest HTML element, since an SVG focus target has none of its
-/// own.
+/// activation of a surrounding clickable.
 fn in_text_control(el: &web_sys::Element) -> bool {
-    if el.closest(TEXT_CONTROL_SELECTOR).ok().flatten().is_some() {
-        return true;
-    }
+    el.closest(TEXT_CONTROL_SELECTOR).ok().flatten().is_some() || in_content_editable(el)
+}
+
+/// Whether `el` is editable content. Read from `isContentEditable` — the
+/// *effective* state, so a `contenteditable="false"` island opts out, which a
+/// `[contenteditable]` attribute selector would not — on the nearest HTML
+/// element, since an SVG element has none of its own.
+fn in_content_editable(el: &web_sys::Element) -> bool {
     let mut current = Some(el.clone());
     while let Some(e) = current {
         if let Some(html) = e.dyn_ref::<web_sys::HtmlElement>() {
@@ -1390,6 +1412,38 @@ fn in_text_control(el: &web_sys::Element) -> bool {
         current = e.parent_element();
     }
     false
+}
+
+/// The `<input>` types whose native context menu is an editing menu (issue
+/// #812). Compared against the `type` IDL property, which the browser has
+/// already normalised: a missing, unknown or wrongly-cased `type` reads `"text"`.
+const TEXT_LIKE_INPUT_TYPES: &[&str] = &[
+    "text", "search", "url", "tel", "email", "password", "number",
+];
+
+/// Whether a right-click at `el` opens the browser's **editing** menu — cut,
+/// copy, paste, spelling suggestions, autofill — which
+/// [`set_suppress_native_context_menu`] leaves alone (issue #812): a
+/// `<textarea>`, a text-like `<input>`, or editable content.
+///
+/// The control is the target or an ancestor of it, never a sibling: a label or
+/// an icon beside a field in its wrapper is not the field. `readonly` and
+/// `disabled` are deliberately not read: a read-only field's menu still offers
+/// Copy, and a disabled one's is the browser's business. `<select>` and the
+/// rich-text editor's container are not here — neither has an editing menu to
+/// keep — but the editor's hidden capture `<textarea>` is, whenever it is the
+/// target.
+fn in_native_editing_context(el: &web_sys::Element) -> bool {
+    if el.closest("textarea").ok().flatten().is_some() {
+        return true;
+    }
+    let text_like_input = el
+        .closest("input")
+        .ok()
+        .flatten()
+        .and_then(|input| input.dyn_into::<web_sys::HtmlInputElement>().ok())
+        .is_some_and(|input| TEXT_LIKE_INPUT_TYPES.contains(&input.type_().as_str()));
+    text_like_input || in_content_editable(el)
 }
 
 /// Publish clipboard content the platform just handed us into the
@@ -2528,9 +2582,12 @@ pub fn setup_event_delegation(doc: &WebDocument) {
     // outside the subtree the handler is on, so it carries no
     // `data-oncontextmenu` and the native menu landed on top of rinch's. They
     // are separated here: prevent the default when a handler was found **or**
-    // [`set_suppress_native_context_menu`] is on, dispatch only when one was
-    // found.
+    // [`set_suppress_native_context_menu`] is on and the target is not in an
+    // editing context (issue #812), dispatch only when one was found.
     let contextmenu_closure = Closure::wrap(Box::new(move |event: web_sys::MouseEvent| {
+        let target = event
+            .target()
+            .and_then(|target| target.dyn_into::<web_sys::Element>().ok());
         // A stale `data-oncontextmenu` — its scope disposed, the attribute
         // outliving the handler (issue #141) — is not a handler. Without this
         // check it both swallowed the browser's menu and dispatched nothing,
@@ -2539,13 +2596,20 @@ pub fn setup_event_delegation(doc: &WebDocument) {
         // and answering `false` there is what lets the click path run instead.
         // Only the nearest carrier is considered, on both backends: the walk
         // stops at the first element wearing the attribute.
-        let handler = event
-            .target()
-            .and_then(|target| target.dyn_into::<web_sys::Element>().ok())
-            .and_then(|el| nearest_handler(&el, "data-oncontextmenu"))
+        let handler = target
+            .as_ref()
+            .and_then(|el| nearest_handler(el, "data-oncontextmenu"))
             .filter(|(_, id)| events::has_click_handler(*id));
 
-        if handler.is_some() || suppresses_native_context_menu() {
+        // The flag is for the menus an app draws itself. In a text field there
+        // usually is none, and the browser's menu there is the user's cut, copy,
+        // paste and spelling, which a page cannot rebuild — so the flag leaves
+        // an editing context alone. A live handler is checked first and still
+        // wins: an app that wants its own menu inside a field attaches one.
+        if handler.is_some()
+            || (suppresses_native_context_menu()
+                && !target.as_ref().is_some_and(in_native_editing_context))
+        {
             event.prevent_default();
         }
 
