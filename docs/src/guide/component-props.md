@@ -466,7 +466,7 @@ Text input with inline color preview and dropdown ColorPicker.
 | `swatches` | `Vec<String>` | `[]` | Preset swatch colors |
 | `swatches_per_row` | `Option<usize>` | `7` | Swatches per row |
 | `disallow_input` | `bool` | `false` | Disallow typing (picker only) |
-| `close_on_click_outside` | `bool` | `true` | Dismiss the dropdown when a click lands outside it (#465). Off mounts no backdrop at all and leaves the field as the only way in and out — the pre-#465 behaviour. Escape closes the dropdown either way |
+| `close_on_click_outside` | `bool` | `true` | Dismiss the dropdown when a click lands outside it (#465). Off mounts no backdrop at all, so no click outside the field dismisses it — the pointer half of the pre-#465 behaviour. Escape closes the dropdown either way |
 
 `size` and `radius` were declared but unread until #263. **`size` always
 resolves to a step, `radius` does not**: an unrecognised `size` falls back to
@@ -479,8 +479,10 @@ the base `--rinch-radius-sm` standing, which is what `DropdownMenu`, `Modal` and
 **The dropdown is dismissed three ways** (#465): clicking the field again,
 clicking anywhere outside it, and Escape. The outside click is the one that is
 optional — `close_on_click_outside` is `true` by default, matching every other
-popover in the library, and turning it off mounts no backdrop at all and
-restores the field-only behaviour `ColorInput` had until #465. (The prop was
+popover in the library, and turning it off mounts no backdrop at all, so the
+field is the only thing a *click* dismisses the dropdown with. Escape is not
+gated by it, so `false` is the pointer half of the behaviour `ColorInput` had
+until #465 rather than a return to it in full. (The prop was
 declared and read by nothing before that; #263 *removed* it rather than wire it,
 because unlike `size` and `radius` there was no behaviour behind it to connect,
 and it came back here with the interaction it names.)

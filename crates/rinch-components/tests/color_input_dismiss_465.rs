@@ -21,7 +21,8 @@
 //!   — the mock has no CSS — so the desktop twin
 //!   (`rinch/src/app/color_input_dismiss_465_tests.rs`) is what measures it.
 //! - **Off means off.** `close_on_click_outside: false` mounts no backdrop at
-//!   all, which is the only spelling that preserves the pre-#465 behaviour.
+//!   all, which is the only spelling that keeps the pre-#465 *pointer*
+//!   behaviour. Escape is not gated by it and closes the dropdown either way.
 //! - **The classes reach a rule that declares something.** #263's lesson: a
 //!   prop that reaches the DOM and no stylesheet is the same defect wearing a
 //!   different hat.
@@ -226,8 +227,9 @@ fn close_on_click_outside_is_on_by_default() {
     );
 }
 
-/// Off mounts no backdrop at all, which is the spelling that preserves the
-/// pre-#465 behaviour: the field is the only way in and out.
+/// Off mounts no backdrop at all, which is the spelling that keeps the pre-#465
+/// *pointer* behaviour: the field is the only thing a click dismisses it with.
+/// Escape is ungated and still closes it.
 ///
 /// Not decoration — without it the suite passes against a fix that ignores the
 /// prop and dismisses unconditionally, which is a different bug with the same
@@ -246,7 +248,10 @@ fn close_on_click_outside_false_mounts_no_backdrop() {
     m.click(FIELD);
     assert!(m.is_open());
     m.click(FIELD);
-    assert!(!m.is_open(), "the field is still the way in and out");
+    assert!(
+        !m.is_open(),
+        "the field is still the only thing a click opens and closes it with"
+    );
 }
 
 /// The backdrop is a child of the *wrapper*, not of the root, and it is a

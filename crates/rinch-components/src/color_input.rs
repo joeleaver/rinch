@@ -80,15 +80,16 @@ pub struct ColorInput {
     ///
     /// **On by default**, which is what every other popover in the library does
     /// — `DropdownMenu`, `Popover`, `Modal`, `Drawer` all default it `true`.
-    /// The alternative was `false`, preserving the field-is-the-only-way-out
-    /// behaviour this input had until #465; an input that alone stays open when
-    /// you click away is the odd one out, and that is the whole of the defect.
+    /// The alternative was `false`, which keeps the *pointer* behaviour this
+    /// input had until #465: the field is the only thing a click dismisses it
+    /// with. An input that alone stays open when you click away is the odd one
+    /// out, and that is the whole of the defect.
     ///
-    /// Turning it off mounts no backdrop at all, so the dropdown is dismissed
-    /// only by clicking the field again — exactly the pre-#465 behaviour.
-    /// **Escape closes it either way**: it rides the dismiss stack rather than
-    /// a backdrop, and a closed dropdown leaves the key to whatever is behind
-    /// it.
+    /// Turning it off mounts no backdrop at all, so no click outside the field
+    /// dismisses the dropdown. **Escape closes it either way** — it rides the
+    /// dismiss stack, not the backdrop — so `false` is the pointer half of the
+    /// pre-#465 behaviour and not a return to it in full. A closed dropdown
+    /// leaves the key to whatever is behind it.
     pub close_on_click_outside: bool,
 }
 
