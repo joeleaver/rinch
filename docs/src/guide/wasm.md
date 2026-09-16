@@ -236,6 +236,34 @@ and the DOM renderer build with `default-features = false`; only the `muda`
 builders behind them are desktop-gated. See `examples/menu-bar-web` for a
 runnable demo.
 
+## Right-click menus
+
+`oncontextmenu` and `ContextMenu` behave as they do on the desktop: a right-click
+on an element with a live handler dispatches it, and the browser's own menu does
+not open. Everywhere else it does, which is what an island in somebody else's
+page must do. A whole-page app that draws its own menus can take the rest of the
+page as well:
+
+```rust
+rinch_web::set_suppress_native_context_menu(true);
+```
+
+`ContextMenu` needs this to look native: its dropdown is portalled to `<body>`,
+outside the element carrying the handler, so without the flag a right-click
+inside the open menu opens the browser's on top of it. The flag is page-global
+and can be flipped at any time.
+
+**It leaves text fields alone.** With the flag on, a right-click on a
+`<textarea>`, on an `<input>` of type `text`, `search`, `url`, `tel`, `email`,
+`password` or `number` (or no `type`), or on `contenteditable` content still
+opens the browser's menu, `readonly` and `disabled` fields included. That menu is
+the user's cut, copy and paste, spelling suggestions and autofill, and a page
+cannot rebuild it. A live handler still wins: to show your own menu in a field,
+put `oncontextmenu` on the field or an ancestor of it. Selected text outside a
+field, a checkbox, a label next to a field and a `contenteditable="false"` island
+are still suppressed. So is the rich-text `Editor`, whose surface is not
+`contenteditable`; its right-click menu is tracked in issue #814.
+
 ## Building
 
 ### With Trunk (Recommended)

@@ -15,13 +15,25 @@
 //! the subtree the handler is on, which is exactly where an app rendering its
 //! own menu did *not* want the browser's.
 //!
-//! The four cases below are the whole matrix: a live handler, no handler with
+//! The first four cases are the handler matrix: a live handler, no handler with
 //! the flag off, no handler with the flag on, and a **stale** handler — an
 //! attribute outliving the scope that registered it (issue #141), which is not a
 //! handler and must not suppress anything on its own.
 //!
+//! The rest are **what the flag leaves alone** (issue #812). With the flag on, a
+//! right-click in an editable context — a `<textarea>`, a text-like `<input>`,
+//! or content whose `isContentEditable` is true — keeps the browser's menu,
+//! because that menu is the user's cut, copy, paste and spelling suggestions and
+//! a page cannot rebuild it. A live handler still wins there; a checkbox, a
+//! label beside a field, a `contenteditable="false"` island and selected text
+//! outside any field are still suppressed.
+//!
 //! `defaultPrevented` on a synthetic, cancelable `contextmenu` event is the
 //! observable: it is what decides whether the browser goes on to open its menu.
+//! A *not prevented* answer is also what a page with no rinch listener at all
+//! gives, so every fixture that expects one right-clicks a plain control first,
+//! with the flag on, and asserts it **was** prevented — the proof that the
+//! delegation is installed in this binary and reached by the event.
 #![cfg(target_arch = "wasm32")]
 
 use rinch_core::dom::{NodeHandle, RenderScope};
@@ -251,5 +263,382 @@ fn a_stale_handler_attribute_neither_fires_nor_suppresses() {
          answers `false` here and lets the click path run"
     );
     assert_eq!(fixture.dispatches(), 0);
+    fixture.teardown();
+}
+
+/// An element `<tag id=..>` with the given attributes and no children.
+fn element(scope: &mut RenderScope, tag: &str, id: &str, attrs: &[(&str, &str)]) -> NodeHandle {
+    let el = scope.create_element(tag);
+    el.set_attribute("id", id);
+    for (k, v) in attrs {
+        el.set_attribute(k, v);
+    }
+    el
+}
+
+/// The positive control for a *not prevented* assertion, which a page with no
+/// rinch listener would also give: with the flag on, a right-click on the plain
+/// `#ctx-control` div must be suppressed, so the listener exists and runs.
+fn assert_control_is_suppressed(fixture: &Fixture) {
+    assert!(rinch_web::suppresses_native_context_menu());
+    assert!(
+        right_click(&fixture.el("ctx-control")),
+        "positive control: with the flag on, a plain div must be suppressed — \
+         otherwise nothing below proves the delegation ran at all"
+    );
+}
+
+/// The case the issue is about. A whole-page app turns the flag on so its own
+/// menus do not wear the browser's, and every text field on the page lost cut,
+/// copy, paste and spelling with it.
+///
+/// Every text-like type is listed, and three spellings of `type` that only the
+/// browser's normalisation resolves: none at all, an unknown one and one in the
+/// wrong case all *are* a text field, which reading the attribute instead of
+/// the `type` IDL property gets wrong.
+#[wasm_bindgen_test]
+fn with_the_flag_a_text_field_keeps_the_browsers_menu() {
+    const TYPES: &[&str] = &[
+        "text", "search", "url", "tel", "email", "password", "number", "bogus", "Email",
+    ];
+    let fixture = Fixture::mount(|scope, _| {
+        let wrapper = scope.create_element("div");
+        wrapper.append_child(&div(scope, "ctx-control", &[]));
+        for ty in TYPES {
+            wrapper.append_child(&element(
+                scope,
+                "input",
+                &format!("ctx-input-{ty}"),
+                &[("type", ty)],
+            ));
+        }
+        wrapper.append_child(&element(scope, "input", "ctx-input-untyped", &[]));
+        wrapper.append_child(&element(scope, "textarea", "ctx-textarea", &[]));
+        wrapper
+    });
+
+    rinch_web::set_suppress_native_context_menu(true);
+    assert_control_is_suppressed(&fixture);
+
+    for ty in TYPES {
+        assert!(
+            !right_click(&fixture.el(&format!("ctx-input-{ty}"))),
+            "an <input type={ty:?}> is a text field: its right-click must keep \
+             the browser's editing menu with the flag on"
+        );
+    }
+    assert!(
+        !right_click(&fixture.el("ctx-input-untyped")),
+        "an <input> with no type is a text field"
+    );
+    assert!(
+        !right_click(&fixture.el("ctx-textarea")),
+        "a <textarea> must keep the browser's editing menu with the flag on"
+    );
+    assert_eq!(fixture.dispatches(), 0);
+    fixture.teardown();
+}
+
+/// `readonly` and `disabled` do not take the carve-out away. A read-only
+/// field's native menu still offers Copy, and what a disabled one shows is the
+/// browser's business rather than rinch's.
+///
+/// A disabled control is the case where the event might never reach the
+/// document at all, which would make the assertion pass for nothing — so a
+/// disabled input under a live handler goes first and must dispatch it.
+#[wasm_bindgen_test]
+fn with_the_flag_a_read_only_or_disabled_field_keeps_the_browsers_menu() {
+    let fixture = Fixture::mount(|scope, count| {
+        let id = scope.register_handler(move || count.set(count.get() + 1));
+        let wrapper = scope.create_element("div");
+        wrapper.append_child(&div(scope, "ctx-control", &[]));
+        let handled = element(
+            scope,
+            "div",
+            "ctx-disabled-handled",
+            &[("data-oncontextmenu", &id.0.to_string())],
+        );
+        handled.append_child(&element(
+            scope,
+            "input",
+            "ctx-disabled-under-handler",
+            &[("disabled", "")],
+        ));
+        wrapper.append_child(&handled);
+        wrapper.append_child(&element(
+            scope,
+            "input",
+            "ctx-readonly-input",
+            &[("readonly", "")],
+        ));
+        wrapper.append_child(&element(
+            scope,
+            "textarea",
+            "ctx-readonly-textarea",
+            &[("readonly", "")],
+        ));
+        wrapper.append_child(&element(
+            scope,
+            "input",
+            "ctx-disabled-input",
+            &[("disabled", "")],
+        ));
+        wrapper.append_child(&element(
+            scope,
+            "textarea",
+            "ctx-disabled-textarea",
+            &[("disabled", "")],
+        ));
+        wrapper
+    });
+
+    rinch_web::set_suppress_native_context_menu(true);
+    assert_control_is_suppressed(&fixture);
+
+    assert!(right_click(&fixture.el("ctx-disabled-under-handler")));
+    assert_eq!(
+        fixture.dispatches(),
+        1,
+        "positive control: a right-click on a disabled input must reach rinch's \
+         listener, or the disabled assertions below prove nothing"
+    );
+
+    for id in [
+        "ctx-readonly-input",
+        "ctx-readonly-textarea",
+        "ctx-disabled-input",
+        "ctx-disabled-textarea",
+    ] {
+        assert!(
+            !right_click(&fixture.el(id)),
+            "#{id} is still a text field: readonly and disabled keep the carve-out"
+        );
+    }
+    assert_eq!(fixture.dispatches(), 1);
+    fixture.teardown();
+}
+
+/// Only a *text-like* input is exempt. The native menu on a checkbox or a
+/// button has nothing to edit, so the flag takes it as it takes a plain div.
+#[wasm_bindgen_test]
+fn with_the_flag_a_non_text_input_is_still_suppressed() {
+    const TYPES: &[&str] = &[
+        "checkbox", "radio", "button", "submit", "reset", "range", "color", "file",
+    ];
+    let fixture = Fixture::mount(|scope, _| {
+        let wrapper = scope.create_element("div");
+        for ty in TYPES {
+            wrapper.append_child(&element(
+                scope,
+                "input",
+                &format!("ctx-input-{ty}"),
+                &[("type", ty)],
+            ));
+        }
+        wrapper
+    });
+
+    rinch_web::set_suppress_native_context_menu(true);
+    for ty in TYPES {
+        assert!(
+            right_click(&fixture.el(&format!("ctx-input-{ty}"))),
+            "an <input type={ty:?}> is not a text field: the flag suppresses it"
+        );
+    }
+    assert_eq!(fixture.dispatches(), 0);
+    fixture.teardown();
+}
+
+/// `contenteditable` is read as the browser computes it, through
+/// `isContentEditable`: it is inherited, `""` and `plaintext-only` turn it on,
+/// a `contenteditable="false"` island turns it off for its own subtree, and an
+/// editable host inside that island turns it back on. An attribute selector
+/// gets the island wrong in one direction or the other.
+///
+/// An SVG element has no `isContentEditable`, so an icon inside an editable
+/// host is answered by its nearest HTML ancestor.
+#[wasm_bindgen_test]
+fn with_the_flag_editable_content_keeps_the_browsers_menu_and_a_false_island_does_not() {
+    let fixture = Fixture::mount(|scope, _| {
+        let wrapper = scope.create_element("div");
+        wrapper.append_child(&div(scope, "ctx-control", &[]));
+
+        let host = element(scope, "div", "ctx-ce", &[("contenteditable", "true")]);
+        host.append_child(&element(scope, "span", "ctx-ce-span", &[]));
+        host.append_child(&element(scope, "svg", "ctx-ce-svg", &[]));
+        let island = element(
+            scope,
+            "div",
+            "ctx-ce-island",
+            &[("contenteditable", "false")],
+        );
+        island.append_child(&element(scope, "span", "ctx-ce-island-span", &[]));
+        let reopened = element(
+            scope,
+            "div",
+            "ctx-ce-reopened",
+            &[("contenteditable", "true")],
+        );
+        reopened.append_child(&element(scope, "span", "ctx-ce-reopened-span", &[]));
+        island.append_child(&reopened);
+        host.append_child(&island);
+        wrapper.append_child(&host);
+
+        let empty = element(scope, "div", "ctx-ce-empty", &[("contenteditable", "")]);
+        empty.append_child(&element(scope, "span", "ctx-ce-empty-span", &[]));
+        wrapper.append_child(&empty);
+        let plain = element(
+            scope,
+            "div",
+            "ctx-ce-plaintext",
+            &[("contenteditable", "plaintext-only")],
+        );
+        plain.append_child(&element(scope, "span", "ctx-ce-plaintext-span", &[]));
+        wrapper.append_child(&plain);
+        wrapper
+    });
+
+    rinch_web::set_suppress_native_context_menu(true);
+    assert_control_is_suppressed(&fixture);
+
+    for id in [
+        "ctx-ce",
+        "ctx-ce-span",
+        "ctx-ce-svg",
+        "ctx-ce-reopened",
+        "ctx-ce-reopened-span",
+        "ctx-ce-empty-span",
+        "ctx-ce-plaintext-span",
+    ] {
+        assert!(
+            !right_click(&fixture.el(id)),
+            "#{id} is editable content: it must keep the browser's editing menu"
+        );
+    }
+    for id in ["ctx-ce-island", "ctx-ce-island-span"] {
+        assert!(
+            right_click(&fixture.el(id)),
+            "#{id} is inside a contenteditable=\"false\" island, which is not \
+             editable: the flag suppresses it"
+        );
+    }
+    assert_eq!(fixture.dispatches(), 0);
+    fixture.teardown();
+}
+
+/// The field is the `<input>` itself, not whatever wraps it: a label, an icon
+/// section and the wrapper around a text field are not editable, so the flag
+/// still suppresses a right-click on them — which is where an app's own menu
+/// for the row would be.
+#[wasm_bindgen_test]
+fn with_the_flag_a_label_or_icon_beside_a_text_field_is_still_suppressed() {
+    let fixture = Fixture::mount(|scope, _| {
+        let wrapper = element(scope, "div", "ctx-field-wrapper", &[]);
+        let label = element(scope, "label", "ctx-field-label", &[]);
+        label.append_child(&scope.create_text("Name"));
+        wrapper.append_child(&label);
+        let row = element(scope, "div", "ctx-field-row", &[]);
+        let icon = element(scope, "span", "ctx-field-icon", &[]);
+        icon.append_child(&scope.create_text("@"));
+        row.append_child(&icon);
+        row.append_child(&element(scope, "input", "ctx-field-input", &[]));
+        wrapper.append_child(&row);
+        wrapper
+    });
+
+    rinch_web::set_suppress_native_context_menu(true);
+    for id in [
+        "ctx-field-wrapper",
+        "ctx-field-label",
+        "ctx-field-row",
+        "ctx-field-icon",
+    ] {
+        assert!(
+            right_click(&fixture.el(id)),
+            "#{id} is beside the text field, not in it: the flag suppresses it"
+        );
+    }
+    assert!(
+        !right_click(&fixture.el("ctx-field-input")),
+        "and the field itself keeps the browser's menu"
+    );
+    fixture.teardown();
+}
+
+/// A live `data-oncontextmenu` still wins inside an editable context, whether
+/// or not the flag is on: an app that wants its own menu in a field says so by
+/// attaching one, and the browser's must not open on top of it.
+#[wasm_bindgen_test]
+fn a_live_handler_still_takes_a_right_click_in_an_editable_context() {
+    let fixture = Fixture::mount(|scope, count| {
+        let id = scope.register_handler(move || count.set(count.get() + 1));
+        let handled = element(
+            scope,
+            "div",
+            "ctx-handled-fields",
+            &[("data-oncontextmenu", &id.0.to_string())],
+        );
+        handled.append_child(&element(scope, "input", "ctx-handled-input", &[]));
+        handled.append_child(&element(scope, "textarea", "ctx-handled-textarea", &[]));
+        let editable = element(
+            scope,
+            "div",
+            "ctx-handled-ce",
+            &[("contenteditable", "true")],
+        );
+        editable.append_child(&element(scope, "span", "ctx-handled-ce-span", &[]));
+        handled.append_child(&editable);
+        handled
+    });
+
+    let targets = [
+        "ctx-handled-input",
+        "ctx-handled-textarea",
+        "ctx-handled-ce-span",
+    ];
+    let mut expected = 0;
+    for flag in [false, true] {
+        rinch_web::set_suppress_native_context_menu(flag);
+        for id in targets {
+            assert!(
+                right_click(&fixture.el(id)),
+                "#{id} sits under a live handler: it must take the browser's \
+                 menu (flag {flag})"
+            );
+            expected += 1;
+            assert_eq!(
+                fixture.dispatches(),
+                expected,
+                "#{id}'s right-click must dispatch the handler (flag {flag})"
+            );
+        }
+    }
+    fixture.teardown();
+}
+
+/// The carve-out is for editing, not for text. Selected text outside any field
+/// has a native menu too (Copy, Search), but an app that turned the flag on
+/// page-wide said it wanted that one gone, so a selection changes nothing.
+#[wasm_bindgen_test]
+fn with_the_flag_selected_text_outside_a_field_is_still_suppressed() {
+    let fixture = Fixture::mount(|scope, _| div(scope, "ctx-selected", &[]));
+
+    let target = fixture.el("ctx-selected");
+    let selection = web_sys::window().unwrap().get_selection().unwrap().unwrap();
+    let range = document().create_range().unwrap();
+    range.select_node_contents(&target).unwrap();
+    selection.remove_all_ranges().unwrap();
+    selection.add_range(&range).unwrap();
+    assert!(
+        !selection.is_collapsed() && String::from(selection.to_string()) == "target",
+        "precondition: the div's text must be selected"
+    );
+
+    rinch_web::set_suppress_native_context_menu(true);
+    assert!(
+        right_click(&target),
+        "a selection outside any field is not an editing context"
+    );
+    selection.remove_all_ranges().unwrap();
     fixture.teardown();
 }
