@@ -53,6 +53,7 @@ fn key(app: &mut RinchApp, key: KeyCode, text: Option<&str>, shift: bool) {
                 shift,
                 ..Modifiers::default()
             },
+            repeat: KeyRepeat::Unknown,
         },
         (800, 600),
         1.0,

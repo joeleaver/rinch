@@ -1407,10 +1407,16 @@ fn modifiers_from_key_event(event: &web_sys::KeyboardEvent) -> events::ModifierS
 /// fire twice).
 ///
 /// An eligible node with a live `data-rid` in its chain activates once per
-/// physical press: auto-repeat keydowns are consumed without dispatching
-/// (desktop's `node_activation_held`), which is what keeps a held Space from
-/// scrolling the page after the first press. A node with no live handler is
-/// a quiet no-op so the key falls through and Tab/scrolling keep working.
+/// physical press: auto-repeat keydowns are consumed without dispatching, which
+/// is what keeps a held Space from scrolling the page after the first press. A
+/// node with no live handler is a quiet no-op so the key falls through and
+/// Tab/scrolling keep working.
+///
+/// The browser hands us `KeyboardEvent.repeat` and this reads it, so there is
+/// nothing to strand. Desktop reaches the same answer through
+/// `PlatformEvent::KeyDown`'s `KeyRepeat`, which winit fills in — its
+/// `node_activation_held` latch is now only the fallback for a backend that
+/// cannot tell (issue #463).
 fn try_keyboard_activation(event: &web_sys::KeyboardEvent, key: &str) -> bool {
     if !activation::key_activates(key)
         || event.ctrl_key()
