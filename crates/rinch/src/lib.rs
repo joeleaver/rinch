@@ -63,7 +63,12 @@ pub mod focus_registry;
 /// App-bundled fonts: the bytes a build carries and the CSS names they answer to.
 #[cfg(any(feature = "desktop", feature = "android", feature = "embed"))]
 pub mod font;
-#[cfg(feature = "desktop")]
+/// [`Menu`](menu::Menu) / [`MenuItem`](menu::MenuItem) and the DOM menu bar.
+///
+/// Deliberately **not** gated on `desktop`: the declaration types and the DOM
+/// renderer are platform-independent, which is what lets a `rinch-web` app
+/// mount the same menus in a browser. The `muda` builders inside it are gated
+/// instead. See the module docs.
 pub mod menu;
 pub mod render_surface;
 #[cfg(any(feature = "desktop", feature = "android"))]

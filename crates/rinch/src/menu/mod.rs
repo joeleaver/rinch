@@ -1,10 +1,29 @@
-//! Unified menu system for native window menus and system tray context menus.
+//! Unified menu system for native window menus, the in-app DOM menu bar, and
+//! system tray context menus.
 //!
-//! Provides [`Menu`] and [`MenuItem`] builder types that work with both
-//! native menu bars (via `muda`) and tray context menus (via `tray-icon`).
-//! Callbacks are `Rc<dyn Fn()>` — no `Send`/`Sync` burden on users. The
-//! runtime wires push-based event delivery so callbacks always run on the
-//! main thread.
+//! Provides [`Menu`] and [`MenuItem`] builder types that work with native menu
+//! bars (via `muda`), the DOM menu bar ([`render_with_menu_bar`]) and tray
+//! context menus (via `tray-icon`). Callbacks are `Rc<dyn Fn()>` — no
+//! `Send`/`Sync` burden on users. The runtime wires push-based event delivery
+//! so callbacks always run on the main thread.
+//!
+//! # What is platform-independent, and why
+//!
+//! Everything an app *declares* — [`Menu`], [`MenuItem`], shortcuts as plain
+//! strings, `on_click`, `enabled`, separators, submenus — and everything that
+//! *renders* a menu out of DOM nodes ([`render_with_menu_bar`],
+//! [`render_menu_bar_standalone`]) builds with `default-features = false`: no
+//! `muda`, no `winit`, no windowing at all. That is what lets a `rinch-web` app
+//! declare the same menus as its desktop build and get the same bar in the
+//! browser (`rinch_web::mount_with_menu_bar`).
+//!
+//! Behind `#[cfg(feature = "desktop")]` sit only the pieces that need a native
+//! toolkit: the `muda` builders (`build_native_menu_bar`, `build_muda_menu`),
+//! the accelerator conversion, the muda event handler, window attachment, and
+//! `match_shortcut`, which takes a `winit::keyboard::KeyCode`. Chord matching
+//! itself is not desktop-only — it lives in [`match_shortcut_code`], keyed by
+//! the W3C `KeyboardEvent.code` name that both winit's `KeyCode` variants and a
+//! browser keydown are named after.
 //!
 //! # Lifetime
 //!
@@ -18,7 +37,7 @@
 //!
 //! Every path that can fire an item applies that rule through one function,
 //! `invoke_menu_callback`: the registry (`dispatch_menu_event`, which muda, ksni
-//! and `match_shortcut` all route through) and the Linux in-app menu bar, which
+//! and `match_shortcut_code` all route through) and the DOM menu bar, which
 //! renders items straight out of the [`Menu`] and holds the `Rc<dyn Fn()>`
 //! itself rather than a registry id.
 //!
@@ -81,19 +100,29 @@
 //!     .menu(vec![("File", file_menu)])
 //!     .run();
 //!
+//! // For the browser, from the same `Menu` values:
+//! rinch_web::mount_with_menu_bar(theme, vec![("File", file_menu)], app);
+//!
 //! // For tray context menu:
 //! TrayIconBuilder::new().with_menu(menu).build()?;
 //! ```
 
-#[cfg(target_os = "linux")]
+// Compiled on every target, not just Linux: the DOM menu bar it renders is the
+// menu bar a `rinch-web` app gets in the browser, where there is no native one
+// to fall back to either. See [`render_with_menu_bar`].
 pub(crate) mod app_menu_bar;
 
+pub use app_menu_bar::{MENU_BAR_HEIGHT, render_menu_bar_standalone, render_with_menu_bar};
+
+#[cfg(feature = "desktop")]
 use muda::accelerator::Accelerator;
 use rinch_core::reactive::{Owner, current_owner, unowned};
 use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
+#[cfg(feature = "desktop")]
 use std::str::FromStr;
+#[cfg(feature = "desktop")]
 use winit::keyboard::KeyCode;
 
 // ── Public API ──────────────────────────────────────────────────────────────
@@ -319,12 +348,19 @@ thread_local! {
     /// Source of [`ShortcutEntry::serial`].
     static NEXT_SHORTCUT_SERIAL: Cell<u64> = const { Cell::new(0) };
 
-    /// The registration held by the most recently built native menu bar.
+    /// Source of the ids [`register_menu_shortcuts`] registers under.
+    static NEXT_MENU_ID: Cell<u64> = const { Cell::new(0) };
+
+    /// The registration held by the most recently built menu bar, native
+    /// (`build_native_menu_bar`) or DOM ([`register_menu_shortcuts`]).
     ///
     /// The bar is a process-wide singleton owned by the runtime rather than by
     /// any caller, so its token lives here: building a new bar replaces this,
-    /// dropping the previous build's ids. This is what keeps
-    /// [`build_native_menu_bar`] from growing the registry on every rebuild.
+    /// dropping the previous build's ids. This is what keeps either builder from
+    /// growing the registry on every rebuild. One slot serves both because no
+    /// app has two menu bars: a desktop build arms its chords through muda, a
+    /// web build through `register_menu_shortcuts`, and neither runs twice over
+    /// one window.
     static MENU_BAR_REGISTRATION: RefCell<Option<MenuRegistration>> = const { RefCell::new(None) };
 }
 
@@ -377,8 +413,8 @@ fn register_shortcut(shortcut_str: &str, menu_id: &str) -> Option<u64> {
 /// Invoke `cb` on behalf of the scope that created it, returning whether it ran.
 ///
 /// The one place the lifetime rule is applied, so every path that can fire a
-/// menu item obeys it: the registry ([`dispatch_menu_event`]) *and* the Linux
-/// in-app menu bar, which renders items straight from the [`Menu`] and holds the
+/// menu item obeys it: the registry ([`dispatch_menu_event`]) *and* the DOM
+/// menu bar, which renders items straight from the [`Menu`] and holds the
 /// `Rc<dyn Fn()>` itself rather than a registry id.
 ///
 /// A live callback runs inside its owner, so a `Signal` it creates belongs to
@@ -477,7 +513,31 @@ fn prune_callback(menu_id: &str, entry: &Rc<MenuCallback>) {
 /// (pruned by [`dispatch_menu_event`]) must not shadow a live duplicate, and a
 /// chord registered for an item with no callback at all must fall through to the
 /// app instead of eating that key combination forever.
+#[cfg(feature = "desktop")]
 pub(crate) fn match_shortcut(ctrl: bool, meta: bool, alt: bool, shift: bool, key: KeyCode) -> bool {
+    let Some(code) = key_code_name(key) else {
+        return false;
+    };
+    match_shortcut_code(ctrl, meta, alt, shift, code)
+}
+
+/// Check whether a keyboard event matches a registered menu shortcut, keyed by
+/// the W3C UI Events `code` name of the key (`"KeyK"`, `"Digit1"`, `"F5"`). If
+/// so, dispatch the callback and return `true`.
+///
+/// The platform-independent half of the desktop's `match_shortcut`, and the
+/// entry point a browser keydown uses directly: `KeyboardEvent.code` already
+/// *is* this string.
+/// `meta` is folded into `ctrl` exactly as it is on the desktop, so an app
+/// declares `"Ctrl+K"` once and Cmd+K works on macOS.
+///
+/// `true` means a callback actually **ran**, which is the caller's cue to
+/// swallow the keystroke (`preventDefault` in a browser). Every chord that
+/// matches is tried, in registration order, until one fires: a chord whose
+/// creating component has since unmounted must not shadow a live duplicate, and
+/// a chord registered for an item with no callback at all must fall through to
+/// the app instead of eating that key combination forever.
+pub fn match_shortcut_code(ctrl: bool, meta: bool, alt: bool, shift: bool, code: &str) -> bool {
     let ctrl_or_cmd = ctrl || meta;
 
     // `collect` on an empty iterator does not allocate, so the overwhelmingly
@@ -490,7 +550,7 @@ pub(crate) fn match_shortcut(ctrl: bool, meta: bool, alt: bool, shift: bool, key
                 entry.shortcut.ctrl_or_cmd == ctrl_or_cmd
                     && entry.shortcut.alt == alt
                     && entry.shortcut.shift == shift
-                    && entry.shortcut.key == key
+                    && entry.shortcut.code == code
             })
             .map(|entry| entry.menu_id.clone())
             .collect()
@@ -581,7 +641,80 @@ impl Drop for MenuRegistration {
     }
 }
 
-// ── Build functions (Menu → muda types) ─────────────────────────────────────
+// ── Build functions (Menu → the registry, Menu → muda types) ────────────────
+
+/// Arm the keyboard shortcuts every item in `menus` declares, and release
+/// whatever the previous call armed.
+///
+/// The DOM menu bar ([`render_with_menu_bar`]) invokes an item straight from its
+/// `Rc<dyn Fn()>`, so a *click* needs nothing registered. A **chord** does: it
+/// arrives as a bare keystroke with no menu in sight, and the registry is what
+/// turns it back into a callback. On the desktop `build_native_menu_bar`
+/// happens to do both jobs at once — Linux builds the native bar it never
+/// attaches purely for this side effect — but there is no muda on the web, so
+/// this is the same registration with the toolkit half left out.
+///
+/// Only items with **both** a shortcut and a callback are registered: an item
+/// with a chord and no `on_click` would otherwise swallow that key combination
+/// (see [`match_shortcut_code`]), and an item with neither has nothing a chord
+/// could reach.
+///
+/// The build's ids are held in [`MENU_BAR_REGISTRATION`], the same slot the
+/// native bar uses, so re-arming a rebuilt menu bar releases the previous
+/// build's ids instead of growing the registry forever.
+pub fn register_menu_shortcuts(menus: &[(&str, &Menu)]) {
+    let mut registration = MenuRegistration::default();
+    for (_, menu) in menus {
+        register_menu_shortcuts_into(menu, &mut registration);
+    }
+    // Bound outside the borrow: dropping the displaced token drops user
+    // callbacks, whose `Drop` may re-enter the registry.
+    let _previous = MENU_BAR_REGISTRATION.with(|slot| slot.borrow_mut().replace(registration));
+}
+
+/// Walk one menu (and its submenus), registering each chord-bearing item.
+fn register_menu_shortcuts_into(menu: &Menu, registration: &mut MenuRegistration) {
+    for entry in &menu.entries {
+        match entry {
+            MenuEntryInner::Item(item) => {
+                // A disabled item fires nothing, so its chord must not either —
+                // the same rule `build_muda_item` applies, for the same reason.
+                if !item.enabled {
+                    continue;
+                }
+                let (Some(cb), Some(shortcut)) = (item.callback.as_ref(), item.shortcut.as_deref())
+                else {
+                    continue;
+                };
+                let menu_id = next_menu_id();
+                registration.register_callback(
+                    &menu_id,
+                    Rc::clone(cb),
+                    item.callback_owner.clone(),
+                );
+                registration.register_shortcut(shortcut, &menu_id);
+            }
+            MenuEntryInner::Separator => {}
+            MenuEntryInner::Submenu { menu, .. } => {
+                register_menu_shortcuts_into(menu, registration);
+            }
+        }
+    }
+}
+
+/// A registry id no other build has used.
+///
+/// Monotonic rather than derived from the item, the way the ksni backend's
+/// `ksni-{N}` is: two items may carry the same label in the same menu, and an id
+/// collision between builds would let an earlier release reclaim a later
+/// registration (see [`take_callback_if_ours`]).
+fn next_menu_id() -> String {
+    NEXT_MENU_ID.with(|next| {
+        let id = next.get();
+        next.set(id + 1);
+        format!("menu-bar-{id}")
+    })
+}
 
 /// Build a native menu bar from a list of `(label, Menu)` pairs.
 ///
@@ -589,6 +722,7 @@ impl Drop for MenuRegistration {
 /// registered in the thread-local registry, and the ids are recorded in
 /// [`MENU_BAR_REGISTRATION`] — so building a new bar releases the previous
 /// build's, instead of leaving it in the registry forever.
+#[cfg(feature = "desktop")]
 pub(crate) fn build_native_menu_bar(menus: Vec<(&str, Menu)>) -> muda::Menu {
     let mut registration = MenuRegistration::default();
     let menu_bar = muda::Menu::new();
@@ -607,6 +741,7 @@ pub(crate) fn build_native_menu_bar(menus: Vec<(&str, Menu)>) -> muda::Menu {
 ///
 /// Returns the token holding this build's ids alongside the menu; the caller
 /// keeps it for as long as the menu is live (see [`MenuRegistration`]).
+#[cfg(feature = "desktop")]
 #[cfg_attr(target_os = "linux", allow(dead_code))]
 pub(crate) fn build_muda_menu(menu: Menu) -> (muda::Menu, MenuRegistration) {
     let mut registration = MenuRegistration::default();
@@ -631,6 +766,7 @@ pub(crate) fn build_muda_menu(menu: Menu) -> (muda::Menu, MenuRegistration) {
 }
 
 /// Recursively populate a muda Submenu from a unified Menu.
+#[cfg(feature = "desktop")]
 fn build_muda_entries(submenu: &muda::Submenu, menu: Menu, registration: &mut MenuRegistration) {
     for entry in menu.entries {
         match entry {
@@ -651,6 +787,7 @@ fn build_muda_entries(submenu: &muda::Submenu, menu: Menu, registration: &mut Me
 }
 
 /// Build a single muda MenuItem, register its callback and shortcut.
+#[cfg(feature = "desktop")]
 fn build_muda_item(item: &MenuItem, registration: &mut MenuRegistration) -> muda::MenuItem {
     let accelerator = item.shortcut.as_ref().and_then(|s| parse_shortcut(s));
     let muda_item = muda::MenuItem::new(&item.label, item.enabled, accelerator);
@@ -681,6 +818,7 @@ fn build_muda_item(item: &MenuItem, registration: &mut MenuRegistration) -> muda
 ///
 /// This single handler covers both native menu events and tray context
 /// menu events (same muda static after tray-icon 0.19 + muda 0.15).
+#[cfg(feature = "desktop")]
 pub(crate) fn install_menu_event_handler() {
     muda::MenuEvent::set_event_handler(Some(|event: muda::MenuEvent| {
         let id = event.id().0.clone();
@@ -693,7 +831,7 @@ pub(crate) fn install_menu_event_handler() {
 // ── Platform-specific menu attachment ───────────────────────────────────────
 
 /// Attach a native menu bar to a window (Windows).
-#[cfg(target_os = "windows")]
+#[cfg(all(feature = "desktop", target_os = "windows"))]
 pub(crate) fn attach_menu_to_window(menu: &muda::Menu, window: &dyn winit::window::Window) {
     use winit::raw_window_handle::HasWindowHandle;
     if let Ok(handle) = window.window_handle() {
@@ -708,13 +846,13 @@ pub(crate) fn attach_menu_to_window(menu: &muda::Menu, window: &dyn winit::windo
 }
 
 /// Attach a native menu bar to the application (macOS).
-#[cfg(target_os = "macos")]
+#[cfg(all(feature = "desktop", target_os = "macos"))]
 pub(crate) fn attach_menu_to_window(menu: &muda::Menu, _window: &winit::window::Window) {
     menu.init_for_nsapp();
 }
 
 /// Attach a native menu bar to a window (Linux — not yet supported).
-#[cfg(target_os = "linux")]
+#[cfg(all(feature = "desktop", target_os = "linux"))]
 pub(crate) fn attach_menu_to_window(_menu: &muda::Menu, _window: &dyn winit::window::Window) {
     // Linux GTK menu integration not yet implemented.
 }
@@ -727,10 +865,20 @@ pub(crate) struct ParsedShortcut {
     pub ctrl_or_cmd: bool,
     pub alt: bool,
     pub shift: bool,
-    pub key: KeyCode,
+    /// The key's W3C UI Events `code` name — `"KeyK"`, `"Digit1"`, `"Enter"`,
+    /// `"ArrowUp"`, `"F5"`.
+    ///
+    /// A string rather than a `winit::keyboard::KeyCode` so this module — and
+    /// with it the DOM menu bar — builds with no windowing stack at all. It
+    /// costs nothing on either side: winit's `KeyCode` variants are named after
+    /// exactly this table (`key_code_name` is the one-to-one map), and a browser
+    /// `KeyboardEvent.code` *is* this string, so the web path needs no
+    /// translation whatsoever.
+    pub code: &'static str,
 }
 
 /// Parse a shortcut string like "Cmd+N" or "Ctrl+Shift+S" into a muda Accelerator.
+#[cfg(feature = "desktop")]
 fn parse_shortcut(shortcut: &str) -> Option<Accelerator> {
     let normalized = shortcut
         .replace("Cmd+", "CmdOrCtrl+")
@@ -762,71 +910,71 @@ fn parse_shortcut_for_matching(shortcut: &str) -> Option<ParsedShortcut> {
         }
     }
 
-    let key = match key_str.to_uppercase().as_str() {
-        "A" => KeyCode::KeyA,
-        "B" => KeyCode::KeyB,
-        "C" => KeyCode::KeyC,
-        "D" => KeyCode::KeyD,
-        "E" => KeyCode::KeyE,
-        "F" => KeyCode::KeyF,
-        "G" => KeyCode::KeyG,
-        "H" => KeyCode::KeyH,
-        "I" => KeyCode::KeyI,
-        "J" => KeyCode::KeyJ,
-        "K" => KeyCode::KeyK,
-        "L" => KeyCode::KeyL,
-        "M" => KeyCode::KeyM,
-        "N" => KeyCode::KeyN,
-        "O" => KeyCode::KeyO,
-        "P" => KeyCode::KeyP,
-        "Q" => KeyCode::KeyQ,
-        "R" => KeyCode::KeyR,
-        "S" => KeyCode::KeyS,
-        "T" => KeyCode::KeyT,
-        "U" => KeyCode::KeyU,
-        "V" => KeyCode::KeyV,
-        "W" => KeyCode::KeyW,
-        "X" => KeyCode::KeyX,
-        "Y" => KeyCode::KeyY,
-        "Z" => KeyCode::KeyZ,
-        "0" => KeyCode::Digit0,
-        "1" => KeyCode::Digit1,
-        "2" => KeyCode::Digit2,
-        "3" => KeyCode::Digit3,
-        "4" => KeyCode::Digit4,
-        "5" => KeyCode::Digit5,
-        "6" => KeyCode::Digit6,
-        "7" => KeyCode::Digit7,
-        "8" => KeyCode::Digit8,
-        "9" => KeyCode::Digit9,
-        "=" | "EQUAL" | "PLUS" => KeyCode::Equal,
-        "-" | "MINUS" => KeyCode::Minus,
-        "F1" => KeyCode::F1,
-        "F2" => KeyCode::F2,
-        "F3" => KeyCode::F3,
-        "F4" => KeyCode::F4,
-        "F5" => KeyCode::F5,
-        "F6" => KeyCode::F6,
-        "F7" => KeyCode::F7,
-        "F8" => KeyCode::F8,
-        "F9" => KeyCode::F9,
-        "F10" => KeyCode::F10,
-        "F11" => KeyCode::F11,
-        "F12" => KeyCode::F12,
-        "ENTER" | "RETURN" => KeyCode::Enter,
-        "ESCAPE" | "ESC" => KeyCode::Escape,
-        "BACKSPACE" => KeyCode::Backspace,
-        "TAB" => KeyCode::Tab,
-        "SPACE" => KeyCode::Space,
-        "DELETE" | "DEL" => KeyCode::Delete,
-        "HOME" => KeyCode::Home,
-        "END" => KeyCode::End,
-        "PAGEUP" => KeyCode::PageUp,
-        "PAGEDOWN" => KeyCode::PageDown,
-        "UP" | "ARROWUP" => KeyCode::ArrowUp,
-        "DOWN" | "ARROWDOWN" => KeyCode::ArrowDown,
-        "LEFT" | "ARROWLEFT" => KeyCode::ArrowLeft,
-        "RIGHT" | "ARROWRIGHT" => KeyCode::ArrowRight,
+    let code = match key_str.to_uppercase().as_str() {
+        "A" => "KeyA",
+        "B" => "KeyB",
+        "C" => "KeyC",
+        "D" => "KeyD",
+        "E" => "KeyE",
+        "F" => "KeyF",
+        "G" => "KeyG",
+        "H" => "KeyH",
+        "I" => "KeyI",
+        "J" => "KeyJ",
+        "K" => "KeyK",
+        "L" => "KeyL",
+        "M" => "KeyM",
+        "N" => "KeyN",
+        "O" => "KeyO",
+        "P" => "KeyP",
+        "Q" => "KeyQ",
+        "R" => "KeyR",
+        "S" => "KeyS",
+        "T" => "KeyT",
+        "U" => "KeyU",
+        "V" => "KeyV",
+        "W" => "KeyW",
+        "X" => "KeyX",
+        "Y" => "KeyY",
+        "Z" => "KeyZ",
+        "0" => "Digit0",
+        "1" => "Digit1",
+        "2" => "Digit2",
+        "3" => "Digit3",
+        "4" => "Digit4",
+        "5" => "Digit5",
+        "6" => "Digit6",
+        "7" => "Digit7",
+        "8" => "Digit8",
+        "9" => "Digit9",
+        "=" | "EQUAL" | "PLUS" => "Equal",
+        "-" | "MINUS" => "Minus",
+        "F1" => "F1",
+        "F2" => "F2",
+        "F3" => "F3",
+        "F4" => "F4",
+        "F5" => "F5",
+        "F6" => "F6",
+        "F7" => "F7",
+        "F8" => "F8",
+        "F9" => "F9",
+        "F10" => "F10",
+        "F11" => "F11",
+        "F12" => "F12",
+        "ENTER" | "RETURN" => "Enter",
+        "ESCAPE" | "ESC" => "Escape",
+        "BACKSPACE" => "Backspace",
+        "TAB" => "Tab",
+        "SPACE" => "Space",
+        "DELETE" | "DEL" => "Delete",
+        "HOME" => "Home",
+        "END" => "End",
+        "PAGEUP" => "PageUp",
+        "PAGEDOWN" => "PageDown",
+        "UP" | "ARROWUP" => "ArrowUp",
+        "DOWN" | "ARROWDOWN" => "ArrowDown",
+        "LEFT" | "ARROWLEFT" => "ArrowLeft",
+        "RIGHT" | "ARROWRIGHT" => "ArrowRight",
         _ => return None,
     };
 
@@ -834,7 +982,85 @@ fn parse_shortcut_for_matching(shortcut: &str) -> Option<ParsedShortcut> {
         ctrl_or_cmd,
         alt,
         shift,
-        key,
+        code,
+    })
+}
+
+/// The W3C `code` name of a winit key, or `None` for a key no shortcut string
+/// can name.
+///
+/// The inverse of the table in [`parse_shortcut_for_matching`], and the only
+/// place a `winit` type meets [`ParsedShortcut`]. Spelled out rather than
+/// derived from `Debug`: the two happen to agree today, and a rename upstream
+/// would silently unbind every shortcut in every app.
+#[cfg(feature = "desktop")]
+fn key_code_name(key: KeyCode) -> Option<&'static str> {
+    Some(match key {
+        KeyCode::KeyA => "KeyA",
+        KeyCode::KeyB => "KeyB",
+        KeyCode::KeyC => "KeyC",
+        KeyCode::KeyD => "KeyD",
+        KeyCode::KeyE => "KeyE",
+        KeyCode::KeyF => "KeyF",
+        KeyCode::KeyG => "KeyG",
+        KeyCode::KeyH => "KeyH",
+        KeyCode::KeyI => "KeyI",
+        KeyCode::KeyJ => "KeyJ",
+        KeyCode::KeyK => "KeyK",
+        KeyCode::KeyL => "KeyL",
+        KeyCode::KeyM => "KeyM",
+        KeyCode::KeyN => "KeyN",
+        KeyCode::KeyO => "KeyO",
+        KeyCode::KeyP => "KeyP",
+        KeyCode::KeyQ => "KeyQ",
+        KeyCode::KeyR => "KeyR",
+        KeyCode::KeyS => "KeyS",
+        KeyCode::KeyT => "KeyT",
+        KeyCode::KeyU => "KeyU",
+        KeyCode::KeyV => "KeyV",
+        KeyCode::KeyW => "KeyW",
+        KeyCode::KeyX => "KeyX",
+        KeyCode::KeyY => "KeyY",
+        KeyCode::KeyZ => "KeyZ",
+        KeyCode::Digit0 => "Digit0",
+        KeyCode::Digit1 => "Digit1",
+        KeyCode::Digit2 => "Digit2",
+        KeyCode::Digit3 => "Digit3",
+        KeyCode::Digit4 => "Digit4",
+        KeyCode::Digit5 => "Digit5",
+        KeyCode::Digit6 => "Digit6",
+        KeyCode::Digit7 => "Digit7",
+        KeyCode::Digit8 => "Digit8",
+        KeyCode::Digit9 => "Digit9",
+        KeyCode::F1 => "F1",
+        KeyCode::F2 => "F2",
+        KeyCode::F3 => "F3",
+        KeyCode::F4 => "F4",
+        KeyCode::F5 => "F5",
+        KeyCode::F6 => "F6",
+        KeyCode::F7 => "F7",
+        KeyCode::F8 => "F8",
+        KeyCode::F9 => "F9",
+        KeyCode::F10 => "F10",
+        KeyCode::F11 => "F11",
+        KeyCode::F12 => "F12",
+        KeyCode::Equal => "Equal",
+        KeyCode::Minus => "Minus",
+        KeyCode::Enter => "Enter",
+        KeyCode::Escape => "Escape",
+        KeyCode::Backspace => "Backspace",
+        KeyCode::Tab => "Tab",
+        KeyCode::Space => "Space",
+        KeyCode::Delete => "Delete",
+        KeyCode::Home => "Home",
+        KeyCode::End => "End",
+        KeyCode::PageUp => "PageUp",
+        KeyCode::PageDown => "PageDown",
+        KeyCode::ArrowUp => "ArrowUp",
+        KeyCode::ArrowDown => "ArrowDown",
+        KeyCode::ArrowLeft => "ArrowLeft",
+        KeyCode::ArrowRight => "ArrowRight",
+        _ => return None,
     })
 }
 
@@ -1037,7 +1263,7 @@ mod tests {
         );
         register_shortcut("Ctrl+Shift+J", "chord-1");
 
-        assert!(match_shortcut(true, false, false, true, KeyCode::KeyJ));
+        assert!(match_shortcut_code(true, false, false, true, "KeyJ"));
     }
 
     /// `MENU_SHORTCUTS` leaks identically to `MENU_CALLBACKS` — the issue names
@@ -1070,7 +1296,7 @@ mod tests {
 
         scope.dispose();
         assert!(
-            !match_shortcut(true, false, true, false, KeyCode::KeyY),
+            !match_shortcut_code(true, false, true, false, "KeyY"),
             "a disposed component's chord must fall through"
         );
         assert_eq!(
@@ -1097,7 +1323,7 @@ mod tests {
         register_shortcut("Ctrl+Alt+U", "no-callback-here");
 
         assert!(
-            !match_shortcut(true, false, true, false, KeyCode::KeyU),
+            !match_shortcut_code(true, false, true, false, "KeyU"),
             "nothing ran, so the keystroke belongs to the app"
         );
     }
@@ -1120,7 +1346,7 @@ mod tests {
 
         dead.dispose();
 
-        assert!(match_shortcut(true, false, true, false, KeyCode::KeyI));
+        assert!(match_shortcut_code(true, false, true, false, "KeyI"));
         assert_eq!(
             fired.get(),
             1,
@@ -1313,6 +1539,132 @@ mod tests {
 
         drop(live);
         assert_eq!(callback_count(), base);
+    }
+
+    // ── The DOM menu bar's own registration ──────────────────────────────
+    //
+    // These run in *both* configurations — with `desktop` and without it — and
+    // that is the point: they are the half of the menu system a `rinch-web`
+    // build gets, where there is no muda to arm a chord and no winit `KeyCode`
+    // to match one with. A regression that re-coupled either to the desktop
+    // would take the whole web menu bar with it.
+
+    /// The web path's equivalent of building the native bar: declare a menu,
+    /// arm it, press the chord.
+    #[test]
+    fn register_menu_shortcuts_arms_a_declared_chord_including_inside_a_submenu() {
+        let (top_fired, top_cb) = probe();
+        let (nested_fired, nested_cb) = probe();
+
+        let file = Menu::new()
+            .item(
+                MenuItem::new("Find")
+                    .shortcut("Ctrl+Shift+F")
+                    .on_click(move || top_cb()),
+            )
+            .separator()
+            .submenu(
+                "Recent",
+                Menu::new().item(
+                    MenuItem::new("Reopen")
+                        .shortcut("Ctrl+Shift+T")
+                        .on_click(move || nested_cb()),
+                ),
+            );
+
+        register_menu_shortcuts(&[("File", &file)]);
+
+        assert!(match_shortcut_code(true, false, false, true, "KeyF"));
+        assert_eq!(top_fired.get(), 1);
+        assert!(
+            match_shortcut_code(true, false, false, true, "KeyT"),
+            "a submenu's items declare chords like any other"
+        );
+        assert_eq!(nested_fired.get(), 1);
+    }
+
+    /// A disabled item fires nothing, so its chord must not be armed — else the
+    /// keystroke runs the callback the greyed-out item refuses to run, *and* is
+    /// swallowed on the way. `build_muda_item` has always applied this rule; the
+    /// DOM bar's registration has to apply it too.
+    #[test]
+    fn register_menu_shortcuts_skips_a_disabled_item_and_one_with_no_callback() {
+        let (fired, cb) = probe();
+        let shortcuts = shortcut_count();
+
+        let view = Menu::new()
+            .item(
+                MenuItem::new("Zoom In")
+                    .shortcut("Ctrl+Alt+B")
+                    .enabled(false)
+                    .on_click(move || cb()),
+            )
+            .item(MenuItem::new("Zoom Out").shortcut("Ctrl+Alt+M"));
+
+        register_menu_shortcuts(&[("View", &view)]);
+
+        assert_eq!(
+            shortcut_count(),
+            shortcuts,
+            "neither item may arm a chord: one is disabled, the other runs nothing"
+        );
+        assert!(!match_shortcut_code(true, false, true, false, "KeyB"));
+        assert_eq!(fired.get(), 0);
+        assert!(
+            !match_shortcut_code(true, false, true, false, "KeyM"),
+            "an item with no on_click must not eat its key combination"
+        );
+    }
+
+    /// Re-arming a rebuilt bar must release the previous build, or a menu
+    /// rebuilt at runtime grows the registry without bound — the leak
+    /// `MenuRegistration` exists to close, reached by the other builder.
+    #[test]
+    fn re_arming_the_menu_bar_releases_the_previous_builds_chords() {
+        let callbacks = callback_count();
+        let shortcuts = shortcut_count();
+
+        for _ in 0..5 {
+            let menu =
+                Menu::new().item(MenuItem::new("Save").shortcut("Ctrl+Alt+S").on_click(|| {}));
+            register_menu_shortcuts(&[("File", &menu)]);
+            assert_eq!(
+                callback_count(),
+                callbacks + 1,
+                "a rebuild must not accumulate"
+            );
+            assert_eq!(shortcut_count(), shortcuts + 1);
+        }
+
+        // Releasing the slot is what actually reclaims the last build.
+        MENU_BAR_REGISTRATION.with(|slot| slot.borrow_mut().take());
+        assert_eq!(callback_count(), callbacks);
+        assert_eq!(shortcut_count(), shortcuts);
+    }
+
+    /// The shortcut string is parsed once, into a `code` name both sides agree
+    /// on. This pins that agreement: the desktop matches by winit `KeyCode`, the
+    /// browser by `KeyboardEvent.code`, and one registration must answer to
+    /// both.
+    #[cfg(feature = "desktop")]
+    #[test]
+    fn the_winit_keycode_and_the_web_code_name_reach_the_same_callback() {
+        for (chord, key, code) in [
+            ("Ctrl+K", KeyCode::KeyK, "KeyK"),
+            ("Ctrl+0", KeyCode::Digit0, "Digit0"),
+            ("F5", KeyCode::F5, "F5"),
+            ("Ctrl+=", KeyCode::Equal, "Equal"),
+            ("Alt+ArrowUp", KeyCode::ArrowUp, "ArrowUp"),
+        ] {
+            let parsed =
+                parse_shortcut_for_matching(chord).unwrap_or_else(|| panic!("{chord} must parse"));
+            assert_eq!(parsed.code, code, "{chord}");
+            assert_eq!(
+                key_code_name(key),
+                Some(code),
+                "{chord}: winit's KeyCode must name the same key as the web code"
+            );
+        }
     }
 
     /// A token must reclaim only what is still its own, for the same reason the
