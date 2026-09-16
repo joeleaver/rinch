@@ -34,8 +34,8 @@ use rinch_core::events;
 #[cfg(feature = "gpu")]
 use rinch_platform::PlatformRenderer;
 use rinch_platform::{
-    AppAction, ImeEvent, KeyCode, Modifiers, MouseButton as PlatformMouseButton, PlatformEvent,
-    PlatformWindow, UserEvent, to_logical, to_logical_point,
+    AppAction, ImeEvent, KeyCode, KeyRepeat, Modifiers, MouseButton as PlatformMouseButton,
+    PlatformEvent, PlatformWindow, UserEvent, to_logical, to_logical_point,
 };
 
 use crate::app::RinchApp;
@@ -153,13 +153,18 @@ pub enum RinchNativeEvent {
 /// # Example
 ///
 /// ```ignore
-/// use rinch_platform::{PlatformEvent, KeyCode, Modifiers};
+/// use rinch_platform::{PlatformEvent, KeyCode, KeyRepeat, Modifiers};
 ///
 /// // Simulate a down-arrow key press for gamepad D-pad
 /// rinch::inject_platform_event(PlatformEvent::KeyDown {
 ///     key: KeyCode::ArrowDown,
+///     logical_key: None,
 ///     text: None,
 ///     modifiers: Modifiers::default(),
+///     // An injector that re-sends a held D-pad every frame should say
+///     // `KeyRepeat::Repeat` for the ones after the first, or
+///     // `KeyRepeat::Unknown` to let the runtime infer it (issue #463).
+///     repeat: KeyRepeat::Fresh,
 /// });
 /// ```
 pub fn inject_platform_event(event: PlatformEvent) {
@@ -1416,6 +1421,46 @@ impl RinchRuntime {
         }
     }
 
+    /// The [`PlatformEvent::KeyDown`] a winit press translates to.
+    ///
+    /// Split out of the `WindowEvent::KeyboardInput` arm so it can be tested at
+    /// all: `window_event` needs a live `ActiveEventLoop` and a real window, and
+    /// the only other statement in that arm is the menu-shortcut consume.
+    ///
+    /// What that buys is the **one** pin on this backend's `repeat` answer.
+    /// Every consumer fixture supplies its own [`KeyRepeat`], so inverting the
+    /// mapping here — desktop refusing every fresh press and activating on
+    /// every auto-repeat, i.e. #463 made worse than before it — was invisible
+    /// to the entire runtime suite (measured: 602 passed, 0 failed, in the
+    /// adversarial review of PR #796). The assertion in
+    /// `key_repeat_translation` is trivial by construction; the point is that
+    /// there was nothing at all.
+    fn key_down_from_winit(
+        key_code: winit::keyboard::KeyCode,
+        logical_key: &winit::keyboard::Key,
+        text: Option<&str>,
+        repeat: bool,
+        modifiers: Modifiers,
+    ) -> PlatformEvent {
+        PlatformEvent::KeyDown {
+            key: Self::translate_key(key_code),
+            // The layout-mapped key value (so Mod+letter follows the keycap, not
+            // the physical position) — winit's logical key carries it even when a
+            // modifier suppresses `text`.
+            logical_key: Self::winit_logical_key_str(logical_key),
+            text: text.map(str::to_string),
+            modifiers,
+            // winit's `repeat` is `true` if and only if the OS made this press
+            // by holding the key down, so desktop never has to infer it from a
+            // release that may never arrive (#463).
+            repeat: if repeat {
+                KeyRepeat::Repeat
+            } else {
+                KeyRepeat::Fresh
+            },
+        }
+    }
+
     /// Translate a winit KeyCode to a platform KeyCode.
     fn translate_key(key_code: winit::keyboard::KeyCode) -> KeyCode {
         use winit::keyboard::KeyCode as WK;
@@ -1871,6 +1916,7 @@ impl ApplicationHandler for RinchRuntime {
                         state: ElementState::Pressed,
                         logical_key: ref win_logical,
                         ref text,
+                        repeat,
                         ..
                     },
                 ..
@@ -1886,16 +1932,7 @@ impl ApplicationHandler for RinchRuntime {
                     return;
                 }
 
-                let platform_key = Self::translate_key(key_code);
-                PlatformEvent::KeyDown {
-                    key: platform_key,
-                    // The layout-mapped key value (so Mod+letter follows the keycap, not
-                    // the physical position) — winit's logical key carries it even when a
-                    // modifier suppresses `text`.
-                    logical_key: Self::winit_logical_key_str(win_logical),
-                    text: text.as_ref().map(|t| t.to_string()),
-                    modifiers: mods,
-                }
+                Self::key_down_from_winit(key_code, win_logical, text.as_deref(), repeat, mods)
             }
             WindowEvent::KeyboardInput {
                 event:
@@ -3451,6 +3488,79 @@ mod logical_key_spelling {
             spell(Key::Unidentified(winit::keyboard::NativeKey::Unidentified)),
             None
         );
+    }
+}
+
+/// The desktop backend's `KeyRepeat` answer (issue #463).
+///
+/// The one producer pin on this backend. Every `key_repeat_tests` fixture hands
+/// the runtime a `KeyRepeat` of its own, so nothing there can tell whether the
+/// shell reports winit's flag, its negation, or a constant — inverting it
+/// survived all 602 tests of `cargo test -p rinch --lib --features debug` in the
+/// adversarial review of PR #796. That is the hole these two assertions close,
+/// and it is worth knowing they are the *only* thing closing it.
+#[cfg(test)]
+mod key_repeat_translation {
+    use super::*;
+    use winit::keyboard::{Key, KeyCode as WK, SmolStr};
+
+    fn press(repeat: bool) -> PlatformEvent {
+        // The spacebar's logical key is its character, not a named key — the
+        // W3C spells it `" "`, and so does winit.
+        RinchRuntime::key_down_from_winit(
+            WK::Space,
+            &Key::Character(SmolStr::new(" ")),
+            Some(" "),
+            repeat,
+            Modifiers::default(),
+        )
+    }
+
+    fn repeat_of(event: &PlatformEvent) -> KeyRepeat {
+        match event {
+            PlatformEvent::KeyDown { repeat, .. } => *repeat,
+            other => panic!("expected a KeyDown, got {other:?}"),
+        }
+    }
+
+    /// winit's `repeat` is documented `true` **iff** the OS produced this press
+    /// by holding the key, so the mapping is the identity and not a negation.
+    /// Getting it backwards would make desktop refuse every real press and
+    /// activate on every auto-repeat — #463 inverted, which is worse than #463.
+    #[test]
+    fn winits_flag_is_reported_not_inverted() {
+        assert_eq!(repeat_of(&press(false)), KeyRepeat::Fresh);
+        assert_eq!(repeat_of(&press(true)), KeyRepeat::Repeat);
+    }
+
+    /// And never `Unknown`: this backend always knows, so it must never fall
+    /// back to the latch — which is the whole of #463 on desktop. Kills a
+    /// shell that quietly answers `KeyRepeat::Unknown` (the `Default`, and so
+    /// the shape a careless refactor reaches for).
+    #[test]
+    fn the_desktop_shell_never_answers_unknown() {
+        for r in [false, true] {
+            assert_ne!(repeat_of(&press(r)), KeyRepeat::Unknown);
+        }
+    }
+
+    /// The extraction moved the whole press translation, not just the flag, so
+    /// the rest of it is pinned here too — the physical key, the layout-mapped
+    /// `logical_key` and the inserted `text` all still ride along.
+    #[test]
+    fn the_rest_of_the_press_survives_the_split() {
+        let PlatformEvent::KeyDown {
+            key,
+            logical_key,
+            text,
+            ..
+        } = press(false)
+        else {
+            panic!("expected a KeyDown");
+        };
+        assert_eq!(key, KeyCode::Space);
+        assert_eq!(logical_key.as_deref(), Some(" "));
+        assert_eq!(text.as_deref(), Some(" "));
     }
 }
 

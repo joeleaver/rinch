@@ -20,8 +20,8 @@ use winit::window::{Window, WindowAttributes, WindowId};
 
 use rinch::prelude::*;
 use rinch_platform::{
-    KeyCode as PlatformKeyCode, Modifiers as PlatformModifiers, MouseButton as PlatformMouseButton,
-    PlatformEvent,
+    KeyCode as PlatformKeyCode, KeyRepeat, Modifiers as PlatformModifiers,
+    MouseButton as PlatformMouseButton, PlatformEvent,
 };
 
 // ── GPU types ───────────────────────────────────────────────────────────────
@@ -1170,6 +1170,16 @@ impl ApplicationHandler for App {
                         logical_key: None,
                         text,
                         modifiers: mods,
+                        // An embed host owns the window, so forward what winit
+                        // knows: this host feeds rinch no `KeyUp` at all, and
+                        // without the flag the runtime would have to infer
+                        // once-per-press from a release that never comes
+                        // (issue #463).
+                        repeat: if event.repeat {
+                            KeyRepeat::Repeat
+                        } else {
+                            KeyRepeat::Fresh
+                        },
                     });
                 } else {
                     // Game keyboard shortcuts

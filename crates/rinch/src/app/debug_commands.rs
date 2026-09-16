@@ -322,6 +322,11 @@ impl RinchApp {
                             logical_key,
                             text: txt,
                             modifiers: rinch_platform::Modifiers::default(),
+                            // One synthesized press per character, and the
+                            // channel sends no `KeyUp` at all — so `Unknown`
+                            // would leave the activation latch armed after the
+                            // first Enter and swallow every later one (#463).
+                            repeat: rinch_platform::KeyRepeat::Fresh,
                         },
                         window_size,
                         scale_factor,
@@ -417,6 +422,7 @@ impl RinchApp {
                             alt,
                             meta,
                         },
+                        repeat: rinch_platform::KeyRepeat::Fresh,
                     },
                     window_size,
                     scale_factor,

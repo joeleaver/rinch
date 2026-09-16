@@ -15,7 +15,7 @@ use android_activity::{AndroidApp, MainEvent, PollEvent};
 use rinch_core::dom::{NodeHandle, RenderScope};
 use rinch_core::element::ThemeProviderProps;
 use rinch_core::events;
-use rinch_platform::{AppAction, ImeEvent, KeyCode, Modifiers, PlatformEvent};
+use rinch_platform::{AppAction, ImeEvent, KeyCode, KeyRepeat, Modifiers, PlatformEvent};
 
 use crate::app::RinchApp;
 use crate::shell::android_frame;
@@ -777,6 +777,9 @@ fn apply_ime_action(
                         logical_key: None,
                         text: Some(ch.to_string()),
                         modifiers: Modifiers::default(),
+                        // Synthesized, one per committed character — never an
+                        // OS auto-repeat of a held key (issue #463).
+                        repeat: KeyRepeat::Fresh,
                     },
                     running,
                 );
@@ -790,6 +793,7 @@ fn apply_ime_action(
                         logical_key: None,
                         text: None,
                         modifiers: Modifiers::default(),
+                        repeat: KeyRepeat::Fresh,
                     },
                     running,
                 );
@@ -801,6 +805,7 @@ fn apply_ime_action(
                         logical_key: None,
                         text: None,
                         modifiers: Modifiers::default(),
+                        repeat: KeyRepeat::Fresh,
                     },
                     running,
                 );
@@ -905,12 +910,25 @@ fn collect_input_events(
                             // key. Android hands us no DOM-style *name* for the
                             // rest (Enter, arrows, CapsLock), so those stay
                             // `None` and resolve through the physical `key`.
+                            // Android reports auto-repeat as a repeat count on
+                            // the same `ACTION_DOWN`, so the runtime never has
+                            // to infer it from a release — which matters twice
+                            // over here, since this backend translates no
+                            // `KeyAction::Up` at all (issue #479) and the
+                            // Enter/Space latch would otherwise be cleared only
+                            // by a window blur (issue #463).
+                            let repeat = if key.repeat_count() > 0 {
+                                KeyRepeat::Repeat
+                            } else {
+                                KeyRepeat::Fresh
+                            };
                             if let Some(key_code) = map_android_keycode(key.key_code()) {
                                 events.push(PlatformEvent::KeyDown {
                                     key: key_code,
                                     logical_key: text.clone(),
                                     text,
                                     modifiers,
+                                    repeat,
                                 });
                             } else if let Some(text) = text {
                                 events.push(PlatformEvent::KeyDown {
@@ -918,6 +936,7 @@ fn collect_input_events(
                                     logical_key: Some(text.clone()),
                                     text: Some(text),
                                     modifiers,
+                                    repeat,
                                 });
                             }
                         }

@@ -69,6 +69,7 @@ fn escape(app: &mut RinchApp) {
             logical_key: None,
             text: None,
             modifiers: Modifiers::default(),
+            repeat: KeyRepeat::Unknown,
         },
         (800, 600),
         1.0,

@@ -57,6 +57,33 @@ impl RinchApp {
         (w as f32, h as f32)
     }
 
+    /// Whether this `KeyDown` is a fresh physical press of `key`, for the
+    /// once-per-press Enter/Space activation of a focused node (issue #463).
+    ///
+    /// The backend's answer wins wherever it has one, and only an `Unknown`
+    /// falls back to the latch — which is the whole repair. A latch can only be
+    /// cleared by a *second* event ([`PlatformEvent::KeyUp`], or the
+    /// [`PlatformEvent::WindowFocus`] heal below), and a release that never
+    /// reaches us — alt-tab while held, a window-manager grab, a native menu or
+    /// modal taking the keyboard, an embed host that reports no focus changes —
+    /// used to strand it for the rest of the session, silently killing that
+    /// key on that node. [`KeyRepeat::Fresh`] cannot be swallowed that way
+    /// because it rides the very press being judged.
+    ///
+    /// The latch is still written on a `Fresh` press, so a backend that mixes
+    /// the two answers (or starts reporting them halfway through a session)
+    /// stays consistent, and a `Repeat` never disturbs it.
+    fn press_is_fresh(&self, key: KeyCode, repeat: KeyRepeat) -> bool {
+        match repeat {
+            KeyRepeat::Fresh => true,
+            KeyRepeat::Repeat => false,
+            // No answer from the backend: the OS auto-repeats `KeyDown` and
+            // nothing in the event tells the two apart, so infer it from the
+            // press/release pair as rinch always has.
+            KeyRepeat::Unknown => self.node_activation_held != Some(key),
+        }
+    }
+
     /// Process a platform event and return a list of actions for the shell.
     ///
     /// `window_size` is in **physical** pixels; the logical layout viewport is
@@ -1095,6 +1122,12 @@ impl RinchApp {
                         // Enter/Space activation latch (issue #228) would stay
                         // armed and swallow the first press after we come back.
                         // A window that lost focus holds no key down.
+                        //
+                        // Still load-bearing after #463, and only for a backend
+                        // that answers `KeyRepeat::Unknown` — one that reports
+                        // repeat needs no clearing at all, which is the point:
+                        // this heal is itself a second event, and a second
+                        // event can be swallowed too (a WM grab need not blur).
                         self.node_activation_held = None;
                     }
                     if let FocusTarget::Node(id) = self.focus_target {
@@ -1114,6 +1147,7 @@ impl RinchApp {
                 logical_key,
                 text,
                 modifiers,
+                repeat,
             } => {
                 // ── Drag-and-drop: Escape cancels active drag ─────────────
                 if key == KeyCode::Escape {
@@ -1308,17 +1342,12 @@ impl RinchApp {
                             KeyCode::Enter | KeyCode::Space
                                 if !ctrl && matches!(self.focus_target, FocusTarget::Node(_)) =>
                             {
-                                if let FocusTarget::Node(id) = self.focus_target {
-                                    // One activation per physical press: the OS
-                                    // auto-repeats KeyDown and `PlatformEvent`
-                                    // carries no repeat flag, so latch until the
-                                    // matching KeyUp (on the web a held Space
-                                    // activates exactly once, on keyup).
-                                    if self.node_activation_held != Some(key) {
-                                        self.node_activation_held = Some(key);
-                                        self.activate_focused_node(id, vp_w, vp_h);
-                                        actions.push(AppAction::RequestRedraw);
-                                    }
+                                if let FocusTarget::Node(id) = self.focus_target
+                                    && self.press_is_fresh(key, repeat)
+                                {
+                                    self.node_activation_held = Some(key);
+                                    self.activate_focused_node(id, vp_w, vp_h);
+                                    actions.push(AppAction::RequestRedraw);
                                 }
                             }
                             KeyCode::Enter if !ctrl => self.handle_enter(shift),
@@ -1358,7 +1387,10 @@ impl RinchApp {
                 modifiers,
             } => {
                 // Release the Enter/Space activation latch (issue #228): the
-                // next KeyDown of this key is a fresh physical press.
+                // next KeyDown of this key is a fresh physical press. Only a
+                // backend answering `KeyRepeat::Unknown` reads the latch
+                // (issue #463), but clearing it unconditionally keeps a mixed
+                // backend consistent and costs one comparison.
                 if self.node_activation_held == Some(key) {
                     self.node_activation_held = None;
                 }

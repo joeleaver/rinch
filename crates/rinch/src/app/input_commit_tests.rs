@@ -66,6 +66,7 @@ fn key(app: &mut RinchApp, key: KeyCode, text: Option<&str>) {
             logical_key: None,
             text: text.map(str::to_string),
             modifiers: Modifiers::default(),
+            repeat: KeyRepeat::Unknown,
         },
         (800, 600),
         1.0,
@@ -781,6 +782,7 @@ fn a_selection_survives_a_programmatic_rewrite() {
                 shift: true,
                 ..Default::default()
             },
+            repeat: KeyRepeat::Unknown,
         },
         (800, 600),
         1.0,

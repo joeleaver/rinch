@@ -13,13 +13,19 @@ use std::rc::Rc;
 pub enum KeyEventKind {
     /// The key went down.
     ///
-    /// **OS auto-repeat also arrives as `Down`**, and there is currently no
-    /// flag distinguishing it from a fresh press: the browser supplies one
-    /// (`KeyboardEvent.repeat`) but `PlatformEvent::KeyDown` does not carry
-    /// winit's, so a `repeat` field here would be truthful on web and silently
-    /// `false` on desktop — the exact divergence a document-level hook exists
-    /// to avoid. It arrives with the plumbing, in the issue that retires the
-    /// runtime's own hand-rolled activation latch.
+    /// **OS auto-repeat also arrives as `Down`**, and this payload still does
+    /// not distinguish it from a fresh press.
+    ///
+    /// The *platform* event does, since issue #463:
+    /// `PlatformEvent::KeyDown` carries a three-state `KeyRepeat`
+    /// (`Fresh`/`Repeat`/`Unknown`), which is what the runtime's own
+    /// once-per-press activation now reads. Surfacing it here is a further
+    /// step, not a formality: the honest field is that same three-state one —
+    /// a plain `bool` would report a held key as fresh on any backend that
+    /// cannot see, which is the divergence a document-level hook exists to
+    /// avoid — and `rinch-core` depends on neither `rinch-platform` (where the
+    /// enum lives) nor the browser, so it needs a home for the type first.
+    /// Tracked as issue #797.
     #[default]
     Down,
     /// The key came up.

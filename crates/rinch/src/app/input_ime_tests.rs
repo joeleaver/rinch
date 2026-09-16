@@ -69,6 +69,7 @@ fn type_str(app: &mut RinchApp, text: &str) {
                 logical_key: None,
                 text: Some(ch.to_string()),
                 modifiers: Modifiers::default(),
+                repeat: KeyRepeat::Unknown,
             },
             (800, 600),
             1.0,

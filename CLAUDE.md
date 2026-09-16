@@ -1408,8 +1408,9 @@ register_focus_target(
   so they may re-enter the runtime freely.
 - `on_key` is offered before the runtime's own handling; `true` consumes. It
   sees **releases too** (#337): `k.kind`/`k.is_up()` tell the phases apart
-  (auto-repeat is a `Down`, currently indistinguishable from a fresh press —
-  desktop carries no repeat flag). A press and its release are spelled
+  (auto-repeat is a `Down`, and `KeyEventData` still does not tell it from a
+  fresh press — the *platform* event does, see **Key auto-repeat** below).
+  A press and its release are spelled
   by the same rule from the same fields, so pairing them by `k.key` works by
   construction — a release carries no text and resolves through `logical_key`,
   which `PlatformEvent::KeyUp` now carries for exactly that reason.
@@ -1544,6 +1545,35 @@ register_focus_target(
   it, so a new caller has to drain it the way `handle_event` does.
 - **Web has no arbiter** — `register_focus_target` is desktop/Android/embed
   only; use a real `tabindex` and the DOM's own `focus`/`blur` there.
+
+**Key auto-repeat: the press says so** (#463). Enter/Space on a focused
+`FocusTarget::Node` activates **once per physical press**, and the OS delivers a
+held key as a stream of `KeyDown`s indistinguishable from real ones — so
+`PlatformEvent::KeyDown` carries `repeat: KeyRepeat`, three-state
+(`Fresh` / `Repeat` / `Unknown`) for the same reason `PrimaryButton` is
+(#189): *a backend that cannot see is a real case and must not be made to
+guess.* winit fills it on desktop, `KeyEvent::repeat_count()` on Android, the
+debug/MCP channel and the `game-embed` host fill it themselves;
+`Unknown` is the `Default` and falls back to `RinchApp::node_activation_held`,
+the press/release latch rinch has always used.
+
+**The latch alone was the #189 shape**: armed on the way down, cleared only by
+the matching `KeyUp` — and a release that never reaches us (alt-tab while held,
+a WM grab, a native menu or modal taking the keyboard, an embed host or the MCP
+channel that sends no releases at all) stranded it, killing that key on that
+node **for the rest of the session**, silently. A `WindowFocus(false)` clear
+(landed with #147, pinned by nothing until #463) bounds it, and on Android it was
+the *only* clear, since that backend translates no `KeyAction::Up` at all
+(#479 — whose activation-latch half this closes, leaving it about release
+*visibility*). But a second event can be swallowed too; a fact carried **by the
+press being judged** cannot. `RinchApp::press_is_fresh` is the one place that
+decides, and `Fresh` is authoritative *over* the latch — that is the repair, not
+a tie-break.
+
+Not carried to `KeyEventData`, so a registered node's `on_key` still cannot tell
+a repeat from a press: the honest field is the same three-state one, and
+`rinch-core` depends on neither `rinch-platform` nor the browser, so it needs a
+home for the type first (**#797**).
 
 Guide: `docs/src/guide/focus.md`.
 

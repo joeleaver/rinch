@@ -734,6 +734,7 @@ fn enter_on_the_opener_moves_focus_into_the_modal() {
             logical_key: None,
             text: None,
             modifiers: Modifiers::default(),
+            repeat: KeyRepeat::Unknown,
         },
         (W as u32, H as u32),
         1.0,

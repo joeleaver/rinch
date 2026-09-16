@@ -62,6 +62,7 @@ fn key(app: &mut RinchApp, key: KeyCode, modifiers: Modifiers) {
             logical_key: None,
             text: None,
             modifiers,
+            repeat: KeyRepeat::Unknown,
         },
         (W as u32, H as u32),
         1.0,

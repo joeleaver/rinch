@@ -551,7 +551,7 @@ a transformed subtree is hit where it is *painted*.
 Translate your engine's events to `rinch_platform::PlatformEvent`:
 
 ```rust
-use rinch_platform::{PlatformEvent, MouseButton, KeyCode, Modifiers};
+use rinch_platform::{PlatformEvent, MouseButton, KeyCode, KeyRepeat, Modifiers};
 
 PlatformEvent::MouseMove { x: 100.0, y: 200.0 }
 PlatformEvent::MouseDown { x: 100.0, y: 200.0, button: MouseButton::Left }
@@ -564,6 +564,13 @@ PlatformEvent::KeyDown {
     logical_key: Some("a".into()),
     text: Some("a".into()),
     modifiers: Modifiers::default(),
+    // Is this a fresh physical press, or the OS repeating a key still held
+    // (issue #463)? Say `KeyRepeat::Repeat` for a re-sent held key, and
+    // `KeyRepeat::Unknown` if your engine cannot tell — the runtime then
+    // infers it from the press/release pair, as it always did. Answering
+    // where you can is what keeps a swallowed release from stranding the
+    // Enter/Space activation of a focused node.
+    repeat: KeyRepeat::Fresh,
 }
 PlatformEvent::KeyUp {
     key: KeyCode::KeyA,

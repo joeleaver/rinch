@@ -372,10 +372,16 @@ registers the node without asking for anything back.
 ### Presses and releases
 
 `k.kind` is `KeyEventKind::Down` or `Up`; `k.is_down()` / `k.is_up()` are the
-shorthands. **OS auto-repeat arrives as `Down`**, and nothing yet distinguishes
-it from a fresh press — the browser supplies a flag but the desktop platform
-event does not carry winit's, so exposing one would be truthful on web and
-silently wrong on desktop. It arrives with that plumbing.
+shorthands. **OS auto-repeat arrives as `Down`**, and `KeyEventData` does not
+yet distinguish it from a fresh press. The *platform* event does, since issue
+#463 — `PlatformEvent::KeyDown` carries a three-state `KeyRepeat`
+(`Fresh` / `Repeat` / `Unknown`), filled in by winit on desktop and by
+`repeat_count()` on Android, and that is what the runtime's own once-per-press
+Enter/Space activation reads. Surfacing it to `on_key` needs the same
+three-state answer (a plain `bool` would report a held key as fresh wherever a
+backend cannot see, which is the divergence a document-level hook exists to
+avoid) and so needs a home for the type that `rinch-core` can reach. Tracked as
+[#797](https://github.com/joeleaver/rinch/issues/797).
 
 A press and its release are spelled by the same rule, from the same fields, so
 **pairing them by `k.key` works by construction** — which is what "is W still

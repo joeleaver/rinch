@@ -53,6 +53,8 @@ mod input_ime_tests;
 #[cfg(test)]
 mod key_event_data_tests;
 #[cfg(test)]
+mod key_repeat_tests;
+#[cfg(test)]
 mod late_children_716_tests;
 #[cfg(test)]
 mod node_ime_tests;
@@ -111,7 +113,8 @@ use rinch_dom::text_query::caret_position_for_offset_layout;
 use rinch_dom::text_query::glyph_bounds_for_offset_layout;
 use rinch_editable::{EditCommand, EditableDocument, EditableState, Selection, StringDocument};
 use rinch_platform::{
-    AppAction, ImeEvent, Instant, KeyCode, Modifiers, MouseButton, PlatformEvent, UserEvent,
+    AppAction, ImeEvent, Instant, KeyCode, KeyRepeat, Modifiers, MouseButton, PlatformEvent,
+    UserEvent,
 };
 #[cfg(any(feature = "gpu", feature = "android-gpu", feature = "embed"))]
 use vello::Scene;
@@ -441,10 +444,19 @@ pub struct RinchApp {
     /// [`PlatformEvent::WindowFocus`] behaves exactly as it did before.
     pub(crate) window_focused: bool,
     /// The Enter/Space key currently latched by a `FocusTarget::Node`
-    /// activation (issue #228). OS auto-repeat delivers indistinguishable
-    /// KeyDowns (`PlatformEvent::KeyDown` carries no repeat flag), so a held
-    /// key must activate once per physical press; cleared on the matching
-    /// KeyUp.
+    /// activation (issue #228) — the **fallback** discriminator for
+    /// once-per-physical-press, used only where the backend answers
+    /// [`KeyRepeat::Unknown`].
+    ///
+    /// A backend that reports auto-repeat (desktop, Android) is believed
+    /// instead, and that is issue #463: a latch is armed by one event and
+    /// cleared only by a second, so a `KeyUp` that never reaches us stranded
+    /// it for the rest of the session and silently killed that key on that
+    /// node. Two things clear it — the matching `KeyUp`, and a
+    /// [`PlatformEvent::WindowFocus`]`(false)`, since a window that lost the
+    /// keyboard holds no key down — but neither is guaranteed to arrive, which
+    /// is why [`RinchApp::press_is_fresh`] prefers the flag on the press
+    /// itself.
     pub(crate) node_activation_held: Option<KeyCode>,
     /// The open native-`<select>` popup, if any. Present exactly when
     /// `focus_target == FocusTarget::Select(_)`. Holds the app-created popup DOM
@@ -4608,6 +4620,7 @@ mod tab_focus_tests {
                     shift,
                     ..Default::default()
                 },
+                repeat: KeyRepeat::Unknown,
             },
             (800, 600),
             1.0,
@@ -4715,9 +4728,11 @@ mod tab_focus_tests {
         assert_eq!(clicks.get(), 2, "Space dispatches the click handler once");
     }
 
-    /// A held key auto-repeats KeyDown with no repeat flag: activation must
-    /// latch until the matching KeyUp — one physical press, one activation
-    /// (a held Space on the web activates exactly once).
+    /// The fallback path, for a backend that answers [`KeyRepeat::Unknown`]:
+    /// with no flag on the press, activation latches until the matching KeyUp
+    /// — one physical press, one activation (a held Space on the web activates
+    /// exactly once). A backend that *does* answer is believed instead; see
+    /// `key_repeat_tests` (issue #463).
     #[test]
     fn held_key_activates_once_per_physical_press() {
         let (mut app, _input_id, div_id, clicks) = mount_input_and_div();
@@ -7918,6 +7933,7 @@ mod transform_aware_walk_tests {
                 logical_key: None,
                 text: None,
                 modifiers: Modifiers::default(),
+                repeat: KeyRepeat::Unknown,
             },
             (800, 600),
             1.0,

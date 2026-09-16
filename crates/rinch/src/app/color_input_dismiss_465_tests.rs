@@ -103,6 +103,9 @@ fn escape(app: &mut RinchApp) {
             logical_key: None,
             text: None,
             modifiers: Modifiers::default(),
+            // Escape never reaches the once-per-press activation arm, so the
+            // fallback answer is the honest one here (issue #463).
+            repeat: KeyRepeat::Unknown,
         },
         (800, 600),
         1.0,

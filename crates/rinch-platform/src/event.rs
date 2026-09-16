@@ -110,6 +110,14 @@ pub enum PlatformEvent {
         /// The text this keypress would insert (suppressed under Ctrl/Cmd), or `None`.
         text: Option<String>,
         modifiers: Modifiers,
+        /// Whether the OS says this press is a fresh one, an auto-repeat of a
+        /// key still held, or something it cannot tell apart (issue #463).
+        ///
+        /// See [`KeyRepeat`]. A backend that does not know says so with
+        /// [`KeyRepeat::Unknown`], which is also the type's `Default` — the
+        /// safe answer, because it is the one that keeps the runtime's
+        /// auto-repeat latch in play.
+        repeat: KeyRepeat,
     },
     /// Key released.
     ///
@@ -351,6 +359,49 @@ impl Modifiers {
             self.ctrl
         }
     }
+}
+
+/// Whether a [`PlatformEvent::KeyDown`] is a fresh physical press or an OS
+/// auto-repeat — or neither, because the backend cannot see (issue #463).
+///
+/// Holding a key down makes the OS deliver a stream of presses indistinguishable
+/// from real ones, so anything that must happen **once per physical press**
+/// (activating a focused `tabindex` node with Enter/Space, a game's "jump")
+/// needs to tell them apart. Without this the runtime could only *infer* it, by
+/// latching the key on the way down and clearing it on the matching `KeyUp` —
+/// and a release that never arrives (alt-tab while held, a window-manager grab,
+/// a native menu or modal taking the keyboard) then strands the latch and eats
+/// every later press of that key. That is the shape issue #189 fixed for a
+/// pointer-capture drag, and the cure is the same one: a fact carried **by the
+/// event being judged** cannot be swallowed the way a second event can.
+///
+/// Three states rather than a `bool`, exactly like
+/// `rinch_core::PrimaryButton` on the drag path, because a backend that cannot
+/// answer is a real case and must not be made to guess:
+///
+/// - **Desktop** (winit) reports it per event and answers `Fresh`/`Repeat`.
+/// - **Android** reports it as `KeyEvent::repeat_count()` and answers
+///   `Fresh`/`Repeat`.
+/// - **An embed host** hand-building events, and the debug/MCP channel's
+///   injected keys, answer `Unknown` unless they genuinely know.
+/// - **`rinch-web` has no `PlatformEvent` pump at all** — the browser is the
+///   arbiter there and supplies `KeyboardEvent.repeat` directly.
+///
+/// `Unknown` is the `Default` because it is the *conservative* answer: it keeps
+/// the runtime's latch in play, so a backend that never learns to fill this in
+/// behaves exactly as it did before.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub enum KeyRepeat {
+    /// The OS says this is a fresh physical press. **Authoritative**: it
+    /// activates whatever a stale latch believes.
+    Fresh,
+    /// The OS says this is an auto-repeat of a key that is still held.
+    /// **Authoritative**: it never activates.
+    Repeat,
+    /// The backend does not report it. The consumer falls back to whatever it
+    /// can infer — on the runtime's activation path, the press/release latch.
+    #[default]
+    Unknown,
 }
 
 /// Platform-agnostic key codes.
