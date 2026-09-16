@@ -119,6 +119,7 @@ use muda::accelerator::Accelerator;
 use rinch_core::reactive::{Owner, current_owner, unowned};
 use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
+use std::marker::PhantomData;
 use std::rc::Rc;
 #[cfg(feature = "desktop")]
 use std::str::FromStr;
@@ -351,6 +352,15 @@ thread_local! {
     /// Source of the ids [`register_menu_shortcuts`] registers under.
     static NEXT_MENU_ID: Cell<u64> = const { Cell::new(0) };
 
+    /// Source of [`MenuRegistration::build`].
+    ///
+    /// Starts at **1**, so the `0` a `MenuRegistration::default()` carries — the
+    /// native bar's build, a tray's — is a number no [`MenuBarChords`] can ever
+    /// name. A token releases the slot only when the slot is still its own
+    /// build, and a build nobody holds a token for must never be mistaken for
+    /// one.
+    static NEXT_MENU_BAR_BUILD: Cell<u64> = const { Cell::new(1) };
+
     /// The registration held by the most recently built menu bar, native
     /// (`build_native_menu_bar`) or DOM ([`register_menu_shortcuts`]).
     ///
@@ -361,7 +371,23 @@ thread_local! {
     /// app has two menu bars: a desktop build arms its chords through muda, a
     /// web build through `register_menu_shortcuts`, and neither runs twice over
     /// one window.
+    ///
+    /// *Replacing* is the whole of the story on the desktop, where the bar has
+    /// the app's lifetime. A web island does not: it can be **unmounted**, and
+    /// then nothing would ever replace its build — so the chords would go on
+    /// firing and go on calling `preventDefault` on somebody else's page. That
+    /// is what [`MenuBarChords`] closes, and why the slot has to be able to say
+    /// *which* build it is holding.
     static MENU_BAR_REGISTRATION: RefCell<Option<MenuRegistration>> = const { RefCell::new(None) };
+}
+
+/// A build number no previous [`register_menu_shortcuts`] call has used.
+fn next_menu_bar_build() -> u64 {
+    NEXT_MENU_BAR_BUILD.with(|next| {
+        let build = next.get();
+        next.set(build + 1);
+        build
+    })
 }
 
 /// Register `cb` under `menu_id` as belonging to `owner`, returning the entry so
@@ -587,6 +613,11 @@ pub(crate) struct MenuRegistration {
     /// [`Rc::ptr_eq`] rather than trusting the key.
     callbacks: Vec<(String, Rc<MenuCallback>)>,
     shortcuts: Vec<u64>,
+    /// Which build this is, for the one holder that can outlive its own
+    /// replacement: see [`MenuBarChords`]. `0` — the `Default` — means "no token
+    /// names this build", which is every registration but a
+    /// [`register_menu_shortcuts`] one.
+    build: u64,
 }
 
 impl MenuRegistration {
@@ -641,6 +672,54 @@ impl Drop for MenuRegistration {
     }
 }
 
+/// The chords one [`register_menu_shortcuts`] call armed, released when this is
+/// dropped.
+///
+/// [`MENU_BAR_REGISTRATION`] holds the build itself; this names it. Dropping the
+/// token releases that build **only while the slot still holds it** — the
+/// [`take_callback_if_ours`] discipline one level up — so:
+///
+/// * the island that armed the chords gives them back when it unmounts, instead
+///   of leaving a removed widget eating a key combination from its host page for
+///   the rest of the session;
+/// * an island that armed them and was then *replaced* by a later bar releases
+///   nothing, because the chords live are no longer its own. "One page, one set
+///   of chords" is a last-writer-wins rule, and un-arming has to obey it or the
+///   first island's unmount would silently disarm the second island.
+///
+/// The desktop needs no token: its bar has the app's lifetime and is only ever
+/// replaced, never taken away, so `build_native_menu_bar` leaves the build at
+/// `0` and nothing can name it.
+///
+/// `!Send` like [`MenuRegistration`], and for the same reason: release touches
+/// thread-local state, so it has to happen on the thread that armed the chords.
+/// The token holds no `Rc` of its own, so the marker says it explicitly.
+#[must_use = "dropping the token immediately releases the chords it just armed; \
+              hold it for as long as the menu bar is mounted"]
+pub struct MenuBarChords {
+    build: u64,
+    _not_send: PhantomData<Rc<()>>,
+}
+
+impl Drop for MenuBarChords {
+    fn drop(&mut self) {
+        let build = self.build;
+        // Bound outside the borrow, like every other release here: the reclaimed
+        // registration holds user callbacks whose `Drop` may re-enter the
+        // registry. `try_with`/`try_borrow_mut` for the thread-exit and
+        // unwinding cases — release degrades to "not reclaimed" rather than
+        // panicking.
+        let _reclaimed = MENU_BAR_REGISTRATION.try_with(|slot| {
+            let mut slot = slot.try_borrow_mut().ok()?;
+            if slot.as_ref().is_some_and(|held| held.build == build) {
+                slot.take()
+            } else {
+                None
+            }
+        });
+    }
+}
+
 // ── Build functions (Menu → the registry, Menu → muda types) ────────────────
 
 /// Arm the keyboard shortcuts every item in `menus` declares, and release
@@ -662,14 +741,24 @@ impl Drop for MenuRegistration {
 /// The build's ids are held in [`MENU_BAR_REGISTRATION`], the same slot the
 /// native bar uses, so re-arming a rebuilt menu bar releases the previous
 /// build's ids instead of growing the registry forever.
-pub fn register_menu_shortcuts(menus: &[(&str, &Menu)]) {
+///
+/// The returned [`MenuBarChords`] is what takes the chords back **down** again:
+/// hold it for as long as the bar is mounted and drop it when it is not. A web
+/// island can be unmounted, and nothing else would ever reclaim its build.
+pub fn register_menu_shortcuts(menus: &[(&str, &Menu)]) -> MenuBarChords {
     let mut registration = MenuRegistration::default();
+    let build = next_menu_bar_build();
+    registration.build = build;
     for (_, menu) in menus {
         register_menu_shortcuts_into(menu, &mut registration);
     }
     // Bound outside the borrow: dropping the displaced token drops user
     // callbacks, whose `Drop` may re-enter the registry.
     let _previous = MENU_BAR_REGISTRATION.with(|slot| slot.borrow_mut().replace(registration));
+    MenuBarChords {
+        build,
+        _not_send: PhantomData,
+    }
 }
 
 /// Walk one menu (and its submenus), registering each chord-bearing item.
@@ -1572,7 +1661,7 @@ mod tests {
                 ),
             );
 
-        register_menu_shortcuts(&[("File", &file)]);
+        let _chords = register_menu_shortcuts(&[("File", &file)]);
 
         assert!(match_shortcut_code(true, false, false, true, "KeyF"));
         assert_eq!(top_fired.get(), 1);
@@ -1601,7 +1690,7 @@ mod tests {
             )
             .item(MenuItem::new("Zoom Out").shortcut("Ctrl+Alt+M"));
 
-        register_menu_shortcuts(&[("View", &view)]);
+        let _chords = register_menu_shortcuts(&[("View", &view)]);
 
         assert_eq!(
             shortcut_count(),
@@ -1624,10 +1713,13 @@ mod tests {
         let callbacks = callback_count();
         let shortcuts = shortcut_count();
 
+        // Every build's token is kept alive to the end, so this asserts the
+        // *replacement* releases the previous build — not a token drop.
+        let mut tokens = Vec::new();
         for _ in 0..5 {
             let menu =
                 Menu::new().item(MenuItem::new("Save").shortcut("Ctrl+Alt+S").on_click(|| {}));
-            register_menu_shortcuts(&[("File", &menu)]);
+            tokens.push(register_menu_shortcuts(&[("File", &menu)]));
             assert_eq!(
                 callback_count(),
                 callbacks + 1,
@@ -1640,6 +1732,81 @@ mod tests {
         MENU_BAR_REGISTRATION.with(|slot| slot.borrow_mut().take());
         assert_eq!(callback_count(), callbacks);
         assert_eq!(shortcut_count(), shortcuts);
+        drop(tokens);
+    }
+
+    /// The other half of "arming replaces": an island that *unmounts* has
+    /// nothing to replace its build, so its token has to take the chords back
+    /// down — otherwise a removed widget goes on running its callback and goes
+    /// on calling `preventDefault` on its host page for the rest of the session
+    /// (measured in Chrome 153; `rinch-web/tests/menu_bar_shortcuts.rs` is the
+    /// browser half of this pair).
+    #[test]
+    fn dropping_the_token_disarms_the_chords_it_armed() {
+        let (fired, cb) = probe();
+        let menu = Menu::new().item(
+            MenuItem::new("Focus Search")
+                .shortcut("Ctrl+Alt+K")
+                .on_click(move || cb()),
+        );
+
+        let chords = register_menu_shortcuts(&[("View", &menu)]);
+        assert!(
+            match_shortcut_code(true, false, true, false, "KeyK"),
+            "control: armed while the bar is up"
+        );
+        assert_eq!(fired.get(), 1);
+
+        drop(chords);
+
+        assert!(
+            !match_shortcut_code(true, false, true, false, "KeyK"),
+            "an unmounted bar must not go on eating its chord"
+        );
+        assert_eq!(fired.get(), 1, "nor go on running its item");
+    }
+
+    /// Release is "only if the slot is still mine", the [`take_callback_if_ours`]
+    /// discipline one level up. Two islands on one page share the chord
+    /// registry and the second to arm wins; the first unmounting afterwards
+    /// must leave the second's chords alone — a token that reclaimed on the
+    /// strength of having *once* armed would silently disarm a live bar.
+    #[test]
+    fn a_stale_token_leaves_a_later_builds_chords_armed() {
+        let (first_fired, first_cb) = probe();
+        let (second_fired, second_cb) = probe();
+        let first_menu = Menu::new().item(
+            MenuItem::new("One")
+                .shortcut("Ctrl+Alt+Y")
+                .on_click(move || first_cb()),
+        );
+        let second_menu = Menu::new().item(
+            MenuItem::new("Two")
+                .shortcut("Ctrl+Alt+Z")
+                .on_click(move || second_cb()),
+        );
+
+        let first = register_menu_shortcuts(&[("First", &first_menu)]);
+        let second = register_menu_shortcuts(&[("Second", &second_menu)]);
+
+        drop(first);
+
+        assert!(
+            match_shortcut_code(true, false, true, false, "KeyZ"),
+            "the second build is the one the slot holds; a stale token must not take it"
+        );
+        assert_eq!(second_fired.get(), 1);
+        assert!(
+            !match_shortcut_code(true, false, true, false, "KeyY"),
+            "the first build was released by the replacement, not by its token"
+        );
+        assert_eq!(first_fired.get(), 0);
+
+        drop(second);
+        assert!(
+            !match_shortcut_code(true, false, true, false, "KeyZ"),
+            "and the live token still disarms its own"
+        );
     }
 
     /// The shortcut string is parsed once, into a `code` name both sides agree
@@ -1664,6 +1831,139 @@ mod tests {
                 Some(code),
                 "{chord}: winit's KeyCode must name the same key as the web code"
             );
+        }
+    }
+
+    /// Every key a shortcut can name, both ways.
+    ///
+    /// The five pairs above are a sample, and a sample is what a hand-written
+    /// 64-arm table is least safe against: flipping `KeyCode::KeyN => "KeyN"` to
+    /// `"KeyM"` survived the entire `menu::` suite, and in production that is
+    /// Ctrl+N on the desktop silently running the Ctrl+M item — with a green
+    /// board, because the *web* half of the same registration is unaffected. The
+    /// two backends diverge and nothing says so.
+    ///
+    /// Neither direction is asserted against a second hand-written table, which
+    /// would only move the typo:
+    ///
+    /// * the inverse table is checked against `Debug`, which is exactly what
+    ///   `key_code_name` deliberately does **not** derive from. Its reason for
+    ///   spelling the arms out — that an upstream *rename* must be a compile
+    ///   error rather than a silent unbinding — survives, because a renamed
+    ///   variant stops compiling here too;
+    /// * the forward table is checked against a spelling *derived* from the code
+    ///   name (`KeyA` → `A`, `Digit0` → `0`, everything else is its own
+    ///   spelling), so a typo in `parse_shortcut_for_matching` fails too.
+    ///
+    /// Together they pin the bijection the two tables are: a code reachable from
+    /// a `KeyCode` is reachable from a shortcut string, and names the same key.
+    #[cfg(feature = "desktop")]
+    #[test]
+    fn every_arm_of_the_key_table_round_trips() {
+        // Listed rather than iterated because `winit::keyboard::KeyCode` is
+        // `#[non_exhaustive]` with hundreds of variants and no iterator; these
+        // are the 64 `key_code_name` answers to. A variant *renamed* upstream
+        // fails to compile here, which is the whole reason the source table is
+        // spelled out.
+        let named: [KeyCode; 64] = [
+            KeyCode::KeyA,
+            KeyCode::KeyB,
+            KeyCode::KeyC,
+            KeyCode::KeyD,
+            KeyCode::KeyE,
+            KeyCode::KeyF,
+            KeyCode::KeyG,
+            KeyCode::KeyH,
+            KeyCode::KeyI,
+            KeyCode::KeyJ,
+            KeyCode::KeyK,
+            KeyCode::KeyL,
+            KeyCode::KeyM,
+            KeyCode::KeyN,
+            KeyCode::KeyO,
+            KeyCode::KeyP,
+            KeyCode::KeyQ,
+            KeyCode::KeyR,
+            KeyCode::KeyS,
+            KeyCode::KeyT,
+            KeyCode::KeyU,
+            KeyCode::KeyV,
+            KeyCode::KeyW,
+            KeyCode::KeyX,
+            KeyCode::KeyY,
+            KeyCode::KeyZ,
+            KeyCode::Digit0,
+            KeyCode::Digit1,
+            KeyCode::Digit2,
+            KeyCode::Digit3,
+            KeyCode::Digit4,
+            KeyCode::Digit5,
+            KeyCode::Digit6,
+            KeyCode::Digit7,
+            KeyCode::Digit8,
+            KeyCode::Digit9,
+            KeyCode::F1,
+            KeyCode::F2,
+            KeyCode::F3,
+            KeyCode::F4,
+            KeyCode::F5,
+            KeyCode::F6,
+            KeyCode::F7,
+            KeyCode::F8,
+            KeyCode::F9,
+            KeyCode::F10,
+            KeyCode::F11,
+            KeyCode::F12,
+            KeyCode::Equal,
+            KeyCode::Minus,
+            KeyCode::Enter,
+            KeyCode::Escape,
+            KeyCode::Backspace,
+            KeyCode::Tab,
+            KeyCode::Space,
+            KeyCode::Delete,
+            KeyCode::Home,
+            KeyCode::End,
+            KeyCode::PageUp,
+            KeyCode::PageDown,
+            KeyCode::ArrowUp,
+            KeyCode::ArrowDown,
+            KeyCode::ArrowLeft,
+            KeyCode::ArrowRight,
+        ];
+
+        let mut seen: Vec<&'static str> = Vec::new();
+        for key in named {
+            let debug = format!("{key:?}");
+            let code = key_code_name(key)
+                .unwrap_or_else(|| panic!("{debug}: no arm names this key any more"));
+            assert_eq!(
+                code, debug,
+                "key_code_name({debug}) must name its own variant"
+            );
+
+            // The shortcut spelling this code answers to. Every code name but a
+            // letter's and a digit's *is* an accepted spelling, uppercased.
+            let spelling = code
+                .strip_prefix("Key")
+                .or_else(|| code.strip_prefix("Digit"))
+                .unwrap_or(code);
+            let parsed = parse_shortcut_for_matching(spelling)
+                .unwrap_or_else(|| panic!("{code}: \"{spelling}\" must parse as a shortcut"));
+            assert_eq!(
+                parsed.code, code,
+                "\"{spelling}\" must parse back to {code}"
+            );
+            assert!(
+                !parsed.ctrl_or_cmd && !parsed.alt && !parsed.shift,
+                "\"{spelling}\" is a bare key, not a modifier"
+            );
+
+            assert!(
+                !seen.contains(&code),
+                "{code} is reached by two KeyCodes: one of them shadows the other"
+            );
+            seen.push(code);
         }
     }
 

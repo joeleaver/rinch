@@ -1275,12 +1275,27 @@ pub(crate) fn add_capture<E: JsCast + 'static>(
     name: &str,
     handler: impl Fn(E) + 'static,
 ) {
+    add_capture_on(doc.as_ref(), name, handler);
+}
+
+/// [`add_capture`] against any target. `window` is the one other target rinch
+/// uses: it is one node further out than `document` on every event path, so a
+/// listener there runs ahead of *every* document listener whatever order they
+/// were registered in — and a `stopPropagation()` from it stops all of them.
+/// That is what the menu bar's chord check needs (`menu_bar.rs`), and what
+/// keeps the pointer-gesture observer seeing a key the chord check consumed.
+pub(crate) fn add_capture_on<E: JsCast + 'static>(
+    target: &web_sys::EventTarget,
+    name: &str,
+    handler: impl Fn(E) + 'static,
+) {
     let closure = Closure::wrap(Box::new(move |e: web_sys::Event| {
         if let Ok(ev) = e.dyn_into::<E>() {
             handler(ev);
         }
     }) as Box<dyn FnMut(web_sys::Event)>);
-    doc.add_event_listener_with_callback_and_bool(name, closure.as_ref().unchecked_ref(), true)
+    target
+        .add_event_listener_with_callback_and_bool(name, closure.as_ref().unchecked_ref(), true)
         .ok();
     closure.forget();
 }

@@ -15,7 +15,7 @@ use wasm_bindgen::prelude::*;
 
 use rinch_core::events;
 
-use crate::editor_input::add_capture;
+use crate::editor_input::{add_capture, add_capture_on};
 use crate::web_document::{COMPOSING_PROP, WebDocument, flush_deferred_value};
 
 thread_local! {
@@ -1738,7 +1738,18 @@ pub fn setup_event_delegation(doc: &WebDocument) {
             schedule_gesture_end(GESTURE_GRACE_MS);
         });
     }
-    add_capture(&browser_doc, "keydown", |event: web_sys::KeyboardEvent| {
+    // On `window`, not `document`, unlike its pointer siblings above: the menu
+    // bar's chord check (`menu_bar.rs`) is a *window* capture listener that
+    // stops a consumed chord before it reaches `document` at all, the way the
+    // desktop shell returns before a matched chord becomes a `PlatformEvent`.
+    // Same-node listeners all still run, so observing from `window` too is what
+    // keeps this flag seeing every key — including a chord — while
+    // `editor_input` and the bubble delegate correctly see none.
+    let window: web_sys::EventTarget = match web_sys::window() {
+        Some(w) => w.into(),
+        None => browser_doc.clone().into(),
+    };
+    add_capture_on(&window, "keydown", |event: web_sys::KeyboardEvent| {
         // A repeat never begins a keyboard interaction — its first press
         // already did — and one landing inside a pointer gesture (a held
         // Shift auto-repeating through a Shift+click) must not un-mark it.
