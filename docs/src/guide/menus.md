@@ -2,6 +2,8 @@
 
 Rinch provides native menu support through the `muda` library. Menus use a unified builder API (`Menu` / `MenuItem`) shared between native window menus and system tray context menus.
 
+The builder API itself needs no windowing at all. Two targets have no native menu bar to attach a menu to — Linux, where muda wants a GTK window, and the browser, where there is no window menu — so both render the same menus out of DOM nodes instead. On the desktop that is automatic; on the web it is `rinch_web::mount_with_menu_bar`, covered in [Running on WASM](./wasm.md#mounting-with-a-menu-bar).
+
 ## Native Menus
 
 Add a native menu bar with `App::menu`:
@@ -96,7 +98,7 @@ Callbacks fire both when the user clicks the menu item and when the keyboard sho
 
 A callback belongs to the component that **created** it — the scope that was rendering when you called `on_click`, which is where the closure captured its `Signal`s. When that component unmounts its signals are freed, so the item stops firing rather than reading freed state (reading a freed signal panics). The callback also runs *inside* that component, so a `Signal` it creates belongs there too.
 
-Ownership is per item, not per menu: one `Menu` may collect items contributed by several components, and each item's callback stops on its own component's unmount. This holds however the item is activated — a native menu click, a tray click, the Linux in-app menu bar, or the keyboard shortcut.
+Ownership is per item, not per menu: one `Menu` may collect items contributed by several components, and each item's callback stops on its own component's unmount. This holds however the item is activated — a native menu click, a tray click, the DOM menu bar on Linux or on the web, or the keyboard shortcut.
 
 Build the menu outside any component — from `main`, before `App::run`, which is what all the examples do — and there is no owner to record, so the callback lives for the life of the app:
 
@@ -189,6 +191,9 @@ MenuItem::new("Find Next").shortcut("F3")
 
 Shortcuts work across platforms - `Cmd` and `Ctrl` are automatically mapped to the platform-appropriate modifier.
 
+In a browser a few of them are the browser's own and cannot be claimed — see
+[Running on WASM](./wasm.md#mounting-with-a-menu-bar). It changes nothing about the declaration; the desktop build still gets the chord.
+
 ## Platform Behavior
 
 ### macOS
@@ -222,7 +227,12 @@ div { style: "position: fixed; top: var(--rinch-window-top-inset, 0px); bottom: 
 The bar behaves like a native one: click a top-level label to open its menu,
 then move across the bar to switch between menus without clicking again. Hover
 or click a submenu row to open its flyout, click an item to run it, and click
-anywhere else in the window to dismiss.
+anywhere else in the window — or press Escape — to dismiss.
+
+Escape rides the same dismiss stack every other rinch overlay uses, so it is
+LIFO against `Modal`, `Drawer`, `Popover` and an open `<select>`: the bar
+registers at mount, which puts every later overlay above it, and its handler
+declines the key outright while no menu is open.
 
 That last one is a full-window overlay rinch renders under the open menu, at
 `z-index: 199` against the bar's `201`. It is `position: fixed`, so it covers

@@ -15,7 +15,7 @@ use wasm_bindgen::prelude::*;
 
 use rinch_core::events;
 
-use crate::editor_input::add_capture;
+use crate::editor_input::{add_capture, add_capture_on};
 use crate::web_document::{COMPOSING_PROP, WebDocument, flush_deferred_value};
 
 thread_local! {
@@ -79,6 +79,40 @@ thread_local! {
     /// Test-only: make the `click` gate read every click as trusted (see
     /// [`__force_trusted_clicks`]).
     static FORCE_TRUSTED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+
+    /// Whether a right-click anywhere on the page suppresses the browser's own
+    /// menu, whether or not rinch has a handler for it. See
+    /// [`set_suppress_native_context_menu`].
+    static SUPPRESS_NATIVE_CONTEXT_MENU: std::cell::Cell<bool> =
+        const { std::cell::Cell::new(false) };
+}
+
+/// Suppress the browser's native context menu on every right-click, not only on
+/// an element carrying a `data-oncontextmenu` handler.
+///
+/// **Default off, and opt-in on purpose.** `mount_into` / `mount_selector`
+/// hydrate an island into a page somebody else wrote, and a widget that took the
+/// right-click away from the rest of that page — links, images, selected text,
+/// the browser's own inspect — would be a bug. A whole-page rinch app that
+/// renders its own menus is the case where the answer flips, so it is the app
+/// that says so.
+///
+/// Turning it on is what makes an in-app context menu look native rather than
+/// wearing the browser's menu on top of it. Rinch's own `ContextMenu` portals
+/// its overlay to `body`, outside the subtree the handler lives on, so a
+/// right-click *inside the open menu* finds no `data-oncontextmenu` at all —
+/// that overlay is precisely where the page's default was still firing.
+///
+/// Page-global and immediate: it applies to every mounted root on the page, and
+/// can be flipped at any time (an app that suppresses only while its own menu is
+/// open, say).
+pub fn set_suppress_native_context_menu(suppress: bool) {
+    SUPPRESS_NATIVE_CONTEXT_MENU.with(|f| f.set(suppress));
+}
+
+/// Whether [`set_suppress_native_context_menu`] is currently on.
+pub fn suppresses_native_context_menu() -> bool {
+    SUPPRESS_NATIVE_CONTEXT_MENU.with(|f| f.get())
 }
 
 /// The elements a `<label>` can forward its activation click to.
@@ -1669,7 +1703,8 @@ fn handle_trapped_tab(browser_doc: &web_sys::Document, shift: bool) -> bool {
 /// `input`
 /// (`data-oninput`), `focusin` (the issue #226 commit baseline), `change`
 /// (`data-onchange`, deduplicated against the Enter commit), `contextmenu`
-/// (`data-oncontextmenu`), and capture-phase `scroll` (`data-onscroll`).
+/// (`data-oncontextmenu`, plus [`set_suppress_native_context_menu`]), and
+/// capture-phase `scroll` (`data-onscroll`).
 ///
 /// Pointer Events are used (rather than raw mouse events) so a single code path
 /// covers mouse, touch, and pen. `web_sys::PointerEvent` derefs to `MouseEvent`,
@@ -1703,7 +1738,18 @@ pub fn setup_event_delegation(doc: &WebDocument) {
             schedule_gesture_end(GESTURE_GRACE_MS);
         });
     }
-    add_capture(&browser_doc, "keydown", |event: web_sys::KeyboardEvent| {
+    // On `window`, not `document`, unlike its pointer siblings above: the menu
+    // bar's chord check (`menu_bar.rs`) is a *window* capture listener that
+    // stops a consumed chord before it reaches `document` at all, the way the
+    // desktop shell returns before a matched chord becomes a `PlatformEvent`.
+    // Same-node listeners all still run, so observing from `window` too is what
+    // keeps this flag seeing every key — including a chord — while
+    // `editor_input` and the bubble delegate correctly see none.
+    let window: web_sys::EventTarget = match web_sys::window() {
+        Some(w) => w.into(),
+        None => browser_doc.clone().into(),
+    };
+    add_capture_on(&window, "keydown", |event: web_sys::KeyboardEvent| {
         // A repeat never begins a keyboard interaction — its first press
         // already did — and one landing inside a pointer gesture (a held
         // Shift auto-repeating through a Shift+click) must not un-mark it.
@@ -2432,13 +2478,38 @@ pub fn setup_event_delegation(doc: &WebDocument) {
         .unwrap();
     change_closure.forget();
 
-    // Contextmenu delegation: dispatch data-oncontextmenu and suppress the
-    // native browser menu when a handler is found.
+    // Contextmenu delegation: dispatch `data-oncontextmenu`, and suppress the
+    // browser's own menu.
+    //
+    // Those are two questions, and this listener used to answer them with one
+    // `if let`: the default was prevented only on the branch that found a
+    // handler. So a right-click anywhere else still opened the browser's menu —
+    // including on `ContextMenu`'s own overlay, which is portalled to `body`,
+    // outside the subtree the handler is on, so it carries no
+    // `data-oncontextmenu` and the native menu landed on top of rinch's. They
+    // are separated here: prevent the default when a handler was found **or**
+    // [`set_suppress_native_context_menu`] is on, dispatch only when one was
+    // found.
     let contextmenu_closure = Closure::wrap(Box::new(move |event: web_sys::MouseEvent| {
-        if let Some(target) = event.target()
-            && let Ok(el) = target.dyn_into::<web_sys::Element>()
-            && let Some((menu_el, id)) = nearest_handler(&el, "data-oncontextmenu")
-        {
+        // A stale `data-oncontextmenu` — its scope disposed, the attribute
+        // outliving the handler (issue #141) — is not a handler. Without this
+        // check it both swallowed the browser's menu and dispatched nothing,
+        // leaving the right-click doing precisely nothing; the desktop's
+        // `dispatch_oncontextmenu` has always filtered on `has_click_handler`,
+        // and answering `false` there is what lets the click path run instead.
+        // Only the nearest carrier is considered, on both backends: the walk
+        // stops at the first element wearing the attribute.
+        let handler = event
+            .target()
+            .and_then(|target| target.dyn_into::<web_sys::Element>().ok())
+            .and_then(|el| nearest_handler(&el, "data-oncontextmenu"))
+            .filter(|(_, id)| events::has_click_handler(*id));
+
+        if handler.is_some() || suppresses_native_context_menu() {
+            event.prevent_default();
+        }
+
+        if let Some((menu_el, id)) = handler {
             set_click_context_for(
                 &menu_el,
                 Some((event.client_x() as f32, event.client_y() as f32)),
@@ -2446,7 +2517,6 @@ pub fn setup_event_delegation(doc: &WebDocument) {
                 events::MouseButton::Right,
                 modifiers_from_event(&event),
             );
-            event.prevent_default();
             events::dispatch_event(id);
         }
     }) as Box<dyn FnMut(_)>);

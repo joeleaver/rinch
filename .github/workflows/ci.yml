@@ -132,6 +132,18 @@ jobs:
           cargo test -p rinch-editor-core --features serde,markdown
           cargo test -p rinch-editor-view --features collaboration
           cargo test -p rinch --features desktop,embed,theme,clipboard,debug
+          # The menu system without a desktop backend — the configuration
+          # `rinch-web` resolves `rinch` to. It is the **decoupling** check, not
+          # extra coverage: `menu::app_menu_bar`'s `portable_tests` and
+          # `menu::tests` both run in the `--workspace` job above (`desktop` is a
+          # default feature and `--workspace` unifies it on), and what this line
+          # alone would notice is a `use muda::…` or a `winit::keyboard::KeyCode`
+          # creeping above the `#[cfg(feature = "desktop")]` line and taking the
+          # whole web menu bar with it. The `cargo check` in the `check` job below
+          # is the compile-only half of the same question; this one also runs the
+          # tests in that configuration, which is where a *behavioural* regression
+          # in the cfg'd-down half would show.
+          cargo test -p rinch --no-default-features --features components,theme
 
   clippy:
     runs-on: ubuntu-latest
@@ -182,11 +194,21 @@ jobs:
       # desktop + embed carries BOTH painters since #140 (the winit shell drives
       # TinySkia while embed RinchContexts drive Vello) and broke silently before
       # anything checked it. Plain `cargo check` — compile-only, cheap.
+      #
+      # `components,theme` with no defaults is the configuration `rinch-web`
+      # resolves `rinch` to: no muda, no winit, no rinch-dom. `rinch::menu` and
+      # its DOM menu bar build there — that is what lets a web app mount the same
+      # menus as its desktop twin — and nothing else in this file would notice a
+      # `use muda::…` creeping back above the `#[cfg(feature = "desktop")]` line.
+      # `clippy-wasm` below lints rinch-web itself, but warnings from a
+      # *dependency* are not denied there, so a broken `rinch` would surface as a
+      # confusing rinch-web failure rather than here.
       - name: Check rinch feature combinations
         run: |
           cargo check -p rinch --features embed
           cargo check -p rinch --no-default-features --features embed
           cargo check -p rinch --features gpu,embed
+          cargo check -p rinch --no-default-features --features components,theme
 
   # Lint the wasm target too. `clippy --workspace` above only ever sees the native
   # cfg, so anything behind `cfg(target_arch = "wasm32")` — the whole rinch-web
@@ -218,6 +240,7 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             target
+            examples/menu-bar-web/target
           key: ${{ runner.os }}-cargo-clippy-wasm-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: |
             ${{ runner.os }}-cargo-clippy-wasm-
@@ -231,6 +254,21 @@ jobs:
               --all-targets -- -D warnings
             echo "::endgroup::"
           done
+
+      # The web examples are excluded from the workspace (they pin their own
+      # `Cargo.lock` and must build for wasm32 alone), so nothing above reaches
+      # them and they can rot silently. `menu-bar-web` is built here because it
+      # is the only thing in the repo that calls `mount_with_menu_bar` and names
+      # `rinch_web::{Menu, MenuItem}` — the web menu bar's whole public surface
+      # has no other consumer, in CI or out of it. `--manifest-path` rather than
+      # `cd`, so it is one step; its own target dir is cached alongside the
+      # workspace's. The other excluded `*-web` examples are still unbuilt here,
+      # deliberately: `ui-zoo-web` is covered by the docs workflow, and the rest
+      # exercise APIs the workspace crates already test.
+      - name: Check the web menu-bar example (wasm32)
+        run: |
+          cargo check --manifest-path examples/menu-bar-web/Cargo.toml \
+            --target wasm32-unknown-unknown
 
   # Lint the Android target too (#598). `clippy --workspace` above only ever
   # sees the native host cfg — this was the first gate that ever ran clippy

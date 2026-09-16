@@ -46,7 +46,13 @@
 //! so creating a GPU context first prevents it from being claimed. Events, layout
 //! size, and resize observation work regardless of context type.
 
-use std::cell::{Cell, RefCell};
+// `Cell` is used by the render-callback guard (desktop) and the `requestAnimation
+// Frame` flag (wasm), and by nothing in between — so a host build with neither,
+// which is the configuration `rinch-web` resolves `rinch` to and which CI now
+// checks, warned on the import.
+#[cfg(any(feature = "desktop", target_arch = "wasm32"))]
+use std::cell::Cell;
+use std::cell::RefCell;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 

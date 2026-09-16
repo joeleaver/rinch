@@ -290,8 +290,9 @@ var(--rinch-shadow-xl)
 var(--rinch-window-top-inset)  /* Height of the chrome rinch draws above your content */
 ```
 
-Rinch sometimes draws window chrome itself: the in-app menu bar on Linux (28px)
-and the `BorderlessWindow` titlebar (36px). That chrome reserves space with
+Rinch sometimes draws window chrome itself: the DOM menu bar (28px — on Linux,
+and on the web under `rinch_web::mount_with_menu_bar`) and the
+`BorderlessWindow` titlebar (36px). That chrome reserves space with
 in-document padding, so **normal flow content clears it automatically**.
 
 A `position: fixed` element does not. Fixed elements resolve against the real

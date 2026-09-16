@@ -152,6 +152,90 @@ listeners once — so any number can coexist without interfering. Dropping a
 `RootHandle` keeps the root mounted; only `unmount()` tears it down. See
 `examples/islands-web` for a runnable demo.
 
+## Mounting with a menu bar
+
+Browsers have no window menu to attach a native menu bar to. Rinch renders one
+out of DOM nodes instead — the same bar the Linux desktop uses, built from the
+same `Menu` / `MenuItem` values you would hand to `App::menu`. So the menus are
+declared once and both targets render them.
+
+```rust
+use rinch_web::{Menu, MenuItem};
+
+#[wasm_bindgen(start)]
+pub fn start() {
+    let file = Menu::new()
+        .item(MenuItem::new("New").shortcut("Ctrl+N").on_click(|| new_doc()))
+        .separator()
+        .submenu("Open Recent", Menu::new()
+            .item(MenuItem::new("notes.md").on_click(|| open("notes.md"))))
+        .item(MenuItem::new("Save").shortcut("Ctrl+S").enabled(false));
+
+    let view = Menu::new()
+        .item(MenuItem::new("Focus Search").shortcut("Ctrl+K").on_click(|| focus_search()));
+
+    rinch_web::mount_with_menu_bar(
+        ThemeProviderProps::default(),
+        vec![("File", file), ("View", view)],
+        my_app::app,
+    );
+}
+```
+
+| API | Purpose |
+|-----|---------|
+| `mount_with_menu_bar(theme, menus, build)` | Whole-page app under a menu bar |
+| `mount_into_with_menu_bar(&Element, theme, menus, build) -> RootHandle` | An island under its own menu bar |
+| `mount_selector_with_menu_bar("#id", theme, menus, build) -> Option<RootHandle>` | Same, by CSS selector |
+
+Each `(label, menu)` pair becomes one top-level menu, in order. Clicking a label
+opens it; moving the pointer across the bar switches to the next menu without a
+second click; clicking outside or pressing Escape dismisses it. Separators and
+submenus render as flyouts.
+
+The bar is laid out *inside* whatever it is mounted into, above the content, and
+the wrapper it builds is **viewport-tall** — `height: 100vh`, from the component
+stylesheet. A whole-page app needs nothing for that; an island gets no say in it
+through the API, so a host shorter than the viewport is overflowed by the bar and
+giving that host a height changes nothing. Measured in Chrome 153: with no
+height on `html`, `body` or the host, everything lands at the viewport's 437px;
+with the host at `height: 120px`, the wrapper is still 437px. Tracked
+separately. An author stylesheet can still override it — the component sheet's
+rule is a bare class selector, so `div.rinch-app-menu-bar-wrapper { height: 100% }`
+wins on specificity (measured: a 120px host then gets a 120px wrapper).
+
+**Shortcuts are armed against the page.** Every item's `shortcut` string is
+matched on a capture-phase `keydown` on `window`, before the app sees the key,
+and a chord the menus claim is consumed: `preventDefault`, so the browser does
+not also act on it, and the event is stopped before it reaches anything else in
+the app — the same thing the desktop does by returning before a matched chord
+becomes an event. `Ctrl` and `Cmd` are interchangeable in the string, as on the
+desktop, so `"Ctrl+K"` is Cmd+K on a Mac. A chord nothing is listening to falls
+through to the page: an item with a `shortcut` but no `on_click`, or a disabled
+one, arms nothing.
+
+**A few chords are the browser's own and cannot be taken.** The ones that open
+and close windows and tabs — `Ctrl+N`, `Ctrl+T`, `Ctrl+W` and their `Shift`
+variants in Chrome and Firefox — are handled by the browser's chrome ahead of the
+page, so `preventDefault` does not reach them and the page may not be sent the
+keystroke at all. Exactly which chords those are depends on the browser and the
+platform, and rinch's `Ctrl`↔`Cmd` mapping shifts the question again on a Mac,
+where `"Ctrl+Q"` means `Cmd+Q` and belongs to the OS. Declaring one is still
+right when the same `Menu` drives a desktop build — `Ctrl+N` is what "New"
+should be there — just do not rely on the chord in the browser, and check any
+chord you care about in the browsers you support.
+
+**Unmounting gives the chords back.** They are page-global, so an island mounted
+into somebody else's page arms them against the whole document;
+`RootHandle::unmount` releases exactly the ones that island armed. Two islands
+that each declare menus still share one registry — the later one to arm wins, and
+the earlier one unmounting leaves the winner alone.
+
+Nothing about this needs the `desktop` feature. `rinch::menu`'s declaration types
+and the DOM renderer build with `default-features = false`; only the `muda`
+builders behind them are desktop-gated. See `examples/menu-bar-web` for a
+runnable demo.
+
 ## Building
 
 ### With Trunk (Recommended)
@@ -210,7 +294,9 @@ The abstraction is clean. If your component code doesn't import anything from `r
 
 - **Custom painting** — Vello and tiny-skia don't run in the browser. The browser paints for you instead.
 - **Game engine embedding** — `RenderSurface` and `RinchContext` are desktop-only.
-- **Native menus** — Browsers have their own menu system. Use Rinch components instead.
+- **Native menus** — There is no OS menu bar to attach one to. Rinch renders its
+  own DOM menu bar instead, from the same `Menu`/`MenuItem` declarations the
+  desktop uses — see [Mounting with a menu bar](#mounting-with-a-menu-bar).
 - **File dialogs** — Use the browser's `<input type="file">` or the File System Access API.
 - **System tray** — Not a thing in browsers.
 
@@ -234,4 +320,5 @@ A full UI Zoo demo (12 sections, 60+ components) compiles to ~3.3MB after `wasm-
 
 ## Reference
 
-See `examples/ui-zoo-web` in the repo for a complete, working WASM app with sidebar navigation, theme switching, and all components.
+See `examples/ui-zoo-web` in the repo for a complete, working WASM app with sidebar navigation, theme switching, and all components,
+and `examples/menu-bar-web` for the menu bar.
