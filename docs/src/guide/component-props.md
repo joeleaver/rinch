@@ -466,6 +466,7 @@ Text input with inline color preview and dropdown ColorPicker.
 | `swatches` | `Vec<String>` | `[]` | Preset swatch colors |
 | `swatches_per_row` | `Option<usize>` | `7` | Swatches per row |
 | `disallow_input` | `bool` | `false` | Disallow typing (picker only) |
+| `close_on_click_outside` | `bool` | `true` | Dismiss the dropdown when a click lands outside it (#465). Off mounts no backdrop at all and leaves the field as the only way in and out — the pre-#465 behaviour. Escape closes the dropdown either way |
 
 `size` and `radius` were declared but unread until #263. **`size` always
 resolves to a step, `radius` does not**: an unrecognised `size` falls back to
@@ -475,12 +476,22 @@ resizes by upgrading. An unrecognised `radius` emits no class at all and leaves
 the base `--rinch-radius-sm` standing, which is what `DropdownMenu`, `Modal` and
 `Card` do.
 
-**The dropdown is dismissed by clicking the field again.** `ColorInput` has no
-click-outside dismissal — it mounts no backdrop and registers no outside-click
-handler. A `close_on_click_outside` prop was declared alongside `size` and
-`radius` and read by nothing; it was removed in #263 rather than wired, because
-unlike those two there was no behaviour behind it to connect, and adding one is
-a new interaction rather than a repair.
+**The dropdown is dismissed three ways** (#465): clicking the field again,
+clicking anywhere outside it, and Escape. The outside click is the one that is
+optional — `close_on_click_outside` is `true` by default, matching every other
+popover in the library, and turning it off mounts no backdrop at all and
+restores the field-only behaviour `ColorInput` had until #465. (The prop was
+declared and read by nothing before that; #263 *removed* it rather than wire it,
+because unlike `size` and `radius` there was no behaviour behind it to connect,
+and it came back here with the interaction it names.)
+
+Two details follow from what the trigger is. **The field stays clickable while
+the picker is open** — it is a text input, not a button, so a click into it
+places a caret rather than being swallowed by the dismissal, and it still
+toggles the dropdown shut. And **Escape joins the dismiss stack when the
+dropdown opens**, not when the input mounts, so a `ColorInput` inside a `Modal`
+answers Escape first while its picker is open and leaves the key to the modal
+the moment it is closed.
 
 **The dropdown picker is bound to the input's current colour** (#237). Typed
 text previews in it live (a parseable keystroke moves its panel and thumbs,
@@ -846,7 +857,10 @@ Escape cancels — both on either backend — plus, on `rinch-web` only, a focus
 popup takes it too, but by joining this same stack rather than by beating it.
 A custom overlay of your own joins the same stack with
 [`push_dismiss_handler`](./focus.md#the-dismiss-stack) — reach for that rather
-than an interceptor, which is one slot per document and so cannot nest.
+than an interceptor, which is one slot per document and so cannot nest. **When**
+to join it is a real choice and these three overlays make the opposite one from
+`ColorInput`'s dropdown and the `<select>` popup; see
+[Register at mount, or at open](./focus.md#the-dismiss-stack).
 
 *Outside clicks* are caught by an invisible full-viewport backdrop the component
 renders while it is open, one stacking level under its own panel, so a click on

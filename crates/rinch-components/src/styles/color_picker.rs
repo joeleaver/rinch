@@ -362,6 +362,67 @@ pub fn styles() -> String {
     display: block;
 }
 
+/* Backdrop — the invisible box that catches outside clicks while the dropdown
+   is open (issue #465). `ColorInput::render` appends it to the wrapper itself.
+
+   `fixed` is what makes "outside" mean the whole window rather than whatever
+   clips the field. An absolute box IS clipped by an `overflow` ancestor in its
+   containing-block chain — CSS, not a rinch quirk — so inside a sidebar, a
+   table cell or any form panel narrower than the window the dismiss region
+   would stop exactly where the picker does. A fixed box's clip chain is empty.
+   It also puts the backdrop above the app's own fixed chrome (a hand-rolled
+   titlebar has no z-index, so it enters at 0), which is why clicking the
+   titlebar dismisses.
+
+   That is the same rule, and the same history, as
+   `.rinch-dropdown-menu__backdrop`: #317 respelled that one `absolute` because
+   rinch used to make an `overflow` clip a stacking context *and* hoist a fixed
+   box out of every ancestor stacking context, so the backdrop outranked the
+   panel it was supposed to sit under. #324 stage B and #545 undid both halves
+   and stage C took it back to `fixed`. The long note above that rule is the
+   full account; do not respell this one without reading it. Measured here by
+   `color_input_dismiss_465_tests::a_tap_outside_the_clipping_shell_dismisses`,
+   which taps outside an `overflow: hidden` shell — the one place the two
+   spellings disagree. */
+.rinch-color-input__backdrop {
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    z-index: 999;
+    display: none;
+}
+
+/* Revealed by the same `--opened` class as the panel, and spelled with child
+   combinators all the way down.
+
+   Both steps are direct children by construction — `render` appends the
+   wrapper to the root and the backdrop to the wrapper — so unlike a *caller's*
+   child this can never grow a `display: contents` wrapper in front of it, which
+   is the trap #774 documents for `DropdownMenu`'s panel. What the `>` buys is
+   the opposite guarantee: the rule reaches this input's own backdrop and
+   nothing else. */
+.rinch-color-input--opened > .rinch-color-input__wrapper > .rinch-color-input__backdrop {
+    display: block;
+}
+
+/* The field is lifted ABOVE the backdrop while the dropdown is open, and this
+   is the one place `ColorInput` departs from `DropdownMenu`, whose trigger is a
+   button: here the trigger *is* a text input, and clicking into it to place a
+   caret has to keep working while the picker is open. Under the backdrop that
+   click is swallowed — it would still dismiss (that is what a backdrop does)
+   but the field would never take the keyboard.
+
+   Only while open, so a closed `ColorInput` creates no stacking context and
+   nothing about an existing layout moves. The three levels are
+   999 < 1000 (`__dropdown`) < 1001, and the middle one is why a click on a
+   swatch inside the picker picks a colour instead of dismissing. */
+.rinch-color-input--opened .rinch-color-input__input-group {
+    position: relative;
+    z-index: 1001;
+}
+
 .rinch-color-input__description {
     font-size: var(--rinch-font-size-xs, 12px);
     color: var(--rinch-color-dimmed);

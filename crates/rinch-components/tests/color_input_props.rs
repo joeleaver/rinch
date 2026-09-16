@@ -4,14 +4,12 @@
 //! field nor the dropdown. `size` now resolves to one of five steps and scales
 //! the field and its preview swatch; `radius` emits a class only when set.
 //!
-//! A third prop, `close_on_click_outside`, was declared alongside them and is
-//! **removed** rather than wired. The issue describes it as gating an existing
-//! behaviour — "the dropdown closes on outside click unconditionally" — and that
-//! is not what the component does. There is no backdrop and no outside-click
-//! handler anywhere in it; the dropdown is dismissed by clicking the field
-//! again. So the prop was not dead wiring over a live behaviour, it was a name
-//! for a behaviour that does not exist, and supplying one is a new interaction
-//! rather than the repair this change is. Filed separately.
+//! A third prop, `close_on_click_outside`, was declared alongside them and
+//! **removed** rather than wired, because unlike those two there was no
+//! behaviour behind it to connect: supplying one is a new interaction rather
+//! than a repair. It was filed as #465 and implemented there, together with the
+//! prop; `color_input_dismiss_465.rs` is that work's own suite. Nothing in this
+//! file covers it.
 //!
 //! These tests assert against the rendered tree rather than the class helper
 //! alone, so they fail if the classes stop being applied to the root, and they
@@ -234,18 +232,18 @@ fn an_unset_or_unrecognised_radius_emits_no_radius_class() {
     }
 }
 
-// ------------------------------------------------- dismissal (unchanged)
+// ------------------------------------------------------------- dismissal
 
-/// The only way to dismiss the dropdown is to click the field again. Pinned
-/// here because it is easy to mistake for a gap rather than the design.
+/// Clicking the field toggles the dropdown.
 ///
-/// `ColorInput` has no click-outside dismissal: it mounts no backdrop and
-/// registers no outside-click handler. It declared a `close_on_click_outside`
-/// prop that read as if it did — that prop is removed in this change and the
-/// behaviour it names is filed as its own piece of work, because adding it is a
-/// new interaction rather than the wiring-up of an existing one.
+/// This was `the_field_toggles_the_dropdown_and_is_the_only_way_to_dismiss_it`
+/// until #465, and the clause that is gone was written to be found: the field
+/// is no longer the *only* way out — an outside click and Escape close it too.
+/// What survives is that the field still toggles, which #465 had to preserve
+/// because the trigger here is a text input the user clicks into.
+/// `color_input_dismiss_465.rs` owns everything else about dismissal.
 #[test]
-fn the_field_toggles_the_dropdown_and_is_the_only_way_to_dismiss_it() {
+fn the_field_toggles_the_dropdown() {
     let m = Mounted::new(ColorInput::default());
 
     m.click("rinch-color-input__input-group");
