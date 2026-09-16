@@ -422,7 +422,8 @@ fn a_selection_enables_cut_and_copy() {
     let (_, by, _, bh) = abs_box(&app, ids.input);
     right_press(&mut app, x, by + bh / 2.0);
     let s = app.text_edit_state().unwrap();
-    assert_eq!(flags(&s), (true, true, cfg!(feature = "clipboard"), true));
+    let clip = cfg!(feature = "clipboard");
+    assert_eq!(flags(&s), (clip, clip, clip, true));
 }
 
 #[test]
@@ -433,7 +434,7 @@ fn readonly_greys_cut_and_paste_and_keeps_copy() {
     let (_, by, _, bh) = abs_box(&app, ids.input);
     right_press(&mut app, x, by + bh / 2.0);
     let s = app.text_edit_state().unwrap();
-    assert_eq!(flags(&s), (false, true, false, true));
+    assert_eq!(flags(&s), (false, cfg!(feature = "clipboard"), false, true));
 }
 
 #[test]
@@ -865,6 +866,425 @@ fn select_all_by_item_equals_select_all_by_chord() {
     assert_eq!((is, ic), (cs, cc));
 }
 
+/// Without a clipboard there is nothing for Cut or Copy to reach, and an
+/// enabled Cut would delete text it never copied (the review's `p5`,
+/// inverted). Runs under a bare `cargo test -p rinch`.
+#[cfg(not(feature = "clipboard"))]
+#[test]
+fn without_the_clipboard_feature_a_selected_field_greys_cut_and_copy() {
+    let (mut app, ids, _log) = page("hello world", &[]);
+    focus_and_select(&mut app, ids.input);
+    let x = x_for_offset(&mut app, ids.input, 4);
+    let (_, by, _, bh) = abs_box(&app, ids.input);
+    right_press(&mut app, x, by + bh / 2.0);
+    assert_eq!(
+        rows(&app),
+        vec![
+            (TextEditAction::Cut, false),
+            (TextEditAction::Copy, false),
+            (TextEditAction::Paste, false),
+            (TextEditAction::SelectAll, true)
+        ]
+    );
+    // And a press on the greyed Cut row deletes nothing.
+    let (rx, ry) = row_center(&app, TextEditAction::Cut);
+    left_press(&mut app, rx, ry);
+    assert_eq!(
+        field_state(&app, ids.input),
+        ("hello world".into(), "2".into(), "5".into())
+    );
+}
+
+/// The row under a window point, with its enabled state — `None` for the
+/// panel's own padding and for anything outside the menu.
+fn row_under(app: &RinchApp, x: f32, y: f32) -> Option<(TextEditAction, bool)> {
+    let m = app.open_text_menu.as_ref()?;
+    let d = app.doc.as_ref().unwrap().borrow();
+    let mut cur = hit_test(&d.tree, x, y);
+    while let Some(nid) = cur {
+        let node = d.tree.get(nid)?;
+        if let Some(i) = node
+            .attributes
+            .get("data-tcm-item")
+            .and_then(|s| s.parse::<usize>().ok())
+        {
+            return m.items.get(i).map(|r| (r.action, r.enabled));
+        }
+        cur = node.parent;
+    }
+    None
+}
+
+/// The opening press's release lands on a row when both clamps moved the
+/// panel up and left to fit the window (a bottom-right press): nothing may
+/// run — items run on a press, and this release is the one that opened it.
+/// (The review's `p1`.)
+#[test]
+fn the_opening_release_over_a_clamped_row_runs_nothing() {
+    let (mut app, ids, _log) = page("hello world", &[]);
+    focus_and_select(&mut app, ids.input);
+    // The field sits at the top of the page; open at the bottom-right corner
+    // through the public API (the gesture opens at the press point and the
+    // clamp is the same code).
+    let (x, y) = (780.0, 590.0);
+    assert!(app.open_text_context_menu(x, y, 800.0, 600.0));
+    let panel = app.open_text_menu.as_ref().unwrap().panel_id;
+    let (px, py, pw, ph) = abs_box(&app, panel);
+    assert!(
+        px + pw <= 800.0 && py + ph <= 600.0 && px < x && py < y,
+        "clamped up and left: ({px},{py}) {pw}x{ph}"
+    );
+    assert_eq!(
+        row_under(&app, x, y),
+        Some((TextEditAction::SelectAll, true)),
+        "an enabled row sits under the pointer"
+    );
+    ev(&mut app, PlatformEvent::MouseMove { x, y });
+    assert_eq!(highlighted(&app), Some(TextEditAction::SelectAll));
+    let before = field_state(&app, ids.input);
+    ev(
+        &mut app,
+        PlatformEvent::MouseUp {
+            x,
+            y,
+            button: MouseButton::Right,
+        },
+    );
+    assert!(
+        app.is_text_context_menu_open(),
+        "the release did not close it"
+    );
+    assert_eq!(
+        field_state(&app, ids.input),
+        before,
+        "the release ran nothing"
+    );
+    ev(
+        &mut app,
+        PlatformEvent::MouseUp {
+            x,
+            y,
+            button: MouseButton::Left,
+        },
+    );
+    assert_eq!(field_state(&app, ids.input), before, "nor a left release");
+    assert!(app.is_text_context_menu_open());
+}
+
+/// The same through the real gesture at scale factor 2, sliding onto an
+/// enabled Cut row before releasing. (The review's `p1b`.)
+#[test]
+fn the_gesture_at_scale_2_and_its_release_over_cut() {
+    let (mut app, ids, _log) = page("hello world", &[]);
+    focus_and_select(&mut app, ids.input);
+    let x = x_for_offset(&mut app, ids.input, 4);
+    let (_, by, _, bh) = abs_box(&app, ids.input);
+    let y = by + bh / 2.0;
+    let hi = |app: &mut RinchApp, e: PlatformEvent| app.handle_event(e, (1600, 1200), 2.0);
+    hi(
+        &mut app,
+        PlatformEvent::MouseDown {
+            x,
+            y,
+            button: MouseButton::Right,
+        },
+    );
+    assert!(app.is_text_context_menu_open());
+    let panel = app.open_text_menu.as_ref().unwrap().panel_id;
+    let (px, py, _, _) = abs_box(&app, panel);
+    assert_eq!((px, py), (x, y), "the logical press point at scale 2");
+    let before = field_state(&app, ids.input);
+    assert_eq!((before.1.as_str(), before.2.as_str()), ("2", "5"));
+    let (cx, cy) = row_center(&app, TextEditAction::Cut);
+    hi(&mut app, PlatformEvent::MouseMove { x: cx, y: cy });
+    assert_eq!(highlighted(&app), Some(TextEditAction::Cut));
+    hi(
+        &mut app,
+        PlatformEvent::MouseUp {
+            x: cx,
+            y: cy,
+            button: MouseButton::Right,
+        },
+    );
+    assert!(app.is_text_context_menu_open());
+    assert_eq!(
+        field_state(&app, ids.input),
+        before,
+        "Cut did not run on the release"
+    );
+}
+
+/// A press on the panel's own padding keeps it open. (The review's `p8`.)
+#[test]
+fn a_press_on_the_panels_padding_keeps_it_open() {
+    let (mut app, ids, _log) = page("hello world", &[]);
+    let (x, y) = abs_center(&app, ids.input);
+    right_press(&mut app, x, y);
+    let panel = app.open_text_menu.as_ref().unwrap().panel_id;
+    let (px, py, _, _) = abs_box(&app, panel);
+    assert_eq!(
+        row_under(&app, px + 2.0, py + 2.0),
+        None,
+        "precondition: padding, not a row"
+    );
+    left_press(&mut app, px + 2.0, py + 2.0);
+    assert!(
+        app.is_text_context_menu_open(),
+        "a padding press keeps the menu"
+    );
+}
+
+/// A wheel closes it and scrolls nothing. (The review's `p9`.)
+#[test]
+fn a_wheel_closes_the_menu() {
+    let (mut app, ids, _log) = page("hello world", &[]);
+    let (x, y) = abs_center(&app, ids.input);
+    right_press(&mut app, x, y);
+    ev(
+        &mut app,
+        PlatformEvent::MouseWheel {
+            x,
+            y,
+            delta_x: 0.0,
+            delta_y: -20.0,
+        },
+    );
+    assert!(!app.is_text_context_menu_open());
+}
+
+/// One panel per app: 200 open/close cycles add no slab entries (the review's
+/// `p6`, where each open used to add 22 for the session), and the panel's
+/// box is as tall as its rows (the bottom clamp used to leave 3px off).
+#[test]
+fn two_hundred_cycles_add_no_nodes_and_the_panel_is_as_tall_as_its_rows() {
+    let (mut app, ids, _log) = page("hello world", &[]);
+    let count = |app: &RinchApp| app.doc.as_ref().unwrap().borrow().tree.nodes.len();
+    let (x, y) = abs_center(&app, ids.input);
+    right_press(&mut app, x, y);
+    let (_, py, _, ph) = abs_box(&app, app.open_text_menu.as_ref().unwrap().panel_id);
+    let last = app
+        .open_text_menu
+        .as_ref()
+        .unwrap()
+        .items
+        .last()
+        .unwrap()
+        .node_id;
+    let (_, ry, _, rh) = abs_box(&app, last);
+    // 4px padding + 1px border below the last row. The separator's vertical
+    // margins used to be lost, leaving the panel 8px shorter than its rows.
+    assert!(
+        (py + ph - (ry + rh) - 5.0).abs() < 0.5,
+        "panel bottom {} is the last row's bottom {} plus padding and border",
+        py + ph,
+        ry + rh
+    );
+    key(&mut app, KeyCode::Escape);
+    let base = count(&app);
+    for _ in 0..200 {
+        right_press(&mut app, x, y);
+        key(&mut app, KeyCode::Escape);
+    }
+    assert_eq!(
+        count(&app),
+        base,
+        "no node was created after the first open"
+    );
+}
+
+/// Hidden between opens, the panel has no box: a press where it was reaches
+/// the page, and nothing under the point is a menu row.
+#[test]
+fn a_closed_panel_is_out_of_hit_testing_and_layout() {
+    let (mut app, ids, log) = page("hello world", &[]);
+    let (x, y) = abs_center(&app, ids.input);
+    right_press(&mut app, x, y);
+    let panel = app.open_text_menu.as_ref().unwrap().panel_id;
+    let (px, py, pw, ph) = abs_box(&app, panel);
+    // A point that is both on the open panel's Copy row and on the plain
+    // `data-rid` div beneath it.
+    let (cx, cy) = row_center(&app, TextEditAction::Copy);
+    let (dx, dy, dw, dh) = abs_box(&app, ids.plain);
+    assert!(
+        cx >= dx && cx <= dx + dw && cy >= dy && cy <= dy + dh,
+        "precondition"
+    );
+    assert!(pw > 0.0 && ph > 0.0);
+    key(&mut app, KeyCode::Escape);
+    assert_eq!(
+        abs_box(&app, panel),
+        (0.0, 0.0, 0.0, 0.0),
+        "display: none — no box at all"
+    );
+    let _ = (px, py);
+    let hit = {
+        let d = app.doc.as_ref().unwrap().borrow();
+        hit_test(&d.tree, cx, cy)
+    };
+    assert_ne!(hit, Some(panel));
+    assert_eq!(row_under(&app, cx, cy), None);
+    left_press(&mut app, cx, cy);
+    assert!(
+        log.borrow().iter().any(|e| e == "plain-click"),
+        "the press reached the page under where the panel was"
+    );
+    // And the liveness check and dismiss entry still behave on the reused panel.
+    let base = dismiss_handler_count();
+    right_press(&mut app, x, y);
+    assert_eq!(dismiss_handler_count(), base + 1);
+    app.doc
+        .as_ref()
+        .unwrap()
+        .borrow_mut()
+        .remove_node(NodeId(ids.input));
+    ev(&mut app, PlatformEvent::MouseMove { x: 1.0, y: 1.0 });
+    assert!(!app.is_text_context_menu_open());
+    assert_eq!(dismiss_handler_count(), base);
+}
+
+// ── The anchor: the real selection rect ──────────────────────────────────────
+
+mod anchor {
+    use super::*;
+
+    /// A field 40px from the left edge (its wrapper's padding), so an anchor
+    /// at the field's origin and one at x 0 both read as wrong. Tall enough
+    /// for a `<textarea>` to show two lines.
+    const OFFSET_FIELD: &str = "width: 300px; height: 80px; padding: 0; margin: 0; \
+         font-size: 16px; line-height: 20px; font-family: sans-serif";
+
+    fn field_app(tag: &'static str, value: &'static str, style: &'static str) -> (RinchApp, usize) {
+        let h = register_input_handler(InputCallback::new(|_| {}));
+        let id: Rc<Cell<Option<usize>>> = Rc::new(Cell::new(None));
+        let id_in = id.clone();
+        let mut app = RinchApp::new(move |scope: &mut RenderScope| {
+            let root = scope.create_element("div");
+            root.set_attribute("style", "padding-left: 40px");
+            let f = scope.create_element(tag);
+            f.set_attribute("style", style);
+            f.set_attribute("value", value);
+            f.set_attribute("data-oninput", &h.0.to_string());
+            root.append_child(&f);
+            id_in.set(Some(f.node_id().0));
+            root
+        });
+        app.mount_component(800.0, 600.0);
+        app.resolve_and_repaint(800.0, 600.0);
+        (app, id.get().unwrap())
+    }
+
+    fn set_selection(app: &mut RinchApp, anchor: usize, head: usize) {
+        app.focused_input_state.as_mut().unwrap().selection =
+            rinch_editable::Selection::new(anchor, head);
+        app.sync_input_cursor_to_dom();
+    }
+
+    /// The x at which the caret for `offset` is drawn, bracketed by the press
+    /// map: pressing just left of it still lands on `offset`, pressing at the
+    /// first x that maps to `offset + 1` does not.
+    fn assert_caret_x(app: &mut RinchApp, input: usize, x: f32, offset: usize) {
+        let lo = x_for_offset(app, input, offset);
+        let hi = x_for_offset(app, input, offset + 1);
+        assert!(
+            lo < x && x < hi,
+            "caret for offset {offset} at x {x} must lie between the first x mapping to it \
+             ({lo}) and the first x mapping to the next offset ({hi})"
+        );
+    }
+
+    #[test]
+    fn a_collapsed_caret_is_a_one_pixel_rect_at_the_caret() {
+        let (mut app, input) = field_app("input", "hello world", OFFSET_FIELD);
+        let (bx, by, _, bh) = abs_box(&app, input);
+        assert_eq!(bx, 40.0, "precondition: the field is off x 0");
+        left_press(&mut app, bx + 1.0, by + bh / 2.0);
+        set_selection(&mut app, 4, 4);
+        let s = app.text_edit_state().unwrap();
+        let (ax, ay, aw, ah) = s.anchor;
+        assert_caret_x(&mut app, input, ax, 4);
+        assert_eq!(aw, 1.0);
+        assert!(
+            ah > 0.0 && ah <= bh,
+            "line height {ah} inside the field's {bh}"
+        );
+        assert!(
+            ay >= by && ay + ah <= by + bh,
+            "vertically inside the field"
+        );
+    }
+
+    #[test]
+    fn a_selection_on_one_line_spans_its_two_carets() {
+        let (mut app, input) = field_app("input", "hello world", OFFSET_FIELD);
+        let (bx, by, _, bh) = abs_box(&app, input);
+        left_press(&mut app, bx + 1.0, by + bh / 2.0);
+        set_selection(&mut app, 5, 2);
+        let s = app.text_edit_state().unwrap();
+        let (ax, ay, aw, ah) = s.anchor;
+        assert_caret_x(&mut app, input, ax, 2);
+        assert_caret_x(&mut app, input, ax + aw - 1.0, 5);
+        assert!(aw > 10.0, "three glyphs wide: {aw}");
+        assert!(ay >= by && ay + ah <= by + bh);
+    }
+
+    #[test]
+    fn a_textarea_selection_across_two_lines_is_the_box_of_both_carets() {
+        // 300px wide at 16px: the value wraps onto a second line.
+        let value = "the quick brown fox jumps over the lazy dog and keeps running";
+        let (mut app, input) = field_app("textarea", value, OFFSET_FIELD);
+        let (bx, by, _, bh) = abs_box(&app, input);
+        left_press(&mut app, bx + 1.0, by + 5.0);
+        // A caret near the start and one near the end: different lines.
+        set_selection(&mut app, 3, 3);
+        let (_, y1, _, h1) = app.text_edit_state().unwrap().anchor;
+        set_selection(&mut app, 55, 55);
+        let (x2, y2, _, _) = app.text_edit_state().unwrap().anchor;
+        assert!(
+            y2 > y1 + h1 * 0.5,
+            "the second caret is on a later line: {y1} vs {y2}"
+        );
+        set_selection(&mut app, 3, 55);
+        let (ax, ay, aw, ah) = app.text_edit_state().unwrap().anchor;
+        assert_eq!(
+            ay,
+            y1.max(by),
+            "top of the first caret's line, inside the field"
+        );
+        assert!(
+            ah > h1 * 1.5,
+            "spans both lines: {ah} against one line's {h1}"
+        );
+        assert!(ax <= x2 && ax + aw >= x2, "the end caret is inside the box");
+        assert!(ay >= by && ay + ah <= by + bh);
+    }
+
+    #[test]
+    fn a_password_field_measures_through_its_bullets() {
+        let (mut app, input) = field_app("input", "hello world", OFFSET_FIELD);
+        app.doc
+            .as_ref()
+            .unwrap()
+            .borrow_mut()
+            .set_attribute(NodeId(input), "type", "password");
+        app.resolve_and_repaint(800.0, 600.0);
+        let (bx, by, _, bh) = abs_box(&app, input);
+        left_press(&mut app, bx + 1.0, by + bh / 2.0);
+        set_selection(&mut app, 2, 5);
+        let (ax, _, aw, _) = app.text_edit_state().unwrap().anchor;
+        assert_caret_x(&mut app, input, ax, 2);
+        assert_caret_x(&mut app, input, ax + aw - 1.0, 5);
+    }
+
+    #[test]
+    fn an_empty_field_falls_back_to_the_text_origin() {
+        let (mut app, input) = field_app("input", "", OFFSET_FIELD);
+        let (bx, by, _, bh) = abs_box(&app, input);
+        left_press(&mut app, bx + 1.0, by + bh / 2.0);
+        let s = app.text_edit_state().unwrap();
+        assert_eq!(s.anchor, (bx, by, 1.0, bh));
+    }
+}
+
 // ── The rich-text editor ─────────────────────────────────────────────────────
 
 #[cfg(feature = "desktop")]
@@ -952,7 +1372,8 @@ mod editor {
             "a press inside the selection keeps it"
         );
         let s = p.app.text_edit_state().unwrap();
-        assert_eq!(flags(&s), (true, true, cfg!(feature = "clipboard"), true));
+        let clip = cfg!(feature = "clipboard");
+        assert_eq!(flags(&s), (clip, clip, clip, true));
         // The anchor spans both carets.
         let (ax, ay, aw, ah) = s.anchor;
         assert!(
@@ -1119,6 +1540,65 @@ mod in_a_modal {
             app.focus_target,
             FocusTarget::Input(input),
             "and the modal stayed"
+        );
+    }
+}
+
+// ── Cost of polling the state (a shell polls it while its toolbar is up) ─────
+
+/// Not a pin — a measurement, `#[ignore]`d. Run with
+/// `cargo test -p rinch --lib text_context_menu_tests::bench -- --ignored --nocapture`.
+#[cfg(feature = "desktop")]
+mod bench {
+    use super::*;
+    use rinch_editor_core::{Pos, Selection};
+
+    #[test]
+    #[ignore]
+    fn text_edit_state_per_call_on_a_400_paragraph_document() {
+        let html: &'static str = Box::leak(
+            (0..400)
+                .map(|i| {
+                    format!("<p>paragraph {i} with some <strong>bold</strong> words in it</p>")
+                })
+                .collect::<String>()
+                .into_boxed_str(),
+        );
+        let slot: Rc<RefCell<Option<(usize, crate::editor::EditorHandle)>>> =
+            Rc::new(RefCell::new(None));
+        let slot_in = slot.clone();
+        let mut app = RinchApp::new(move |scope: &mut RenderScope| {
+            let root = scope.create_element("div");
+            let (container, handle) = crate::editor::mount_editor(scope);
+            handle.load_html(html);
+            container.set_attribute(
+                "style",
+                "width: 400px; height: 200px; font-size: 16px; line-height: 24px; \
+                 font-family: sans-serif",
+            );
+            root.append_child(&container);
+            *slot_in.borrow_mut() = Some((container.node_id().0, handle));
+            root
+        });
+        app.mount_component(800.0, 600.0);
+        app.resolve_and_repaint(800.0, 600.0);
+        let (c, h) = slot.borrow_mut().take().unwrap();
+        let (x, y, hh) = app.editor_caret_point(&h, Pos(3)).unwrap();
+        left_press(&mut app, x + 1.0, y + hh / 2.0);
+        assert_eq!(app.focus_target, FocusTarget::Editor(c));
+        let per_call = |app: &mut RinchApp| {
+            let t = Instant::now();
+            for _ in 0..200 {
+                assert!(app.text_edit_state().is_some());
+            }
+            t.elapsed().as_secs_f64() * 1000.0 / 200.0
+        };
+        let collapsed = per_call(&mut app);
+        h.set_selection(Selection::text(Pos(3), Pos(12000)));
+        let selected = per_call(&mut app);
+        eprintln!(
+            "BENCH text_edit_state() per call: collapsed {collapsed:.3}ms, \
+             ~12k-char selection {selected:.3}ms (400-paragraph doc, debug build)"
         );
     }
 }

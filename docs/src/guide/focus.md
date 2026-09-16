@@ -710,11 +710,16 @@ transparent window, and follows the theme's palette when there is one.
   stays shut. Attach one to a field to give it a menu of your own.
 - **Each item runs the code its chord runs** — `Ctrl+X` / `Ctrl+C` / `Ctrl+V`
   / `Ctrl+A` (`Cmd` on macOS), including the editor's asynchronous, anchored
-  paste — so the two cannot drift.
+  paste. Today that is literally one function per operation on both paths, and
+  a fixture pins item and chord to the same value, selection and clipboard;
+  nothing in the code *enforces* it, so a check added to one path alone would
+  drift the other silently.
 - **Enabled states follow the field.** Cut and Copy need a non-empty
   selection; a `readonly` field greys Cut and Paste; a `password` field greys
   Cut and Copy; Select all needs content; a `disabled` field takes no focus and
-  gets no menu. **Paste is not decided by reading the clipboard** — a read can
+  gets no menu. Without the `clipboard` feature Cut, Copy and Paste are all
+  greyed — there is no clipboard for them to reach, and an enabled Cut would
+  delete text it never copied. **Paste is not decided by reading the clipboard** — a read can
   block for up to four seconds on X11 — so it stays enabled over an empty
   clipboard, where a native menu would grey it out; pasting nothing does
   nothing.

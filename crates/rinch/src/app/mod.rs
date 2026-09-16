@@ -496,6 +496,8 @@ pub struct RinchApp {
     /// entry, flag and stylesheet follow the `<select>` popup's pattern above,
     /// drain site included.
     pub(crate) open_text_menu: Option<text_context_menu::OpenTextMenu>,
+    /// The menu's nodes, built on the first open and reused (hidden) after.
+    pub(crate) text_menu_panel: Option<text_context_menu::TextMenuPanel>,
     pub(crate) text_menu_dismiss_asked: Rc<std::cell::Cell<bool>>,
     pub(crate) text_menu_dismiss_handle: Option<rinch_core::DismissHandle>,
     pub(crate) text_menu_css_injected: bool,
@@ -587,6 +589,7 @@ impl RinchApp {
             select_dismiss_handle: None,
             select_css_injected: false,
             open_text_menu: None,
+            text_menu_panel: None,
             text_menu_dismiss_asked: Rc::new(std::cell::Cell::new(false)),
             text_menu_dismiss_handle: None,
             text_menu_css_injected: false,

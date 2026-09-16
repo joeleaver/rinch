@@ -341,6 +341,7 @@ fn rich_probe(backend: &mut dyn Backend) -> ClipboardResult<RichPaste> {
 /// Process-wide, so tests sharing a binary share one clipboard; serialize the
 /// ones that read what another wrote.
 #[cfg(feature = "test-backend")]
+#[doc(hidden)]
 pub fn use_in_memory_clipboard() {
     use std::sync::atomic::{AtomicBool, Ordering};
 

@@ -43,6 +43,11 @@ use rinch_core::dom::NodeId;
 ///   grey it out. Pasting nothing then does nothing.
 /// - `can_select_all`: the field has content.
 ///
+/// **All three clipboard flags are `false` when `rinch` was built without the
+/// `clipboard` feature**: there is no clipboard for Copy or Paste to reach, and
+/// an enabled Cut would delete text it never copied. (The chord's own
+/// no-clipboard Cut is pre-existing and tracked as #823.)
+///
 /// A `disabled` field never takes the keyboard (issue #315), so it never
 /// reaches here; a `readonly` one does, with `can_cut` and `can_paste` off.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -53,10 +58,15 @@ pub struct TextEditState {
     pub can_paste: bool,
     pub can_select_all: bool,
     /// The selection's — or, collapsed, the caret's — rect in **logical window
-    /// px** as `(x, y, w, h)`: where a floating toolbar anchors. For the editor
-    /// it is the box spanned by the two caret rects at the selection's ends;
-    /// for an `<input>`/`<textarea>` it is the caret rect the IME candidate box
-    /// is placed at, which is approximated at the field's text origin.
+    /// px** as `(x, y, w, h)`: where a floating toolbar anchors. A collapsed
+    /// caret is a 1px-wide rect at the caret; a selection on one line is the
+    /// rect from its start caret to its end caret over that line; a selection
+    /// spanning lines (a `<textarea>`, a multi-block editor selection) is the
+    /// **bounding box of the two caret rects** — left and right from the two
+    /// carets, top of the first line to the bottom of the last — rather than
+    /// the union of the full line boxes. The field's own text layout is
+    /// measured for it (a `password` field through its bullets), which is why
+    /// [`RinchApp::text_edit_state`] takes `&mut self`.
     pub anchor: (f32, f32, f32, f32),
 }
 
@@ -122,12 +132,23 @@ pub enum TextContextMenuPresentation {
     Shell,
 }
 
-/// The open DOM menu: the app-created nodes plus the highlight.
+/// The menu's nodes, built once per app and kept: a trailing `<body>` child
+/// hidden with `display: none` between opens. Rebuilding per open leaked 22
+/// slab entries per right-click for the session — `rinch-dom` frees nothing on
+/// `remove_node` (#723) — and every later layout walked the dead panels
+/// (measured by #817's review: 37x on the layout pass after 1000 opens).
+pub(crate) struct TextMenuPanel {
+    pub panel_id: usize,
+    /// `(action, row node id)` in menu order.
+    pub rows: Vec<(TextEditAction, usize)>,
+}
+
+/// The open DOM menu: which target, the rows' states at open, the highlight.
 pub(crate) struct OpenTextMenu {
     /// The text target the menu was opened for. The menu lives exactly as long
     /// as this target holds the keyboard.
     pub target: FocusTarget,
-    /// The menu panel, a trailing `<body>` child.
+    /// The panel showing — [`TextMenuPanel::panel_id`], copied for the readers.
     pub panel_id: usize,
     /// The item rows, in menu order.
     pub items: Vec<TextMenuRow>,
@@ -206,8 +227,10 @@ const TEXT_CONTEXT_MENU_CSS: &str = r#"
     color: var(--rinch-color-gray-5, #adb5bd);
 }
 .rinch-tcm-sep {
+    padding: 4px 0;
+}
+.rinch-tcm-sep-line {
     height: 1px;
-    margin: 4px 0;
     background: var(--rinch-color-gray-3, #dee2e6);
 }
 "#;
@@ -228,11 +251,13 @@ impl RinchApp {
     /// when no text target holds it.
     ///
     /// Read, not cached: it answers for the state as it is at the call, so a
-    /// shell may poll it to keep a toolbar's items current.
-    pub fn text_edit_state(&self) -> Option<TextEditState> {
+    /// shell may poll it to keep a toolbar's items current — it is cheap
+    /// enough for that (no serialization, no document walk; the field's text
+    /// layout is rebuilt for the anchor, which is what `&mut self` is for).
+    pub fn text_edit_state(&mut self) -> Option<TextEditState> {
         match self.focus_target {
             FocusTarget::Input(node_id) => {
-                let doc = self.doc.as_ref()?;
+                let doc = self.doc.clone()?;
                 let state = self.focused_input_state.as_ref()?;
                 let (has_selection, writable, password, has_content) = {
                     let d = doc.borrow();
@@ -247,16 +272,41 @@ impl RinchApp {
                         !state.document.to_text().is_empty(),
                     )
                 };
-                let anchor = self
-                    .input_caret_area(node_id)
+                let (start, end) = (state.selection.start().0, state.selection.end().0);
+                let anchor = {
+                    let d = doc.borrow();
+                    let mut caret = |offset: usize| {
+                        Self::input_caret_rect_for_offset(
+                            &d.tree,
+                            &mut self.hit_test_font_cx,
+                            &mut self.hit_test_layout_cx,
+                            node_id,
+                            offset,
+                        )
+                    };
+                    // Clipped to the field's own box, as its text is: a line box
+                    // can overhang the content box by a pixel, and a toolbar
+                    // anchored to it should not.
+                    match (caret(start), caret(end)) {
+                        (Some(a), Some(b)) => Some(clip_rect(
+                            union_of_caret_rects(a, b),
+                            painted_element_box(&d.tree, node_id),
+                        )),
+                        _ => None,
+                    }
+                };
+                // An empty field has no layout to measure: the IME candidate
+                // box's approximation (the text origin, full height) stands in.
+                let anchor = anchor
+                    .or_else(|| self.input_caret_area(node_id))
                     .unwrap_or_else(|| painted_element_box(&doc.borrow().tree, node_id));
+                // None of the three is ever decided by reading the clipboard —
+                // see the type's doc — and all three are off without one.
+                let clipboard = cfg!(feature = "clipboard");
                 Some(TextEditState {
-                    can_cut: has_selection && writable && !password,
-                    can_copy: has_selection && !password,
-                    // Never decided by reading the clipboard — see the field's
-                    // doc. Without the `clipboard` feature there is nothing to
-                    // paste from, on the chord path as much as here.
-                    can_paste: writable && cfg!(feature = "clipboard"),
+                    can_cut: has_selection && writable && !password && clipboard,
+                    can_copy: has_selection && !password && clipboard,
+                    can_paste: writable && clipboard,
                     can_select_all: has_content,
                     anchor,
                 })
@@ -265,21 +315,25 @@ impl RinchApp {
             FocusTarget::Editor(container) => {
                 let handle = crate::editor::editor_for_doc(self.doc_key(), container)?;
                 let selection = handle.selection();
-                // The same question `editor_copy` asks, so an item is enabled
-                // exactly when its chord would do something.
-                let can_copy = !selection.is_empty() && handle.selection_clipboard().is_some();
+                // A non-empty selection is what `editor_copy` serializes; the
+                // serialization itself is not repeated here (this is polled).
+                let can_copy = !selection.is_empty() && cfg!(feature = "clipboard");
                 let anchor = self
                     .editor_selection_anchor(&handle, &selection)
                     .or_else(|| {
                         let doc = self.doc.as_ref()?;
                         Some(painted_element_box(&doc.borrow().tree, container))
                     })?;
+                // `content_size` is a stored count, not a walk: an empty editor
+                // is one empty paragraph, size 2, so anything larger holds a
+                // character, an atom or a further block to select.
+                let can_select_all = handle.doc().content_size() > 2;
                 Some(TextEditState {
                     // The editor has no read-only mode; cut is copy plus delete.
                     can_cut: can_copy,
                     can_copy,
                     can_paste: cfg!(feature = "clipboard"),
-                    can_select_all: editor_node_has_content(&handle.doc()),
+                    can_select_all,
                     anchor,
                 })
             }
@@ -585,8 +639,12 @@ impl RinchApp {
     /// size is known. Returns whether a menu opened; `false` when no text
     /// target holds the keyboard.
     ///
-    /// Replaces an open menu. The nodes are appended to `<body>` outside every
-    /// reactive scope, like the `<select>` popup's. Not exempted from the
+    /// Replaces an open menu. The nodes are built once per app, appended to
+    /// `<body>` outside every reactive scope like the `<select>` popup's, and
+    /// **kept**: an open shows the same panel again with its position, each
+    /// row's `data-disabled` and the highlight rewritten, and a close hides it
+    /// with `display: none` — out of layout, paint, hit testing and the Tab
+    /// order (the rows carry no `tabindex` in any case). Not exempted from the
     /// scroll lock (#474): the panel declares no `overflow`, so it is no scroll
     /// container and the lock has nothing to refuse on it.
     pub fn open_text_context_menu(&mut self, x: f32, y: f32, vp_w: f32, vp_h: f32) -> bool {
@@ -603,57 +661,40 @@ impl RinchApp {
             doc.borrow_mut().load_css(TEXT_CONTEXT_MENU_CSS);
             self.text_menu_css_injected = true;
         }
-
-        let chord_prefix = if cfg!(target_os = "macos") {
-            "\u{2318}"
-        } else {
-            "Ctrl+"
+        if self.text_menu_panel.is_none() {
+            self.text_menu_panel = Some(Self::build_text_menu_panel(&mut doc.borrow_mut()));
+        }
+        let (panel_id, rows) = {
+            let p = self.text_menu_panel.as_ref().expect("built above");
+            (p.panel_id, p.rows.clone())
         };
+        let panel = NodeId(panel_id);
 
         let mut d = doc.borrow_mut();
-        let body = d.body();
-        let panel = d.create_element("div");
-        d.set_attribute(panel, "class", "rinch-tcm-panel");
         d.set_style(panel, "left", &format!("{x}px"));
         d.set_style(panel, "top", &format!("{y}px"));
-
-        let mut items = Vec::with_capacity(TextEditAction::ALL.len());
-        for (i, action) in TextEditAction::ALL.into_iter().enumerate() {
-            if action == TextEditAction::SelectAll {
-                let sep = d.create_element("div");
-                d.set_attribute(sep, "class", "rinch-tcm-sep");
-                d.append_child(panel, sep);
-            }
+        let mut items = Vec::with_capacity(rows.len());
+        for (action, node_id) in rows {
             let enabled = action.enabled_in(&state);
-            let row = d.create_element("div");
-            d.set_attribute(row, "class", "rinch-tcm-item");
-            d.set_attribute(row, "data-tcm-item", &i.to_string());
-            if !enabled {
+            let row = NodeId(node_id);
+            if enabled {
+                d.remove_attribute(row, "data-disabled");
+            } else {
                 d.set_attribute(row, "data-disabled", "");
             }
-            let label = d.create_element("span");
-            d.set_attribute(label, "class", "rinch-tcm-label");
-            let label_text = d.create_text(action.label());
-            d.append_child(label, label_text);
-            d.append_child(row, label);
-            let hint = d.create_element("span");
-            d.set_attribute(hint, "class", "rinch-tcm-hint");
-            let hint_text = d.create_text(&format!("{chord_prefix}{}", action.chord_letter()));
-            d.append_child(hint, hint_text);
-            d.append_child(row, hint);
-            d.append_child(panel, row);
+            d.remove_attribute(row, "data-highlighted");
             items.push(TextMenuRow {
                 action,
-                node_id: row.0,
+                node_id,
                 enabled,
             });
         }
-        d.append_child(body, panel);
+        d.set_style(panel, "display", "block");
         drop(d);
 
         self.open_text_menu = Some(OpenTextMenu {
             target,
-            panel_id: panel.0,
+            panel_id,
             items,
             highlighted: None,
         });
@@ -681,7 +722,7 @@ impl RinchApp {
         let placed = {
             let d = doc.borrow();
             d.tree
-                .get(panel.0)
+                .get(panel_id)
                 .map(|n| (n.layout.width, n.layout.height))
         };
         if let Some((w, h)) = placed {
@@ -699,7 +740,7 @@ impl RinchApp {
         true
     }
 
-    /// Close the DOM menu (idempotent): remove its nodes and release its
+    /// Close the DOM menu (idempotent): hide its panel and release its
     /// dismiss entry. This is the one place `open_text_menu` becomes `None`,
     /// so it is the one place the release has to be. Does not touch focus.
     pub fn close_text_context_menu(&mut self) {
@@ -709,9 +750,55 @@ impl RinchApp {
         self.text_menu_dismiss_handle = None;
         self.text_menu_dismiss_asked.set(false);
         if let Some(doc) = self.doc.clone() {
-            doc.borrow_mut().remove_node(NodeId(open.panel_id));
+            doc.borrow_mut()
+                .set_style(NodeId(open.panel_id), "display", "none");
         }
         self.scene_dirty = true;
+    }
+
+    /// Build the panel once: rows with their labels and chord hints, hidden
+    /// until the first open shows it.
+    fn build_text_menu_panel(d: &mut RinchDocument) -> TextMenuPanel {
+        let chord_prefix = if cfg!(target_os = "macos") {
+            "\u{2318}"
+        } else {
+            "Ctrl+"
+        };
+        let body = d.body();
+        let panel = d.create_element("div");
+        d.set_attribute(panel, "class", "rinch-tcm-panel");
+        d.set_style(panel, "display", "none");
+        let mut rows = Vec::with_capacity(TextEditAction::ALL.len());
+        for (i, action) in TextEditAction::ALL.into_iter().enumerate() {
+            if action == TextEditAction::SelectAll {
+                let sep = d.create_element("div");
+                d.set_attribute(sep, "class", "rinch-tcm-sep");
+                let line = d.create_element("div");
+                d.set_attribute(line, "class", "rinch-tcm-sep-line");
+                d.append_child(sep, line);
+                d.append_child(panel, sep);
+            }
+            let row = d.create_element("div");
+            d.set_attribute(row, "class", "rinch-tcm-item");
+            d.set_attribute(row, "data-tcm-item", &i.to_string());
+            let label = d.create_element("span");
+            d.set_attribute(label, "class", "rinch-tcm-label");
+            let label_text = d.create_text(action.label());
+            d.append_child(label, label_text);
+            d.append_child(row, label);
+            let hint = d.create_element("span");
+            d.set_attribute(hint, "class", "rinch-tcm-hint");
+            let hint_text = d.create_text(&format!("{chord_prefix}{}", action.chord_letter()));
+            d.append_child(hint, hint_text);
+            d.append_child(row, hint);
+            d.append_child(panel, row);
+            rows.push((action, row.0));
+        }
+        d.append_child(body, panel);
+        TextMenuPanel {
+            panel_id: panel.0,
+            rows,
+        }
     }
 
     /// Whether the open menu's target still holds the keyboard and is still in
@@ -933,18 +1020,23 @@ impl RinchApp {
     }
 }
 
-/// Whether an editor document holds anything a Select all would select: a
-/// non-empty text node, or an atom (an image, a rule, a hard break).
-#[cfg(feature = "desktop")]
-fn editor_node_has_content(node: &rinch_editor_core::Node) -> bool {
-    if node.is_text() {
-        return node.text().is_some_and(|t| !t.is_empty());
-    }
-    if node.is_atom() {
-        return true;
-    }
-    node.content()
-        .children()
-        .iter()
-        .any(editor_node_has_content)
+/// `r` intersected with `bounds`, both `(x, y, w, h)`; a rect entirely outside
+/// collapses to a 1px-wide, 0-high rect at the nearest edge.
+fn clip_rect(r: (f32, f32, f32, f32), bounds: (f32, f32, f32, f32)) -> (f32, f32, f32, f32) {
+    let left = r.0.max(bounds.0).min(bounds.0 + bounds.2);
+    let top = r.1.max(bounds.1).min(bounds.1 + bounds.3);
+    let right = (r.0 + r.2).min(bounds.0 + bounds.2).max(left);
+    let bottom = (r.1 + r.3).min(bounds.1 + bounds.3).max(top);
+    (left, top, (right - left).max(1.0), bottom - top)
+}
+
+/// The bounding box of two caret rects `(x, y, w, h)`: on one line, the rect
+/// from the first caret to the second; across lines, left and right from the
+/// two carets and top of the first to the bottom of the last.
+fn union_of_caret_rects(a: (f32, f32, f32, f32), b: (f32, f32, f32, f32)) -> (f32, f32, f32, f32) {
+    let left = a.0.min(b.0);
+    let top = a.1.min(b.1);
+    let right = (a.0 + a.2).max(b.0 + b.2);
+    let bottom = (a.1 + a.3).max(b.1 + b.3);
+    (left, top, (right - left).max(1.0), bottom - top)
 }
