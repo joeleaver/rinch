@@ -6,6 +6,7 @@ members = [
 ]
 exclude = [
     "examples/ui-zoo-web",
+    "examples/menu-bar-web",
     "examples/paint-web",
     "examples/events-web",
     "examples/islands-web",

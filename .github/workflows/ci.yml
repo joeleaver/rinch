@@ -132,6 +132,12 @@ jobs:
           cargo test -p rinch-editor-core --features serde,markdown
           cargo test -p rinch-editor-view --features collaboration
           cargo test -p rinch --features desktop,embed,theme,clipboard,debug
+          # The menu system without a desktop backend: `menu::app_menu_bar`'s
+          # `portable_tests` drive the DOM menu bar against rinch-core's headless
+          # document, and `menu::tests` covers chord registration with no winit
+          # `KeyCode` in sight. Both are dead in every other run here, because
+          # `desktop` is a default feature and `--workspace` unifies it on.
+          cargo test -p rinch --no-default-features --features components,theme
 
   clippy:
     runs-on: ubuntu-latest
@@ -182,11 +188,21 @@ jobs:
       # desktop + embed carries BOTH painters since #140 (the winit shell drives
       # TinySkia while embed RinchContexts drive Vello) and broke silently before
       # anything checked it. Plain `cargo check` — compile-only, cheap.
+      #
+      # `components,theme` with no defaults is the configuration `rinch-web`
+      # resolves `rinch` to: no muda, no winit, no rinch-dom. `rinch::menu` and
+      # its DOM menu bar build there — that is what lets a web app mount the same
+      # menus as its desktop twin — and nothing else in this file would notice a
+      # `use muda::…` creeping back above the `#[cfg(feature = "desktop")]` line.
+      # `clippy-wasm` below lints rinch-web itself, but warnings from a
+      # *dependency* are not denied there, so a broken `rinch` would surface as a
+      # confusing rinch-web failure rather than here.
       - name: Check rinch feature combinations
         run: |
           cargo check -p rinch --features embed
           cargo check -p rinch --no-default-features --features embed
           cargo check -p rinch --features gpu,embed
+          cargo check -p rinch --no-default-features --features components,theme
 
   # Lint the wasm target too. `clippy --workspace` above only ever sees the native
   # cfg, so anything behind `cfg(target_arch = "wasm32")` — the whole rinch-web
