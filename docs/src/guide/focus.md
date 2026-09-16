@@ -594,6 +594,28 @@ focused `RenderSurface` swallows every key there, where on desktop a surface is
 routed by the arbiter, i.e. *after* the stack. That asymmetry is older than the
 stack (the interceptor already had it) and is not something this API changed.
 
+### Register at mount, or at open
+
+The snippet above registers once, when the overlay mounts, and answers `false`
+while it is closed. That is what `Modal`, `Drawer` and `Popover` do, and it is
+right for an overlay whose open state arrives as a *prop*: `render` runs once,
+so there is no later moment to hang a registration on.
+
+It is the wrong choice for an overlay **statically nested inside another one**.
+A component renders *after* its children, so `Modal { ColorInput { … } }` pushes
+the input's entry first and the modal's on top of it — and the stack is LIFO, so
+the modal answers Escape while the colour picker is the thing on screen.
+
+An overlay that owns its open state avoids that by pushing when it **opens** and
+releasing when it closes. Opening happens after every ancestor has mounted, so
+LIFO puts the entry where the user expects it with no precedence rule anywhere.
+This is what the native `<select>` popup does (issue #671) and what
+`ColorInput`'s dropdown does (issue #465); in a component,
+`rinch_components::overlay_dismiss::arm_close_on_escape_while_open` is that
+policy written out. Such a handler consumes unconditionally — it exists only
+while the overlay is open, so it has no closed state to decline in — and the
+release must cover **unmount-while-open** as well as close.
+
 `Modal`, `Drawer` and `Popover` already do all of this for you through their
 `close_on_escape` prop — reach for `push_dismiss_handler` when you are building
 an overlay of your own. **Prefer it over `set_keyboard_interceptor` for

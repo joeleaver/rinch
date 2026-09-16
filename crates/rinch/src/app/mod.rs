@@ -12,6 +12,8 @@ mod animation_theme_change_tests;
 mod blink_and_click_focus_tests;
 mod click_handling;
 #[cfg(test)]
+mod color_input_dismiss_465_tests;
+#[cfg(test)]
 mod component_class_717_tests;
 #[cfg(test)]
 mod component_prop_707_tests;

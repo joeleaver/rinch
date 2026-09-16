@@ -6,7 +6,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use rinch_core::dom::{NodeHandle, RenderScope};
-use rinch_core::{Component, InputCallback, Signal};
+use rinch_core::{Callback, Component, InputCallback, Signal};
 
 use crate::color_picker::ColorPicker;
 use crate::color_swatch::ColorSwatch;
@@ -22,7 +22,6 @@ pub type ReactiveString = Rc<dyn Fn() -> String>;
 const OPENED_CLASS: &str = "rinch-color-input--opened";
 
 /// A text input with color preview swatch and dropdown ColorPicker.
-#[derive(Default)]
 pub struct ColorInput {
     /// Input label.
     pub label: String,
@@ -77,6 +76,46 @@ pub struct ColorInput {
     pub swatches_per_row: Option<usize>,
     /// Disallow typing into the input (only use picker).
     pub disallow_input: bool,
+    /// Dismiss the dropdown when a click lands outside it (issue #465).
+    ///
+    /// **On by default**, which is what every other popover in the library does
+    /// — `DropdownMenu`, `Popover`, `Modal`, `Drawer` all default it `true`.
+    /// The alternative was `false`, which keeps the *pointer* behaviour this
+    /// input had until #465: the field is the only thing a click dismisses it
+    /// with. An input that alone stays open when you click away is the odd one
+    /// out, and that is the whole of the defect.
+    ///
+    /// Turning it off mounts no backdrop at all, so no click outside the field
+    /// dismisses the dropdown. **Escape closes it either way** — it rides the
+    /// dismiss stack, not the backdrop — so `false` is the pointer half of the
+    /// pre-#465 behaviour and not a return to it in full. A closed dropdown
+    /// leaves the key to whatever is behind it.
+    pub close_on_click_outside: bool,
+}
+
+impl Default for ColorInput {
+    fn default() -> Self {
+        Self {
+            label: String::new(),
+            description: String::new(),
+            error: String::new(),
+            placeholder: String::new(),
+            size: String::new(),
+            radius: String::new(),
+            disabled: false,
+            value: String::new(),
+            value_fn: None,
+            onchange: None,
+            format: String::new(),
+            alpha: false,
+            swatches: Vec::new(),
+            swatches_per_row: None,
+            disallow_input: false,
+            // The one field whose default is not `Default::default()`, which is
+            // why this impl is written out rather than derived.
+            close_on_click_outside: true,
+        }
+    }
 }
 
 impl ColorInput {
@@ -390,6 +429,39 @@ impl Component for ColorInput {
 
         wrapper.append_child(&dropdown);
 
+        // Outside-click dismissal (issue #465). An invisible box over the whole
+        // window, mounted for the component's life and revealed by the same
+        // `--opened` class that reveals the panel — the reveal is CSS, not an
+        // inline `display` write, because the class is already what shows the
+        // dropdown and #760 is the tale of keeping those two in one place.
+        //
+        // Copied from `DropdownMenu`/`Popover`, including the part that is
+        // load-bearing rather than incidental: **`position: fixed`, not
+        // `absolute`**. An absolute box is clipped by an `overflow` ancestor in
+        // its containing-block chain, so inside a sidebar, a table cell or any
+        // panel narrower than the window "outside the field" would shrink to
+        // "inside that panel". The long note above
+        // `.rinch-dropdown-menu__backdrop` in `styles::dropdown_menu` has the
+        // whole history, #317 and #324 stage C included.
+        //
+        // **The handler closes; it never toggles.** The field's handler above
+        // toggles, and copying it here would make a click on the backdrop
+        // *open* the dropdown whenever it was already closed — which is the
+        // state the backdrop spends most of its life in, and which the
+        // stylesheet hides rather than unmounts. Pinned by
+        // `color_input_dismiss_465::an_outside_click_on_a_closed_dropdown_is_inert`.
+        //
+        // A direct child of the wrapper, so the reveal rule can be spelled with
+        // child combinators: the component appends it itself, so unlike a
+        // caller's child it can never grow a `display: contents` wrapper in
+        // front of it (the #774 hazard).
+        if self.close_on_click_outside {
+            let backdrop = rinch_macros::rsx! { div { class: "rinch-color-input__backdrop" } };
+            let handler_id = __scope.register_handler(move || opened.set(false));
+            backdrop.set_attribute("data-rid", &handler_id.to_string());
+            wrapper.append_child(&backdrop);
+        }
+
         root.append_child(&wrapper);
 
         // Reactive: toggle the opened class. Deliberately its own effect: the
@@ -412,6 +484,37 @@ impl Component for ColorInput {
                     root_clone.remove_class(OPENED_CLASS);
                 }
             });
+        }
+
+        // Escape closes the dropdown (issue #465), through the dismiss stack
+        // (#474/#671) and never through `set_keyboard_interceptor` — that is
+        // one slot per document, so an input registering there would disable
+        // whatever overlay held it and its unmount would *clear* the slot
+        // rather than restore what it displaced.
+        //
+        // The **open-time** registration, not `arm_close_on_escape`'s mount-time
+        // one, and that is the whole of `Modal { ColorInput { … } }` working: a
+        // component renders after its children, so a mount-time entry here would
+        // sit *under* the modal's and the modal would answer Escape while the
+        // picker was the thing on screen. Pushing at open puts it on top by the
+        // same LIFO rule that orders nested modals — the #671 shape. The helper
+        // states the trade in full.
+        //
+        // **Ungated, unlike the backdrop.** `close_on_click_outside` names a
+        // pointer gesture; an author turning it off is asking for the field to
+        // be the only place to *click*, not for the keyboard to stop working.
+        // Nothing is swallowed by that either: while the dropdown is closed
+        // there is no entry at all, so a `ColorInput` inside a `Modal` never
+        // costs that modal its own Escape.
+        // `rinch/src/app/color_input_dismiss_465_tests.rs` measures both halves.
+        {
+            let is_open: crate::overlay_dismiss::ReactiveBool = Rc::new(move || opened.get());
+            crate::overlay_dismiss::arm_close_on_escape_while_open(
+                __scope,
+                &root,
+                is_open,
+                Callback::new(move || opened.set(false)),
+            );
         }
 
         // Reactive: update preview/input from current_value

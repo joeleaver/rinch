@@ -1432,7 +1432,20 @@ register_focus_target(
   owner-checked at dispatch, dispatched from inside
   `dispatch_keyboard_event` for an Escape *press* after the interceptor (so
   both backends get it with no edit). `Modal`/`Drawer`/`Popover`'s
-  `close_on_escape` rides it; a custom overlay should too. It shares the
+  `close_on_escape` rides it; a custom overlay should too — **and there are two
+  registration policies, not one** (#465). Those three register at *mount* and
+  answer `opened_fn` at dispatch, because `render` runs once and a closed
+  overlay stays mounted. That is wrong for an overlay **statically nested inside
+  another one**: a component renders *after* its children, so
+  `Modal { ColorInput { … } }` pushes the input's entry first and the modal's on
+  top, and the modal answers Escape while the picker is what is on screen. An
+  overlay that owns its open state pushes at *open* time instead and releases on
+  close — the `<select>` popup's shape (#671), spelled for components as
+  `rinch_components::overlay_dismiss::arm_close_on_escape_while_open` and used by
+  `ColorInput`'s dropdown (whose outside-click backdrop is `DropdownMenu`'s,
+  `position: fixed` and all). Such a handler consumes unconditionally, since it
+  exists only while the overlay is open, and its release has to cover
+  unmount-while-open as well as close. It shares the
   *lifetime* rule though (#183):
   registering it during a render releases it on unmount, ownerless registration
   keeps app lifetime, and an earlier unmount never clobbers a later
