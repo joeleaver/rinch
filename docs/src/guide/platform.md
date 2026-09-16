@@ -397,8 +397,12 @@ focus; the activity also finishes it on its own in `onPause` and on
 window-focus loss. An item that finishes the toolbar (Cut, Copy, Paste) is
 finished on the Java side *before* the item is reported, so the shell hears
 the toolbar is gone before it could refresh it; an IME's Cut, Copy or Paste
-finishes nothing on the Java side, and the shell asks for the finish itself. The rich-text `Editor` is not part of an Android build
-today (it is `desktop`-only), so the toolbar covers `<input>` and `<textarea>`.
+finishes nothing on the Java side, and the shell asks for the finish itself.
+(Gboard's Text Editing panel enables its Cut and Copy only over a selection
+the IME can see, and rinch's input connection reports none, so from that
+panel only Paste and Select all reach a rinch field — measured.) The
+rich-text `Editor` is not part of an Android build today (it is
+`desktop`-only), so the toolbar covers `<input>` and `<textarea>`.
 
 ---
 

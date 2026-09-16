@@ -8,9 +8,9 @@
 //! arrives here as [`TextActionEvent::Perform`] from
 //! [`TextActionSource::Toolbar`]. Separately, an IME may ask for the action
 //! itself through `InputConnection.performContextMenuAction(android.R.id.*)` —
-//! Gboard's Text Editing panel does for its Paste key (measured on an API 34
-//! emulator; its clipboard chip and clipboard panel commit text instead) — and
-//! `BaseInputConnection`'s default for that call
+//! Gboard's Text Editing panel does for its Paste and Select all keys (measured
+//! on an API 34 emulator; its clipboard chip and clipboard panel commit text
+//! instead) — and `BaseInputConnection`'s default for that call
 //! does **nothing**. `RinchInputConnection` overrides it and the request lands
 //! in this same queue from [`TextActionSource::Ime`], so an IME's paste reaches
 //! the field whether or not the toolbar is involved. The frame loop drains the

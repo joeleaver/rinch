@@ -2360,8 +2360,10 @@ source**, because Cut / Copy / Paste end the toolbar from either one (as in an
 and asks for a counted finish for an IME request — treating the IME's like the
 item's left an orphan no tap could take down, measured. Measured on an API 34
 emulator with one Gboard build: its clipboard chip and clipboard panel both
-paste as `commitText`, and its Text Editing panel's Paste arrives as
-`performContextMenuAction`. The toolbar anchors
+paste as `commitText`, and its Text Editing panel's Paste and Select all
+arrive as `performContextMenuAction` (its Cut and Copy stay disabled over a
+rinch selection, which the input connection does not report to the IME).
+The toolbar anchors
 where `TextEditState.anchor` reports. The rich-text `Editor` is
 `desktop`-only and is not part of an Android build (#818).
 
