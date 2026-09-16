@@ -195,12 +195,14 @@ submenus render as flyouts.
 
 The bar is laid out *inside* whatever it is mounted into, above the content, and
 the wrapper it builds is **viewport-tall** — `height: 100vh`, from the component
-stylesheet. A whole-page app needs nothing for that; an island does not get to
-override it, so a host shorter than the viewport is overflowed by the bar and
+stylesheet. A whole-page app needs nothing for that; an island gets no say in it
+through the API, so a host shorter than the viewport is overflowed by the bar and
 giving that host a height changes nothing. Measured in Chrome 153: with no
 height on `html`, `body` or the host, everything lands at the viewport's 437px;
 with the host at `height: 120px`, the wrapper is still 437px. Tracked
-separately.
+separately. An author stylesheet can still override it — the component sheet's
+rule is a bare class selector, so `div.rinch-app-menu-bar-wrapper { height: 100% }`
+wins on specificity (measured: a 120px host then gets a 120px wrapper).
 
 **Shortcuts are armed against the page.** Every item's `shortcut` string is
 matched on a capture-phase `keydown` on `window`, before the app sees the key,

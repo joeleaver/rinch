@@ -411,8 +411,10 @@ where
 /// `height: 100vh` from the component stylesheet, so a host shorter than the
 /// viewport is overflowed by it, and giving the host a height does not change
 /// that. Measured in Chrome 153: a `height: 120px` host gets a 437px wrapper in
-/// a 437px viewport. Tracked separately; nothing the caller does works around
-/// it today.
+/// a 437px viewport. Tracked separately. Until it is fixed the workaround is an
+/// author CSS rule more specific than the component sheet's bare class —
+/// measured: `div.rinch-app-menu-bar-wrapper { height: 100% }` gives that 120px
+/// host a 120px wrapper.
 ///
 /// **One page, one set of chords.** Clicks are per-bar, but keyboard shortcuts
 /// are matched against a single page-global registry, and arming a bar releases

@@ -1994,9 +1994,12 @@ mod tests {
     ///
     /// The parse is deliberately narrow — a trimmed, non-comment line whose
     /// right-hand side is a quoted string literal followed by a comma — which is
-    /// the shape `cargo fmt` gives both tables and nothing else in this file.
-    /// The length assertions are the positive control: a parse that matched
-    /// nothing would otherwise compare two empty sets and pass.
+    /// the shape `cargo fmt` gives both tables and nothing else in this file. A
+    /// trailing `//` comment is stripped first, because an arm outside the
+    /// accepted shape is *silently uncovered* on the forward side (see the loop)
+    /// where the inverse side fails loud through the count. The length
+    /// assertions are the positive control: a parse that matched nothing would
+    /// otherwise compare two empty sets and pass.
     #[cfg(feature = "desktop")]
     #[test]
     fn the_two_key_tables_name_the_same_codes() {
@@ -2006,10 +2009,15 @@ mod tests {
         let mut inverse_arms = 0usize;
 
         for line in source.lines() {
-            let line = line.trim();
-            if line.starts_with("//") {
-                continue;
-            }
+            // A trailing `//` comment is stripped rather than skipped, and that
+            // is not cosmetic: `cargo fmt` accepts an arm written with one, and
+            // skipping the line makes a *forward*-only spelling invisible —
+            // the sets stay equal and the M5 defect passes. The inverse side
+            // fails loud either way, through the arm count, which is exactly the
+            // asymmetry (it has something to count against and the forward side
+            // does not). A `//` inside one of the string literals would be
+            // wrong to strip, and neither table contains one.
+            let line = line.split("//").next().unwrap_or(line).trim();
             let Some((lhs, rhs)) = line.split_once(" => ") else {
                 continue;
             };
