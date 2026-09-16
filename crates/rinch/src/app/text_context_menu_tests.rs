@@ -498,9 +498,10 @@ fn an_outside_press_closes_the_menu_without_acting_and_is_swallowed() {
     let before_open = dismiss_handler_count() - 1;
     let state_before = field_state(&app, ids.input);
 
-    // Arrow to Cut so an "acting" mutant has something to run.
+    // Arrow to the first enabled row so an "acting" mutant has something to
+    // run: Cut with a clipboard, Select all without one.
     key(&mut app, KeyCode::ArrowDown);
-    assert_eq!(highlighted(&app), Some(TextEditAction::Cut));
+    assert!(highlighted(&app).is_some());
 
     // The plain div's left end: on the div, and outside the panel, which
     // opened at the field's centre and extends right and down from there.
@@ -741,7 +742,8 @@ fn under_shell_presentation_the_gesture_prepares_and_emits_instead_of_opening() 
         "no DOM menu under Shell presentation"
     );
     let s = app.text_edit_state().expect("the state the shell reads");
-    assert_eq!(flags(&s), (true, true, cfg!(feature = "clipboard"), true));
+    let clip = cfg!(feature = "clipboard");
+    assert_eq!(flags(&s), (clip, clip, clip, true));
     assert_eq!(
         (
             attr(&app, ids.input, "data-selection-start"),
@@ -972,9 +974,10 @@ fn the_opening_release_over_a_clamped_row_runs_nothing() {
 }
 
 /// The same through the real gesture at scale factor 2, sliding onto an
-/// enabled Cut row before releasing. (The review's `p1b`.)
+/// enabled row — Select all, enabled with or without a clipboard — before
+/// releasing. (The review's `p1b`, which used Cut.)
 #[test]
-fn the_gesture_at_scale_2_and_its_release_over_cut() {
+fn the_gesture_at_scale_2_and_its_release_over_a_row() {
     let (mut app, ids, _log) = page("hello world", &[]);
     focus_and_select(&mut app, ids.input);
     let x = x_for_offset(&mut app, ids.input, 4);
@@ -995,9 +998,9 @@ fn the_gesture_at_scale_2_and_its_release_over_cut() {
     assert_eq!((px, py), (x, y), "the logical press point at scale 2");
     let before = field_state(&app, ids.input);
     assert_eq!((before.1.as_str(), before.2.as_str()), ("2", "5"));
-    let (cx, cy) = row_center(&app, TextEditAction::Cut);
+    let (cx, cy) = row_center(&app, TextEditAction::SelectAll);
     hi(&mut app, PlatformEvent::MouseMove { x: cx, y: cy });
-    assert_eq!(highlighted(&app), Some(TextEditAction::Cut));
+    assert_eq!(highlighted(&app), Some(TextEditAction::SelectAll));
     hi(
         &mut app,
         PlatformEvent::MouseUp {
@@ -1010,7 +1013,7 @@ fn the_gesture_at_scale_2_and_its_release_over_cut() {
     assert_eq!(
         field_state(&app, ids.input),
         before,
-        "Cut did not run on the release"
+        "Select all did not run on the release"
     );
 }
 
