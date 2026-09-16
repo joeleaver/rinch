@@ -1218,7 +1218,7 @@ fn walk_text_nodes_for_offset(
 /// The nearest ancestor-or-self of `el` carrying handler attribute `attr`
 /// (`data-rid`, `data-onmousedown`, `data-ondragover`, …) and its parsed
 /// handler id.
-fn nearest_handler(
+pub(crate) fn nearest_handler(
     el: &web_sys::Element,
     attr: &str,
 ) -> Option<(web_sys::Element, events::EventHandlerId)> {

@@ -40,6 +40,18 @@
 //! Typed characters from a *physical* keyboard are consumed (and `preventDefault`ed) by
 //! the keydown handler before the textarea sees them. This mirrors the CodeMirror /
 //! ProseMirror hidden-input technique.
+//!
+//! **The same textarea is what gives the editor the browser's own right-click menu**
+//! (issue #814). A right-click on the visible surface would target a plain element, and
+//! the menu the browser builds for one has no Paste and no Cut; rinch draws no menu of
+//! its own on the web, because a page's paste needs `navigator.clipboard.readText()`,
+//! which prompts. So at a right-button press the capture textarea is **parked under
+//! the pointer** — invisible, but hittable — for as long as it takes the browser to
+//! fire `contextmenu` and hit-test the point for its menu; the menu it builds is then
+//! the editing one, and its Paste / Cut / Copy fire the ordinary clipboard events on
+//! the (still focused) textarea, which the listeners below answer from the model.
+//! See [`park_capture_for_context_menu`] for the whole cycle, CodeMirror 5's
+//! `TextareaInput.onContextMenu` for the prior art.
 
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
@@ -51,7 +63,7 @@ use rinch_editor_core::{CursorMotion, Pos, Selection};
 use rinch_editor_view::{EditorHandle, registry};
 
 use crate::event_delegation::{
-    compute_byte_offset_in_block, drag_machine, utf16_offset_to_utf8_bytes,
+    compute_byte_offset_in_block, drag_machine, nearest_handler, utf16_offset_to_utf8_bytes,
 };
 use crate::web_document::{find_text_node_at_byte_offset, get_nid, node_by_nid};
 
@@ -82,6 +94,14 @@ thread_local! {
     /// `(pointer_id, client_x, client_y)`. A release near that point is a tap rather
     /// than a scroll, and focuses the capture target (see `handle_touch_tap`).
     static TOUCH_TAP: Cell<Option<(i32, f32, f32)>> = const { Cell::new(None) };
+    /// The context-menu cycle in flight (issue #814): the capture textarea is, or
+    /// was just, parked under the pointer and holds the Select-All sentinel rather
+    /// than the mirror. `None` when no cycle is live. See
+    /// [`park_capture_for_context_menu`].
+    static MENU_CYCLE: RefCell<Option<MenuCycle>> = const { RefCell::new(None) };
+    /// Issues each cycle its id, so a timer armed for one cycle is a no-op once a
+    /// later cycle — or none — has replaced it.
+    static MENU_CYCLE_SEQ: Cell<u64> = const { Cell::new(0) };
 }
 
 fn focused_editor() -> Option<usize> {
@@ -266,9 +286,11 @@ fn clear_mirror(ta: &web_sys::HtmlTextAreaElement) {
 }
 
 /// Rewrite the capture textarea to mirror the caret's textblock, and remember what we
-/// wrote. A no-op mid-composition — the IME owns the field until it commits.
+/// wrote. A no-op mid-composition — the IME owns the field until it commits — and
+/// while a context-menu cycle holds the field (it carries the Select-All sentinel
+/// then, and is re-mirrored when the cycle ends).
 fn sync_mirror(handle: &EditorHandle) {
-    if COMPOSING.with(|c| c.get()) {
+    if COMPOSING.with(|c| c.get()) || menu_cycle_id().is_some() {
         return;
     }
     let Some(ta) = capture_target() else {
@@ -414,15 +436,7 @@ fn ensure_capture_target(doc: &web_sys::Document) -> Option<web_sys::HtmlTextAre
     ta.set_spellcheck(false);
     ta.set_attribute("autocorrect", "off").ok();
     ta.set_attribute("autocapitalize", "off").ok();
-    // Off-screen, invisible, and non-interactive (`pointer-events: none` so it never
-    // becomes a mouse target / steals a click) yet still programmatically focusable.
-    ta.set_attribute(
-        "style",
-        "position: fixed; top: 0; left: 0; width: 1px; height: 1px; padding: 0; \
-         margin: -1px; border: 0; opacity: 0; overflow: hidden; resize: none; \
-         pointer-events: none; outline: none; z-index: -1; white-space: pre;",
-    )
-    .ok();
+    ta.set_attribute("style", HIDDEN_CAPTURE_STYLE).ok();
     doc.body()?.append_child(&ta).ok()?;
     install_capture_listeners(&ta);
     CAPTURE.with(|c| *c.borrow_mut() = Some(ta.clone()));
@@ -450,8 +464,286 @@ fn focus_capture_target(doc: &web_sys::Document) {
 
 /// Blur the capture target (when focus leaves the editor for another field).
 fn blur_capture_target() {
+    end_context_menu_cycle();
     if let Some(ta) = capture_target() {
         let _ = ta.blur();
+    }
+}
+
+// ── The browser's own context menu (issue #814) ───────────────────────────────
+//
+// The browser builds its right-click menu for the element its own hit test finds
+// at the press point, and the editor's surface is a plain `<div>`: the menu for one
+// has no Paste and no Cut. A page cannot draw its own — `navigator.clipboard.
+// readText()` prompts — so the fix is CodeMirror 5's: park the capture textarea
+// under the pointer at the right-button press, so the hit test finds an editable.
+//
+// A cycle runs like this:
+//
+// 1. `handle_mousedown` (button 2) applies the right-press caret rule, then
+//    `park_capture_for_context_menu` moves the textarea under the pointer —
+//    `pointer-events: auto`, on top, `opacity: 0` — and fills it with the
+//    **sentinel** below plus the editor's selection as text, selected from offset 1,
+//    so the menu offers Copy / Cut exactly when the editor has a selection. The
+//    mirror is dropped for the duration (`sync_mirror` is a no-op meanwhile).
+// 2. The browser fires `contextmenu` at the textarea and hit-tests the point for
+//    its menu. Chrome does both at the press, so the `contextmenu` listener
+//    schedules the **unpark** — the textarea goes back off-screen, the sentinel
+//    stays — a moment later; a `mouseup` of the right button schedules one too,
+//    for a browser that fires `contextmenu` at the release.
+// 3. The menu's items fire on the *focused* editable, wherever it is: `paste`,
+//    `cut`, `copy` and `beforeinput` are answered from the model by the listeners
+//    above. Select All is the exception — it selects the textarea's contents,
+//    which the sentinel makes detectable (`select_all_chosen`) — and is translated
+//    into the editor's `selectAll`.
+// 4. The cycle **ends** — `end_context_menu_cycle` restores the hidden style and
+//    re-mirrors the caret's block — on the first of: any of those events, the next
+//    key or pointer press, the textarea losing focus, or the Select-All poll
+//    running out.
+
+/// The textarea's resting style: off-screen, invisible, and non-interactive
+/// (`pointer-events: none` so it never becomes a mouse target / steals a click)
+/// yet still programmatically focusable.
+const HIDDEN_CAPTURE_STYLE: &str = "position: fixed; top: 0; left: 0; width: 1px; \
+     height: 1px; padding: 0; margin: -1px; border: 0; opacity: 0; overflow: hidden; \
+     resize: none; pointer-events: none; outline: none; z-index: -1; white-space: pre;";
+
+/// The side of the square the parked textarea covers around the pointer.
+const PARK_SIZE: f32 = 30.0;
+
+/// How long after the `contextmenu` dispatch the textarea stays parked. The
+/// browser hit-tests for its menu in that event's default action, before any
+/// timer can run; CodeMirror waits the same 50 ms.
+const UNPARK_AFTER_MENU_MS: i32 = 50;
+
+/// How long after a right-button release the textarea stays parked, for a
+/// platform whose `contextmenu` follows the release rather than the press.
+const UNPARK_AFTER_RELEASE_MS: i32 = 100;
+
+/// The Select-All poll: `SELECT_ALL_POLL_TICKS` × `SELECT_ALL_POLL_MS` is how long
+/// a cycle stays open for a menu the page hears nothing more from — one dismissed
+/// by a click the menu swallowed, say.
+const SELECT_ALL_POLL_MS: i32 = 250;
+const SELECT_ALL_POLL_TICKS: u32 = 20;
+
+/// Prefixed to the parked textarea's value. The editor's own writes select from
+/// offset 1, past it, so a selection that starts at 0 and reaches the end can only
+/// be the browser's Select All (CodeMirror's sentinel; a zero-width space so it
+/// shows nothing if it ever does show).
+const SELECT_ALL_SENTINEL: char = '\u{200b}';
+
+/// The most of the selection's text the parked textarea carries. It is there to
+/// make the field *have* a selection — Copy and Cut are answered from the model —
+/// so a document-sized selection need not be serialized into it.
+const PARKED_TEXT_CAP: usize = 1000;
+
+/// A context-menu cycle in flight.
+struct MenuCycle {
+    id: u64,
+    /// Whether the textarea is still under the pointer. It goes back off-screen
+    /// shortly after the `contextmenu` dispatch; the sentinel stays until the cycle
+    /// ends.
+    parked: bool,
+    /// The model selection when the cycle began. Select All is translated only
+    /// while it is unchanged: an edit in between means the menu is long gone.
+    selection: Selection,
+}
+
+/// The live cycle's id, if any.
+fn menu_cycle_id() -> Option<u64> {
+    MENU_CYCLE.with(|c| c.borrow().as_ref().map(|m| m.id))
+}
+
+/// The style that parks the textarea under the pointer at `(x, y)` (viewport
+/// coordinates): a `PARK_SIZE` square centred on the point, hittable and on top of
+/// everything, invisible.
+fn parked_capture_style(x: f32, y: f32) -> String {
+    let half = PARK_SIZE / 2.0;
+    format!(
+        "position: fixed; left: {}px; top: {}px; width: {PARK_SIZE}px; height: {PARK_SIZE}px; \
+         padding: 0; margin: 0; border: 0; opacity: 0; overflow: hidden; resize: none; \
+         pointer-events: auto; outline: none; z-index: 2147483647; white-space: pre; \
+         background: transparent;",
+        x - half,
+        y - half
+    )
+}
+
+/// Whether a selection of `start..end` over a field of `len` UTF-16 units is the
+/// browser's Select All: the whole field, sentinel included. The editor's own
+/// writes never start at 0 while the sentinel is in place.
+fn select_all_chosen(start: u32, end: u32, len: u32) -> bool {
+    len > 0 && start == 0 && end == len
+}
+
+/// Whether a right-click at `target` belongs to an app handler: an element up its
+/// chain carrying a **live** `data-oncontextmenu` (the same test the generic
+/// delegation makes before dispatching one). An app that wants its own menu over
+/// an editor attaches one, and then gets it, as over anything else it wraps.
+fn context_menu_claimed_by_app(target: &web_sys::Element) -> bool {
+    nearest_handler(target, "data-oncontextmenu")
+        .is_some_and(|(_, id)| rinch_core::events::has_click_handler(id))
+}
+
+/// Run `f` after `ms` on the page's timer.
+fn after(ms: i32, f: impl FnOnce() + 'static) {
+    let Some(win) = web_sys::window() else {
+        return;
+    };
+    let cb = Closure::once_into_js(f);
+    let _ = win.set_timeout_with_callback_and_timeout_and_arguments_0(cb.unchecked_ref(), ms);
+}
+
+/// Start a context-menu cycle for a right-button press at `(x, y)` inside the
+/// focused editor: park the capture textarea under the point and fill it with the
+/// sentinel and the editor's selection (see the section comment above).
+fn park_capture_for_context_menu(handle: &EditorHandle, x: f32, y: f32) {
+    // A cycle still open from an earlier press ends first, so its sentinel is not
+    // read as this one's.
+    end_context_menu_cycle();
+    let Some(ta) = capture_target() else {
+        return;
+    };
+    let id = MENU_CYCLE_SEQ.with(|c| {
+        let next = c.get() + 1;
+        c.set(next);
+        next
+    });
+    let _ = ta.set_attribute("style", &parked_capture_style(x, y));
+
+    let selection = handle.selection();
+    let selected = if selection.is_empty() {
+        String::new()
+    } else {
+        let text: String = handle
+            .selection_clipboard()
+            .map(|(_, text)| text)
+            .unwrap_or_default()
+            .chars()
+            .take(PARKED_TEXT_CAP)
+            .collect();
+        // A node selection (an image) has no text; the field still needs a
+        // character to select or the menu greys Copy and Cut out.
+        if text.is_empty() {
+            " ".to_string()
+        } else {
+            text
+        }
+    };
+    let value = format!("{SELECT_ALL_SENTINEL}{selected}");
+    // The field no longer mirrors anything; `end_context_menu_cycle` rebuilds it.
+    MIRROR.with(|m| *m.borrow_mut() = None);
+    ta.set_value(&value);
+    let len = value.encode_utf16().count() as u32;
+    let _ = ta.set_selection_range(1, len);
+    MENU_CYCLE.with(|c| {
+        *c.borrow_mut() = Some(MenuCycle {
+            id,
+            parked: true,
+            selection,
+        })
+    });
+    poll_select_all(id, SELECT_ALL_POLL_TICKS);
+}
+
+/// Send the textarea back off-screen if cycle `id` is live and still has it
+/// parked. The cycle itself stays open for the menu's items.
+fn unpark_capture(id: u64) {
+    let was_parked = MENU_CYCLE.with(|c| match c.borrow_mut().as_mut() {
+        Some(m) if m.id == id && m.parked => {
+            m.parked = false;
+            true
+        }
+        _ => false,
+    });
+    if was_parked && let Some(ta) = capture_target() {
+        let _ = ta.set_attribute("style", HIDDEN_CAPTURE_STYLE);
+    }
+}
+
+/// Schedule the unpark of the live cycle, if any, `ms` from now.
+fn schedule_unpark(ms: i32) {
+    if let Some(id) = menu_cycle_id() {
+        after(ms, move || unpark_capture(id));
+    }
+}
+
+/// Watch the parked field for the menu's Select All — which the page hears of
+/// only through the field's selection — and close a cycle nobody else closes.
+fn poll_select_all(id: u64, ticks_left: u32) {
+    after(SELECT_ALL_POLL_MS, move || {
+        if menu_cycle_id() != Some(id) {
+            return;
+        }
+        let Some(ta) = capture_target() else {
+            return;
+        };
+        let doc = ta.owner_document();
+        let focused = doc.and_then(|d| d.active_element()).as_deref() == Some(ta.as_ref());
+        if select_all_chosen_in(&ta) || !focused || ticks_left <= 1 {
+            end_context_menu_cycle();
+            return;
+        }
+        poll_select_all(id, ticks_left - 1);
+    });
+}
+
+/// [`select_all_chosen`] read off the field.
+fn select_all_chosen_in(ta: &web_sys::HtmlTextAreaElement) -> bool {
+    let len = ta.value().encode_utf16().count() as u32;
+    let start = ta.selection_start().ok().flatten().unwrap_or(0);
+    let end = ta.selection_end().ok().flatten().unwrap_or(0);
+    select_all_chosen(start, end, len)
+}
+
+/// The field's `select` event: fired by the menu's Select All (among other
+/// things), so it is the prompt answer where the poll is the fallback.
+fn on_select() {
+    if menu_cycle_id().is_some()
+        && let Some(ta) = capture_target()
+        && select_all_chosen_in(&ta)
+    {
+        end_context_menu_cycle();
+    }
+}
+
+/// End the cycle in flight, if any: unpark the textarea, translate a Select All
+/// the menu chose, and put the mirror back — the field held the sentinel, so it
+/// is rebuilt from the caret's block. A no-op when no cycle is live, which is
+/// what lets every event path call it unconditionally.
+fn end_context_menu_cycle() {
+    let Some(cycle) = MENU_CYCLE.with(|c| c.borrow_mut().take()) else {
+        return;
+    };
+    let Some(ta) = capture_target() else {
+        return;
+    };
+    if cycle.parked {
+        let _ = ta.set_attribute("style", HIDDEN_CAPTURE_STYLE);
+    }
+    let chose_select_all = select_all_chosen_in(&ta);
+    match focused_handle() {
+        Some((_, handle)) => {
+            if chose_select_all && handle.selection() == cycle.selection {
+                handle.command("selectAll");
+            }
+            clear_mirror(&ta);
+            refresh_caret();
+        }
+        None => clear_mirror(&ta),
+    }
+}
+
+/// The `contextmenu` the browser fires for a right press. When it targets the
+/// parked textarea the browser's hit test has found the editable; its menu is
+/// built in this event's default action, after which the textarea can go back.
+fn handle_contextmenu(event: &web_sys::MouseEvent) {
+    if event
+        .target()
+        .and_then(|t| t.dyn_into::<web_sys::Element>().ok())
+        .is_some_and(|el| el.has_attribute("data-pm-capture"))
+    {
+        schedule_unpark(UNPARK_AFTER_MENU_MS);
     }
 }
 
@@ -468,6 +760,7 @@ fn install_capture_listeners(ta: &web_sys::HtmlTextAreaElement) {
         on_before_input(&e);
     });
     add_target_listener(target, "input", |_e: web_sys::InputEvent| on_input());
+    add_target_listener(target, "select", |_e: web_sys::Event| on_select());
     add_target_listener(
         target,
         "compositionstart",
@@ -498,6 +791,8 @@ fn install_capture_listeners(ta: &web_sys::HtmlTextAreaElement) {
 /// `preventDefault` so the empty hidden textarea is never copied (which would clobber
 /// the clipboard); only write data when there is a non-empty selection.
 fn on_copy(event: &web_sys::ClipboardEvent) {
+    // The menu's Copy: the cycle has served its purpose.
+    end_context_menu_cycle();
     let Some((_, handle)) = focused_handle() else {
         return;
     };
@@ -512,6 +807,7 @@ fn on_copy(event: &web_sys::ClipboardEvent) {
 
 /// Cut: copy the selection, then delete it.
 fn on_cut(event: &web_sys::ClipboardEvent) {
+    end_context_menu_cycle();
     let Some((_, handle)) = focused_handle() else {
         return;
     };
@@ -530,6 +826,7 @@ fn on_cut(event: &web_sys::ClipboardEvent) {
 /// Paste over the selection, preferring rich `text/html`, then a raw image file
 /// (encoded as a `data:` URL via `FileReader`), then `text/plain`.
 fn on_paste(event: &web_sys::ClipboardEvent) {
+    end_context_menu_cycle();
     let Some((_, handle)) = focused_handle() else {
         return;
     };
@@ -741,6 +1038,9 @@ fn on_before_input(event: &web_sys::InputEvent) {
     if event.is_composing() || COMPOSING.with(|c| c.get()) {
         return;
     }
+    // A menu item that edits (Delete, Undo) arrives here; the cycle ends first so
+    // the field the browser is about to edit is the mirror, not the sentinel.
+    end_context_menu_cycle();
     let Some((_, handle)) = focused_handle() else {
         return;
     };
@@ -788,6 +1088,7 @@ fn on_input() {
     if COMPOSING.with(|c| c.get()) {
         return;
     }
+    end_context_menu_cycle();
     let Some((_, handle)) = focused_handle() else {
         // Nothing to apply it to; just don't leave text for a later `copy` to pick up
         // (and drop the mirror with it, so nothing later diffs against a cleared field).
@@ -806,12 +1107,27 @@ fn on_input() {
 /// Handle a `mousedown`. Returns whether it landed in an editor (so the listener
 /// consumes it). Mirrors `try_new_editor_click`.
 fn handle_mousedown(event: &web_sys::MouseEvent, doc: &web_sys::Document) -> bool {
-    let Some(target) = event
+    // A press of any button means the browser's menu is closed: the cycle ends,
+    // and the textarea is back off-screen before this press is resolved.
+    end_context_menu_cycle();
+    let Some(mut target) = event
         .target()
         .and_then(|t| t.dyn_into::<web_sys::Element>().ok())
     else {
         return false;
     };
+    let x = event.client_x() as f32;
+    let y = event.client_y() as f32;
+    // A press that landed on the capture textarea itself found it still parked
+    // under the pointer from a right press moments before. It is not a press into
+    // "another text field": now that the cycle has ended it is a press on whatever
+    // the editor has at that point.
+    if target.has_attribute("data-pm-capture") {
+        let Some(beneath) = doc.element_from_point(x, y) else {
+            return false;
+        };
+        target = beneath;
+    }
     let Some(editor_el) = target.closest("[data-pm-editor]").ok().flatten() else {
         // Outside any editor. Blur only when moving to another text field, so a
         // toolbar click keeps the editor focused (and its selection visible).
@@ -839,21 +1155,44 @@ fn handle_mousedown(event: &web_sys::MouseEvent, doc: &web_sys::Document) -> boo
     focus_capture_target(doc);
 
     // A click on a leaf atom (image / horizontal rule) node-selects it.
-    if let Some(leaf) = target
+    let leaf_selection = target
         .closest("[data-pm-type='image'], [data-pm-type='horizontal_rule']")
         .ok()
         .flatten()
-        && let Some(leaf_nid) = get_nid(&leaf.into()).map(|n| n.0)
-        && let Some(sel) = handle.node_selection_at_host(leaf_nid)
-    {
+        .and_then(|leaf| get_nid(&leaf.into()).map(|n| n.0))
+        .and_then(|leaf_nid| handle.node_selection_at_host(leaf_nid));
+
+    // A right press: the caret rule native editors follow — a press *inside* the
+    // selection keeps it (that is what the menu's Cut and Copy act on), a press
+    // outside moves the caret there — and never a drag. Then the browser's own
+    // menu, through the parked textarea (issue #814), unless an app handler up
+    // the chain has claimed the right-click.
+    if event.button() == 2 {
+        if let Some(sel) = leaf_selection {
+            handle.set_selection(sel);
+        } else if let Some(hit) = resolve_editor_point(doc, x, y)
+            && hit.container_nid == container_nid
+            && let Some(clicked) = handle.pos_at(hit.textblock_nid, hit.byte)
+        {
+            let sel = handle.selection();
+            if sel.is_empty() || clicked < sel.from() || clicked > sel.to() {
+                handle.set_selection(Selection::cursor(clicked));
+            }
+        }
+        registry::end_drag(None);
+        refresh_caret();
+        if !context_menu_claimed_by_app(&target) {
+            park_capture_for_context_menu(&handle, x, y);
+        }
+        return true;
+    }
+
+    if let Some(sel) = leaf_selection {
         handle.set_selection(sel);
         registry::end_drag(None);
         refresh_caret();
         return true;
     }
-
-    let x = event.client_x() as f32;
-    let y = event.client_y() as f32;
 
     // A click in a task item's checkbox gutter (left of its content, where the CSS
     // `::before` checkbox renders) toggles its `checked` state instead of placing a
@@ -994,6 +1333,10 @@ fn editor_key_binding(
 /// Handle a `keydown`. Returns whether the editor consumed the key (so the listener
 /// `preventDefault`s + stops it). Mirrors `dispatch_new_editor_key`.
 fn handle_keydown(event: &web_sys::KeyboardEvent, doc: &web_sys::Document) -> bool {
+    // A key reaching the page means the browser's menu is closed (it takes the
+    // keyboard while open); the cycle ends before the key is read, so a typed
+    // character lands in a mirrored field rather than the sentinel.
+    end_context_menu_cycle();
     // Never hijack a key destined for a real form control / editable element (e.g. a
     // search box the user clicked) — but our own hidden capture textarea
     // (`data-pm-capture`) IS the editor's focus target, so let its keys through.
@@ -1420,8 +1763,20 @@ pub(crate) fn install(browser_doc: &web_sys::Document) {
             e.prevent_default();
         }
     });
-    add_capture(browser_doc, "mouseup", move |_e: web_sys::MouseEvent| {
+    add_capture(browser_doc, "mouseup", move |e: web_sys::MouseEvent| {
         registry::end_drag(None);
+        // A right-button release: on a platform whose `contextmenu` follows the
+        // release, the browser hit-tests for its menu right after this event.
+        if e.button() == 2 {
+            schedule_unpark(UNPARK_AFTER_RELEASE_MS);
+        }
+    });
+    // The browser's `contextmenu` for a right press (issue #814): once it has been
+    // dispatched at the parked textarea, the hit test for the menu is done and the
+    // textarea can go back off-screen. Capture phase, so the generic delegation's
+    // own `contextmenu` listener sees the same target it always would.
+    add_capture(browser_doc, "contextmenu", |e: web_sys::MouseEvent| {
+        handle_contextmenu(&e);
     });
 
     // Bubble-phase refresh: after an *outside* click that wasn't consumed in capture
@@ -1695,6 +2050,40 @@ mod tests {
             );
             assert_eq!(utf16_offset_to_utf8_bytes(text, 0), 0, "{text:?}");
         }
+    }
+
+    // ── The context-menu cycle (issue #814) ───────────────────────────────────
+
+    #[test]
+    fn select_all_is_the_whole_field_from_offset_zero() {
+        // The menu's Select All over a sentinel + 9 characters.
+        assert!(select_all_chosen(0, 10, 10));
+        // The editor's own write: selected from past the sentinel.
+        assert!(!select_all_chosen(1, 10, 10));
+        // A partial selection the user could not have made from the menu.
+        assert!(!select_all_chosen(0, 9, 10));
+        assert!(!select_all_chosen(2, 7, 10));
+        // An empty field selects nothing.
+        assert!(!select_all_chosen(0, 0, 0));
+        // The empty-selection cycle: the field is the sentinel alone.
+        assert!(select_all_chosen(0, 1, 1));
+        assert!(!select_all_chosen(1, 1, 1));
+    }
+
+    #[test]
+    fn the_parked_style_centres_a_hittable_box_on_the_pointer() {
+        // Off the origin, so a style that forgot the offset would show.
+        let style = parked_capture_style(100.0, 40.0);
+        assert!(style.contains("left: 85px;"), "{style}");
+        assert!(style.contains("top: 25px;"), "{style}");
+        assert!(style.contains("width: 30px; height: 30px;"), "{style}");
+        // Hittable and on top — what the hidden style is not.
+        assert!(style.contains("pointer-events: auto;"), "{style}");
+        assert!(!style.contains("pointer-events: none"), "{style}");
+        assert!(!style.contains("z-index: -1"), "{style}");
+        // And still invisible.
+        assert!(style.contains("opacity: 0;"), "{style}");
+        assert!(HIDDEN_CAPTURE_STYLE.contains("pointer-events: none;"));
     }
 
     // ── Tap vs scroll ─────────────────────────────────────────────────────────
