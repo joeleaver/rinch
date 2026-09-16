@@ -136,7 +136,7 @@ fn an_auto_repeat_never_reactivates() {
 /// introduced (the blur heal had already emptied the latch, so the same
 /// synthetic press activated before it too) and this fixture is not the place
 /// to fix it: nothing else kills the mutant named below, and rinch reads no
-/// `is_synthetic` anywhere. Tracked separately.
+/// `is_synthetic` anywhere. Tracked as issue #800.
 ///
 /// Kills `KeyRepeat::Repeat => self.node_activation_held != Some(key)`.
 #[test]
