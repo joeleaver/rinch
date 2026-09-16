@@ -770,3 +770,37 @@ fn a_touch_tap_still_focuses_the_editor() {
     );
     f.teardown();
 }
+
+// ── The page-wide suppression flag ──────────────────────────────────────────
+
+/// With `set_suppress_native_context_menu(true)` the page takes the browser's
+/// menu away everywhere — except in an editing context (issue #812), which the
+/// parked textarea is. So the editor keeps its editing menu under the flag,
+/// while the same right press on the editor's surface without the textarea
+/// under it would be suppressed. Kills: a carve-out keyed on anything but the
+/// event's target; parking after the delegation has already answered.
+#[wasm_bindgen_test]
+fn with_the_flag_on_the_parked_textarea_keeps_the_browsers_menu() {
+    let f = Fixture::mount();
+    let at = f.point(0, 8);
+    f.focus_at(at);
+    rinch_web::set_suppress_native_context_menu(true);
+
+    // Positive control: with the flag on, a contextmenu at the editor's surface
+    // itself (nothing parked) is suppressed.
+    let surface = under(at.0, at.1);
+    assert!(!is_capture(&surface));
+    let ev = mouse_on(&surface, "contextmenu", at.0, at.1, 2);
+    assert!(
+        ev.default_prevented(),
+        "the flag suppresses the menu on the plain surface"
+    );
+
+    let (ev, tag) = f.right_press(at);
+    assert_eq!(tag, "TEXTAREA");
+    assert!(
+        !ev.default_prevented(),
+        "the parked textarea is an editing context: the browser's menu stays"
+    );
+    f.teardown();
+}
