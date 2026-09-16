@@ -31,6 +31,31 @@ fn affine_to_transform(a: Affine) -> Transform {
     )
 }
 
+/// Premultiply one straight-alpha colour channel by `alpha`, **rounding to
+/// nearest** rather than truncating (#461, #473).
+///
+/// The exact value is `c * alpha / 255`. `(c * alpha + 127) / 255` in integer
+/// arithmetic is that value rounded to nearest, exactly and with no float:
+/// `floor((x + 127) / 255)` and `floor((x + 127.5) / 255)` cannot differ for an
+/// integer `x`, and a tie would need `2 * c * alpha` to be an odd multiple of
+/// `255`, which an even number is not. It agrees with `draw_image`'s
+/// `(c as f32 * af + 0.5) as u8` over the whole domain.
+///
+/// It is **not** the `+128` that `blit_rgba` uses, which is round-half-up: at
+/// `c * alpha ≡ 127 (mod 255)` — 128 of the 65 536 pairs — that rounds a
+/// fraction of `127/255` up, half a level past nearest. Both are pinned by
+/// `the_helper_agrees_with_the_float_spelling_and_not_with_plus_128`.
+///
+/// **The premultiplied invariant survives the rounding**, which is what tiny-skia
+/// validates: `c <= 255` gives `c * alpha / 255 <= alpha`, and rounding a value
+/// that is at most `alpha` cannot exceed `alpha` because the tie case does not
+/// arise. Proved over the whole 256x256 domain, against tiny-skia's own
+/// `PremultipliedColorU8::from_rgba`, by `rounding_never_breaks_the_premultiplied_invariant`.
+#[inline]
+fn premultiply_channel(c: u8, alpha: u8) -> u8 {
+    ((c as u16 * alpha as u16 + 127) / 255) as u8
+}
+
 /// Convert a peniko `AlphaColor<Srgb>` to a tiny-skia `Color`.
 fn to_skia_color(c: AlphaColor<Srgb>) -> SkColor {
     let rgba = c.to_rgba8();
@@ -936,11 +961,10 @@ impl TinySkiaPainter {
             if a == 0 {
                 continue;
             }
-            let af = a as f32 / 255.0;
             let idx = i * 4;
-            glyph_pixels[idx] = (cr as f32 * af) as u8;
-            glyph_pixels[idx + 1] = (cg as f32 * af) as u8;
-            glyph_pixels[idx + 2] = (cb as f32 * af) as u8;
+            glyph_pixels[idx] = premultiply_channel(cr, a);
+            glyph_pixels[idx + 1] = premultiply_channel(cg, a);
+            glyph_pixels[idx + 2] = premultiply_channel(cb, a);
             glyph_pixels[idx + 3] = a;
         }
 
@@ -999,10 +1023,9 @@ impl TinySkiaPainter {
                 glyph_pixels[dst_idx + 3] = 255;
             } else {
                 // Convert straight alpha to premultiplied
-                let af = sa as f32 / 255.0;
-                glyph_pixels[dst_idx] = (sr as f32 * af) as u8;
-                glyph_pixels[dst_idx + 1] = (sg as f32 * af) as u8;
-                glyph_pixels[dst_idx + 2] = (sb as f32 * af) as u8;
+                glyph_pixels[dst_idx] = premultiply_channel(sr, sa);
+                glyph_pixels[dst_idx + 1] = premultiply_channel(sg, sa);
+                glyph_pixels[dst_idx + 2] = premultiply_channel(sb, sa);
                 glyph_pixels[dst_idx + 3] = sa;
             }
         }
@@ -1014,5 +1037,338 @@ impl TinySkiaPainter {
         let paint = PixmapPaint::default();
         self.pixmap
             .draw_pixmap(0, 0, glyph_pm.as_ref(), &paint, ts, self.clip_mask.as_ref());
+    }
+}
+
+// ── Premultiply rounding (#461, #473) ─────────────────────────────────────
+
+/// Both glyph blitters premultiply a straight-alpha colour channel by the
+/// pixel's alpha, and both used to do it with a bare `as u8`, which truncates.
+/// That is a one-sided error — it can only ever move a channel down — so every
+/// antialiased glyph edge pixel came out up to one level short and text
+/// rendered slightly thin. `glyph_premultiply_tests.rs` is the end-to-end pixel
+/// oracle over a real glyph edge; this module is the font-free half, and it is
+/// what covers the **colour**-glyph site, which needs a COLR/bitmap face no CI
+/// host is guaranteed to have.
+///
+/// The two blitters are tested through their own private methods rather than
+/// through `draw_glyphs`, for the same reason: a synthetic mask is the only way
+/// to choose the alphas, and choosing them is the whole point. A real edge's
+/// alphas are whatever the font and the hinter produced, and about half of them
+/// sit where truncation and rounding agree — the fixed-point trap.
+///
+/// # Which fixture kills which mutant
+///
+/// Measured, one run each, against the five fixtures here plus the one in
+/// `glyph_premultiply_tests.rs`:
+///
+/// | mutation | killed by |
+/// |---|---|
+/// | the helper truncates (#461's bug) | all six |
+/// | the helper rounds half **up** (`+128`) | all six |
+/// | the helper `ceil`s | all six |
+/// | the **mask site** alone re-truncates, helper intact | `the_mask_glyph_premultiply_rounds`, `a_translucent_brush_rounds_too`, and the pixel oracle |
+/// | the **colour site** alone re-truncates, helper intact | `the_colour_glyph_premultiply_rounds` **only** |
+///
+/// The last row is the reason this module exists: no document fixture paints a
+/// COLR glyph, so that site regressing is invisible to every other test in the
+/// workspace, the pixel oracle included.
+#[cfg(test)]
+mod premultiply_tests {
+    use super::*;
+    use tiny_skia::PremultipliedColorU8;
+
+    /// The straight-alpha brush these fixtures use. None of the three channels
+    /// is `0` or `255`: at either of those `c * a / 255` is an integer for
+    /// every `a`, truncation and rounding agree, and the fixture would sit on
+    /// the fixed point and pass against the bug.
+    ///
+    /// All three are also **coprime to 255**, which is a second fixed point and
+    /// a less obvious one. `c * a mod 255` only ever takes multiples of
+    /// `gcd(c, 255)`, so a channel like `200` (`gcd = 5`) reaches just 51 of the
+    /// 255 possible fractions and can never produce one of `127/255` — the
+    /// single fraction at which round-half-up and round-to-nearest disagree.
+    /// A fixture built on `200, 150, 100` is blind to that mutant by
+    /// construction; measured, and the reason these are `199, 151, 101`.
+    const CR: u8 = 199;
+    const CG: u8 = 151;
+    const CB: u8 = 101;
+
+    /// What the sites did before #461: `(c as f32 * (a as f32 / 255.0)) as u8`.
+    fn truncating_premultiply(c: u8, alpha: u8) -> u8 {
+        let af = alpha as f32 / 255.0;
+        (c as f32 * af) as u8
+    }
+
+    /// Round-to-nearest, arrived at a **different way** from the implementation
+    /// — `f64` and `.round()` rather than integer `+127` — so that the blitter
+    /// fixtures below compare against an independent value.
+    ///
+    /// Asserting them against `premultiply_channel` instead makes them pin only
+    /// *"the site calls the helper"*: measured, a `ceil` mutation of the helper
+    /// left both of them green, because both sides of the comparison moved
+    /// together. The helper's own correctness is pinned exhaustively by
+    /// `rounding_never_breaks_the_premultiplied_invariant`; these pin the sites.
+    fn rounded_premultiply(c: u8, alpha: u8) -> u8 {
+        (c as f64 * alpha as f64 / 255.0).round() as u8
+    }
+
+    /// Step 2 of #461: *prove* rather than argue that tiny-skia still accepts
+    /// the rounded values. The domain is 256x256, so it is checked entire
+    /// rather than sampled.
+    ///
+    /// `PremultipliedColorU8::from_rgba` is tiny-skia's own validation — it
+    /// answers `None` for any channel above its alpha — so this asserts against
+    /// the library's rule, not against a restatement of it.
+    #[test]
+    fn rounding_never_breaks_the_premultiplied_invariant() {
+        let mut discriminating = 0usize;
+        for alpha in 0..=255u8 {
+            for c in 0..=255u8 {
+                let v = premultiply_channel(c, alpha);
+
+                assert!(
+                    v <= alpha,
+                    "premultiplied channel {v} exceeds its alpha {alpha} (c = {c})"
+                );
+                assert!(
+                    PremultipliedColorU8::from_rgba(v, v, v, alpha).is_some(),
+                    "tiny-skia rejects the premultiplied pixel ({v}, {alpha}) for c = {c}"
+                );
+
+                // Rounded to nearest: at most half a level from the exact value.
+                let exact = c as f64 * alpha as f64 / 255.0;
+                assert!(
+                    (v as f64 - exact).abs() <= 0.5,
+                    "premultiply_channel({c}, {alpha}) = {v}, exact = {exact}"
+                );
+
+                if v != truncating_premultiply(c, alpha) {
+                    discriminating += 1;
+                }
+            }
+        }
+
+        // Positive control. Without it a `premultiply_channel` that truncated
+        // would still satisfy every assertion above except the 0.5 bound, and a
+        // future rewrite of that bound into something looser would go green on
+        // an empty claim. 31 770 of the 65 536 cases separate the two rules.
+        assert!(
+            discriminating > 30_000,
+            "only {discriminating} of 65536 (c, alpha) pairs separate rounding from \
+             truncation — the fixture is no longer discriminating"
+        );
+    }
+
+    /// Where the helper stands against the two rounding spellings this file
+    /// already had, measured rather than assumed — the first draft of this test
+    /// asserted it agreed with both and was wrong about one of them.
+    ///
+    /// `draw_image`'s `(x as f32 * af + 0.5) as u8`: identical, all 65 536
+    /// pairs. So that site could be folded onto the helper with no pixel
+    /// changing, which this PR deliberately does not do — it is correct today,
+    /// and changing correct code is how a text-rendering PR grows a second,
+    /// unreviewed surface.
+    ///
+    /// `blit_rgba`'s `(x * a + 128) / 255`: **not** identical. It is
+    /// round-half-up, and at `c * alpha ≡ 127 (mod 255)` it rounds a fraction of
+    /// `127/255 = 0.498` up to the next level — 128 pairs, error `0.502`, i.e.
+    /// just past half a level and in the opposite direction to #461's
+    /// truncation. It is a sub-level imprecision on an image path with no
+    /// coverage, not the glyph bug, so it is recorded here rather than changed.
+    ///
+    /// Either way this pins #473's framing: the glyph sites were the only
+    /// premultiplies in the file that had dropped the rounding term altogether.
+    #[test]
+    fn the_helper_agrees_with_the_float_spelling_and_not_with_plus_128() {
+        let mut plus_128_differs = 0usize;
+        for alpha in 0..=255u8 {
+            for c in 0..=255u8 {
+                let helper = premultiply_channel(c, alpha);
+
+                let draw_image_spelling = {
+                    let af = alpha as f32 / 255.0;
+                    (c as f32 * af + 0.5) as u8
+                };
+                assert_eq!(
+                    helper, draw_image_spelling,
+                    "integer and float rounding disagree at (c = {c}, alpha = {alpha})"
+                );
+
+                let blit_rgba_spelling = ((c as u16 * alpha as u16 + 128) / 255) as u8;
+                if helper != blit_rgba_spelling {
+                    plus_128_differs += 1;
+                    assert_eq!(
+                        c as u16 * alpha as u16 % 255,
+                        127,
+                        "+128 differs somewhere other than a 127/255 fraction, at \
+                         (c = {c}, alpha = {alpha})"
+                    );
+                    assert_eq!(
+                        blit_rgba_spelling,
+                        helper + 1,
+                        "+128 differs by something other than rounding up, at \
+                         (c = {c}, alpha = {alpha})"
+                    );
+                }
+            }
+        }
+        assert_eq!(
+            plus_128_differs, 128,
+            "the +128 spelling's disagreement with round-to-nearest changed"
+        );
+    }
+
+    /// Every alpha a mask can carry, in one row, so no alpha the rounding could
+    /// be wrong at is left out — and so the fixture cannot sit on a fixed point
+    /// by accident.
+    fn every_alpha() -> Vec<u8> {
+        (1..=254u8).collect()
+    }
+
+    fn painted_row(painter: &TinySkiaPainter, len: usize) -> Vec<[u8; 4]> {
+        let d = painter.pixels();
+        (0..len)
+            .map(|x| [d[x * 4], d[x * 4 + 1], d[x * 4 + 2], d[x * 4 + 3]])
+            .collect()
+    }
+
+    /// Site 1: the mask path — an ordinary (non-colour) glyph combined with the
+    /// brush colour. Every glyph of Latin text on the software backend takes it.
+    #[test]
+    fn the_mask_glyph_premultiply_rounds() {
+        let mask = every_alpha();
+        let mut painter = TinySkiaPainter::new(mask.len() as u32, 1);
+        painter.blit_alpha_mask(
+            &mask,
+            mask.len() as u32,
+            1,
+            0.0,
+            0.0,
+            CR,
+            CG,
+            CB,
+            255,
+            Transform::identity(),
+            None,
+        );
+
+        let row = painted_row(&painter, mask.len());
+        let mut moved = 0usize;
+        for (i, &alpha) in mask.iter().enumerate() {
+            let px = row[i];
+            assert_eq!(px[3], alpha, "alpha changed at column {i}");
+            for (ch, &c) in [CR, CG, CB].iter().enumerate() {
+                assert_eq!(
+                    px[ch],
+                    rounded_premultiply(c, alpha),
+                    "channel {ch} at alpha {alpha}: truncation gives {}, rounding gives {}",
+                    truncating_premultiply(c, alpha),
+                    rounded_premultiply(c, alpha)
+                );
+                if rounded_premultiply(c, alpha) != truncating_premultiply(c, alpha) {
+                    moved += 1;
+                }
+            }
+        }
+
+        // Positive control: this fixture would pass unchanged against the
+        // truncating code if no alpha it sampled separated the two rules.
+        // 381 of the 762 channel samples do.
+        assert!(
+            moved > 300,
+            "only {moved} of {} channel samples separate rounding from truncation",
+            mask.len() * 3
+        );
+    }
+
+    /// Site 2: the COLR / embedded-bitmap path, which carries its own
+    /// straight-alpha RGBA and ignores the brush. Unreachable from a document
+    /// fixture without a colour font, which is why it is driven directly.
+    #[test]
+    fn the_colour_glyph_premultiply_rounds() {
+        let alphas = every_alpha();
+        let mut rgba = Vec::with_capacity(alphas.len() * 4);
+        for &a in &alphas {
+            rgba.extend_from_slice(&[CR, CG, CB, a]);
+        }
+
+        let mut painter = TinySkiaPainter::new(alphas.len() as u32, 1);
+        painter.blit_color_glyph(
+            &rgba,
+            alphas.len() as u32,
+            1,
+            0.0,
+            0.0,
+            Transform::identity(),
+            None,
+        );
+
+        let row = painted_row(&painter, alphas.len());
+        let mut moved = 0usize;
+        for (i, &alpha) in alphas.iter().enumerate() {
+            let px = row[i];
+            assert_eq!(px[3], alpha, "alpha changed at column {i}");
+            for (ch, &c) in [CR, CG, CB].iter().enumerate() {
+                assert_eq!(
+                    px[ch],
+                    rounded_premultiply(c, alpha),
+                    "channel {ch} at alpha {alpha}: truncation gives {}, rounding gives {}",
+                    truncating_premultiply(c, alpha),
+                    rounded_premultiply(c, alpha)
+                );
+                if rounded_premultiply(c, alpha) != truncating_premultiply(c, alpha) {
+                    moved += 1;
+                }
+            }
+        }
+        // Positive control, as above: 381 of the 762 channel samples separate
+        // the two rules on this path too.
+        assert!(
+            moved > 300,
+            "only {moved} of {} channel samples separate rounding from truncation",
+            alphas.len() * 3
+        );
+    }
+
+    /// The brush's own alpha is folded into the mask before the premultiply, so
+    /// a translucent brush is a second, independent way to reach a partial
+    /// alpha — and the one that is not the fixed point `ca == 255` the two
+    /// fixtures above sit on.
+    #[test]
+    fn a_translucent_brush_rounds_too() {
+        let mask = every_alpha();
+        const CA: u8 = 137;
+        let mut painter = TinySkiaPainter::new(mask.len() as u32, 1);
+        painter.blit_alpha_mask(
+            &mask,
+            mask.len() as u32,
+            1,
+            0.0,
+            0.0,
+            CR,
+            CG,
+            CB,
+            CA,
+            Transform::identity(),
+            None,
+        );
+
+        let row = painted_row(&painter, mask.len());
+        for (i, &coverage) in mask.iter().enumerate() {
+            let alpha = ((coverage as u16 * CA as u16 + 127) / 255) as u8;
+            if alpha == 0 {
+                continue;
+            }
+            let px = row[i];
+            assert_eq!(px[3], alpha, "combined alpha at column {i}");
+            for (ch, &c) in [CR, CG, CB].iter().enumerate() {
+                assert_eq!(
+                    px[ch],
+                    rounded_premultiply(c, alpha),
+                    "channel {ch} at coverage {coverage} (combined alpha {alpha})"
+                );
+            }
+        }
     }
 }

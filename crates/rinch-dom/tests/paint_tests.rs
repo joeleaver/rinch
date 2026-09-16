@@ -3526,6 +3526,14 @@ mod opacity_layer_bounds {
 /// bias: it can only ever move a value down, and box shadows stack eight
 /// layers, so eight truncations compound. Every assertion below is an exact
 /// byte, and every one of them was one level lighter before.
+///
+/// **The scoping in that first sentence is deliberate and was, until #461, a
+/// real gap rather than a hedge.** What a painter then does *internally* is a
+/// separate question, and `TinySkiaPainter` truncated the premultiply on both
+/// of its glyph paths — so text, which none of these fixtures touch, carried
+/// exactly the bias this module is about. That half now lives in
+/// `glyph_premultiply_tests.rs` and in `skia_painter.rs`'s own
+/// `premultiply_tests`.
 mod channel_rounding {
     use super::transform_paint::{paint_skia, pixel_at};
     use super::*;
