@@ -912,6 +912,28 @@ impl TouchGesture {
         self.state = TouchState::LongPressed;
     }
 
+    /// How long until a still press becomes a long press — `None` when no
+    /// press is pending, `Some(0)` once the deadline has passed and the next
+    /// [`Self::tick_long_press`] will fire it.
+    ///
+    /// The frame loop feeds this into its poll timeout (issue #813). Since
+    /// card K37 that loop sleeps on the looper with no timeout while nothing
+    /// is happening, and a finger held still is, to the looper, nothing
+    /// happening: no motion event arrives, so no turn of the loop runs the
+    /// tick, and the deadline passes unobserved. The lift then arrives with
+    /// the press still `Pending` and is read as a tap — a long press was a tap
+    /// in any app whose loop had nothing else to wake it. (It worked in the
+    /// hello-android demo only because its sensor stream wakes the loop
+    /// fifteen times a second.) Asking the loop to come back when the press
+    /// falls due is the same shape as `next_poll_due`, and for the same
+    /// reason: a clock nobody rings.
+    pub(crate) fn long_press_due(&self, now: Instant) -> Option<Duration> {
+        let TouchState::Pending { down_at, .. } = self.state else {
+            return None;
+        };
+        Some(LONG_PRESS_TIMEOUT.saturating_sub(now.duration_since(down_at)))
+    }
+
     /// Whether momentum scrolling still owes the window a frame.
     pub(crate) fn has_momentum(&self) -> bool {
         self.velocity_x.abs() > MOMENTUM_MIN_VELOCITY
@@ -1196,6 +1218,54 @@ mod tests {
     /// that *is* a flick is asserted by
     /// `the_same_fling_lasts_the_same_time_at_any_refresh_rate` and
     /// `a_fling_leaves_at_the_same_speed_whatever_the_touch_report_rate`.
+    /// The loop has to be told when a still press falls due, or it sleeps
+    /// through the deadline (issue #813; see `long_press_due`). Sampled at
+    /// 200ms into the hold rather than at the press itself, where the answer
+    /// equals the constant whether or not the elapsed time is subtracted.
+    #[test]
+    fn a_pending_press_tells_the_loop_when_it_falls_due() {
+        let mut f = Finger::new();
+        assert_eq!(
+            f.gesture.long_press_due(f.t0),
+            None,
+            "nothing pending, no deadline"
+        );
+
+        f.act(0, TouchAction::Down, 100.0, 100.0);
+        assert_eq!(
+            f.gesture.long_press_due(f.t0 + Duration::from_millis(200)),
+            Some(Duration::from_millis(300)),
+            "the remainder of the hold, not the whole timeout"
+        );
+        assert_eq!(
+            f.gesture.long_press_due(f.t0 + Duration::from_millis(900)),
+            Some(Duration::ZERO),
+            "past the deadline it is due now, never negative"
+        );
+
+        // A scroll takes the press away, and its deadline with it.
+        f.act(20, TouchAction::Move, 100.0, 130.0);
+        assert_eq!(
+            f.gesture.long_press_due(f.t0 + Duration::from_millis(40)),
+            None,
+            "a press that became a scroll has no long press to wait for"
+        );
+
+        // And once the long press has fired, nothing is pending any more.
+        let mut g = Finger::new();
+        g.act(0, TouchAction::Down, 100.0, 100.0);
+        g.tick(600);
+        assert_eq!(
+            g.gesture.long_press_due(g.t0 + Duration::from_millis(600)),
+            None
+        );
+        g.act(700, TouchAction::Up, 100.0, 100.0);
+        assert_eq!(
+            g.gesture.long_press_due(g.t0 + Duration::from_millis(700)),
+            None
+        );
+    }
+
     #[test]
     fn a_press_that_became_a_scroll_never_becomes_a_context_menu() {
         let mut f = Finger::new();

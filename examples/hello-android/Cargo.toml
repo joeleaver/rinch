@@ -8,7 +8,7 @@ name = "hello_android"
 crate-type = ["cdylib"]
 
 [dependencies]
-rinch = { workspace = true, features = ["android", "components", "theme"] }
+rinch = { workspace = true, features = ["android", "components", "theme", "clipboard"] }
 
 [target.'cfg(target_os = "android")'.dependencies]
 rinch-android = { workspace = true }

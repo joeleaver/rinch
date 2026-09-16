@@ -2325,6 +2325,29 @@ intercepted Ctrl+V, which is still `prevent_default()`ed. One slot per document 
 thread-global fallback, like `set_keyboard_interceptor` (#340/#478); desktop never
 dispatches it (no OS paste event).
 
+**Android: a long press on a text field shows the platform's floating toolbar**
+(issue #813) — `ActionMode.TYPE_FLOATING`, started by `RinchActivity` on the
+window's decor view (the 1x1 `RinchInputView` cannot host one: the framework
+hides the toolbar unless the content rect intersects the originating view).
+The shell sets `TextContextMenuPresentation::Shell`, so the runtime prepares
+the caret and selection and hands back `AppAction::ShowTextContextMenu`; the
+shell selects the word under the finger (`RinchApp::select_word_at_caret`, a
+press inside a selection keeps it), shows the items `text_edit_state()` allows,
+and performs a tapped item through `perform_text_edit` — the chord's own code.
+Item taps, `RinchInputConnection.performContextMenuAction` and every dismissal
+arrive through one queue in `rinch_android::text_action`, and
+`ToolbarMirror` there is the loop's belief about the toolbar, with a count of
+the finishes it asked for so a late report for a finished mode cannot take
+down the one that replaced it. Two things that were silently wrong before and
+are worth knowing: **a still finger never fired the long press** on an idle
+loop, because K37's looper sleep has no deadline and nothing woke it
+(`TouchGesture::long_press_due` now feeds `poll_timeout`); and **Paste on
+Android needs the `clipboard` feature**, exactly as on desktop — without it
+`handle_paste` inserts nothing, from the toolbar or a hardware Ctrl+V. Measured
+on an API 34 emulator with Gboard: its clipboard chip and clipboard panel both
+paste as `commitText`, not `performContextMenuAction`. The rich-text `Editor`
+is `desktop`-only and is not part of an Android build.
+
 **The built-in editor's Ctrl+V is asynchronous** — see the `anchor_selection` row in the
 `EditorHandle` table. The plain `<input>`/`<textarea>` paste path
 (`RinchApp::handle_paste`) is still synchronous: its completion would need `&mut

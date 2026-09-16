@@ -510,3 +510,105 @@ fn the_ready_flag_is_only_touched_under_the_queue_lock() {
          queueIntent, the write in flushPendingIntents); found {checked}"
     );
 }
+
+// ── The text-selection toolbar (issue #813) ──────────────────────────────────
+
+const INPUT_CONNECTION_JAVA: &str = include_str!("../java/com/rinch/RinchInputConnection.java");
+
+/// `RinchActivity.textActionCode` and `TextAction::from_code` are one table
+/// written twice, on two sides of JNI that no compiler checks against each
+/// other. A renumbering on one side turns Paste into Select all on the other,
+/// silently: every call still succeeds.
+#[test]
+fn the_text_action_codes_agree_across_the_jni_boundary() {
+    use rinch_android::text_action::TextAction;
+
+    let body = method_body("textActionCode");
+    let code_for = |id: &str| -> i32 {
+        let needle = format!("android.R.id.{id}) return ");
+        let at = body
+            .find(&needle)
+            .unwrap_or_else(|| panic!("textActionCode has no arm for android.R.id.{id}"));
+        body[at + needle.len()..]
+            .split(';')
+            .next()
+            .and_then(|n| n.trim().parse().ok())
+            .unwrap_or_else(|| panic!("textActionCode's arm for {id} does not return an int"))
+    };
+
+    assert_eq!(
+        TextAction::from_code(code_for("cut")),
+        Some(TextAction::Cut)
+    );
+    assert_eq!(
+        TextAction::from_code(code_for("copy")),
+        Some(TextAction::Copy)
+    );
+    assert_eq!(
+        TextAction::from_code(code_for("paste")),
+        Some(TextAction::Paste)
+    );
+    assert_eq!(
+        TextAction::from_code(code_for("selectAll")),
+        Some(TextAction::SelectAll)
+    );
+    assert!(
+        body.contains("return -1;"),
+        "an id that is none of the four must map to -1, which the Rust side drops"
+    );
+}
+
+/// An IME's own paste — Gboard's clipboard panel — may arrive as
+/// `performContextMenuAction(android.R.id.paste)` rather than as text, and
+/// `BaseInputConnection`'s default for it acts on an `Editable` this
+/// connection keeps permanently empty. Deleting the override loses nothing
+/// visible: the IME's call still returns, the keyboard still closes its panel,
+/// and the field stays as it was.
+#[test]
+fn the_input_connection_forwards_context_menu_actions_to_rust() {
+    let at = INPUT_CONNECTION_JAVA
+        .find("public boolean performContextMenuAction(int")
+        .expect("RinchInputConnection must override performContextMenuAction");
+    let body = &INPUT_CONNECTION_JAVA[at..];
+    let body = &body[..body
+        .find("\n    }\n")
+        .expect("end of performContextMenuAction")];
+    assert!(
+        body.contains("RinchActivity.textActionCode(") && body.contains("nativeContextMenuAction("),
+        "performContextMenuAction must map the id through textActionCode and forward it: {body}"
+    );
+}
+
+/// The loop's mirror of "the toolbar is up" is cleared only by the report
+/// from `onDestroyActionMode`, and that callback is the one place every way a
+/// mode can end passes through. Without the report a toolbar dismissed with
+/// Back leaves the mirror latched, and the next long press is answered with
+/// an `invalidate()` on a mode that no longer exists.
+#[test]
+fn every_way_the_toolbar_ends_reports_back_to_rust() {
+    let body = method_body("onDestroyActionMode");
+    assert!(
+        body.contains("nativeOnTextActionModeFinished()"),
+        "onDestroyActionMode must report the dismissal: {body}"
+    );
+}
+
+/// The independent clearing condition (see `text_action.rs`): pausing
+/// finishes the mode from Java, on the UI thread, with no native call — a
+/// native call from a lifecycle override races the thread that registers it.
+#[test]
+fn pausing_finishes_the_toolbar_without_a_native_call() {
+    let body = method_body("onPause");
+    assert!(
+        body.contains("textActionMode.finish()"),
+        "onPause must finish the toolbar: {body}"
+    );
+    let code: String = body
+        .lines()
+        .filter(|l| !l.trim_start().starts_with("//"))
+        .collect();
+    assert!(
+        !code.contains("native"),
+        "onPause must not call a native method (cold-start race): {body}"
+    );
+}
