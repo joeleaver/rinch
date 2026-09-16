@@ -375,6 +375,32 @@ async fn the_textarea_goes_back_off_screen_after_the_contextmenu_dispatch() {
     f.teardown();
 }
 
+/// On Linux and macOS the menu opens at the press, and the release usually
+/// goes to the menu window rather than the page — so the `contextmenu`
+/// dispatch alone, with no `mouseup` ever seen, must be enough to send the
+/// textarea back. Kills: unparking only from the right-button release.
+#[wasm_bindgen_test]
+async fn a_held_right_press_still_unparks_after_the_contextmenu_dispatch() {
+    let f = Fixture::mount();
+    let at = f.point(0, 5);
+    f.focus_at(at);
+    mouse("mousedown", at.0, at.1, 2);
+    let target = under(at.0, at.1);
+    assert!(is_capture(&target), "positive control: parked at the press");
+    mouse_on(&target, "contextmenu", at.0, at.1, 2);
+    // No mouseup: the menu has the pointer.
+
+    sleep(150).await;
+
+    let hit = under(at.0, at.1);
+    assert!(
+        !is_capture(&hit),
+        "the contextmenu dispatch alone unparks the textarea, found <{}>",
+        hit.tag_name()
+    );
+    f.teardown();
+}
+
 /// A left press that lands on the still-parked textarea (a fast second click
 /// inside the unpark window) is the editor's click: it places the caret where
 /// the pointer is rather than blurring the editor for "another text field".

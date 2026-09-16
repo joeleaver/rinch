@@ -340,6 +340,28 @@ so keys can't reach the wrong control. Typed characters are still consumed by th
 editor's key handler (and never reach the textarea); only IME composition flows
 through it. This mirrors the CodeMirror / ProseMirror hidden-input technique.
 
+**Right-click gets the browser's own editing menu** (issue #814) — Paste, Cut, Copy,
+Select All, and whatever else the platform adds (spelling, emoji, extensions).
+rinch draws no context menu of its own on the web: a page's paste needs
+`navigator.clipboard.readText()`, which prompts. Instead, the same hidden textarea
+is what the browser's menu is built for. The editor's surface is not editable as
+far as the browser is concerned, so a right-click there used to open the menu for a
+plain element, with no Paste; now a right-button press parks the capture textarea
+under the pointer — invisible, but hittable — for the instant the browser needs to
+fire `contextmenu` and hit-test the point for its menu (CodeMirror 5's technique),
+then sends it back off-screen. The menu's items fire the ordinary `paste` / `cut` /
+`copy` events on the focused textarea and are answered from the editor's model: a
+paste lands at the editor's selection, Cut and Copy act on the editor's selection
+even when it spans blocks, and Select All — which the browser can only apply to the
+textarea — is detected and becomes the editor's `selectAll`. A right press inside the
+selection keeps it (so Cut and Copy act on it); outside, it moves the caret first.
+An element up the chain carrying a live `data-oncontextmenu` still wins, as it does
+over any other element it wraps. What was measured, in Chrome 153: a real right
+press makes Chrome's own `contextmenu` target the parked textarea, unprevented,
+where before it targeted the paragraph — Chrome builds its menu for the element its
+hit test finds there, so the editing menu follows from that. Firefox and Safari are
+unverified.
+
 ## Collaboration (optional, `collaboration` feature)
 
 Two editors can share one live document. Enable the `collaboration` feature and the
