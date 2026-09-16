@@ -3525,7 +3525,9 @@ mod opacity_layer_bounds {
 /// Truncation is not a rounding-mode preference, it is a systematic one-sided
 /// bias: it can only ever move a value down, and box shadows stack eight
 /// layers, so eight truncations compound. Every assertion below is an exact
-/// byte, and every one of them was one level lighter before.
+/// byte, and every one of them was off before — by one level, or by three where
+/// eight shadow layers compounded. Which *way* it was off is the paragraph two
+/// below.
 ///
 /// **The scoping in that first sentence is deliberate and was, until #461, a
 /// real gap rather than a hedge.** What a painter then does *internally* is a
@@ -3534,6 +3536,25 @@ mod opacity_layer_bounds {
 /// exactly the bias this module is about. That half now lives in
 /// `glyph_premultiply_tests.rs` and in `skia_painter.rs`'s own
 /// `premultiply_tests`.
+///
+/// The *apparent* direction differs, which is worth knowing before reading the
+/// two sets of fixtures together — but the axis is the **overlaid colour**, not
+/// which module you are in. Here the truncated quantity is an overlay's or a
+/// shadow layer's *alpha*, so weakening it moves the pixel toward whatever was
+/// under it: a black overlay came out one level lighter
+/// (`brightness(0.35)`: 90 where 89 is right, and every shadow case below),
+/// a white one one level darker
+/// (`brightness_brighten_rounds_the_overlay_alpha`: 165 where 166 is right).
+/// On the glyph path the truncated quantity is instead a premultiplied colour
+/// *channel* whose alpha is written through untouched, so the result is one
+/// level darker over any background.
+///
+/// Visibility differs too, and the other way round from what you might guess.
+/// The glyph shift is at most one level of 255 and is not observable; these
+/// were — eight shadow layers compounded to three whole levels
+/// (`shadow_stacked_layers_do_not_compound_a_truncation_bias`: 66 against 69),
+/// and a faint shadow vanished from the framebuffer entirely
+/// (`a_faint_shadow_is_painted_rather_than_skipped`).
 mod channel_rounding {
     use super::transform_paint::{paint_skia, pixel_at};
     use super::*;

@@ -41,9 +41,13 @@ fn affine_to_transform(a: Affine) -> Transform {
 /// `255`, which an even number is not. It agrees with `draw_image`'s
 /// `(c as f32 * af + 0.5) as u8` over the whole domain.
 ///
-/// It is **not** the `+128` that `blit_rgba` uses, which is round-half-up: at
-/// `c * alpha ≡ 127 (mod 255)` — 128 of the 65 536 pairs — that rounds a
-/// fraction of `127/255` up, half a level past nearest. Both are pinned by
+/// It is **not** the `+128` that `blit_rgba` uses. `+128` is *not* a
+/// tie-breaking rule — since no tie exists in this domain, round-half-up and
+/// round-to-nearest are the same function, so "round-half-up" would mean `+127`.
+/// What `+128` does is round up at a fraction of `127/255 ≈ 0.498`, i.e. it
+/// applies round-to-nearest against a threshold biased low by `1/510`, and so
+/// disagrees at `c * alpha ≡ 127 (mod 255)` — 128 of the 65 536 pairs. Both
+/// facts are pinned by
 /// `the_helper_agrees_with_the_float_spelling_and_not_with_plus_128`.
 ///
 /// **The premultiplied invariant survives the rounding**, which is what tiny-skia
@@ -1045,11 +1049,32 @@ impl TinySkiaPainter {
 /// Both glyph blitters premultiply a straight-alpha colour channel by the
 /// pixel's alpha, and both used to do it with a bare `as u8`, which truncates.
 /// That is a one-sided error — it can only ever move a channel down — so every
-/// antialiased glyph edge pixel came out up to one level short and text
-/// rendered slightly thin. `glyph_premultiply_tests.rs` is the end-to-end pixel
-/// oracle over a real glyph edge; this module is the font-free half, and it is
-/// what covers the **colour**-glyph site, which needs a COLR/bitmap face no CI
-/// host is guaranteed to have.
+/// antialiased glyph edge pixel came out up to one level short.
+///
+/// **Which means one level DARKER, not thinner.** Only the colour channels
+/// moved; `alpha` is written straight through by both blitters and was never
+/// touched. A premultiplied pixel whose channels drop while its alpha holds is
+/// not closer to transparent, it is closer to black:
+/// `out = src_premul + dst * (255 - a) / 255`, so a lower `src_premul` darkens
+/// the result over any background. Measured on opaque backgrounds, same
+/// document, only the premultiply swapped: `#111` on white 230.4746 → 230.4434,
+/// `#eee` on black 24.5254 → 24.4937 — darker both times. Dark text on a light
+/// page therefore looked *heavier*, not thinner; "thinner" holds only for
+/// light-on-dark.
+///
+/// **And it is not observable.** The shift is at most one level of 255 on
+/// antialiased channels alone — about 0.2% of full scale, on a few percent of
+/// the frame. What the fix buys is the removal of a provable one-sided bias and
+/// the first pixel oracle glyph paint has ever had, not a visible difference.
+///
+/// `glyph_premultiply_tests.rs` is that end-to-end oracle, over a real glyph
+/// edge; this module is the font-free half, and it is what covers the
+/// **colour**-glyph site, which needs a COLR face no CI host is guaranteed to
+/// have. (COLR is the whole of it: `draw_glyphs` builds its swash `Render` from
+/// `ColorOutline` and `Outline` only, with no `Source::ColorBitmap`, so a
+/// CBDT/CBLC or sbix emoji face paints **nothing** on this backend — a separate
+/// pre-existing bug, filed from the #794 review, not something these fixtures
+/// cover or claim to.)
 ///
 /// The two blitters are tested through their own private methods rather than
 /// through `draw_glyphs`, for the same reason: a synthetic mask is the only way
@@ -1060,19 +1085,29 @@ impl TinySkiaPainter {
 /// # Which fixture kills which mutant
 ///
 /// Measured, one run each, against the five fixtures here plus the one in
-/// `glyph_premultiply_tests.rs`:
+/// `glyph_premultiply_tests.rs`, and re-run in full after the oracle's face was
+/// pinned (which changes the margins, not the verdicts):
 ///
 /// | mutation | killed by |
 /// |---|---|
 /// | the helper truncates (#461's bug) | all six |
-/// | the helper rounds half **up** (`+128`) | all six |
+/// | the helper uses `+128` | all six — but the oracle only by 9 of 6 822 samples; the exhaustive fixture here is what guarantees it |
 /// | the helper `ceil`s | all six |
+/// | the helper uses `+126` | all six |
+/// | the helper uses `(ca + 127) >> 8` (the classic fast premultiply) | all six |
 /// | the **mask site** alone re-truncates, helper intact | `the_mask_glyph_premultiply_rounds`, `a_translucent_brush_rounds_too`, and the pixel oracle |
+/// | the mask site writes `alpha = premultiply_channel(a, a)` | the same two, and the pixel oracle's `invalid` arm |
 /// | the **colour site** alone re-truncates, helper intact | `the_colour_glyph_premultiply_rounds` **only** |
+/// | the colour site's `sa == 255` branch halves every channel | `the_colour_glyph_premultiply_rounds` **only**, and only since `every_alpha` reached 255 |
 ///
-/// The last row is the reason this module exists: no document fixture paints a
-/// COLR glyph, so that site regressing is invisible to every other test in the
-/// workspace, the pixel oracle included.
+/// The last two rows are the reason this module exists: no document fixture
+/// paints a COLR glyph, so either of those regressing is invisible to every
+/// other test in the workspace, the pixel oracle included. The last row is also
+/// the third fixed point this work turned up — see `every_alpha`.
+///
+/// One mutation is **equivalent** and cannot be killed by anything, so a future
+/// run should not chase it: `premultiply_channel` is symmetric in its two
+/// arguments, so swapping them changes no value.
 #[cfg(test)]
 mod premultiply_tests {
     use super::*;
@@ -1170,12 +1205,17 @@ mod premultiply_tests {
     /// and changing correct code is how a text-rendering PR grows a second,
     /// unreviewed surface.
     ///
-    /// `blit_rgba`'s `(x * a + 128) / 255`: **not** identical. It is
-    /// round-half-up, and at `c * alpha ≡ 127 (mod 255)` it rounds a fraction of
-    /// `127/255 = 0.498` up to the next level — 128 pairs, error `0.502`, i.e.
-    /// just past half a level and in the opposite direction to #461's
-    /// truncation. It is a sub-level imprecision on an image path with no
-    /// coverage, not the glyph bug, so it is recorded here rather than changed.
+    /// `blit_rgba`'s `(x * a + 128) / 255`: **not** identical — and the reason
+    /// is not the one it looks like. It is tempting to call `+128`
+    /// "round-half-up", but this domain contains **no ties at all** (a tie needs
+    /// `2 * c * alpha` to be an odd multiple of 255), so round-half-up and
+    /// round-to-nearest are the same function here and `+128` would have to
+    /// equal `+127`. What `+128` really does is move the rounding *threshold*
+    /// down by `1/510`: it rounds up at a fraction of `127/255 = 0.498`, one
+    /// level too eagerly, at the 128 pairs where `c * alpha ≡ 127 (mod 255)`.
+    /// Error `0.502`, in the opposite direction to #461's truncation. A
+    /// sub-level imprecision on an image path with no coverage, not the glyph
+    /// bug, so it is recorded here rather than changed.
     ///
     /// Either way this pins #473's framing: the glyph sites were the only
     /// premultiplies in the file that had dropped the rounding term altogether.
@@ -1222,8 +1262,17 @@ mod premultiply_tests {
     /// Every alpha a mask can carry, in one row, so no alpha the rounding could
     /// be wrong at is left out — and so the fixture cannot sit on a fixed point
     /// by accident.
+    ///
+    /// **`255` is in the range even though rounding cannot be wrong there**, and
+    /// that is the point: `blit_color_glyph` has a separate `sa == 255` branch
+    /// that copies the channels straight through and never reaches the helper,
+    /// so `255` covers a *branch* rather than an arithmetic case. It was
+    /// `1..=254` in the first round, and a mutant that halved every channel
+    /// inside that branch survived all six fixtures (#794 review, mutant J).
+    /// The pixel oracle cannot cover it either — it skips fully opaque pixels by
+    /// construction, since they separate no rounding rule.
     fn every_alpha() -> Vec<u8> {
-        (1..=254u8).collect()
+        (1..=255u8).collect()
     }
 
     fn painted_row(painter: &TinySkiaPainter, len: usize) -> Vec<[u8; 4]> {
@@ -1274,7 +1323,8 @@ mod premultiply_tests {
 
         // Positive control: this fixture would pass unchanged against the
         // truncating code if no alpha it sampled separated the two rules.
-        // 381 of the 762 channel samples do.
+        // 381 of the 765 channel samples do (alpha 255 is not one of them: it
+        // agrees, which is the point of including it — see `every_alpha`).
         assert!(
             moved > 300,
             "only {moved} of {} channel samples separate rounding from truncation",
@@ -1282,9 +1332,20 @@ mod premultiply_tests {
         );
     }
 
-    /// Site 2: the COLR / embedded-bitmap path, which carries its own
-    /// straight-alpha RGBA and ignores the brush. Unreachable from a document
-    /// fixture without a colour font, which is why it is driven directly.
+    /// Site 2: the **COLR** path, which carries its own straight-alpha RGBA and
+    /// ignores the brush. Not the embedded-bitmap path, which does not exist:
+    /// `draw_glyphs` asks swash for `ColorOutline` and `Outline` and never
+    /// `ColorBitmap`, so a CBDT/CBLC or sbix face paints nothing at all here
+    /// (measured in the #794 review, filed separately).
+    ///
+    /// It is reachable from a document fixture on a host that happens to have a
+    /// COLR face installed, and unreachable on one that does not — which is the
+    /// same thing as saying no fixture may depend on it. Hence driving the
+    /// blitter directly.
+    ///
+    /// This is the **only** thing in the workspace that kills a regression of
+    /// either branch of this method, the `sa == 255` fast path included; see
+    /// `every_alpha`.
     #[test]
     fn the_colour_glyph_premultiply_rounds() {
         let alphas = every_alpha();
@@ -1322,7 +1383,7 @@ mod premultiply_tests {
                 }
             }
         }
-        // Positive control, as above: 381 of the 762 channel samples separate
+        // Positive control, as above: 381 of the 765 channel samples separate
         // the two rules on this path too.
         assert!(
             moved > 300,
@@ -1335,6 +1396,20 @@ mod premultiply_tests {
     /// a translucent brush is a second, independent way to reach a partial
     /// alpha — and the one that is not the fixed point `ca == 255` the two
     /// fixtures above sit on.
+    ///
+    /// **The `(coverage * CA + 127) / 255` below is a deliberate second copy of
+    /// the combine in `blit_alpha_mask`, not a self-reference.** This fixture
+    /// owns it; the src line it mirrors is a different line of code, so a
+    /// mutation there fails the `px[3]` assertion. (Only the *channel*
+    /// assertions go through `rounded_premultiply`, which is derived
+    /// independently for the reason on that function.)
+    ///
+    /// **What it deliberately does not assert:** the combine rounds, and then
+    /// the channel is rounded against that already-rounded alpha, so relative
+    /// to the exact `c * coverage * ca / 255²` a channel can be about a level
+    /// out. That double rounding is pre-existing and untouched by #461 — this
+    /// fixture asserts against the rounded `a`, which is what the premultiply is
+    /// actually given.
     #[test]
     fn a_translucent_brush_rounds_too() {
         let mask = every_alpha();
