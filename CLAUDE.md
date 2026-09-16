@@ -2346,13 +2346,22 @@ feature now implies `clipboard`** — without it `handle_paste` reads an empty
 string, so a hardware Ctrl+V inserted nothing and an IME's
 `performContextMenuAction(paste)` returned `true` having pasted nothing (the
 toolbar hides its Paste). Paste is also hidden while `hasPrimaryClip()` is
-false, which reads no clip. **An item that finishes the toolbar is finished on
+false, which reads no clip and raises no clipboard-access notice (measured),
+and is asked **once per long press**, not per refresh: it is a binder round
+trip (0.56 ms median, 10.7 ms p99 on the emulator) and the refresh runs every
+turn the toolbar is up. **An item that finishes the toolbar is finished on
 the Java side before it is reported** (PR #819 review, F1): both calls queue
 an event and wake the loop, and reported first, a lone `Perform` turn
 re-prepared a toolbar the loop believed was up and the UI thread started a
-fresh one — an orphan whose items acted on nothing. Measured on an API 34
+fresh one — an orphan whose items acted on nothing. **A `Perform` carries its
+source**, because Cut / Copy / Paste end the toolbar from either one (as in an
+`EditText`, measured) but only a toolbar item has already finished it:
+`ToolbarMirror::performing` takes the mirror down uncounted for a toolbar item
+and asks for a counted finish for an IME request — treating the IME's like the
+item's left an orphan no tap could take down, measured. Measured on an API 34
 emulator with one Gboard build: its clipboard chip and clipboard panel both
-paste as `commitText`, not `performContextMenuAction`. The toolbar anchors
+paste as `commitText`, and its Text Editing panel's Paste arrives as
+`performContextMenuAction`. The toolbar anchors
 where `TextEditState.anchor` reports. The rich-text `Editor` is
 `desktop`-only and is not part of an Android build (#818).
 

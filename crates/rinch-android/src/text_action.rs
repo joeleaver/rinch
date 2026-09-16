@@ -5,16 +5,24 @@
 //! Two producers feed one queue. `RinchActivity.showTextActionMode` starts an
 //! `ActionMode.TYPE_FLOATING` on the window's decor view (see the Java for why
 //! the decor view and not `RinchInputView`), and a tap on one of its items
-//! arrives here as [`TextActionEvent::Perform`]. Separately, an IME that
-//! implements its own clipboard UI — Gboard's clipboard panel, the "paste"
-//! chip on its suggestion strip — may deliver a paste not as committed text but
-//! as `InputConnection.performContextMenuAction(android.R.id.paste)`, and
-//! `BaseInputConnection`'s default for that call does **nothing**.
-//! `RinchInputConnection` overrides it and the request lands in this same
-//! queue, so an IME's paste reaches the field whether or not the toolbar is
-//! involved. The frame loop drains the queue once per turn
-//! ([`drain_text_action_events`]) and performs each action through the same
-//! path the keyboard shortcut takes.
+//! arrives here as [`TextActionEvent::Perform`] from
+//! [`TextActionSource::Toolbar`]. Separately, an IME may ask for the action
+//! itself through `InputConnection.performContextMenuAction(android.R.id.*)` —
+//! Gboard's Text Editing panel does for its Paste key (measured on an API 34
+//! emulator; its clipboard chip and clipboard panel commit text instead) — and
+//! `BaseInputConnection`'s default for that call
+//! does **nothing**. `RinchInputConnection` overrides it and the request lands
+//! in this same queue from [`TextActionSource::Ime`], so an IME's paste reaches
+//! the field whether or not the toolbar is involved. The frame loop drains the
+//! queue once per turn ([`drain_text_action_events`]) and performs each action
+//! through the same path the keyboard shortcut takes.
+//!
+//! **The source matters to the toolbar, not to the action.** Cut, Copy and
+//! Paste end the interaction the toolbar was up for, from either source, as
+//! they do in an `EditText` (whose `onTextContextMenuItem` serves both). But
+//! only a toolbar item has already finished the mode on the Java side; an IME
+//! request leaves the toolbar up, and the loop has to finish it.
+//! [`ToolbarMirror::performing`] is where that is decided.
 //!
 //! Java maps `android.R.id.*` to the small integers in [`TextAction::from_code`]
 //! before crossing JNI, so no Android resource id is spelled on this side.
@@ -60,13 +68,27 @@ impl TextAction {
     }
 }
 
+/// Who asked for a [`TextAction`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TextActionSource {
+    /// An item on the floating toolbar. `RinchActivity` has already finished
+    /// the mode for Cut, Copy and Paste by the time this is queued.
+    Toolbar,
+    /// The IME, through `RinchInputConnection.performContextMenuAction`. The
+    /// toolbar, if one is up, is untouched.
+    Ime,
+}
+
 /// Something the platform did with the text actions.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TextActionEvent {
     /// The user tapped a toolbar item, or the IME asked for the action through
     /// `performContextMenuAction`. Either way the action has **not** been
     /// performed yet — the loop performs it.
-    Perform(TextAction),
+    Perform {
+        action: TextAction,
+        source: TextActionSource,
+    },
     /// The floating toolbar is gone: an item that finishes it, `finish()`,
     /// the activity pausing, window-focus loss, or a replacement. Sent from
     /// `onDestroyActionMode`, so it fires for every way a mode can end.
@@ -115,9 +137,9 @@ fn queue(event: TextActionEvent) {
 /// not have sent. Shared by the toolbar's item click and the IME's
 /// `performContextMenuAction`, which are the same request from two sources.
 #[cfg(any(target_os = "android", test))]
-fn queue_action_code(code: i32) {
+fn queue_action_code(code: i32, source: TextActionSource) {
     match TextAction::from_code(code) {
-        Some(action) => queue(TextActionEvent::Perform(action)),
+        Some(action) => queue(TextActionEvent::Perform { action, source }),
         None => log::warn!("text action: Java sent an unknown action code {code}; ignored"),
     }
 }
@@ -131,7 +153,7 @@ pub extern "C" fn Java_com_rinch_RinchActivity_nativeOnTextActionItem(
     _class: jni::objects::JClass,
     code: jni::sys::jint,
 ) {
-    queue_action_code(code);
+    queue_action_code(code, TextActionSource::Toolbar);
 }
 
 #[cfg(target_os = "android")]
@@ -150,7 +172,7 @@ pub extern "C" fn Java_com_rinch_RinchInputConnection_nativeContextMenuAction(
     _class: jni::objects::JClass,
     code: jni::sys::jint,
 ) {
-    queue_action_code(code);
+    queue_action_code(code, TextActionSource::Ime);
 }
 
 // ── Calls into Java (Android only) ──────────────────────────────────────────
@@ -211,16 +233,20 @@ pub fn finish_toolbar() {
 /// that finished the mode, the activity pausing, window-focus loss — and takes
 /// the mirror down.
 ///
-/// An item that finishes the mode is the one platform-initiated ending the
-/// loop can *see coming*: it drains the item's `Perform` and knows Cut, Copy
-/// and Paste end the interaction. [`Self::platform_finishing`] is how it says
-/// so. Java finishes the mode before it reports the item, so the report is
-/// ahead of the `Perform` in the queue and the mirror is normally down already
-/// by the time the item is performed; the method is for the drain that sees
-/// the `Perform` first, where a refresh in that turn would re-prepare a
-/// toolbar that is on its way out and, on the UI thread, start a fresh one
-/// (PR #819 review, F1). It counts nothing: the report that follows is the
-/// platform's own and pays off no requested finish.
+/// Cut, Copy and Paste end the interaction the toolbar was up for, and the
+/// loop tells the mirror before it performs one ([`Self::performing`]). What
+/// that means depends on who asked. A toolbar item is the one
+/// platform-initiated ending the loop can *see coming*: Java has finished the
+/// mode already and its report is on the way, so the mirror goes down with
+/// nothing counted. Java finishes the mode before it reports the item, so the
+/// report is ahead of the `Perform` in the queue and the mirror is normally
+/// down already; this is for a drain that sees the `Perform` first, where a
+/// refresh in that turn would re-prepare a toolbar that is on its way out and,
+/// on the UI thread, start a fresh one (PR #819 review, F1). An IME request
+/// finishes nothing on the Java side, so there the loop has to ask, and the
+/// finish is counted like any other — treating it as the platform's own would
+/// leave the toolbar on screen with a mirror that says none, and every
+/// clearing condition the loop owns would then find nothing to finish.
 #[derive(Debug, Default)]
 pub struct ToolbarMirror {
     shown: bool,
@@ -269,14 +295,29 @@ impl ToolbarMirror {
         true
     }
 
-    /// The user tapped an item that finishes the mode (Cut, Copy, Paste): the
-    /// platform is taking the toolbar down and will report it. Believe it now,
-    /// so no refresh re-prepares the toolbar in the meantime, and count
-    /// nothing, since the report is the platform's own. Idempotent, and a
-    /// no-op after the report has already arrived.
-    pub fn platform_finishing(&mut self) {
-        self.shown = false;
-        self.last_pushed = None;
+    /// The loop is about to perform `action` for `source`. Answers whether the
+    /// platform has to be told to finish the toolbar.
+    ///
+    /// Select all keeps the toolbar, and the refresh re-prepares it over the
+    /// new selection. Cut, Copy and Paste end it. From the toolbar, the
+    /// platform is already taking it down and will report it: believe it now,
+    /// so no refresh re-prepares it in the meantime, and count nothing, since
+    /// the report is the platform's own — idempotent, and a no-op after the
+    /// report has already arrived. From the IME, nothing on the Java side has
+    /// finished anything, so this is an ordinary [`Self::finish`].
+    #[must_use = "the platform is told only if the caller acts on `true`"]
+    pub fn performing(&mut self, action: TextAction, source: TextActionSource) -> bool {
+        if action == TextAction::SelectAll {
+            return false;
+        }
+        match source {
+            TextActionSource::Toolbar => {
+                self.shown = false;
+                self.last_pushed = None;
+                false
+            }
+            TextActionSource::Ime => self.finish(),
+        }
     }
 
     /// Java reported a mode ended (or a finish request found none).
@@ -315,17 +356,23 @@ mod tests {
         let _serial = crate::test_serial();
         drain_text_action_events();
 
-        queue_action_code(3);
-        queue_action_code(99);
+        queue_action_code(3, TextActionSource::Toolbar);
+        queue_action_code(99, TextActionSource::Ime);
         queue(TextActionEvent::ToolbarDismissed);
-        queue_action_code(2);
+        queue_action_code(2, TextActionSource::Ime);
 
         assert_eq!(
             drain_text_action_events(),
             vec![
-                TextActionEvent::Perform(TextAction::SelectAll),
+                TextActionEvent::Perform {
+                    action: TextAction::SelectAll,
+                    source: TextActionSource::Toolbar,
+                },
                 TextActionEvent::ToolbarDismissed,
-                TextActionEvent::Perform(TextAction::Paste),
+                TextActionEvent::Perform {
+                    action: TextAction::Paste,
+                    source: TextActionSource::Ime,
+                },
             ]
         );
         assert!(
@@ -343,7 +390,7 @@ mod tests {
         drain_text_action_events();
 
         let before = crate::wake::wake_count();
-        queue_action_code(2);
+        queue_action_code(2, TextActionSource::Toolbar);
         assert!(
             crate::wake::wake_count() > before,
             "a paste tap must wake the loop"
@@ -437,22 +484,26 @@ mod mirror_tests {
     /// a toolbar on screen with a mirror that, once the report arrived, said
     /// none (measured 5/7 and 4/6). Between the `Perform` and its report the
     /// mirror must already say the toolbar is gone, so the refresh — gated on
-    /// `is_shown()` — does not run; the report then pays off nothing and
-    /// changes nothing; and the next genuine request is a fresh push.
+    /// `is_shown()` — does not run; the loop tells Java nothing, since Java
+    /// finished the mode itself; the report then pays off nothing and changes
+    /// nothing; and the next genuine request is a fresh push.
     #[test]
     fn an_item_that_finishes_the_mode_takes_the_mirror_down_before_the_report() {
         let mut m = ToolbarMirror::new();
         assert!(m.request(RECT, ALL));
 
-        // The drain sees `Perform(Paste)`; the report has not arrived.
-        m.platform_finishing();
+        // The drain sees the item's `Perform`; the report has not arrived.
+        assert!(
+            !m.performing(TextAction::Paste, TextActionSource::Toolbar),
+            "Java finished this mode itself; the loop has nothing to tell it"
+        );
         assert!(
             !m.is_shown(),
             "the refresh is gated on is_shown(), so nothing may be pushed here"
         );
         assert!(
             !m.finish(),
-            "and the loop has nothing to tell either — the platform is already finishing"
+            "and no clearing condition has anything to tell either — the platform is already finishing"
         );
 
         // The report for that mode: the platform's own, nothing to pay off.
@@ -462,12 +513,64 @@ mod mirror_tests {
         // A later long press is a fresh toolbar, whatever was pushed before.
         assert!(m.request(RECT, PASTE_ONLY));
         assert!(m.is_shown());
-        // Idempotent after the fact: a second `platform_finishing` for an item
-        // on the NEW toolbar behaves the same way.
-        m.platform_finishing();
+        // Idempotent after the fact: the same for an item on the NEW toolbar.
+        assert!(!m.performing(TextAction::Cut, TextActionSource::Toolbar));
         m.dismissed();
         assert!(!m.is_shown());
         assert!(!m.finish());
+    }
+
+    /// An IME's Cut, Copy or Paste ends the toolbar too — a platform
+    /// `EditText`'s toolbar goes when Gboard's Text Editing panel pastes into
+    /// it (measured on the emulator) — but nothing on the Java side has
+    /// finished the mode, so the loop must ask, and the report that comes back
+    /// pays off that finish rather than anything newer. Taking the mirror down
+    /// as if the platform were finishing, which is right for a toolbar item,
+    /// is wrong here: measured on the emulator, a Gboard panel Paste then left
+    /// a toolbar up that a tap elsewhere could no longer take down, because
+    /// the mirror said there was none to finish.
+    #[test]
+    fn an_ime_request_that_ends_the_interaction_asks_for_the_finish_and_counts_it() {
+        let mut m = ToolbarMirror::new();
+        assert!(m.request(RECT, ALL));
+        assert!(
+            m.performing(TextAction::Paste, TextActionSource::Ime),
+            "Java finished nothing for an IME request; the loop must tell it"
+        );
+        assert!(!m.is_shown());
+
+        // A long press lands before that finish's report comes back. The
+        // report pays off the IME's finish and must leave the new toolbar up.
+        assert!(m.request(RECT, PASTE_ONLY));
+        m.dismissed();
+        assert!(
+            m.is_shown(),
+            "the report was for the finish the IME request asked for"
+        );
+
+        // With no toolbar up there is nothing to finish and nothing to count,
+        // so a later genuine dismissal still takes the next toolbar down.
+        let mut idle = ToolbarMirror::new();
+        assert!(!idle.performing(TextAction::Copy, TextActionSource::Ime));
+        assert!(idle.request(RECT, ALL));
+        idle.dismissed();
+        assert!(!idle.is_shown());
+    }
+
+    /// Select all keeps the toolbar, from either source: the refresh then
+    /// re-prepares it with Cut and Copy over the new selection.
+    #[test]
+    fn select_all_keeps_the_toolbar_from_either_source() {
+        for source in [TextActionSource::Toolbar, TextActionSource::Ime] {
+            let mut m = ToolbarMirror::new();
+            assert!(m.request(RECT, PASTE_ONLY));
+            assert!(!m.performing(TextAction::SelectAll, source));
+            assert!(m.is_shown(), "{source:?}: Select all took the toolbar down");
+            assert!(
+                !m.request(RECT, PASTE_ONLY),
+                "{source:?}: what was pushed is still known, so an unchanged refresh is no push"
+            );
+        }
     }
 
     #[test]

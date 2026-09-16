@@ -189,6 +189,10 @@ fn run_loop(android_app: AndroidApp, mut app: RinchApp) {
     // The platform's floating text-selection toolbar, as the loop believes it
     // to be (issue #813). See `ToolbarMirror` for why a belief and a count.
     let mut text_toolbar = ToolbarMirror::new();
+    // Whether the clipboard held anything when the toolbar was last asked
+    // for, which decides its Paste. Asked once per long press rather than per
+    // refresh: see `toolbar_items`.
+    let mut clipboard_has_clip = false;
     let mut keyboard_visible = false;
     // The kind of Enter key the keyboard is currently showing. Mirrors what
     // the Java side was last told, so the input session is only restarted when
@@ -551,7 +555,8 @@ fn run_loop(android_app: AndroidApp, mut app: RinchApp) {
             // an empty field — or a press on whitespace — keeps its caret and
             // offers only Paste.
             app.select_word_at_caret();
-            push_text_toolbar(&mut text_toolbar, &app, scale_factor);
+            clipboard_has_clip = rinch_android::clipboard::has_text();
+            push_text_toolbar(&mut text_toolbar, &app, scale_factor, clipboard_has_clip);
         } else if pressed_elsewhere && text_toolbar.finish() {
             rinch_android::text_action::finish_toolbar();
         }
@@ -671,19 +676,20 @@ fn run_loop(android_app: AndroidApp, mut app: RinchApp) {
         for event in rinch_android::text_action::drain_text_action_events() {
             match event {
                 TextActionEvent::ToolbarDismissed => text_toolbar.dismissed(),
-                TextActionEvent::Perform(action) => {
-                    log::info!("text action: {action:?}");
-                    // Cut, Copy and Paste finish the mode on the Java side,
-                    // and Java finishes it *before* reporting the item, so the
-                    // dismissal report is normally already drained. Should
-                    // this turn see the item first, the mirror must not go on
-                    // believing a toolbar is up: the refresh below would
-                    // re-prepare it and, on the UI thread, start a new one
-                    // (PR #819 review, F1). Not when a fresh toolbar was
-                    // requested this very turn — that one is real, and the
-                    // item belongs to the mode before it.
-                    if action != TextAction::SelectAll && !toolbar_requested {
-                        text_toolbar.platform_finishing();
+                TextActionEvent::Perform { action, source } => {
+                    log::info!("text action: {action:?} from {source:?}");
+                    // Cut, Copy and Paste end the toolbar's interaction, from
+                    // either source. A toolbar item has finished the mode on
+                    // the Java side already — before reporting the item, so
+                    // its dismissal is normally drained by now — and the
+                    // mirror only has to stop believing in it, or the refresh
+                    // below would re-prepare it and, on the UI thread, start a
+                    // new one (PR #819 review, F1). An IME request finished
+                    // nothing, so the loop asks. Not when a fresh toolbar was
+                    // requested this very turn: that one is newer than
+                    // anything this drain holds.
+                    if !toolbar_requested && text_toolbar.performing(action, source) {
+                        rinch_android::text_action::finish_toolbar();
                     }
                     let actions = app.perform_text_edit(match action {
                         TextAction::Cut => TextEditAction::Cut,
@@ -703,7 +709,9 @@ fn run_loop(android_app: AndroidApp, mut app: RinchApp) {
         // while nothing changed.
         if text_toolbar.is_shown() {
             match app.text_edit_state() {
-                Some(_) => push_text_toolbar(&mut text_toolbar, &app, scale_factor),
+                Some(_) => {
+                    push_text_toolbar(&mut text_toolbar, &app, scale_factor, clipboard_has_clip)
+                }
                 None => {
                     if text_toolbar.finish() {
                         rinch_android::text_action::finish_toolbar();
@@ -2529,15 +2537,30 @@ fn physical_rect(anchor: (f32, f32, f32, f32), scale_factor: f64) -> PhysicalRec
 /// disabled, which is what the platform's own text views do. Paste is
 /// `can_paste` — the field's own answer — and, as in a platform `EditText`
 /// (`Editor.canPaste` is `hasPrimaryClip` plus a text description), only
-/// while the clipboard holds something: `hasPrimaryClip()` is a synchronous
-/// binder query that reads no clip, so it raises none of the Android 12+
-/// clipboard-access notice that `getPrimaryClip` does (measured, see the PR),
-/// and the #149 rule about not *reading* the clipboard to decide is kept.
-fn toolbar_items(state: &TextEditState) -> TextActionItems {
+/// while the clipboard holds something. That is `clipboard_has_clip`, from
+/// `hasPrimaryClip()`: it reads no clip, so the #149 rule about not *reading*
+/// the clipboard to decide is kept, and it raises no Android 12+
+/// "… pasted from your clipboard" notice — measured on an API 34 emulator with
+/// a clip another app set, where the toolbar's own Paste, which does read it,
+/// raises one.
+///
+/// It is still a binder round trip, so the loop asks it once per long press
+/// and hands the answer in, rather than asking on every refresh: measured on
+/// that emulator, a call costs 0.56 ms at the median and 10.7 ms at the 99th
+/// percentile (worst 64 ms, n = 2475), and the refresh runs every turn of the
+/// loop while the toolbar is up — 50 to 60 times a second there. The cost of
+/// asking less often: a clip that arrives while a toolbar is up — the app's
+/// own code writing one, another app writing one in the background — shows
+/// on the next long press, where a platform `EditText` re-decides whenever it
+/// re-prepares its toolbar. The routes by which the *user* writes one through
+/// rinch end the toolbar first: its own Cut and Copy finish it, an IME's
+/// `performContextMenuAction` Cut and Copy do (see
+/// `ToolbarMirror::performing`), and a hardware chord is a key press.
+fn toolbar_items(state: &TextEditState, clipboard_has_clip: bool) -> TextActionItems {
     TextActionItems {
         cut: state.can_cut,
         copy: state.can_copy,
-        paste: state.can_paste && rinch_android::clipboard::has_text(),
+        paste: state.can_paste && clipboard_has_clip,
         select_all: state.can_select_all,
     }
 }
@@ -2545,12 +2568,17 @@ fn toolbar_items(state: &TextEditState) -> TextActionItems {
 /// Show the toolbar for the text target holding the keyboard, or bring the
 /// one that is up in line with it. Nothing holding the keyboard is nothing to
 /// show, and the mirror decides whether the platform has to be told at all.
-fn push_text_toolbar(mirror: &mut ToolbarMirror, app: &RinchApp, scale_factor: f64) {
+fn push_text_toolbar(
+    mirror: &mut ToolbarMirror,
+    app: &RinchApp,
+    scale_factor: f64,
+    clipboard_has_clip: bool,
+) {
     let Some(state) = app.text_edit_state() else {
         return;
     };
     let rect = physical_rect(state.anchor, scale_factor);
-    let items = toolbar_items(&state);
+    let items = toolbar_items(&state, clipboard_has_clip);
     if mirror.request(rect, items) {
         rinch_android::text_action::show_toolbar(rect, items);
     }

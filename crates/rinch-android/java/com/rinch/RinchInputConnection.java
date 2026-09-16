@@ -81,9 +81,10 @@ public class RinchInputConnection extends BaseInputConnection {
 
     @Override
     public boolean performContextMenuAction(int id) {
-        // An IME with its own clipboard UI — Gboard's clipboard panel, the
-        // paste chip on its suggestion strip — may deliver a paste this way
-        // rather than as committed text, and BaseInputConnection's default
+        // An IME with its own editing keys may deliver a paste this way
+        // rather than as committed text — Gboard's Text Editing panel does
+        // (measured on an API 34 emulator; its clipboard chip and clipboard
+        // panel commit text instead) — and BaseInputConnection's default
         // does nothing with it: it acts on getEditable(), which this
         // connection keeps permanently empty because rinch owns the value.
         // Forwarded into the same queue the floating toolbar's items use
