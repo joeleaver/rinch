@@ -30,3 +30,11 @@ web-sys = { version = "0.3", features = [
 wasm-bindgen = "0.2"
 wasm-bindgen-futures = "0.4"
 js-sys = "0.3"
+
+[features]
+# An in-memory clipboard for tests: `use_in_memory_clipboard()` swaps the
+# native worker's backend for one that never touches the system clipboard, so
+# a test can observe a copy and preload a paste with no display and without
+# clobbering the developer's own clipboard. Native only; no effect on wasm or
+# Android, whose clipboards have no worker.
+test-backend = []

@@ -78,6 +78,8 @@ mod select_widget;
 #[cfg(test)]
 mod stepper_state_709_tests;
 mod text_context_menu;
+#[cfg(test)]
+mod text_context_menu_tests;
 mod text_selection;
 #[cfg(test)]
 mod textarea_newline_tests;

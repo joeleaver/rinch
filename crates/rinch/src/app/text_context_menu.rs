@@ -167,7 +167,10 @@ const TEXT_CONTEXT_MENU_CSS: &str = r#"
     position: fixed;
     z-index: 9999;
     box-sizing: border-box;
-    min-width: 180px;
+    /* Explicit: a `width: auto` fixed block fills the viewport (the `<select>`
+       popup sizes itself the same way), and rinch lays `max-content` out as
+       `auto` (#626). */
+    width: 200px;
     padding: 4px;
     background: var(--rinch-color-body, #ffffff);
     border: 1px solid var(--rinch-color-gray-3, #dee2e6);
@@ -802,8 +805,17 @@ impl RinchApp {
             // must not close it; items run on the press.
             PlatformEvent::MouseUp { .. } => Some(Vec::new()),
             PlatformEvent::MouseMove { x, y } => {
+                // A disabled row is not highlighted by hover, as in a native
+                // menu; an enabled one is.
                 let hovered = match self.text_menu_hit(x, y) {
-                    MenuHit::Item(idx) => Some(idx),
+                    MenuHit::Item(idx)
+                        if self
+                            .open_text_menu
+                            .as_ref()
+                            .is_some_and(|m| m.items.get(idx).is_some_and(|r| r.enabled)) =>
+                    {
+                        Some(idx)
+                    }
                     _ => None,
                 };
                 let mut actions = vec![AppAction::SetCursor(rinch_platform::CursorStyle::Default)];
