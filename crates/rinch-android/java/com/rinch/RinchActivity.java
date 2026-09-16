@@ -573,13 +573,27 @@ public class RinchActivity extends NativeActivity {
                     if (code < 0) {
                         return false;
                     }
-                    nativeOnTextActionItem(code);
                     // Cut, copy and paste end the interaction, as they do in a
                     // TextView; Select all leaves the toolbar up over the new
                     // selection, and the native side re-prepares it.
+                    //
+                    // The finish comes BEFORE the item is reported, and the
+                    // order is load-bearing (PR #819 review, F1). Both calls
+                    // queue an event for the native loop and wake it, and the
+                    // loop may drain either one alone. Reported first, a lone
+                    // `Perform` turn ran the action and then re-prepared a
+                    // toolbar the loop still believed was up — posting a
+                    // `showTextActionMode` that, by the time it ran here,
+                    // found this mode already finished and started a NEW one:
+                    // a toolbar on screen with the native side believing there
+                    // is none, whose items then acted on nothing. Finishing
+                    // first puts the dismissal report ahead of the item in the
+                    // one queue, so whichever way the loop drains, it hears
+                    // the toolbar is gone before it can refresh it.
                     if (code != 3) {
                         mode.finish();
                     }
+                    nativeOnTextActionItem(code);
                     return true;
                 }
 
@@ -588,8 +602,9 @@ public class RinchActivity extends NativeActivity {
                     if (textActionMode == mode) {
                         textActionMode = null;
                     }
-                    // Every way a mode can end passes through here — Back,
-                    // finish(), onPause, a replacement — so the native mirror
+                    // Every way a mode can end passes through here — an item
+                    // that finishes it, finish(), onPause, window-focus loss,
+                    // a replacement — so the native mirror
                     // of "is it showing" can never stay latched on a toolbar
                     // that is gone.
                     nativeOnTextActionModeFinished();
@@ -610,8 +625,8 @@ public class RinchActivity extends NativeActivity {
      * when there was a mode to finish, directly when there was not. The
      * native side counts the finishes it asked for against the reports it
      * gets, so a request that quietly found nothing would leave a count
-     * unpaid and the next genuine dismissal (Back, an item, onPause)
-     * swallowed as if it were this one.
+     * unpaid and the next genuine dismissal (an item that finishes the
+     * mode, onPause) swallowed as if it were this one.
      */
     public void finishTextActionMode() {
         runOnUiThread(() -> {

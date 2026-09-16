@@ -1819,9 +1819,7 @@ impl RinchApp {
     }
 
     /// Whether the field currently holding the input claim is read-only.
-    /// Crate-visible for the Android shell, which hides the toolbar's Paste
-    /// on a read-only field (issue #813).
-    pub(crate) fn focused_input_is_readonly(&self) -> bool {
+    fn focused_input_is_readonly(&self) -> bool {
         let Some(node_id) = self.focused_input_node_id else {
             return false;
         };

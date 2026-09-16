@@ -581,9 +581,9 @@ fn the_input_connection_forwards_context_menu_actions_to_rust() {
 
 /// The loop's mirror of "the toolbar is up" is cleared only by the report
 /// from `onDestroyActionMode`, and that callback is the one place every way a
-/// mode can end passes through. Without the report a toolbar dismissed with
-/// Back leaves the mirror latched, and the next long press is answered with
-/// an `invalidate()` on a mode that no longer exists.
+/// mode can end passes through. Without the report a toolbar finished by the
+/// platform leaves the mirror latched, and the next long press is answered
+/// with an `invalidate()` on a mode that no longer exists.
 #[test]
 fn every_way_the_toolbar_ends_reports_back_to_rust() {
     let body = method_body("onDestroyActionMode");
@@ -593,22 +593,84 @@ fn every_way_the_toolbar_ends_reports_back_to_rust() {
     );
 }
 
-/// The independent clearing condition (see `text_action.rs`): pausing
-/// finishes the mode from Java, on the UI thread, with no native call — a
-/// native call from a lifecycle override races the thread that registers it.
+/// An item that finishes the mode must finish it BEFORE reporting the item
+/// (PR #819 review, F1). Both calls queue an event for the native loop and
+/// wake it, and the loop may drain either alone; reported first, a lone
+/// `Perform` turn re-prepared a toolbar the loop still believed was up, and
+/// the UI thread then started a fresh mode — a toolbar with no mirror
+/// (measured 5/7). Finishing first puts the report ahead of the item in the
+/// one queue. Order is all this pins, and order is exactly what a tidy-up
+/// would swap back.
 #[test]
-fn pausing_finishes_the_toolbar_without_a_native_call() {
-    let body = method_body("onPause");
+fn a_finishing_item_finishes_the_mode_before_it_is_reported() {
+    let body = method_body("onActionItemClicked");
+    let finish = body
+        .find("mode.finish()")
+        .expect("onActionItemClicked must finish the mode for Cut/Copy/Paste");
+    let report = body
+        .find("nativeOnTextActionItem(")
+        .expect("onActionItemClicked must report the item");
+    assert!(
+        finish < report,
+        "mode.finish() must come before nativeOnTextActionItem: {body}"
+    );
+}
+
+/// Java source with both comment forms removed, so a claim about what a
+/// method *calls* is a claim about its code. (`method_body`'s `//` filter is
+/// not enough: a `/* … */` inside a body is code to that filter.)
+fn without_comments(java: &str) -> String {
+    let mut out = String::with_capacity(java.len());
+    let mut rest = java;
+    loop {
+        // The nearer of the two openers, and whether it is the block form.
+        let next = match (rest.find("//"), rest.find("/*")) {
+            (None, None) => None,
+            (Some(l), None) => Some((l, false)),
+            (None, Some(b)) => Some((b, true)),
+            (Some(l), Some(b)) => Some(if l < b { (l, false) } else { (b, true) }),
+        };
+        let Some((at, block)) = next else {
+            out.push_str(rest);
+            return out;
+        };
+        out.push_str(&rest[..at]);
+        rest = if block {
+            rest[at..].find("*/").map_or("", |e| &rest[at + e + 2..])
+        } else {
+            rest[at..].find('\n').map_or("", |e| &rest[at + e..])
+        };
+    }
+}
+
+/// The independent clearing condition (see `text_action.rs`): pausing
+/// finishes the mode from Java, on the UI thread, and calls nothing native —
+/// a native call from a lifecycle override races the thread that registers
+/// it. Pinned on the call graph rather than on the absence of a word: the
+/// stripped body may call exactly `finish()` and `super.onPause()`, so a
+/// helper that hides a native call behind one indirection
+/// (`dropToolbar()`) fails here, and a block comment mentioning "native"
+/// does not.
+#[test]
+fn pausing_finishes_the_toolbar_and_calls_nothing_else() {
+    let body = without_comments(&method_body("onPause"));
     assert!(
         body.contains("textActionMode.finish()"),
         "onPause must finish the toolbar: {body}"
     );
-    let code: String = body
-        .lines()
-        .filter(|l| !l.trim_start().starts_with("//"))
+    let calls: Vec<&str> = body
+        .match_indices('(')
+        .map(|(at, _)| {
+            let start = body[..at]
+                .rfind(|c: char| !(c.is_alphanumeric() || c == '_' || c == '.'))
+                .map_or(0, |i| i + 1);
+            body[start..at].trim()
+        })
+        .filter(|name| !name.is_empty() && *name != "onPause" && *name != "if")
         .collect();
-    assert!(
-        !code.contains("native"),
-        "onPause must not call a native method (cold-start race): {body}"
+    assert_eq!(
+        calls,
+        vec!["textActionMode.finish", "super.onPause"],
+        "onPause may call exactly finish() and super.onPause(); it calls: {calls:?}\n{body}"
     );
 }

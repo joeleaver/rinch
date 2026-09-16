@@ -27,9 +27,12 @@
 //! condition is on the Java side and needs no native call: `RinchActivity`
 //! finishes the mode in `onPause` and on window-focus loss, and every
 //! `showTextActionMode` replaces whatever mode is up. The Java side also
-//! reports every dismissal ([`TextActionEvent::ToolbarDismissed`]) — Back,
-//! `finish()`, a replacement — so the loop's own "is it showing" mirror can
-//! never stay latched on a toolbar that is gone.
+//! reports every dismissal ([`TextActionEvent::ToolbarDismissed`]) — an item
+//! that finishes the mode, `finish()`, a replacement — so the loop's own "is
+//! it showing" mirror can never stay latched on a toolbar that is gone. (Back
+//! is not one of those routes: it reaches the app through the native input
+//! queue as `Escape`, and it is the loop's own press arm that finishes the
+//! mode — measured in the PR #819 review.)
 
 use std::sync::Mutex;
 
@@ -64,9 +67,9 @@ pub enum TextActionEvent {
     /// `performContextMenuAction`. Either way the action has **not** been
     /// performed yet — the loop performs it.
     Perform(TextAction),
-    /// The floating toolbar is gone: Back, `finish()`, the activity pausing, or
-    /// a replacement. Sent from `onDestroyActionMode`, so it fires for every
-    /// way a mode can end.
+    /// The floating toolbar is gone: an item that finishes it, `finish()`,
+    /// the activity pausing, window-focus loss, or a replacement. Sent from
+    /// `onDestroyActionMode`, so it fires for every way a mode can end.
     ToolbarDismissed,
 }
 
@@ -204,9 +207,20 @@ pub fn finish_toolbar() {
 /// finish the loop asks for is counted, `finishTextActionMode` reports exactly
 /// one dismissal per request whether or not it found a mode to finish, and a
 /// report that pays off a counted finish says nothing about the current mode.
-/// A report with nothing to pay off is the platform's own dismissal — Back,
-/// an item that finished the mode, the activity pausing — and takes the
-/// mirror down.
+/// A report with nothing to pay off is the platform's own dismissal — an item
+/// that finished the mode, the activity pausing, window-focus loss — and takes
+/// the mirror down.
+///
+/// An item that finishes the mode is the one platform-initiated ending the
+/// loop can *see coming*: it drains the item's `Perform` and knows Cut, Copy
+/// and Paste end the interaction. [`Self::platform_finishing`] is how it says
+/// so. Java finishes the mode before it reports the item, so the report is
+/// ahead of the `Perform` in the queue and the mirror is normally down already
+/// by the time the item is performed; the method is for the drain that sees
+/// the `Perform` first, where a refresh in that turn would re-prepare a
+/// toolbar that is on its way out and, on the UI thread, start a fresh one
+/// (PR #819 review, F1). It counts nothing: the report that follows is the
+/// platform's own and pays off no requested finish.
 #[derive(Debug, Default)]
 pub struct ToolbarMirror {
     shown: bool,
@@ -253,6 +267,16 @@ impl ToolbarMirror {
         self.last_pushed = None;
         self.pending_finishes += 1;
         true
+    }
+
+    /// The user tapped an item that finishes the mode (Cut, Copy, Paste): the
+    /// platform is taking the toolbar down and will report it. Believe it now,
+    /// so no refresh re-prepares the toolbar in the meantime, and count
+    /// nothing, since the report is the platform's own. Idempotent, and a
+    /// no-op after the report has already arrived.
+    pub fn platform_finishing(&mut self) {
+        self.shown = false;
+        self.last_pushed = None;
     }
 
     /// Java reported a mode ended (or a finish request found none).
@@ -401,8 +425,49 @@ mod mirror_tests {
         assert!(m.request(RECT, ALL), "a request while finishing pushes");
         m.dismissed(); // the report for the mode finished above
         assert!(m.is_shown(), "the new toolbar is still up");
-        m.dismissed(); // now the platform's own dismissal (Back, an item)
+        m.dismissed(); // now the platform's own dismissal (an item, onPause)
         assert!(!m.is_shown());
+    }
+
+    /// The PR #819 review's R1, adapted. A Paste tap makes Java finish the
+    /// mode and report the item; the loop can drain the `Perform` before the
+    /// report, and its per-turn refresh then found `is_shown()` true, saw the
+    /// items change (Cut/Copy gone with the selection), and pushed a
+    /// `showTextActionMode` that started a brand-new mode on the UI thread —
+    /// a toolbar on screen with a mirror that, once the report arrived, said
+    /// none (measured 5/7 and 4/6). Between the `Perform` and its report the
+    /// mirror must already say the toolbar is gone, so the refresh — gated on
+    /// `is_shown()` — does not run; the report then pays off nothing and
+    /// changes nothing; and the next genuine request is a fresh push.
+    #[test]
+    fn an_item_that_finishes_the_mode_takes_the_mirror_down_before_the_report() {
+        let mut m = ToolbarMirror::new();
+        assert!(m.request(RECT, ALL));
+
+        // The drain sees `Perform(Paste)`; the report has not arrived.
+        m.platform_finishing();
+        assert!(
+            !m.is_shown(),
+            "the refresh is gated on is_shown(), so nothing may be pushed here"
+        );
+        assert!(
+            !m.finish(),
+            "and the loop has nothing to tell either — the platform is already finishing"
+        );
+
+        // The report for that mode: the platform's own, nothing to pay off.
+        m.dismissed();
+        assert!(!m.is_shown());
+
+        // A later long press is a fresh toolbar, whatever was pushed before.
+        assert!(m.request(RECT, PASTE_ONLY));
+        assert!(m.is_shown());
+        // Idempotent after the fact: a second `platform_finishing` for an item
+        // on the NEW toolbar behaves the same way.
+        m.platform_finishing();
+        m.dismissed();
+        assert!(!m.is_shown());
+        assert!(!m.finish());
     }
 
     #[test]

@@ -2341,12 +2341,20 @@ the finishes it asked for so a late report for a finished mode cannot take
 down the one that replaced it. Two things that were silently wrong before and
 are worth knowing: **a still finger never fired the long press** on an idle
 loop, because K37's looper sleep has no deadline and nothing woke it
-(`TouchGesture::long_press_due` now feeds `poll_timeout`); and **Paste on
-Android needs the `clipboard` feature**, exactly as on desktop — without it
-`handle_paste` inserts nothing, from the toolbar or a hardware Ctrl+V. Measured
-on an API 34 emulator with Gboard: its clipboard chip and clipboard panel both
-paste as `commitText`, not `performContextMenuAction`. The rich-text `Editor`
-is `desktop`-only and is not part of an Android build.
+(`TouchGesture::long_press_due` now feeds `poll_timeout`); and **the `android`
+feature now implies `clipboard`** — without it `handle_paste` reads an empty
+string, so a hardware Ctrl+V inserted nothing and an IME's
+`performContextMenuAction(paste)` returned `true` having pasted nothing (the
+toolbar hides its Paste). Paste is also hidden while `hasPrimaryClip()` is
+false, which reads no clip. **An item that finishes the toolbar is finished on
+the Java side before it is reported** (PR #819 review, F1): both calls queue
+an event and wake the loop, and reported first, a lone `Perform` turn
+re-prepared a toolbar the loop believed was up and the UI thread started a
+fresh one — an orphan whose items acted on nothing. Measured on an API 34
+emulator with one Gboard build: its clipboard chip and clipboard panel both
+paste as `commitText`, not `performContextMenuAction`. The toolbar anchors
+where `TextEditState.anchor` reports. The rich-text `Editor` is
+`desktop`-only and is not part of an Android build (#818).
 
 **The built-in editor's Ctrl+V is asynchronous** — see the `anchor_selection` row in the
 `EditorHandle` table. The plain `<input>`/`<textarea>` paste path

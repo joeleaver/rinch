@@ -673,6 +673,18 @@ fn run_loop(android_app: AndroidApp, mut app: RinchApp) {
                 TextActionEvent::ToolbarDismissed => text_toolbar.dismissed(),
                 TextActionEvent::Perform(action) => {
                     log::info!("text action: {action:?}");
+                    // Cut, Copy and Paste finish the mode on the Java side,
+                    // and Java finishes it *before* reporting the item, so the
+                    // dismissal report is normally already drained. Should
+                    // this turn see the item first, the mirror must not go on
+                    // believing a toolbar is up: the refresh below would
+                    // re-prepare it and, on the UI thread, start a new one
+                    // (PR #819 review, F1). Not when a fresh toolbar was
+                    // requested this very turn — that one is real, and the
+                    // item belongs to the mode before it.
+                    if action != TextAction::SelectAll && !toolbar_requested {
+                        text_toolbar.platform_finishing();
+                    }
                     let actions = app.perform_text_edit(match action {
                         TextAction::Cut => TextEditAction::Cut,
                         TextAction::Copy => TextEditAction::Copy,
@@ -2514,15 +2526,18 @@ fn physical_rect(anchor: (f32, f32, f32, f32), scale_factor: f64) -> PhysicalRec
 }
 
 /// The seam's four flags as the toolbar's items. Shown or hidden rather than
-/// disabled, which is what the platform's own text views do; Paste follows
-/// `can_paste`, which is decided by the field alone and never by reading the
-/// clipboard (see the `text_action` module for why `hasPrimaryClip` is not
-/// consulted).
+/// disabled, which is what the platform's own text views do. Paste is
+/// `can_paste` — the field's own answer — and, as in a platform `EditText`
+/// (`Editor.canPaste` is `hasPrimaryClip` plus a text description), only
+/// while the clipboard holds something: `hasPrimaryClip()` is a synchronous
+/// binder query that reads no clip, so it raises none of the Android 12+
+/// clipboard-access notice that `getPrimaryClip` does (measured, see the PR),
+/// and the #149 rule about not *reading* the clipboard to decide is kept.
 fn toolbar_items(state: &TextEditState) -> TextActionItems {
     TextActionItems {
         cut: state.can_cut,
         copy: state.can_copy,
-        paste: state.can_paste,
+        paste: state.can_paste && rinch_android::clipboard::has_text(),
         select_all: state.can_select_all,
     }
 }

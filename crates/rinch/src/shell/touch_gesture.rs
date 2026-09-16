@@ -1203,21 +1203,6 @@ mod tests {
         );
     }
 
-    /// A finger that leaves the slop is a scroll, and a scroll is not a press:
-    /// however long it is then held, no context event may appear.
-    ///
-    /// **It also no longer flings, and that is the velocity rewrite rather than
-    /// a regression.** The finger here moves 30px in 20ms and then holds
-    /// perfectly still for three quarters of a second before lifting. The old
-    /// velocity estimate was an average of per-*event* distances that only moved
-    /// when an event arrived, so after the hold it still held the speed of a
-    /// gesture that had been over for 760ms, and the list took off from under a
-    /// stationary finger. A rate measured against the clock decays to nothing
-    /// across that hold — which is what every native scroller does and what a
-    /// person expects: you stop, then you let go, and nothing moves. The flick
-    /// that *is* a flick is asserted by
-    /// `the_same_fling_lasts_the_same_time_at_any_refresh_rate` and
-    /// `a_fling_leaves_at_the_same_speed_whatever_the_touch_report_rate`.
     /// The loop has to be told when a still press falls due, or it sleeps
     /// through the deadline (issue #813; see `long_press_due`). Sampled at
     /// 200ms into the hold rather than at the press itself, where the answer
@@ -1266,6 +1251,21 @@ mod tests {
         );
     }
 
+    /// A finger that leaves the slop is a scroll, and a scroll is not a press:
+    /// however long it is then held, no context event may appear.
+    ///
+    /// **It also no longer flings, and that is the velocity rewrite rather than
+    /// a regression.** The finger here moves 30px in 20ms and then holds
+    /// perfectly still for three quarters of a second before lifting. The old
+    /// velocity estimate was an average of per-*event* distances that only moved
+    /// when an event arrived, so after the hold it still held the speed of a
+    /// gesture that had been over for 760ms, and the list took off from under a
+    /// stationary finger. A rate measured against the clock decays to nothing
+    /// across that hold — which is what every native scroller does and what a
+    /// person expects: you stop, then you let go, and nothing moves. The flick
+    /// that *is* a flick is asserted by
+    /// `the_same_fling_lasts_the_same_time_at_any_refresh_rate` and
+    /// `a_fling_leaves_at_the_same_speed_whatever_the_touch_report_rate`.
     #[test]
     fn a_press_that_became_a_scroll_never_becomes_a_context_menu() {
         let mut f = Finger::new();

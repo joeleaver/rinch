@@ -159,6 +159,13 @@ android = [
     "dep:android-activity", "dep:ndk",
     "dep:log", "dep:android_logger",
     "dep:rinch-android",
+    # Paste is not optional on a phone. On Android `rinch-clipboard` is only
+    # the JNI bridge to `ClipboardManager` (no arboard), so this costs
+    # nothing — and without it `handle_paste` reads an empty string, a
+    # hardware Ctrl+V inserts nothing, and the IME's
+    # `performContextMenuAction(paste)` returns true having pasted nothing
+    # (issue #813).
+    "clipboard",
 ]
 gpu = [
     "desktop",

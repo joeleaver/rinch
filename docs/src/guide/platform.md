@@ -355,7 +355,8 @@ app lifetime. See
 
 A long press on an `<input>` or `<textarea>` shows Android's own floating
 text-selection toolbar — Cut / Copy / Paste / Select all, the platform's
-strings, the platform's look — anchored to the caret (issue #813). It is an
+strings, the platform's look — anchored where the runtime's `TextEditState.anchor`
+reports the selection (issue #813). It is an
 `ActionMode.TYPE_FLOATING` started by `RinchActivity` on the window's decor
 view, and it is what the desktop's built-in DOM context menu becomes on
 Android: the shell sets `TextContextMenuPresentation::Shell`, so the runtime
@@ -367,28 +368,32 @@ The long press follows the platform convention: it selects the word under the
 finger, a press inside an existing selection keeps that selection, and an
 empty field (or a press on whitespace) keeps its caret and offers only Paste.
 Cut and Copy appear only over a selection, Paste is hidden on a `readonly`
-field, and Select all needs content. Paste is never hidden because the
-clipboard is empty — the field decides, the clipboard is read only when Paste
-is tapped. Each item runs exactly the code its keyboard shortcut runs
+field and while the clipboard is empty (`hasPrimaryClip()`, which reads no
+clip and raises no clipboard-access notice), and Select all needs content.
+The clipboard itself is read only when Paste is tapped. Each item runs
+exactly the code its keyboard shortcut runs
 (`RinchApp::perform_text_edit`), so a toolbar Paste, a hardware Ctrl+V and an
 IME's paste are one path.
 
-**Paste from the system clipboard needs the `clipboard` feature.** Without it
-`handle_paste` reads an empty string, on Android as on desktop, and both the
-toolbar's Paste and a hardware Ctrl+V insert nothing. Every route measured on
-an API 34 emulator with Gboard lands once the feature is on: the toolbar's
+**The `android` feature implies `clipboard`.** Paste is not optional on a
+phone, and without the feature `handle_paste` reads an empty string: a
+hardware Ctrl+V inserts nothing and an IME's paste request is answered "done"
+with nothing pasted (the toolbar hides its Paste instead). Every route
+measured on an API 34 emulator with one Gboard build lands: the toolbar's
 Paste; the clipboard chip Gboard puts on its suggestion strip after a copy;
 an item in Gboard's clipboard panel; and `Ctrl+V` from a hardware keyboard.
-Gboard delivers its chip and panel pastes as ordinary committed text
-(`InputConnection.commitText`). An IME that instead calls
+That Gboard build delivers its chip and panel pastes as ordinary committed
+text (`InputConnection.commitText`). An IME that instead calls
 `performContextMenuAction(android.R.id.paste)` — which
 `BaseInputConnection` would otherwise drop, since rinch's connection keeps no
 `Editable` — reaches the same path through `RinchInputConnection`'s override.
 
 The toolbar goes when the user taps or scrolls elsewhere, types, edits from
 the keyboard, or when the field loses focus; the activity also finishes it on
-its own in `onPause` and on window-focus loss, so a dismissal the shell never
-saw cannot leave it up. The rich-text `Editor` is not part of an Android build
+its own in `onPause` and on window-focus loss. An item that finishes the
+toolbar (Cut, Copy, Paste) is finished on the Java side *before* the item is
+reported, so the shell always hears the toolbar is gone before it could
+refresh it. The rich-text `Editor` is not part of an Android build
 today (it is `desktop`-only), so the toolbar covers `<input>` and `<textarea>`.
 
 ---
