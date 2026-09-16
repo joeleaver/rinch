@@ -2205,7 +2205,24 @@ pub fn setup_event_delegation(doc: &WebDocument) {
 
     // Keyboard delegation: route to focused render surface or keyboard interceptor.
     let browser_doc_for_tab = browser_doc.clone();
-    let keydown_closure = Closure::wrap(Box::new(move |event: web_sys::KeyboardEvent| {
+    let keydown_closure = Closure::wrap(Box::new(move |event: web_sys::Event| {
+        // Anything at all can be dispatched at `document` under the name
+        // "keydown" — `document.dispatchEvent(new Event("keydown"))` from page
+        // script, a polyfill, an extension, a test harness. wasm-bindgen hands a
+        // `Closure<dyn FnMut(web_sys::KeyboardEvent)>` whatever arrives, cast
+        // **unchecked**, so on a plain `Event` the very first `event.key()`
+        // returned `undefined` and the string marshaller threw `Cannot read
+        // properties of undefined (reading 'length')` out of a document
+        // listener — a console full of TypeErrors from a page that had done
+        // nothing wrong.
+        //
+        // `dyn_ref` is the instanceof check that was missing. `add_capture`
+        // already does the same thing for the listeners that go through it;
+        // these two are the ones registered by hand.
+        let Some(event) = event.dyn_ref::<web_sys::KeyboardEvent>() else {
+            return;
+        };
+
         // Escape cancels an in-progress element drag (consumed only if one was
         // actually active, so Escape otherwise reaches the app normally).
         if event.key() == "Escape" && cancel_web_drag() {
@@ -2263,7 +2280,7 @@ pub fn setup_event_delegation(doc: &WebDocument) {
             // still sees Tab first, and before the activation branch, which only
             // ever answers Enter/Space.
             event.prevent_default();
-        } else if try_keyboard_activation(&event, &key_data.key) {
+        } else if try_keyboard_activation(event, &key_data.key) {
             // Enter/Space on a focused element the browser does not activate
             // itself (issue #240 — the `Tree` node shape). Consume the key:
             // this is what stops Space from also scrolling the page, on the
@@ -2329,7 +2346,12 @@ pub fn setup_event_delegation(doc: &WebDocument) {
     // Its return value is ignored, matching desktop: there is nothing
     // downstream of a release to suppress, and `prevent_default` on a keyup
     // suppresses nothing a browser would have done anyway.
-    let keyup_closure = Closure::wrap(Box::new(move |event: web_sys::KeyboardEvent| {
+    let keyup_closure = Closure::wrap(Box::new(move |event: web_sys::Event| {
+        // See the keydown listener: the cast is unchecked, so a plain
+        // `Event("keyup")` would read `undefined` for `key` and throw.
+        let Some(event) = event.dyn_ref::<web_sys::KeyboardEvent>() else {
+            return;
+        };
         let key_data = events::KeyEventData::new(event.key(), event.code())
             .with_modifiers(
                 event.ctrl_key() || event.meta_key(),
