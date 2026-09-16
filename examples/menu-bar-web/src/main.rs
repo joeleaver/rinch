@@ -16,12 +16,13 @@
 //! * click anywhere outside an open menu, or press Escape, to dismiss it.
 //!
 //! **File > New declares `Ctrl+N` on purpose, and in a browser you should click
-//! it rather than press it.** A handful of chords — `Ctrl+N`, `Ctrl+T`,
-//! `Ctrl+W`, `Ctrl+Q` and their `Shift` variants — are the browser's own, handled
-//! by its chrome before the page: `preventDefault` does not reach them, and the
-//! page may not be sent the keystroke at all. The declaration is still the right
-//! one, because the same `Menu` value drives a desktop build where `Ctrl+N` is
-//! exactly what "New" should be.
+//! it rather than press it.** Some chords are the browser's own — the ones that
+//! open and close windows and tabs, `Ctrl+N` / `Ctrl+T` / `Ctrl+W` and their
+//! `Shift` variants in Chrome and Firefox — handled by its chrome before the
+//! page: `preventDefault` does not reach them, and the page may not be sent the
+//! keystroke at all. Which ones depends on the browser and the platform. The
+//! declaration is still the right one, because the same `Menu` value drives a
+//! desktop build where `Ctrl+N` is exactly what "New" should be.
 //!
 //! Build it the way the other web examples are built:
 //!

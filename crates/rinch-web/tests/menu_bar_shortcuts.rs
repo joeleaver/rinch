@@ -80,19 +80,27 @@ fn press(code: &str) -> bool {
     event.default_prevented()
 }
 
-/// An island under a menu bar whose single item carries `chord`, plus the
-/// counter that item's callback increments.
+/// An island under a menu bar whose single item carries `chord`, plus the two
+/// counters the test reads: the menu item's callback, and a `data-rid` button
+/// inside the island's content.
 struct Fixture {
     root: RootHandle,
     host: web_sys::Element,
     fired: Rc<Cell<u32>>,
+    clicks: Rc<Cell<u32>>,
 }
 
 impl Fixture {
     fn mount(chord: &str) -> Self {
         purge_stale_hosts();
+        // The activation state (`POINTER_GESTURE` and the clear scheduled for
+        // it) is page-global and every wasm test shares one page, so state the
+        // default rather than inheriting whatever ran last.
+        rinch_web::__reset_activation_state();
         let fired = Rc::new(Cell::new(0u32));
         let counter = fired.clone();
+        let clicks = Rc::new(Cell::new(0u32));
+        let click_counter = clicks.clone();
         let host = document().create_element("div").unwrap();
         host.set_attribute(HOST_MARKER, "").unwrap();
         document().body().unwrap().append_child(&host).unwrap();
@@ -110,20 +118,82 @@ impl Fixture {
             &host,
             ThemeProviderProps::default(),
             vec![("File", menu)],
-            |scope: &mut RenderScope| {
+            move |scope: &mut RenderScope| {
                 let div = scope.create_element("div");
                 let text = scope.create_text("content");
                 div.append_child(&text);
+                let rid =
+                    scope.register_handler(move || click_counter.set(click_counter.get() + 1));
+                let button = scope.create_element("button");
+                button.set_attribute("data-rid", &rid.0.to_string());
+                let label = scope.create_text("activate");
+                button.append_child(&label);
+                div.append_child(&button);
                 div
             },
         );
-        Self { root, host, fired }
+        Self {
+            root,
+            host,
+            fired,
+            clicks,
+        }
+    }
+
+    /// The island's own `data-rid` button, found inside this fixture's host
+    /// rather than by page-wide id — two fixtures can be mounted at once.
+    fn button(&self) -> web_sys::Element {
+        self.host
+            .query_selector("button[data-rid]")
+            .unwrap()
+            .expect("the island's data-rid button")
     }
 
     fn teardown(self) {
         self.root.unmount();
         self.host.remove();
     }
+}
+
+fn centre(el: &web_sys::Element) -> (i32, i32) {
+    let r = el.get_bounding_client_rect();
+    (
+        (r.x() + r.width() / 2.0) as i32,
+        (r.y() + r.height() / 2.0) as i32,
+    )
+}
+
+/// A primary mouse `pointerdown`/`pointerup` at the element's centre.
+fn pointer_event(el: &web_sys::Element, name: &str) {
+    let init = web_sys::PointerEventInit::new();
+    init.set_bubbles(true);
+    init.set_cancelable(true);
+    init.set_pointer_id(1);
+    init.set_is_primary(true);
+    init.set_pointer_type("mouse");
+    init.set_button(0);
+    init.set_buttons(if name == "pointerdown" { 1 } else { 0 });
+    let (x, y) = centre(el);
+    init.set_client_x(x);
+    init.set_client_y(y);
+    let ev = web_sys::PointerEvent::new_with_event_init_dict(name, &init).unwrap();
+    el.dispatch_event(&ev).unwrap();
+}
+
+/// A `click` with the given `detail`. `detail == 0` is the shape of a
+/// keyboard-synthesised or assistive-technology click.
+fn click(el: &web_sys::Element, detail: i32) {
+    let init = web_sys::MouseEventInit::new();
+    init.set_bubbles(true);
+    init.set_cancelable(true);
+    init.set_detail(detail);
+    if detail > 0 {
+        let (x, y) = centre(el);
+        init.set_client_x(x);
+        init.set_client_y(y);
+    }
+    let ev = web_sys::MouseEvent::new_with_mouse_event_init_dict("click", &init).unwrap();
+    el.dispatch_event(&ev).unwrap();
 }
 
 /// The positive control for [`an_unmounted_island_gives_its_chords_back`]: while
@@ -257,5 +327,62 @@ fn a_chord_the_menu_consumed_reaches_no_other_document_listener() {
     );
 
     bystander.remove();
+    fixture.teardown();
+}
+
+/// The other half of the listener move, and the one nothing pinned.
+///
+/// Stopping a consumed chord at `window` takes it away from every `document`
+/// listener — but **one** of them must go on seeing it: the pointer-gesture
+/// observer (`POINTER_GESTURE`, issue #240), whose job is to watch the raw input
+/// stream. That is why the same change moved it to `window` too, beside the
+/// chord listener: `stopPropagation` is not `stopImmediatePropagation`, so
+/// same-node listeners all still run.
+///
+/// The coupling is stated in a comment at both ends and enforced by nothing
+/// else. Measured (review of PR #808): a *tidy* revert of that one listener to
+/// `document` passes `clippy -D warnings` on wasm **and** all 117 rinch-web
+/// browser tests — #240 reopened on a green board. This is the fixture that
+/// goes red instead.
+///
+/// The observable is #240's own symptom rather than the flag: a keyboard
+/// activation's trusted `click` after a pointer gesture must still dispatch,
+/// which is only true if some keydown in between cleared the flag.
+#[wasm_bindgen_test]
+fn a_consumed_chord_still_clears_the_pointer_gesture_flag() {
+    let fixture = Fixture::mount("Ctrl+Alt+P");
+    // A test can only dispatch *untrusted* events, which the gate always lets
+    // through; the suppression this rests on is only reachable with the seam on.
+    rinch_web::__force_trusted_clicks(true);
+    let button = fixture.button();
+
+    // A mouse interaction: `pointerdown` dispatches, and the trailing click is
+    // its duplicate and is suppressed. The flag is left armed, with a 1 s grace.
+    pointer_event(&button, "pointerdown");
+    pointer_event(&button, "pointerup");
+    click(&button, 1);
+    assert_eq!(
+        fixture.clicks.get(),
+        1,
+        "control: the press dispatches once and its trailing click is suppressed"
+    );
+
+    // A chord the menu claims. It is stopped at `window`, so nothing on
+    // `document` sees it — the gesture observer only does because it is on
+    // `window` as well.
+    assert!(press("KeyP"), "control: the menu claimed Ctrl+Alt+P");
+    assert_eq!(fixture.fired.get(), 1, "control: and ran its item");
+
+    // A keyboard-synthesised / assistive-technology click, the shape #240 is
+    // about. It must dispatch: a keyboard interaction has begun.
+    click(&button, 0);
+    assert_eq!(
+        fixture.clicks.get(),
+        2,
+        "a consumed chord must still clear the pointer-gesture flag, \
+         or the next keyboard activation's click is swallowed (#240)"
+    );
+
+    rinch_web::__reset_activation_state();
     fixture.teardown();
 }

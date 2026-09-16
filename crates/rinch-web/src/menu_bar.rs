@@ -118,10 +118,13 @@ fn install_shortcut_dispatch() {
                 event.prevent_default();
                 // The app must not *also* act on a key the menu consumed — the
                 // desktop shell returns instead of forwarding a matched chord, and
-                // this is the browser's way of saying the same thing. From `window`
-                // this reaches everything: `editor_input`'s keymap, the pointer-
-                // gesture observer and the bubble delegate all sit on `document`,
-                // one node further along the path.
+                // this is the browser's way of saying the same thing. From
+                // `window` this reaches `editor_input`'s keymap and the bubble
+                // delegate, which sit on `document`, one node further along the
+                // path. The one listener it does **not** reach is the
+                // pointer-gesture observer, which is on `window` beside this one
+                // for exactly that reason (see above) — measured in Chrome 153: a
+                // consumed chord still clears the flag.
                 event.stop_propagation();
             }
         },

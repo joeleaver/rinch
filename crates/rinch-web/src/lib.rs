@@ -39,9 +39,9 @@
 //! and a chord the menus claim is consumed — `preventDefault`, so the browser's
 //! own handling of `Ctrl+K` does not run alongside the app's, and the event is
 //! stopped before it reaches anything else in the app, which is what the desktop
-//! does by returning ahead of the event loop. A handful of chords (`Ctrl+N`,
-//! `Ctrl+T`, `Ctrl+W`, `Ctrl+Q` and their `Shift` variants) are the browser's
-//! alone and cannot be claimed; see the [WASM
+//! does by returning ahead of the event loop. Some chords are the browser's
+//! alone and cannot be claimed — which ones depends on the browser and the
+//! platform; see the [WASM
 //! guide](https://github.com/joeleaver/rinch/blob/main/docs/src/guide/wasm.md).
 //!
 //! ## Whole-page app
@@ -380,14 +380,10 @@ where
 /// item's `on_click` and consumes the keystroke, so neither the browser's own
 /// handling of that combination nor anything else in the app also acts on it.
 /// Arming replaces whatever a previous call armed, so remounting does not
-/// accumulate chords. A handful of chords — `Ctrl+N`, `Ctrl+T`, `Ctrl+W`,
-/// `Ctrl+Q` and their `Shift` variants — are the browser's own and cannot be
-/// claimed at all; declare them anyway if the same `Menu` drives a desktop
-/// build, just do not rely on them here.
-///
-/// The bar is laid out above the content *inside* the page, and the content
-/// wrapper is `height: 100%` — so `html, body` want a height, or everything
-/// below the bar collapses.
+/// accumulate chords. Some chords are the browser's own — `Ctrl+N`, `Ctrl+T`
+/// and `Ctrl+W` in Chrome and Firefox, and more depending on the browser and
+/// platform — and cannot be claimed; declare them anyway if the same `Menu`
+/// drives a desktop build, just do not rely on them here.
 ///
 /// The menus are read during this call and nothing is kept borrowed afterwards,
 /// which is why the labels may be borrowed `&str`.
@@ -410,10 +406,13 @@ where
 /// Mount an island into `host` under a menu bar. See [`mount_into`] and
 /// [`mount_with_menu_bar`].
 ///
-/// The bar fills the host element's width and the content sits below it, so the
-/// host wants a height of its own — the bar is laid out inside the island, not
-/// over the page, and the content wrapper below it is `height: 100%`, which
-/// collapses without one.
+/// The bar fills the host element's width and the content sits below it. It
+/// does **not** fit itself to the host's height: the wrapper it builds is
+/// `height: 100vh` from the component stylesheet, so a host shorter than the
+/// viewport is overflowed by it, and giving the host a height does not change
+/// that. Measured in Chrome 153: a `height: 120px` host gets a 437px wrapper in
+/// a 437px viewport. Tracked separately; nothing the caller does works around
+/// it today.
 ///
 /// **One page, one set of chords.** Clicks are per-bar, but keyboard shortcuts
 /// are matched against a single page-global registry, and arming a bar releases

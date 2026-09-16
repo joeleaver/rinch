@@ -1176,6 +1176,8 @@ mod tests {
     use super::*;
     use rinch_core::reactive::{Scope, Signal};
     use std::cell::Cell;
+    #[cfg(feature = "desktop")]
+    use std::collections::BTreeSet;
 
     /// Every registry here is `thread_local!` and `cargo test` gives each test
     /// its own thread, so the tests are isolated without a mutex — but ids must
@@ -1860,80 +1862,8 @@ mod tests {
     #[cfg(feature = "desktop")]
     #[test]
     fn every_arm_of_the_key_table_round_trips() {
-        // Listed rather than iterated because `winit::keyboard::KeyCode` is
-        // `#[non_exhaustive]` with hundreds of variants and no iterator; these
-        // are the 64 `key_code_name` answers to. A variant *renamed* upstream
-        // fails to compile here, which is the whole reason the source table is
-        // spelled out.
-        let named: [KeyCode; 64] = [
-            KeyCode::KeyA,
-            KeyCode::KeyB,
-            KeyCode::KeyC,
-            KeyCode::KeyD,
-            KeyCode::KeyE,
-            KeyCode::KeyF,
-            KeyCode::KeyG,
-            KeyCode::KeyH,
-            KeyCode::KeyI,
-            KeyCode::KeyJ,
-            KeyCode::KeyK,
-            KeyCode::KeyL,
-            KeyCode::KeyM,
-            KeyCode::KeyN,
-            KeyCode::KeyO,
-            KeyCode::KeyP,
-            KeyCode::KeyQ,
-            KeyCode::KeyR,
-            KeyCode::KeyS,
-            KeyCode::KeyT,
-            KeyCode::KeyU,
-            KeyCode::KeyV,
-            KeyCode::KeyW,
-            KeyCode::KeyX,
-            KeyCode::KeyY,
-            KeyCode::KeyZ,
-            KeyCode::Digit0,
-            KeyCode::Digit1,
-            KeyCode::Digit2,
-            KeyCode::Digit3,
-            KeyCode::Digit4,
-            KeyCode::Digit5,
-            KeyCode::Digit6,
-            KeyCode::Digit7,
-            KeyCode::Digit8,
-            KeyCode::Digit9,
-            KeyCode::F1,
-            KeyCode::F2,
-            KeyCode::F3,
-            KeyCode::F4,
-            KeyCode::F5,
-            KeyCode::F6,
-            KeyCode::F7,
-            KeyCode::F8,
-            KeyCode::F9,
-            KeyCode::F10,
-            KeyCode::F11,
-            KeyCode::F12,
-            KeyCode::Equal,
-            KeyCode::Minus,
-            KeyCode::Enter,
-            KeyCode::Escape,
-            KeyCode::Backspace,
-            KeyCode::Tab,
-            KeyCode::Space,
-            KeyCode::Delete,
-            KeyCode::Home,
-            KeyCode::End,
-            KeyCode::PageUp,
-            KeyCode::PageDown,
-            KeyCode::ArrowUp,
-            KeyCode::ArrowDown,
-            KeyCode::ArrowLeft,
-            KeyCode::ArrowRight,
-        ];
-
         let mut seen: Vec<&'static str> = Vec::new();
-        for key in named {
+        for key in NAMED_KEYS {
             let debug = format!("{key:?}");
             let code = key_code_name(key)
                 .unwrap_or_else(|| panic!("{debug}: no arm names this key any more"));
@@ -1965,6 +1895,162 @@ mod tests {
             );
             seen.push(code);
         }
+    }
+
+    /// The keys [`key_code_name`] answers to.
+    ///
+    /// Listed rather than iterated because `winit::keyboard::KeyCode` is
+    /// `#[non_exhaustive]` with hundreds of variants and no iterator. A variant
+    /// *renamed* upstream fails to compile here, which is the whole reason the
+    /// source table is spelled out; a variant **added** to the table without
+    /// being added here is caught by
+    /// [`the_two_key_tables_name_the_same_codes`], which counts the arms.
+    #[cfg(feature = "desktop")]
+    const NAMED_KEYS: [KeyCode; 64] = [
+        KeyCode::KeyA,
+        KeyCode::KeyB,
+        KeyCode::KeyC,
+        KeyCode::KeyD,
+        KeyCode::KeyE,
+        KeyCode::KeyF,
+        KeyCode::KeyG,
+        KeyCode::KeyH,
+        KeyCode::KeyI,
+        KeyCode::KeyJ,
+        KeyCode::KeyK,
+        KeyCode::KeyL,
+        KeyCode::KeyM,
+        KeyCode::KeyN,
+        KeyCode::KeyO,
+        KeyCode::KeyP,
+        KeyCode::KeyQ,
+        KeyCode::KeyR,
+        KeyCode::KeyS,
+        KeyCode::KeyT,
+        KeyCode::KeyU,
+        KeyCode::KeyV,
+        KeyCode::KeyW,
+        KeyCode::KeyX,
+        KeyCode::KeyY,
+        KeyCode::KeyZ,
+        KeyCode::Digit0,
+        KeyCode::Digit1,
+        KeyCode::Digit2,
+        KeyCode::Digit3,
+        KeyCode::Digit4,
+        KeyCode::Digit5,
+        KeyCode::Digit6,
+        KeyCode::Digit7,
+        KeyCode::Digit8,
+        KeyCode::Digit9,
+        KeyCode::F1,
+        KeyCode::F2,
+        KeyCode::F3,
+        KeyCode::F4,
+        KeyCode::F5,
+        KeyCode::F6,
+        KeyCode::F7,
+        KeyCode::F8,
+        KeyCode::F9,
+        KeyCode::F10,
+        KeyCode::F11,
+        KeyCode::F12,
+        KeyCode::Equal,
+        KeyCode::Minus,
+        KeyCode::Enter,
+        KeyCode::Escape,
+        KeyCode::Backspace,
+        KeyCode::Tab,
+        KeyCode::Space,
+        KeyCode::Delete,
+        KeyCode::Home,
+        KeyCode::End,
+        KeyCode::PageUp,
+        KeyCode::PageDown,
+        KeyCode::ArrowUp,
+        KeyCode::ArrowDown,
+        KeyCode::ArrowLeft,
+        KeyCode::ArrowRight,
+    ];
+
+    /// The two tables name the **same set** of codes — the other direction, and
+    /// the one a per-arm walk cannot reach.
+    ///
+    /// [`every_arm_of_the_key_table_round_trips`] starts from a `KeyCode` and so
+    /// only ever visits codes the inverse table produces. A spelling added to
+    /// `parse_shortcut_for_matching` whose code **no** `KeyCode` arm produces is
+    /// invisible to it: measured, adding a `Comma` spelling to the forward table
+    /// survives that test and the whole `menu::` suite. The consequence is
+    /// #807's own bug one direction along — `MenuItem::shortcut("Ctrl+Comma")`
+    /// arms and fires on the web, which matches `KeyboardEvent.code` directly,
+    /// and is permanently dead on the desktop, where `key_code_name` answers
+    /// `None`. Two backends, one declaration, silently different.
+    ///
+    /// Both tables are read out of **this file's own source**, because a set
+    /// comparison has nothing else to derive them from and a hand-written third
+    /// list would only move the typo. That also pins the arm *count*, so a 65th
+    /// arm added to `key_code_name` without a 65th entry in [`NAMED_KEYS`] fails
+    /// here rather than going unwalked.
+    ///
+    /// The parse is deliberately narrow — a trimmed, non-comment line whose
+    /// right-hand side is a quoted string literal followed by a comma — which is
+    /// the shape `cargo fmt` gives both tables and nothing else in this file.
+    /// The length assertions are the positive control: a parse that matched
+    /// nothing would otherwise compare two empty sets and pass.
+    #[cfg(feature = "desktop")]
+    #[test]
+    fn the_two_key_tables_name_the_same_codes() {
+        let source = include_str!("mod.rs");
+        let mut from_key_codes: BTreeSet<&str> = BTreeSet::new();
+        let mut from_spellings: BTreeSet<&str> = BTreeSet::new();
+        let mut inverse_arms = 0usize;
+
+        for line in source.lines() {
+            let line = line.trim();
+            if line.starts_with("//") {
+                continue;
+            }
+            let Some((lhs, rhs)) = line.split_once(" => ") else {
+                continue;
+            };
+            // `"Code",` and nothing else: `_ => return None,` and the modifier
+            // table (whose arms assign a bool) both fail this.
+            let Some(code) = rhs
+                .strip_prefix('"')
+                .and_then(|rest| rest.strip_suffix("\","))
+                .filter(|code| !code.contains('"'))
+            else {
+                continue;
+            };
+            if let Some(variant) = lhs.strip_prefix("KeyCode::") {
+                if variant.contains(' ') {
+                    continue;
+                }
+                inverse_arms += 1;
+                from_key_codes.insert(code);
+            } else if lhs.starts_with('"') && lhs.ends_with('"') {
+                from_spellings.insert(code);
+            }
+        }
+
+        assert_eq!(
+            inverse_arms,
+            NAMED_KEYS.len(),
+            "key_code_name has {inverse_arms} arms and NAMED_KEYS lists {}: \
+             an arm nothing walks is an arm nothing checks",
+            NAMED_KEYS.len()
+        );
+        assert_eq!(
+            from_key_codes.len(),
+            NAMED_KEYS.len(),
+            "two arms name the same code, or the parse found the wrong table"
+        );
+        assert_eq!(
+            from_spellings, from_key_codes,
+            "a code one table can produce and the other cannot: \
+             a shortcut string that arms on the web and is dead on the desktop, \
+             or a KeyCode no shortcut string can name"
+        );
     }
 
     /// A token must reclaim only what is still its own, for the same reason the

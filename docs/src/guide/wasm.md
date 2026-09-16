@@ -193,11 +193,14 @@ opens it; moving the pointer across the bar switches to the next menu without a
 second click; clicking outside or pressing Escape dismisses it. Separators and
 submenus render as flyouts.
 
-The bar is laid out *inside* whatever it is mounted into, above the content,
-and the content wrapper is `height: 100%`. For a whole-page app that means
-`html, body { height: 100% }` in your stylesheet (as `examples/menu-bar-web`
-does) — without a height to be a percentage of, the content below the bar
-collapses. For an island, the same applies to the host element.
+The bar is laid out *inside* whatever it is mounted into, above the content, and
+the wrapper it builds is **viewport-tall** — `height: 100vh`, from the component
+stylesheet. A whole-page app needs nothing for that; an island does not get to
+override it, so a host shorter than the viewport is overflowed by the bar and
+giving that host a height changes nothing. Measured in Chrome 153: with no
+height on `html`, `body` or the host, everything lands at the viewport's 437px;
+with the host at `height: 120px`, the wrapper is still 437px. Tracked
+separately.
 
 **Shortcuts are armed against the page.** Every item's `shortcut` string is
 matched on a capture-phase `keydown` on `window`, before the app sees the key,
@@ -209,16 +212,16 @@ desktop, so `"Ctrl+K"` is Cmd+K on a Mac. A chord nothing is listening to falls
 through to the page: an item with a `shortcut` but no `on_click`, or a disabled
 one, arms nothing.
 
-**A few chords are the browser's own and cannot be taken.** `Ctrl+N`, `Ctrl+T`,
-`Ctrl+W`, `Ctrl+Q` and their `Shift` variants open and close browser windows and
-tabs; the browser's chrome handles them ahead of the page, so `preventDefault`
-does not reach them and the page may not be sent the keystroke at all. Declaring
-them is still right when the same `Menu` drives a desktop build — `Ctrl+N` is
-what "New" should be there — just do not rely on the chord in the browser. The
-browser's *page-level* shortcuts are a different case and are claimable:
-`Ctrl+S` is measured reaching the page here (rinch sees the keydown and declines
-it when nothing has claimed it), and a cancelable keydown the page receives is
-one `preventDefault` can take.
+**A few chords are the browser's own and cannot be taken.** The ones that open
+and close windows and tabs — `Ctrl+N`, `Ctrl+T`, `Ctrl+W` and their `Shift`
+variants in Chrome and Firefox — are handled by the browser's chrome ahead of the
+page, so `preventDefault` does not reach them and the page may not be sent the
+keystroke at all. Exactly which chords those are depends on the browser and the
+platform, and rinch's `Ctrl`↔`Cmd` mapping shifts the question again on a Mac,
+where `"Ctrl+Q"` means `Cmd+Q` and belongs to the OS. Declaring one is still
+right when the same `Menu` drives a desktop build — `Ctrl+N` is what "New"
+should be there — just do not rely on the chord in the browser, and check any
+chord you care about in the browsers you support.
 
 **Unmounting gives the chords back.** They are page-global, so an island mounted
 into somebody else's page arms them against the whole document;
