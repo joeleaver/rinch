@@ -380,10 +380,18 @@ pub fn styles() -> String {
    box out of every ancestor stacking context, so the backdrop outranked the
    panel it was supposed to sit under. #324 stage B and #545 undid both halves
    and stage C took it back to `fixed`. The long note above that rule is the
-   full account; do not respell this one without reading it. Measured here by
+   full account; do not respell this one without reading it.
+
+   Measured here by
    `color_input_dismiss_465_tests::a_tap_outside_the_clipping_shell_dismisses`,
-   which taps outside an `overflow: hidden` shell — the one place the two
-   spellings disagree. */
+   which taps outside an `overflow: hidden` shell that does not fill the
+   window. Against #317's exact spelling (`position: absolute` with
+   ±100vh/±100vw insets) the backdrop's *box* still covers that point —
+   `(-800, -600) → (1200, 636)`, measured — and the tap does not dismiss,
+   because the clip takes it. A point *inside* the shell dismisses under both
+   spellings, which is why the sample point has to be outside one:
+   `a_tap_elsewhere_on_the_page_dismisses` sits on that agreement and proves
+   nothing about `fixed`. */
 .rinch-color-input__backdrop {
     position: fixed;
     top: 0;

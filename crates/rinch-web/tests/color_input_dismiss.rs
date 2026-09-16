@@ -105,10 +105,15 @@ fn click(el: &web_sys::Element) {
     el.dyn_ref::<web_sys::HtmlElement>().unwrap().click();
 }
 
+/// Read from the `class` attribute rather than `Element::class_list`, which
+/// this crate's `web-sys` feature set does not expose.
 fn is_open(doc: &web_sys::Document) -> bool {
     one(doc, ".rinch-color-input")
-        .class_list()
-        .contains("rinch-color-input--opened")
+        .get_attribute("class")
+        .is_some_and(|c| {
+            c.split_whitespace()
+                .any(|one| one == "rinch-color-input--opened")
+        })
 }
 
 /// What the browser says is on top at a point, as the element itself.

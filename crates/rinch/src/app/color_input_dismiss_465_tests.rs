@@ -28,7 +28,7 @@
 //! The long note above `.rinch-dropdown-menu__backdrop` explains why at length;
 //! `a_tap_outside_the_clipping_shell_dismisses` is the measurement, and it sits
 //! outside an `overflow: hidden` shell precisely because that is where the
-//! `absolute` spelling stops covering.
+//! `absolute` spelling is clipped away — its *box* reaches there either way.
 
 use super::*;
 use std::cell::{Cell, RefCell};
@@ -268,10 +268,15 @@ fn a_tap_elsewhere_on_the_page_dismisses() {
 ///
 /// This is the fixture that fails against `position: absolute` — an absolute
 /// box *is* clipped by an `overflow` ancestor in its containing-block chain, so
-/// "outside the field" would shrink to "inside this 400x300 panel". The sample
-/// point is deliberately outside the shell: a point inside it is the fixed point
-/// where both spellings agree, and `a_tap_elsewhere_on_the_page_dismisses`
-/// already covers that.
+/// "outside the field" would shrink to "inside this 400x500 panel". Written back
+/// over the shipped sheet, #317's exact spelling (`absolute` with ±100vh/±100vw
+/// insets) leaves the backdrop's *box* covering `(-800, -600) → (1200, 636)` and
+/// this tap still does not dismiss, which is the clip and nothing else.
+///
+/// The sample point is deliberately outside the shell: a point inside it is the
+/// fixed point where both spellings agree — measured, the same mutant leaves
+/// `a_tap_elsewhere_on_the_page_dismisses` green — so a fixture sitting there
+/// says nothing about `fixed`.
 #[test]
 fn a_tap_outside_the_clipping_shell_dismisses() {
     let mut f = mount_field(true);
