@@ -165,6 +165,39 @@ impl Component for ContextMenu {
         }
         body.append_child(&portal);
 
+        // Take the portal down with whatever built this menu.
+        //
+        // The portal hangs off `body`, outside the subtree this component was
+        // rendered into — that is the whole point of a portal, and it is why
+        // nothing reclaimed it. When the owning scope is disposed (a reactive
+        // `for`/`if` rebuilding the row the menu belongs to, or the root
+        // unmounting) the subtree under `root` goes and this node does not: its
+        // handlers are deregistered with the scope and its signals are freed,
+        // but the markup stays on `body`. An open menu was then left on screen
+        // that neither acted nor closed, which a person meets by right-clicking
+        // while the tree behind them is refreshing.
+        //
+        // The ambient owner first, because that is the *rebuilding* one: a
+        // reactive block pushes an owner per run and disposes it on the next,
+        // and `RenderScope::on_cleanup` would instead tie the portal to the
+        // whole root, which only a full unmount disposes. `on_cleanup` answers
+        // `false` when there is no live ambient owner (a component built
+        // straight at the root, outside any reactive block), and the root scope
+        // is the right home for that case.
+        //
+        // The cleanup removes the node and touches no signal. `opened` is freed
+        // by the same disposal, so a "close it on the way out" write here would
+        // be dropped and would warn — see the `is_alive` guard on
+        // `DropdownMenuItem`'s close write. Removing the node is the whole job.
+        {
+            let portal_for_owner = portal.clone();
+            let registered = rinch_core::reactive::on_cleanup(move || portal_for_owner.discard());
+            if !registered {
+                let portal_for_root = portal.clone();
+                __scope.on_cleanup(move || portal_for_root.discard());
+            }
+        }
+
         root
     }
 }
@@ -200,5 +233,114 @@ impl Component for ContextMenuDropdown {
         }
 
         dropdown
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rinch_core::dom::mock::MockDomDocument;
+    use rinch_core::dom::{DomDocument, NodeHandle};
+    use rinch_core::reactive::Scope;
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
+    /// Direct children of `body` carrying `class`.
+    fn portals_on_body(doc: &Rc<RefCell<dyn DomDocument>>, class: &str) -> usize {
+        let d = doc.borrow();
+        let body = d.body();
+        d.get_children(body)
+            .into_iter()
+            .filter(|id| {
+                d.get_attribute(*id, "class")
+                    .is_some_and(|c| c.split_whitespace().any(|c| c == class))
+            })
+            .count()
+    }
+
+    fn render_menu(scope: &mut RenderScope) -> NodeHandle {
+        let target = scope.create_element("div");
+        let items = scope.create_element("div");
+        ContextMenu::default().render(scope, &[target, items])
+    }
+
+    /// The portal lives on `body`, outside the subtree the menu was built into,
+    /// so disposing that subtree used to leave it behind: markup on screen whose
+    /// handlers had been deregistered with the scope, a menu that neither acted
+    /// nor closed. It goes with its owner now.
+    #[test]
+    fn disposing_the_owning_scope_takes_the_portal_off_body() {
+        let doc: Rc<RefCell<dyn DomDocument>> = Rc::new(RefCell::new(MockDomDocument::new()));
+        let body = doc.borrow().body();
+        let mut scope = RenderScope::new(doc.clone(), body);
+
+        // A reactive block pushes an owner per run and disposes it on the next;
+        // `Scope::run` is that shape, and it is the owner a rebuild reclaims.
+        let owner = Scope::new();
+        owner.run(|| {
+            let _ = render_menu(&mut scope);
+        });
+        assert_eq!(
+            portals_on_body(&doc, "rinch-context-menu__portal"),
+            1,
+            "the menu portals itself to body"
+        );
+
+        owner.dispose();
+        assert_eq!(
+            portals_on_body(&doc, "rinch-context-menu__portal"),
+            0,
+            "and the rebuild that disposed its owner must not orphan it there"
+        );
+    }
+
+    /// Rebuilding five times must leave one portal, not five — the shape a tree
+    /// that refreshes under the pointer produces.
+    #[test]
+    fn rebuilding_does_not_accumulate_portals() {
+        let doc: Rc<RefCell<dyn DomDocument>> = Rc::new(RefCell::new(MockDomDocument::new()));
+        let body = doc.borrow().body();
+        let mut scope = RenderScope::new(doc.clone(), body);
+
+        let mut live: Option<Scope> = None;
+        for run in 0..5 {
+            let owner = Scope::new();
+            owner.run(|| {
+                let _ = render_menu(&mut scope);
+            });
+            // Disposing the previous run is what a reactive block does before
+            // building the next.
+            if let Some(previous) = live.replace(owner) {
+                previous.dispose();
+            }
+            assert_eq!(
+                portals_on_body(&doc, "rinch-context-menu__portal"),
+                1,
+                "rebuild {run} must leave exactly one portal on body"
+            );
+        }
+
+        live.take().unwrap().dispose();
+        assert_eq!(portals_on_body(&doc, "rinch-context-menu__portal"), 0);
+    }
+
+    /// With no ambient owner — a menu built straight at the root, outside any
+    /// reactive block — the root scope is the right home for the cleanup, and
+    /// the portal still goes when the root does.
+    #[test]
+    fn with_no_ambient_owner_the_root_scope_reclaims_the_portal() {
+        let doc: Rc<RefCell<dyn DomDocument>> = Rc::new(RefCell::new(MockDomDocument::new()));
+        let body = doc.borrow().body();
+        let mut scope = RenderScope::new(doc.clone(), body);
+
+        let _ = render_menu(&mut scope);
+        assert_eq!(portals_on_body(&doc, "rinch-context-menu__portal"), 1);
+
+        scope.dispose();
+        assert_eq!(
+            portals_on_body(&doc, "rinch-context-menu__portal"),
+            0,
+            "an unmounting root must reclaim its portal too"
+        );
     }
 }
