@@ -59,6 +59,7 @@ content looks right out of the box — you don't hand-roll editor CSS.
 |------|------|---------|
 | `editor` | `Option<EditorHandle>` | A handle from `create_editor()`. Omit it and the component creates its own self-contained editor. |
 | `content` | `String` | Initial content as schema-whitelisted HTML, parsed into the document once on mount. |
+| `read_only` | `bool` | Mount the editor [read-only](#read-only). `false` (the default) leaves the handle's switch as it is, so a handle locked before mount stays locked. Change it afterwards with `handle.set_read_only(..)`. |
 
 Like every rinch component, `Editor {}` also accepts the universal `style:` and
 `class:` props, applied to its host element.
@@ -178,6 +179,47 @@ button {
     {move || if dark.get() { "Light mode" } else { "Dark mode" }}
 }
 ```
+
+### Read-only
+
+`set_read_only(true)` turns the editor into a document people can read, select and
+copy, and cannot change — what `readonly` is to an `<input>`. It is a runtime switch:
+flip it whenever access changes, mounted or not, and ask with `is_read_only()`.
+
+```rust
+let editor = create_editor();
+editor.load_html(&note_html);
+editor.set_read_only(!can_edit);          // at open…
+
+// …and again whenever the answer changes (a role was granted or revoked):
+editor.set_read_only(!now_can_edit);
+
+rsx! { Editor { editor: editor.clone() } }   // or: Editor { read_only: true, content: … }
+```
+
+| Refused (each answers `false`; document, undo history and `on_change` untouched) | Still works |
+|---|---|
+| Typing, IME commit, Backspace/Delete, Enter | Placing and moving the caret, pointer and keyboard selection, `selectAll` |
+| Paste, cut, pasted images | Copy (`selection_clipboard`, Ctrl+C, the context menu's Copy) |
+| Every document-changing `command(..)` — marks, block types, lists, indent/outdent, tables — and the keys bound to them | Every query: `doc()`, `is_mark_active`, `current_block_type`, … |
+| `undo` / `redo` | `load_html` / `load_doc` — the app showing a document is not the user editing one |
+| `toggle_link`, `insert_image`, a task checkbox click, any `update(..)` transaction that changes the document or sets stored marks | **Remote collaboration updates** (`collab_receive`), exactly as in an editable editor |
+
+It makes no difference who asks: a toolbar button calling `command("toggleBold")` and
+a keystroke go through the same gate, which sits at the one place every local change
+lands rather than in each input handler. `can_run(name)` answers `false` for a refused
+command, so a toolbar that greys its buttons from it goes inert with the switch; a
+toolbar of your own should also read `is_read_only()`. The built-in context menu
+offers Copy and Select all only, the OS input method stays off (no IME candidate
+window), and on the web the hidden capture field is `readonly`, so no soft keyboard
+is raised and the browser's own menu drops Paste and Cut.
+
+The caret stays visible — a reader selects and copies with it. The mounted container
+carries `data-pm-readonly="true"` while the switch is on, for your own styling; the
+built-in stylesheet uses it to hide the empty-editor placeholder.
+
+Switching it on drops pending typing state (a clicked "Bold" waiting for text, an IME
+preedit). Switching it off gives everything back, undo history included.
 
 ## Keyboard shortcuts
 
@@ -531,6 +573,22 @@ semantics as stopping and rejoining.
 `is_collaboration_poisoned()` queries the state; the recovery in practice is
 `stop_collaboration()` followed by rejoining from a healthy peer's snapshot
 (`collab_snapshot()` → `start_collaboration_guest`).
+
+**A read-only collaborator.** [`set_read_only(true)`](#read-only) on a collaborating
+editor makes it a live view of a document other people are writing: `collab_receive`
+(and `post_remote_delta`, and a reconciliation diff) integrates and re-projects as
+ever — remote integration does not pass through the gate local edits pass through, so
+there is nothing to switch off and on around it — while no local change is recorded
+onto the CRDT and `outbound` never fires. Set it before or after joining, and flip it
+mid-session when a role changes. Two consequences worth knowing:
+
+- `load_html` / `load_doc` on a **collaborating** read-only editor are refused
+  (`load_html` answers `false`): with a session attached a load is a write to the
+  shared document. `stop_collaboration()` first, or join the next document with
+  `start_collaboration_guest`, which adopts it without writing anything.
+- `collab_sync_diff` is a pure read and still answers. A read-only client that was
+  editable earlier in the session can hold edits its server lacks; whether to send
+  that diff is the app's call (a server that enforces the role will refuse it).
 
 ### On the web
 
