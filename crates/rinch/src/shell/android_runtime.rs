@@ -13,7 +13,7 @@ use android_activity::input::{KeyAction, KeyMapChar, MotionAction};
 use android_activity::{AndroidApp, MainEvent, PollEvent};
 
 use rinch_android::text_action::{
-    PhysicalRect, TextAction, TextActionEvent, TextActionItems, ToolbarMirror,
+    PhysicalRect, TextAction, TextActionEvent, TextActionItems, ToolbarMirror, ToolbarPush,
 };
 use rinch_core::dom::{NodeHandle, RenderScope};
 use rinch_core::element::ThemeProviderProps;
@@ -557,7 +557,13 @@ fn run_loop(android_app: AndroidApp, mut app: RinchApp) {
             app.select_word_at_caret();
             clipboard_has_clip = rinch_android::clipboard::has_text();
             if let Some(state) = app.text_edit_state() {
-                push_text_toolbar(&mut text_toolbar, &state, scale_factor, clipboard_has_clip);
+                push_text_toolbar(
+                    &mut text_toolbar,
+                    &state,
+                    scale_factor,
+                    clipboard_has_clip,
+                    true,
+                );
             }
         } else if pressed_elsewhere && text_toolbar.finish() {
             rinch_android::text_action::finish_toolbar();
@@ -708,12 +714,18 @@ fn run_loop(android_app: AndroidApp, mut app: RinchApp) {
         // turn, so Cut and Copy appear the moment Select all made a selection,
         // the toolbar follows a caret the user moved, and it goes when the
         // field loses the keyboard. `ToolbarMirror` makes this cost nothing
-        // while nothing changed.
-        if text_toolbar.is_shown() {
+        // while nothing changed. A refresh never starts a toolbar (see
+        // `push_text_toolbar`). Skipped on a long-press turn, which pushed the
+        // state it just read.
+        if text_toolbar.is_shown() && !toolbar_requested {
             match app.text_edit_state() {
-                Some(state) => {
-                    push_text_toolbar(&mut text_toolbar, &state, scale_factor, clipboard_has_clip)
-                }
+                Some(state) => push_text_toolbar(
+                    &mut text_toolbar,
+                    &state,
+                    scale_factor,
+                    clipboard_has_clip,
+                    false,
+                ),
                 None => {
                     if text_toolbar.finish() {
                         rinch_android::text_action::finish_toolbar();
@@ -2574,16 +2586,34 @@ fn toolbar_items(state: &TextEditState, clipboard_has_clip: bool) -> TextActionI
 /// platform has to be told at all. Takes the state rather than the app so each
 /// turn polls `text_edit_state()` once: the `<input>`/`<textarea>` anchor is
 /// measured from the field's text layout.
+///
+/// **A refresh never starts a toolbar** (PR #819 final review, N1). The push
+/// runs on the UI thread later than this decides it, and a tap on an item can
+/// finish the mode in between; a refresh allowed to start would put a new mode
+/// on screen behind that item, with the mirror taken down by the item's report
+/// — an orphan whose Paste did nothing (measured: 11 of 11 item taps that
+/// reached the loop, with an anchor moving every frame; 0 of 13 with the same
+/// rule in the review's experiment).
+/// So the platform may start one only when the mirror believes none is up
+/// ([`ToolbarPush::Start`]) or when `long_press` says the user just asked for
+/// it — the latter for a long press on a toolbar the mirror still shows,
+/// whose mode could be gone without its report drained yet.
 fn push_text_toolbar(
     mirror: &mut ToolbarMirror,
     state: &TextEditState,
     scale_factor: f64,
     clipboard_has_clip: bool,
+    long_press: bool,
 ) {
     let rect = physical_rect(state.anchor, scale_factor);
     let items = toolbar_items(state, clipboard_has_clip);
-    if mirror.request(rect, items) {
-        rinch_android::text_action::show_toolbar(rect, items);
+    match mirror.request(rect, items) {
+        ToolbarPush::Nothing => {}
+        push => rinch_android::text_action::show_toolbar(
+            rect,
+            items,
+            push == ToolbarPush::Start || long_press,
+        ),
     }
 }
 

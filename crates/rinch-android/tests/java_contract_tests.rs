@@ -558,8 +558,10 @@ fn the_text_action_codes_agree_across_the_jni_boundary() {
     );
 }
 
-/// An IME's own paste — Gboard's clipboard panel — may arrive as
-/// `performContextMenuAction(android.R.id.paste)` rather than as text, and
+/// An IME's own paste may arrive as
+/// `performContextMenuAction(android.R.id.paste)` rather than as text — Gboard's
+/// Text Editing panel sends its Paste and Select all that way (measured; its
+/// clipboard chip and clipboard panel commit text) — and
 /// `BaseInputConnection`'s default for it acts on an `Editable` this
 /// connection keeps permanently empty. Deleting the override loses nothing
 /// visible: the IME's call still returns, the keyboard still closes its panel,
@@ -613,6 +615,42 @@ fn a_finishing_item_finishes_the_mode_before_it_is_reported() {
     assert!(
         finish < report,
         "mode.finish() must come before nativeOnTextActionItem: {body}"
+    );
+}
+
+/// **A refresh never starts a toolbar** (PR #819 final review, N1). The
+/// native loop re-pushes a showing toolbar whenever its anchor or items move,
+/// and the push runs here later than the loop decided it. A tap on an item in
+/// between finishes the mode and nulls `textActionMode`; a push that then fell
+/// through to `startActionMode` put a new mode on screen behind the item —
+/// one the loop's mirror, taken down by the item's report, no longer knew
+/// about, whose Paste did nothing (11 of 11 item taps under a per-frame anchor
+/// move). The order is the whole rule: the update of a mode that is up must
+/// still run for a refresh, and the `start` guard must stand between it and
+/// `startActionMode(`.
+#[test]
+fn a_refresh_updates_a_showing_toolbar_and_never_starts_one() {
+    let body = without_comments(&method_body("showTextActionMode"));
+    let update = body
+        .find("textActionMode.invalidate()")
+        .expect("showTextActionMode must re-prepare a mode that is up");
+    let guard = body
+        .find("if (!start)")
+        .expect("showTextActionMode must refuse to start a mode for a refresh");
+    let start = body
+        .find("startActionMode(")
+        .expect("showTextActionMode must start a mode for a long press");
+    assert!(
+        update < guard,
+        "a refresh must still update a showing toolbar, so the update comes before the `start` guard: {body}"
+    );
+    assert!(
+        guard < start,
+        "the `start` guard must come before startActionMode(: {body}"
+    );
+    assert!(
+        body[guard..start].contains("return;"),
+        "the `start` guard must return before a mode is started: {body}"
     );
 }
 

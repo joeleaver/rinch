@@ -33,11 +33,15 @@
 //! shell's own conditions and any one of them may be missed (a release nobody
 //! saw, a focus move the loop never dispatched). The independent clearing
 //! condition is on the Java side and needs no native call: `RinchActivity`
-//! finishes the mode in `onPause` and on window-focus loss, and every
-//! `showTextActionMode` replaces whatever mode is up. The Java side also
+//! finishes the mode in `onPause` and on window-focus loss. The Java side also
 //! reports every dismissal ([`TextActionEvent::ToolbarDismissed`]) — an item
-//! that finishes the mode, `finish()`, a replacement — so the loop's own "is
-//! it showing" mirror can never stay latched on a toolbar that is gone. (Back
+//! that finishes the mode, `finish()`, the activity pausing — so the loop's own
+//! "is it showing" mirror can never stay latched on a toolbar that is gone.
+//! `showTextActionMode` replaces nothing: it re-prepares and moves a mode that
+//! is up, and starts one only when the push says it may
+//! ([`ToolbarPush::Start`], or a long press) — so a refresh already on its way
+//! to the UI thread when an item finishes the mode cannot start a new one
+//! behind it (PR #819 final review, N1). (Back
 //! is not one of those routes: it reaches the app through the native input
 //! queue as `Escape`, and it is the loop's own press arm that finishes the
 //! mode — measured in the PR #819 review.)
@@ -177,16 +181,19 @@ pub extern "C" fn Java_com_rinch_RinchInputConnection_nativeContextMenuAction(
 
 // ── Calls into Java (Android only) ──────────────────────────────────────────
 
-/// Show the floating toolbar beside `rect` with the given items, or move and
-/// re-prepare the one already showing. Hops to the UI thread on the Java side.
+/// Move and re-prepare the floating toolbar that is showing, beside `rect`
+/// with the given items; when none is showing, start one only if `start`.
+/// Hops to the UI thread on the Java side, where "is one showing" is decided —
+/// by then an item tap may have finished the mode this push was meant for, and
+/// a push that was only a refresh must not start a new one in its place.
 #[cfg(target_os = "android")]
-pub fn show_toolbar(rect: PhysicalRect, items: TextActionItems) {
+pub fn show_toolbar(rect: PhysicalRect, items: TextActionItems, start: bool) {
     use jni::objects::JValue;
     crate::bridge::with_activity(|env, activity| {
         if let Err(e) = env.call_method(
             activity,
             "showTextActionMode",
-            "(IIIIZZZZ)V",
+            "(IIIIZZZZZ)V",
             &[
                 JValue::Int(rect.left),
                 JValue::Int(rect.top),
@@ -196,6 +203,7 @@ pub fn show_toolbar(rect: PhysicalRect, items: TextActionItems) {
                 JValue::Bool(items.copy as jni::sys::jboolean),
                 JValue::Bool(items.paste as jni::sys::jboolean),
                 JValue::Bool(items.select_all as jni::sys::jboolean),
+                JValue::Bool(start as jni::sys::jboolean),
             ],
         ) {
             log::warn!("showTextActionMode failed: {e}");
@@ -214,6 +222,18 @@ pub fn finish_toolbar() {
 }
 
 // ── The loop's mirror of the toolbar ────────────────────────────────────────
+
+/// What [`ToolbarMirror::request`] asks the platform for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ToolbarPush {
+    /// Nothing changed; no JNI call.
+    Nothing,
+    /// A toolbar is up: move and re-prepare it, and do **not** start one if it
+    /// turns out to be gone by the time the push reaches the UI thread.
+    Update,
+    /// No toolbar is up: start one.
+    Start,
+}
 
 /// What the frame loop believes about the toolbar, and the one place that
 /// decides when the platform has to be told something.
@@ -247,6 +267,17 @@ pub fn finish_toolbar() {
 /// finish is counted like any other — treating it as the platform's own would
 /// leave the toolbar on screen with a mirror that says none, and every
 /// clearing condition the loop owns would then find nothing to finish.
+///
+/// **A refresh never starts a toolbar** (PR #819 final review, N1). A push
+/// reaches the UI thread later than the loop decided it, and a tap on an item
+/// can finish the mode in between. [`Self::request`] therefore says *which*
+/// push it wants: [`ToolbarPush::Start`] only when the mirror believes no
+/// toolbar is up, [`ToolbarPush::Update`] when one is — and an update that
+/// finds the mode gone does nothing, because the report that it went is
+/// already queued and will take the mirror down. Measured with an anchor that
+/// moved every frame, so a refresh was posted on every turn: an update that
+/// was allowed to start left an orphaned toolbar behind 11 of the 11 item taps
+/// that reached the loop.
 #[derive(Debug, Default)]
 pub struct ToolbarMirror {
     shown: bool,
@@ -268,18 +299,26 @@ impl ToolbarMirror {
         self.shown
     }
 
-    /// The loop wants the toolbar beside `rect` with `items`. Answers whether
-    /// the platform has to be told: always for a toolbar that is not up, and
-    /// for one that is only when something differs from what was last pushed.
-    #[must_use = "the platform is told only if the caller acts on `true`"]
-    pub fn request(&mut self, rect: PhysicalRect, items: TextActionItems) -> bool {
+    /// The loop wants the toolbar beside `rect` with `items`. Answers what the
+    /// platform has to be told: [`ToolbarPush::Start`] for a toolbar the
+    /// mirror believes is not up, [`ToolbarPush::Update`] for one that is and
+    /// whose rect or items differ from what was last pushed, and
+    /// [`ToolbarPush::Nothing`] otherwise. A shown mirror never answers
+    /// `Start`, which is what keeps the per-turn refresh — run only while the
+    /// mirror is shown — from ever starting a mode.
+    #[must_use = "the platform is told only if the caller acts on the answer"]
+    pub fn request(&mut self, rect: PhysicalRect, items: TextActionItems) -> ToolbarPush {
         let want = Some((rect, items));
-        if self.shown && self.last_pushed == want {
-            return false;
-        }
+        let push = if !self.shown {
+            ToolbarPush::Start
+        } else if self.last_pushed != want {
+            ToolbarPush::Update
+        } else {
+            return ToolbarPush::Nothing;
+        };
         self.shown = true;
         self.last_pushed = want;
-        true
+        push
     }
 
     /// The loop wants the toolbar gone. Answers whether the platform has to be
@@ -433,32 +472,42 @@ mod mirror_tests {
     fn a_request_pushes_once_and_a_refresh_pushes_only_what_changed() {
         let mut m = ToolbarMirror::new();
         assert!(!m.is_shown());
-        assert!(m.request(RECT, PASTE_ONLY), "first request always pushes");
+        assert_eq!(
+            m.request(RECT, PASTE_ONLY),
+            ToolbarPush::Start,
+            "first request always pushes"
+        );
         assert!(m.is_shown());
-        assert!(
-            !m.request(RECT, PASTE_ONLY),
+        assert_eq!(
+            m.request(RECT, PASTE_ONLY),
+            ToolbarPush::Nothing,
             "the same rect and items again is a no-op, not a JNI call per frame"
         );
-        assert!(
+        assert_eq!(
             m.request(RECT, ALL),
+            ToolbarPush::Update,
             "a selection appearing changes the items"
         );
         let moved = PhysicalRect { left: 11, ..RECT };
-        assert!(m.request(moved, ALL), "a caret move changes the rect");
+        assert_eq!(
+            m.request(moved, ALL),
+            ToolbarPush::Update,
+            "a caret move changes the rect"
+        );
     }
 
     #[test]
     fn a_finish_is_told_once_and_its_report_does_not_count_as_a_dismissal() {
         let mut m = ToolbarMirror::new();
         assert!(!m.finish(), "nothing up, nothing to tell");
-        assert!(m.request(RECT, ALL));
+        assert_eq!(m.request(RECT, ALL), ToolbarPush::Start);
         assert!(m.finish());
         assert!(!m.is_shown());
         assert!(!m.finish(), "already asked; not told twice");
         m.dismissed();
         assert!(!m.is_shown());
         // The next request is a fresh push, whatever was pushed before.
-        assert!(m.request(RECT, ALL));
+        assert_eq!(m.request(RECT, ALL), ToolbarPush::Start);
     }
 
     /// The race this struct exists for: finish, then a new long press before
@@ -467,9 +516,13 @@ mod mirror_tests {
     #[test]
     fn a_late_report_for_a_finished_mode_does_not_take_down_the_next_one() {
         let mut m = ToolbarMirror::new();
-        assert!(m.request(RECT, PASTE_ONLY));
+        assert_eq!(m.request(RECT, PASTE_ONLY), ToolbarPush::Start);
         assert!(m.finish());
-        assert!(m.request(RECT, ALL), "a request while finishing pushes");
+        assert_eq!(
+            m.request(RECT, ALL),
+            ToolbarPush::Start,
+            "a request while finishing starts a new toolbar"
+        );
         m.dismissed(); // the report for the mode finished above
         assert!(m.is_shown(), "the new toolbar is still up");
         m.dismissed(); // now the platform's own dismissal (an item, onPause)
@@ -490,7 +543,7 @@ mod mirror_tests {
     #[test]
     fn an_item_that_finishes_the_mode_takes_the_mirror_down_before_the_report() {
         let mut m = ToolbarMirror::new();
-        assert!(m.request(RECT, ALL));
+        assert_eq!(m.request(RECT, ALL), ToolbarPush::Start);
 
         // The drain sees the item's `Perform`; the report has not arrived.
         assert!(
@@ -511,7 +564,7 @@ mod mirror_tests {
         assert!(!m.is_shown());
 
         // A later long press is a fresh toolbar, whatever was pushed before.
-        assert!(m.request(RECT, PASTE_ONLY));
+        assert_eq!(m.request(RECT, PASTE_ONLY), ToolbarPush::Start);
         assert!(m.is_shown());
         // Idempotent after the fact: the same for an item on the NEW toolbar.
         assert!(!m.performing(TextAction::Cut, TextActionSource::Toolbar));
@@ -532,7 +585,7 @@ mod mirror_tests {
     #[test]
     fn an_ime_request_that_ends_the_interaction_asks_for_the_finish_and_counts_it() {
         let mut m = ToolbarMirror::new();
-        assert!(m.request(RECT, ALL));
+        assert_eq!(m.request(RECT, ALL), ToolbarPush::Start);
         assert!(
             m.performing(TextAction::Paste, TextActionSource::Ime),
             "Java finished nothing for an IME request; the loop must tell it"
@@ -541,7 +594,7 @@ mod mirror_tests {
 
         // A long press lands before that finish's report comes back. The
         // report pays off the IME's finish and must leave the new toolbar up.
-        assert!(m.request(RECT, PASTE_ONLY));
+        assert_eq!(m.request(RECT, PASTE_ONLY), ToolbarPush::Start);
         m.dismissed();
         assert!(
             m.is_shown(),
@@ -552,7 +605,7 @@ mod mirror_tests {
         // so a later genuine dismissal still takes the next toolbar down.
         let mut idle = ToolbarMirror::new();
         assert!(!idle.performing(TextAction::Copy, TextActionSource::Ime));
-        assert!(idle.request(RECT, ALL));
+        assert_eq!(idle.request(RECT, ALL), ToolbarPush::Start);
         idle.dismissed();
         assert!(!idle.is_shown());
     }
@@ -563,20 +616,65 @@ mod mirror_tests {
     fn select_all_keeps_the_toolbar_from_either_source() {
         for source in [TextActionSource::Toolbar, TextActionSource::Ime] {
             let mut m = ToolbarMirror::new();
-            assert!(m.request(RECT, PASTE_ONLY));
+            assert_eq!(m.request(RECT, PASTE_ONLY), ToolbarPush::Start);
             assert!(!m.performing(TextAction::SelectAll, source));
             assert!(m.is_shown(), "{source:?}: Select all took the toolbar down");
-            assert!(
-                !m.request(RECT, PASTE_ONLY),
+            assert_eq!(
+                m.request(RECT, PASTE_ONLY),
+                ToolbarPush::Nothing,
                 "{source:?}: what was pushed is still known, so an unchanged refresh is no push"
             );
         }
     }
 
+    /// **A refresh never starts a toolbar** (PR #819 final review, N1). The
+    /// per-turn refresh runs only while the mirror is shown, and a push is
+    /// posted to the UI thread, where a tap on an item can finish the mode
+    /// before the push runs. A push that was allowed to start would then start
+    /// a new mode behind the item — an orphan on screen whose Paste did nothing
+    /// (11 of 11 item taps under a per-frame anchor move). So a request on a
+    /// shown mirror is an `Update`, whatever changed and however often: sampled
+    /// off the first push, across an items change, a rect move on every one of
+    /// several turns (the probe's shape), and after a paid-off finish report
+    /// that left a newer toolbar up. Only a mirror that believes nothing is up
+    /// answers `Start`.
+    #[test]
+    fn a_request_on_a_shown_mirror_is_an_update_never_a_start() {
+        let mut m = ToolbarMirror::new();
+        assert_eq!(m.request(RECT, PASTE_ONLY), ToolbarPush::Start);
+        assert_eq!(m.request(RECT, ALL), ToolbarPush::Update, "items changed");
+        for top in [21, 20, 21, 20] {
+            let moved = PhysicalRect { top, ..RECT };
+            assert_eq!(
+                m.request(moved, ALL),
+                ToolbarPush::Update,
+                "the anchor moved while shown (top = {top}): a refresh, never a start"
+            );
+        }
+
+        // Finish, then a new long press before the report: that request
+        // starts, and once the report is paid off the refreshes that follow
+        // are updates of the new toolbar again.
+        assert!(m.finish());
+        assert_eq!(m.request(RECT, ALL), ToolbarPush::Start);
+        m.dismissed();
+        assert!(m.is_shown());
+        assert_eq!(
+            m.request(PhysicalRect { left: 30, ..RECT }, ALL),
+            ToolbarPush::Update
+        );
+
+        // The platform's own dismissal takes the mirror down; only then does a
+        // request start again.
+        m.dismissed();
+        assert!(!m.is_shown());
+        assert_eq!(m.request(RECT, ALL), ToolbarPush::Start);
+    }
+
     #[test]
     fn a_platform_dismissal_takes_the_mirror_down() {
         let mut m = ToolbarMirror::new();
-        assert!(m.request(RECT, ALL));
+        assert_eq!(m.request(RECT, ALL), ToolbarPush::Start);
         m.dismissed();
         assert!(!m.is_shown());
         assert!(!m.finish(), "and nothing is left to tell");

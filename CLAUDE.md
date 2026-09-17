@@ -2353,7 +2353,14 @@ turn the toolbar is up. **An item that finishes the toolbar is finished on
 the Java side before it is reported** (PR #819 review, F1): both calls queue
 an event and wake the loop, and reported first, a lone `Perform` turn
 re-prepared a toolbar the loop believed was up and the UI thread started a
-fresh one — an orphan whose items acted on nothing. **A `Perform` carries its
+fresh one — an orphan whose items acted on nothing. **And a refresh never
+starts a toolbar** (final review, N1): a refresh posted *before* the tap
+reaches the UI thread after the item finished the mode, so
+`ToolbarMirror::request` answers `Start | Update | Nothing`, the per-turn
+refresh (run only while the mirror is shown) is always an `Update`, and
+`showTextActionMode`'s `start` flag returns rather than starting a mode for
+one — measured 11 of 11 orphans under an anchor moving every frame before
+it. **A `Perform` carries its
 source**, because Cut / Copy / Paste end the toolbar from either one (as in an
 `EditText`, measured) but only a toolbar item has already finished it:
 `ToolbarMirror::performing` takes the mirror down uncounted for a toolbar item

@@ -396,9 +396,13 @@ the keyboard, cuts, copies or pastes — from the toolbar or through the IME's
 own editing keys, as over a platform text view — or when the field loses
 focus; the activity also finishes it on its own in `onPause` and on
 window-focus loss. An item that finishes the toolbar (Cut, Copy, Paste) is
-finished on the Java side *before* the item is reported, so the shell hears
-the toolbar is gone before it could refresh it; an IME's Cut, Copy or Paste
-finishes nothing on the Java side, and the shell asks for the finish itself.
+finished on the Java side *before* the item is reported, so a refresh the
+shell decides after hearing of the item never re-prepares it; and **a refresh
+never starts a toolbar** — it only moves and re-prepares one that is up — so a
+refresh already on its way to the UI thread when the item finished the mode
+finds nothing to update and does nothing, where it used to start a new
+toolbar that nothing could take down. An IME's Cut, Copy or Paste finishes
+nothing on the Java side, and the shell asks for the finish itself.
 (Gboard's Text Editing panel enables its Cut and Copy only over a selection
 the IME can see, and rinch's input connection reports none, so from that
 panel only Paste and Select all reach a rinch field — measured.) The

@@ -532,10 +532,19 @@ public class RinchActivity extends NativeActivity {
      * platform's own text views do: Cut and Copy go with an empty selection,
      * Paste with a read-only field. Their titles are the platform's strings,
      * so they are localised like everything else on the device.
+     *
+     * <p>{@code start} says whether a mode may be started when none is up.
+     * The native loop passes {@code false} for a refresh of a toolbar it
+     * believes is showing. This runs later than the loop decided it, and a tap
+     * on an item may have finished the mode in between; a refresh that started
+     * a new one here would leave a toolbar on screen that the loop believes is
+     * gone, whose items act on nothing (PR #819 final review, N1). The
+     * dismissal that item queued takes the loop's mirror down on its own.
      */
     public void showTextActionMode(final int left, final int top, final int right, final int bottom,
                                    final boolean cut, final boolean copy,
-                                   final boolean paste, final boolean selectAll) {
+                                   final boolean paste, final boolean selectAll,
+                                   final boolean start) {
         runOnUiThread(() -> {
             textActionRect.set(left, top, right, bottom);
             textActionCut = cut;
@@ -545,6 +554,10 @@ public class RinchActivity extends NativeActivity {
             if (textActionMode != null) {
                 textActionMode.invalidate();
                 textActionMode.invalidateContentRect();
+                return;
+            }
+            // A refresh never starts a mode: the one it was meant for is gone.
+            if (!start) {
                 return;
             }
             android.view.View host = getWindow().getDecorView();
@@ -589,7 +602,9 @@ public class RinchActivity extends NativeActivity {
                     // is none, whose items then acted on nothing. Finishing
                     // first puts the dismissal report ahead of the item in the
                     // one queue, so whichever way the loop drains, it hears
-                    // the toolbar is gone before it can refresh it.
+                    // the toolbar is gone before it can refresh it. A refresh
+                    // it had already posted before this tap is the other half,
+                    // and showTextActionMode's `start` flag closes that one.
                     if (code != 3) {
                         mode.finish();
                     }
