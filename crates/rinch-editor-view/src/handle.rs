@@ -61,6 +61,11 @@ struct EditorCore {
     /// [`SelectionAnchor`]. Empty for every editor that has none, so the
     /// mutation path's carry step is a cheap early return.
     anchors: Rc<RefCell<AnchorMap>>,
+    /// Whether local edits are refused — see [`EditorHandle::set_read_only`].
+    /// Enforced in exactly one place: [`Self::refuses`], which [`Self::commit`]
+    /// asks before it stores anything. Every local change lands in `commit`, so
+    /// an input path added later is read-only without knowing this flag exists.
+    read_only: bool,
     /// The collaboration session + outbound delta sink, when this editor is
     /// collaborating (design M9). `None` for a non-collaborative editor — the
     /// common case — so the mutation path's collab hook is a cheap early return.
@@ -80,14 +85,25 @@ impl EditorCore {
     /// and re-projected *without* recording it back onto the CRDT (which would echo
     /// it to peers and double-apply).
     ///
-    /// Returns whether the **document** changed (a selection-only edit leaves the
-    /// same doc `Rc`), which is what drives [`EditorHandle::on_change`].
+    /// `None` when the editor is [read-only](EditorHandle::set_read_only) and
+    /// refuses the change ([`Self::refuses`]): nothing is stored, projected,
+    /// recorded or broadcast, and the caller reports the edit as not applied.
+    /// Otherwise whether the **document** changed (a selection-only edit leaves
+    /// the same doc `Rc`), which is what drives [`EditorHandle::on_change`].
     ///
     /// `mapping` is the applied transaction's position mapping, which carries any
     /// [`SelectionAnchor`] across the edit. `None` means "there is no
     /// correspondence between the old and new positions" — a whole-document load
     /// — and invalidates every anchor.
-    fn commit(&mut self, prev: EditorState, next: EditorState, mapping: Option<&Mapping>) -> bool {
+    fn commit(
+        &mut self,
+        prev: EditorState,
+        next: EditorState,
+        mapping: Option<&Mapping>,
+    ) -> Option<bool> {
+        if self.refuses(&prev, &next, mapping.is_none()) {
+            return None;
+        }
         let doc_changed = !prev.doc.same_ref(&next.doc);
         if doc_changed {
             self.carry_anchors(&next.doc, mapping);
@@ -98,7 +114,41 @@ impl EditorCore {
         }
         #[cfg(feature = "collaboration")]
         self.record_local(&prev, &next);
-        doc_changed
+        Some(doc_changed)
+    }
+
+    /// Whether the read-only switch refuses the local change `prev → next`.
+    ///
+    /// A **transaction** (typing, a command, paste, IME commit, undo) is refused
+    /// if it changes the document, or sets stored marks — the "click Bold, then
+    /// type" state, which is an edit in waiting and would light a toolbar button
+    /// for text nobody can type. What is left is the selection: placing and
+    /// moving the caret, selecting, select-all. Those still apply (clearing
+    /// stored marks on the way, as a caret move always does), which is what keeps
+    /// a read-only document selectable and copyable.
+    ///
+    /// A **load** (`is_load`: `load_doc` / `load_html`) is the app replacing the
+    /// document rather than the user editing it, and is how a read-only editor
+    /// gets something to show, so it applies — unless a collaboration session is
+    /// attached. There a load is recorded onto the shared CRDT and broadcast like
+    /// any other local edit, which is exactly the write read-only forbids.
+    ///
+    /// Judged on the states rather than on who is asking, so it holds for every
+    /// caller of [`Self::commit`] there is or will be. Remote integration
+    /// ([`EditorHandle::collab_receive`]) never reaches `commit` and so is never
+    /// asked.
+    fn refuses(&self, prev: &EditorState, next: &EditorState, is_load: bool) -> bool {
+        if !self.read_only {
+            return false;
+        }
+        if is_load {
+            #[cfg(feature = "collaboration")]
+            return self.collab.is_some();
+            #[cfg(not(feature = "collaboration"))]
+            return false;
+        }
+        !prev.doc.same_ref(&next.doc)
+            || (next.stored_marks.is_some() && next.stored_marks != prev.stored_marks)
     }
 
     /// Carry every live [`SelectionAnchor`] across a document change, so an
@@ -285,6 +335,7 @@ impl EditorHandle {
                 plugins,
                 on_change: None,
                 anchors: Rc::new(RefCell::new(AnchorMap::default())),
+                read_only: false,
                 #[cfg(feature = "collaboration")]
                 collab: None,
             })),
@@ -312,6 +363,7 @@ impl EditorHandle {
                 plugins,
                 on_change: None,
                 anchors: Rc::new(RefCell::new(AnchorMap::default())),
+                read_only: false,
                 #[cfg(feature = "collaboration")]
                 collab: None,
             })),
@@ -326,6 +378,9 @@ impl EditorHandle {
     pub(crate) fn attach(&self, container: NodeHandle, doc_ref: Weak<RefCell<dyn DomDocument>>) {
         let mut core = self.inner.borrow_mut();
         let view = RinchDomEditorView::new(container, doc_ref, &core.state);
+        // The switch lives on the handle, so one set before mount (or across a
+        // re-mount) is on the new container from its first frame.
+        view.set_read_only(core.read_only);
         core.view = Some(view);
     }
 
@@ -351,8 +406,10 @@ impl EditorHandle {
 
     /// Apply the transaction built by `build` (given the current state), then
     /// re-project the host. `build` returns `None` to dispatch nothing. Returns
-    /// whether a transaction was applied. The single dispatch path — `command`,
-    /// keyboard insert, paste, and IME commit all funnel through here.
+    /// whether a transaction was applied — `false`, too, when the editor is
+    /// [read-only](Self::set_read_only) and the transaction would have changed the
+    /// document. The single dispatch path — `command`, keyboard insert, paste, and
+    /// IME commit all funnel through here.
     pub fn update(&self, build: impl FnOnce(&EditorState) -> Option<Transaction>) -> bool {
         let mut core = self.inner.borrow_mut();
         let Some(tr) = build(&core.state) else {
@@ -362,7 +419,9 @@ impl EditorHandle {
         // The mapping has to be taken before `apply` consumes the transaction.
         let mapping = tr.mapping().clone();
         let next = core.state.apply(tr);
-        let doc_changed = core.commit(prev, next, Some(&mapping));
+        let Some(doc_changed) = core.commit(prev, next, Some(&mapping)) else {
+            return false;
+        };
         drop(core);
         if doc_changed {
             self.notify_change();
@@ -371,14 +430,17 @@ impl EditorHandle {
     }
 
     /// Run the named command (applying + re-projecting if it applies). Returns
-    /// whether it applied. The toolbar/keymap entry point.
+    /// whether it applied — a [read-only](Self::set_read_only) editor refuses every
+    /// command that would change the document. The toolbar/keymap entry point.
     pub fn command(&self, name: &str) -> bool {
         let mut core = self.inner.borrow_mut();
         let Some((next, mapping)) = core.state.run_mapped(name) else {
             return false;
         };
         let prev = core.state.clone();
-        let doc_changed = core.commit(prev, next, Some(&mapping));
+        let Some(doc_changed) = core.commit(prev, next, Some(&mapping)) else {
+            return false;
+        };
         drop(core);
         if doc_changed {
             self.notify_change();
@@ -455,8 +517,20 @@ impl EditorHandle {
     }
 
     /// Whether the named command currently applies (toolbar enablement).
+    ///
+    /// In a [read-only](Self::set_read_only) editor that means "applies **and**
+    /// would not be refused": `can_run("toggleBold")` is `false`, `can_run(
+    /// "selectAll")` still `true`, so a toolbar that greys its buttons from here
+    /// goes inert with the switch. Answered by running the command against the
+    /// state (pure — nothing is committed) and asking the same rule the gate asks.
     pub fn can_run(&self, name: &str) -> bool {
-        self.inner.borrow().state.can_run(name)
+        let core = self.inner.borrow();
+        if !core.read_only {
+            return core.state.can_run(name);
+        }
+        core.state
+            .run_mapped(name)
+            .is_some_and(|(next, _)| !core.refuses(&core.state, &next, false))
     }
 
     /// Look up `binding` in the editor's aggregated keymap and run the bound command.
@@ -758,6 +832,93 @@ impl EditorHandle {
         false
     }
 
+    /// Make the editor **read-only** (`true`) or editable again (`false`, the
+    /// default). Takes effect at once and may be flipped at any time, mounted or
+    /// not — the switch lives on the handle, so it survives a re-mount.
+    ///
+    /// Read-only means what `readonly` means on an `<input>`: the document can be
+    /// read, selected and copied, and the person in front of it cannot change it.
+    ///
+    /// **Refused**, each reporting "not applied" (`false`) and leaving the document,
+    /// the undo history and [`on_change`](Self::on_change) untouched: typing and IME
+    /// commits ([`insert_text`](Self::insert_text), [`ime_commit`](Self::ime_commit),
+    /// [`ime_delete_surrounding`](Self::ime_delete_surrounding)), paste and cut
+    /// ([`replace_selection_with_html`](Self::replace_selection_with_html),
+    /// [`replace_selection_with_text`](Self::replace_selection_with_text),
+    /// [`insert_image`](Self::insert_image)), every document-changing
+    /// [`command`](Self::command) — formatting, lists, tables, `undo`/`redo` — and
+    /// so every key bound to one ([`dispatch_key`](Self::dispatch_key)),
+    /// [`toggle_link`](Self::toggle_link), a task checkbox click
+    /// ([`toggle_task_checked_at`](Self::toggle_task_checked_at)) and any
+    /// transaction handed to [`update`](Self::update) that changes the document or
+    /// sets stored marks. It makes no difference who calls: a toolbar button and a
+    /// keystroke go through the same gate. [`can_run`](Self::can_run) answers
+    /// `false` for a refused command, and no IME preedit is shown.
+    ///
+    /// **Still works:** placing and moving the caret, selecting (pointer, keyboard,
+    /// `selectAll`), copying ([`selection_clipboard`](Self::selection_clipboard)),
+    /// every query, [`load_doc`](Self::load_doc) / [`load_html`](Self::load_html)
+    /// (the app replacing the document is how a read-only editor gets one to show)
+    /// — and, when collaborating, **everything inbound**:
+    /// [`collab_receive`](Self::collab_receive) integrates a peer's delta and
+    /// re-projects exactly as in an editable editor, because remote integration
+    /// never passes through the gate local edits pass through. A read-only editor
+    /// is a live view of a document other people are writing.
+    ///
+    /// **While collaborating, nothing goes out:** no local change is recorded onto
+    /// the CRDT, so `outbound` does not fire. That includes `load_doc` /
+    /// `load_html`, which with a session attached are writes to the shared
+    /// document and are refused too. (Joining — `start_collaboration_guest` —
+    /// adopts the shared document and is not a write.)
+    ///
+    /// The gate is one check in the single place local changes land (see
+    /// `EditorCore::commit`), not a check per input handler, so an input path added
+    /// later is read-only by default.
+    ///
+    /// Switching it **on** drops pending typing state: stored marks (a clicked
+    /// "Bold" waiting for text) and any IME preedit. The mounted container carries
+    /// `data-pm-readonly="true"` while it is on, for styling; the built-in
+    /// stylesheet uses it to hide the empty-editor placeholder, which would
+    /// otherwise invite typing.
+    pub fn set_read_only(&self, read_only: bool) {
+        let mut core = self.inner.borrow_mut();
+        if core.read_only == read_only {
+            return;
+        }
+        if read_only && core.state.stored_marks.is_some() {
+            // Still editable here, so this goes through the ordinary path.
+            let prev = core.state.clone();
+            let mut tr = prev.tr();
+            tr.set_stored_marks(None);
+            let mapping = tr.mapping().clone();
+            let next = prev.apply(tr);
+            core.commit(prev, next, Some(&mapping));
+        }
+        core.read_only = read_only;
+        if let Some(view) = core.view.as_mut() {
+            if read_only {
+                view.set_preedit("");
+            }
+            view.set_read_only(read_only);
+        }
+        drop(core);
+        // No input event brought this change; a runtime that keeps per-editor
+        // input state in step from its input handlers (the web's capture field)
+        // hears about it here. After the borrow is released: the refresh reads
+        // this handle.
+        crate::registry::request_overlay_refresh();
+    }
+
+    /// Whether the editor is [read-only](Self::set_read_only).
+    ///
+    /// Uses `try_borrow` — soft, like [`Self::collab_receive`] — so it may be asked
+    /// from inside an `on_change` or `outbound` callback; while the handle is
+    /// borrowed a local edit is being committed, which a read-only editor would
+    /// have refused, so `false` is the consistent answer for that window.
+    pub fn is_read_only(&self) -> bool {
+        self.inner.try_borrow().is_ok_and(|core| core.read_only)
+    }
+
     /// Switch the editor between the light (default) and dark color schemes of the
     /// built-in stylesheet. A no-op before mount. The app should trigger a repaint
     /// afterward (toolbar/keyboard handlers already do).
@@ -775,7 +936,18 @@ impl EditorHandle {
     /// HTML, since `Schema::branch` does not fill required content) is repaired to a
     /// single empty paragraph, so the editor is never left with no textblock to
     /// render or place a caret in.
+    ///
+    /// A [read-only](Self::set_read_only) editor still loads — that is how it gets
+    /// a document to show — **except while collaborating**, where a load is a
+    /// write to the shared document and is refused like any other (see
+    /// [`Self::set_read_only`]); [`Self::load_html`] reports that as `false`.
     pub fn load_doc(&self, doc: Node) {
+        self.load_doc_checked(doc);
+    }
+
+    /// [`Self::load_doc`], answering whether the document was loaded (`false`:
+    /// refused by a read-only, collaborating editor).
+    fn load_doc_checked(&self, doc: Node) -> bool {
         let mut core = self.inner.borrow_mut();
         let doc = if doc.child_count() == 0 {
             empty_paragraph_doc(&core.schema).unwrap_or(doc)
@@ -791,12 +963,13 @@ impl EditorHandle {
         // No mapping: the new document is unrelated to the old one, so every
         // outstanding `SelectionAnchor` is invalidated rather than remapped onto
         // whatever now happens to sit at those offsets.
-        core.commit(prev, next, None);
+        core.commit(prev, next, None).is_some()
     }
 
     /// Parse `html` (schema-whitelisted) and load it as the document. Empty or
     /// whitespace-only `html` loads a single empty paragraph (via [`Self::load_doc`]),
-    /// not a block-less doc. Returns `false` only if `html` fails to parse at all.
+    /// not a block-less doc. Returns `false` if `html` fails to parse at all, or if
+    /// the editor is read-only and collaborating (see [`Self::load_doc`]).
     pub fn load_html(&self, html: &str) -> bool {
         let schema = self.inner.borrow().schema.clone();
         let Ok(slice) = slice_from_html(&schema, html) else {
@@ -805,8 +978,7 @@ impl EditorHandle {
         let Ok(doc) = schema.branch("doc", slice.content.clone()) else {
             return false;
         };
-        self.load_doc(doc);
-        true
+        self.load_doc_checked(doc)
     }
 
     // ── Clipboard (copy / cut / paste) ──────────────────────────────────────
@@ -851,7 +1023,9 @@ impl EditorHandle {
             return false;
         };
         let prev = core.state.clone();
-        let doc_changed = core.commit(prev, next, Some(&mapping));
+        let Some(doc_changed) = core.commit(prev, next, Some(&mapping)) else {
+            return false;
+        };
         drop(core);
         if doc_changed {
             self.notify_change();
@@ -876,7 +1050,9 @@ impl EditorHandle {
             return false;
         };
         let prev = core.state.clone();
-        let doc_changed = core.commit(prev, next, Some(&mapping));
+        let Some(doc_changed) = core.commit(prev, next, Some(&mapping)) else {
+            return false;
+        };
         drop(core);
         if doc_changed {
             self.notify_change();
@@ -970,8 +1146,14 @@ impl EditorHandle {
     /// `cursor` is the candidate cursor within `text`; the overlay ignores it for
     /// now (the platform candidate box is placed from the model caret instead). A
     /// no-op before mount.
+    ///
+    /// A [read-only](Self::set_read_only) editor shows no composition: the commit
+    /// it would lead to is refused, so the overlay would be text that can never
+    /// land.
     pub fn ime_set_preedit(&self, text: &str, _cursor: Option<(usize, usize)>) {
-        if let Some(view) = self.inner.borrow_mut().view.as_mut() {
+        let mut core = self.inner.borrow_mut();
+        let text = if core.read_only { "" } else { text };
+        if let Some(view) = core.view.as_mut() {
             view.set_preedit(text);
         }
     }
@@ -1089,10 +1271,15 @@ impl EditorHandle {
         outbound: impl Fn(Vec<u8>) + 'static,
     ) -> Result<(), CollabError> {
         let session = CollabSession::from_bytes(snapshot)?;
-        // Adopt the host's document first (no session attached yet, so this load is
-        // not recorded back onto the CRDT), then attach the matching session.
+        // Adopt the host's document first, with **no** session attached, so the load
+        // is not recorded onto a CRDT — the new session already holds this content,
+        // and a session left attached from an earlier document must not have this
+        // one written over what its peers share. A read-only editor depends on the
+        // same thing: with no session attached, a load is never refused. Then
+        // attach the matching session.
         let schema = self.inner.borrow().schema.clone();
         let doc = session.projected_doc(&schema)?;
+        self.inner.borrow_mut().collab = None;
         self.load_doc(doc);
         self.inner.borrow_mut().collab = Some(CollabBridge::new(session, Box::new(outbound)));
         Ok(())
@@ -2269,6 +2456,421 @@ mod tests {
         );
     }
 
+    // ── Read-only (`set_read_only`) ──────────────────────────────────────────
+    //
+    // The gate is one check in `EditorCore::commit`, so these go through the public
+    // entry points the platform glue calls — the keyboard's `insert_text` and
+    // `dispatch_key`, the clipboard's `replace_selection_with_*`, the IME's
+    // `ime_commit`, a toolbar's `command` — and assert on the document `Rc` itself:
+    // refused means *the same document object*, not an equal one.
+
+    /// A paragraph, a bullet list with one item and a task list with one item —
+    /// enough structure for every edit below to have something it would change.
+    ///
+    /// Built **by the handle**: parsed by its own schema, wrapped by its own
+    /// commands, then reloaded so the history starts empty. Node types compare by
+    /// identity (#217), so a list assembled from a second `Schema::starter_kit()`
+    /// would make the list commands no-ops and their refusals prove nothing.
+    fn read_only_fixture() -> Harness {
+        let s = schema();
+        let h = mount(doc_node(&s, vec![para(&s, "")]));
+        assert!(
+            h.handle
+                .load_html("<p>hello world</p><p>item</p><p>todo</p>")
+        );
+        // "hello world" is 1..12; the second paragraph opens at 13.
+        h.handle.set_selection(Selection::cursor(Pos(15)));
+        assert!(h.handle.command("toggleBulletList"));
+        // list 13, item 14, paragraph 15, "item" 16..20; the third opens at 23.
+        h.handle.set_selection(Selection::cursor(Pos(25)));
+        assert!(h.handle.command("toggleTaskList"));
+        // task list 23, task item 24, paragraph 25, "todo" 26..30.
+        h.handle.load_doc(h.handle.doc());
+        let doc = h.handle.doc();
+        assert_eq!(doc.child(1).type_name(), "bullet_list");
+        assert_eq!(doc.child(2).type_name(), "task_list");
+        h
+    }
+
+    /// A local edit by name: where the selection sits for it, and the call the
+    /// platform glue (or a toolbar) makes, answering whether it applied.
+    type LocalEdit = (&'static str, Selection, fn(&EditorHandle) -> bool);
+
+    /// Every kind of local mutation there is an entry point for. In
+    /// [`read_only_fixture`] "hello world" is 1..12 ("world" 7..12), the list
+    /// item's "item" starts at 16 and the task item's "todo" at 26.
+    fn local_edits() -> Vec<LocalEdit> {
+        /// For the entry points that answer `()`: did the document change?
+        fn changed(h: &EditorHandle, edit: impl FnOnce(&EditorHandle)) -> bool {
+            let before = h.doc();
+            edit(h);
+            !h.doc().same_ref(&before)
+        }
+        let world = || Selection::text(Pos(7), Pos(12));
+        let end = || Selection::cursor(Pos(12));
+        /// A key the keymap binds: consumed whether or not its command applies.
+        fn bound_key(h: &EditorHandle, k: &str) -> bool {
+            let applied = h.dispatch_key(KeyBinding::parse(k).unwrap());
+            assert!(applied.is_some(), "{k} is bound, so consumed either way");
+            applied == Some(true)
+        }
+        vec![
+            ("typing over a selection", world(), |h| h.insert_text("X")),
+            ("typing at a caret", end(), |h| h.insert_text("!")),
+            ("a markdown input rule", end(), |h| h.insert_text(" **b** ")),
+            ("an IME commit", end(), |h| {
+                changed(h, |h| h.ime_commit("ね"))
+            }),
+            ("an IME surrounding-text delete", end(), |h| {
+                changed(h, |h| h.ime_delete_surrounding(2, 0))
+            }),
+            ("cut / delete selection", world(), |h| {
+                h.command("deleteSelection")
+            }),
+            ("backspace", end(), |h| h.command("deleteCharBackward")),
+            ("forward delete", Selection::cursor(Pos(3)), |h| {
+                h.command("deleteCharForward")
+            }),
+            ("the Backspace key", end(), |h| bound_key(h, "Backspace")),
+            ("enter", end(), |h| h.command("enter")),
+            ("the Enter key", end(), |h| bound_key(h, "Enter")),
+            ("a hard break", end(), |h| h.command("insertHardBreak")),
+            ("a horizontal rule", end(), |h| {
+                h.command("insertHorizontalRule")
+            }),
+            ("a table", end(), |h| h.command("insertTable")),
+            ("a plain-text paste", world(), |h| {
+                h.replace_selection_with_text("pasted\nlines")
+            }),
+            ("a rich paste", world(), |h| {
+                h.replace_selection_with_html("<p><b>pasted</b></p>")
+            }),
+            ("an image paste", end(), |h| {
+                h.insert_image("data:image/png;base64,AAAA", "")
+            }),
+            ("bold over a range", world(), |h| h.command("toggleBold")),
+            ("Mod-b over a range", world(), |h| bound_key(h, "Mod-b")),
+            ("italic over a range", world(), |h| {
+                h.command("toggleItalic")
+            }),
+            ("a link", world(), |h| h.toggle_link("https://example.com")),
+            ("a heading", end(), |h| h.command("setHeading1")),
+            ("alignment", end(), |h| h.command("setTextAlignCenter")),
+            ("a blockquote wrap", end(), |h| {
+                h.command("wrapInBlockquote")
+            }),
+            ("a list wrap", end(), |h| h.command("toggleBulletList")),
+            ("outdent", Selection::cursor(Pos(17)), |h| {
+                h.command("liftListItem")
+            }),
+            ("Shift-Tab in a list", Selection::cursor(Pos(17)), |h| {
+                bound_key(h, "Shift-Tab")
+            }),
+            ("a task checkbox click", end(), |h| {
+                h.toggle_task_checked_at(26)
+            }),
+            ("a hand-built transaction", end(), |h| {
+                h.update(|state| {
+                    let mut tr = state.tr();
+                    tr.delete(1, 6).ok()?;
+                    Some(tr)
+                })
+            }),
+        ]
+    }
+
+    /// Every local edit, refused: it answers "not applied", the document is the
+    /// very same object afterwards, the host still shows it, and `on_change` stayed
+    /// silent. Each is first shown to **apply** on an editable editor from the same
+    /// position — a command that would have done nothing anyway proves nothing.
+    #[test]
+    fn a_read_only_editor_refuses_every_local_edit() {
+        use std::cell::Cell;
+        for (what, selection, edit) in local_edits() {
+            let control = read_only_fixture();
+            control.handle.set_selection(selection.clone());
+            let before = control.handle.doc();
+            assert!(
+                edit(&control.handle),
+                "control: {what} applies when editable"
+            );
+            assert!(
+                !control.handle.doc().same_ref(&before),
+                "control: {what} changes the document when editable"
+            );
+
+            let h = read_only_fixture();
+            let hits = Rc::new(Cell::new(0u32));
+            h.handle.on_change({
+                let hits = hits.clone();
+                move || hits.set(hits.get() + 1)
+            });
+            assert!(!h.handle.is_read_only(), "editable by default");
+            h.handle.set_read_only(true);
+            assert!(h.handle.is_read_only());
+            h.handle.set_selection(selection.clone());
+            let before = h.handle.doc();
+            let host_before: Vec<_> = children(&h, h.container_id)
+                .into_iter()
+                .map(|id| text(&h, id))
+                .collect();
+
+            assert!(!edit(&h.handle), "{what} must report that it did not apply");
+            assert!(
+                h.handle.doc().same_ref(&before),
+                "{what} must leave the very same document"
+            );
+            assert_eq!(
+                h.handle.selection(),
+                selection,
+                "{what} must not move the selection either"
+            );
+            let host_after: Vec<_> = children(&h, h.container_id)
+                .into_iter()
+                .map(|id| text(&h, id))
+                .collect();
+            assert_eq!(host_after, host_before, "{what}: the host is untouched");
+            assert_eq!(hits.get(), 0, "{what}: on_change stayed silent");
+        }
+    }
+
+    /// Undo and redo replay document changes, so they are refused like any other —
+    /// and the history they would have replayed is still there when the editor is
+    /// writable again. Flipping the switch back restores editing in full.
+    #[test]
+    fn undo_and_redo_are_refused_while_read_only_and_flipping_back_restores_editing() {
+        let s = schema();
+        let h = mount(doc_node(&s, vec![para(&s, "abc")]));
+        h.handle.set_selection(Selection::cursor(Pos(4)));
+        assert!(h.handle.insert_text("d"));
+        let para_text = |h: &Harness| text(h, children(h, h.container_id)[0]);
+        assert_eq!(para_text(&h).as_deref(), Some("abcd"));
+
+        h.handle.set_read_only(true);
+        let locked = h.handle.doc();
+        assert!(!h.handle.command("undo"), "undo is refused");
+        assert!(h.handle.doc().same_ref(&locked));
+        assert!(!h.handle.can_run("undo"), "and reported as unavailable");
+
+        h.handle.set_read_only(false);
+        assert!(!h.handle.is_read_only());
+        assert!(h.handle.can_run("undo"));
+        assert!(h.handle.command("undo"), "the history survived the lock");
+        assert_eq!(para_text(&h).as_deref(), Some("abc"));
+
+        h.handle.set_read_only(true);
+        let locked = h.handle.doc();
+        assert!(!h.handle.command("redo"), "redo is refused");
+        assert!(h.handle.doc().same_ref(&locked));
+
+        h.handle.set_read_only(false);
+        assert!(h.handle.command("redo"));
+        assert_eq!(para_text(&h).as_deref(), Some("abcd"));
+        h.handle.set_selection(Selection::cursor(Pos(5)));
+        assert!(h.handle.insert_text("e"), "typing works again");
+        assert_eq!(para_text(&h).as_deref(), Some("abcde"));
+    }
+
+    /// What a reader does: place the caret, move it, extend a selection, select a
+    /// word, a block, everything — and copy.
+    #[test]
+    fn a_read_only_editor_still_selects_moves_the_caret_and_copies() {
+        let s = schema();
+        let h = mount(doc_node(
+            &s,
+            vec![para(&s, "hello world"), para(&s, "second")],
+        ));
+        h.handle.set_read_only(true);
+
+        h.handle.set_selection(Selection::cursor(Pos(3)));
+        assert_eq!(h.handle.selection(), Selection::cursor(Pos(3)));
+        assert!(h.handle.move_cursor(CursorMotion::CharRight, false));
+        assert_eq!(h.handle.selection().head(), Pos(4));
+        assert!(h.handle.move_cursor(CursorMotion::WordRight, true));
+        assert!(!h.handle.selection().is_empty(), "shift+motion extends");
+        assert!(h.handle.move_cursor(CursorMotion::DocEnd, false));
+
+        assert!(h.handle.select_word_at(Pos(8)));
+        let (html, plain) = h.handle.selection_clipboard().expect("a word to copy");
+        assert_eq!(plain, "world");
+        assert!(html.contains("world"));
+        assert!(h.handle.select_block_at(Pos(15)));
+        assert_eq!(h.handle.selection_clipboard().unwrap().1, "second");
+
+        assert!(h.handle.can_run("selectAll"));
+        assert!(
+            h.handle.command("selectAll"),
+            "select-all changes no document"
+        );
+        assert_eq!(
+            h.handle.selection_clipboard().unwrap().1,
+            "hello world\nsecond"
+        );
+        assert_eq!(
+            h.handle.dispatch_key(KeyBinding::parse("Mod-a").unwrap()),
+            Some(true)
+        );
+    }
+
+    /// "Click Bold, then type" is an edit in waiting: refused on a read-only editor
+    /// (or the toolbar would light Bold for text nobody can type), dropped when the
+    /// switch goes on, and never in the way of a caret move.
+    #[test]
+    fn stored_marks_are_refused_and_dropped_by_a_read_only_editor() {
+        let s = schema();
+        let h = mount(doc_node(&s, vec![para(&s, "abc")]));
+        h.handle.set_selection(Selection::cursor(Pos(2)));
+        assert!(h.handle.command("toggleBold"), "editable: bold is stored");
+        assert!(h.handle.is_mark_active("bold"));
+
+        h.handle.set_read_only(true);
+        assert!(
+            !h.handle.is_mark_active("bold"),
+            "going read-only drops the pending mark"
+        );
+        assert!(!h.handle.command("toggleBold"), "and none can be stored");
+        assert!(!h.handle.is_mark_active("bold"));
+        assert!(!h.handle.can_run("toggleBold"));
+
+        // Stored marks left over in the state must not make a caret move look like
+        // an edit: clearing them is what every caret move does.
+        h.handle.set_read_only(false);
+        assert!(h.handle.command("toggleItalic"));
+        {
+            // Lock without the tidy-up `set_read_only` does, to pin the rule itself.
+            h.handle.inner.borrow_mut().read_only = true;
+        }
+        assert!(h.handle.state().stored_marks.is_some());
+        assert!(h.handle.move_cursor(CursorMotion::CharRight, false));
+        assert_eq!(h.handle.selection().head(), Pos(3), "the caret moved");
+        assert!(h.handle.state().stored_marks.is_none());
+    }
+
+    /// `can_run` is what a toolbar greys its buttons from, so it has to follow the
+    /// switch — without taking the reader's own commands down with it.
+    #[test]
+    fn can_run_follows_the_switch() {
+        let h = read_only_fixture();
+        h.handle.set_selection(Selection::text(Pos(7), Pos(12)));
+        let editing = ["toggleBold", "setHeading1", "toggleBulletList", "enter"];
+        for name in editing {
+            assert!(h.handle.can_run(name), "{name} applies while editable");
+        }
+        h.handle.set_read_only(true);
+        let (doc, selection) = (h.handle.doc(), h.handle.selection());
+        for name in editing {
+            assert!(!h.handle.can_run(name), "{name} is unavailable read-only");
+        }
+        assert!(
+            h.handle.can_run("selectAll"),
+            "a reader can still select all"
+        );
+        assert!(
+            h.handle.doc().same_ref(&doc) && h.handle.selection() == selection,
+            "asking ran nothing: the answer comes from a dry run"
+        );
+        h.handle.set_read_only(false);
+        for name in editing {
+            assert!(h.handle.can_run(name), "{name} is back");
+        }
+    }
+
+    /// The app loading a document is not the user editing one: it is how a
+    /// read-only editor gets something to show, flag on, no toggling round it.
+    #[test]
+    fn a_read_only_editor_still_loads_a_document() {
+        let s = schema();
+        let h = mount(doc_node(&s, vec![para(&s, "old")]));
+        h.handle.set_read_only(true);
+        assert!(h.handle.load_html("<p>new content</p>"));
+        assert_eq!(
+            text(&h, children(&h, h.container_id)[0]).as_deref(),
+            Some("new content")
+        );
+        h.handle.load_doc(doc_node(&s, vec![para(&s, "and again")]));
+        assert_eq!(
+            text(&h, children(&h, h.container_id)[0]).as_deref(),
+            Some("and again")
+        );
+        assert!(h.handle.is_read_only(), "a load does not unlock it");
+        assert!(!h.handle.insert_text("x"));
+    }
+
+    /// The switch lives on the handle, not the view: set before mount it is on the
+    /// container from the first build, a re-mount keeps it, and switching it off
+    /// takes the attribute away again.
+    #[test]
+    fn the_container_carries_the_switch_across_mounts() {
+        let doc: Rc<RefCell<dyn DomDocument>> = Rc::new(RefCell::new(MockDomDocument::new()));
+        let mount_into = |h: &EditorHandle| {
+            let id = doc.borrow_mut().create_element("div");
+            h.attach(
+                NodeHandle::new(id, Rc::downgrade(&doc)),
+                Rc::downgrade(&doc),
+            );
+            id
+        };
+        let readonly_attr = |id: NodeId| doc.borrow().get_attribute(id, "data-pm-readonly");
+
+        let s = Rc::new(schema());
+        let h = EditorHandle::unmounted(s.clone(), empty_doc(&s), default_plugins());
+        h.set_read_only(true); // before any view exists
+        assert!(!h.insert_text("x"), "refused before mount too");
+
+        let first = mount_into(&h);
+        assert_eq!(readonly_attr(first).as_deref(), Some("true"));
+        let second = mount_into(&h); // a reactive re-mount
+        assert_eq!(readonly_attr(second).as_deref(), Some("true"));
+
+        h.set_read_only(false);
+        assert_eq!(readonly_attr(second), None, "absent, not \"false\"");
+        h.set_read_only(true);
+        assert_eq!(readonly_attr(second).as_deref(), Some("true"));
+    }
+
+    /// The `Editor { read_only: true }` prop switches the handle on at mount; the
+    /// default `false` leaves a handle the app already locked alone.
+    #[test]
+    fn the_editor_components_read_only_prop_only_ever_locks() {
+        use rinch_core::Component;
+        let doc: Rc<RefCell<dyn DomDocument>> = Rc::new(RefCell::new(MockDomDocument::new()));
+        let render = |editor: crate::Editor| {
+            let root = doc.borrow_mut().create_element("div");
+            let mut scope = RenderScope::new(doc.clone(), root);
+            let container = editor.render(&mut scope, &[]);
+            (scope, container)
+        };
+
+        let prop = crate::create_editor();
+        let (_scope, container) = render(crate::Editor {
+            editor: Some(prop.clone()),
+            content: "<p>shown</p>".into(),
+            read_only: true,
+        });
+        assert!(prop.is_read_only());
+        assert_eq!(
+            container.get_attribute("data-pm-readonly").as_deref(),
+            Some("true")
+        );
+        assert_eq!(
+            prop.doc().child(0).child(0).text(),
+            Some("shown"),
+            "the content prop still loads"
+        );
+        assert!(!prop.insert_text("x"));
+
+        let locked = crate::create_editor();
+        locked.set_read_only(true);
+        let (_scope, _container) = render(crate::Editor {
+            editor: Some(locked.clone()),
+            ..Default::default()
+        });
+        assert!(
+            locked.is_read_only(),
+            "`read_only: false` is the default, not an instruction to unlock"
+        );
+    }
+
     // ── Collaboration (design M9, the `collaboration` feature) ───────────────
     //
     // Two real `EditorHandle`s (each over its own mock host) wired into a single
@@ -2364,6 +2966,255 @@ mod tests {
                 REFRESHES.with(|n| n.get()) >= 1,
                 "the platform was asked to repaint the overlays"
             );
+        }
+
+        // ── Read-only and collaboration ──────────────────────────────────────
+        //
+        // The pair of properties a read-only collaborator is for: what peers write
+        // still arrives, and nothing it does ever leaves.
+
+        /// A host and a **read-only** guest on one loopback. The guest was locked
+        /// before it joined, so the join itself is part of what is proven. Returns
+        /// the guest's harness (for its mock host) and a counter of every delta the
+        /// guest tried to send.
+        fn read_only_guest(host: &EditorHandle) -> (Harness, Rc<Cell<usize>>) {
+            let s = schema();
+            let guest = mount(doc_node(&s, vec![para(&s, "stale local")]));
+            guest.handle.set_read_only(true);
+            let guest_in = guest.handle.clone();
+            let snapshot = host
+                .start_collaboration_host(move |delta| {
+                    guest_in.collab_receive(&delta);
+                })
+                .expect("host projects its document");
+            let sent = Rc::new(Cell::new(0usize));
+            let (host_in, counter) = (host.clone(), sent.clone());
+            guest
+                .handle
+                .start_collaboration_guest(&snapshot, move |delta| {
+                    counter.set(counter.get() + 1);
+                    host_in.collab_receive(&delta);
+                })
+                .expect("a read-only guest joins");
+            (guest, sent)
+        }
+
+        /// The first block of a harness's **host** — what is on screen.
+        fn shown(h: &Harness) -> Option<String> {
+            text(h, children(h, h.container_id)[0])
+        }
+
+        /// Remote deltas are applied and shown exactly as in an editable editor:
+        /// integration never passes through the gate local edits pass through.
+        #[test]
+        fn a_read_only_guest_joins_and_keeps_receiving_remote_edits() {
+            let s = schema();
+            let host = mount(doc_node(&s, vec![para(&s, "shared")])).handle;
+            let (guest, sent) = read_only_guest(&host);
+            assert_eq!(doc_text(&guest.handle), "shared", "adopted on join");
+            assert_eq!(shown(&guest).as_deref(), Some("shared"), "and shown");
+            assert!(guest.handle.is_read_only() && guest.handle.is_collaborating());
+
+            // Typing, a mark, a new block and a deletion, all from the peer.
+            host.set_selection(Selection::cursor(Pos(7)));
+            assert!(host.insert_text(" text"));
+            assert_eq!(doc_text(&guest.handle), "shared text");
+            assert_eq!(
+                shown(&guest).as_deref(),
+                Some("shared text"),
+                "the view follows"
+            );
+
+            host.set_selection(Selection::text(Pos(1), Pos(7)));
+            assert!(host.command("toggleBold"));
+            assert_eq!(
+                guest.handle.doc().child(0).child(0).marks().len(),
+                1,
+                "a remote mark arrives"
+            );
+
+            host.set_selection(Selection::cursor(Pos(12)));
+            assert!(host.command("enter"));
+            assert!(host.insert_text("second"));
+            assert_eq!(doc_text(&guest.handle), "shared text\nsecond");
+            assert_eq!(children(&guest, guest.container_id).len(), 2);
+
+            host.set_selection(Selection::text(Pos(1), Pos(8)));
+            assert!(host.command("deleteSelection"));
+            assert_eq!(doc_text(&guest.handle), "text\nsecond");
+            assert_eq!(shown(&guest).as_deref(), Some("text"));
+
+            // A reconciliation diff is a remote update like any other.
+            let sv = guest.handle.collab_state_vector().unwrap();
+            let diff = host.collab_sync_diff(&sv).unwrap();
+            guest.handle.collab_receive(&diff);
+            assert_eq!(doc_text(&guest.handle), doc_text(&host));
+            assert_eq!(
+                sent.get(),
+                0,
+                "and through all of it the guest sent nothing"
+            );
+        }
+
+        /// Local insert, delete, paste, format and undo on a read-only collaborator:
+        /// refused, and the CRDT is byte-for-byte what it was — same snapshot, same
+        /// state vector, nothing handed to `outbound`, nothing at the peer.
+        #[test]
+        fn a_read_only_guest_changes_nothing_shared() {
+            let s = schema();
+            let host = mount(doc_node(&s, vec![para(&s, "hello world")])).handle;
+            let (guest, sent) = read_only_guest(&host);
+            let guest = guest.handle;
+            // Something to undo, had the guest been allowed: the host's edit is in
+            // the guest's document, and a local history entry is made below.
+            host.set_selection(Selection::cursor(Pos(12)));
+            assert!(host.insert_text("!"));
+            assert_eq!(doc_text(&guest), "hello world!");
+
+            let (snapshot, sv) = (guest.collab_snapshot(), guest.collab_state_vector());
+            let (doc, host_doc) = (guest.doc(), host.doc());
+
+            guest.set_selection(Selection::text(Pos(7), Pos(12)));
+            assert!(!guest.insert_text("X"), "insert");
+            assert!(!guest.command("deleteSelection"), "delete");
+            assert!(!guest.command("deleteCharBackward"), "backspace");
+            assert!(!guest.replace_selection_with_text("pasted"), "paste");
+            assert!(!guest.replace_selection_with_html("<p><i>rich</i></p>"));
+            assert!(!guest.command("toggleBold"), "format");
+            assert!(!guest.command("setHeading2"), "block format");
+            assert!(!guest.command("undo"), "undo");
+            assert!(!guest.command("redo"), "redo");
+            guest.ime_commit("ね");
+
+            assert!(
+                guest.doc().same_ref(&doc),
+                "the guest's document is untouched"
+            );
+            assert_eq!(
+                guest.collab_snapshot(),
+                snapshot,
+                "the CRDT bytes are unchanged"
+            );
+            assert_eq!(
+                guest.collab_state_vector(),
+                sv,
+                "and so is the state vector"
+            );
+            assert_eq!(sent.get(), 0, "outbound never fired");
+            assert!(host.doc().same_ref(&host_doc), "the peer saw nothing");
+            assert!(guest.collab_take_error().is_none());
+        }
+
+        /// The switch is a runtime one (a role changes): off, the same session
+        /// edits and broadcasts again; on again, it stops — with the peer's edits
+        /// arriving throughout.
+        #[test]
+        fn flipping_read_only_mid_session_stops_and_restores_editing() {
+            let s = schema();
+            let host = mount(doc_node(&s, vec![para(&s, "ab")])).handle;
+            let (guest, sent) = read_only_guest(&host);
+            let guest = guest.handle;
+
+            guest.set_selection(Selection::cursor(Pos(3)));
+            assert!(!guest.insert_text("c"));
+
+            guest.set_read_only(false);
+            assert!(guest.insert_text("c"), "editable again");
+            assert_eq!(doc_text(&host), "abc", "and the edit reached the peer");
+            assert_eq!(sent.get(), 1);
+            // Its own history works: undo of its own edit is an edit, and travels.
+            assert!(guest.command("undo"));
+            assert_eq!(doc_text(&host), "ab");
+            assert!(guest.command("redo"));
+            assert_eq!(doc_text(&host), "abc");
+            let sent_while_editable = sent.get();
+
+            guest.set_read_only(true);
+            assert!(!guest.insert_text("d"));
+            assert!(
+                !guest.command("undo"),
+                "its own history is locked again too"
+            );
+            host.set_selection(Selection::cursor(Pos(1)));
+            assert!(host.insert_text(">"));
+            assert_eq!(doc_text(&guest), ">abc", "inbound never stopped");
+            assert_eq!(doc_text(&host), ">abc");
+            assert_eq!(
+                sent.get(),
+                sent_while_editable,
+                "locked: nothing more went out"
+            );
+        }
+
+        /// With a session attached a load is a write to the shared document — it
+        /// would be recorded and broadcast — so a read-only collaborator refuses it.
+        /// Detached, the same load is the app showing a document, and works.
+        #[test]
+        fn a_read_only_collaborator_refuses_a_load_until_it_detaches() {
+            let s = schema();
+            let host = mount(doc_node(&s, vec![para(&s, "shared")])).handle;
+            let (guest, sent) = read_only_guest(&host);
+            let snapshot = guest.handle.collab_snapshot();
+
+            assert!(
+                !guest.handle.load_html("<p>replaced</p>"),
+                "reported as refused"
+            );
+            guest
+                .handle
+                .load_doc(doc_node(&s, vec![para(&s, "replaced")]));
+            assert_eq!(doc_text(&guest.handle), "shared");
+            assert_eq!(doc_text(&host), "shared", "the peer's document survives");
+            assert_eq!(guest.handle.collab_snapshot(), snapshot);
+            assert_eq!(sent.get(), 0);
+
+            guest.handle.stop_collaboration();
+            assert!(guest.handle.load_html("<p>next document</p>"));
+            assert_eq!(shown(&guest).as_deref(), Some("next document"));
+            assert_eq!(doc_text(&host), "shared");
+        }
+
+        /// One editor pane moving from document to document (Pimble's shape), and
+        /// the app forgot `stop_collaboration` in between. The join adopts the new
+        /// document — read-only or not — and the *old* session's peers are not sent
+        /// the new document as an edit to theirs.
+        #[test]
+        fn joining_with_a_stale_session_attached_adopts_the_new_document_and_spares_the_old() {
+            let s = schema();
+            for read_only in [true, false] {
+                let first = mount(doc_node(&s, vec![para(&s, "first document")])).handle;
+                let second = mount(doc_node(&s, vec![para(&s, "second document")])).handle;
+                let pane = mount(doc_node(&s, vec![para(&s, "")]));
+                pane.handle.set_read_only(read_only);
+
+                let to_first = Rc::new(Cell::new(0usize));
+                let snapshot = first.start_collaboration_host(|_| {}).unwrap();
+                let (first_in, counter) = (first.clone(), to_first.clone());
+                pane.handle
+                    .start_collaboration_guest(&snapshot, move |delta| {
+                        counter.set(counter.get() + 1);
+                        first_in.collab_receive(&delta);
+                    })
+                    .unwrap();
+                assert_eq!(doc_text(&pane.handle), "first document");
+
+                // No `stop_collaboration` here.
+                let snapshot = second.start_collaboration_host(|_| {}).unwrap();
+                pane.handle
+                    .start_collaboration_guest(&snapshot, |_| {})
+                    .unwrap();
+                assert_eq!(
+                    doc_text(&pane.handle),
+                    "second document",
+                    "read_only={read_only}: the join adopted the new document"
+                );
+                assert_eq!(shown(&pane).as_deref(), Some("second document"));
+                assert_eq!(
+                    (to_first.get(), doc_text(&first).as_str()),
+                    (0, "first document"),
+                    "read_only={read_only}: the first document's peers were sent nothing"
+                );
+            }
         }
 
         #[test]

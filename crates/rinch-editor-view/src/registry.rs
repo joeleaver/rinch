@@ -58,7 +58,9 @@ thread_local! {
 /// shortens the line, the DOM follows, and the caret stays painted where the
 /// line used to end, out past the text, until the next local keystroke. Such a
 /// runtime registers its refresh here and [`EditorHandle::collab_receive`]
-/// calls it after a remote change.
+/// calls it after a remote change. [`EditorHandle::set_read_only`] calls it too:
+/// the switch arrives through no input event either, and the web keeps its
+/// capture field's `readonly` in step from the same refresh.
 ///
 /// Per thread, like the rest of this registry; setting it again replaces it.
 pub fn set_overlay_refresher(refresh: fn()) {
@@ -67,7 +69,6 @@ pub fn set_overlay_refresher(refresh: fn()) {
 
 /// Run the registered overlay refresh, if any. The caller must not be holding
 /// an editor handle's borrow: the refresh reads every mounted editor.
-#[cfg(feature = "collaboration")]
 pub(crate) fn request_overlay_refresh() {
     if let Some(refresh) = OVERLAY_REFRESHER.with(|slot| slot.get()) {
         refresh();

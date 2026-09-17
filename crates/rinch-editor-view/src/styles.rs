@@ -150,6 +150,9 @@ pub(crate) const DEFAULT_EDITOR_CSS: &str = r#"
 
 /* ── Placeholder (empty-document hint) ─────────────────────────────────── */
 [data-pm-placeholder] { color: #8c959f; position: absolute; pointer-events: none; }
+/* A read-only editor (EditorHandle::set_read_only) takes no typing, so it shows
+   no prompt to type. */
+[data-pm-editor][data-pm-readonly] [data-pm-placeholder] { display: none; }
 
 /* ═══ Dark color scheme (opt-in via data-pm-theme="dark") ═══════════════ */
 [data-pm-editor][data-pm-theme="dark"] {

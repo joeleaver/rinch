@@ -40,6 +40,14 @@ pub struct Editor {
     /// Initial content as schema-whitelisted HTML, loaded once when the editor
     /// mounts. Empty means "start with an empty paragraph".
     pub content: String,
+    /// Mount the editor **read-only**: selectable and copyable, and refusing every
+    /// local edit — see [`EditorHandle::set_read_only`], which is also how to
+    /// change it afterwards (a prop is read once, at mount).
+    ///
+    /// `true` switches the handle to read-only. `false` (the default) leaves the
+    /// handle as it is rather than forcing it editable, so a handle the app made
+    /// read-only before mounting — or across a re-mount — stays read-only.
+    pub read_only: bool,
 }
 
 impl Component for Editor {
@@ -50,6 +58,12 @@ impl Component for Editor {
         // already-loaded external handle, the `content` prop wins.
         if !self.content.is_empty() {
             handle.load_html(&self.content);
+        }
+        // After the content load (a load is never refused without a session, but
+        // the order reads right: fill it, then lock it) and before the mount, so
+        // the container carries `data-pm-readonly` from its first frame.
+        if self.read_only {
+            handle.set_read_only(true);
         }
         let container = handle.mount(scope);
         // Stop the runtime from driving this mount once the scope is disposed
