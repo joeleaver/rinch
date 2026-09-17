@@ -201,7 +201,32 @@ fn refresh_caret() {
     // caret move comes through here, which is exactly when a keyboard's idea of the
     // surrounding text goes stale.
     if let Some((_, handle)) = focused_handle() {
+        sync_capture_read_only(&handle);
         sync_mirror(&handle);
+    }
+}
+
+/// Make the capture textarea `readonly` exactly while the focused editor is
+/// read-only ([`EditorHandle::set_read_only`]).
+///
+/// The handle already refuses every edit, so this is not what keeps the document
+/// safe. It is what makes the *browser* behave as it does for a read-only field,
+/// which no amount of refusing afterwards can: a soft keyboard is not raised for
+/// a tap, an IME does not start composing, the browser's own context menu (issue
+/// #814) offers Copy but neither Paste nor Cut, and the field is never edited
+/// behind the mirror by a keystroke the model turned down. Focus, the caret keys
+/// and `copy` are untouched — a `readonly` field has all three.
+///
+/// One capture field serves every editor, so this is re-decided wherever the
+/// focused editor or its switch can have changed: at focus (before the field is
+/// focused, so the keyboard never flashes up) and on every [`refresh_caret`],
+/// which `set_read_only` requests through the overlay refresher.
+fn sync_capture_read_only(handle: &EditorHandle) {
+    if let Some(ta) = capture_target() {
+        let read_only = handle.is_read_only();
+        if ta.read_only() != read_only {
+            ta.set_read_only(read_only);
+        }
     }
 }
 
@@ -457,8 +482,11 @@ fn capture_target() -> Option<web_sys::HtmlTextAreaElement> {
 
 /// Focus the capture target so the browser routes clipboard / IME events to it.
 /// `preventScroll` keeps focusing the off-screen target from jumping the page.
-fn focus_capture_target(doc: &web_sys::Document) {
+fn focus_capture_target(doc: &web_sys::Document, handle: &EditorHandle) {
     if let Some(ta) = ensure_capture_target(doc) {
+        // Before the focus, not after: focusing a writable field is what raises a
+        // soft keyboard, and a read-only editor must not flash one up.
+        sync_capture_read_only(handle);
         let opts = web_sys::FocusOptions::new();
         opts.set_prevent_scroll(true);
         let _ = ta.focus_with_options(&opts);
@@ -949,13 +977,20 @@ fn on_copy(event: &web_sys::ClipboardEvent) {
     }
 }
 
-/// Cut: copy the selection, then delete it.
+/// Cut: copy the selection, then delete it. Nothing at all in a read-only editor,
+/// as in a `readonly` field: the delete would be refused, and a Cut that only
+/// copies has changed the clipboard while appearing to do nothing. (The capture
+/// field being `readonly` keeps Cut out of the browser's own menu; this is for a
+/// `cut` that arrives anyway.)
 fn on_cut(event: &web_sys::ClipboardEvent) {
     end_context_menu_cycle();
     let Some((_, handle)) = focused_handle() else {
         return;
     };
     event.prevent_default();
+    if handle.is_read_only() {
+        return;
+    }
     if let Some((html, text)) = handle.selection_clipboard()
         && let Some(dt) = event.clipboard_data()
     {
@@ -1298,7 +1333,7 @@ fn handle_mousedown(event: &web_sys::MouseEvent, doc: &web_sys::Document) -> boo
     set_goal_x(None);
     // Focus the hidden capture target so the browser routes clipboard / IME events
     // to this editor (a non-`contenteditable` `<div>` would receive none).
-    focus_capture_target(doc);
+    focus_capture_target(doc, &handle);
 
     // A click on a leaf atom (image / horizontal rule) node-selects it.
     let leaf_selection = target
@@ -1641,7 +1676,10 @@ fn handle_keydown(event: &web_sys::KeyboardEvent, doc: &web_sys::Document) -> bo
             else if ctrl || alt {
                 false
             } else if key.chars().count() == 1 && !key.chars().next().unwrap().is_control() {
-                handle.insert_text(&key)
+                // A read-only editor refuses the text but still owns the key, as
+                // on desktop: left unconsumed, a typed letter would go on to the
+                // page's own shortcuts and Space would scroll it.
+                handle.insert_text(&key) || handle.is_read_only()
             } else {
                 false
             }
@@ -1967,6 +2005,8 @@ pub(crate) fn install(browser_doc: &web_sys::Document) {
     // The caret is refreshed from the input handlers below, and a remote
     // collaboration delta arrives through none of them: without this a peer
     // shortening the caret's line leaves the caret painted out past the text.
+    // `EditorHandle::set_read_only` arrives through none of them either, and the
+    // same refresh is what carries it to the capture textarea's `readonly`.
     registry::set_overlay_refresher(refresh_caret);
 
     let doc = browser_doc.clone();
