@@ -1095,15 +1095,29 @@ fn two_hundred_cycles_add_no_nodes_and_the_panel_is_as_tall_as_its_rows() {
     );
 }
 
-/// Hidden between opens, the panel has no box: a press where it was reaches
-/// the page, and nothing under the point is a menu row.
+/// The panel's node ids and every node under it.
+fn panel_subtree(app: &RinchApp) -> Vec<usize> {
+    let Some(panel) = app.text_menu_panel.as_ref().map(|p| p.panel_id) else {
+        return Vec::new();
+    };
+    let d = app.doc.as_ref().unwrap().borrow();
+    let mut out = vec![panel];
+    let mut i = 0;
+    while i < out.len() {
+        out.extend(d.tree.get(out[i]).unwrap().children.iter().copied());
+        i += 1;
+    }
+    out
+}
+
+/// Hidden between opens, the panel has no box: nothing under the point where
+/// its Copy row was is in the panel, and a press there reaches the page.
 #[test]
 fn a_closed_panel_is_out_of_hit_testing_and_layout() {
     let (mut app, ids, log) = page("hello world", &[]);
     let (x, y) = abs_center(&app, ids.input);
     right_press(&mut app, x, y);
     let panel = app.open_text_menu.as_ref().unwrap().panel_id;
-    let (px, py, pw, ph) = abs_box(&app, panel);
     // A point that is both on the open panel's Copy row and on the plain
     // `data-rid` div beneath it.
     let (cx, cy) = row_center(&app, TextEditAction::Copy);
@@ -1112,20 +1126,28 @@ fn a_closed_panel_is_out_of_hit_testing_and_layout() {
         cx >= dx && cx <= dx + dw && cy >= dy && cy <= dy + dh,
         "precondition"
     );
-    assert!(pw > 0.0 && ph > 0.0);
     key(&mut app, KeyCode::Escape);
     assert_eq!(
         abs_box(&app, panel),
         (0.0, 0.0, 0.0, 0.0),
         "display: none — no box at all"
     );
-    let _ = (px, py);
     let hit = {
         let d = app.doc.as_ref().unwrap().borrow();
-        hit_test(&d.tree, cx, cy)
+        let mut chain = Vec::new();
+        let mut cur = hit_test(&d.tree, cx, cy);
+        while let Some(id) = cur {
+            chain.push(id);
+            cur = d.tree.get(id).and_then(|n| n.parent);
+        }
+        chain
     };
-    assert_ne!(hit, Some(panel));
-    assert_eq!(row_under(&app, cx, cy), None);
+    assert!(!hit.is_empty(), "something on the page is hit");
+    let subtree = panel_subtree(&app);
+    assert!(
+        hit.iter().all(|id| !subtree.contains(id)),
+        "no node of the hidden panel is hit: {hit:?}"
+    );
     left_press(&mut app, cx, cy);
     assert!(
         log.borrow().iter().any(|e| e == "plain-click"),
@@ -1143,6 +1165,31 @@ fn a_closed_panel_is_out_of_hit_testing_and_layout() {
     ev(&mut app, PlatformEvent::MouseMove { x: 1.0, y: 1.0 });
     assert!(!app.is_text_context_menu_open());
     assert_eq!(dismiss_handler_count(), base);
+}
+
+/// Tab after a close never lands in the hidden panel.
+#[test]
+fn tab_never_reaches_a_closed_panel() {
+    let (mut app, ids, _log) = page("hello world", &[]);
+    let (x, y) = abs_center(&app, ids.input);
+    right_press(&mut app, x, y);
+    key(&mut app, KeyCode::Escape);
+    let subtree = panel_subtree(&app);
+    let mut seen = Vec::new();
+    for _ in 0..8 {
+        key(&mut app, KeyCode::Tab);
+        match app.focus_target {
+            FocusTarget::Input(n) | FocusTarget::Node(n) => {
+                assert!(!subtree.contains(&n), "Tab reached panel node {n}");
+                seen.push(n);
+            }
+            other => panic!("Tab left the page's focusables: {other:?}"),
+        }
+    }
+    assert!(
+        seen.contains(&ids.other),
+        "positive control: Tab walked the page: {seen:?}"
+    );
 }
 
 /// The reused panel keeps its nodes, so an open must rewrite everything the
@@ -1480,7 +1527,7 @@ mod anchor_against_paint {
     use super::*;
 
     /// A full, non-incremental software frame at scale 1.
-    fn frame(app: &mut RinchApp) -> (Vec<u8>, u32, u32) {
+    pub(super) fn frame(app: &mut RinchApp) -> (Vec<u8>, u32, u32) {
         app.scene_dirty = true;
         app.has_previous_frame = false;
         let (p, w, h) = app.build_pixels(1.0, VP, false);
@@ -1489,7 +1536,7 @@ mod anchor_against_paint {
 
     /// The `(x0, y0, x1, y1)` box, in logical px at scale 1, of every pixel
     /// that differs between two frames.
-    fn diff_box(a: &[u8], b: &[u8], w: u32, h: u32) -> Option<(f32, f32, f32, f32)> {
+    pub(super) fn diff_box(a: &[u8], b: &[u8], w: u32, h: u32) -> Option<(f32, f32, f32, f32)> {
         let mut bb: Option<(u32, u32, u32, u32)> = None;
         for y in 0..h {
             for x in 0..w {
@@ -1511,7 +1558,7 @@ mod anchor_against_paint {
         app.sync_input_cursor_to_dom();
     }
 
-    fn caret_visible(app: &RinchApp, id: usize, visible: bool) {
+    pub(super) fn caret_visible(app: &RinchApp, id: usize, visible: bool) {
         app.doc
             .as_ref()
             .unwrap()
@@ -1618,6 +1665,58 @@ mod anchor_against_paint {
             (ay + ah - c2.3).abs() <= 4.0,
             "bottom: {} vs {c2:?}",
             ay + ah
+        );
+    }
+}
+
+// ── The closed panel against the pixels paint draws ──────────────────────────
+
+#[cfg(software_shell)]
+mod closed_panel_against_paint {
+    use super::anchor_against_paint::{caret_visible, diff_box, frame};
+    use super::*;
+
+    /// Hidden, the panel paints nothing: after a close the frame is the page's
+    /// frame from before the first open, pixel for pixel — the incremental
+    /// frame (the software painter's dirty-region path) and a full one alike,
+    /// and again after reopening somewhere else. A panel hidden by
+    /// `visibility: hidden` instead fails it: its rows' text is still drawn
+    /// (#829).
+    #[test]
+    fn a_closed_panel_paints_nothing() {
+        let (mut app, ids, _log) = page("hello world", &[]);
+        focus_and_select(&mut app, ids.input);
+        caret_visible(&app, ids.input, false);
+        let (before, w, h) = frame(&mut app);
+        for (x, y) in [(400.0, 300.0), (100.0, 400.0)] {
+            assert!(app.open_text_context_menu(x, y, 800.0, 600.0));
+            caret_visible(&app, ids.input, false);
+            app.scene_dirty = true;
+            assert!(app.has_previous_frame, "precondition: an incremental frame");
+            let open = app.build_pixels(1.0, VP, false).0.to_vec();
+            let panel = app.open_text_menu.as_ref().unwrap().panel_id;
+            let (px, py, pw, ph) = abs_box(&app, panel);
+            let shown = diff_box(&before, &open, w, h).expect("positive control: the panel paints");
+            assert!(
+                shown.0 >= px - 16.0 && shown.2 <= px + pw + 16.0 && shown.3 > py + ph / 2.0,
+                "the change is the panel ({px}, {py}, {pw}, {ph}): {shown:?}"
+            );
+            key(&mut app, KeyCode::Escape);
+            assert!(!app.is_text_context_menu_open());
+            caret_visible(&app, ids.input, false);
+            app.scene_dirty = true;
+            let after = app.build_pixels(1.0, VP, false).0.to_vec();
+            assert_eq!(
+                diff_box(&before, &after, w, h),
+                None,
+                "the incremental frame after closing the menu opened at ({x}, {y})"
+            );
+        }
+        let (full, _, _) = frame(&mut app);
+        assert_eq!(
+            diff_box(&before, &full, w, h),
+            None,
+            "a full frame after the close"
         );
     }
 }
@@ -1947,6 +2046,67 @@ mod bench {
         eprintln!(
             "BENCH text_edit_state() per call: collapsed {collapsed:.3}ms, \
              ~12k-char selection {selected:.3}ms (400-paragraph doc, debug build)"
+        );
+    }
+
+    /// What keeping the panel costs a page that is not using it: ms per layout
+    /// pass on a themed page before the menu is first opened, and after one
+    /// open and close (#826 — text under `display: none` is re-laid-out on
+    /// every pass). Run with `--release`.
+    #[test]
+    #[ignore]
+    fn a_layout_pass_before_the_first_open_and_after_a_close() {
+        let (mut app, ids, _log) = page("hello world", &[]);
+        {
+            let mut d = app.doc.as_ref().unwrap().borrow_mut();
+            d.load_css(&rinch_theme::generate_theme_css(
+                &rinch_theme::Theme::default(),
+            ));
+            d.load_css(&rinch_components::generate_component_css());
+            d.recompute_all_styles_full();
+        }
+        app.resolve_and_repaint(800.0, 600.0);
+        // A width flip on a plain div: a real layout pass each time, and
+        // nothing about the menu.
+        let per_pass = |app: &mut RinchApp| {
+            let pass = |app: &mut RinchApp, i: u32| {
+                let w = if i.is_multiple_of(2) {
+                    "280px"
+                } else {
+                    "290px"
+                };
+                app.doc
+                    .as_ref()
+                    .unwrap()
+                    .borrow_mut()
+                    .set_style(NodeId(ids.plain), "width", w);
+                app.resolve_and_repaint(800.0, 600.0);
+            };
+            for i in 0..50 {
+                pass(app, i);
+            }
+            let computes = app.doc.as_ref().unwrap().borrow().tree.taffy_computes;
+            let t = Instant::now();
+            for i in 0..1000 {
+                pass(app, i);
+            }
+            let ms = t.elapsed().as_secs_f64() * 1000.0 / 1000.0;
+            let computed = app.doc.as_ref().unwrap().borrow().tree.taffy_computes - computes;
+            assert!(
+                computed >= 1000,
+                "positive control: every pass laid out ({computed})"
+            );
+            ms
+        };
+        let before = per_pass(&mut app);
+        let (x, y) = abs_center(&app, ids.input);
+        right_press(&mut app, x, y);
+        assert!(app.is_text_context_menu_open());
+        key(&mut app, KeyCode::Escape);
+        assert!(!app.is_text_context_menu_open());
+        let after = per_pass(&mut app);
+        eprintln!(
+            "BENCH layout pass: before the first open {before:.4}ms, after a close {after:.4}ms"
         );
     }
 }

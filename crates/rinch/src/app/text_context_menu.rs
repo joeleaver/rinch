@@ -659,7 +659,14 @@ impl RinchApp {
     /// **kept**: an open shows the same panel again with its position, each
     /// row's `data-disabled` and the highlight rewritten, and a close hides it
     /// with `display: none` — out of layout, paint, hit testing and the Tab
-    /// order (the rows carry no `tabindex` in any case). Not exempted from the
+    /// order (the rows carry no `tabindex` in any case).
+    ///
+    /// `display: none` costs every later layout pass a little: text under it
+    /// is laid out again each pass (#826; +0.05 ms a pass, release, measured
+    /// on a themed page). `visibility: hidden` would not, and was tried: set
+    /// through `set_style` it does not reach the rows (#508), and set by a
+    /// stylesheet rule it hides the rows but not their text, which paint
+    /// draws whatever the IFC root's visibility (#829). Not exempted from the
     /// scroll lock (#474): the panel declares no `overflow`, so it is no scroll
     /// container and the lock has nothing to refuse on it.
     pub fn open_text_context_menu(&mut self, x: f32, y: f32, vp_w: f32, vp_h: f32) -> bool {
