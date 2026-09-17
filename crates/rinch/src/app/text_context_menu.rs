@@ -540,11 +540,13 @@ impl RinchApp {
                 if self.focus_target == FocusTarget::Input(node_id) {
                     self.adopt_focused_input_value_from_dom();
                 }
+                // The text is saved with the selection: the selection is put
+                // back only onto the text it indexes.
                 let saved = (self.focus_target == FocusTarget::Input(node_id))
                     .then(|| {
                         self.focused_input_state
                             .as_ref()
-                            .map(|s| s.selection.clone())
+                            .map(|s| (s.document.to_text(), s.selection.clone()))
                     })
                     .flatten();
                 let offset = {
@@ -569,13 +571,20 @@ impl RinchApp {
                 if self.focus_target != FocusTarget::Input(node_id) {
                     return None;
                 }
+                // The click path dispatched a `data-rid` above the field, and
+                // that handler may have written the field's `value`: take the
+                // write in before anything syncs the state back over it.
+                self.adopt_focused_input_value_from_dom();
                 // The caret rule's other half: a press inside the selection
-                // keeps it. The click path collapsed it, so put it back.
-                if let Some(sel) = saved
+                // keeps it. The click path collapsed it, so put it back — unless
+                // the text changed under the press, when the old offsets index
+                // nothing and the write already placed the caret.
+                if let Some((text, sel)) = saved
                     && !sel.is_cursor()
                     && sel.start().0 <= offset
                     && offset <= sel.end().0
                     && let Some(state) = self.focused_input_state.as_mut()
+                    && state.document.to_text() == text
                 {
                     state.selection = sel;
                     self.sync_input_cursor_to_dom();
