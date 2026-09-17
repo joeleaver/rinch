@@ -65,7 +65,8 @@ use rinch_editor_core::{CursorMotion, Pos, Selection};
 use rinch_editor_view::{EditorHandle, registry};
 
 use crate::event_delegation::{
-    compute_byte_offset_in_block, drag_machine, nearest_handler, utf16_offset_to_utf8_bytes,
+    compute_byte_offset_in_block, drag_machine, modifiers_from_key_event, nearest_handler,
+    set_click_context_for, utf16_offset_to_utf8_bytes,
 };
 use crate::web_document::{find_text_node_at_byte_offset, get_nid, node_by_nid};
 
@@ -104,6 +105,10 @@ thread_local! {
     /// Issues each cycle and each park its id, so a timer armed for one is a no-op
     /// once a later one — or none — has replaced it.
     static MENU_CYCLE_SEQ: Cell<u64> = const { Cell::new(0) };
+    /// Whether the last menu-key press went to an app's `data-oncontextmenu`
+    /// rather than to the browser, so its release is withheld from the browser too
+    /// (see [`handle_keydown`]).
+    static MENU_KEY_TO_APP: Cell<bool> = const { Cell::new(false) };
 }
 
 fn focused_editor() -> Option<usize> {
@@ -489,15 +494,19 @@ fn blur_capture_target() {
 //    selection; and **parks** it under the pointer — `pointer-events: auto`, on
 //    top, `opacity: 0`. The mirror is dropped for the duration (`sync_mirror` is a
 //    no-op meanwhile). The menu key and Shift+F10 start a cycle too, parked at the
-//    caret. A right press on a link or an image outside the selection starts none:
-//    the browser's own link or image menu is the one wanted there.
+//    caret — unless an app's `data-oncontextmenu` claims the editor, which then
+//    gets the key's menu instead. A right press on a link or an image outside the
+//    selection starts none: the browser's own link or image menu is the one
+//    wanted there.
 // 2. The browser fires `contextmenu` at the textarea and hit-tests the point for
 //    its menu while it is still handling the input event that parked it (Chrome,
 //    measured: before any timer that event's listener set). So a park lasts
-//    `PARK_MS` whether or not a menu came — a hittable textarea left behind would
-//    take a click meant for whatever is under it. Where the menu follows the
-//    **release** instead (Windows, by reading Chromium), the release parks the
-//    textarea again if no `contextmenu` has come for the cycle yet.
+//    `PARK_MS` whether or not a menu came, and a click on the page after that
+//    reaches the page. Inside those 100 ms a click in the 30 px box goes to the
+//    textarea rather than to what is under it (measured). Where the menu follows
+//    the **release** instead (Windows, by reading Chromium), a release over the
+//    cycle's own editor parks the textarea again if no `contextmenu` has come for
+//    the cycle yet.
 // 3. The menu's items fire on the *focused* editable, wherever it is: `paste`,
 //    `cut` and `copy` are answered from the model by the listeners above, and so is
 //    `beforeinput`. Undo and Redo may be aimed at another field on the page
@@ -525,7 +534,9 @@ const PARK_SIZE: f32 = 30.0;
 /// or release that parked the textarea — and hit-tests for its menu — while still
 /// handling that input event, before a timer its listener set can run (measured in
 /// Chrome 153 for a right press, a held right press, the menu key and Shift+F10),
-/// so any delay covers it; this one leaves the margin CodeMirror leaves.
+/// so any delay covers it; this one leaves the margin CodeMirror leaves. It is
+/// also how long a click inside the parked box is the textarea's rather than the
+/// page's.
 const PARK_MS: i32 = 100;
 
 /// The zero-width space the parked field starts and ends with. The editor's own
@@ -555,6 +566,8 @@ enum MenuTrigger {
 /// A context-menu cycle in flight.
 struct MenuCycle {
     id: u64,
+    /// The host id of the editor the cycle belongs to.
+    container_nid: usize,
     trigger: MenuTrigger,
     /// The park holding the textarea under the pointer, if any — the id of that
     /// park, so its timer does not end a later one.
@@ -598,12 +611,12 @@ fn park_around(x: f32, y: f32) -> (f32, f32) {
     (x - PARK_SIZE / 2.0, y - PARK_SIZE / 2.0)
 }
 
-/// The top-left corner of a park whose **left edge** is at `x`, centred on the
-/// line from `top` of height `h`. Chrome opens a keyboard-invoked menu at the
-/// focused box's left edge (measured), so a park for the menu key starts at the
-/// caret rather than around it.
-fn park_from(x: f32, top: f32, h: f32) -> (f32, f32) {
-    (x, top + h / 2.0 - PARK_SIZE / 2.0)
+/// The top-left corner of a park whose **left edge** is at `x`, centred on `y`.
+/// Chrome opens a keyboard-invoked menu at the focused box's left edge
+/// (measured), so a park for the menu key starts at the caret rather than
+/// around it.
+fn park_right_of(x: f32, y: f32) -> (f32, f32) {
+    (x, y - PARK_SIZE / 2.0)
 }
 
 /// Whether a selection of `start..end` over a field of `len` UTF-16 units is the
@@ -652,7 +665,12 @@ fn after(ms: i32, f: impl FnOnce() + 'static) {
 /// Start a context-menu cycle inside the focused editor: fill the capture
 /// textarea with the sentinels around the editor's selection and park it with its
 /// top-left corner at `spot` (see the section comment above).
-fn start_context_menu_cycle(handle: &EditorHandle, trigger: MenuTrigger, spot: (f32, f32)) {
+fn start_context_menu_cycle(
+    handle: &EditorHandle,
+    container_nid: usize,
+    trigger: MenuTrigger,
+    spot: (f32, f32),
+) {
     // A cycle still open from an earlier press ends first, so its sentinels are
     // not read as this one's.
     end_context_menu_cycle();
@@ -688,6 +706,7 @@ fn start_context_menu_cycle(handle: &EditorHandle, trigger: MenuTrigger, spot: (
     MENU_CYCLE.with(|c| {
         *c.borrow_mut() = Some(MenuCycle {
             id,
+            container_nid,
             trigger,
             park: None,
             menu_fired: false,
@@ -736,16 +755,33 @@ fn unpark_capture(park: u64) {
 /// key. Where the browser opens its menu at the release rather than the press
 /// (Windows, by reading Chromium), the park from the press is long gone by then,
 /// so a release that no `contextmenu` has preceded parks the textarea again, at
-/// `spot`.
-fn repark_on_release(trigger: MenuTrigger, spot: impl FnOnce() -> Option<(f32, f32)>) {
+/// the `spot` it gives for the cycle's editor (`None` parks nothing).
+fn repark_on_release(trigger: MenuTrigger, spot: impl FnOnce(usize) -> Option<(f32, f32)>) {
     let waiting = MENU_CYCLE.with(|c| {
         c.borrow()
             .as_ref()
-            .is_some_and(|m| m.trigger == trigger && !m.menu_fired)
+            .filter(|m| m.trigger == trigger && !m.menu_fired)
+            .map(|m| m.container_nid)
     });
-    if waiting && let Some(spot) = spot() {
+    if let Some(container_nid) = waiting
+        && let Some(spot) = spot(container_nid)
+    {
         park_capture(spot);
     }
+}
+
+/// Whether viewport point `(x, y)` is over the editor whose container is
+/// `container_nid`, looking past the capture textarea, which may still be parked
+/// there. A right press dragged out of the editor and released over page content
+/// is that content's to answer.
+fn point_over_editor(doc: &web_sys::Document, x: f32, y: f32, container_nid: usize) -> bool {
+    doc.elements_from_point(x, y)
+        .iter()
+        .filter_map(|v| v.dyn_into::<web_sys::Element>().ok())
+        .find(|el| !el.has_attribute("data-pm-capture"))
+        .and_then(|el| el.closest("[data-pm-editor]").ok().flatten())
+        .and_then(|editor| get_nid(&editor.into()))
+        .is_some_and(|nid| nid.0 == container_nid)
 }
 
 /// [`select_all_chosen`] read off the field.
@@ -819,9 +855,10 @@ fn handle_contextmenu(event: &web_sys::MouseEvent) {
 /// `historyUndo` at the element that owns the newest step there, not at the focused
 /// field: with the editor focused and an `<input>` elsewhere typed into earlier, it
 /// undoes that input and moves focus to it (measured in Chrome 153). The editor never
-/// adds steps of its own — its keys and edits are all cancelled — so while the capture
-/// textarea holds focus such an event can only be the user asking to undo the editor.
-/// One aimed at the textarea itself is `on_before_input`'s.
+/// adds a step to another field — its keys and edits are cancelled, and an IME commit
+/// adds one to the capture textarea at most — so while the capture textarea holds
+/// focus, such an event aimed at another element can only be the user asking to undo
+/// the editor. One aimed at the textarea itself is `on_before_input`'s.
 fn on_foreign_history_input(event: &web_sys::InputEvent) {
     let command = match event.input_type().as_str() {
         "historyUndo" => "undo",
@@ -1145,10 +1182,10 @@ fn on_before_input(event: &web_sys::InputEvent) {
     if event.is_composing() || COMPOSING.with(|c| c.get()) {
         return;
     }
-    // A menu item that edits the field arrives here — Paste as plain text's
-    // `insertFromPaste`, and Undo / Redo when Chrome aims them at this field rather
-    // than at another one (`on_foreign_history_input`); the cycle ends first so the
-    // field the browser is about to edit is the mirror, not the sentinels.
+    // The menu's Undo / Redo arrive here when Chrome aims them at this field rather
+    // than at another one (`on_foreign_history_input`); its Paste as plain text does
+    // not, since it fires only `paste` (measured). The cycle ends first so the field
+    // the browser is about to edit is the mirror, not the sentinels.
     end_context_menu_cycle();
     let Some((_, handle)) = focused_handle() else {
         return;
@@ -1312,7 +1349,12 @@ fn handle_mousedown(event: &web_sys::MouseEvent, doc: &web_sys::Document) -> boo
         registry::end_drag(None);
         refresh_caret();
         if !(on_link_or_image && !inside) && !context_menu_claimed_by_app(&target) {
-            start_context_menu_cycle(&handle, MenuTrigger::Pointer, park_around(x, y));
+            start_context_menu_cycle(
+                &handle,
+                container_nid,
+                MenuTrigger::Pointer,
+                park_around(x, y),
+            );
         }
         return true;
     }
@@ -1467,6 +1509,9 @@ fn handle_keydown(event: &web_sys::KeyboardEvent, doc: &web_sys::Document) -> bo
     // keyboard while open); the cycle ends before the key is read, so a typed
     // character lands in a mirrored field rather than the sentinel.
     end_context_menu_cycle();
+    if event.key() == "ContextMenu" {
+        MENU_KEY_TO_APP.with(|c| c.set(false));
+    }
     // Never hijack a key destined for a real form control / editable element (e.g. a
     // search box the user clicked) — but our own hidden capture textarea
     // (`data-pm-capture`) IS the editor's focus target, so let its keys through.
@@ -1504,14 +1549,38 @@ fn handle_keydown(event: &web_sys::KeyboardEvent, doc: &web_sys::Document) -> bo
     // The keyboard's menu key, and Shift+F10: the browser fires `contextmenu` at the
     // focused element — this textarea — as the key's default action, and places the
     // menu at the element's box. Parked at the caret first, the menu opens at the
-    // caret rather than at the textarea's resting corner (issue #814) — unless an app
-    // handler has claimed the editor's context menu, as a right-click there finds.
-    // The key is left to the browser, or no menu would open at all.
+    // caret rather than at the textarea's resting corner (issue #814); the key is
+    // left to the browser, or no menu would open at all.
+    //
+    // Unless an app's `data-oncontextmenu` claims the editor, as a right-click there
+    // finds: the browser's `contextmenu` would go to this textarea, outside the app's
+    // subtree, and never reach the handler. So the handler is dispatched here, with
+    // its click context at the caret, and the key is consumed so the browser opens
+    // no menu of its own — nor at the release, where Windows opens it (by reading
+    // Chromium), which is what `MENU_KEY_TO_APP` withholds.
     if key == "ContextMenu" || (key == "F10" && shift) {
-        if !key_menu_claimed_by_app(&handle, container_nid)
-            && let Some(spot) = key_park_spot(&handle, doc, container_nid)
-        {
-            start_context_menu_cycle(&handle, MenuTrigger::Key, spot);
+        let point = key_menu_point(&handle, doc, container_nid);
+        if let Some((menu_el, id)) = key_menu_app_handler(&handle, container_nid) {
+            set_click_context_for(
+                &menu_el,
+                point,
+                Default::default(),
+                rinch_core::events::MouseButton::Right,
+                modifiers_from_key_event(event),
+            );
+            if key == "ContextMenu" {
+                MENU_KEY_TO_APP.with(|c| c.set(true));
+            }
+            rinch_core::events::dispatch_event(id);
+            return true;
+        }
+        if let Some((x, y)) = point {
+            start_context_menu_cycle(
+                &handle,
+                container_nid,
+                MenuTrigger::Key,
+                park_right_of(x, y),
+            );
         }
         return false;
     }
@@ -1668,17 +1737,18 @@ fn head_screen_rect(
     Some((r.x() as f32, r.y() as f32, h))
 }
 
-/// Where the menu key parks the capture textarea (its top-left corner): with its
-/// left edge at the caret. Without a caret rect — a selected horizontal rule has no
-/// text position — at the selected node's outline, and failing that at the editor's
-/// own box, so the field still carries the selection the menu's Copy acts on.
-fn key_park_spot(
+/// Where a key-invoked menu opens, in viewport coordinates: at the caret, on its
+/// line's middle. Without a caret rect — a selected horizontal rule has no text
+/// position, and nor does Select All in a document ending with one — at the
+/// selected node's outline, and failing that at the editor's own box, so a park
+/// there still carries the selection the menu's Copy acts on.
+fn key_menu_point(
     handle: &EditorHandle,
     doc: &web_sys::Document,
     container_nid: usize,
 ) -> Option<(f32, f32)> {
     if let Some((x, y, h)) = head_screen_rect(handle, doc, handle.selection().head()) {
-        return Some(park_from(x, y, h));
+        return Some((x, y + h / 2.0));
     }
     let editor = node_by_nid(container_nid)?
         .dyn_into::<web_sys::Element>()
@@ -1690,24 +1760,28 @@ fn key_park_spot(
         .map(|el| el.get_bounding_client_rect())
         .filter(|r| r.width() > 0.0 && r.height() > 0.0);
     Some(match outline {
-        Some(r) => park_from(r.x() as f32, r.y() as f32, r.height() as f32),
+        Some(r) => (r.x() as f32, (r.y() + r.height() / 2.0) as f32),
         None => {
             let r = editor.get_bounding_client_rect();
-            (r.x() as f32, r.y() as f32)
+            (r.x() as f32, r.y() as f32 + PARK_SIZE / 2.0)
         }
     })
 }
 
-/// Whether an app handler claims the context menu the menu key opens in the
-/// focused editor — the lookup a right-click makes, from the caret's block (or the
+/// The app handler that claims the context menu the menu key opens in the focused
+/// editor, if any: the lookup a right-click makes, from the caret's block (or the
 /// editor itself when the caret has none).
-fn key_menu_claimed_by_app(handle: &EditorHandle, container_nid: usize) -> bool {
+fn key_menu_app_handler(
+    handle: &EditorHandle,
+    container_nid: usize,
+) -> Option<(web_sys::Element, rinch_core::events::EventHandlerId)> {
     handle
         .caret_address(handle.selection().head())
         .and_then(|(block, _)| node_by_nid(block))
         .or_else(|| node_by_nid(container_nid))
         .and_then(|node| node.dyn_into::<web_sys::Element>().ok())
-        .is_some_and(|el| context_menu_claimed_by_app(&el))
+        .and_then(|el| nearest_handler(&el, "data-oncontextmenu"))
+        .filter(|(_, id)| rinch_core::events::has_click_handler(*id))
 }
 
 // ── Caret blink ──────────────────────────────────────────────────────────────
@@ -1950,23 +2024,35 @@ pub(crate) fn install(browser_doc: &web_sys::Document) {
             e.prevent_default();
         }
     });
+    let doc = browser_doc.clone();
     add_capture(browser_doc, "mouseup", move |e: web_sys::MouseEvent| {
         registry::end_drag(None);
         // A right-button release: on a platform whose `contextmenu` follows the
-        // release, the browser hit-tests for its menu right after this event.
+        // release, the browser hit-tests for its menu right after this event — for
+        // the editor's menu only if the release is still over that editor.
         if e.button() == 2 {
             let (x, y) = (e.client_x() as f32, e.client_y() as f32);
-            repark_on_release(MenuTrigger::Pointer, || Some(park_around(x, y)));
-        }
-    });
-    // The menu key's release, for the same platform (issue #814).
-    let doc = browser_doc.clone();
-    add_capture(browser_doc, "keyup", move |e: web_sys::KeyboardEvent| {
-        if e.key() == "ContextMenu" {
-            repark_on_release(MenuTrigger::Key, || {
-                focused_handle().and_then(|(id, handle)| key_park_spot(&handle, &doc, id))
+            repark_on_release(MenuTrigger::Pointer, |container_nid| {
+                point_over_editor(&doc, x, y, container_nid).then(|| park_around(x, y))
             });
         }
+    });
+    // The menu key's release, for the same platform (issue #814). One whose press
+    // went to an app's `data-oncontextmenu` is withheld from the browser as well.
+    let doc = browser_doc.clone();
+    add_capture(browser_doc, "keyup", move |e: web_sys::KeyboardEvent| {
+        if e.key() != "ContextMenu" {
+            return;
+        }
+        if MENU_KEY_TO_APP.with(|c| c.replace(false)) {
+            e.prevent_default();
+            return;
+        }
+        repark_on_release(MenuTrigger::Key, |_| {
+            focused_handle()
+                .and_then(|(id, handle)| key_menu_point(&handle, &doc, id))
+                .map(|(x, y)| park_right_of(x, y))
+        });
     });
     // The browser's `contextmenu` for a context press or key (issue #814). Capture
     // phase, so the generic delegation's own `contextmenu` listener sees the same
@@ -2290,8 +2376,8 @@ mod tests {
     fn a_park_is_centred_on_the_pointer_and_starts_at_the_caret() {
         // Off the origin, so a spot that forgot the offset would show.
         assert_eq!(park_around(100.0, 40.0), (85.0, 25.0));
-        // The menu key: left edge at the caret x, centred on its 20px line.
-        assert_eq!(park_from(100.0, 40.0, 20.0), (100.0, 35.0));
+        // The menu key: left edge at the caret x, centred on the line's middle.
+        assert_eq!(park_right_of(100.0, 50.0), (100.0, 35.0));
     }
 
     #[test]

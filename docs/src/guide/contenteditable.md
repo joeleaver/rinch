@@ -350,8 +350,9 @@ far as the browser is concerned, so a right-click there used to open the menu fo
 plain element, with no Paste; now a right-button press parks the capture textarea
 under the pointer — invisible, but hittable — for the instant the browser needs to
 fire `contextmenu` and hit-test the point for its menu (CodeMirror 5's technique),
-then sends it back off-screen a moment later, whether or not a menu came, so it
-never takes a click meant for the page. The menu's items fire the ordinary `paste` /
+then sends it back off-screen 100 ms later, whether or not a menu came, so a click
+on the page after that reaches the page. (A click inside the textarea's 30 px box
+within those 100 ms goes to the textarea instead.) The menu's items fire the ordinary `paste` /
 `cut` / `copy` events on the focused textarea and are answered from the editor's
 model: a paste lands at the editor's selection, Cut and Copy act on the editor's
 selection even when it spans blocks, and Select All — which the browser can only
@@ -382,12 +383,14 @@ focus, so the other field is not undone.)
 The keyboard's menu key and Shift+F10 open the same menu at the caret: the browser
 sends their `contextmenu` to the focused element, which is the textarea, and the
 editor parks it with its left edge at the caret first — at a selected horizontal
-rule, which has no caret, it parks at the rule. On macOS a Control-click opens the
-menu like a right press, and the word a Mac right-click selects under the pointer is
-not mistaken for Select All; neither is verified on a Mac. An element up the chain
-carrying a live `data-oncontextmenu` still wins — over the whole editor, links and
-images included, and for the menu key — as it does over any other element it
-wraps. What was measured, in Chrome 153: a real right press makes Chrome's own
+rule, which has no caret, it parks at the rule, and with neither a caret nor a
+selected node — Select All in a document that ends with a rule — at the editor's
+own box. On macOS a Control-click opens the menu like a right press, and the word a
+Mac right-click selects under the pointer is not mistaken for Select All; neither is
+verified on a Mac. An element up the chain carrying a live `data-oncontextmenu`
+still wins, as it does over any other element it wraps: over the whole editor,
+links and images included, and for the menu key and Shift+F10, which dispatch that
+handler with its click context at the caret and open no browser menu. What was measured, in Chrome 153: a real right press makes Chrome's own
 `contextmenu` target the parked textarea, unprevented, where before it targeted the
 paragraph (outside a selection it still targets the `<a>` or `<img>`) — Chrome
 builds its menu for the element its hit test finds there, so the editing menu

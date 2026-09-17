@@ -274,7 +274,9 @@ right press dispatches `contextmenu` at the textarea, not prevented). The
 keyboard's menu key and Shift+F10 go to the focused element, that same textarea;
 the editor parks it at the caret on that key, so the `contextmenu` the browser
 places at the focused element's box lands at the caret rather than at the
-textarea's resting corner. A `contextmenu` dispatched at the
+textarea's resting corner. Under an app's `data-oncontextmenu` the key opens that
+handler instead, with its click context at the caret, and the browser's menu is
+prevented. A `contextmenu` dispatched at the
 surface itself with nothing parked — by script, or by a touch long-press (#821) —
 is still suppressed with the flag on. So is a right-click on a link or an image in
 the editor outside the selection: the editor parks nothing there, so that the
