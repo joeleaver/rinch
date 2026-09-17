@@ -1218,7 +1218,7 @@ fn walk_text_nodes_for_offset(
 /// The nearest ancestor-or-self of `el` carrying handler attribute `attr`
 /// (`data-rid`, `data-onmousedown`, `data-ondragover`, …) and its parsed
 /// handler id.
-fn nearest_handler(
+pub(crate) fn nearest_handler(
     el: &web_sys::Element,
     attr: &str,
 ) -> Option<(web_sys::Element, events::EventHandlerId)> {
@@ -1277,7 +1277,7 @@ fn click_ancestors_of(rid_el: &web_sys::Element) -> Vec<events::AncestorBounds> 
 /// `clientX = clientY = 0`, which would be wrong. `CLICK_CONTEXT` is never
 /// cleared, so every dispatch path must set it or the handler reads the last
 /// mouse click's coordinates (`Select` computes flip placement from them).
-fn set_click_context_for(
+pub(crate) fn set_click_context_for(
     rid_el: &web_sys::Element,
     cursor: Option<(f32, f32)>,
     text_hit: events::TextHitInfo,
@@ -1472,7 +1472,7 @@ fn document_selection_text() -> Option<String> {
 }
 
 /// Read the keyboard modifier state carried by a browser keyboard event.
-fn modifiers_from_key_event(event: &web_sys::KeyboardEvent) -> events::ModifierState {
+pub(crate) fn modifiers_from_key_event(event: &web_sys::KeyboardEvent) -> events::ModifierState {
     events::ModifierState {
         shift: event.shift_key(),
         ctrl: event.ctrl_key(),

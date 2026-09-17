@@ -63,6 +63,8 @@ web-sys = { version = "0.3", features = [
     "InputEvent",
     # Composition-event constructor for the focused-value-write tests (#238).
     "CompositionEventInit",
+    # Clipboard / input-event constructors for the editor context-menu tests (#814).
+    "ClipboardEventInit", "InputEventInit",
     "DataTransfer", "DataTransferItem", "DataTransferItemList",
     "Blob", "File", "FileReader",
 ] }
