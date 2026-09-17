@@ -296,8 +296,54 @@ mod tests {
     #[test]
     fn a_caret_in_an_untouched_later_paragraph_shifts_with_the_document() {
         let schema = Rc::new(Schema::starter_kit());
-        let state = state_with_cursor(&schema, &["hello", "next"], 9); // "ne|xt"
+        let state = state_with_cursor(&schema, &["hello", "next"], 9); // "n|ext"
         let target = doc(&schema, &["hello there", "next"]);
         assert_eq!(head_after(&state, &target), 15);
+    }
+
+    /// A peer removes a whole block. The old and new changed ranges then no longer
+    /// correspond index for index, so the walk that follows them in step must not
+    /// start: `Fragment::child` indexes a `Vec`, and reading past the end of the
+    /// shorter range is a panic — which on wasm takes the page down. The
+    /// block-count guard is the whole of what stands in front of that, and this is
+    /// its only pin; `a_split_paragraph_still_leaves_a_valid_caret` covers the
+    /// other direction, where there are *more* new blocks and no walk runs off
+    /// anything.
+    #[test]
+    fn a_peer_deleting_a_whole_paragraph_is_left_to_the_mapping() {
+        let schema = Rc::new(Schema::starter_kit());
+        let state = state_with_cursor(&schema, &["keep", "doomed"], 3); // "ke|ep"
+        let target = doc(&schema, &["keep"]);
+        assert_eq!(head_after(&state, &target), 3);
+    }
+
+    /// Two blocks change in one delta and the caret is in the **second** of them.
+    /// Its new home is measured against what the earlier changed blocks have
+    /// *become*, not against what they were — every other fixture puts the caret in
+    /// the first changed block, where the two are the same number and a walk that
+    /// accumulated the old sizes would still answer correctly.
+    #[test]
+    fn a_caret_in_a_later_changed_block_is_measured_against_the_new_earlier_block() {
+        let schema = Rc::new(Schema::starter_kit());
+        // "alpha" is 5 long, so its block is 7 wide and "beta" content is 8..=12;
+        // the caret is at the end of "beta".
+        let state = state_with_cursor(&schema, &["alpha", "beta", "tail"], 12);
+        let target = doc(&schema, &["alpha rewritten", "beta!", "tail"]);
+        // "alpha rewritten" is 15 long, so its block is 17 wide, and the caret keeps
+        // its place at the end of "beta": 17 + 1 + 4.
+        assert_eq!(head_after(&state, &target), 22);
+    }
+
+    /// The caret sits exactly where the two versions stop agreeing. It belongs to
+    /// the text before it, which both versions share, so it does not move. Reading
+    /// that boundary as *inside* the change instead would carry it to the end of
+    /// whatever replaced the rest of the line — a caret in the middle of a line
+    /// jumping to its end on a peer's keystroke.
+    #[test]
+    fn a_caret_at_the_point_the_two_versions_diverge_stays_put() {
+        let schema = Rc::new(Schema::starter_kit());
+        let state = state_with_cursor(&schema, &["hello world"], 7); // "hello |world"
+        let target = doc(&schema, &["hello there"]);
+        assert_eq!(head_after(&state, &target), 7);
     }
 }
