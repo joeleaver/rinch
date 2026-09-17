@@ -73,6 +73,10 @@ const IMAGE_AT: usize = 27;
 const RULE: &str = "<p>Hello world one</p><hr><p>Second paragraph here</p>";
 const RULE_AT: usize = 17;
 
+/// A document that ends with a horizontal rule: Select All there leaves the head
+/// after the rule, with no caret rect and no node outline.
+const ENDS_WITH_RULE: &str = "<p>above</p><hr>";
+
 /// The zero-width space the parked field starts and ends with.
 const SENTINEL: char = '\u{200b}';
 
@@ -83,6 +87,8 @@ struct Fixture {
     /// Dispatches of the `data-oncontextmenu` handler the app-menu fixture wraps
     /// the editor in (0 for every other fixture).
     app_menu: Rc<Cell<u32>>,
+    /// The `(mouse_x, mouse_y)` of the click context that handler last saw.
+    app_menu_at: Rc<Cell<(f32, f32)>>,
 }
 
 impl Fixture {
@@ -121,6 +127,8 @@ impl Fixture {
         assert!(handle.load_html(content));
         let count = Rc::new(Cell::new(0u32));
         let counter = count.clone();
+        let menu_at = Rc::new(Cell::new((f32::NAN, f32::NAN)));
+        let seen_at = menu_at.clone();
         let mounted = handle.clone();
         let root = rinch_web::mount_into(
             &host,
@@ -130,7 +138,11 @@ impl Fixture {
                 if app_menu {
                     let wrapper = scope.create_element("div");
                     wrapper.set_attribute("id", "app-menu");
-                    let id = scope.register_handler(move || counter.set(counter.get() + 1));
+                    let id = scope.register_handler(move || {
+                        counter.set(counter.get() + 1);
+                        let ctx = rinch_core::events::get_click_context();
+                        seen_at.set((ctx.mouse_x, ctx.mouse_y));
+                    });
                     wrapper.set_attribute("data-oncontextmenu", &id.0.to_string());
                     wrapper.append_child(&editor);
                     wrapper
@@ -144,6 +156,7 @@ impl Fixture {
             host,
             handle,
             app_menu: count,
+            app_menu_at: menu_at,
         }
     }
 
@@ -573,12 +586,14 @@ fn a_left_press_on_the_parked_textarea_still_places_the_caret() {
 
 /// However a press ends — even when no menu ever answers it (a key an app
 /// cancelled, a platform whose keys open none, a release that never arrives) —
-/// the parked textarea is hittable only for the input event the browser builds
-/// its menu from, not until something else happens: content under the box a
-/// moment later is what a click there reaches. Kills: a park that waits for a
-/// `contextmenu`, a release or a timeout of seconds before it goes back.
+/// the parked textarea goes back 100 ms after the press or key that parked it,
+/// and a click on page content under its box after that reaches the content.
+/// Inside those 100 ms a click in the 30 px box does go to the textarea (the
+/// reviewer measured a click at +30 and +80 ms lost, one at +150 ms delivered).
+/// Kills: a park that waits for a `contextmenu`, a release or a timeout of
+/// seconds before it goes back.
 #[wasm_bindgen_test]
-async fn a_park_no_menu_answers_never_intercepts_a_click_on_page_content() {
+async fn a_park_no_menu_answers_lets_clicks_reach_page_content_after_100_ms() {
     let f = Fixture::mount();
     f.focus_at(f.point(0, 1));
     f.handle.set_selection(Selection::cursor(Pos(21)));
@@ -709,6 +724,50 @@ async fn a_menu_that_follows_the_release_still_finds_the_textarea() {
     f.teardown();
 }
 
+/// A release parks again only over the cycle's own editor: a right press
+/// dragged out onto page content and released there — where Windows would open
+/// its menu (by reading Chromium) — belongs to that content, not to the editor.
+/// Kills: a release re-parking wherever it lands.
+#[wasm_bindgen_test]
+async fn a_release_over_page_content_does_not_park_the_textarea() {
+    let f = Fixture::mount();
+    let at = f.point(0, 8);
+    f.focus_at(at);
+    let host = f.host.get_bounding_client_rect();
+    let button = document().create_element("button").unwrap();
+    button.set_attribute(HOST_MARKER, "").unwrap();
+    button
+        .set_attribute(
+            "style",
+            &format!(
+                "position: fixed; left: {}px; top: {}px; width: 60px; height: 30px; \
+                 margin: 0; padding: 0; border: 0; z-index: 10;",
+                host.x() + 20.0,
+                host.y() + host.height() + 40.0
+            ),
+        )
+        .unwrap();
+    document().body().unwrap().append_child(&button).unwrap();
+    let out = centre(&button);
+
+    mouse("mousedown", at.0, at.1, 2);
+    sleep(250).await;
+    assert!(
+        under(out.0, out.1).is_same_node(Some(&button)),
+        "positive control: the release point is the button"
+    );
+    mouse("mouseup", out.0, out.1, 2);
+
+    let hit = under(out.0, out.1);
+    assert!(
+        hit.is_same_node(Some(&button)),
+        "a release over page content parks nothing there, found <{}>",
+        hit.tag_name()
+    );
+    button.remove();
+    f.teardown();
+}
+
 /// Focus moving to another element ends the menu cycle there and then — the
 /// field gives up the sentinel — rather than on a timer. Kills: nothing ending a
 /// cycle when focus leaves the textarea.
@@ -773,6 +832,10 @@ async fn the_menu_key_parks_the_textarea_at_the_caret() {
             !ev.default_prevented(),
             "{key}: the key must reach the browser, which is what opens the menu"
         );
+        assert!(
+            !key_event(&ta, "keyup", key, key == "F10").default_prevented(),
+            "{key}: and so must its release"
+        );
         let hit = under(right_of_caret.0, right_of_caret.1);
         assert!(
             is_capture(&hit),
@@ -799,29 +862,107 @@ async fn the_menu_key_parks_the_textarea_at_the_caret() {
     f.teardown();
 }
 
-/// The menu key under an app's `data-oncontextmenu` leaves the textarea where it
-/// is, as a right-click there does: the app has claimed the editor's context
-/// menu. Kills: the key parking regardless of an app handler.
+/// The menu key and Shift+F10 under an app's `data-oncontextmenu` open the app's
+/// menu, as a right-click there does: the handler is dispatched with its click
+/// context at the caret, the key is prevented so the browser opens no menu of
+/// its own — and so is the menu key's release, where Windows opens it (by
+/// reading Chromium) — and nothing is parked. Kills: not dispatching the
+/// handler; leaving the key to the browser; leaving the menu key's release to
+/// it; a click context that is not the caret.
 #[wasm_bindgen_test]
-fn the_menu_key_does_not_park_under_an_apps_context_menu_handler() {
+fn the_menu_key_under_an_apps_context_menu_handler_opens_the_apps_menu() {
     let f = Fixture::mount_with(true);
     f.focus_at(f.point(0, 1));
     f.handle.set_selection(Selection::cursor(Pos(21)));
     let (_, cy) = f.point(1, 3);
-    let probe = (caret_x(&f.paragraph(1), 3) + 6.0, cy);
+    let cx = caret_x(&f.paragraph(1), 3);
+    let probe = (cx + 6.0, cy);
+    let ta = f.capture();
+
+    for (i, (key, shift)) in [("ContextMenu", false), ("F10", true)]
+        .into_iter()
+        .enumerate()
+    {
+        let ev = key_event(&ta, "keydown", key, shift);
+
+        assert_eq!(
+            f.app_menu.get(),
+            i as u32 + 1,
+            "{key}: the app's handler is dispatched"
+        );
+        assert!(
+            ev.default_prevented(),
+            "{key}: the key is prevented, so the browser opens no menu of its own"
+        );
+        let (mx, my) = f.app_menu_at.get();
+        assert!(
+            (mx - cx).abs() <= 1.0 && (my - cy).abs() <= 12.0,
+            "{key}: the handler's click context is the caret ({cx}, {cy}), got ({mx}, {my})"
+        );
+        assert!(
+            !is_capture(&under(probe.0, probe.1)),
+            "{key}: nothing is parked at the caret"
+        );
+        assert!(
+            !ta.value().starts_with(SENTINEL),
+            "{key}: and no menu cycle took the field, got {:?}",
+            ta.value()
+        );
+        let up = key_event(&ta, "keyup", key, shift);
+        if key == "ContextMenu" {
+            assert!(
+                up.default_prevented(),
+                "the menu key's release is prevented too"
+            );
+        }
+    }
+    f.teardown();
+}
+
+/// Select All in a document that ends with a horizontal rule leaves the head
+/// after the rule, where there is neither a caret rect nor a node outline. The
+/// menu key parks at the editor's own box then, with the field carrying the
+/// selection, rather than parking nothing. Kills: no editor-box fallback.
+#[wasm_bindgen_test]
+fn the_menu_key_parks_at_the_editor_with_neither_a_caret_nor_an_outline() {
+    let f = Fixture::mount_content(ENDS_WITH_RULE, false);
+    f.focus_at(f.point(0, 2));
+    assert!(f.handle.command("selectAll"));
+    let sel = f.handle.selection();
+    assert!(
+        !sel.is_empty(),
+        "precondition: everything is selected, got {sel:?}"
+    );
+    let outline_shown = document()
+        .query_selector("[data-pm-editor] [data-pm-selected]")
+        .unwrap()
+        .is_some_and(|el| el.get_bounding_client_rect().width() > 0.0);
+    assert!(!outline_shown, "precondition: no node outline");
+    let editor = document()
+        .query_selector("[data-pm-editor]")
+        .unwrap()
+        .expect("the editor");
+    let r = editor.get_bounding_client_rect();
+    let probe = ((r.x() + 6.0) as f32, (r.y() + 6.0) as f32);
+    assert!(
+        !is_capture(&under(probe.0, probe.1)),
+        "positive control: nothing parked at the editor's corner before the key"
+    );
     let ta = f.capture();
 
     let ev = key_event(&ta, "keydown", "ContextMenu", false);
 
-    assert!(!ev.default_prevented(), "the key still reaches the browser");
+    assert!(!ev.default_prevented());
+    let hit = under(probe.0, probe.1);
     assert!(
-        !is_capture(&under(probe.0, probe.1)),
-        "nothing is parked at the caret under an app handler"
+        is_capture(&hit),
+        "parked at the editor's box, found <{}>",
+        hit.tag_name()
     );
+    let (start, end) = selection_span(&ta);
     assert!(
-        !ta.value().starts_with(SENTINEL),
-        "and no menu cycle took the field, got {:?}",
-        ta.value()
+        end > start,
+        "the field carries the selection for Copy, got {start}..{end}"
     );
     f.teardown();
 }
