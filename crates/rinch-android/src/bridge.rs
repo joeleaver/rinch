@@ -148,6 +148,19 @@ pub fn init(android_app: &AndroidApp) {
                     fn_ptr: crate::intent::Java_com_rinch_RinchActivity_nativeOnIncomingIntent
                         as *mut std::ffi::c_void,
                 },
+                jni::NativeMethod {
+                    name: "nativeOnTextActionItem".into(),
+                    sig: "(I)V".into(),
+                    fn_ptr: crate::text_action::Java_com_rinch_RinchActivity_nativeOnTextActionItem
+                        as *mut std::ffi::c_void,
+                },
+                jni::NativeMethod {
+                    name: "nativeOnTextActionModeFinished".into(),
+                    sig: "()V".into(),
+                    fn_ptr:
+                        crate::text_action::Java_com_rinch_RinchActivity_nativeOnTextActionModeFinished
+                            as *mut std::ffi::c_void,
+                },
             ],
         )
         .expect("failed to register RinchActivity native methods");
@@ -205,8 +218,14 @@ pub fn activity_class() -> &'static GlobalRef {
 /// an `UnsatisfiedLinkError` on the first call, at which point the activity is
 /// force-finished. One list, used by both registration sites, so a method cannot
 /// be added to one and missed from the other.
-fn input_connection_natives() -> [jni::NativeMethod; 4] {
+fn input_connection_natives() -> [jni::NativeMethod; 5] {
     [
+        jni::NativeMethod {
+            name: "nativeContextMenuAction".into(),
+            sig: "(I)V".into(),
+            fn_ptr: crate::text_action::Java_com_rinch_RinchInputConnection_nativeContextMenuAction
+                as *mut std::ffi::c_void,
+        },
         jni::NativeMethod {
             name: "nativeCommitText".into(),
             sig: "(Ljava/lang/String;)V".into(),

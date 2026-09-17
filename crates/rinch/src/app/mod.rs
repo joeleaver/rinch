@@ -77,6 +77,8 @@ mod paused_animation_frames_tests;
 mod select_widget;
 #[cfg(test)]
 mod stepper_state_709_tests;
+#[cfg(test)]
+mod text_action_word_tests;
 mod text_context_menu;
 #[cfg(test)]
 mod text_context_menu_tests;
@@ -2073,6 +2075,42 @@ impl RinchApp {
     fn handle_select_all(&mut self) {
         self.handle_input_edit_command(EditCommand::SelectAll);
     }
+
+    /// Select the word around the focused field's caret — the platform
+    /// convention for a long press on Android (issue #813) — and say whether
+    /// there was one. A caret on whitespace or punctuation, or in an empty
+    /// field, selects nothing and stays where the press put it, which is what
+    /// leaves an empty field showing only Paste. A read-only field still
+    /// selects: selecting is not a mutation. A selection that already exists
+    /// is kept — the seam's caret rule keeps it for a press inside it, and a
+    /// long press on a selection is a request to act on it, not to shrink it
+    /// to one word.
+    ///
+    /// Not an `EditCommand`: `SelectWordLeft`/`SelectWordRight` extend from
+    /// the caret in one direction, and a caret sitting at the *start* of a
+    /// word would have `MoveWordLeft` walk into the previous word first.
+    /// [`word_around`] is the boundary rule, on its own so it can be pinned.
+    pub fn select_word_at_caret(&mut self) -> bool {
+        if self.live_focused_input_handler().is_none() {
+            return false;
+        }
+        self.adopt_focused_input_value_from_dom();
+        let Some(state) = self.focused_input_state.as_mut() else {
+            return false;
+        };
+        // A press inside an existing selection keeps it (the seam's caret
+        // rule), and that selection is what the toolbar acts on.
+        if state.selection.anchor != state.selection.head {
+            return true;
+        }
+        let text = state.document.to_text();
+        let Some((start, end)) = word_around(&text, state.selection.head.offset()) else {
+            return false;
+        };
+        state.selection = Selection::new(start, end);
+        self.sync_input_cursor_to_dom();
+        true
+    }
     fn handle_copy(&mut self) {
         // Check for read-only text selection first
         if self
@@ -3623,6 +3661,35 @@ impl RinchApp {
             }
         }
     }
+}
+
+/// The word around a caret, as `(start, end)` byte offsets, or `None` when
+/// the caret touches no word character on either side. A word character is
+/// alphanumeric or `_`; a caret *between* two characters belongs to the word
+/// on either side of it, so a caret at a word's start or end selects that
+/// word rather than its neighbour. `caret` is clamped to the text and snapped
+/// back to a char boundary.
+pub(crate) fn word_around(text: &str, caret: usize) -> Option<(usize, usize)> {
+    let is_word = |c: char| c.is_alphanumeric() || c == '_';
+    let caret = (0..=caret.min(text.len()))
+        .rev()
+        .find(|&i| text.is_char_boundary(i))?;
+    let touches_word = text[caret..].chars().next().is_some_and(is_word)
+        || text[..caret].chars().next_back().is_some_and(is_word);
+    if !touches_word {
+        return None;
+    }
+    let start = text[..caret]
+        .char_indices()
+        .rev()
+        .take_while(|&(_, c)| is_word(c))
+        .last()
+        .map_or(caret, |(i, _)| i);
+    let end = text[caret..]
+        .char_indices()
+        .find(|&(_, c)| !is_word(c))
+        .map_or(text.len(), |(i, _)| caret + i);
+    Some((start, end))
 }
 
 #[cfg(all(test, software_shell))]

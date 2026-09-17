@@ -54,6 +54,8 @@ fn Demo(on_stress: Callback, children: &[NodeHandle]) -> NodeHandle {
     let location_text = Signal::new(String::new());
     let image_data_uri = Signal::new(String::new());
     let img_status = Signal::new(String::new());
+    let input_value = Signal::new(String::from("hello world"));
+    let textarea_value = Signal::new(String::new());
 
     #[cfg(target_os = "android")]
     {
@@ -78,6 +80,34 @@ fn Demo(on_stress: Callback, children: &[NodeHandle]) -> NodeHandle {
                 style: "padding: 10px 20px; background-color: #E91E63; color: white; font-size: 16px; align-self: flex-start",
                 onclick: move || on_stress.invoke(),
                 "Stress Test"
+            }
+
+            // Text fields, for the text-selection toolbar and system-clipboard
+            // paste (issue #813). The first carries a value so a long press
+            // has a word to land on; the second starts empty, which is the
+            // shape Android shows only Paste for.
+            div { style: "font-size: 18px; font-weight: bold; color: #1976D2; margin-top: 8px", "Text fields" }
+            // `oninput` is what makes an element a text field the shell will
+            // claim on a press (`click_handling.rs`, the `data-oninput` walk);
+            // a bare `input {}` is inert. The mirrors under each field are a
+            // second witness that a paste reached the value, not just the
+            // pixels.
+            input {
+                style: "padding: 8px; font-size: 16px; border: 1px solid #999; background-color: #fff; color: #222",
+                value: "hello world",
+                placeholder: "single-line input",
+                oninput: move |v: String| input_value.set(v),
+            }
+            div { style: "font-family: monospace; font-size: 13px; color: #666",
+                "input value: " {|| input_value.get()}
+            }
+            textarea {
+                style: "padding: 8px; font-size: 16px; border: 1px solid #999; background-color: #fff; color: #222; height: 80px",
+                placeholder: "multi-line textarea",
+                oninput: move |v: String| textarea_value.set(v),
+            }
+            div { style: "font-family: monospace; font-size: 13px; color: #666; white-space: pre-wrap",
+                "textarea value: " {|| textarea_value.get()}
             }
 
             div { style: "font-size: 18px; font-weight: bold; color: #1976D2; margin-top: 8px", "Sensors" }

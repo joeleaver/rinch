@@ -79,6 +79,26 @@ public class RinchInputConnection extends BaseInputConnection {
         return super.sendKeyEvent(event);
     }
 
+    @Override
+    public boolean performContextMenuAction(int id) {
+        // An IME with its own editing keys may deliver a paste this way
+        // rather than as committed text — Gboard's Text Editing panel does
+        // (measured on an API 34 emulator; its clipboard chip and clipboard
+        // panel commit text instead) — and BaseInputConnection's default
+        // does nothing with it: it acts on getEditable(), which this
+        // connection keeps permanently empty because rinch owns the value.
+        // Forwarded into the same queue the floating toolbar's items use
+        // (issue #813), so an IME's paste reaches the field whatever the
+        // toolbar is doing. `false` for an id rinch has no action for lets
+        // the IME hear that nothing happened.
+        int code = RinchActivity.textActionCode(id);
+        if (code < 0) {
+            return false;
+        }
+        nativeContextMenuAction(code);
+        return true;
+    }
+
     // ── JNI native methods (implemented in rinch-android/src/ime.rs) ───
     //
     // One queue, in call order. A composition and the commit that ends it are a
@@ -88,4 +108,7 @@ public class RinchInputConnection extends BaseInputConnection {
     private static native void nativeSetComposingText(String text, int newCursorPosition);
     private static native void nativeFinishComposingText();
     private static native void nativeDeleteSurrounding(int before, int after);
+    /** The action code from {@link RinchActivity#textActionCode}. Implemented in
+     *  rinch-android/src/text_action.rs. */
+    private static native void nativeContextMenuAction(int action);
 }

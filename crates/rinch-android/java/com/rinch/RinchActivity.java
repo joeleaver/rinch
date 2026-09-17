@@ -8,6 +8,10 @@ import android.content.ContentValues;
 import android.content.Intent;
 import android.content.pm.PackageManager;
 import android.graphics.Bitmap;
+import android.graphics.Rect;
+import android.view.ActionMode;
+import android.view.Menu;
+import android.view.MenuItem;
 import android.graphics.BitmapFactory;
 import android.graphics.Matrix;
 import android.net.Uri;
@@ -489,6 +493,193 @@ public class RinchActivity extends NativeActivity {
         });
     }
 
+    // ── Text-selection toolbar (issue #813) ─────────────────────────────
+
+    /**
+     * The floating Cut / Copy / Paste / Select all toolbar currently up over
+     * a rinch text field, or null. UI thread only.
+     */
+    private ActionMode textActionMode;
+    /** Where the toolbar floats: the caret or selection, in decor-view (window) pixels. */
+    private final Rect textActionRect = new Rect();
+    private boolean textActionCut, textActionCopy, textActionPaste, textActionSelectAll;
+
+    /**
+     * The small integer each platform text action crosses JNI as, so the Rust
+     * side spells no {@code android.R.id}. The Rust half of this table is
+     * {@code TextAction::from_code}; -1 is "not one of ours".
+     */
+    public static int textActionCode(int id) {
+        if (id == android.R.id.cut) return 0;
+        if (id == android.R.id.copy) return 1;
+        if (id == android.R.id.paste) return 2;
+        if (id == android.R.id.selectAll) return 3;
+        return -1;
+    }
+
+    /**
+     * Show the platform's floating text-selection toolbar beside the given
+     * rect, or move and re-prepare the one already showing.
+     *
+     * <p>The rect is in the decor view's coordinates — window pixels, which is
+     * the space the native side's touch events arrive in. It is started on the
+     * <em>decor view</em>, not on {@code inputView}: {@code FloatingActionMode}
+     * only shows its toolbar while the content rect intersects the originating
+     * view's on-screen rect, and the input view is a 1x1 proxy at the origin,
+     * so a rect beside any real caret would leave the toolbar hidden.
+     *
+     * <p>Items are shown or hidden rather than disabled, which is what the
+     * platform's own text views do: Cut and Copy go with an empty selection,
+     * Paste with a read-only field. Their titles are the platform's strings,
+     * so they are localised like everything else on the device.
+     *
+     * <p>{@code start} says whether a mode may be started when none is up.
+     * The native loop passes {@code false} for a refresh of a toolbar it
+     * believes is showing. This runs later than the loop decided it, and a tap
+     * on an item may have finished the mode in between; a refresh that started
+     * a new one here would leave a toolbar on screen that the loop believes is
+     * gone, whose items act on nothing (PR #819 final review, N1). The
+     * dismissal that item queued takes the loop's mirror down on its own.
+     */
+    public void showTextActionMode(final int left, final int top, final int right, final int bottom,
+                                   final boolean cut, final boolean copy,
+                                   final boolean paste, final boolean selectAll,
+                                   final boolean start) {
+        runOnUiThread(() -> {
+            textActionRect.set(left, top, right, bottom);
+            textActionCut = cut;
+            textActionCopy = copy;
+            textActionPaste = paste;
+            textActionSelectAll = selectAll;
+            if (textActionMode != null) {
+                textActionMode.invalidate();
+                textActionMode.invalidateContentRect();
+                return;
+            }
+            // A refresh never starts a mode: the one it was meant for is gone.
+            if (!start) {
+                return;
+            }
+            android.view.View host = getWindow().getDecorView();
+            textActionMode = host.startActionMode(new ActionMode.Callback2() {
+                @Override
+                public boolean onCreateActionMode(ActionMode mode, Menu menu) {
+                    menu.add(Menu.NONE, android.R.id.cut, 0, android.R.string.cut);
+                    menu.add(Menu.NONE, android.R.id.copy, 1, android.R.string.copy);
+                    menu.add(Menu.NONE, android.R.id.paste, 2, android.R.string.paste);
+                    menu.add(Menu.NONE, android.R.id.selectAll, 3, android.R.string.selectAll);
+                    return true;
+                }
+
+                @Override
+                public boolean onPrepareActionMode(ActionMode mode, Menu menu) {
+                    menu.findItem(android.R.id.cut).setVisible(textActionCut);
+                    menu.findItem(android.R.id.copy).setVisible(textActionCopy);
+                    menu.findItem(android.R.id.paste).setVisible(textActionPaste);
+                    menu.findItem(android.R.id.selectAll).setVisible(textActionSelectAll);
+                    return true;
+                }
+
+                @Override
+                public boolean onActionItemClicked(ActionMode mode, MenuItem item) {
+                    int code = textActionCode(item.getItemId());
+                    if (code < 0) {
+                        return false;
+                    }
+                    // Cut, copy and paste end the interaction, as they do in a
+                    // TextView; Select all leaves the toolbar up over the new
+                    // selection, and the native side re-prepares it.
+                    //
+                    // The finish comes BEFORE the item is reported, and the
+                    // order is load-bearing (PR #819 review, F1). Both calls
+                    // queue an event for the native loop and wake it, and the
+                    // loop may drain either one alone. Reported first, a lone
+                    // `Perform` turn ran the action and then re-prepared a
+                    // toolbar the loop still believed was up — posting a
+                    // `showTextActionMode` that, by the time it ran here,
+                    // found this mode already finished and started a NEW one:
+                    // a toolbar on screen with the native side believing there
+                    // is none, whose items then acted on nothing. Finishing
+                    // first puts the dismissal report ahead of the item in the
+                    // one queue, so whichever way the loop drains, it hears
+                    // the toolbar is gone before it can refresh it. A refresh
+                    // it had already posted before this tap is the other half,
+                    // and showTextActionMode's `start` flag closes that one.
+                    if (code != 3) {
+                        mode.finish();
+                    }
+                    nativeOnTextActionItem(code);
+                    return true;
+                }
+
+                @Override
+                public void onDestroyActionMode(ActionMode mode) {
+                    if (textActionMode == mode) {
+                        textActionMode = null;
+                    }
+                    // Every way a mode can end passes through here — an item
+                    // that finishes it, finish(), onPause, window-focus loss,
+                    // a replacement — so the native mirror
+                    // of "is it showing" can never stay latched on a toolbar
+                    // that is gone.
+                    nativeOnTextActionModeFinished();
+                }
+
+                @Override
+                public void onGetContentRect(ActionMode mode, android.view.View view, Rect outRect) {
+                    outRect.set(textActionRect);
+                }
+            }, ActionMode.TYPE_FLOATING);
+        });
+    }
+
+    /**
+     * Take the toolbar down.
+     *
+     * Reports exactly one dismissal per call: through onDestroyActionMode
+     * when there was a mode to finish, directly when there was not. The
+     * native side counts the finishes it asked for against the reports it
+     * gets, so a request that quietly found nothing would leave a count
+     * unpaid and the next genuine dismissal (an item that finishes the
+     * mode, onPause) swallowed as if it were this one.
+     */
+    public void finishTextActionMode() {
+        runOnUiThread(() -> {
+            if (textActionMode != null) {
+                textActionMode.finish();
+            } else {
+                nativeOnTextActionModeFinished();
+            }
+        });
+    }
+
+    @Override
+    public void onWindowFocusChanged(boolean hasFocus) {
+        super.onWindowFocusChanged(hasFocus);
+        // A dialog or another window over ours: the toolbar's field is no
+        // longer what the user is acting on. Same shape as onPause, and the
+        // same reason it is here rather than native. The toolbar's own popup
+        // and the soft keyboard are not focusable windows and do not take
+        // window focus, so neither trips this.
+        if (!hasFocus && textActionMode != null) {
+            textActionMode.finish();
+        }
+    }
+
+    @Override
+    protected void onPause() {
+        // The independent clearing condition for the toolbar (see
+        // text_action.rs): the native side finishes it on its own events, any
+        // of which can be missed, and this one needs no native call — it runs
+        // on the UI thread and finish() reports back through
+        // onDestroyActionMode. Lifecycle itself still reaches Rust through the
+        // android-activity glue, not through this override.
+        if (textActionMode != null) {
+            textActionMode.finish();
+        }
+        super.onPause();
+    }
+
     // ── Clipboard ───────────────────────────────────────────────────────
 
     public void copyToClipboard(String text) {
@@ -556,6 +747,11 @@ public class RinchActivity extends NativeActivity {
     }
 
     private native void nativeOnPermissionsResult(int requestCode, boolean allGranted);
+
+    /** A toolbar item was tapped; the code is {@link #textActionCode}'s. rinch-android/src/text_action.rs. */
+    private native void nativeOnTextActionItem(int action);
+    /** The toolbar is gone, by whatever route. rinch-android/src/text_action.rs. */
+    private native void nativeOnTextActionModeFinished();
 
     // ── File Picker (SAF) ───────────────────────────────────────────────
 

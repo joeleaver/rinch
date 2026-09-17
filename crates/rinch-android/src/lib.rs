@@ -91,6 +91,9 @@ pub mod screen;
 pub mod sensors;
 #[cfg(target_os = "android")]
 pub mod share;
+// Same split as `callback`: the queue and its drain compile everywhere, the JNI
+// entry points and the calls into `RinchActivity` are Android-only.
+pub mod text_action;
 pub mod wake;
 
 #[cfg(target_os = "android")]

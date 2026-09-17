@@ -2325,6 +2325,56 @@ intercepted Ctrl+V, which is still `prevent_default()`ed. One slot per document 
 thread-global fallback, like `set_keyboard_interceptor` (#340/#478); desktop never
 dispatches it (no OS paste event).
 
+**Android: a long press on a text field shows the platform's floating toolbar**
+(issue #813) — `ActionMode.TYPE_FLOATING`, started by `RinchActivity` on the
+window's decor view (the 1x1 `RinchInputView` cannot host one: the framework
+hides the toolbar unless the content rect intersects the originating view).
+The shell sets `TextContextMenuPresentation::Shell`, so the runtime prepares
+the caret and selection and hands back `AppAction::ShowTextContextMenu`; the
+shell selects the word under the finger (`RinchApp::select_word_at_caret`, a
+press inside a selection keeps it), shows the items `text_edit_state()` allows,
+and performs a tapped item through `perform_text_edit` — the chord's own code.
+Item taps, `RinchInputConnection.performContextMenuAction` and every dismissal
+arrive through one queue in `rinch_android::text_action`, and
+`ToolbarMirror` there is the loop's belief about the toolbar, with a count of
+the finishes it asked for so a late report for a finished mode cannot take
+down the one that replaced it. Two things that were silently wrong before and
+are worth knowing: **a still finger never fired the long press** on an idle
+loop, because K37's looper sleep has no deadline and nothing woke it
+(`TouchGesture::long_press_due` now feeds `poll_timeout`); and **the `android`
+feature now implies `clipboard`** — without it `handle_paste` reads an empty
+string, so a hardware Ctrl+V inserted nothing and an IME's
+`performContextMenuAction(paste)` returned `true` having pasted nothing (the
+toolbar hides its Paste). Paste is also hidden while `hasPrimaryClip()` is
+false, which reads no clip and raises no clipboard-access notice (measured),
+and is asked **once per long press**, not per refresh: it is a binder round
+trip (0.56 ms median, 10.7 ms p99 on the emulator) and the refresh runs every
+turn the toolbar is up. **An item that finishes the toolbar is finished on
+the Java side before it is reported** (PR #819 review, F1): both calls queue
+an event and wake the loop, and reported first, a lone `Perform` turn
+re-prepared a toolbar the loop believed was up and the UI thread started a
+fresh one — an orphan whose items acted on nothing. **And a refresh never
+starts a toolbar** (final review, N1): a refresh posted *before* the tap
+reaches the UI thread after the item finished the mode, so
+`ToolbarMirror::request` answers `Start | Update | Nothing`, the per-turn
+refresh (run only while the mirror is shown) is always an `Update`, and
+`showTextActionMode`'s `start` flag returns rather than starting a mode for
+one — measured 11 of 11 orphans under an anchor moving every frame before
+it. **A `Perform` carries its
+source**, because Cut / Copy / Paste end the toolbar from either one (as in an
+`EditText`, measured) but only a toolbar item has already finished it:
+`ToolbarMirror::performing` takes the mirror down uncounted for a toolbar item
+and asks for a counted finish for an IME request — treating the IME's like the
+item's left an orphan no tap could take down, measured. Measured on an API 34
+emulator with one Gboard build: its clipboard chip and clipboard panel both
+paste as `commitText`, and its Text Editing panel's Paste and Select all
+arrive as `performContextMenuAction` (its Cut and Copy stay disabled over a
+rinch selection, which the input connection does not report to the IME).
+The toolbar floats over the selection itself: `TextEditState.anchor` is the
+selection's rect (a 1px caret rect when collapsed), scaled to physical px. The
+rich-text `Editor` is
+`desktop`-only and is not part of an Android build (#818).
+
 **The built-in editor's Ctrl+V is asynchronous** — see the `anchor_selection` row in the
 `EditorHandle` table. The plain `<input>`/`<textarea>` paste path
 (`RinchApp::handle_paste`) is still synchronous: its completion would need `&mut

@@ -351,6 +351,64 @@ it (issue #183). Registering from `main` or startup code has no owner and keeps
 app lifetime. See
 [Lifetimes](./hooks.md#global-callback-registries-are-released-too).
 
+### Android: the text-selection toolbar and paste
+
+A long press on an `<input>` or `<textarea>` shows Android's own floating
+text-selection toolbar — Cut / Copy / Paste / Select all, the platform's
+strings, the platform's look — floating over the selected word, or over the
+caret when nothing is selected: the rect the runtime's `TextEditState.anchor`
+reports (issue #813). It is an
+`ActionMode.TYPE_FLOATING` started by `RinchActivity` on the window's decor
+view, and it is what the desktop's built-in DOM context menu becomes on
+Android: the shell sets `TextContextMenuPresentation::Shell`, so the runtime
+prepares the caret and selection and hands the presentation to the platform.
+A `data-oncontextmenu` handler on the field or an ancestor still wins, as on
+desktop.
+
+The long press follows the platform convention: it selects the word under the
+finger, a press inside an existing selection keeps that selection, and an
+empty field (or a press on whitespace) keeps its caret and offers only Paste.
+Cut and Copy appear only over a selection, Paste is hidden on a `readonly`
+field and while the clipboard is empty (`hasPrimaryClip()`, asked once per
+long press, which reads no clip and raises no clipboard-access notice), and
+Select all needs content.
+The clipboard itself is read only when Paste is tapped. Each item runs
+exactly the code its keyboard shortcut runs
+(`RinchApp::perform_text_edit`), so a toolbar Paste, a hardware Ctrl+V and an
+IME's paste are one path.
+
+**The `android` feature implies `clipboard`.** Paste is not optional on a
+phone, and without the feature `handle_paste` reads an empty string: a
+hardware Ctrl+V inserts nothing and an IME's paste request is answered "done"
+with nothing pasted (the toolbar hides its Paste instead). Every route
+measured on an API 34 emulator with one Gboard build lands: the toolbar's
+Paste; the clipboard chip Gboard puts on its suggestion strip after a copy;
+an item in Gboard's clipboard panel; the Paste key of Gboard's Text Editing
+panel; and `Ctrl+V` from a hardware keyboard. That Gboard build delivers its
+chip and clipboard-panel pastes as ordinary committed text
+(`InputConnection.commitText`), and its Text Editing panel's Paste as
+`performContextMenuAction(android.R.id.paste)` — which `BaseInputConnection`
+would otherwise drop, since rinch's connection keeps no `Editable`, and which
+reaches the same path through `RinchInputConnection`'s override.
+
+The toolbar goes when the user taps or scrolls elsewhere, types, edits from
+the keyboard, cuts, copies or pastes — from the toolbar or through the IME's
+own editing keys, as over a platform text view — or when the field loses
+focus; the activity also finishes it on its own in `onPause` and on
+window-focus loss. An item that finishes the toolbar (Cut, Copy, Paste) is
+finished on the Java side *before* the item is reported, so a refresh the
+shell decides after hearing of the item never re-prepares it; and **a refresh
+never starts a toolbar** — it only moves and re-prepares one that is up — so a
+refresh already on its way to the UI thread when the item finished the mode
+finds nothing to update and does nothing, where it used to start a new
+toolbar that nothing could take down. An IME's Cut, Copy or Paste finishes
+nothing on the Java side, and the shell asks for the finish itself.
+(Gboard's Text Editing panel enables its Cut and Copy only over a selection
+the IME can see, and rinch's input connection reports none, so from that
+panel only Paste and Select all reach a rinch field — measured.) The
+rich-text `Editor` is not part of an Android build today (it is
+`desktop`-only), so the toolbar covers `<input>` and `<textarea>`.
+
 ---
 
 ## System Tray
@@ -489,12 +547,13 @@ rinch = { version = "0.1", features = ["file-dialogs", "clipboard", "system-tray
 
 ## Platform Support
 
-| Feature | Windows | macOS | Linux |
-|---------|---------|-------|-------|
-| File Dialogs | ✓ | ✓ | ✓ |
-| Clipboard (Text) | ✓ | ✓ | ✓ |
-| Clipboard (Image) | ✓ | ✓ | ✓* |
-| System Tray | ✓ | ✓ | ✓** |
+| Feature | Windows | macOS | Linux | Android |
+|---------|---------|-------|-------|---------|
+| File Dialogs | ✓ | ✓ | ✓ | SAF (`rinch_android::file_picker`) |
+| Clipboard (Text) | ✓ | ✓ | ✓ | ✓ |
+| Clipboard (Image) | ✓ | ✓ | ✓* | – |
+| Text-selection toolbar | DOM menu | DOM menu | DOM menu | native (`ActionMode`) |
+| System Tray | ✓ | ✓ | ✓** | – |
 
 \* Linux image clipboard requires X11 or Wayland clipboard support.
 

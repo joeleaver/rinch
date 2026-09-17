@@ -510,3 +510,205 @@ fn the_ready_flag_is_only_touched_under_the_queue_lock() {
          queueIntent, the write in flushPendingIntents); found {checked}"
     );
 }
+
+// ── The text-selection toolbar (issue #813) ──────────────────────────────────
+
+const INPUT_CONNECTION_JAVA: &str = include_str!("../java/com/rinch/RinchInputConnection.java");
+
+/// `RinchActivity.textActionCode` and `TextAction::from_code` are one table
+/// written twice, on two sides of JNI that no compiler checks against each
+/// other. A renumbering on one side turns Paste into Select all on the other,
+/// silently: every call still succeeds.
+#[test]
+fn the_text_action_codes_agree_across_the_jni_boundary() {
+    use rinch_android::text_action::TextAction;
+
+    let body = method_body("textActionCode");
+    let code_for = |id: &str| -> i32 {
+        let needle = format!("android.R.id.{id}) return ");
+        let at = body
+            .find(&needle)
+            .unwrap_or_else(|| panic!("textActionCode has no arm for android.R.id.{id}"));
+        body[at + needle.len()..]
+            .split(';')
+            .next()
+            .and_then(|n| n.trim().parse().ok())
+            .unwrap_or_else(|| panic!("textActionCode's arm for {id} does not return an int"))
+    };
+
+    assert_eq!(
+        TextAction::from_code(code_for("cut")),
+        Some(TextAction::Cut)
+    );
+    assert_eq!(
+        TextAction::from_code(code_for("copy")),
+        Some(TextAction::Copy)
+    );
+    assert_eq!(
+        TextAction::from_code(code_for("paste")),
+        Some(TextAction::Paste)
+    );
+    assert_eq!(
+        TextAction::from_code(code_for("selectAll")),
+        Some(TextAction::SelectAll)
+    );
+    assert!(
+        body.contains("return -1;"),
+        "an id that is none of the four must map to -1, which the Rust side drops"
+    );
+}
+
+/// An IME's own paste may arrive as
+/// `performContextMenuAction(android.R.id.paste)` rather than as text — Gboard's
+/// Text Editing panel sends its Paste and Select all that way (measured; its
+/// clipboard chip and clipboard panel commit text) — and
+/// `BaseInputConnection`'s default for it acts on an `Editable` this
+/// connection keeps permanently empty. Deleting the override loses nothing
+/// visible: the IME's call still returns, the keyboard still closes its panel,
+/// and the field stays as it was.
+#[test]
+fn the_input_connection_forwards_context_menu_actions_to_rust() {
+    let at = INPUT_CONNECTION_JAVA
+        .find("public boolean performContextMenuAction(int")
+        .expect("RinchInputConnection must override performContextMenuAction");
+    let body = &INPUT_CONNECTION_JAVA[at..];
+    let body = &body[..body
+        .find("\n    }\n")
+        .expect("end of performContextMenuAction")];
+    assert!(
+        body.contains("RinchActivity.textActionCode(") && body.contains("nativeContextMenuAction("),
+        "performContextMenuAction must map the id through textActionCode and forward it: {body}"
+    );
+}
+
+/// The loop's mirror of "the toolbar is up" is cleared only by the report
+/// from `onDestroyActionMode`, and that callback is the one place every way a
+/// mode can end passes through. Without the report a toolbar finished by the
+/// platform leaves the mirror latched, and the next long press is answered
+/// with an `invalidate()` on a mode that no longer exists.
+#[test]
+fn every_way_the_toolbar_ends_reports_back_to_rust() {
+    let body = method_body("onDestroyActionMode");
+    assert!(
+        body.contains("nativeOnTextActionModeFinished()"),
+        "onDestroyActionMode must report the dismissal: {body}"
+    );
+}
+
+/// An item that finishes the mode must finish it BEFORE reporting the item
+/// (PR #819 review, F1). Both calls queue an event for the native loop and
+/// wake it, and the loop may drain either alone; reported first, a lone
+/// `Perform` turn re-prepared a toolbar the loop still believed was up, and
+/// the UI thread then started a fresh mode — a toolbar with no mirror
+/// (measured 5/7). Finishing first puts the report ahead of the item in the
+/// one queue. Order is all this pins, and order is exactly what a tidy-up
+/// would swap back.
+#[test]
+fn a_finishing_item_finishes_the_mode_before_it_is_reported() {
+    let body = method_body("onActionItemClicked");
+    let finish = body
+        .find("mode.finish()")
+        .expect("onActionItemClicked must finish the mode for Cut/Copy/Paste");
+    let report = body
+        .find("nativeOnTextActionItem(")
+        .expect("onActionItemClicked must report the item");
+    assert!(
+        finish < report,
+        "mode.finish() must come before nativeOnTextActionItem: {body}"
+    );
+}
+
+/// **A refresh never starts a toolbar** (PR #819 final review, N1). The
+/// native loop re-pushes a showing toolbar whenever its anchor or items move,
+/// and the push runs here later than the loop decided it. A tap on an item in
+/// between finishes the mode and nulls `textActionMode`; a push that then fell
+/// through to `startActionMode` put a new mode on screen behind the item —
+/// one the loop's mirror, taken down by the item's report, no longer knew
+/// about, whose Paste did nothing (11 of 11 item taps under a per-frame anchor
+/// move). The order is the whole rule: the update of a mode that is up must
+/// still run for a refresh, and the `start` guard must stand between it and
+/// `startActionMode(`.
+#[test]
+fn a_refresh_updates_a_showing_toolbar_and_never_starts_one() {
+    let body = without_comments(&method_body("showTextActionMode"));
+    let update = body
+        .find("textActionMode.invalidate()")
+        .expect("showTextActionMode must re-prepare a mode that is up");
+    let guard = body
+        .find("if (!start)")
+        .expect("showTextActionMode must refuse to start a mode for a refresh");
+    let start = body
+        .find("startActionMode(")
+        .expect("showTextActionMode must start a mode for a long press");
+    assert!(
+        update < guard,
+        "a refresh must still update a showing toolbar, so the update comes before the `start` guard: {body}"
+    );
+    assert!(
+        guard < start,
+        "the `start` guard must come before startActionMode(: {body}"
+    );
+    assert!(
+        body[guard..start].contains("return;"),
+        "the `start` guard must return before a mode is started: {body}"
+    );
+}
+
+/// Java source with both comment forms removed, so a claim about what a
+/// method *calls* is a claim about its code. (`method_body`'s `//` filter is
+/// not enough: a `/* … */` inside a body is code to that filter.)
+fn without_comments(java: &str) -> String {
+    let mut out = String::with_capacity(java.len());
+    let mut rest = java;
+    loop {
+        // The nearer of the two openers, and whether it is the block form.
+        let next = match (rest.find("//"), rest.find("/*")) {
+            (None, None) => None,
+            (Some(l), None) => Some((l, false)),
+            (None, Some(b)) => Some((b, true)),
+            (Some(l), Some(b)) => Some(if l < b { (l, false) } else { (b, true) }),
+        };
+        let Some((at, block)) = next else {
+            out.push_str(rest);
+            return out;
+        };
+        out.push_str(&rest[..at]);
+        rest = if block {
+            rest[at..].find("*/").map_or("", |e| &rest[at + e + 2..])
+        } else {
+            rest[at..].find('\n').map_or("", |e| &rest[at + e..])
+        };
+    }
+}
+
+/// The independent clearing condition (see `text_action.rs`): pausing
+/// finishes the mode from Java, on the UI thread, and calls nothing native —
+/// a native call from a lifecycle override races the thread that registers
+/// it. Pinned on the call graph rather than on the absence of a word: the
+/// stripped body may call exactly `finish()` and `super.onPause()`, so a
+/// helper that hides a native call behind one indirection
+/// (`dropToolbar()`) fails here, and a block comment mentioning "native"
+/// does not.
+#[test]
+fn pausing_finishes_the_toolbar_and_calls_nothing_else() {
+    let body = without_comments(&method_body("onPause"));
+    assert!(
+        body.contains("textActionMode.finish()"),
+        "onPause must finish the toolbar: {body}"
+    );
+    let calls: Vec<&str> = body
+        .match_indices('(')
+        .map(|(at, _)| {
+            let start = body[..at]
+                .rfind(|c: char| !(c.is_alphanumeric() || c == '_' || c == '.'))
+                .map_or(0, |i| i + 1);
+            body[start..at].trim()
+        })
+        .filter(|name| !name.is_empty() && *name != "onPause" && *name != "if")
+        .collect();
+    assert_eq!(
+        calls,
+        vec!["textActionMode.finish", "super.onPause"],
+        "onPause may call exactly finish() and super.onPause(); it calls: {calls:?}\n{body}"
+    );
+}
