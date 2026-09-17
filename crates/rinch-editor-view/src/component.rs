@@ -47,23 +47,36 @@ pub struct Editor {
     /// `true` switches the handle to read-only. `false` (the default) leaves the
     /// handle as it is rather than forcing it editable, so a handle the app made
     /// read-only before mounting — or across a re-mount — stays read-only.
+    ///
+    /// **It only ever locks, so it is the wrong prop to drive from a signal.** A
+    /// reactive `read_only: {|| !can_edit.get()}` re-renders (and re-mounts) the
+    /// component and locks when it turns `true`, and then does *not* unlock when it
+    /// turns `false` again — a `bool` prop cannot tell "leave it alone" from
+    /// "unlock it", and leaving it alone is what a handle locked elsewhere needs.
+    /// Call [`EditorHandle::set_read_only`] for an answer that changes.
     pub read_only: bool,
 }
 
 impl Component for Editor {
     fn render(&self, scope: &mut RenderScope, _children: &[NodeHandle]) -> NodeHandle {
         let handle = self.editor.clone().unwrap_or_else(create_editor);
+        // Lock *before* the content load, and before the mount so the container
+        // carries `data-pm-readonly` from its first frame. The order is only
+        // observable on a handle that is already collaborating, and there it is the
+        // whole point: a load with a session attached is a write to the shared
+        // document, which a read-only editor refuses (`set_read_only`). Filling
+        // first would have sent this component's `content` to the peers of a
+        // document the app has just declared this user may not change. With no
+        // session — every ordinary mount — a load is never refused, so the content
+        // still loads exactly as it did.
+        if self.read_only {
+            handle.set_read_only(true);
+        }
         // Load initial content *before* mounting so the view's first build renders
         // it directly (no empty→content diff). A no-op for empty content; on an
         // already-loaded external handle, the `content` prop wins.
         if !self.content.is_empty() {
             handle.load_html(&self.content);
-        }
-        // After the content load (a load is never refused without a session, but
-        // the order reads right: fill it, then lock it) and before the mount, so
-        // the container carries `data-pm-readonly` from its first frame.
-        if self.read_only {
-            handle.set_read_only(true);
         }
         let container = handle.mount(scope);
         // Stop the runtime from driving this mount once the scope is disposed

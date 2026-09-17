@@ -3077,6 +3077,9 @@ impl RinchApp {
     /// the document.
     #[cfg(feature = "clipboard")]
     pub(super) fn editor_paste(&self, handle: &crate::editor::EditorHandle) -> bool {
+        // `dispatch_editor_paste` answers whether a clipboard read started; the
+        // `bool` here is "did the document change", which is `false` either way —
+        // the insertion, if there is one, happens when the read answers.
         Self::dispatch_editor_paste(handle, false);
         false
     }
@@ -3086,6 +3089,9 @@ impl RinchApp {
     /// gesture). Asynchronous, like [`Self::editor_paste`].
     #[cfg(feature = "clipboard")]
     fn editor_paste_plain(&self, handle: &crate::editor::EditorHandle) -> bool {
+        // `dispatch_editor_paste` answers whether a clipboard read started; the
+        // `bool` here is "did the document change", which is `false` either way —
+        // the insertion, if there is one, happens when the read answers.
         Self::dispatch_editor_paste(handle, true);
         false
     }
@@ -3113,10 +3119,24 @@ impl RinchApp {
     /// thread first and only its id crosses over. The result hops back through the
     /// runtime's cross-thread dispatcher, which also wakes the event loop, so the
     /// paste paints promptly.
+    ///
+    /// # Read-only
+    ///
+    /// A read-only editor (`EditorHandle::set_read_only`) starts **no read at all**:
+    /// the insertion would be refused, and a read is not free to make and discard —
+    /// against a hung X11 selection owner it waits up to four seconds, and some
+    /// platforms raise a clipboard-access prompt for it. The web makes no such read
+    /// either (a `readonly` capture field gets no `paste` event), so this is also
+    /// what keeps the two backends saying the same thing. Answers whether a read was
+    /// started, which is what pins that: the document alone cannot tell a refused
+    /// insertion from a read that never happened.
     #[cfg(feature = "clipboard")]
-    fn dispatch_editor_paste(handle: &crate::editor::EditorHandle, plain_only: bool) {
+    fn dispatch_editor_paste(handle: &crate::editor::EditorHandle, plain_only: bool) -> bool {
         use rinch_clipboard::{ClipboardResult, RichPaste};
 
+        if handle.is_read_only() {
+            return false;
+        }
         let handle = handle.clone();
         let anchor = handle.anchor_selection();
         // Parked main-thread-side: this closure holds `!Send` UI state and never
@@ -3139,6 +3159,7 @@ impl RinchApp {
         } else {
             crate::clipboard::paste_rich_async(deliver);
         }
+        true
     }
 
     /// Resolve a window/logical point to `(container id, textblock id, flat IFC
@@ -3802,6 +3823,31 @@ mod async_paste_tests {
                 };
                 assert_eq!(text_of(&handle), expected);
             }
+        }
+    }
+
+    /// A read-only editor does not read the clipboard at all — neither Ctrl+V nor
+    /// Ctrl+Shift+V. The document cannot show this: it is unchanged either way (the
+    /// gate refuses the insertion), which is why `dispatch_editor_paste` answers
+    /// whether it started a read. The writable control beside it says the answer is
+    /// about the switch and not about the path being dead.
+    #[test]
+    fn a_read_only_editor_starts_no_clipboard_read() {
+        // Keep the control's read off the developer's (and CI's absent) system
+        // clipboard; idempotent and process-wide.
+        rinch_clipboard::use_in_memory_clipboard();
+        for plain_only in [false, true] {
+            let handle = editor_with("<p>hello world</p>");
+            assert!(
+                super::RinchApp::dispatch_editor_paste(&handle, plain_only),
+                "writable: the read starts"
+            );
+            handle.set_read_only(true);
+            assert!(
+                !super::RinchApp::dispatch_editor_paste(&handle, plain_only),
+                "read-only: no read is started"
+            );
+            assert_eq!(text_of(&handle), "hello world");
         }
     }
 

@@ -504,7 +504,10 @@ fn a_read_only_editor_shows_no_composition() {
 }
 
 /// The other half of read-only: what a peer writes still arrives and is shown.
-/// Needs `--features collaboration`, which no CI job turns on for this crate.
+/// Needs `--features collaboration`: the bare `cargo test -p rinch-web` run does
+/// not turn it on, so CI's test-wasm job runs this one target a second time with
+/// the feature (`ci.yml`) — without that the fixture would run nowhere and read
+/// exactly like a passing one.
 #[cfg(feature = "collaboration")]
 #[wasm_bindgen_test]
 fn a_read_only_editor_still_shows_remote_edits_and_sends_none() {

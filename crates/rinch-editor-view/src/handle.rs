@@ -521,8 +521,20 @@ impl EditorHandle {
     /// In a [read-only](Self::set_read_only) editor that means "applies **and**
     /// would not be refused": `can_run("toggleBold")` is `false`, `can_run(
     /// "selectAll")` still `true`, so a toolbar that greys its buttons from here
-    /// goes inert with the switch. Answered by running the command against the
-    /// state (pure — nothing is committed) and asking the same rule the gate asks.
+    /// goes inert with the switch.
+    ///
+    /// Answered by running the command against the state and asking the same rule
+    /// the gate asks, because whether a command changes the document is not knowable
+    /// without computing what it would do. Nothing is committed — the resulting
+    /// state is discarded — but this is **not** the cheap `Command`-with-`None`
+    /// applicability query the editable path uses: the command's dispatch branch
+    /// runs, building the transaction and folding every plugin (the history plugin
+    /// inverts every step). So a read-only toolbar that re-queries twenty buttons on
+    /// every caret move pays twenty transaction builds; ask
+    /// [`is_read_only`](Self::is_read_only) once instead and grey them all. It also
+    /// means an app-supplied command whose dispatch branch has a side effect of its
+    /// own would see it fire from a query — no command in `rinch-editor-core` has
+    /// one. Tracked for a cheaper answer.
     pub fn can_run(&self, name: &str) -> bool {
         let core = self.inner.borrow();
         if !core.read_only {
@@ -912,9 +924,14 @@ impl EditorHandle {
     /// Whether the editor is [read-only](Self::set_read_only).
     ///
     /// Uses `try_borrow` — soft, like [`Self::collab_receive`] — so it may be asked
-    /// from inside an `on_change` or `outbound` callback; while the handle is
-    /// borrowed a local edit is being committed, which a read-only editor would
-    /// have refused, so `false` is the consistent answer for that window.
+    /// from inside a callback the handle invokes. It answers `false` when the handle
+    /// is already borrowed, i.e. **fails open**, which is the wrong direction for a
+    /// permission question and is why the window matters: no such re-entrant caller
+    /// exists today (`on_change` runs with the borrow released, and `outbound`
+    /// cannot fire on a read-only editor, which records nothing), so the answer is
+    /// reachable only by a future re-entrant one. Do not build an access decision on
+    /// it from inside a handle callback — the gate in `EditorCore::commit`, which
+    /// reads the flag directly, is what actually refuses an edit.
     pub fn is_read_only(&self) -> bool {
         self.inner.try_borrow().is_ok_and(|core| core.read_only)
     }
@@ -3172,6 +3189,49 @@ mod tests {
             assert!(guest.handle.load_html("<p>next document</p>"));
             assert_eq!(shown(&guest).as_deref(), Some("next document"));
             assert_eq!(doc_text(&host), "shared");
+        }
+
+        /// `Editor { content, read_only: true }` mounted onto a handle that is
+        /// **already collaborating**: the component locks before it loads, so its
+        /// `content` is refused like any other write to a shared document rather
+        /// than being sent to the peers of a document this user was just told they
+        /// may not change. The order is observable nowhere else — with no session a
+        /// load is never refused, so an ordinary mount still fills the editor
+        /// (`the_editor_components_read_only_prop_only_ever_locks`).
+        #[test]
+        fn the_content_prop_does_not_write_a_collaborating_read_only_editors_shared_doc() {
+            use rinch_core::Component;
+            let s = schema();
+            let host = mount(doc_node(&s, vec![para(&s, "shared")])).handle;
+            let snapshot = host.start_collaboration_host(|_| {}).unwrap();
+
+            let pane = crate::create_editor();
+            let sent = Rc::new(Cell::new(0usize));
+            let counter = sent.clone();
+            pane.start_collaboration_guest(&snapshot, move |_| counter.set(counter.get() + 1))
+                .unwrap();
+
+            let doc: Rc<RefCell<dyn DomDocument>> = Rc::new(RefCell::new(MockDomDocument::new()));
+            let root = doc.borrow_mut().create_element("div");
+            let mut scope = RenderScope::new(doc.clone(), root);
+            let container = crate::Editor {
+                editor: Some(pane.clone()),
+                content: "<p>mine</p>".into(),
+                read_only: true,
+            }
+            .render(&mut scope, &[]);
+
+            assert_eq!(
+                doc_text(&pane),
+                "shared",
+                "the shared document is what shows"
+            );
+            assert_eq!(doc_text(&host), "shared", "and the peer's is untouched");
+            assert_eq!(sent.get(), 0, "nothing was broadcast");
+            assert_eq!(
+                container.get_attribute("data-pm-readonly").as_deref(),
+                Some("true")
+            );
         }
 
         /// One editor pane moving from document to document (Pimble's shape), and

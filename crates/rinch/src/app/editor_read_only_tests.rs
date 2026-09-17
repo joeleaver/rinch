@@ -387,12 +387,11 @@ fn the_text_edit_state_offers_copy_and_select_all_only() {
 mod clipboard {
     use super::*;
 
-    /// The clipboard is one per process and the test binary is many threads.
-    fn clipboard_lock() -> std::sync::MutexGuard<'static, ()> {
-        static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-        rinch_clipboard::use_in_memory_clipboard();
-        LOCK.lock().unwrap_or_else(|e| e.into_inner())
-    }
+    /// The clipboard is one per process and the test binary is many threads — and
+    /// `text_context_menu_tests` is in this same binary over the same clipboard, so
+    /// this takes **its** lock rather than a second one of our own: two locks would
+    /// serialize each file against itself and neither against the other.
+    use crate::app::text_context_menu_tests::clipboard_lock;
 
     /// Cut in a read-only editor is not "copy": it would change the clipboard
     /// while appearing to do nothing. Copy is copy. By chord and by the menu's
