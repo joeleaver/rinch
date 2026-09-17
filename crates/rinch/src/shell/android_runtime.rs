@@ -2591,9 +2591,9 @@ fn toolbar_items(state: &TextEditState, clipboard_has_clip: bool) -> TextActionI
 /// runs on the UI thread later than this decides it, and a tap on an item can
 /// finish the mode in between; a refresh allowed to start would put a new mode
 /// on screen behind that item, with the mirror taken down by the item's report
-/// — an orphan whose Paste did nothing (measured: 11 of 11 item taps that
-/// reached the loop, with an anchor moving every frame; 0 of 13 with the same
-/// rule in the review's experiment).
+/// — an orphan whose Paste did nothing. Measured on an API 34 emulator with an
+/// anchor moving every frame: 7 orphans among the 8 item taps that reached the
+/// loop with the Java `start` guard deleted, 0 among 16 with it.
 /// So the platform may start one only when the mirror believes none is up
 /// ([`ToolbarPush::Start`]) or when `long_press` says the user just asked for
 /// it — the latter for a long press on a toolbar the mirror still shows,
