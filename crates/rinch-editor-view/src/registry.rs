@@ -11,7 +11,7 @@
 //! focus-arbiter authority (design A10). The runtime holds the focused editor's
 //! container id and resolves it to a handle via [`editor_for`].
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 
 // Whether a drag-select owned by `owner` may be read or ended while `caller`'s
 // events are being dispatched (issue #139). The rule lives in rinch-core so the
@@ -43,6 +43,35 @@ thread_local! {
     /// dragging from, and A's mouseup could then no longer clear the entry it no
     /// longer owns.
     static DRAG: RefCell<Vec<(Option<u64>, usize, usize)>> = const { RefCell::new(Vec::new()) };
+    /// See [`set_overlay_refresher`].
+    static OVERLAY_REFRESHER: Cell<Option<fn()>> = const { Cell::new(None) };
+}
+
+/// Tell the editor view how to get its overlays (caret, selection highlight)
+/// re-rendered when the document changed *without* an input event.
+///
+/// A runtime that lays out and then sweeps the overlays on every frame (desktop)
+/// needs nothing: changing the document dirties it, and the sweep follows. A
+/// runtime that refreshes the overlays from its input handlers (web, where the
+/// geometry read is a synchronous reflow) never hears about a change that did
+/// not come from input. A remote collaboration delta is exactly that: the peer
+/// shortens the line, the DOM follows, and the caret stays painted where the
+/// line used to end, out past the text, until the next local keystroke. Such a
+/// runtime registers its refresh here and [`EditorHandle::collab_receive`]
+/// calls it after a remote change.
+///
+/// Per thread, like the rest of this registry; setting it again replaces it.
+pub fn set_overlay_refresher(refresh: fn()) {
+    OVERLAY_REFRESHER.with(|slot| slot.set(Some(refresh)));
+}
+
+/// Run the registered overlay refresh, if any. The caller must not be holding
+/// an editor handle's borrow: the refresh reads every mounted editor.
+#[cfg(feature = "collaboration")]
+pub(crate) fn request_overlay_refresh() {
+    if let Some(refresh) = OVERLAY_REFRESHER.with(|slot| slot.get()) {
+        refresh();
+    }
 }
 
 /// Begin a pointer drag-select at `anchor` (a `Pos.0`) in editor `container` of

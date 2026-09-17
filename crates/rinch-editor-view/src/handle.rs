@@ -1112,6 +1112,19 @@ impl EditorHandle {
     /// re-enter the *same* handle (instead of the peer / a channel) degrades to a
     /// no-op `false` rather than panicking.
     pub fn collab_receive(&self, delta: &[u8]) -> bool {
+        let changed = self.integrate_remote(delta);
+        if changed {
+            // No input event brought this change, so a runtime that refreshes the
+            // caret from its input handlers has to be told (see
+            // `registry::set_overlay_refresher`). After `integrate_remote`
+            // returned: the refresh borrows this handle.
+            crate::registry::request_overlay_refresh();
+        }
+        changed
+    }
+
+    #[cfg(feature = "collaboration")]
+    fn integrate_remote(&self, delta: &[u8]) -> bool {
         // `outbound` runs while a local edit holds this handle's borrow; a self-
         // wired sink that calls back in here would otherwise hit an already-borrowed
         // panic. Fail soft instead.
@@ -2308,6 +2321,49 @@ mod tests {
                     host_in.collab_receive(&delta);
                 })
                 .expect("guest joins from the snapshot");
+        }
+
+        /// A peer's keystroke in the paragraph the caret is in leaves the caret in
+        /// that paragraph, where it was in the text, and asks the platform to
+        /// repaint the overlays. Both used to go wrong: the caret was carried to
+        /// the next paragraph, and on a runtime that refreshes the caret from its
+        /// input handlers (web) it stayed painted where the line used to end.
+        #[test]
+        fn a_remote_edit_in_the_carets_paragraph_keeps_the_caret_and_asks_for_a_repaint() {
+            thread_local! {
+                static REFRESHES: Cell<u32> = const { Cell::new(0) };
+            }
+            fn count_refresh() {
+                REFRESHES.with(|n| n.set(n.get() + 1));
+            }
+
+            let s = schema();
+            let host = mount(doc_node(
+                &s,
+                vec![para(&s, "Once in a while"), para(&s, "next")],
+            ))
+            .handle;
+            let guest = mount(doc_node(&s, vec![para(&s, "")])).handle;
+            loopback(&host, &guest);
+
+            // The guest's caret sits at the end of the first line; the host
+            // backspaces that line's last letter.
+            guest.set_selection(Selection::cursor(Pos(16)));
+            crate::registry::set_overlay_refresher(count_refresh);
+            REFRESHES.with(|n| n.set(0));
+            host.set_selection(Selection::cursor(Pos(16)));
+            host.ime_delete_surrounding(1, 0);
+            assert_eq!(doc_text(&guest), "Once in a whil\nnext");
+
+            assert_eq!(
+                guest.state().selection.head(),
+                Pos(15),
+                "the caret stays at the end of its own line"
+            );
+            assert!(
+                REFRESHES.with(|n| n.get()) >= 1,
+                "the platform was asked to repaint the overlays"
+            );
         }
 
         #[test]

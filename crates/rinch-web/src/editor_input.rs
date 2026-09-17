@@ -1964,6 +1964,11 @@ pub(crate) fn install(browser_doc: &web_sys::Document) {
     // Patch the one editor default-stylesheet rule that is desktop-specific (see below).
     ensure_editor_web_styles(browser_doc);
 
+    // The caret is refreshed from the input handlers below, and a remote
+    // collaboration delta arrives through none of them: without this a peer
+    // shortening the caret's line leaves the caret painted out past the text.
+    registry::set_overlay_refresher(refresh_caret);
+
     let doc = browser_doc.clone();
     add_capture(browser_doc, "keydown", move |e: web_sys::KeyboardEvent| {
         if handle_keydown(&e, &doc) {
