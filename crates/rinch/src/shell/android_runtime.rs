@@ -556,7 +556,9 @@ fn run_loop(android_app: AndroidApp, mut app: RinchApp) {
             // offers only Paste.
             app.select_word_at_caret();
             clipboard_has_clip = rinch_android::clipboard::has_text();
-            push_text_toolbar(&mut text_toolbar, &app, scale_factor, clipboard_has_clip);
+            if let Some(state) = app.text_edit_state() {
+                push_text_toolbar(&mut text_toolbar, &state, scale_factor, clipboard_has_clip);
+            }
         } else if pressed_elsewhere && text_toolbar.finish() {
             rinch_android::text_action::finish_toolbar();
         }
@@ -709,8 +711,8 @@ fn run_loop(android_app: AndroidApp, mut app: RinchApp) {
         // while nothing changed.
         if text_toolbar.is_shown() {
             match app.text_edit_state() {
-                Some(_) => {
-                    push_text_toolbar(&mut text_toolbar, &app, scale_factor, clipboard_has_clip)
+                Some(state) => {
+                    push_text_toolbar(&mut text_toolbar, &state, scale_factor, clipboard_has_clip)
                 }
                 None => {
                     if text_toolbar.finish() {
@@ -2520,8 +2522,10 @@ fn earliest_due(a: Option<Duration>, b: Option<Duration>) -> Option<Duration> {
 
 // ── The text-selection toolbar (issue #813) ──────────────────────────────────
 
-/// The seam's anchor — the selection's or caret's rect in logical window px
-/// — in the physical window pixels the decor view measures in.
+/// The seam's anchor — the selection's real rect, or a 1px caret rect when it
+/// is collapsed, in logical window px — in the physical window pixels the
+/// decor view measures in. The platform floats the toolbar above that rect
+/// (below it near the top of the window).
 fn physical_rect(anchor: (f32, f32, f32, f32), scale_factor: f64) -> PhysicalRect {
     let (x, y, w, h) = anchor;
     let px = |v: f32| (v as f64 * scale_factor).round() as i32;
@@ -2565,20 +2569,19 @@ fn toolbar_items(state: &TextEditState, clipboard_has_clip: bool) -> TextActionI
     }
 }
 
-/// Show the toolbar for the text target holding the keyboard, or bring the
-/// one that is up in line with it. Nothing holding the keyboard is nothing to
-/// show, and the mirror decides whether the platform has to be told at all.
+/// Show the toolbar for `state` — the text target holding the keyboard — or
+/// bring the one that is up in line with it. The mirror decides whether the
+/// platform has to be told at all. Takes the state rather than the app so each
+/// turn polls `text_edit_state()` once: the `<input>`/`<textarea>` anchor is
+/// measured from the field's text layout.
 fn push_text_toolbar(
     mirror: &mut ToolbarMirror,
-    app: &RinchApp,
+    state: &TextEditState,
     scale_factor: f64,
     clipboard_has_clip: bool,
 ) {
-    let Some(state) = app.text_edit_state() else {
-        return;
-    };
     let rect = physical_rect(state.anchor, scale_factor);
-    let items = toolbar_items(&state, clipboard_has_clip);
+    let items = toolbar_items(state, clipboard_has_clip);
     if mirror.request(rect, items) {
         rinch_android::text_action::show_toolbar(rect, items);
     }
@@ -2601,9 +2604,10 @@ fn process_actions(actions: &[AppAction], running: &mut bool) {
             | AppAction::SetCursor(_)
             | AppAction::ToggleDevTools
             | AppAction::ToggleInspectMode => {}
-            // Emitted only under `TextContextMenuPresentation::Shell`, which
-            // this shell does not yet ask for: the runtime's own DOM menu is
-            // what a long press in a text field opens today (issue #813).
+            // This shell asks for `TextContextMenuPresentation::Shell` at
+            // startup; the loop answers the action by scanning each event's
+            // actions for it (`toolbar_requested`) and showing the platform
+            // toolbar, so there is nothing to do here (issue #813).
             AppAction::ShowTextContextMenu => {}
         }
     }

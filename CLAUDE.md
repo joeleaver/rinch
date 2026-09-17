@@ -2363,8 +2363,9 @@ emulator with one Gboard build: its clipboard chip and clipboard panel both
 paste as `commitText`, and its Text Editing panel's Paste and Select all
 arrive as `performContextMenuAction` (its Cut and Copy stay disabled over a
 rinch selection, which the input connection does not report to the IME).
-The toolbar anchors
-where `TextEditState.anchor` reports. The rich-text `Editor` is
+The toolbar floats over the selection itself: `TextEditState.anchor` is the
+selection's rect (a 1px caret rect when collapsed), scaled to physical px. The
+rich-text `Editor` is
 `desktop`-only and is not part of an Android build (#818).
 
 **The built-in editor's Ctrl+V is asynchronous** — see the `anchor_selection` row in the

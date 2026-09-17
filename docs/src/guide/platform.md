@@ -355,8 +355,9 @@ app lifetime. See
 
 A long press on an `<input>` or `<textarea>` shows Android's own floating
 text-selection toolbar — Cut / Copy / Paste / Select all, the platform's
-strings, the platform's look — anchored where the runtime's `TextEditState.anchor`
-reports the selection (issue #813). It is an
+strings, the platform's look — floating over the selected word, or over the
+caret when nothing is selected: the rect the runtime's `TextEditState.anchor`
+reports (issue #813). It is an
 `ActionMode.TYPE_FLOATING` started by `RinchActivity` on the window's decor
 view, and it is what the desktop's built-in DOM context menu becomes on
 Android: the shell sets `TextContextMenuPresentation::Shell`, so the runtime
