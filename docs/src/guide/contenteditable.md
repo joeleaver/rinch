@@ -203,7 +203,11 @@ platform. `Mod` = Ctrl on Windows/Linux, Cmd on macOS.
 | Backspace / Delete | Delete backward / forward |
 
 (Copy/cut/paste — Mod+C/X/V, and Mod+Shift+V for paste-as-plain — are handled by the
-platform clipboard, not the keymap.) Undo/redo is a single, exact history: each undo
+platform clipboard, not the keymap.) On desktop the same four operations — cut, copy,
+paste and select all — are also on the built-in right-click menu of the editor
+(issue #813), and the menu items run exactly the code the chords run; see
+[Right-clicking a text field](focus.md#right-clicking-a-text-field). On the web the
+browser's own menu covers the editor surface. Undo/redo is a single, exact history: each undo
 reverses one logical edit (typing is merged into a group), because every edit is an
 invertible step.
 

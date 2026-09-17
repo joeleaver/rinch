@@ -1576,6 +1576,33 @@ register_focus_target(
 - **Web has no arbiter** — `register_focus_target` is desktop/Android/embed
   only; use a real `tabindex` and the DOM's own `focus`/`blur` there.
 
+**A right press on a text target opens a built-in Cut / Copy / Paste / Select
+all menu** (#813) — an `<input>` of a text-like type, a `<textarea>`, or the
+rich-text `Editor`; not a checkbox, a plain focusable node or a render surface.
+It is a runtime-built DOM overlay in the `<select>` popup's shape
+(`app/text_context_menu.rs`): body-portal nodes, a dismiss-stack entry pushed at
+*open* and released on close, closed by any outside press (swallowed), a wheel,
+a window blur, a focus move, or the field leaving the document (checked on
+every event). A live `data-oncontextmenu` on the field or an ancestor wins and
+the menu stays shut. Each item runs **the chord's code** — `handle_cut` /
+`handle_copy` / `handle_paste` / `handle_select_all` for the editable fields,
+`editor_cut` / `editor_copy` / `dispatch_editor_paste` / `selectAll` for the
+editor — and `text_context_menu_tests` pins item and chord to identical value,
+selection and clipboard. Enabled states: Cut = selection && writable &&
+not `password`; Copy = selection && not `password`; Paste = writable, **never
+decided by reading the clipboard** (#149 — so it stays enabled over an empty
+clipboard); Select all = content. **All three clipboard rows — Cut, Copy and
+Paste — are greyed when `rinch` is built without the `clipboard` feature**:
+there is no clipboard for Copy or Paste to reach, and an enabled Cut would
+delete text it never copied. The press applies the native caret rule:
+outside the selection it moves the caret, inside it keeps the selection. The
+field keeps the keyboard throughout. The platform-neutral half is a seam for a
+shell with its own toolbar: `RinchApp::text_edit_state()`,
+`perform_text_edit(TextEditAction)`, `prepare_text_context_target(..)`, and
+`set_text_context_menu_presentation(Shell)`, under which the gesture emits
+`AppAction::ShowTextContextMenu` instead of opening the DOM menu — what the
+Android half of #813 builds on.
+
 **Key auto-repeat: the press says so** (#463). Enter/Space on a focused
 `FocusTarget::Node` activates **once per physical press**, and the OS delivers a
 held key as a stream of `KeyDown`s indistinguishable from real ones — so

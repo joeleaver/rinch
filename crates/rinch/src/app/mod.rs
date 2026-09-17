@@ -77,6 +77,9 @@ mod paused_animation_frames_tests;
 mod select_widget;
 #[cfg(test)]
 mod stepper_state_709_tests;
+mod text_context_menu;
+#[cfg(test)]
+mod text_context_menu_tests;
 mod text_selection;
 #[cfg(test)]
 mod textarea_newline_tests;
@@ -86,6 +89,7 @@ mod trap_focus_tests;
 mod ua_block_defaults_components_tests;
 
 pub(crate) use hit_testing::*;
+pub use text_context_menu::{TextContextMenuPresentation, TextEditAction, TextEditState};
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -488,6 +492,18 @@ pub struct RinchApp {
     pub(crate) select_dismiss_handle: Option<rinch_core::DismissHandle>,
     /// Whether the native-select popup stylesheet has been injected (once).
     pub(crate) select_css_injected: bool,
+    /// The open built-in text context menu (issue #813), if any. Its dismiss
+    /// entry, flag and stylesheet follow the `<select>` popup's pattern above,
+    /// drain site included.
+    pub(crate) open_text_menu: Option<text_context_menu::OpenTextMenu>,
+    /// The menu's nodes, built on the first open and reused (hidden) after.
+    pub(crate) text_menu_panel: Option<text_context_menu::TextMenuPanel>,
+    pub(crate) text_menu_dismiss_asked: Rc<std::cell::Cell<bool>>,
+    pub(crate) text_menu_dismiss_handle: Option<rinch_core::DismissHandle>,
+    pub(crate) text_menu_css_injected: bool,
+    /// Who presents the text context menu — the runtime's DOM menu, or the
+    /// shell through [`AppAction::ShowTextContextMenu`].
+    pub(crate) text_menu_presentation: TextContextMenuPresentation,
     /// The "goal column" (a window-space x) preserved across consecutive vertical
     /// cursor moves (Up/Down) in the focused new editor, so the caret keeps its
     /// horizontal position through short lines instead of drifting to line ends.
@@ -572,6 +588,12 @@ impl RinchApp {
             select_dismiss_asked: Rc::new(std::cell::Cell::new(false)),
             select_dismiss_handle: None,
             select_css_injected: false,
+            open_text_menu: None,
+            text_menu_panel: None,
+            text_menu_dismiss_asked: Rc::new(std::cell::Cell::new(false)),
+            text_menu_dismiss_handle: None,
+            text_menu_css_injected: false,
+            text_menu_presentation: TextContextMenuPresentation::default(),
             #[cfg(feature = "desktop")]
             editor_goal_x: None,
             hovered_surface: None,

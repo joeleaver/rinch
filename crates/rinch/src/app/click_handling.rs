@@ -2,6 +2,22 @@
 
 use super::*;
 
+/// The glyph a `password` field is laid out with, one per character.
+const PASSWORD_BULLET: &str = "\u{2022}";
+
+/// A field's text as Parley laid it out for paint, plus where that text sits
+/// in the field's border box. See [`RinchApp::input_text_layout`].
+pub(super) struct InputTextLayout {
+    pub layout: parley::layout::Layout<peniko::Brush>,
+    /// The field's real value (a password field's layout is over bullets).
+    pub value: String,
+    pub is_password: bool,
+    pub padding_left: f32,
+    pub padding_top: f32,
+    /// The extra top offset a single-line `<input>` centres its line with.
+    pub vertical_offset: f32,
+}
+
 impl RinchApp {
     // ── Click handling ───────────────────────────────────────────────────
 
@@ -556,7 +572,7 @@ impl RinchApp {
     /// glyph, and so do the coordinate spaces: the click arrives in layout
     /// pixels, and the box's painted origin is where paint and hit testing say
     /// it is, IFC content-box offset included.
-    fn compute_input_cursor_from_click(
+    pub(super) fn compute_input_cursor_from_click(
         tree: &rinch_dom::NodeTree,
         font_cx: &mut parley::FontContext,
         layout_cx: &mut parley::LayoutContext<peniko::Brush>,
@@ -564,18 +580,9 @@ impl RinchApp {
         click_x: f32,
         click_y: f32,
     ) -> usize {
-        let Some(node) = tree.get(node_id) else {
+        let Some(it) = Self::input_text_layout(tree, font_cx, layout_cx, node_id) else {
             return 0;
         };
-
-        let value = node
-            .attributes
-            .get("value")
-            .map(|s| s.as_str())
-            .unwrap_or("");
-        if value.is_empty() {
-            return 0;
-        }
 
         // The click in the field's own space, relative to its border-box origin
         // — the same descent paint makes, so the IFC content-box offset a field
@@ -586,12 +593,91 @@ impl RinchApp {
         // `paint_inline_layout` a content-box origin.
         let (box_x, box_y) = pointer_in_node(tree, node_id, click_x, click_y);
 
+        // Local coordinates within the text area, the single-line centring
+        // taken off the y.
+        let local_x = (box_x - it.padding_left).max(0.0);
+        let local_y = (box_y - it.padding_top).max(0.0);
+        let adjusted_y = (local_y - it.vertical_offset).max(0.0);
+
+        let byte_offset = byte_offset_from_position(&it.layout, local_x, adjusted_y);
+
+        // For password fields, map display byte offset back to real value byte offset
+        if it.is_password {
+            let char_index = byte_offset / PASSWORD_BULLET.len();
+            it.value
+                .char_indices()
+                .nth(char_index)
+                .map(|(i, _)| i)
+                .unwrap_or(it.value.len())
+        } else {
+            byte_offset
+        }
+    }
+
+    /// The caret rect for byte `offset` of a field's value, in window px
+    /// `(x, y, 1, line height)` — the inverse of
+    /// [`Self::compute_input_cursor_from_click`], over the same layout, so a
+    /// caret placed by a press and the rect reported for it agree glyph for
+    /// glyph. `None` for an empty field (nothing to lay out) or a missing node.
+    pub(super) fn input_caret_rect_for_offset(
+        tree: &rinch_dom::NodeTree,
+        font_cx: &mut parley::FontContext,
+        layout_cx: &mut parley::LayoutContext<peniko::Brush>,
+        node_id: usize,
+        offset: usize,
+    ) -> Option<(f32, f32, f32, f32)> {
+        let it = Self::input_text_layout(tree, font_cx, layout_cx, node_id)?;
+        // A password field is laid out as bullets: the value's byte offset
+        // becomes a character count, then a bullet-text byte offset.
+        let display_offset = if it.is_password {
+            let clamped = offset.min(it.value.len());
+            it.value[..clamped].chars().count() * PASSWORD_BULLET.len()
+        } else {
+            offset.min(it.value.len())
+        };
+        let (lx, ly) =
+            rinch_dom::text_query::caret_position_for_offset_layout(&it.layout, display_offset);
+        // The line box's height, from the same cursor geometry.
+        let geometry = parley::layout::Cursor::from_byte_index(
+            &it.layout,
+            display_offset,
+            parley::layout::Affinity::Downstream,
+        )
+        .geometry(&it.layout, 0.0);
+        let line_h = (geometry.y1 - geometry.y0).max(1.0) as f32;
+        // Into the border box (padding, and the single-line centring), then
+        // forward through the composed transform to the painted box (#203).
+        let bx = (it.padding_left + lx) as f64;
+        let by = (it.padding_top + it.vertical_offset + ly) as f64;
+        let (ax, ay) = rinch_dom::paint::point_from_painted_box(tree, node_id, 1.0, bx, by);
+        let (_, ay2) =
+            rinch_dom::paint::point_from_painted_box(tree, node_id, 1.0, bx, by + line_h as f64);
+        Some((ax as f32, ay as f32, 1.0, (ay2 - ay).abs() as f32))
+    }
+
+    /// The Parley layout `paint_input_value` draws a field's text with, rebuilt
+    /// with the app's own contexts — one builder, shared by the click→offset
+    /// map and the offset→caret map so the two agree. `None` for a missing
+    /// node or an empty value.
+    pub(super) fn input_text_layout(
+        tree: &rinch_dom::NodeTree,
+        font_cx: &mut parley::FontContext,
+        layout_cx: &mut parley::LayoutContext<peniko::Brush>,
+        node_id: usize,
+    ) -> Option<InputTextLayout> {
+        let node = tree.get(node_id)?;
+
+        let value = node
+            .attributes
+            .get("value")
+            .map(|s| s.as_str())
+            .unwrap_or("");
+        if value.is_empty() {
+            return None;
+        }
+
         let padding_left = node.computed_style.padding_left.to_px();
         let padding_top = node.computed_style.padding_top.to_px();
-
-        // Local coordinates within the text area
-        let local_x = (box_x - padding_left).max(0.0);
-        let local_y = (box_y - padding_top).max(0.0);
 
         // Build a Parley layout matching paint_input_value's parameters
         let font_size = node.computed_style.font_size;
@@ -602,13 +688,12 @@ impl RinchApp {
             node.computed_style.font_family.clone()
         };
 
-        // Password masking: map click position through bullet text
+        // Password masking: the layout is built over bullet text
         let is_password = node.attributes.get("type").map(|s| s.as_str()) == Some("password");
-        let bullet = "\u{2022}";
         let password_display;
         let display_text = if is_password {
             let total_chars = value.chars().count();
-            password_display = bullet.repeat(total_chars);
+            password_display = PASSWORD_BULLET.repeat(total_chars);
             password_display.as_str()
         } else {
             value
@@ -632,34 +717,28 @@ impl RinchApp {
         }
 
         let content_width = node.layout.width - padding_left * 2.0;
-        let mut text_layout = builder.build(display_text);
-        text_layout.break_all_lines(Some(content_width));
+        let mut layout = builder.build(display_text);
+        layout.break_all_lines(Some(content_width));
 
-        // For single-line inputs, adjust local_y to account for vertical centering
+        // A single-line input centres its line vertically; a textarea starts
+        // at the top of its content box.
         let is_textarea = node.tag() == Some("textarea");
-        let adjusted_y = if !is_textarea {
-            let text_height = text_layout.height();
+        let vertical_offset = if !is_textarea {
+            let text_height = layout.height();
             let content_height = node.layout.height;
-            let vertical_offset = (content_height - text_height) / 2.0 - padding_top;
-            (local_y - vertical_offset.max(0.0)).max(0.0)
+            ((content_height - text_height) / 2.0 - padding_top).max(0.0)
         } else {
-            local_y
+            0.0
         };
 
-        let byte_offset = byte_offset_from_position(&text_layout, local_x, adjusted_y);
-
-        // For password fields, map display byte offset back to real value byte offset
-        if is_password {
-            let bullet_len = bullet.len();
-            let char_index = byte_offset / bullet_len;
-            value
-                .char_indices()
-                .nth(char_index)
-                .map(|(i, _)| i)
-                .unwrap_or(value.len())
-        } else {
-            byte_offset
-        }
+        Some(InputTextLayout {
+            layout,
+            value: value.to_string(),
+            is_password,
+            padding_left,
+            padding_top,
+            vertical_offset,
+        })
     }
 
     /// Walk up from `hit_id` looking for a `data-render-surface` attribute.

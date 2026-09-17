@@ -172,6 +172,9 @@ impl RinchApp {
         if self.focus_target == target {
             return (false, None);
         }
+        // The built-in text context menu belongs to the owner being torn
+        // down (#813): it goes with the claim, whoever moves it.
+        self.close_text_context_menu();
         // Everything the blurred owner is owed, collected in its arm and
         // dispatched only after the transition completes — see
         // [`PendingFocusWork`] for why it cannot run here.

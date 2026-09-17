@@ -2404,6 +2404,10 @@ fn process_actions(actions: &[AppAction], running: &mut bool) {
             | AppAction::SetCursor(_)
             | AppAction::ToggleDevTools
             | AppAction::ToggleInspectMode => {}
+            // Emitted only under `TextContextMenuPresentation::Shell`, which
+            // this shell does not yet ask for: the runtime's own DOM menu is
+            // what a long press in a text field opens today (issue #813).
+            AppAction::ShowTextContextMenu => {}
         }
     }
 }

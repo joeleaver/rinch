@@ -132,6 +132,15 @@ jobs:
           cargo test -p rinch-editor-core --features serde,markdown
           cargo test -p rinch-editor-view --features collaboration
           cargo test -p rinch --features desktop,embed,theme,clipboard,debug
+          # Bare on purpose: `desktop` (the default) WITHOUT `clipboard`. The
+          # text context menu's no-clipboard pin (#813,
+          # `without_the_clipboard_feature_a_selected_field_greys_cut_and_copy`)
+          # is cfg(not(feature = "clipboard")): the line above enables the
+          # feature, `--workspace` unifies it on, and the `components,theme`
+          # line below compiles no `app` module at all — so without this line
+          # it runs nowhere. Filtered to the menu's fixtures, which is all this
+          # configuration adds; it is still a second build of `rinch`.
+          cargo test -p rinch --lib text_context_menu
           # The menu system without a desktop backend — the configuration
           # `rinch-web` resolves `rinch` to. It is the **decoupling** check, not
           # extra coverage: `menu::app_menu_bar`'s `portable_tests` and

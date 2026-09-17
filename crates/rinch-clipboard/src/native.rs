@@ -324,6 +324,85 @@ fn rich_probe(backend: &mut dyn Backend) -> ClipboardResult<RichPaste> {
     }
 }
 
+// ── The in-memory backend (tests) ────────────────────────────────────────────
+
+/// Route every clipboard call in this process to an **in-memory** clipboard
+/// instead of the system one, for tests.
+///
+/// The system clipboard is one per user session: a test that copies through
+/// `arboard` overwrites whatever the developer had on it, and a headless CI
+/// runner has no clipboard at all, so `copy_text` then `paste_text` there
+/// cannot observe anything. This swaps the worker's backend for one that keeps
+/// the last write in memory and answers reads from it, with the same
+/// text/html/image flavour rules the real one has — a `set_text` clears the
+/// html and image flavours, as a real clipboard write does.
+///
+/// Idempotent: the first call installs, later calls keep the current contents.
+/// Process-wide, so tests sharing a binary share one clipboard; serialize the
+/// ones that read what another wrote.
+#[cfg(feature = "test-backend")]
+#[doc(hidden)]
+pub fn use_in_memory_clipboard() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    #[derive(Default)]
+    struct MemoryBackend {
+        text: Option<String>,
+        html: Option<String>,
+        image: Option<(usize, usize, Vec<u8>)>,
+    }
+
+    impl Backend for MemoryBackend {
+        fn get_text(&mut self) -> ClipboardResult<String> {
+            self.text.clone().ok_or(ClipboardError::ContentTypeMismatch)
+        }
+        fn set_text(&mut self, text: &str) -> ClipboardResult<()> {
+            *self = MemoryBackend {
+                text: Some(text.to_string()),
+                ..Default::default()
+            };
+            Ok(())
+        }
+        fn get_html(&mut self) -> ClipboardResult<String> {
+            self.html.clone().ok_or(ClipboardError::ContentTypeMismatch)
+        }
+        fn set_html(&mut self, html: &str, alt_text: Option<&str>) -> ClipboardResult<()> {
+            *self = MemoryBackend {
+                html: Some(html.to_string()),
+                text: alt_text.map(str::to_string),
+                image: None,
+            };
+            Ok(())
+        }
+        fn get_image(&mut self) -> ClipboardResult<ImageData<'static>> {
+            self.image
+                .as_ref()
+                .map(|(w, h, bytes)| ImageData::new(*w, *h, bytes.clone()))
+                .ok_or(ClipboardError::ContentTypeMismatch)
+        }
+        fn set_image(&mut self, image: ImageData<'_>) -> ClipboardResult<()> {
+            *self = MemoryBackend {
+                image: Some((image.width, image.height, image.bytes.into_owned())),
+                ..Default::default()
+            };
+            Ok(())
+        }
+        fn clear(&mut self) -> ClipboardResult<()> {
+            *self = MemoryBackend::default();
+            Ok(())
+        }
+    }
+
+    static INSTALLED: AtomicBool = AtomicBool::new(false);
+    if INSTALLED.swap(true, Ordering::SeqCst) {
+        return;
+    }
+    let mut guard = WORKER.lock().unwrap_or_else(|e| e.into_inner());
+    *guard = Some(Worker::spawn(|| {
+        Ok(Box::new(MemoryBackend::default()) as Box<dyn Backend>)
+    }));
+}
+
 // ── Blocking API (unchanged signatures) ──────────────────────────────────────
 
 /// Copy text to the clipboard.

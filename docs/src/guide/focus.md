@@ -695,6 +695,55 @@ refused while the lock is held; the Linux in-app menu bar's own dropdown is the
 known instance, tracked in
 [issue #701](https://github.com/joeleaver/rinch/issues/701).
 
+## Right-clicking a text field
+
+A right press on a text target — an `<input>` of a text-like type (`text`,
+`search`, `url`, `tel`, `email`, `password`, `number`, or no `type` at all), a
+`<textarea>`, or the rich-text `Editor` — opens a built-in **Cut / Copy /
+Paste / Select all** menu on desktop (issue #813). It is a menu the runtime
+draws itself, as a DOM overlay in the same shape as the native `<select>`
+popup, so it is the same on Linux, macOS and Windows, works in a borderless or
+transparent window, and follows the theme's palette when there is one.
+
+- **A `data-oncontextmenu` handler still wins.** If the pressed node or any
+  ancestor carries a live one, it runs exactly as before and the built-in menu
+  stays shut. Attach one to a field to give it a menu of your own.
+- **Each item runs the code its chord runs** — `Ctrl+X` / `Ctrl+C` / `Ctrl+V`
+  / `Ctrl+A` (`Cmd` on macOS), including the editor's asynchronous, anchored
+  paste. Today that is literally one function per operation on both paths, and
+  a fixture pins item and chord to the same value, selection and clipboard;
+  nothing in the code *enforces* it, so a check added to one path alone would
+  drift the other silently.
+- **Enabled states follow the field.** Cut and Copy need a non-empty
+  selection; a `readonly` field greys Cut and Paste; a `password` field greys
+  Cut and Copy; Select all needs content; a `disabled` field takes no focus and
+  gets no menu. Without the `clipboard` feature Cut, Copy and Paste are all
+  greyed — there is no clipboard for them to reach, and an enabled Cut would
+  delete text it never copied. **Paste is not decided by reading the clipboard** — a read can
+  block for up to four seconds on X11 — so it stays enabled over an empty
+  clipboard, where a native menu would grey it out; pasting nothing does
+  nothing.
+- **The press places the caret like a native editor's.** Outside the current
+  selection it moves the caret to the press point; inside it, the selection is
+  kept, so Cut and Copy act on what you selected.
+- **The field keeps the keyboard** while the menu is open and after an item
+  runs. Up / Down / Home / End move over the enabled rows (wrapping), Enter or
+  Space runs the highlighted one, and Escape closes through [the dismiss
+  stack](#the-dismiss-stack) — the menu pushes its entry at open time, above an
+  enclosing `Modal`'s, and releases it on close. Any press outside the menu
+  closes it without acting and is swallowed; a wheel closes it too.
+- **It goes with its target.** The menu closes when the field's claim moves
+  (a click elsewhere, a programmatic focus), when the window loses focus, and
+  when the field leaves the document — the last is checked on every event
+  rather than waiting for a second event that might never arrive.
+
+On `rinch-web` the browser's own menu covers text fields and the runtime draws
+none (issue #812). On Android a long press in a field arrives as the same
+right press; which presentation the Android shell uses is that platform's
+half of #813 — the runtime exposes the state and the actions
+(`RinchApp::text_edit_state`, `perform_text_edit`) for a native toolbar to
+build on, with this menu as the fallback.
+
 ## Where this does *not* apply
 
 - **The browser backend (`rinch-web`).** There is no arbiter there because the
