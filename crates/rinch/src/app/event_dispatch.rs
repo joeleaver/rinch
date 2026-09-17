@@ -3047,8 +3047,15 @@ impl RinchApp {
 
     /// Cut: copy the selection to the clipboard, then delete it. Returns whether the
     /// document changed.
+    ///
+    /// Nothing at all in a read-only editor, as in a `readonly` field: the delete
+    /// would be refused (`EditorHandle::set_read_only`), and a Cut that only
+    /// copies has changed the clipboard while appearing to do nothing.
     #[cfg(feature = "clipboard")]
     pub(super) fn editor_cut(&self, handle: &crate::editor::EditorHandle) -> bool {
+        if handle.is_read_only() {
+            return false;
+        }
         match handle.selection_clipboard() {
             Some((html, text)) => {
                 crate::clipboard::copy_html_async(&html, Some(&text));
@@ -3763,6 +3770,39 @@ mod async_paste_tests {
             RichPaste::Text("X".into())
         ));
         assert_eq!(text_of(&handle), "ABhelloX world");
+    }
+
+    /// Ctrl+V on a writable editor, and the editor goes read-only (a role changed)
+    /// while the clipboard read is in flight: the late insertion is refused where
+    /// every other edit is, whatever the payload. A check at dispatch could not
+    /// see this; the handle's gate does. The same paste lands when nothing locked
+    /// the editor meanwhile.
+    #[test]
+    fn a_paste_that_lands_after_the_editor_went_read_only_is_refused() {
+        let pastes = || {
+            [
+                RichPaste::Text("THERE".into()),
+                RichPaste::Html("<p><b>THERE</b></p>".into()),
+            ]
+        };
+        for locked_meanwhile in [false, true] {
+            for paste in pastes() {
+                let handle = editor_with("<p>hello world</p>");
+                handle.set_selection(Selection::cursor(Pos(6)));
+                let anchor = handle.anchor_selection();
+                handle.set_read_only(locked_meanwhile);
+                assert_eq!(
+                    apply_paste_at_anchor(&handle, &anchor, paste),
+                    !locked_meanwhile
+                );
+                let expected = if locked_meanwhile {
+                    "hello world"
+                } else {
+                    "helloTHERE world"
+                };
+                assert_eq!(text_of(&handle), expected);
+            }
+        }
     }
 
     /// Rich HTML goes in as structure, at the anchor.
