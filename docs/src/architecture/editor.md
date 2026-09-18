@@ -180,6 +180,20 @@ the view renders when the `Editor {}` component mounts it. This is what lets a h
 be created in a component body and handed to buttons *and* to `Editor {}` in the same
 `rsx!` block.
 
+**Read-only is one check where local changes land, not one per input path.** Every
+local change — `update`, `command`, `insert_image`, `toggle_link`, `load_doc` — is
+stored by `EditorCore::commit`, and that is where `set_read_only` is enforced: a
+transaction that changes the document or sets stored marks is refused, a
+selection-only one applies, and a load applies unless a collaboration session would
+record it. The rule reads the two states, not the caller, so the desktop key handler,
+the web's `beforeinput` and mirror-diff paths, an app's toolbar and any input path
+added later are covered without knowing the switch exists. Remote integration
+(`collab_receive`) has never gone through `commit` — it must not be recorded back
+onto the CRDT — so a read-only editor keeps receiving *by construction*: there is no
+flag to lower around it and none to forget to raise again. The platform crates add
+only what a refusal cannot express (the OS input method off, the context menu's Cut
+and Paste greyed, the web capture field `readonly` so no soft keyboard rises).
+
 **The registry is keyed by `(doc_key, container_id)`, not by container id alone.**
 Container ids are per-document slab indices, so two documents on one thread — two
 desktop windows, or two embedded `RinchContext`s — collide at the same id (issue

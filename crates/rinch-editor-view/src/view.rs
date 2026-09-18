@@ -591,6 +591,20 @@ impl RinchDomEditorView {
             .set_attribute("data-pm-theme", if dark { "dark" } else { "light" });
     }
 
+    /// Mark the container read-only (`data-pm-readonly="true"`) or clear the mark.
+    /// The attribute is a styling hook and nothing more — the default stylesheet
+    /// hides the placeholder under it — and refusing edits is
+    /// [`EditorHandle::set_read_only`](super::EditorHandle::set_read_only)'s job,
+    /// done on the model. Present-or-absent rather than `"true"`/`"false"`, like
+    /// `readonly` on an `<input>`, so `[data-pm-readonly]` is the whole selector.
+    pub(crate) fn set_read_only(&self, read_only: bool) {
+        if read_only {
+            self.root.dom.set_attribute("data-pm-readonly", "true");
+        } else {
+            self.root.dom.remove_attribute("data-pm-readonly");
+        }
+    }
+
     /// Resolve a model [`Pos`] to its host caret address `(textblock element id,
     /// flat UTF-8 byte offset)` — the address app-side geometry (caret point,
     /// vertical movement) queries Parley with. `None` if `pos` isn't in a textblock.

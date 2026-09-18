@@ -330,14 +330,19 @@ impl RinchApp {
         match self.focus_target {
             #[cfg(feature = "desktop")]
             FocusTarget::Editor(container) => {
-                let cursor_area = crate::editor::editor_for_doc(self.doc_key(), container)
-                    .and_then(|handle| {
-                        let head = handle.selection().head();
-                        self.editor_caret_point(&handle, head)
-                            .map(|(x, y, h)| (x, y, 1.0, h))
-                    });
+                let handle = crate::editor::editor_for_doc(self.doc_key(), container);
+                // A read-only editor composes nothing (`EditorHandle::set_read_only`
+                // refuses the commit and shows no preedit), so the OS input method
+                // stays off for it: no candidate window over text that cannot take
+                // the result. Re-read on every reconcile, so it follows the switch.
+                let enabled = !handle.as_ref().is_some_and(|h| h.is_read_only());
+                let cursor_area = handle.and_then(|handle| {
+                    let head = handle.selection().head();
+                    self.editor_caret_point(&handle, head)
+                        .map(|(x, y, h)| (x, y, 1.0, h))
+                });
                 ImeState {
-                    enabled: true,
+                    enabled,
                     cursor_area,
                 }
             }

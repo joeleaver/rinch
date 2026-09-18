@@ -49,7 +49,8 @@ use rinch_core::dom::NodeId;
 /// no-clipboard Cut is pre-existing and tracked as #823.)
 ///
 /// A `disabled` field never takes the keyboard (issue #315), so it never
-/// reaches here; a `readonly` one does, with `can_cut` and `can_paste` off.
+/// reaches here; a `readonly` one does, with `can_cut` and `can_paste` off —
+/// and so does a read-only editor (`EditorHandle::set_read_only`), the same way.
 #[derive(Clone, Copy, Debug, PartialEq)]
 #[non_exhaustive]
 pub struct TextEditState {
@@ -336,11 +337,14 @@ impl RinchApp {
                 // is one empty paragraph, size 2, so anything larger holds a
                 // character, an atom or a further block to select.
                 let can_select_all = handle.doc().content_size() > 2;
+                // A read-only editor (`EditorHandle::set_read_only`) is a
+                // `readonly` field: it copies and selects, and offers neither
+                // Cut (copy plus a delete it would refuse) nor Paste.
+                let writable = !handle.is_read_only();
                 Some(TextEditState {
-                    // The editor has no read-only mode; cut is copy plus delete.
-                    can_cut: can_copy,
+                    can_cut: can_copy && writable,
                     can_copy,
-                    can_paste: cfg!(feature = "clipboard"),
+                    can_paste: writable && cfg!(feature = "clipboard"),
                     can_select_all,
                     anchor,
                 })

@@ -771,8 +771,14 @@ fn under_shell_presentation_the_gesture_prepares_and_emits_instead_of_opening() 
 
 /// The clipboard is one per process and the test binary is many threads:
 /// each clipboard fixture holds this for its whole body.
+///
+/// **One lock for the whole binary.** `editor_read_only_tests` is in this same
+/// `--lib` target and touches the same in-memory clipboard, so a second `static
+/// LOCK` of its own would serialize each file against itself and neither against
+/// the other — two fixtures asserting on clipboard *content* would then race. Any
+/// further module that reads what another wrote takes this one too.
 #[cfg(feature = "clipboard")]
-fn clipboard_lock() -> std::sync::MutexGuard<'static, ()> {
+pub(super) fn clipboard_lock() -> std::sync::MutexGuard<'static, ()> {
     static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
     rinch_clipboard::use_in_memory_clipboard();
     LOCK.lock().unwrap_or_else(|e| e.into_inner())

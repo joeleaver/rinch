@@ -407,6 +407,13 @@ jobs:
         run: |
           cargo test -p rinch-storage --target wasm32-unknown-unknown
           cargo test -p rinch-web --target wasm32-unknown-unknown
+          # The editor's read-only collaboration fixture is
+          # `#[cfg(feature = "collaboration")]`, which the bare run above does not
+          # turn on — it would have run nowhere, and a test that never runs reads
+          # exactly like a passing one. Only that target, so the rest of the suite
+          # is not compiled and re-run a second time for one fixture.
+          cargo test -p rinch-web --target wasm32-unknown-unknown \
+            --features collaboration --test editor_read_only
 
   # Type-check the Android target. Nothing else in this pipeline compiles it.
   #
