@@ -43,6 +43,13 @@ pub(super) fn paint_inline_layout(
         scale,
     );
 
+    // Wavy underlines (`text-decoration-style: wavy` — the spellcheck squiggle)
+    // paint AFTER the text, so the wave reads over the glyph descenders rather
+    // than being hidden by them.
+    if !inline_layout.decoration_spans.is_empty() {
+        paint_wavy_decorations(painter, parent_x, parent_y, inline_layout, transform, scale);
+    }
+
     // Paint inline-block boxes by looking them up in tree and painting
     for line in inline_layout.layout.lines() {
         for item in line.items() {
@@ -143,6 +150,100 @@ fn paint_inline_backgrounds(
             } else {
                 painter.fill(Fill::NonZero, transform, &brush, &rect.into());
             }
+        }
+    }
+}
+
+/// Paint the wavy underlines recorded as [`InlineDecorationSpan`]s.
+///
+/// Parley's decoration styles are a straight line of a given brush, offset and
+/// size — there is no wavy variant — so `text-decoration-style: wavy` is carried
+/// out of the cascade as a byte range (see
+/// `RinchDocument::push_inline_spans`) and drawn here as a zigzag under the
+/// run, the same way an inline background is drawn as a rectangle under one.
+///
+/// The wave is a polyline rather than a curve: at a ~1px amplitude over a ~5px
+/// period the difference is below a pixel, and a polyline costs no curve
+/// flattening in the software painter, where this runs on every repaint of a
+/// document with squiggles in it. Geometry is in the same **scaled** space
+/// [`render_text`] draws glyphs in, so the underline tracks the text on a HiDPI
+/// display.
+///
+/// [`InlineDecorationSpan`]: crate::node::InlineDecorationSpan
+fn paint_wavy_decorations(
+    painter: &mut dyn Painter,
+    parent_x: f64,
+    parent_y: f64,
+    inline_layout: &crate::node::InlineLayout,
+    css_transform: Affine,
+    scale: f64,
+) {
+    use parley::layout::Cluster;
+    use peniko::kurbo::BezPath;
+
+    let sf = scale as f32;
+    let layout = &inline_layout.layout;
+    let transform = css_transform * Affine::translate((parent_x, parent_y));
+    // CSS px, scaled with everything else below.
+    const PERIOD: f64 = 5.0;
+    const AMPLITUDE: f64 = 1.0;
+    const THICKNESS: f64 = 1.0;
+
+    for span in &inline_layout.decoration_spans {
+        let brush = Brush::Solid(span.color);
+        for line in layout.lines() {
+            let line_range = line.text_range();
+            if line_range.end <= span.start || line_range.start >= span.end {
+                continue;
+            }
+            let start = span.start.max(line_range.start);
+            let end = span.end.min(line_range.end);
+            let Some(sc) = Cluster::from_byte_index(layout, start) else {
+                continue;
+            };
+            let Some(ec) = Cluster::from_byte_index(layout, end.saturating_sub(1).max(start))
+            else {
+                continue;
+            };
+            let (Some(x_start), Some(x_end)) = (sc.visual_offset(), ec.visual_offset()) else {
+                continue;
+            };
+            let (x0, x1) = ((x_start * sf) as f64, ((x_end + ec.advance()) * sf) as f64);
+            if x1 <= x0 {
+                continue;
+            }
+            let metrics = line.metrics();
+            let baseline = (metrics.baseline * sf) as f64;
+            // Parley's `underline_offset` is measured **up** from the baseline
+            // (the sign `render_text` subtracts with), and is per-run, so take it
+            // from the line's first run and fall back to a fraction of the
+            // descent for a line that somehow has none.
+            let offset = line
+                .runs()
+                .next()
+                .map(|r| r.metrics().underline_offset)
+                .unwrap_or(-metrics.descent * 0.4);
+            // Sit the *top* of the wave where a straight underline would be, so a
+            // squiggle never rides up into the glyphs.
+            let mid = baseline - (offset * sf) as f64 + AMPLITUDE * scale;
+            let amp = AMPLITUDE * scale;
+            let half = (PERIOD * scale) / 2.0;
+
+            let mut path = BezPath::new();
+            path.move_to((x0, mid + amp));
+            let mut x = x0;
+            let mut up = true;
+            while x < x1 {
+                x = (x + half).min(x1);
+                path.line_to((x, if up { mid - amp } else { mid + amp }));
+                up = !up;
+            }
+            painter.stroke(
+                &Stroke::new(THICKNESS * scale),
+                transform,
+                &brush,
+                &path.into(),
+            );
         }
     }
 }
