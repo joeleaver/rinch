@@ -443,6 +443,23 @@ pub struct InlineBackgroundSpan {
     pub border_radius: f32,
 }
 
+/// A **wavy underline** span within an IFC — the spellcheck squiggle.
+///
+/// Every other `text-decoration` is a straight line Parley already strokes from
+/// the run metrics (`paint::text::render_text`). A wave is not expressible as a
+/// Parley style, so `text-decoration-style: wavy` is recorded here instead, as a
+/// byte range over the flat IFC text, and painted as a zigzag path — the same
+/// shape [`InlineBackgroundSpan`] takes, and for the same reason.
+pub struct InlineDecorationSpan {
+    /// Byte range start in the IFC `text_content`.
+    pub start: usize,
+    /// Byte range end (exclusive) in the IFC `text_content`.
+    pub end: usize,
+    /// The line's colour, already resolved: `text-decoration-color` when the
+    /// element set one, otherwise the element's own `color` (CSS `currentcolor`).
+    pub color: peniko::Color,
+}
+
 /// Cached Parley inline layout for an IFC (Inline Formatting Context) root.
 ///
 /// Stored on the IFC root element. Rebuilt when any inline child mutates.
@@ -457,6 +474,9 @@ pub struct InlineLayout {
     pub text_ranges: Vec<IfcTextRange>,
     /// Background spans for inline elements (code, mark, etc.).
     pub background_spans: Vec<InlineBackgroundSpan>,
+    /// Wavy-underline spans (`text-decoration-style: wavy`), which Parley cannot
+    /// express as a style and the painter draws itself.
+    pub decoration_spans: Vec<InlineDecorationSpan>,
     /// The max_width used to build this layout (for cache invalidation).
     pub max_width: f32,
 }

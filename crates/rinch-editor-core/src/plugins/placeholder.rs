@@ -114,6 +114,7 @@ mod tests {
             Decoration::Widget { widget, .. } => {
                 assert_eq!(*widget, Widget::Placeholder(Rc::from("Write something…")));
             }
+            other => panic!("expected a widget, got {other:?}"),
         }
     }
 
