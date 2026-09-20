@@ -113,6 +113,22 @@ fn typing_is_one_undo_group_via_keymap() {
 }
 
 #[test]
+fn text_align_default_keybindings() {
+    // Google Docs convention: Mod-Shift-{l,e,r,j} for left/center/right/justify.
+    let state = empty_editor();
+    let cases = [
+        ("Mod-Shift-l", "setTextAlignLeft"),
+        ("Mod-Shift-e", "setTextAlignCenter"),
+        ("Mod-Shift-r", "setTextAlignRight"),
+        ("Mod-Shift-j", "setTextAlignJustify"),
+    ];
+    for (binding, command) in cases {
+        let kb = KeyBinding::parse(binding).unwrap();
+        assert_eq!(state.keymap().command_for(&kb), Some(command), "{binding}");
+    }
+}
+
+#[test]
 fn markdown_heading_input_rule_via_public_api() {
     // type "##" then a space → the input rule turns the block into an <h2>
     let mut state = empty_editor();
