@@ -43,6 +43,32 @@ fn scene_break(schema: &Schema) -> Node {
     schema.branch("horizontal_rule", Fragment::empty()).unwrap()
 }
 
+/// An inline atom: an `image` with the starter kit's attrs, which lives *inside* a
+/// paragraph's text rather than as a block of its own.
+fn image(schema: &Schema, src: &str) -> Node {
+    schema
+        .create_node(
+            "image",
+            Attrs::new()
+                .with("src", AttrValue::from(src))
+                .with("alt", AttrValue::from("a cat")),
+            Fragment::empty(),
+        )
+        .unwrap()
+}
+
+/// The other inline atom: the `hard_break` a Shift+Enter inserts.
+fn hard_break(schema: &Schema) -> Node {
+    schema.branch("hard_break", Fragment::empty()).unwrap()
+}
+
+/// A paragraph over arbitrary inline children (text nodes, atoms, or both).
+fn para_of(schema: &Schema, children: Vec<Node>) -> Node {
+    schema
+        .branch("paragraph", Fragment::from_children(children))
+        .unwrap()
+}
+
 /// The model position at which block `index` of `doc` starts.
 fn block_start(doc: &Node, index: usize) -> usize {
     (0..index).map(|i| doc.child(i).node_size()).sum()
@@ -240,17 +266,23 @@ fn norm(doc: &Node) -> String {
     for bi in 0..doc.child_count() {
         let b = doc.child(bi);
         s.push_str(&format!("<{} {}>", b.type_name(), norm_attrs(b)));
-        let mut runs: Vec<(Vec<String>, String)> = Vec::new();
+        // (marks, rendering, is_text) — an inline **atom** renders as its type and
+        // attrs, and never coalesces with a neighbouring run, so a document that lost
+        // one (or grew one) cannot compare equal to one that did not.
+        let mut runs: Vec<(Vec<String>, String, bool)> = Vec::new();
         for ci in 0..b.child_count() {
             let c = b.child(ci);
-            let text = c.text().unwrap_or("").to_string();
             let marks = canon_marks(c);
+            let (text, is_text) = match c.text() {
+                Some(t) => (t.to_string(), true),
+                None => (format!("⟦{} {}⟧", c.type_name(), norm_attrs(c)), false),
+            };
             match runs.last_mut() {
-                Some(last) if last.0 == marks => last.1.push_str(&text),
-                _ => runs.push((marks, text)),
+                Some(last) if last.2 && is_text && last.0 == marks => last.1.push_str(&text),
+                _ => runs.push((marks, text, is_text)),
             }
         }
-        for (marks, text) in runs {
+        for (marks, text, _) in runs {
             s.push_str(&format!("«{}|{}»", text, marks.join("+")));
         }
         s.push_str("</>");
@@ -1226,31 +1258,266 @@ fn a_peer_typing_in_a_paragraph_another_turns_into_a_scene_break_still_converges
     assert!(norm(&b.state.doc).contains("two!"), "editing still works");
 }
 
+// --- inline atoms (hard breaks, images) ----------------------------------------
+
 #[test]
-fn an_inline_atom_is_still_out_of_scope() {
-    // The boundary the block atom does NOT move (and the reason it is stated as "leaf
-    // *block* atom"): an `image` is an atom too, but it lives inside a paragraph's
-    // inline content, where a block's single projected text has nowhere to put it.
+fn projection_round_trips_a_paragraph_holding_inline_atoms() {
+    // The headline inline-atom test: an image and a hard break inside a line of text
+    // survive the round trip as themselves, at the positions they were in — not as
+    // stray U+FFFC characters, and not by failing loud.
     let schema = Rc::new(Schema::starter_kit());
-    let image = schema
-        .create_node(
-            "image",
-            Attrs::new().with("src", AttrValue::from("cat.png")),
-            Fragment::empty(),
-        )
+    let line = para_of(
+        &schema,
+        vec![
+            schema.text("look: ").unwrap(),
+            image(&schema, "cat.png"),
+            schema.text(" and on").unwrap(),
+            hard_break(&schema),
+            schema.text("a new line").unwrap(),
+        ],
+    );
+    let doc = doc_of(&schema, vec![line, para(&schema, "after")]);
+    let cdoc = rinch_editor_collab::CollabDoc::from_doc(&doc).unwrap();
+    let back = cdoc.to_doc(&schema).unwrap();
+    assert_eq!(
+        back, doc,
+        "the rebuilt document is the identical model tree"
+    );
+    assert_eq!(tree(&doc), tree(&back));
+
+    // And a late joiner reading the same bytes adopts it too (the snapshot path).
+    let joined = rinch_editor_collab::CollabDoc::load(&cdoc.save())
+        .expect("a projection holding inline atoms is joinable")
+        .to_doc(&schema)
         .unwrap();
-    let p = schema
-        .create_node(
-            "paragraph",
-            Attrs::new(),
-            Fragment::from_children(vec![schema.text("look: ").unwrap(), image]),
-        )
+    assert_eq!(joined, doc);
+}
+
+#[test]
+fn a_hard_break_typed_by_the_host_reaches_the_guest_and_the_body_keeps_syncing() {
+    // PlotWeb's actual symptom, the inline half of it: the moment the author pressed
+    // Shift+Enter the body stopped syncing while the editor still said "Saved". The
+    // break must project, arrive, and leave the paragraph editable on both sides.
+    let schema = Rc::new(Schema::starter_kit());
+    let (mut a, mut b) = two_peers(&schema, vec![para(&schema, "one two")]);
+
+    // Shift+Enter between the words: an atom inserted into existing text.
+    let at = block_start(&a.state.doc, 0) + 5; // "one |two"
+    let br = hard_break(&schema);
+    a.local(|tr| {
+        tr.replace(at, at, Slice::new(Fragment::from_node(br), 0, 0))
+            .unwrap();
+    });
+    sync(&mut a, &mut b);
+    assert_converged(&a, &b, &schema);
+    assert_eq!(
+        norm(&b.state.doc),
+        norm(&doc_of(
+            &schema,
+            vec![para_of(
+                &schema,
+                vec![
+                    schema.text("one ").unwrap(),
+                    hard_break(&schema),
+                    schema.text("two").unwrap(),
+                ],
+            )],
+        )),
+        "the guest received the hard break in place"
+    );
+
+    // Typing on both sides of it still syncs, and the break stays where it is.
+    a.type_at(block_content_end(&a.state.doc, 0), "!");
+    b.type_at(block_start(&b.state.doc, 0) + 1, "X");
+    sync(&mut a, &mut b);
+    assert_converged(&a, &b, &schema);
+    assert!(
+        norm(&a.state.doc).contains("⟦hard_break ⟧"),
+        "the break survived the edits around it: {}",
+        norm(&a.state.doc)
+    );
+}
+
+#[test]
+fn deleting_an_inline_atom_removes_it_on_the_other_side() {
+    let schema = Rc::new(Schema::starter_kit());
+    let line = para_of(
+        &schema,
+        vec![
+            schema.text("ab").unwrap(),
+            image(&schema, "cat.png"),
+            schema.text("cd").unwrap(),
+        ],
+    );
+    let (mut a, mut b) = two_peers(&schema, vec![line]);
+    assert!(
+        norm(&b.state.doc).contains("⟦image"),
+        "the guest joined with it"
+    );
+
+    // The image is one model position wide, just after "ab".
+    let at = block_start(&a.state.doc, 0) + 3;
+    a.local(|tr| {
+        tr.delete(at, at + 1).unwrap();
+    });
+    sync(&mut a, &mut b);
+    assert_converged(&a, &b, &schema);
+    assert_eq!(
+        norm(&b.state.doc),
+        norm(&doc_of(&schema, vec![para(&schema, "abcd")])),
+        "the deletion reached the guest and left ordinary text behind"
+    );
+}
+
+#[test]
+fn changing_an_atoms_attrs_reconciles_it_rather_than_duplicating_it() {
+    // An image whose `src` changes is the same node with a different attribute, so the
+    // projection must rewrite that one char's `@atom` value — not insert a second
+    // placeholder beside the first, which is what a diff that treated the atom as
+    // opaque content would do.
+    let schema = Rc::new(Schema::starter_kit());
+    let line = para_of(
+        &schema,
+        vec![
+            schema.text("see ").unwrap(),
+            image(&schema, "old.png"),
+            schema.text(" now").unwrap(),
+        ],
+    );
+    let (mut a, mut b) = two_peers(&schema, vec![line]);
+    let at = block_start(&a.state.doc, 0) + 5; // just before the image
+
+    a.local(|tr| {
+        tr.step(Box::new(SetNodeAttrStep::new(
+            at,
+            "src",
+            AttrValue::from("new.png"),
+        )))
         .unwrap();
-    let doc = doc_of(&schema, vec![p]);
+    });
+    sync(&mut a, &mut b);
+    assert_converged(&a, &b, &schema);
+    assert_eq!(
+        norm(&b.state.doc),
+        norm(&doc_of(
+            &schema,
+            vec![para_of(
+                &schema,
+                vec![
+                    schema.text("see ").unwrap(),
+                    image(&schema, "new.png"),
+                    schema.text(" now").unwrap(),
+                ],
+            )],
+        )),
+        "one image, with the new src"
+    );
+    assert_eq!(
+        norm(&b.state.doc).matches("⟦image").count(),
+        1,
+        "exactly one image: {}",
+        norm(&b.state.doc)
+    );
+}
+
+#[test]
+fn concurrent_edits_on_both_sides_of_an_atom_converge_and_keep_it() {
+    // Two authors typing either side of a picture. The interesting half is the peer
+    // typing *immediately after* it: yrs swallows an insert at the end boundary of a
+    // formatted range into that range, so those chars arrive carrying the image's
+    // `@atom` attribute. Treating that as corruption would poison the session over a
+    // formatting artifact; instead the chars are text (a char that is not U+FFFC is not
+    // an atom), and the next projection clears the stray span.
+    let schema = Rc::new(Schema::starter_kit());
+    let line = para_of(
+        &schema,
+        vec![
+            schema.text("ab").unwrap(),
+            image(&schema, "cat.png"),
+            schema.text("cd").unwrap(),
+        ],
+    );
+    let (mut a, mut b) = two_peers(&schema, vec![line]);
+    let after_image = block_start(&a.state.doc, 0) + 4;
+    let before_image = block_start(&b.state.doc, 0) + 3;
+
+    a.type_at(after_image, "XY"); // directly after the atom
+    b.type_at(before_image, "Z"); // directly before it
+    sync(&mut a, &mut b);
+    assert_converged(&a, &b, &schema);
+
+    let converged = norm(&a.state.doc);
+    assert_eq!(
+        converged.matches("⟦image").count(),
+        1,
+        "exactly one image, and no char of the typing became a second one: {converged}"
+    );
+    for typed in ["XY", "Z"] {
+        assert!(converged.contains(typed), "{typed} survived: {converged}");
+    }
+
+    // The session is healthy, not poisoned: the next edit on either side still syncs.
+    a.type_at(block_content_end(&a.state.doc, 0), "!");
+    sync(&mut a, &mut b);
+    assert_converged(&a, &b, &schema);
+    assert!(norm(&b.state.doc).contains('!'), "editing still works");
+}
+
+#[test]
+fn an_atom_carrying_a_mark_reaches_the_peer_with_it() {
+    // A linked image — the atom is a char that happens to be formatted, so its own
+    // marks are ordinary spans over that char and travel like any other formatting.
+    let schema = Rc::new(Schema::starter_kit());
+    let link = Mark::new(
+        schema.mark_type("link").unwrap().clone(),
+        Attrs::new().with("href", AttrValue::from("https://example.test/")),
+    );
+    let line = para_of(
+        &schema,
+        vec![
+            schema.text("see ").unwrap(),
+            image(&schema, "cat.png").with_marks(vec![link]),
+        ],
+    );
+    let (_a, b) = two_peers(&schema, vec![line.clone()]);
+    assert_eq!(
+        tree(&b.state.doc),
+        tree(&doc_of(&schema, vec![line])),
+        "the guest built the linked image from the snapshot"
+    );
+}
+
+#[test]
+fn a_literal_object_replacement_character_stays_text() {
+    // The character the projection uses as its placeholder is one a user can paste.
+    // Nothing marks it as an atom, so it must round-trip — and converge — as text.
+    let schema = Rc::new(Schema::starter_kit());
+    let (mut a, mut b) = two_peers(&schema, vec![para(&schema, "a\u{FFFC}b")]);
+    a.type_at(block_content_end(&a.state.doc, 0), "!");
+    sync(&mut a, &mut b);
+    assert_converged(&a, &b, &schema);
+    assert_eq!(
+        norm(&b.state.doc),
+        norm(&doc_of(&schema, vec![para(&schema, "a\u{FFFC}b!")])),
+        "still one paragraph of plain text"
+    );
+    assert!(
+        !norm(&b.state.doc).contains('⟦'),
+        "and no node was invented from it: {}",
+        norm(&b.state.doc)
+    );
+}
+
+#[test]
+fn an_inline_atom_is_still_not_a_block_of_its_own() {
+    // The boundary the inline atom does NOT move: an `image` is in scope inside a
+    // textblock's inline content, never as a top-level block.
+    let schema = Rc::new(Schema::starter_kit());
+    let doc = doc_of(&schema, vec![image(&schema, "cat.png")]);
     let err = rinch_editor_collab::CollabDoc::from_doc(&doc).unwrap_err();
     assert!(
         matches!(err, rinch_editor_collab::CollabError::Unsupported(_)),
-        "an inline atom must still fail loud, got {err:?}"
+        "an inline atom standing as a block must still fail loud, got {err:?}"
     );
 }
 

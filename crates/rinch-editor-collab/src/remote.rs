@@ -344,6 +344,45 @@ mod tests {
         assert_eq!(head_after(&state, &target), 22);
     }
 
+    /// A peer types before the caret in a line that holds an **inline atom**, which
+    /// the caret has to be measured *across*. `flat_units` gives the atom one unit —
+    /// the same single model position it occupies, and the same U+FFFC the collab
+    /// projection stands it up with — so the offsets on either side of it still line
+    /// up. Counting it as zero (or as its rendered width) would slide the caret by one
+    /// per picture on every keystroke a peer makes.
+    #[test]
+    fn a_caret_after_an_inline_atom_is_carried_across_it() {
+        let schema = Rc::new(Schema::starter_kit());
+        let line = |lead: &str| {
+            let image = schema
+                .create_node(
+                    "image",
+                    rinch_editor_core::Attrs::new()
+                        .with("src", rinch_editor_core::AttrValue::from("cat.png")),
+                    Fragment::empty(),
+                )
+                .unwrap();
+            let para = schema
+                .branch(
+                    "paragraph",
+                    Fragment::from_children(vec![
+                        schema.text(lead).unwrap(),
+                        image,
+                        schema.text("tail").unwrap(),
+                    ]),
+                )
+                .unwrap();
+            schema.branch("doc", Fragment::from_node(para)).unwrap()
+        };
+        // doc(paragraph("ab", image, "tail")): content 1..=8, the caret after "ta".
+        let state = EditorState::create(schema.clone(), line("ab"), vec![]);
+        let mut tr = state.tr();
+        tr.set_selection(Selection::cursor(Pos(6)));
+        let state = state.apply(tr);
+        // The peer types one char before the atom: everything after it shifts by one.
+        assert_eq!(head_after(&state, &line("abX")), 7);
+    }
+
     /// The caret sits exactly where the two versions stop agreeing. It belongs to
     /// the text before it, which both versions share, so it does not move. Reading
     /// that boundary as *inside* the change instead would carry it to the end of

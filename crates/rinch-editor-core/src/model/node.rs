@@ -258,7 +258,14 @@ impl Node {
 
     /// A copy of this node with the given mark list (text node keeps its text,
     /// non-text node keeps its content). Port of `Node.mark`.
-    pub(crate) fn mark(&self, marks: Vec<Mark>) -> Node {
+    ///
+    /// **Public**, unlike its `with_attrs` sibling, and named for the value it
+    /// returns rather than for an action it does not perform: it is the only way
+    /// to put marks on a **non-text** node, which [`Schema::text_with_marks`]
+    /// cannot do. An inline atom carrying a mark — a linked `image` — is built
+    /// this way, by the HTML parser here and by the collab adapter rebuilding one
+    /// out of a CRDT.
+    pub fn with_marks(&self, marks: Vec<Mark>) -> Node {
         if self.is_text() {
             Node::new_text(self.0.typ.clone(), self.0.text.clone().unwrap(), marks)
         } else {

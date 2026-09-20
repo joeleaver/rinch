@@ -215,7 +215,7 @@ impl<'a> Transform<'a> {
         });
         for (pos, size, marks) in conversions {
             let new_block =
-                Node::new_branch(typ.clone(), attrs.clone(), Fragment::empty()).mark(marks);
+                Node::new_branch(typ.clone(), attrs.clone(), Fragment::empty()).with_marks(marks);
             let slice = Slice::new(Fragment::from_node(new_block), 0, 0);
             self.step(Box::new(ReplaceAroundStep::new(
                 pos,

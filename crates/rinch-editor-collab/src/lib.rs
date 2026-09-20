@@ -31,12 +31,13 @@
 //!
 //! The first milestone covers **flat text-blocks + marks** (`paragraph`/`heading`/
 //! `code_block` with text + bold/italic/link/… marks), the **list containers**
-//! (`bullet_list`/`ordered_list`/`list_item`, nested to any depth), and **leaf block
+//! (`bullet_list`/`ordered_list`/`list_item`, nested to any depth), **leaf block
 //! atoms** — a block-level node holding no content at all, such as the
 //! `horizontal_rule` an author inserts as a scene break, which projects as a block
-//! whose text is empty. Anything outside that — a nested block the containers do not
-//! cover, an **inline** atom such as `image`/`hard_break` — is
-//! [`CollabError::Unsupported`]: the adapter **fails loud** rather than silently
+//! whose text is empty — and the **inline atoms** `image`/`hard_break`, each one
+//! U+FFFC char of its block's text carrying a reserved `@atom` attribute. Anything
+//! outside that — a nested block the containers do not cover, a table, a task list —
+//! is [`CollabError::Unsupported`]: the adapter **fails loud** rather than silently
 //! dropping a change, because a silent drop is exactly the divergence class the editor
 //! rewrite set out to kill.
 //!
