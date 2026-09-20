@@ -826,6 +826,13 @@ impl RinchApp {
 
                 let mut handled = false;
                 if button == MouseButton::Right {
+                    // The editor's caret rule runs *before* the app handler, so a
+                    // `data-oncontextmenu` that draws its own menu reads the word
+                    // under the pointer rather than wherever the caret happened to
+                    // be. The web backend already orders it this way; see
+                    // `App::apply_editor_context_caret`.
+                    #[cfg(feature = "desktop")]
+                    self.apply_editor_context_caret(x, y);
                     // Right-click: try oncontextmenu dispatch first
                     let mods = self.modifier_state();
                     if let Some(doc) = &self.doc {

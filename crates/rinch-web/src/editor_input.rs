@@ -1373,6 +1373,16 @@ fn handle_mousedown(event: &web_sys::MouseEvent, doc: &web_sys::Document) -> boo
             .ok()
             .flatten()
             .is_some_and(|el| editor_el.contains(Some(&el)));
+        // Asked **before** the caret rule below, because the caret rule can take
+        // the pressed element out of the document: a decoration plugin (the
+        // spellchecker's squiggle) withholds the decoration over the word the
+        // caret has just moved into, and the `<span data-pm-deco>` the press
+        // landed on is discarded with it. A detached node has no ancestors, so
+        // the walk for an app's `data-oncontextmenu` would find nothing and the
+        // textarea would be parked over an app that *had* claimed the press.
+        // "Did the app claim this press" is a question about the DOM as it was
+        // when the button went down, so it is answered there.
+        let claimed_by_app = context_menu_claimed_by_app(&target);
         if !inside {
             match (leaf_selection, clicked) {
                 (Some(_), _) if on_link_or_image => {}
@@ -1383,7 +1393,7 @@ fn handle_mousedown(event: &web_sys::MouseEvent, doc: &web_sys::Document) -> boo
         }
         registry::end_drag(None);
         refresh_caret();
-        if !(on_link_or_image && !inside) && !context_menu_claimed_by_app(&target) {
+        if !(on_link_or_image && !inside) && !claimed_by_app {
             start_context_menu_cycle(
                 &handle,
                 container_nid,

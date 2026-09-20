@@ -429,6 +429,40 @@ impl EditorHandle {
         true
     }
 
+    /// Add `plugin` to this editor, rebuilding its state over the **current**
+    /// document and selection.
+    ///
+    /// The plugin list is otherwise fixed at construction
+    /// ([`create_editor`](super::create_editor) installs
+    /// [`default_plugins`](rinch_editor_core::default_plugins)), which leaves an app
+    /// no way to contribute one of its own — a spellchecker's decorations, say. This
+    /// is that seam.
+    ///
+    /// Rebuilding the state **discards every plugin's folded state**, undo history
+    /// included, so this is a construction-time call: add the plugin to a freshly
+    /// created handle, before any content is loaded or typed. Adding a key that is
+    /// already installed is a no-op, so calling it twice is harmless.
+    ///
+    /// Returns whether the plugin was added.
+    pub fn add_plugin(&self, plugin: Rc<dyn Plugin>) -> bool {
+        let mut core = self.inner.borrow_mut();
+        if core.plugins.iter().any(|p| p.key() == plugin.key()) {
+            return false;
+        }
+        core.plugins.push(plugin);
+        let prev = core.state.clone();
+        let mut next = EditorState::create(
+            core.schema.clone(),
+            prev.doc.clone(),
+            core.plugins.clone(),
+        );
+        next.selection = prev.selection.clone();
+        // No mapping: the document is unchanged, so nothing needs remapping, and
+        // `commit` treats a `None` mapping as a load — which this is, in the sense
+        // that matters (state replaced wholesale rather than stepped forward).
+        core.commit(prev, next, None).is_some()
+    }
+
     /// Run the named command (applying + re-projecting if it applies). Returns
     /// whether it applied — a [read-only](Self::set_read_only) editor refuses every
     /// command that would change the document. The toolbar/keymap entry point.
