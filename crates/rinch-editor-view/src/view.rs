@@ -351,6 +351,15 @@ pub struct RinchDomEditorView {
     /// The last rendered node-selection box `(x, y, w, h)` (pixels rounded), so a
     /// re-run on the same geometry writes nothing (mirrors [`Self::last_caret`]).
     last_node_outline: Option<(i32, i32, i32, i32)>,
+    /// Index into [`Self::selection_rects`] of the wash rectangle over the *head*
+    /// cell of the current [`Selection::Cell`], or `None` when the selection is not
+    /// a cell selection. It is the cell-selection arm's
+    /// [scroll anchor](Self::scroll_anchor) — the cell the user is moving, so
+    /// extending a cell rectangle follows the head rather than jumping to the
+    /// anchor corner.
+    ///
+    /// [`Selection::Cell`]: rinch_editor_core::Selection::Cell
+    cell_anchor_rect: Option<usize>,
     /// The IME composition (preedit) overlay: a span shown inline at the caret
     /// with the composing text underlined. The composition is **never** part of
     /// the document (design A5) — it is a transient view overlay, discarded on the
@@ -414,6 +423,7 @@ impl RinchDomEditorView {
             last_selection: None,
             node_outline: None,
             last_node_outline: None,
+            cell_anchor_rect: None,
             preedit_node: None,
             preedit_text: None,
             preedit: None,
@@ -478,14 +488,22 @@ impl EditorView for RinchDomEditorView {
 
     fn update_caret(&mut self, next: &EditorState) -> Vec<ViewRequest> {
         // Phase 2 (after layout): render the selection from `next.selection`.
+        //
+        // Every request below is gated on the selection overlay having actually
+        // *moved*. This pass runs on every layout/refresh, not only after a
+        // selection change, so an ungated `ScrollSelectionIntoView` would yank the
+        // caret back under the user the moment they wheel-scrolled away from it.
+        // The `position_*` helpers already early-return on an unchanged geometry
+        // key, so "did it move" is exactly what they report.
+        //
         // A node selection (a selected image / horizontal rule) outlines the node
         // and shows neither a text highlight nor a caret (design §6 node-views).
         if let rinch_editor_core::Selection::Node(_) = &next.selection {
             self.clear_selection_rects();
             self.hide_caret();
             self.hide_preedit();
-            self.render_node_selection(next);
-            return vec![ViewRequest::ScrollSelectionIntoView];
+            self.cell_anchor_rect = None;
+            return scroll_if(self.render_node_selection(next));
         }
         // A cell selection (a rectangle of table cells) washes each selected cell
         // and shows neither a caret nor a node outline.
@@ -493,10 +511,10 @@ impl EditorView for RinchDomEditorView {
             self.clear_node_selection();
             self.hide_caret();
             self.hide_preedit();
-            self.render_cell_selection(next);
-            return vec![ViewRequest::ScrollSelectionIntoView];
+            return scroll_if(self.render_cell_selection(next));
         }
         self.clear_node_selection();
+        self.cell_anchor_rect = None;
         // Otherwise: the text selection highlight (for a range) and the caret (at a
         // collapsed cursor).
         self.render_selection(next);
@@ -552,17 +570,29 @@ impl EditorView for RinchDomEditorView {
                 if let Some(text) = self.preedit.clone() {
                     self.position_preedit(x, y, height, &text, preedit_font.as_ref());
                     self.hide_caret();
+                    Vec::new()
                 } else {
                     self.hide_preedit();
-                    self.position_caret(x, y, height);
+                    scroll_if(self.position_caret(x, y, height))
                 }
             }
             None => {
                 self.hide_preedit();
                 self.hide_caret();
+                Vec::new()
             }
         }
+    }
+}
+
+/// `[ScrollSelectionIntoView]` when the selection overlay moved, else nothing —
+/// the movement gate every arm of [`RinchDomEditorView::update_caret`] returns
+/// through.
+fn scroll_if(moved: bool) -> Vec<ViewRequest> {
+    if moved {
         vec![ViewRequest::ScrollSelectionIntoView]
+    } else {
+        Vec::new()
     }
 }
 
@@ -697,6 +727,35 @@ impl RinchDomEditorView {
         std::mem::take(&mut self.overlay_dirty)
     }
 
+    /// The host element a [`ViewRequest::ScrollSelectionIntoView`] should bring into
+    /// view: the overlay the *current* selection is drawn with. (Unrelated to
+    /// [`SelectionAnchor`](super::SelectionAnchor), which captures a *position* for
+    /// a later async edit.) Which element to scroll to is the view's knowledge, not
+    /// the runtime's — the runtime only calls
+    /// [`NodeHandle::scroll_into_view`] on whatever comes back (see
+    /// [`EditorHandle::update_caret`](super::EditorHandle::update_caret)).
+    ///
+    /// - collapsed cursor → the caret bar,
+    /// - [`Selection::Node`] → the node outline,
+    /// - [`Selection::Cell`] → the wash rectangle over the *head* cell.
+    ///
+    /// `None` when nothing is drawn (no overlay yet, or the selection has no
+    /// geometry). The overlays are container children positioned in container
+    /// space, so scrolling one is scrolling the selection.
+    ///
+    /// [`Selection::Node`]: rinch_editor_core::Selection::Node
+    /// [`Selection::Cell`]: rinch_editor_core::Selection::Cell
+    pub(crate) fn scroll_anchor(&self) -> Option<&NodeHandle> {
+        if self.last_caret.is_some() {
+            return self.caret.as_ref();
+        }
+        if self.last_node_outline.is_some() {
+            return self.node_outline.as_ref();
+        }
+        let idx = self.cell_anchor_rect?;
+        self.selection_rects.get(idx)
+    }
+
     /// Render (or clear) the text-selection highlight from `state.selection`.
     fn render_selection(&mut self, state: &EditorState) {
         let sel = &state.selection;
@@ -802,6 +861,7 @@ impl RinchDomEditorView {
         }
         self.overlay_dirty = true;
         self.last_selection = None;
+        self.cell_anchor_rect = None;
         for div in self.selection_rects.drain(..) {
             div.discard();
         }
@@ -813,30 +873,39 @@ impl RinchDomEditorView {
     /// rect pool, so the wash sits behind the cell content just like a text
     /// highlight. Clears the wash if the table can't be resolved.
     ///
+    /// Returns whether the wash actually changed (the
+    /// [movement gate](Self::position_caret) for the cell-selection arm) and records
+    /// the head cell's rectangle in [`Self::cell_anchor_rect`] as the scroll anchor.
+    ///
     /// [`Selection::Cell`]: rinch_editor_core::Selection::Cell
-    fn render_cell_selection(&mut self, state: &EditorState) {
+    fn render_cell_selection(&mut self, state: &EditorState) -> bool {
         use rinch_editor_core::Pos;
         let rinch_editor_core::Selection::Cell(cell) = &state.selection else {
-            return;
+            return false;
         };
         let key = (1u8, cell.anchor_cell.0, cell.head_cell.0);
         if self.last_selection == Some(key) {
-            return;
+            return false;
         }
         let Some((map, _table, _start)) =
             rinch_editor_core::tables::map_around(&state.doc, cell.head_cell)
         else {
             self.clear_selection_rects();
-            return;
+            self.cell_anchor_rect = None;
+            return false;
         };
         let Some(rect) = map.rect_between(cell.anchor_cell.0, cell.head_cell.0) else {
             self.clear_selection_rects();
-            return;
+            self.cell_anchor_rect = None;
+            return false;
         };
         let Some(doc) = self.doc.upgrade() else {
-            return;
+            return false;
         };
-        let rects: Vec<(f32, f32, f32, f32)> = {
+        let head_cell = cell.head_cell.0;
+        // `(is_head, rect)` per cell: the wash rectangles are built by a filter_map,
+        // so the head cell's *index* among them can only be learnt as they are made.
+        let measured: Vec<(bool, (f32, f32, f32, f32))> = {
             let d = doc.borrow();
             map.cells_in_rect(rect)
                 .into_iter()
@@ -844,16 +913,23 @@ impl RinchDomEditorView {
                     let node_id = self.node_host_at(&state.doc, Pos(cell_pos))?;
                     let (_, _, w, h) = d.query_node_layout(node_id as u64)?;
                     let (ox, oy) = self.block_offset_in_container(&*d, node_id);
-                    Some((ox, oy, w, h))
+                    Some((cell_pos == head_cell, (ox, oy, w, h)))
                 })
                 .collect()
         };
-        if rects.is_empty() {
+        if measured.is_empty() {
             self.clear_selection_rects();
-            return;
+            self.cell_anchor_rect = None;
+            return false;
         }
+        self.cell_anchor_rect = measured
+            .iter()
+            .position(|(is_head, _)| *is_head)
+            .or(Some(0));
+        let rects: Vec<(f32, f32, f32, f32)> = measured.into_iter().map(|(_, r)| r).collect();
         self.last_selection = Some(key);
         self.set_selection_rects(&rects);
+        true
     }
 
     /// Outline the node a [`Selection::Node`] selects — resolve the node's host
@@ -861,14 +937,17 @@ impl RinchDomEditorView {
     /// overlay over it. Clears the outline if the node can't be located or has no
     /// geometry yet (e.g. an off-screen / virtualized block).
     ///
+    /// Returns whether the outline actually moved (the
+    /// [movement gate](Self::position_caret) for the node-selection arm).
+    ///
     /// [`Selection::Node`]: rinch_editor_core::Selection::Node
-    fn render_node_selection(&mut self, state: &EditorState) {
+    fn render_node_selection(&mut self, state: &EditorState) -> bool {
         let Some(node_id) = self.node_host_at(&state.doc, state.selection.from()) else {
             self.clear_node_selection();
-            return;
+            return false;
         };
         let Some(doc) = self.doc.upgrade() else {
-            return;
+            return false;
         };
         let geometry = {
             let d = doc.borrow();
@@ -879,15 +958,18 @@ impl RinchDomEditorView {
         };
         match geometry {
             Some((x, y, w, h)) => self.position_node_outline(x, y, w, h),
-            None => self.clear_node_selection(),
+            None => {
+                self.clear_node_selection();
+                false
+            }
         }
     }
 
     /// Position the node-selection outline at the container-space box `(x, y, w, h)`.
     /// Reuses one overlay div (created lazily) and skips the writes when the box is
     /// unchanged, so a re-run doesn't re-dirty the tree (mirrors
-    /// [`Self::position_caret`]).
-    fn position_node_outline(&mut self, x: f32, y: f32, w: f32, h: f32) {
+    /// [`Self::position_caret`]). Returns whether the box actually moved.
+    fn position_node_outline(&mut self, x: f32, y: f32, w: f32, h: f32) -> bool {
         let key = (
             x.round() as i32,
             y.round() as i32,
@@ -895,13 +977,13 @@ impl RinchDomEditorView {
             h.round() as i32,
         );
         if self.last_node_outline == Some(key) {
-            return;
+            return false;
         }
         self.overlay_dirty = true;
         self.last_node_outline = Some(key);
         if self.node_outline.is_none() {
             let Some(div) = create_element(&self.doc, "div") else {
-                return;
+                return false;
             };
             div.set_attribute("data-pm-selected", "true");
             div.set_styles(&[
@@ -930,6 +1012,7 @@ impl RinchDomEditorView {
                 ("display", "block"),
             ]);
         }
+        true
     }
 
     /// Hide the node-selection outline (the selection is no longer a node selection,
@@ -977,12 +1060,18 @@ impl RinchDomEditorView {
     /// Position the caret overlay at `(x, y)` in **container space** with `height`.
     /// The caret is a child of the container (created lazily), so it never disrupts
     /// a textblock's inline layout.
-    fn position_caret(&mut self, x: f32, y: f32, height: f32) {
+    ///
+    /// Returns whether the caret actually **moved** (i.e. the geometry key changed
+    /// and the writes below ran). That is the movement gate
+    /// [`EditorView::update_caret`] turns into a `ScrollSelectionIntoView` request:
+    /// a pass that lands the caret where it already was must not scroll, or a user
+    /// who wheel-scrolled away from the caret is dragged back on the next frame.
+    fn position_caret(&mut self, x: f32, y: f32, height: f32) -> bool {
         let key = (x.round() as i32, y.round() as i32, height.round() as i32);
         // Nothing changed since last frame — skip the writes so the caret doesn't
         // re-dirty itself and spin the repaint loop.
         if self.last_caret == Some(key) {
-            return;
+            return false;
         }
         self.overlay_dirty = true;
         self.last_caret = Some(key);
@@ -1000,7 +1089,7 @@ impl RinchDomEditorView {
         self.blink_shown = Some(true);
         if self.caret.is_none() {
             let Some(caret) = create_element(&self.doc, "div") else {
-                return;
+                return false;
             };
             caret.set_attribute("data-pm-caret", "true");
             caret.set_styles(&[
@@ -1025,6 +1114,7 @@ impl RinchDomEditorView {
                 ("display", "block"),
             ]);
         }
+        true
     }
 
     /// Hide all overlays — the caret and the selection highlight. Used when the
@@ -1291,16 +1381,22 @@ mod tests {
     /// A host document plus a container node to mount the editor into.
     struct Harness {
         doc: Rc<RefCell<dyn DomDocument>>,
+        /// The *same* allocation as `doc`, typed — the mock's test-only helpers
+        /// (`__set_node_layout`, `__node_count`) are inherent methods, not trait
+        /// ones, and are unreachable through the `dyn DomDocument` the view holds.
+        mock: Rc<RefCell<MockDomDocument>>,
         container: NodeHandle,
         container_id: NodeId,
     }
 
     fn harness() -> Harness {
-        let doc: Rc<RefCell<dyn DomDocument>> = Rc::new(RefCell::new(MockDomDocument::new()));
+        let mock = Rc::new(RefCell::new(MockDomDocument::new()));
+        let doc: Rc<RefCell<dyn DomDocument>> = mock.clone();
         let container_id = doc.borrow_mut().create_element("div");
         let container = NodeHandle::new(container_id, Rc::downgrade(&doc));
         Harness {
             doc,
+            mock,
             container,
             container_id,
         }
@@ -1960,6 +2056,187 @@ mod tests {
         let host = view.node_host_at(&st.doc, rinch_editor_core::Pos(2));
         assert_eq!(host, Some(img_id.0), "outline traces the inner <img>");
         assert_ne!(host, Some(a_id.0), "not the <a> mark wrapper");
+    }
+
+    // ── ScrollSelectionIntoView: emitted only when the selection actually moved ──
+
+    /// `doc(p(), p())` mounted into `h`, with both paragraphs given stacked 200x20
+    /// boxes. Two empty paragraphs because
+    /// [`empty_block_caret`](RinchDomEditorView::empty_block_caret) is the one caret
+    /// path the mock can drive — it has no text layout, so `query_caret_position`
+    /// always declines — and stacked because a cursor in the first vs. the second is
+    /// then a genuine caret *move*.
+    fn measured_empty_paragraphs(h: &Harness, s: &Rc<Schema>) -> (EditorState, RinchDomEditorView) {
+        let empty = || s.branch("paragraph", Fragment::empty()).unwrap();
+        let st = state(s.clone(), doc_node(s, vec![empty(), empty()]));
+        let view = RinchDomEditorView::new(h.container.clone(), doc_ref(h), &st);
+        let blocks = children(h, h.container_id);
+        let mut m = h.mock.borrow_mut();
+        for (i, b) in blocks.iter().enumerate() {
+            m.__set_node_layout(*b, 0.0, i as f32 * 20.0, 200.0, 20.0);
+        }
+        (st, view)
+    }
+
+    fn cursor_at(st: &mut EditorState, pos: usize) {
+        st.selection = Selection::cursor(rinch_editor_core::Pos(pos));
+    }
+
+    /// The attribute marking which overlay div a handle points at.
+    fn overlay_kind(h: &Harness, node: &NodeHandle) -> Option<String> {
+        let d = h.doc.borrow();
+        ["data-pm-caret", "data-pm-selected", "data-pm-selection"]
+            .into_iter()
+            .find(|a| d.get_attribute(node.node_id(), a).is_some())
+            .map(str::to_string)
+    }
+
+    #[test]
+    fn caret_placement_and_moves_request_a_scroll_into_view() {
+        let h = harness();
+        let s = schema();
+        let (mut st, mut view) = measured_empty_paragraphs(&h, &s);
+
+        // doc(p(), p()) → 0[p 1]2[p 3]4.
+        cursor_at(&mut st, 1);
+        assert_eq!(
+            view.update_caret(&st),
+            vec![ViewRequest::ScrollSelectionIntoView],
+            "the caret's first placement is a move — bring it into view"
+        );
+        assert!(view.last_caret.is_some(), "a caret was placed");
+
+        cursor_at(&mut st, 3);
+        assert_eq!(
+            view.update_caret(&st),
+            vec![ViewRequest::ScrollSelectionIntoView],
+            "a caret that moved to another block is brought into view"
+        );
+    }
+
+    #[test]
+    fn a_repeat_caret_pass_on_an_unchanged_selection_requests_no_scroll() {
+        let h = harness();
+        let s = schema();
+        let (mut st, mut view) = measured_empty_paragraphs(&h, &s);
+
+        cursor_at(&mut st, 1);
+        assert_eq!(
+            view.update_caret(&st),
+            vec![ViewRequest::ScrollSelectionIntoView]
+        );
+
+        // `update_all_carets` sweeps every mounted editor on every layout pass, so
+        // this runs constantly with nothing changed. Scrolling here would yank a
+        // user who has wheel-scrolled away from the caret straight back to it.
+        assert_eq!(
+            view.update_caret(&st),
+            Vec::new(),
+            "an unchanged caret must not re-request a scroll"
+        );
+        assert_eq!(view.update_caret(&st), Vec::new());
+    }
+
+    #[test]
+    fn a_blink_toggle_requests_no_scroll() {
+        let h = harness();
+        let s = schema();
+        let (mut st, mut view) = measured_empty_paragraphs(&h, &s);
+
+        cursor_at(&mut st, 1);
+        assert_eq!(
+            view.update_caret(&st),
+            vec![ViewRequest::ScrollSelectionIntoView]
+        );
+
+        // The blink driver never goes through `update_caret` at all, and a caret
+        // pass landing between the two phases finds the same geometry — so neither
+        // half of a blink scrolls anything.
+        assert_eq!(view.set_caret_blink_visible(false), Some(true));
+        assert_eq!(
+            view.update_caret(&st),
+            Vec::new(),
+            "a caret in its hidden blink phase is still in the same place"
+        );
+        assert_eq!(view.set_caret_blink_visible(true), Some(true));
+        assert_eq!(view.update_caret(&st), Vec::new());
+    }
+
+    #[test]
+    fn a_caret_that_cannot_be_placed_requests_no_scroll() {
+        let h = harness();
+        let s = schema();
+        // The same document, *unmeasured*: the mock reports no box for either
+        // paragraph, so there is no caret geometry to scroll to.
+        let empty = || s.branch("paragraph", Fragment::empty()).unwrap();
+        let mut st = state(s.clone(), doc_node(&s, vec![empty(), empty()]));
+        let mut view = RinchDomEditorView::new(h.container.clone(), doc_ref(&h), &st);
+
+        cursor_at(&mut st, 1);
+        assert_eq!(view.update_caret(&st), Vec::new());
+        assert!(view.last_caret.is_none(), "no caret was placed");
+        assert!(
+            view.scroll_anchor().is_none(),
+            "and so there is nothing to anchor a scroll to"
+        );
+    }
+
+    #[test]
+    fn the_caret_arms_scroll_anchor_is_the_caret_element() {
+        let h = harness();
+        let s = schema();
+        let (mut st, mut view) = measured_empty_paragraphs(&h, &s);
+
+        cursor_at(&mut st, 1);
+        view.update_caret(&st);
+
+        let anchor = view.scroll_anchor().expect("a caret to scroll to");
+        assert_eq!(
+            overlay_kind(&h, anchor).as_deref(),
+            Some("data-pm-caret"),
+            "the view points the runtime at the caret bar itself"
+        );
+    }
+
+    #[test]
+    fn a_node_selection_requests_a_scroll_once_per_move() {
+        let h = harness();
+        let s = schema();
+        let hr = || s.branch("horizontal_rule", Fragment::empty()).unwrap();
+        let mut st = state(s.clone(), doc_node(&s, vec![hr(), hr()]));
+        let mut view = RinchDomEditorView::new(h.container.clone(), doc_ref(&h), &st);
+        let blocks = children(&h, h.container_id);
+        {
+            let mut m = h.mock.borrow_mut();
+            m.__set_node_layout(blocks[0], 0.0, 0.0, 200.0, 2.0);
+            m.__set_node_layout(blocks[1], 0.0, 40.0, 200.0, 2.0);
+        }
+
+        // doc(hr, hr) → the rules occupy one position each, at 0 and 1.
+        st.selection = Selection::node_at(&st.doc, rinch_editor_core::Pos(0)).unwrap();
+        assert_eq!(
+            view.update_caret(&st),
+            vec![ViewRequest::ScrollSelectionIntoView],
+            "selecting a node brings its outline into view"
+        );
+        assert_eq!(
+            view.update_caret(&st),
+            Vec::new(),
+            "re-rendering the same node selection must not scroll again"
+        );
+        let anchor = view.scroll_anchor().expect("a node outline to scroll to");
+        assert_eq!(
+            overlay_kind(&h, anchor).as_deref(),
+            Some("data-pm-selected"),
+            "the node-selection arm anchors on the outline, not the caret"
+        );
+
+        st.selection = Selection::node_at(&st.doc, rinch_editor_core::Pos(1)).unwrap();
+        assert_eq!(
+            view.update_caret(&st),
+            vec![ViewRequest::ScrollSelectionIntoView],
+            "moving the node selection down the document scrolls to the new node"
+        );
     }
 
     #[test]
