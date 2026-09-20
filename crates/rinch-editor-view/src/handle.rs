@@ -4163,7 +4163,7 @@ mod tests {
             assert_eq!(doc_text(&guest), "ok");
 
             // A blockquote is still outside the projected scope (lists are supported
-            // now; blockquote / tables / task lists / inline atoms are not).
+            // now, and so are inline atoms; blockquote / tables / task lists are not).
             assert!(host.load_html("<blockquote><p>quoted</p></blockquote>"));
 
             // The host's model changed locally, but the projection failed loud (the
@@ -4176,6 +4176,64 @@ mod tests {
                 doc_text(&guest),
                 "ok",
                 "the peer is untouched by an unsupported local edit (no partial sync)"
+            );
+        }
+
+        #[test]
+        fn inline_atom_edits_sync_to_the_peer() {
+            // The handle-level pin on PlotWeb's symptom: a hard break or an image used
+            // to stop the body syncing the moment it appeared, while the editor still
+            // reported a clean save. Both are inside the projected scope now, so
+            // neither may fail loud, and the guest must actually receive them.
+            let s = schema();
+            let host = mount(doc_node(&s, vec![para(&s, "one two")])).handle;
+            let guest = mount(doc_node(&s, vec![para(&s, "")])).handle;
+            loopback(&host, &guest);
+            assert_eq!(doc_text(&guest), "one two");
+
+            // Shift+Enter between the words.
+            host.set_selection(Selection::cursor(Pos(5)));
+            assert!(host.command("insertHardBreak"));
+            assert!(
+                host.collab_take_error().is_none(),
+                "a hard break is supported and must not fail loud"
+            );
+
+            // An image paste, which is an inline atom carrying attrs.
+            assert!(host.insert_image("data:image/png;base64,AAAA", "shot"));
+            assert!(
+                host.collab_take_error().is_none(),
+                "an image is supported and must not fail loud"
+            );
+
+            // The guest holds the same document, atoms and all. Compared by *shape*,
+            // not by `==`: the two handles are mounted with their own `Schema`
+            // instances, and node/mark type equality is `Rc::ptr_eq` (issue #217).
+            let line = guest.doc().child(0).clone();
+            let kinds: Vec<String> = (0..line.child_count())
+                .map(|i| line.child(i).type_name().to_string())
+                .collect();
+            assert_eq!(
+                kinds,
+                vec!["text", "hard_break", "image", "text"],
+                "the peer received the inline atoms, not just the text around them"
+            );
+            assert_eq!(
+                line.child(2).attrs().get_str("src"),
+                Some("data:image/png;base64,AAAA"),
+                "with the image's attrs intact"
+            );
+            assert!(
+                guest.collab_take_error().is_none(),
+                "and integrated them without an error"
+            );
+
+            // Ordinary typing keeps flowing afterwards — the "it went quiet" symptom.
+            host.set_selection(Selection::cursor(Pos(1)));
+            assert!(host.insert_text("Z"));
+            assert!(
+                doc_text(&guest).starts_with('Z'),
+                "typing still reaches the peer"
             );
         }
 

@@ -40,6 +40,38 @@
 //! atom. [`build_block`] refuses an atom carrying text loudly rather than dropping it,
 //! which is the only thing left that a foreign writer could produce.
 //!
+//! An **inline atom** (`image`, `hard_break` — atomic and contentless, but living
+//! *inside* a textblock's inline content) is one **U+FFFC** char in that block's `Text`
+//! carrying one reserved formatting attribute:
+//!
+//! ```text
+//!       "text" -> Text            // "look: \u{FFFC} and on"
+//!         "@atom" -> Map          // over the U+FFFC char only:
+//!                                 //   {"@type": "image", "src": "cat.png", …}
+//! ```
+//!
+//! …which is the *same* shape as a mark with attrs, deliberately: the atom is a char
+//! that happens to be formatted, so every path that already carries a formatted char
+//! carries it — [`read_text_data`] reads it as a [`SpanMark`] with no case of its own,
+//! [`splice_min`] moves it as text, [`resync_marks`] diffs it as formatting. Its own
+//! marks (a link on an image) are ordinary spans over that same char. **Not** a yrs
+//! embed, which is the obvious alternative and is still refused: an embed is opaque to
+//! `Text::diff`'s string path, to the char/UTF-16 offset arithmetic and to the minimal
+//! splice, so every one of those would need a second, parallel implementation — and the
+//! model already gives an inline leaf exactly **one** position, which is exactly one
+//! char.
+//!
+//! The pairing is checked both ways and neither half is an error on its own: a U+FFFC
+//! with no attribute is text (a user can paste one), and the attribute over any other
+//! char is ignored formatting — see [`is_atom_char`], which is also where the
+//! concurrent-edit measurement that forces that second rule is written down.
+//!
+//! Wire-compatibly this is **additive**: [`FORMAT_TAG`] does not move. An older reader
+//! meets the attribute as an unknown *mark name* and fails loud in [`marks_at`]
+//! ("unknown mark type `@atom` in CRDT") rather than half-understanding the document —
+//! which is the outcome a version bump would have bought, at the price of also locking
+//! that reader out of every document with no atom in it.
+//!
 //! One `Text` per textblock with native formatting attributes over it is the
 //! *rich-text* model — text and formatting merge independently, which is exactly the
 //! "concurrent insert/format" convergence the milestone requires. A textblock keeps its
@@ -86,18 +118,17 @@
 //!
 //! ## Scope (design A22)
 //!
-//! Supported: **flat text-blocks + marks** (`paragraph`/`heading`/`code_block` whose own
-//! children are text nodes), the **leaf block atoms** (`horizontal_rule` — a block-level
-//! node with no content at all), and the **list containers** `bullet_list` /
-//! `ordered_list` / `list_item`, nested into each other and around text-blocks to any
-//! depth.
+//! Supported: **flat text-blocks + marks** (`paragraph`/`heading`/`code_block`), the
+//! **inline atoms** inside them (`image`/`hard_break` — one placeholder char each), the
+//! **leaf block atoms** (`horizontal_rule` — a block-level node with no content at all),
+//! and the **list containers** `bullet_list` / `ordered_list` / `list_item`, nested into
+//! each other and around text-blocks to any depth.
 //!
 //! Everything else still **fails loud** with
 //! [`CollabError::Unsupported`](crate::CollabError::Unsupported) — **never a silent
 //! drop**: any other nested block (`blockquote`, `table`/`table_row`/cells,
-//! `task_list`/`task_item`) and every *inline* atom (`hard_break`, `image`), which lives
-//! inside a textblock's inline content where this projection has nowhere to put it — a
-//! block's text is one yrs `Text`, and an embedded value in it fails loud.
+//! `task_list`/`task_item`), and an embedded value in a block's text, which is not how
+//! this projection writes an atom.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -134,6 +165,37 @@ const FORMAT: &str = "format";
 /// then refuses the bytes loudly instead of half-understanding them. (Playweft's
 /// "wipe, don't convert" precedent — tag every blob, refuse an untagged one.)
 const FORMAT_TAG: &str = "rinch-editor-collab/yrs-1";
+
+/// The prefix every name the projection **reserves** inside a block's text begins with.
+///
+/// A yrs `Text`'s formatting attributes are keyed by *mark type name*, so an attribute
+/// the projection adds of its own ([`ATOM_MARK`]) must be a name the schema can never
+/// mint. Schema mark names and node attribute names are identifiers (`bold`, `link`,
+/// `text_color`, `src`); `@` is not an identifier character in any of them, so a single
+/// reserved leading `@` separates the two namespaces for good. Both directions are
+/// guarded rather than trusted: [`read_block`] refuses an inline atom whose own attrs
+/// carry a reserved key, and [`build_block`] refuses a schema that has minted a mark
+/// type in the reserved namespace.
+const RESERVED_PREFIX: char = '@';
+
+/// The reserved formatting attribute that turns an [`ATOM_PLACEHOLDER`] char in a
+/// block's text into an **inline atom** (`image`, `hard_break`).
+///
+/// Its value is the atom's attrs in [`encode_mark_value`]'s ordinary encoding, plus the
+/// node type name under [`ATOM_TYPE`] — so it rides the wire as any other mark does and
+/// [`read_text_data`] needs no case of its own for it.
+const ATOM_MARK: &str = "@atom";
+
+/// The key inside an [`ATOM_MARK`] value carrying the atom's **node type name**
+/// (`"image"`). Reserved (see [`RESERVED_PREFIX`]) so it cannot collide with an attr of
+/// the atom itself — an `image`'s `src`/`alt`/`title` sit in the same map.
+const ATOM_TYPE: &str = "@type";
+
+/// U+FFFC OBJECT REPLACEMENT CHARACTER — the one char an inline atom occupies in a
+/// block's projected text, which is also the one model position it occupies
+/// (`Node::node_size` of a leaf is 1). The same stand-in `remote::flat_units` already
+/// uses when it measures a caret across a line holding an inline leaf.
+const ATOM_PLACEHOLDER: char = '\u{FFFC}';
 
 /// Origin tag for a yrs transaction that applies bytes received from a peer, as opposed to
 /// one that projects a local edit. The update observer skips these: they are already
@@ -242,8 +304,9 @@ fn is_supported_container(type_name: &str) -> bool {
 /// in scope for free, while the three conditions each keep something out —
 ///
 /// * `is_block()` — the **inline** atoms (`image`, `hard_break`) are `is_atom() &&
-///   is_leaf()` too, and stay out of scope: they live *inside* a textblock's inline
-///   content, where a block's single yrs `Text` has nowhere to put them.
+///   is_leaf()` too, and are in scope by the *other* route ([`is_inline_atom`]): they
+///   live inside a textblock's inline content, so they project as a char of its text
+///   rather than as a block of their own.
 /// * `is_atom()` — an opaque unit, which is what makes "no text, no children" its whole
 ///   content rather than an erasure of something.
 /// * `is_leaf()` — "the content match accepts nothing" (the same source of truth as
@@ -254,6 +317,26 @@ fn is_supported_container(type_name: &str) -> bool {
 /// never overlap with [`Node::is_textblock`].
 fn is_leaf_block_atom(typ: &NodeType) -> bool {
     typ.is_block() && typ.is_atom() && typ.is_leaf()
+}
+
+/// An **inline atom** — an atomic, contentless node type that lives *inside* a
+/// textblock's inline content (`image`, `hard_break`). It projects as one
+/// [`ATOM_PLACEHOLDER`] char in the block's text carrying an [`ATOM_MARK`] attribute.
+///
+/// The exact complement of [`is_leaf_block_atom`] on its first clause, and a predicate
+/// on the schema type for the same reason: "inline, atomic, holds nothing" is the shape
+/// the one-char projection is faithful to, so an app schema's own inline atom is in
+/// scope for free —
+///
+/// * `!is_block()` — a *block* atom (`horizontal_rule`) is a block of its own and
+///   projects as one, with empty text; it must not become a char inside a neighbour.
+/// * `is_atom()` — an opaque unit, which is what makes standing for it with a single
+///   char faithful rather than an erasure. It is also what excludes `text`, which is
+///   inline and a leaf but is the very thing the placeholder is *not*.
+/// * `is_leaf()` — "the content match accepts nothing", so there is no content the one
+///   char could be silently dropping.
+fn is_inline_atom(typ: &NodeType) -> bool {
+    !typ.is_block() && typ.is_atom() && typ.is_leaf()
 }
 
 /// A yrs document projecting an editor document.
@@ -845,6 +928,16 @@ fn apply_mark(txn: &mut TransactionMut, text: &TextRef, s: &str, m: &SpanMark) {
 /// clear cannot blank a *kept* span of the same name — and all clears run before all
 /// applies, so a span that changed extent (cleared at the old range, re-applied at the
 /// new) nets out to exactly the new range.
+///
+/// An **inline atom**'s [`ATOM_MARK`] span rides through here as an ordinary span, and
+/// safely so: a yrs formatting clear is per *attribute key*, so a peer clearing `bold`
+/// over the atom's char cannot take `@atom` with it, and the per-span difference above
+/// means a local edit that did not touch the atom does not rewrite it either. Writing
+/// the attribute *with* the placeholder's insert instead (`insert_with_attributes`)
+/// would buy nothing: it is the same format markers around the same char. What it
+/// could not prevent either way is the boundary inheritance [`is_atom_char`] describes
+/// — an insert landing *inside* those markers — which is why that is handled on the
+/// read side rather than guarded against here.
 fn resync_marks(
     txn: &mut TransactionMut,
     text: &TextRef,
@@ -890,8 +983,9 @@ fn read_text_data<T: ReadTxn>(txn: &T, text: &TextRef) -> Result<(String, Vec<Sp
     for chunk in text.diff(txn, YChange::identity) {
         let Out::Any(Any::String(part)) = &chunk.insert else {
             return Err(CollabError::unsupported(
-                "an embedded value inside a block's text is not supported (inline atoms \
-                 such as image/hard_break are not yet projected)",
+                "an embedded value inside a block's text is not supported; an inline \
+                 atom is projected as a placeholder char with an `@atom` attribute, \
+                 never as a yrs embed",
             ));
         };
         let start = s.chars().count();
@@ -973,8 +1067,8 @@ pub(crate) fn read_node(node: &Node) -> Result<NodeData> {
     }
     Err(CollabError::unsupported(format!(
         "node `{}` is not a flat text-block, a leaf block atom, or a supported list \
-         container (bullet_list/ordered_list/list_item); other nested blocks, tables and \
-         inline atoms are not yet supported",
+         container (bullet_list/ordered_list/list_item); other nested blocks and tables \
+         are not yet supported",
         node.type_name()
     )))
 }
@@ -983,6 +1077,9 @@ pub(crate) fn read_node(node: &Node) -> Result<NodeData> {
 /// projectable data. Marks are returned in canonical `(start, end, name)` order —
 /// matching [`read_text_data`] — so a [`NodeData`] read from the model compares equal to
 /// the same node read back from the CRDT.
+///
+/// A textblock's children may be text nodes **or inline atoms** ([`is_inline_atom`]);
+/// an atom becomes one [`ATOM_PLACEHOLDER`] char plus an [`ATOM_MARK`] span over it.
 pub(crate) fn read_block(block: &Node) -> Result<BlockData> {
     if is_leaf_block_atom(block.node_type()) {
         // An atom holds nothing (`is_leaf` *is* "the content match accepts nothing"), so
@@ -1006,8 +1103,8 @@ pub(crate) fn read_block(block: &Node) -> Result<BlockData> {
     }
     if !block.is_textblock() {
         return Err(CollabError::unsupported(format!(
-            "block `{}` is not a flat text-block or a leaf block atom (nested blocks and \
-             inline atoms are not yet supported)",
+            "block `{}` is not a flat text-block or a leaf block atom (nested blocks are \
+             not yet supported)",
             block.type_name()
         )));
     }
@@ -1015,14 +1112,37 @@ pub(crate) fn read_block(block: &Node) -> Result<BlockData> {
     let mut marks: Vec<SpanMark> = Vec::new();
     for i in 0..block.child_count() {
         let child = block.child(i);
-        let Some(t) = child.text() else {
-            return Err(CollabError::unsupported(format!(
-                "inline node `{}` (an atom such as image/hard_break) is not yet supported",
-                child.type_name()
-            )));
-        };
         let start = text.chars().count();
-        text.push_str(t);
+        match child.text() {
+            Some(t) => text.push_str(t),
+            // An **inline atom** stands in the text as one placeholder char carrying
+            // the reserved [`ATOM_MARK`] attribute, which is where its type and attrs
+            // live. Its own marks (a link on an image, if the schema allows one) are
+            // pushed over that same char as ordinary spans, exactly as for text — so
+            // the atom is a char that happens to be formatted, and every path that
+            // already handles a formatted char handles it.
+            None => {
+                if !is_inline_atom(child.node_type()) {
+                    return Err(CollabError::unsupported(format!(
+                        "inline node `{}` inside `{}` is neither text nor an inline atom",
+                        child.type_name(),
+                        block.type_name()
+                    )));
+                }
+                // `is_leaf` says the content match accepts nothing, so children here
+                // mean a node built past its own schema. A cheap guard against
+                // projecting one char over content that is really there.
+                if child.child_count() != 0 {
+                    return Err(CollabError::schema(format!(
+                        "inline atom `{}` holds {} child node(s); an atom has no content",
+                        child.type_name(),
+                        child.child_count()
+                    )));
+                }
+                text.push(ATOM_PLACEHOLDER);
+                push_mark_span(&mut marks, ATOM_MARK, atom_attrs(child)?, start, start + 1);
+            }
+        }
         let end = text.chars().count();
         for m in child.marks() {
             push_span(&mut marks, m, start, end);
@@ -1061,6 +1181,70 @@ fn push_mark_span(marks: &mut Vec<SpanMark>, name: &str, attrs: Attrs, start: us
     });
 }
 
+/// The [`ATOM_MARK`] value for an inline atom node: its own attrs plus its node type
+/// name under [`ATOM_TYPE`], as one flat attr set.
+///
+/// Flat, rather than a nested `{type, attrs}` map, so the value encodes and decodes
+/// through the *same* [`encode_mark_value`] / [`decode_mark_value`] pair every other
+/// mark uses — which is what lets [`read_text_data`] read an atom back without a case
+/// of its own (it makes a [`SpanMark`] of every formatting attribute, and this is one).
+/// The flattening is only safe because the type key is reserved: an atom that carries
+/// an attr in the reserved namespace would be indistinguishable from it, so it is
+/// refused here rather than silently overwritten.
+fn atom_attrs(atom: &Node) -> Result<Attrs> {
+    let mut attrs = Attrs::new();
+    for (k, v) in atom.attrs().iter() {
+        if k.starts_with(RESERVED_PREFIX) {
+            return Err(CollabError::schema(format!(
+                "inline atom `{}` carries the reserved attribute `{k}`; `{RESERVED_PREFIX}` \
+                 names belong to the projection",
+                atom.type_name()
+            )));
+        }
+        attrs = attrs.with(k, v.clone());
+    }
+    Ok(attrs.with(ATOM_TYPE, AttrValue::from(atom.type_name())))
+}
+
+/// The inverse of [`atom_attrs`]: an [`ATOM_MARK`] span's attrs split back into the
+/// atom's node type name and its own attrs. Fails loud on a value that could not have
+/// come from [`atom_attrs`] — a missing or non-string type, any other reserved key —
+/// rather than materializing a guess.
+fn atom_span_type(span: &SpanMark) -> Result<(String, Attrs)> {
+    let mut type_name: Option<String> = None;
+    let mut attrs = Attrs::new();
+    for (k, v) in span.attrs.iter() {
+        if k == ATOM_TYPE {
+            let AttrValue::Str(name) = v else {
+                return Err(CollabError::schema(format!(
+                    "inline atom's `{ATOM_TYPE}` must be a string, got {v:?}"
+                )));
+            };
+            type_name = Some(name.to_string());
+        } else if k.starts_with(RESERVED_PREFIX) {
+            return Err(CollabError::schema(format!(
+                "unknown reserved key `{k}` in an inline atom's `{ATOM_MARK}` value"
+            )));
+        } else {
+            attrs = attrs.with(k, v.clone());
+        }
+    }
+    let type_name = type_name.ok_or_else(|| {
+        CollabError::schema(format!(
+            "an `{ATOM_MARK}` span carries no `{ATOM_TYPE}`, so there is no node to build"
+        ))
+    })?;
+    Ok((type_name, attrs))
+}
+
+/// The [`ATOM_MARK`] span covering char `i`, if any. Two spans of one name never
+/// overlap (both span lists are canonical coalesced runs), so there is at most one.
+fn atom_span_at(spans: &[SpanMark], i: usize) -> Option<&SpanMark> {
+    spans
+        .iter()
+        .find(|s| s.name == ATOM_MARK && s.start <= i && i < s.end)
+}
+
 // --- NodeData → model ----------------------------------------------------------
 
 /// Rebuild a model node from projected [`NodeData`], recursing into list containers.
@@ -1095,6 +1279,9 @@ fn build_node(schema: &Schema, nd: &NodeData) -> Result<Node> {
 /// Rebuild a model textblock node from projected block data: split the text into runs
 /// at mark boundaries, build a text node per run, assemble the block. A leaf block atom
 /// takes the short path — an empty fragment, since it has no content to run-split.
+///
+/// A char that is an inline atom ([`is_atom_char`]) breaks every run and becomes a node
+/// of its own, carrying whatever real marks cover it.
 fn build_block(schema: &Schema, b: &BlockData) -> Result<Node> {
     // Inbound scope guard (A22): a peer CRDT must not be able to materialize a
     // non-flat block here — `create_node` would happily build a `blockquote`/`list`,
@@ -1124,33 +1311,51 @@ fn build_block(schema: &Schema, b: &BlockData) -> Result<Node> {
     }
     if !typ.is_textblock() {
         return Err(CollabError::unsupported(format!(
-            "block `{}` is not a flat text-block or a leaf block atom (nested blocks and \
-             inline atoms are not yet supported)",
+            "block `{}` is not a flat text-block or a leaf block atom (nested blocks are \
+             not yet supported)",
             b.type_name
+        )));
+    }
+    // A schema that has minted a mark type in the reserved namespace would make an
+    // atom's attribute indistinguishable from one of its marks, in both directions.
+    // Checked here, the one place with a schema in hand, rather than assumed.
+    if schema.mark_type(ATOM_MARK).is_some() {
+        return Err(CollabError::schema(format!(
+            "the schema defines a mark type named `{ATOM_MARK}`, which the projection \
+             reserves for inline atoms"
         )));
     }
     let chars: Vec<char> = b.text.chars().collect();
     let mut runs: Vec<Node> = Vec::new();
-    if !chars.is_empty() {
-        let mut run_start = 0usize;
-        let mut cur = marks_at(schema, &b.marks, 0)?;
-        for i in 1..=chars.len() {
-            let here = if i < chars.len() {
-                marks_at(schema, &b.marks, i)?
-            } else {
-                Vec::new()
-            };
-            let boundary = i == chars.len() || !same_mark_set(&cur, &here);
-            if boundary {
-                let s: String = chars[run_start..i].iter().collect();
-                let node = schema
-                    .text_with_marks(&s, cur.clone())
-                    .map_err(CollabError::from)?;
-                runs.push(node);
-                run_start = i;
-                cur = here;
-            }
+    let mut i = 0usize;
+    while i < chars.len() {
+        // An inline atom: one placeholder char carrying the reserved attribute, built
+        // as its own node with whatever real marks cover that char. One node **per
+        // char**, never per span: `push_mark_span` coalesces two adjacent identical
+        // atoms (two hard breaks, the same image twice) into a single two-char span,
+        // and those are two nodes.
+        if is_atom_char(&b.marks, &chars, i) {
+            let span = atom_span_at(&b.marks, i).expect("is_atom_char found one");
+            runs.push(build_inline_atom(
+                schema,
+                span,
+                marks_at(schema, &b.marks, i)?,
+            )?);
+            i += 1;
+            continue;
         }
+        // Otherwise a run of text: extend while the mark set holds and no atom starts.
+        let cur = marks_at(schema, &b.marks, i)?;
+        let run_start = i;
+        i += 1;
+        while i < chars.len()
+            && !is_atom_char(&b.marks, &chars, i)
+            && same_mark_set(&cur, &marks_at(schema, &b.marks, i)?)
+        {
+            i += 1;
+        }
+        let s: String = chars[run_start..i].iter().collect();
+        runs.push(schema.text_with_marks(&s, cur).map_err(CollabError::from)?);
     }
     let attrs = b.attrs.clone();
     schema
@@ -1158,10 +1363,66 @@ fn build_block(schema: &Schema, b: &BlockData) -> Result<Node> {
         .map_err(CollabError::from)
 }
 
+/// Whether char `i` is an inline atom: the [`ATOM_PLACEHOLDER`] **and** covered by an
+/// [`ATOM_MARK`] span. Both halves are load-bearing, and each mismatch is deliberate:
+///
+/// * A placeholder with **no** atom attribute is ordinary text. A U+FFFC is a character
+///   a user can type or paste, and the projection has no way to tell one that was
+///   pasted from one whose attribute a merge dropped, so it round-trips as text.
+/// * An atom attribute over a char that is **not** a placeholder is ignored, and the
+///   char is text. This is *not* a silent drop — there is no atom node to drop; a char
+///   that already exists keeps its text and its real marks, and the stray attribute is
+///   cleared by the next [`resync_marks`] on that block.
+///
+/// The second rule cannot be a fail-loud guard, however much the rest of this crate
+/// leans that way (A22), because an ordinary concurrent edit produces it. A yrs insert
+/// at the **end boundary** of a formatted range is swallowed into that range — that is
+/// rich-text CRDT behaviour, the same rule that continues bold when you type at the end
+/// of a bold word — so a peer typing immediately after an image inherits the image's
+/// `@atom` attribute on its new chars. Measured: it happens for every client-id order
+/// and both integration orders. Refusing it would turn "two authors, one of them typing
+/// just after a picture" into a poisoned session (issue #196) over a formatting
+/// artifact that carries no content at all.
+fn is_atom_char(spans: &[SpanMark], chars: &[char], i: usize) -> bool {
+    chars.get(i) == Some(&ATOM_PLACEHOLDER) && atom_span_at(spans, i).is_some()
+}
+
+/// Build one inline atom node from its [`ATOM_MARK`] span and the real marks covering
+/// its char. Fails loud (never a silent drop: there *is* a node here) on a type the
+/// schema does not know, or one that is not an inline atom — a block, a textblock or a
+/// text type smuggled into an atom attribute would otherwise be built by
+/// [`Schema::create_node`] into a shape no textblock can hold.
+fn build_inline_atom(schema: &Schema, span: &SpanMark, marks: Vec<Mark>) -> Result<Node> {
+    let (type_name, attrs) = atom_span_type(span)?;
+    let typ = schema.node_type(&type_name).ok_or_else(|| {
+        CollabError::unsupported(format!("unknown inline atom type `{type_name}` in CRDT"))
+    })?;
+    if !is_inline_atom(typ) {
+        return Err(CollabError::unsupported(format!(
+            "`{type_name}` is not an inline atom, so it cannot stand in a block's text"
+        )));
+    }
+    let node = schema
+        .create_node(&type_name, attrs, Fragment::empty())
+        .map_err(CollabError::from)?;
+    Ok(if marks.is_empty() {
+        node
+    } else {
+        node.with_marks(marks)
+    })
+}
+
 /// The model marks active at char index `i`, resolved against the schema.
+///
+/// [`ATOM_MARK`] spans are skipped: the attribute names an inline atom, not a mark, and
+/// the schema has no mark type of that name to resolve it against — asking for one
+/// would fail loud on every atom in the document.
 fn marks_at(schema: &Schema, spans: &[SpanMark], i: usize) -> Result<Vec<Mark>> {
     let mut out = Vec::new();
     for s in spans {
+        if s.name == ATOM_MARK {
+            continue;
+        }
         if s.start <= i && i < s.end {
             let mt = schema.mark_type(&s.name).ok_or_else(|| {
                 CollabError::schema(format!("unknown mark type `{}` in CRDT", s.name))
@@ -1380,30 +1641,39 @@ mod tests {
     }
 
     #[test]
-    fn leaf_block_atoms_are_in_scope_and_inline_atoms_are_not() {
-        // The predicate that decides what "a block atom" means, pinned against the
-        // starter kit. `horizontal_rule` is the one in scope; `image`/`hard_break` are
-        // atoms too but *inline*, and `blockquote`/`table_row` are blocks but hold
-        // content — each is kept out by a different clause of `is_leaf_block_atom`.
+    fn the_two_atom_predicates_split_the_starter_kit_between_them() {
+        // The pair of predicates that decide what "an atom" means here, pinned against
+        // the starter kit. `horizontal_rule` is the block one (a block of its own, with
+        // empty text); `image`/`hard_break` are the inline ones (one char inside a
+        // block's text). `blockquote`/`table_row` are neither — they hold content — and
+        // a textblock is neither, which is what keeps the three paths apart.
         let s = schema();
         let typ = |n: &str| s.node_type(n).expect("starter-kit type").clone();
         assert!(is_leaf_block_atom(&typ("horizontal_rule")));
+        assert!(!is_inline_atom(&typ("horizontal_rule")));
         for inline_atom in ["image", "hard_break"] {
             assert!(
+                is_inline_atom(&typ(inline_atom)),
+                "{inline_atom} is an inline atom and is now in scope"
+            );
+            assert!(
                 !is_leaf_block_atom(&typ(inline_atom)),
-                "{inline_atom} is an *inline* atom and stays out of scope"
+                "{inline_atom} is *inline*, so it is not the block kind"
             );
         }
         for container in ["blockquote", "table_row", "task_item", "list_item"] {
             assert!(
-                !is_leaf_block_atom(&typ(container)),
-                "{container} holds block content, so it is not a leaf atom"
+                !is_leaf_block_atom(&typ(container)) && !is_inline_atom(&typ(container)),
+                "{container} holds content, so it is no kind of atom"
             );
         }
         for textblock in ["paragraph", "heading", "code_block"] {
-            assert!(!is_leaf_block_atom(&typ(textblock)));
+            assert!(!is_leaf_block_atom(&typ(textblock)) && !is_inline_atom(&typ(textblock)));
             assert!(typ(textblock).is_textblock(), "and is a textblock instead");
         }
+        // `text` is inline and a leaf, and is emphatically not an atom: the placeholder
+        // stands in for a node that has no text, and text is the thing that has it.
+        assert!(!is_inline_atom(&typ("text")));
     }
 
     #[test]
@@ -1443,28 +1713,326 @@ mod tests {
         assert!(matches!(err, CollabError::Unsupported(_)), "got {err:?}");
     }
 
+    /// `read_block` → `build_block` is an identity for `block`, and the block data it
+    /// went through, so a test can assert on the wire shape as well as the round trip.
+    fn round_trip(s: &Schema, block: &Node) -> BlockData {
+        let data = read_block(block).expect("read_block");
+        assert_eq!(
+            &build_block(s, &data).expect("build_block"),
+            block,
+            "the rebuilt block is the identical model tree"
+        );
+        data
+    }
+
+    /// An `image` with the starter kit's three attrs.
+    fn image(s: &Schema, src: &str) -> Node {
+        s.create_node(
+            "image",
+            Attrs::new()
+                .with("src", AttrValue::from(src))
+                .with("alt", AttrValue::from("a cat"))
+                .with("title", AttrValue::from("Cat")),
+            Fragment::empty(),
+        )
+        .unwrap()
+    }
+
     #[test]
-    fn an_inline_atom_inside_a_block_is_still_unsupported() {
-        // The boundary the block atom does NOT move: an `image` lives in a paragraph's
-        // inline content, where the block's single `Text` has nowhere to put it.
+    fn an_inline_atom_is_one_placeholder_char_carrying_the_reserved_attribute() {
+        // The representation, stated once: the atom occupies exactly one char of the
+        // block's text — the same single model position a leaf node has — and its type
+        // and attrs ride in an `@atom` span over that char, alongside (not instead of)
+        // any real marks.
         let s = schema();
-        let image = s
-            .create_node(
-                "image",
-                Attrs::new().with("src", AttrValue::from("cat.png")),
-                Fragment::empty(),
-            )
-            .unwrap();
         let para = s
             .branch(
                 "paragraph",
-                Fragment::from_children(vec![s.text("look: ").unwrap(), image.clone()]),
+                Fragment::from_children(vec![
+                    s.text("look: ").unwrap(),
+                    image(&s, "cat.png"),
+                    s.text(" and on").unwrap(),
+                ]),
             )
             .unwrap();
-        let err = read_block(&para).unwrap_err();
+        let data = round_trip(&s, &para);
+        assert_eq!(data.text, "look: \u{FFFC} and on");
+        assert_eq!(
+            data.marks,
+            vec![SpanMark {
+                name: ATOM_MARK.into(),
+                attrs: Attrs::new()
+                    .with("alt", AttrValue::from("a cat"))
+                    .with("src", AttrValue::from("cat.png"))
+                    .with("title", AttrValue::from("Cat"))
+                    .with(ATOM_TYPE, AttrValue::from("image")),
+                start: 6,
+                end: 7,
+            }],
+            "one span, over the placeholder char only"
+        );
+        // And the value survives the *mark* encoding unchanged, which is what lets
+        // `read_text_data` read an atom back with no case of its own.
+        assert_eq!(
+            decode_mark_value(&encode_mark_value(&data.marks[0].attrs)).unwrap(),
+            data.marks[0].attrs
+        );
+    }
+
+    #[test]
+    fn a_hard_break_round_trips_at_the_start_middle_and_end_of_a_paragraph() {
+        // Shift+Enter is the everyday inline atom, and the three positions are the
+        // three ways the run-splitting in `build_block` can be off by one.
+        let s = schema();
+        let br = || s.branch("hard_break", Fragment::empty()).unwrap();
+        for children in [
+            vec![br(), s.text("after").unwrap()],
+            vec![s.text("a").unwrap(), br(), s.text("b").unwrap()],
+            vec![s.text("before").unwrap(), br()],
+        ] {
+            let para = s
+                .branch("paragraph", Fragment::from_children(children))
+                .unwrap();
+            round_trip(&s, &para);
+        }
+    }
+
+    #[test]
+    fn two_adjacent_atoms_are_two_nodes_even_though_they_coalesce_into_one_span() {
+        // Two identical hard breaks are one coalesced `@atom` span over two chars (the
+        // canonical span lists coalesce by (name, attrs), and these agree in both) —
+        // and they must still rebuild as TWO nodes, which is why `build_block` makes a
+        // node per placeholder char and not per span.
+        let s = schema();
+        let br = || s.branch("hard_break", Fragment::empty()).unwrap();
+        let para = s
+            .branch("paragraph", Fragment::from_children(vec![br(), br()]))
+            .unwrap();
+        let data = round_trip(&s, &para);
+        assert_eq!(data.text, "\u{FFFC}\u{FFFC}");
+        assert_eq!(data.marks.len(), 1, "coalesced into one span: {data:?}");
+        assert_eq!((data.marks[0].start, data.marks[0].end), (0, 2));
+        assert_eq!(build_block(&s, &data).unwrap().child_count(), 2);
+    }
+
+    #[test]
+    fn an_atom_inside_a_mark_that_also_covers_the_text_on_both_sides() {
+        // The interleaving case: a bold run spanning text-atom-text is ONE bold span
+        // over all of it, and the atom breaks the text runs without breaking the mark.
+        let s = schema();
+        let bold = Mark::simple(s.mark_type("bold").unwrap().clone());
+        let para = s
+            .branch(
+                "paragraph",
+                Fragment::from_children(vec![
+                    s.text_with_marks("a", vec![bold.clone()]).unwrap(),
+                    image(&s, "cat.png").with_marks(vec![bold.clone()]),
+                    s.text_with_marks("b", vec![bold]).unwrap(),
+                ]),
+            )
+            .unwrap();
+        let data = round_trip(&s, &para);
+        let bold_spans: Vec<&SpanMark> = data.marks.iter().filter(|m| m.name == "bold").collect();
+        assert_eq!(bold_spans.len(), 1, "one coalesced bold span: {data:?}");
+        assert_eq!((bold_spans[0].start, bold_spans[0].end), (0, 3));
+    }
+
+    #[test]
+    fn an_atom_carries_its_own_mark() {
+        // A linked image: the mark is an ordinary span over the atom's char, and the
+        // rebuilt node carries it — which is what `Node::with_marks` is for (a
+        // non-text node cannot be built through `Schema::text_with_marks`).
+        let s = schema();
+        let link = Mark::new(
+            s.mark_type("link").unwrap().clone(),
+            Attrs::new().with("href", AttrValue::from("https://example.test/")),
+        );
+        let para = s
+            .branch(
+                "paragraph",
+                Fragment::from_node(image(&s, "cat.png").with_marks(vec![link])),
+            )
+            .unwrap();
+        let data = round_trip(&s, &para);
+        let names: Vec<&str> = data.marks.iter().map(|m| m.name.as_str()).collect();
+        assert_eq!(names, vec![ATOM_MARK, "link"], "both spans, over one char");
+        assert_eq!(
+            build_block(&s, &data).unwrap().child(0).marks().len(),
+            1,
+            "the rebuilt atom keeps its link"
+        );
+    }
+
+    #[test]
+    fn a_literal_placeholder_char_with_no_atom_attribute_is_text() {
+        // A user can paste a U+FFFC. Nothing marks it as an atom, so it is a character
+        // like any other and must round-trip as one, not vanish and not error.
+        let s = schema();
+        let para = s
+            .branch(
+                "paragraph",
+                Fragment::from_node(s.text("a\u{FFFC}b").unwrap()),
+            )
+            .unwrap();
+        let data = round_trip(&s, &para);
+        assert_eq!(data.text, "a\u{FFFC}b");
+        assert!(data.marks.is_empty(), "no atom span: {data:?}");
+    }
+
+    #[test]
+    fn an_atom_attribute_over_an_ordinary_char_is_ignored_rather_than_fatal() {
+        // The one corruption that is NOT fail-loud, and the reason is in
+        // `is_atom_char`: an ordinary concurrent edit produces it. yrs swallows an
+        // insert at the end boundary of a formatted range into that range, so a peer
+        // typing right after an image inherits its `@atom` attribute — and there is no
+        // atom node to lose, only a formatting artifact over a char that is already
+        // text. Erroring would poison a live session for it.
+        let s = schema();
+        let stray = BlockData {
+            type_name: "paragraph".into(),
+            attrs: Attrs::new(),
+            text: "xy".into(),
+            marks: vec![SpanMark {
+                name: ATOM_MARK.into(),
+                attrs: Attrs::new().with(ATOM_TYPE, AttrValue::from("image")),
+                start: 0,
+                end: 2,
+            }],
+        };
+        let built = build_block(&s, &stray).expect("a stray atom attribute is not fatal");
+        assert_eq!(built.child_count(), 1);
+        assert_eq!(built.child(0).text(), Some("xy"), "still plain text");
+    }
+
+    #[test]
+    fn a_corrupt_atom_attribute_with_a_real_placeholder_fails_loud() {
+        // Where the placeholder IS there, the attribute is the only thing saying what
+        // node to build, so every way of it being wrong is a node that would otherwise
+        // be silently dropped or silently invented (A22).
+        let s = schema();
+        let block = |attrs: Attrs| BlockData {
+            type_name: "paragraph".into(),
+            attrs: Attrs::new(),
+            text: "\u{FFFC}".into(),
+            marks: vec![SpanMark {
+                name: ATOM_MARK.into(),
+                attrs,
+                start: 0,
+                end: 1,
+            }],
+        };
+        // A type the schema does not know.
+        let err =
+            build_block(&s, &block(Attrs::new().with(ATOM_TYPE, "no_such_node"))).unwrap_err();
         assert!(matches!(err, CollabError::Unsupported(_)), "got {err:?}");
-        // …and on its own it is not a block at all, so `read_node` refuses it too.
-        let err = read_node(&image).unwrap_err();
+        // A type that is a block, or a textblock, or text — none can stand in a line.
+        for not_inline in ["horizontal_rule", "paragraph", "blockquote", "text"] {
+            let err =
+                build_block(&s, &block(Attrs::new().with(ATOM_TYPE, not_inline))).unwrap_err();
+            assert!(
+                matches!(err, CollabError::Unsupported(_)),
+                "{not_inline}: got {err:?}"
+            );
+        }
+        // No type at all, or one that is not a string.
+        let err = build_block(&s, &block(Attrs::new().with("src", "cat.png"))).unwrap_err();
+        assert!(matches!(err, CollabError::Schema(_)), "got {err:?}");
+        let err = build_block(&s, &block(Attrs::new().with(ATOM_TYPE, 7i64))).unwrap_err();
+        assert!(matches!(err, CollabError::Schema(_)), "got {err:?}");
+        // An unknown key in the reserved namespace: a shape a future wire version
+        // might mean something by, refused rather than half-read.
+        let err = build_block(
+            &s,
+            &block(Attrs::new().with(ATOM_TYPE, "image").with("@extra", true)),
+        )
+        .unwrap_err();
+        assert!(matches!(err, CollabError::Schema(_)), "got {err:?}");
+    }
+
+    #[test]
+    fn read_block_refuses_an_inline_atom_carrying_content() {
+        // Outbound guard: a node built past its own schema. One char must not stand
+        // for content that is really there.
+        let s = schema();
+        let stuffed = s
+            .create_node(
+                "image",
+                Attrs::new().with("src", AttrValue::from("cat.png")),
+                Fragment::from_node(s.text("smuggled").unwrap()),
+            )
+            .unwrap();
+        let para = s.branch("paragraph", Fragment::from_node(stuffed)).unwrap();
+        let err = read_block(&para).unwrap_err();
+        assert!(matches!(err, CollabError::Schema(_)), "got {err:?}");
+    }
+
+    #[test]
+    fn read_block_refuses_an_atom_whose_own_attrs_invade_the_reserved_namespace() {
+        // The flat `@atom` value works only because `@type` cannot collide with one of
+        // the atom's own attrs. An atom that carries a reserved key is refused rather
+        // than having it silently overwritten.
+        let s = schema();
+        let odd = s
+            .create_node(
+                "image",
+                Attrs::new()
+                    .with("src", AttrValue::from("cat.png"))
+                    .with(ATOM_TYPE, AttrValue::from("hard_break")),
+                Fragment::empty(),
+            )
+            .unwrap();
+        let para = s.branch("paragraph", Fragment::from_node(odd)).unwrap();
+        let err = read_block(&para).unwrap_err();
+        assert!(matches!(err, CollabError::Schema(_)), "got {err:?}");
+    }
+
+    #[test]
+    fn a_schema_mark_in_the_reserved_namespace_fails_loud() {
+        // The other half of the same guarantee, from the schema's side: a mark type
+        // named `@atom` would make a mark and an atom indistinguishable on the wire, in
+        // both directions, so the projection refuses to read into such a schema at all.
+        let mut builder = rinch_editor_core::SchemaBuilder::new();
+        builder = builder.node(
+            "doc",
+            rinch_editor_core::NodeSpec::builder("doc")
+                .content("block+")
+                .build(),
+        );
+        builder = builder.node(
+            "paragraph",
+            rinch_editor_core::NodeSpec::builder("paragraph")
+                .content("inline*")
+                .group("block")
+                .build(),
+        );
+        builder = builder.node(
+            "text",
+            rinch_editor_core::NodeSpec::builder("text")
+                .group("inline")
+                .inline()
+                .build(),
+        );
+        builder = builder.mark(ATOM_MARK, rinch_editor_core::MarkSpec::simple(ATOM_MARK));
+        let hostile = builder.build();
+        let err = build_block(
+            &hostile,
+            &BlockData {
+                type_name: "paragraph".into(),
+                attrs: Attrs::new(),
+                text: "hi".into(),
+                marks: vec![],
+            },
+        )
+        .unwrap_err();
+        assert!(matches!(err, CollabError::Schema(_)), "got {err:?}");
+    }
+
+    #[test]
+    fn an_inline_atom_is_still_not_a_block_on_its_own() {
+        // The one boundary this does NOT move: an `image` is in scope *inside* a
+        // textblock's text, never as a top-level node of its own.
+        let s = schema();
+        let err = read_node(&image(&s, "cat.png")).unwrap_err();
         assert!(matches!(err, CollabError::Unsupported(_)), "got {err:?}");
     }
 

@@ -33,7 +33,7 @@ use std::rc::Rc;
 use rinch_editor_collab::CollabSession;
 use rinch_editor_collab::testing::{session_from_bytes_with_client_id, session_with_client_id};
 use rinch_editor_core::model::Fragment;
-use rinch_editor_core::{EditorState, Node, Pos, Schema, Selection, default_plugins};
+use rinch_editor_core::{EditorState, Node, Pos, Schema, Selection, Slice, default_plugins};
 
 /// xorshift64* — tiny, deterministic, no deps.
 struct Rng(u64);
@@ -111,9 +111,12 @@ fn random_text(rng: &mut Rng) -> String {
 /// Apply one random *projectable* edit to `state` — insert / delete / mark / split /
 /// block-type, plus the list container ops (wrap, unwrap, indent, outdent). Returns
 /// `None` (skip) when the random selection makes the op invalid; the fuzz tolerates
-/// skips. Stays inside the projected scope (no task lists, blockquotes, tables, or
-/// inline atoms), so `record_local` never hits the A22 `Unsupported` boundary — a
-/// failure here is a real projection bug, not an out-of-scope node.
+/// skips. Stays inside the projected scope (no task lists, blockquotes or tables), so
+/// `record_local` never hits the A22 `Unsupported` boundary — a failure here is a real
+/// projection bug, not an out-of-scope node. **Inline atoms are in scope** and are
+/// generated deliberately: they are one char of a block's text carrying a reserved
+/// formatting attribute, so every text splice and mark resync in the projection now has
+/// to carry them, and only random interleaving exercises that at the boundaries.
 fn random_edit(rng: &mut Rng, state: &EditorState) -> Option<EditorState> {
     match rng.below(11) {
         // Insert text (weighted — the common case).
@@ -159,6 +162,41 @@ fn random_edit(rng: &mut Rng, state: &EditorState) -> Option<EditorState> {
             let mut tr = state.tr();
             tr.set_selection(Selection::cursor(p));
             state.apply(tr).run("splitBlock")
+        }
+        // Insert an inline atom into a line. Restricted to a position whose parent is
+        // a textblock: an inline node between two blocks is not a shape the model can
+        // place, and generating one would (correctly) fail the projection assertion
+        // below rather than find a real bug.
+        7 => {
+            let p = random_pos(rng, state);
+            let parent_is_textblock = state
+                .doc
+                .resolve(p)
+                .ok()
+                .is_some_and(|r| r.parent().is_textblock());
+            if !parent_is_textblock {
+                return None;
+            }
+            // `hard_break`, never `image` — **not** because an image is out of scope
+            // (it is not; the projection tests round-trip one with all three attrs)
+            // but because it would break `replaying_a_trial_is_byte_identical` for a
+            // reason that has nothing to do with atoms. A mark value carrying two or
+            // more attrs is an `Any::Map`, and yrs encodes one by iterating a
+            // `HashMap`, whose order is seeded per instance — so `{"@type":"image",
+            // "src":…}` serializes in either order from one run to the next. An
+            // attr-less atom's value is a single-key map, which has only one order.
+            // The same latent non-determinism is reachable today through a `link`
+            // mark's `href`+`title`, which this fuzz also never generates; fixing it
+            // means changing the wire encoding of every mark value, which is a
+            // format bump and a separate change.
+            let atom = state
+                .schema()
+                .branch("hard_break", Fragment::empty())
+                .ok()?;
+            let mut tr = state.tr();
+            tr.replace(p.0, p.0, Slice::new(Fragment::from_node(atom), 0, 0))
+                .ok()?;
+            Some(state.apply(tr))
         }
         // Wrap/unwrap the block in a list, and nest/un-nest list items. These are the
         // container operations — they are what makes the projection recursive, so the

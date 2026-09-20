@@ -16,7 +16,7 @@
 //!
 //! A changed top-level *list* reconciles recursively (same diff, one level down), so a
 //! keystroke inside one list item re-splices only that item's text object. Any node
-//! outside the supported scope (a non-list nested block, an inline atom) anywhere in
+//! outside the supported scope (a non-list nested block, a table) anywhere in
 //! `before` or `after` fails loud ([`CollabError::Unsupported`], design A22).
 //!
 //! The diff trusts `before` to describe what the CRDT holds — which is the invariant —

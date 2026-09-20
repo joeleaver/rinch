@@ -71,7 +71,7 @@ impl Step for AddMarkStep {
             if !markable(node) || !parent.node_type().spec().marks.allows(mark.type_name()) {
                 node.clone()
             } else {
-                node.mark(mark.add_to_set(node.marks()))
+                node.with_marks(mark.add_to_set(node.marks()))
             }
         };
         let content = map_inline(&old_slice.content, &parent, &f);
@@ -151,7 +151,7 @@ impl Step for RemoveMarkStep {
         let parent = r_from.node(r_from.shared_depth(Pos(self.to))).clone();
         let mark = self.mark.clone();
         let f = move |node: &Node, _parent: &Node| -> Node {
-            node.mark(mark.remove_from_set(node.marks()))
+            node.with_marks(mark.remove_from_set(node.marks()))
         };
         let content = map_inline(&old_slice.content, &parent, &f);
         let slice = Slice::new(content, old_slice.open_start, old_slice.open_end);
