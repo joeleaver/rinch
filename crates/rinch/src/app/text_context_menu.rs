@@ -523,6 +523,48 @@ impl RinchApp {
         None
     }
 
+    /// Apply the editor caret rule for a context press at `(x, y)` **before** an
+    /// app's `data-oncontextmenu` is dispatched, so a handler that draws its own
+    /// menu (a spellchecker's suggestions, say) can read the word under the pointer
+    /// off `EditorHandle::selection`.
+    ///
+    /// The web backend already does this: its `mousedown` path places the caret for
+    /// a right press and only *then* decides whether an app handler claims the menu
+    /// (`rinch-web`'s `editor_input`). Desktop used to place it inside
+    /// [`Self::prepare_target`], which a claimed press never reaches — so the same
+    /// right-click gave the app a stale selection on one backend and the right one
+    /// on the other. Idempotent: the unclaimed path runs the same rule again.
+    ///
+    /// A no-op unless the press lands inside an editor.
+    #[cfg(feature = "desktop")]
+    pub(crate) fn apply_editor_context_caret(&mut self, x: f32, y: f32) {
+        let Some(TextTarget::Editor(container)) = self.text_target_at(x, y) else {
+            return;
+        };
+        let Some(handle) = crate::editor::editor_for_doc(self.doc_key(), container) else {
+            return;
+        };
+        use rinch_editor_core::Selection;
+        if let Some(leaf) = self.editor_leaf_at(x, y)
+            && let Some(node_sel) = handle.node_selection_at_host(leaf)
+        {
+            if handle.selection() != node_sel {
+                handle.set_selection(node_sel);
+            }
+        } else if let Some((c, textblock, ifc_byte)) = self.editor_point_address(x, y)
+            && c == container
+            && let Some(pressed) = handle.pos_at(textblock, ifc_byte)
+        {
+            let selection = handle.selection();
+            let inside = !selection.is_empty()
+                && selection.from() <= pressed
+                && pressed <= selection.to();
+            if !inside {
+                handle.set_selection(Selection::cursor(pressed));
+            }
+        }
+    }
+
     fn prepare_target(
         &mut self,
         target: TextTarget,
