@@ -1417,6 +1417,33 @@ impl DomDocument for WebDocument {
             .unwrap_or(0.0)
     }
 
+    /// Scroll `node` into view **now**, rather than queueing the request the way
+    /// the desktop backend does. The trait defers because Taffy layout has to be
+    /// resolved before an element's position relative to its scroll container is
+    /// known; in the browser layout is synchronous, so by the time a caller holds
+    /// a node its box is already measurable and `scrollIntoView` reads it itself.
+    /// There is correspondingly nothing for `drain_scroll_into_view_requests` to
+    /// return — the default (empty) is right here.
+    ///
+    /// `block`/`inline: "nearest"` is the minimal scroll: an element already in
+    /// view does not move, and one out of view is brought just inside the edge it
+    /// left by. Centring would jump the page on every caret move. The behaviour is
+    /// left at the default (`auto`, i.e. instant) deliberately — `smooth` animates,
+    /// and a caret that keeps typing would chase a still-moving viewport.
+    fn request_scroll_into_view(&mut self, node: NodeId) {
+        let Some(el) = self
+            .nodes
+            .get(&node.0)
+            .and_then(|n| n.clone().dyn_into::<web_sys::Element>().ok())
+        else {
+            return;
+        };
+        let opts = web_sys::ScrollIntoViewOptions::new();
+        opts.set_block(web_sys::ScrollLogicalPosition::Nearest);
+        opts.set_inline(web_sys::ScrollLogicalPosition::Nearest);
+        el.scroll_into_view_with_scroll_into_view_options(&opts);
+    }
+
     fn set_inner_html(&mut self, node: NodeId, html: &str) {
         if let Some(n) = self.nodes.get(&node.0)
             && let Ok(el) = n.clone().dyn_into::<web_sys::Element>()

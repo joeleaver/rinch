@@ -27,7 +27,7 @@ use rinch_editor_core::serialize::{
 use rinch_editor_core::transform::Mapping;
 use rinch_editor_core::{
     CursorMotion, EditorState, EditorView, KeyBinding, Node, Plugin, Pos, Schema, Selection,
-    Transaction, apply_input_rules,
+    Transaction, ViewRequest, apply_input_rules,
 };
 
 #[cfg(feature = "collaboration")]
@@ -1159,12 +1159,32 @@ impl EditorHandle {
     /// Returns whether an overlay actually moved (so the runtime can force a full
     /// repaint — the overlays are absolutely positioned and the software renderer's
     /// dirty-region cache can't clear their old rect).
+    ///
+    /// This is also where the view's [`ViewRequest`]s are *fulfilled*. The view owns
+    /// no window and no scroll container, so it hands back what it needs as data
+    /// (design §6); the handle is the nearest thing to a runtime that both platforms
+    /// share, so it turns `ScrollSelectionIntoView` into a
+    /// [`scroll_into_view`](rinch_core::dom::NodeHandle::scroll_into_view) on the
+    /// view's *scroll anchor* — which element that is stays the view's knowledge.
+    /// The backend then does the minimal "nearest" scroll of the caret's closest
+    /// scroll container (immediately on web, after the next layout on desktop). The
+    /// view emits the request only when the selection overlay actually moved, so a
+    /// pass that re-renders the caret where it already was never drags a user who
+    /// has scrolled away back to it.
     pub fn update_caret(&self) -> bool {
         let mut core = self.inner.borrow_mut();
         let state = core.state.clone();
         match core.view.as_mut() {
             Some(view) => {
-                view.update_caret(&state);
+                for request in view.update_caret(&state) {
+                    match request {
+                        ViewRequest::ScrollSelectionIntoView => {
+                            if let Some(anchor) = view.scroll_anchor() {
+                                anchor.scroll_into_view();
+                            }
+                        }
+                    }
+                }
                 view.take_overlay_dirty()
             }
             None => false,
@@ -1569,12 +1589,16 @@ mod tests {
 
     struct Harness {
         doc: Rc<RefCell<dyn DomDocument>>,
+        /// The *same* allocation as `doc`, typed: the mock's test-only helpers are
+        /// inherent methods and unreachable through `dyn DomDocument`.
+        mock: Rc<RefCell<MockDomDocument>>,
         container_id: NodeId,
         handle: EditorHandle,
     }
 
     fn mount(html_blocks: Node) -> Harness {
-        let doc: Rc<RefCell<dyn DomDocument>> = Rc::new(RefCell::new(MockDomDocument::new()));
+        let mock = Rc::new(RefCell::new(MockDomDocument::new()));
+        let doc: Rc<RefCell<dyn DomDocument>> = mock.clone();
         let container_id = doc.borrow_mut().create_element("div");
         let container = NodeHandle::new(container_id, Rc::downgrade(&doc));
         let schema = Rc::new(Schema::starter_kit());
@@ -1587,9 +1611,56 @@ mod tests {
         );
         Harness {
             doc,
+            mock,
             container_id,
             handle,
         }
+    }
+
+    /// The handle→request plumbing: `update_caret` must *fulfil* the view's
+    /// `ScrollSelectionIntoView` by calling `scroll_into_view()` on the caret
+    /// element, and must do it only when the caret moved. The mock queues those
+    /// calls the way the desktop backend does, so the queue is what we read.
+    ///
+    /// Before this, the returned `Vec<ViewRequest>` was dropped on the floor and
+    /// `ScrollSelectionIntoView` had no consumer anywhere in the tree.
+    #[test]
+    fn update_caret_scrolls_the_caret_into_view_only_when_it_moved() {
+        let s = schema();
+        let empty = || s.branch("paragraph", Fragment::empty()).unwrap();
+        let h = mount(doc_node(&s, vec![empty(), empty()]));
+
+        // Measure the two paragraphs so the caret has somewhere to land (the mock
+        // lays nothing out; `__set_node_layout` is the injection point).
+        let blocks = children(&h, h.container_id);
+        {
+            let mut m = h.mock.borrow_mut();
+            for (i, b) in blocks.iter().enumerate() {
+                m.__set_node_layout(*b, 0.0, i as f32 * 20.0, 200.0, 20.0);
+            }
+        }
+        let drained = |h: &Harness| h.doc.borrow_mut().drain_scroll_into_view_requests();
+
+        // doc(p(), p()) → 0[p 1]2[p 3]4.
+        h.handle.set_selection(Selection::cursor(Pos(1)));
+        h.handle.update_caret();
+        let first = drained(&h);
+        assert_eq!(first.len(), 1, "the caret's first placement scrolls to it");
+        assert_eq!(
+            h.doc.borrow().get_attribute(first[0], "data-pm-caret"),
+            Some("true".to_string()),
+            "and it is the caret element that was scrolled to"
+        );
+
+        // The runtime's post-layout pass runs on every frame; an unchanged caret
+        // must not keep re-scrolling, or a user who scrolled away is dragged back.
+        h.handle.update_caret();
+        h.handle.update_caret();
+        assert!(drained(&h).is_empty(), "a repeat pass scrolls nothing");
+
+        h.handle.set_selection(Selection::cursor(Pos(3)));
+        h.handle.update_caret();
+        assert_eq!(drained(&h).len(), 1, "a moved caret scrolls again");
     }
 
     /// Issue #217 where a user actually meets it. `create_editor` mints a **new**
