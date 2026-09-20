@@ -10,8 +10,8 @@
 //! ## Wire shape (rich-text projection)
 //!
 //! Every model node — at any depth — projects onto the **same** yrs `Map` shape;
-//! nesting is just recursion on it. A node is *either* a textblock (carries a `text`)
-//! *or* a container (carries a `content` array of child nodes):
+//! nesting is just recursion on it. A node is *either* a block (carries a `text`) *or* a
+//! container (carries a `content` array of child nodes):
 //!
 //! ```text
 //! root Map "meta"                 // the projection-format marker (see `load`)
@@ -29,6 +29,16 @@
 //!          *removes* the format over a range.)
 //!       "content" -> Array<Node>  // a container block's child nodes, recursively
 //! ```
+//!
+//! A **leaf block atom** (`horizontal_rule` — a block-level node the schema gives no
+//! content at all) is a block whose `text` is simply always **empty**: same `Map`, same
+//! `text` key, an empty `Text` object. It needs no wire shape of its own, so a peer at
+//! this same wire version reads it back as an ordinary node and the format tag does not
+//! move. What keeps that empty text *empty* is [`reconcile_node`]: a node whose type
+//! changes into (or out of) a shape with no text is **replaced**, never reconciled in
+//! place, so a peer's concurrent typing cannot land in the `Text` of what has become an
+//! atom. [`build_block`] refuses an atom carrying text loudly rather than dropping it,
+//! which is the only thing left that a foreign writer could produce.
 //!
 //! One `Text` per textblock with native formatting attributes over it is the
 //! *rich-text* model — text and formatting merge independently, which is exactly the
@@ -77,14 +87,17 @@
 //! ## Scope (design A22)
 //!
 //! Supported: **flat text-blocks + marks** (`paragraph`/`heading`/`code_block` whose own
-//! children are text nodes), and the **list containers** `bullet_list` / `ordered_list` /
-//! `list_item`, nested into each other and around text-blocks to any depth.
+//! children are text nodes), the **leaf block atoms** (`horizontal_rule` — a block-level
+//! node with no content at all), and the **list containers** `bullet_list` /
+//! `ordered_list` / `list_item`, nested into each other and around text-blocks to any
+//! depth.
 //!
 //! Everything else still **fails loud** with
 //! [`CollabError::Unsupported`](crate::CollabError::Unsupported) — **never a silent
 //! drop**: any other nested block (`blockquote`, `table`/`table_row`/cells,
-//! `task_list`/`task_item`) and every inline atom (`hard_break`, `image`,
-//! `horizontal_rule`).
+//! `task_list`/`task_item`) and every *inline* atom (`hard_break`, `image`), which lives
+//! inside a textblock's inline content where this projection has nowhere to put it — a
+//! block's text is one yrs `Text`, and an embedded value in it fails loud.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -98,7 +111,7 @@ use yrs::{
     TransactionMut, Update,
 };
 
-use rinch_editor_core::{AttrValue, Attrs, Fragment, Mark, Node, Schema};
+use rinch_editor_core::{AttrValue, Attrs, Fragment, Mark, Node, NodeType, Schema};
 
 use crate::error::{CollabError, Result};
 
@@ -162,7 +175,9 @@ pub(crate) struct SpanMark {
     pub end: usize,
 }
 
-/// The plain text of a flat block plus the marks over it, ready to project.
+/// The plain text of a flat block plus the marks over it, ready to project. A **leaf
+/// block atom** (`horizontal_rule`) is the degenerate case: the same struct with an
+/// empty `text` and no marks — see [`is_leaf_block_atom`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct BlockData {
     pub type_name: String,
@@ -171,14 +186,16 @@ pub(crate) struct BlockData {
     pub marks: Vec<SpanMark>,
 }
 
-/// One projectable model node: either a flat text-block ([`BlockData`]) or a container
-/// block (a list / list item) holding child nodes recursively. Structural equality is
+/// One projectable model node: either a flat block ([`BlockData`] — a text-block, or a
+/// leaf block atom with empty text) or a container block (a list / list item) holding
+/// child nodes recursively. Structural equality is
 /// canonical (marks are sorted in [`read_block`] / [`read_text_data`]), so comparing two
 /// `NodeData` trees is the same as comparing the model nodes they came from — the
 /// child-list diff in [`reconcile_child_list`] relies on that.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum NodeData {
-    /// A flat text-block (`paragraph`/`heading`/`code_block`): its `text` + marks.
+    /// A flat text-block (`paragraph`/`heading`/`code_block`): its `text` + marks — or
+    /// a leaf block atom (`horizontal_rule`), which is the same thing with no text.
     Block(BlockData),
     /// A container block (`bullet_list`/`ordered_list`/`list_item`): its child nodes.
     Container {
@@ -213,6 +230,30 @@ impl NodeData {
 /// being silently mangled.
 fn is_supported_container(type_name: &str) -> bool {
     matches!(type_name, "bullet_list" | "ordered_list" | "list_item")
+}
+
+/// A **leaf block atom** — a block-level node type that holds no content of its own and
+/// is one opaque unit in the document (`horizontal_rule`, the scene break). It projects
+/// as a [`NodeData::Block`] whose text is empty.
+///
+/// Deliberately a *predicate on the schema type*, not a name whitelist like
+/// [`is_supported_container`]: "block-level, atomic, holds nothing" is exactly the shape
+/// the empty-text projection is faithful to, so an app schema's own leaf block atom is
+/// in scope for free, while the three conditions each keep something out —
+///
+/// * `is_block()` — the **inline** atoms (`image`, `hard_break`) are `is_atom() &&
+///   is_leaf()` too, and stay out of scope: they live *inside* a textblock's inline
+///   content, where a block's single yrs `Text` has nowhere to put them.
+/// * `is_atom()` — an opaque unit, which is what makes "no text, no children" its whole
+///   content rather than an erasure of something.
+/// * `is_leaf()` — "the content match accepts nothing" (the same source of truth as
+///   `Node::node_size`), which is what rules out `blockquote`, tables and `task_item`:
+///   they hold block content the projection would silently drop.
+///
+/// A textblock can be none of these (its content match accepts `text`), so the three
+/// never overlap with [`Node::is_textblock`].
+fn is_leaf_block_atom(typ: &NodeType) -> bool {
+    typ.is_block() && typ.is_atom() && typ.is_leaf()
 }
 
 /// A yrs document projecting an editor document.
@@ -556,6 +597,9 @@ fn write_node(txn: &mut TransactionMut, node: &MapRef, nd: &NodeData) -> Result<
     write_attrs(txn, &attrs_obj, nd.attrs());
     match nd {
         NodeData::Block(b) => {
+            // A leaf block atom takes this same branch with an empty string, so it gets
+            // an empty `Text` object: one wire shape for every block, and a peer at this
+            // wire version reads it back without knowing atoms exist.
             let text = node.insert(txn, TEXT, TextPrelim::new(b.text.as_str()));
             for m in &b.marks {
                 apply_mark(txn, &text, &b.text, m);
@@ -575,6 +619,10 @@ fn write_node(txn: &mut TransactionMut, node: &MapRef, nd: &NodeData) -> Result<
 /// changed, then reconcile its body — a text-block's text + marks, or a container's
 /// child list — recursively. Unchanged descendants keep their CRDT identity, so a
 /// concurrent edit to a *different* text-block (even in a different list item) merges.
+///
+/// Two kinds of change are **replaced** wholesale instead: a node changing kind
+/// (text-block ↔ container), and a node retyped into a shape that holds no text (a
+/// paragraph becoming a `horizontal_rule`) — see the comments on each below.
 pub(crate) fn reconcile_node(
     txn: &mut TransactionMut,
     list: &ArrayRef,
@@ -589,7 +637,28 @@ pub(crate) fn reconcile_node(
     // coarse-grained replace is fine.
     let crdt_is_block = block_text(txn, &node).is_some();
     let target_is_block = matches!(target, NodeData::Block(_));
-    if crdt_is_block != target_is_block {
+    // A node retyped into something that holds no text — a paragraph becoming a
+    // `horizontal_rule`, the scene break — is replaced for the same reason, and it is
+    // the guard that keeps a leaf block atom's text empty. Reconciled in place it would
+    // keep its `Text` object while its `type` flipped to the atom, and a peer typing
+    // into that very block concurrently would leave the converged document holding an
+    // hr with text in it: a shape no model can express, which `build_block` can then
+    // only refuse. Replacing instead makes the conflict structural — the peer's
+    // insertion lands in a node that is gone, and its edit is the one thing lost rather
+    // than the whole document's projectability.
+    //
+    // Stated over the target's *text* rather than its atom-ness because this layer has
+    // no schema to ask (the type name is all the CRDT carries). The cost is that
+    // retyping a block that is *also* empty — an empty paragraph made a heading —
+    // replaces rather than reconciles; there is no text in it to preserve, so all that
+    // is given up is the merge of a peer's concurrent typing into an empty block.
+    let retyped_to_empty = match target {
+        NodeData::Block(b) => {
+            b.text.is_empty() && node_type(txn, &node).as_deref() != Some(b.type_name.as_str())
+        }
+        NodeData::Container { .. } => false,
+    };
+    if crdt_is_block != target_is_block || retyped_to_empty {
         check_index(txn, list, index, false)?;
         list.remove(txn, index);
         return insert_node(txn, list, index, target);
@@ -626,6 +695,14 @@ pub(crate) fn reconcile_node(
 /// Reconcile a text-block's `text` object to `b`: a minimal common-prefix/suffix splice
 /// (so the per-char CRDT identity of unchanged text survives) plus a mark resync only
 /// when the marks actually changed.
+///
+/// A **leaf block atom** reaching here is already the same atom type in the CRDT (any
+/// other way of becoming one is a replace — see [`reconcile_node`]), so `old` and
+/// `b.text` are both empty, the splice and the resync are both skipped, and this is a
+/// no-op. It is not a special case that needs guarding: `splice_min` on `"" -> ""`
+/// computes a zero-length delete and an empty insert and issues neither, so even a
+/// corrupt atom that *did* hold text is healed (spliced back to empty) rather than
+/// erroring.
 fn reconcile_text(txn: &mut TransactionMut, text: &TextRef, b: &BlockData) -> Result<()> {
     let (old, old_marks) = read_text_data(txn, text)?;
     let spliced = old != b.text;
@@ -835,9 +912,11 @@ fn read_text_data<T: ReadTxn>(txn: &T, text: &TextRef) -> Result<(String, Vec<Sp
 }
 
 /// Read the node at `index` of `list` back out of the CRDT as [`NodeData`]. A node
-/// carrying a `text` object is a text-block; a node carrying a `content` array is a
-/// container, read recursively. Fails loud on a node that is neither (a corrupt
-/// projection), rather than materializing a broken shape.
+/// carrying a `text` object is a block (a text-block, or a leaf block atom whose text is
+/// empty — the schema, consulted in [`build_block`], is what tells those apart, and this
+/// layer has none); a node carrying a `content` array is a container, read recursively.
+/// Fails loud on a node that is neither (a corrupt projection), rather than
+/// materializing a broken shape.
 pub(crate) fn read_node_data<T: ReadTxn>(txn: &T, list: &ArrayRef, index: u32) -> Result<NodeData> {
     let node = child_map(txn, list, index)
         .ok_or_else(|| CollabError::schema("read_node_data: missing node"))?;
@@ -872,12 +951,13 @@ pub(crate) fn read_node_data<T: ReadTxn>(txn: &T, list: &ArrayRef, index: u32) -
 // --- model → NodeData ----------------------------------------------------------
 
 /// Validate a model node is projectable and extract its [`NodeData`], recursing into
-/// list containers. A flat text-block becomes [`NodeData::Block`]; a supported list
-/// container ([`is_supported_container`]) becomes [`NodeData::Container`] over its
-/// recursively-read children. Anything else — an unsupported nested block (`blockquote`,
-/// table, task list) or an inline atom — fails loud (design A22).
+/// list containers. A flat text-block — or a leaf block atom ([`is_leaf_block_atom`]) —
+/// becomes [`NodeData::Block`]; a supported list container ([`is_supported_container`])
+/// becomes [`NodeData::Container`] over its recursively-read children. Anything else —
+/// an unsupported nested block (`blockquote`, table, task list) or an *inline* atom —
+/// fails loud (design A22).
 pub(crate) fn read_node(node: &Node) -> Result<NodeData> {
-    if node.is_textblock() {
+    if node.is_textblock() || is_leaf_block_atom(node.node_type()) {
         return Ok(NodeData::Block(read_block(node)?));
     }
     if is_supported_container(node.type_name()) {
@@ -892,21 +972,42 @@ pub(crate) fn read_node(node: &Node) -> Result<NodeData> {
         });
     }
     Err(CollabError::unsupported(format!(
-        "node `{}` is not a flat text-block or a supported list container \
-         (bullet_list/ordered_list/list_item); other nested blocks, tables and inline \
-         atoms are not yet supported",
+        "node `{}` is not a flat text-block, a leaf block atom, or a supported list \
+         container (bullet_list/ordered_list/list_item); other nested blocks, tables and \
+         inline atoms are not yet supported",
         node.type_name()
     )))
 }
 
-/// Validate a model block is a flat textblock and extract its projectable data. Marks
-/// are returned in canonical `(start, end, name)` order — matching [`read_text_data`] —
-/// so a [`NodeData`] read from the model compares equal to the same node read back from
-/// the CRDT.
+/// Validate a model block is a flat textblock — or a leaf block atom — and extract its
+/// projectable data. Marks are returned in canonical `(start, end, name)` order —
+/// matching [`read_text_data`] — so a [`NodeData`] read from the model compares equal to
+/// the same node read back from the CRDT.
 pub(crate) fn read_block(block: &Node) -> Result<BlockData> {
+    if is_leaf_block_atom(block.node_type()) {
+        // An atom holds nothing (`is_leaf` *is* "the content match accepts nothing"), so
+        // it projects as a block with empty text and no marks — and reads back from the
+        // CRDT as exactly that, which is what makes the round trip an identity. The
+        // child check is a cheap guard against a node built past the schema rather than
+        // a reachable state.
+        if block.child_count() != 0 {
+            return Err(CollabError::schema(format!(
+                "leaf block atom `{}` holds {} child node(s); an atom has no content",
+                block.type_name(),
+                block.child_count()
+            )));
+        }
+        return Ok(BlockData {
+            type_name: block.type_name().to_string(),
+            attrs: block.attrs().clone(),
+            text: String::new(),
+            marks: Vec::new(),
+        });
+    }
     if !block.is_textblock() {
         return Err(CollabError::unsupported(format!(
-            "block `{}` is not a flat text-block (nested blocks/atoms are not yet supported)",
+            "block `{}` is not a flat text-block or a leaf block atom (nested blocks and \
+             inline atoms are not yet supported)",
             block.type_name()
         )));
     }
@@ -992,7 +1093,8 @@ fn build_node(schema: &Schema, nd: &NodeData) -> Result<Node> {
 }
 
 /// Rebuild a model textblock node from projected block data: split the text into runs
-/// at mark boundaries, build a text node per run, assemble the block.
+/// at mark boundaries, build a text node per run, assemble the block. A leaf block atom
+/// takes the short path — an empty fragment, since it has no content to run-split.
 fn build_block(schema: &Schema, b: &BlockData) -> Result<Node> {
     // Inbound scope guard (A22): a peer CRDT must not be able to materialize a
     // non-flat block here — `create_node` would happily build a `blockquote`/`list`,
@@ -1000,9 +1102,30 @@ fn build_block(schema: &Schema, b: &BlockData) -> Result<Node> {
     let typ = schema.node_type(&b.type_name).ok_or_else(|| {
         CollabError::unsupported(format!("unknown block type `{}` in CRDT", b.type_name))
     })?;
+    if is_leaf_block_atom(typ) {
+        // The atom's whole content is that it has none, so build it from an empty
+        // fragment rather than from text runs. Text on an atom means the CRDT holds
+        // something this cannot represent: `reconcile_node` replaces a node rather than
+        // let a live `Text` survive a type change into an atom, so the only writer that
+        // can produce it is a foreign or corrupt one — and dropping it silently is the
+        // divergence class A22 exists to kill.
+        if !b.text.is_empty() || !b.marks.is_empty() {
+            return Err(CollabError::unsupported(format!(
+                "leaf block atom `{}` carries text in the CRDT ({} char(s), {} mark \
+                 span(s)); an atom has no content",
+                b.type_name,
+                b.text.chars().count(),
+                b.marks.len()
+            )));
+        }
+        return schema
+            .create_node(&b.type_name, b.attrs.clone(), Fragment::empty())
+            .map_err(CollabError::from);
+    }
     if !typ.is_textblock() {
         return Err(CollabError::unsupported(format!(
-            "block `{}` is not a flat text-block (nested blocks/atoms are not yet supported)",
+            "block `{}` is not a flat text-block or a leaf block atom (nested blocks and \
+             inline atoms are not yet supported)",
             b.type_name
         )));
     }
@@ -1254,6 +1377,95 @@ mod tests {
             marks: vec![],
         };
         assert!(build_block(&s, &good).is_ok());
+    }
+
+    #[test]
+    fn leaf_block_atoms_are_in_scope_and_inline_atoms_are_not() {
+        // The predicate that decides what "a block atom" means, pinned against the
+        // starter kit. `horizontal_rule` is the one in scope; `image`/`hard_break` are
+        // atoms too but *inline*, and `blockquote`/`table_row` are blocks but hold
+        // content — each is kept out by a different clause of `is_leaf_block_atom`.
+        let s = schema();
+        let typ = |n: &str| s.node_type(n).expect("starter-kit type").clone();
+        assert!(is_leaf_block_atom(&typ("horizontal_rule")));
+        for inline_atom in ["image", "hard_break"] {
+            assert!(
+                !is_leaf_block_atom(&typ(inline_atom)),
+                "{inline_atom} is an *inline* atom and stays out of scope"
+            );
+        }
+        for container in ["blockquote", "table_row", "task_item", "list_item"] {
+            assert!(
+                !is_leaf_block_atom(&typ(container)),
+                "{container} holds block content, so it is not a leaf atom"
+            );
+        }
+        for textblock in ["paragraph", "heading", "code_block"] {
+            assert!(!is_leaf_block_atom(&typ(textblock)));
+            assert!(typ(textblock).is_textblock(), "and is a textblock instead");
+        }
+    }
+
+    #[test]
+    fn a_block_atom_reads_and_builds_as_a_block_with_empty_text() {
+        // The representation: `read_block`/`build_block` are inverses for an atom, with
+        // the empty text standing in for "this node has no content".
+        let s = schema();
+        let hr = s.branch("horizontal_rule", Fragment::empty()).unwrap();
+        let data = read_block(&hr).unwrap();
+        assert_eq!(
+            data,
+            BlockData {
+                type_name: "horizontal_rule".into(),
+                attrs: Attrs::new(),
+                text: String::new(),
+                marks: vec![],
+            }
+        );
+        assert_eq!(build_block(&s, &data).unwrap(), hr);
+        // And `read_node` admits it at the top level, as the same `Block` shape.
+        assert_eq!(read_node(&hr).unwrap(), NodeData::Block(data));
+    }
+
+    #[test]
+    fn build_block_refuses_an_atom_that_carries_text() {
+        // Only a foreign or corrupt writer can produce this — `reconcile_node` replaces
+        // a node rather than let a live `Text` survive a retype into an atom — and it is
+        // a shape no model can express, so it must fail loud rather than be dropped.
+        let s = schema();
+        let with_text = BlockData {
+            type_name: "horizontal_rule".into(),
+            attrs: Attrs::new(),
+            text: "smuggled".into(),
+            marks: vec![],
+        };
+        let err = build_block(&s, &with_text).unwrap_err();
+        assert!(matches!(err, CollabError::Unsupported(_)), "got {err:?}");
+    }
+
+    #[test]
+    fn an_inline_atom_inside_a_block_is_still_unsupported() {
+        // The boundary the block atom does NOT move: an `image` lives in a paragraph's
+        // inline content, where the block's single `Text` has nowhere to put it.
+        let s = schema();
+        let image = s
+            .create_node(
+                "image",
+                Attrs::new().with("src", AttrValue::from("cat.png")),
+                Fragment::empty(),
+            )
+            .unwrap();
+        let para = s
+            .branch(
+                "paragraph",
+                Fragment::from_children(vec![s.text("look: ").unwrap(), image.clone()]),
+            )
+            .unwrap();
+        let err = read_block(&para).unwrap_err();
+        assert!(matches!(err, CollabError::Unsupported(_)), "got {err:?}");
+        // …and on its own it is not a block at all, so `read_node` refuses it too.
+        let err = read_node(&image).unwrap_err();
+        assert!(matches!(err, CollabError::Unsupported(_)), "got {err:?}");
     }
 
     #[test]

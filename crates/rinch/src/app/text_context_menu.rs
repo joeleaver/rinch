@@ -556,9 +556,8 @@ impl RinchApp {
             && let Some(pressed) = handle.pos_at(textblock, ifc_byte)
         {
             let selection = handle.selection();
-            let inside = !selection.is_empty()
-                && selection.from() <= pressed
-                && pressed <= selection.to();
+            let inside =
+                !selection.is_empty() && selection.from() <= pressed && pressed <= selection.to();
             if !inside {
                 handle.set_selection(Selection::cursor(pressed));
             }

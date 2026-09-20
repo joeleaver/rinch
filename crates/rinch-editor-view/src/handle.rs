@@ -451,11 +451,8 @@ impl EditorHandle {
         }
         core.plugins.push(plugin);
         let prev = core.state.clone();
-        let mut next = EditorState::create(
-            core.schema.clone(),
-            prev.doc.clone(),
-            core.plugins.clone(),
-        );
+        let mut next =
+            EditorState::create(core.schema.clone(), prev.doc.clone(), core.plugins.clone());
         next.selection = prev.selection.clone();
         // No mapping: the document is unchanged, so nothing needs remapping, and
         // `commit` treats a `None` mapping as a load — which this is, in the sense
@@ -3498,17 +3495,29 @@ mod tests {
             assert_eq!(doc_text(&guest), "hello");
             assert!(host.collab_outbound_stall().is_none(), "healthy to start");
 
-            // Insert a horizontal rule — applied locally, refused by the projection.
-            host.set_selection(Selection::cursor(Pos(6)));
+            // Append a blockquote — applied locally, refused by the projection. (A
+            // `horizontal_rule` used to stand here; leaf block atoms are inside the
+            // projected scope now, so the stall needs content that is still outside it.)
             assert!(
-                host.command("insertHorizontalRule"),
+                host.update(|state| {
+                    let s = state.schema().clone();
+                    let inner = s
+                        .branch("paragraph", Fragment::from_node(s.text("q").ok()?))
+                        .ok()?;
+                    let bq = s.branch("blockquote", Fragment::from_node(inner)).ok()?;
+                    let at = state.doc.content_size();
+                    let mut tr = state.tr();
+                    tr.replace(at, at, Slice::new(Fragment::from_node(bq), 0, 0))
+                        .ok()?;
+                    Some(tr)
+                }),
                 "the editor applies it"
             );
             let stall = host
                 .collab_outbound_stall()
                 .expect("outbound must report itself stalled");
             assert!(
-                stall.to_string().contains("horizontal_rule"),
+                stall.to_string().contains("blockquote"),
                 "the stall must name the content to remove, got: {stall}"
             );
             assert!(
@@ -3521,7 +3530,7 @@ mod tests {
             assert!(host.insert_text("!!"));
             assert!(
                 host.collab_outbound_stall().is_some(),
-                "still stalled while the rule is there"
+                "still stalled while the blockquote is there"
             );
             assert_eq!(
                 doc_text(&guest),
@@ -3529,7 +3538,7 @@ mod tests {
                 "nothing reached the guest during the stall"
             );
 
-            // Delete the rule — selecting it and pressing Delete, as an app would. Note
+            // Delete the blockquote — selecting it and pressing Delete, as an app would. Note
             // this is NOT `undo`: the text typed during the stall stays, which is the
             // half that must survive.
             assert!(
@@ -3542,7 +3551,7 @@ mod tests {
                     tr.delete(from, to).ok()?;
                     Some(tr)
                 }),
-                "the rule is deleted"
+                "the blockquote is deleted"
             );
             assert!(
                 host.collab_outbound_stall().is_none(),

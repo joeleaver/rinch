@@ -37,6 +37,45 @@ fn doc_of(schema: &Schema, blocks: Vec<Node>) -> Node {
         .unwrap()
 }
 
+/// A scene break: the leaf block *atom* of the starter kit — a block-level node with no
+/// content at all, which projects as a block whose text is empty.
+fn scene_break(schema: &Schema) -> Node {
+    schema.branch("horizontal_rule", Fragment::empty()).unwrap()
+}
+
+/// The model position at which block `index` of `doc` starts.
+fn block_start(doc: &Node, index: usize) -> usize {
+    (0..index).map(|i| doc.child(i).node_size()).sum()
+}
+
+/// The model position at the *end* of block `index`'s content (just inside its close
+/// token) — where typing appends to that block.
+fn block_content_end(doc: &Node, index: usize) -> usize {
+    block_start(doc, index) + doc.child(index).node_size() - 1
+}
+
+/// Replace block `index` of `peer`'s document with `block`, as a block-level replace —
+/// the shape a remote change takes, and the local edit that turns a paragraph into a
+/// scene break (or back).
+fn replace_block(peer: &mut Peer, index: usize, block: Node) {
+    let doc = peer.state.doc.clone();
+    let start = block_start(&doc, index);
+    let end = start + doc.child(index).node_size();
+    peer.local(|tr| {
+        tr.replace(start, end, Slice::new(Fragment::from_node(block), 0, 0))
+            .unwrap();
+    });
+}
+
+/// Insert `block` as a whole new block *before* block `index`.
+fn insert_block_before(peer: &mut Peer, index: usize, block: Node) {
+    let at = block_start(&peer.state.doc, index);
+    peer.local(|tr| {
+        tr.replace(at, at, Slice::new(Fragment::from_node(block), 0, 0))
+            .unwrap();
+    });
+}
+
 fn list_item(schema: &Schema, blocks: Vec<Node>) -> Node {
     schema
         .branch("list_item", Fragment::from_children(blocks))
@@ -954,6 +993,264 @@ fn a_delete_only_broadcast_delta_reaches_the_peer() {
         norm(&b.state.doc).contains("abef"),
         "the deletion reached the peer: {}",
         norm(&b.state.doc)
+    );
+}
+
+// --- leaf block atoms (scene breaks) -------------------------------------------
+
+#[test]
+fn projection_round_trips_a_scene_break_between_paragraphs() {
+    // The headline atom test: a block that holds *nothing* survives the round trip as
+    // itself. `horizontal_rule` projects as a block whose text is empty, and the
+    // rebuild must hand back the identical `Node` — not a paragraph, and not a rule
+    // with an empty text child in it.
+    let schema = Rc::new(Schema::starter_kit());
+    let doc = doc_of(
+        &schema,
+        vec![para(&schema, "a"), scene_break(&schema), para(&schema, "b")],
+    );
+    let cdoc = rinch_editor_collab::CollabDoc::from_doc(&doc).unwrap();
+    let back = cdoc.to_doc(&schema).unwrap();
+    assert_eq!(
+        back, doc,
+        "the rebuilt document is the identical model tree"
+    );
+    assert_eq!(tree(&doc), tree(&back));
+    assert_eq!(back.child(1).child_count(), 0, "the rule holds no content");
+
+    // And a late joiner reading the same bytes adopts it too (the snapshot path).
+    let joined = rinch_editor_collab::CollabDoc::load(&cdoc.save())
+        .expect("a projection holding a scene break is joinable")
+        .to_doc(&schema)
+        .unwrap();
+    assert_eq!(joined, doc);
+}
+
+#[test]
+fn a_scene_break_inserted_by_the_host_reaches_the_guest() {
+    // PlotWeb's actual symptom (a scene break stopped the body syncing while the UI
+    // still said Saved): the author inserts an hr between two paragraphs, and it must
+    // both project and arrive — after which ordinary typing in the paragraph *after*
+    // the rule keeps working and the rule stays where it is.
+    let schema = Rc::new(Schema::starter_kit());
+    let (mut a, mut b) = two_peers(&schema, vec![para(&schema, "one"), para(&schema, "two")]);
+    insert_block_before(&mut a, 1, scene_break(&schema));
+    sync(&mut a, &mut b);
+    assert_converged(&a, &b, &schema);
+    assert_eq!(
+        norm(&b.state.doc),
+        norm(&doc_of(
+            &schema,
+            vec![
+                para(&schema, "one"),
+                scene_break(&schema),
+                para(&schema, "two"),
+            ],
+        )),
+        "the guest received the scene break in place"
+    );
+
+    // Typing into the paragraph *after* the rule still syncs, and the rule survives it.
+    let at = block_content_end(&a.state.doc, 2);
+    a.type_at(at, "!");
+    sync(&mut a, &mut b);
+    assert_converged(&a, &b, &schema);
+    assert_eq!(
+        norm(&b.state.doc),
+        norm(&doc_of(
+            &schema,
+            vec![
+                para(&schema, "one"),
+                scene_break(&schema),
+                para(&schema, "two!"),
+            ],
+        )),
+        "the guest sees the text edit and still has the rule"
+    );
+}
+
+#[test]
+fn deleting_a_scene_break_on_one_side_removes_it_on_the_other() {
+    let schema = Rc::new(Schema::starter_kit());
+    let (mut a, mut b) = two_peers(
+        &schema,
+        vec![
+            para(&schema, "one"),
+            scene_break(&schema),
+            para(&schema, "two"),
+        ],
+    );
+    assert_eq!(
+        b.state.doc.child_count(),
+        3,
+        "the guest joined with the rule"
+    );
+
+    delete_block(&mut a, 1);
+    sync(&mut a, &mut b);
+    assert_converged(&a, &b, &schema);
+    assert_eq!(
+        norm(&b.state.doc),
+        norm(&doc_of(
+            &schema,
+            vec![para(&schema, "one"), para(&schema, "two")],
+        )),
+        "the deletion reached the guest"
+    );
+}
+
+#[test]
+fn a_remote_change_swapping_a_paragraph_for_a_scene_break_and_back_is_handled() {
+    // A block changing *kind* is the case the projection must not treat as a text
+    // splice: reconciled in place, the rule would keep the paragraph's `Text` object
+    // and a peer's concurrent typing would land inside what is now an atom — a shape no
+    // model can express. The peer here even has its caret inside the paragraph being
+    // replaced, which is the caret-carry path that must decline rather than measure a
+    // text offset against an atom.
+    let schema = Rc::new(Schema::starter_kit());
+    let (mut a, mut b) = two_peers(
+        &schema,
+        vec![
+            para(&schema, "one"),
+            para(&schema, "mid"),
+            para(&schema, "two"),
+        ],
+    );
+    // B's caret sits inside "mid" (content starts just after the block's open token).
+    let caret = block_start(&b.state.doc, 1) + 2;
+    b.local(|tr| {
+        tr.set_selection(Selection::cursor(Pos(caret)));
+    });
+
+    // A replaces that paragraph with a scene break.
+    replace_block(&mut a, 1, scene_break(&schema));
+    sync(&mut a, &mut b);
+    assert_converged(&a, &b, &schema);
+    let expected = doc_of(
+        &schema,
+        vec![
+            para(&schema, "one"),
+            scene_break(&schema),
+            para(&schema, "two"),
+        ],
+    );
+    assert_eq!(
+        norm(&b.state.doc),
+        norm(&expected),
+        "the guest has the rule"
+    );
+    let head = b.state.selection.head().0;
+    assert!(
+        head >= 1 && head <= b.state.doc.content_size(),
+        "the caret is still a valid position: {head}"
+    );
+
+    // …and the other direction: B turns the rule back into a paragraph.
+    replace_block(&mut b, 1, para(&schema, "back"));
+    sync(&mut a, &mut b);
+    assert_converged(&a, &b, &schema);
+    assert_eq!(
+        norm(&a.state.doc),
+        norm(&doc_of(
+            &schema,
+            vec![
+                para(&schema, "one"),
+                para(&schema, "back"),
+                para(&schema, "two"),
+            ],
+        )),
+        "the host has the paragraph again"
+    );
+
+    // Typing in the restored paragraph still syncs — the swap left no stale text object.
+    let at = block_content_end(&b.state.doc, 1);
+    b.type_at(at, "!");
+    sync(&mut a, &mut b);
+    assert_converged(&a, &b, &schema);
+    assert!(
+        norm(&a.state.doc).contains("back!"),
+        "the restored paragraph is editable: {}",
+        norm(&a.state.doc)
+    );
+}
+
+#[test]
+fn a_peer_typing_in_a_paragraph_another_turns_into_a_scene_break_still_converges() {
+    // The concurrency case the "retyped to empty is a replace" rule exists for. If the
+    // projection reconciled that change in place, the rule would inherit the paragraph's
+    // live `Text` object while its `type` flipped to the atom — and the peer's
+    // concurrent keystroke, merged into that same text, would leave the *converged* CRDT
+    // holding a horizontal_rule with text inside it. No model can express that, so every
+    // read-back from then on fails and the session poisons: one scene break typed at the
+    // wrong moment would take the document down for both authors. (Measured, with the
+    // replace rule disabled: `SessionPoisoned("... leaf block atom `horizontal_rule`
+    // carries text in the CRDT (1 char(s), 0 mark span(s)) ...")` on B's integrate.) Replacing makes the
+    // conflict structural instead — the keystroke is lost with the block it was in,
+    // which is the honest outcome of "you edited what I deleted".
+    let schema = Rc::new(Schema::starter_kit());
+    let (mut a, mut b) = two_peers(
+        &schema,
+        vec![
+            para(&schema, "one"),
+            para(&schema, "mid"),
+            para(&schema, "two"),
+        ],
+    );
+    replace_block(&mut a, 1, scene_break(&schema)); // A: the paragraph becomes a rule
+    b.type_at(block_content_end(&b.state.doc, 1), "X"); // B: types in that paragraph
+    sync(&mut a, &mut b);
+
+    assert_converged(&a, &b, &schema);
+    assert_eq!(
+        norm(&a.state.doc),
+        norm(&doc_of(
+            &schema,
+            vec![
+                para(&schema, "one"),
+                scene_break(&schema),
+                para(&schema, "two"),
+            ],
+        )),
+        "the rule won, and it is a rule with nothing in it"
+    );
+    assert!(
+        !norm(&a.state.doc).contains('X'),
+        "the keystroke went with the block it was in, rather than into the atom: {}",
+        norm(&a.state.doc)
+    );
+
+    // The session is healthy, not poisoned: the next edit on either side still syncs.
+    a.type_at(block_content_end(&a.state.doc, 2), "!");
+    sync(&mut a, &mut b);
+    assert_converged(&a, &b, &schema);
+    assert!(norm(&b.state.doc).contains("two!"), "editing still works");
+}
+
+#[test]
+fn an_inline_atom_is_still_out_of_scope() {
+    // The boundary the block atom does NOT move (and the reason it is stated as "leaf
+    // *block* atom"): an `image` is an atom too, but it lives inside a paragraph's
+    // inline content, where a block's single projected text has nowhere to put it.
+    let schema = Rc::new(Schema::starter_kit());
+    let image = schema
+        .create_node(
+            "image",
+            Attrs::new().with("src", AttrValue::from("cat.png")),
+            Fragment::empty(),
+        )
+        .unwrap();
+    let p = schema
+        .create_node(
+            "paragraph",
+            Attrs::new(),
+            Fragment::from_children(vec![schema.text("look: ").unwrap(), image]),
+        )
+        .unwrap();
+    let doc = doc_of(&schema, vec![p]);
+    let err = rinch_editor_collab::CollabDoc::from_doc(&doc).unwrap_err();
+    assert!(
+        matches!(err, rinch_editor_collab::CollabError::Unsupported(_)),
+        "an inline atom must still fail loud, got {err:?}"
     );
 }
 
