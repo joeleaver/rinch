@@ -51,6 +51,10 @@ web-sys = { version = "0.3", features = [
     "EventInit", "MouseEventInit", "KeyboardEventInit", "PointerEventInit",
     "EventTarget", "FocusOptions", "FocusEvent",
     "Range",
+    # `Element::scrollIntoView({block, inline})` — the minimal ("nearest") scroll
+    # that fulfils the editor view's `ScrollSelectionIntoView` request on the web
+    # (`request_scroll_into_view` in web_document.rs).
+    "ScrollIntoViewOptions", "ScrollLogicalPosition",
     # `window.getSelection()`, so a copy/cut of ordinary page content mirrors
     # into the clipboard buffers the way `copy_text()` does (issue #150).
     "Selection",
