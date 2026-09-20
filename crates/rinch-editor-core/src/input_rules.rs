@@ -248,6 +248,58 @@ pub fn mark_input_rule(pattern: &str, mark_type: &'static str) -> InputRule {
     })
 }
 
+/// A rule that replaces an otherwise-empty paragraph with a `horizontal_rule` when
+/// `---` or `***` is typed. Unlike the space-triggered block rules above (heading,
+/// blockquote, lists — where the space separates the marker from body text that
+/// follows it), this fires the instant the third `-`/`*` completes the marker, no
+/// trailing space needed — the same shape as the ` ``` ` → `code_block` rule,
+/// which fires on its closing backtick rather than a following space. The pattern
+/// is anchored both ends (`^...$`), so it only matches when the marker is the
+/// paragraph's *entire* content — typing `-` or `*` into a non-empty paragraph
+/// (`text---`) never fires it, and (like every input rule) it is skipped entirely
+/// inside a code block by `apply_input_rules`'s own guard.
+///
+/// `horizontal_rule` is an atom, not a textblock, so — unlike
+/// [`textblock_type_input_rule`] — this can't just change the current block's
+/// type in place; it replaces the whole enclosing paragraph (found via
+/// [`block_range_simple`], as [`wrapping_input_rule`] does) with the rule, so no
+/// empty paragraph is left behind where the marker was. This mirrors
+/// `commands::insert_horizontal_rule`'s caret placement (`Selection::near` just
+/// after the inserted node) for the common case where another block already
+/// follows — the caret lands in it. But since here the *entire* replaced block is
+/// the one the marker lived in, when nothing follows there is no block left for
+/// the caret to land in at all, so (unlike the raw command) a fresh empty
+/// paragraph is appended after the rule to give the caret somewhere to go.
+pub fn horizontal_rule_input_rule() -> InputRule {
+    InputRule::new(r"^(?:---|\*\*\*)$", |state, _caps, start, end| {
+        let mut tr = state.tr();
+        tr.delete(start, end).ok()?;
+        let r_from = tr.doc().resolve(Pos(start)).ok()?;
+        let range = block_range_simple(&r_from, &r_from)?;
+        let before = range.start();
+        let after = range.end();
+        let has_following_block = after < tr.doc().content_size();
+
+        let hr = state
+            .schema()
+            .create_node("horizontal_rule", Attrs::new(), Fragment::empty())
+            .ok()?;
+        let hr_size = hr.node_size();
+        let fragment = if has_following_block {
+            Fragment::from_node(hr)
+        } else {
+            let para = state
+                .schema()
+                .create_node("paragraph", Attrs::new(), Fragment::empty())
+                .ok()?;
+            Fragment::from_children(vec![hr, para])
+        };
+        tr.replace_with(before, after, fragment).ok()?;
+        tr.set_selection(Selection::near(tr.doc(), Pos(before + hr_size), 1));
+        Some(tr)
+    })
+}
+
 /// The default markdown-shortcut input rules: block shortcuts (heading, blockquote,
 /// bullet/ordered/task list, code block) plus inline mark shortcuts (`**bold**`,
 /// `*italic*`, `~~strike~~`, `==highlight==`, `` `code` ``). Contributed by the
@@ -263,6 +315,8 @@ pub fn markdown_input_rules() -> Vec<InputRule> {
         // ``` ``` ``` → code block (before the inline-code rule, which also triggers
         // on a backtick)
         textblock_type_input_rule(r"^```$", "code_block", |_| Attrs::new()),
+        // `---` / `***` → horizontal rule (fires on the 3rd char, no trailing space)
+        horizontal_rule_input_rule(),
         // `> ` → blockquote
         wrapping_input_rule(r"^\s*>\s$", "blockquote", |_| Attrs::new()),
         // `[ ] ` / `[x] ` → task list (before the bullet rule is harmless — different
@@ -452,10 +506,15 @@ mod tests {
 
     #[test]
     fn mark_rule_rejects_empty_inner() {
-        // "**"; typing a third "*" gives "***" — no inner text, no mark.
-        let state = state_with("**");
+        // "__"; typing a third "_" gives "___" — too short for the bold-underscore
+        // close (min 5 chars) and the middle "_" is disallowed as the italic-underscore
+        // rule's inner char, so neither mark rule fires. (Using underscores rather than
+        // stars here: "**" + "*" → "***" is now claimed by the horizontal-rule rule —
+        // see `horizontal_rule_rule_fires_on_triple_star` — so it no longer exercises
+        // this "no mark matches" case.)
+        let state = state_with("__");
         let rules = state.input_rules();
-        assert!(apply_input_rules(&state, rules, 3, "*").is_none());
+        assert!(apply_input_rules(&state, rules, 3, "_").is_none());
     }
 
     #[test]
@@ -475,6 +534,86 @@ mod tests {
     fn task_list_rule_no_inner_space() {
         let next = fire("[] ").expect("task rule should fire");
         assert_eq!(next.doc.child(0).type_name(), "task_list");
+    }
+
+    /// A doc with a single `code_block` (rather than `paragraph`) holding `text`,
+    /// for verifying input rules stay off inside code.
+    fn code_block_state(text: &str) -> EditorState {
+        let s = Rc::new(Schema::starter_kit());
+        let cb = s
+            .branch("code_block", Fragment::from_node(s.text(text).unwrap()))
+            .unwrap();
+        let doc = s.branch("doc", Fragment::from_node(cb)).unwrap();
+        EditorState::create(s, doc, vec![Rc::new(MdRules)])
+    }
+
+    #[test]
+    fn horizontal_rule_rule_fires_on_triple_dash() {
+        let next = fire("---").expect("hr rule should fire");
+        assert_eq!(next.doc.child(0).type_name(), "horizontal_rule");
+        // Nothing followed the marker paragraph, so a fresh empty paragraph is
+        // appended after the rule for the caret to land in.
+        assert_eq!(next.doc.child_count(), 2);
+        assert_eq!(next.doc.child(1).type_name(), "paragraph");
+        assert_eq!(next.doc.child(1).content().size(), 0);
+        // hr occupies position 0..1; the fresh paragraph opens at 1, so its content
+        // (where the caret lands) starts at 2.
+        assert_eq!(next.selection, Selection::cursor(Pos(2)));
+    }
+
+    #[test]
+    fn horizontal_rule_rule_fires_on_triple_star() {
+        let next = fire("***").expect("hr rule should fire");
+        assert_eq!(next.doc.child(0).type_name(), "horizontal_rule");
+        assert_eq!(next.doc.child_count(), 2);
+        assert_eq!(next.doc.child(1).type_name(), "paragraph");
+        assert_eq!(next.doc.child(1).content().size(), 0);
+    }
+
+    #[test]
+    fn horizontal_rule_rule_keeps_a_following_block_no_extra_paragraph() {
+        // doc(paragraph "---", paragraph "next"): firing the rule on the first
+        // paragraph must not add a spare empty paragraph when "next" already
+        // follows — the caret should land in "next" instead.
+        let s = Rc::new(Schema::starter_kit());
+        let head = s
+            .branch("paragraph", Fragment::from_node(s.text("--").unwrap()))
+            .unwrap();
+        let tail = s
+            .branch("paragraph", Fragment::from_node(s.text("next").unwrap()))
+            .unwrap();
+        let doc = s
+            .branch("doc", Fragment::from_children(vec![head, tail]))
+            .unwrap();
+        let state = EditorState::create(s, doc, vec![Rc::new(MdRules)]);
+        let rules = state.input_rules();
+        // cursor after "--" in the first paragraph, at pos 3; type the 3rd "-"
+        let tr = apply_input_rules(&state, rules, 3, "-").expect("hr rule should fire");
+        let next = state.apply(tr);
+        assert_eq!(next.doc.child_count(), 2);
+        assert_eq!(next.doc.child(0).type_name(), "horizontal_rule");
+        assert_eq!(next.doc.child(1).type_name(), "paragraph");
+        assert_eq!(block_text(next.doc.child(1)), "next");
+    }
+
+    #[test]
+    fn horizontal_rule_rule_does_not_fire_mid_paragraph() {
+        // "text--"; typing a third "-" gives "text---" — not anchored at the block
+        // start, so the rule must not fire.
+        let state = state_with("text--");
+        let rules = state.input_rules();
+        let pos = 1 + "text--".chars().count();
+        assert!(apply_input_rules(&state, rules, pos, "-").is_none());
+    }
+
+    #[test]
+    fn horizontal_rule_rule_does_not_fire_in_code_block() {
+        // "--" inside a code_block; typing the 3rd "-" must not fire (apply_input_rules
+        // disables all input rules inside code blocks).
+        let state = code_block_state("--");
+        let rules = state.input_rules();
+        let pos = 1 + "--".chars().count();
+        assert!(apply_input_rules(&state, rules, pos, "-").is_none());
     }
 
     #[test]
