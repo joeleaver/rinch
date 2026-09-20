@@ -1,12 +1,13 @@
 //! [`CollabError`] — the one error type for the collab adapter.
 //!
 //! The most important variant is [`CollabError::Unsupported`]: per design amendment
-//! **A22**, the staged first-milestone scope is **flat text-blocks + marks**. When the
-//! adapter meets a model shape it cannot faithfully project onto the CRDT (a nested
-//! block, an inline atom, a multi-block paste it cannot reduce), it **fails loud** with
-//! `Unsupported` rather than silently dropping the change. A silent drop would
-//! reintroduce the exact "the two sides disagree" divergence class the editor rewrite
-//! set out to kill.
+//! **A22**, the staged first-milestone scope is **flat text-blocks + marks**, the list
+//! containers, and **leaf block atoms** (a block-level node with no content of its own,
+//! such as `horizontal_rule`). When the adapter meets a model shape it cannot faithfully
+//! project onto the CRDT (a nested block outside that scope, an *inline* atom, a
+//! multi-block paste it cannot reduce), it **fails loud** with `Unsupported` rather than
+//! silently dropping the change. A silent drop would reintroduce the exact "the two
+//! sides disagree" divergence class the editor rewrite set out to kill.
 
 use thiserror::Error;
 
@@ -18,8 +19,10 @@ pub enum CollabError {
     #[error("crdt engine error: {0}")]
     Engine(String),
 
-    /// The model shape is outside the staged first-milestone scope (nested blocks,
-    /// inline atoms, deep nesting). **Fail-loud, never a silent drop** (design A22).
+    /// The model shape is outside the staged first-milestone scope (nested blocks
+    /// other than the list containers, inline atoms, deep nesting). **Fail-loud, never
+    /// a silent drop** (design A22). Leaf block atoms such as `horizontal_rule` are
+    /// **in** scope and do not reach here.
     #[error("collab does not support this content yet: {0}")]
     Unsupported(String),
 
