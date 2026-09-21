@@ -2,6 +2,7 @@
 name = "rinch-editable"
 version = "0.1.0"
 edition = "2021"
+license.workspace = true
 description = "Generic text editing primitives for rinch"
 
 [dependencies]
