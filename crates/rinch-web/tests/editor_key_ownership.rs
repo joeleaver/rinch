@@ -183,8 +183,8 @@ fn build(scope: &mut RenderScope, handle: EditorHandle, count: Rc<Cell<u32>>) ->
     for (tag, id, tabindex) in [
         ("div", "node", Some("0")),
         ("button", "button", None),
-        // A non-focusable clickable: a DOM menu-bar item, a `DropdownMenu`
-        // item, a `div { onclick }` toolbar button.
+        // A non-focusable clickable: a DOM menu-bar item, a
+        // `div { onclick }` toolbar button.
         ("div", "plain", None),
     ] {
         let el = scope.create_element(tag);

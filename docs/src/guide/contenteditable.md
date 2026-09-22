@@ -492,9 +492,10 @@ keyboard back. A switch to another window and back is meant to leave it in place
 textarea stays the page's focused element, and the release waits for focus to move
 within the page.
 
-A press on a **non-focusable** clickable — a DOM menu-bar item, a `DropdownMenu`
-item, a `div { onclick }` toolbar button — leaves the keyboard with the editor, as
-desktop does for a press on a `data-rid` element. A toolbar of real `<button>`s
+A press on a **non-focusable** clickable — a DOM menu-bar item, a `div { onclick }`
+toolbar button — leaves the keyboard with the editor, as desktop does for such a
+press. A focusable one takes it, `DropdownMenu`'s `<button>` items included, as on
+desktop. A toolbar of real `<button>`s
 that should leave the keyboard with the editor carries `data-nofocus` (see the
 toolbar note above); the editor-web example's does. A command run while the editor
 keeps the keyboard with no pointer event at all — assistive technology or

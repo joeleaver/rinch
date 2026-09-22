@@ -1000,11 +1000,12 @@ const FOCUSABLE_SELECTOR: &str = "button, a[href], input, select, textarea, [tab
      [contenteditable], summary, iframe, audio[controls], video[controls]";
 
 /// Whether a press at `target` lands on a `data-rid` handler with nothing
-/// focusable between them — a DOM menu-bar item, a `DropdownMenu` item, a
-/// `div { onclick }` toolbar button. The browser would move focus to `<body>`
-/// for such a press; desktop keeps the editor focused for it (`click_handling.rs`:
-/// a press on a `data-rid` preserves editor focus, only a focusable node claims
-/// it), and so does this module, by `preventDefault`ing the `mousedown`.
+/// focusable between them — a DOM menu-bar item, a `div { onclick }` toolbar
+/// button. (A `DropdownMenu` item is a `<button>`, so it is focusable.) The
+/// browser would move focus to `<body>` for such a press; desktop keeps the
+/// editor focused for it (`click_handling.rs`: a press on a `data-rid` preserves
+/// editor focus, only a focusable node claims it), and so does this module, by
+/// `preventDefault`ing the `mousedown`.
 fn is_non_focusable_handler_press(target: &web_sys::Element) -> bool {
     let Some(rid) = target.closest("[data-rid]").ok().flatten() else {
         return false;
