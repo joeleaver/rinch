@@ -571,6 +571,74 @@ pub fn denotes_emitted(parsed: Hsva, notation: Notation, emitted: &str) -> bool 
     parse_color(emitted).is_some_and(|e| format_color(parsed, format) == format_color(e, format))
 }
 
+/// Whether `parsed`, read from a string written in `notation`, is a spelling
+/// of `emitted` — a string this crate's serializer produced — that another
+/// serializer could have written: [`denotes_emitted`], or else every channel
+/// within half a grid step of `emitted`'s exact value on `notation`'s grid
+/// (GH #262).
+///
+/// A store that re-spells an emission in another notation lands on the grid
+/// point nearest the emission's exact value, the same point rinch's own
+/// serializer lands on — except where that value sits on a tie between two
+/// points, which each converter may round its own way (`#797e81`'s hue is
+/// exactly 202.5°; an exact-rational converter writes 203 where rinch writes
+/// 202). Accepting any rounding of the exact value accepts both neighbours
+/// of a tie and nothing else: off a tie, half a step past the exact value is
+/// still short of the next grid point. A value one grid point from rinch's
+/// spelling that is *not* a rounding of the exact value — a peer's genuine
+/// 1° move where the exact hue is 206⅔° and rinch writes 207 — is judged
+/// foreign, exactly as [`denotes_emitted`] judges it.
+///
+/// This is `ColorPicker`'s emission arm only. The comparison against the
+/// colour the picker *holds* stays [`denotes_emitted`]: a held colour is not
+/// a quantized emission, so there is no exact value a store could have
+/// rounded the other way.
+pub fn respells_emitted(parsed: Hsva, notation: Notation, emitted: &str) -> bool {
+    if denotes_emitted(parsed, notation, emitted) {
+        return true;
+    }
+    let Some(exact) = parse_color(emitted) else {
+        return false;
+    };
+    // A float slack far below any genuine gap: an 8-bit colour's hsl channels
+    // are rationals whose distance from a half step is at least 1/1020 of a
+    // step, and an integer hsl colour's 8-bit channels are further still from
+    // anything the float pipeline could blur.
+    const HALF_STEP: f64 = 0.5 + 1e-6;
+    let within = |a: f64, b: f64| (a - b).abs() <= HALF_STEP;
+    let on_grid = |c: Hsva| -> [f64; 4] {
+        match notation {
+            Notation::Hex | Notation::Rgb => {
+                let rgb = hsv_to_rgb(c);
+                let alpha_steps = if notation == Notation::Hex {
+                    255.0
+                } else {
+                    100.0
+                };
+                [
+                    rgb.r * 255.0,
+                    rgb.g * 255.0,
+                    rgb.b * 255.0,
+                    rgb.a * alpha_steps,
+                ]
+            }
+            Notation::Hsl => {
+                let hsl = hsv_to_hsl(c);
+                [hsl.h, hsl.s * 100.0, hsl.l * 100.0, hsl.a * 100.0]
+            }
+        }
+    };
+    let (p, e) = (on_grid(parsed), on_grid(exact));
+    let first_matches = if notation == Notation::Hsl {
+        // Hue is circular: 359.6° and 0° are 0.4° apart.
+        let d = (p[0] - e[0]).rem_euclid(360.0);
+        d.min(360.0 - d) <= HALF_STEP
+    } else {
+        within(p[0], e[0])
+    };
+    first_matches && within(p[1], e[1]) && within(p[2], e[2]) && within(p[3], e[3])
+}
+
 /// Whether `text` denotes the colour `colour` holds — every channel, alpha
 /// included — at the resolution of the notation `text` is written in (see
 /// [`denotes_emitted`]).
@@ -1457,5 +1525,45 @@ mod tests {
         // commit boundary normalizes it.
         assert!(parse_color("rgb(255, 0, 0").is_some());
         assert!(parse_color("hsl(0, 100%, 50%").is_some());
+    }
+
+    /// GH #262: the emission arm accepts both roundings of a tie and nothing
+    /// farther. `#797e81`'s hue is exactly 202.5°.
+    #[test]
+    fn a_respelled_emission_may_round_a_tie_either_way() {
+        let respells = |text: &str, emitted: &str| {
+            let (parsed, notation) = parse_color_with_notation(text).unwrap();
+            respells_emitted(parsed, notation, emitted)
+        };
+        assert!(respells("hsl(202, 3%, 49%)", "#797e81"));
+        assert!(respells("hsl(203, 3%, 49%)", "#797e81"));
+        assert!(!respells("hsl(201, 3%, 49%)", "#797e81"));
+        assert!(!respells("hsl(204, 3%, 49%)", "#797e81"));
+        assert!(!respells("hsl(203, 4%, 49%)", "#797e81"), "only the tie");
+
+        // Off a tie, one grid point from rinch's spelling is not a rounding:
+        // `#797e82`'s hue is 206⅔°, rinch writes 207, and 206 is a peer's.
+        assert!(respells("hsl(207, 4%, 49%)", "#797e82"));
+        assert!(!respells("hsl(206, 4%, 49%)", "#797e82"));
+        assert!(!respells("hsl(208, 4%, 49%)", "#797e82"));
+
+        // Hue is circular: `#c85051`'s hue is 359.5°, and a store may write
+        // 359 or wrap to 0.
+        assert!(respells("hsl(359, 52%, 55%)", "#c85051"));
+        assert!(respells("hsl(0, 52%, 55%)", "#c85051"));
+        assert!(!respells("hsl(358, 52%, 55%)", "#c85051"));
+        assert!(!respells("hsl(1, 52%, 55%)", "#c85051"));
+
+        // The 8-bit grid, alpha included: alpha 0.50 is 127.5 of 255.
+        let emitted = "hsla(0, 100%, 50%, 0.50)";
+        assert!(respells("#ff000080", emitted));
+        assert!(respells("#ff00007f", emitted));
+        assert!(!respells("#ff00007e", emitted));
+        assert!(
+            !respells("#fe00007f", emitted),
+            "a colour channel is not a tie"
+        );
+        assert!(respells("rgba(255, 0, 0, 0.5)", emitted));
+        assert!(!respells("rgba(255, 0, 0, 0.51)", emitted));
     }
 }

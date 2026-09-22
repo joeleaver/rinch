@@ -13,7 +13,7 @@ use rinch_core::{Component, Drag, InputCallback, Signal, batch, get_click_contex
 use crate::color_swatch::ColorSwatch;
 use crate::color_utils::{
     ColorFormat, Hsva, Notation, denotes_emitted, format_color, hsv_to_rgb, hue_to_rgb_hex,
-    parse_color, parse_color_with_notation, rgb_to_hex, text_denotes,
+    parse_color, parse_color_with_notation, respells_emitted, rgb_to_hex, text_denotes,
 };
 
 /// Reactive callback type for string state.
@@ -660,10 +660,19 @@ impl Component for ColorPicker {
                     // an alpha-dropping format that includes "rgba(r, g, b,
                     // 1)" restating the emission — alpha is externally
                     // drivable under the formats that carry it.
+                    //
+                    // The emission arm accepts any rounding of the emission's
+                    // exact value, not just rinch's own (GH #262): a store
+                    // re-spelling the emission in the inbound notation may
+                    // round a tie between two grid points the other way, and
+                    // that is still this picker's echo. The held-colour arm
+                    // stays exact — a peer's value is not a re-spelling, and
+                    // only a rounding of the emission's exact value is folded,
+                    // so a peer's one-grid-step move off a tie still applies.
                     let held = format_color(current, notation.with_alpha());
                     let echoes_self = denotes_emitted(parsed, notation, &held)
                         || (color_format != notation.with_alpha()
-                            && denotes_emitted(
+                            && respells_emitted(
                                 parsed,
                                 notation,
                                 &format_color(current, color_format),
