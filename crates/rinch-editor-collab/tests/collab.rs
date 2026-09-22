@@ -1422,12 +1422,14 @@ fn changing_an_atoms_attrs_reconciles_it_rather_than_duplicating_it() {
 
 #[test]
 fn concurrent_edits_on_both_sides_of_an_atom_converge_and_keep_it() {
-    // Two authors typing either side of a picture. The interesting half is the peer
-    // typing *immediately after* it: yrs swallows an insert at the end boundary of a
-    // formatted range into that range, so those chars arrive carrying the image's
-    // `@atom` attribute. Treating that as corruption would poison the session over a
-    // formatting artifact; instead the chars are text (a char that is not U+FFFC is not
-    // an atom), and the next projection clears the stray span.
+    // Two authors typing either side of a picture: exactly one image survives, both
+    // insertions survive, and the session stays healthy. The typer right *after* the
+    // image gets the image's `@atom` attribute on its new chars from yrs (an insert at
+    // the end boundary of a formatted range joins it), but its own `resync_marks`
+    // clears that in the same transaction, so the peer never receives a stray span
+    // from this path. The stray-span rule of `is_atom_char` is pinned by
+    // `a_stray_atom_attribute_from_a_peer_is_text_and_is_cleared_by_the_next_local_edit`,
+    // which forges the update a non-rinch peer would send.
     let schema = Rc::new(Schema::starter_kit());
     let line = para_of(
         &schema,

@@ -57,7 +57,8 @@
 //! …which is the *same* shape as a mark with attrs, deliberately: the atom is a char
 //! that happens to be formatted, so every path that already carries a formatted char
 //! carries it — [`read_text_data`] reads it as a [`SpanMark`] with no case of its own,
-//! [`splice_min`] moves it as text, [`resync_marks`] diffs it as formatting. Its own
+//! [`splice_min`] moves it as text, [`resync_marks`] diffs it as formatting (per
+//! *char* rather than per span, for the reason given there). Its own
 //! marks (a link on an image) are ordinary spans over that same char. **Not** a yrs
 //! embed, which is the obvious alternative and is still refused: an embed is opaque to
 //! `Text::diff`'s string path, to the char/UTF-16 offset arithmetic and to the minimal
@@ -68,13 +69,33 @@
 //! The pairing is checked both ways and neither half is an error on its own: a U+FFFC
 //! with no attribute is text (a user can paste one), and the attribute over any other
 //! char is ignored formatting — see [`is_atom_char`], which is also where the
-//! concurrent-edit measurement that forces that second rule is written down.
+//! yrs behaviour that forces that second rule is written down.
 //!
-//! Wire-compatibly this is **additive**: [`FORMAT_TAG`] does not move. An older reader
+//! **Known limitation: two *identical* atoms side by side, edited concurrently.** They
+//! are one `@atom` formatting range with one value at the CRDT level. A peer changing
+//! the attrs of one of them writes a format marker at the boundary between the two
+//! chars, and so does a peer changing the other; yrs orders two concurrent markers at
+//! one boundary by client id, and the loser's change can be overwritten by the
+//! winner's rewrite of the neighbour it did not touch. The replicas still converge, but
+//! **one of the two edits may be lost** (measured: 15 to 22 of 40 random client-id
+//! pairs, for two copies of one picture whose `src` both peers change at once). It is
+//! Yjs formatting semantics, not something a formatting encoding can fix; the pin is
+//! `two_adjacent_identical_images_edited_concurrently_converge` in `tests/collab.rs`,
+//! which asserts convergence only. Atoms that differ in any attr are separate ranges
+//! and are not affected, and neither is an edit to a single atom.
+//!
+//! Wire-compatibly this is **additive**: [`FORMAT_TAG`] does not move, which also means
+//! it needs a **coordinated upgrade**, as the leaf block atoms above do. An older reader
 //! meets the attribute as an unknown *mark name* and fails loud in [`marks_at`]
-//! ("unknown mark type `@atom` in CRDT") rather than half-understanding the document —
-//! which is the outcome a version bump would have bought, at the price of also locking
-//! that reader out of every document with no atom in it.
+//! ("unknown mark type `@atom` in CRDT") rather than half-understanding the document.
+//! Joining from a snapshot that holds an atom fails that way. A **live** older peer
+//! whose session integrates an atom is **poisoned** (#196): `SessionPoisoned`, sticky,
+//! inbound *and* outbound, for as long as any atom remains in the shared document (it
+//! heals when the last one is deleted). That is the outcome a version bump would have
+//! bought for atom documents, at the price of also locking the older reader out of
+//! every document with no atom in it — so the tag stays, and every peer on a shared
+//! document must run a build with inline atoms in scope before any of them inserts an
+//! image or a hard break.
 //!
 //! One `Text` per textblock with native formatting attributes over it is the
 //! *rich-text* model — text and formatting merge independently, which is exactly the
@@ -944,9 +965,11 @@ fn apply_mark(txn: &mut TransactionMut, text: &TextRef, s: &str, m: &SpanMark) {
 /// letter after a picture (review of #838). Per char, the image's own char is unchanged
 /// and is not written; only the stray char is cleared. Two *identical adjacent* atoms
 /// coalesce into one span the same way, and per-char diffing stops an edit of one from
-/// rewriting the other — but see [`ATOM_MARK`] for what yrs still does to that pair
-/// under concurrency. Other marks must stay per span: they are inclusive in the model
-/// too, so a typed char carries them and a per-char diff would buy nothing there.
+/// rewriting the other — but see the module docs for what yrs still does to that pair
+/// under concurrency. Every other mark stays per span: marks are inclusive in the
+/// model too, so a typed char carries them and there is no stray to clear — and the
+/// review of #838 found that diffing *every* mark per char loses a peer's concurrent
+/// link change in the same typing shape.
 ///
 /// A yrs formatting clear is per *attribute key*, so a peer clearing `bold` over the
 /// atom's char cannot take `@atom` with it. Writing the attribute *with* the
@@ -1466,11 +1489,15 @@ fn build_block(schema: &Schema, b: &BlockData) -> Result<Node> {
 /// leans that way (A22), because an ordinary concurrent edit produces it. A yrs insert
 /// at the **end boundary** of a formatted range is swallowed into that range — that is
 /// rich-text CRDT behaviour, the same rule that continues bold when you type at the end
-/// of a bold word — so a peer typing immediately after an image inherits the image's
-/// `@atom` attribute on its new chars. Measured: it happens for every client-id order
-/// and both integration orders. Refusing it would turn "two authors, one of them typing
-/// just after a picture" into a poisoned session (issue #196) over a formatting
-/// artifact that carries no content at all.
+/// of a bold word — so any char inserted immediately after a placeholder with no
+/// formatting of its own inherits the image's `@atom` attribute. This projection's own
+/// typer never *sends* such a span: its [`resync_marks`] clears the inherited attribute
+/// from its new chars in the same transaction. But a peer that is not this projection
+/// (any Yjs client, or a projection built before the per-char resync) sends exactly
+/// that, and `a_stray_atom_attribute_from_a_peer_is_text_and_is_cleared_by_the_next_local_edit`
+/// in `tests/collab.rs` delivers one through `integrate_incremental`. Refusing it would
+/// turn "a peer typed just after a picture" into a poisoned session (issue #196) over a
+/// formatting artifact that carries no content at all.
 fn is_atom_char(spans: &[SpanMark], chars: &[char], i: usize) -> bool {
     chars.get(i) == Some(&ATOM_PLACEHOLDER) && atom_span_at(spans, i).is_some()
 }
