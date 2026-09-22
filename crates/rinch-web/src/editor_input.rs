@@ -1000,23 +1000,20 @@ const FOCUSABLE_SELECTOR: &str = "button, a[href], input, select, textarea, [tab
      [contenteditable], summary, iframe, audio[controls], video[controls]";
 
 /// Whether a press at `target` lands on a `data-rid` handler with nothing
-/// focusable anywhere on its ancestor chain — a DOM menu-bar item, a `div { onclick }` toolbar
-/// button. (A `DropdownMenu` item is a `<button>`, so it is focusable.) The
+/// focusable anywhere on its ancestor chain — a DOM menu-bar item, a
+/// `div { onclick }` toolbar button. (A `DropdownMenu` item is a `<button>`, so it is focusable.) The
 /// browser would move focus to `<body>` for such a press; desktop keeps the
 /// editor focused for it (`click_handling.rs`: a press on a `data-rid` preserves
 /// editor focus, only a focusable node claims it), and so does this module, by
 /// `preventDefault`ing the `mousedown`.
 fn is_non_focusable_handler_press(target: &web_sys::Element) -> bool {
-    let Some(rid) = target.closest("[data-rid]").ok().flatten() else {
+    if target.closest("[data-rid]").ok().flatten().is_none() {
         return false;
-    };
-    match target.closest(FOCUSABLE_SELECTOR).ok().flatten() {
-        None => true,
-        // Any focusable on the chain — the handler itself, inside it, or an
-        // ancestor of it (a `Tree` chevron inside its `tabindex` row) — is
-        // what the browser focuses, as desktop does: leave the press alone.
-        Some(_) => false,
     }
+    // Any focusable on the chain — the handler itself, inside it, or an
+    // ancestor of it (a `Tree` chevron inside its `tabindex` row) — is what
+    // the browser focuses, as desktop does: leave the press alone.
+    target.closest(FOCUSABLE_SELECTOR).ok().flatten().is_none()
 }
 
 // ── Clipboard (copy / cut / paste) ─────────────────────────────────────────────
