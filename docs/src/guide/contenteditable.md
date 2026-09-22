@@ -484,14 +484,21 @@ editor's key handler (and never reach the textarea); only IME composition flows
 through it. This mirrors the CodeMirror / ProseMirror hidden-input technique.
 
 **The editor owns a key only while that textarea holds focus** (issue #271). Tab to a
-button, click a focusable control, or click blank page, and the next key — Enter and
-Space included — belongs to whatever has focus now, exactly as it would beside a
-native editable. Press inside the editor to give it the keyboard back. A toolbar
-that should leave the keyboard with the editor while its buttons are clicked
-carries `data-nofocus` (see the toolbar note above); the editor-web example's does.
-A toolbar command that runs with no pointer at all — Enter or Space on a focused
-toolbar control, assistive technology, `element.click()` — still moves the caret
-overlay with its edit.
+button, press a focusable control (a `<button>`, a link, a `tabindex` element, a text
+field), or press blank page, and the editor lets go: the next key — Enter and Space
+included — belongs to whatever has focus now, and the editor stops painting its
+caret, as a blurred editor does on desktop. Press inside the editor to give it the
+keyboard back. A switch to another window and back is meant to leave it in place: the
+textarea stays the page's focused element, and the release waits for focus to move
+within the page.
+
+A press on a **non-focusable** clickable — a DOM menu-bar item, a `DropdownMenu`
+item, a `div { onclick }` toolbar button — leaves the keyboard with the editor, as
+desktop does for a press on a `data-rid` element. A toolbar of real `<button>`s
+that should leave the keyboard with the editor carries `data-nofocus` (see the
+toolbar note above); the editor-web example's does. A command run while the editor
+keeps the keyboard with no pointer event at all — assistive technology or
+`element.click()` on a toolbar button — still moves the caret with its edit.
 
 **Right-click gets the browser's own editing menu** (issue #814) — Paste, Cut, Copy,
 Select All, and whatever else the browser puts there (emoji, extensions; the hidden
