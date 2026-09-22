@@ -787,10 +787,18 @@ impl NodeHandle {
         }
     }
 
-    /// Request that this element be scrolled into view.
+    /// Request that this element be scrolled into view — the minimal
+    /// ("nearest") scroll: an element already in view does not move.
     ///
-    /// The scroll is deferred until after the next layout pass, since the
-    /// element's position must be known relative to its scroll container.
+    /// The backends differ in when and how far:
+    /// - **desktop** (`rinch-dom`) defers the scroll until after the next layout
+    ///   pass, since the element's position must be known relative to its scroll
+    ///   container, and scrolls only the **nearest** scroll container (issue #842).
+    /// - **web** (`rinch-web`) scrolls immediately, with the browser's
+    ///   `scrollIntoView({block: "nearest", inline: "nearest"})`, which scrolls
+    ///   **every** scrollable ancestor, the page included. Until the editor's
+    ///   caret scroll (#837) it was a silent no-op there.
+    /// - the test `MockDomDocument` only queues the request.
     pub fn scroll_into_view(&self) {
         if let Some(doc) = self.doc.upgrade() {
             doc.borrow_mut().request_scroll_into_view(self.node_id);

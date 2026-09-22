@@ -11,6 +11,14 @@ pub struct MockDomDocument {
     dirty: Vec<NodeId>,
     root_id: NodeId,
     body_id: NodeId,
+    /// Box geometry injected by a test, keyed by node (see
+    /// [`__set_node_layout`](MockDomDocument::__set_node_layout)). Empty by
+    /// default, which is what makes `query_node_layout` report "not measured".
+    layout: std::collections::HashMap<NodeId, (f32, f32, f32, f32)>,
+    /// Pending [`DomDocument::request_scroll_into_view`] targets, in request
+    /// order. The mock queues them exactly as the desktop backend does — there is
+    /// no layout here to scroll, so the queue *is* the observable behaviour.
+    scroll_into_view_requests: Vec<NodeId>,
 }
 
 struct MockNode {
@@ -46,6 +54,19 @@ impl MockDomDocument {
         self.nodes.len()
     }
 
+    /// **Test-only.** Give `node` a border box, so
+    /// [`DomDocument::query_node_layout`] reports `(x, y, w, h)` for it.
+    ///
+    /// The mock has no layout engine, and every geometry query returns `None`
+    /// unless a test says otherwise — which is right for the many tests that only
+    /// care about tree structure, but leaves anything reading a *measured* box
+    /// (the editor's caret placement, for one) untestable on the host. This is the
+    /// injection point: positions are parent-relative, like Taffy's.
+    #[doc(hidden)]
+    pub fn __set_node_layout(&mut self, node: NodeId, x: f32, y: f32, w: f32, h: f32) {
+        self.layout.insert(node, (x, y, w, h));
+    }
+
     pub fn new() -> Self {
         let mut doc = Self {
             doc_key: crate::dom::next_doc_key(),
@@ -54,6 +75,8 @@ impl MockDomDocument {
             dirty: Vec::new(),
             root_id: NodeId(0),
             body_id: NodeId(0),
+            layout: std::collections::HashMap::new(),
+            scroll_into_view_requests: Vec::new(),
         };
 
         // Create root and body
@@ -441,8 +464,18 @@ impl DomDocument for MockDomDocument {
         // Mock does nothing
     }
 
-    fn query_node_layout(&self, _node_id: u64) -> Option<(f32, f32, f32, f32)> {
-        None // Mock returns None
+    fn query_node_layout(&self, node_id: u64) -> Option<(f32, f32, f32, f32)> {
+        // `None` unless a test injected a box with `__set_node_layout` — the mock
+        // does not lay anything out.
+        self.layout.get(&NodeId(node_id as usize)).copied()
+    }
+
+    fn request_scroll_into_view(&mut self, node: NodeId) {
+        self.scroll_into_view_requests.push(node);
+    }
+
+    fn drain_scroll_into_view_requests(&mut self) -> Vec<NodeId> {
+        std::mem::take(&mut self.scroll_into_view_requests)
     }
 
     fn tag_name(&self, node: NodeId) -> Option<String> {
