@@ -9,7 +9,6 @@ use rinch_editor_core::{Attrs, EditorState, Plugin, PluginKey, Pos, Selection};
 use rinch_web::{EditorHandle, RootHandle, create_editor};
 use std::cell::Cell;
 use std::rc::Rc;
-use wasm_bindgen::JsCast;
 use wasm_bindgen_test::*;
 
 wasm_bindgen_test_configure!(run_in_browser);
