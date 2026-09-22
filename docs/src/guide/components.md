@@ -526,7 +526,18 @@ of the rendering pipeline](../architecture/rendering-pipeline.md).
 A `visibility: hidden` subtree is excluded from paint, from hit testing and from
 the Tab order, which is most of what `display: none` was doing — but not all of
 it, and the difference is that the box is still **there**. Two consequences to
-know before you reach for it:
+know before you reach for it are below.
+
+On desktop, "excluded from paint" covers the box's background, border and
+shadow, and also its text, underline (wavy too) and line-through, `text-shadow`, inline
+backgrounds, SVG shapes, scrollbar thumbs, `RenderSurface` frame, `filter`
+overlay and read-only selection highlight (desktop drew the text until issue
+#829). Three known exceptions remain: a hidden span inside a
+`text-overflow: ellipsis` line is still drawn (#853), a hidden `data-viewport`
+still cuts its hole in its ancestors' backgrounds (#854), and a ligature that
+straddles a visibility boundary follows the wrong end of it (#852). As in CSS,
+a descendant that declares `visibility: visible` is painted again.
+
 
 - **It still takes part in layout**, so a hidden overlay that is a direct child
   of an `overflow: auto` container contributes its box to that container's
@@ -538,7 +549,7 @@ know before you reach for it:
   order honours it (`collect_focusable_nodes_from` tests each node on its own),
   and hit testing does **not** — it rejects the whole subtree at the hidden
   ancestor before it ever reaches the descendant. So such a node is painted and
-  tabbable but not clickable.
+  tabbable but not clickable (#843).
 
 Neither is a reason to go back to `display`, which cannot animate at all. They
 are the two places to look when a closed overlay misbehaves.

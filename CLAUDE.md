@@ -3057,6 +3057,26 @@ Three things it deliberately does not do.
   on desktop only until #703 and had never run on `rinch-web` at all. Its closed
   state is `visibility: hidden` now, like `Popover`'s — hidden, still rendered,
   and still out of paint, hit testing and the Tab order on both backends.
+  **Out of paint now covers the content, not only the box** (#829): desktop used to gate only a hidden
+  box's own background, border and shadow, and went on drawing the text its
+  IFC laid out — so a closing `Drawer` or `Popover` left its title and body on
+  screen, with no panel behind them, for the length of the slide or fade.
+  `paint::text::TextMask` now gives each IFC text range the visibility of its
+  text node's parent element and drops hidden glyphs (and their share of the
+  underline, line-through and `text-shadow`, and of the wavy underline
+  `paint_wavy_decorations` draws, cluster by cluster) glyph by glyph, since a
+  `display: contents` wrapper that differs only in `visibility` shares its
+  neighbours' Parley glyph run; inline backgrounds, SVG shapes, scrollbar
+  thumbs, a `RenderSurface`'s frame, the `filter` overlay and the read-only
+  selection highlight are gated too. Because visibility is read at paint time,
+  a box-less inline's restyle dirties its IFC root's rect
+  (`compute_dirty_region`), or the incremental frame would keep the old text.
+  Known exceptions, each filed: a hidden span under `text-overflow: ellipsis`
+  still draws (#853), a hidden `data-viewport` still cuts its hole (#854), a
+  ligature across a visibility boundary follows the wrong end (#852). A
+  `visibility: visible` descendant is drawn, as in CSS — but desktop hit
+  testing still skips the whole hidden subtree, so it is drawn and not
+  clickable (**#843**).
   `rinch/src/app/overlay_animation_audit_tests.rs` holds one fixture per overlay
   and fails the moment a transitioned property starts changing on a reveal pass;
   the *close* is deliberately instant on both backends, because animating it

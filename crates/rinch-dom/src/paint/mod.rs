@@ -76,6 +76,35 @@ pub fn compute_dirty_region(
                 region = Some(region.map_or(r, |prev| prev.union(r)));
             }
 
+            // A flowed inline element owns no box (`0x0`): its glyphs, its
+            // decorations and its background are drawn by the IFC root it
+            // flows into. So a restyle that changes only how it *paints* —
+            // `visibility` above all, which is read at paint time and moves
+            // nothing (#829) — has to dirty that root's rect, or the change
+            // never reaches the incremental frame. Only for a box-less node:
+            // anything with a box of its own is covered by that box.
+            //
+            // Deliberately NOT recorded in `seen`: the root may be paint-dirty
+            // in its own right (it moved), and its own entry must still add
+            // its *previous* rect. Marking it seen here skipped that and left
+            // the line painted where it used to be (#844 review, round 2). A
+            // root reached from several spans adds the same rect repeatedly,
+            // which the union absorbs.
+            if (w <= 0.0 || h <= 0.0)
+                && let Some(root_id) = node.ifc_root
+                && root_id != node_id
+                && let Some(root) = tree.get(root_id)
+            {
+                let (rx, ry, rt) = compute_absolute_position_and_transform(tree, root_id, scale);
+                let rw = root.layout.width as f64 * scale;
+                let rh = root.layout.height as f64 * scale;
+                if rw > 0.0 && rh > 0.0 {
+                    let r = rt.transform_rect_bbox(Rect::new(rx, ry, rx + rw, ry + rh));
+                    let r = Rect::new(r.x0 - margin, r.y0 - margin, r.x1 + margin, r.y1 + margin);
+                    region = Some(region.map_or(r, |prev| prev.union(r)));
+                }
+            }
+
             // Previous position (for moved/resized nodes)
             let pw = node.prev_layout.width as f64 * scale;
             let ph = node.prev_layout.height as f64 * scale;
@@ -1716,6 +1745,12 @@ fn paint_node(
         // Inline painting for render surfaces — draws pixels at the element's
         // position like <img>, participating in normal stacking and clipping.
         NodeKind::Element(_) if node.attributes.contains_key("data-render-surface") => {
+            // The frame is this box's own content, like an `<img>`'s, so a
+            // hidden surface draws neither it nor its background (#829).
+            let surface_visible = !matches!(
+                node.computed_style.visibility,
+                VisibilityValue::Hidden | VisibilityValue::Collapse
+            );
             let surface_painted = node
                 .attributes
                 .get("data-render-surface")
@@ -1741,8 +1776,9 @@ fn paint_node(
                                     }
 
                                     // Paint background behind the surface if any
-                                    if let BackgroundValue::Color(bg_color) =
-                                        &node.computed_style.background
+                                    if surface_visible
+                                        && let BackgroundValue::Color(bg_color) =
+                                            &node.computed_style.background
                                     {
                                         painter.fill_color(
                                             Fill::NonZero,
@@ -1757,16 +1793,18 @@ fn paint_node(
                                     // frame source must not be cloned into a
                                     // `DecodedImage` first: that is a whole
                                     // frame of memcpy per frame, for nothing.
-                                    image::paint_image_data(
-                                        painter,
-                                        &pixels.data,
-                                        pixels.width,
-                                        pixels.height,
-                                        rect,
-                                        scale,
-                                        crate::computed_style::ObjectFitValue::Contain,
-                                        node_transform,
-                                    );
+                                    if surface_visible {
+                                        image::paint_image_data(
+                                            painter,
+                                            &pixels.data,
+                                            pixels.width,
+                                            pixels.height,
+                                            rect,
+                                            scale,
+                                            crate::computed_style::ObjectFitValue::Contain,
+                                            node_transform,
+                                        );
+                                    }
 
                                     if opacity < 1.0 {
                                         painter.pop_layer();
@@ -2164,11 +2202,13 @@ fn paint_node(
             }
 
             // Render read-only text selection highlight (user-select: text).
-            if node
-                .attributes
-                .get("data-text-sel")
-                .map(|s| s == "true")
-                .unwrap_or(false)
+            // It highlights this box's own text, so it goes with it (#829).
+            if visible
+                && node
+                    .attributes
+                    .get("data-text-sel")
+                    .map(|s| s == "true")
+                    .unwrap_or(false)
             {
                 let sel_start = node
                     .attributes
@@ -2230,6 +2270,9 @@ fn paint_node(
                     layout_cx,
                     ifc_text_shadows,
                     node_transform,
+                    // The root's own visibility answers only for text no range
+                    // maps to; each text run follows its own element (#829).
+                    !visible,
                 );
 
                 // Still paint non-inline (block) children normally
@@ -2287,8 +2330,12 @@ fn paint_node(
             // Gated up front on the two overflow enums captured before the
             // children were painted, so a node that scrolls on neither axis —
             // almost every node — pays two enum checks and nothing else.
-            if matches!(overflow_y, OverflowValue::Scroll | OverflowValue::Auto)
-                || matches!(overflow_x, OverflowValue::Scroll | OverflowValue::Auto)
+            //
+            // A scrollbar is the container's own visual, so a hidden container
+            // draws none (#829) — hit testing already offers none to press.
+            if visible
+                && (matches!(overflow_y, OverflowValue::Scroll | OverflowValue::Auto)
+                    || matches!(overflow_x, OverflowValue::Scroll | OverflowValue::Auto))
             {
                 let node = tree.get(node_id).unwrap(); // re-borrow after children done
                 let bars = scrollbar::scrollbars(tree, node_id, scale);
@@ -2365,7 +2412,12 @@ fn paint_node(
 
             // Apply CSS filter approximations (after content is painted, before opacity pop)
             let cs = &tree.get(node_id).unwrap().computed_style;
-            let has_filter = cs.filter_brightness != 1.0 || cs.filter_grayscale > 0.0;
+            // Gated on the box's own visibility (#829): the approximation is an
+            // overlay over this box's border box, so a hidden box would still
+            // darken or grey whatever is behind it. (The real `filter` would
+            // apply to a `visibility: visible` descendant; the overlay cannot
+            // express that either way.)
+            let has_filter = visible && (cs.filter_brightness != 1.0 || cs.filter_grayscale > 0.0);
 
             if has_filter {
                 // Brightness: overlay black (darken) or white (brighten) with calculated alpha
@@ -2458,6 +2510,7 @@ fn paint_node(
                     text_shadows,
                     parent_transform,
                     scale,
+                    None,
                 );
                 return;
             }
@@ -2571,6 +2624,7 @@ fn paint_node(
                 text_shadows,
                 parent_transform,
                 scale,
+                None,
             );
         }
 

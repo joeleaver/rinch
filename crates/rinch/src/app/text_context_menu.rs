@@ -781,10 +781,10 @@ impl RinchApp {
     /// is laid out again each pass (#826; +0.05 ms a pass, release, measured
     /// on a themed page). `visibility: hidden` would not, and was tried: set
     /// through `set_style` it does not reach the rows (#508), and set by a
-    /// stylesheet rule it hides the rows but not their text, which paint
-    /// draws whatever the IFC root's visibility (#829). Not exempted from the
-    /// scroll lock (#474): the panel declares no `overflow`, so it is no scroll
-    /// container and the lock has nothing to refuse on it.
+    /// stylesheet rule it hid the rows but not their text, which paint drew
+    /// whatever the IFC root's visibility until #829 fixed that half. Not
+    /// exempted from the scroll lock (#474): the panel declares no `overflow`,
+    /// so it is no scroll container and the lock has nothing to refuse on it.
     pub fn open_text_context_menu(&mut self, x: f32, y: f32, vp_w: f32, vp_h: f32) -> bool {
         let Some(state) = self.text_edit_state() else {
             return false;

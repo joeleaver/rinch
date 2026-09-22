@@ -5,8 +5,8 @@ use peniko::kurbo::{Affine, Stroke};
 use peniko::{Brush, Fill};
 
 use super::painter::{PaintGlyph, Painter};
-use crate::computed_style::TextShadowValue;
-use crate::node::NodeTree;
+use crate::computed_style::{TextShadowValue, VisibilityValue};
+use crate::node::{Node, NodeTree};
 
 use super::paint_node;
 
@@ -27,10 +27,16 @@ pub(super) fn paint_inline_layout(
     layout_cx: &mut parley::LayoutContext<Brush>,
     text_shadows: &[TextShadowValue],
     transform: Affine,
+    root_hidden: bool,
 ) {
+    // Which of the laid-out text is `visibility: hidden` (#829). `None` — the
+    // common case — means all of it is shown and nothing below changes.
+    let mask = TextMask::for_ifc(tree, inline_layout, root_hidden);
+    let mask = mask.as_ref();
+
     // Paint inline element backgrounds BEFORE text so text renders on top
     if !inline_layout.background_spans.is_empty() {
-        paint_inline_backgrounds(painter, parent_x, parent_y, inline_layout, transform);
+        paint_inline_backgrounds(tree, painter, parent_x, parent_y, inline_layout, transform);
     }
 
     render_text_with_shadow(
@@ -41,13 +47,22 @@ pub(super) fn paint_inline_layout(
         text_shadows,
         transform,
         scale,
+        mask,
     );
 
     // Wavy underlines (`text-decoration-style: wavy` — the spellcheck squiggle)
     // paint AFTER the text, so the wave reads over the glyph descenders rather
     // than being hidden by them.
     if !inline_layout.decoration_spans.is_empty() {
-        paint_wavy_decorations(painter, parent_x, parent_y, inline_layout, transform, scale);
+        paint_wavy_decorations(
+            painter,
+            parent_x,
+            parent_y,
+            inline_layout,
+            transform,
+            scale,
+            mask,
+        );
     }
 
     // Paint inline-block boxes by looking them up in tree and painting
@@ -70,6 +85,7 @@ pub(super) fn paint_inline_layout(
 /// exact visual bounds of each inline background span. Handles multi-line
 /// spans by iterating lines and computing per-line background rectangles.
 fn paint_inline_backgrounds(
+    tree: &NodeTree,
     painter: &mut dyn Painter,
     parent_x: f64,
     parent_y: f64,
@@ -83,6 +99,12 @@ fn paint_inline_backgrounds(
     let transform = css_transform * Affine::translate((parent_x, parent_y));
 
     for bg_span in &inline_layout.background_spans {
+        // The background is the inline element's own visual, so it follows
+        // that element's visibility — not the visibility of the text inside
+        // it, which a `visibility: visible` child can override (#829).
+        if tree.get(bg_span.owner).is_some_and(is_hidden) {
+            continue;
+        }
         let brush = Brush::Solid(bg_span.color);
 
         // Iterate lines to find those overlapping this background span
@@ -169,7 +191,11 @@ fn paint_inline_backgrounds(
 /// [`render_text`] draws glyphs in, so the underline tracks the text on a HiDPI
 /// display.
 ///
+/// `mask` cuts the wave under hidden text cluster by cluster, as
+/// [`render_text`] cuts the straight underline under hidden glyphs (#829).
+///
 /// [`InlineDecorationSpan`]: crate::node::InlineDecorationSpan
+#[allow(clippy::too_many_arguments)]
 fn paint_wavy_decorations(
     painter: &mut dyn Painter,
     parent_x: f64,
@@ -177,6 +203,7 @@ fn paint_wavy_decorations(
     inline_layout: &crate::node::InlineLayout,
     css_transform: Affine,
     scale: f64,
+    mask: Option<&TextMask>,
 ) {
     use peniko::kurbo::BezPath;
 
@@ -197,7 +224,7 @@ fn paint_wavy_decorations(
             }
             let start = span.start.max(line_range.start);
             let end = span.end.min(line_range.end);
-            let segments = visual_segments(&line, start, end);
+            let segments = visual_segments(&line, start, end, mask);
             if segments.is_empty() {
                 continue;
             }
@@ -240,6 +267,83 @@ fn paint_wavy_decorations(
     }
 }
 
+/// Whether `node` is `visibility: hidden` or `collapse` — nothing of its own is
+/// drawn. `visibility` inherits, so an element under a hidden ancestor answers
+/// `true` too unless it declared `visible` itself.
+pub(super) fn is_hidden(node: &Node) -> bool {
+    matches!(
+        node.computed_style.visibility,
+        VisibilityValue::Hidden | VisibilityValue::Collapse
+    )
+}
+
+/// Which bytes of an IFC's laid-out text belong to a `visibility: hidden`
+/// element (#829).
+///
+/// A text node has no computed style of its own — it is drawn with its
+/// parent element's — so each [`crate::node::IfcTextRange`] takes the
+/// visibility of its text node's **DOM parent**. That is per element, not per
+/// Parley run: two adjacent elements that differ only in visibility share one
+/// style, so Parley shapes them into one glyph run, and the split has to be
+/// made glyph by glyph (see [`GlyphCursor`]). Bytes no range covers —
+/// the ellipsis layout records none — take the IFC root's visibility, which
+/// is why a hidden span inside an ellipsis line still draws (#853).
+pub(super) struct TextMask {
+    /// `(start, end, hidden)` per text range, in layout byte offsets.
+    ranges: Vec<(usize, usize, bool)>,
+    /// The answer for bytes no range covers.
+    default_hidden: bool,
+}
+
+impl TextMask {
+    /// `None` when every byte is shown, which is the fast path: the painter
+    /// then does exactly what it did before visibility was consulted.
+    pub(super) fn for_ifc(
+        tree: &NodeTree,
+        inline_layout: &crate::node::InlineLayout,
+        root_hidden: bool,
+    ) -> Option<Self> {
+        let mut ranges: Vec<(usize, usize, bool)> = inline_layout
+            .text_ranges
+            .iter()
+            .filter(|r| !r.is_br)
+            .map(|r| {
+                let hidden = tree
+                    .get(r.node_id)
+                    .and_then(|t| t.parent)
+                    .and_then(|p| tree.get(p))
+                    .map(is_hidden)
+                    .unwrap_or(root_hidden);
+                (r.flat_start, r.flat_end, hidden)
+            })
+            .collect::<Vec<_>>();
+        if !root_hidden && ranges.iter().all(|&(_, _, h)| !h) {
+            return None;
+        }
+        // Already in text order; the sort is a linear pass that keeps
+        // `hidden_at`'s binary search honest if that ever changes.
+        ranges.sort_by_key(|&(s, _, _)| s);
+        Some(Self {
+            ranges,
+            default_hidden: root_hidden,
+        })
+    }
+
+    /// Whether the cluster starting at layout byte `byte` is hidden.
+    ///
+    /// A binary search: the ranges are pushed in text order by
+    /// `walk_inline_children` (`flat_pos` only grows) and never overlap. A
+    /// linear scan made a paint of one IFC quadratic in its spans (PR #844
+    /// review, F2: 2000 spans, one hidden, 596 -> 1780 ms).
+    fn hidden_at(&self, byte: usize) -> bool {
+        let i = self.ranges.partition_point(|&(_, e, _)| e <= byte);
+        match self.ranges.get(i) {
+            Some(&(s, _, h)) if s <= byte => h,
+            _ => self.default_hidden,
+        }
+    }
+}
+
 /// The **visual** x extents, in unscaled layout px, of the clusters of `line`
 /// whose text lies in the byte range `start..end` — one `(x0, x1)` per stretch
 /// that is contiguous on screen, left to right.
@@ -254,6 +358,7 @@ fn visual_segments(
     line: &parley::layout::Line<'_, Brush>,
     start: usize,
     end: usize,
+    mask: Option<&TextMask>,
 ) -> Vec<(f32, f32)> {
     let mut segments: Vec<(f32, f32)> = Vec::new();
     for run in line.runs() {
@@ -269,7 +374,11 @@ fn visual_segments(
         for cluster in run.visual_clusters() {
             let text = cluster.text_range();
             let advance = cluster.advance();
-            if text.start < end && text.end > start {
+            // A hidden cluster takes no wave (#829); the stretch breaks there.
+            if text.start < end
+                && text.end > start
+                && !mask.is_some_and(|m| m.hidden_at(text.start))
+            {
                 match segments.last_mut() {
                     Some(last) if (last.1 - x).abs() < 0.01 => last.1 = x + advance,
                     _ => segments.push((x, x + advance)),
@@ -290,10 +399,75 @@ fn visual_segments(
     merged
 }
 
+/// Lines a hidden mask up with Parley's glyph runs.
+///
+/// A line item is one `Run` view, which Parley splits into consecutive glyph
+/// runs wherever the glyphs' `style_index` changes, and keeps each glyph run's
+/// start private. So the cursor walks the run's visual-order glyphs **once**
+/// per line item, recording each glyph's style index and whether its cluster
+/// is hidden, and then hands out consecutive slices of that walk, splitting
+/// them by style index exactly as Parley's own iterator does. Each glyph is
+/// visited a constant number of times however many glyph runs its run holds —
+/// re-walking the run per glyph run was the other half of F2.
+#[derive(Default)]
+struct GlyphCursor {
+    key: Option<(usize, usize)>,
+    next: usize,
+    /// `(style_index, hidden)` per glyph of the current run, visual order.
+    glyphs: Vec<(usize, bool)>,
+}
+
+impl GlyphCursor {
+    /// This glyph run's hidden flags, or `None` when none of its glyphs is
+    /// hidden; advances past it either way.
+    fn take(
+        &mut self,
+        glyph_run: &parley::layout::GlyphRun<'_, Brush>,
+        mask: &TextMask,
+    ) -> Option<Vec<bool>> {
+        let run = glyph_run.run();
+        let key = (run.index(), run.cluster_range().start);
+        if self.key != Some(key) {
+            self.key = Some(key);
+            self.next = 0;
+            self.glyphs.clear();
+            for cluster in run.visual_clusters() {
+                let hidden = mask.hidden_at(cluster.text_range().start);
+                self.glyphs
+                    .extend(cluster.glyphs().map(|g| (g.style_index(), hidden)));
+            }
+        }
+        let rest = self.glyphs.get(self.next..).unwrap_or(&[]);
+        let style = rest.first()?.0;
+        let count = rest.iter().take_while(|&&(si, _)| si == style).count();
+        let slice = &rest[..count];
+        self.next += count;
+        slice
+            .iter()
+            .any(|&(_, h)| h)
+            .then(|| slice.iter().map(|&(_, h)| h).collect())
+    }
+}
+
+/// A glyph run's hidden flags, or `None` when it is entirely shown (always,
+/// without a mask).
+fn run_flags(
+    cursor: &mut GlyphCursor,
+    glyph_run: &parley::layout::GlyphRun<'_, Brush>,
+    mask: Option<&TextMask>,
+) -> Option<Vec<bool>> {
+    cursor.take(glyph_run, mask?)
+}
+
 /// Render a Parley text layout using a Painter.
 ///
 /// `scale` scales glyph positions and font sizes from logical to physical pixels
 /// so text rasterizes crisply on HiDPI displays. Pass 1.0 for no scaling.
+///
+/// `mask` drops the glyphs of hidden elements, and their share of the
+/// underline and line-through, while every shown glyph keeps the position it
+/// was laid out at (#829).
+#[allow(clippy::too_many_arguments)]
 pub(super) fn render_text(
     painter: &mut dyn Painter,
     layout: &parley::layout::Layout<Brush>,
@@ -301,14 +475,20 @@ pub(super) fn render_text(
     y: f64,
     css_transform: Affine,
     scale: f64,
+    mask: Option<&TextMask>,
 ) {
     let sf = scale as f32;
     let transform = css_transform * Affine::translate((x, y));
     for line in layout.lines() {
+        let mut cursor = GlyphCursor::default();
         for item in line.items() {
             let parley::layout::PositionedLayoutItem::GlyphRun(glyph_run) = item else {
                 continue;
             };
+            let flags = run_flags(&mut cursor, &glyph_run, mask);
+            if flags.as_ref().is_some_and(|f| f.iter().all(|&h| h)) {
+                continue;
+            }
             let mut gx = glyph_run.offset() * sf;
             let gy = glyph_run.baseline() * sf;
             let run = glyph_run.run();
@@ -321,22 +501,28 @@ pub(super) fn render_text(
             let style = glyph_run.style();
             let brush = style.brush.clone();
 
-            // Track run width for decorations
-            let run_x = glyph_run.offset() * sf;
-
-            let glyphs: Vec<PaintGlyph> = glyph_run
-                .glyphs()
-                .map(|glyph| {
-                    let px = gx + glyph.x * sf;
-                    let py = gy + glyph.y * sf;
-                    gx += glyph.advance * sf;
-                    PaintGlyph {
-                        id: glyph.id,
-                        x: px,
-                        y: py,
-                    }
-                })
-                .collect();
+            // The x extents of the shown stretches of this run, for the
+            // decorations: the whole run when nothing in it is hidden.
+            let mut segments: Vec<(f32, f32)> = Vec::new();
+            let mut glyphs: Vec<PaintGlyph> = Vec::new();
+            for (i, glyph) in glyph_run.glyphs().enumerate() {
+                let start_x = gx;
+                let px = gx + glyph.x * sf;
+                let py = gy + glyph.y * sf;
+                gx += glyph.advance * sf;
+                if flags.as_ref().is_some_and(|f| f[i]) {
+                    continue;
+                }
+                match segments.last_mut() {
+                    Some(seg) if seg.1 == start_x => seg.1 = gx,
+                    _ => segments.push((start_x, gx)),
+                }
+                glyphs.push(PaintGlyph {
+                    id: glyph.id,
+                    x: px,
+                    y: py,
+                });
+            }
             painter.draw_glyphs(
                 font,
                 font_size,
@@ -355,13 +541,11 @@ pub(super) fn render_text(
                 let size = underline.size.unwrap_or(run_metrics.underline_size) * sf;
                 let dec_brush = &underline.brush;
                 let line_y = (gy - offset) as f64;
-                let run_width = (gx - run_x) as f64;
-                let line = peniko::kurbo::Line::new(
-                    (run_x as f64, line_y),
-                    (run_x as f64 + run_width, line_y),
-                );
                 let stroke = Stroke::new(size.max(1.0) as f64);
-                painter.stroke(&stroke, transform, dec_brush, &line.into());
+                for &(x0, x1) in &segments {
+                    let line = peniko::kurbo::Line::new((x0 as f64, line_y), (x1 as f64, line_y));
+                    painter.stroke(&stroke, transform, dec_brush, &line.into());
+                }
             }
 
             // Draw strikethrough decoration
@@ -374,13 +558,11 @@ pub(super) fn render_text(
                 let size = strikethrough.size.unwrap_or(run_metrics.strikethrough_size) * sf;
                 let dec_brush = &strikethrough.brush;
                 let line_y = (gy - offset) as f64;
-                let run_width = (gx - run_x) as f64;
-                let line = peniko::kurbo::Line::new(
-                    (run_x as f64, line_y),
-                    (run_x as f64 + run_width, line_y),
-                );
                 let stroke = Stroke::new(size.max(1.0) as f64);
-                painter.stroke(&stroke, transform, dec_brush, &line.into());
+                for &(x0, x1) in &segments {
+                    let line = peniko::kurbo::Line::new((x0 as f64, line_y), (x1 as f64, line_y));
+                    painter.stroke(&stroke, transform, dec_brush, &line.into());
+                }
             }
         }
     }
@@ -389,7 +571,8 @@ pub(super) fn render_text(
 /// Render a single shadow pass of a Parley text layout (glyphs only, no decorations).
 ///
 /// Draws all glyph runs at the given offset with the specified shadow color,
-/// ignoring the original brush from the layout styles.
+/// ignoring the original brush from the layout styles. A hidden glyph casts no
+/// shadow (`mask`, #829).
 pub(super) fn render_text_shadow_pass(
     painter: &mut dyn Painter,
     layout: &parley::layout::Layout<Brush>,
@@ -397,14 +580,17 @@ pub(super) fn render_text_shadow_pass(
     y: f64,
     shadow_color: AlphaColor<Srgb>,
     css_transform: Affine,
+    mask: Option<&TextMask>,
 ) {
     let transform = css_transform * Affine::translate((x, y));
     let shadow_brush = Brush::Solid(shadow_color);
     for line in layout.lines() {
+        let mut cursor = GlyphCursor::default();
         for item in line.items() {
             let parley::layout::PositionedLayoutItem::GlyphRun(glyph_run) = item else {
                 continue;
             };
+            let flags = run_flags(&mut cursor, &glyph_run, mask);
             let mut gx = glyph_run.offset();
             let gy = glyph_run.baseline();
             let run = glyph_run.run();
@@ -417,17 +603,24 @@ pub(super) fn render_text_shadow_pass(
 
             let glyphs: Vec<PaintGlyph> = glyph_run
                 .glyphs()
-                .map(|glyph| {
+                .enumerate()
+                .filter_map(|(i, glyph)| {
                     let px = gx + glyph.x;
                     let py = gy + glyph.y;
                     gx += glyph.advance;
-                    PaintGlyph {
+                    if flags.as_ref().is_some_and(|f| f[i]) {
+                        return None;
+                    }
+                    Some(PaintGlyph {
                         id: glyph.id,
                         x: px,
                         y: py,
-                    }
+                    })
                 })
                 .collect();
+            if glyphs.is_empty() {
+                continue;
+            }
             painter.draw_glyphs(
                 font,
                 font_size,
@@ -445,7 +638,9 @@ pub(super) fn render_text_shadow_pass(
 /// Render text with optional text-shadow effects.
 ///
 /// Draws shadow passes (in reverse order so first shadow renders on top of later ones)
-/// at the specified offsets, then draws the normal text on top.
+/// at the specified offsets, then draws the normal text on top. `mask` is
+/// [`render_text`]'s, applied to every pass.
+#[allow(clippy::too_many_arguments)]
 pub(super) fn render_text_with_shadow(
     painter: &mut dyn Painter,
     layout: &parley::layout::Layout<Brush>,
@@ -454,9 +649,10 @@ pub(super) fn render_text_with_shadow(
     text_shadows: &[TextShadowValue],
     css_transform: Affine,
     scale: f64,
+    mask: Option<&TextMask>,
 ) {
     if text_shadows.is_empty() {
-        render_text(painter, layout, x, y, css_transform, scale);
+        render_text(painter, layout, x, y, css_transform, scale, mask);
         return;
     }
 
@@ -467,9 +663,9 @@ pub(super) fn render_text_with_shadow(
         });
         let sx = x + shadow.offset_x as f64;
         let sy = y + shadow.offset_y as f64;
-        render_text_shadow_pass(painter, layout, sx, sy, shadow_color, css_transform);
+        render_text_shadow_pass(painter, layout, sx, sy, shadow_color, css_transform, mask);
     }
 
     // Render the main text on top
-    render_text(painter, layout, x, y, css_transform, scale);
+    render_text(painter, layout, x, y, css_transform, scale, mask);
 }

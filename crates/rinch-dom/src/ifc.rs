@@ -4471,6 +4471,7 @@ impl RinchDocument {
         }
         let cs = &owner.computed_style;
         background_spans.push(crate::node::InlineBackgroundSpan {
+            owner: owner.id,
             start,
             end,
             color,
