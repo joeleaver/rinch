@@ -1,5 +1,8 @@
-//! Review fixtures for PR #837: the web half of "scroll the caret into view".
-//! Run with `--features collaboration` for the remote-edit fixture.
+//! The web half of "scroll the caret into view" (#837): a local caret move
+//! scrolls the caret's scroller minimally, a second editor below the fold does
+//! not pull the page, and a peer's edit above the caret does not pull a user who
+//! scrolled away back to it. Run with `--features collaboration` for that last
+//! fixture.
 #![cfg(target_arch = "wasm32")]
 
 use rinch_core::dom::RenderScope;

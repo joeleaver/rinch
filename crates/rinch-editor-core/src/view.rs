@@ -42,8 +42,16 @@ use crate::state::EditorState;
 /// enable/candidate-box positioning (M6) and accessibility refresh (M7b).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ViewRequest {
-    /// Scroll the host so the current selection's caret is visible. Emitted after
-    /// a selection-changing transaction.
+    /// The selection's overlay moved; the host may want to scroll it into view.
+    /// Emitted by a caret pass on which the overlay actually moved.
+    ///
+    /// A **hint**, not an instruction: an overlay moves for reasons that are not
+    /// the user moving the caret (a resize reflow, a remote edit above it, a
+    /// virtualized block being measured), and scrolling on those pulls a user who
+    /// scrolled away back to the caret. Whether to scroll is decided from what
+    /// changed the *state* — `rinch-editor-view`'s `EditorHandle` scrolls only
+    /// after a local edit or selection move, or on focus (ProseMirror's
+    /// `tr.scrollIntoView()`), and reads this request for nothing else.
     ScrollSelectionIntoView,
 }
 

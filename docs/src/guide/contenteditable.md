@@ -262,6 +262,46 @@ built-in stylesheet uses it to hide the empty-editor placeholder.
 Switching it on drops pending typing state (a clicked "Bold" waiting for text, an IME
 preedit). Switching it off gives everything back, undo history included.
 
+### Keeping the caret in view
+
+A focused editor scrolls its caret into view after the **user** moves it or edits
+at it: typing, Enter, Backspace/Delete, every command and the keys bound to them,
+arrow keys and clicks, `set_selection`, paste, IME commit, `insert_image` and
+`toggle_link`. It also reveals the caret when the editor **gains focus**, as a
+browser's `focus()` on a contenteditable does. For a node selection the selected
+node's outline is what is revealed, and for a cell selection the cell under its
+moving (head) corner.
+
+The scroll is the minimal one (`nearest`): a caret already in view moves nothing,
+and one out of view is brought just inside the edge it left by, instantly rather
+than smoothly. On the **web** that is the browser's `scrollIntoView`, which scrolls
+every scrollable ancestor, the page included. On **desktop** only the caret's
+nearest scroll container scrolls (issue #842), so an editor whose scroller is itself
+off screen stays off screen.
+
+It deliberately does **not** scroll when the caret's position on screen changes
+without the user moving it — a user who scrolled away to read something is left
+where they are:
+
+- a collaborator's edit arriving (`collab_receive`), even one above the caret;
+- `load_html` / `load_doc`;
+- a window resize that reflows the text, and the user's own scrolling (including a
+  long, virtualized editor measuring the blocks it scrolls past);
+- an app transaction through `update(..)` that edits the document and lets the
+  selection be *mapped* rather than setting it. A transaction that calls
+  `tr.set_selection(..)` — as `tr.insert_text` does — scrolls like typing; to reveal
+  the caret after an edit of your own, set the selection explicitly, even to where
+  it already is (`let sel = tr.selection(); tr.set_selection(sel);`);
+- an edit a [read-only](#read-only) editor refuses. A read-only editor's caret
+  moves still scroll: they are real selection changes;
+- an editor that is not focused: its caret is not drawn, so a programmatic
+  `set_selection` on it scrolls when it is next focused, not before.
+
+Not covered: the moving end of a text **range** (Shift+arrow) is not revealed, and
+moving the caret into a block of a virtualized editor that has never been laid out
+(Ctrl+End from the top of a very long document) does not scroll to it until the
+block is on screen (issue #845).
+
 ## Keyboard shortcuts
 
 The editor handles its own keyboard input. Every shortcut below comes from the

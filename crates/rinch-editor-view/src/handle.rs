@@ -66,11 +66,78 @@ struct EditorCore {
     /// asks before it stores anything. Every local change lands in `commit`, so
     /// an input path added later is read-only without knowing this flag exists.
     read_only: bool,
+    /// Whether the caret owes a scroll into view — see [`ScrollGate`]. Armed by
+    /// a local edit or selection move ([`Self::commit`] with
+    /// [`Scroll::IfChanged`]) and by the editor gaining focus; fulfilled and
+    /// cleared by [`EditorHandle::update_caret`].
+    scroll: ScrollGate,
+    /// Whether the overlays are currently hidden because the editor is not the
+    /// focused one ([`EditorHandle::hide_overlays`]). The first
+    /// [`EditorHandle::update_caret`] after that is the editor gaining focus,
+    /// which reveals the selection the way a browser's `focus()` on a
+    /// contenteditable does.
+    overlays_hidden: bool,
     /// The collaboration session + outbound delta sink, when this editor is
     /// collaborating (design M9). `None` for a non-collaborative editor — the
     /// common case — so the mutation path's collab hook is a cheap early return.
     #[cfg(feature = "collaboration")]
     collab: Option<CollabBridge>,
+}
+
+/// Whether a [`EditorCore::commit`] should bring the caret into view.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Scroll {
+    /// Yes, if the document or the selection changed.
+    IfChanged,
+    /// No — a load, an app transaction that only mapped the selection, a
+    /// stored-marks reset.
+    No,
+}
+
+/// Whether the caret owes a scroll into view: ProseMirror's
+/// `tr.scrollIntoView()`, held on the handle because the request is made by a
+/// commit and fulfilled by a later caret pass, once there is geometry.
+///
+/// **Armed** by a local edit or selection move ([`Scroll::IfChanged`]) and by
+/// the editor gaining focus. Never by a remote edit (`collab_receive` does not
+/// commit), a load, a resize, a scroll or a virtualized block being measured —
+/// those change the caret's *geometry* without the user moving it, and a gate on
+/// geometry is what #837's review measured pulling a user who scrolled away back
+/// to the caret.
+///
+/// **Fulfilled** on the first caret pass that has a scroll anchor to scroll to,
+/// whether or not the overlay moved on that pass (a Delete leaves the caret
+/// where it was and still reveals it). A pass without an anchor — the caret's
+/// block is not measured yet — leaves it owed, so an Enter that makes an
+/// unmeasured paragraph still scrolls once that paragraph is laid out.
+///
+/// **Dropped** on a pass whose selection is a non-empty text range: a range has
+/// no scroll anchor (a shift-arrow head is not revealed), and an arm left over
+/// from one must not fire when something later collapses the range.
+#[derive(Clone, Copy, Default, Debug, PartialEq, Eq)]
+struct ScrollGate {
+    pending: bool,
+}
+
+impl ScrollGate {
+    fn arm(&mut self) {
+        self.pending = true;
+    }
+
+    /// Advance the gate over one caret pass. `has_anchor`: there is an element
+    /// to scroll to; `range`: the selection is a non-empty text range. Returns
+    /// whether to scroll to the anchor now.
+    fn on_pass(&mut self, has_anchor: bool, range: bool) -> bool {
+        if range {
+            self.pending = false;
+            return false;
+        }
+        if self.pending && has_anchor {
+            self.pending = false;
+            return true;
+        }
+        false
+    }
 }
 
 impl EditorCore {
@@ -95,16 +162,24 @@ impl EditorCore {
     /// [`SelectionAnchor`] across the edit. `None` means "there is no
     /// correspondence between the old and new positions" — a whole-document load
     /// — and invalidates every anchor.
+    ///
+    /// `scroll` says whether this change should bring the caret into view (see
+    /// [`ScrollGate`]): [`Scroll::IfChanged`] arms the gate when the document or
+    /// the selection changed. A refused change arms nothing.
     fn commit(
         &mut self,
         prev: EditorState,
         next: EditorState,
         mapping: Option<&Mapping>,
+        scroll: Scroll,
     ) -> Option<bool> {
         if self.refuses(&prev, &next, mapping.is_none()) {
             return None;
         }
         let doc_changed = !prev.doc.same_ref(&next.doc);
+        if scroll == Scroll::IfChanged && (doc_changed || prev.selection != next.selection) {
+            self.scroll.arm();
+        }
         if doc_changed {
             self.carry_anchors(&next.doc, mapping);
         }
@@ -336,6 +411,8 @@ impl EditorHandle {
                 on_change: None,
                 anchors: Rc::new(RefCell::new(AnchorMap::default())),
                 read_only: false,
+                scroll: ScrollGate::default(),
+                overlays_hidden: true,
                 #[cfg(feature = "collaboration")]
                 collab: None,
             })),
@@ -364,6 +441,8 @@ impl EditorHandle {
                 on_change: None,
                 anchors: Rc::new(RefCell::new(AnchorMap::default())),
                 read_only: false,
+                scroll: ScrollGate::default(),
+                overlays_hidden: true,
                 #[cfg(feature = "collaboration")]
                 collab: None,
             })),
@@ -410,7 +489,29 @@ impl EditorHandle {
     /// [read-only](Self::set_read_only) and the transaction would have changed the
     /// document. The single dispatch path — `command`, keyboard insert, paste, and
     /// IME commit all funnel through here.
+    ///
+    /// **Scrolling.** A transaction that sets the selection explicitly
+    /// ([`Transaction::set_selection`], which `insert_text` and
+    /// `replace_selection_with` do too) brings the caret into view on the next
+    /// caret pass, as typing does. One that only edits the document and lets the
+    /// selection be *mapped* — an app inserting text somewhere else, the shape a
+    /// collaborator's edit takes — does not: a browser does not scroll a
+    /// contenteditable to its caret because the DOM changed elsewhere, and a user
+    /// who scrolled away would be pulled back.
     pub fn update(&self, build: impl FnOnce(&EditorState) -> Option<Transaction>) -> bool {
+        self.dispatch(build, false)
+    }
+
+    /// [`Self::update`], with the scroll decision made by the caller: `input`
+    /// says the transaction is the user's own input at the selection (a keystroke,
+    /// a paste, an IME edit), which brings the caret into view whether or not the
+    /// transaction set the selection explicitly — an input rule's rewrite or an
+    /// IME's surrounding-text delete maps it instead.
+    fn dispatch(
+        &self,
+        build: impl FnOnce(&EditorState) -> Option<Transaction>,
+        input: bool,
+    ) -> bool {
         let mut core = self.inner.borrow_mut();
         let Some(tr) = build(&core.state) else {
             return false;
@@ -418,8 +519,13 @@ impl EditorHandle {
         let prev = core.state.clone();
         // The mapping has to be taken before `apply` consumes the transaction.
         let mapping = tr.mapping().clone();
+        let scroll = if input || tr.selection_set() {
+            Scroll::IfChanged
+        } else {
+            Scroll::No
+        };
         let next = core.state.apply(tr);
-        let Some(doc_changed) = core.commit(prev, next, Some(&mapping)) else {
+        let Some(doc_changed) = core.commit(prev, next, Some(&mapping), scroll) else {
             return false;
         };
         drop(core);
@@ -484,7 +590,7 @@ impl EditorHandle {
             return false;
         };
         let prev = core.state.clone();
-        let Some(doc_changed) = core.commit(prev, next, Some(&mapping)) else {
+        let Some(doc_changed) = core.commit(prev, next, Some(&mapping), Scroll::IfChanged) else {
             return false;
         };
         drop(core);
@@ -765,30 +871,33 @@ impl EditorHandle {
         if matches!(self.selection(), Selection::Cell(_)) {
             self.command("deleteCellSelection");
         }
-        self.update(|state| {
-            // Markdown input rules (M3): at a collapsed cursor, a just-typed character
-            // may complete a shortcut (`**bold**`, `# `, `[ ] ` → task list, …) and
-            // rewrite the text instead of inserting it verbatim. Mirrors ProseMirror's
-            // `inputRules` plugin, which runs before the plain text insert. Paste and IME
-            // preedit don't reach here; an IME *commit* does (`ime_commit`), which is the
-            // intended behaviour.
-            if state.selection.is_empty() {
-                let pos = state.selection.from().0;
-                if let Some(tr) = apply_input_rules(state, state.input_rules(), pos, text) {
+        self.dispatch(
+            |state| {
+                // Markdown input rules (M3): at a collapsed cursor, a just-typed character
+                // may complete a shortcut (`**bold**`, `# `, `[ ] ` → task list, …) and
+                // rewrite the text instead of inserting it verbatim. Mirrors ProseMirror's
+                // `inputRules` plugin, which runs before the plain text insert. Paste and IME
+                // preedit don't reach here; an IME *commit* does (`ime_commit`), which is the
+                // intended behaviour.
+                if state.selection.is_empty() {
+                    let pos = state.selection.from().0;
+                    if let Some(tr) = apply_input_rules(state, state.input_rules(), pos, text) {
+                        return Some(tr);
+                    }
+                }
+                let mut tr = state.tr();
+                if tr.insert_text(text).is_ok() {
                     return Some(tr);
                 }
-            }
-            let mut tr = state.tr();
-            if tr.insert_text(text).is_ok() {
-                return Some(tr);
-            }
-            // The flat insert couldn't replace the selection in place (a block node
-            // selection). Delete it, then insert the text at the collapsed cursor.
-            let mut tr = state.tr();
-            tr.delete_selection().ok()?;
-            tr.insert_text(text).ok()?;
-            Some(tr)
-        })
+                // The flat insert couldn't replace the selection in place (a block node
+                // selection). Delete it, then insert the text at the collapsed cursor.
+                let mut tr = state.tr();
+                tr.delete_selection().ok()?;
+                tr.insert_text(text).ok()?;
+                Some(tr)
+            },
+            true,
+        )
     }
 
     /// Toggle the `checked` state of the task item enclosing document position `pos`
@@ -817,12 +926,18 @@ impl EditorHandle {
     }
 
     /// Move the selection (and re-project, so the caret follows once geometry lands).
+    ///
+    /// A selection that changed brings the caret into view on the next caret pass
+    /// of a focused editor (the arrow keys and clicks all land here).
     pub fn set_selection(&self, selection: Selection) {
-        self.update(|state| {
-            let mut tr = state.tr();
-            tr.set_selection(selection.clone());
-            Some(tr)
-        });
+        self.dispatch(
+            |state| {
+                let mut tr = state.tr();
+                tr.set_selection(selection.clone());
+                Some(tr)
+            },
+            true,
+        );
     }
 
     /// Select the word around model `pos` (the double-click gesture). Returns whether
@@ -950,7 +1065,8 @@ impl EditorHandle {
             tr.set_stored_marks(None);
             let mapping = tr.mapping().clone();
             let next = prev.apply(tr);
-            core.commit(prev, next, Some(&mapping));
+            // Clears stored marks only: nothing moves, so nothing to scroll to.
+            core.commit(prev, next, Some(&mapping), Scroll::No);
         }
         core.read_only = read_only;
         if let Some(view) = core.view.as_mut() {
@@ -1026,7 +1142,9 @@ impl EditorHandle {
         // No mapping: the new document is unrelated to the old one, so every
         // outstanding `SelectionAnchor` is invalidated rather than remapped onto
         // whatever now happens to sit at those offsets.
-        core.commit(prev, next, None).is_some()
+        // A load is the app replacing the document, not the user moving the
+        // caret: it scrolls nothing.
+        core.commit(prev, next, None, Scroll::No).is_some()
     }
 
     /// Parse `html` (schema-whitelisted) and load it as the document. Empty or
@@ -1086,7 +1204,7 @@ impl EditorHandle {
             return false;
         };
         let prev = core.state.clone();
-        let Some(doc_changed) = core.commit(prev, next, Some(&mapping)) else {
+        let Some(doc_changed) = core.commit(prev, next, Some(&mapping), Scroll::IfChanged) else {
             return false;
         };
         drop(core);
@@ -1113,7 +1231,7 @@ impl EditorHandle {
             return false;
         };
         let prev = core.state.clone();
-        let Some(doc_changed) = core.commit(prev, next, Some(&mapping)) else {
+        let Some(doc_changed) = core.commit(prev, next, Some(&mapping), Scroll::IfChanged) else {
             return false;
         };
         drop(core);
@@ -1138,20 +1256,23 @@ impl EditorHandle {
     /// the cursor lands after the inserted content via the transaction's selection
     /// mapping.
     fn replace_selection_slice(&self, slice: Slice) -> bool {
-        self.update(move |state| {
-            let (from, to) = (state.selection.from().0, state.selection.to().0);
-            let mut tr = state.tr();
-            tr.replace(from, to, slice).ok()?;
-            // Collapse the cursor just after the inserted content (PM
-            // `replaceSelection` semantics). Without this, the default per-endpoint
-            // selection mapping leaves a range selection spanning the paste. Map the
-            // range's right edge with assoc +1 so a pure-insert cursor lands *after*
-            // the inserted content (assoc -1 would keep it before).
-            let end = tr.mapping().map(to, 1);
-            let cursor = Selection::near(tr.doc(), Pos(end), -1);
-            tr.set_selection(cursor);
-            Some(tr)
-        })
+        self.dispatch(
+            move |state| {
+                let (from, to) = (state.selection.from().0, state.selection.to().0);
+                let mut tr = state.tr();
+                tr.replace(from, to, slice).ok()?;
+                // Collapse the cursor just after the inserted content (PM
+                // `replaceSelection` semantics). Without this, the default per-endpoint
+                // selection mapping leaves a range selection spanning the paste. Map the
+                // range's right edge with assoc +1 so a pure-insert cursor lands *after*
+                // the inserted content (assoc -1 would keep it before).
+                let end = tr.mapping().map(to, 1);
+                let cursor = Selection::near(tr.doc(), Pos(end), -1);
+                tr.set_selection(cursor);
+                Some(tr)
+            },
+            true,
+        )
     }
 
     /// Phase-2 projection: render caret/selection geometry from the current state.
@@ -1163,32 +1284,47 @@ impl EditorHandle {
     /// This is also where the view's [`ViewRequest`]s are *fulfilled*. The view owns
     /// no window and no scroll container, so it hands back what it needs as data
     /// (design §6); the handle is the nearest thing to a runtime that both platforms
-    /// share, so it turns `ScrollSelectionIntoView` into a
+    /// share, so it turns a scroll into a
     /// [`scroll_into_view`](rinch_core::dom::NodeHandle::scroll_into_view) on the
     /// view's *scroll anchor* — which element that is stays the view's knowledge.
-    /// The backend then does the minimal "nearest" scroll of the caret's closest
-    /// scroll container (immediately on web, after the next layout on desktop). The
-    /// view emits the request only when the selection overlay actually moved, so a
-    /// pass that re-renders the caret where it already was never drags a user who
-    /// has scrolled away back to it.
+    /// The backend then does the minimal "nearest" scroll (immediately on web,
+    /// after the next layout on desktop).
+    ///
+    /// **When it scrolls is decided here, not by the view** ([`ScrollGate`]): only
+    /// after a local edit or selection move, or on the editor gaining focus —
+    /// ProseMirror's `tr.scrollIntoView()`. The view's own
+    /// `ScrollSelectionIntoView` means only "the overlay moved", which a resize
+    /// reflow, a remote edit above the caret or a virtualized block being measured
+    /// all cause without the caret moving in the document; scrolling on those
+    /// would pull a user who scrolled away back to the caret.
     pub fn update_caret(&self) -> bool {
-        let mut core = self.inner.borrow_mut();
-        let state = core.state.clone();
-        match core.view.as_mut() {
-            Some(view) => {
-                for request in view.update_caret(&state) {
-                    match request {
-                        ViewRequest::ScrollSelectionIntoView => {
-                            if let Some(anchor) = view.scroll_anchor() {
-                                anchor.scroll_into_view();
-                            }
-                        }
-                    }
-                }
-                view.take_overlay_dirty()
-            }
-            None => false,
+        let mut guard = self.inner.borrow_mut();
+        let core = &mut *guard;
+        let Some(view) = core.view.as_mut() else {
+            return false;
+        };
+        if std::mem::take(&mut core.overlays_hidden) {
+            // Focus gained: reveal the selection, as `focus()` on a browser's
+            // contenteditable does (measured in Chromium).
+            core.scroll.arm();
         }
+        let state = &core.state;
+        // The view's `ScrollSelectionIntoView` says only that the overlay moved;
+        // whether to scroll is the gate's decision (see above), so the requests
+        // are read for nothing else.
+        for request in view.update_caret(state) {
+            match request {
+                ViewRequest::ScrollSelectionIntoView => {}
+            }
+        }
+        let range = matches!(&state.selection, Selection::Text(_)) && !state.selection.is_empty();
+        let anchor = view.scroll_anchor();
+        if core.scroll.on_pass(anchor.is_some(), range)
+            && let Some(anchor) = anchor
+        {
+            anchor.scroll_into_view();
+        }
+        view.take_overlay_dirty()
     }
 
     /// Hide this editor's overlays (caret + selection highlight) because it isn't
@@ -1196,7 +1332,10 @@ impl EditorHandle {
     /// that isn't the focused one. A no-op before mount. Returns whether an overlay
     /// was actually cleared (so the runtime can force a full repaint).
     pub fn hide_overlays(&self) -> bool {
-        match self.inner.borrow_mut().view.as_mut() {
+        let mut guard = self.inner.borrow_mut();
+        let core = &mut *guard;
+        core.overlays_hidden = true;
+        match core.view.as_mut() {
             Some(view) => {
                 view.hide_overlays();
                 view.take_overlay_dirty()
@@ -1274,17 +1413,20 @@ impl EditorHandle {
         if before == 0 && after == 0 {
             return;
         }
-        self.update(|state| {
-            let head = state.selection.head().0;
-            let from = head.saturating_sub(before);
-            let to = (head + after).min(state.doc.content().size());
-            if from >= to {
-                return None;
-            }
-            let mut tr = state.tr();
-            tr.delete(from, to).ok()?;
-            Some(tr)
-        });
+        self.dispatch(
+            |state| {
+                let head = state.selection.head().0;
+                let from = head.saturating_sub(before);
+                let to = (head + after).min(state.doc.content().size());
+                if from >= to {
+                    return None;
+                }
+                let mut tr = state.tr();
+                tr.delete(from, to).ok()?;
+                Some(tr)
+            },
+            true,
+        );
     }
 }
 
@@ -1661,6 +1803,220 @@ mod tests {
         h.handle.set_selection(Selection::cursor(Pos(3)));
         h.handle.update_caret();
         assert_eq!(drained(&h).len(), 1, "a moved caret scrolls again");
+    }
+
+    // ── The scroll gate: what brings the caret into view, and what does not ──
+
+    /// `doc(p(), p(), p())` — 0[p 1]2[p 3]4[p 5]6 — with the three paragraphs
+    /// measured as stacked 200x20 boxes, and the caret pass drained once so the
+    /// focus-gained arm is spent. Empty paragraphs because the mock has no text
+    /// layout: an empty block's caret is the one caret path it can place.
+    fn gate_rig() -> Harness {
+        let s = schema();
+        let empty = || s.branch("paragraph", Fragment::empty()).unwrap();
+        let h = mount(doc_node(&s, vec![empty(), empty(), empty()]));
+        measure(&h, &[0.0, 20.0, 40.0]);
+        h.handle.set_selection(Selection::cursor(Pos(5)));
+        h.handle.update_caret();
+        assert_eq!(
+            drain(&h).len(),
+            1,
+            "positive control: first placement scrolls"
+        );
+        h.handle.update_caret();
+        assert!(drain(&h).is_empty(), "positive control: the gate is idle");
+        h
+    }
+
+    /// Give the container's block children the stacked `tops`.
+    fn measure(h: &Harness, tops: &[f32]) {
+        let blocks = children(h, h.container_id);
+        let mut m = h.mock.borrow_mut();
+        for (b, top) in blocks.iter().zip(tops) {
+            m.__set_node_layout(*b, 0.0, *top, 200.0, 20.0);
+        }
+    }
+
+    fn drain(h: &Harness) -> Vec<NodeId> {
+        h.doc.borrow_mut().drain_scroll_into_view_requests()
+    }
+
+    fn caret_top(h: &Harness) -> Option<String> {
+        let d = h.mock.borrow();
+        (0..d.__node_count())
+            .map(NodeId)
+            .find(|id| d.get_attribute(*id, "data-pm-caret").is_some())
+            .and_then(|id| d.get_attribute(id, "style"))
+    }
+
+    /// An insertion into paragraph 1 that does **not** set the selection — it is
+    /// mapped, the shape a collaborator's edit or an app's own edit takes.
+    fn edit_above_without_moving(h: &Harness) {
+        assert!(h.handle.update(|state| {
+            let mut tr = state.tr();
+            let text = state.schema().text("x").unwrap();
+            tr.replace_with(1, 1, Fragment::from_node(text)).unwrap();
+            Some(tr)
+        }));
+    }
+
+    /// Geometry moving under a caret the user did not move must not scroll —
+    /// the four ways #837's review measured it (a resize reflow, a remote or app
+    /// edit above the caret, a virtualized block being measured) all reduce to
+    /// "the caret overlay moved, and nothing local changed the selection".
+    #[test]
+    fn a_caret_that_moves_without_a_local_selection_change_does_not_scroll() {
+        let h = gate_rig();
+        let before = caret_top(&h);
+
+        // Layout moves (a reflow above the caret).
+        measure(&h, &[0.0, 20.0, 90.0]);
+        h.handle.update_caret();
+        assert_ne!(
+            caret_top(&h),
+            before,
+            "positive control: the caret overlay moved"
+        );
+        assert!(
+            drain(&h).is_empty(),
+            "a reflow under the caret does not scroll"
+        );
+
+        // An edit above it that only maps the selection.
+        let sel = h.handle.selection();
+        edit_above_without_moving(&h);
+        assert_ne!(
+            h.handle.selection(),
+            sel,
+            "positive control: the caret was mapped"
+        );
+        measure(&h, &[0.0, 20.0, 130.0]);
+        h.handle.update_caret();
+        assert!(drain(&h).is_empty(), "an edit elsewhere does not scroll");
+
+        // A load replaces the document and resets the selection.
+        let s = schema();
+        let empty = || s.branch("paragraph", Fragment::empty()).unwrap();
+        h.handle
+            .load_doc(doc_node(&s, vec![empty(), empty(), empty()]));
+        measure(&h, &[0.0, 20.0, 40.0]);
+        h.handle.update_caret();
+        assert!(
+            caret_top(&h).is_some(),
+            "positive control: the loaded doc has a caret"
+        );
+        assert!(drain(&h).is_empty(), "a load does not scroll");
+    }
+
+    /// The other side: a local change scrolls even when the caret's geometry does
+    /// **not** change (a Delete at the caret; here an explicit selection set to
+    /// where the caret already is, over an edit elsewhere) — the view reports
+    /// nothing moved, and it is the handle's gate that asks.
+    #[test]
+    fn a_local_selection_change_scrolls_even_when_the_caret_does_not_move() {
+        let h = gate_rig();
+        let before = caret_top(&h);
+        assert!(h.handle.update(|state| {
+            let mut tr = state.tr();
+            let text = state.schema().text("x").unwrap();
+            tr.replace_with(1, 1, Fragment::from_node(text)).unwrap();
+            let mapped = tr.selection();
+            tr.set_selection(mapped);
+            Some(tr)
+        }));
+        h.handle.update_caret();
+        assert_eq!(
+            caret_top(&h),
+            before,
+            "positive control: the caret did not move"
+        );
+        assert_eq!(drain(&h).len(), 1, "an explicit selection set scrolls");
+        h.handle.update_caret();
+        assert!(drain(&h).is_empty(), "once");
+    }
+
+    /// A scroll asked for while the caret cannot be placed (its block is not
+    /// measured yet — a fresh paragraph from Enter, a virtualized block) waits for
+    /// the pass that can place it, rather than being spent on a pass with nothing
+    /// to scroll to.
+    #[test]
+    fn a_scroll_waits_for_a_caret_that_can_be_placed() {
+        let s = schema();
+        let empty = || s.branch("paragraph", Fragment::empty()).unwrap();
+        let h = mount(doc_node(&s, vec![empty(), empty()]));
+        // Only the first paragraph is measured.
+        measure(&h, &[0.0]);
+        h.handle.set_selection(Selection::cursor(Pos(3)));
+        h.handle.update_caret();
+        assert!(caret_top(&h).is_none(), "positive control: no caret yet");
+        assert!(drain(&h).is_empty());
+        h.handle.update_caret();
+        assert!(drain(&h).is_empty(), "still nothing to scroll to");
+        measure(&h, &[0.0, 20.0]);
+        h.handle.update_caret();
+        assert_eq!(
+            drain(&h).len(),
+            1,
+            "the owed scroll lands once the caret exists"
+        );
+        h.handle.update_caret();
+        assert!(drain(&h).is_empty());
+    }
+
+    /// Focus gained reveals the caret, as a browser's `focus()` on a
+    /// contenteditable reveals its selection (measured in Chromium: a caret at
+    /// the end of a 40-line editor scrolled 0 → 1256 on `focus()`). The runtime's
+    /// sweep hides an unfocused editor's overlays and places the focused one's,
+    /// so the first `update_caret` after `hide_overlays` is the focus.
+    #[test]
+    fn regaining_focus_scrolls_to_the_caret() {
+        let h = gate_rig();
+        h.handle.hide_overlays();
+        h.handle.hide_overlays();
+        assert!(drain(&h).is_empty(), "an unfocused editor scrolls nothing");
+        h.handle.update_caret();
+        assert_eq!(drain(&h).len(), 1, "focus gained scrolls");
+        h.handle.update_caret();
+        assert!(drain(&h).is_empty(), "and only then");
+    }
+
+    /// Read-only (#832): a refused edit arms nothing, and a selection move — which
+    /// read-only allows — still scrolls.
+    #[test]
+    fn read_only_refused_edits_do_not_scroll_and_selection_moves_do() {
+        let h = gate_rig();
+        h.handle.set_read_only(true);
+        assert!(!h.handle.update(|state| {
+            let mut tr = state.tr();
+            let text = state.schema().text("x").unwrap();
+            tr.replace_with(1, 1, Fragment::from_node(text)).unwrap();
+            tr.set_selection(Selection::cursor(Pos(1)));
+            Some(tr)
+        }));
+        h.handle.update_caret();
+        assert!(drain(&h).is_empty(), "a refused edit scrolls nothing");
+        h.handle.set_selection(Selection::cursor(Pos(1)));
+        h.handle.update_caret();
+        assert_eq!(drain(&h).len(), 1, "a read-only caret move scrolls");
+    }
+
+    /// The gate's state machine directly: movement alone never scrolls, an owed
+    /// scroll waits for an anchor and is spent by it, and a text range drops it.
+    #[test]
+    fn the_scroll_gate_waits_for_an_anchor_and_a_range_drops_it() {
+        let mut g = ScrollGate::default();
+        assert!(!g.on_pass(true, false), "idle: never scrolls");
+        g.arm();
+        assert!(!g.on_pass(false, false), "no anchor: stay owed");
+        assert!(g.on_pass(true, false), "anchor: scroll");
+        assert!(!g.on_pass(true, false), "spent");
+
+        g.arm();
+        assert!(!g.on_pass(false, true), "a range drops the owed scroll");
+        assert!(
+            !g.on_pass(true, false),
+            "so a later collapse does not fire it"
+        );
     }
 
     /// Issue #217 where a user actually meets it. `create_editor` mints a **new**

@@ -694,12 +694,12 @@ impl EditorView for RinchDomEditorView {
     fn update_caret(&mut self, next: &EditorState) -> Vec<ViewRequest> {
         // Phase 2 (after layout): render the selection from `next.selection`.
         //
-        // Every request below is gated on the selection overlay having actually
-        // *moved*. This pass runs on every layout/refresh, not only after a
-        // selection change, so an ungated `ScrollSelectionIntoView` would yank the
-        // caret back under the user the moment they wheel-scrolled away from it.
-        // The `position_*` helpers already early-return on an unchanged geometry
-        // key, so "did it move" is exactly what they report.
+        // Every request below is emitted only when the selection overlay actually
+        // *moved* — the `position_*` helpers early-return on an unchanged geometry
+        // key, so "did it move" is exactly what they report. That is a hint, not
+        // the scroll decision: an overlay also moves under a resize or a remote
+        // edit, which must not scroll. `EditorHandle::update_caret` decides from
+        // what changed the state (its `ScrollGate`).
         //
         // A node selection (a selected image / horizontal rule) outlines the node
         // and shows neither a text highlight nor a caret (design §6 node-views).
@@ -791,7 +791,7 @@ impl EditorView for RinchDomEditorView {
 }
 
 /// `[ScrollSelectionIntoView]` when the selection overlay moved, else nothing —
-/// the movement gate every arm of [`RinchDomEditorView::update_caret`] returns
+/// the "overlay moved" hint every arm of [`RinchDomEditorView::update_caret`] returns
 /// through.
 fn scroll_if(moved: bool) -> Vec<ViewRequest> {
     if moved {
@@ -1079,7 +1079,7 @@ impl RinchDomEditorView {
     /// highlight. Clears the wash if the table can't be resolved.
     ///
     /// Returns whether the wash actually changed (the
-    /// [movement gate](Self::position_caret) for the cell-selection arm) and records
+    /// ["overlay moved" hint](Self::position_caret) for the cell-selection arm) and records
     /// the head cell's rectangle in [`Self::cell_anchor_rect`] as the scroll anchor.
     ///
     /// [`Selection::Cell`]: rinch_editor_core::Selection::Cell
@@ -1143,7 +1143,7 @@ impl RinchDomEditorView {
     /// geometry yet (e.g. an off-screen / virtualized block).
     ///
     /// Returns whether the outline actually moved (the
-    /// [movement gate](Self::position_caret) for the node-selection arm).
+    /// ["overlay moved" hint](Self::position_caret) for the node-selection arm).
     ///
     /// [`Selection::Node`]: rinch_editor_core::Selection::Node
     fn render_node_selection(&mut self, state: &EditorState) -> bool {
@@ -1267,10 +1267,9 @@ impl RinchDomEditorView {
     /// a textblock's inline layout.
     ///
     /// Returns whether the caret actually **moved** (i.e. the geometry key changed
-    /// and the writes below ran). That is the movement gate
-    /// [`EditorView::update_caret`] turns into a `ScrollSelectionIntoView` request:
-    /// a pass that lands the caret where it already was must not scroll, or a user
-    /// who wheel-scrolled away from the caret is dragged back on the next frame.
+    /// and the writes below ran), which [`EditorView::update_caret`] reports as a
+    /// `ScrollSelectionIntoView` hint. It is also what keeps a repeat pass from
+    /// re-dirtying the tree.
     fn position_caret(&mut self, x: f32, y: f32, height: f32) -> bool {
         let key = (x.round() as i32, y.round() as i32, height.round() as i32);
         // Nothing changed since last frame — skip the writes so the caret doesn't

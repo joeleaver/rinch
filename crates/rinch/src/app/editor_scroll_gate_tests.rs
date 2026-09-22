@@ -1,4 +1,14 @@
-//! Review fixtures for PR #837 (caret scroll-into-view). Scratch — not part of the PR.
+//! The editor caret's scroll-into-view, over a real editor in a real scroller:
+//! what brings the caret into view, and — the half these mostly pin — what must
+//! not pull a user who scrolled away back to it.
+//!
+//! #837 first gated the scroll on the caret overlay's *geometry* changing, and
+//! its review measured four ways that pulls a user back to a caret that did not
+//! move in the document (a virtualized editor re-measuring blocks, an edit above
+//! the caret, a resize reflow, and a peer's edit on the web). The gate is now
+//! the handle's `ScrollGate`, armed only by a local edit or selection move and by
+//! focus; these are its end-to-end pins. The handle's own unit tests pin the
+//! state machine.
 #![cfg(feature = "desktop")]
 use super::*;
 use rinch_editor_core::{Pos, Selection};
@@ -88,19 +98,9 @@ fn caret_to_end(r: &mut Rig, vw: f32) {
     r.handle
         .set_selection(Selection::cursor(Pos(doc.content_size() - 1)));
     r.app.refresh_editor_overlays();
-    for i in 0..4 {
-        let ran = r.app.resolve_and_repaint(vw, 600.0);
-        eprintln!(
-            "r837 frame {i}: ran={ran} caret={:?} scroll={}",
-            caret_top(&r.app).map(|s| s.split("top:").nth(1).unwrap_or("").to_string()),
-            scroll_of(&r.app, r.scroller)
-        );
+    for _ in 0..4 {
+        r.app.resolve_and_repaint(vw, 600.0);
     }
-    eprintln!(
-        "r837 caret after move: {:?} scroll={}",
-        caret_top(&r.app),
-        scroll_of(&r.app, r.scroller)
-    );
     assert!(
         scroll_of(&r.app, r.scroller) > 0.0,
         "positive control: the caret move scrolled"
@@ -111,7 +111,7 @@ fn caret_to_end(r: &mut Rig, vw: f32) {
 /// changes, but the caret did not MOVE in the document; a browser does not
 /// scroll to the caret on resize. A user who scrolled away should stay.
 #[test]
-fn r837_a_resize_reflow_does_not_yank_the_scroller_back_to_the_caret() {
+fn a_resize_reflow_does_not_yank_the_scroller_back_to_the_caret() {
     let mut r = rig(
         40,
         "width: 100%; height: 600px",
@@ -138,7 +138,6 @@ fn r837_a_resize_reflow_does_not_yank_the_scroller_back_to_the_caret() {
     r.app.resolve_and_repaint(560.0, 600.0);
     r.app.resolve_and_repaint(560.0, 600.0);
     let after_caret = caret_top(&r.app);
-    eprintln!("r837 resize caret before={before:?} after={after_caret:?}");
     assert_ne!(
         before, after_caret,
         "positive control: the reflow moved the caret"
@@ -155,7 +154,7 @@ fn r837_a_resize_reflow_does_not_yank_the_scroller_back_to_the_caret() {
 /// geometry. Browsers do not scroll a contenteditable to the caret on a DOM
 /// mutation elsewhere.
 #[test]
-fn r837_an_edit_above_the_caret_does_not_yank_the_scroller_back() {
+fn an_edit_above_the_caret_does_not_yank_the_scroller_back() {
     let mut r = rig(
         40,
         "width: 800px; height: 600px",
@@ -202,7 +201,7 @@ fn r837_an_edit_above_the_caret_does_not_yank_the_scroller_back() {
 /// 24px estimate with their real height, so every block below — the caret's
 /// included — moves. That move must not yank the user back to the caret.
 #[test]
-fn r837_scrolling_a_virtualized_editor_does_not_yank_back_to_the_caret() {
+fn scrolling_a_virtualized_editor_does_not_yank_back_to_the_caret() {
     let mut r = rig(
         300,
         "width: 800px; height: 600px",
@@ -228,7 +227,6 @@ fn r837_scrolling_a_virtualized_editor_does_not_yank_back_to_the_caret() {
     }
     let bottom = scroll_of(&r.app, r.scroller);
     let caret0 = caret_top(&r.app);
-    eprintln!("r837 virt: bottom={bottom} caret={caret0:?}");
     assert!(
         caret0.is_some() && bottom > 0.0,
         "positive control: caret placed at the bottom"
@@ -240,10 +238,6 @@ fn r837_scrolling_a_virtualized_editor_does_not_yank_back_to_the_caret() {
         r.app.resolve_and_repaint(800.0, 600.0);
     }
     let after = scroll_of(&r.app, r.scroller);
-    eprintln!(
-        "r837 virt: mid={mid} after={after} caret={:?}",
-        caret_top(&r.app)
-    );
     assert_ne!(
         caret_top(&r.app),
         caret0,
@@ -255,25 +249,13 @@ fn r837_scrolling_a_virtualized_editor_does_not_yank_back_to_the_caret() {
     );
 }
 
-#[test]
-fn r837_probe_editor_as_scroller_small() {
-    let mut r = rig(
-        50,
-        "width: 800px; height: 600px",
-        "width: 400px; height: 300px; overflow-y: auto",
-        true,
-        800.0,
-    );
-    caret_to_end(&mut r, 800.0);
-}
-
 /// Nested scrollers: the editor's 120px scroller sits 2000px down the page
 /// (the body is the outer scroller). A caret move scrolls the inner scroller;
 /// does anything bring the scroller itself on screen, as `scrollIntoView` does
 /// on the web (every scrollable ancestor)?
 #[test]
 #[ignore = "issue #842: desktop scrolls only the nearest scroll container"]
-fn r837_nested_scrollers_the_outer_one_follows_too() {
+fn nested_scrollers_the_outer_one_follows_too() {
     let ids: Rc<Cell<Option<(usize, usize)>>> = Rc::new(Cell::new(None));
     let ids_in = ids.clone();
     let handle = crate::editor::create_editor();
@@ -305,10 +287,60 @@ fn r837_nested_scrollers_the_outer_one_follows_too() {
     app.resolve_and_repaint(800.0, 600.0);
     app.resolve_and_repaint(800.0, 600.0);
     let (inner, outer) = (scroll_of(&app, scroller), scroll_of(&app, body));
-    eprintln!("r837 nested: inner={inner} body={outer}");
     assert!(inner > 0.0, "positive control: the inner scroller scrolled");
     assert!(
         outer > 0.0,
         "the page did not follow (body scroll {outer}); the caret is still 1400px below the window"
+    );
+}
+
+/// Typing that wraps the caret onto a new line below the fold is scrolled to
+/// where the caret really lands — one input event and one frame per word, the
+/// real desktop path (the input handler's caret pass, then the frame's).
+#[test]
+fn typing_that_wraps_below_the_fold_follows_the_caret_onto_the_new_line() {
+    let mut r = rig(
+        4,
+        "width: 800px; height: 600px; font-size: 16px; line-height: 20px",
+        "width: 300px; height: 100px; overflow-y: auto",
+        false,
+        800.0,
+    );
+    let doc = r.handle.doc();
+    r.handle
+        .set_selection(Selection::cursor(Pos(doc.content_size() - 1)));
+    r.app.refresh_editor_overlays();
+    r.app.resolve_and_repaint(800.0, 600.0);
+    r.app.resolve_and_repaint(800.0, 600.0);
+    let start = scroll_of(&r.app, r.scroller);
+    // Type word by word, one input event and one frame each, as a user would.
+    for _ in 0..30 {
+        assert!(r.handle.insert_text(" wrap"));
+        r.app.refresh_editor_overlays();
+        r.app.resolve_and_repaint(800.0, 600.0);
+    }
+    let scroll = scroll_of(&r.app, r.scroller);
+    assert!(
+        scroll > start,
+        "positive control: typing scrolled ({start} -> {scroll})"
+    );
+    let style = caret_top(&r.app).expect("a caret");
+    let num = |k: &str| {
+        style
+            .split(';')
+            .find_map(|d| {
+                let (n, v) = d.split_once(':')?;
+                (n.trim() == k)
+                    .then(|| v.trim().trim_end_matches("px").parse::<f64>().ok())
+                    .flatten()
+            })
+            .expect(k)
+    };
+    let (top, height) = (num("top"), num("height"));
+    assert!(
+        top >= scroll - 0.5 && top + height <= scroll + 100.5,
+        "the caret [{top}, {}] is inside the scrolled band [{scroll}, {}]",
+        top + height,
+        scroll + 100.0
     );
 }
