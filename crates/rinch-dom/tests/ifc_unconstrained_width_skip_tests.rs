@@ -13,16 +13,35 @@
 use rinch_core::dom::{DomDocument, NodeId};
 use rinch_dom::RinchDocument;
 
-/// The address of `id`'s current text layout. A rebuild stores a freshly boxed
-/// layout (allocated while the old one is still alive), so the address changes
-/// exactly when the layout was rebuilt.
-fn layout_addr(doc: &RinchDocument, id: NodeId) -> *const () {
+/// Stamped into a root's kept layout. A rebuild replaces the whole layout, and
+/// with it `text_content`, so the stamp survives exactly when the layout was
+/// kept. (Comparing the boxed layout's address instead is not sound: a rebuild
+/// can land at the address the old layout was freed from.)
+const KEPT: &str = "\u{0}kept";
+
+fn stamp(doc: &mut RinchDocument, id: NodeId) {
+    let node = doc.tree.nodes.get_mut(id.0).unwrap();
+    node.text_layout
+        .as_mut()
+        .expect("the root should carry a text layout")
+        .text_content = KEPT.to_string();
+}
+
+fn was_kept(doc: &RinchDocument, id: NodeId) -> bool {
     let node = doc.tree.get(id.0).unwrap();
-    let layout = node
+    node.text_layout
+        .as_ref()
+        .is_some_and(|layout| layout.text_content == KEPT)
+}
+
+fn max_width(doc: &RinchDocument, id: NodeId) -> f32 {
+    doc.tree
+        .get(id.0)
+        .unwrap()
         .text_layout
         .as_ref()
-        .expect("the root should carry a text layout");
-    &**layout as *const _ as *const ()
+        .expect("the root should carry a text layout")
+        .max_width
 }
 
 fn text_block(doc: &mut RinchDocument, parent: NodeId, style: &str, text: &str) -> NodeId {
@@ -46,32 +65,24 @@ fn a_layout_only_pass_keeps_the_text_layout_of_a_zero_width_root() {
 
     doc.resolve_layout(800.0, 600.0);
     assert_eq!(
-        doc.tree
-            .get(unconstrained.0)
-            .unwrap()
-            .text_layout
-            .as_ref()
-            .unwrap()
-            .max_width,
+        max_width(&doc, unconstrained),
         f32::INFINITY,
         "the premise: a zero-width root is built with no width constraint"
     );
-    let unconstrained_before = layout_addr(&doc, unconstrained);
-    let constrained_before = layout_addr(&doc, constrained);
+    stamp(&mut doc, unconstrained);
+    stamp(&mut doc, constrained);
 
     // A layout-only change elsewhere: no text and no display changes, so no
     // IFC root is text-dirty and `build_ifc_layouts` runs in rebuild-all mode.
     doc.set_attribute(resized, "style", "width: 150px; height: 10px");
     doc.resolve_layout(800.0, 600.0);
 
-    assert_eq!(
-        layout_addr(&doc, constrained),
-        constrained_before,
+    assert!(
+        was_kept(&doc, constrained),
         "a constrained root at an unchanged width is not rebuilt"
     );
-    assert_eq!(
-        layout_addr(&doc, unconstrained),
-        unconstrained_before,
+    assert!(
+        was_kept(&doc, unconstrained),
         "an unconstrained root with unchanged text is not rebuilt either"
     );
 }
@@ -83,24 +94,11 @@ fn an_unconstrained_root_that_gains_a_width_is_rebuilt() {
     let root = text_block(&mut doc, body, "width: 0px", "now it has room");
 
     doc.resolve_layout(800.0, 600.0);
-    let before = layout_addr(&doc, root);
+    stamp(&mut doc, root);
 
     doc.set_attribute(root, "style", "width: 300px");
     doc.resolve_layout(800.0, 600.0);
 
-    assert_ne!(
-        layout_addr(&doc, root),
-        before,
-        "a width change still rebuilds"
-    );
-    assert_eq!(
-        doc.tree
-            .get(root.0)
-            .unwrap()
-            .text_layout
-            .as_ref()
-            .unwrap()
-            .max_width,
-        300.0
-    );
+    assert!(!was_kept(&doc, root), "a width change still rebuilds");
+    assert_eq!(max_width(&doc, root), 300.0);
 }
