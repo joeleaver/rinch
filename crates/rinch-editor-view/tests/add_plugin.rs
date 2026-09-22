@@ -98,3 +98,21 @@ fn add_plugin_on_a_read_only_collaborating_editor_installs_and_broadcasts_nothin
         "the outbound sink never fires at all"
     );
 }
+
+/// A stored mark (Ctrl+B on a collapsed caret) survives `add_plugin`: the next
+/// character typed is bold. From the review of #847.
+#[test]
+fn add_plugin_keeps_stored_marks() {
+    let h = rinch_editor_view::create_editor();
+    h.load_html("<p>hello</p>");
+    h.set_selection(rinch_editor_core::Selection::cursor(Pos(6)));
+    assert!(h.command("toggleBold"));
+    assert!(
+        h.state().stored_marks.is_some(),
+        "precondition: stored marks"
+    );
+    assert!(h.add_plugin(Rc::new(Spell)));
+    assert!(h.insert_text("x"));
+    let html = rinch_editor_core::serialize::html::node_to_html(&h.doc());
+    assert!(html.contains("<strong>x</strong>"), "{html}");
+}
