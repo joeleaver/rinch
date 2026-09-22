@@ -2,6 +2,7 @@
 name = "rinch-clipboard"
 version = "0.1.0"
 edition = "2021"
+license.workspace = true
 description = "Cross-platform clipboard abstraction for rinch (native + WASM)"
 
 [dependencies]

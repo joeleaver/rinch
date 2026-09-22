@@ -535,3 +535,32 @@ fn register_font_data_joins_the_fallback_chain_notdef_and_all() {
          not a hypothetical: got glyph ids {glyphs:?}"
     );
 }
+
+/// `register_font_data` claims `sans-serif` **and** `system-ui`, and both
+/// halves are load-bearing.
+///
+/// The default theme's stack ends in `sans-serif`; `system-ui` is the same
+/// request phrased as "whatever this platform uses for its own UI", and a
+/// theme that names neither a family nor a generic ends up asking for one of
+/// the two. On wasm — which is the front door this function exists for —
+/// there is no platform face behind either slot, so a registration that
+/// quietly stopped claiming them would not fall back to something worse, it
+/// would fall back to nothing. The sibling pins above cover what
+/// `register_font_data` does to the *fallback* chain; this covers what it
+/// answers to by name.
+#[test]
+fn register_font_data_answers_sans_serif_and_system_ui() {
+    let app = mounted_app();
+    assert_eq!(
+        doc_statics(&app, "sans-serif"),
+        vec![FACE.as_ptr() as usize],
+        "the registered face must head `sans-serif`, which is where the \
+         default theme's stack ends up"
+    );
+    assert_eq!(
+        doc_statics(&app, "system-ui"),
+        vec![FACE.as_ptr() as usize],
+        "and `system-ui` with it — on wasm there is no system UI face for it \
+         to mean instead"
+    );
+}
