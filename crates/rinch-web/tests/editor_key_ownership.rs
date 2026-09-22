@@ -52,8 +52,8 @@ struct Fixture {
 }
 
 impl Fixture {
-    /// One editor over [`CONTENT`] above three controls — a `tabindex` div, a
-    /// `<button>` and a `<select>`. The div and the button share one handler,
+    /// One editor over [`CONTENT`] above four controls — a `tabindex` div, a
+    /// `<button>`, a non-focusable `div` and a `<select>`. The first three share one handler,
     /// which counts and then runs a toolbar-style edit on the editor (types
     /// `XYZ` at the caret).
     fn mount() -> Self {
@@ -129,6 +129,21 @@ impl Fixture {
             .x()
     }
 
+    fn caret_visible(&self) -> bool {
+        match self.editor_el().query_selector("[data-pm-caret]").unwrap() {
+            Some(c) => {
+                let st = web_sys::window()
+                    .unwrap()
+                    .get_computed_style(&c)
+                    .unwrap()
+                    .unwrap();
+                st.get_property_value("display").unwrap() != "none"
+                    && c.get_client_rects().length() > 0
+            }
+            None => false,
+        }
+    }
+
     /// Focus the editor with a genuine left press on character 3 of its first
     /// paragraph, and prove the capture textarea holds focus.
     fn focus_editor(&self) {
@@ -165,7 +180,13 @@ fn build(scope: &mut RenderScope, handle: EditorHandle, count: Rc<Cell<u32>>) ->
         count.set(count.get() + 1);
         ed.insert_text("XYZ");
     });
-    for (tag, id, tabindex) in [("div", "node", Some("0")), ("button", "button", None)] {
+    for (tag, id, tabindex) in [
+        ("div", "node", Some("0")),
+        ("button", "button", None),
+        // A non-focusable clickable: a DOM menu-bar item, a `DropdownMenu`
+        // item, a `div { onclick }` toolbar button.
+        ("div", "plain", None),
+    ] {
         let el = scope.create_element(tag);
         el.set_attribute("id", id);
         el.set_attribute("data-rid", &rid.0.to_string());
@@ -247,21 +268,19 @@ fn enter_on_a_focused_control_after_an_editor_click_activates_it() {
     f.teardown();
 }
 
-/// Space, likewise — the editor must not type it, and the caret overlay
-/// follows the command Space ran.
+/// Space, likewise — the editor must not type it, and, no longer owning the
+/// keyboard, it paints no caret (desktop hides a blurred editor's overlays).
 #[wasm_bindgen_test]
 fn space_on_a_focused_control_after_an_editor_click_activates_it() {
     let f = Fixture::mount();
     f.focus_editor();
-    let before = f.caret_x();
     let node = f.el("node");
     node.focus().unwrap();
     keydown(node.as_ref(), " ", "Space");
     assert_eq!(f.count.get(), 1, "Space must activate the focused control");
-    let after = f.caret_x();
     assert!(
-        after > before + 20.0,
-        "the caret followed the command's edit ({before} -> {after})"
+        !f.caret_visible(),
+        "the editor that lost the keyboard paints no caret"
     );
     assert_eq!(
         f.text().replace("XYZ", ""),
@@ -285,28 +304,26 @@ fn a_key_on_a_focused_button_types_nothing_into_the_editor() {
     f.teardown();
 }
 
-/// Enter on a focused `tabindex` toolbar control runs its command, and the
-/// caret overlay follows the edit — no pointer event is there to refresh it.
+/// Enter on a focused `tabindex` toolbar control runs its command against the
+/// editor. The editor does not own the keyboard there, so it paints no caret
+/// even though its document changed.
 #[wasm_bindgen_test]
-fn a_keyboard_activated_command_moves_the_caret_overlay() {
+fn a_keyboard_activated_command_runs_and_the_unfocused_editor_paints_no_caret() {
     let f = Fixture::mount();
     f.focus_editor();
-    let before = f.caret_x();
     let node = f.el("node");
     node.focus().unwrap();
     keydown(node.as_ref(), "Enter", "Enter");
     assert_eq!(f.count.get(), 1, "positive control: the command ran");
     assert!(f.text().contains("XYZ"), "and edited: {}", f.text());
-    let after = f.caret_x();
-    assert!(
-        after > before + 20.0,
-        "the caret moved past the three typed characters ({before} -> {after})"
-    );
+    assert!(!f.caret_visible(), "and no caret is painted");
     f.teardown();
 }
 
-/// The same through a pointer-less `click` on a `<button>` — what Enter or
-/// Space on a focused button, or assistive technology, produces.
+/// A pointer-less `click` on a `<button>` — assistive technology or
+/// `element.click()` — runs a command while the capture textarea keeps focus,
+/// and no pointer or key event is there to refresh the caret; the `click`
+/// refresh moves it.
 #[wasm_bindgen_test]
 fn a_pointerless_click_command_moves_the_caret_overlay() {
     let f = Fixture::mount();
@@ -336,6 +353,99 @@ fn a_press_on_a_select_blurs_the_editor() {
     assert!(
         document().active_element().as_deref() != Some(f.capture().as_ref()),
         "the capture textarea no longer holds focus"
+    );
+    f.teardown();
+}
+
+fn pointer_event(el: &web_sys::Element, name: &str) {
+    let r = el.get_bounding_client_rect();
+    let init = web_sys::PointerEventInit::new();
+    init.set_bubbles(true);
+    init.set_cancelable(true);
+    init.set_pointer_id(1);
+    init.set_is_primary(true);
+    init.set_pointer_type("mouse");
+    init.set_button(0);
+    init.set_buttons(1);
+    init.set_client_x((r.x() + r.width() / 2.0) as i32);
+    init.set_client_y((r.y() + r.height() / 2.0) as i32);
+    let ev = web_sys::PointerEvent::new_with_event_init_dict(name, &init).unwrap();
+    el.dispatch_event(&ev).unwrap();
+}
+
+/// A mousedown at the element's centre; answers whether it was
+/// `preventDefault`ed — the only thing that keeps the browser from moving focus
+/// (a synthetic event moves none, so this is the observable).
+fn press_prevented(el: &web_sys::Element) -> bool {
+    let r = el.get_bounding_client_rect();
+    let init = web_sys::MouseEventInit::new();
+    init.set_bubbles(true);
+    init.set_cancelable(true);
+    init.set_button(0);
+    init.set_buttons(1);
+    init.set_detail(1);
+    init.set_client_x((r.x() + r.width() / 2.0) as i32);
+    init.set_client_y((r.y() + r.height() / 2.0) as i32);
+    let ev = web_sys::MouseEvent::new_with_mouse_event_init_dict("mousedown", &init).unwrap();
+    el.dispatch_event(&ev).unwrap();
+    ev.default_prevented()
+}
+
+/// A press on a NON-focusable `data-rid` element (a menu-bar item, a dropdown
+/// item, a `div` toolbar button) leaves the keyboard with the focused editor —
+/// desktop's "click Bold, keep typing" (`click_handling.rs`: a press on a
+/// `data-rid` preserves editor focus; only a focusable node claims it). A
+/// focusable control still takes the keyboard, as a browser and desktop both
+/// have it.
+#[wasm_bindgen_test]
+fn a_press_on_a_non_focusable_handler_keeps_the_keyboard_with_the_editor() {
+    let f = Fixture::mount();
+    f.focus_editor();
+    assert!(
+        press_prevented(f.el("plain").as_ref()),
+        "the mousedown on a non-focusable data-rid must not move focus"
+    );
+    assert!(
+        !press_prevented(f.el("button").as_ref()),
+        "a <button> takes focus as usual"
+    );
+    assert!(
+        !press_prevented(f.el("node").as_ref()),
+        "a tabindex element takes focus as usual"
+    );
+    f.teardown();
+}
+
+/// Without an editor holding the keyboard, a non-focusable press is left to the
+/// browser entirely.
+#[wasm_bindgen_test]
+fn a_non_focusable_press_with_no_focused_editor_is_left_alone() {
+    let f = Fixture::mount();
+    assert!(!press_prevented(f.el("plain").as_ref()));
+    f.teardown();
+}
+
+/// A press on a toolbar control released somewhere else fires no `click`, but
+/// the command already ran from `pointerdown`: the `mousedown` refresh is what
+/// moves the caret then.
+#[wasm_bindgen_test]
+fn a_press_that_runs_a_command_moves_the_caret_before_any_click() {
+    let f = Fixture::mount();
+    f.focus_editor();
+    let before = f.caret_x();
+    let plain = f.el("plain");
+    pointer_event(plain.as_ref(), "pointerdown");
+    press_prevented(plain.as_ref());
+    assert_eq!(
+        f.count.get(),
+        1,
+        "positive control: the command ran on pointerdown"
+    );
+    assert!(f.text().contains("XYZ"), "and edited: {}", f.text());
+    let after = f.caret_x();
+    assert!(
+        after > before + 20.0,
+        "the caret moved past the three typed characters ({before} -> {after})"
     );
     f.teardown();
 }
