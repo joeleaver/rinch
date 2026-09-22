@@ -2153,12 +2153,17 @@ pub(crate) fn install(browser_doc: &web_sys::Document) {
             .ok();
     }
     refresh.forget();
-    let refresh_on_activation = Closure::wrap(Box::new(move |e: web_sys::KeyboardEvent| {
+    // Typed as a plain `Event`: page script can dispatch a bare `Event` named
+    // `keydown`, and a `KeyboardEvent` accessor on it throws.
+    let refresh_on_activation = Closure::wrap(Box::new(move |e: web_sys::Event| {
+        let Some(e) = e.dyn_ref::<web_sys::KeyboardEvent>() else {
+            return;
+        };
         let key = e.key();
         if (key == "Enter" || key == " ") && focused_editor().is_some() {
             refresh_caret();
         }
-    }) as Box<dyn FnMut(web_sys::KeyboardEvent)>);
+    }) as Box<dyn FnMut(web_sys::Event)>);
     browser_doc
         .add_event_listener_with_callback("keydown", refresh_on_activation.as_ref().unchecked_ref())
         .ok();
