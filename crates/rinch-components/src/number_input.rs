@@ -278,17 +278,9 @@ impl Component for NumberInput {
 
         // Reactive value binding
         if let Some(ref value_fn) = self.value_fn {
-            // Set initial value
-            let initial_value = value_fn();
-            input.set_attribute("value", &initial_value);
-
-            // Create Effect for reactive updates
-            let value_fn = value_fn.clone();
-            let input_clone = input.clone();
-            __scope.create_effect(move || {
-                let current_value = value_fn();
-                input_clone.set_attribute("value", &current_value);
-            });
+            // Written now and on every change — minus the echo of the user's
+            // own keystroke, which the field already shows (#238).
+            crate::value_binding::bind_value_fn(__scope, &input, value_fn);
         } else if let Some(v) = shown.get() {
             input.set_attribute("value", &format_shown(v, self.decimal_scale));
         }

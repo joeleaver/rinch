@@ -14,8 +14,11 @@
 //! backends). The desktop runtime mirrors the typed text into the `value`
 //! attribute *before* dispatching, so these tests do the same and then assert
 //! the attribute still holds the author's text afterwards. On web the
-//! attribute lags the live text instead, so one test dispatches without the
-//! mirror and asserts no write landed at all.
+//! attribute lags the live text instead: `type_text_web` moves only the live
+//! text (`MockDomDocument::__type_into`, the `.value` property a browser user
+//! types into) and those tests assert no write landed at all. The components
+//! read the field through `NodeHandle::live_value` (#238), so the web-shaped
+//! tests are what fail if either one goes back to reading the attribute.
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -127,6 +130,15 @@ impl Mounted {
         dispatch_input_event(self.field_handler(), text.to_string());
     }
 
+    /// One keystroke, web-shaped: the live text moves and the `value`
+    /// attribute stays at the last programmatic write, then `oninput`
+    /// dispatches with the live text.
+    fn type_text_web(&self, text: &str) {
+        let field = self.field().node_id();
+        self._doc.borrow_mut().__type_into(field, text);
+        dispatch_input_event(self.field_handler(), text.to_string());
+    }
+
     /// The commit boundary (#226): the runtime/browser fires `data-onchange`
     /// with the final text when the gesture ends (blur after modification,
     /// Enter).
@@ -232,18 +244,18 @@ fn typing_toward_an_alpha_pair_keeps_the_authors_text() {
 }
 
 /// The web shape of the same defect: there the browser owns the live text and
-/// the `value` attribute this component reads lags behind it, so the guard
-/// cannot see the prefix in the attribute — the handler's own record of the
-/// typed text has to suppress the write. An untouched attribute is the proof
+/// the `value` attribute lags behind it, so a guard reading the attribute
+/// cannot see the prefix — only the live text (`live_value`, #238) can
+/// suppress the write. An untouched attribute is the proof
 /// no write landed (on web a write here replaces the field's real text via the
 /// value-property mirror and throws the caret to the end).
 #[test]
 fn a_prefix_typed_while_the_attribute_lags_is_left_alone() {
     let picker = Mounted::picker("#ff0000", "hex");
 
-    // No attribute mirror before dispatch — the attribute still holds the
-    // mount-time text, as it does mid-typing on web.
-    dispatch_input_event(picker.field_handler(), "#336".to_string());
+    // The attribute still holds the mount-time text, as it does mid-typing
+    // on web.
+    picker.type_text_web("#336");
 
     assert_eq!(
         picker.field_text(),
@@ -334,14 +346,14 @@ fn color_input_typing_is_not_hijacked_either() {
 }
 
 /// ColorInput on the web shape: the attribute lags the live text, so only
-/// the handler's own record can recognise the author's prefix — a guard that
-/// consults the attribute alone would rewrite the field here.
+/// the live text can recognise the author's prefix — a guard that consults
+/// the attribute would rewrite the field here.
 #[test]
 fn color_input_prefix_with_lagging_attribute_is_left_alone() {
     let input = Mounted::color_input("#ff0000");
 
-    // No attribute mirror before dispatch, as mid-typing on web.
-    dispatch_input_event(input.field_handler(), "#336".to_string());
+    // The attribute still holds the mount-time text, as mid-typing on web.
+    input.type_text_web("#336");
 
     assert_eq!(
         input.field_text(),
@@ -408,16 +420,18 @@ fn a_return_to_the_last_written_colour_still_rewrites_on_web() {
     assert_eq!(picker.field_text(), "#22aa55");
 
     // Web-shaped typing: the live text changes, the attribute does not.
-    dispatch_input_event(picker.field_handler(), "#336".to_string());
+    picker.type_text_web("#336");
 
     picker.click_swatch(); // back to "#22aa55" — equal to the fossil attribute
 
     // The write must land: on web it is the only thing that repairs the live
-    // text (via the value-property mirror). The typed record ("#336") is the
-    // field's truth here, and it disagrees.
+    // text (via the value-property mirror). The live text ("#336") is the
+    // field's truth here, and it disagrees. Asserted on the LIVE text: the
+    // attribute already said "#22aa55" before the click, so it cannot tell a
+    // write from none.
     assert_eq!(
-        picker.field_text(),
-        "#22aa55",
+        picker.field().live_value().as_deref(),
+        Some("#22aa55"),
         "the colour moved away from the author's text; the field must be rewritten \
          even though the stale attribute already spelled the target colour"
     );
