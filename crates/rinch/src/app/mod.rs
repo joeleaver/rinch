@@ -914,8 +914,8 @@ impl RinchApp {
     /// absolutely positioned, and the software renderer's dirty-region cache can't
     /// clear a moved absolute element's old rect — so without this they ghost.
     ///
-    /// A caret that owes a scroll (a local edit or selection move, or focus — the
-    /// handle's `ScrollGate`) also queues a `scroll_into_view` on itself. It is
+    /// A caret that owes a scroll (a local edit or selection move — the handle's
+    /// `ScrollGate`) also queues a `scroll_into_view` on itself. It is
     /// deliberately **not** applied here: this runs straight out of an input
     /// handler, so the caret overlay's style has just been rewritten and its
     /// layout is stale — measuring it now would scroll to where the caret *was*.
@@ -1059,8 +1059,8 @@ impl RinchApp {
                 let _ = d.take_dirty_nodes();
                 d.resolve_layout(viewport_width, viewport_height);
             }
-            // A caret that owes a scroll — after a local edit or selection move, or
-            // on focus; `EditorHandle::update_caret` decides, and queues a
+            // A caret that owes a scroll — after a local edit or selection move;
+            // `EditorHandle::update_caret` decides, and queues a
             // `scroll_into_view` on the caret overlay. The drain at the top of
             // this frame ran *before* the caret pass, so without this the request
             // would sit in the queue until some later relayout happened to come

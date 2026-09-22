@@ -267,8 +267,7 @@ preedit). Switching it off gives everything back, undo history included.
 A focused editor scrolls its caret into view after the **user** moves it or edits
 at it: typing, Enter, Backspace/Delete, every command and the keys bound to them,
 arrow keys and clicks, `set_selection`, paste, IME commit, `insert_image` and
-`toggle_link`. It also reveals the caret when the editor **gains focus**, as a
-browser's `focus()` on a contenteditable does. For a node selection the selected
+`toggle_link`. For a node selection the selected
 node's outline is what is revealed, and for a cell selection the cell under its
 moving (head) corner.
 
@@ -294,6 +293,9 @@ where they are:
   it already is (`let sel = tr.selection(); tr.set_selection(sel);`);
 - an edit a [read-only](#read-only) editor refuses. A read-only editor's caret
   moves still scroll: they are real selection changes;
+- focus on its own. A click that places the caret scrolls (it moved the
+  selection); a click that focuses the editor without moving the caret — a task
+  checkbox, a right-click on an image — does not jump to where the caret was;
 - an editor that is not focused: its caret is not drawn, so a programmatic
   `set_selection` on it scrolls when it is next focused, not before.
 

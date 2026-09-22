@@ -68,15 +68,9 @@ struct EditorCore {
     read_only: bool,
     /// Whether the caret owes a scroll into view — see [`ScrollGate`]. Armed by
     /// a local edit or selection move ([`Self::commit`] with
-    /// [`Scroll::IfChanged`]) and by the editor gaining focus; fulfilled and
-    /// cleared by [`EditorHandle::update_caret`].
+    /// [`Scroll::IfChanged`]); fulfilled and cleared by
+    /// [`EditorHandle::update_caret`].
     scroll: ScrollGate,
-    /// Whether the overlays are currently hidden because the editor is not the
-    /// focused one ([`EditorHandle::hide_overlays`]). The first
-    /// [`EditorHandle::update_caret`] after that is the editor gaining focus,
-    /// which reveals the selection the way a browser's `focus()` on a
-    /// contenteditable does.
-    overlays_hidden: bool,
     /// The collaboration session + outbound delta sink, when this editor is
     /// collaborating (design M9). `None` for a non-collaborative editor — the
     /// common case — so the mutation path's collab hook is a cheap early return.
@@ -98,8 +92,13 @@ enum Scroll {
 /// `tr.scrollIntoView()`, held on the handle because the request is made by a
 /// commit and fulfilled by a later caret pass, once there is geometry.
 ///
-/// **Armed** by a local edit or selection move ([`Scroll::IfChanged`]) and by
-/// the editor gaining focus. Never by a remote edit (`collab_receive` does not
+/// **Armed** by a local edit or selection move ([`Scroll::IfChanged`]) — and
+/// not by focus: rinch has no programmatic `focus()` for an editor, only a
+/// press, and a press that places the caret already arms through
+/// `set_selection`, while one that does not (a task checkbox, a right-click on
+/// an image) must not pull the user away from what they clicked (#846's
+/// review measured 0 -> 2255). An `EditorHandle::focus()`, if one is ever
+/// added, is where to arm it. Never by a remote edit (`collab_receive` does not
 /// commit), a load, a resize, a scroll or a virtualized block being measured —
 /// those change the caret's *geometry* without the user moving it, and a gate on
 /// geometry is what #837's review measured pulling a user who scrolled away back
@@ -412,7 +411,6 @@ impl EditorHandle {
                 anchors: Rc::new(RefCell::new(AnchorMap::default())),
                 read_only: false,
                 scroll: ScrollGate::default(),
-                overlays_hidden: true,
                 #[cfg(feature = "collaboration")]
                 collab: None,
             })),
@@ -442,7 +440,6 @@ impl EditorHandle {
                 anchors: Rc::new(RefCell::new(AnchorMap::default())),
                 read_only: false,
                 scroll: ScrollGate::default(),
-                overlays_hidden: true,
                 #[cfg(feature = "collaboration")]
                 collab: None,
             })),
@@ -1291,8 +1288,7 @@ impl EditorHandle {
     /// after the next layout on desktop).
     ///
     /// **When it scrolls is decided here, not by the view** ([`ScrollGate`]): only
-    /// after a local edit or selection move, or on the editor gaining focus —
-    /// ProseMirror's `tr.scrollIntoView()`. The view's own
+    /// after a local edit or selection move — ProseMirror's `tr.scrollIntoView()`. The view's own
     /// `ScrollSelectionIntoView` means only "the overlay moved", which a resize
     /// reflow, a remote edit above the caret or a virtualized block being measured
     /// all cause without the caret moving in the document; scrolling on those
@@ -1303,11 +1299,6 @@ impl EditorHandle {
         let Some(view) = core.view.as_mut() else {
             return false;
         };
-        if std::mem::take(&mut core.overlays_hidden) {
-            // Focus gained: reveal the selection, as `focus()` on a browser's
-            // contenteditable does (measured in Chromium).
-            core.scroll.arm();
-        }
         let state = &core.state;
         // The view's `ScrollSelectionIntoView` says only that the overlay moved;
         // whether to scroll is the gate's decision (see above), so the requests
@@ -1332,10 +1323,7 @@ impl EditorHandle {
     /// that isn't the focused one. A no-op before mount. Returns whether an overlay
     /// was actually cleared (so the runtime can force a full repaint).
     pub fn hide_overlays(&self) -> bool {
-        let mut guard = self.inner.borrow_mut();
-        let core = &mut *guard;
-        core.overlays_hidden = true;
-        match core.view.as_mut() {
+        match self.inner.borrow_mut().view.as_mut() {
             Some(view) => {
                 view.hide_overlays();
                 view.take_overlay_dirty()
@@ -1783,11 +1771,17 @@ mod tests {
         }
         let drained = |h: &Harness| h.doc.borrow_mut().drain_scroll_into_view_requests();
 
-        // doc(p(), p()) → 0[p 1]2[p 3]4.
-        h.handle.set_selection(Selection::cursor(Pos(1)));
+        // doc(p(), p()) → 0[p 1]2[p 3]4. The fresh editor's cursor is at 1, and
+        // placing it there scrolls nothing (focus alone is not a move — #846).
+        h.handle.update_caret();
+        assert!(
+            drained(&h).is_empty(),
+            "placing an unmoved caret scrolls nothing"
+        );
+        h.handle.set_selection(Selection::cursor(Pos(3)));
         h.handle.update_caret();
         let first = drained(&h);
-        assert_eq!(first.len(), 1, "the caret's first placement scrolls to it");
+        assert_eq!(first.len(), 1, "a caret move scrolls to it");
         assert_eq!(
             h.doc.borrow().get_attribute(first[0], "data-pm-caret"),
             Some("true".to_string()),
@@ -1800,7 +1794,7 @@ mod tests {
         h.handle.update_caret();
         assert!(drained(&h).is_empty(), "a repeat pass scrolls nothing");
 
-        h.handle.set_selection(Selection::cursor(Pos(3)));
+        h.handle.set_selection(Selection::cursor(Pos(1)));
         h.handle.update_caret();
         assert_eq!(drained(&h).len(), 1, "a moved caret scrolls again");
     }
@@ -1963,21 +1957,29 @@ mod tests {
         assert!(drain(&h).is_empty());
     }
 
-    /// Focus gained reveals the caret, as a browser's `focus()` on a
-    /// contenteditable reveals its selection (measured in Chromium: a caret at
-    /// the end of a 40-line editor scrolled 0 → 1256 on `focus()`). The runtime's
-    /// sweep hides an unfocused editor's overlays and places the focused one's,
-    /// so the first `update_caret` after `hide_overlays` is the focus.
+    /// Focus alone does not scroll. The runtime's sweep hides an unfocused
+    /// editor's overlays and places the focused one's, and the only way to focus
+    /// an editor is a press: one that places the caret arms through
+    /// `set_selection`, and one that does not (a task checkbox) must not pull
+    /// the user to the old caret. A scroll owed from while the editor was
+    /// unfocused is still paid on the first focused pass.
     #[test]
-    fn regaining_focus_scrolls_to_the_caret() {
+    fn regaining_focus_alone_does_not_scroll_but_an_owed_scroll_is_paid() {
         let h = gate_rig();
         h.handle.hide_overlays();
+        h.handle.update_caret();
+        assert!(
+            caret_top(&h).is_some(),
+            "positive control: the caret is back"
+        );
+        assert!(drain(&h).is_empty(), "focus gained scrolls nothing");
+
+        h.handle.hide_overlays();
+        h.handle.set_selection(Selection::cursor(Pos(3)));
         h.handle.hide_overlays();
         assert!(drain(&h).is_empty(), "an unfocused editor scrolls nothing");
         h.handle.update_caret();
-        assert_eq!(drain(&h).len(), 1, "focus gained scrolls");
-        h.handle.update_caret();
-        assert!(drain(&h).is_empty(), "and only then");
+        assert_eq!(drain(&h).len(), 1, "the owed scroll lands on focus");
     }
 
     /// Read-only (#832): a refused edit arms nothing, and a selection move — which

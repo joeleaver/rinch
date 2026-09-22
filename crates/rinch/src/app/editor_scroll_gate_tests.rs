@@ -441,9 +441,8 @@ fn r846_a_focusing_checkbox_click_does_not_yank_to_the_old_caret() {
         r.app.resolve_and_repaint(800.0, 600.0);
     }
     assert!(checked(&r), "positive control: the click toggled the box");
-    assert_eq!(
+    assert!(
         r.app.focused_editor_id().is_some(),
-        true,
         "positive control: focused"
     );
     let after = scroll_of(&r.app, r.scroller);
@@ -475,10 +474,12 @@ fn r846_window_refocus_does_not_scroll_to_the_caret() {
     assert_eq!(scroll_of(&r.app, r.scroller), 0.0);
 }
 
-/// Focus gained programmatically (the arbiter's transition, which is all a
-/// Tab or a `focus()` would be) with the caret below the fold: scrolls.
+/// An IME's surrounding-text delete at an off-screen caret is the user's own
+/// input at the caret (the IME recomposing what they typed), so it reveals the
+/// caret like Backspace does — even though the transaction only maps the
+/// selection, which through the public `update(..)` would not scroll.
 #[test]
-fn r846_focus_gained_scrolls_to_an_offscreen_caret() {
+fn an_ime_surrounding_delete_at_an_offscreen_caret_reveals_it() {
     let mut r = rig(
         40,
         "width: 800px; height: 600px",
@@ -487,16 +488,20 @@ fn r846_focus_gained_scrolls_to_an_offscreen_caret() {
         800.0,
     );
     r846_scrolled_away(&mut r);
-    let editor = r.app.focused_editor_id().unwrap();
-    r.app.set_focus_target(FocusTarget::None);
-    r.app.refresh_editor_overlays();
-    r.app.resolve_and_repaint(800.0, 600.0);
-    r.app.set_focus_target(FocusTarget::Editor(editor));
+    let size = r.handle.doc().content_size();
+    r.handle.ime_delete_surrounding(2, 0);
+    assert!(
+        r.handle.doc().content_size() < size,
+        "positive control: the IME delete landed"
+    );
     r.app.refresh_editor_overlays();
     for _ in 0..3 {
         r.app.resolve_and_repaint(800.0, 600.0);
     }
-    assert!(scroll_of(&r.app, r.scroller) > 0.0);
+    assert!(
+        scroll_of(&r.app, r.scroller) > 0.0,
+        "the IME delete at the caret did not reveal it"
+    );
 }
 
 /// Toolbar Bold with a collapsed caret changes stored marks only: no scroll.

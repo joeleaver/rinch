@@ -50,7 +50,7 @@ pub enum ViewRequest {
     /// virtualized block being measured), and scrolling on those pulls a user who
     /// scrolled away back to the caret. Whether to scroll is decided from what
     /// changed the *state* — `rinch-editor-view`'s `EditorHandle` scrolls only
-    /// after a local edit or selection move, or on focus (ProseMirror's
+    /// after a local edit or selection move (ProseMirror's
     /// `tr.scrollIntoView()`), and reads this request for nothing else.
     ScrollSelectionIntoView,
 }
