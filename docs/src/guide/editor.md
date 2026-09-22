@@ -191,7 +191,10 @@ EditorState { doc, selection, stored_marks, schema, plugins, plugin_state }
 ```
 
 `state.apply(tr)` runs the transaction's steps, then folds each plugin's state
-forward (history pushes inverted steps, decoration sets remap through the mapping).
+forward (history pushes inverted steps). Decorations are **not** stored and
+remapped by the core: `state.decorations()` asks every plugin afresh for the
+state being rendered, so a plugin that caches decoration ranges maps them through
+`tr.mapping()` in its own `apply`.
 It returns a brand-new state; nothing is mutated in place, no DOM is touched.
 
 **Selection** is part of state and is mapped forward by every transaction. It is one
@@ -265,7 +268,9 @@ the recorded selection. `undo` / `redo` are the only history entry points.
 History, tables, links, input rules, and (later) collaboration and accessibility are
 **all plugins** — none is special-cased in the core. A plugin can contribute schema
 nodes/marks, commands, keymap bindings, input rules, per-document state, decorations
-(preedit overlay, selection rectangle, search highlight), and node-views. This is how
+(a widget such as the placeholder, or an inline class over a document range — a
+spellcheck squiggle, a search highlight), and node-views. An app adds its own with
+`EditorHandle::add_plugin`. This is how
 features compose without bloating the core.
 
 ## The view seam

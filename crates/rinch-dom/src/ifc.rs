@@ -3981,9 +3981,20 @@ impl RinchDocument {
             root_text_style.line_height = lh;
         }
 
-        // Apply text-decoration from computed style
-        root_text_style.has_underline = root_computed.text_decoration.underline;
+        // Apply text-decoration from computed style. A **wavy** underline is not a
+        // Parley style — it becomes a decoration span painted as a zigzag, pushed
+        // over the whole flat text once the walk below knows how long that is — so
+        // the straight line is suppressed here, exactly as `inline_style_props`
+        // does for an inline element.
+        root_text_style.has_underline = root_computed.text_decoration.underline
+            && !root_computed.text_decoration.is_wavy_underline();
         root_text_style.has_strikethrough = root_computed.text_decoration.strikethrough;
+        // `text-decoration-color`. Left unset for `currentcolor`, whose meaning is
+        // exactly Parley's own fallback to the text brush.
+        if let Some(c) = root_computed.text_decoration.color {
+            root_text_style.underline_brush = Some(Brush::Solid(c));
+            root_text_style.strikethrough_brush = Some(Brush::Solid(c));
+        }
 
         // Apply text-underline-offset from computed style.
         //
@@ -4060,6 +4071,7 @@ impl RinchDocument {
         let mut child_positions = Vec::new();
         let mut text_ranges = Vec::new();
         let mut background_spans = Vec::new();
+        let mut decoration_spans = Vec::new();
         let mut flat_pos = 0usize;
 
         // Walk children and build the Parley tree
@@ -4070,10 +4082,25 @@ impl RinchDocument {
             &mut child_positions,
             &mut text_ranges,
             &mut background_spans,
+            &mut decoration_spans,
             &mut flat_pos,
             scale,
             collapse,
         );
+
+        // The IFC root's own wavy underline covers everything the walk produced.
+        // (An inline element's covers its own range and is pushed by the walk.)
+        if root_computed.text_decoration.is_wavy_underline() && flat_pos > 0 {
+            decoration_spans.push(crate::node::InlineDecorationSpan {
+                start: 0,
+                end: flat_pos,
+                color: root_computed
+                    .text_decoration
+                    .color
+                    .or(root_computed.color)
+                    .unwrap_or(peniko::Color::BLACK),
+            });
+        }
 
         let (text_layout, text_content) = builder.build();
         let mut text_layout = text_layout;
@@ -4094,6 +4121,7 @@ impl RinchDocument {
             child_positions,
             text_ranges,
             background_spans,
+            decoration_spans,
             max_width: max_width.unwrap_or(f32::INFINITY),
         }
     }
@@ -4208,6 +4236,7 @@ impl RinchDocument {
             child_positions: Vec::new(),
             text_ranges: Vec::new(),
             background_spans: Vec::new(),
+            decoration_spans: Vec::new(),
             max_width: container_width,
         }
     }
@@ -4296,8 +4325,7 @@ impl RinchDocument {
             && a.font_weight == b.font_weight
             && a.font_style == b.font_style
             && a.color == b.color
-            && a.text_decoration.underline == b.text_decoration.underline
-            && a.text_decoration.strikethrough == b.text_decoration.strikethrough
+            && a.text_decoration == b.text_decoration
             && a.text_underline_offset == b.text_underline_offset
             && same_line_height
             && a.letter_spacing == b.letter_spacing
@@ -4329,11 +4357,33 @@ impl RinchDocument {
         if let Some(color) = computed.color {
             props.push(parley::style::StyleProperty::Brush(Brush::Solid(color)));
         }
-        if computed.text_decoration.underline {
+        // A wavy underline is painted by `paint::text` from a decoration span
+        // (Parley has no wavy decoration), so a wavy element pushes no
+        // `Underline` at all — and in particular does not turn one *off*. CSS
+        // propagates an ancestor's decoration to every descendant's glyphs and a
+        // descendant cannot remove it, so a misspelled word inside `<u>` or an
+        // underlined link keeps its straight line and gains the squiggle, which
+        // is what a browser draws (review of #836, finding 4).
+        let wavy = computed.text_decoration.is_wavy_underline();
+        if computed.text_decoration.underline && !wavy {
             props.push(parley::style::StyleProperty::Underline(true));
         }
         if computed.text_decoration.strikethrough {
             props.push(parley::style::StyleProperty::Strikethrough(true));
+        }
+        // `text-decoration-color`; see the sibling assignment in
+        // `build_inline_layout` for why `currentcolor` pushes nothing. A wavy
+        // element's colour belongs to its squiggle (the decoration span carries
+        // it), not to an underline it inherited.
+        if let Some(c) = computed.text_decoration.color {
+            if !wavy {
+                props.push(parley::style::StyleProperty::UnderlineBrush(Some(
+                    Brush::Solid(c),
+                )));
+            }
+            props.push(parley::style::StyleProperty::StrikethroughBrush(Some(
+                Brush::Solid(c),
+            )));
         }
         // Negated on the way out, for the reason spelled out at the sibling push
         // in [`Self::build_inline_layout`]: the field is CSS-signed (positive is
@@ -4381,18 +4431,36 @@ impl RinchDocument {
         props
     }
 
-    /// Push a background span for `owner` over `start..end`, if it has a visible
-    /// one — the one place an inline box's background becomes a span, so the
-    /// ordinary `display: inline` arm and the split-inline bridge below cannot
-    /// disagree about padding or radius.
-    fn push_inline_background(
+    /// Push the spans `owner` contributes over `start..end` — its background, if
+    /// it has a visible one, and its wavy underline, if it has one.
+    ///
+    /// The one place an inline box becomes a span, so the ordinary `display:
+    /// inline` arm and the split-inline bridge below cannot disagree about
+    /// padding, radius, or which elements get a squiggle.
+    fn push_inline_spans(
         owner: &Node,
         start: usize,
         end: usize,
         background_spans: &mut Vec<crate::node::InlineBackgroundSpan>,
+        decoration_spans: &mut Vec<crate::node::InlineDecorationSpan>,
     ) {
         if end <= start {
             return;
+        }
+        // A wavy underline is not a Parley style, so it is recorded as a span and
+        // painted as a path; `inline_style_props` correspondingly declines to push
+        // the straight `Underline` for the same element.
+        if owner.computed_style.text_decoration.is_wavy_underline() {
+            decoration_spans.push(crate::node::InlineDecorationSpan {
+                start,
+                end,
+                color: owner
+                    .computed_style
+                    .text_decoration
+                    .color
+                    .or(owner.computed_style.color)
+                    .unwrap_or(peniko::Color::BLACK),
+            });
         }
         let Some(color) = owner.computed_style.background_color() else {
             return;
@@ -4454,6 +4522,7 @@ impl RinchDocument {
         child_positions: &mut Vec<(usize, LayoutResult)>,
         text_ranges: &mut Vec<crate::node::IfcTextRange>,
         background_spans: &mut Vec<crate::node::InlineBackgroundSpan>,
+        decoration_spans: &mut Vec<crate::node::InlineDecorationSpan>,
         flat_pos: &mut usize,
         scale: f32,
         collapse: parley::style::WhiteSpaceCollapse,
@@ -4504,7 +4573,13 @@ impl RinchDocument {
                     .count();
                 for (owner_id, start) in open.drain(keep..).rev() {
                     if let Some(owner) = nodes.get(owner_id) {
-                        Self::push_inline_background(owner, start, *flat_pos, background_spans);
+                        Self::push_inline_spans(
+                            owner,
+                            start,
+                            *flat_pos,
+                            background_spans,
+                            decoration_spans,
+                        );
                     }
                 }
                 for &owner_id in &chain[keep..] {
@@ -4647,6 +4722,7 @@ impl RinchDocument {
                         child_positions,
                         text_ranges,
                         background_spans,
+                        decoration_spans,
                         flat_pos,
                         scale,
                         collapse,
@@ -4659,7 +4735,13 @@ impl RinchDocument {
                     // split-inline bridge below cannot drift about padding or
                     // radius.
                     if has_bg {
-                        Self::push_inline_background(child, bg_start, *flat_pos, background_spans);
+                        Self::push_inline_spans(
+                            child,
+                            bg_start,
+                            *flat_pos,
+                            background_spans,
+                            decoration_spans,
+                        );
                     }
                 }
                 NodeKind::Element(_) if role == InlineFlowRole::Inline => {
@@ -4712,6 +4794,7 @@ impl RinchDocument {
                         child_positions,
                         text_ranges,
                         background_spans,
+                        decoration_spans,
                         flat_pos,
                         scale,
                         collapse,
@@ -4782,7 +4865,13 @@ impl RinchDocument {
         // Close whatever is still open at the end of the run.
         for (owner_id, start) in open.drain(..).rev() {
             if let Some(owner) = nodes.get(owner_id) {
-                Self::push_inline_background(owner, start, *flat_pos, background_spans);
+                Self::push_inline_spans(
+                    owner,
+                    start,
+                    *flat_pos,
+                    background_spans,
+                    decoration_spans,
+                );
             }
         }
     }

@@ -32,6 +32,8 @@ mod drawer_open_animation_tests;
 #[cfg(test)]
 mod drawer_scroll_overflow_tests;
 #[cfg(all(test, feature = "desktop"))]
+mod editor_decoration_tests;
+#[cfg(all(test, feature = "desktop"))]
 mod editor_read_only_tests;
 mod event_dispatch;
 mod focus;

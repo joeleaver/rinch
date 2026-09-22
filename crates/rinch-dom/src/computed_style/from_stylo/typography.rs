@@ -101,12 +101,40 @@ pub(super) fn white_space_from_stylo(
     }
 }
 
+/// `text-decoration-line` + `-style` + `-color` (the three longhands the
+/// `text-decoration` shorthand expands to) as one [`TextDecorationValue`].
+///
+/// `current` is the element's own resolved `color`, which is what
+/// `text-decoration-color`'s initial value — `currentcolor` — means. It resolves
+/// to `None` here rather than to that colour, because Parley already falls back
+/// to the text brush when no decoration brush is pushed; carrying `Some(text
+/// colour)` instead would only defeat the "did this element change the text
+/// style at all" comparison in `same_inline_text_style`.
 pub(super) fn text_decoration_from_stylo(
     line: &style::values::specified::TextDecorationLine,
+    style: style::properties::longhands::text_decoration_style::computed_value::T,
+    color: &style::values::computed::Color,
+    current: &style::color::AbsoluteColor,
 ) -> TextDecorationValue {
+    use style::properties::longhands::text_decoration_style::computed_value::T as Style;
     TextDecorationValue {
         underline: line.contains(style::values::specified::TextDecorationLine::UNDERLINE),
         strikethrough: line.contains(style::values::specified::TextDecorationLine::LINE_THROUGH),
+        style: match style {
+            Style::Solid => TextDecorationStyleValue::Solid,
+            Style::Double => TextDecorationStyleValue::Double,
+            Style::Dotted => TextDecorationStyleValue::Dotted,
+            Style::Dashed => TextDecorationStyleValue::Dashed,
+            Style::Wavy => TextDecorationStyleValue::Wavy,
+            // `-moz-none` is the Gecko-internal "suppress the line" value; nothing
+            // in the servo build's UA sheet sets it, and it is not a *style*.
+            Style::MozNone => TextDecorationStyleValue::Solid,
+        },
+        color: if color.is_currentcolor() {
+            None
+        } else {
+            super::color::color_from_computed(color, current)
+        },
     }
 }
 

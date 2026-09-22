@@ -6,7 +6,9 @@
 //! minimal **block-level** `ReplaceStep` (common-prefix/suffix on blocks, so untouched
 //! blocks keep their identity). Because the model is rebuilt from the *same* CRDT both
 //! peers converge to, `model ≡ project(model)` is restored exactly — no position-math
-//! risk.
+//! risk. Every remote change is therefore a block replace and never a text splice, which
+//! is what makes a block changing *kind* — a paragraph becoming a `horizontal_rule`, or
+//! back — nothing special here; only the caret carry below has to notice.
 //!
 //! There is deliberately no engine type in this file. The convergence-critical path only
 //! ever needs "give me the converged document as a `Node`", which is why swapping the
@@ -128,6 +130,14 @@ fn carried_position(
         // Content positions of a block at `at`: `at + 1 ..= at + 1 + content_size`.
         let inside = pos > old_at && pos < old_at + old_block.node_size();
         if inside {
+            // Both sides must be textblocks for an offset in one to mean anything in
+            // the other. A **block atom** (`horizontal_rule`) is where the two can
+            // differ: a peer replacing a paragraph with a scene break, or a scene break
+            // with a paragraph, changes the block's kind, and there is no text offset to
+            // carry across. `None` hands the caret to the step mapping, which re-anchors
+            // it from the block-level replace the caller already emits — an atom is
+            // never spliced as text. (An atom on the *old* side cannot even reach here:
+            // a leaf is one position wide, so nothing sits `inside` it.)
             if !(old_block.is_textblock() && new_block.is_textblock()) {
                 return None;
             }

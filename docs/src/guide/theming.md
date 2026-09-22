@@ -380,6 +380,16 @@ Measured on the desktop engine:
 Reach for a class where the table says a selector does not match — that is the
 one spelling with no gap on either backend.
 
+## Text decoration (desktop)
+
+`text-decoration-line`, `-color` and `-style` all reach the desktop painter.
+`text-decoration-style: wavy` draws a zigzag under the text — the spellcheck
+squiggle — in the decoration colour, or the text colour when none is given.
+The other styles (`double`, `dotted`, `dashed`) parse and paint as a solid
+line. A decoration propagates to descendants as in CSS: a wavy word inside an
+underlined link keeps the link's line and gains the wave. The wave follows the
+text on screen, right-to-left and mixed-direction runs included.
+
 ## Extending the Theme
 
 ### Scoped Overrides

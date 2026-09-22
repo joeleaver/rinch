@@ -2,7 +2,7 @@
 //! `EditorState` onto rinch-dom (design §6).
 
 use std::cell::RefCell;
-use std::rc::Weak;
+use std::rc::{Rc, Weak};
 
 use rinch_core::dom::{DomDocument, NodeFont, NodeHandle};
 use rinch_editor_core::decoration::DecorationSet;
@@ -159,6 +159,164 @@ fn wrap_marks(inner: &NodeHandle, marks: &[Mark], doc: &DocRef) -> NodeHandle {
     current
 }
 
+/// One [`Decoration::Inline`] flattened for the view: an absolute model range in
+/// char positions plus the CSS class list to put on the host element(s) wrapping
+/// it.
+///
+/// [`Decoration::Inline`]: rinch_editor_core::decoration::Decoration::Inline
+#[derive(Clone, Debug, PartialEq)]
+struct InlineDeco {
+    from: usize,
+    to: usize,
+    class: Rc<str>,
+}
+
+/// A decorated stretch of **one** text run: local char offsets into the run's
+/// text and the (possibly merged) class list for it. This is the view's
+/// change-detection key for a run — [`ViewDesc::decos`] holds what is currently
+/// projected, and a run whose recomputed list compares equal is not touched.
+#[derive(Clone, Debug, PartialEq)]
+struct RunDeco {
+    start: usize,
+    end: usize,
+    class: Rc<str>,
+}
+
+/// The inline decorations of `set`, in draw order. Widgets (and inline
+/// decorations with nothing to draw — an empty range or no `class`) drop out:
+/// `Decoration::inline_class` is the core's own filter, so the view never
+/// matches the enum.
+fn inline_decos(set: &DecorationSet) -> Vec<InlineDeco> {
+    set.iter()
+        .filter_map(|d| {
+            let class: Rc<str> = Rc::from(d.inline_class()?);
+            let (from, to) = d.range();
+            Some(InlineDeco {
+                from: from.0,
+                to: to.0,
+                class,
+            })
+        })
+        .collect()
+}
+
+/// Clip `decos` to the text run occupying model chars `[run_from, run_from + len)`
+/// and flatten them into non-overlapping, ordered stretches in run-local char
+/// offsets.
+///
+/// Two decorations that overlap (a misspelling inside a search hit) produce one
+/// stretch per distinct sub-range carrying **both** classes, so a stretch is never
+/// wrapped twice; abutting stretches with an identical class list are merged back
+/// into one, so the projected DOM is the minimum that expresses the decorations.
+fn run_decos(decos: &[InlineDeco], run_from: usize, len: usize) -> Vec<RunDeco> {
+    let run_to = run_from + len;
+    let clipped: Vec<(usize, usize, &str)> = decos
+        .iter()
+        .filter_map(|d| {
+            let a = d.from.max(run_from);
+            let b = d.to.min(run_to);
+            (a < b).then(|| (a - run_from, b - run_from, &*d.class))
+        })
+        .collect();
+    if clipped.is_empty() {
+        return Vec::new();
+    }
+    let mut bounds: Vec<usize> = clipped.iter().flat_map(|(a, b, _)| [*a, *b]).collect();
+    bounds.sort_unstable();
+    bounds.dedup();
+    let mut out: Vec<RunDeco> = Vec::new();
+    for w in bounds.windows(2) {
+        let (a, b) = (w[0], w[1]);
+        let mut classes: Vec<&str> = clipped
+            .iter()
+            .filter(|(x, y, _)| *x <= a && *y >= b)
+            .map(|(_, _, c)| *c)
+            .collect();
+        if classes.is_empty() {
+            continue;
+        }
+        classes.dedup();
+        let class: Rc<str> = Rc::from(classes.join(" "));
+        match out.last_mut() {
+            Some(last) if last.end == a && last.class == class => last.end = b,
+            _ => out.push(RunDeco {
+                start: a,
+                end: b,
+                class,
+            }),
+        }
+    }
+    out
+}
+
+/// The UTF-8 byte offset of char index `i` in `text` (its length past the end).
+fn byte_of_char(text: &str, i: usize) -> usize {
+    text.char_indices().nth(i).map_or(text.len(), |(b, _)| b)
+}
+
+/// Build the host node a text run projects to, given the decorations over it —
+/// the inner node a mark chain then wraps.
+///
+/// With no decorations that is a bare host **text node**, exactly as before
+/// decorations existed: an undecorated document projects to byte-identical DOM.
+/// With decorations it is a `<span data-pm-deco-run>` holding the run split into
+/// plain text chunks and `<span data-pm-deco class="…">` segments.
+///
+/// **Why split the run rather than overlay it** (the alternative: absolutely
+/// positioned underline divs measured from `query_selection_rects`, like the
+/// selection wash). A wrapper span is what *both* backends already know how to
+/// style — the web puts the consumer's CSS class straight on a real element, and
+/// the native side gets the same cascade through rinch-dom — so one `class` attr
+/// covers both with no per-backend painting code in the view. It also survives
+/// reflow for free: an overlay would have to be re-measured after every layout,
+/// on every line, and would ghost the way the caret does (see
+/// [`RinchDomEditorView::overlay_dirty`]). And it is invisible to the rest of the
+/// view: an inline element contributes nothing to the inline formatting context's
+/// flat text, so the caret map (`textblock_flat_byte`/`ifc_byte_to_char`, both
+/// computed from the **model**) and both backends' hit-tests — which walk every
+/// text node under the textblock — are unchanged by the extra nesting.
+///
+/// Returns the inner node and the decoration segments inside it (kept so a
+/// pointer hit on one still resolves to the run: see [`find_node_by_host`]).
+fn build_run_host(
+    text: &str,
+    decos: &[RunDeco],
+    doc: &DocRef,
+) -> Option<(NodeHandle, Vec<NodeHandle>)> {
+    if decos.is_empty() {
+        return Some((create_text(doc, text)?, Vec::new()));
+    }
+    let wrapper = create_element(doc, "span")?;
+    wrapper.set_attribute("data-pm-deco-run", "true");
+    let mut segments = Vec::with_capacity(decos.len());
+    let mut at = 0usize;
+    let chunk = |from: usize, to: usize| &text[byte_of_char(text, from)..byte_of_char(text, to)];
+    for d in decos {
+        if d.start > at
+            && let Some(t) = create_text(doc, chunk(at, d.start))
+        {
+            wrapper.append_child(&t);
+        }
+        if let Some(span) = create_element(doc, "span") {
+            span.set_attribute("data-pm-deco", "true");
+            span.set_attribute("class", &d.class);
+            if let Some(t) = create_text(doc, chunk(d.start, d.end)) {
+                span.append_child(&t);
+            }
+            wrapper.append_child(&span);
+            segments.push(span);
+        }
+        at = d.end;
+    }
+    let total = text.chars().count();
+    if at < total
+        && let Some(t) = create_text(doc, chunk(at, total))
+    {
+        wrapper.append_child(&t);
+    }
+    Some((wrapper, segments))
+}
+
 /// A descriptor mirroring one model [`Node`], owning the host node that projects
 /// it. The conceptual successor to the old `BlockMap`, but a proper persistent
 /// tree: because the model shares `Rc`s, [`Node::same_ref`] lets the diff skip an
@@ -182,8 +340,25 @@ pub(crate) struct ViewDesc {
     outer: NodeHandle,
     /// Child descriptors, positionally 1:1 with `node`'s children.
     children: Vec<ViewDesc>,
-    /// Whether [`Self::dom`] is a host text node (vs an element).
+    /// Whether `node` is a model **text** node. For a decorated run [`Self::dom`]
+    /// is then the `<span data-pm-deco-run>` standing in for the text node, not a
+    /// host text node — see [`Self::decos`].
     is_text: bool,
+    /// The inline decorations currently projected over this text run, in run-local
+    /// char offsets (always empty for an element). The decoration pass's
+    /// change-detection key: a run whose recomputed list compares equal is left
+    /// alone, so a transaction that changes only the *document* never rewrites a
+    /// squiggle's DOM, and one that changes only decorations never touches the
+    /// document's.
+    decos: Vec<RunDeco>,
+    /// The `<span data-pm-deco>` segments inside a decorated run, so a host node
+    /// lookup that lands on one resolves to this run ([`find_node_by_host`]).
+    segments: Vec<NodeHandle>,
+    /// Whether this subtree currently projects **any** decoration segment. Lets
+    /// the decoration pass skip a subtree that neither holds one nor overlaps a
+    /// decoration, so a per-keystroke pass costs one range test per top-level
+    /// block rather than a walk of the whole document.
+    has_deco: bool,
 }
 
 impl ViewDesc {
@@ -213,6 +388,11 @@ impl ViewDesc {
             outer,
             children,
             is_text,
+            // A freshly built run carries no decorations; the decoration pass that
+            // runs right after the document diff puts them back on.
+            decos: Vec::new(),
+            segments: Vec::new(),
+            has_deco: false,
         })
     }
 
@@ -235,6 +415,12 @@ impl ViewDesc {
                 return false;
             }
             if self.node.text() != new.text() {
+                // A *decorated* run's `dom` is the wrapper span holding its
+                // segments, not a text node — the text has to be re-split, so
+                // rebuild the run wholesale and let the decoration pass re-apply.
+                if !self.decos.is_empty() {
+                    return false;
+                }
                 self.dom.set_text(new.text().unwrap_or(""));
             }
             self.node = new.clone();
@@ -402,6 +588,9 @@ impl RinchDomEditorView {
             dom: container,
             children,
             is_text: false,
+            decos: Vec::new(),
+            segments: Vec::new(),
+            has_deco: false,
         };
         let mut view = RinchDomEditorView {
             doc,
@@ -425,14 +614,31 @@ impl RinchDomEditorView {
         view
     }
 
-    /// Diff `state`'s decorations against the projected set and patch the overlay
-    /// nodes — independent of the document diff (design A4). M5.4 handles the
-    /// placeholder widget only; M6 adds the IME preedit and richer kinds.
+    /// Diff `state`'s decorations against the projected set and patch what they
+    /// render to — independent of the document diff (design A4): the placeholder
+    /// overlay for widgets, and the wrapper spans over decorated text runs for
+    /// inline decorations.
     fn sync_decorations(&mut self, state: &EditorState) {
         let next = state.decorations();
-        if next == self.decorations {
-            return;
+        if next != self.decorations {
+            self.sync_widget_decorations(&next);
         }
+        // Inline decorations are re-applied whenever any are present *or* any were
+        // last time, even when the set itself compares equal. The document diff
+        // runs first and may have rebuilt a decorated run — a fresh text node
+        // carries no segments — so "the decorations did not change" does not imply
+        // "what projects them is still there". The `has_deco` prune below keeps
+        // that re-check to one range test per undecorated top-level block.
+        let inline = inline_decos(&next);
+        if !inline.is_empty() || self.root.has_deco {
+            self.root.has_deco = sync_inline_decos(&mut self.root, &inline, 0, &self.doc);
+        }
+        self.decorations = next;
+    }
+
+    /// The widget half of [`Self::sync_decorations`]: today the empty-editor
+    /// placeholder (design A8).
+    fn sync_widget_decorations(&mut self, next: &DecorationSet) {
         let placeholder_text = next.iter().find_map(|d| d.as_placeholder());
         match (placeholder_text, self.placeholder.is_some()) {
             (Some(text), false) => {
@@ -461,7 +667,6 @@ impl RinchDomEditorView {
             // (None, false): nothing to do.
             _ => {}
         }
-        self.decorations = next;
     }
 }
 
@@ -1210,7 +1415,13 @@ fn find_node_by_host(
 ) -> Option<(usize, &Node)> {
     let mut pos = content_start; // the position just before the current child
     for child in &desc.children {
-        if child.dom.node_id().0 == target || child.outer.node_id().0 == target {
+        // A decorated run is placed as a wrapper span holding `<span data-pm-deco>`
+        // segments, so a hit that lands on a segment (or on any of its own mark
+        // wrappers) has to resolve to the run just as a hit on the text node does.
+        if child.dom.node_id().0 == target
+            || child.outer.node_id().0 == target
+            || child.segments.iter().any(|s| s.node_id().0 == target)
+        {
             return Some((pos, &child.node));
         }
         if let Some(found) = find_node_by_host(child, target, pos + 1) {
@@ -1219,6 +1430,71 @@ fn find_node_by_host(
         pos += child.node.node_size();
     }
     None
+}
+
+/// Re-project the inline decorations over `desc`'s subtree. `content_start` is the
+/// model position just inside `desc`'s content (0 for the root/doc). Returns
+/// whether any decoration segment is projected in this subtree — the caller's
+/// [`ViewDesc::has_deco`].
+///
+/// Writes nothing for a run whose decorations are unchanged, so this is safe to
+/// run on every transaction: the per-run comparison is against
+/// [`ViewDesc::decos`], and a subtree that neither holds a segment nor overlaps a
+/// decoration is not even descended into.
+fn sync_inline_decos(
+    desc: &mut ViewDesc,
+    decos: &[InlineDeco],
+    content_start: usize,
+    doc: &DocRef,
+) -> bool {
+    let mut any = false;
+    let mut pos = content_start; // the position just before the current child
+    for child in &mut desc.children {
+        let size = child.node.node_size();
+        let overlaps = decos.iter().any(|d| d.from < pos + size && d.to > pos);
+        // `has_deco` is what makes the skip sound in the other direction: a subtree
+        // no decoration reaches any more still has to be visited to *take its
+        // segments off*.
+        if overlaps || child.has_deco {
+            if child.is_text {
+                let len = child.node.text().map_or(0, |t| t.chars().count());
+                apply_run_decos(child, run_decos(decos, pos, len), doc);
+                child.has_deco = !child.decos.is_empty();
+            } else {
+                child.has_deco = sync_inline_decos(child, decos, pos + 1, doc);
+            }
+        }
+        any |= child.has_deco;
+        pos += size;
+    }
+    any
+}
+
+/// Project `next` over the text run `desc`, replacing the run's inner host node
+/// with the shape [`build_run_host`] builds for it. A no-op when the run's
+/// decorations are unchanged — the one place the decoration pass writes to the
+/// host.
+fn apply_run_decos(desc: &mut ViewDesc, next: Vec<RunDeco>, doc: &DocRef) {
+    if desc.decos == next {
+        return;
+    }
+    let Some((inner, segments)) = build_run_host(desc.node.text().unwrap_or(""), &next, doc) else {
+        return;
+    };
+    // An unmarked run is placed in the parent by its own inner node (`outer ==
+    // dom`); a marked one is placed by its outermost mark wrapper, which keeps its
+    // identity while its content is swapped underneath.
+    let was_outer = desc.outer.node_id() == desc.dom.node_id();
+    desc.dom.replace_with(&inner);
+    // `replace_with` detaches the node it displaces and nothing can show it again
+    // (issue #719) — and this is a per-keystroke path on a decorated run.
+    desc.dom.discard();
+    if was_outer {
+        desc.outer = inner.clone();
+    }
+    desc.dom = inner;
+    desc.segments = segments;
+    desc.decos = next;
 }
 
 /// The model **char** offset within a textblock for a flat UTF-8 `ifc_byte` offset
@@ -1990,6 +2266,360 @@ mod tests {
             view.selection_rects.is_empty(),
             "no text highlight for a node selection"
         );
+    }
+
+    // ── inline decorations ───────────────────────────────────────────────────
+
+    /// A stand-in for a consumer's spellcheck plugin: it reports whatever ranges
+    /// the test puts in it, so a test can change the decorations without touching
+    /// the document (and vice versa).
+    struct SpellPlugin {
+        ranges: RefCell<Vec<(usize, usize, &'static str)>>,
+    }
+
+    impl SpellPlugin {
+        fn new() -> Rc<SpellPlugin> {
+            Rc::new(SpellPlugin {
+                ranges: RefCell::new(Vec::new()),
+            })
+        }
+        fn set(&self, ranges: &[(usize, usize, &'static str)]) {
+            *self.ranges.borrow_mut() = ranges.to_vec();
+        }
+    }
+
+    impl rinch_editor_core::Plugin for SpellPlugin {
+        fn key(&self) -> rinch_editor_core::PluginKey {
+            rinch_editor_core::PluginKey("test.spell")
+        }
+        fn decorations(&self, _state: &EditorState) -> DecorationSet {
+            DecorationSet::new(
+                self.ranges
+                    .borrow()
+                    .iter()
+                    .map(|(from, to, class)| {
+                        rinch_editor_core::decoration::Decoration::inline(
+                            rinch_editor_core::Pos(*from),
+                            rinch_editor_core::Pos(*to),
+                            rinch_editor_core::Attrs::new().with("class", *class),
+                        )
+                    })
+                    .collect(),
+            )
+        }
+    }
+
+    /// A state over `doc` whose only plugin is `spell`.
+    fn spell_state(s: Rc<Schema>, doc: Node, spell: &Rc<SpellPlugin>) -> EditorState {
+        EditorState::create(s, doc, vec![spell.clone()])
+    }
+
+    /// `(element id, class)` for every `[data-pm-deco]` segment under `id`, in
+    /// document order — the squiggles as the host actually carries them.
+    fn deco_spans(h: &Harness, id: NodeId) -> Vec<(NodeId, String, String)> {
+        let mut out = Vec::new();
+        if attr_of(h, id, "data-pm-deco").is_some() {
+            out.push((
+                id,
+                attr_of(h, id, "class").unwrap_or_default(),
+                text(h, id).unwrap_or_default(),
+            ));
+        }
+        for child in children(h, id) {
+            out.extend(deco_spans(h, child));
+        }
+        out
+    }
+
+    #[test]
+    fn inline_decoration_wraps_its_range_in_a_deco_span() {
+        let h = harness();
+        let s = schema();
+        let spell = SpellPlugin::new();
+        // "hello world": the paragraph's content starts at 1, so "world" is 7..12.
+        spell.set(&[(7, 12, "pm-spell-error")]);
+        let st = spell_state(
+            s.clone(),
+            doc_node(&s, vec![para(&s, "hello world")]),
+            &spell,
+        );
+        let _view = RinchDomEditorView::new(h.container.clone(), doc_ref(&h), &st);
+
+        let p = children(&h, h.container_id)[0];
+        // The run is split, but the block still reads back as the model text — the
+        // caret map and both backends' hit-tests depend on that.
+        assert_eq!(text(&h, p).as_deref(), Some("hello world"));
+        let spans = deco_spans(&h, p);
+        assert_eq!(spans.len(), 1, "expected exactly one decorated segment");
+        assert_eq!(spans[0].1, "pm-spell-error");
+        assert_eq!(spans[0].2, "world");
+        // The segment is a real element inside a wrapper, not the block itself.
+        assert_eq!(tag(&h, spans[0].0).as_deref(), Some("span"));
+        let wrapper = children(&h, p)[0];
+        assert_eq!(
+            attr_of(&h, wrapper, "data-pm-deco-run").as_deref(),
+            Some("true")
+        );
+    }
+
+    #[test]
+    fn an_undecorated_run_is_still_a_bare_text_node() {
+        // The whole point of building the wrapper lazily: a document with no
+        // decorations projects exactly the DOM it did before they existed.
+        let h = harness();
+        let s = schema();
+        let spell = SpellPlugin::new();
+        let st = spell_state(s.clone(), doc_node(&s, vec![para(&s, "hello")]), &spell);
+        let _view = RinchDomEditorView::new(h.container.clone(), doc_ref(&h), &st);
+
+        let p = children(&h, h.container_id)[0];
+        let kid = children(&h, p)[0];
+        assert_eq!(tag(&h, kid), None, "an undecorated run stays a text node");
+        assert!(deco_spans(&h, p).is_empty());
+    }
+
+    #[test]
+    fn dropping_the_decoration_restores_a_plain_text_node() {
+        let h = harness();
+        let s = schema();
+        let spell = SpellPlugin::new();
+        spell.set(&[(1, 6, "pm-spell-error")]);
+        let st = spell_state(
+            s.clone(),
+            doc_node(&s, vec![para(&s, "helo world")]),
+            &spell,
+        );
+        let mut view = RinchDomEditorView::new(h.container.clone(), doc_ref(&h), &st);
+        let p = children(&h, h.container_id)[0];
+        let wrapper = children(&h, p)[0];
+        assert_eq!(deco_spans(&h, p).len(), 1, "precondition: squiggle mounted");
+
+        // The user accepted the correction, the plugin drops the range — a
+        // decoration-only change, with no transaction touching the document.
+        spell.set(&[]);
+        view.update_dom(&st, &st);
+
+        assert!(deco_spans(&h, p).is_empty());
+        let kid = children(&h, p)[0];
+        assert_eq!(tag(&h, kid), None, "the run is a bare text node again");
+        assert_eq!(text(&h, p).as_deref(), Some("helo world"));
+        assert_eq!(
+            tag(&h, wrapper),
+            None,
+            "#719: the displaced wrapper must be discarded, not merely detached"
+        );
+    }
+
+    #[test]
+    fn a_decoration_only_change_leaves_the_document_nodes_alone() {
+        // Design A4: decorations diff independently of the document. The block
+        // elements must keep their identity, or every squiggle would re-create the
+        // paragraph it lands in (and with it the caret's host).
+        let h = harness();
+        let s = schema();
+        let spell = SpellPlugin::new();
+        let st = spell_state(
+            s.clone(),
+            doc_node(&s, vec![para(&s, "helo"), para(&s, "there")]),
+            &spell,
+        );
+        let mut view = RinchDomEditorView::new(h.container.clone(), doc_ref(&h), &st);
+        let blocks_before = children(&h, h.container_id);
+        let untouched_text = children(&h, blocks_before[1])[0];
+
+        spell.set(&[(1, 5, "pm-spell-error")]);
+        view.update_dom(&st, &st);
+
+        assert_eq!(children(&h, h.container_id), blocks_before);
+        assert_eq!(
+            children(&h, blocks_before[1])[0],
+            untouched_text,
+            "an undecorated block's text node was rebuilt by a decoration change"
+        );
+        assert_eq!(deco_spans(&h, blocks_before[0]).len(), 1);
+    }
+
+    #[test]
+    fn a_squiggle_survives_an_edit_that_leaves_the_decoration_set_equal() {
+        // The trap this guards: the document diff rebuilds the decorated run (a
+        // decorated run cannot be patched in place), and the decoration set is
+        // *unchanged*, so a pass that ran only on a decoration diff would leave the
+        // fresh text node bare.
+        let h = harness();
+        let s = schema();
+        let spell = SpellPlugin::new();
+        spell.set(&[(1, 5, "pm-spell-error")]); // "helo" at the start of the block
+        let st = spell_state(
+            s.clone(),
+            doc_node(&s, vec![para(&s, "helo world")]),
+            &spell,
+        );
+        let mut view = RinchDomEditorView::new(h.container.clone(), doc_ref(&h), &st);
+        let p = children(&h, h.container_id)[0];
+
+        // Type at the END of the block: the run's text changes, the misspelling at
+        // the start does not move, so the plugin reports the very same range.
+        let mut tr = st.tr();
+        tr.set_selection(Selection::cursor(rinch_editor_core::Pos(11)));
+        tr.insert_text("!").unwrap();
+        let next = st.apply(tr);
+        assert_eq!(
+            st.decorations(),
+            next.decorations(),
+            "precondition: this edit must leave the decoration set equal"
+        );
+        view.update_dom(&st, &next);
+
+        assert_eq!(text(&h, p).as_deref(), Some("helo world!"));
+        let spans = deco_spans(&h, p);
+        assert_eq!(
+            spans.len(),
+            1,
+            "the squiggle was lost when the run was rebuilt"
+        );
+        assert_eq!(spans[0].2, "helo");
+    }
+
+    #[test]
+    fn the_caret_map_is_blind_to_the_deco_wrapper() {
+        // An inline element contributes nothing to the flat IFC text, so splitting
+        // a run must not move a single caret address — in either direction.
+        let h = harness();
+        let s = schema();
+        let spell = SpellPlugin::new();
+        let doc = doc_node(&s, vec![para(&s, "héllo wörld")]);
+        let st = spell_state(s.clone(), doc.clone(), &spell);
+        let mut view = RinchDomEditorView::new(h.container.clone(), doc_ref(&h), &st);
+
+        let addresses: Vec<Option<(usize, usize)>> = (1..=12)
+            .map(|i| view.caret_address(&doc, rinch_editor_core::Pos(i)))
+            .collect();
+
+        spell.set(&[(7, 12, "pm-spell-error")]);
+        view.update_dom(&st, &st);
+        assert_eq!(deco_spans(&h, children(&h, h.container_id)[0]).len(), 1);
+
+        for (i, before) in addresses.iter().enumerate() {
+            let pos = rinch_editor_core::Pos(i + 1);
+            assert_eq!(
+                &view.caret_address(&doc, pos),
+                before,
+                "decorating the run moved the caret address for {pos:?}"
+            );
+            // And the hit-test inverse still round-trips through the wrapper.
+            if let Some((block, byte)) = before {
+                assert_eq!(view.pos_at(*block, *byte), Some(pos));
+            }
+        }
+    }
+
+    #[test]
+    fn a_hit_on_a_deco_segment_resolves_to_its_run() {
+        // A pointer lands on the `<span data-pm-deco>`, not on the run's own host —
+        // it must still resolve to the text run, like a hit on a mark wrapper does.
+        let h = harness();
+        let s = schema();
+        let spell = SpellPlugin::new();
+        spell.set(&[(7, 12, "pm-spell-error")]);
+        let st = spell_state(
+            s.clone(),
+            doc_node(&s, vec![para(&s, "hello world")]),
+            &spell,
+        );
+        let view = RinchDomEditorView::new(h.container.clone(), doc_ref(&h), &st);
+
+        let p = children(&h, h.container_id)[0];
+        let segment = deco_spans(&h, p)[0].0;
+        let (pos, node) = view
+            .node_pos_for_host(segment.0)
+            .expect("a hit on a decoration segment must resolve");
+        assert_eq!(pos, 1, "the run starts just inside the paragraph");
+        assert_eq!(node.text(), Some("hello world"));
+    }
+
+    #[test]
+    fn a_decorated_marked_run_keeps_its_mark_wrappers() {
+        // Decoration segments live *inside* the mark chain, so a bold misspelling
+        // is still bold and `<strong>` is still what the paragraph holds.
+        let h = harness();
+        let s = schema();
+        let spell = SpellPlugin::new();
+        spell.set(&[(1, 5, "pm-spell-error")]);
+        let bold = mk(&s, "bold", rinch_editor_core::Attrs::new());
+        let st = spell_state(
+            s.clone(),
+            doc_node(&s, vec![marked_para(&s, "helo", vec![bold])]),
+            &spell,
+        );
+        let _view = RinchDomEditorView::new(h.container.clone(), doc_ref(&h), &st);
+
+        let p = children(&h, h.container_id)[0];
+        let strong = children(&h, p)[0];
+        assert_eq!(tag(&h, strong).as_deref(), Some("strong"));
+        assert_eq!(attr_of(&h, strong, "data-pm-mark").as_deref(), Some("bold"));
+        let spans = deco_spans(&h, p);
+        assert_eq!(spans.len(), 1);
+        assert_eq!(spans[0].2, "helo");
+        assert_eq!(text(&h, strong).as_deref(), Some("helo"));
+    }
+
+    #[test]
+    fn decorations_spanning_runs_and_overlapping_each_other_flatten_cleanly() {
+        // `run_decos` is the whole of the clipping/overlap policy, so test it
+        // directly: a range is clipped to the run, an overlap yields one segment
+        // per distinct stretch carrying both classes, and abutting stretches with
+        // the same class merge back into one.
+        let d = |from: usize, to: usize, class: &str| InlineDeco {
+            from,
+            to,
+            class: Rc::from(class),
+        };
+        // Run occupying model chars 10..20.
+        let decos = vec![d(5, 13, "a"), d(11, 16, "b"), d(30, 40, "a")];
+        let out = run_decos(&decos, 10, 10);
+        let seen: Vec<(usize, usize, &str)> =
+            out.iter().map(|r| (r.start, r.end, &*r.class)).collect();
+        assert_eq!(seen, vec![(0, 1, "a"), (1, 3, "a b"), (3, 6, "b")]);
+
+        // Two decorations that abut and agree are one segment, not two.
+        let merged = run_decos(&[d(10, 13, "a"), d(13, 16, "a")], 10, 10);
+        let seen: Vec<(usize, usize, &str)> =
+            merged.iter().map(|r| (r.start, r.end, &*r.class)).collect();
+        assert_eq!(seen, vec![(0, 6, "a")]);
+
+        // A range that misses the run entirely decorates nothing.
+        assert!(run_decos(&[d(30, 40, "a")], 10, 10).is_empty());
+    }
+
+    #[test]
+    fn a_decoration_reaching_across_a_mark_boundary_decorates_both_runs() {
+        // Known limitation, pinned here: the model's runs are the unit of
+        // wrapping, so a decoration crossing a mark boundary becomes one segment
+        // per run rather than one continuous element. Visually identical for an
+        // underline; worth knowing for anything that draws a box.
+        let h = harness();
+        let s = schema();
+        let spell = SpellPlugin::new();
+        let bold = mk(&s, "bold", rinch_editor_core::Attrs::new());
+        let p = s
+            .branch(
+                "paragraph",
+                Fragment::from_children(vec![
+                    s.text("he").unwrap(),
+                    s.text_with_marks("lo", vec![bold]).unwrap(),
+                ]),
+            )
+            .unwrap();
+        spell.set(&[(1, 5, "pm-spell-error")]);
+        let st = spell_state(s.clone(), doc_node(&s, vec![p]), &spell);
+        let _view = RinchDomEditorView::new(h.container.clone(), doc_ref(&h), &st);
+
+        let block = children(&h, h.container_id)[0];
+        let spans = deco_spans(&h, block);
+        assert_eq!(spans.len(), 2, "one segment per model run");
+        assert_eq!(spans[0].2, "he");
+        assert_eq!(spans[1].2, "lo");
+        assert_eq!(text(&h, block).as_deref(), Some("helo"));
     }
 
     #[test]

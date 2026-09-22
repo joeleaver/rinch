@@ -16,6 +16,14 @@
 //! **Tables:** rinch-dom has no `display: table`, so tables are laid out with
 //! flexbox (`table` = column, `row` = row, cells = equal-width flex items). This
 //! is why the default stylesheet is load-bearing for tables, not just cosmetic.
+//!
+//! **Inline decorations:** a
+//! [`Decoration::Inline`](rinch_editor_core::decoration::Decoration::Inline)
+//! projects to `<span data-pm-deco class="…">` around its range, so a consumer
+//! styles its own decorations with its own CSS class and needs nothing from this
+//! file. The two classes styled below — `pm-spell-error` and `pm-grammar-error`
+//! — are shipped only because a spellcheck squiggle is the reason inline
+//! decorations exist, so that case works with no consumer CSS at all.
 
 use std::cell::RefCell;
 use std::rc::Weak;
@@ -148,6 +156,17 @@ pub(crate) const DEFAULT_EDITOR_CSS: &str = r#"
 }
 [data-pm-editor] th { font-weight: 600; background: #f6f8fa; }
 
+/* ── Inline decorations ─────────────────────────────────────
+   A `Decoration::Inline` wraps its range in `<span data-pm-deco class="…">`
+   carrying whatever class the plugin asked for, so styling one is ordinary CSS
+   and a consumer's rule for its own class needs nothing from here. The two
+   below ship only because a spellcheck squiggle is the reason inline
+   decorations exist — that case then works with no consumer CSS at all. The
+   wrapper is deliberately given no metrics of its own: a squiggle appearing
+   must not reflow the text it sits under. */
+[data-pm-editor] [data-pm-deco].pm-spell-error { text-decoration: underline wavy #d1242f; }
+[data-pm-editor] [data-pm-deco].pm-grammar-error { text-decoration: underline wavy #1a7f37; }
+
 /* ── Placeholder (empty-document hint) ─────────────────────────────────── */
 [data-pm-placeholder] { color: #8c959f; position: absolute; pointer-events: none; }
 /* A read-only editor (EditorHandle::set_read_only) takes no typing, so it shows
@@ -184,6 +203,8 @@ pub(crate) const DEFAULT_EDITOR_CSS: &str = r#"
 [data-pm-editor][data-pm-theme="dark"] th { border-color: #30363d; }
 [data-pm-editor][data-pm-theme="dark"] th { background: #161b22; }
 [data-pm-editor][data-pm-theme="dark"] [data-pm-placeholder] { color: #6e7681; }
+[data-pm-editor][data-pm-theme="dark"] [data-pm-deco].pm-spell-error { text-decoration-color: #ff7b72; }
+[data-pm-editor][data-pm-theme="dark"] [data-pm-deco].pm-grammar-error { text-decoration-color: #3fb950; }
 "#;
 
 thread_local! {

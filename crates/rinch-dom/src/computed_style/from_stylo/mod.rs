@@ -241,6 +241,9 @@ impl ComputedStyle {
             text_align: text_align_from_stylo(&text.text_align),
             text_decoration: text_decoration_from_stylo(
                 &cv.get_text().clone_text_decoration_line(),
+                cv.get_text().clone_text_decoration_style(),
+                &cv.get_text().clone_text_decoration_color(),
+                &text.color,
             ),
             text_transform: text_transform_from_stylo(&text.text_transform),
             // `text-underline-offset` is declared `engines="gecko"` at

@@ -429,6 +429,52 @@ impl EditorHandle {
         true
     }
 
+    /// Add `plugin` to this editor, rebuilding its state over the **current**
+    /// document and selection.
+    ///
+    /// The plugin list is otherwise fixed at construction
+    /// ([`create_editor`](super::create_editor) installs
+    /// [`default_plugins`](rinch_editor_core::default_plugins)), which leaves an app
+    /// no way to contribute one of its own — a spellchecker's decorations, say. This
+    /// is that seam.
+    ///
+    /// Rebuilding the state **discards every plugin's folded state**, undo history
+    /// included, so this is a construction-time call: add the plugin to a freshly
+    /// created handle, before any content is loaded or typed. Adding a key that is
+    /// already installed is a no-op, so calling it twice is harmless.
+    ///
+    /// Adding a plugin is **not an edit**: the document is the same node before
+    /// and after, so a [read-only](Self::set_read_only) editor accepts it — a
+    /// collaborating one included — nothing is recorded onto a collaboration
+    /// session, and [`on_change`](Self::on_change) does not fire. The selection
+    /// and any stored marks are carried over.
+    ///
+    /// Returns whether the plugin was added. It is all-or-nothing: `false` leaves
+    /// the plugin list untouched, so a later call can still add it.
+    pub fn add_plugin(&self, plugin: Rc<dyn Plugin>) -> bool {
+        let mut core = self.inner.borrow_mut();
+        if core.plugins.iter().any(|p| p.key() == plugin.key()) {
+            return false;
+        }
+        let mut plugins = core.plugins.clone();
+        plugins.push(plugin);
+        let prev = core.state.clone();
+        let mut next = EditorState::create(core.schema.clone(), prev.doc.clone(), plugins.clone());
+        next.selection = prev.selection.clone();
+        next.stored_marks = prev.stored_marks.clone();
+        // The identity mapping says what this is: a step forward over the same
+        // document, not a load. `commit` treats a `None` mapping as a load, which
+        // a read-only editor with a collaboration session attached refuses (a
+        // load there is a write to the shared document) — and this used to pass
+        // `None` after pushing the plugin, so that refusal left the key taken
+        // and every retry refused too (review of #836).
+        if core.commit(prev, next, Some(&Mapping::new())).is_none() {
+            return false;
+        }
+        core.plugins = plugins;
+        true
+    }
+
     /// Run the named command (applying + re-projecting if it applies). Returns
     /// whether it applied — a [read-only](Self::set_read_only) editor refuses every
     /// command that would change the document. The toolbar/keymap entry point.
@@ -3464,17 +3510,29 @@ mod tests {
             assert_eq!(doc_text(&guest), "hello");
             assert!(host.collab_outbound_stall().is_none(), "healthy to start");
 
-            // Insert a horizontal rule — applied locally, refused by the projection.
-            host.set_selection(Selection::cursor(Pos(6)));
+            // Append a blockquote — applied locally, refused by the projection. (A
+            // `horizontal_rule` used to stand here; leaf block atoms are inside the
+            // projected scope now, so the stall needs content that is still outside it.)
             assert!(
-                host.command("insertHorizontalRule"),
+                host.update(|state| {
+                    let s = state.schema().clone();
+                    let inner = s
+                        .branch("paragraph", Fragment::from_node(s.text("q").ok()?))
+                        .ok()?;
+                    let bq = s.branch("blockquote", Fragment::from_node(inner)).ok()?;
+                    let at = state.doc.content_size();
+                    let mut tr = state.tr();
+                    tr.replace(at, at, Slice::new(Fragment::from_node(bq), 0, 0))
+                        .ok()?;
+                    Some(tr)
+                }),
                 "the editor applies it"
             );
             let stall = host
                 .collab_outbound_stall()
                 .expect("outbound must report itself stalled");
             assert!(
-                stall.to_string().contains("horizontal_rule"),
+                stall.to_string().contains("blockquote"),
                 "the stall must name the content to remove, got: {stall}"
             );
             assert!(
@@ -3487,7 +3545,7 @@ mod tests {
             assert!(host.insert_text("!!"));
             assert!(
                 host.collab_outbound_stall().is_some(),
-                "still stalled while the rule is there"
+                "still stalled while the blockquote is there"
             );
             assert_eq!(
                 doc_text(&guest),
@@ -3495,7 +3553,7 @@ mod tests {
                 "nothing reached the guest during the stall"
             );
 
-            // Delete the rule — selecting it and pressing Delete, as an app would. Note
+            // Delete the blockquote — selecting it and pressing Delete, as an app would. Note
             // this is NOT `undo`: the text typed during the stall stays, which is the
             // half that must survive.
             assert!(
@@ -3508,7 +3566,7 @@ mod tests {
                     tr.delete(from, to).ok()?;
                     Some(tr)
                 }),
-                "the rule is deleted"
+                "the blockquote is deleted"
             );
             assert!(
                 host.collab_outbound_stall().is_none(),
