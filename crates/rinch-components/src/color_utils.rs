@@ -1565,5 +1565,10 @@ mod tests {
         );
         assert!(respells("rgba(255, 0, 0, 0.5)", emitted));
         assert!(!respells("rgba(255, 0, 0, 0.51)", emitted));
+        // And the 8-bit alpha grid is 255 steps, not 100: 0.51 is 130.05 of
+        // 255, so 131 is a step away though it is within half a percent.
+        let emitted = "hsla(0, 100%, 50%, 0.51)";
+        assert!(respells("#ff000082", emitted));
+        assert!(!respells("#ff000083", emitted));
     }
 }
