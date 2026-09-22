@@ -290,8 +290,23 @@ Custom Default: `toggle_visibility` defaults to `true`.
 | `value` | `String` | `""` | |
 | `value_fn` | `Option<ReactiveString>` | `None` | Reactive value binding (auto-wrapped) |
 | `onchange` | `Option<InputCallback>` | `None` | Receives selected value as `String` |
+| `data` | `Vec<SelectOption>` | `[]` | The list of selectable options |
 
-Options are passed as children: `option { value: "us", "United States" }`
+Options are passed via `data`, not as children — the trigger's `_children` param
+is unused. Build a `Vec<SelectOption>` with `SelectOption::new(value, label)` (a
+`SelectOption` is `{ value: String, label: String }`; an empty `label` falls back
+to displaying `value`):
+
+```rust
+Select {
+    data: vec![
+        SelectOption::new("us", "United States"),
+        SelectOption::new("ca", "Canada"),
+    ],
+    value_fn: move || country.get(),
+    onchange: move |v: String| country.set(v),
+}
+```
 
 The trigger is a Tab stop (`tabindex="0"`, `role="combobox"`,
 `aria-haspopup="listbox"`, and an `aria-expanded` that tracks the open state).
@@ -1127,6 +1142,8 @@ Two consequences of that spelling:
 | Prop | Type | Default | Description |
 |------|------|---------|-------------|
 | `opened` | `bool` | `false` | |
+| `opened_fn` | `Option<ReactiveBool>` | `None` | Reactive opened getter — use this for fine-grained updates |
+| `on_close` | `Option<Callback>` | `None` | Fired when the user clicks outside the menu or clicks a menu item (with `close_on_click_outside`/`close_on_item_click`); the caller should set their `opened_fn` source to `false` from here |
 | `position` | `String` | `""` | |
 | `offset` | `Option<i32>` | `None` | |
 | `radius` | `String` | `""` | |
@@ -1367,6 +1384,7 @@ Custom Default: `level_offset` defaults to `"md"`, `expand_on_click` defaults to
 | `onselect` | `Option<ValueCallback<String>>` | `None` | |
 | `onexpand` | `Option<ValueCallback<String>>` | `None` | |
 | `oncollapse` | `Option<ValueCallback<String>>` | `None` | |
+| `data_source` | `Option<Rc<dyn Fn() -> Vec<TreeNodeData>>>` | `None` | Reactive data source — when provided, root nodes update when this changes |
 
 **TreeNodeData:** `value: String`, `label: String`, `children: Vec<TreeNodeData>`, `disabled: bool`, `icon: Option<TablerIcon>`, `payload: Option<Rc<dyn Any>>`.
 
@@ -1390,6 +1408,45 @@ Custom Default: `show_minimize`, `show_maximize`, `show_close` all default to `t
 | `on_minimize` | `Option<Callback>` | `None` | |
 | `on_maximize` | `Option<Callback>` | `None` | |
 | `on_close` | `Option<Callback>` | `None` | |
+
+### FloatingPanel
+
+A draggable, resizable floating panel for desktop app patterns — tool panels,
+property inspectors, floating toolbars. Position and size are controlled via
+`Signal<f32>` props (each defaults to an internal signal when not given —
+`x`/`y` default to `50.0`, `width` to `300.0`, `height` to `200.0`); the panel
+writes back to them during drag/resize.
+
+| Prop | Type | Default | Description |
+|------|------|---------|-------------|
+| `title` | `String` | `""` | Displayed in the panel header; header renders no title span when empty |
+| `x` | `Option<Signal<f32>>` | `None` | X position (viewport px) |
+| `y` | `Option<Signal<f32>>` | `None` | Y position (viewport px) |
+| `width` | `Option<Signal<f32>>` | `None` | Width (viewport px) |
+| `height` | `Option<Signal<f32>>` | `None` | Height (viewport px) |
+| `min_width` | `Option<f32>` | `None` | Minimum width constraint (falls back to `200.0`) |
+| `min_height` | `Option<f32>` | `None` | Minimum height constraint (falls back to `100.0`) |
+| `resizable` | `bool` | **`true`** | Whether the panel can be resized |
+| `on_close` | `Option<Callback>` | `None` | Shows a close button in the header when set |
+
+```rust
+let x = Signal::new(100.0);
+let y = Signal::new(100.0);
+let w = Signal::new(300.0);
+let h = Signal::new(200.0);
+
+rsx! {
+    FloatingPanel {
+        title: "Properties",
+        x: x,
+        y: y,
+        width: w,
+        height: h,
+        on_close: move || { /* hide panel */ },
+        div { "Panel content here" }
+    }
+}
+```
 
 ---
 
