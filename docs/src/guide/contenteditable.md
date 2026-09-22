@@ -163,6 +163,47 @@ inline tags become marks; unknown tags and attributes (`<script>`, inline event
 handlers, …) are dropped at parse time. The document can only ever hold structure
 the schema allows.
 
+### Your own plugins and inline decorations
+
+`add_plugin(Rc<dyn Plugin>) -> bool` installs a plugin of your own — a
+spellchecker, a search highlighter. It rebuilds the editor's state over the
+current document and selection, which **discards the undo history**, so call it
+on a freshly created handle, before content is typed. It is not an edit: a
+read-only editor (collaborating or not) accepts it, nothing is sent to peers and
+`on_change` does not fire. A plugin whose key is already installed is refused
+(`false`), and a refused call changes nothing.
+
+A plugin marks ranges of text through its `decorations()`, without touching the
+document:
+
+```rust
+use rinch_editor_core::decoration::{Decoration, DecorationSet};
+
+impl Plugin for Spellcheck {
+    fn key(&self) -> PluginKey { PluginKey("my-app.spellcheck") }
+    fn decorations(&self, state: &EditorState) -> DecorationSet {
+        DecorationSet::new(
+            self.misspelled(&state.doc)
+                .map(|(from, to)| {
+                    Decoration::inline(from, to, Attrs::new().with("class", "pm-spell-error"))
+                })
+                .collect(),
+        )
+    }
+}
+```
+
+The view wraps each decorated stretch in a `<span data-pm-deco class="…">`.
+The built-in stylesheet draws `pm-spell-error` (red) and `pm-grammar-error`
+(green) as wavy underlines, on desktop and on the web; any other class is yours
+to style. Decorations are recomputed from every new state, and the editor does
+**not** move a range for you when text is inserted before it — a plugin that
+caches ranges maps them through `tr.mapping()` in its `apply`.
+
+A right press over the editor places the caret before an app's
+`data-oncontextmenu` handler runs, on both backends, so a handler that draws its
+own suggestions menu reads the pressed word from `selection()`.
+
 ### Dark mode
 
 The editor's built-in stylesheet has light and dark color schemes; toggle between
@@ -238,11 +279,19 @@ platform. `Mod` = Ctrl on Windows/Linux, Cmd on macOS.
 | Mod+Shift+0 | Paragraph |
 | Mod+Shift+7 / 8 / 9 | Task / bullet / ordered list |
 | Mod+Shift+B | Blockquote |
+| Mod+Shift+L / E / R / J | Align left / center / right / justify |
 | Mod+Z / Mod+Shift+Z / Mod+Y | Undo / redo |
 | Enter | Split block / new list item |
 | Shift+Enter | Insert a hard break (line break within the block) |
 | Tab / Shift+Tab | Move between table cells, else indent / outdent a list item |
 | Backspace / Delete | Delete backward / forward |
+
+The four alignment chords are the Google Docs ones, and some of them are also
+chords of the browser or the platform, which may take the key before the editor
+sees it. Chrome reserves Ctrl+Shift+J (and Ctrl+Shift+I) for its developer
+tools; Ctrl+Shift+R is the browser's hard reload; some Linux input methods
+(IBus's emoji picker) bind Ctrl+Shift+E. The commands themselves
+(`setTextAlignLeft` / `Center` / `Right` / `Justify`) always work from a toolbar.
 
 (Copy/cut/paste — Mod+C/X/V, and Mod+Shift+V for paste-as-plain — are handled by the
 platform clipboard, not the keymap.) On desktop the same four operations — cut, copy,
@@ -300,6 +349,7 @@ start of a line; inline mark shortcuts fire when you type the closing delimiter:
 |------|---------|
 | `# ` … `###### ` | Heading 1–6 |
 | `` ``` `` | Code block |
+| `---` / `***` | Horizontal rule (fires on the third character, no space) |
 | `> ` | Blockquote |
 | `- ` / `* ` / `+ ` | Bullet list |
 | `1. ` | Ordered list |
@@ -309,6 +359,11 @@ start of a line; inline mark shortcuts fire when you type the closing delimiter:
 | `~~strike~~` | ~~strike~~ |
 | `==highlight==` | highlighted |
 | `` `code` `` | inline `code` |
+
+The horizontal rule fires only when the marker is the paragraph's **whole**
+content: `---` typed in front of existing text, or in a heading, stays text. The
+caret lands in the block after the rule, or in a fresh empty paragraph appended
+after it (inside the same blockquote or list item) when nothing follows.
 
 Inside a task list, **Enter** adds a new (unchecked) item, and **Enter** on an empty
 item exits the list — just like bullet/ordered lists. **Click a task's checkbox** to
@@ -521,11 +576,15 @@ peer.
 `is_collaborating()`, `stop_collaboration()`, `collab_snapshot()` (a fresh snapshot
 for a *late*-joining peer to `start_collaboration_guest` from), and
 `collab_take_error()` round out the API. The first milestone covers **flat
-text-blocks + marks** (paragraphs, headings, code blocks, bold/italic/link/…) plus
-list containers (bullet/ordered lists and list items, nested to any depth); an edit
+text-blocks + marks** (paragraphs, headings, code blocks, bold/italic/link/…),
+list containers (bullet/ordered lists and list items, nested to any depth) and
+horizontal rules; an edit
 outside that scope fails loud rather than silently diverging —
 `collab_take_error()` surfaces it, and the CRDT is left untouched (the local edit is
-not projected). A runnable two-pane loopback (both editors in one window, no network)
+not projected). Horizontal rules joined that scope without a new wire
+format, so **every peer on a document must be upgraded together**: an older build
+accepts a rule from a newer peer and then cannot read it, which poisons its
+session (see below). A runnable two-pane loopback (both editors in one window, no network)
 lives at `examples/collab-editor-demo/src/main.rs`.
 
 **Outbound stalls: an out-of-scope edit, and how it un-sticks.** The local edit that

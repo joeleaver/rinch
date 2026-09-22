@@ -32,9 +32,13 @@
 //!
 //! A **leaf block atom** (`horizontal_rule` — a block-level node the schema gives no
 //! content at all) is a block whose `text` is simply always **empty**: same `Map`, same
-//! `text` key, an empty `Text` object. It needs no wire shape of its own, so a peer at
-//! this same wire version reads it back as an ordinary node and the format tag does not
-//! move. What keeps that empty text *empty* is [`reconcile_node`]: a node whose type
+//! `text` key, an empty `Text` object. It needs no wire shape of its own, so the format
+//! tag does not move — and that is exactly why the change is **not** backward
+//! compatible: a peer built before leaf atoms were in scope carries the same tag,
+//! accepts the bytes, and then refuses the rule on read (`Unsupported`), which
+//! poisons its session (#196). Loud, not a silent divergence, but a
+//! **coordinated upgrade**: every peer on a shared document must run a build with
+//! leaf atoms in scope before any of them inserts one. What keeps that empty text *empty* is [`reconcile_node`]: a node whose type
 //! changes into (or out of) a shape with no text is **replaced**, never reconciled in
 //! place, so a peer's concurrent typing cannot land in the `Text` of what has become an
 //! atom. [`build_block`] refuses an atom carrying text loudly rather than dropping it,
