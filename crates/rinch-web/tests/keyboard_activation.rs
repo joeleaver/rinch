@@ -285,6 +285,118 @@ fn a_label_activation_click_after_a_mouse_press_is_not_a_second_dispatch() {
     f.teardown();
 }
 
+/// A `pointerdown`/`pointermove`/`pointerup` at an explicit viewport point,
+/// with the primary button held for everything but the release.
+fn pointer_event_at(el: &web_sys::Element, name: &str, x: i32, y: i32) {
+    let init = web_sys::PointerEventInit::new();
+    init.set_bubbles(true);
+    init.set_cancelable(true);
+    init.set_pointer_id(1);
+    init.set_is_primary(true);
+    init.set_pointer_type("mouse");
+    init.set_button(if name == "pointermove" { -1 } else { 0 });
+    init.set_buttons(if name == "pointerup" { 0 } else { 1 });
+    init.set_client_x(x);
+    init.set_client_y(y);
+    let ev = web_sys::PointerEvent::new_with_event_init_dict(name, &init).unwrap();
+    el.dispatch_event(&ev).unwrap();
+}
+
+/// `<label for=x>` outside a `data-rid` wrapper, `<input id=x>` inside it.
+fn label_for_outside_the_wrapper(scope: &mut RenderScope, rid: EventHandlerId) -> NodeHandle {
+    let root = scope.create_element("div");
+    let label = scope.create_element("label");
+    label.set_attribute("id", "lbl272");
+    label.set_attribute("for", "cb272");
+    let text = scope.create_text("label text");
+    label.append_child(&text);
+    root.append_child(&label);
+    let wrapper = rid_element(scope, "div", "wrap272", rid, &[]);
+    let input = scope.create_element("input");
+    input.set_attribute("type", "checkbox");
+    input.set_attribute("id", "cb272");
+    wrapper.append_child(&input);
+    root.append_child(&wrapper);
+    root
+}
+
+#[wasm_bindgen_test]
+fn a_label_for_outside_a_wrapper_activates_it_once_by_mouse() {
+    // Issue #272. The press on the label finds no `data-rid` and dispatches
+    // nothing, so the click the label forwards to its control — which bubbles
+    // through the wrapper — is the interaction's ONLY activation, not a
+    // duplicate of one. The gesture gate used to suppress it: the label did
+    // nothing by mouse while Space on the checkbox worked.
+    let f = Fixture::mount(label_for_outside_the_wrapper);
+    rinch_web::__force_trusted_clicks(true);
+    let label = f.el("lbl272");
+    let cb = f.el("cb272");
+    pointerdown(&label);
+    assert_eq!(f.dispatches(), 0, "the press is outside every data-rid");
+    pointerup(&label);
+    // The browser's own click on the label. Its activation behaviour forwards a
+    // click to #cb272 (Chrome runs it for a dispatched click too).
+    click(&label, 1);
+    assert_eq!(
+        f.dispatches(),
+        1,
+        "the click the label forwards through the wrapper must dispatch it exactly once"
+    );
+    assert!(
+        cb.dyn_ref::<web_sys::HtmlInputElement>().unwrap().checked(),
+        "positive control: the label's activation did reach its control"
+    );
+    f.teardown();
+}
+
+#[wasm_bindgen_test]
+fn a_label_for_outside_a_wrapper_activates_it_once_by_pointerless_click() {
+    // The same markup by AT / `label.click()`: the pre-existing path, which the
+    // mouse case now agrees with.
+    let f = Fixture::mount(label_for_outside_the_wrapper);
+    rinch_web::__force_trusted_clicks(true);
+    f.el("lbl272").click();
+    assert_eq!(f.dispatches(), 1);
+    f.teardown();
+}
+
+#[wasm_bindgen_test]
+fn a_dropped_drags_trailing_click_does_not_dispatch_the_container() {
+    // A pending element drag *arms* on pointerdown and dispatches nothing
+    // there. After it activates and drops, the browser's click lands on the
+    // common ancestor of press and release — here a clickable container — and
+    // must stay suppressed: the gesture was a drag, not a click on the row.
+    let f = Fixture::mount(|scope, rid| {
+        let container = rid_element(scope, "div", "row", rid, &[]);
+        let source = scope.create_element("div");
+        source.set_attribute("id", "src");
+        source.set_attribute("draggable", "true");
+        source.set_attribute("style", "width: 100px; height: 40px;");
+        container.append_child(&source);
+        container
+    });
+    rinch_web::__force_trusted_clicks(true);
+    let src = f.el("src");
+    let row = f.el("row");
+    let (x, y) = centre(&src);
+    pointer_event_at(&src, "pointerdown", x, y);
+    assert_eq!(
+        f.dispatches(),
+        0,
+        "a draggable defers its click to pointerup"
+    );
+    pointer_event_at(&src, "pointermove", x + 30, y);
+    pointer_event_at(&src, "pointerup", x + 30, y);
+    assert_eq!(f.dispatches(), 0, "an activated drag dispatches no click");
+    click(&row, 1);
+    assert_eq!(
+        f.dispatches(),
+        0,
+        "a drag's trailing click must not activate the container it ended in"
+    );
+    f.teardown();
+}
+
 #[wasm_bindgen_test]
 fn a_keydown_reopens_the_click_path_after_a_mouse_interaction() {
     let f = Fixture::mount(|scope, rid| rid_element(scope, "button", "btn", rid, &[]));
