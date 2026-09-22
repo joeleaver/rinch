@@ -421,6 +421,17 @@ fn a_press_on_a_non_focusable_handler_keeps_the_keyboard_with_the_editor() {
 #[wasm_bindgen_test]
 fn a_non_focusable_press_with_no_focused_editor_is_left_alone() {
     let f = Fixture::mount();
+    // Every wasm test shares one page: a capture textarea a previous test
+    // focused is still focused here. Let go of it, as a press elsewhere would.
+    if let Some(ta) = document()
+        .query_selector("textarea[data-pm-capture]")
+        .unwrap()
+    {
+        ta.dyn_into::<web_sys::HtmlElement>()
+            .unwrap()
+            .blur()
+            .unwrap();
+    }
     assert!(!press_prevented(f.el("plain").as_ref()));
     f.teardown();
 }
