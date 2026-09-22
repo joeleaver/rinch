@@ -302,7 +302,11 @@ nothing to duplicate, so its clicks are not suppressed: a `<label for="x">`
 **outside** every handler, whose `<input id="x">` sits inside a clickable
 wrapper, activates that wrapper once by mouse as it does by keyboard (issue
 #272, web only — the desktop backend does not follow `for`, so there the
-press does nothing). Clicks with no pointer gesture behind
+press does nothing). The same rule lets a click through when something else
+swallowed the press: a third-party widget (a map, a chart) inside a clickable
+card that stops its own `pointerdown` from propagating now activates the card
+on release, as a browser's own `click` would — stop `click` too if the widget
+must not. Clicks with no pointer gesture behind
 them — assistive technology (whose clicks are *trusted*, with no pointer or
 key event of their own on Firefox/WebKit), `element.click()` — are honoured
 once, and a click a handler raises itself (`hidden_input.click()`) does not

@@ -766,3 +766,200 @@ fn space_on_a_link_dispatches_through_rinch_and_enter_is_left_to_the_browser() {
     );
     f.teardown();
 }
+
+// ── The GESTURE_ACTED record (issue #272; from the review of #867) ──────────
+
+/// A pointer event of `kind` ("mouse" / "touch") at a viewport point.
+fn gesture_pointer(el: &web_sys::Element, name: &str, x: i32, y: i32, kind: &str) {
+    let init = web_sys::PointerEventInit::new();
+    init.set_bubbles(true);
+    init.set_cancelable(true);
+    init.set_pointer_id(if kind == "mouse" { 1 } else { 7 });
+    init.set_is_primary(true);
+    init.set_pointer_type(kind);
+    init.set_button(if name == "pointermove" { -1 } else { 0 });
+    init.set_buttons(if name == "pointerup" { 0 } else { 1 });
+    init.set_client_x(x);
+    init.set_client_y(y);
+    let ev = web_sys::PointerEvent::new_with_event_init_dict(name, &init).unwrap();
+    el.dispatch_event(&ev).unwrap();
+}
+
+async fn gesture_sleep(ms: i32) {
+    let promise = js_sys::Promise::new(&mut |resolve, _reject| {
+        web_sys::window()
+            .unwrap()
+            .set_timeout_with_callback_and_timeout_and_arguments_0(&resolve, ms)
+            .unwrap();
+    });
+    wasm_bindgen_futures::JsFuture::from(promise).await.unwrap();
+}
+
+#[wasm_bindgen_test]
+fn an_acted_press_does_not_leak_into_the_next_label_press() {
+    // An acted gesture (press on another handler) followed, with no reset in
+    // between, by the #272 label press: the record is per press.
+    let other = Rc::new(Cell::new(0u32));
+    let other_in = other.clone();
+    let f = Fixture::mount_with(move |scope, count| {
+        let a = scope.register_handler(move || other_in.set(other_in.get() + 1));
+        let b = scope.register_handler(move || count.set(count.get() + 1));
+        let root = scope.create_element("div");
+        let btn = rid_element(scope, "button", "btnA", a, &[]);
+        root.append_child(&btn);
+        let inner = label_for_outside_the_wrapper(scope, b);
+        root.append_child(&inner);
+        root
+    });
+    rinch_web::__force_trusted_clicks(true);
+    let btn = f.el("btnA");
+    pointerdown(&btn);
+    pointerup(&btn);
+    click(&btn, 1);
+    assert_eq!(other.get(), 1);
+    let label = f.el("lbl272");
+    pointerdown(&label);
+    pointerup(&label);
+    click(&label, 1);
+    assert_eq!(other.get(), 1);
+    assert_eq!(
+        f.dispatches(),
+        1,
+        "the previous press's record must not suppress this press's forward"
+    );
+    f.teardown();
+}
+
+#[wasm_bindgen_test]
+fn an_escape_cancelled_pending_drag_does_not_click_its_container() {
+    let f = Fixture::mount(|scope, rid| {
+        let container = rid_element(scope, "div", "row", rid, &[]);
+        let source = scope.create_element("div");
+        source.set_attribute("id", "src");
+        source.set_attribute("draggable", "true");
+        source.set_attribute("style", "width: 100px; height: 40px;");
+        container.append_child(&source);
+        container
+    });
+    rinch_web::__force_trusted_clicks(true);
+    let src = f.el("src");
+    let row = f.el("row");
+    let (x, y) = centre(&src);
+    gesture_pointer(&src, "pointerdown", x, y, "mouse");
+    keydown(&src, "Escape", false);
+    gesture_pointer(&src, "pointerup", x, y, "mouse");
+    assert_eq!(f.dispatches(), 0, "Escape cancelled the pending drag");
+    click(&row, 1);
+    assert_eq!(
+        f.dispatches(),
+        0,
+        "an Escape-cancelled drag's trailing click must stay suppressed"
+    );
+    f.teardown();
+}
+
+#[wasm_bindgen_test]
+fn a_deferred_touch_tap_dispatches_once() {
+    let f = Fixture::mount(|scope, rid| {
+        let scroller = scope.create_element("div");
+        scroller.set_attribute("style", "height: 60px; overflow-y: auto;");
+        let row = rid_element(scope, "div", "trow", rid, &[("style", "height: 200px;")]);
+        scroller.append_child(&row);
+        scroller
+    });
+    rinch_web::__force_trusted_clicks(true);
+    let row = f.el("trow");
+    let r = row.get_bounding_client_rect();
+    let (x, y) = ((r.x() + 10.0) as i32, (r.y() + 10.0) as i32);
+    gesture_pointer(&row, "pointerdown", x, y, "touch");
+    assert_eq!(f.dispatches(), 0, "positive control: the tap was deferred");
+    gesture_pointer(&row, "pointerup", x, y, "touch");
+    assert_eq!(f.dispatches(), 1, "the deferred tap fires on release");
+    click(&row, 1);
+    assert_eq!(f.dispatches(), 1, "and its trailing click is its duplicate");
+    f.teardown();
+}
+
+#[wasm_bindgen_test]
+async fn a_long_press_drag_does_not_click_its_container() {
+    let f = Fixture::mount(|scope, rid| {
+        let container = rid_element(scope, "div", "lrow", rid, &[]);
+        let source = scope.create_element("div");
+        source.set_attribute("id", "lsrc");
+        source.set_attribute("draggable", "true");
+        source.set_attribute("style", "width: 100px; height: 40px;");
+        container.append_child(&source);
+        container
+    });
+    rinch_web::__force_trusted_clicks(true);
+    let src = f.el("lsrc");
+    let row = f.el("lrow");
+    let (x, y) = centre(&src);
+    gesture_pointer(&src, "pointerdown", x, y, "touch");
+    gesture_sleep(450).await;
+    gesture_pointer(&src, "pointerup", x, y, "touch");
+    assert_eq!(f.dispatches(), 0, "the long press became a drag");
+    click(&row, 1);
+    assert_eq!(
+        f.dispatches(),
+        0,
+        "a long-press drag's click must stay suppressed"
+    );
+    f.teardown();
+}
+
+#[wasm_bindgen_test]
+fn a_button_inside_a_wrapper_dispatches_once() {
+    let f = Fixture::mount(|scope, rid| {
+        let wrap = rid_element(scope, "div", "bwrap", rid, &[]);
+        let b = scope.create_element("button");
+        b.set_attribute("id", "binner");
+        let t = scope.create_text("x");
+        b.append_child(&t);
+        wrap.append_child(&b);
+        wrap
+    });
+    rinch_web::__force_trusted_clicks(true);
+    let b = f.el("binner");
+    pointerdown(&b);
+    pointerup(&b);
+    click(&b, 1);
+    assert_eq!(f.dispatches(), 1);
+    f.teardown();
+}
+
+#[wasm_bindgen_test]
+fn a_third_party_widget_that_stops_pointerdown_inside_a_wrapper() {
+    // A raw widget (map, chart) inside a clickable card that stops its own
+    // pointerdown from bubbling. HEAD: the card never fires (the press
+    // dispatched nothing, the click was gated). PR: the click passes.
+    let f = Fixture::mount(|scope, rid| {
+        let card = rid_element(scope, "div", "card3p", rid, &[]);
+        let w = scope.create_element("div");
+        w.set_attribute("id", "widget3p");
+        w.set_attribute("style", "width: 80px; height: 30px;");
+        card.append_child(&w);
+        card
+    });
+    let w = f.el("widget3p");
+    let stop = wasm_bindgen::closure::Closure::wrap(Box::new(|e: web_sys::Event| {
+        e.stop_propagation();
+    }) as Box<dyn FnMut(_)>);
+    w.add_event_listener_with_callback("pointerdown", stop.as_ref().unchecked_ref())
+        .unwrap();
+    stop.forget();
+    rinch_web::__force_trusted_clicks(true);
+    pointerdown(&w);
+    assert_eq!(f.dispatches(), 0, "the widget swallowed the press");
+    pointerup(&w);
+    click(&w, 1);
+    // The widget swallowed the press, so the press acted on nothing and the
+    // release's click is the card's only activation — as in a browser, where
+    // stopping `pointerdown` never stopped `click` (review of #867).
+    assert_eq!(
+        f.dispatches(),
+        1,
+        "a swallowed press lets its click activate the card once"
+    );
+    f.teardown();
+}

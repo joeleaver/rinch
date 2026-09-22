@@ -65,7 +65,11 @@ thread_local! {
     /// the gesture its duplicate (issue #272). A press that acted on nothing
     /// has nothing to duplicate — and the click a `<label for>` outside every
     /// `data-rid` forwards to a control *inside* one is that interaction's only
-    /// activation. Reset by each `pointerdown` (capture phase) and set by the
+    /// activation. So is the click after a press that never reached the
+    /// bubble listener — a widget inside a `data-rid` card that stops its own
+    /// `pointerdown` now lets the release's `click` activate the card, as a
+    /// browser would (stopping `pointerdown` never stopped `click`).
+    /// Reset by each `pointerdown` (capture phase) and set by the
     /// bubble listener; no key touches it, so a drag cancelled with Escape
     /// while the button is held still suppresses its trailing click.
     static GESTURE_ACTED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
