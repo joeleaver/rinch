@@ -277,7 +277,7 @@ impl Component for ColorInput {
         let last_committed: Rc<RefCell<String>> = Rc::new(RefCell::new(initial_color.clone()));
 
         // Handle text input changes. Per-keystroke this is internal only —
-        // record the live text, parse, and preview through `current_value`
+        // parse the typed text and preview through `current_value`
         // (swatch, dropdown picker). `self.onchange` fires from the commit
         // handler below, not here: the prop promises a committed color, not a
         // live preview per parseable keystroke (issue #226).
