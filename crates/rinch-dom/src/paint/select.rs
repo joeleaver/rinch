@@ -112,6 +112,7 @@ pub(super) fn paint_select_value(
         text_shadows,
         transform,
         1.0,
+        None,
     );
 
     painter.pop_layer();

@@ -425,6 +425,10 @@ pub struct IfcTextRange {
 /// Records the byte range in the flat IFC text that has a background color,
 /// along with padding values for visual extension of the background rect.
 pub struct InlineBackgroundSpan {
+    /// The inline element whose background this is. Paint reads its
+    /// `visibility` at draw time, so hiding the element needs no re-layout
+    /// (#829).
+    pub owner: RawNodeId,
     /// Byte range start in the IFC `text_content`.
     pub start: usize,
     /// Byte range end (exclusive) in the IFC `text_content`.

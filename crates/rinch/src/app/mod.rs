@@ -93,6 +93,8 @@ mod textarea_newline_tests;
 mod trap_focus_tests;
 #[cfg(test)]
 mod ua_block_defaults_components_tests;
+#[cfg(all(test, software_shell))]
+mod visibility_hidden_overlay_paint_tests;
 
 pub(crate) use hit_testing::*;
 pub use text_context_menu::{TextContextMenuPresentation, TextEditAction, TextEditState};

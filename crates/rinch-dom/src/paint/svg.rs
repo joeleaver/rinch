@@ -88,6 +88,11 @@ pub(super) fn paint_svg(
         let NodeKind::Element(ref el) = child.kind else {
             continue;
         };
+        // `visibility` inherits into an SVG's shapes and each shape can set it
+        // back to `visible`, so the question is the shape's own (#829).
+        if super::text::is_hidden(child) {
+            continue;
+        }
 
         // `currentcolor` is the child's own cascaded `color` (a child that
         // declares none inherits the `<svg>`'s).
