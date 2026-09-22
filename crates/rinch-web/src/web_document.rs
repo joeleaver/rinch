@@ -1248,6 +1248,25 @@ impl DomDocument for WebDocument {
         el.get_attribute(name)
     }
 
+    /// The `.value` **property** of an `<input>`, `<textarea>` or `<select>`
+    /// (issue #238) — the text the user sees — never the content attribute,
+    /// which typing leaves at whatever was last written programmatically. Any
+    /// other element answers from its `value` attribute, as the trait default
+    /// does. A `file` input's `.value` is the browser's fake path
+    /// (`C:\fakepath\…`), which is what the browser itself reports.
+    fn live_value(&self, node: NodeId) -> Option<String> {
+        let n = self.nodes.get(&node.0)?;
+        if let Some(input) = n.dyn_ref::<web_sys::HtmlInputElement>() {
+            Some(input.value())
+        } else if let Some(textarea) = n.dyn_ref::<web_sys::HtmlTextAreaElement>() {
+            Some(textarea.value())
+        } else if let Some(select) = n.dyn_ref::<web_sys::HtmlSelectElement>() {
+            Some(select.value())
+        } else {
+            n.dyn_ref::<web_sys::Element>()?.get_attribute("value")
+        }
+    }
+
     /// Straight to the browser's own CSSOM, which is why nothing here restates
     /// the property-name rules desktop needs (#711): `setProperty` lowercases a
     /// non-custom name and compares custom ones exactly, and no `rinch-web` code

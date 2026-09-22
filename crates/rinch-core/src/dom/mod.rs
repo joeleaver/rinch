@@ -347,6 +347,20 @@ impl NodeHandle {
         doc.borrow().get_attribute(self.node_id, name)
     }
 
+    /// The text this form control holds **right now** (issue #238) — the live
+    /// text the user sees and edits, which on the web is the element's `.value`
+    /// property and not the `value` attribute
+    /// [`get_attribute`](Self::get_attribute) reads.
+    ///
+    /// Use it, not `get_attribute("value")`, whenever the question is "what
+    /// does the field say?": the two agree on desktop and part ways in a
+    /// browser as soon as the user types. See [`DomDocument::live_value`] for
+    /// each backend's answer and what `None` means.
+    pub fn live_value(&self) -> Option<String> {
+        let doc = self.doc.upgrade()?;
+        doc.borrow().live_value(self.node_id)
+    }
+
     /// Append a child node to this element.
     #[doc(hidden)]
     pub fn append_child(&self, child: &NodeHandle) {
