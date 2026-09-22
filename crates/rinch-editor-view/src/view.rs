@@ -2515,6 +2515,116 @@ mod tests {
         );
     }
 
+    // ── review #837: the arms the PR's own fixtures do not reach ──
+
+    /// A node selection made *after* a text cursor existed must anchor on the
+    /// outline, not on the (now hidden) caret div, which still exists.
+    #[test]
+    fn r837_a_node_selection_after_a_cursor_anchors_on_the_outline() {
+        let h = harness();
+        let s = schema();
+        let empty = || s.branch("paragraph", Fragment::empty()).unwrap();
+        let hr = || s.branch("horizontal_rule", Fragment::empty()).unwrap();
+        // doc(p(), hr) → 0[p 1]2 (hr at 2)
+        let mut st = state(s.clone(), doc_node(&s, vec![empty(), hr()]));
+        let mut view = RinchDomEditorView::new(h.container.clone(), doc_ref(&h), &st);
+        let blocks = children(&h, h.container_id);
+        {
+            let mut m = h.mock.borrow_mut();
+            m.__set_node_layout(blocks[0], 0.0, 0.0, 200.0, 20.0);
+            m.__set_node_layout(blocks[1], 0.0, 40.0, 200.0, 2.0);
+        }
+        cursor_at(&mut st, 1);
+        view.update_caret(&st);
+        assert!(view.caret.is_some(), "positive control: a caret div exists");
+        st.selection = Selection::node_at(&st.doc, rinch_editor_core::Pos(2)).unwrap();
+        assert_eq!(
+            view.update_caret(&st),
+            vec![ViewRequest::ScrollSelectionIntoView]
+        );
+        let anchor = view.scroll_anchor().expect("an outline to scroll to");
+        assert_eq!(
+            overlay_kind(&h, anchor).as_deref(),
+            Some("data-pm-selected")
+        );
+    }
+
+    /// The cell arm: a request once per head move, none on a repeat pass, and
+    /// the anchor is the HEAD cell's wash (not the fixed corner).
+    #[test]
+    fn r837_a_cell_selection_scrolls_once_per_head_move_and_anchors_on_the_head() {
+        let h = harness();
+        let s = schema();
+        let table = rinch_editor_core::commands::build_table(&s, 3, 2).unwrap();
+        let mut st = state(s.clone(), doc_node(&s, vec![table.clone()]));
+        let mut view = RinchDomEditorView::new(h.container.clone(), doc_ref(&h), &st);
+        // Give every node a box, stacked by id, so each cell has a distinct offset.
+        {
+            let mut m = h.mock.borrow_mut();
+            let n = m.__node_count();
+            for id in 1..n {
+                m.__set_node_layout(NodeId(id), 3.0, 7.0 + id as f32, 100.0, 20.0);
+            }
+        }
+        let map = rinch_editor_core::tables::TableMap::compute(&table, 1);
+        let c00 = map.cell_at(0, 0).unwrap();
+        let c11 = map.cell_at(1, 1).unwrap();
+        let c21 = map.cell_at(2, 1).unwrap();
+        st.selection = Selection::cell(rinch_editor_core::Pos(c00), rinch_editor_core::Pos(c11));
+        assert_eq!(
+            view.update_caret(&st),
+            vec![ViewRequest::ScrollSelectionIntoView]
+        );
+        assert_eq!(
+            view.update_caret(&st),
+            Vec::new(),
+            "a repeat pass scrolls nothing"
+        );
+        let head_style = |view: &RinchDomEditorView, head: usize| {
+            let d = h.doc.borrow();
+            let host = view
+                .node_host_at(&st.doc, rinch_editor_core::Pos(head))
+                .unwrap();
+            let (ox, oy) = view.block_offset_in_container(&*d, host);
+            (ox.round() as i32, oy.round() as i32)
+        };
+        let anchor_pos = |view: &RinchDomEditorView| {
+            let a = view.scroll_anchor().expect("a wash to scroll to");
+            let style = h
+                .doc
+                .borrow()
+                .get_attribute(a.node_id(), "style")
+                .unwrap_or_default();
+            let num = |k: &str| {
+                style
+                    .split(';')
+                    .find_map(|d| {
+                        let (n, v) = d.split_once(':')?;
+                        (n.trim() == k)
+                            .then(|| v.trim().trim_end_matches("px").parse::<f32>().ok())
+                            .flatten()
+                    })
+                    .map(|v| v.round() as i32)
+            };
+            (num("left").unwrap(), num("top").unwrap())
+        };
+        assert_eq!(
+            anchor_pos(&view),
+            head_style(&view, c11),
+            "anchored on the head cell"
+        );
+        st.selection = Selection::cell(rinch_editor_core::Pos(c00), rinch_editor_core::Pos(c21));
+        assert_eq!(
+            view.update_caret(&st),
+            vec![ViewRequest::ScrollSelectionIntoView]
+        );
+        assert_eq!(
+            anchor_pos(&view),
+            head_style(&view, c21),
+            "follows the moving head"
+        );
+    }
+
     #[test]
     fn node_selection_hides_caret_and_text_highlight() {
         let h = harness();
