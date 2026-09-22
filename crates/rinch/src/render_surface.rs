@@ -711,6 +711,22 @@ fn is_inline_surface(surface: &RenderSurfaceHandle) -> bool {
     surface.viewport_name.starts_with("__render_surface_")
 }
 
+/// Whether a GPU compositor presents the window: never on a desktop build
+/// without `gpu`, and on a `gpu` build whenever the GPU renderer started
+/// (`shell::renderer`), which is a run-time question since a `gpu` build can
+/// fall back to software. Gated like its callers.
+#[cfg(feature = "desktop")]
+fn has_gpu_compositor() -> bool {
+    #[cfg(feature = "gpu")]
+    {
+        crate::shell::renderer::gpu_presenting()
+    }
+    #[cfg(not(feature = "gpu"))]
+    {
+        false
+    }
+}
+
 /// Whether a surface belongs on the **compositor** path — a layer on GPU, a
 /// post-paint blit on software — rather than being painted inline during
 /// `paint_document`.
@@ -761,12 +777,10 @@ pub fn collect_surface_frames() -> Vec<(String, Vec<u8>, u32, u32)> {
             if !surface_takes_compositor_path(
                 is_inline_surface(surface),
                 surface.is_video,
-                // "has a GPU compositor", not "has the `gpu` feature": the
-                // Android shell picks its painter with `android-gpu`, and both
-                // are what the `software_shell` alias is the negation of. With
-                // `cfg!(feature = "gpu")` an `android-gpu` build would route
-                // video off the compositor with nothing painting it inline.
-                cfg!(not(software_shell)),
+                // "a GPU compositor presents", not "has the `gpu` feature": a
+                // `gpu` build presents with software when the GPU would not
+                // start, and software paints video inline.
+                has_gpu_compositor(),
             ) {
                 continue;
             }
@@ -1752,7 +1766,7 @@ mod compositor_routing_tests {
         let blitted = collect_surface_frames();
         assert_eq!(
             blitted.iter().any(|(name, ..)| name == "test-video"),
-            cfg!(not(software_shell)),
+            has_gpu_compositor(),
             "video reaches the compositor path on GPU only — on software it \
              paints inline instead (#358)"
         );

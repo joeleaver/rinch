@@ -12,6 +12,8 @@ pub(crate) mod frame_upload;
 pub mod html_parser;
 pub mod memory_profile;
 #[cfg(feature = "desktop")]
+pub mod renderer;
+#[cfg(feature = "desktop")]
 pub mod rinch_runtime;
 pub mod screenshot;
 #[cfg(feature = "desktop")]

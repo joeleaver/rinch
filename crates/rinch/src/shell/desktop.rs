@@ -103,6 +103,13 @@ pub(crate) fn set_gpu_init(init: GpuInit) {
     let _ = GPU_INIT.set(init);
 }
 
+/// Whether the app configured the GPU device itself (`App::gpu_config` or
+/// `App::external_gpu`). Such an app gets no fallback to software when the GPU
+/// will not start (`shell::renderer::on_gpu_failure`).
+pub(crate) fn gpu_init_installed() -> bool {
+    GPU_INIT.get().is_some()
+}
+
 /// A GPU texture layer for zero-copy compositing.
 ///
 /// Unlike [`CompositeLayer`] which carries CPU pixel data, this provides
@@ -227,7 +234,26 @@ pub struct WgpuRenderer {
 
 impl WgpuRenderer {
     /// Create a new GPU renderer for the given window.
+    ///
+    /// # Panics
+    ///
+    /// When the GPU cannot start; [`Self::try_new`] reports that instead.
     pub fn new(window: &dyn Window, width: u32, height: u32) -> Self {
+        Self::try_new(window, width, height).unwrap_or_else(|e| panic!("{e}"))
+    }
+
+    /// Create a new GPU renderer for the given window, or say why the GPU
+    /// cannot present to it: no window handle, no surface, no adapter that can
+    /// present to the surface, no device, or a validation error while
+    /// configuring the surface and building Vello's pipelines. Nothing is
+    /// published through [`gpu_handle`] unless it succeeds.
+    ///
+    /// # Panics
+    ///
+    /// With [`crate::App::external_gpu`], when the supplied adapter cannot
+    /// present to the window surface: that is a configuration error in the
+    /// app, not a missing GPU.
+    pub fn try_new(window: &dyn Window, width: u32, height: u32) -> Result<Self, String> {
         let width = width.max(1);
         let height = height.max(1);
 
@@ -259,12 +285,18 @@ impl WgpuRenderer {
         let surface = unsafe {
             use winit::raw_window_handle::{HasDisplayHandle, HasWindowHandle};
             let target = wgpu::SurfaceTargetUnsafe::RawHandle {
-                raw_display_handle: window.display_handle().unwrap().as_raw(),
-                raw_window_handle: window.window_handle().unwrap().as_raw(),
+                raw_display_handle: window
+                    .display_handle()
+                    .map_err(|e| format!("no display handle for a GPU surface: {e}"))?
+                    .as_raw(),
+                raw_window_handle: window
+                    .window_handle()
+                    .map_err(|e| format!("no window handle for a GPU surface: {e}"))?
+                    .as_raw(),
             };
             instance
                 .create_surface_unsafe(target)
-                .expect("Failed to create surface")
+                .map_err(|e| format!("Failed to create surface: {e}"))?
         };
 
         // Adapter: adopt the embedder's, or pick a surface-compatible one.
@@ -285,7 +317,7 @@ impl WgpuRenderer {
                     compatible_surface: Some(&surface),
                     force_fallback_adapter: false,
                 }))
-                .expect("Failed to find adapter"),
+                .map_err(|e| format!("Failed to find adapter: {e}"))?,
             ),
         };
 
@@ -296,7 +328,12 @@ impl WgpuRenderer {
         } else if caps.formats.contains(&TextureFormat::Bgra8Unorm) {
             TextureFormat::Bgra8Unorm
         } else {
-            caps.formats[0]
+            *caps.formats.first().ok_or_else(|| {
+                format!(
+                    "the adapter {:?} offers no format for this window's surface",
+                    adapter.get_info().name
+                )
+            })?
         };
 
         // Device/Queue: adopt the embedder's, or create one — optionally with
@@ -328,20 +365,22 @@ impl WgpuRenderer {
                         trace: wgpu::Trace::default(),
                         experimental_features: wgpu::ExperimentalFeatures::default(),
                     }))
-                    .expect(
-                        "Failed to create device (the adapter may not support the \
-                         features/limits requested via App::gpu_config)",
-                    );
+                    .map_err(|e| {
+                        format!(
+                            "Failed to create device (the adapter may not support the \
+                             features/limits requested via App::gpu_config): {e}"
+                        )
+                    })?;
                 (Arc::new(raw_device), Arc::new(raw_queue))
             }
         };
 
-        // Publish the shared GPU handle for external renderers
-        let _ = GPU_HANDLE.set(GpuHandle {
-            device: device.clone(),
-            queue: queue.clone(),
-            adapter: adapter.clone(),
-        });
+        // wgpu reports errors in what follows (configuring the surface,
+        // creating the texture, compiling Vello's shaders) through the device's
+        // error handler, which panics by default. Scope them so a device that
+        // cannot do the work is an `Err` like every step above.
+        device.push_error_scope(wgpu::ErrorFilter::OutOfMemory);
+        device.push_error_scope(wgpu::ErrorFilter::Validation);
 
         let surface_config = SurfaceConfiguration {
             usage: TextureUsages::RENDER_ATTACHMENT | TextureUsages::COPY_DST,
@@ -373,8 +412,22 @@ impl WgpuRenderer {
                 num_init_threads: None,
                 pipeline_cache: None,
             },
-        )
-        .expect("Failed to create Vello renderer");
+        );
+
+        let validation = pollster::block_on(device.pop_error_scope());
+        let out_of_memory = pollster::block_on(device.pop_error_scope());
+        if let Some(e) = validation.or(out_of_memory) {
+            return Err(format!("the GPU device cannot present this window: {e}"));
+        }
+        let renderer = renderer.map_err(|e| format!("Failed to create Vello renderer: {e}"))?;
+
+        // Publish the shared GPU handle for external renderers, now that the
+        // device is known to work.
+        let _ = GPU_HANDLE.set(GpuHandle {
+            device: device.clone(),
+            queue: queue.clone(),
+            adapter: adapter.clone(),
+        });
 
         tracing::info!(
             "rinch-dom runtime: backend={:?}, format={:?}",
@@ -382,7 +435,7 @@ impl WgpuRenderer {
             format
         );
 
-        Self {
+        Ok(Self {
             renderer,
             render_texture,
             surface,
@@ -394,7 +447,7 @@ impl WgpuRenderer {
             composite_layers: Vec::new(),
             gpu_layers: Vec::new(),
             composited_texture: None,
-        }
+        })
     }
 
     fn create_render_texture(

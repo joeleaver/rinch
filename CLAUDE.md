@@ -393,6 +393,7 @@ fn main() {
 | `.fonts(&[AppFont])` | Typefaces the build carries in its own binary (issue #286) |
 | `.menu(Vec<(&str, Menu)>)` | Native menu bar |
 | `.window_props(WindowProps)` | Borderless, transparent, icon, `app_id`, `on_close_requested`, … |
+| `.renderer(Renderer)` | `Auto` (GPU, falling back to software), `Gpu` or `Software`; `RINCH_RENDERER` overrides it |
 | `.gpu_config(RinchGpuConfig)` / `.external_gpu(ExternalGpu)` | GPU device (`gpu` feature) |
 | `.run()` | Start on desktop; runs until the event loop exits |
 | `.run_android(android_app)` | Start on Android (`android` feature, Android target) |
@@ -1655,21 +1656,33 @@ Guide: `docs/src/guide/focus.md`.
 
 ### Rendering Backends
 
-Rinch supports two rendering backends, selected at compile time:
+Rinch has two rendering backends. Every desktop build carries the software one;
+the `gpu` feature adds the GPU one, and the window picks between them at run time:
 
 | Backend | Feature | Renderer | Presentation |
 |---------|---------|----------|--------------|
 | **GPU** | `"gpu"` | Vello + wgpu | GPU compositing |
-| **Software** | (default) | tiny-skia | softbuffer |
+| **Software** | (always on desktop) | tiny-skia | softbuffer |
 
 Set in `Cargo.toml`:
 ```toml
-# GPU mode:
+# GPU, with software as the fallback and on request:
 rinch = { workspace = true, features = ["desktop", "gpu"] }
 
-# Software mode (default):
+# Software only:
 rinch = { workspace = true, features = ["desktop"] }
 ```
+
+On a `gpu` build, `App::renderer(Renderer)` chooses (`shell/renderer.rs`):
+`Renderer::Auto` (the default) creates the GPU renderer when the window opens
+and presents with software, logging a warning, when the GPU will not start (no
+surface, adapter or device, or a validation error while configuring them);
+`Renderer::Gpu` panics instead; `Renderer::Software` never touches wgpu. The
+`RINCH_RENDERER` environment variable (`auto`, `gpu`, `software`, `cpu`)
+overrides the app's choice. An app that configured the device itself
+(`gpu_config`, `external_gpu`) gets no fallback. Whether the GPU compositor is
+presenting is a run-time question on a `gpu` build
+(`renderer::gpu_presenting()`), never `cfg!(not(software_shell))`.
 
 Both use the same `Painter` trait (`crates/rinch-dom/src/paint/painter.rs`):
 - `VelloPainter` — records commands into `vello::Scene`
