@@ -52,23 +52,49 @@ fn add_plugin_on_a_read_only_editor() {
     assert!(has_spell(&h));
 }
 
-#[cfg(feature = "collaboration")]
 #[test]
-fn add_plugin_on_a_read_only_collaborating_editor_is_not_half_applied() {
+fn add_plugin_is_not_an_edit() {
     let h = rinch_editor_view::create_editor();
     h.load_html("<p>helo</p>");
-    h.start_collaboration_host(|_delta| {}).unwrap();
+    let fired = Rc::new(std::cell::Cell::new(0));
+    let f = fired.clone();
+    h.on_change(move || f.set(f.get() + 1));
+    let before = h.doc();
+    assert!(h.add_plugin(Rc::new(Spell)));
+    assert_eq!(fired.get(), 0, "on_change fired for a plugin registration");
+    assert_eq!(h.doc(), before);
+}
+
+#[cfg(feature = "collaboration")]
+#[test]
+fn add_plugin_on_a_read_only_collaborating_editor_installs_and_broadcasts_nothing() {
+    // It used to commit as a *load*, which a read-only collaborating editor
+    // refuses — after the plugin had already been pushed, so it answered false
+    // and every retry answered "already installed" (review of #836).
+    let h = rinch_editor_view::create_editor();
+    h.load_html("<p>helo</p>");
+    let sent = Rc::new(std::cell::Cell::new(0));
+    let s2 = sent.clone();
+    h.start_collaboration_host(move |_delta| s2.set(s2.get() + 1))
+        .unwrap();
+    let sent_before = sent.get();
     h.set_read_only(true);
-    let added = h.add_plugin(Rc::new(Spell));
-    let installed = has_spell(&h);
-    // Either it is installed (preferred: adding a plugin is not an edit) or it is
-    // refused *and* a retry after leaving read-only works. What must not happen is
-    // "refused, but the key is now taken so every retry is refused too".
-    h.set_read_only(false);
-    let retry = h.add_plugin(Rc::new(Spell));
     assert!(
-        (added && installed) || (!added && retry && has_spell(&h)),
-        "added={added} installed={installed} retry={retry} now={}",
-        has_spell(&h)
+        h.add_plugin(Rc::new(Spell)),
+        "read-only collab refused add_plugin"
+    );
+    assert!(has_spell(&h));
+    assert_eq!(
+        sent.get(),
+        sent_before,
+        "a plugin registration was broadcast"
+    );
+    assert!(h.collab_take_error().is_none());
+    // Positive control: the same session does broadcast a real edit.
+    h.set_read_only(false);
+    assert!(h.insert_text("x"));
+    assert!(
+        sent.get() > sent_before,
+        "the outbound sink never fires at all"
     );
 }

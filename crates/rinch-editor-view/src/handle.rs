@@ -443,21 +443,36 @@ impl EditorHandle {
     /// created handle, before any content is loaded or typed. Adding a key that is
     /// already installed is a no-op, so calling it twice is harmless.
     ///
-    /// Returns whether the plugin was added.
+    /// Adding a plugin is **not an edit**: the document is the same node before
+    /// and after, so a [read-only](Self::set_read_only) editor accepts it — a
+    /// collaborating one included — nothing is recorded onto a collaboration
+    /// session, and [`on_change`](Self::on_change) does not fire. The selection
+    /// and any stored marks are carried over.
+    ///
+    /// Returns whether the plugin was added. It is all-or-nothing: `false` leaves
+    /// the plugin list untouched, so a later call can still add it.
     pub fn add_plugin(&self, plugin: Rc<dyn Plugin>) -> bool {
         let mut core = self.inner.borrow_mut();
         if core.plugins.iter().any(|p| p.key() == plugin.key()) {
             return false;
         }
-        core.plugins.push(plugin);
+        let mut plugins = core.plugins.clone();
+        plugins.push(plugin);
         let prev = core.state.clone();
-        let mut next =
-            EditorState::create(core.schema.clone(), prev.doc.clone(), core.plugins.clone());
+        let mut next = EditorState::create(core.schema.clone(), prev.doc.clone(), plugins.clone());
         next.selection = prev.selection.clone();
-        // No mapping: the document is unchanged, so nothing needs remapping, and
-        // `commit` treats a `None` mapping as a load — which this is, in the sense
-        // that matters (state replaced wholesale rather than stepped forward).
-        core.commit(prev, next, None).is_some()
+        next.stored_marks = prev.stored_marks.clone();
+        // The identity mapping says what this is: a step forward over the same
+        // document, not a load. `commit` treats a `None` mapping as a load, which
+        // a read-only editor with a collaboration session attached refuses (a
+        // load there is a write to the shared document) — and this used to pass
+        // `None` after pushing the plugin, so that refusal left the key taken
+        // and every retry refused too (review of #836).
+        if core.commit(prev, next, Some(&Mapping::new())).is_none() {
+            return false;
+        }
+        core.plugins = plugins;
+        true
     }
 
     /// Run the named command (applying + re-projecting if it applies). Returns
