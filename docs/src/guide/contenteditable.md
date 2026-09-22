@@ -590,12 +590,14 @@ directions for as long as that content remains in the document — it heals only
 when the last one is deleted. A peer joining from a snapshot that already holds
 one fails the join instead.
 
-One concurrent edit can still be lost, and it is narrow: **two identical images
-side by side** (same `src`, same `alt`, …) whose attributes two people change at
-the same moment. The CRDT sees them as one formatted run, and one of the two
-changes can overwrite the other. Both editors still end up with the same
-document. Images that differ in any attribute, and edits to a single image, are
-not affected.
+Two concurrent edits to images can still be lost, and both editors still end up
+with the same document when they are. **Two identical images side by side**
+(same `src`, same `alt`, …) whose attributes two people change at the same
+moment: the CRDT sees them as one formatted run, and one change can overwrite the
+other (#860). And **splitting a block right before an image** (Enter) while
+someone else changes that image's attributes loses the change — a split moves
+content, and this is true of any mark change on moved text, not only images
+(#861).
 
 A runnable two-pane loopback (both editors in one window, no network)
 lives at `examples/collab-editor-demo/src/main.rs`.

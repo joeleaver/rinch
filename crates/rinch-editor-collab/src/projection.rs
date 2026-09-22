@@ -82,7 +82,10 @@
 //! Yjs formatting semantics, not something a formatting encoding can fix; the pin is
 //! `two_adjacent_identical_images_edited_concurrently_converge` in `tests/collab.rs`,
 //! which asserts convergence only. Atoms that differ in any attr are separate ranges
-//! and are not affected, and neither is an edit to a single atom.
+//! and are not affected by *that* loss. It is not the only one: splitting a block
+//! right before an atom while a peer changes the atom's attrs loses the change too —
+//! a split moves content, and a concurrent mark or atom-attr change on moved content is
+//! lost whatever it applies to (#861, pre-existing).
 //!
 //! Wire-compatibly this is **additive**: [`FORMAT_TAG`] does not move, which also means
 //! it needs a **coordinated upgrade**, as the leaf block atoms above do. An older reader
