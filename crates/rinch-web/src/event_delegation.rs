@@ -33,7 +33,8 @@ thread_local! {
     /// the trusted `click` that ends it has been consumed, or a grace period
     /// after release if none comes — the gate for the `click` listener (issue
     /// #240). `data-rid` dispatches from `pointerdown`, so every trusted
-    /// `click` that belongs to the gesture is a duplicate: the browser's own
+    /// `click` that belongs to a gesture whose press acted (`GESTURE_ACTED`,
+    /// issue #272) is a duplicate: the browser's own
     /// click after the press, the deferred touch click, and the trusted,
     /// `detail == 0` click a `<label>` fires at its control.
     ///
@@ -57,6 +58,21 @@ thread_local! {
     /// Generation of the current pointer gesture. A scheduled clear captures
     /// it and is a no-op once a newer `pointerdown` has started another.
     static GESTURE_GEN: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+
+    /// Whether the current pointer gesture's `pointerdown` *acted*: dispatched
+    /// a `data-rid` click, or armed something that will (an element drag, a
+    /// touch tap deferred to `pointerup`). Only then is a trusted click inside
+    /// the gesture its duplicate (issue #272). A press that acted on nothing
+    /// has nothing to duplicate — and the click a `<label for>` outside every
+    /// `data-rid` forwards to a control *inside* one is that interaction's only
+    /// activation. So is the click after a press that never reached the
+    /// bubble listener — a widget inside a `data-rid` card that stops its own
+    /// `pointerdown` now lets the release's `click` activate the card, as a
+    /// browser would (stopping `pointerdown` never stopped `click`).
+    /// Reset by each `pointerdown` (capture phase) and set by the
+    /// bubble listener; no key touches it, so a drag cancelled with Escape
+    /// while the button is held still suppresses its trailing click.
+    static GESTURE_ACTED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 
     /// `data-rid` handlers currently dispatching (innermost last). A handler
     /// that raises a click itself (`hidden_input.click()` to open a file
@@ -165,6 +181,13 @@ const GESTURE_GRACE_MS: i32 = 1000;
 fn begin_pointer_gesture() {
     GESTURE_GEN.with(|g| g.set(g.get().wrapping_add(1)));
     POINTER_GESTURE.with(|p| p.set(true));
+    GESTURE_ACTED.with(|a| a.set(false));
+}
+
+/// The current gesture's press dispatched or armed something (see
+/// `GESTURE_ACTED`).
+fn mark_gesture_acted() {
+    GESTURE_ACTED.with(|a| a.set(true));
 }
 
 /// Clear the gesture flag after `delay_ms`, unless a newer gesture has begun
@@ -225,6 +248,7 @@ pub fn __force_trusted_clicks(on: bool) {
 pub fn __reset_activation_state() {
     GESTURE_GEN.with(|g| g.set(g.get().wrapping_add(1)));
     POINTER_GESTURE.with(|p| p.set(false));
+    GESTURE_ACTED.with(|a| a.set(false));
     DISPATCHING.with(|d| d.borrow_mut().clear());
     LABEL_FORWARD.with(|l| l.set(None));
     FORCE_TRUSTED.with(|t| t.set(false));
@@ -584,10 +608,14 @@ use drag_machine::{PendingMove, PointerKind, pending_move_decision};
 /// can be unit-tested on the host target like `drag_machine`.
 mod activation {
     /// Whether a browser `click` should dispatch `data-rid`, given whether a
-    /// pointer gesture is in flight and whether the event is trusted.
+    /// pointer gesture that *acted* is in flight and whether the event is
+    /// trusted.
     ///
-    /// A pointer gesture already dispatched from `pointerdown`, so its trusted
-    /// click is a duplicate. A trusted click with no gesture in flight is a
+    /// A pointer gesture whose `pointerdown` dispatched (or armed a drag or a
+    /// deferred tap) has already activated, so its trusted click is a
+    /// duplicate. One whose press acted on nothing passes its click through
+    /// (issue #272): that is the only route by which a `<label for>` outside
+    /// every `data-rid` activates a wrapper around its control. A trusted click with no gesture in flight is a
     /// keyboard activation (the browser's synthesised click for Enter on a
     /// focused `<button>`) or an assistive-technology activation — AT clicks
     /// are *trusted*, with no pointer or key event of their own on
@@ -596,8 +624,8 @@ mod activation {
     /// The gate is about the interaction, not the event's shape: `detail == 0`
     /// cannot separate a keyboard click from the trusted, detail-0 click a
     /// `<label>` fires at its control after a mouse press.
-    pub fn click_should_dispatch(pointer_gesture: bool, is_trusted: bool) -> bool {
-        !is_trusted || !pointer_gesture
+    pub fn click_should_dispatch(acted_gesture: bool, is_trusted: bool) -> bool {
+        !is_trusted || !acted_gesture
     }
 
     /// Whether `key` (a `KeyboardEvent.key` value) activates a focused
@@ -1323,6 +1351,9 @@ fn dispatch_click_at(
     // rather than swallowing the press that belongs to the row, backdrop or
     // modal wrapping it.
     if let Some((rid_el, rid)) = nearest_live_rid(el) {
+        // Recorded before the handler runs, so a handler that raises a trusted
+        // click of its own is still inside an acted gesture.
+        mark_gesture_acted();
         let cursor = (event.client_x() as f32, event.client_y() as f32);
         let text_hit = resolve_text_hit(browser_doc, cursor.0, cursor.1).unwrap_or_default();
         set_click_context_for(
@@ -1897,6 +1928,7 @@ pub fn setup_event_delegation(doc: &WebDocument) {
             if let Some(source) = &drag_source
                 && event.is_primary()
             {
+                mark_gesture_acted();
                 let kind = PointerKind::from_type(&event.pointer_type());
                 WEB_DRAG.with(|d| {
                     *d.borrow_mut() = Some(WebDragState {
@@ -1963,6 +1995,7 @@ pub fn setup_event_delegation(doc: &WebDocument) {
                     && has_scrollable_ancestor(&el);
 
                 if defer_to_up {
+                    mark_gesture_acted();
                     PENDING_CLICK.with(|c| {
                         *c.borrow_mut() = Some(PendingClick {
                             target: el.clone(),
@@ -2199,12 +2232,14 @@ pub fn setup_event_delegation(doc: &WebDocument) {
     // a pointerdown behind it (Chromium's AT click does, and dispatches from
     // it like a mouse press), so `data-rid` never fired for them. A click
     // that belongs to a pointer gesture is the duplicate of the pointerdown
-    // dispatch and is suppressed (see POINTER_GESTURE). No `prevent_default`
+    // dispatch and is suppressed (see POINTER_GESTURE) — when that pointerdown
+    // acted at all (GESTURE_ACTED, issue #272). No `prevent_default`
     // here: it would cancel link navigation, the label→control toggle and
     // native form submit for keyboard users only.
     let click_closure = Closure::wrap(Box::new(move |event: web_sys::MouseEvent| {
         let trusted = event.is_trusted() || FORCE_TRUSTED.with(|t| t.get());
-        if !activation::click_should_dispatch(POINTER_GESTURE.with(|p| p.get()), trusted) {
+        let acted_gesture = POINTER_GESTURE.with(|p| p.get()) && GESTURE_ACTED.with(|a| a.get());
+        if !activation::click_should_dispatch(acted_gesture, trusted) {
             // The gesture's trailing click: the interaction is over once this
             // task ends. A `<label>`'s forwarded click (a second trusted click,
             // at the control) is dispatched synchronously inside this task and
