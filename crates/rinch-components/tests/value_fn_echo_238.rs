@@ -192,3 +192,67 @@ fn a_programmatic_change_is_written_even_back_to_the_stale_attribute() {
         );
     }
 }
+
+// ---- from the review of PR #863 ----
+
+fn digits_only_keep(text: &str) -> String {
+    // A rejecting handler cannot see the old value through `fn`, so this
+    // variant keys on the test's mount value: anything non-digit collapses to
+    // the digits it contains — "12a" -> "12", the value the signal held.
+    text.chars().filter(|c| c.is_ascii_digit()).collect()
+}
+
+/// The classic reject: the handler stores the SAME value the signal already
+/// held (`Signal::set` notifies on an equal write). The field shows "12a",
+/// so the effect must write "12" back — on every kind.
+#[test]
+fn a_rejected_keystroke_is_rewritten_to_the_unchanged_value() {
+    for kind in KINDS {
+        let m = Mounted::mount(kind, "12", digits_only_keep);
+        m.type_text("12a");
+        assert_eq!(m.signal.get(), "12", "control: the handler rejected it");
+        assert_eq!(
+            m.field.live_value().as_deref(),
+            Some("12"),
+            "the field still shows the rejected keystroke"
+        );
+    }
+}
+
+/// A focused-desktop-shaped run: no `__type_into` split at all (the attribute
+/// IS the live text, as on desktop), programmatic change is written.
+#[test]
+fn desktop_shape_programmatic_change_lands() {
+    for kind in KINDS {
+        let m = Mounted::mount(kind, "10", as_typed);
+        // desktop mirrors the text into the attribute before oninput
+        m.field.set_attribute("value", "12");
+        let handler = EventHandlerId(
+            m.field
+                .get_attribute("data-oninput")
+                .unwrap()
+                .parse()
+                .unwrap(),
+        );
+        dispatch_input_event(handler, "12".to_string());
+        assert_eq!(m.signal.get(), "12");
+        m.signal.set("7".to_string());
+        assert_eq!(m.attribute().as_deref(), Some("7"));
+    }
+}
+
+fn trimmed(text: &str) -> String {
+    text.trim().to_string()
+}
+
+/// A whitespace-only difference is a difference: a trimming handler's rewrite
+/// must reach the field. Kills a guard that compares trimmed text.
+#[test]
+fn a_whitespace_only_rewrite_is_written() {
+    for kind in KINDS {
+        let m = Mounted::mount(kind, "", trimmed);
+        m.type_text("ab ");
+        assert_eq!(m.signal.get(), "ab");
+        assert_eq!(m.field.live_value().as_deref(), Some("ab"));
+    }
+}

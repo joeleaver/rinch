@@ -355,6 +355,13 @@ impl DomDocument for MockDomDocument {
 
     fn remove_attribute(&mut self, node: NodeId, name: &str) {
         if let Some(n) = self.nodes.get_mut(&node) {
+            // `rinch-web` empties a control's live text when its `value`
+            // attribute goes (`remove_value_attribute` writes `""`).
+            if name == "value"
+                && matches!(&n.kind, MockNodeKind::Element(tag) if is_value_control(tag))
+            {
+                n.live_value = Some(String::new());
+            }
             n.attributes.remove(name);
         }
         self.mark_dirty(node);
@@ -859,6 +866,18 @@ mod tests {
     /// The mock models the web's split (issue #238): a user's typing moves the
     /// live text and leaves the `value` attribute behind, and `live_value` is
     /// what reports the field — the attribute is a fossil of the last write.
+    /// Removing a control's `value` attribute empties its live text, as the
+    /// web backend's `remove_value_attribute` does — not only the attribute.
+    #[test]
+    fn removing_the_value_attribute_empties_the_live_text() {
+        let mut doc = MockDomDocument::new();
+        let input = doc.create_element("input");
+        doc.set_attribute(input, "value", "x");
+        doc.__type_into(input, "typed");
+        doc.remove_attribute(input, "value");
+        assert_eq!(doc.live_value(input).as_deref(), Some(""));
+    }
+
     #[test]
     fn live_value_reports_typed_text_while_the_attribute_lags() {
         let mut doc = MockDomDocument::new();
