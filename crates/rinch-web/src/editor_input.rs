@@ -959,10 +959,12 @@ fn install_capture_listeners(ta: &web_sys::HtmlTextAreaElement) {
 }
 
 /// The capture textarea lost focus. Release the editor unless the textarea is
-/// still the document's focused element, which is what a *window* blur leaves
-/// (alt-tab away: focus comes back to it on return, as desktop's
-/// `WindowFocus(false)` keeps the claim, #226), or a context-menu cycle is in
-/// flight (#814: the browser's own menu has the keyboard for a moment).
+/// still the document's focused element or the page itself lost focus — what a
+/// *window* blur leaves (alt-tab away: focus comes back to it on return, as
+/// desktop's `WindowFocus(false)` keeps the claim, #226). No guard for a #814
+/// menu cycle: a press or key that moves focus ends the cycle first
+/// (`end_context_menu_cycle`), and the `editor_native_context_menu` suite passes
+/// without one.
 fn on_capture_blur() {
     let Some(doc) = web_sys::window().and_then(|w| w.document()) else {
         return;
@@ -972,7 +974,7 @@ fn on_capture_blur() {
         doc.active_element().as_ref() == Some(ta)
     });
     let page_has_focus = doc.has_focus().unwrap_or(false);
-    if still_focused || !page_has_focus || MENU_CYCLE.with(|c| c.borrow().is_some()) {
+    if still_focused || !page_has_focus {
         return;
     }
     if focused_editor().is_some() {
