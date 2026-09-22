@@ -571,7 +571,11 @@ impl EditorHandle {
         // load there is a write to the shared document) — and this used to pass
         // `None` after pushing the plugin, so that refusal left the key taken
         // and every retry refused too (review of #836).
-        if core.commit(prev, next, Some(&Mapping::new())).is_none() {
+        // Not an edit, so it never scrolls the caret into view.
+        if core
+            .commit(prev, next, Some(&Mapping::new()), Scroll::No)
+            .is_none()
+        {
             return false;
         }
         core.plugins = plugins;

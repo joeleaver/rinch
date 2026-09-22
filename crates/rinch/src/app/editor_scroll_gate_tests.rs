@@ -691,3 +691,108 @@ fn r846_a_doc_change_that_does_not_move_the_caret_leaves_no_stale_scroll() {
         "a stale scroll fired on the user's next wheel ({s1} -> {s2})"
     );
 }
+
+/// Adding a plugin is not an edit (#836/#847): it must not scroll a user who
+/// scrolled away back to the caret, even when the plugin re-decorates the
+/// document. `add_plugin` commits with `Scroll::No`. (Its commit changes
+/// neither the document nor the selection, so this also pins the gate's
+/// "changed" check; what it kills is a commit that arms unconditionally.)
+#[test]
+fn adding_a_plugin_does_not_scroll_to_an_offscreen_caret() {
+    use rinch_editor_core::{Attrs, Decoration, DecorationSet, EditorState, Plugin, PluginKey};
+    struct Marker;
+    impl Plugin for Marker {
+        fn key(&self) -> PluginKey {
+            PluginKey("scroll-gate.marker")
+        }
+        fn decorations(&self, _state: &EditorState) -> DecorationSet {
+            DecorationSet::new(vec![Decoration::inline(
+                Pos(1),
+                Pos(3),
+                Attrs::new().with("class", "marker"),
+            )])
+        }
+    }
+    let mut r = rig(
+        40,
+        "width: 800px; height: 600px",
+        "width: 400px; height: 160px; overflow-y: auto",
+        false,
+        800.0,
+    );
+    r846_scrolled_away(&mut r);
+    assert!(r.handle.add_plugin(Rc::new(Marker)));
+    r.app.refresh_editor_overlays();
+    for _ in 0..3 {
+        r.app.resolve_and_repaint(800.0, 600.0);
+    }
+    assert_eq!(
+        scroll_of(&r.app, r.scroller),
+        0.0,
+        "adding a plugin scrolled to the caret"
+    );
+    // And no request is left queued for the user's next wheel.
+    user_scrolls_to(&mut r.app, r.scroller, 0.0);
+    r.app.resolve_and_repaint(800.0, 600.0);
+    assert_eq!(scroll_of(&r.app, r.scroller), 0.0);
+}
+
+/// A right press on a visible line of an editor whose caret is off screen
+/// (#847's claimed/built-in right press places the caret and focuses the
+/// editor). The press moves the selection, which is a local selection change
+/// and arms the scroll — to the caret where the press put it, which is on
+/// screen, so the minimal scroll moves nothing. Checked both while focused and
+/// when the press is what focuses the editor.
+#[test]
+fn a_right_press_on_a_visible_line_scrolls_nothing() {
+    for focused in [true, false] {
+        let mut r = rig(
+            40,
+            "width: 800px; height: 600px",
+            "width: 400px; height: 160px; overflow-y: auto",
+            false,
+            800.0,
+        );
+        r846_scrolled_away(&mut r);
+        let end = r.handle.selection().head().0;
+        if !focused {
+            r.app.set_focus_target(FocusTarget::None);
+            r.app.refresh_editor_overlays();
+            r.app.resolve_and_repaint(800.0, 600.0);
+        }
+        let button = MouseButton::Right;
+        r846_ev(
+            &mut r.app,
+            PlatformEvent::MouseDown {
+                x: 30.0,
+                y: 12.0,
+                button,
+            },
+        );
+        r846_ev(
+            &mut r.app,
+            PlatformEvent::MouseUp {
+                x: 30.0,
+                y: 12.0,
+                button,
+            },
+        );
+        r.app.refresh_editor_overlays();
+        for _ in 0..3 {
+            r.app.resolve_and_repaint(800.0, 600.0);
+        }
+        assert!(
+            r.handle.selection().head().0 < end,
+            "positive control (focused={focused}): the press moved the caret up"
+        );
+        assert!(
+            r.app.focused_editor_id().is_some(),
+            "positive control (focused={focused}): the editor is focused"
+        );
+        assert_eq!(
+            scroll_of(&r.app, r.scroller),
+            0.0,
+            "a right press on a visible line scrolled (focused={focused})"
+        );
+    }
+}

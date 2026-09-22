@@ -283,7 +283,7 @@ without the user moving it — a user who scrolled away to read something is lef
 where they are:
 
 - a collaborator's edit arriving (`collab_receive`), even one above the caret;
-- `load_html` / `load_doc`;
+- `load_html` / `load_doc`, and `add_plugin` (neither is an edit);
 - a window resize that reflows the text, and the user's own scrolling (including a
   long, virtualized editor measuring the blocks it scrolls past);
 - an app transaction through `update(..)` that edits the document and lets the
