@@ -410,8 +410,14 @@ fn a_dead_prefix_does_not_veto_the_next_rewrite() {
 /// Web shape of the same class: the `value` attribute holds only what was
 /// last *written* (mount value or a previous rewrite), so once the author has
 /// typed, the attribute must never speak for the field — otherwise a colour
-/// moving BACK to the attribute's fossil value is wrongly judged "already
-/// shown" and the live text is never fixed.
+/// the attribute's fossil already spells is wrongly judged "already shown"
+/// and the live text is never fixed.
+///
+/// The typed text is deliberately **unparseable** (a backspace into a dead
+/// prefix). A parseable one moves the colour, so even a guard reading the
+/// attribute rewrites the field on that keystroke and the fossil never gets
+/// to speak — this test passed against exactly that guard while it typed
+/// "#336".
 #[test]
 fn a_return_to_the_last_written_colour_still_rewrites_on_web() {
     let picker = Mounted::picker("#ff0000", "hex");
@@ -420,12 +426,12 @@ fn a_return_to_the_last_written_colour_still_rewrites_on_web() {
     assert_eq!(picker.field_text(), "#22aa55");
 
     // Web-shaped typing: the live text changes, the attribute does not.
-    picker.type_text_web("#336");
+    picker.type_text_web("#22aa5");
 
-    picker.click_swatch(); // back to "#22aa55" — equal to the fossil attribute
+    picker.click_swatch(); // "#22aa55" — what the fossil attribute already says
 
     // The write must land: on web it is the only thing that repairs the live
-    // text (via the value-property mirror). The live text ("#336") is the
+    // text (via the value-property mirror). The live text ("#22aa5") is the
     // field's truth here, and it disagrees. Asserted on the LIVE text: the
     // attribute already said "#22aa55" before the click, so it cannot tell a
     // write from none.
