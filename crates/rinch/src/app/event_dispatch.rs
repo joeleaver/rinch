@@ -825,27 +825,51 @@ impl RinchApp {
                 );
 
                 let mut handled = false;
+                // An editor press is resolved on the tree as it was pressed, and
+                // the app's `data-oncontextmenu` claim is looked up on it too —
+                // both BEFORE the caret moves. Moving the caret re-runs the
+                // editor's decorations, which can re-render the very run the
+                // press landed on (a spellchecker that withdraws its squiggle
+                // once the caret is inside the word), and nothing lays the
+                // document out again before the next read: a claim walk would
+                // start from a detached node, and a second caret resolution
+                // would map `(x, y)` against a text node with no layout and
+                // land at the block start (review of #836). The web backend
+                // orders it the same way (`rinch-web`'s `editor_input`).
+                #[cfg(feature = "desktop")]
+                let editor_press = if button == MouseButton::Right {
+                    self.resolve_editor_context_press(x, y)
+                } else {
+                    None
+                };
                 if button == MouseButton::Right {
-                    // The editor's caret rule runs *before* the app handler, so a
-                    // `data-oncontextmenu` that draws its own menu reads the word
-                    // under the pointer rather than wherever the caret happened to
-                    // be. The web backend already orders it this way; see
-                    // `App::apply_editor_context_caret`.
-                    #[cfg(feature = "desktop")]
-                    self.apply_editor_context_caret(x, y);
-                    // Right-click: try oncontextmenu dispatch first
                     let mods = self.modifier_state();
-                    if let Some(doc) = &self.doc {
+                    let claim = self.doc.as_ref().and_then(|doc| {
                         let hit_id = {
                             let d = doc.borrow();
                             hit_test(&d.tree, x, y)
-                        };
-                        if let Some(hit_id) = hit_id {
-                            if Self::dispatch_oncontextmenu(doc, hit_id, x, y, vp_w, vp_h, mods) {
-                                actions.push(AppAction::RequestRedraw);
-                                handled = true;
-                            }
+                        }?;
+                        Self::oncontextmenu_handler_at(doc, hit_id)
+                    });
+                    if let Some(claim) = claim {
+                        // The app claimed the press over an editor: place the
+                        // caret (and take the keyboard, as the web's mousedown
+                        // does) before its handler runs, so a handler drawing its
+                        // own menu — a spellchecker's suggestions — reads the
+                        // word under the pointer off `EditorHandle::selection`.
+                        #[cfg(feature = "desktop")]
+                        if let Some(press) = &editor_press
+                            && crate::editor::editor_for_doc(self.doc_key(), press.container)
+                                .is_some()
+                        {
+                            self.set_focus_target(FocusTarget::Editor(press.container));
+                            self.editor_goal_x = None;
+                            self.apply_editor_context_press(press);
+                            self.refresh_editor_overlays();
                         }
+                        Self::fire_oncontextmenu(claim, x, y, vp_w, vp_h, mods);
+                        actions.push(AppAction::RequestRedraw);
+                        handled = true;
                     }
                 }
                 // Nothing handled a right press: on a text target it is the
@@ -854,7 +878,15 @@ impl RinchApp {
                 // so. A `data-oncontextmenu` above the field keeps winning.
                 if !handled
                     && button == MouseButton::Right
-                    && self.text_context_menu_gesture(x, y, vp_w, vp_h, &mut actions)
+                    && self.text_context_menu_gesture(
+                        x,
+                        y,
+                        vp_w,
+                        vp_h,
+                        &mut actions,
+                        #[cfg(feature = "desktop")]
+                        editor_press,
+                    )
                 {
                     handled = true;
                 }
@@ -1938,70 +1970,67 @@ impl RinchApp {
         }
     }
 
-    /// Dispatch `data-oncontextmenu` handler for the right-clicked node or its ancestors.
-    ///
-    /// Walks up from `hit_id` looking for a `data-oncontextmenu` attribute.
-    /// If found, sets the [`ClickContext`] with mouse position and element bounds,
-    /// then dispatches the registered event handler. Returns `true` if a handler
-    /// was found and dispatched.
-    pub(super) fn dispatch_oncontextmenu(
+    /// The live `data-oncontextmenu` nearest `hit_id` on its ancestor chain:
+    /// its handler id and the box it is painted in. The walk stops at the first
+    /// element carrying the attribute; a stale one claims nothing.
+    pub(super) fn oncontextmenu_handler_at(
         doc: &Rc<RefCell<RinchDocument>>,
         hit_id: usize,
+    ) -> Option<(usize, f32, f32, f32, f32)> {
+        let d = doc.borrow();
+        let mut current = Some(hit_id);
+        let mut found = None;
+        while let Some(nid) = current {
+            if let Some(node) = d.tree.get(nid) {
+                // A stale attribute must not stop the walk — see the note
+                // on the `data-onenter` walk (issue #141).
+                if let Some(val) = node.attributes.get("data-oncontextmenu") {
+                    if let Some(id) = val
+                        .parse::<usize>()
+                        .ok()
+                        .filter(|&id| events::has_click_handler(events::EventHandlerId(id)))
+                    {
+                        // The box the element is *painted* in, exactly as
+                        // the click path reports it — a hand-rolled
+                        // parent-chain sum composed no transform and made
+                        // no `position: fixed` exception (#203).
+                        let (ax, ay, aw, ah) = painted_element_box(&d.tree, nid);
+                        found = Some((id, ax, ay, aw, ah));
+                    }
+                    break;
+                }
+                current = node.parent;
+            } else {
+                break;
+            }
+        }
+        found
+    }
+
+    /// Run a `data-oncontextmenu` handler found by
+    /// [`Self::oncontextmenu_handler_at`], with the click context it reads.
+    pub(super) fn fire_oncontextmenu(
+        (id, elem_x, elem_y, elem_w, elem_h): (usize, f32, f32, f32, f32),
         x: f32,
         y: f32,
         viewport_width: f32,
         viewport_height: f32,
         modifiers: events::ModifierState,
-    ) -> bool {
-        let handler_info = {
-            let d = doc.borrow();
-            let mut current = Some(hit_id);
-            let mut found = None;
-            while let Some(nid) = current {
-                if let Some(node) = d.tree.get(nid) {
-                    // A stale attribute must not stop the walk — see the note
-                    // on the `data-onenter` walk (issue #141).
-                    if let Some(val) = node.attributes.get("data-oncontextmenu") {
-                        if let Some(id) = val
-                            .parse::<usize>()
-                            .ok()
-                            .filter(|&id| events::has_click_handler(events::EventHandlerId(id)))
-                        {
-                            // The box the element is *painted* in, exactly as
-                            // the click path reports it — a hand-rolled
-                            // parent-chain sum composed no transform and made
-                            // no `position: fixed` exception (#203).
-                            let (ax, ay, aw, ah) = painted_element_box(&d.tree, nid);
-                            found = Some((id, ax, ay, aw, ah));
-                        }
-                        break;
-                    }
-                    current = node.parent;
-                } else {
-                    break;
-                }
-            }
-            found
-        };
-        if let Some((id, elem_x, elem_y, elem_w, elem_h)) = handler_info {
-            events::set_click_context(events::ClickContext {
-                mouse_x: x,
-                mouse_y: y,
-                element_x: elem_x,
-                element_y: elem_y,
-                element_width: elem_w,
-                element_height: elem_h,
-                text_hit: events::TextHitInfo::default(),
-                viewport_width,
-                viewport_height,
-                button: events::MouseButton::Right,
-                modifiers,
-            });
-            events::dispatch_event(events::EventHandlerId(id));
-            true
-        } else {
-            false
-        }
+    ) {
+        events::set_click_context(events::ClickContext {
+            mouse_x: x,
+            mouse_y: y,
+            element_x: elem_x,
+            element_y: elem_y,
+            element_width: elem_w,
+            element_height: elem_h,
+            text_hit: events::TextHitInfo::default(),
+            viewport_width,
+            viewport_height,
+            button: events::MouseButton::Right,
+            modifiers,
+        });
+        events::dispatch_event(events::EventHandlerId(id));
     }
 
     /// Build an absolute-positioned ancestor chain for `hit_id`, from immediate

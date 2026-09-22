@@ -330,6 +330,13 @@ fn a_right_press_that_withdraws_the_squiggle_still_works() {
             "claim={claim}"
         );
         assert_eq!(segs(&p), 0, "the squiggle withdrew (claim={claim})");
+        // The editor holds the keyboard either way — the web's mousedown
+        // focuses the capture textarea before an app claim is consulted.
+        assert_eq!(
+            p.app.focus_target,
+            FocusTarget::Editor(p.container),
+            "claim={claim}"
+        );
         if claim {
             assert_eq!(p.seen.borrow().clone(), vec![Selection::cursor(Pos(9))]);
             assert!(!p.app.is_text_context_menu_open());
