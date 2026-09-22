@@ -1392,10 +1392,11 @@ const TEXT_CONTROL_SELECTOR: &str = "input, textarea, select, [data-pm-editor]";
 /// assistive technology or `element.click()` but not by mouse.
 const SELF_HANDLED_SELECTOR: &str = "[data-pm-editor], [data-render-surface]";
 
-/// Whether keys at `el` belong to a text control or the rich-text editor (the
-/// guard `editor_input` uses): Enter there is a submit/newline/commit, never an
-/// activation of a surrounding clickable.
-fn in_text_control(el: &web_sys::Element) -> bool {
+/// Whether keys at `el` belong to a text control or the rich-text editor:
+/// Enter there is a submit/newline/commit, never an activation of a surrounding
+/// clickable. `editor_input` asks the same question of a press outside every
+/// editor — one predicate, so the two cannot drift (issue #271).
+pub(crate) fn in_text_control(el: &web_sys::Element) -> bool {
     el.closest(TEXT_CONTROL_SELECTOR).ok().flatten().is_some() || in_content_editable(el)
 }
 

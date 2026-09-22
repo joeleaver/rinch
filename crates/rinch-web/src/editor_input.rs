@@ -1312,12 +1312,8 @@ fn handle_mousedown(event: &web_sys::MouseEvent, doc: &web_sys::Document) -> boo
     let Some(editor_el) = target.closest("[data-pm-editor]").ok().flatten() else {
         // Outside any editor. Blur only when moving to another text field, so a
         // toolbar click keeps the editor focused (and its selection visible).
-        if target
-            .closest("input, textarea, [contenteditable], [data-pm-editor]")
-            .ok()
-            .flatten()
-            .is_some()
-        {
+        // The text-field rule is keyboard activation's own (issue #271).
+        if crate::event_delegation::in_text_control(&target) {
             set_focused_editor(None);
             blur_capture_target();
         }
@@ -1557,18 +1553,21 @@ fn handle_keydown(event: &web_sys::KeyboardEvent, doc: &web_sys::Document) -> bo
     if event.key() == "ContextMenu" {
         MENU_KEY_TO_APP.with(|c| c.set(false));
     }
-    // Never hijack a key destined for a real form control / editable element (e.g. a
-    // search box the user clicked) — but our own hidden capture textarea
-    // (`data-pm-capture`) IS the editor's focus target, so let its keys through.
-    if let Some(t) = event
+    // The editor owns a key only while its capture textarea holds the keyboard
+    // (issue #271). This listener is on `document` in the capture phase, so it
+    // sees every key on the page: a key whose target is anything else — a search
+    // box, a `<button>` or `tabindex` control the user tabbed or clicked to, the
+    // page body after a click on blank space — belongs to that element. Routing
+    // it to the last editor clicked used to split that editor's paragraph on
+    // Enter and swallow the key, so keyboard activation went inert page-wide once
+    // any editor had been clicked. (A toolbar that must not take the keyboard
+    // from the editor says so with `data-nofocus`, which keeps the capture
+    // textarea focused through the press.)
+    let on_capture = event
         .target()
         .and_then(|t| t.dyn_into::<web_sys::Element>().ok())
-        && !t.has_attribute("data-pm-capture")
-        && t.closest("input, textarea, select, [contenteditable]")
-            .ok()
-            .flatten()
-            .is_some()
-    {
+        .is_some_and(|t| t.has_attribute("data-pm-capture"));
+    if !on_capture {
         return false;
     }
     // During an IME composition, yield every key to the textarea + IME — the composed
@@ -2140,10 +2139,30 @@ pub(crate) fn install(browser_doc: &web_sys::Document) {
             refresh_caret();
         }
     }) as Box<dyn FnMut(web_sys::Event)>);
-    browser_doc
-        .add_event_listener_with_callback("mousedown", refresh.as_ref().unchecked_ref())
-        .ok();
+    // The same after a command reached with no pointer at all (issue #271): Enter
+    // or Space on a focused toolbar control dispatches from the delegation's
+    // bubble `keydown` (a `tabindex` element) or from the `click` the browser
+    // synthesises for a `<button>`, as do assistive technology and
+    // `element.click()`. None of those is an input event this module refreshes
+    // from, so without these the caret stays where the edit left it. The `keydown`
+    // one answers only the two activation keys: every other key reaching the bubble
+    // phase belongs to some other field, and a refresh is a synchronous reflow.
+    for name in ["mousedown", "click"] {
+        browser_doc
+            .add_event_listener_with_callback(name, refresh.as_ref().unchecked_ref())
+            .ok();
+    }
     refresh.forget();
+    let refresh_on_activation = Closure::wrap(Box::new(move |e: web_sys::KeyboardEvent| {
+        let key = e.key();
+        if (key == "Enter" || key == " ") && focused_editor().is_some() {
+            refresh_caret();
+        }
+    }) as Box<dyn FnMut(web_sys::KeyboardEvent)>);
+    browser_doc
+        .add_event_listener_with_callback("keydown", refresh_on_activation.as_ref().unchecked_ref())
+        .ok();
+    refresh_on_activation.forget();
 
     // Caret blink (530 ms half-period — the platform default).
     if let Some(win) = web_sys::window() {
