@@ -344,3 +344,345 @@ fn typing_that_wraps_below_the_fold_follows_the_caret_onto_the_new_line() {
         scroll + 100.0
     );
 }
+
+// ── review-846 fixtures ──────────────────────────────────────────────────────
+
+fn r846_ev(app: &mut RinchApp, e: PlatformEvent) {
+    app.handle_event(e, (800, 600), 1.0);
+}
+
+fn r846_click(app: &mut RinchApp, x: f32, y: f32) {
+    r846_ev(
+        app,
+        PlatformEvent::MouseDown {
+            x,
+            y,
+            button: MouseButton::Left,
+        },
+    );
+    r846_ev(
+        app,
+        PlatformEvent::MouseUp {
+            x,
+            y,
+            button: MouseButton::Left,
+        },
+    );
+}
+
+/// Caret at the end (scrolled), the user scrolls back to the top, 3 frames: 0.
+fn r846_scrolled_away(r: &mut Rig) {
+    caret_to_end(r, 800.0);
+    user_scrolls_to(&mut r.app, r.scroller, 0.0);
+    for _ in 0..3 {
+        r.app.resolve_and_repaint(800.0, 600.0);
+    }
+    assert_eq!(
+        scroll_of(&r.app, r.scroller),
+        0.0,
+        "control: user stayed at 0"
+    );
+}
+
+/// A click in the checkbox gutter of a task item at the TOP of an unfocused
+/// editor toggles the box and does not move the caret. It also focuses the
+/// editor, and the focus arm then scrolls to the old caret at the bottom —
+/// away from the checkbox the user just clicked.
+#[test]
+fn r846_a_focusing_checkbox_click_does_not_yank_to_the_old_caret() {
+    let mut r = rig(
+        40,
+        "width: 800px; height: 600px",
+        "width: 400px; height: 160px; overflow-y: auto",
+        false,
+        800.0,
+    );
+    // Make the first paragraph a task item via the markdown input rule.
+    r.handle.set_selection(Selection::cursor(Pos(1)));
+    for c in ["[", " ", "]", " "] {
+        assert!(r.handle.insert_text(c));
+    }
+    assert_eq!(
+        r.handle.doc().child(0).type_name(),
+        "task_list",
+        "positive control: task list"
+    );
+    r.app.resolve_and_repaint(800.0, 600.0);
+    r846_scrolled_away(&mut r);
+    // Blur the editor (focus elsewhere), and let the frame hide its overlays.
+    r.app.set_focus_target(FocusTarget::None);
+    r.app.refresh_editor_overlays();
+    r.app.resolve_and_repaint(800.0, 600.0);
+    let (bx, by) = {
+        let doc = r.app.doc.as_ref().unwrap();
+        let d = doc.borrow();
+        let item = (0..d.tree.nodes.len())
+            .find(|&id| {
+                d.tree.get(id).is_some_and(|n| {
+                    n.attributes.get("data-pm-type").map(String::as_str) == Some("task_item")
+                })
+            })
+            .expect("a task item");
+        let (x, y, _, h) = painted_element_box(&d.tree, item);
+        (x + 4.0, y + h / 2.0)
+    };
+    let checked = |r: &Rig| {
+        r.handle
+            .doc()
+            .child(0)
+            .child(0)
+            .attrs()
+            .get_bool("checked")
+            .unwrap_or(false)
+    };
+    assert!(!checked(&r));
+    r846_click(&mut r.app, bx, by);
+    for _ in 0..3 {
+        r.app.resolve_and_repaint(800.0, 600.0);
+    }
+    assert!(checked(&r), "positive control: the click toggled the box");
+    assert_eq!(
+        r.app.focused_editor_id().is_some(),
+        true,
+        "positive control: focused"
+    );
+    let after = scroll_of(&r.app, r.scroller);
+    assert_eq!(
+        after, 0.0,
+        "the checkbox click yanked the scroller to the old caret ({after})"
+    );
+}
+
+/// Alt-tab away and back: `WindowFocus(false)` then `(true)`. A browser does
+/// not scroll a contenteditable to its caret on window refocus.
+#[test]
+fn r846_window_refocus_does_not_scroll_to_the_caret() {
+    let mut r = rig(
+        40,
+        "width: 800px; height: 600px",
+        "width: 400px; height: 160px; overflow-y: auto",
+        false,
+        800.0,
+    );
+    r846_scrolled_away(&mut r);
+    r846_ev(&mut r.app, PlatformEvent::WindowFocus(false));
+    r.app.resolve_and_repaint(800.0, 600.0);
+    r846_ev(&mut r.app, PlatformEvent::WindowFocus(true));
+    for _ in 0..3 {
+        r.app.refresh_editor_overlays();
+        r.app.resolve_and_repaint(800.0, 600.0);
+    }
+    assert_eq!(scroll_of(&r.app, r.scroller), 0.0);
+}
+
+/// Focus gained programmatically (the arbiter's transition, which is all a
+/// Tab or a `focus()` would be) with the caret below the fold: scrolls.
+#[test]
+fn r846_focus_gained_scrolls_to_an_offscreen_caret() {
+    let mut r = rig(
+        40,
+        "width: 800px; height: 600px",
+        "width: 400px; height: 160px; overflow-y: auto",
+        false,
+        800.0,
+    );
+    r846_scrolled_away(&mut r);
+    let editor = r.app.focused_editor_id().unwrap();
+    r.app.set_focus_target(FocusTarget::None);
+    r.app.refresh_editor_overlays();
+    r.app.resolve_and_repaint(800.0, 600.0);
+    r.app.set_focus_target(FocusTarget::Editor(editor));
+    r.app.refresh_editor_overlays();
+    for _ in 0..3 {
+        r.app.resolve_and_repaint(800.0, 600.0);
+    }
+    assert!(scroll_of(&r.app, r.scroller) > 0.0);
+}
+
+/// Toolbar Bold with a collapsed caret changes stored marks only: no scroll.
+/// Undo that restores text at the (off-screen) caret: scrolls.
+#[test]
+fn r846_toggle_bold_does_not_scroll_undo_does() {
+    let mut r = rig(
+        40,
+        "width: 800px; height: 600px",
+        "width: 400px; height: 160px; overflow-y: auto",
+        false,
+        800.0,
+    );
+    caret_to_end(&mut r, 800.0);
+    assert!(r.handle.insert_text("X"));
+    r.app.refresh_editor_overlays();
+    r.app.resolve_and_repaint(800.0, 600.0);
+    user_scrolls_to(&mut r.app, r.scroller, 0.0);
+    r.app.resolve_and_repaint(800.0, 600.0);
+    assert!(r.handle.command("toggleBold"));
+    r.app.refresh_editor_overlays();
+    for _ in 0..3 {
+        r.app.resolve_and_repaint(800.0, 600.0);
+    }
+    assert_eq!(scroll_of(&r.app, r.scroller), 0.0, "bold must not scroll");
+    // ...nor leave a request queued for the user's next wheel to drain.
+    user_scrolls_to(&mut r.app, r.scroller, 0.0);
+    r.app.resolve_and_repaint(800.0, 600.0);
+    assert_eq!(
+        scroll_of(&r.app, r.scroller),
+        0.0,
+        "bold queued a stale scroll"
+    );
+    assert!(r.handle.command("undo"));
+    r.app.refresh_editor_overlays();
+    for _ in 0..3 {
+        r.app.resolve_and_repaint(800.0, 600.0);
+    }
+    assert!(
+        scroll_of(&r.app, r.scroller) > 0.0,
+        "undo reveals the change"
+    );
+}
+
+/// An app inserting text AT the caret through the public `update` (tr.insert_text
+/// sets the selection) scrolls; one that inserts at the caret position with a
+/// raw step (no set_selection) does not.
+#[test]
+fn r846_public_update_scrolls_only_with_set_selection() {
+    let mut r = rig(
+        40,
+        "width: 800px; height: 600px",
+        "width: 400px; height: 160px; overflow-y: auto",
+        false,
+        800.0,
+    );
+    r846_scrolled_away(&mut r);
+    assert!(r.handle.update(|s| {
+        let mut tr = s.tr();
+        let at = s.selection.head().0;
+        let t = s.schema().text("raw").unwrap();
+        tr.replace_with(at, at, rinch_editor_core::Fragment::from_node(t))
+            .unwrap();
+        Some(tr)
+    }));
+    r.app.refresh_editor_overlays();
+    for _ in 0..3 {
+        r.app.resolve_and_repaint(800.0, 600.0);
+    }
+    let raw = scroll_of(&r.app, r.scroller);
+    assert!(r.handle.update(|s| {
+        let mut tr = s.tr();
+        tr.insert_text("typed").unwrap();
+        Some(tr)
+    }));
+    r.app.refresh_editor_overlays();
+    for _ in 0..3 {
+        r.app.resolve_and_repaint(800.0, 600.0);
+    }
+    let typed = scroll_of(&r.app, r.scroller);
+    eprintln!("R846 raw-step scroll={raw} insert_text scroll={typed}");
+    assert_eq!(raw, 0.0);
+    assert!(typed > 0.0);
+}
+
+/// Delete (forward) at an off-screen caret: the caret does not move, the doc
+/// changes. The PR says it "still reveals" the caret. Measure when.
+#[test]
+fn r846_forward_delete_at_an_offscreen_caret_reveals_it_at_once_not_on_the_next_wheel() {
+    let mut r = rig(
+        40,
+        "width: 800px; height: 600px",
+        "width: 400px; height: 160px; overflow-y: auto",
+        false,
+        800.0,
+    );
+    caret_to_end(&mut r, 800.0);
+    let end = r.handle.doc().content_size() - 1;
+    r.handle.set_selection(Selection::cursor(Pos(end - 4)));
+    r.app.refresh_editor_overlays();
+    for _ in 0..3 {
+        r.app.resolve_and_repaint(800.0, 600.0);
+    }
+    user_scrolls_to(&mut r.app, r.scroller, 0.0);
+    for _ in 0..3 {
+        r.app.resolve_and_repaint(800.0, 600.0);
+    }
+    assert_eq!(scroll_of(&r.app, r.scroller), 0.0, "control");
+    let before = r.handle.selection();
+    assert!(r.handle.command("deleteCharForward"));
+    assert_eq!(r.handle.selection(), before, "control: caret did not move");
+    r.app.refresh_editor_overlays();
+    for _ in 0..3 {
+        r.app.resolve_and_repaint(800.0, 600.0);
+    }
+    let s1 = scroll_of(&r.app, r.scroller);
+    // Idle frames with nothing dirty.
+    for _ in 0..3 {
+        r.app.resolve_and_repaint(800.0, 600.0);
+    }
+    let s1b = scroll_of(&r.app, r.scroller);
+    // The user scrolls away again: nothing stale may pull them back.
+    user_scrolls_to(&mut r.app, r.scroller, 0.0);
+    for _ in 0..3 {
+        r.app.resolve_and_repaint(800.0, 600.0);
+    }
+    let s2 = scroll_of(&r.app, r.scroller);
+    eprintln!("R846 delete: after delete {s1}, idle {s1b}, after next wheel {s2}");
+    assert!(s1 > 0.0, "the delete did not reveal the caret in its frame");
+    assert_eq!(s2, 0.0, "a stale scroll pulled the user back");
+}
+
+/// A command that changes the document at an off-screen caret without moving
+/// the caret overlay (align-left on an already left-aligned paragraph). The
+/// gate fires on a caret pass whose overlay did not move, so desktop's in-frame
+/// apply (which runs only when an overlay moved) is skipped and the request
+/// sits in the queue. Whatever it does, it must not fire on the user's NEXT
+/// wheel.
+#[test]
+fn r846_a_doc_change_that_does_not_move_the_caret_leaves_no_stale_scroll() {
+    let mut r = rig(
+        40,
+        "width: 800px; height: 600px",
+        "width: 400px; height: 160px; overflow-y: auto",
+        false,
+        800.0,
+    );
+    caret_to_end(&mut r, 800.0);
+    assert!(r.handle.command("insertTable"), "control: table inserted");
+    r.app.refresh_editor_overlays();
+    for _ in 0..3 {
+        r.app.resolve_and_repaint(800.0, 600.0);
+    }
+    user_scrolls_to(&mut r.app, r.scroller, 0.0);
+    for _ in 0..3 {
+        r.app.resolve_and_repaint(800.0, 600.0);
+    }
+    assert_eq!(scroll_of(&r.app, r.scroller), 0.0, "control: user at 0");
+    let before_doc = r.handle.doc();
+    let caret0 = caret_top(&r.app);
+    let sel0 = r.handle.selection();
+    assert!(
+        r.handle.command("addRowAfter"),
+        "control: the command applied"
+    );
+    assert_eq!(r.handle.selection(), sel0, "control: selection unchanged");
+    assert!(
+        !r.handle.doc().same_ref(&before_doc),
+        "control: the doc changed"
+    );
+    r.app.refresh_editor_overlays();
+    for _ in 0..3 {
+        r.app.resolve_and_repaint(800.0, 600.0);
+    }
+    let s1 = scroll_of(&r.app, r.scroller);
+    assert_eq!(
+        caret_top(&r.app),
+        caret0,
+        "control: the caret overlay did not move"
+    );
+    user_scrolls_to(&mut r.app, r.scroller, 0.0);
+    r.app.resolve_and_repaint(800.0, 600.0);
+    let s2 = scroll_of(&r.app, r.scroller);
+    eprintln!("R846 align: after command {s1}, after next wheel {s2}");
+    assert_eq!(
+        s2, 0.0,
+        "a stale scroll fired on the user's next wheel ({s1} -> {s2})"
+    );
+}

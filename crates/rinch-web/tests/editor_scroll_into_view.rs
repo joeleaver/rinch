@@ -265,3 +265,131 @@ fn a_remote_edit_above_the_caret_does_not_yank_a_scrolled_away_user() {
     local.stop_collaboration();
     f.teardown();
 }
+
+/// review-846: a click in a task item's checkbox gutter at the TOP of an
+/// unfocused editor toggles the box and does not move the caret. It must not
+/// scroll the editor to the old caret at the bottom.
+#[wasm_bindgen_test]
+fn r846_a_focusing_checkbox_click_does_not_yank_to_the_old_caret() {
+    let f = Fixture::mount(1, 0);
+    // An ordinary text field outside the editor, to take focus away.
+    let other = document().create_element("input").unwrap();
+    other
+        .set_attribute(
+            "style",
+            "position: fixed; left: 500px; top: 10px; width: 100px; height: 20px",
+        )
+        .unwrap();
+    f.host.append_child(&other).unwrap();
+    f.focus_first();
+    let h = f.handles[0].clone();
+    h.set_selection(Selection::cursor(Pos(1)));
+    for c in ["[", " ", "]", " "] {
+        assert!(h.insert_text(c));
+    }
+    assert_eq!(
+        h.doc().child(0).type_name(),
+        "task_list",
+        "control: a task list"
+    );
+    let sc = f.scroller(0);
+    let end = h.doc().content_size() - 1;
+    h.set_selection(Selection::cursor(Pos(end)));
+    keydown("ArrowLeft", "ArrowLeft");
+    assert!(sc.scroll_top() > 0, "control: caret scrolled into view");
+    // Focus the other field (a genuine press on it).
+    let r = other.get_bounding_client_rect();
+    mouse("mousedown", (r.x() + 5.0) as f32, (r.y() + 5.0) as f32);
+    mouse("mouseup", (r.x() + 5.0) as f32, (r.y() + 5.0) as f32);
+    // Any later refresh (e.g. a mousedown anywhere) runs the caret pass.
+    sc.set_scroll_top(0);
+    assert_eq!(sc.scroll_top(), 0);
+    let item = document()
+        .query_selector("[data-pm-type='task_item']")
+        .unwrap()
+        .expect("a task item");
+    let content = item
+        .first_element_child()
+        .unwrap()
+        .get_bounding_client_rect();
+    let (x, y) = (
+        (content.left() - 6.0) as f32,
+        (content.top() + content.height() / 2.0) as f32,
+    );
+    mouse("mousedown", x, y);
+    mouse("mouseup", x, y);
+    let checked = h
+        .doc()
+        .child(0)
+        .child(0)
+        .attrs()
+        .get_bool("checked")
+        .unwrap_or(false);
+    assert!(checked, "control: the click toggled the box");
+    let top = sc.scroll_top();
+    other.remove();
+    f.teardown();
+    assert_eq!(
+        top, 0,
+        "the checkbox click yanked the scroller to the old caret (got {top})"
+    );
+}
+
+/// review-846: the same, with focus taken away by a SECOND editor (whose
+/// caret pass hides the first editor's overlays, so the first's re-focus is a
+/// "focus gained" to the handle).
+#[wasm_bindgen_test]
+fn r846_a_checkbox_click_refocusing_from_another_editor_does_not_yank() {
+    let f = Fixture::mount(2, 0);
+    f.focus_first();
+    let h = f.handles[0].clone();
+    h.set_selection(Selection::cursor(Pos(1)));
+    for c in ["[", " ", "]", " "] {
+        assert!(h.insert_text(c));
+    }
+    assert_eq!(
+        h.doc().child(0).type_name(),
+        "task_list",
+        "control: a task list"
+    );
+    let sc = f.scroller(0);
+    let end = h.doc().content_size() - 1;
+    h.set_selection(Selection::cursor(Pos(end)));
+    keydown("ArrowLeft", "ArrowLeft");
+    assert!(sc.scroll_top() > 0, "control: caret scrolled into view");
+    // Focus editor 1 with a press on its first line.
+    let r1 = f.scroller(1).get_bounding_client_rect();
+    let (x1, y1) = ((r1.x() + 40.0) as f32, (r1.y() + 12.0) as f32);
+    mouse("mousedown", x1, y1);
+    mouse("mouseup", x1, y1);
+    sc.set_scroll_top(0);
+    assert_eq!(sc.scroll_top(), 0);
+    let item = document()
+        .query_selector("[data-pm-type='task_item']")
+        .unwrap()
+        .expect("a task item");
+    let content = item
+        .first_element_child()
+        .unwrap()
+        .get_bounding_client_rect();
+    let (x, y) = (
+        (content.left() - 6.0) as f32,
+        (content.top() + content.height() / 2.0) as f32,
+    );
+    mouse("mousedown", x, y);
+    mouse("mouseup", x, y);
+    let checked = h
+        .doc()
+        .child(0)
+        .child(0)
+        .attrs()
+        .get_bool("checked")
+        .unwrap_or(false);
+    let top = sc.scroll_top();
+    f.teardown();
+    assert!(checked, "control: the click toggled the box");
+    assert_eq!(
+        top, 0,
+        "the checkbox click yanked the scroller to the old caret (got {top})"
+    );
+}
