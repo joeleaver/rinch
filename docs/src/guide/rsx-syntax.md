@@ -297,7 +297,12 @@ repeat). On web, two routes cover the two kinds of element:
 Neither route double-fires with the mouse: a pointer press dispatches from
 `pointerdown`, and the trailing `click` of that same gesture — including the
 extra click a `<label>` fires at its control — is suppressed, even if a key
-was pressed while the button was held. Clicks with no pointer gesture behind
+was pressed while the button was held. A press that dispatched nothing has
+nothing to duplicate, so its clicks are not suppressed: a `<label for="x">`
+**outside** every handler, whose `<input id="x">` sits inside a clickable
+wrapper, activates that wrapper once by mouse as it does by keyboard (issue
+#272, web only — the desktop backend does not follow `for`, so there the
+press does nothing). Clicks with no pointer gesture behind
 them — assistive technology (whose clicks are *trusted*, with no pointer or
 key event of their own on Firefox/WebKit), `element.click()` — are honoured
 once, and a click a handler raises itself (`hidden_input.click()`) does not
