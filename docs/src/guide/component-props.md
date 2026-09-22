@@ -445,6 +445,13 @@ holds, so an attribute-reading consumer never sees a stale shorthand outlive
 the gesture that typed it. `ColorInput`'s text field follows the same
 contract.
 
+"The field's text" here is the field's **live** text, read through
+`NodeHandle::live_value` (issue #238) — on the web the `.value` property the
+user types into, never the `value` attribute, which there holds only what was
+last written programmatically. It is the same read the `value_fn` binding of
+`TextInput`, `PasswordInput`, `Textarea` and `NumberInput` makes before
+writing, so the echo of a keystroke is not written back there either.
+
 ### ColorInput
 
 Text input with inline color preview and dropdown ColorPicker.

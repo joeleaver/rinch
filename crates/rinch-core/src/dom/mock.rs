@@ -25,8 +25,19 @@ struct MockNode {
     kind: MockNodeKind,
     text: String,
     attributes: std::collections::HashMap<String, String>,
+    /// A form control's live text — the browser's `.value` property — once
+    /// something has set it (issue #238). `None` means "never moved", and the
+    /// control then reads as its `value` attribute, as a pristine browser
+    /// control does.
+    live_value: Option<String>,
     children: Vec<NodeId>,
     parent: Option<NodeId>,
+}
+
+/// Tags whose live text is a property separate from the `value` attribute —
+/// the three `rinch-web` reads `.value` from.
+fn is_value_control(tag: &str) -> bool {
+    matches!(tag, "input" | "textarea" | "select")
 }
 
 enum MockNodeKind {
@@ -65,6 +76,23 @@ impl MockDomDocument {
     #[doc(hidden)]
     pub fn __set_node_layout(&mut self, node: NodeId, x: f32, y: f32, w: f32, h: f32) {
         self.layout.insert(node, (x, y, w, h));
+    }
+
+    /// **Test-only.** Put `text` in a form control the way a **user** does in a
+    /// browser: the live text moves and the `value` attribute does not (issue
+    /// #238).
+    ///
+    /// The mock otherwise behaves like desktop, where the two never part — a
+    /// `set_attribute("value")` moves both, as `rinch-web`'s reflected-property
+    /// mirror does. This is the one way to reach the web's other state, the one
+    /// a component that reads the attribute instead of
+    /// [`DomDocument::live_value`] gets wrong. It dispatches nothing; a test
+    /// follows it with the `oninput` it wants delivered.
+    #[doc(hidden)]
+    pub fn __type_into(&mut self, node: NodeId, text: &str) {
+        if let Some(n) = self.nodes.get_mut(&node) {
+            n.live_value = Some(text.to_string());
+        }
     }
 
     pub fn new() -> Self {
@@ -157,6 +185,7 @@ impl DomDocument for MockDomDocument {
                 kind: MockNodeKind::Element(tag.to_string()),
                 text: String::new(),
                 attributes: std::collections::HashMap::new(),
+                live_value: None,
                 children: Vec::new(),
                 parent: None,
             },
@@ -172,6 +201,7 @@ impl DomDocument for MockDomDocument {
                 kind: MockNodeKind::Text,
                 text: text.to_string(),
                 attributes: std::collections::HashMap::new(),
+                live_value: None,
                 children: Vec::new(),
                 parent: None,
             },
@@ -187,6 +217,7 @@ impl DomDocument for MockDomDocument {
                 kind: MockNodeKind::Comment,
                 text: text.to_string(),
                 attributes: std::collections::HashMap::new(),
+                live_value: None,
                 children: Vec::new(),
                 parent: None,
             },
@@ -310,6 +341,13 @@ impl DomDocument for MockDomDocument {
 
     fn set_attribute(&mut self, node: NodeId, name: &str, value: &str) {
         if let Some(n) = self.nodes.get_mut(&node) {
+            // A programmatic write reaches the live text too, as `rinch-web`'s
+            // `sync_reflected_property` makes it (issue #100).
+            if name == "value"
+                && matches!(&n.kind, MockNodeKind::Element(tag) if is_value_control(tag))
+            {
+                n.live_value = Some(value.to_string());
+            }
             n.attributes.insert(name.to_string(), value.to_string());
         }
         self.mark_dirty(node);
@@ -317,6 +355,13 @@ impl DomDocument for MockDomDocument {
 
     fn remove_attribute(&mut self, node: NodeId, name: &str) {
         if let Some(n) = self.nodes.get_mut(&node) {
+            // `rinch-web` empties a control's live text when its `value`
+            // attribute goes (`remove_value_attribute` writes `""`).
+            if name == "value"
+                && matches!(&n.kind, MockNodeKind::Element(tag) if is_value_control(tag))
+            {
+                n.live_value = Some(String::new());
+            }
             n.attributes.remove(name);
         }
         self.mark_dirty(node);
@@ -324,6 +369,22 @@ impl DomDocument for MockDomDocument {
 
     fn get_attribute(&self, node: NodeId, name: &str) -> Option<String> {
         self.nodes.get(&node)?.attributes.get(name).cloned()
+    }
+
+    /// `rinch-web`'s answer, not the default's: a form control reads its live
+    /// text, which [`__type_into`](MockDomDocument::__type_into) can move away
+    /// from the attribute, and always answers `Some` — `""` when empty.
+    fn live_value(&self, node: NodeId) -> Option<String> {
+        let n = self.nodes.get(&node)?;
+        match &n.kind {
+            MockNodeKind::Element(tag) if is_value_control(tag) => Some(
+                n.live_value
+                    .clone()
+                    .or_else(|| n.attributes.get("value").cloned())
+                    .unwrap_or_default(),
+            ),
+            _ => n.attributes.get("value").cloned(),
+        }
     }
 
     /// Merge one declaration into the node's inline `style`, the way both real
@@ -433,6 +494,7 @@ impl DomDocument for MockDomDocument {
                 kind: MockNodeKind::Text,
                 text: html.to_string(),
                 attributes: std::collections::HashMap::new(),
+                live_value: None,
                 children: Vec::new(),
                 parent: None,
             },
@@ -799,5 +861,60 @@ mod tests {
         let div = doc.create_element("div");
         doc.set_style(div, "color", "red");
         assert_eq!(style_of(&doc, div), "color: red");
+    }
+
+    /// The mock models the web's split (issue #238): a user's typing moves the
+    /// live text and leaves the `value` attribute behind, and `live_value` is
+    /// what reports the field — the attribute is a fossil of the last write.
+    /// Removing a control's `value` attribute empties its live text, as the
+    /// web backend's `remove_value_attribute` does — not only the attribute.
+    #[test]
+    fn removing_the_value_attribute_empties_the_live_text() {
+        let mut doc = MockDomDocument::new();
+        let input = doc.create_element("input");
+        doc.set_attribute(input, "value", "x");
+        doc.__type_into(input, "typed");
+        doc.remove_attribute(input, "value");
+        assert_eq!(doc.live_value(input).as_deref(), Some(""));
+    }
+
+    #[test]
+    fn live_value_reports_typed_text_while_the_attribute_lags() {
+        let mut doc = MockDomDocument::new();
+        let input = doc.create_element("input");
+        doc.set_attribute(input, "value", "mount");
+
+        doc.__type_into(input, "typed");
+
+        assert_eq!(doc.live_value(input).as_deref(), Some("typed"));
+        assert_eq!(
+            doc.get_attribute(input, "value").as_deref(),
+            Some("mount"),
+            "typing must not reach the attribute, or the split is not modelled"
+        );
+
+        // A programmatic write reaches both, as the web's reflected-property
+        // mirror makes it.
+        doc.set_attribute(input, "value", "written");
+        assert_eq!(doc.live_value(input).as_deref(), Some("written"));
+        assert_eq!(
+            doc.get_attribute(input, "value").as_deref(),
+            Some("written")
+        );
+    }
+
+    /// A form control always has a live value — `""` before anything set one —
+    /// and an element that is not a form control answers from its attribute.
+    #[test]
+    fn live_value_of_an_empty_control_and_of_a_non_control() {
+        let mut doc = MockDomDocument::new();
+        let textarea = doc.create_element("textarea");
+        let div = doc.create_element("div");
+        assert_eq!(doc.live_value(textarea).as_deref(), Some(""));
+        assert_eq!(doc.live_value(div), None);
+
+        doc.set_attribute(div, "value", "attr");
+        doc.__type_into(div, "ignored");
+        assert_eq!(doc.live_value(div).as_deref(), Some("attr"));
     }
 }

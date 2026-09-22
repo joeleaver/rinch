@@ -1319,6 +1319,15 @@ rsx! {
 }
 ```
 
+**The echo is not written back.** In this pattern every keystroke runs
+`oninput` → signal → `value_fn`, which returns the very text the field already
+shows. `TextInput`, `PasswordInput`, `Textarea` and `NumberInput` compare
+`value_fn`'s result with the field's live text (`NodeHandle::live_value`,
+issue #238) and write only when they differ — a normalising handler's rewrite,
+or a programmatic change. The comparison is against the *live* text, not the
+`value` attribute, which on the web still holds the last programmatic write
+while the user types.
+
 **Writing to the field the user is typing in.** A `value_fn` write (or any
 `set_attribute("value")`) that lands on the *focused* field is adopted by the
 field on both backends (issue #238): it becomes the text the next keystroke

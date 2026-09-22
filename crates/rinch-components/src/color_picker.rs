@@ -3,7 +3,7 @@
 //! An interactive color picker with a saturation panel, hue slider,
 //! optional alpha slider, hex input, and preset swatches.
 
-use std::cell::{Cell, RefCell};
+use std::cell::Cell;
 use std::rc::Rc;
 
 use rinch_core::dom::{NodeHandle, RenderScope};
@@ -375,26 +375,9 @@ impl Component for ColorPicker {
             let hex_input = rinch_macros::rsx! { input { class: "rinch-color-picker__hex-input" } };
             hex_input.set_attribute("value", &format_color(initial, color_format));
 
-            // The field's live text, as this component last heard it: every
-            // `oninput` records here — parseable or not, because a record
-            // that survives an edit it no longer describes would later veto
-            // a legitimate rewrite (type "#336", backspace to "#33", click a
-            // #333366 swatch: a parse-gated record still says "#336" and the
-            // field would stay stuck at "#33"). The display effect prefers
-            // this record over the `value` attribute: on desktop both track
-            // the live text, but on web the attribute holds only what was
-            // last *written* programmatically — during typing it is a fossil
-            // that must not speak for the field. Cleared whenever the effect
-            // rewrites the field (the write becomes the live text on both
-            // backends).
-            let typed: Rc<RefCell<Option<String>>> = Rc::new(RefCell::new(None));
-
             {
-                let typed = typed.clone();
                 let handler_id = __scope.register_input_handler(move |value: String| {
-                    let parsed = parse_color(&value);
-                    *typed.borrow_mut() = Some(value);
-                    if let Some(parsed) = parsed {
+                    if let Some(parsed) = parse_color(&value) {
                         // One typed colour = one transition: batched, so
                         // onchange reports the committed colour once, not once
                         // per component with mixtures in between.
@@ -416,12 +399,10 @@ impl Component for ColorPicker {
             // while the gesture is live, and a committed shorthand left in
             // the field would mislead any attribute-reading consumer (#235's
             // residual). An unparseable commit reverts to the color the
-            // picker still holds. Either rewrite clears the typed record,
-            // like any effect rewrite. The signals are NOT touched here: every
+            // picker still holds. The signals are NOT touched here: every
             // parseable state already landed through `oninput`, and re-setting
             // them would re-notify the onchange coordinating effect.
             {
-                let typed = typed.clone();
                 let hex_input_commit = hex_input.clone();
                 let handler_id = __scope.register_input_handler(move |value: String| {
                     let committed = match parse_color(&value) {
@@ -436,7 +417,6 @@ impl Component for ColorPicker {
                             color_format,
                         ),
                     };
-                    *typed.borrow_mut() = None;
                     hex_input_commit.set_attribute("value", &committed);
                 });
                 hex_input.set_attribute("data-onchange", &handler_id.to_string());
@@ -479,24 +459,22 @@ impl Component for ColorPicker {
                     // rewritten only when the colour moves away from it — a
                     // drag, a swatch, an external apply.
                     //
-                    // "The field's text" is the `typed` record when one
-                    // exists (the live text on both backends), else the
-                    // `value` attribute (live only until the first keystroke
-                    // on web — but `typed` covers from then on). Agreement is
+                    // "The field's text" is its `live_value` (#238) — never the
+                    // `value` attribute, which on web holds only what was last
+                    // *written* programmatically and is a fossil once the
+                    // author types, so it must not speak for the field (a
+                    // colour moving back to the fossil would be judged
+                    // "already shown" and the live text never fixed). Agreement is
                     // `text == next` (the steady state: the string this
                     // effect last wrote) or `text_denotes` — the full colour,
                     // alpha included, so a typed "#3333666c" survives while
                     // the picker really holds that alpha, yet an alpha-slider
                     // move under a hex format still rewrites it.
                     let next = format_color(hsv, color_format);
-                    let field_text = typed
-                        .borrow()
-                        .clone()
-                        .or_else(|| hex_input.get_attribute("value"));
-                    let field_agrees = field_text
+                    let field_agrees = hex_input
+                        .live_value()
                         .is_some_and(|text| text.trim() == next || text_denotes(&text, hsv));
                     if !field_agrees {
-                        *typed.borrow_mut() = None;
                         hex_input.set_attribute("value", &next);
                     }
                 });
