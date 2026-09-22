@@ -10,9 +10,9 @@
 //! receiver calls `rinch::post_remote_delta` from its thread).
 //!
 //! Click into either pane and type — the edit converges in the other. The shared
-//! content is deliberately **flat** (headings, paragraphs, marks): the staged collab
-//! scope (design A22) is flat text-blocks + marks, so lists/blockquotes/tables are
-//! out of scope for now and would fail loud.
+//! content is deliberately **flat** (headings, paragraphs, marks). The staged collab
+//! scope (design A22) also covers lists, horizontal rules, images and hard breaks;
+//! blockquotes, tables and task lists are out of scope for now and would fail loud.
 
 use rinch::prelude::*;
 use rinch_editor_core::{Pos, Selection};

@@ -577,14 +577,27 @@ peer.
 for a *late*-joining peer to `start_collaboration_guest` from), and
 `collab_take_error()` round out the API. The first milestone covers **flat
 text-blocks + marks** (paragraphs, headings, code blocks, bold/italic/link/…),
-list containers (bullet/ordered lists and list items, nested to any depth) and
-horizontal rules; an edit
+list containers (bullet/ordered lists and list items, nested to any depth),
+horizontal rules, and the inline atoms inside a line — images and hard breaks
+(Shift+Enter). Blockquotes, tables and task lists are still outside it: an edit
 outside that scope fails loud rather than silently diverging —
 `collab_take_error()` surfaces it, and the CRDT is left untouched (the local edit is
-not projected). Horizontal rules joined that scope without a new wire
-format, so **every peer on a document must be upgraded together**: an older build
-accepts a rule from a newer peer and then cannot read it, which poisons its
-session (see below). A runnable two-pane loopback (both editors in one window, no network)
+not projected). Horizontal rules, images and hard breaks all joined that scope
+without a new wire format, so **every peer on a document must be upgraded
+together**: an older build accepts a rule, an image or a hard break from a newer
+peer and then cannot read it, which poisons its session (see below) in both
+directions for as long as that content remains in the document — it heals only
+when the last one is deleted. A peer joining from a snapshot that already holds
+one fails the join instead.
+
+One concurrent edit can still be lost, and it is narrow: **two identical images
+side by side** (same `src`, same `alt`, …) whose attributes two people change at
+the same moment. The CRDT sees them as one formatted run, and one of the two
+changes can overwrite the other. Both editors still end up with the same
+document. Images that differ in any attribute, and edits to a single image, are
+not affected.
+
+A runnable two-pane loopback (both editors in one window, no network)
 lives at `examples/collab-editor-demo/src/main.rs`.
 
 **Outbound stalls: an out-of-scope edit, and how it un-sticks.** The local edit that
