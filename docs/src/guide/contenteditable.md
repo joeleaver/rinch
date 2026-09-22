@@ -483,6 +483,16 @@ so keys can't reach the wrong control. Typed characters are still consumed by th
 editor's key handler (and never reach the textarea); only IME composition flows
 through it. This mirrors the CodeMirror / ProseMirror hidden-input technique.
 
+**The editor owns a key only while that textarea holds focus** (issue #271). Tab to a
+button, click a focusable control, or click blank page, and the next key — Enter and
+Space included — belongs to whatever has focus now, exactly as it would beside a
+native editable. Press inside the editor to give it the keyboard back. A toolbar
+that should leave the keyboard with the editor while its buttons are clicked
+carries `data-nofocus` (see the toolbar note above); the editor-web example's does.
+A toolbar command that runs with no pointer at all — Enter or Space on a focused
+toolbar control, assistive technology, `element.click()` — still moves the caret
+overlay with its edit.
+
 **Right-click gets the browser's own editing menu** (issue #814) — Paste, Cut, Copy,
 Select All, and whatever else the browser puts there (emoji, extensions; the hidden
 field has spellcheck off, so there are no spelling suggestions). The editor draws no
