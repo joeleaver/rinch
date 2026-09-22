@@ -933,15 +933,26 @@ fn apply_mark(txn: &mut TransactionMut, text: &TextRef, s: &str, m: &SpanMark) {
 /// applies, so a span that changed extent (cleared at the old range, re-applied at the
 /// new) nets out to exactly the new range.
 ///
-/// An **inline atom**'s [`ATOM_MARK`] span rides through here as an ordinary span, and
-/// safely so: a yrs formatting clear is per *attribute key*, so a peer clearing `bold`
-/// over the atom's char cannot take `@atom` with it, and the per-span difference above
-/// means a local edit that did not touch the atom does not rewrite it either. Writing
-/// the attribute *with* the placeholder's insert instead (`insert_with_attributes`)
-/// would buy nothing: it is the same format markers around the same char. What it
-/// could not prevent either way is the boundary inheritance [`is_atom_char`] describes
-/// — an insert landing *inside* those markers — which is why that is handled on the
-/// read side rather than guarded against here.
+/// An **inline atom**'s [`ATOM_MARK`] attribute is the one exception: it is diffed **per
+/// char** by [`resync_atoms_per_char`], never per span. A span is too coarse for it,
+/// because yrs extends a formatted range over an insert at its end boundary: a char
+/// typed right after an image lands inside the image's `@atom` range at the CRDT level
+/// while the model holds it as plain text, so the current span covers `[image, typed]`
+/// with one value against a target of `[image]`. Diffed per span, that clears the image
+/// char too and re-applies its attrs as a fresh write, which outlives a peer's
+/// concurrent change of those attrs — the #193 resurrection, reached by typing one
+/// letter after a picture (review of #838). Per char, the image's own char is unchanged
+/// and is not written; only the stray char is cleared. Two *identical adjacent* atoms
+/// coalesce into one span the same way, and per-char diffing stops an edit of one from
+/// rewriting the other — but see [`ATOM_MARK`] for what yrs still does to that pair
+/// under concurrency. Other marks must stay per span: they are inclusive in the model
+/// too, so a typed char carries them and a per-char diff would buy nothing there.
+///
+/// A yrs formatting clear is per *attribute key*, so a peer clearing `bold` over the
+/// atom's char cannot take `@atom` with it. Writing the attribute *with* the
+/// placeholder's insert (`insert_with_attributes`) instead would not prevent the
+/// boundary inheritance [`is_atom_char`] describes either — it is the same format
+/// markers around the same char.
 fn resync_marks(
     txn: &mut TransactionMut,
     text: &TextRef,
@@ -949,8 +960,9 @@ fn resync_marks(
     current_marks: &[SpanMark],
     target: &[SpanMark],
 ) {
+    resync_atoms_per_char(txn, text, current, current_marks, target);
     for m in current_marks {
-        if target.contains(m) {
+        if m.name == ATOM_MARK || target.contains(m) {
             continue;
         }
         let (at, len) = u16_span(current, m.start, m.end);
@@ -965,9 +977,81 @@ fn resync_marks(
         );
     }
     for m in target {
-        if !current_marks.contains(m) {
+        if m.name != ATOM_MARK && !current_marks.contains(m) {
             apply_mark(txn, text, current, m);
         }
+    }
+}
+
+/// The [`ATOM_MARK`] half of [`resync_marks`], diffed **per char** (see there for why).
+/// Clears the attribute from every maximal run of chars that carry it now and should
+/// not, then writes it over every maximal run of chars whose target value differs from
+/// the current one — and over nothing else, so an atom whose char already carries its
+/// target value gets no write at all. Costs nothing when neither side holds an atom.
+fn resync_atoms_per_char(
+    txn: &mut TransactionMut,
+    text: &TextRef,
+    current: &str,
+    current_marks: &[SpanMark],
+    target: &[SpanMark],
+) {
+    if !current_marks
+        .iter()
+        .chain(target)
+        .any(|m| m.name == ATOM_MARK)
+    {
+        return;
+    }
+    let n = current.chars().count();
+    let per_char = |spans: &[SpanMark]| -> Vec<Option<Attrs>> {
+        let mut v = vec![None; n];
+        for m in spans.iter().filter(|m| m.name == ATOM_MARK) {
+            for slot in &mut v[m.start.min(n)..m.end.min(n)] {
+                *slot = Some(m.attrs.clone());
+            }
+        }
+        v
+    };
+    let (cur, tgt) = (per_char(current_marks), per_char(target));
+
+    // Clears first: a char that carries the attribute and should carry none.
+    let mut i = 0;
+    while i < n {
+        if cur[i].is_none() || tgt[i].is_some() {
+            i += 1;
+            continue;
+        }
+        let start = i;
+        while i < n && cur[i].is_some() && tgt[i].is_none() {
+            i += 1;
+        }
+        let (at, len) = u16_span(current, start, i);
+        text.format(txn, at, len, YAttrs::from([(ATOM_MARK.into(), Any::Null)]));
+    }
+    // Then writes: a char whose target value is not what it carries now. A run is
+    // extended only while the target value stays the same, so one write never spans two
+    // different atoms.
+    let mut i = 0;
+    while i < n {
+        let Some(want) = tgt[i].as_ref().filter(|w| cur[i].as_ref() != Some(*w)) else {
+            i += 1;
+            continue;
+        };
+        let start = i;
+        while i < n && tgt[i].as_ref() == Some(want) && cur[i].as_ref() != Some(want) {
+            i += 1;
+        }
+        apply_mark(
+            txn,
+            text,
+            current,
+            &SpanMark {
+                name: ATOM_MARK.into(),
+                attrs: want.clone(),
+                start,
+                end: i,
+            },
+        );
     }
 }
 
