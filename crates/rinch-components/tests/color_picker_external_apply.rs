@@ -1229,7 +1229,11 @@ fn an_alpha_drag_survives_a_store_that_rounds_the_hue_tie_the_other_way() {
 
     click_at(0.4, 0.5);
     dispatch_event(overlay);
-    assert_eq!(picker.store.get(), "hsl(203, 3%, 49%)", "the store re-spelled");
+    assert_eq!(
+        picker.store.get(),
+        "hsl(203, 3%, 49%)",
+        "the store re-spelled"
+    );
     let left = percent_of(
         &picker.thumb_style("rinch-color-picker__alpha-thumb"),
         "left: ",
@@ -1279,7 +1283,11 @@ fn an_alpha_drag_survives_a_store_that_rounds_an_rgb_tie_down() {
         (left - 40.0).abs() < 0.01,
         "the echo is the picker's own emission, so the alpha holds: left {left}%"
     );
-    assert_eq!(picker.displayed(), MID_GREY, "and the colour is not moved to 127");
+    assert_eq!(
+        picker.displayed(),
+        MID_GREY,
+        "and the colour is not moved to 127"
+    );
 }
 
 /// The half of the decision that keeps #242 fixed: the tolerance is a
@@ -1309,4 +1317,3 @@ fn a_peers_one_degree_move_off_the_tie_still_applies_under_hex() {
         picker.emissions()
     );
 }
-
