@@ -247,15 +247,22 @@ fn enter_on_a_focused_control_after_an_editor_click_activates_it() {
     f.teardown();
 }
 
-/// Space, likewise — and the editor must not type it either.
+/// Space, likewise — the editor must not type it, and the caret overlay
+/// follows the command Space ran.
 #[wasm_bindgen_test]
 fn space_on_a_focused_control_after_an_editor_click_activates_it() {
     let f = Fixture::mount();
     f.focus_editor();
+    let before = f.caret_x();
     let node = f.el("node");
     node.focus().unwrap();
     keydown(node.as_ref(), " ", "Space");
     assert_eq!(f.count.get(), 1, "Space must activate the focused control");
+    let after = f.caret_x();
+    assert!(
+        after > before + 20.0,
+        "the caret followed the command's edit ({before} -> {after})"
+    );
     assert_eq!(
         f.text().replace("XYZ", ""),
         TEXT,
