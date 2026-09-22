@@ -4357,25 +4357,30 @@ impl RinchDocument {
         if let Some(color) = computed.color {
             props.push(parley::style::StyleProperty::Brush(Brush::Solid(color)));
         }
-        if computed.text_decoration.underline {
-            // A wavy underline is painted by `paint::text` from a decoration span
-            // (Parley has no wavy decoration), so the straight line is explicitly
-            // turned *off* rather than merely not turned on: the enclosing span
-            // may have switched it on, and a squiggle drawn over an inherited
-            // straight rule is two underlines.
-            props.push(parley::style::StyleProperty::Underline(
-                !computed.text_decoration.is_wavy_underline(),
-            ));
+        // A wavy underline is painted by `paint::text` from a decoration span
+        // (Parley has no wavy decoration), so a wavy element pushes no
+        // `Underline` at all — and in particular does not turn one *off*. CSS
+        // propagates an ancestor's decoration to every descendant's glyphs and a
+        // descendant cannot remove it, so a misspelled word inside `<u>` or an
+        // underlined link keeps its straight line and gains the squiggle, which
+        // is what a browser draws (review of #836, finding 4).
+        let wavy = computed.text_decoration.is_wavy_underline();
+        if computed.text_decoration.underline && !wavy {
+            props.push(parley::style::StyleProperty::Underline(true));
         }
         if computed.text_decoration.strikethrough {
             props.push(parley::style::StyleProperty::Strikethrough(true));
         }
         // `text-decoration-color`; see the sibling assignment in
-        // `build_inline_layout` for why `currentcolor` pushes nothing.
+        // `build_inline_layout` for why `currentcolor` pushes nothing. A wavy
+        // element's colour belongs to its squiggle (the decoration span carries
+        // it), not to an underline it inherited.
         if let Some(c) = computed.text_decoration.color {
-            props.push(parley::style::StyleProperty::UnderlineBrush(Some(
-                Brush::Solid(c),
-            )));
+            if !wavy {
+                props.push(parley::style::StyleProperty::UnderlineBrush(Some(
+                    Brush::Solid(c),
+                )));
+            }
             props.push(parley::style::StyleProperty::StrikethroughBrush(Some(
                 Brush::Solid(c),
             )));

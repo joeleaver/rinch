@@ -1,4 +1,8 @@
-//! Fixtures from the review of #836: wavy underline edge cases.
+//! `text-decoration-style: wavy` against the rest of CSS text decoration:
+//! propagation from an ancestor, right-to-left and mixed-direction text, the
+//! wave's shape and its `currentcolor` fallback (fixtures from the review of
+//! #836). Local pixel oracles on a software-painted frame; every text-measured
+//! fixture declares its `font-size` and `line-height`.
 use rinch_core::dom::{DomDocument, NodeId};
 use rinch_dom::RinchDocument;
 use rinch_dom::paint::skia_painter::TinySkiaPainter;
@@ -186,30 +190,19 @@ fn bidi_span_wave_covers_both_words() {
     let w = |v: &[(usize, usize)]| {
         v.iter().map(|p| p.0).max().unwrap_or(0) - v.iter().map(|p| p.0).min().unwrap_or(0)
     };
+    let lo = |v: &[(usize, usize)]| v.iter().map(|p| p.0).min().unwrap_or(0);
+    let hi = |v: &[(usize, usize)]| v.iter().map(|p| p.0).max().unwrap_or(0);
     eprintln!("bidi solid width {} wavy width {}", w(&solid), w(&wavy));
+    assert!(!solid.is_empty(), "positive control");
     assert!(w(&wavy) + 6 >= w(&solid), "bidi wave shorter than the text");
-}
-
-/// With a tight line-height the wave extends past the IFC root's box.
-#[test]
-fn wave_bottom_vs_box_bottom() {
-    for lh in [40, 20, 16] {
-        let mut doc = RinchDocument::new();
-        let body = doc.body();
-        let c = el(
-            &mut doc,
-            body,
-            "div",
-            &format!("width: 400px; line-height: {lh}px; font-size: 20px; color: black"),
-        );
-        let s = el(&mut doc, c, "span", "text-decoration: underline wavy red");
-        txt(&mut doc, s, "recieve");
-        doc.resolve_layout(VW, VH);
-        let red = reddish(&pixels(&mut doc));
-        let bottom = red.iter().map(|p| p.1).max().unwrap_or(0);
-        let h = doc.tree.nodes[c.0].layout.height;
-        eprintln!("line-height {lh}: wave bottom row {bottom}, box height {h}");
-    }
+    assert!(
+        lo(&wavy) + 3 >= lo(&solid) && hi(&wavy) <= hi(&solid) + 3,
+        "bidi wave runs past the text: wave {}..{}, text {}..{}",
+        lo(&wavy),
+        hi(&wavy),
+        lo(&solid),
+        hi(&solid)
+    );
 }
 
 #[test]
@@ -230,5 +223,79 @@ fn control_the_blue_line_paints_without_the_wavy_child() {
     assert!(
         !blue.is_empty(),
         "control: <u> with a blue decoration colour paints blue"
+    );
+}
+
+/// The wave alternates: under the word, the topmost wave row goes up and down
+/// with the 5px period. "More rows than a solid line" alone is satisfied by a
+/// straight line with a hook at its start (the review's surviving mutant M4:
+/// `up = !up` deleted).
+#[test]
+fn the_wave_alternates_along_the_word() {
+    let mut doc = RinchDocument::new();
+    let body = doc.body();
+    let c = el(
+        &mut doc,
+        body,
+        "div",
+        "width: 400px; line-height: 40px; font-size: 20px; color: black",
+    );
+    let s = el(&mut doc, c, "span", "text-decoration: underline wavy red");
+    txt(&mut doc, s, "recieve");
+    doc.resolve_layout(VW, VH);
+    let red = reddish(&pixels(&mut doc));
+    assert!(!red.is_empty(), "positive control: the wave painted");
+    let x0 = red.iter().map(|p| p.0).min().unwrap();
+    let x1 = red.iter().map(|p| p.0).max().unwrap();
+    assert!(
+        x1 - x0 > 40,
+        "the word is wide enough to hold several periods"
+    );
+    let top: Vec<usize> = (x0..=x1)
+        .filter_map(|x| red.iter().filter(|p| p.0 == x).map(|p| p.1).min())
+        .collect();
+    let changes = top.windows(2).filter(|w| w[0] != w[1]).count();
+    // ~2 changes per 5px period; a straight line with a hook changes once or twice.
+    assert!(
+        changes >= (x1 - x0) / 10,
+        "the wave is flat: {changes} changes of its top row over {}px ({top:?})",
+        x1 - x0
+    );
+}
+
+/// `text-decoration-color` unset is `currentcolor`: the wave takes the text's
+/// colour, not black (the review's surviving mutant M6 dropped that fallback).
+#[test]
+fn a_wave_with_no_decoration_colour_takes_the_text_colour() {
+    let ink = |style: &str| {
+        let mut doc = RinchDocument::new();
+        let body = doc.body();
+        let c = el(
+            &mut doc,
+            body,
+            "div",
+            "width: 400px; line-height: 40px; font-size: 20px; color: red",
+        );
+        let s = el(&mut doc, c, "span", style);
+        txt(&mut doc, s, "recieve");
+        doc.resolve_layout(VW, VH);
+        pixels(&mut doc)
+    };
+    let plain = ink("");
+    let wavy = ink("text-decoration: underline wavy");
+    // The wave's own pixels: ink in the wavy frame where the plain one has none.
+    let wave: Vec<[u8; 4]> = plain
+        .iter()
+        .zip(&wavy)
+        .filter(|(p, w)| p[3] == 0 && w[3] > 128)
+        .map(|(_, w)| *w)
+        .collect();
+    let red = wave.iter().filter(|p| p[0] > 150 && p[1] < 80).count();
+    let dark = wave.iter().filter(|p| p[0] < 80).count();
+    assert!(wave.len() > 10, "positive control: the wave added ink");
+    assert!(
+        red > dark && dark == 0,
+        "the wave is not the text colour: {red} red, {dark} dark of {}",
+        wave.len()
     );
 }

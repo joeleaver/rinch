@@ -178,7 +178,6 @@ fn paint_wavy_decorations(
     css_transform: Affine,
     scale: f64,
 ) {
-    use parley::layout::Cluster;
     use peniko::kurbo::BezPath;
 
     let sf = scale as f32;
@@ -198,18 +197,8 @@ fn paint_wavy_decorations(
             }
             let start = span.start.max(line_range.start);
             let end = span.end.min(line_range.end);
-            let Some(sc) = Cluster::from_byte_index(layout, start) else {
-                continue;
-            };
-            let Some(ec) = Cluster::from_byte_index(layout, end.saturating_sub(1).max(start))
-            else {
-                continue;
-            };
-            let (Some(x_start), Some(x_end)) = (sc.visual_offset(), ec.visual_offset()) else {
-                continue;
-            };
-            let (x0, x1) = ((x_start * sf) as f64, ((x_end + ec.advance()) * sf) as f64);
-            if x1 <= x0 {
+            let segments = visual_segments(&line, start, end);
+            if segments.is_empty() {
                 continue;
             }
             let metrics = line.metrics();
@@ -230,13 +219,16 @@ fn paint_wavy_decorations(
             let half = (PERIOD * scale) / 2.0;
 
             let mut path = BezPath::new();
-            path.move_to((x0, mid + amp));
-            let mut x = x0;
-            let mut up = true;
-            while x < x1 {
-                x = (x + half).min(x1);
-                path.line_to((x, if up { mid - amp } else { mid + amp }));
-                up = !up;
+            for (x0, x1) in segments {
+                let (x0, x1) = ((x0 * sf) as f64, (x1 * sf) as f64);
+                path.move_to((x0, mid + amp));
+                let mut x = x0;
+                let mut up = true;
+                while x < x1 {
+                    x = (x + half).min(x1);
+                    path.line_to((x, if up { mid - amp } else { mid + amp }));
+                    up = !up;
+                }
             }
             painter.stroke(
                 &Stroke::new(THICKNESS * scale),
@@ -246,6 +238,56 @@ fn paint_wavy_decorations(
             );
         }
     }
+}
+
+/// The **visual** x extents, in unscaled layout px, of the clusters of `line`
+/// whose text lies in the byte range `start..end` — one `(x0, x1)` per stretch
+/// that is contiguous on screen, left to right.
+///
+/// A byte range is contiguous in *logical* order only. In right-to-left text its
+/// first cluster is the rightmost, so reading x0 off the first cluster and x1 off
+/// the last gives `x1 <= x0` and no wave at all; in mixed-direction text the
+/// range can be split across runs laid out in the other order, so the two ends
+/// span too little (review of #836, finding 5). Walking each run's clusters in
+/// visual order and merging what touches answers both.
+fn visual_segments(
+    line: &parley::layout::Line<'_, Brush>,
+    start: usize,
+    end: usize,
+) -> Vec<(f32, f32)> {
+    let mut segments: Vec<(f32, f32)> = Vec::new();
+    for run in line.runs() {
+        let range = run.text_range();
+        if range.end <= start || range.start >= end {
+            continue;
+        }
+        // One O(line) offset lookup per run, then accumulate: `visual_offset`
+        // per cluster would make a long line quadratic.
+        let Some(mut x) = run.visual_clusters().next().and_then(|c| c.visual_offset()) else {
+            continue;
+        };
+        for cluster in run.visual_clusters() {
+            let text = cluster.text_range();
+            let advance = cluster.advance();
+            if text.start < end && text.end > start {
+                match segments.last_mut() {
+                    Some(last) if (last.1 - x).abs() < 0.01 => last.1 = x + advance,
+                    _ => segments.push((x, x + advance)),
+                }
+            }
+            x += advance;
+        }
+    }
+    segments.sort_by(|a, b| a.0.total_cmp(&b.0));
+    let mut merged: Vec<(f32, f32)> = Vec::with_capacity(segments.len());
+    for (x0, x1) in segments {
+        match merged.last_mut() {
+            Some(last) if x0 <= last.1 + 0.01 => last.1 = last.1.max(x1),
+            _ => merged.push((x0, x1)),
+        }
+    }
+    merged.retain(|&(x0, x1)| x1 > x0);
+    merged
 }
 
 /// Render a Parley text layout using a Painter.
