@@ -2087,3 +2087,27 @@ fn a_stray_atom_attribute_from_a_peer_is_text_and_is_cleared_by_the_next_local_e
     assert_converged(&a, &b, &schema);
     assert_eq!(image_srcs(&b.state.doc), vec!["cat.png".to_string()]);
 }
+
+#[test]
+fn pasting_two_different_images_side_by_side_keeps_each_its_own_attrs() {
+    // One transaction inserting two *different* adjacent atoms: the per-char resync must
+    // write each char's own value, never one value across a run of two atoms. (A single
+    // inserted atom cannot tell those apart — a run then has one char.)
+    let schema = Rc::new(Schema::starter_kit());
+    let (mut a, mut b) = two_peers_with_ids(&schema, vec![para(&schema, "abcd")], (11, 22));
+    let two = Fragment::from_children(vec![image(&schema, "one.png"), image(&schema, "two.png")]);
+    a.local(|tr| {
+        tr.replace(3, 3, Slice::new(two, 0, 0)).unwrap();
+    });
+    assert_eq!(
+        image_srcs(&a.session.projected_doc(&schema).unwrap()),
+        vec!["one.png".to_string(), "two.png".to_string()],
+        "model ≡ project(model) on the paste itself"
+    );
+    sync(&mut a, &mut b);
+    assert_converged(&a, &b, &schema);
+    assert_eq!(
+        image_srcs(&b.state.doc),
+        vec!["one.png".to_string(), "two.png".to_string()]
+    );
+}
