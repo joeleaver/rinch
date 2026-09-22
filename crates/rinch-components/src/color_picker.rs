@@ -19,7 +19,9 @@ use crate::color_utils::{
 /// Reactive callback type for string state.
 pub type ReactiveString = Rc<dyn Fn() -> String>;
 
-/// Raises the "an external value is being applied" flag for as long as it lives.
+/// Raises one of the picker's window flags for as long as it lives: "an
+/// external value is being applied", or "the coordinating effect is inside
+/// its `onchange` call" (GH #283).
 ///
 /// RAII rather than a set/clear pair because the batched writes it spans
 /// normally flush effects before the batch returns: arbitrary subscriber code
@@ -167,6 +169,19 @@ impl Component for ColorPicker {
         // guard's drop. The coordinating effect recognises the recorded colour
         // and stays silent about it — GH #229 must hold on that path too.
         let last_external_apply: Rc<Cell<Option<Hsva>>> = Rc::new(Cell::new(None));
+
+        // Raised while the coordinating effect is inside its `onchange` call.
+        // An external apply that lands in that window — a controlled handler
+        // writing a *transformed* colour back into the store `value_fn` reads
+        // (`|v| store.set(snap_to_palette(v))`) — runs one frame down the
+        // coordinating effect's own stack, and its batch flush cannot re-run
+        // that effect: `run_effect` skips a self-re-entrant effect and drops
+        // the run rather than re-queuing it. So the coordinating effect never
+        // observes such an apply, and the deferred-apply marker must not be
+        // armed for it — armed, nothing would take it, and it would swallow the
+        // next author act that lands bit-exactly on the applied colour (a
+        // click on the palette swatch the app snapped to) (GH #283).
+        let emitting = Rc::new(Cell::new(false));
 
         // Root container
         let size_class = match self.size.as_str() {
@@ -538,6 +553,7 @@ impl Component for ColorPicker {
             let onchange = onchange.clone();
             let applying_external = applying_external.clone();
             let last_applied = last_external_apply.clone();
+            let emitting = emitting.clone();
             let mut first_run = true;
             __scope.create_effect(move || {
                 // Read all four before any early return, so this effect stays
@@ -581,6 +597,10 @@ impl Component for ColorPicker {
                 // store, and a peer's later write would re-run it — ahead of
                 // the consumer's own `value_fn` effect — re-emitting the
                 // stale colour for the handler to write back over the peer's.
+                //
+                // The `emitting` window spans the call: an apply the handler
+                // provokes lands in it and arms no marker (GH #283).
+                let _emitting = ApplyGuard::raise(&emitting);
                 untracked(|| onchange.invoke(format_color(hsv, color_format)));
             });
         }
@@ -599,6 +619,7 @@ impl Component for ColorPicker {
         if let Some(ref value_fn) = self.value_fn {
             let value_fn = value_fn.clone();
             let last_applied = last_external_apply.clone();
+            let emitting = emitting.clone();
             __scope.create_effect(move || {
                 let external = value_fn();
                 // Only a parseable external value can apply: garbage and
@@ -668,8 +689,13 @@ impl Component for ColorPicker {
                         // marker holds `applied` — what the batch writes,
                         // kept channels included — never the raw parse, so
                         // the coordinating effect can recognise the flush by
-                        // exact equality.
-                        last_applied.set(Some(applied));
+                        // exact equality. Not armed while the coordinating
+                        // effect is emitting: this apply then runs down its
+                        // stack, the flush skips it, and nothing would ever
+                        // take the marker (GH #283).
+                        if !emitting.get() {
+                            last_applied.set(Some(applied));
+                        }
                         let _applying = ApplyGuard::raise(&applying_external);
                         batch(|| {
                             hue.set(applied.h);

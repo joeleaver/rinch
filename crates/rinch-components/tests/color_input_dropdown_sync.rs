@@ -65,6 +65,10 @@ enum Echo {
     /// The controlled idiom that *reads* the store inside the handler:
     /// `if value != store.get() { store.set(value) }`.
     IfChanged,
+    /// A *transforming* controlled handler (#283): every emission is written
+    /// back as this fixed colour — `|v| store.set(snap_to_palette(v))` with a
+    /// one-colour palette.
+    Snap(&'static str),
     Never,
 }
 
@@ -141,6 +145,7 @@ impl Input {
                 match (echo, store) {
                     (Echo::Back, Some(store)) => store.set(value),
                     (Echo::IfChanged, Some(store)) if value != store.get() => store.set(value),
+                    (Echo::Snap(colour), Some(store)) => store.set(colour.to_string()),
                     _ => {}
                 }
             })),
@@ -477,6 +482,48 @@ fn a_saturation_drag_is_not_reverted_by_its_own_echo() {
         expected,
         "the store saw the seed and one write per frame — nothing else"
     );
+}
+
+/// A controlled `onchange` that writes back a *transformed* colour leaves no
+/// deferred-apply marker armed in the dropdown picker (#283).
+///
+/// The snap's apply runs down the picker's coordinating effect's own stack,
+/// where the flush cannot re-run that effect, so a marker armed for it was
+/// never taken — and swallowed the next author act that landed on the
+/// snapped colour: the swatch click below reported nothing, and the wrapper's
+/// `current_value` write that repopulates the emptied field never happened.
+#[test]
+fn a_snapping_handler_does_not_swallow_a_click_on_the_snapped_swatch() {
+    const SNAPPED: &str = "#22aa55";
+    let input = Input::bound(START, "", Echo::Snap(SNAPPED));
+
+    input.press_saturation(0.5, 0.5); // s = 0.5, v = 0.5 — not the snap
+    assert_eq!(input.emissions().len(), 1, "the drag reports once");
+    assert_eq!(input.store().get(), SNAPPED, "and the app snapped it");
+    input.assert_picker_at(SNAPPED, "the picker follows the snapped colour");
+
+    // The author empties the field, then clicks the swatch the app snaps to.
+    input.type_text("");
+    let swatch = find_by_class(&input.root, "rinch-color-picker__swatches")
+        .expect("swatches grid")
+        .children()
+        .first()
+        .expect("one swatch")
+        .clone();
+    dispatch_event(EventHandlerId(
+        swatch
+            .get_attribute("data-rid")
+            .expect("swatch is clickable")
+            .parse()
+            .expect("handler id is numeric"),
+    ));
+
+    assert_eq!(
+        input.emissions(),
+        vec![input.emissions()[0].clone(), SNAPPED.to_string()],
+        "the swatch click is an author act and reports once"
+    );
+    assert_eq!(input.field_text(), SNAPPED, "and it repopulates the field");
 }
 
 /// The #261 review note: under `format: "hex"` a store speaking hsl moves the
