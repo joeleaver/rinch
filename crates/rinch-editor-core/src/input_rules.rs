@@ -253,47 +253,74 @@ pub fn mark_input_rule(pattern: &str, mark_type: &'static str) -> InputRule {
 /// blockquote, lists — where the space separates the marker from body text that
 /// follows it), this fires the instant the third `-`/`*` completes the marker, no
 /// trailing space needed — the same shape as the ` ``` ` → `code_block` rule,
-/// which fires on its closing backtick rather than a following space. The pattern
-/// is anchored both ends (`^...$`), so it only matches when the marker is the
-/// paragraph's *entire* content — typing `-` or `*` into a non-empty paragraph
-/// (`text---`) never fires it, and (like every input rule) it is skipped entirely
+/// which fires on its closing backtick rather than a following space.
+///
+/// It fires only when the marker is the paragraph's **whole** content. The
+/// pattern's `^...$` cannot say that on its own: [`apply_input_rules`] matches
+/// against the text *before the caret*, so a caret at the start of `world` typing
+/// `---` matched too and the replacement below deleted `world` (review of #836).
+/// The handler therefore also requires the caret to sit at the end of the
+/// paragraph's content. Typing `-` or `*` into a non-empty paragraph (`text---`,
+/// or `---` in front of existing text) never fires it; neither does a heading
+/// (only a `paragraph` is consumed), and (like every input rule) it is skipped
 /// inside a code block by `apply_input_rules`'s own guard.
 ///
 /// `horizontal_rule` is an atom, not a textblock, so — unlike
 /// [`textblock_type_input_rule`] — this can't just change the current block's
-/// type in place; it replaces the whole enclosing paragraph (found via
-/// [`block_range_simple`], as [`wrapping_input_rule`] does) with the rule, so no
-/// empty paragraph is left behind where the marker was. This mirrors
-/// `commands::insert_horizontal_rule`'s caret placement (`Selection::near` just
-/// after the inserted node) for the common case where another block already
-/// follows — the caret lands in it. But since here the *entire* replaced block is
-/// the one the marker lived in, when nothing follows there is no block left for
-/// the caret to land in at all, so (unlike the raw command) a fresh empty
-/// paragraph is appended after the rule to give the caret somewhere to go.
+/// type in place; it replaces the whole paragraph with the rule, so no empty
+/// paragraph is left behind where the marker was. When another block follows the
+/// paragraph *in the same parent* the caret lands in it (as
+/// `commands::insert_horizontal_rule` does); when the paragraph was its parent's
+/// last child a fresh empty paragraph is appended after the rule, inside that
+/// parent, so the caret always lands in a textblock — in a blockquote or a list
+/// item as well as at the top level. The rule declines, leaving `---` as text,
+/// when the parent's content expression would not accept the result (a schema
+/// whose `list_item` must start with a paragraph, say — the starter kit's is
+/// `block+` and accepts it).
 pub fn horizontal_rule_input_rule() -> InputRule {
-    InputRule::new(r"^(?:---|\*\*\*)$", |state, _caps, start, end| {
-        let mut tr = state.tr();
-        tr.delete(start, end).ok()?;
-        let r_from = tr.doc().resolve(Pos(start)).ok()?;
-        let range = block_range_simple(&r_from, &r_from)?;
-        let before = range.start();
-        let after = range.end();
-        let has_following_block = after < tr.doc().content_size();
+    InputRule::new(r"^(?:---|\*\*\*)$", |state, _caps, _start, end| {
+        // The marker must be the paragraph's entire content: nothing after the
+        // caret (the pattern already said nothing before the marker).
+        let r_end = state.doc.resolve(Pos(end)).ok()?;
+        let para = r_end.parent();
+        if para.type_name() != "paragraph" || r_end.parent_offset() != para.content().size() {
+            return None;
+        }
+        let depth = r_end.depth();
+        if depth == 0 {
+            return None;
+        }
+        let parent = r_end.node(depth - 1);
+        let index = r_end.index(depth - 1);
+        let is_last = index + 1 == parent.child_count();
+
+        // The parent's children after the swap must still satisfy its content
+        // expression (a list item's first child must be a paragraph).
+        let mut names: Vec<&str> = parent.content().iter().map(|c| c.type_name()).collect();
+        names[index] = "horizontal_rule";
+        if is_last {
+            names.push("paragraph");
+        }
+        crate::schema::validation::validate_content(state.schema(), parent.type_name(), &names)
+            .ok()?;
 
         let hr = state
             .schema()
             .create_node("horizontal_rule", Attrs::new(), Fragment::empty())
             .ok()?;
         let hr_size = hr.node_size();
-        let fragment = if has_following_block {
-            Fragment::from_node(hr)
-        } else {
+        let fragment = if is_last {
             let para = state
                 .schema()
                 .create_node("paragraph", Attrs::new(), Fragment::empty())
                 .ok()?;
             Fragment::from_children(vec![hr, para])
+        } else {
+            Fragment::from_node(hr)
         };
+        let before = r_end.before(depth)?;
+        let after = r_end.after(depth)?;
+        let mut tr = state.tr();
         tr.replace_with(before, after, fragment).ok()?;
         tr.set_selection(Selection::near(tr.doc(), Pos(before + hr_size), 1));
         Some(tr)
