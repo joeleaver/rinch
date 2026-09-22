@@ -43,6 +43,32 @@ fn scene_break(schema: &Schema) -> Node {
     schema.branch("horizontal_rule", Fragment::empty()).unwrap()
 }
 
+/// An inline atom: an `image` with the starter kit's attrs, which lives *inside* a
+/// paragraph's text rather than as a block of its own.
+fn image(schema: &Schema, src: &str) -> Node {
+    schema
+        .create_node(
+            "image",
+            Attrs::new()
+                .with("src", AttrValue::from(src))
+                .with("alt", AttrValue::from("a cat")),
+            Fragment::empty(),
+        )
+        .unwrap()
+}
+
+/// The other inline atom: the `hard_break` a Shift+Enter inserts.
+fn hard_break(schema: &Schema) -> Node {
+    schema.branch("hard_break", Fragment::empty()).unwrap()
+}
+
+/// A paragraph over arbitrary inline children (text nodes, atoms, or both).
+fn para_of(schema: &Schema, children: Vec<Node>) -> Node {
+    schema
+        .branch("paragraph", Fragment::from_children(children))
+        .unwrap()
+}
+
 /// The model position at which block `index` of `doc` starts.
 fn block_start(doc: &Node, index: usize) -> usize {
     (0..index).map(|i| doc.child(i).node_size()).sum()
@@ -240,17 +266,23 @@ fn norm(doc: &Node) -> String {
     for bi in 0..doc.child_count() {
         let b = doc.child(bi);
         s.push_str(&format!("<{} {}>", b.type_name(), norm_attrs(b)));
-        let mut runs: Vec<(Vec<String>, String)> = Vec::new();
+        // (marks, rendering, is_text) — an inline **atom** renders as its type and
+        // attrs, and never coalesces with a neighbouring run, so a document that lost
+        // one (or grew one) cannot compare equal to one that did not.
+        let mut runs: Vec<(Vec<String>, String, bool)> = Vec::new();
         for ci in 0..b.child_count() {
             let c = b.child(ci);
-            let text = c.text().unwrap_or("").to_string();
             let marks = canon_marks(c);
+            let (text, is_text) = match c.text() {
+                Some(t) => (t.to_string(), true),
+                None => (format!("⟦{} {}⟧", c.type_name(), norm_attrs(c)), false),
+            };
             match runs.last_mut() {
-                Some(last) if last.0 == marks => last.1.push_str(&text),
-                _ => runs.push((marks, text)),
+                Some(last) if last.2 && is_text && last.0 == marks => last.1.push_str(&text),
+                _ => runs.push((marks, text, is_text)),
             }
         }
-        for (marks, text) in runs {
+        for (marks, text, _) in runs {
             s.push_str(&format!("«{}|{}»", text, marks.join("+")));
         }
         s.push_str("</>");
@@ -1226,31 +1258,268 @@ fn a_peer_typing_in_a_paragraph_another_turns_into_a_scene_break_still_converges
     assert!(norm(&b.state.doc).contains("two!"), "editing still works");
 }
 
+// --- inline atoms (hard breaks, images) ----------------------------------------
+
 #[test]
-fn an_inline_atom_is_still_out_of_scope() {
-    // The boundary the block atom does NOT move (and the reason it is stated as "leaf
-    // *block* atom"): an `image` is an atom too, but it lives inside a paragraph's
-    // inline content, where a block's single projected text has nowhere to put it.
+fn projection_round_trips_a_paragraph_holding_inline_atoms() {
+    // The headline inline-atom test: an image and a hard break inside a line of text
+    // survive the round trip as themselves, at the positions they were in — not as
+    // stray U+FFFC characters, and not by failing loud.
     let schema = Rc::new(Schema::starter_kit());
-    let image = schema
-        .create_node(
-            "image",
-            Attrs::new().with("src", AttrValue::from("cat.png")),
-            Fragment::empty(),
-        )
+    let line = para_of(
+        &schema,
+        vec![
+            schema.text("look: ").unwrap(),
+            image(&schema, "cat.png"),
+            schema.text(" and on").unwrap(),
+            hard_break(&schema),
+            schema.text("a new line").unwrap(),
+        ],
+    );
+    let doc = doc_of(&schema, vec![line, para(&schema, "after")]);
+    let cdoc = rinch_editor_collab::CollabDoc::from_doc(&doc).unwrap();
+    let back = cdoc.to_doc(&schema).unwrap();
+    assert_eq!(
+        back, doc,
+        "the rebuilt document is the identical model tree"
+    );
+    assert_eq!(tree(&doc), tree(&back));
+
+    // And a late joiner reading the same bytes adopts it too (the snapshot path).
+    let joined = rinch_editor_collab::CollabDoc::load(&cdoc.save())
+        .expect("a projection holding inline atoms is joinable")
+        .to_doc(&schema)
         .unwrap();
-    let p = schema
-        .create_node(
-            "paragraph",
-            Attrs::new(),
-            Fragment::from_children(vec![schema.text("look: ").unwrap(), image]),
-        )
+    assert_eq!(joined, doc);
+}
+
+#[test]
+fn a_hard_break_typed_by_the_host_reaches_the_guest_and_the_body_keeps_syncing() {
+    // PlotWeb's actual symptom, the inline half of it: the moment the author pressed
+    // Shift+Enter the body stopped syncing while the editor still said "Saved". The
+    // break must project, arrive, and leave the paragraph editable on both sides.
+    let schema = Rc::new(Schema::starter_kit());
+    let (mut a, mut b) = two_peers(&schema, vec![para(&schema, "one two")]);
+
+    // Shift+Enter between the words: an atom inserted into existing text.
+    let at = block_start(&a.state.doc, 0) + 5; // "one |two"
+    let br = hard_break(&schema);
+    a.local(|tr| {
+        tr.replace(at, at, Slice::new(Fragment::from_node(br), 0, 0))
+            .unwrap();
+    });
+    sync(&mut a, &mut b);
+    assert_converged(&a, &b, &schema);
+    assert_eq!(
+        norm(&b.state.doc),
+        norm(&doc_of(
+            &schema,
+            vec![para_of(
+                &schema,
+                vec![
+                    schema.text("one ").unwrap(),
+                    hard_break(&schema),
+                    schema.text("two").unwrap(),
+                ],
+            )],
+        )),
+        "the guest received the hard break in place"
+    );
+
+    // Typing on both sides of it still syncs, and the break stays where it is.
+    a.type_at(block_content_end(&a.state.doc, 0), "!");
+    b.type_at(block_start(&b.state.doc, 0) + 1, "X");
+    sync(&mut a, &mut b);
+    assert_converged(&a, &b, &schema);
+    assert!(
+        norm(&a.state.doc).contains("⟦hard_break ⟧"),
+        "the break survived the edits around it: {}",
+        norm(&a.state.doc)
+    );
+}
+
+#[test]
+fn deleting_an_inline_atom_removes_it_on_the_other_side() {
+    let schema = Rc::new(Schema::starter_kit());
+    let line = para_of(
+        &schema,
+        vec![
+            schema.text("ab").unwrap(),
+            image(&schema, "cat.png"),
+            schema.text("cd").unwrap(),
+        ],
+    );
+    let (mut a, mut b) = two_peers(&schema, vec![line]);
+    assert!(
+        norm(&b.state.doc).contains("⟦image"),
+        "the guest joined with it"
+    );
+
+    // The image is one model position wide, just after "ab".
+    let at = block_start(&a.state.doc, 0) + 3;
+    a.local(|tr| {
+        tr.delete(at, at + 1).unwrap();
+    });
+    sync(&mut a, &mut b);
+    assert_converged(&a, &b, &schema);
+    assert_eq!(
+        norm(&b.state.doc),
+        norm(&doc_of(&schema, vec![para(&schema, "abcd")])),
+        "the deletion reached the guest and left ordinary text behind"
+    );
+}
+
+#[test]
+fn changing_an_atoms_attrs_reconciles_it_rather_than_duplicating_it() {
+    // An image whose `src` changes is the same node with a different attribute, so the
+    // projection must rewrite that one char's `@atom` value — not insert a second
+    // placeholder beside the first, which is what a diff that treated the atom as
+    // opaque content would do.
+    let schema = Rc::new(Schema::starter_kit());
+    let line = para_of(
+        &schema,
+        vec![
+            schema.text("see ").unwrap(),
+            image(&schema, "old.png"),
+            schema.text(" now").unwrap(),
+        ],
+    );
+    let (mut a, mut b) = two_peers(&schema, vec![line]);
+    let at = block_start(&a.state.doc, 0) + 5; // just before the image
+
+    a.local(|tr| {
+        tr.step(Box::new(SetNodeAttrStep::new(
+            at,
+            "src",
+            AttrValue::from("new.png"),
+        )))
         .unwrap();
-    let doc = doc_of(&schema, vec![p]);
+    });
+    sync(&mut a, &mut b);
+    assert_converged(&a, &b, &schema);
+    assert_eq!(
+        norm(&b.state.doc),
+        norm(&doc_of(
+            &schema,
+            vec![para_of(
+                &schema,
+                vec![
+                    schema.text("see ").unwrap(),
+                    image(&schema, "new.png"),
+                    schema.text(" now").unwrap(),
+                ],
+            )],
+        )),
+        "one image, with the new src"
+    );
+    assert_eq!(
+        norm(&b.state.doc).matches("⟦image").count(),
+        1,
+        "exactly one image: {}",
+        norm(&b.state.doc)
+    );
+}
+
+#[test]
+fn concurrent_edits_on_both_sides_of_an_atom_converge_and_keep_it() {
+    // Two authors typing either side of a picture: exactly one image survives, both
+    // insertions survive, and the session stays healthy. The typer right *after* the
+    // image gets the image's `@atom` attribute on its new chars from yrs (an insert at
+    // the end boundary of a formatted range joins it), but its own `resync_marks`
+    // clears that in the same transaction, so the peer never receives a stray span
+    // from this path. The stray-span rule of `is_atom_char` is pinned by
+    // `a_stray_atom_attribute_from_a_peer_is_text_and_is_cleared_by_the_next_local_edit`,
+    // which forges the update a non-rinch peer would send.
+    let schema = Rc::new(Schema::starter_kit());
+    let line = para_of(
+        &schema,
+        vec![
+            schema.text("ab").unwrap(),
+            image(&schema, "cat.png"),
+            schema.text("cd").unwrap(),
+        ],
+    );
+    let (mut a, mut b) = two_peers(&schema, vec![line]);
+    let after_image = block_start(&a.state.doc, 0) + 4;
+    let before_image = block_start(&b.state.doc, 0) + 3;
+
+    a.type_at(after_image, "XY"); // directly after the atom
+    b.type_at(before_image, "Z"); // directly before it
+    sync(&mut a, &mut b);
+    assert_converged(&a, &b, &schema);
+
+    let converged = norm(&a.state.doc);
+    assert_eq!(
+        converged.matches("⟦image").count(),
+        1,
+        "exactly one image, and no char of the typing became a second one: {converged}"
+    );
+    for typed in ["XY", "Z"] {
+        assert!(converged.contains(typed), "{typed} survived: {converged}");
+    }
+
+    // The session is healthy, not poisoned: the next edit on either side still syncs.
+    a.type_at(block_content_end(&a.state.doc, 0), "!");
+    sync(&mut a, &mut b);
+    assert_converged(&a, &b, &schema);
+    assert!(norm(&b.state.doc).contains('!'), "editing still works");
+}
+
+#[test]
+fn an_atom_carrying_a_mark_reaches_the_peer_with_it() {
+    // A linked image — the atom is a char that happens to be formatted, so its own
+    // marks are ordinary spans over that char and travel like any other formatting.
+    let schema = Rc::new(Schema::starter_kit());
+    let link = Mark::new(
+        schema.mark_type("link").unwrap().clone(),
+        Attrs::new().with("href", AttrValue::from("https://example.test/")),
+    );
+    let line = para_of(
+        &schema,
+        vec![
+            schema.text("see ").unwrap(),
+            image(&schema, "cat.png").with_marks(vec![link]),
+        ],
+    );
+    let (_a, b) = two_peers(&schema, vec![line.clone()]);
+    assert_eq!(
+        tree(&b.state.doc),
+        tree(&doc_of(&schema, vec![line])),
+        "the guest built the linked image from the snapshot"
+    );
+}
+
+#[test]
+fn a_literal_object_replacement_character_stays_text() {
+    // The character the projection uses as its placeholder is one a user can paste.
+    // Nothing marks it as an atom, so it must round-trip — and converge — as text.
+    let schema = Rc::new(Schema::starter_kit());
+    let (mut a, mut b) = two_peers(&schema, vec![para(&schema, "a\u{FFFC}b")]);
+    a.type_at(block_content_end(&a.state.doc, 0), "!");
+    sync(&mut a, &mut b);
+    assert_converged(&a, &b, &schema);
+    assert_eq!(
+        norm(&b.state.doc),
+        norm(&doc_of(&schema, vec![para(&schema, "a\u{FFFC}b!")])),
+        "still one paragraph of plain text"
+    );
+    assert!(
+        !norm(&b.state.doc).contains('⟦'),
+        "and no node was invented from it: {}",
+        norm(&b.state.doc)
+    );
+}
+
+#[test]
+fn an_inline_atom_is_still_not_a_block_of_its_own() {
+    // The boundary the inline atom does NOT move: an `image` is in scope inside a
+    // textblock's inline content, never as a top-level block.
+    let schema = Rc::new(Schema::starter_kit());
+    let doc = doc_of(&schema, vec![image(&schema, "cat.png")]);
     let err = rinch_editor_collab::CollabDoc::from_doc(&doc).unwrap_err();
     assert!(
         matches!(err, rinch_editor_collab::CollabError::Unsupported(_)),
-        "an inline atom must still fail loud, got {err:?}"
+        "an inline atom standing as a block must still fail loud, got {err:?}"
     );
 }
 
@@ -1495,4 +1764,350 @@ fn all_text(node: &Node) -> String {
     (0..node.child_count())
         .map(|i| all_text(node.child(i)))
         .collect()
+}
+
+// --- an inline atom's attrs survive a neighbour's typing (review of #838, F1) -------
+//
+// yrs extends a formatted range over an insert at its **end** boundary — the rule that
+// continues bold when you type at the end of a bold word — so a char typed right after
+// an image lands inside the image's `@atom` range at the CRDT level, while the model
+// (which never extends an atom onto its neighbour) holds it as plain text. The typer's
+// own `resync_marks` then clears that stray attribute. It used to clear it **per span**:
+// the stray char and the image char are one coalesced span with one value, so clearing
+// it cleared the image too and re-applied the image's *old* attrs as a fresh write —
+// which outlived a peer's concurrent `src` change on every replica. Both peers still
+// converged, on the old picture; nothing errored. A `link` mark in the same shape never
+// did this (every mark here is inclusive, so the typed char is linked in the model too
+// and there is nothing to resync) — `typing_after_a_link_while_a_peer_changes_its_href_keeps_the_new_href`
+// is that baseline.
+//
+// Every fixture runs under **both** yrs client-id orders, because which concurrent
+// formatting write wins is decided by the client-id tie-break: a test run once with
+// random ids passes or fails by coin toss.
+
+/// Client-id pairs covering both tie-break orders.
+const ID_ORDERS: [(u64, u64); 2] = [(11, 22), (22, 11)];
+
+/// [`two_peers`] with both yrs client ids pinned.
+fn two_peers_with_ids(schema: &Rc<Schema>, blocks: Vec<Node>, ids: (u64, u64)) -> (Peer, Peer) {
+    use rinch_editor_collab::testing::{session_from_bytes_with_client_id, session_with_client_id};
+    let a_state = EditorState::create(schema.clone(), doc_of(schema, blocks), plugins());
+    let session_a = session_with_client_id(&a_state, ids.0).expect("session A");
+    let snapshot = session_a.snapshot();
+    let a = Peer {
+        state: a_state,
+        session: session_a,
+    };
+    let session_b = session_from_bytes_with_client_id(&snapshot, ids.1).expect("session B");
+    let doc = session_b.projected_doc(schema).expect("project B");
+    let b = Peer {
+        state: EditorState::create(schema.clone(), doc, plugins()),
+        session: session_b,
+    };
+    (a, b)
+}
+
+/// `ab` + an image of `cat.png` + `cd`: the image sits at block offset 3, and the
+/// position right after it is block offset 4.
+fn line_with_image(schema: &Schema) -> Node {
+    para_of(
+        schema,
+        vec![
+            schema.text("ab").unwrap(),
+            image(schema, "cat.png"),
+            schema.text("cd").unwrap(),
+        ],
+    )
+}
+
+/// Every image's `src`, in document order.
+fn image_srcs(doc: &Node) -> Vec<String> {
+    let mut v = Vec::new();
+    for bi in 0..doc.child_count() {
+        let b = doc.child(bi);
+        for ci in 0..b.child_count() {
+            let c = b.child(ci);
+            if c.type_name() == "image" {
+                v.push(c.attrs().get_str("src").unwrap_or("").to_string());
+            }
+        }
+    }
+    v
+}
+
+fn set_src(peer: &mut Peer, pos: usize, src: &str) {
+    peer.local(|tr| {
+        tr.step(Box::new(SetNodeAttrStep::new(
+            pos,
+            "src",
+            AttrValue::from(src),
+        )))
+        .unwrap();
+    });
+}
+
+/// One peer types `typed` right after the image while the other changes its `src`;
+/// run under every client-id order and with either peer as the typer. Returns the
+/// failing combinations (empty = pass), so the assertion names every one at once.
+fn typing_after_image_vs_src_change(typed: &str) -> Vec<String> {
+    let mut failures = Vec::new();
+    for ids in ID_ORDERS {
+        for a_types in [true, false] {
+            let schema = Rc::new(Schema::starter_kit());
+            let (mut a, mut b) = two_peers_with_ids(&schema, vec![line_with_image(&schema)], ids);
+            let s = block_start(&a.state.doc, 0);
+            let (typer, changer) = if a_types {
+                (&mut a, &mut b)
+            } else {
+                (&mut b, &mut a)
+            };
+            typer.type_at(s + 4, typed);
+            set_src(changer, s + 3, "new.png");
+            sync(&mut a, &mut b);
+            assert_converged(&a, &b, &schema);
+            let srcs = image_srcs(&a.state.doc);
+            let text = all_text(&a.state.doc);
+            if srcs != ["new.png"] || !text.contains(typed) {
+                failures.push(format!(
+                    "ids {ids:?}, typer {}: images {srcs:?}, doc {}",
+                    if a_types { "A" } else { "B" },
+                    norm(&a.state.doc)
+                ));
+            }
+        }
+    }
+    failures
+}
+
+#[test]
+fn typing_right_after_an_image_keeps_a_peers_concurrent_src_change() {
+    let failures = typing_after_image_vs_src_change("X");
+    assert!(
+        failures.is_empty(),
+        "the typer's resync reverted the peer's src change:\n{}",
+        failures.join("\n")
+    );
+}
+
+#[test]
+fn a_literal_placeholder_typed_after_an_image_keeps_a_peers_concurrent_src_change() {
+    // A pasted U+FFFC is text, not an image — and typing it must not revert the image
+    // beside it any more than typing a letter does.
+    let failures = typing_after_image_vs_src_change("\u{FFFC}");
+    assert!(
+        failures.is_empty(),
+        "the typer's resync reverted the peer's src change:\n{}",
+        failures.join("\n")
+    );
+}
+
+#[test]
+fn typing_after_a_link_while_a_peer_changes_its_href_keeps_the_new_href() {
+    // The baseline the atom cases are measured against: the same shape with an
+    // attr-carrying *mark*. It never lost the update, because the typed char is linked
+    // in the model too (every mark is inclusive), so there is nothing to resync.
+    for ids in ID_ORDERS {
+        let schema = Rc::new(Schema::starter_kit());
+        let link = |h: &str| {
+            Mark::new(
+                schema.mark_type("link").unwrap().clone(),
+                Attrs::new().with("href", AttrValue::from(h)),
+            )
+        };
+        let line = para_of(
+            &schema,
+            vec![
+                schema.text_with_marks("ab", vec![link("old")]).unwrap(),
+                schema.text("cd").unwrap(),
+            ],
+        );
+        let (mut a, mut b) = two_peers_with_ids(&schema, vec![line], ids);
+        let s = block_start(&a.state.doc, 0);
+        a.type_at(s + 3, "X");
+        let l = link("new");
+        b.local(|tr| {
+            tr.add_mark(s + 1, s + 3, l).unwrap();
+        });
+        sync(&mut a, &mut b);
+        assert_converged(&a, &b, &schema);
+        let n = norm(&a.state.doc);
+        assert!(n.contains("\"new\""), "ids {ids:?}: {n}");
+    }
+}
+
+#[test]
+fn two_adjacent_identical_images_edited_concurrently_converge() {
+    // **A known limitation, pinned for convergence only.** Two identical images side by
+    // side are, at the CRDT level, one `@atom` formatting range with one value. Each
+    // peer changing *one* of them writes a formatting marker at the boundary between
+    // the two chars, and yrs orders two concurrent markers at one boundary by client id
+    // — so one peer's edit can be overwritten by the other's restore of the neighbour
+    // it did not touch. The replicas still converge (asserted), but one of the two
+    // changes may be lost; which one depends on the client-id order. This is yrs/Yjs
+    // concurrent-formatting semantics and cannot be fixed inside a formatting encoding.
+    for ids in ID_ORDERS {
+        let schema = Rc::new(Schema::starter_kit());
+        let line = para_of(
+            &schema,
+            vec![
+                schema.text("a").unwrap(),
+                image(&schema, "cat.png"),
+                image(&schema, "cat.png"),
+                schema.text("b").unwrap(),
+            ],
+        );
+        let (mut a, mut b) = two_peers_with_ids(&schema, vec![line], ids);
+        let s = block_start(&a.state.doc, 0);
+        set_src(&mut a, s + 2, "one.png");
+        set_src(&mut b, s + 3, "two.png");
+        sync(&mut a, &mut b);
+        assert_converged(&a, &b, &schema);
+        assert_eq!(image_srcs(&a.state.doc).len(), 2, "both images survive");
+    }
+}
+
+// --- a stray `@atom` span arriving from a peer (review of #838, F2) ------------------
+
+/// Block 0's text in raw yrs terms: `(chunk string, carries "@atom")` per diff chunk.
+fn raw_block0_chunks(doc: &yrs::Doc) -> Vec<(String, bool)> {
+    use yrs::{Array, Map, Text, Transact};
+    let content = doc.get_or_insert_array("content");
+    let txn = doc.transact();
+    let Some(yrs::Out::YMap(node)) = content.get(&txn, 0) else {
+        panic!("block 0 must be a node map");
+    };
+    let Some(yrs::Out::YText(text)) = node.get(&txn, "text") else {
+        panic!("block 0 must carry a text");
+    };
+    text.diff(&txn, yrs::types::text::YChange::identity)
+        .into_iter()
+        .map(|d| {
+            let yrs::Out::Any(yrs::Any::String(s)) = &d.insert else {
+                panic!("block 0 holds only string chunks");
+            };
+            let atom = d
+                .attributes
+                .as_ref()
+                .is_some_and(|a| a.get("@atom").is_some_and(|v| *v != yrs::Any::Null));
+            (s.to_string(), atom)
+        })
+        .collect()
+}
+
+/// A raw yrs replica of `session`'s document, with the projection's UTF-16 offsets
+/// (`Doc::new()` counts bytes, and an index into the 3-byte U+FFFC then splits it).
+fn raw_replica(session: &CollabSession) -> yrs::Doc {
+    use yrs::updates::decoder::Decode;
+    use yrs::{Transact, Update};
+    let doc = yrs::Doc::with_options(yrs::Options {
+        offset_kind: yrs::OffsetKind::Utf16,
+        ..Default::default()
+    });
+    doc.transact_mut()
+        .apply_update(Update::decode_v1(&session.snapshot()).unwrap())
+        .unwrap();
+    doc
+}
+
+#[test]
+fn a_stray_atom_attribute_from_a_peer_is_text_and_is_cleared_by_the_next_local_edit() {
+    // Through the projection a typer never *sends* a stray `@atom` span: its own
+    // `resync_marks` clears the one yrs gave its new chars in the same transaction. A
+    // peer that is not this projection can send one, though — any Yjs client inserting
+    // right after the placeholder with no formatting of its own inherits the range, and
+    // so does a projection built before the per-char resync. This drives that update
+    // through `integrate_incremental`, which is the only way to reach `is_atom_char`'s
+    // "attribute over a char that is not the placeholder" rule from outside the crate.
+    use yrs::updates::decoder::Decode;
+    use yrs::{Array, Map, ReadTxn, StateVector, Text, Transact};
+
+    let schema = Rc::new(Schema::starter_kit());
+    let (mut a, mut b) = two_peers_with_ids(&schema, vec![line_with_image(&schema)], (11, 22));
+
+    // A raw Yjs peer types "XY" right after the placeholder (UTF-16 offset 3), with no
+    // attributes of its own.
+    let raw = raw_replica(&a.session);
+    {
+        let content = raw.get_or_insert_array("content");
+        let mut txn = raw.transact_mut();
+        let Some(yrs::Out::YMap(node)) = content.get(&txn, 0) else {
+            panic!("block 0 must be a node map");
+        };
+        let Some(yrs::Out::YText(text)) = node.get(&txn, "text") else {
+            panic!("block 0 must carry a text");
+        };
+        text.insert(&mut txn, 3, "XY");
+    }
+    // Positive control: the update really carries the stray span — "XY" arrives inside
+    // the image's `@atom` range. Without this the rest of the test could pass on an
+    // update that never exercised the rule.
+    assert_eq!(
+        raw_block0_chunks(&raw),
+        vec![
+            ("ab".to_string(), false),
+            ("\u{FFFC}XY".to_string(), true),
+            ("cd".to_string(), false),
+        ],
+        "the forged update must put `@atom` over the typed chars"
+    );
+    let delta = {
+        let sv = StateVector::decode_v1(&a.session.state_vector()).unwrap();
+        raw.transact().encode_diff_v1(&sv)
+    };
+
+    // A integrates it: one image, and "XY" is text — not two more images, and not an
+    // error (which would poison the session over a formatting artifact).
+    let next = a
+        .session
+        .integrate_incremental(&a.state, &delta)
+        .expect("a stray atom attribute is not corruption")
+        .expect("the document changed");
+    a.state = next;
+    assert_eq!(image_srcs(&a.state.doc), vec!["cat.png".to_string()]);
+    assert_eq!(all_text(&a.state.doc), "abXYcd");
+    assert_eq!(
+        norm(&a.state.doc),
+        norm(&a.session.projected_doc(&schema).unwrap()),
+        "model ≡ projection"
+    );
+
+    // The stray span persists in the CRDT until this block is next reconciled locally;
+    // A's next edit in it clears the stray chars — and only those.
+    a.type_at(block_content_end(&a.state.doc, 0), "!");
+    assert_eq!(
+        raw_block0_chunks(&raw_replica(&a.session)),
+        vec![
+            ("ab".to_string(), false),
+            ("\u{FFFC}".to_string(), true),
+            ("XYcd!".to_string(), false),
+        ],
+        "the next local resync clears `@atom` from the stray chars and keeps the image's"
+    );
+    sync(&mut a, &mut b);
+    assert_converged(&a, &b, &schema);
+    assert_eq!(image_srcs(&b.state.doc), vec!["cat.png".to_string()]);
+}
+
+#[test]
+fn pasting_two_different_images_side_by_side_keeps_each_its_own_attrs() {
+    // One transaction inserting two *different* adjacent atoms: the per-char resync must
+    // write each char's own value, never one value across a run of two atoms. (A single
+    // inserted atom cannot tell those apart — a run then has one char.)
+    let schema = Rc::new(Schema::starter_kit());
+    let (mut a, mut b) = two_peers_with_ids(&schema, vec![para(&schema, "abcd")], (11, 22));
+    let two = Fragment::from_children(vec![image(&schema, "one.png"), image(&schema, "two.png")]);
+    a.local(|tr| {
+        tr.replace(3, 3, Slice::new(two, 0, 0)).unwrap();
+    });
+    assert_eq!(
+        image_srcs(&a.session.projected_doc(&schema).unwrap()),
+        vec!["one.png".to_string(), "two.png".to_string()],
+        "model ≡ project(model) on the paste itself"
+    );
+    sync(&mut a, &mut b);
+    assert_converged(&a, &b, &schema);
+    assert_eq!(
+        image_srcs(&b.state.doc),
+        vec!["one.png".to_string(), "two.png".to_string()]
+    );
 }

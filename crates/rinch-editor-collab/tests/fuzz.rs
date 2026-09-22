@@ -33,7 +33,10 @@ use std::rc::Rc;
 use rinch_editor_collab::CollabSession;
 use rinch_editor_collab::testing::{session_from_bytes_with_client_id, session_with_client_id};
 use rinch_editor_core::model::Fragment;
-use rinch_editor_core::{EditorState, Node, Pos, Schema, Selection, default_plugins};
+use rinch_editor_core::{
+    AttrValue, Attrs, EditorState, Node, Pos, Schema, Selection, Slice, default_plugins,
+};
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 /// xorshift64* — tiny, deterministic, no deps.
 struct Rng(u64);
@@ -111,11 +114,16 @@ fn random_text(rng: &mut Rng) -> String {
 /// Apply one random *projectable* edit to `state` — insert / delete / mark / split /
 /// block-type, plus the list container ops (wrap, unwrap, indent, outdent). Returns
 /// `None` (skip) when the random selection makes the op invalid; the fuzz tolerates
-/// skips. Stays inside the projected scope (no task lists, blockquotes, tables, or
-/// inline atoms), so `record_local` never hits the A22 `Unsupported` boundary — a
-/// failure here is a real projection bug, not an out-of-scope node.
-fn random_edit(rng: &mut Rng, state: &EditorState) -> Option<EditorState> {
-    match rng.below(12) {
+/// skips. Stays inside the projected scope (no task lists, blockquotes or tables), so
+/// `record_local` never hits the A22 `Unsupported` boundary — a failure here is a real
+/// projection bug, not an out-of-scope node. **Inline atoms are in scope** and are
+/// generated deliberately: they are one char of a block's text carrying a reserved
+/// formatting attribute, so every text splice and mark resync in the projection now has
+/// to carry them, and only random interleaving exercises that at the boundaries.
+/// `images` also lets the inline-atom op insert an `image`; see that arm for why only
+/// the convergence-only trial (`fuzz_with_images_converges`) passes `true`.
+fn random_edit(rng: &mut Rng, state: &EditorState, images: bool) -> Option<EditorState> {
+    match rng.below(13) {
         // Insert text (weighted — the common case).
         0..=3 => {
             let p = random_pos(rng, state);
@@ -159,6 +167,59 @@ fn random_edit(rng: &mut Rng, state: &EditorState) -> Option<EditorState> {
             let mut tr = state.tr();
             tr.set_selection(Selection::cursor(p));
             state.apply(tr).run("splitBlock")
+        }
+        // Insert an inline atom into a line. Restricted to a position whose parent is
+        // a textblock: an inline node between two blocks is not a shape the model can
+        // place, and generating one would (correctly) fail the projection assertion
+        // below rather than find a real bug.
+        11 => {
+            let p = random_pos(rng, state);
+            let parent_is_textblock = state
+                .doc
+                .resolve(p)
+                .ok()
+                .is_some_and(|r| r.parent().is_textblock());
+            if !parent_is_textblock {
+                return None;
+            }
+            // A `hard_break` by default, and an `image` only when `images` is set — **not**
+            // because an image is out of scope (it is not; the projection tests round-trip
+            // one with all three attrs) but because it breaks
+            // `replaying_a_trial_is_byte_identical` for a reason that has nothing to do
+            // with atoms (issue #841). A mark value carrying two or more attrs is an
+            // `Any::Map`, and yrs encodes one by iterating a `HashMap`, whose order is
+            // seeded per instance — so `{"@type":"image","src":…}` serializes in either
+            // order from one run to the next. An attr-less atom's value is a single-key
+            // map, which has only one order. The same latent non-determinism is reachable
+            // today through a `link` mark's `href`+`title`, which this fuzz also never
+            // generates; fixing it changes the wire encoding of every mark value.
+            //
+            // Convergence does not depend on that order, so images are fuzzed anyway, in
+            // a trial that asserts convergence and not replay. Two `src` values, so that
+            // adjacent images are sometimes identical (one coalesced `@atom` range) and
+            // sometimes not.
+            let atom = if images && rng.chance(50) {
+                IMAGES_INSERTED.fetch_add(1, Ordering::Relaxed);
+                state
+                    .schema()
+                    .create_node(
+                        "image",
+                        Attrs::new()
+                            .with("src", AttrValue::from(["a.png", "b.png"][rng.below(2)]))
+                            .with("alt", AttrValue::from("x")),
+                        Fragment::empty(),
+                    )
+                    .ok()?
+            } else {
+                state
+                    .schema()
+                    .branch("hard_break", Fragment::empty())
+                    .ok()?
+            };
+            let mut tr = state.tr();
+            tr.replace(p.0, p.0, Slice::new(Fragment::from_node(atom), 0, 0))
+                .ok()?;
+            Some(state.apply(tr))
         }
         // Wrap/unwrap the block in a list, and nest/un-nest list items. These are the
         // container operations — they are what makes the projection recursive, so the
@@ -244,7 +305,13 @@ struct Swarm {
     seen: Vec<usize>,
     /// Local edits projected so far (a trial that made none proves nothing).
     edits: usize,
+    /// Whether [`random_edit`] may insert images (see its inline-atom arm).
+    images: bool,
 }
+
+/// Images inserted by [`random_edit`] across the whole test binary — the positive
+/// control that the image trial generated any.
+static IMAGES_INSERTED: AtomicUsize = AtomicUsize::new(0);
 
 /// A distinct, deterministic yrs client id for peer `p` of the trial at `seed`.
 ///
@@ -301,6 +368,7 @@ impl Swarm {
             queue: Vec::new(),
             seen: vec![0usize; peers],
             edits: 0,
+            images: false,
         }
     }
 
@@ -373,7 +441,7 @@ impl Swarm {
             // 60% make a local edit, 40% deliver a pending delta.
             if rng.chance(60) {
                 let p = rng.below(self.peers());
-                let Some(next) = random_edit(rng, &self.states[p]) else {
+                let Some(next) = random_edit(rng, &self.states[p], self.images) else {
                     continue;
                 };
                 self.record_local(seed, p, next);
@@ -430,6 +498,10 @@ impl Swarm {
 /// flush, asserting the two invariants throughout. Returns the trial's fingerprint, which
 /// `replaying_a_trial_is_byte_identical` uses to pin replayability.
 fn fuzz_trial(seed: u64, peers: usize, rounds: usize) -> Fingerprint {
+    fuzz_trial_with(seed, peers, rounds, false)
+}
+
+fn fuzz_trial_with(seed: u64, peers: usize, rounds: usize, images: bool) -> Fingerprint {
     let schema = schema();
     let mut rng = Rng::new(seed);
     let mut swarm = Swarm::new(
@@ -438,6 +510,7 @@ fn fuzz_trial(seed: u64, peers: usize, rounds: usize) -> Fingerprint {
         initial_state(&schema).doc.clone(),
         peers,
     );
+    swarm.images = images;
     swarm.run_rounds(seed, rounds, &mut rng);
     swarm.flush(seed);
     swarm.assert_converged(seed);
@@ -560,6 +633,22 @@ fn fuzz_many_peers_converge() {
     for seed in 300..=305u64 {
         let _ = fuzz_trial(seed, 6, 500);
     }
+}
+
+/// Images in the random edit stream: every per-char `@atom` resync, and the splices
+/// around a placeholder whose value carries real attrs, under random interleaving
+/// (review of #838). Convergence only — never compare these trials' bytes (#841).
+#[test]
+fn fuzz_with_images_converges() {
+    let before = IMAGES_INSERTED.load(Ordering::Relaxed);
+    for seed in 700..=715u64 {
+        let _ = fuzz_trial_with(seed, 2 + (seed % 3) as usize, 300, true);
+    }
+    let inserted = IMAGES_INSERTED.load(Ordering::Relaxed) - before;
+    assert!(
+        inserted >= 20,
+        "the trial must actually insert images to test anything (inserted {inserted})"
+    );
 }
 
 #[test]

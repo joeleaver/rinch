@@ -277,7 +277,7 @@ fn node_from_doc_node(schema: &Schema, doc: &DocNode) -> Result<Node, EditorErro
     Ok(if marks.is_empty() {
         node
     } else {
-        node.mark(marks)
+        node.with_marks(marks)
     })
 }
 
