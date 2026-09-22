@@ -115,7 +115,7 @@ fn random_text(rng: &mut Rng) -> String {
 /// inline atoms), so `record_local` never hits the A22 `Unsupported` boundary — a
 /// failure here is a real projection bug, not an out-of-scope node.
 fn random_edit(rng: &mut Rng, state: &EditorState) -> Option<EditorState> {
-    match rng.below(11) {
+    match rng.below(12) {
         // Insert text (weighted — the common case).
         0..=3 => {
             let p = random_pos(rng, state);
@@ -182,6 +182,30 @@ fn random_edit(rng: &mut Rng, state: &EditorState) -> Option<EditorState> {
             let placed = state.apply(tr);
             let cmd = ["sinkListItem", "liftListItem"][rng.below(2)];
             placed.run(cmd)
+        }
+        // A scene break (review of #836) — the command, or a whole textblock replaced
+        // by a rule (the `---` input rule's shape).
+        7 => {
+            let p = random_pos(rng, state);
+            let mut tr = state.tr();
+            tr.set_selection(Selection::cursor(p));
+            state.apply(tr).run("insertHorizontalRule")
+        }
+        8 => {
+            let p = random_pos(rng, state);
+            let r = state.doc.resolve(p).ok()?;
+            if !r.parent().is_textblock() {
+                return None;
+            }
+            let d = r.depth();
+            let (start, end) = (r.before(d)?, r.after(d)?);
+            let hr = state
+                .schema()
+                .create_node("horizontal_rule", Default::default(), Fragment::empty())
+                .ok()?;
+            let mut tr = state.tr();
+            tr.replace_with(start, end, Fragment::from_node(hr)).ok()?;
+            Some(state.apply(tr))
         }
         // Set the block type (paragraph / heading / code_block — all flat).
         _ => {
