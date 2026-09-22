@@ -665,10 +665,11 @@ impl Component for ColorPicker {
                     // exact value, not just rinch's own (GH #262): a store
                     // re-spelling the emission in the inbound notation may
                     // round a tie between two grid points the other way, and
-                    // that is still this picker's echo. The held-colour arm
-                    // stays exact — a peer's value is not a re-spelling, and
-                    // only a rounding of the emission's exact value is folded,
-                    // so a peer's one-grid-step move off a tie still applies.
+                    // that is still this picker's echo. Only a rounding of the
+                    // emission's exact value is folded, so a peer's one-step
+                    // move off a tie still applies. The held-colour arm stays
+                    // exact: `held` is spelled in the inbound notation, on the
+                    // grid already, so there is no tie to round either way.
                     let held = format_color(current, notation.with_alpha());
                     let echoes_self = denotes_emitted(parsed, notation, &held)
                         || (color_format != notation.with_alpha()

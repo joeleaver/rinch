@@ -589,10 +589,12 @@ pub fn denotes_emitted(parsed: Hsva, notation: Notation, emitted: &str) -> bool 
 /// 1° move where the exact hue is 206⅔° and rinch writes 207 — is judged
 /// foreign, exactly as [`denotes_emitted`] judges it.
 ///
-/// This is `ColorPicker`'s emission arm only. The comparison against the
-/// colour the picker *holds* stays [`denotes_emitted`]: a held colour is not
-/// a quantized emission, so there is no exact value a store could have
-/// rounded the other way.
+/// The tolerance only does anything across notations. When `emitted` is
+/// already spelled in `notation` its exact value *is* a grid point, whose one
+/// rounding is itself, and this reduces to [`denotes_emitted`] — which is why
+/// `ColorPicker`'s held-colour arm, whose string is spelled in the inbound
+/// notation, keeps calling [`denotes_emitted`]: there is nothing for a store
+/// to have rounded differently.
 pub fn respells_emitted(parsed: Hsva, notation: Notation, emitted: &str) -> bool {
     if denotes_emitted(parsed, notation, emitted) {
         return true;

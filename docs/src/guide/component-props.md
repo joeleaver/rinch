@@ -433,9 +433,15 @@ emission could not have spelled folds as an echo, in both directions: on an
 chroma, where it does not move the rendered colour by an 8-bit step, while an
 inbound `hsl()` value that shares a spelling with the picker's current colour
 folds even where 8-bit could tell them apart (a normalizing store re-spelling
-the picker's own hex emission as `hsl()` is indistinguishable from it). The
-text field's write-back guard judges at the same resolution, so field, thumbs
-and store stay in step.
+the picker's own hex emission as `hsl()` is indistinguishable from it). A
+store that re-spells the emission in another notation may also round a *tie*
+its own way — `#797e81`'s hue is exactly 202.5°, which rinch writes as 202 and
+an exact converter as 203 — so an inbound value compared against what the
+picker emits (not what it holds) is accepted at either rounding of the
+emission's exact value, and at nothing farther: `#797e82`'s hue is 206⅔°, so a
+peer's `hsl(206, …)` under a `hex` display still applies. The text field's
+write-back guard judges at the same resolution, so field, thumbs and store stay
+in step.
 
 **Accepted colour notations** (everywhere a colour string is read — `value`,
 `value_fn`, typed text, swatches): hex in 3, 4, 6, or 8 digits (`#rgb`,
