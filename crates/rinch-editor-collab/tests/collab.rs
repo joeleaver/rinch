@@ -1763,3 +1763,203 @@ fn all_text(node: &Node) -> String {
         .map(|i| all_text(node.child(i)))
         .collect()
 }
+
+// --- an inline atom's attrs survive a neighbour's typing (review of #838, F1) -------
+//
+// yrs extends a formatted range over an insert at its **end** boundary — the rule that
+// continues bold when you type at the end of a bold word — so a char typed right after
+// an image lands inside the image's `@atom` range at the CRDT level, while the model
+// (which never extends an atom onto its neighbour) holds it as plain text. The typer's
+// own `resync_marks` then clears that stray attribute. It used to clear it **per span**:
+// the stray char and the image char are one coalesced span with one value, so clearing
+// it cleared the image too and re-applied the image's *old* attrs as a fresh write —
+// which outlived a peer's concurrent `src` change on every replica. Both peers still
+// converged, on the old picture; nothing errored. A `link` mark in the same shape never
+// did this (every mark here is inclusive, so the typed char is linked in the model too
+// and there is nothing to resync) — `typing_after_a_link_while_a_peer_changes_its_href_keeps_the_new_href`
+// is that baseline.
+//
+// Every fixture runs under **both** yrs client-id orders, because which concurrent
+// formatting write wins is decided by the client-id tie-break: a test run once with
+// random ids passes or fails by coin toss.
+
+/// Client-id pairs covering both tie-break orders.
+const ID_ORDERS: [(u64, u64); 2] = [(11, 22), (22, 11)];
+
+/// [`two_peers`] with both yrs client ids pinned.
+fn two_peers_with_ids(schema: &Rc<Schema>, blocks: Vec<Node>, ids: (u64, u64)) -> (Peer, Peer) {
+    use rinch_editor_collab::testing::{session_from_bytes_with_client_id, session_with_client_id};
+    let a_state = EditorState::create(schema.clone(), doc_of(schema, blocks), plugins());
+    let session_a = session_with_client_id(&a_state, ids.0).expect("session A");
+    let snapshot = session_a.snapshot();
+    let a = Peer {
+        state: a_state,
+        session: session_a,
+    };
+    let session_b = session_from_bytes_with_client_id(&snapshot, ids.1).expect("session B");
+    let doc = session_b.projected_doc(schema).expect("project B");
+    let b = Peer {
+        state: EditorState::create(schema.clone(), doc, plugins()),
+        session: session_b,
+    };
+    (a, b)
+}
+
+/// `ab` + an image of `cat.png` + `cd`: the image sits at block offset 3, and the
+/// position right after it is block offset 4.
+fn line_with_image(schema: &Schema) -> Node {
+    para_of(
+        schema,
+        vec![
+            schema.text("ab").unwrap(),
+            image(schema, "cat.png"),
+            schema.text("cd").unwrap(),
+        ],
+    )
+}
+
+/// Every image's `src`, in document order.
+fn image_srcs(doc: &Node) -> Vec<String> {
+    let mut v = Vec::new();
+    for bi in 0..doc.child_count() {
+        let b = doc.child(bi);
+        for ci in 0..b.child_count() {
+            let c = b.child(ci);
+            if c.type_name() == "image" {
+                v.push(c.attrs().get_str("src").unwrap_or("").to_string());
+            }
+        }
+    }
+    v
+}
+
+fn set_src(peer: &mut Peer, pos: usize, src: &str) {
+    peer.local(|tr| {
+        tr.step(Box::new(SetNodeAttrStep::new(
+            pos,
+            "src",
+            AttrValue::from(src),
+        )))
+        .unwrap();
+    });
+}
+
+/// One peer types `typed` right after the image while the other changes its `src`;
+/// run under every client-id order and with either peer as the typer. Returns the
+/// failing combinations (empty = pass), so the assertion names every one at once.
+fn typing_after_image_vs_src_change(typed: &str) -> Vec<String> {
+    let mut failures = Vec::new();
+    for ids in ID_ORDERS {
+        for a_types in [true, false] {
+            let schema = Rc::new(Schema::starter_kit());
+            let (mut a, mut b) = two_peers_with_ids(&schema, vec![line_with_image(&schema)], ids);
+            let s = block_start(&a.state.doc, 0);
+            let (typer, changer) = if a_types {
+                (&mut a, &mut b)
+            } else {
+                (&mut b, &mut a)
+            };
+            typer.type_at(s + 4, typed);
+            set_src(changer, s + 3, "new.png");
+            sync(&mut a, &mut b);
+            assert_converged(&a, &b, &schema);
+            let srcs = image_srcs(&a.state.doc);
+            let text = all_text(&a.state.doc);
+            if srcs != ["new.png"] || !text.contains(typed) {
+                failures.push(format!(
+                    "ids {ids:?}, typer {}: images {srcs:?}, doc {}",
+                    if a_types { "A" } else { "B" },
+                    norm(&a.state.doc)
+                ));
+            }
+        }
+    }
+    failures
+}
+
+#[test]
+fn typing_right_after_an_image_keeps_a_peers_concurrent_src_change() {
+    let failures = typing_after_image_vs_src_change("X");
+    assert!(
+        failures.is_empty(),
+        "the typer's resync reverted the peer's src change:\n{}",
+        failures.join("\n")
+    );
+}
+
+#[test]
+fn a_literal_placeholder_typed_after_an_image_keeps_a_peers_concurrent_src_change() {
+    // A pasted U+FFFC is text, not an image — and typing it must not revert the image
+    // beside it any more than typing a letter does.
+    let failures = typing_after_image_vs_src_change("\u{FFFC}");
+    assert!(
+        failures.is_empty(),
+        "the typer's resync reverted the peer's src change:\n{}",
+        failures.join("\n")
+    );
+}
+
+#[test]
+fn typing_after_a_link_while_a_peer_changes_its_href_keeps_the_new_href() {
+    // The baseline the atom cases are measured against: the same shape with an
+    // attr-carrying *mark*. It never lost the update, because the typed char is linked
+    // in the model too (every mark is inclusive), so there is nothing to resync.
+    for ids in ID_ORDERS {
+        let schema = Rc::new(Schema::starter_kit());
+        let link = |h: &str| {
+            Mark::new(
+                schema.mark_type("link").unwrap().clone(),
+                Attrs::new().with("href", AttrValue::from(h)),
+            )
+        };
+        let line = para_of(
+            &schema,
+            vec![
+                schema.text_with_marks("ab", vec![link("old")]).unwrap(),
+                schema.text("cd").unwrap(),
+            ],
+        );
+        let (mut a, mut b) = two_peers_with_ids(&schema, vec![line], ids);
+        let s = block_start(&a.state.doc, 0);
+        a.type_at(s + 3, "X");
+        let l = link("new");
+        b.local(|tr| {
+            tr.add_mark(s + 1, s + 3, l).unwrap();
+        });
+        sync(&mut a, &mut b);
+        assert_converged(&a, &b, &schema);
+        let n = norm(&a.state.doc);
+        assert!(n.contains("\"new\""), "ids {ids:?}: {n}");
+    }
+}
+
+#[test]
+fn two_adjacent_identical_images_edited_concurrently_converge() {
+    // **A known limitation, pinned for convergence only.** Two identical images side by
+    // side are, at the CRDT level, one `@atom` formatting range with one value. Each
+    // peer changing *one* of them writes a formatting marker at the boundary between
+    // the two chars, and yrs orders two concurrent markers at one boundary by client id
+    // — so one peer's edit can be overwritten by the other's restore of the neighbour
+    // it did not touch. The replicas still converge (asserted), but one of the two
+    // changes may be lost; which one depends on the client-id order. This is yrs/Yjs
+    // concurrent-formatting semantics and cannot be fixed inside a formatting encoding.
+    for ids in ID_ORDERS {
+        let schema = Rc::new(Schema::starter_kit());
+        let line = para_of(
+            &schema,
+            vec![
+                schema.text("a").unwrap(),
+                image(&schema, "cat.png"),
+                image(&schema, "cat.png"),
+                schema.text("b").unwrap(),
+            ],
+        );
+        let (mut a, mut b) = two_peers_with_ids(&schema, vec![line], ids);
+        let s = block_start(&a.state.doc, 0);
+        set_src(&mut a, s + 2, "one.png");
+        set_src(&mut b, s + 3, "two.png");
+        sync(&mut a, &mut b);
+        assert_converged(&a, &b, &schema);
+        assert_eq!(image_srcs(&a.state.doc).len(), 2, "both images survive");
+    }
+}
