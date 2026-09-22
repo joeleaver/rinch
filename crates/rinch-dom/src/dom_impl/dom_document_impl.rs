@@ -513,6 +513,25 @@ impl DomDocument for RinchDocument {
         let folded = crate::attr_name::fold_attribute_name(self.tree.nodes[node.0].tag(), name);
         let name: &str = &folded;
 
+        // Writing the value an attribute already has changes nothing, so it
+        // restyles nothing: no selector can match differently and no inline
+        // style differs. Without this, every identical write re-resolved the
+        // node's whole subtree, and a reactive attribute that re-runs with the
+        // same answer is the common case (a toolbar's fifteen button styles,
+        // re-written on every keystroke, restyled about a hundred nodes).
+        // `set_text_content` has always skipped identical text the same way.
+        // `src` is the exception: re-setting an image's source is how a failed
+        // load is retried.
+        if name != "src"
+            && self.tree.nodes[node.0]
+                .attributes
+                .get(name)
+                .map(String::as_str)
+                == Some(value)
+        {
+            return;
+        }
+
         // An `<option>`'s selectedness moves on the *transition* into the
         // `selected` attribute, never on a re-write of one already there — the
         // browser's own gate, and what makes the selected option the last one
@@ -666,6 +685,11 @@ impl DomDocument for RinchDocument {
         // Merge into the inline style attribute and parse it once; both paths
         // below store exactly this string and this declaration block.
         let style_str = self.merged_inline_style(node.0, properties);
+        // Nothing to do when the merge leaves the inline style as it was (see
+        // the identical-write skip in `set_attribute`).
+        if self.tree.nodes[node.0].attributes.get("style") == Some(&style_str) {
+            return;
+        }
         let pdb = parse_inline_style(&style_str);
         let insets = self.inset_fast_path_values(node.0, properties, &pdb);
 
