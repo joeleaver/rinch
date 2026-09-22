@@ -267,35 +267,40 @@ fn the_wave_alternates_along_the_word() {
 /// colour, not black (the review's surviving mutant M6 dropped that fallback).
 #[test]
 fn a_wave_with_no_decoration_colour_takes_the_text_colour() {
-    let ink = |style: &str| {
-        let mut doc = RinchDocument::new();
-        let body = doc.body();
-        let c = el(
-            &mut doc,
-            body,
-            "div",
-            "width: 400px; line-height: 40px; font-size: 20px; color: red",
+    // On an inline element, and on the IFC root itself — two separate sites.
+    for on_root in [false, true] {
+        let ink = |decl: &str| {
+            let mut doc = RinchDocument::new();
+            let body = doc.body();
+            let root_style = format!(
+                "width: 400px; line-height: 40px; font-size: 20px; color: red; {}",
+                if on_root { decl } else { "" }
+            );
+            let c = el(&mut doc, body, "div", &root_style);
+            let s = el(&mut doc, c, "span", if on_root { "" } else { decl });
+            txt(&mut doc, s, "recieve");
+            doc.resolve_layout(VW, VH);
+            pixels(&mut doc)
+        };
+        let plain = ink("");
+        let wavy = ink("text-decoration: underline wavy");
+        // The wave's own pixels: ink in the wavy frame where the plain one has none.
+        let wave: Vec<[u8; 4]> = plain
+            .iter()
+            .zip(&wavy)
+            .filter(|(p, w)| p[3] == 0 && w[3] > 128)
+            .map(|(_, w)| *w)
+            .collect();
+        let red = wave.iter().filter(|p| p[0] > 150 && p[1] < 80).count();
+        let dark = wave.iter().filter(|p| p[0] < 80).count();
+        assert!(
+            wave.len() > 10,
+            "positive control: the wave added ink (root={on_root})"
         );
-        let s = el(&mut doc, c, "span", style);
-        txt(&mut doc, s, "recieve");
-        doc.resolve_layout(VW, VH);
-        pixels(&mut doc)
-    };
-    let plain = ink("");
-    let wavy = ink("text-decoration: underline wavy");
-    // The wave's own pixels: ink in the wavy frame where the plain one has none.
-    let wave: Vec<[u8; 4]> = plain
-        .iter()
-        .zip(&wavy)
-        .filter(|(p, w)| p[3] == 0 && w[3] > 128)
-        .map(|(_, w)| *w)
-        .collect();
-    let red = wave.iter().filter(|p| p[0] > 150 && p[1] < 80).count();
-    let dark = wave.iter().filter(|p| p[0] < 80).count();
-    assert!(wave.len() > 10, "positive control: the wave added ink");
-    assert!(
-        red > dark && dark == 0,
-        "the wave is not the text colour: {red} red, {dark} dark of {}",
-        wave.len()
-    );
+        assert!(
+            red > dark && dark == 0,
+            "the wave is not the text colour (root={on_root}): {red} red, {dark} dark of {}",
+            wave.len()
+        );
+    }
 }
