@@ -1963,3 +1963,125 @@ fn two_adjacent_identical_images_edited_concurrently_converge() {
         assert_eq!(image_srcs(&a.state.doc).len(), 2, "both images survive");
     }
 }
+
+// --- a stray `@atom` span arriving from a peer (review of #838, F2) ------------------
+
+/// Block 0's text in raw yrs terms: `(chunk string, carries "@atom")` per diff chunk.
+fn raw_block0_chunks(doc: &yrs::Doc) -> Vec<(String, bool)> {
+    use yrs::{Array, Map, Text, Transact};
+    let content = doc.get_or_insert_array("content");
+    let txn = doc.transact();
+    let Some(yrs::Out::YMap(node)) = content.get(&txn, 0) else {
+        panic!("block 0 must be a node map");
+    };
+    let Some(yrs::Out::YText(text)) = node.get(&txn, "text") else {
+        panic!("block 0 must carry a text");
+    };
+    text.diff(&txn, yrs::types::text::YChange::identity)
+        .into_iter()
+        .map(|d| {
+            let yrs::Out::Any(yrs::Any::String(s)) = &d.insert else {
+                panic!("block 0 holds only string chunks");
+            };
+            let atom = d
+                .attributes
+                .as_ref()
+                .is_some_and(|a| a.get("@atom").is_some_and(|v| *v != yrs::Any::Null));
+            (s.to_string(), atom)
+        })
+        .collect()
+}
+
+/// A raw yrs replica of `session`'s document, with the projection's UTF-16 offsets
+/// (`Doc::new()` counts bytes, and an index into the 3-byte U+FFFC then splits it).
+fn raw_replica(session: &CollabSession) -> yrs::Doc {
+    use yrs::updates::decoder::Decode;
+    use yrs::{Transact, Update};
+    let doc = yrs::Doc::with_options(yrs::Options {
+        offset_kind: yrs::OffsetKind::Utf16,
+        ..Default::default()
+    });
+    doc.transact_mut()
+        .apply_update(Update::decode_v1(&session.snapshot()).unwrap())
+        .unwrap();
+    doc
+}
+
+#[test]
+fn a_stray_atom_attribute_from_a_peer_is_text_and_is_cleared_by_the_next_local_edit() {
+    // Through the projection a typer never *sends* a stray `@atom` span: its own
+    // `resync_marks` clears the one yrs gave its new chars in the same transaction. A
+    // peer that is not this projection can send one, though — any Yjs client inserting
+    // right after the placeholder with no formatting of its own inherits the range, and
+    // so does a projection built before the per-char resync. This drives that update
+    // through `integrate_incremental`, which is the only way to reach `is_atom_char`'s
+    // "attribute over a char that is not the placeholder" rule from outside the crate.
+    use yrs::updates::decoder::Decode;
+    use yrs::{Array, Map, ReadTxn, StateVector, Text, Transact};
+
+    let schema = Rc::new(Schema::starter_kit());
+    let (mut a, mut b) = two_peers_with_ids(&schema, vec![line_with_image(&schema)], (11, 22));
+
+    // A raw Yjs peer types "XY" right after the placeholder (UTF-16 offset 3), with no
+    // attributes of its own.
+    let raw = raw_replica(&a.session);
+    {
+        let content = raw.get_or_insert_array("content");
+        let mut txn = raw.transact_mut();
+        let Some(yrs::Out::YMap(node)) = content.get(&txn, 0) else {
+            panic!("block 0 must be a node map");
+        };
+        let Some(yrs::Out::YText(text)) = node.get(&txn, "text") else {
+            panic!("block 0 must carry a text");
+        };
+        text.insert(&mut txn, 3, "XY");
+    }
+    // Positive control: the update really carries the stray span — "XY" arrives inside
+    // the image's `@atom` range. Without this the rest of the test could pass on an
+    // update that never exercised the rule.
+    assert_eq!(
+        raw_block0_chunks(&raw),
+        vec![
+            ("ab".to_string(), false),
+            ("\u{FFFC}XY".to_string(), true),
+            ("cd".to_string(), false),
+        ],
+        "the forged update must put `@atom` over the typed chars"
+    );
+    let delta = {
+        let sv = StateVector::decode_v1(&a.session.state_vector()).unwrap();
+        raw.transact().encode_diff_v1(&sv)
+    };
+
+    // A integrates it: one image, and "XY" is text — not two more images, and not an
+    // error (which would poison the session over a formatting artifact).
+    let next = a
+        .session
+        .integrate_incremental(&a.state, &delta)
+        .expect("a stray atom attribute is not corruption")
+        .expect("the document changed");
+    a.state = next;
+    assert_eq!(image_srcs(&a.state.doc), vec!["cat.png".to_string()]);
+    assert_eq!(all_text(&a.state.doc), "abXYcd");
+    assert_eq!(
+        norm(&a.state.doc),
+        norm(&a.session.projected_doc(&schema).unwrap()),
+        "model ≡ projection"
+    );
+
+    // The stray span persists in the CRDT until this block is next reconciled locally;
+    // A's next edit in it clears the stray chars — and only those.
+    a.type_at(block_content_end(&a.state.doc, 0), "!");
+    assert_eq!(
+        raw_block0_chunks(&raw_replica(&a.session)),
+        vec![
+            ("ab".to_string(), false),
+            ("\u{FFFC}".to_string(), true),
+            ("XYcd!".to_string(), false),
+        ],
+        "the next local resync clears `@atom` from the stray chars and keeps the image's"
+    );
+    sync(&mut a, &mut b);
+    assert_converged(&a, &b, &schema);
+    assert_eq!(image_srcs(&b.state.doc), vec!["cat.png".to_string()]);
+}
