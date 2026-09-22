@@ -40,6 +40,10 @@ const REMOTE: &str = "#8844dd";
 #[derive(Clone, Copy, PartialEq)]
 enum Echo {
     Back,
+    /// A *transforming* controlled handler (#283): every emission is written
+    /// back as this fixed colour — `|v| store.set(snap_to_palette(v))` with a
+    /// one-colour palette.
+    Snap(&'static str),
     Never,
 }
 
@@ -99,8 +103,10 @@ impl Picker {
             value_fn: Some(Rc::new(move || store.get())),
             onchange: Some(InputCallback::new(move |value: String| {
                 seen.borrow_mut().push(value.clone());
-                if echo == Echo::Back {
-                    store.set(value);
+                match echo {
+                    Echo::Back => store.set(value),
+                    Echo::Snap(colour) => store.set(colour.to_string()),
+                    Echo::Never => {}
                 }
             })),
             alpha: true,
@@ -420,6 +426,57 @@ fn a_swatch_click_reaches_the_consumer() {
         "one click reports once, with the swatch's colour"
     );
     assert_eq!(picker.store.get(), "#22aa55");
+}
+
+/// A consumer that writes back a *transformed* colour does not leave the
+/// picker believing a deferred apply is still pending (#283).
+///
+/// The handler runs inside the coordinating effect, so the snap's apply runs
+/// inside it too, and its batch flush cannot re-run the effect that is still
+/// on the stack — the branch that would have cleared the deferred-apply
+/// marker never runs. The marker then outlived the apply and swallowed the
+/// next author act that landed bit-exactly on the snapped colour: here, a
+/// click on the very swatch the app snaps to. Off the fixed point: the drag
+/// lands on a colour the snap moves away from, so the swallow is observable.
+#[test]
+fn a_transforming_handler_does_not_swallow_the_next_act() {
+    let picker = Picker::mount(START, Echo::Snap("#22aa55"));
+
+    // A drag frame: the author moves the colour, the app snaps it.
+    let overlay = picker.handler("rinch-color-picker__saturation-overlay", "data-rid");
+    click_at(0.5, 0.5);
+    dispatch_event(overlay);
+    assert_eq!(picker.emissions().len(), 1, "the drag reports once");
+    assert_eq!(picker.store.get(), "#22aa55", "and the app snapped it");
+    assert_eq!(
+        picker.displayed(),
+        "#22aa55",
+        "the picker follows the snapped colour"
+    );
+
+    // Then the author clicks the swatch the app snapped to.
+    let swatch = find_by_class(&picker.root, "rinch-color-picker__swatches")
+        .expect("swatches grid")
+        .children()
+        .first()
+        .expect("one swatch")
+        .clone();
+    let id = EventHandlerId(
+        swatch
+            .get_attribute("data-rid")
+            .expect("swatch is clickable")
+            .parse()
+            .expect("handler id is numeric"),
+    );
+    dispatch_event(id);
+
+    assert_eq!(
+        picker.emissions().len(),
+        2,
+        "the swatch click is an author act and reports: {:?}",
+        picker.emissions()
+    );
+    assert_eq!(picker.emissions()[1], "#22aa55");
 }
 
 /// A saturation drag reports every frame, and does not lose the hue it started
