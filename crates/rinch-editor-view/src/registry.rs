@@ -53,6 +53,52 @@ thread_local! {
     /// at most one per document, keyed like [`DRAG`]. See [`set_link_hover`].
     static LINK_HOVER: RefCell<Vec<(Option<u64>, EditorHandle, LinkSpan)>> =
         const { RefCell::new(Vec::new()) };
+    /// See [`set_focus_handler`].
+    static FOCUS_HANDLER: Cell<Option<fn(usize)>> = const { Cell::new(None) };
+    /// The `doc_key`s of documents with an editor whose
+    /// [`EditorHandle::scroll_into_view`] wants an overlay pass — see
+    /// [`reveal_owed`]. Empty for every app that never asks.
+    static REVEALS_OWED: RefCell<Vec<u64>> = const { RefCell::new(Vec::new()) };
+}
+
+/// Tell [`EditorHandle::focus`] how this platform gives an editor the keyboard,
+/// given its container id. The web registers one (it focuses its capture
+/// textarea at once, as a mousedown does); desktop registers none, and the
+/// handle posts a focus request on the container that the runtime applies
+/// through its focus arbiter.
+///
+/// Per thread, like the rest of this registry; setting it again replaces it.
+pub fn set_focus_handler(focus: fn(usize)) {
+    FOCUS_HANDLER.with(|slot| slot.set(Some(focus)));
+}
+
+/// The registered [`set_focus_handler`], if any.
+pub(crate) fn focus_handler() -> Option<fn(usize)> {
+    FOCUS_HANDLER.with(|slot| slot.get())
+}
+
+/// Note that an editor in document `doc_key` has a
+/// [`scroll_into_view`](EditorHandle::scroll_into_view) waiting for an overlay
+/// pass.
+pub(crate) fn owe_reveal(doc_key: u64) {
+    REVEALS_OWED.with(|r| {
+        let mut r = r.borrow_mut();
+        if !r.contains(&doc_key) {
+            r.push(doc_key);
+        }
+    });
+}
+
+/// Whether an editor in document `doc_key` asked to
+/// [`scroll_into_view`](EditorHandle::scroll_into_view) since that document's
+/// last overlay pass ([`update_all_carets`]). A runtime whose frame skips the
+/// layout and overlay pass when nothing is dirty (desktop) runs them when this
+/// is `true`, which is what makes a scroll asked for outside any input event
+/// happen. The next pass clears it whether or not the reveal could be
+/// fulfilled, so a reveal that has no geometry yet waits for a pass that
+/// happens anyway rather than forcing one every frame.
+pub fn reveal_owed(doc_key: u64) -> bool {
+    REVEALS_OWED.with(|r| r.borrow().contains(&doc_key))
 }
 
 /// Tell the editor view how to get its overlays (caret, selection highlight)
@@ -291,7 +337,19 @@ pub fn editor_for(container_id: usize) -> Option<EditorHandle> {
 /// `doc_key`: pass `Some(key)` to touch only that document's editors (a desktop
 /// or embed runtime driving its own post-layout pass); `None` sweeps every
 /// mounted editor (the web runtime, which drives all islands from one place).
+///
+/// Every editor, focused or not, then gets its pending
+/// [`scroll_into_view`](EditorHandle::scroll_into_view) fulfilled if it has
+/// one and the geometry for it — after the caret, so its scroll is queued last
+/// and wins over the caret's. `true` is returned for that as for a moved
+/// overlay: the probes it placed need a layout before the scroll is applied.
 pub fn update_all_carets(doc_key: Option<u64>, focused: Option<usize>) -> bool {
+    REVEALS_OWED.with(|r| {
+        let mut r = r.borrow_mut();
+        if !r.is_empty() {
+            r.retain(|dk| doc_key.is_some_and(|k| k != *dk));
+        }
+    });
     let editors = all_editors();
     let mut moved = false;
     for (dk, id, handle) in editors {
@@ -303,6 +361,7 @@ pub fn update_all_carets(doc_key: Option<u64>, focused: Option<usize>) -> bool {
         } else {
             moved |= handle.hide_overlays();
         }
+        moved |= handle.reveal_pass();
     }
     moved
 }

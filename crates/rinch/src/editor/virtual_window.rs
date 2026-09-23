@@ -182,6 +182,33 @@ impl CeVirtualWindow {
         true
     }
 
+    /// Lay out `block` (a direct child of the editor) now, wherever it is: if it
+    /// is collapsed to its estimated height, give it back its real layout.
+    /// Returns whether it was collapsed. The window's range is not moved, so
+    /// the block stays laid out until it enters the range and leaves it again
+    /// like any other; the caller keeps it among `protected_blocks` meanwhile.
+    ///
+    /// For `EditorHandle::scroll_into_view`, which needs the geometry of a
+    /// block the user has not scrolled to — the one thing a window driven by
+    /// the scroll position cannot supply by itself (#845's shape).
+    pub fn materialize(&mut self, doc: &mut RinchDocument, block: usize) -> bool {
+        if !self.active || !self.initialized {
+            return false;
+        }
+        let Some(node) = doc.tree.nodes.get_mut(block) else {
+            return false;
+        };
+        if node.estimated_height.take().is_none() {
+            return false;
+        }
+        doc.tree.style_dirty_nodes.push(block);
+        doc.tree.dirty_ifc_text_roots.insert(block);
+        doc.tree.layout_dirty = true;
+        doc.tree.ifc_dirty = true;
+        doc.tree.styles_dirty = true;
+        true
+    }
+
     /// Post-layout phase: cache measured heights from Taffy.
     pub fn post_layout_cache(&mut self, doc: &mut RinchDocument) {
         if !self.active {
