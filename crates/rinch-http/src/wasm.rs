@@ -19,7 +19,9 @@ use crate::{Credentials, HttpCallback, HttpError, Request, Response};
 pub fn fetch(request: Request, on_done: impl HttpCallback) {
     spawn_local(async move {
         let result = do_fetch(request).await;
-        on_done(result);
+        // One reactive transaction, like every event handler
+        // (`rinch_core::batch`): nothing else wraps this call on the web.
+        rinch_core::batch(|| on_done(result));
     });
 }
 

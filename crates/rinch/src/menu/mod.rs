@@ -452,12 +452,14 @@ fn register_shortcut(shortcut_str: &str, menu_id: &str) -> Option<u64> {
 pub(crate) fn invoke_menu_callback(cb: &Rc<dyn Fn()>, owner: Option<&Owner>) -> bool {
     match owner {
         Some(owner) if !owner.is_alive() => false,
+        // One transaction per callback, like every event handler
+        // (`rinch_core::reactive::batch`).
         Some(owner) => {
-            owner.run(|| cb());
+            rinch_core::reactive::batch(|| owner.run(|| cb()));
             true
         }
         None => {
-            unowned(|| cb());
+            rinch_core::reactive::batch(|| unowned(|| cb()));
             true
         }
     }

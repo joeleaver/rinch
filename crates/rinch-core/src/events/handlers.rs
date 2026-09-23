@@ -436,7 +436,10 @@ pub fn dispatch_event(id: EventHandlerId) -> bool {
 
     if let Some(h) = handler {
         tracing::trace!("dispatch_event: calling handler {:?}", id);
-        h();
+        // One transaction per handler: every signal it writes lands before any
+        // effect runs, and effects flush once, when it returns. See
+        // `crate::reactive::batch` and the guide's "Batching" section.
+        crate::reactive::batch(|| h());
         tracing::trace!("dispatch_event: handler {:?} completed", id);
         true
     } else {
@@ -501,7 +504,7 @@ pub fn dispatch_input_event(id: EventHandlerId, value: String) -> bool {
     });
 
     if let Some(h) = handler {
-        h.invoke(value);
+        crate::reactive::batch(|| h.invoke(value));
         // Signal that an input event was handled - caller should re-render
         INPUT_EVENT_HANDLED.with(|flag| *flag.borrow_mut() = true);
         true
@@ -540,7 +543,7 @@ pub fn dispatch_file_drop_event(id: EventHandlerId, paths: Vec<PathBuf>) -> bool
     let handler: Option<FileDropCallback> =
         FILE_DROP_REGISTRY.with(|registry| registry.borrow().handlers.get(&id).cloned());
     if let Some(h) = handler {
-        h.invoke(paths);
+        crate::reactive::batch(|| h.invoke(paths));
         true
     } else {
         false
@@ -578,7 +581,7 @@ pub fn dispatch_scroll_event(id: EventHandlerId, event: ScrollEvent) -> bool {
     let handler: Option<ScrollCallback> =
         SCROLL_REGISTRY.with(|registry| registry.borrow().handlers.get(&id).cloned());
     if let Some(h) = handler {
-        h.invoke(event);
+        crate::reactive::batch(|| h.invoke(event));
         true
     } else {
         false
@@ -771,5 +774,127 @@ mod owner_tests {
             "the nested handler's signal belongs to the inner scope"
         );
         assert!(current_owner().is_none(), "the stack drains completely");
+    }
+}
+
+#[cfg(test)]
+mod batch_tests {
+    //! Every handler dispatch is one reactive transaction: the signals a
+    //! handler writes all land before any effect runs, effects flush once when
+    //! it returns, and a memo it reads after a write is already current.
+    //!
+    //! One handler per registry per test, for the reason `owner_tests` gives.
+
+    use super::*;
+    use crate::events::{
+        KeyEventData, clear_keyboard_interceptor, dispatch_keyboard_event, set_keyboard_interceptor,
+    };
+    use crate::reactive::{Effect, Memo, Signal, reactive_counters, subscribe_signal_change};
+    use std::cell::{Cell, RefCell};
+
+    /// How many signals the multi-write handlers write. Several, so "one flush"
+    /// and "one flush per write" are different numbers.
+    const WRITES: usize = 5;
+
+    /// Counts the flushes that reach the host — the signal-change callback is
+    /// what the desktop shell turns into a `ReRender`.
+    fn count_flushes() -> (Rc<Cell<u32>>, crate::reactive::SignalChangeSubscription) {
+        let flushes = Rc::new(Cell::new(0));
+        let f = Rc::clone(&flushes);
+        let sub = subscribe_signal_change(move || f.set(f.get() + 1));
+        (flushes, sub)
+    }
+
+    /// K writes in one click handler: one flush, one run of the effect that
+    /// reads all of them, and that run sees every write (no intermediate
+    /// state, which is what an effect re-run per write would glitch through).
+    #[test]
+    fn a_click_handler_that_writes_k_signals_flushes_once() {
+        let signals: Vec<Signal<u32>> = (0..WRITES).map(|_| Signal::new(0)).collect();
+        let seen = Rc::new(RefCell::new(Vec::new()));
+        let s = Rc::clone(&seen);
+        let sigs = signals.clone();
+        let _effect = Effect::new(move || {
+            let sum: u32 = sigs.iter().map(|sig| sig.get()).sum();
+            s.borrow_mut().push(sum);
+        });
+        seen.borrow_mut().clear();
+
+        let sigs = signals.clone();
+        let id = register_handler(Rc::new(move || {
+            for (i, sig) in sigs.iter().enumerate() {
+                sig.set(i as u32 + 1);
+            }
+        }));
+        let (flushes, _sub) = count_flushes();
+        let runs_before = reactive_counters().effect_runs;
+
+        assert!(dispatch_event(id));
+
+        assert_eq!(flushes.get(), 1, "one flush for the whole handler");
+        assert_eq!(reactive_counters().effect_runs - runs_before, 1);
+        assert_eq!(*seen.borrow(), vec![15], "1+2+3+4+5, never a partial sum");
+    }
+
+    /// A handler that writes and then reads a memo of what it wrote gets the
+    /// new value, although the flush has not happened yet.
+    #[test]
+    fn a_handler_reads_a_fresh_memo_after_its_own_write() {
+        let n = Signal::new(3i32);
+        let squared = Memo::new(move || n.get() * n.get());
+        let effect_runs = Rc::new(Cell::new(0));
+        let e = Rc::clone(&effect_runs);
+        let _effect = Effect::new(move || {
+            let _ = squared.get();
+            e.set(e.get() + 1);
+        });
+
+        let observed = Rc::new(RefCell::new(Vec::new()));
+        let o = Rc::clone(&observed);
+        let runs_inside = Rc::clone(&effect_runs);
+        let id = register_input_handler(InputCallback::new(move |value: String| {
+            n.set(value.parse().unwrap());
+            o.borrow_mut().push((squared.get(), runs_inside.get()));
+            n.set(n.get() + 1);
+            o.borrow_mut().push((squared.get(), runs_inside.get()));
+        }));
+
+        assert!(dispatch_input_event(id, "7".to_string()));
+        assert_eq!(
+            *observed.borrow(),
+            vec![(49, 1), (64, 1)],
+            "fresh memo values inside the handler, and no effect has run yet"
+        );
+        assert_eq!(effect_runs.get(), 2, "the effect runs once, afterwards");
+    }
+
+    /// The keyboard path is batched too: the interceptor and the dismiss scan
+    /// share one transaction.
+    #[test]
+    fn a_keyboard_interceptor_that_writes_k_signals_flushes_once() {
+        let signals: Vec<Signal<u32>> = (0..WRITES).map(|_| Signal::new(0)).collect();
+        let runs = Rc::new(Cell::new(0));
+        let r = Rc::clone(&runs);
+        let sigs = signals.clone();
+        let _effect = Effect::new(move || {
+            for sig in &sigs {
+                let _ = sig.get();
+            }
+            r.set(r.get() + 1);
+        });
+        runs.set(0);
+
+        let sigs = signals.clone();
+        set_keyboard_interceptor(move |_| {
+            for sig in &sigs {
+                sig.update(|v| *v += 1);
+            }
+            true
+        });
+        let (flushes, _sub) = count_flushes();
+        assert!(dispatch_keyboard_event(&KeyEventData::new("a", "KeyA")));
+        clear_keyboard_interceptor();
+
+        assert_eq!((flushes.get(), runs.get()), (1, 1));
     }
 }

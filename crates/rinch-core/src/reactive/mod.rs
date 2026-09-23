@@ -73,6 +73,8 @@
 mod bounds;
 mod effect;
 mod memo;
+#[cfg(test)]
+mod memo_cutoff_tests;
 mod poll;
 mod scope;
 mod scoped;
@@ -138,6 +140,12 @@ pub(crate) struct Runtime {
     /// was written for.
     pub(crate) pending_effects_set: HashSet<ObserverId, effect::ObserverIdBuildHasher>,
 
+    /// The pending observers that were queued by a **signal** they read — as
+    /// opposed to being woken through a memo. These run unconditionally; any
+    /// other pending observer is a "maybe" that `flush_effects` runs only if a
+    /// memo it read moved to a new version (the memo equality cut-off).
+    pub(crate) definite_effects: HashSet<ObserverId, effect::ObserverIdBuildHasher>,
+
     /// Whether we're currently in a batch
     pub(crate) batching: bool,
 
@@ -175,6 +183,7 @@ impl Runtime {
             observer_stack: Vec::new(),
             pending_effects: VecDeque::new(),
             pending_effects_set: HashSet::default(),
+            definite_effects: HashSet::default(),
             batching: false,
             next_id: 0,
             owner_stack: Vec::new(),
@@ -396,8 +405,11 @@ pub fn queue_main_callback(f: Box<dyn FnOnce() + Send>) -> bool {
 /// own host, because a signal change notifies every subscriber (issue #134).
 pub fn drain_main_callbacks() {
     let callbacks: Vec<Box<dyn FnOnce() + Send>> = MAIN_QUEUE.lock().unwrap().drain(..).collect();
+    // One transaction per callback, not one for the whole drain: callbacks are
+    // queued independently (a `Signal::send`, a timer, a parked continuation),
+    // and a later one may rely on an earlier one's effects having run.
     for callback in callbacks {
-        callback();
+        batch(callback);
     }
 }
 
@@ -478,8 +490,18 @@ pub(crate) struct ObserverId(pub(crate) usize);
 /// `run_effect` that finds nothing to run.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) enum DepKey {
-    Signal { id: u32, generation: u32 },
-    Memo { id: u32, generation: u32 },
+    Signal {
+        id: u32,
+        generation: u32,
+    },
+    /// `seen` is the memo's version as of the read that took the
+    /// subscription out — what `flush_effects` compares against to decide
+    /// whether an observer woken through this memo really has to run.
+    Memo {
+        id: u32,
+        generation: u32,
+        seen: u64,
+    },
 }
 
 impl DepKey {
@@ -499,7 +521,7 @@ impl DepKey {
                     slot.subscribers.remove(&observer);
                 }
             }),
-            DepKey::Memo { id, generation } => {
+            DepKey::Memo { id, generation, .. } => {
                 MEMO_STORE.with(|store| store.borrow().unsubscribe(id, generation, observer));
             }
         }
@@ -626,6 +648,10 @@ thread_local! {
 
 struct MemoSlot {
     inner: Rc<dyn Any>, // Type-erased Rc<MemoInner<T>>
+    /// The same allocation as `inner`, as the runtime's type-erased memo
+    /// interface: the version check in `flush_effects` starts from a
+    /// [`DepKey`] and has to refresh the memo without knowing its `T`.
+    node: Rc<dyn memo::MemoNode>,
     /// The memo's dirty-marker effect, which holds the *second* strong
     /// reference to the same `MemoInner`. Recorded here because the slot is
     /// type-erased: freeing a memo has to remove the marker's `EFFECTS` entry
@@ -659,6 +685,7 @@ impl MemoStore {
     pub(crate) fn alloc(
         &mut self,
         inner: Rc<dyn Any>,
+        node: Rc<dyn memo::MemoNode>,
         observer: ObserverId,
         subscribers: Rc<RefCell<BTreeSet<ObserverId>>>,
     ) -> (u32, u32) {
@@ -670,6 +697,7 @@ impl MemoStore {
 
         let slot = MemoSlot {
             inner,
+            node,
             observer,
             subscribers,
             generation,
@@ -691,6 +719,16 @@ impl MemoStore {
             .as_ref()
             .filter(|s| s.generation == generation)
             .map(|s| Rc::clone(&s.inner))
+    }
+
+    /// The memo in this slot as a [`MemoNode`](memo::MemoNode), if the slot
+    /// still holds the memo the caller recorded.
+    pub(crate) fn get_node(&self, id: u32, generation: u32) -> Option<Rc<dyn memo::MemoNode>> {
+        self.slots
+            .get(id as usize)?
+            .as_ref()
+            .filter(|s| s.generation == generation)
+            .map(|s| Rc::clone(&s.node))
     }
 
     /// Remove an observer from a memo's subscriber set, if this slot still
@@ -761,6 +799,47 @@ pub(crate) fn free_memo(id: u32, generation: u32) {
 }
 
 // ============================================================================
+// Memo staleness
+// ============================================================================
+
+/// The memo a registered observer stands for, if it is a memo's marker.
+fn memo_node_of(observer: ObserverId) -> Option<Rc<dyn memo::MemoNode>> {
+    effect::EFFECTS.with(|effects| {
+        effects
+            .borrow()
+            .get(&observer)
+            .and_then(|inner| inner.memo.clone())
+    })
+}
+
+/// Mark stale, synchronously, every memo among a written signal's
+/// `subscribers` (`Dirty`), and every memo downstream of those (`Check`).
+///
+/// This is the *push* half of the memo model: it is what lets a read made
+/// straight after a write — inside a [`batch`], inside an event handler that
+/// has not returned yet — see the new value, where a memo invalidated only
+/// when its queued marker ran would answer from its cache until the flush.
+/// It computes nothing. The walk stops at a memo that was already stale,
+/// because a stale memo's dependents were marked when it became stale.
+pub(crate) fn mark_memos_stale(subscribers: &[ObserverId]) {
+    let mut to_check: Vec<ObserverId> = Vec::new();
+    for &observer in subscribers {
+        if let Some(node) = memo_node_of(observer)
+            && node.mark_dirty()
+        {
+            to_check.extend(node.subscriber_snapshot());
+        }
+    }
+    while let Some(observer) = to_check.pop() {
+        if let Some(node) = memo_node_of(observer)
+            && node.mark_check()
+        {
+            to_check.extend(node.subscriber_snapshot());
+        }
+    }
+}
+
+// ============================================================================
 // Batching
 // ============================================================================
 
@@ -826,10 +905,19 @@ impl Drop for BatchGuard {
 /// batch with an RAII window (raise flag → batch writes → drop flag) and
 /// needs observers to run inside the window must account for this case.
 ///
-/// Until the flush, nothing has run: inside the closure — including after a
-/// *nested* `batch()` returns — effects have not executed, and [`Memo::get`]
-/// still returns the pre-batch value (a memo is re-marked dirty by a queued
-/// marker effect, which is itself deferred by the batch).
+/// Until the flush, no effect has run: inside the closure — including after a
+/// *nested* `batch()` returns — effects have not executed. [`Memo::get`] is
+/// current all the same: a write marks the memos that read it stale
+/// synchronously, and the read recomputes (see `memo`'s module docs).
+///
+/// Event-handler dispatch runs inside one (`events::dispatch_event` and its
+/// siblings, the keyboard and paste interceptors, the dismiss stack, `Drag`
+/// callbacks, each drained main-thread callback, each timer — the guide's
+/// "Event handlers run as batches" has the exact list, and what is left out),
+/// so a handler that writes several signals flushes once. A `NodeHandle`
+/// operation inside the batch runs the effects queued so far first
+/// ([`flush_pending_effects`]), so the DOM a handler touches is never behind the
+/// writes it already made.
 ///
 /// # Panics
 ///
@@ -858,7 +946,33 @@ pub fn batch<R>(f: impl FnOnce() -> R) -> R {
     let guard = BatchGuard::raise();
     let outermost = !guard.prev;
 
+    // An outermost batch is its own flush context, even when it is opened from
+    // inside an effect body (an effect that dispatches a handler, a web
+    // `focus()` that fires one synchronously). The effect depth that makes
+    // `flush_pending_effects` a no-op inside effect bodies is set aside for its
+    // duration, so a DOM call in the batch still sees the batch's own writes.
+    // Library suppression (`suppress_effect_flush`) is deliberately NOT set
+    // aside: a borrow the library holds is still held.
+    let _depth = outermost.then(DepthSetAside::enter);
+    // What suppression the outermost batch was opened under (library code can
+    // legitimately open one while holding a guard), so its exit can check that
+    // nothing taken inside it outlived it.
+    let suppressed_at_entry = outermost.then(|| FLUSH_SUPPRESSED.with(|s| s.get()));
+
     let result = f();
+
+    // A leaked `suppress_effect_flush` guard (`mem::forget`, a guard stashed
+    // in a struct that outlives the handler) would silently switch the
+    // mid-batch flush off on this thread for good, and nothing else would ever
+    // notice: every handler would just lose program order again.
+    if let Some(at_entry) = suppressed_at_entry {
+        debug_assert_eq!(
+            FLUSH_SUPPRESSED.with(|s| s.get()),
+            at_entry,
+            "a suppress_effect_flush() guard taken inside this batch outlived it; \
+             mid-batch flushing would stay off on this thread"
+        );
+    }
 
     // Restore the flag *before* flushing: `Signal::set` inside a flushed
     // effect must see `batching = false` again, and a `batch()` opened there
@@ -870,6 +984,142 @@ pub fn batch<R>(f: impl FnOnce() -> R) -> R {
     }
 
     result
+}
+
+thread_local! {
+    /// How many effect bodies and memo computations are running on this thread
+    /// right now (nested runs count once each). See [`flush_pending_effects`].
+    static REACTIVE_DEPTH: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+}
+
+/// Saves [`REACTIVE_DEPTH`], zeroes it, and puts it back on drop — for an
+/// outermost [`batch`], which is a flush context of its own.
+struct DepthSetAside(u32);
+
+impl DepthSetAside {
+    fn enter() -> Self {
+        DepthSetAside(REACTIVE_DEPTH.with(|d| d.replace(0)))
+    }
+}
+
+impl Drop for DepthSetAside {
+    fn drop(&mut self) {
+        let saved = self.0;
+        let _ = REACTIVE_DEPTH.try_with(|d| d.set(saved));
+    }
+}
+
+thread_local! {
+    /// Open [`suppress_effect_flush`] guards on this thread.
+    static FLUSH_SUPPRESSED: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+}
+
+/// While the returned guard lives, [`flush_pending_effects`] — and therefore
+/// every `NodeHandle` operation — runs no effects.
+///
+/// For **library code that touches the DOM while it holds a borrow of its own
+/// state**. A `NodeHandle` operation made inside a batch runs the effects the
+/// batch has queued so far, and a user effect is free to call back into the
+/// library — which, under a held `RefCell` borrow, is a `BorrowMutError`. The
+/// editor is the shape: `EditorHandle::command` holds its core mutably while
+/// the view patches the DOM, and a toolbar effect reading
+/// `is_mark_active` would run in the middle of it. Take the guard *with* the
+/// borrow and drop it after; the pending effects run at the next DOM access
+/// outside it, or when the batch ends.
+///
+/// Library code should also call [`flush_pending_effects`] **before** taking
+/// such a borrow, so that the caller's earlier writes have reached the DOM the
+/// library is about to work on (program order, as for any DOM access).
+///
+/// Unlike the effect depth, suppression is not set aside by a [`batch`]
+/// opened inside it: a batch does not release the borrow.
+#[must_use = "the suppression ends when the guard is dropped"]
+pub fn suppress_effect_flush() -> EffectFlushSuppressed {
+    FLUSH_SUPPRESSED.with(|s| s.set(s.get() + 1));
+    EffectFlushSuppressed {
+        _not_send: std::marker::PhantomData,
+    }
+}
+
+/// The guard [`suppress_effect_flush`] returns.
+pub struct EffectFlushSuppressed {
+    _not_send: std::marker::PhantomData<*const ()>,
+}
+
+impl Drop for EffectFlushSuppressed {
+    fn drop(&mut self) {
+        let _ = FLUSH_SUPPRESSED.try_with(|s| s.set(s.get().saturating_sub(1)));
+    }
+}
+
+/// Marks an effect body or memo computation as running, for
+/// [`flush_pending_effects`]. RAII, so a panicking body cannot strand it.
+pub(crate) struct ReactiveDepthGuard;
+
+impl ReactiveDepthGuard {
+    pub(crate) fn enter() -> Self {
+        REACTIVE_DEPTH.with(|d| d.set(d.get() + 1));
+        ReactiveDepthGuard
+    }
+}
+
+impl Drop for ReactiveDepthGuard {
+    fn drop(&mut self) {
+        let _ = REACTIVE_DEPTH.try_with(|d| d.set(d.get().saturating_sub(1)));
+    }
+}
+
+/// Run, now, the effects the current [`batch`] has queued so far — the flush it
+/// would otherwise run when it exits — and leave the batch open.
+///
+/// This is what keeps an event handler's **program order** intact although
+/// the handler is a batch: every `NodeHandle` operation calls it first, so
+/// `open.set(true); field.focus()` focuses *after* the dialog's effects have
+/// run (and after the dialog's own focus request, which the handler's then
+/// overrides), and `rows.update(..); list.scroll_to_bottom()` scrolls to the
+/// new last row. It is the analogue of a browser flushing pending style when
+/// script asks for layout. Call it yourself before handing control to code
+/// that reads the DOM some other way.
+///
+/// The flush is an ordinary one: the batching flag is lowered while it runs,
+/// so the effects see exactly what the end-of-batch flush would show them
+/// (a write inside one flushes synchronously; a `batch()` inside one flushes
+/// before returning), and raised again afterwards so the handler's later writes
+/// are batched as before. Order is the queue's, so the #154 contract holds.
+///
+/// A no-op outside a batch (writes there have already flushed), when nothing
+/// is queued, while an effect body or memo computation is running — those
+/// run *inside* a flush, and draining the queue from one would run effects
+/// queued behind it ahead of their turn (an outermost `batch` opened inside
+/// one is its own context again) — and under [`suppress_effect_flush`]. The signal-change callbacks (the
+/// host's re-render request) are not called here; the batch's own exit calls
+/// them once.
+pub fn flush_pending_effects() {
+    if REACTIVE_DEPTH.with(|d| d.get()) > 0 || FLUSH_SUPPRESSED.with(|s| s.get()) > 0 {
+        return;
+    }
+    let pending = RUNTIME.with(|rt| {
+        rt.try_borrow()
+            .map(|rt| rt.batching && !rt.pending_effects.is_empty())
+            .unwrap_or(false)
+    });
+    if !pending {
+        return;
+    }
+    /// Lowers the flag for the flush and raises it again — on unwind too.
+    struct Lowered;
+    impl Drop for Lowered {
+        fn drop(&mut self) {
+            let _ = RUNTIME.try_with(|rt| {
+                if let Ok(mut rt) = rt.try_borrow_mut() {
+                    rt.batching = true;
+                }
+            });
+        }
+    }
+    RUNTIME.with(|rt| rt.borrow_mut().batching = false);
+    let _raise = Lowered;
+    flush_effects();
 }
 
 /// Run every pending effect, then the UI re-render callbacks.
@@ -936,7 +1186,7 @@ pub(crate) fn count_signal_notify() {
 ///
 /// This is a convenience function that creates a memo and returns it
 /// as a signal-like value.
-pub fn derived<T: Clone + 'static>(f: impl Fn() -> T + 'static) -> Memo<T> {
+pub fn derived<T: Clone + PartialEq + 'static>(f: impl Fn() -> T + 'static) -> Memo<T> {
     Memo::new(f)
 }
 
@@ -1776,5 +2026,35 @@ mod tests {
         count.set(5);
         assert_eq!(a.get(), 10);
         assert_eq!(b.get(), 10);
+    }
+}
+
+#[cfg(test)]
+mod drain_batching_tests {
+    use super::*;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicI32, Ordering};
+
+    /// Each drained main-thread callback is its own transaction, **not** one
+    /// for the whole drain: callbacks are queued independently, and a later one
+    /// may rely on an earlier one's effects having run. Here the second reads a
+    /// signal an effect derives from the first one's write. With the drain as a
+    /// single batch it read the pre-drain value.
+    ///
+    /// The only test in this crate that drains the process-global queue, so no
+    /// other test's callbacks can land on this thread.
+    #[test]
+    fn each_drained_callback_sees_the_effects_of_the_ones_before_it() {
+        let source = Signal::new(0i32);
+        let derived = Signal::new(0i32);
+        let _derive = Effect::new(move || derived.set(source.get() * 10));
+
+        let seen = Arc::new(AtomicI32::new(i32::MIN));
+        let s = Arc::clone(&seen);
+        queue_main_callback(Box::new(move || source.set(5)));
+        queue_main_callback(Box::new(move || s.store(derived.get(), Ordering::SeqCst)));
+        drain_main_callbacks();
+
+        assert_eq!(seen.load(Ordering::SeqCst), 50);
     }
 }

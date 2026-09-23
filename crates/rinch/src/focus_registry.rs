@@ -281,7 +281,8 @@ pub(crate) fn notify_focus_gained(doc_key: u64, node_id: usize) {
     if let Some(entry) = entry_for(doc_key, node_id)
         && let Some(cb) = entry.on_focus_gained.clone()
     {
-        cb();
+        // One transaction per callback, like every event handler.
+        rinch_core::batch(|| cb());
     }
 }
 
@@ -291,7 +292,7 @@ pub(crate) fn notify_focus_lost(doc_key: u64, node_id: usize) {
     if let Some(entry) = entry_for(doc_key, node_id)
         && let Some(cb) = entry.on_focus_lost.clone()
     {
-        cb();
+        rinch_core::batch(|| cb());
     }
 }
 
@@ -300,7 +301,7 @@ pub(crate) fn notify_focus_lost(doc_key: u64, node_id: usize) {
 pub(crate) fn offer_key(doc_key: u64, node_id: usize, key: &KeyEventData) -> bool {
     entry_for(doc_key, node_id)
         .and_then(|entry| entry.on_key.clone())
-        .is_some_and(|cb| cb(key))
+        .is_some_and(|cb| rinch_core::batch(|| cb(key)))
 }
 
 /// Whether the target at `(doc_key, node_id)` consumes IME composition — i.e.
@@ -329,7 +330,7 @@ pub(crate) fn caret_rect_of(doc_key: u64, node_id: usize) -> Option<(f32, f32, f
 pub(crate) fn offer_ime(doc_key: u64, node_id: usize, ime: &ImeEvent) -> bool {
     match entry_for(doc_key, node_id).and_then(|entry| entry.on_ime.clone()) {
         Some(cb) => {
-            cb(ime);
+            rinch_core::batch(|| cb(ime));
             true
         }
         None => false,

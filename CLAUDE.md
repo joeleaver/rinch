@@ -682,7 +682,8 @@ Component functions run **once** to build the DOM. Reactive closures (`{|| expr}
 | Primitive | Purpose |
 |-----------|---------|
 | `Signal::new(value)` | Reactive state that triggers updates |
-| `Memo::new(closure)` | Cached computed values |
+| `Memo::new(closure)` | Cached computed values (`T: Clone + PartialEq`; an equal recompute wakes nobody) |
+| `batch(closure)` | One transaction: effects flush once at the end. Event handlers already run in one |
 | `create_store(value)` | Share a store across components (recommended for shared state) |
 | `use_store::<T>()` | Access a shared store (panics if missing) |
 | `try_use_store::<T>()` | Try to access a shared store (returns Option<T>) |
@@ -779,6 +780,60 @@ let multiplier = Signal::new(2);
 // Automatically tracks count and multiplier
 let result = Memo::new(move || count.get() * multiplier.get());
 ```
+
+**A memo has an equality cut-off, and its value type must be `PartialEq`**
+(a breaking change; `Clone + PartialEq` is the bound on `Memo::new`/`get`/
+`derived`). A recompute that yields an *equal* value wakes none of its
+dependents, so `Memo::new(move || selected.get() == id)` per row re-runs two row
+effects on a selection change, not every row's. The model is **push-dirty,
+pull-value**: `Signal::notify` marks every memo reading the signal `Dirty` and
+everything downstream `Check` *synchronously* (`mark_memos_stale`), nothing is
+computed until a read; each memo carries a **version** that moves only on an
+unequal recompute, every observer records the version it read in its
+`DepKey::Memo { seen }`, and `flush_effects` runs an observer woken only through
+a memo (a *maybe* — not in `Runtime::definite_effects`) only if one of those
+versions moved. A memo's marker effect is never cut off (it cannot know what its
+dependents saw) and is **not counted** in `effect_runs`. Skipping never reorders
+anything, so the #154 contract holds for whatever runs
+(`reactive/memo_cutoff_tests.rs`). A type with no meaningful equality can
+implement `PartialEq` as always-`false` to get the old wake-everything behaviour.
+
+**Event handlers are `batch()`es** — `events::dispatch_event`/`_input_`/
+`_scroll_`/`_file_drop_`, the keyboard and paste interceptors, the dismiss
+stack, `Drag` `on_move`/`on_end`/`on_cancel`, menu callbacks, focus-registry
+callbacks, each drained main-thread callback (one batch **per callback**), each
+timer, and web `rinch-http`/`rinch-ws` completions — on desktop, web and embed
+alike. The guide lists what is **not** batched (`run_on_main_thread` on the main
+thread, selection / configuration-change / child-observer callbacks, surface
+events, `on_change`); keep that list exact. A handler's writes flush effects
+once, when it returns — **except that every `NodeHandle` operation from handler
+code first runs the effects queued so far** (`NodeHandle::accessed_doc` →
+`rinch_core::flush_pending_effects`), the analogue of a browser's forced style
+flush. That keeps program order: `open.set(true); field.focus()` focuses after
+the overlay effect's own `focus_into`, so the handler's request wins
+(`app/batched_handler_focus_tests.rs`), and a reveal/insert-then-read or
+-scroll sees the new DOM (`rinch-core/src/batch_dom_order_tests.rs`). The flush
+lowers the batch flag while it runs (a normal flush) and raises it after; it is
+a no-op outside a batch and inside any effect body or memo computation
+(`REACTIVE_DEPTH`), whose queue is the running flush's own — except that an
+**outermost** `batch()` (a handler dispatched from inside an effect) sets that
+depth aside and is its own flush context — and under
+`rinch_core::suppress_effect_flush()`. **Library code that touches the DOM while
+holding a `RefCell` borrow of its own must hold that guard with the borrow** (and
+call `flush_pending_effects()` just before borrowing, for program order), or a
+user effect run by its own `NodeHandle` call re-enters it: `BorrowMutError`. The
+editor routes every borrow of its core through `EditorHandle::core`/`core_mut`
+(`CoreGuard`) for exactly this — only the mutable ones flush at entry, since a
+query does no DOM work and must not run a user effect under the caller's own
+borrows; a leaked guard trips a `debug_assert` at the outermost batch's exit; the PR #882 audit of every other such site is in
+that PR. Memos are current
+inside a batch (the eager marking above). A freed memo dependency counts as
+*changed*. Guide: `docs/src/guide/reactivity.md#event-handlers-run-as-batches`.
+On desktop the resulting signal-change callback queues at most **one** pending
+`ReRender` (`shell::rinch_runtime::NativeEventQueue`, cleared under the queue
+lock by the drain), and `resolve_and_repaint` detects a theme change from a
+generation counter (`rinch_core::current_theme_css_generation`,
+`RinchApp::theme_key`) instead of cloning and comparing the theme CSS string.
 
 **`create_store` / `use_store`** - Shared state across components:
 ```rust

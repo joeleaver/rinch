@@ -37,6 +37,8 @@ pub mod show;
 pub mod timer;
 pub mod virtual_list;
 
+#[cfg(test)]
+mod batch_dom_order_tests;
 /// The post-condition of `remove` vs `discard` across the reactive helpers
 /// (issue #719). Needs `MockDomDocument`, which is `cfg(test)` here.
 #[cfg(test)]
@@ -77,10 +79,11 @@ pub use timer::{TimeoutHandle, clear_timeout, fire_timeout, set_timeout, set_tim
 pub use reactive::{
     Effect, ElementBounds, Memo, OwnedCounts, Owner, PollRate, Scope, Signal,
     SignalChangeSubscription, batch, clear_main_callbacks, clear_on_signal_change,
-    clear_signals_changed, current_owner, derived, drain_main_callbacks, drain_polls, poll_signal,
-    queue_main_callback, register_bounds_signal, register_main_thread, run_on_main_thread,
-    set_cross_thread_dispatcher, set_cross_thread_dispatcher_if_unset, set_on_signal_change,
-    signals_changed, subscribe_signal_change, unowned, untracked, update_bounds_signals,
+    clear_signals_changed, current_owner, derived, drain_main_callbacks, drain_polls,
+    flush_pending_effects, poll_signal, queue_main_callback, register_bounds_signal,
+    register_main_thread, run_on_main_thread, set_cross_thread_dispatcher,
+    set_cross_thread_dispatcher_if_unset, set_on_signal_change, signals_changed,
+    subscribe_signal_change, suppress_effect_flush, unowned, untracked, update_bounds_signals,
 };
 
 // Re-export context for sharing state across components
@@ -178,14 +181,39 @@ pub fn stored_effect_count() -> usize {
 #[cfg(feature = "theme")]
 thread_local! {
     static CURRENT_THEME_CSS: RefCell<Option<String>> = const { RefCell::new(None) };
+    /// Bumped every time [`set_current_theme_css`] actually changes the slot.
+    static CURRENT_THEME_CSS_GENERATION: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
 }
 
 /// Set the current theme CSS for snapshot creation.
+///
+/// Setting the same CSS again changes nothing, including the
+/// [generation](current_theme_css_generation).
 #[cfg(feature = "theme")]
 pub fn set_current_theme_css(css: Option<String>) {
-    CURRENT_THEME_CSS.with(|theme_css| {
-        *theme_css.borrow_mut() = css;
+    let changed = CURRENT_THEME_CSS.with(|theme_css| {
+        let mut slot = theme_css.borrow_mut();
+        if *slot == css {
+            false
+        } else {
+            *slot = css;
+            true
+        }
     });
+    if changed {
+        CURRENT_THEME_CSS_GENERATION.with(|g| g.set(g.get().wrapping_add(1)));
+    }
+}
+
+/// A counter that moves whenever the current theme CSS changes.
+///
+/// The cheap way to ask "has the theme changed since I last looked?": the CSS
+/// itself is tens of kilobytes (every palette in ten shades), and a host that
+/// cloned and compared it on every signal flush paid for that on every
+/// re-render.
+#[cfg(feature = "theme")]
+pub fn current_theme_css_generation() -> u64 {
+    CURRENT_THEME_CSS_GENERATION.with(|g| g.get())
 }
 
 /// Get the current theme CSS for snapshot creation.

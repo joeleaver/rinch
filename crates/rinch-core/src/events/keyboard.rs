@@ -193,6 +193,12 @@ pub fn clear_keyboard_interceptor() {
 /// an app that consumes Escape there means it. A **release** never dismisses —
 /// `KeyUp` comes through this same function and must not close anything.
 pub fn dispatch_keyboard_event(data: &KeyEventData) -> bool {
+    // One transaction for the interceptor and the dismiss scan together, like
+    // every other handler dispatch (`crate::reactive::batch`).
+    crate::reactive::batch(|| dispatch_keyboard_event_unbatched(data))
+}
+
+fn dispatch_keyboard_event_unbatched(data: &KeyEventData) -> bool {
     let intercepted = match crate::reactive::read_doc_scoped_slot(&KEYBOARD_INTERCEPTOR) {
         Some(cb) => cb(data),
         None => false,

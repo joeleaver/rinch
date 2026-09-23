@@ -265,9 +265,13 @@ fn invoke<T: 'static>(id: u64, arg: T, select: impl Fn(&mut Handlers) -> &mut Op
         return;
     }
 
+    // One reactive transaction per callback, like every event handler
+    // (`rinch_core::batch`). On native this is already inside the main-thread
+    // drain's batch and joins it; on the web `dispatch` is called straight from
+    // the socket's JS callback, so this is the only one.
     match &owner {
-        Some(owner) => owner.run(|| cb(arg)),
-        None => unowned(|| cb(arg)),
+        Some(owner) => rinch_core::batch(|| owner.run(|| cb(arg))),
+        None => rinch_core::batch(|| unowned(|| cb(arg))),
     }
 
     HANDLERS.with(|h| {

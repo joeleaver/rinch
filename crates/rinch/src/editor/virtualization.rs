@@ -38,6 +38,13 @@ thread_local! {
 /// document's style/layout dirty flags, so the caller's short-circuit will not fire
 /// and the upcoming resolve applies the collapse.
 pub(crate) fn pre_layout(doc: &mut RinchDocument, focused: Option<usize>) {
+    // This pass asks the editor handles for their caret while it holds
+    // `WINDOWS` and the document mutably; a handle read may run pending effects
+    // (`rinch_core::flush_pending_effects`) when called inside a batch, and an
+    // effect touching a `NodeHandle` would then re-borrow the document. It runs
+    // from the frame pass, outside any batch, today — the guard keeps it that
+    // way if a caller ever changes (PR #882 audit).
+    let _no_flush = rinch_core::reactive::suppress_effect_flush();
     let doc_key = doc.doc_key();
     // Only this document's editors: another document's editors are driven by its
     // own runtime pass, against its own tree (issue #134).
@@ -86,6 +93,8 @@ pub(crate) fn pre_layout(doc: &mut RinchDocument, focused: Option<usize>) {
 /// Phase 2 (after layout): cache measured heights, then re-verify the materialized
 /// range with fresh positions; if it changed (a big scroll jump), re-layout once.
 pub(crate) fn post_layout(doc: &mut RinchDocument, focused: Option<usize>, vw_w: f32, vw_h: f32) {
+    // Same reason as `pre_layout`.
+    let _no_flush = rinch_core::reactive::suppress_effect_flush();
     let doc_key = doc.doc_key();
     let editors: Vec<(usize, EditorHandle)> = registry::all_editors()
         .into_iter()

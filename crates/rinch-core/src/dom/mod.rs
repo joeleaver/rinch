@@ -230,6 +230,31 @@ impl NodeHandle {
         Self { node_id, doc }
     }
 
+    /// The document, for an operation on it — after running any effects the
+    /// current batch has queued.
+    ///
+    /// **Program order across a batch.** An event handler runs inside a
+    /// [`batch`](crate::reactive::batch), which defers effects to the end of
+    /// the handler. A handler that writes a signal and then touches the DOM
+    /// itself — `open.set(true); field.focus()`, `rows.update(..);
+    /// list.scroll_to_bottom()`, `cls.set(..); node.get_attribute("class")` —
+    /// wrote that code assuming the write had already reached the DOM, as it
+    /// always had. So every `NodeHandle` operation first runs the effects the
+    /// batch has queued so far ([`flush_pending_effects`]), the way a browser
+    /// flushes pending style before answering a layout query. A handler that
+    /// only writes signals still flushes once, at the end; one that interleaves
+    /// writes and DOM calls flushes at each DOM call that has something
+    /// pending, which is exactly the order it would have seen unbatched.
+    ///
+    /// Outside a batch, and inside an effect or memo computation (where the
+    /// queue is the flush's own business), this is a no-op.
+    ///
+    /// [`flush_pending_effects`]: crate::reactive::flush_pending_effects
+    fn accessed_doc(&self) -> Option<Rc<RefCell<dyn DomDocument>>> {
+        crate::reactive::flush_pending_effects();
+        self.doc.upgrade()
+    }
+
     /// Get the underlying node ID.
     pub fn node_id(&self) -> NodeId {
         self.node_id
@@ -261,7 +286,7 @@ impl NodeHandle {
     /// For element nodes, this replaces all children with a single text node.
     #[doc(hidden)]
     pub fn set_text(&self, text: &str) {
-        if let Some(doc) = self.doc.upgrade() {
+        if let Some(doc) = self.accessed_doc() {
             tracing::debug!(
                 "NodeHandle::set_text(node={}, text_len={})",
                 self.node_id.0,
@@ -282,7 +307,7 @@ impl NodeHandle {
     /// May panic if called on a non-element node.
     #[doc(hidden)]
     pub fn set_attribute(&self, name: &str, value: &str) {
-        if let Some(doc) = self.doc.upgrade() {
+        if let Some(doc) = self.accessed_doc() {
             doc.borrow_mut().set_attribute(self.node_id, name, value);
         }
     }
@@ -336,14 +361,14 @@ impl NodeHandle {
 
     /// Remove an attribute from this element.
     pub fn remove_attribute(&self, name: &str) {
-        if let Some(doc) = self.doc.upgrade() {
+        if let Some(doc) = self.accessed_doc() {
             doc.borrow_mut().remove_attribute(self.node_id, name);
         }
     }
 
     /// Get an attribute value from this element.
     pub fn get_attribute(&self, name: &str) -> Option<String> {
-        let doc = self.doc.upgrade()?;
+        let doc = self.accessed_doc()?;
         doc.borrow().get_attribute(self.node_id, name)
     }
 
@@ -357,7 +382,7 @@ impl NodeHandle {
     /// browser as soon as the user types. See [`DomDocument::live_value`] for
     /// each backend's answer and what `None` means.
     pub fn live_value(&self) -> Option<String> {
-        let doc = self.doc.upgrade()?;
+        let doc = self.accessed_doc()?;
         doc.borrow().live_value(self.node_id)
     }
 
@@ -368,7 +393,7 @@ impl NodeHandle {
         // from has lost a child (issue #745). Read before the document changes,
         // and `None` unless something on the thread is watching for removals.
         let vacated = late_child::vacated_parent(child);
-        if let Some(doc) = self.doc.upgrade() {
+        if let Some(doc) = self.accessed_doc() {
             doc.borrow_mut().append_child(self.node_id, child.node_id);
         }
         late_child::notify_vacated(vacated.as_ref(), self);
@@ -377,7 +402,7 @@ impl NodeHandle {
 
     /// Remove a child node from this element.
     pub fn remove_child(&self, child: &NodeHandle) {
-        if let Some(doc) = self.doc.upgrade() {
+        if let Some(doc) = self.accessed_doc() {
             doc.borrow_mut().remove_child(self.node_id, child.node_id);
         }
         // This node *is* the parent that lost a child, so there is nothing to
@@ -388,7 +413,7 @@ impl NodeHandle {
     /// Insert a child before a reference node.
     pub fn insert_before(&self, child: &NodeHandle, reference: &NodeHandle) {
         let vacated = late_child::vacated_parent(child);
-        if let Some(doc) = self.doc.upgrade() {
+        if let Some(doc) = self.accessed_doc() {
             doc.borrow_mut()
                 .insert_before(self.node_id, child.node_id, reference.node_id);
         }
@@ -403,7 +428,7 @@ impl NodeHandle {
     pub fn replace_with(&self, replacement: &NodeHandle) {
         let parent = self.parent_node();
         let vacated = late_child::vacated_parent(replacement);
-        if let Some(doc) = self.doc.upgrade() {
+        if let Some(doc) = self.accessed_doc() {
             doc.borrow_mut()
                 .replace_node(self.node_id, replacement.node_id);
         }
@@ -428,7 +453,7 @@ impl NodeHandle {
     /// [`DomDocument::discard_node`] for what each backend reclaims.
     pub fn remove(&self) {
         let vacated = late_child::vacated_parent(self);
-        if let Some(doc) = self.doc.upgrade() {
+        if let Some(doc) = self.accessed_doc() {
             doc.borrow_mut().remove_node(self.node_id);
         }
         if let Some(vacated) = vacated {
@@ -457,7 +482,7 @@ impl NodeHandle {
         // detached and may be retired (issue #745).
         late_child::forget_node(self);
         let vacated = late_child::vacated_parent(self);
-        if let Some(doc) = self.doc.upgrade() {
+        if let Some(doc) = self.accessed_doc() {
             doc.borrow_mut().discard_node(self.node_id);
         }
         if let Some(vacated) = vacated {
@@ -470,7 +495,7 @@ impl NodeHandle {
     /// This sets the element as the currently focused element, allowing it to
     /// receive keyboard input. For input/textarea elements, this enables text input.
     pub fn focus(&self) {
-        if let Some(doc) = self.doc.upgrade() {
+        if let Some(doc) = self.accessed_doc() {
             doc.borrow_mut().focus_element(self.node_id);
         }
     }
@@ -487,7 +512,7 @@ impl NodeHandle {
     /// focused*: on the web an element rinch did not create (and so carries no
     /// `__nid`) cannot be named here. See [`DomDocument::active_element`].
     pub fn active_element(&self) -> Option<NodeHandle> {
-        let doc = self.doc.upgrade()?;
+        let doc = self.accessed_doc()?;
         let id = doc.borrow().active_element()?;
         Some(NodeHandle::new(id, self.doc.clone()))
     }
@@ -499,7 +524,7 @@ impl NodeHandle {
     /// See [`DomDocument::focus_into`], including why desktop applies it after
     /// the next layout rather than immediately.
     pub fn focus_into(&self, policy: FocusIntoPolicy) {
-        if let Some(doc) = self.doc.upgrade() {
+        if let Some(doc) = self.accessed_doc() {
             doc.borrow_mut().focus_into(self.node_id, policy);
         }
     }
@@ -511,7 +536,7 @@ impl NodeHandle {
     /// moment an effect calls this: see [`DomDocument::restore_focus`] for the
     /// three questions and why a `blur()` verb would not have been enough.
     pub fn restore_focus(&self, opener: Option<&NodeHandle>) {
-        if let Some(doc) = self.doc.upgrade() {
+        if let Some(doc) = self.accessed_doc() {
             doc.borrow_mut()
                 .restore_focus(opener.map(|o| o.node_id), self.node_id);
         }
@@ -531,14 +556,14 @@ impl NodeHandle {
     /// [`RenderScope::body_handle`](super::RenderScope::body_handle) instead:
     /// on the web that is `<div id="rinch-body">`, not the page.
     pub fn set_scroll_locked(&self, locked: bool) {
-        if let Some(doc) = self.doc.upgrade() {
+        if let Some(doc) = self.accessed_doc() {
             doc.borrow_mut().set_scroll_locked(locked, self.node_id);
         }
     }
 
     /// Get the children of this node as NodeHandles.
     pub fn children(&self) -> Vec<NodeHandle> {
-        if let Some(doc) = self.doc.upgrade() {
+        if let Some(doc) = self.accessed_doc() {
             let child_ids = doc.borrow().get_children(self.node_id);
             child_ids
                 .into_iter()
@@ -560,14 +585,14 @@ impl NodeHandle {
 
     /// Get the parent node.
     pub fn parent_node(&self) -> Option<NodeHandle> {
-        let doc = self.doc.upgrade()?;
+        let doc = self.accessed_doc()?;
         let parent_id = doc.borrow().parent_node(self.node_id)?;
         Some(NodeHandle::new(parent_id, self.doc.clone()))
     }
 
     /// Get the next sibling node.
     pub fn next_sibling(&self) -> Option<NodeHandle> {
-        let doc = self.doc.upgrade()?;
+        let doc = self.accessed_doc()?;
         let sibling_id = doc.borrow().next_sibling(self.node_id)?;
         Some(NodeHandle::new(sibling_id, self.doc.clone()))
     }
@@ -576,7 +601,7 @@ impl NodeHandle {
     pub fn insert_after(&self, new_node: &NodeHandle) {
         let vacated = late_child::vacated_parent(new_node);
         let mut inserted_into = None;
-        if let Some(doc) = self.doc.upgrade() {
+        if let Some(doc) = self.accessed_doc() {
             let parent_id = doc.borrow().parent_node(self.node_id);
             if let Some(parent_id) = parent_id {
                 let next = doc.borrow().next_sibling(self.node_id);
@@ -599,7 +624,7 @@ impl NodeHandle {
     /// Set a CSS style property.
     #[doc(hidden)]
     pub fn set_style(&self, property: &str, value: &str) {
-        if let Some(doc) = self.doc.upgrade() {
+        if let Some(doc) = self.accessed_doc() {
             doc.borrow_mut().set_style(self.node_id, property, value);
         }
     }
@@ -608,7 +633,7 @@ impl NodeHandle {
     /// More efficient than calling `set_style` multiple times because it only
     /// parses the style string once.
     pub fn set_styles(&self, properties: &[(&str, &str)]) {
-        if let Some(doc) = self.doc.upgrade() {
+        if let Some(doc) = self.accessed_doc() {
             doc.borrow_mut().set_styles(self.node_id, properties);
         }
     }
@@ -648,7 +673,7 @@ impl NodeHandle {
     /// came off again.
     #[doc(hidden)]
     pub fn add_class(&self, class: &str) {
-        if let Some(doc) = self.doc.upgrade() {
+        if let Some(doc) = self.accessed_doc() {
             // Get current class attribute (borrow ends here)
             let current = doc.borrow().get_attribute(self.node_id, "class");
             let new_class = match current {
@@ -682,7 +707,7 @@ impl NodeHandle {
     /// verbatim: a padded `class` now serialises padded.
     #[doc(hidden)]
     pub fn remove_class(&self, class: &str) {
-        if let Some(doc) = self.doc.upgrade() {
+        if let Some(doc) = self.accessed_doc() {
             // Get current class attribute (borrow ends here)
             let existing = doc.borrow().get_attribute(self.node_id, "class");
             if let Some(existing) = existing {
@@ -703,7 +728,7 @@ impl NodeHandle {
 
     /// Toggle a class on the element.
     pub fn toggle_class(&self, class: &str) {
-        if let Some(doc) = self.doc.upgrade() {
+        if let Some(doc) = self.accessed_doc() {
             // Get current class attribute (borrow ends here)
             let has_class = doc
                 .borrow()
@@ -723,7 +748,7 @@ impl NodeHandle {
     /// Set the vertical scroll position of this element.
     /// For elements with overflow: auto/scroll, this sets the vertical scroll offset.
     pub fn set_scroll_top(&self, scroll_top: f64) {
-        if let Some(doc) = self.doc.upgrade() {
+        if let Some(doc) = self.accessed_doc() {
             doc.borrow_mut().set_scroll_top(self.node_id, scroll_top);
         }
     }
@@ -731,8 +756,7 @@ impl NodeHandle {
     /// Get the vertical scroll position of this element.
     /// Equivalent to `element.scrollTop` in the web DOM.
     pub fn scroll_top(&self) -> f64 {
-        self.doc
-            .upgrade()
+        self.accessed_doc()
             .map(|doc| doc.borrow().scroll_top(self.node_id))
             .unwrap_or(0.0)
     }
@@ -740,8 +764,7 @@ impl NodeHandle {
     /// Get the horizontal scroll position of this element.
     /// Equivalent to `element.scrollLeft` in the web DOM.
     pub fn scroll_left(&self) -> f64 {
-        self.doc
-            .upgrade()
+        self.accessed_doc()
             .map(|doc| doc.borrow().scroll_left(self.node_id))
             .unwrap_or(0.0)
     }
@@ -749,7 +772,7 @@ impl NodeHandle {
     /// Set the horizontal scroll position of this element.
     /// Equivalent to `element.scrollLeft = value` in the web DOM.
     pub fn set_scroll_left(&self, scroll_left: f64) {
-        if let Some(doc) = self.doc.upgrade() {
+        if let Some(doc) = self.accessed_doc() {
             doc.borrow_mut().set_scroll_left(self.node_id, scroll_left);
         }
     }
@@ -757,8 +780,7 @@ impl NodeHandle {
     /// Get the total scrollable content height.
     /// Equivalent to `element.scrollHeight` in the web DOM.
     pub fn scroll_height(&self) -> f64 {
-        self.doc
-            .upgrade()
+        self.accessed_doc()
             .map(|doc| doc.borrow().scroll_height(self.node_id))
             .unwrap_or(0.0)
     }
@@ -766,8 +788,7 @@ impl NodeHandle {
     /// Get the total scrollable content width.
     /// Equivalent to `element.scrollWidth` in the web DOM.
     pub fn scroll_width(&self) -> f64 {
-        self.doc
-            .upgrade()
+        self.accessed_doc()
             .map(|doc| doc.borrow().scroll_width(self.node_id))
             .unwrap_or(0.0)
     }
@@ -775,8 +796,7 @@ impl NodeHandle {
     /// Get the visible content area height (layout height minus padding and border).
     /// Equivalent to `element.clientHeight` in the web DOM.
     pub fn client_height(&self) -> f64 {
-        self.doc
-            .upgrade()
+        self.accessed_doc()
             .map(|doc| doc.borrow().client_height(self.node_id))
             .unwrap_or(0.0)
     }
@@ -784,8 +804,7 @@ impl NodeHandle {
     /// Get the visible content area width (layout width minus padding and border).
     /// Equivalent to `element.clientWidth` in the web DOM.
     pub fn client_width(&self) -> f64 {
-        self.doc
-            .upgrade()
+        self.accessed_doc()
             .map(|doc| doc.borrow().client_width(self.node_id))
             .unwrap_or(0.0)
     }
@@ -793,7 +812,7 @@ impl NodeHandle {
     /// Scroll this element so its bottom content is visible.
     /// Convenience method: sets `scroll_top` to `scroll_height - client_height`.
     pub fn scroll_to_bottom(&self) {
-        if let Some(doc) = self.doc.upgrade() {
+        if let Some(doc) = self.accessed_doc() {
             let sh = doc.borrow().scroll_height(self.node_id);
             let ch = doc.borrow().client_height(self.node_id);
             let max = (sh - ch).max(0.0);
@@ -814,7 +833,7 @@ impl NodeHandle {
     ///   caret scroll (#837) it was a silent no-op there.
     /// - the test `MockDomDocument` only queues the request.
     pub fn scroll_into_view(&self) {
-        if let Some(doc) = self.doc.upgrade() {
+        if let Some(doc) = self.accessed_doc() {
             doc.borrow_mut().request_scroll_into_view(self.node_id);
         }
     }
@@ -825,21 +844,21 @@ impl NodeHandle {
     /// the DOM tree produced by parsing `html`. The underlying document
     /// implementation handles parsing and insertion.
     pub fn set_inner_html(&self, html: &str) {
-        if let Some(doc) = self.doc.upgrade() {
+        if let Some(doc) = self.accessed_doc() {
             doc.borrow_mut().set_inner_html(self.node_id, html);
         }
     }
 
     /// Query a single child node matching the selector.
     pub fn query_selector(&self, selector: &str) -> Option<NodeHandle> {
-        let doc = self.doc.upgrade()?;
+        let doc = self.accessed_doc()?;
         let node_id = doc.borrow().query_selector(selector)?;
         Some(NodeHandle::new(node_id, self.doc.clone()))
     }
 
     /// Query all child nodes matching the selector.
     pub fn query_selector_all(&self, selector: &str) -> Vec<NodeHandle> {
-        if let Some(doc) = self.doc.upgrade() {
+        if let Some(doc) = self.accessed_doc() {
             doc.borrow()
                 .query_selector_all(selector)
                 .into_iter()
@@ -858,7 +877,7 @@ impl NodeHandle {
     /// # Returns
     /// Some((x, y)) if the node has text layout and the offset is valid, None otherwise
     pub fn query_caret_position(&self, byte_offset: usize) -> Option<(f32, f32)> {
-        let doc = self.doc.upgrade()?;
+        let doc = self.accessed_doc()?;
         doc.borrow()
             .query_caret_position(self.node_id.0 as u64, byte_offset)
     }
@@ -871,7 +890,7 @@ impl NodeHandle {
     /// # Returns
     /// Some(GlyphBounds) if the node has text layout and the offset is valid, None otherwise
     pub fn query_glyph_bounds(&self, byte_offset: usize) -> Option<GlyphBounds> {
-        let doc = self.doc.upgrade()?;
+        let doc = self.accessed_doc()?;
         doc.borrow()
             .query_glyph_bounds(self.node_id.0 as u64, byte_offset)
     }
@@ -880,7 +899,7 @@ impl NodeHandle {
     ///
     /// Returns (x, y, width, height) if the node has been laid out.
     pub fn get_layout_bounds(&self) -> Option<(f32, f32, f32, f32)> {
-        let doc = self.doc.upgrade()?;
+        let doc = self.accessed_doc()?;
         doc.borrow().query_node_layout(self.node_id.0 as u64)
     }
 
@@ -929,13 +948,13 @@ impl NodeHandle {
 
     /// Get the tag name of this node (if it's an element).
     pub fn tag_name(&self) -> Option<String> {
-        let doc = self.doc.upgrade()?;
+        let doc = self.accessed_doc()?;
         doc.borrow().tag_name(self.node_id)
     }
 
     /// Get the node type (1 = element, 3 = text, 8 = comment).
     pub fn node_type(&self) -> Option<u16> {
-        let doc = self.doc.upgrade()?;
+        let doc = self.accessed_doc()?;
         doc.borrow().node_type(self.node_id)
     }
 
@@ -943,7 +962,7 @@ impl NodeHandle {
     ///
     /// For text nodes: returns the text. For elements: returns concatenated descendant text.
     pub fn text_content(&self) -> Option<String> {
-        let doc = self.doc.upgrade()?;
+        let doc = self.accessed_doc()?;
         doc.borrow().text_content(self.node_id)
     }
 }

@@ -140,7 +140,7 @@ Effects are still de-duplicated per flush: an effect observing two signals that 
 
 ## Batching Updates
 
-When you update multiple signals, effects run after each update. To avoid redundant runs, use `batch()`:
+Outside a batch, effects run after each update. To avoid redundant runs, use `batch()`:
 
 ```rust
 batch(|| {
@@ -153,9 +153,59 @@ batch(|| {
 
 A top-level `batch()` flushes synchronously: by the time it returns, every effect its writes woke has run. Batches also **nest** — a `batch()` called inside another batch's closure joins the outer transaction, and the single flush happens when the outermost batch exits. (A `batch()` opened from inside an effect *run by a flush* is its own outermost batch — the flag is restored before the flush begins — so it still flushes before returning. An effect body that runs while a batch is still *open* is different: `Effect::new` runs its body immediately, so an effect created inside a batch closure runs inside that batch, and a `batch()` opened there joins the outer transaction instead of flushing.)
 
-Until the flush, nothing has run: inside the closure — including after a nested `batch()` returns — effects have not executed, and `Memo::get` still returns the pre-batch value.
+Until the flush, no effect has run: inside the closure — including after a nested `batch()` returns — effects have not executed, so a signal an effect writes still holds its old value. **Memos are different: `Memo::get` inside the batch returns the new value.** A write marks every memo that reads it stale synchronously, and the read recomputes it (see [Memos](./memos.md#the-equality-cut-off)). It used to return the pre-batch value, which made a handler that wrote a signal and then read a memo of it act on stale data. **The DOM is different too:** any `NodeHandle` call made in the batch first runs the effects queued so far (see [below](#touching-the-dom-inside-a-handler)).
 
 If the closure **panics**, the panic propagates and the batching flag is restored on the way out, so later writes flush normally. Nothing is flushed during the unwind itself — the effects the aborted batch queued stay pending and run at the next flush (the next unbatched write or outermost batch exit; the runtime does not schedule one on its own).
+
+### Event handlers run as batches
+
+You rarely need to call `batch()` yourself: **rinch runs each of these as one**, on desktop, on the web (the delegated listeners go through the same `rinch_core::events::dispatch_*` functions) and in embed:
+
+- `onclick` and every other `data-rid` handler (the element drag attributes included), `oninput`/`onchange`, `onscroll`, file drops;
+- the keyboard interceptor and the Escape dismiss stack (one transaction for both), the paste interceptor;
+- `Drag` `on_move`, `on_end` and `on_cancel`;
+- menu and tray callbacks, and their shortcuts;
+- a registered focus target's `on_focus_gained`, `on_focus_lost`, `on_key` and `on_ime`;
+- each callback drained from the main-thread queue — `Signal::send`/`update_send` and `run_on_main_thread` called from another thread, and on native `set_timeout`, `rinch-http` and `rinch-ws` completions — **one transaction per callback**, not one for the whole drain, because they were queued independently and a later one may rely on an earlier one's effects;
+- on the web, a `set_timeout` callback, a `rinch-http` completion and a `rinch-ws` event, which arrive straight from the browser.
+
+**Everything else that calls into your code is not batched by rinch**, and its writes flush one by one as they always did. That includes, for example: `run_on_main_thread` called *on* the main thread (it runs its closure there and then, inside whatever transaction is open), `set_selection_callback` / `set_selection_sync_callback`, the configuration-change handler, `on_child_inserted` / `on_child_removed` observers, a `RenderSurface`'s event handler, `EditorHandle::on_change`, and effects and memo computations themselves. Wrap any of those in `batch()` yourself if it writes several signals.
+
+So a handler that writes five signals flushes effects **once**, when it returns, and the host is told once (on desktop, one `ReRender`, not five). What that means inside the handler:
+
+- **Memos are current.** Write, then read a memo of what you wrote: you get the new value.
+- **Effects run when the handler returns — or earlier, the moment the handler touches the DOM** (next section). Until then a signal an effect derives still holds its old value; read the source signal (or a memo) instead.
+- **Glitch-free.** An effect that reads several of the signals the handler wrote runs once, and sees all of the writes, never a mix of old and new.
+
+#### Touching the DOM inside a handler
+
+A handler that writes a signal and then works on the DOM itself was written expecting the write to have reached the DOM already — it always had:
+
+```rust
+button { onclick: move || {
+    dialog_open.set(true);   // a Modal's effect shows the dialog and focuses its first field
+    email_field.focus();     // …but this handler wants the email field
+}, "Sign in" }
+
+button { onclick: move || {
+    messages.update(|m| m.push(new_message()));  // a `for` effect appends the row
+    log.scroll_to_bottom();                      // …and this should reach it
+}, "Send" }
+```
+
+So **every `NodeHandle` operation made from handler code first runs the effects the handler has queued so far** — `focus()`, `scroll_into_view()`, `set_scroll_top()`, `scroll_to_bottom()`, reads such as `get_attribute`, `children`, `scroll_height` or `get_layout_bounds`, and writes such as `set_attribute` alike. It is the analogue of a browser flushing pending style when script asks for layout. Program order is kept: the `Modal`'s own focus request is made first and the handler's `focus()` overrides it; the new message row exists before the scroll; a `set_attribute` made after a signal write wins over the effect bound to that signal, instead of being overwritten when the handler returns. A handler that only writes signals still flushes exactly once. `rinch_core::flush_pending_effects()` does the same thing explicitly, for code that reaches the DOM some other way.
+
+The rule applies to handler code, not to effects: a `NodeHandle` call inside an effect body or a memo computation never drains the queue, since that code runs *inside* a flush and must not run effects queued behind it ahead of their turn. A handler dispatched *from* an effect (an effect that calls `dispatch_event`, or a web `focus()` that fires a listener synchronously) is handler code again: its batch is a flush context of its own.
+
+**One way to trip over it in your own code.** If a handler writes a signal and then makes a `NodeHandle` call while holding a borrow of a `RefCell` that an effect of that signal also borrows, the effect runs inside that call — and panics with `BorrowError`/`BorrowMutError`. Before handlers were batched the same effect ran at the write itself, before your borrow was taken; the conflict is the same, it just moved from the write to the DOM call. Take the borrow after the DOM call, or drop it before. (Editor *queries* such as `is_mark_active` are not DOM calls and run no effects.)
+
+**Writing a library that keeps its own `RefCell` state?** A `NodeHandle` call inside a handler can now run *user* effects, and a user effect is free to call back into your API. If your code touches the DOM while it holds a borrow of its own state, that is a `BorrowMutError` waiting to happen. Hold `rinch_core::reactive::suppress_effect_flush()` for as long as the borrow lives — no effect runs inside it; the pending ones run at the next DOM access outside it, or when the batch ends — and call `rinch_core::flush_pending_effects()` just *before* taking the borrow, so the caller's earlier writes have reached the DOM you are about to work on. The rich-text editor does exactly this around every borrow of its core, so `tick.set(1); editor.command("toggleBold")` in one handler, or two commands in a row with an `on_change` that bumps a toolbar signal, behave as they did before handlers were batched.
+
+#### Two consequences to know about
+
+**An effect sees only where the handler ended up, never the steps.** `show.set(false); show.set(true)` in one handler does not remount the `if` branch; removing a `for` item and putting one with the same key back keeps that row and its state; closing and re-opening an overlay in one handler neither restores nor re-captures focus. (A `NodeHandle` call in between flushes, so it *does* make the step visible — that is what the rule above is for.)
+
+**A handler that blocks keeps its transaction open.** If a handler shows a native modal dialog (a file picker, a message box) that runs a nested platform event loop — which macOS and Windows dialogs can — its batch stays open until the dialog returns, and anything rinch runs meanwhile, such as a drained `Signal::send` or a timer, joins that batch: its effects run when the dialog closes, not when it arrived.
 
 ## Reading Without Tracking
 

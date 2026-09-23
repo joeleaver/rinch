@@ -151,7 +151,7 @@ impl RinchContext {
                 Some(ref theme) => crate::generate_theme_css_string(theme),
                 None => crate::generate_theme_css_string(&ThemeProviderProps::default()),
             };
-            app.owned_theme_css = Some(css);
+            app.set_owned_theme_css(Some(css));
         }
         let _ = &config.theme; // suppress unused warning when theme feature is off
 
@@ -347,9 +347,10 @@ impl RinchContext {
     /// path for changing an embedded context's theme.
     #[cfg(feature = "theme")]
     pub fn set_theme(&mut self, theme: &ThemeProviderProps) {
-        self.app.owned_theme_css = Some(crate::generate_theme_css_string(theme));
+        self.app
+            .set_owned_theme_css(Some(crate::generate_theme_css_string(theme)));
         // Wake the next update() — resolve_and_repaint detects the owned-CSS
-        // change against its cached last_theme_css and does the full restyle,
+        // change against its cached last_theme_key and does the full restyle,
         // exactly like the shell's thread-slot comparison path.
         self.dirty.store(true, Ordering::Release);
     }

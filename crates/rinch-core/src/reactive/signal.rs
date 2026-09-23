@@ -236,6 +236,12 @@ impl<T: 'static> Signal<T> {
             subscribers.len()
         );
 
+        // Mark every memo downstream of this signal stale *now*, before any
+        // flush and whether or not a batch is open, so a read straight after
+        // the write — in the same handler, inside the same batch — recomputes
+        // rather than answering from the cache (see `memo`'s module docs).
+        super::mark_memos_stale(&subscribers);
+
         RUNTIME.with(|rt| {
             let mut rt = rt.borrow_mut();
 
@@ -243,6 +249,9 @@ impl<T: 'static> Signal<T> {
             rt.signals_changed = true;
 
             for observer in subscribers {
+                // A direct reader of a signal that changed runs whatever its
+                // memos say: it is *definite*, not a maybe (`flush_effects`).
+                rt.definite_effects.insert(observer);
                 if rt.pending_effects_set.insert(observer) {
                     rt.pending_effects.push_back(observer);
                 }

@@ -144,6 +144,11 @@ pub(super) struct EffectInner {
     /// memo from its own sources, and a dirty memo nobody happens to read would
     /// then stay disconnected from them.
     pub(super) body_tracks_deps: bool,
+    /// `Some` for a memo's dirty-marker: the memo it stands for. Read by the
+    /// eager staleness walk in `Signal::notify` (which marks the memo stale the
+    /// moment a source is written) and by `flush_effects` (which skips a
+    /// marker whose memo nobody reads). `None` for an ordinary effect.
+    pub(super) memo: Option<Rc<dyn super::memo::MemoNode>>,
 }
 
 impl Effect {
@@ -161,6 +166,7 @@ impl Effect {
             owner: super::Owner::current(),
             deps: RefCell::new(Vec::new()),
             body_tracks_deps: true,
+            memo: None,
         });
 
         // Store the effect
@@ -190,6 +196,7 @@ impl Effect {
             owner: super::Owner::current(),
             deps: RefCell::new(Vec::new()),
             body_tracks_deps: true,
+            memo: None,
         });
 
         register(id, inner);
@@ -455,7 +462,14 @@ pub(super) fn run_effect(id: ObserverId) {
             ObserverGuard::push(id)
         };
 
-        super::count_effect_run();
+        // A memo's marker is bookkeeping, not an effect body anyone wrote: it
+        // only passes a wake on. Counting it would make `effect_runs` scale
+        // with the number of memos a write *reached* rather than the effects
+        // that actually re-ran.
+        if inner.memo.is_none() {
+            super::count_effect_run();
+        }
+        let _depth = super::ReactiveDepthGuard::enter();
         body();
         drop(body);
 
@@ -472,23 +486,101 @@ pub(super) fn run_effect(id: ObserverId) {
 /// effects in *reverse* registration order, and would run effects queued by a
 /// running effect ahead of ones queued before it. See the "Execution order"
 /// section of the [`reactive`](crate::reactive) module docs.
+///
+/// **The memo equality cut-off lives here.** An observer queued by a signal it
+/// reads directly is *definite* and runs. One queued only by a memo's marker is
+/// a *maybe*: it runs only if at least one memo it read has moved to a new
+/// version since it read it ([`memo_sources_changed`]), which brings those
+/// memos up to date to find out. A skipped observer keeps its place in no
+/// queue and its subscriptions untouched — it has seen nothing new. Skipping
+/// never reorders anything: the observers that do run still run in the order
+/// they were queued.
 pub(super) fn flush_effects() {
     loop {
-        let effect_id = RUNTIME.with(|rt| {
+        let next = RUNTIME.with(|rt| {
             let mut rt = rt.borrow_mut();
-            let id = rt.pending_effects.pop_front();
+            let id = rt.pending_effects.pop_front()?;
             // Remove from set when dequeuing.
-            if let Some(ref observer) = id {
-                rt.pending_effects_set.remove(observer);
-            }
-            id
+            rt.pending_effects_set.remove(&id);
+            let definite = rt.definite_effects.remove(&id);
+            Some((id, definite))
         });
 
-        match effect_id {
-            Some(id) => run_effect(id),
+        match next {
+            Some((id, true)) => run_effect(id),
+            Some((id, false)) => {
+                if maybe_needs_run(id) {
+                    run_effect(id);
+                }
+            }
             None => break,
         }
     }
+}
+
+/// Whether an observer woken only through a memo has anything new to see.
+fn maybe_needs_run(id: ObserverId) -> bool {
+    let Some(inner) = EFFECTS.with(|effects| effects.borrow().get(&id).cloned()) else {
+        return false;
+    };
+    if inner.disposed.get() {
+        return false;
+    }
+    // A memo's marker is never cut off here, only when nobody subscribes to
+    // its memo. Asking whether the *memo's* sources moved is the wrong
+    // question: a read in between (inside a batch, say) can already have
+    // recomputed the memo and re-recorded its sources, so they look unmoved
+    // while the memo's value has moved on from what its dependents last saw.
+    // Only each dependent knows which version it saw, so the marker passes the
+    // wake on and every dependent makes its own comparison.
+    if let Some(memo) = &inner.memo {
+        return memo.has_subscribers();
+    }
+    deps_changed(&inner)
+}
+
+/// Whether any memo `observer` read has moved to a new version since.
+///
+/// Used for a *maybe* observer (above) and for a memo in the `Check` state
+/// (`MemoNode::refresh`), whose dependencies are recorded on its marker under
+/// the same id. Refreshes each memo it asks about — that is the "pull".
+pub(super) fn memo_sources_changed(observer: ObserverId) -> bool {
+    let Some(inner) = EFFECTS.with(|effects| effects.borrow().get(&observer).cloned()) else {
+        return true;
+    };
+    deps_changed(&inner)
+}
+
+fn deps_changed(inner: &EffectInner) -> bool {
+    // Copied out: refreshing a memo runs user code, which must not find this
+    // observer's `deps` borrowed.
+    let memo_deps: Vec<(u32, u32, u64)> = inner
+        .deps
+        .borrow()
+        .iter()
+        .filter_map(|dep| match *dep {
+            DepKey::Memo {
+                id,
+                generation,
+                seen,
+            } => Some((id, generation, seen)),
+            DepKey::Signal { .. } => None,
+        })
+        .collect();
+    // Woken through a memo but holding no record of reading one: nothing to
+    // compare against, so run rather than guess.
+    if memo_deps.is_empty() {
+        return true;
+    }
+    memo_deps.into_iter().any(|(id, generation, seen)| {
+        let node = super::MEMO_STORE.with(|store| store.borrow().get_node(id, generation));
+        // A freed memo counts as moved. The reader was computed from its old
+        // value and nothing will ever wake it again (the memo's marker went
+        // with it), so leaving it clean would strand it on that value for good
+        // — a `try_get` reader must get its chance to see `None`. Costs one
+        // recompute, once.
+        node.is_none_or(|node| node.refresh() != seen)
+    })
 }
 
 #[cfg(test)]
