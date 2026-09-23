@@ -1726,6 +1726,42 @@ impl EditorHandle {
         }
     }
 
+    /// A **sticky index** for position `pos`: an address that follows the text through
+    /// every later edit, local or a peer's, on this replica or any other. For deep
+    /// links into a collaborating document. Resolve it with
+    /// [`Self::collab_resolve_sticky`].
+    ///
+    /// The bytes are a plain yrs `StickyIndex` (v1 encoding) on the `text` of the
+    /// textblock holding `pos`, so an app can also resolve them with yrs alone, against
+    /// any replica of the shared document, without an editor
+    /// ([`rinch_editor_collab::CollabDoc::sticky_index`] documents the encoding).
+    ///
+    /// `None` when not collaborating; when `pos` is not inside a textblock (between
+    /// blocks); for the starter paragraph of a shared document with no blocks, which
+    /// has nothing in the CRDT behind it; and while the session is
+    /// [poisoned](Self::is_collaboration_poisoned) or
+    /// [stalled](Self::collab_outbound_stall). Uses `try_borrow`, like
+    /// [`Self::collab_state_vector`].
+    pub fn collab_sticky_index(&self, pos: Pos) -> Option<Vec<u8>> {
+        let core = self.inner.try_borrow().ok()?;
+        let bridge = core.collab.as_ref()?;
+        bridge.session.sticky_index(&core.state.doc, pos)
+    }
+
+    /// Where a sticky index from [`Self::collab_sticky_index`] (made by this editor or
+    /// by any peer's) points now, as a position in this editor's document.
+    ///
+    /// When its character was deleted it resolves to where that character was. `None`
+    /// when not collaborating; when the bytes do not decode or name an item this
+    /// replica has not seen (a peer's edit not merged yet); when its **block** was
+    /// deleted (a block joined into the one before it counts: its text moves as a new
+    /// insert); and while the session is poisoned or stalled.
+    pub fn collab_resolve_sticky(&self, bytes: &[u8]) -> Option<Pos> {
+        let core = self.inner.try_borrow().ok()?;
+        let bridge = core.collab.as_ref()?;
+        bridge.session.resolve_sticky(&core.state.doc, bytes)
+    }
+
     /// Detach the collaboration session (stop projecting and broadcasting). The
     /// document is unchanged; subsequent edits are local-only again.
     pub fn stop_collaboration(&self) {
@@ -4818,6 +4854,50 @@ mod tests {
                     "handles diverged (seed={seed})"
                 );
             }
+        }
+
+        // ── Sticky positions (deep links) ────────────────────────────────────
+
+        /// No session, no sticky index: the methods answer `None` rather than an
+        /// address no one could resolve.
+        #[test]
+        fn sticky_positions_need_a_session() {
+            let s = schema();
+            let h = mount(doc_node(&s, vec![para(&s, "hello")])).handle;
+            assert_eq!(h.collab_sticky_index(Pos(2)), None);
+            h.start_collaboration_host(|_| {}).unwrap();
+            let bytes = h.collab_sticky_index(Pos(2)).expect("collaborating");
+            h.stop_collaboration();
+            assert_eq!(h.collab_resolve_sticky(&bytes), None);
+        }
+
+        /// A sticky index made on one editor follows its character through edits on
+        /// both, and resolves on the peer to the same character.
+        #[test]
+        fn a_sticky_index_follows_its_character_across_peers() {
+            let s = schema();
+            let host = mount(doc_node(&s, vec![para(&s, "hello world")])).handle;
+            let guest = mount(doc_node(&s, vec![para(&s, "")])).handle;
+            loopback(&host, &guest);
+
+            let w = host
+                .collab_sticky_index(Pos(7))
+                .expect("inside the paragraph");
+            assert_eq!(guest.collab_resolve_sticky(&w), Some(Pos(7)));
+
+            // The guest types before it, the host types before it too.
+            guest.set_selection(Selection::cursor(Pos(1)));
+            assert!(guest.insert_text("oh, "));
+            host.set_selection(Selection::cursor(Pos(1)));
+            assert!(host.insert_text("so "));
+            assert_eq!(doc_text(&host), "so oh, hello world");
+            assert_eq!(doc_text(&guest), doc_text(&host));
+
+            for h in [&host, &guest] {
+                assert_eq!(h.collab_resolve_sticky(&w), Some(Pos(14)));
+            }
+            // Between blocks is not a place in any text.
+            assert_eq!(host.collab_sticky_index(Pos(0)), None);
         }
     }
 
