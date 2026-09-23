@@ -296,7 +296,13 @@ impl RinchDocument {
                 if let Some(existing) = &node.text_layout {
                     let old_max_width = existing.max_width;
                     let new_max_width = max_width.unwrap_or(f32::INFINITY);
-                    if (old_max_width - new_max_width).abs() < 0.01 {
+                    // `==` first: an unconstrained root stores `INFINITY`, and
+                    // `INFINITY - INFINITY` is NaN, which no tolerance admits, so
+                    // without it every such root was reshaped on every layout
+                    // pass that changed no text (ifc_unconstrained_width_skip_tests).
+                    if old_max_width == new_max_width
+                        || (old_max_width - new_max_width).abs() < 0.01
+                    {
                         continue; // Skip — text_layout is still valid
                     }
                 }
