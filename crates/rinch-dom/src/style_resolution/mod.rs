@@ -585,12 +585,20 @@ impl RinchDocument {
                 invalidate_recursive(tree, child_id);
             }
         }
-        self.tree.style_roots.push(node_id);
         invalidate_recursive(&mut self.tree, node_id);
 
-        // Resolve styles using Stylo
+        // Resolve styles using Stylo. Only the inserted subtree is cascaded on
+        // the spot; whatever else is pending — above all the siblings an
+        // insertion marks for a structural selector (`note_child_list_changed`)
+        // — waits for the next `resolve_styles`, once per frame, as in a
+        // browser. Resolving everything pending here made every insertion
+        // re-cascade every marked sibling: building a 1000-row list under
+        // `li:last-of-type` one row at a time was 36s instead of 57ms.
         self.tree.styles_dirty = true;
-        self.resolve_styles();
+        if !self.resolve_inserted_subtree(node_id) {
+            self.tree.style_roots.push(node_id);
+            self.resolve_styles();
+        }
         self.apply_stylo_styles_to_taffy();
         self.push_dirty_flags(
             node_id,
@@ -948,7 +956,8 @@ impl RinchDocument {
 
             // --- Transition logic ---
             let specs = &self.tree.nodes[node_id].transition_specs;
-            let node_has_been_styled = self.tree.nodes[node_id].has_been_styled;
+            let node_has_been_styled = self.tree.nodes[node_id].has_been_styled
+                && !self.tree.nodes[node_id].styled_unrendered;
             if self.tree.transitions_enabled && node_has_been_styled && !specs.is_empty() {
                 let old_style = &self.tree.nodes[node_id].computed_style;
                 let diffs = diff_animatable(old_style, &new_style);
@@ -1149,7 +1158,12 @@ impl RinchDocument {
                 }
             }
 
-            // Mark node as styled so future changes can trigger transitions
+            // Mark node as styled so future changes can trigger transitions —
+            // once it has been rendered (`Node::styled_unrendered`).
+            if !self.tree.nodes[node_id].has_been_styled {
+                self.tree.nodes[node_id].styled_unrendered = true;
+                self.tree.styled_unrendered.push(node_id);
+            }
             self.tree.nodes[node_id].has_been_styled = true;
 
             // Whether an absolute descendant resolves against the initial

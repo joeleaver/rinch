@@ -269,33 +269,37 @@ impl<'a> Element for RinchNode<'a> {
         false
     }
 
+    /// The previous sibling that is an element — and not a generated
+    /// `::before` / `::after` / list-marker box. rinch keeps those in the
+    /// child list, but they are not children for selector matching:
+    /// `:nth-child`, `:first-child` and `+` count element children only
+    /// (Selectors 4 §14). Counting them made an element's index depend on
+    /// whether its parent's generated content existed yet — and change,
+    /// unrestyled, when it appeared.
     fn prev_sibling_element(&self) -> Option<Self> {
-        let mut n = 1;
-        while let Some(node) = self.backward(n) {
-            if node.is_element() {
-                return Some(node);
-            }
-            n += 1;
-        }
-        None
+        let parent = &self.tree.nodes[self.node().parent?];
+        let pos = parent.children.iter().position(|&c| c == self.id)?;
+        parent.children[..pos]
+            .iter()
+            .rev()
+            .find(|&&c| is_matchable_element(&self.tree.nodes[c]))
+            .map(|&c| self.with(c))
     }
 
     fn next_sibling_element(&self) -> Option<Self> {
-        let mut n = 1;
-        while let Some(node) = self.forward(n) {
-            if node.is_element() {
-                return Some(node);
-            }
-            n += 1;
-        }
-        None
+        let parent = &self.tree.nodes[self.node().parent?];
+        let pos = parent.children.iter().position(|&c| c == self.id)?;
+        parent.children[pos + 1..]
+            .iter()
+            .find(|&&c| is_matchable_element(&self.tree.nodes[c]))
+            .map(|&c| self.with(c))
     }
 
     fn first_element_child(&self) -> Option<Self> {
         self.node()
             .children
             .iter()
-            .find(|&&id| self.tree.nodes[id].is_element())
+            .find(|&&id| is_matchable_element(&self.tree.nodes[id]))
             .map(|&id| self.with(id))
     }
 
@@ -981,12 +985,6 @@ impl<'a> TElement for RinchNode<'a> {
     }
 }
 
-/// Intern an arbitrary tag name into a `'static` [`BorrowedLocalName`] so stylo's
-/// type-selector matching recognizes it. The hardcoded fast-path arms in
-/// [`local_name`](RinchElement::local_name) cover the common tags lock-free; this
-/// handles the long tail (table cells `td`/`tr`/`th`, custom elements, …) by
-/// interning on first use and caching the leaked atom. The set of distinct tag
-/// names a document uses is small and finite, so the bounded leak is intentional.
 /// The element state Stylo sees for `node`: the interaction states rinch
 /// tracks, plus `CHECKED` from the `checked` attribute — the same fact
 /// `:checked` is matched from, so Stylo's state-dependency map can say which
@@ -1012,19 +1010,63 @@ pub(crate) fn element_state(node: &Node) -> ElementState {
     state
 }
 
+/// An element child as selectors count children: an element, and not a
+/// generated pseudo-element box.
+fn is_matchable_element(node: &Node) -> bool {
+    matches!(node.kind, NodeKind::Element(_)) && !node.is_pseudo_element
+}
+
 /// `:empty`: no child element other than a generated pseudo-element box, and
 /// no text node with any text. Comments do not count.
 pub(crate) fn node_is_empty(tree: &NodeTree, id: RawNodeId) -> bool {
-    tree.nodes[id].children.iter().all(|&c| {
-        let child = &tree.nodes[c];
-        match &child.kind {
-            NodeKind::Element(_) => child.is_pseudo_element,
-            NodeKind::Text(t) => t.content.is_empty(),
-            _ => true,
-        }
-    })
+    tree.nodes[id]
+        .children
+        .iter()
+        .all(|&c| !child_defeats_empty(&tree.nodes[c]))
 }
 
+/// Whether `node`, as a child, makes its parent not `:empty`.
+pub(crate) fn child_defeats_empty(child: &Node) -> bool {
+    match &child.kind {
+        NodeKind::Element(_) => !child.is_pseudo_element,
+        NodeKind::Text(t) => !t.content.is_empty(),
+        _ => false,
+    }
+}
+
+/// Whether some child of `id` other than `except` keeps `id` from being
+/// `:empty`.
+pub(crate) fn other_children_defeat_empty(
+    tree: &NodeTree,
+    id: RawNodeId,
+    except: RawNodeId,
+) -> bool {
+    tree.nodes[id]
+        .children
+        .iter()
+        .any(|&c| c != except && child_defeats_empty(&tree.nodes[c]))
+}
+
+/// Whether one child change (an insertion, a removal, a text edit) can have
+/// flipped `id`'s `:empty`: only if, after it, at most one child keeps `id`
+/// from being empty. Anything more and `id` was non-empty before the change
+/// and is after it. What keeps a list build under an `:empty` rule from
+/// restyling the list (and its subtree) on every row.
+pub(crate) fn empty_can_have_flipped(tree: &NodeTree, id: RawNodeId) -> bool {
+    tree.nodes[id]
+        .children
+        .iter()
+        .filter(|&&c| child_defeats_empty(&tree.nodes[c]))
+        .nth(1)
+        .is_none()
+}
+
+/// Intern an arbitrary tag name into a `'static` [`BorrowedLocalName`] so stylo's
+/// type-selector matching recognizes it. The hardcoded fast-path arms in
+/// [`local_name`](RinchElement::local_name) cover the common tags lock-free; this
+/// handles the long tail (table cells `td`/`tr`/`th`, custom elements, …) by
+/// interning on first use and caching the leaked atom. The set of distinct tag
+/// names a document uses is small and finite, so the bounded leak is intentional.
 fn intern_local_name(tag: &str) -> &'static BorrowedLocalName {
     use std::collections::HashMap;
     use std::sync::{Mutex, OnceLock};

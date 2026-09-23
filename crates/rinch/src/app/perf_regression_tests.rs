@@ -147,7 +147,8 @@ fn an_idle_app_redraws_nothing() {
         &[
             (StyleResolves, 1),
             (ElementsCascaded, 1),
-            (StyleNodesVisited, 2),
+            (StyleNodesVisited, 1),
+            (StyleInvalidations, 1),
             (TaffyStyleSyncs, 1),
             (LayoutResolves, 1),
             (LayoutSkippedPaintOnly, 1),
@@ -486,7 +487,7 @@ fn a_keyed_for_moves_one_row() {
         &[
             (StyleResolves, 2),
             (ElementsCascaded, 1),
-            (StyleNodesVisited, 2),
+            (StyleNodesVisited, 1),
             (TaffyStyleSyncs, 1),
             (ShapeMeasureIfc, 1),
             (ShapeIfcBuild, 1),
@@ -534,7 +535,7 @@ fn a_keyed_for_inserts_one_row_in_the_middle() {
         &[
             (StyleResolves, 2),
             (ElementsCascaded, 1),
-            (StyleNodesVisited, 2),
+            (StyleNodesVisited, 1),
             (TaffyStyleSyncs, 2),
             (TaffyStyleChanges, 1),
             (ShapeMeasureIfc, 1),
@@ -609,7 +610,7 @@ fn a_keyed_for_replaces_every_row() {
         &[
             (StyleResolves, 201),
             (ElementsCascaded, 200),
-            (StyleNodesVisited, 400),
+            (StyleNodesVisited, 200),
             (TaffyStyleSyncs, 400),
             (TaffyStyleChanges, 200),
             (ShapeMeasureIfc, 200),
@@ -771,6 +772,7 @@ fn ten_queued_drag_moves_lay_out_once() {
             (StyleResolves, 1),
             (ElementsCascaded, 1),
             (StyleNodesVisited, 1),
+            (StyleInvalidations, 1),
             (TaffyStyleSyncs, 1),
             (TaffyStyleChanges, 1),
             (LayoutResolves, 1),
@@ -1009,6 +1011,7 @@ fn full_repaint_region_too_large() {
             (StyleResolves, 1),
             (ElementsCascaded, 1),
             (StyleNodesVisited, 1),
+            (StyleInvalidations, 1),
             (TaffyStyleSyncs, 1),
             (LayoutResolves, 1),
             (LayoutSkippedPaintOnly, 1),
@@ -1043,7 +1046,7 @@ fn full_repaint_restyle() {
         &[
             (StyleResolves, 3),
             (ElementsCascaded, 217),
-            (StyleNodesVisited, 429),
+            (StyleNodesVisited, 428),
             (FullRestyles, 1),
             (FullRestyleStylesheet, 1),
             (FullStyleWalks, 1),

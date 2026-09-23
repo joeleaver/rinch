@@ -50,7 +50,13 @@ impl RinchDocument {
                     VisitedHandlingMode::AllLinksUnvisited,
                     IncludeStartingStyle::No,
                     self.stylist.quirks_mode(),
-                    NeedsSelectorFlags::No,
+                    // Recorded, as for the element's own match: a structural
+                    // selector that only a pseudo rule uses
+                    // (`li:last-child::after`, Breadcrumbs'
+                    // `:not(:last-child)::after`, `:empty::before`) must flag
+                    // the parent too, or an insertion or removal never
+                    // restyles the sibling it moves (`invalidation.rs`).
+                    NeedsSelectorFlags::Yes,
                     MatchingForInvalidation::No,
                 );
             matching_context.extra_data.originating_element_style = Some(parent_style);
@@ -116,6 +122,20 @@ impl RinchDocument {
             .intersects(style::computed_value_flags::ComputedValueFlags::USES_VIEWPORT_UNITS)
         {
             self.tree.nodes[parent_id].uses_viewport_units.set(true);
+        }
+
+        // `content: attr(x)` reads an attribute no selector need name, so
+        // the element is flagged for `note_attribute_change` to restyle on any
+        // attribute write — including the one that *adds* `x`, when there is
+        // no generated box yet (an absent attribute yields empty content).
+        if let style::values::generics::counters::Content::Items(items) =
+            &pseudo_computed.get_counters().content
+            && items
+                .items
+                .iter()
+                .any(|i| matches!(i, style::values::generics::counters::ContentItem::Attr(_)))
+        {
+            self.tree.nodes[parent_id].content_reads_attrs.set(true);
         }
 
         // Check content property - if none/normal/empty, skip

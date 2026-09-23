@@ -35,11 +35,24 @@
 
 mod style_twin;
 
+use std::cell::{Cell, RefCell};
 use std::collections::BTreeMap;
 
 use rinch_core::dom::{DomDocument, NodeId};
 use rinch_dom::RinchDocument;
 use style_twin::{assert_twin, assert_twin_opts};
+
+thread_local! {
+    /// While set, [`apply`] does not resolve after its op: several changes
+    /// land before one restyle, the way a frame's event handlers batch them.
+    static BATCH: Cell<bool> = const { Cell::new(false) };
+    /// The stylesheet documents are built with: [`CSS`], or a subset of it.
+    static CSS_CUR: RefCell<String> = RefCell::new(CSS.to_string());
+}
+
+fn css() -> String {
+    CSS_CUR.with(|c| c.borrow().clone())
+}
 
 const CSS: &str = r#"
     body { font-size: 16px; }
@@ -205,7 +218,7 @@ fn create(
 /// from scratch.
 fn fresh(spec: &Spec) -> RinchDocument {
     let mut doc = RinchDocument::new();
-    doc.load_css(CSS);
+    doc.load_css(&css());
     let mut map = BTreeMap::new();
     let mut texts = BTreeMap::new();
     // Create every element first, then set state, then attach top-down, so
@@ -262,7 +275,7 @@ fn fresh(spec: &Spec) -> RinchDocument {
 
 fn live(spec: &Spec) -> Live {
     let mut doc = RinchDocument::new();
-    doc.load_css(CSS);
+    doc.load_css(&css());
     let mut map = BTreeMap::new();
     let mut texts = BTreeMap::new();
     let mut order = vec![];
@@ -453,7 +466,9 @@ fn apply(spec: &mut Spec, l: &mut Live, op: &Op) {
             l.doc.update_active(n);
         }
     }
-    l.doc.resolve_layout(800.0, 600.0);
+    if !BATCH.with(|b| b.get()) {
+        l.doc.resolve_layout(800.0, 600.0);
+    }
 }
 
 /// Clear, through the real entry points, any interaction state held by a node
@@ -1001,4 +1016,81 @@ fn an_ancestor_becoming_a_containing_block_resizes_an_absolute() {
             Op::ToggleClass(0, "f"),
         ],
     );
+}
+
+/// The random differential with **several changes before each restyle**.
+/// The one-op-per-resolve differential never exercises "one snapshot per
+/// element per frame, taken from the state before the frame's *first*
+/// change" — overwriting the snapshot's attributes on every change survived
+/// it and dies here (review of #894, M6).
+#[test]
+fn batched_random_mutations_match_a_fresh_document() {
+    let seeds: u64 = std::env::var("RINCH_TWIN_SEEDS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(20);
+    for seed in 1..=seeds {
+        let mut rng = Rng(0x9E37_79B9_7F4A_7C15 ^ seed.wrapping_mul(0x1000_0001) ^ 0xABCD);
+        let mut spec = random_spec(&mut rng);
+        let mut l = live(&spec);
+        for step in 0..6 {
+            BATCH.with(|b| b.set(true));
+            let mut ops = vec![];
+            for _ in 0..4 {
+                let op = random_op(&mut rng, &spec);
+                apply(&mut spec, &mut l, &op);
+                ops.push(op);
+            }
+            BATCH.with(|b| b.set(false));
+            l.doc.resolve_layout(800.0, 600.0);
+            check_random(&spec, &l, &format!("seed {seed} step {step}: {ops:?}"));
+        }
+    }
+}
+
+/// The random differential over **random subsets of the stylesheet** (about a
+/// quarter of the rules each), batched on half the seeds. With the whole sheet
+/// a catch-all rule masks a gap: `[data-x]` made Stylo restyle any element
+/// whose `data-x` changed, which hid that `content: attr(data-x)` did not
+/// appear when the attribute was added (review of #894, D3).
+#[test]
+fn random_stylesheet_subsets_match_a_fresh_document() {
+    let seeds: u64 = std::env::var("RINCH_TWIN_SEEDS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(20);
+    let rules: Vec<String> = CSS
+        .lines()
+        .map(|l| l.trim().to_string())
+        .filter(|l| !l.is_empty())
+        .collect();
+    for seed in 1..=seeds {
+        let mut rng = Rng(0x1234_5678 ^ seed.wrapping_mul(0x9E37_79B9));
+        let mut chosen = vec![rules[0].clone()];
+        for r in &rules[1..] {
+            if rng.below(4) == 0 {
+                chosen.push(r.clone());
+            }
+        }
+        let sheet = chosen.join("\n");
+        CSS_CUR.with(|c| *c.borrow_mut() = sheet.clone());
+        let mut spec = random_spec(&mut rng);
+        let mut l = live(&spec);
+        let batched = rng.below(2) == 0;
+        for step in 0..10 {
+            BATCH.with(|b| b.set(batched));
+            let op = random_op(&mut rng, &spec);
+            apply(&mut spec, &mut l, &op);
+            BATCH.with(|b| b.set(false));
+            if !batched || step % 3 == 2 {
+                l.doc.resolve_layout(800.0, 600.0);
+                check_random(
+                    &spec,
+                    &l,
+                    &format!("seed {seed} step {step}: {op:?}\nstylesheet:\n{sheet}"),
+                );
+            }
+        }
+    }
+    CSS_CUR.with(|c| *c.borrow_mut() = CSS.to_string());
 }

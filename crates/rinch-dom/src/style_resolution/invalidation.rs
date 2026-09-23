@@ -187,25 +187,7 @@ impl RinchDocument {
         if !self.tree.nodes.get(node).is_some_and(|n| n.is_element()) {
             return;
         }
-        self.tree.styles_dirty = true;
-        if self.ensure_snapshot(node) {
-            let snapshot = self
-                .snapshots
-                .get_mut(&style::dom::OpaqueNode(node))
-                .expect("ensure_snapshot made one");
-            if snapshot.attrs.is_none() {
-                snapshot.attrs = Some(snapshot_attrs(&self.tree.nodes[node]));
-            }
-            match name {
-                "class" => snapshot.class_changed = true,
-                "id" => snapshot.id_changed = true,
-                _ => snapshot.other_attributes_changed = true,
-            }
-            let ln = local_name(name);
-            if !snapshot.changed_attrs.contains(&ln) {
-                snapshot.changed_attrs.push(ln);
-            }
-        }
+        self.snapshot_attribute_change(node, name);
 
         // What Stylo's maps cannot know.
         let tag = self.tree.nodes[node].tag().map(str::to_owned);
@@ -224,12 +206,57 @@ impl RinchDocument {
             }
             _ => {}
         }
-        let has_generated = self.tree.nodes[node]
-            .children
-            .iter()
-            .any(|&c| self.tree.nodes[c].is_pseudo_element);
+        let has_generated = self.tree.nodes[node].content_reads_attrs.get()
+            || self.tree.nodes[node]
+                .children
+                .iter()
+                .any(|&c| self.tree.nodes[c].is_pseudo_element);
         if has_generated {
             self.mark_restyle(node, false);
+        }
+    }
+
+    /// The inset fast path's half of [`Self::note_attribute_change`]: when
+    /// some rule names the `style` attribute (`[style*=…]`), snapshot it so
+    /// Stylo's invalidator sees the write; otherwise do nothing at all, so a
+    /// drag's per-frame `set_style` still costs no style resolve.
+    pub(crate) fn note_inset_style_write(&mut self, node: usize) {
+        let ln = local_name("style");
+        let selected = self.tree.nodes.get(node).is_some_and(|n| n.is_element())
+            && self
+                .stylist
+                .any_applicable_rule_data(RinchNode::new(node, &self.tree), |data| {
+                    data.might_have_attribute_dependency(&ln)
+                });
+        if selected {
+            self.snapshot_attribute_change(node, "style");
+        }
+    }
+
+    /// The snapshot half of [`Self::note_attribute_change`] alone: Stylo's
+    /// invalidator learns that `name` changed, and nothing is forced.
+    pub(crate) fn snapshot_attribute_change(&mut self, node: usize, name: &str) {
+        if !self.tree.nodes.get(node).is_some_and(|n| n.is_element()) {
+            return;
+        }
+        self.tree.styles_dirty = true;
+        if self.ensure_snapshot(node) {
+            let snapshot = self
+                .snapshots
+                .get_mut(&style::dom::OpaqueNode(node))
+                .expect("ensure_snapshot made one");
+            if snapshot.attrs.is_none() {
+                snapshot.attrs = Some(snapshot_attrs(&self.tree.nodes[node]));
+            }
+            match name {
+                "class" => snapshot.class_changed = true,
+                "id" => snapshot.id_changed = true,
+                _ => snapshot.other_attributes_changed = true,
+            }
+            let ln = local_name(name);
+            if !snapshot.changed_attrs.contains(&ln) {
+                snapshot.changed_attrs.push(ln);
+            }
         }
     }
 
@@ -251,7 +278,12 @@ impl RinchDocument {
     fn ensure_snapshot(&mut self, node: usize) -> bool {
         let opaque = style::dom::OpaqueNode(node);
         if self.snapshots.contains_key(&opaque) {
-            return true;
+            if self.tree.nodes[node].has_snapshot {
+                return true;
+            }
+            // An entry for a slab id since freed and handed to this node
+            // (`set_inner_html`, `remove_subtree`): it describes the old node.
+            self.snapshots.remove(&opaque);
         }
         let styled = self.tree.nodes[node]
             .stylo_element_data
@@ -259,19 +291,14 @@ impl RinchDocument {
             .as_ref()
             .is_some_and(|d| d.styles.primary.is_some());
         if !styled {
-            // Only siblings that have a style can go stale; a parent with none
-            // means a subtree still being built, whose children will be
-            // matched from scratch when it is connected.
-            let parent_styled = self.tree.nodes[node].parent.is_some_and(|p| {
-                self.tree.nodes[p]
-                    .stylo_element_data
-                    .borrow()
-                    .as_ref()
-                    .is_some_and(|d| d.styles.primary.is_some())
-            });
-            if parent_styled {
-                self.mark_later_siblings(node, true);
-            }
+            // Nothing to snapshot: the element is matched from scratch at the
+            // next resolve anyway. Its later siblings need nothing either. An
+            // unstyled element among styled siblings got there by an
+            // insertion, which already marked every sibling a structural or
+            // sibling selector can reach (`note_child_list_changed`, from the
+            // flags those siblings' own matching left on the parent). One
+            // whose style was dropped *after* its snapshot was taken is
+            // handled in `process_snapshots`.
             return false;
         }
         let snapshot = ServoElementSnapshot {
@@ -294,6 +321,11 @@ impl RinchDocument {
         }
         let ids = std::mem::take(&mut self.snapshot_ids);
         let mut outcomes: Vec<(usize, bool, bool, bool)> = Vec::with_capacity(ids.len());
+        // Snapshotted elements whose style was dropped before this resolve —
+        // a resize restyling a viewport-unit user, a re-insertion. Stylo
+        // cannot compare them; they re-cascade from scratch, and whatever a
+        // sibling selector ties to them is restyled wholesale.
+        let mut lost: Vec<usize> = Vec::new();
         {
             let guard = self.tree.guard.read();
             let guards = StylesheetGuards::same(&guard);
@@ -319,7 +351,8 @@ impl RinchDocument {
                 }
                 let element = RinchNode::new(id, &self.tree);
                 let mut data = node.stylo_element_data.borrow_mut();
-                let Some(data) = data.as_mut() else {
+                let Some(data) = data.as_mut().filter(|d| d.styles.primary.is_some()) else {
+                    lost.push(id);
                     continue;
                 };
                 // `ElementData::invalidate_style_if_needed`, with one change:
@@ -353,6 +386,9 @@ impl RinchDocument {
                     .store(false, std::sync::atomic::Ordering::SeqCst);
             }
         }
+        for id in lost {
+            self.mark_later_siblings(id, true);
+        }
         for (id, invalidated_self, descendants, siblings) in outcomes {
             self.tree
                 .perf
@@ -378,11 +414,19 @@ impl RinchDocument {
         if !n.is_element() || n.is_pseudo_element {
             return;
         }
+        let wanted = if subtree {
+            RestyleHint::RESTYLE_SELF | RestyleHint::RESTYLE_DESCENDANTS
+        } else {
+            RestyleHint::RESTYLE_SELF
+        };
         if let Some(data) = n.stylo_element_data.borrow_mut().as_mut() {
-            data.hint.insert(RestyleHint::RESTYLE_SELF);
-            if subtree {
-                data.hint.insert(RestyleHint::RESTYLE_DESCENDANTS);
+            // Already marked this frame: its root and dirty flags are in
+            // place. Without this, N insertions into a list under a structural
+            // selector pushed O(N²) roots before the frame's one resolve.
+            if data.hint.contains(wanted) {
+                return;
             }
+            data.hint.insert(wanted);
         }
         self.tree.style_roots.push(node);
         self.tree.styles_dirty = true;
@@ -428,14 +472,29 @@ impl RinchDocument {
     /// - `HAS_EDGE_CHILD_SELECTOR` (`:first-child`, `:last-child`,
     ///   `:only-child`): the element siblings on either side of `at`, which is
     ///   where "first" and "last" can move;
-    /// - `HAS_EMPTY_SELECTOR` on `parent` itself: `parent` (its `:empty` may
-    ///   have flipped), with its later siblings (`:empty + p`);
+    /// - `HAS_EMPTY_SELECTOR` on `parent` itself: `parent`, with its later
+    ///   siblings (`:empty + p`) — only when its `:empty` can have flipped,
+    ///   i.e. at most one child now keeps it non-empty. Marking it on every
+    ///   insertion forced a full resolve of the list per row (an ancestor of
+    ///   the new row carried a hint): 10400 cascades for 100 appends;
     /// - an `<ol>`: every `<li>` after `at`, whose marker number moved.
     ///
     /// Each restyled child takes its subtree along (`:nth-child(2) .x`). A
     /// `parent` never matched against anything — being built, or detached —
     /// carries no flags and costs nothing.
     pub(crate) fn note_child_list_changed(&mut self, parent: usize, at: usize) {
+        self.note_child_list_changed_with(parent, at, true);
+    }
+
+    /// [`Self::note_child_list_changed`], told by a caller that knows it
+    /// (`replace_node` swapping one non-empty child for another) that
+    /// `parent`'s `:empty` cannot have flipped.
+    pub(crate) fn note_child_list_changed_with(
+        &mut self,
+        parent: usize,
+        at: usize,
+        empty_may_flip: bool,
+    ) {
         let Some(p) = self.tree.nodes.get(parent) else {
             return;
         };
@@ -479,9 +538,11 @@ impl RinchDocument {
                 self.mark_restyle(c, true);
             }
         }
-        if flags.contains(ElementSelectorFlags::HAS_EMPTY_SELECTOR) {
-            self.mark_restyle(parent, true);
-            self.mark_later_siblings(parent, true);
+        if flags.contains(ElementSelectorFlags::HAS_EMPTY_SELECTOR)
+            && empty_may_flip
+            && crate::stylo_impl::empty_can_have_flipped(&self.tree, parent)
+        {
+            self.note_empty_flipped(parent);
         }
         if is_ol {
             for &c in children.iter().skip(at) {
@@ -492,16 +553,38 @@ impl RinchDocument {
         }
     }
 
-    /// A text child of `parent` changed its text: only `:empty` can see that.
-    pub(crate) fn note_text_changed(&mut self, parent: usize) {
+    /// Text child `child` of `parent` is about to change between empty and
+    /// non-empty (the caller checks that): only `:empty` can see it, and only
+    /// if no other child already keeps `parent` non-empty. A text edit that
+    /// keeps a node non-empty — every keystroke in an editor paragraph under
+    /// `p:empty` — costs nothing.
+    pub(crate) fn note_text_emptiness_changed(&mut self, parent: usize, child: usize) {
         let Some(p) = self.tree.nodes.get(parent) else {
             return;
         };
         if p.selector_flags
             .borrow()
             .contains(ElementSelectorFlags::HAS_EMPTY_SELECTOR)
+            && !crate::stylo_impl::other_children_defeat_empty(&self.tree, parent, child)
         {
-            self.mark_restyle(parent, true);
+            self.note_empty_flipped(parent);
+        }
+    }
+
+    /// `parent`'s `:empty` flipped: restyle it, and its later siblings only
+    /// if a sibling combinator was ever matched among its siblings
+    /// (`:empty + p` flags `parent`'s own parent). The editor's
+    /// `p:empty { min-height: 1lh }` names no sibling, so emptying one
+    /// paragraph restyles that paragraph, not every one after it.
+    fn note_empty_flipped(&mut self, parent: usize) {
+        self.mark_restyle(parent, true);
+        let siblings_selected = self.tree.nodes[parent].parent.is_some_and(|g| {
+            self.tree.nodes[g]
+                .selector_flags
+                .borrow()
+                .contains(ElementSelectorFlags::HAS_SLOW_SELECTOR_LATER_SIBLINGS)
+        });
+        if siblings_selected {
             self.mark_later_siblings(parent, true);
         }
     }

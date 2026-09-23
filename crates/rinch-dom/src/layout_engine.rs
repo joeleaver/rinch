@@ -201,6 +201,13 @@ impl RinchDocument {
             self.apply_stylo_styles_to_taffy();
             self.tree.styles_dirty = false;
         }
+        // Everything styled so far is rendered by this frame; a later
+        // cascade has a before-change style to transition from.
+        for id in std::mem::take(&mut self.tree.styled_unrendered) {
+            if let Some(n) = self.tree.nodes.get_mut(id) {
+                n.styled_unrendered = false;
+            }
+        }
 
         // Trigger loads for any background-image URLs not yet in the cache
         self.request_background_image_loads();

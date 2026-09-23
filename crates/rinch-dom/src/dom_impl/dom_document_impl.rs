@@ -284,6 +284,11 @@ impl DomDocument for RinchDocument {
         if old == new {
             return;
         }
+        // A non-empty child swapped for a non-empty one leaves the parent's
+        // `:empty` where it was (the editor's view diff does this for every
+        // mark it applies).
+        let keeps_nonempty = crate::stylo_impl::child_defeats_empty(&self.tree.nodes[old.0])
+            && crate::stylo_impl::child_defeats_empty(&self.tree.nodes[new.0]);
         self.invalidate_ifc_for_node(old.0);
         self.clear_ifc_root_recursive(old.0);
         self.invalidate_ifc_for_node(new.0);
@@ -339,7 +344,7 @@ impl DomDocument for RinchDocument {
             self.push_dirty_flags(parent_id, DirtyFlags::LAYOUT | DirtyFlags::CHILDREN);
 
             let at = self.child_index(parent_id, new.0);
-            self.note_child_list_changed(parent_id, at);
+            self.note_child_list_changed_with(parent_id, at, !keeps_nonempty);
 
             // Recompute styles for the new subtree to pick up ancestor-based selectors
             self.recompute_node_styles_recursive(new.0);
@@ -468,13 +473,12 @@ impl DomDocument for RinchDocument {
         // stop an element being empty); an element's children are replaced
         // outright below.
         if let Some(parent_id) = self.tree.nodes[n].parent
-            && !self.tree.nodes[n].is_element()
+            && let NodeKind::Text(t) = &self.tree.nodes[n].kind
+            && t.content.is_empty() != text.is_empty()
         {
-            self.note_text_changed(parent_id);
+            self.note_text_emptiness_changed(parent_id, n);
         }
-        if self.tree.nodes[n].is_element() {
-            self.note_child_list_changed(n, 0);
-        }
+        let replaces_children = self.tree.nodes[n].is_element();
         match &mut self.tree.nodes[n].kind {
             NodeKind::Text(t) => {
                 t.content = text.to_string();
@@ -547,6 +551,13 @@ impl DomDocument for RinchDocument {
                 }
                 self.tree.ifc_dirty = true; // Structural change (children replaced)
             }
+        }
+        // After the replacement, not before: whether `:empty` can have
+        // flipped is judged on the children the element now has. Before it,
+        // two old non-empty children read as "cannot flip" and
+        // `set_text_content(el, "")` left `el:empty` stale.
+        if replaces_children {
+            self.note_child_list_changed(n, 0);
         }
         self.tree.layout_dirty = true; // Text content change affects layout
         self.push_dirty(n);
@@ -734,10 +745,14 @@ impl DomDocument for RinchDocument {
         }
         let pdb = parse_inline_style(&style_str);
         let insets = self.inset_fast_path_values(node.0, properties, &pdb);
+        // Before the write, as `set_attribute` does: a `[style*=…]` selector
+        // sees the change. Off the fast path the element is restyled too; on
+        // it, the inset is written directly and a snapshot is taken only if
+        // some rule names the `style` attribute.
         if insets.is_none() {
-            // Before the write, as `set_attribute` does: a `[style*=…]`
-            // selector sees the change, and the element is restyled.
             self.note_attribute_change(node.0, "style");
+        } else {
+            self.note_inset_style_write(node.0);
         }
 
         self.tree.nodes[node.0]
@@ -896,6 +911,10 @@ impl DomDocument for RinchDocument {
             self.tree.remove_subtree(child);
         }
         self.tree.nodes[node.0].children.clear();
+        // `:empty` on the node, and whatever a structural selector ties to
+        // its children, can have moved (each re-append below notes its own
+        // insertion; a clear-to-empty has none).
+        self.note_child_list_changed(node.0, 0);
         // Clearing a subtree is a structural change: without these flags a
         // clear-to-empty `set_inner_html` (nothing re-appended below) leaves
         // `resolve_layout`'s dirty gate closed and the old geometry — the

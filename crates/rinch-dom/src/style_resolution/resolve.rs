@@ -239,6 +239,63 @@ impl RinchDocument {
         }
     }
 
+    /// Cascade just the freshly inserted (and unstyled) subtree at `node_id`,
+    /// leaving every other pending style change for the next
+    /// `resolve_styles`. Answers `false`, doing nothing, when that would be
+    /// wrong and the caller should run a full `resolve_styles` instead:
+    ///
+    /// - no layout has completed yet, or a whole-document walk is pending;
+    /// - the node is not connected (a detached node is not styled at all —
+    ///   `resolve_styles` drops such a root, #651);
+    /// - some ancestor is itself waiting for a restyle (no style, a restyle
+    ///   hint, a pending snapshot, or a marked descendant path): the subtree
+    ///   would cascade against an ancestor style this frame is about to
+    ///   replace, and its next cascade would then read as a *change* — a
+    ///   transition on a node that was only just inserted.
+    pub(crate) fn resolve_inserted_subtree(&mut self, node_id: usize) -> bool {
+        use crate::stylo_impl::RinchNode;
+        use style::shared_lock::StylesheetGuards;
+
+        if self.tree.full_style_walk || !self.tree.transitions_enabled {
+            return false;
+        }
+        if self.depth_if_connected(node_id).is_none() {
+            return false;
+        }
+        let mut current = self.tree.nodes[node_id].parent;
+        while let Some(id) = current {
+            let n = &self.tree.nodes[id];
+            if n.is_element() {
+                if n.has_snapshot || n.style_dirty_descendants.get() {
+                    return false;
+                }
+                let data = n.stylo_element_data.borrow();
+                match data.as_ref() {
+                    Some(d) if d.styles.primary.is_some() && d.hint.is_empty() => {}
+                    _ => return false,
+                }
+            }
+            current = n.parent;
+        }
+
+        self.tree.hit_cache.invalidate();
+        let t = web_time::Instant::now();
+        self.tree.perf.bump(crate::perf::Counter::StyleResolves);
+        {
+            let guard = self.tree.guard.read();
+            let guards = StylesheetGuards::same(&guard);
+            self.stylist.flush::<RinchNode>(&guards, None, None);
+        }
+        self.refresh_pseudo_rule_presence();
+        let parent_style = self.find_parent_computed_style(node_id);
+        self.fill_style_bloom_for(node_id);
+        self.resolve_styles_recursive(node_id, parent_style, ChildCascade::Skip, false);
+        self.tree
+            .perf
+            .add_elapsed(crate::perf::Counter::TimeStyleNs, t);
+        true
+    }
+
     /// Whether the style walk has anything to do at `node_id`: it has no
     /// style yet, carries a restyle hint, or some descendant does.
     fn node_needs_style_visit(&self, node_id: usize) -> bool {
@@ -637,6 +694,9 @@ impl RinchDocument {
                 .flags
                 .intersects(style::computed_value_flags::ComputedValueFlags::USES_VIEWPORT_UNITS),
         );
+
+        // Re-derived by the pseudo passes below.
+        self.tree.nodes[node_id].content_reads_attrs.set(false);
 
         // Check for ::before and ::after pseudo-elements — only when some
         // stylesheet has a rule for that pseudo at all. The UA sheet has none,

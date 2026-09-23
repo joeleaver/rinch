@@ -798,6 +798,14 @@ pub struct Node {
     /// Whether this node has been styled at least once.
     /// Prevents transitions from firing on initial style application.
     pub has_been_styled: bool,
+    /// First styled since the last layout: it has never been rendered, so it
+    /// has no before-change style and a re-cascade in the same frame starts
+    /// no transition (css-transitions-1 §3). An insertion cascades its new
+    /// subtree on the spot and a later insertion in the same frame can move
+    /// it (`li:nth-child(odd)` under two prepends); that second cascade is
+    /// still its first rendered style. Cleared by `resolve_layout` after the
+    /// frame's style pass, from `NodeTree::styled_unrendered`.
+    pub styled_unrendered: bool,
 
     // === Stylo CSS engine fields ===
     /// Stylo element data containing computed CSS values.
@@ -864,6 +872,11 @@ pub struct Node {
     /// descendant it invalidated (`TElement::set_dirty_descendants`), and the
     /// one `resolve_styles` follows. Cleared as the resolve walks it.
     pub style_dirty_descendants: Cell<bool>,
+    /// This element's `::before` / `::after` content uses `attr()`: any
+    /// attribute write restyles it, whether or not a generated box exists
+    /// yet (`invalidation::note_attribute_change`). Set by the pseudo
+    /// resolution at each cascade of the element.
+    pub content_reads_attrs: Cell<bool>,
 
     /// When set, this block uses a fixed estimated height in Taffy instead of
     /// measuring via Parley. Used by contenteditable block virtualization to
@@ -1020,6 +1033,7 @@ impl Node {
             transition_specs: Vec::new(),
             animation_specs: Vec::new(),
             has_been_styled: false,
+            styled_unrendered: false,
             // Stylo fields
             stylo_element_data: AtomicRefCell::new(None),
             selector_flags: AtomicRefCell::new(ElementSelectorFlags::empty()),
@@ -1033,6 +1047,7 @@ impl Node {
             focus_sensitive: Cell::new(false),
             uses_viewport_units: Cell::new(false),
             style_dirty_descendants: Cell::new(false),
+            content_reads_attrs: Cell::new(false),
             estimated_height: None,
             contents_spliced: false,
             ifc_detached: false,
@@ -1078,6 +1093,7 @@ impl Node {
             transition_specs: Vec::new(),
             animation_specs: Vec::new(),
             has_been_styled: false,
+            styled_unrendered: false,
             // Stylo fields
             stylo_element_data: AtomicRefCell::new(None),
             selector_flags: AtomicRefCell::new(ElementSelectorFlags::empty()),
@@ -1091,6 +1107,7 @@ impl Node {
             focus_sensitive: Cell::new(false),
             uses_viewport_units: Cell::new(false),
             style_dirty_descendants: Cell::new(false),
+            content_reads_attrs: Cell::new(false),
             estimated_height: None,
             contents_spliced: false,
             ifc_detached: false,
@@ -1135,6 +1152,7 @@ impl Node {
             transition_specs: Vec::new(),
             animation_specs: Vec::new(),
             has_been_styled: false,
+            styled_unrendered: false,
             // Stylo fields
             stylo_element_data: AtomicRefCell::new(None),
             selector_flags: AtomicRefCell::new(ElementSelectorFlags::empty()),
@@ -1148,6 +1166,7 @@ impl Node {
             focus_sensitive: Cell::new(false),
             uses_viewport_units: Cell::new(false),
             style_dirty_descendants: Cell::new(false),
+            content_reads_attrs: Cell::new(false),
             estimated_height: None,
             contents_spliced: false,
             ifc_detached: false,
@@ -1190,6 +1209,7 @@ impl Node {
             transition_specs: Vec::new(),
             animation_specs: Vec::new(),
             has_been_styled: false,
+            styled_unrendered: false,
             // Stylo fields
             stylo_element_data: AtomicRefCell::new(None),
             selector_flags: AtomicRefCell::new(ElementSelectorFlags::empty()),
@@ -1203,6 +1223,7 @@ impl Node {
             focus_sensitive: Cell::new(false),
             uses_viewport_units: Cell::new(false),
             style_dirty_descendants: Cell::new(false),
+            content_reads_attrs: Cell::new(false),
             estimated_height: None,
             contents_spliced: false,
             ifc_detached: false,
@@ -1935,6 +1956,9 @@ pub struct NodeTree {
     /// Do not swap it back for a `HashSet`. The set holds a handful of entries
     /// and its `O(log n)` insert is not on any path the cost harness measures.
     pub dirty_atomic_inlines: BTreeSet<RawNodeId>,
+    /// The nodes whose `Node::styled_unrendered` is set, for `resolve_layout`
+    /// to clear after the frame's style pass.
+    pub styled_unrendered: Vec<RawNodeId>,
     /// What the Taffy measure function measured for each IFC root, kept across
     /// frames, **keyed by root** so invalidating one is O(1).
     ///
@@ -2118,6 +2142,7 @@ impl NodeTree {
             mousemove_handlers: 0,
             dirty_text_contexts: HashSet::new(),
             dirty_atomic_inlines: BTreeSet::new(),
+            styled_unrendered: Vec::new(),
             ifc_measure_cache: HashMap::new(),
             scroll_into_view_requests: Vec::new(),
             pending_scroll_clamps: Vec::new(),
