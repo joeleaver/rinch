@@ -228,7 +228,7 @@ A mark spec's `inclusive` flag (`MarkSpec::inclusive`, default `true`, builder
 `.inclusive(false)`) decides what happens at a mark's **end**. An inclusive mark
 (`bold`) carries on: type right after a bold word and the new text is bold. A
 non-inclusive mark does not: at a boundary it is dropped unless the run after the
-position carries the same mark (same attrs) too, and at a textblock's start it is
+position carries a mark of the same type too, and at a textblock's start it is
 dropped. The starter kit's `link` is the one non-inclusive mark, as in ProseMirror's
 example schema and tiptap, so for a link:
 
@@ -237,6 +237,13 @@ example schema and tiptap, so for a link:
 | inside the link | linked | the link's `href` |
 | at the link's start | not linked (the text before decides) | `None` |
 | right after its last character | not linked | `None` |
+| right after its last character, with a *different* link right after | in the first link | the first link's `href` |
+
+That last row departs from ProseMirror, where the typed text is plain. With
+collaboration on, plain text between two links cannot be written to the CRDT
+without a formatting marker that brings a link back onto text nobody linked when a
+peer removes the second link at the same moment; text that continues the first link
+needs no marker at all.
 
 `is_mark_active`, `marks_at` and `Transaction::add_stored_mark` read the same rule.
 With collaboration on, the typed character is written to the CRDT outside the link

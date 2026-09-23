@@ -827,7 +827,7 @@ fn reconcile_text(
 
     let spliced = old != b.text;
     if spliced {
-        if inserts_after_non_inclusive(&old, &old_marks, &b.text, per_char) {
+        if inserts_after_non_inclusive(&old, &old_marks, &b.text, &target_marks, per_char) {
             splice_min_with_marks(txn, text, &old, &b.text, &target_marks);
         } else {
             splice_min(txn, text, &old, &b.text);
@@ -951,8 +951,15 @@ fn splice_bounds(o: &[char], n: &[char]) -> (usize, usize) {
 }
 
 /// Whether the splice turning `old` into `new` inserts text right after a char that
-/// carries a non-inclusive mark (`per_char`) and is not an inline atom: the one case
-/// [`splice_min_with_marks`] is for. An atom is left out on purpose: an insert that
+/// carries a non-inclusive mark (`per_char`) and is not an inline atom, **and** the first
+/// inserted char carries exactly the marks the char after the insertion point carries
+/// (nothing, at the block's end): the one case [`splice_min_with_marks`] is for. Only
+/// then does `insert_with_attributes` walk past every formatting marker between the
+/// two chars and write none of its own. Anywhere else it stops at the first marker
+/// whose value differs and writes `{link:null} X {link:old}`, and that trailing
+/// restore depends on the link's original end marker: a peer's concurrent removal of
+/// the link deletes it, and the restore brings the link back over the following text
+/// (review of #901, round 2 — a bold link, or an image right after the link). An atom is left out on purpose: an insert that
 /// steps past an image's end marker instead of clearing its own char is exposed to a
 /// peer's concurrent `src` change re-writing that marker, and a literal U+FFFC absorbed
 /// into the image's `@atom` range reads back as a second image (measured) — the
@@ -961,6 +968,7 @@ fn inserts_after_non_inclusive(
     old: &str,
     old_marks: &[SpanMark],
     new: &str,
+    target: &[SpanMark],
     per_char: &BTreeSet<String>,
 ) -> bool {
     if per_char.is_empty() {
@@ -972,13 +980,27 @@ fn inserts_after_non_inclusive(
     if prefix == 0 || n.len() - prefix - suffix == 0 {
         return false;
     }
-    let before = prefix - 1;
-    let on_before = || {
-        old_marks
+    let at = |marks: &[SpanMark], i: usize| -> Vec<(String, Attrs)> {
+        let mut v: Vec<(String, Attrs)> = marks
             .iter()
-            .filter(move |m| m.start <= before && before < m.end)
+            .filter(|m| m.start <= i && i < m.end)
+            .map(|m| (m.name.clone(), m.attrs.clone()))
+            .collect();
+        v.sort_by(|a, b| a.0.cmp(&b.0));
+        v
     };
-    on_before().any(|m| per_char.contains(&m.name)) && !on_before().any(|m| m.name == ATOM_MARK)
+    let before = at(old_marks, prefix - 1);
+    if !before.iter().any(|(name, _)| per_char.contains(name))
+        || before.iter().any(|(name, _)| name == ATOM_MARK)
+    {
+        return false;
+    }
+    let after = if suffix == 0 {
+        Vec::new()
+    } else {
+        at(old_marks, o.len() - suffix)
+    };
+    at(target, prefix) == after
 }
 
 /// [`splice_min`], but the inserted chars are written **with** the formatting `target`

@@ -2430,3 +2430,240 @@ fn pasting_two_different_images_side_by_side_keeps_each_its_own_attrs() {
         vec!["one.png".to_string(), "two.png".to_string()]
     );
 }
+
+// ===== Review of #901, round 2: fixtures (append to crates/rinch-editor-collab/tests/collab.rs) =====
+// F1–F4 FAIL on 1f5833d6. F1/F2 passed on e4a5fc7e (insert-then-clear) and on main; F3/F4 fail
+// on e4a5fc7e too and pass on main. F5/F6 pass on 1f5833d6 and pin two surviving mutants.
+
+/// Typer types `X` right after the link at block offset 3; the other peer runs `change`.
+/// Every client-id order, either peer typing. Returns the converged docs that `ok` rejects.
+fn r2_vs(
+    line: impl Fn(&Schema) -> Node,
+    change: impl Fn(&mut Peer, usize),
+    ok: impl Fn(&str) -> bool,
+) -> Vec<String> {
+    let mut failures = Vec::new();
+    for ids in ID_ORDERS {
+        for a_types in [true, false] {
+            let schema = Rc::new(Schema::starter_kit());
+            let (mut a, mut b) = two_peers_with_ids(&schema, vec![line(&schema)], ids);
+            let s = block_start(&a.state.doc, 0);
+            let (typer, changer) = if a_types {
+                (&mut a, &mut b)
+            } else {
+                (&mut b, &mut a)
+            };
+            typer.type_at(s + 3, "X");
+            change(changer, s);
+            sync(&mut a, &mut b);
+            assert_converged(&a, &b, &schema);
+            let n = norm(&a.state.doc);
+            if !ok(&n) {
+                failures.push(format!(
+                    "ids {ids:?}, typer {}: {n}",
+                    if a_types { "A" } else { "B" }
+                ));
+            }
+        }
+    }
+    failures
+}
+
+fn r2_bold(schema: &Schema) -> Mark {
+    Mark::simple(schema.mark_type("bold").unwrap().clone())
+}
+
+fn r2_unlink(href: &'static str, from: usize, to: usize) -> impl Fn(&mut Peer, usize) {
+    move |p: &mut Peer, s: usize| {
+        let l = link_mark(p.state.schema(), href);
+        p.local(|tr| {
+            tr.remove_mark(s + from, s + to, l).unwrap();
+        });
+    }
+}
+
+#[test]
+fn typing_after_a_bold_link_while_a_peer_removes_the_link_links_nothing_else() {
+    // F1. `ab` is bold AND linked. Measured on 1f5833d6: `«abX|bold»«cd|link old»` in all
+    // four combinations — the removed link comes back over `cd`, which was never linked.
+    let f = r2_vs(
+        |sc| {
+            para_of(
+                sc,
+                vec![
+                    sc.text_with_marks("ab", vec![link_mark(sc, "old"), r2_bold(sc)])
+                        .unwrap(),
+                    sc.text("cd").unwrap(),
+                ],
+            )
+        },
+        r2_unlink("old", 1, 3),
+        |n| n == "<paragraph >«abX|bold[]»«cd|»</>",
+    );
+    assert!(f.is_empty(), "{}", f.join("\n"));
+}
+
+#[test]
+fn typing_after_a_link_followed_by_an_image_while_a_peer_removes_the_link_links_nothing_else() {
+    // F2. Measured on 1f5833d6: the image and `cd` come back linked to `old`, all four.
+    let f = r2_vs(
+        |sc| {
+            para_of(
+                sc,
+                vec![
+                    sc.text_with_marks("ab", vec![link_mark(sc, "old")])
+                        .unwrap(),
+                    image(sc, "c.png"),
+                    sc.text("cd").unwrap(),
+                ],
+            )
+        },
+        r2_unlink("old", 1, 3),
+        |n| !n.contains("link["),
+    );
+    assert!(f.is_empty(), "{}", f.join("\n"));
+}
+
+fn r2_two_links(sc: &Schema) -> Node {
+    para_of(
+        sc,
+        vec![
+            sc.text_with_marks("ab", vec![link_mark(sc, "old")])
+                .unwrap(),
+            sc.text_with_marks("cd", vec![link_mark(sc, "other")])
+                .unwrap(),
+            sc.text("ef").unwrap(),
+        ],
+    )
+}
+
+#[test]
+fn typing_between_two_links_while_a_peer_removes_the_second_links_nothing_else() {
+    // F3. Measured on 1f5833d6: `«cdef|link old»` in 2/4 (the first link spreads over the
+    // unlinked `cd` and the never-linked `ef`); on e4a5fc7e `«cdef|link other»` 4/4. main: clean.
+    // X typed at the seam of two links continues the first (`ResolvedPos::marks`), so it
+    // needs no formatting marker; the peer's concurrent removal of the second link may
+    // leave it plain instead, depending on the client-id order. Never linked beyond `abX`.
+    let f = r2_vs(r2_two_links, r2_unlink("other", 3, 5), |n| {
+        n == "<paragraph >«abX|link[href=Str(\"old\")]»«cdef|»</>"
+            || n == "<paragraph >«ab|link[href=Str(\"old\")]»«Xcdef|»</>"
+    });
+    assert!(f.is_empty(), "{}", f.join("\n"));
+}
+
+#[test]
+fn typing_between_two_links_while_a_peer_removes_both_leaves_no_link() {
+    // F4. Measured on 1f5833d6: `«abX|»«cdef|link old»` 4/4; e4a5fc7e: `link other` 4/4.
+    let f = r2_vs(
+        r2_two_links,
+        |p, s| {
+            r2_unlink("old", 1, 3)(p, s);
+            r2_unlink("other", 3, 5)(p, s);
+        },
+        |n| n == "<paragraph >«abXcdef|»</>",
+    );
+    assert!(f.is_empty(), "{}", f.join("\n"));
+}
+
+#[test]
+fn typing_after_a_bold_link_while_a_peer_unbolds_it_keeps_the_unbold() {
+    // F5 — pins mutant M1 (splice_min_with_marks writes only the non-inclusive keys):
+    // under it the peer's unbold of `ab` is lost in all four combinations.
+    let f = r2_vs(
+        |sc| {
+            para_of(
+                sc,
+                vec![
+                    sc.text_with_marks("ab", vec![link_mark(sc, "old"), r2_bold(sc)])
+                        .unwrap(),
+                    sc.text("cd").unwrap(),
+                ],
+            )
+        },
+        |p, s| {
+            let b = r2_bold(p.state.schema());
+            p.local(|tr| {
+                tr.remove_mark(s + 1, s + 3, b).unwrap();
+            });
+        },
+        |n| n.starts_with("<paragraph >«ab|link[href=Str(\"old\")]»«X"),
+    );
+    assert!(f.is_empty(), "{}", f.join("\n"));
+}
+
+#[test]
+fn a_multi_run_insert_of_astral_text_after_a_link_lands_in_order() {
+    // F6 — pins mutant M2 (`at += run.len()`, bytes instead of UTF-16 units): under it the
+    // second run lands after `cd` and model ≢ projection.
+    for ids in ID_ORDERS {
+        let schema = Rc::new(Schema::starter_kit());
+        let (mut a, mut b) = two_peers_with_ids(&schema, vec![line_with_link(&schema)], ids);
+        let s = block_start(&a.state.doc, 0);
+        let bm = r2_bold(&schema);
+        a.local(|tr| {
+            tr.set_selection(Selection::cursor(Pos(s + 3)));
+            tr.insert_text("😀éP").unwrap();
+            tr.add_mark(s + 3, s + 4, bm).unwrap();
+        });
+        sync(&mut a, &mut b);
+        assert_converged(&a, &b, &schema);
+        assert_eq!(
+            norm(&a.state.doc),
+            "<paragraph >«ab|link[href=Str(\"old\")]»«😀|bold[]»«éPcd|»</>",
+            "ids {ids:?}"
+        );
+    }
+}
+
+#[test]
+fn typing_after_a_bold_link_into_bold_text_while_a_peer_unbolds_the_link_keeps_the_unbold() {
+    // The attribute-insert path proper: `cd` is bold too, so the typed char (bold, not
+    // linked) carries exactly what `cd` carries and is inserted with those attributes.
+    // Under a mutant that writes only the non-inclusive keys, yrs unsets bold on it, and
+    // the per-span bold resync then rewrites bold over `abXcd`, reverting the unbold.
+    let f = r2_vs(
+        |sc| {
+            para_of(
+                sc,
+                vec![
+                    sc.text_with_marks("ab", vec![link_mark(sc, "old"), r2_bold(sc)])
+                        .unwrap(),
+                    sc.text_with_marks("cd", vec![r2_bold(sc)]).unwrap(),
+                ],
+            )
+        },
+        |p, s| {
+            let b = r2_bold(p.state.schema());
+            p.local(|tr| {
+                tr.remove_mark(s + 1, s + 3, b).unwrap();
+            });
+        },
+        |n| n == "<paragraph >«ab|link[href=Str(\"old\")]»«Xcd|bold[]»</>",
+    );
+    assert!(f.is_empty(), "{}", f.join("\n"));
+}
+
+#[test]
+fn a_multi_run_insert_after_a_link_whose_first_run_is_astral_lands_in_order() {
+    // The attribute-insert path with two runs: `😀` plain (what `cd` carries), then `éP`
+    // bold. Under a mutant that advances by bytes instead of UTF-16 units, the second
+    // run lands past `cd`.
+    for ids in ID_ORDERS {
+        let schema = Rc::new(Schema::starter_kit());
+        let (mut a, mut b) = two_peers_with_ids(&schema, vec![line_with_link(&schema)], ids);
+        let s = block_start(&a.state.doc, 0);
+        let bm = r2_bold(&schema);
+        a.local(|tr| {
+            tr.set_selection(Selection::cursor(Pos(s + 3)));
+            tr.insert_text("😀éP").unwrap();
+            tr.add_mark(s + 4, s + 6, bm).unwrap();
+        });
+        sync(&mut a, &mut b);
+        assert_converged(&a, &b, &schema);
+        assert_eq!(
+            norm(&b.state.doc),
+            "<paragraph >«ab|link[href=Str(\"old\")]»«😀|»«éP|bold[]»«cd|»</>",
+            "ids {ids:?}"
+        );
+    }
+}

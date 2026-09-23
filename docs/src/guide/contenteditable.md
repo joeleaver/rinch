@@ -753,7 +753,8 @@ keeps their change — a new `href`, removing the link, or extending it over the
 after it — but the character you typed may end up **inside** their link rather than
 plain, because it sits exactly where their change starts or ends. The same is true when they link the text right after yours to
 something else. Nothing is lost and both editors converge; the typed character is
-just formatted where you did not mean it.
+just formatted where you did not mean it. A link is never brought back over text
+someone unlinked, and never spreads over text nobody linked.
 
 A runnable two-pane loopback (both editors in one window, no network)
 lives at `examples/collab-editor-demo/src/main.rs`.

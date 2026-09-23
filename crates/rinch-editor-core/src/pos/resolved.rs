@@ -227,6 +227,15 @@ impl ResolvedPos {
     ///   every mark, so the link is not reported there either.
     /// - **At the start** of a textblock (no node before): the marks of the node after,
     ///   minus every non-inclusive one (there is nothing before it to continue).
+    ///
+    /// **One deliberate departure from ProseMirror:** at a boundary where the node
+    /// after carries a mark of the *same type* with different attrs — one link right
+    /// against another — the node before's mark is kept, so text typed at the seam
+    /// joins the first link. ProseMirror drops it (the text is plain). Plain text
+    /// there cannot be projected onto the collaboration CRDT (yrs formatting
+    /// markers) without writing a marker that brings a link back onto text nobody
+    /// linked when a peer concurrently removes the second link (review of #901,
+    /// round 2); text that continues the first link needs no marker at all.
     pub fn marks(&self) -> Vec<Mark> {
         let parent = self.parent();
         if parent.content().size() == 0 {
@@ -249,7 +258,10 @@ impl ResolvedPos {
         };
         main.marks()
             .iter()
-            .filter(|m| m.typ.spec().inclusive || other.is_some_and(|o| m.is_in(o.marks())))
+            .filter(|m| {
+                m.typ.spec().inclusive
+                    || other.is_some_and(|o| o.marks().iter().any(|om| om.typ == m.typ))
+            })
             .cloned()
             .collect()
     }
@@ -360,16 +372,18 @@ mod tests {
     }
 
     #[test]
-    fn a_different_link_after_the_boundary_does_not_continue_the_first() {
+    fn at_the_seam_of_two_different_links_the_first_goes_on() {
+        // A departure from ProseMirror, which reports no link here: see `marks`.
         let s = Schema::starter_kit();
+        let a = link(&s, "https://a.example");
         let d = doc(
             &s,
             vec![
-                ("ab", vec![link(&s, "https://a.example")]),
+                ("ab", vec![a.clone()]),
                 ("cd", vec![link(&s, "https://b.example")]),
             ],
         );
-        assert!(names(&d, 3).is_empty());
+        assert_eq!(d.resolve(Pos(3)).unwrap().marks(), vec![a]);
     }
 
     #[test]
