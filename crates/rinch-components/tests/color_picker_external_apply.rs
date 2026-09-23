@@ -37,9 +37,13 @@ const REMOTE: &str = "#8844dd";
 ///
 /// `Echo::Back` is the production shape this defect was measured in: a
 /// collaborative store that `value_fn` reads and `onchange` writes.
-#[derive(Clone, Copy, PartialEq)]
+#[derive(Clone, Copy)]
 enum Echo {
     Back,
+    /// A *normalizing* store (#262): every emission is written back
+    /// re-spelled by a converter that is not rinch's — the same colour in
+    /// another notation, rounded by another rule.
+    Normalizing(fn(&str) -> String),
     /// A *transforming* controlled handler (#283): every emission is written
     /// back as this fixed colour — `|v| store.set(snap_to_palette(v))` with a
     /// one-colour palette.
@@ -106,6 +110,7 @@ impl Picker {
                 match echo {
                     Echo::Back => store.set(value),
                     Echo::Snap(colour) => store.set(colour.to_string()),
+                    Echo::Normalizing(respell) => store.set(respell(&value)),
                     Echo::Never => {}
                 }
             })),
@@ -1111,5 +1116,436 @@ fn the_field_follows_a_peers_low_chroma_hue_move_on_an_hsl_wire() {
         picker.emissions(),
         vec![LOW_CHROMA_MOVED.to_string()],
         "the external apply and the rewrite are silent"
+    );
+}
+
+// === #262: a store that re-spells the emission rounds a tie its own way ===
+//
+// The #242 gate's emission arm asks whether an inbound value denotes what the
+// picker emits, at the inbound notation's grid — by re-spelling the emission
+// with rinch's own serializer. A store that re-spells it with another
+// converter lands on the same grid point except where the exact value sits
+// on a tie between two points, and there it may round the other way: about
+// 0.22% of 8-bit colours have an hsl hue on a half degree. The picker then
+// read its own echo as foreign and applied it — under an alpha-dropping
+// display format, the alpha snapped opaque, on every frame of a drag.
+//
+// The decision recorded on #262 is option (b): the emission arm accepts any
+// rounding of the emission's exact value (at a tie, the neighbouring grid
+// point); a value compared against the colour the picker *holds* is still
+// judged exactly, and so is anything farther than a rounding away.
+
+/// `#rrggbb` → `hsl(h, s%, l%)` in exact integer arithmetic, rounding every
+/// half up — the tie rule of an exact-rational converter, which is not the
+/// one rinch's float pipeline lands on.
+fn hex_to_hsl_ties_up(hex: &str) -> String {
+    let hex = hex.strip_prefix('#').expect("a hex emission");
+    assert_eq!(hex.len(), 6, "an opaque 6-digit emission: {hex}");
+    let channel = |i: usize| i64::from_str_radix(&hex[i..i + 2], 16).expect("hex digits");
+    let (r, g, b) = (channel(0), channel(2), channel(4));
+    let (max, min) = (r.max(g).max(b), r.min(g).min(b));
+    let d = max - min;
+    // round(n / q) for n, q > 0 with halves rounded up.
+    let round = |n: i64, q: i64| (2 * n + q).div_euclid(2 * q);
+    let l = round(100 * (max + min), 510);
+    if d == 0 {
+        return format!("hsl(0, 0%, {l}%)");
+    }
+    // Hue as an exact fraction over `d`, in [0, 360).
+    let hue_num = if max == r {
+        (60 * (g - b)).rem_euclid(360 * d)
+    } else if max == g {
+        60 * (b - r) + 120 * d
+    } else {
+        60 * (r - g) + 240 * d
+    };
+    let h = round(hue_num, d).rem_euclid(360);
+    let s = round(100 * d, 255 - (max + min - 255).abs());
+    format!("hsl({h}, {s}%, {l}%)")
+}
+
+/// `hsl(h, s%, l%)` with integer channels → `#rrggbb`, rounding every half
+/// down — the other tie direction, for the other notation pair.
+fn hsl_to_hex_ties_down(hsl: &str) -> String {
+    let inner = hsl
+        .strip_prefix("hsl(")
+        .and_then(|t| t.strip_suffix(')'))
+        .expect("an opaque hsl emission");
+    let parts: Vec<f64> = inner
+        .split(',')
+        .map(|t| t.trim().trim_end_matches('%').parse().expect("a number"))
+        .collect();
+    let (h, s, l) = (parts[0], parts[1] / 100.0, parts[2] / 100.0);
+    let c = (1.0 - (2.0 * l - 1.0).abs()) * s;
+    let x = c * (1.0 - ((h / 60.0) % 2.0 - 1.0).abs());
+    let m = l - c / 2.0;
+    let (r, g, b) = match (h / 60.0) as u32 {
+        0 => (c, x, 0.0),
+        1 => (x, c, 0.0),
+        2 => (0.0, c, x),
+        3 => (0.0, x, c),
+        4 => (x, 0.0, c),
+        _ => (c, 0.0, x),
+    };
+    let byte = |v: f64| ((v + m) * 255.0 - 0.5).ceil() as u8;
+    format!("#{:02x}{:02x}{:02x}", byte(r), byte(g), byte(b))
+}
+
+/// The emission whose hsl hue sits on a tie: 60 × (121 − 126) / 8 + 240 is
+/// exactly 202.5°.
+const HUE_TIE: &str = "#797e81";
+
+#[test]
+fn the_tie_converters_disagree_with_rinch_where_the_fixtures_say() {
+    use rinch_components::color_utils::{ColorFormat, format_color};
+    // Positive controls: each fixture below rests on the store spelling the
+    // emission differently from rinch — otherwise it pins nothing.
+    let rinch = format_color(parse_color(HUE_TIE).unwrap(), ColorFormat::Hsl);
+    let store = hex_to_hsl_ties_up(HUE_TIE);
+    assert_ne!(rinch, store, "the tie is spelled two ways");
+    assert_eq!(store, "hsl(203, 3%, 49%)");
+    // Off the tie the two converters agree, grey included.
+    for hex in ["#797e82", "#8844dd", "#404040", "#ff0000", "#22aa55"] {
+        assert_eq!(
+            format_color(parse_color(hex).unwrap(), ColorFormat::Hsl),
+            hex_to_hsl_ties_up(hex),
+            "{hex}"
+        );
+    }
+    let rinch = format_color(parse_color("hsl(0, 0%, 50%)").unwrap(), ColorFormat::Hex);
+    assert_eq!(rinch, "#808080");
+    assert_eq!(hsl_to_hex_ties_down("hsl(0, 0%, 50%)"), "#7f7f7f");
+    assert_eq!(hsl_to_hex_ties_down("hsl(0, 100%, 50%)"), "#ff0000");
+}
+
+/// The #262 repro: an alpha drag under the default hex format, behind a store
+/// that re-spells every emission as hsl and rounds the half-degree tie up.
+/// The echo `hsl(203, 3%, 49%)` is the picker's own `#797e81`; pre-fix it was
+/// applied as a foreign colour and the alpha snapped opaque on every frame.
+#[test]
+fn an_alpha_drag_survives_a_store_that_rounds_the_hue_tie_the_other_way() {
+    let picker = Picker::mount(HUE_TIE, Echo::Normalizing(hex_to_hsl_ties_up));
+    let overlay = picker.handler("rinch-color-picker__alpha-overlay", "data-rid");
+
+    click_at(0.4, 0.5);
+    dispatch_event(overlay);
+    assert_eq!(
+        picker.store.get(),
+        "hsl(203, 3%, 49%)",
+        "the store re-spelled"
+    );
+    let left = percent_of(
+        &picker.thumb_style("rinch-color-picker__alpha-thumb"),
+        "left: ",
+    );
+    assert!(
+        (left - 40.0).abs() < 0.01,
+        "the echo is the picker's own emission, so the alpha holds: left {left}%"
+    );
+
+    update_drag(120.0, 100.0); // alpha = 0.6
+    let left = percent_of(
+        &picker.thumb_style("rinch-color-picker__alpha-thumb"),
+        "left: ",
+    );
+    assert!(
+        (left - 60.0).abs() < 0.01,
+        "and follows the drag instead of snapping opaque: left {left}%"
+    );
+    assert_eq!(
+        picker.emissions(),
+        vec![HUE_TIE.to_string(), HUE_TIE.to_string()],
+        "one report per frame, and no apply re-entered"
+    );
+}
+
+/// The other notation pair and the other tie direction: an hsl display
+/// behind a store that re-spells it as hex, rounding 127.5 down.
+#[test]
+fn an_alpha_drag_survives_a_store_that_rounds_an_rgb_tie_down() {
+    const MID_GREY: &str = "hsl(0, 0%, 50%)";
+    let picker = Picker::mount_with_format(
+        MID_GREY,
+        MID_GREY,
+        "hsl",
+        Echo::Normalizing(hsl_to_hex_ties_down),
+    );
+    let overlay = picker.handler("rinch-color-picker__alpha-overlay", "data-rid");
+
+    click_at(0.4, 0.5);
+    dispatch_event(overlay);
+    assert_eq!(picker.store.get(), "#7f7f7f", "the store re-spelled");
+    let left = percent_of(
+        &picker.thumb_style("rinch-color-picker__alpha-thumb"),
+        "left: ",
+    );
+    assert!(
+        (left - 40.0).abs() < 0.01,
+        "the echo is the picker's own emission, so the alpha holds: left {left}%"
+    );
+    assert_eq!(
+        picker.displayed(),
+        MID_GREY,
+        "and the colour is not moved to 127"
+    );
+}
+
+/// The half of the decision that keeps #242 fixed: the tolerance is a
+/// *rounding* of the emission, not a free degree. Off the tie, a peer's
+/// genuine 1° move under a hex display is farther from the emission's exact
+/// hue than any rounding of it, and applies.
+///
+/// `#797e82`'s hue is exactly 206⅔°, which rinch spells 207; the peer writes
+/// 206, two thirds of a degree away. A flat ±1-degree window would fold it.
+#[test]
+fn a_peers_one_degree_move_off_the_tie_still_applies_under_hex() {
+    let picker = Picker::mount("#797e82", Echo::Back); // default format: Hex
+
+    picker.store.set("hsl(206, 4%, 49%)".to_string());
+
+    let hue_left = percent_of(
+        &picker.thumb_style("rinch-color-picker__hue-thumb"),
+        "left: ",
+    );
+    assert!(
+        (hue_left - 206.0 / 3.6).abs() < 0.01,
+        "the peer's 206° lands: left {hue_left}%"
+    );
+    assert!(
+        picker.emissions().is_empty(),
+        "an external apply is silent: {:?}",
+        picker.emissions()
+    );
+}
+
+// === #262 option (b), channel by channel: a rounding folds, a move applies ===
+//
+// Each case mounts a picker whose emission is `emission` under `format`, with
+// the store echoing, then has a peer write `inbound` into the store. "Folded"
+// means no thumb moves; "applied" means some thumb moves (and, either way,
+// nothing is emitted — an external apply is silent).
+
+fn thumbs(picker: &Picker) -> [String; 3] {
+    [
+        picker.thumb_style("rinch-color-picker__hue-thumb"),
+        picker.thumb_style("rinch-color-picker__thumb"),
+        picker.thumb_style("rinch-color-picker__alpha-thumb"),
+    ]
+}
+
+/// Whether a peer's `inbound` moves a picker holding `emission` under `format`.
+fn peer_applies(emission: &str, format: &str, inbound: &str) -> bool {
+    let picker = Picker::mount_with_format(emission, emission, format, Echo::Back);
+    let before = thumbs(&picker);
+    picker.store.set(inbound.to_string());
+    assert!(
+        picker.emissions().is_empty(),
+        "{inbound} over {emission} ({format}): an external value emits nothing: {:?}",
+        picker.emissions()
+    );
+    thumbs(&picker) != before
+}
+
+fn check(emission: &str, format: &str, folded: &[&str], applied: &[&str]) {
+    for inbound in folded {
+        assert!(
+            !peer_applies(emission, format, inbound),
+            "{inbound} is a rounding of {emission} ({format}) and must fold"
+        );
+    }
+    for inbound in applied {
+        assert!(
+            peer_applies(emission, format, inbound),
+            "{inbound} is a peer's move off {emission} ({format}) and must apply"
+        );
+    }
+}
+
+/// Hue, under both 8-bit display formats: at the 202.5° tie both neighbours
+/// fold and the next grid points apply; off the tie (206⅔°) only 207 folds.
+#[test]
+fn tie_tolerance_hue_folds_only_roundings_under_hex_and_rgb() {
+    for (emission, format) in [("#797e81", ""), ("rgb(121, 126, 129)", "rgb")] {
+        check(
+            emission,
+            format,
+            &["hsl(202, 3%, 49%)", "hsl(203, 3%, 49%)"],
+            &["hsl(201, 3%, 49%)", "hsl(204, 3%, 49%)"],
+        );
+    }
+    for (emission, format) in [("#797e82", ""), ("rgb(121, 126, 130)", "rgb")] {
+        check(
+            emission,
+            format,
+            &["hsl(207, 4%, 49%)"],
+            &["hsl(206, 4%, 49%)", "hsl(208, 4%, 49%)"],
+        );
+    }
+}
+
+/// Saturation on a tie (`#168a50` is hsl(150, 72.5%, 31.37…%)) and lightness,
+/// which has no tie on the 8-bit → hsl map at all (20·(max+min) = 51·odd has
+/// no solution), so both its neighbours apply.
+#[test]
+fn tie_tolerance_saturation_tie_and_lightness_neighbours() {
+    check(
+        "#168a50",
+        "",
+        &["hsl(150, 72%, 31%)", "hsl(150, 73%, 31%)"],
+        &[
+            "hsl(150, 71%, 31%)",
+            "hsl(150, 74%, 31%)",
+            "hsl(150, 73%, 30%)",
+            "hsl(150, 73%, 32%)",
+            "hsl(149, 73%, 31%)",
+            "hsl(151, 73%, 31%)",
+        ],
+    );
+    // Off every tie: #8844dd is hsl(266.67, 69.4%, 56.7%) → rinch 267/69/57.
+    check(
+        "#8844dd",
+        "",
+        &["hsl(267, 69%, 57%)"],
+        &[
+            "hsl(266, 69%, 57%)",
+            "hsl(268, 69%, 57%)",
+            "hsl(267, 68%, 57%)",
+            "hsl(267, 70%, 57%)",
+            "hsl(267, 69%, 56%)",
+            "hsl(267, 69%, 58%)",
+        ],
+    );
+}
+
+/// 8-bit channels under an hsl display, hex and rgb wires: mid grey is 127.5
+/// on every channel, so 127 and 128 fold per channel and 126/129 apply; 40%
+/// grey is 102 exactly, so only 102 folds.
+#[test]
+fn tie_tolerance_rgb_channels_under_an_hsl_display() {
+    check(
+        "hsl(0, 0%, 50%)",
+        "hsl",
+        &["#7f7f7f", "#808080", "#807f80", "rgb(127, 128, 127)"],
+        &[
+            "#7e7f7f",
+            "#7f817f",
+            "#7f7f7e",
+            "#818080",
+            "rgb(126, 127, 127)",
+            "rgb(127, 127, 129)",
+        ],
+    );
+    check(
+        "hsl(0, 0%, 40%)",
+        "hsl",
+        &["#666666", "rgb(102, 102, 102)"],
+        &["#676666", "#666566", "#666667", "rgb(101, 102, 102)"],
+    );
+    // Off the grey axis, sampled off 0/255 on every channel.
+    // hsl(200, 50%, 40%) is r=51, g=119, b=153 exactly: no tie anywhere.
+    check(
+        "hsl(200, 50%, 40%)",
+        "hsl",
+        &["#337799"],
+        &[
+            "#347799", "#327799", "#337899", "#337699", "#33779a", "#337798",
+        ],
+    );
+}
+
+/// Alpha: hsla 0.50 is 127.5 of 255 (a tie on the hex wire), 0.51 is 130.05
+/// (not one); the rgba wire shares hsla's 100-step grid, so no tie there.
+#[test]
+fn tie_tolerance_alpha_ties_and_neighbours() {
+    check(
+        "hsla(0, 100%, 50%, 0.50)",
+        "hsla",
+        &["#ff00007f", "#ff000080", "rgba(255, 0, 0, 0.5)"],
+        &[
+            "#ff00007e",
+            "#ff000081",
+            "rgba(255, 0, 0, 0.49)",
+            "rgba(255, 0, 0, 0.51)",
+        ],
+    );
+    check(
+        "hsla(0, 100%, 50%, 0.51)",
+        "hsla",
+        &["#ff000082"],
+        &["#ff000081", "#ff000083"],
+    );
+    // Hexa display, hsla wire: 0x80 is 50.196%, rinch writes 0.50.
+    check(
+        "#ff000080",
+        "hexa",
+        &["hsla(0, 100%, 50%, 0.50)"],
+        &["hsla(0, 100%, 50%, 0.49)", "hsla(0, 100%, 50%, 0.51)"],
+    );
+}
+
+/// `hsla(h, s%, l%, a)` → `#rrggbbaa`, every half rounded DOWN.
+fn hsla_to_hexa_ties_down(hsla: &str) -> String {
+    let inner = hsla
+        .strip_prefix("hsla(")
+        .and_then(|t| t.strip_suffix(')'))
+        .expect("an hsla emission");
+    let parts: Vec<f64> = inner
+        .split(',')
+        .map(|t| t.trim().trim_end_matches('%').parse().expect("a number"))
+        .collect();
+    let (h, s, l, a) = (parts[0], parts[1] / 100.0, parts[2] / 100.0, parts[3]);
+    let c = (1.0 - (2.0 * l - 1.0).abs()) * s;
+    let x = c * (1.0 - ((h / 60.0) % 2.0 - 1.0).abs());
+    let m = l - c / 2.0;
+    let (r, g, b) = match (h / 60.0) as u32 {
+        0 => (c, x, 0.0),
+        1 => (x, c, 0.0),
+        2 => (0.0, c, x),
+        3 => (0.0, x, c),
+        4 => (x, 0.0, c),
+        _ => (c, 0.0, x),
+    };
+    let byte = |v: f64| (v * 255.0 - 0.5).ceil().max(0.0) as u8;
+    format!(
+        "#{:02x}{:02x}{:02x}{:02x}",
+        byte(r + m),
+        byte(g + m),
+        byte(b + m),
+        byte(a)
+    )
+}
+
+/// The alpha tie, end to end: an alpha drag under `hsla` behind a store that
+/// re-spells the emission as `#rrggbbaa` rounding 127.5 down to 0x7f. The
+/// echo is the picker's own emission; the thumb must stay at the drag.
+#[test]
+fn tie_tolerance_an_alpha_drag_survives_a_store_that_rounds_the_alpha_tie_down() {
+    let seed = "hsla(0, 100%, 50%, 1.00)";
+    assert_eq!(
+        hsla_to_hexa_ties_down("hsla(0, 100%, 50%, 0.50)"),
+        "#ff00007f",
+        "positive control: the store rounds the tie away from rinch's 0x80"
+    );
+    let picker = Picker::mount_with_format(
+        seed,
+        seed,
+        "hsla",
+        Echo::Normalizing(hsla_to_hexa_ties_down),
+    );
+    let overlay = picker.handler("rinch-color-picker__alpha-overlay", "data-rid");
+    click_at(0.5, 0.5);
+    dispatch_event(overlay);
+    assert_eq!(picker.store.get(), "#ff00007f", "the store re-spelled");
+    let left = percent_of(
+        &picker.thumb_style("rinch-color-picker__alpha-thumb"),
+        "left: ",
+    );
+    assert!(
+        (left - 50.0).abs() < 0.01,
+        "the echo is the picker's own emission, so the alpha holds: left {left}%"
+    );
+    assert_eq!(
+        picker.emissions(),
+        vec!["hsla(0, 100%, 50%, 0.50)".to_string()]
     );
 }
