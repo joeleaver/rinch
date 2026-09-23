@@ -566,3 +566,270 @@ fn unattributed_and_attributed_requests_are_told_apart() {
     assert_eq!(stats.get(Counter::RepaintNone), 1, "{stats:?}");
     assert_eq!(stats.get(Counter::RepaintFull), 0, "{stats:?}");
 }
+
+// ── Nodes that name no rect of their own (#886 review) ─────────────────────
+
+/// A small harness for fixtures that need their own page, size or scale.
+struct Page {
+    app: RinchApp,
+    nodes: Rc<RefCell<Vec<NodeHandle>>>,
+    size: (u32, u32),
+    scale: f64,
+}
+
+type Build = Box<dyn Fn(&mut RenderScope, &RefCell<Vec<NodeHandle>>) -> NodeHandle>;
+
+impl Page {
+    fn mount(size: (u32, u32), scale: f64, build: Build) -> Self {
+        let nodes: Rc<RefCell<Vec<NodeHandle>>> = Rc::new(RefCell::new(Vec::new()));
+        let out = nodes.clone();
+        let mut app = RinchApp::new(move |scope: &mut RenderScope| build(scope, &out));
+        app.mount_component(size.0 as f32, size.1 as f32);
+        let mut page = Self {
+            app,
+            nodes,
+            size,
+            scale,
+        };
+        for _ in 0..3 {
+            page.frame();
+        }
+        page
+    }
+
+    fn node(&self, i: usize) -> NodeHandle {
+        self.nodes.borrow()[i].clone()
+    }
+
+    fn frame(&mut self) -> (Vec<u8>, FrameStats) {
+        self.app
+            .resolve_and_repaint(self.size.0 as f32, self.size.1 as f32);
+        let px = self
+            .app
+            .build_pixels(self.scale, self.size, false)
+            .0
+            .to_vec();
+        (px, self.app.end_perf_frame().expect("mounted"))
+    }
+
+    fn full(&mut self) -> Vec<u8> {
+        self.app.scene_dirty = true;
+        self.app.has_previous_frame = false;
+        let px = self
+            .app
+            .build_pixels(self.scale, self.size, false)
+            .0
+            .to_vec();
+        let _ = self.app.end_perf_frame();
+        px
+    }
+
+    /// Pixels that differ between `a` and `b` by more than `tolerance` in
+    /// some channel.
+    fn stale(a: &[u8], b: &[u8], tolerance: i32) -> usize {
+        a.chunks(4)
+            .zip(b.chunks(4))
+            .filter(|(p, q)| (0..4).any(|k| (p[k] as i32 - q[k] as i32).abs() > tolerance))
+            .count()
+    }
+
+    /// Change the page with `change`, paint the next frame, and assert it holds
+    /// what a from-scratch frame holds — with a positive control that the
+    /// change reached pixels at all.
+    fn assert_repaints(&mut self, what: &str, change: impl FnOnce(&Self)) -> FrameStats {
+        let (before, _) = self.frame();
+        change(self);
+        let (after, stats) = self.frame();
+        let full = self.full();
+        assert!(
+            Self::stale(&before, &full, 2) > 0,
+            "{what}: positive control, the change reaches pixels"
+        );
+        assert_eq!(
+            Self::stale(&after, &full, 2),
+            0,
+            "{what}: the incremental frame is stale: {stats:?}"
+        );
+        stats
+    }
+}
+
+fn el(scope: &mut RenderScope, tag: &str, style: &str) -> NodeHandle {
+    let n = scope.create_element(tag);
+    if !style.is_empty() {
+        n.set_attribute("style", style);
+    }
+    n
+}
+
+/// A native `<select>` built from options, as a controlled select renders it.
+fn select_page() -> Page {
+    Page::mount(
+        (300, 200),
+        1.0,
+        Box::new(|scope, out| {
+            let root = el(scope, "div", "padding: 20px");
+            let select = el(scope, "select", "width: 150px; font-size: 16px");
+            for (i, label) in ["Alpha", "WWWWWW"].iter().enumerate() {
+                let option = el(scope, "option", "");
+                option.set_attribute("value", &i.to_string());
+                let text = scope.create_text(label);
+                option.append_child(&text);
+                select.append_child(&option);
+                out.borrow_mut().push(option);
+                out.borrow_mut().push(text);
+            }
+            root.append_child(&select);
+            root
+        }),
+    )
+}
+
+/// Selecting another option changes what the closed `<select>` shows. The
+/// option has no box (`display: none`) and the select paints it, so the
+/// select is the damage — it used to name nothing and paint nothing.
+#[test]
+fn selecting_an_option_repaints_its_select() {
+    let mut page = select_page();
+    let stats = page.assert_repaints("option selected", |p| {
+        p.node(2).set_attribute("selected", "");
+    });
+    assert_eq!(stats.get(Counter::RepaintPartial), 1, "{stats:?}");
+}
+
+/// Renaming the selected option changes the label the select shows.
+#[test]
+fn renaming_the_selected_option_repaints_its_select() {
+    let mut page = select_page();
+    let stats = page.assert_repaints("option text", |p| {
+        p.node(1).set_text("MMMMMMM");
+    });
+    assert_eq!(stats.get(Counter::RepaintPartial), 1, "{stats:?}");
+}
+
+/// A zero-size positioned anchor (a tooltip or popover anchor) moves, and its
+/// overflowing child moves with it without being dirty itself. Its old pixels
+/// are the anchor's subtree where it was last painted.
+#[test]
+fn a_zero_size_anchor_that_moves_takes_its_child_along() {
+    for anchor in [
+        "position: absolute; left: 20px; top: 20px; width: 0; height: 0",
+        "position: relative; left: 20px; top: 20px; height: 0",
+    ] {
+        let style = anchor.to_string();
+        let mut page = Page::mount(
+            (300, 200),
+            1.0,
+            Box::new(move |scope, out| {
+                let root = el(
+                    scope,
+                    "div",
+                    "position: relative; width: 300px; height: 200px",
+                );
+                let anchor = el(scope, "div", &style);
+                let child = el(
+                    scope,
+                    "div",
+                    "position: absolute; left: 0; top: 0; width: 40px; height: 40px; \
+                     background: rgb(255, 0, 0)",
+                );
+                anchor.append_child(&child);
+                root.append_child(&anchor);
+                out.borrow_mut().push(anchor);
+                root
+            }),
+        );
+        let stats = page.assert_repaints(anchor, |p| {
+            p.node(0).set_style("left", "150px");
+        });
+        assert_eq!(stats.get(Counter::RepaintPartial), 1, "{anchor}: {stats:?}");
+    }
+}
+
+/// A `display: contents` wrapper whose class change restyles its child only
+/// through a descendant selector. The child is not pushed; the wrapper has no
+/// box, so its subtree's painted bounds are the damage.
+#[test]
+fn a_contents_wrapper_restyling_its_child_repaints_the_child() {
+    let mut page = Page::mount(
+        (300, 200),
+        1.0,
+        Box::new(|scope, out| {
+            let root = el(scope, "div", "padding: 10px");
+            let style = scope.create_element("style");
+            let css = scope.create_text(
+                ".w.on .c { background: rgb(255, 0, 0); } \
+                 .c { width: 60px; height: 30px; background: rgb(0, 0, 255); }",
+            );
+            style.append_child(&css);
+            root.append_child(&style);
+            let wrapper = el(scope, "div", "display: contents");
+            wrapper.set_attribute("class", "w");
+            let child = scope.create_element("div");
+            child.set_attribute("class", "c");
+            wrapper.append_child(&child);
+            root.append_child(&wrapper);
+            out.borrow_mut().push(wrapper);
+            root
+        }),
+    );
+    let stats = page.assert_repaints("contents wrapper", |p| {
+        p.node(0).set_attribute("class", "w on");
+    });
+    assert_eq!(stats.get(Counter::RepaintPartial), 1, "{stats:?}");
+    // The child's 60x30 box plus the 4px margin: the wrapper's own subtree,
+    // not the whole row its nearest boxed ancestor spans (the fallback for a
+    // node that names nothing, which would also be correct but 4x larger).
+    assert_eq!(stats.get(Counter::RepaintedPx), 68 * 38, "{stats:?}");
+}
+
+/// At a fractional scale, fractional boxes land on fractional device pixels.
+/// Each damage rect is snapped out to whole pixels, so the rect cleared and the
+/// rect clipped to agree; unsnapped, a cleared-but-not-repainted sliver shows.
+#[test]
+fn damage_rects_snap_to_whole_pixels_at_fractional_scales() {
+    for scale in [1.25, 1.5] {
+        let mut page = Page::mount(
+            (400, 300),
+            scale,
+            Box::new(|scope, out| {
+                let root = el(
+                    scope,
+                    "div",
+                    "position: relative; width: 400px; height: 300px; \
+                     background: rgb(240, 240, 250)",
+                );
+                let layer = el(
+                    scope,
+                    "div",
+                    "position: absolute; left: 13.3px; top: 17.7px; width: 350.4px; \
+                     height: 250.2px; border-radius: 37px; opacity: 0.6; \
+                     background: rgb(200, 40, 40); border: 3px solid rgb(0, 0, 0)",
+                );
+                root.append_child(&layer);
+                for i in 0..6 {
+                    let x = 7.3 + i as f64 * 61.9;
+                    let y = 11.1 + ((i * 53) % 260) as f64;
+                    let dot = el(
+                        scope,
+                        "div",
+                        &format!(
+                            "position: absolute; left: {x}px; top: {y}px; width: 9.4px; \
+                             height: 9.4px; border-radius: 50%; background: rgb(0, 0, 200)"
+                        ),
+                    );
+                    root.append_child(&dot);
+                    out.borrow_mut().push(dot);
+                }
+                root
+            }),
+        );
+        let stats = page.assert_repaints(&format!("scale {scale}"), |p| {
+            for i in 0..2 {
+                p.node(i).set_style("background", "rgb(0, 180, 0)");
+            }
+        });
+        assert_eq!(stats.get(Counter::RepaintPartial), 1, "{scale}: {stats:?}");
+        assert_eq!(stats.get(Counter::DamageRects), 2, "{scale}: {stats:?}");
+    }
+}

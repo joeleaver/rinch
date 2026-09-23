@@ -29,7 +29,7 @@ use svg::*;
 use text::*;
 
 use peniko::color::{AlphaColor, Srgb};
-use peniko::kurbo::{Affine, BezPath, Point, Rect, RoundedRect, RoundedRectRadii, Shape};
+use peniko::kurbo::{Affine, BezPath, Point, Rect, RoundedRect, RoundedRectRadii, Shape, Vec2};
 use peniko::{Brush, Fill};
 
 use painter::{BlendMode, PaintShape, Painter};
@@ -115,7 +115,14 @@ pub fn compute_damage(
     }
 
     let margin = 4.0; // pixels margin for anti-aliasing
+    // Whether the node being measured has named any rect yet. A paint-dirty
+    // node that names none is not "nothing changed": see the fallback at the
+    // end of the loop.
+    let named = Cell::new(false);
     let mut add = |r: Rect| -> bool {
+        if r.width() > 0.0 && r.height() > 0.0 {
+            named.set(true);
+        }
         region.add(Rect::new(
             r.x0 - margin,
             r.y0 - margin,
@@ -133,6 +140,7 @@ pub fn compute_damage(
         let Some(node) = tree.get(node_id) else {
             continue;
         };
+        named.set(false);
 
         // Current position. CSS transforms displace where a node renders, so
         // use the transform-aware absolute rect — the region must cover the
@@ -205,12 +213,13 @@ pub fn compute_damage(
         }
 
         // A box-less element that is not a flowed inline — a
-        // `display: contents` wrapper, a zero-size parent — still has
-        // children whose paint its restyle can reach (an inherited colour, a
-        // descendant selector). Its own rect is empty, so without this the
-        // change named nothing, and the frame used to repaint in full only
-        // because an empty region *meant* "everything". Cover what its
-        // subtree paints instead.
+        // `display: contents` wrapper, a zero-size parent or positioned
+        // anchor — still has children whose paint its restyle or move can
+        // reach (an inherited colour, a descendant selector, a tooltip under a
+        // 0x0 anchor). Its own rect is empty, so cover what its subtree paints
+        // now and, when it has been painted before, the same subtree where it
+        // was then: children that did not move relative to it are not dirty
+        // themselves and would otherwise be left behind.
         if (w <= 0.0 || h <= 0.0)
             && node.ifc_root.is_none()
             && !node.children.is_empty()
@@ -220,11 +229,18 @@ pub fn compute_damage(
             if bounds == UNBOUNDED {
                 return DamageRegion::full(viewport_w, viewport_h);
             }
-            if bounds.width() > 0.0
-                && bounds.height() > 0.0
-                && add(transform.transform_rect_bbox(bounds))
-            {
-                return DamageRegion::full(viewport_w, viewport_h);
+            if bounds.width() > 0.0 && bounds.height() > 0.0 {
+                if add(transform.transform_rect_bbox(bounds)) {
+                    return DamageRegion::full(viewport_w, viewport_h);
+                }
+                if node.painted.is_some() {
+                    let (px, py, pt) =
+                        position_and_transform_in(tree, node_id, scale, Frame::Painted);
+                    let old = bounds + (Vec2::new(px - ax, py - ay));
+                    if add(pt.transform_rect_bbox(old)) {
+                        return DamageRegion::full(viewport_w, viewport_h);
+                    }
+                }
             }
         }
 
@@ -236,6 +252,31 @@ pub fn compute_damage(
             && add(r)
         {
             return DamageRegion::full(viewport_w, viewport_h);
+        }
+
+        // A node that was marked paint-dirty and named no rect at all — an
+        // `<option>` (`display: none`, painted by its `<select>`), a text node
+        // under one, an element painted by an ancestor — still changed
+        // something. Damage the ancestor that paints it: the nearest one with
+        // a box, where it is and where it was painted. A node that is detached
+        // or inside a `display: none` subtree paints nothing and names nothing.
+        if !named.get()
+            && let Some(owner) = boxed_owner(tree, node_id)
+        {
+            if let Some(owner_node) = tree.get(owner) {
+                let (ox, oy, ot) = compute_absolute_position_and_transform(tree, owner, scale);
+                let ow = owner_node.layout.width as f64 * scale;
+                let oh = owner_node.layout.height as f64 * scale;
+                let ink = Outsets::from_css(own_ink_outsets(&owner_node.computed_style), scale);
+                if add(ot.transform_rect_bbox(ink.grow(Rect::new(ox, oy, ox + ow, oy + oh)))) {
+                    return DamageRegion::full(viewport_w, viewport_h);
+                }
+            }
+            if let Some(r) = painted_rect_with(tree, owner, scale, Outsets::ZERO)
+                && add(r)
+            {
+                return DamageRegion::full(viewport_w, viewport_h);
+            }
         }
     }
 
@@ -257,6 +298,51 @@ pub fn compute_damage(
 
     // Every rect was clamped to the surface as it was added.
     region
+}
+
+/// The ancestor whose paint covers `node_id` when `node_id` names no rect of
+/// its own: a `<select>` for anything inside it (it paints its options), else
+/// the nearest ancestor with a non-empty box. `None` when the node is not in
+/// the document or sits in a `display: none` subtree other than a select's
+/// options — it paints nothing, so there is nothing to repaint.
+fn boxed_owner(tree: &NodeTree, node_id: RawNodeId) -> Option<RawNodeId> {
+    // Connected to the document at all? A removed or not-yet-inserted node
+    // keeps whatever layout it last had and must not name its old ancestors.
+    let mut cur = Some(node_id);
+    let mut connected = false;
+    while let Some(id) = cur {
+        if id == tree.root_id {
+            connected = true;
+            break;
+        }
+        cur = tree.get(id).and_then(|n| n.parent);
+    }
+    if !connected {
+        return None;
+    }
+    let hidden = |n: &Node| {
+        n.tag().is_some()
+            && matches!(n.computed_style.display, DisplayValue::None)
+            && !matches!(n.tag(), Some("option" | "optgroup"))
+    };
+    if hidden(tree.get(node_id)?) {
+        return None;
+    }
+    let mut cur = tree.get(node_id)?.parent;
+    while let Some(id) = cur {
+        let n = tree.get(id)?;
+        if n.tag() == Some("select") {
+            return Some(id);
+        }
+        if hidden(n) {
+            return None;
+        }
+        if n.layout.width > 0.0 && n.layout.height > 0.0 {
+            return Some(id);
+        }
+        cur = n.parent;
+    }
+    None
 }
 
 /// How far a node's **own** ink reaches past its border box, in CSS px:

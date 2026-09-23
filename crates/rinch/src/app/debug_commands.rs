@@ -787,10 +787,10 @@ mod tests {
     /// nothing later re-dirties it.
     ///
     /// Asserting on `paint_dirty_nodes` rather than on a rasterised frame is
-    /// deliberate: the frame is only wrong when the region is *non-empty and
-    /// too small* (an empty `paint_dirty_nodes` makes `compute_dirty_region`
-    /// return `None`, which means a full repaint and a correct frame), so the
-    /// missing entry is the defect and a screenshot is a lossy view of it.
+    /// deliberate: the missing entry is the defect, and a screenshot is a lossy
+    /// view of it. (Since #886 an empty damage repaints nothing, so without the
+    /// entry the scrolled container keeps its pre-scroll pixels even when
+    /// nothing else is dirty.)
     #[test]
     fn an_mcp_scroll_pushes_the_container_paint_dirty() {
         let ids: Rc<Cell<Option<(usize, usize)>>> = Rc::new(Cell::new(None));
@@ -822,12 +822,12 @@ mod tests {
         );
     }
 
-    /// The live failure mode, reproduced: an *empty* `paint_dirty_nodes` makes
-    /// `compute_dirty_region` return `None`, which means a full repaint and a
-    /// correct frame — so the corruption only appears when something *else* was
-    /// already dirty (in the report, a drawer that had just closed). Seed one
-    /// unrelated dirty node and the region has to grow to cover the container
-    /// anyway.
+    /// The live failure mode, reproduced: when this was reported, an *empty*
+    /// `paint_dirty_nodes` meant a full repaint and a correct frame, so the
+    /// corruption only appeared when something *else* was already dirty (in
+    /// the report, a drawer that had just closed). Seed one unrelated dirty
+    /// node and the damage has to cover the container anyway. (Since #886 an
+    /// empty damage repaints nothing, so the entry is needed either way.)
     #[test]
     fn an_mcp_scroll_widens_a_dirty_region_that_already_has_other_nodes_in_it() {
         let ids: Rc<Cell<Option<(usize, usize)>>> = Rc::new(Cell::new(None));
