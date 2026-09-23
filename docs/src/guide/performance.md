@@ -122,6 +122,7 @@ assert_eq!(frame.get(Counter::TaffyRootComputes), 0, "a colour change must not l
 | | `paint_nodes_visited` | Nodes `paint_node` visited |
 | | `stacking_order_builds` | Stacking sequences built, by paint and by hit testing |
 | Input | `hit_tests`, `hit_test_nodes_visited` | Hit tests run, and the nodes they visited |
+| | `hit_extents_computed` | Subtree extents the hit tester computed so it can skip subtrees nowhere near the pointer. They are kept until the document or its layout changes, so a run of moves over a still document computes each one once |
 | Reactive | `effect_runs`, `signal_notifies` | Effect bodies run (a memo's invalidation marker counts as one; its recompute does not), and signal writes |
 | | `rerender_events_queued` | `ReRender` events queued to the desktop event loop |
 | Time (ns) | `time_style_ns`, `time_layout_ns` (`time_ifc_setup_ns`, `time_taffy_compute_ns`, `time_build_ifc_ns`), `time_paint_ns`, `time_present_ns` | Wall-clock time per phase, summed over the frame. Each phase *call* is timed, never each node; a phase can run several times a frame (every DOM insertion runs the two style phases), so this is a few clock reads per call |
@@ -155,7 +156,10 @@ for responsiveness on a 40-row list and asserts today's counter values:
 
 `crates/rinch/src/app/perf_stats_tests.rs` covers the counters only the shell
 fills: the full-repaint reasons, the dirty region, hit testing, and the
-reactive deltas.
+reactive deltas. It also pins the pointer-move path: a warm move over a
+500-row scroller runs one hit test that visits the four boxes under the pointer
+and builds no stacking sequence, a move with no `onmousemove` handler anywhere
+runs one hit test, and five drag moves queued before a frame lay out once.
 
 Each scenario asserts the **whole frame**: every counter's exact value, with
 any counter the baseline does not list expected to be zero. That catches a path

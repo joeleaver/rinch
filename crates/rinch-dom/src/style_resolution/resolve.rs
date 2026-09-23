@@ -15,6 +15,7 @@ impl RinchDocument {
     /// roots are tracked (initial render, stylesheet reload, viewport
     /// resize).
     pub fn resolve_styles(&mut self) {
+        self.tree.hit_cache.invalidate();
         let t = web_time::Instant::now();
         self.tree.perf.bump(crate::perf::Counter::StyleResolves);
         self.resolve_styles_inner();

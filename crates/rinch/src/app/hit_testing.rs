@@ -1,7 +1,9 @@
 // ── Free functions (platform-agnostic hit testing) ───────────────────────────
 
 use super::ScrollAxis;
-use rinch_dom::stacking::{paints_at_stacking_root, stacking_paint_order};
+use std::rc::Rc;
+
+use rinch_dom::stacking::{PaintOrder, paints_at_stacking_root, stacking_paint_order};
 
 /// Simple hit testing: find the deepest node whose layout rect contains (x, y).
 /// Respects CSS stacking contexts so that elements with higher z-index
@@ -230,12 +232,27 @@ fn hit_test_node(
             // read backwards — the last box painted is the first one tapped.
             // Same function, same offsets, opposite direction: the two cannot
             // drift apart the way two hand-written phase walks did.
-            let order =
-                stacking_paint_order(tree, node_id, 1.0, (nx - sx) as f64, (ny - sy) as f64);
+            let order = cached_paint_order(tree, node_id, (nx - sx) as f64, (ny - sy) as f64);
             for entry in order.iter().rev() {
                 let Some(child) = tree.get(entry.node_id) else {
                     continue;
                 };
+                // A box entered as an ordinary node — in flow, or positioned
+                // with `z-index: auto` — can be skipped outright when its
+                // flow subtree reaches nowhere near the point. A stacking
+                // context cannot: its own hoisted descendants may be anywhere.
+                if entry.kind != rinch_dom::stacking::PaintKind::StackingContext
+                    && !flow_subtree_may_contain(
+                        tree,
+                        child,
+                        entry.offset_x as f32,
+                        entry.offset_y as f32,
+                        x,
+                        y,
+                    )
+                {
+                    continue;
+                }
                 // This root's own bounds gate. A `position: fixed` entry is
                 // exempt: this root is not its containing block, so its clip
                 // does not apply — paint lifts the same bracket around it
@@ -296,6 +313,9 @@ fn hit_test_node(
                 if paints_at_stacking_root(child) || is_stretched_ifc_text(child) {
                     continue;
                 }
+                if !flow_subtree_may_contain(tree, child, nx - sx, ny - sy, x, y) {
+                    continue;
+                }
                 if let Some(hit) = hit_test_node(tree, child_id, nx - sx, ny - sy, x, y, vx, vy) {
                     return Some(hit);
                 }
@@ -316,6 +336,106 @@ fn hit_test_node(
     }
 
     Some(node_id)
+}
+
+/// `root`'s stacking sequence at base `(ox, oy)`, from the tree's hit cache
+/// when nothing has invalidated it since it was built (see
+/// [`rinch_dom::hit_cache`]). Paint builds its own at the DPI scale; this one
+/// is at `scale = 1.0`, the unit hit testing works in, so it is cached apart.
+fn cached_paint_order(tree: &rinch_dom::NodeTree, root: usize, ox: f64, oy: f64) -> Rc<PaintOrder> {
+    if let Some(order) = tree.hit_cache.order(root, ox, oy) {
+        return order;
+    }
+    let order = Rc::new(stacking_paint_order(tree, root, 1.0, ox, oy));
+    tree.hit_cache.store_order(root, ox, oy, order.clone());
+    order
+}
+
+/// Slack added around a subtree extent before it is allowed to prune. The
+/// extent is summed relative to each box while `hit_test_node` sums absolute
+/// offsets down the tree, and the two roundings can differ by an ulp at an
+/// edge; a pixel of slack keeps the prune strictly conservative.
+const EXTENT_SLACK: f32 = 1.0;
+
+/// Whether `hit_test_node(child)` — entered at parent offset `(ox, oy)` as an
+/// ordinary node, i.e. not as a stacking-context root — could possibly return
+/// a hit for the point `(x, y)`.
+///
+/// `false` is a proof, not a guess: the point lies outside the union of every
+/// box the child's flow walk can test (see [`flow_extent`]), so the walk would
+/// visit the whole subtree and find nothing. `true` means "walk it".
+fn flow_subtree_may_contain(
+    tree: &rinch_dom::NodeTree,
+    child: &rinch_dom::Node,
+    ox: f32,
+    oy: f32,
+    x: f32,
+    y: f32,
+) -> bool {
+    // Mirror `descend` for a non-fixed, untransformed box. Only a stacking
+    // context can be either, and callers never hand one in — but a box that
+    // is one anyway is simply walked.
+    if child.computed_style.position == rinch_dom::computed_style::PositionValue::Fixed
+        || !child.computed_style.transform.is_identity
+    {
+        return true;
+    }
+    let (dx, dy) = rinch_dom::paint::ifc_content_box_offset(tree, child);
+    let cx = ox + child.layout.x + dx;
+    let cy = oy + child.layout.y + dy;
+    let [x0, y0, x1, y1] = flow_extent(tree, child.id);
+    x >= cx + x0 - EXTENT_SLACK
+        && x <= cx + x1 + EXTENT_SLACK
+        && y >= cy + y0 - EXTENT_SLACK
+        && y <= cy + y1 + EXTENT_SLACK
+}
+
+/// The rectangle, relative to `id`'s own border-box origin, that contains
+/// every box `hit_test_node` can test when it enters `id` as an ordinary node:
+/// the node's own box, and — unless the node clips, which confines every child
+/// hit to its own box — the extents of the children that walk recurses into
+/// (the same enumeration: box-tree children, minus those hoisted to a stacking
+/// root and the stretched IFC text it never tests), placed where the walk
+/// places them, scroll offset included.
+///
+/// Hoisted descendants are deliberately absent: they are entries of an
+/// ancestor stacking root's sequence, and that root tests them itself.
+///
+/// A NaN component (a box with no finite layout) is dropped by `min`/`max`,
+/// which is conservative: a subtree placed at NaN cannot be hit anyway.
+///
+/// Memoised in the tree's hit cache until something invalidates it.
+fn flow_extent(tree: &rinch_dom::NodeTree, id: usize) -> rinch_dom::hit_cache::Extent {
+    if let Some(e) = tree.hit_cache.extent(id) {
+        return e;
+    }
+    tree.perf.bump(rinch_dom::perf::Counter::HitExtentsComputed);
+    let Some(node) = tree.get(id) else {
+        return [0.0; 4];
+    };
+    let mut e = [0.0, 0.0, node.layout.width, node.layout.height];
+    if !node.clips_overflow() {
+        let sx = node.scroll_offset.0 as f32;
+        let sy = node.scroll_offset.1 as f32;
+        for &child_id in rinch_dom::RinchDocument::box_tree_children(&tree.nodes, id).iter() {
+            let Some(child) = tree.get(child_id) else {
+                continue;
+            };
+            if paints_at_stacking_root(child) || (child.is_text() && child.ifc_root.is_some()) {
+                continue;
+            }
+            let (dx, dy) = rinch_dom::paint::ifc_content_box_offset(tree, child);
+            let cx = child.layout.x + dx - sx;
+            let cy = child.layout.y + dy - sy;
+            let [c0, c1, c2, c3] = flow_extent(tree, child_id);
+            e[0] = e[0].min(cx + c0);
+            e[1] = e[1].min(cy + c1);
+            e[2] = e[2].max(cx + c2);
+            e[3] = e[3].max(cy + c3);
+        }
+    }
+    tree.hit_cache.store_extent(id, e);
+    e
 }
 
 /// The box a node is *painted* in, in layout pixels, shaped as the four
@@ -922,6 +1042,10 @@ fn find_scrollbar_hit_node(
 
     None
 }
+
+#[cfg(test)]
+#[path = "hit_test_prune_tests.rs"]
+mod prune_tests;
 
 #[cfg(test)]
 mod tests {

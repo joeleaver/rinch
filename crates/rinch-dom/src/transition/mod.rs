@@ -174,6 +174,7 @@ pub fn start_transitions(
 /// 3. Mark node dirty (PAINT, and LAYOUT if layout-affecting)
 /// 4. Remove completed transitions
 pub fn tick_transitions(tree: &mut NodeTree, current_time_ms: f64) -> bool {
+    tree.hit_cache.invalidate();
     let node_ids: Vec<RawNodeId> = tree.active_transitions.keys().copied().collect();
     let mut any_active = false;
 

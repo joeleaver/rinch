@@ -198,6 +198,7 @@ pub fn start_animations(
 /// node, and every later tick re-applies it the same quiet way — see
 /// [`ActiveAnimation::fill_settled`].
 pub fn tick_animations(tree: &mut NodeTree, current_time_ms: f64) -> bool {
+    tree.hit_cache.invalidate();
     let node_ids: Vec<RawNodeId> = tree.active_animations.keys().copied().collect();
     let mut any_active = false;
 

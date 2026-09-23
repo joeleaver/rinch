@@ -1307,6 +1307,8 @@ impl RinchApp {
                 node.scroll_offset.1 = clamped;
                 node.dirty.insert(rinch_dom::DirtyFlags::PAINT);
             }
+            // A scroll moves every box inside the container.
+            d.tree.hit_cache.invalidate();
             d.tree.dirty_nodes.insert(container_id);
             self.scene_dirty = true;
         }
