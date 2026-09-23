@@ -2013,6 +2013,13 @@ input a shaped layout is built from:
   came through one — a `span`'s own font change, `set_text_content` on text in a
   `display: contents` wrapper — marked nothing the compute walks, and Taffy
   served the root its old size (**#878**).
+- **A text run's IFC root can be a box no element holds.** Beside a
+  block-level sibling a run is laid out by an anonymous block box, and inside a
+  split inline (#513) by the box around its fragment — neither is in the
+  element tree, so no ancestor walk from the restyled element finds it, and a
+  text node is never cascaded on its own. `invalidate_text_measure_for_node`
+  therefore also drops each **text child's own `ifc_root`**; without it a font
+  change on `div > ["t", li]` left the box at its old line height and glyphs.
 - **An atomic inline is two roots' business.** An `inline-block` / `-flex` /
   `-grid` holding text is a member of the IFC around it *and* the root of its
   own, so `invalidate_ifc_for_node` drops both: reaching only the outer one
