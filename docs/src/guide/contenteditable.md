@@ -304,6 +304,65 @@ moving the caret into a block of a virtualized editor that has never been laid o
 (Ctrl+End from the top of a very long document) does not scroll to it until the
 block is on screen (issue #845).
 
+### Links: clicking and hovering
+
+The editor never follows a link by itself: what a link *means* — a URL to open in a
+browser, another document in your app — is the app's business. Two callbacks tell
+the app what the pointer does with links:
+
+```rust
+let ed = editor.clone();
+editor.on_link_click(move |click| {
+    if !click.primary {
+        return false; // a plain click puts the caret in the link, as always
+    }
+    open_link(&click.link.href);
+    true // claimed: the caret does not move
+});
+
+let tooltip: Signal<Option<(String, rinch::reactive::ElementBounds)>> = Signal::new(None);
+editor.on_link_hover(move |hover| {
+    tooltip.set(hover.map(|h| (h.link.href.clone(), h.rect)));
+});
+```
+
+| Method | Purpose |
+|--------|---------|
+| `on_link_click(impl Fn(&LinkClick) -> bool)` | A single primary-button press on a linked character, **before** the caret is placed. Return `true` to claim it: no caret move, no drag-select, no selection change (the editor still takes focus). `false` and the press is an ordinary one. Called in a read-only editor too. |
+| `on_link_hover(impl Fn(Option<&LinkHover>))` | The pointer came onto a link (`Some`), moved straight onto a different link (`Some`), or left this editor's links (`None`). Called only when that answer changes, never once per move. |
+| `link_at(pos) -> Option<LinkSpan>` | The link carrying the character that starts at `pos`, as the whole run. |
+
+A `LinkSpan` is the whole link as the reader sees it: `href`, `title` (`None` when
+empty) and its `from`..`to` range, taken across other formatting, so a link with a
+bold word in the middle is one span. `LinkClick` carries the span and the modifiers
+(`ctrl`, `meta`, `shift`, `alt`) plus `primary`, the platform accelerator — Cmd on
+macOS, Ctrl elsewhere — which is the usual "open the link" chord. `LinkHover`
+carries the span and `rect`, the box around the link's painted run (a wrapped link
+is the union of its lines), measured when the pointer came onto it: logical window
+pixels on desktop, the frame `bounds_signal()` and root-level absolutely positioned
+popups use; viewport client pixels (`getBoundingClientRect`) in the browser.
+
+Both are decided by **the character under the pointer**, not by the nearest caret
+position. The two differ at a link's edges: a caret just after a link's last letter
+is "in" the link (`active_link_href()` answers it, and typing there extends the
+link), but the pointer over the space after the link is not on it, and the pointer
+over the right half of the last letter is.
+
+Not reported: a double or triple press (they select a word or a block), the
+secondary button (the context menu keeps its own link handling), a press on an image
+inside a link (it selects the image), and hover during a drag-select or a
+drag-and-drop. A callback runs with no internal borrow held, so it may re-enter the
+handle — load another document, read the selection. A pointer move pays nothing for
+hover while no editor on the thread has an `on_link_hover` callback; with one it
+reuses the move's own hit test on desktop.
+
+In the browser an editor link is a real `<a href>`, and the click that follows a
+press would navigate even though the editor cancels the press. rinch prevents the
+default action of every primary click, and every middle click, on a link inside an
+editor, whether or not a callback is registered. The right-click menu is untouched:
+it is the browser's own link menu, whose "Open link" still works (see
+[On the web](#on-the-web-rinch-web)).
+
 ## Keyboard shortcuts
 
 The editor handles its own keyboard input. Every shortcut below comes from the

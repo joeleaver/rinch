@@ -179,6 +179,26 @@ pub fn byte_offset_from_position(layout: &parley::layout::Layout<Brush>, x: f32,
     Cursor::from_point(layout, x, y).index()
 }
 
+/// The byte range of the glyph cluster **under** layout-local `(x, y)` — the
+/// character the pointer is over — or `None` when no glyph is under it: beside
+/// the end of a line, above or below the text, in an inline box.
+///
+/// Not [`byte_offset_from_position`], which answers the nearest *caret*
+/// boundary: over the right half of a word's last letter that is the position
+/// after the letter, which says nothing about the letter itself. Link hover and
+/// link activation ask about the letter.
+pub fn cluster_range_at_point(
+    layout: &parley::layout::Layout<Brush>,
+    x: f32,
+    y: f32,
+) -> Option<std::ops::Range<usize>> {
+    // `from_point_exact` clamps `y` to the first and last lines.
+    if !(0.0..layout.height()).contains(&y) {
+        return None;
+    }
+    parley::layout::Cluster::from_point_exact(layout, x, y).map(|(c, _)| c.text_range())
+}
+
 /// Per-line selection rectangles `(x, y, width, height)` (layout-local) covering
 /// the byte range `[a, b)` in `layout`. One rect per visual line the range spans.
 /// Used to render a text selection's highlight.

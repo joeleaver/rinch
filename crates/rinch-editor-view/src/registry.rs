@@ -23,6 +23,7 @@ use std::cell::{Cell, RefCell};
 use rinch_core::doc_matches as same_doc;
 
 use crate::handle::EditorHandle;
+use crate::links::{LinkHover, LinkSpan};
 
 thread_local! {
     /// `(doc_key, container node id, handle)` for every mounted editor. The
@@ -45,6 +46,13 @@ thread_local! {
     static DRAG: RefCell<Vec<(Option<u64>, usize, usize)>> = const { RefCell::new(Vec::new()) };
     /// See [`set_overlay_refresher`].
     static OVERLAY_REFRESHER: Cell<Option<fn()>> = const { Cell::new(None) };
+    /// How many live editors on this thread have an
+    /// [`EditorHandle::on_link_hover`] callback — see [`link_hover_wanted`].
+    static LINK_HOVER_LISTENERS: Cell<usize> = const { Cell::new(0) };
+    /// The link each document's pointer is over, as `(doc, editor, link)` —
+    /// at most one per document, keyed like [`DRAG`]. See [`set_link_hover`].
+    static LINK_HOVER: RefCell<Vec<(Option<u64>, EditorHandle, LinkSpan)>> =
+        const { RefCell::new(Vec::new()) };
 }
 
 /// Tell the editor view how to get its overlays (caret, selection highlight)
@@ -112,6 +120,65 @@ pub fn end_drag(doc: Option<u64>) {
         d.borrow_mut()
             .retain(|(owner, _, _)| !same_doc(*owner, doc))
     });
+}
+
+/// Whether any editor on this thread has an [`EditorHandle::on_link_hover`]
+/// callback. A runtime asks this on every pointer move before doing any link
+/// hover work, so an app that registers none pays one thread-local read per
+/// move and no hit test or text query.
+pub fn link_hover_wanted() -> bool {
+    LINK_HOVER_LISTENERS.with(Cell::get) > 0
+}
+
+pub(crate) fn link_hover_listener_added() {
+    LINK_HOVER_LISTENERS.with(|c| c.set(c.get() + 1));
+}
+
+pub(crate) fn link_hover_listener_removed() {
+    // `try_with`: an editor can be dropped during thread-local teardown.
+    let _ = LINK_HOVER_LISTENERS.try_with(|c| c.set(c.get().saturating_sub(1)));
+}
+
+/// Report which link the pointer of document `doc` is over after a pointer
+/// move: `Some((editor, hover))`, or `None` when it is over no link (plain
+/// text, outside every editor). `doc` is keyed as [`begin_drag`]'s is (`None`
+/// for a runtime with a single page-wide pointer stream).
+///
+/// Fires the editors' [`EditorHandle::on_link_hover`] callbacks only for a
+/// change: a move that stays on the same link of the same editor fires
+/// nothing; one that leaves an editor's links fires that editor's `None`; one
+/// that reaches a link fires its editor's `Some`, and a move from one link
+/// straight onto another link of the same editor fires only the new `Some`.
+/// "The same link" is the same [`LinkSpan`] (href, title and range), so a
+/// resting pointer whose link was edited is reported again on its next move.
+/// Callbacks run after the registry's borrow is released.
+pub fn set_link_hover(doc: Option<u64>, hovered: Option<(EditorHandle, LinkHover)>) {
+    let previous = LINK_HOVER.with(|h| {
+        let mut h = h.borrow_mut();
+        let index = h.iter().position(|(owner, _, _)| *owner == doc);
+        if let (Some(i), Some((editor, hover))) = (index, &hovered)
+            && h[i].1.same_editor(editor)
+            && h[i].2 == hover.link
+        {
+            return Err(()); // unchanged
+        }
+        let previous = index.map(|i| h.remove(i));
+        if let Some((editor, hover)) = &hovered {
+            h.push((doc, editor.clone(), hover.link.clone()));
+        }
+        Ok(previous)
+    });
+    let Ok(previous) = previous else { return };
+    if let Some((_, old, _)) = previous
+        && hovered
+            .as_ref()
+            .is_none_or(|(editor, _)| !editor.same_editor(&old))
+    {
+        old.notify_link_hover(None);
+    }
+    if let Some((editor, hover)) = &hovered {
+        editor.notify_link_hover(Some(hover));
+    }
 }
 
 /// Register `handle` under its document's `doc_key` and `container_id`
