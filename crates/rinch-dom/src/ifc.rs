@@ -232,21 +232,22 @@ impl RinchDocument {
             }
         }
 
-        // Only rebuild Parley TextLayouts for dirty IFC roots (the expensive part).
-        // When dirty_ifc_text_roots is empty, rebuild all (structural IFC change).
-        let rebuild_all = self.tree.dirty_ifc_text_roots.is_empty();
-
+        // Only the roots that need it are re-shaped (the expensive part): a
+        // root is rebuilt when it is dirty, has no layout, or has a layout
+        // built at a different width — the check after `max_width` below.
+        //
+        // There used to be a second, earlier skip: whenever *any* root was
+        // dirty, every non-dirty root was skipped before its width was
+        // looked at. So a width change with no restyle of its own — a flex
+        // item narrowed because a sibling's text grew, the sibling being the
+        // dirty one — kept its glyphs broken at the old width, overflowing its
+        // box. A root with no layout was skipped the same way, and would have
+        // had nothing to paint. The width comparison below is the whole rule.
         for root_id in ifc_roots {
             // Skip collapsed blocks (virtualized) — no Parley work needed.
             // Drop any existing text_layout to free memory.
             if self.tree.nodes[root_id].estimated_height.is_some() {
                 self.tree.nodes[root_id].text_layout = None;
-                continue;
-            }
-
-            // Skip IFC roots that aren't dirty (scoped rebuild).
-            // This turns O(all_roots) Parley work into O(dirty_roots).
-            if !rebuild_all && !self.tree.dirty_ifc_text_roots.contains(&root_id) {
                 continue;
             }
 
@@ -3591,12 +3592,7 @@ impl RinchDocument {
                 root.text_layout = None;
             }
             self.tree.dirty_ifc_text_roots.insert(root_id);
-            self.tree
-                .perf
-                .bump(crate::perf::Counter::IfcMeasureCacheRetains);
-            self.tree
-                .ifc_measure_cache
-                .retain(|&(rid, _), _| rid != root_id);
+            self.tree.forget_ifc_measures(root_id);
             if let Some(root_taffy) = self.tree.nodes.get(root_id).and_then(|n| n.taffy_id) {
                 let _ = self.tree.taffy.mark_dirty(root_taffy);
             }
@@ -3958,16 +3954,13 @@ impl RinchDocument {
                 // The measure may be cached on the root's measure leaf rather
                 // than the root itself — dirty propagates up, not down (#466).
                 self.mark_ifc_measure_dirty(root_id);
+                // Measures cached under the stale inline-block size would be
+                // served straight back on the second pass, re-introducing the
+                // collapse. Only this root's: it used to clear the whole cache,
+                // which re-shaped every IFC root in the document whenever one
+                // percentage-sized chip moved by half a pixel.
+                self.tree.forget_ifc_measures(root_id);
             }
-        }
-
-        if changed {
-            // Measures cached under the stale inline-block sizes would be served
-            // straight back on the second pass, re-introducing the collapse.
-            self.tree
-                .perf
-                .bump(crate::perf::Counter::IfcMeasureCacheClears);
-            self.tree.ifc_measure_cache.clear();
         }
         changed
     }
@@ -4908,6 +4901,212 @@ impl RinchDocument {
                     decoration_spans,
                 );
             }
+        }
+    }
+}
+
+// ── IFC content signatures ──────────────────────────────────────────────────
+
+/// FxHash's mixing step: fast, not cryptographic, and good enough to tell one
+/// IFC's content from another's. Collisions would cost a stale measure, so
+/// each member's hash is finished with a full avalanche (`finish_member`)
+/// before the members are summed.
+#[derive(Default)]
+struct SigHasher(u64);
+
+impl SigHasher {
+    #[inline]
+    fn add(&mut self, word: u64) {
+        self.0 = (self.0.rotate_left(5) ^ word).wrapping_mul(0x51_7c_c1_b7_27_22_0a_95);
+    }
+}
+
+impl std::hash::Hasher for SigHasher {
+    fn finish(&self) -> u64 {
+        self.0
+    }
+    fn write(&mut self, bytes: &[u8]) {
+        let (chunks, rest) = bytes.as_chunks::<8>();
+        for c in chunks {
+            self.add(u64::from_le_bytes(*c));
+        }
+        if !rest.is_empty() {
+            let mut b = [0u8; 8];
+            b[..rest.len()].copy_from_slice(rest);
+            self.add(u64::from_le_bytes(b));
+        }
+    }
+    fn write_u8(&mut self, i: u8) {
+        self.add(i as u64);
+    }
+    fn write_u32(&mut self, i: u32) {
+        self.add(i as u64);
+    }
+    fn write_u64(&mut self, i: u64) {
+        self.add(i);
+    }
+    fn write_usize(&mut self, i: usize) {
+        self.add(i as u64);
+    }
+    fn write_isize(&mut self, i: isize) {
+        self.add(i as u64);
+    }
+}
+
+/// splitmix64's finaliser, so that summing member hashes (which makes the
+/// signature independent of slab order) cannot cancel structured inputs out.
+#[inline]
+fn finish_member(mut z: u64) -> u64 {
+    z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+    z = (z ^ (z >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+    z ^ (z >> 31)
+}
+
+impl RinchDocument {
+    /// The content signature of every IFC root in the document, keyed by root.
+    ///
+    /// A root's signature hashes everything its measure and its paint layout
+    /// are built from **other than typography and the available width**:
+    /// which nodes are its members (`ifc_root == Some(root)`), under which
+    /// parent and at which index (so a reorder moves it), what each one is —
+    /// its text, its tag, its `display` mode, its `position`, whether it is
+    /// generated content — and, for an atomic inline, the size
+    /// `compute_inline_block_layouts` just gave it, which the line breaks
+    /// around. The root's own `estimated_height` (a virtualized, collapsed
+    /// block) is folded in too.
+    ///
+    /// Typography is deliberately **not** in it: the cascade compares each
+    /// re-cascaded node's text inputs and drops the IFC of the one that
+    /// changed (`ComputedStyle::same_text_layout_inputs`), so hashing styles
+    /// here would only repeat that at the cost of a style hash per member per
+    /// structural pass. The width is the key of each cached size.
+    ///
+    /// O(document): one pass over the slab and a hash of every member's text.
+    /// That is what the structural pass costs anyway; what this replaces was
+    /// a Parley shape of every root.
+    pub(crate) fn ifc_signatures(&self) -> HashMap<usize, u64> {
+        use std::hash::{Hash, Hasher};
+        let nodes = &self.tree.nodes;
+        let mut sigs: HashMap<usize, u64> = HashMap::new();
+        for (parent_id, parent) in nodes.iter() {
+            for (index, &child_id) in parent.ifc_children().iter().enumerate() {
+                let Some(child) = nodes.get(child_id) else {
+                    continue;
+                };
+                let Some(root) = child.ifc_root else {
+                    continue;
+                };
+                let mut h = SigHasher::default();
+                child_id.hash(&mut h);
+                parent_id.hash(&mut h);
+                index.hash(&mut h);
+                match &child.kind {
+                    NodeKind::Text(t) => {
+                        0u8.hash(&mut h);
+                        t.content.hash(&mut h);
+                    }
+                    NodeKind::Element(_) => {
+                        1u8.hash(&mut h);
+                        child.tag().unwrap_or("").hash(&mut h);
+                    }
+                    _ => 2u8.hash(&mut h),
+                }
+                std::mem::discriminant(&child.display_mode).hash(&mut h);
+                std::mem::discriminant(&child.computed_style.position).hash(&mut h);
+                child.is_pseudo_element.hash(&mut h);
+                if child.display_mode.is_atomic_inline() {
+                    child.layout.width.to_bits().hash(&mut h);
+                    child.layout.height.to_bits().hash(&mut h);
+                }
+                let member = finish_member(h.finish());
+                let sig = sigs.entry(root).or_insert(0);
+                *sig = sig.wrapping_add(member);
+            }
+        }
+        for (&root, sig) in sigs.iter_mut() {
+            let collapsed = nodes.get(root).and_then(|n| n.estimated_height);
+            let mut h = SigHasher::default();
+            collapsed.map(f32::to_bits).hash(&mut h);
+            *sig = sig.wrapping_add(finish_member(h.finish() ^ 0x9e37_79b9_7f4a_7c15));
+        }
+        sigs
+    }
+
+    /// Decide, after a structural pass, which IFC roots the change reached.
+    ///
+    /// A root whose content signature ([`Self::ifc_signatures`]) is the one it
+    /// had at the previous structural pass keeps its cached measures and its
+    /// paint layout: nothing it is built from moved. A root whose signature
+    /// moved — a child appended, removed or reordered anywhere inside it, a
+    /// member's text or `display` changed, an atomic inline in it resized —
+    /// or that is new, loses both, and is marked dirty in Taffy so the next
+    /// compute measures it at all. A node that has stopped being a root loses
+    /// its entry.
+    ///
+    /// This is what lets the structural pass stop clearing the whole measure
+    /// cache, which re-shaped every paragraph in a document to measure one
+    /// appended row. It is also a second, independent net under the mutation
+    /// verbs' own invalidations (`invalidate_parent_ifc` and friends), which
+    /// only reach the *parent* of a change: text appended to a `<span>` inside
+    /// a paragraph invalidated the span, not the paragraph, and the paragraph
+    /// kept painting its old line.
+    pub(crate) fn refresh_ifc_signatures(&mut self) {
+        let sigs = self.ifc_signatures();
+        self.tree
+            .ifc_measure_cache
+            .retain(|root, _| sigs.contains_key(root));
+        // A node that is no longer an IFC root keeps no layout from when it
+        // was one. `text_layout` is written for IFC roots only (a text leaf's
+        // shaped text lives in `cached_text_parley`), and several readers take
+        // its presence to mean "this is a root" — caret and selection rects,
+        // layer bounds, and the ancestor walk in `invalidate_ifc_for_node`,
+        // which would stop at the stale node instead of the real root.
+        for (id, node) in self.tree.nodes.iter_mut() {
+            if node.text_layout.is_some() && !sigs.contains_key(&id) {
+                node.text_layout = None;
+            }
+        }
+        let mut changed: u64 = 0;
+        let mut atomic_changed = false;
+        for (root, sig) in sigs {
+            let entry = self.tree.ifc_measure_cache.entry(root).or_default();
+            if entry.signature == Some(sig) {
+                continue;
+            }
+            let seen_before = entry.signature.is_some();
+            entry.signature = Some(sig);
+            entry.sizes.clear();
+            changed += 1;
+            let Some(node) = self.tree.nodes.get_mut(root) else {
+                continue;
+            };
+            node.text_layout = None;
+            // An atomic inline is sized by its own detached compute, which
+            // `compute_inline_block_layouts` ran *earlier in this pass* —
+            // against the cached measures this loop is only now dropping, and
+            // with no signal that its content had changed. So it is queued
+            // for the same re-measure a text edit inside it gets, which runs
+            // below once every changed root has been seen. A root seen for
+            // the first time is not: it has no earlier measure to be stale
+            // against, and re-measuring every new chip would size each one
+            // twice on a first layout.
+            if node.display_mode.is_atomic_inline() {
+                if seen_before {
+                    self.tree.dirty_atomic_inlines.insert(root);
+                    atomic_changed = true;
+                }
+                continue;
+            }
+            if let Some(taffy_id) = node.taffy_id {
+                let _ = self.tree.taffy.mark_dirty(taffy_id);
+            }
+            self.mark_ifc_measure_dirty(root);
+        }
+        self.tree
+            .perf
+            .add(crate::perf::Counter::IfcSignatureChanges, changed);
+        if atomic_changed {
+            self.remeasure_dirty_atomic_inlines();
         }
     }
 }

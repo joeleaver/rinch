@@ -110,11 +110,14 @@ fn a_hover_repaints_a_region_and_counts_its_hit_tests() {
         (Counter::RepaintedPx, 800 * 28),
         (Counter::SurfacePx, 800 * 600),
         (Counter::TaffyRootComputes, 0),
-        (Counter::LayoutSkippedTextOnly, 1),
+        // Paint-only: no text input changed, so no text layout was dropped.
+        (Counter::LayoutSkippedTextOnly, 0),
+        (Counter::LayoutSkippedPaintOnly, 1),
         (Counter::ElementsCascaded, 1),
-        // The row's text is re-shaped though only its background changed
-        // (update-path audit F1.1). The minimum is 0.
-        (Counter::ShapeIfcBuild, 1),
+        // The row's text is not re-shaped: only its background changed. It
+        // was 1 while every restyle dropped every text layout under the
+        // restyled node (update-path audit F1.1).
+        (Counter::ShapeIfcBuild, 0),
         // A mouse move hit-tests twice: once for `data-onmousemove` dispatch
         // and once for hover (update-path audit F2.1). The minimum is 1.
         (Counter::HitTests, 2),

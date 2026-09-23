@@ -261,6 +261,7 @@ impl RinchDocument {
 
         // Remove existing pseudo-element children before re-resolving styles
         // to avoid duplicates when styles are recomputed.
+        let had_pseudo;
         {
             let children_to_remove: Vec<usize> = self.tree.nodes[node_id]
                 .children
@@ -273,7 +274,13 @@ impl RinchDocument {
                 })
                 .copied()
                 .collect();
+            had_pseudo = !children_to_remove.is_empty();
             for cid in children_to_remove {
+                // The IFC the generated box was laid out in names it; see the
+                // invalidation after the pseudo-elements are re-resolved.
+                if let Some(root) = self.tree.nodes[cid].ifc_root {
+                    self.invalidate_ifc_root(root);
+                }
                 // Remove from taffy parent (use safe version — the child may
                 // have already been detached by setup_inline_formatting_contexts)
                 if let (Some(parent_taffy), Some(child_taffy)) = (
@@ -403,6 +410,25 @@ impl RinchDocument {
 
         // Generate list markers for <li> elements (if no CSS ::before exists)
         self.resolve_list_marker(node_id);
+
+        // The pseudo-element children were just freed and minted again, so the
+        // inline layout that holds them — this node's own IFC, or the one it is
+        // an inline member of — names nodes that no longer exist, or that the
+        // slab has since handed to someone else. The cascade's per-node text
+        // comparison cannot see that: nothing about *this* node's style had to
+        // change for it to happen. It used to be covered by accident, by an
+        // eager drop of every text layout under any restyled node. Only nodes
+        // that actually carry generated content pay for it.
+        let has_pseudo = self.tree.nodes[node_id]
+            .children
+            .iter()
+            .any(|&c| self.tree.nodes.get(c).is_some_and(|n| n.is_pseudo_element));
+        if had_pseudo || has_pseudo {
+            if let Some(root) = self.tree.nodes[node_id].ifc_root {
+                self.invalidate_ifc_root(root);
+            }
+            self.invalidate_ifc_root(node_id);
+        }
 
         // Re-read children list since pseudo-element resolution may have added nodes
         let children: Vec<usize> = self.tree.nodes[node_id].children.clone();

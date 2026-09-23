@@ -1588,6 +1588,55 @@ fn default_display_for_tag(tag: &str) -> DisplayMode {
     }
 }
 
+/// One IFC root's entry in [`NodeTree::ifc_measure_cache`].
+///
+/// A root's measure is built (`RinchDocument::build_inline_layout`) from its
+/// members — which nodes, in what order, their text, their `display` and
+/// `position`, the size of each atomic inline among them — from every
+/// member's typography, and from the available width. The width is the key of
+/// each size; typography is covered by the cascade's per-node comparison,
+/// which drops the sizes of the root a restyled member belongs to; and the
+/// rest is `signature`, a hash of the root's content that the structural pass
+/// recomputes and compares.
+#[derive(Debug, Default, Clone)]
+pub struct IfcRootMeasures {
+    /// The content signature this root had when the structural pass last
+    /// looked at it, or `None` if it has not seen it since the entry was
+    /// created. See `RinchDocument::refresh_ifc_signatures`.
+    pub signature: Option<u64>,
+    /// `(available-width bits, (width, height))`, one per available space the
+    /// measure function was asked about, newest last, at most
+    /// [`IfcRootMeasures::MAX_SIZES`].
+    pub sizes: Vec<(u32, (f32, f32))>,
+}
+
+impl IfcRootMeasures {
+    /// A root is typically measured under three or four available spaces per
+    /// width (min-content, max-content, the definite width, and a flex
+    /// item's re-measures). Eight keeps a live resize from growing the entry
+    /// without bound: every new width used to be one more entry for as long
+    /// as the root lived.
+    pub const MAX_SIZES: usize = 8;
+
+    /// The size measured under `bits`, if any.
+    pub fn get(&self, bits: u32) -> Option<(f32, f32)> {
+        self.sizes
+            .iter()
+            .rev()
+            .find(|(b, _)| *b == bits)
+            .map(|&(_, s)| s)
+    }
+
+    /// Record the size measured under `bits`, replacing an older one.
+    pub fn insert(&mut self, bits: u32, size: (f32, f32)) {
+        self.sizes.retain(|(b, _)| *b != bits);
+        if self.sizes.len() >= Self::MAX_SIZES {
+            self.sizes.remove(0);
+        }
+        self.sizes.push((bits, size));
+    }
+}
+
 /// The node tree, stored in a slab for stable IDs.
 pub struct NodeTree {
     /// All nodes, indexed by RawNodeId.
@@ -1836,10 +1885,27 @@ pub struct NodeTree {
     /// Do not swap it back for a `HashSet`. The set holds a handful of entries
     /// and its `O(log n)` insert is not on any path the cost harness measures.
     pub dirty_atomic_inlines: BTreeSet<RawNodeId>,
-    /// Cached IFC measure results from previous frames.
-    /// Key: (ifc_root_node_id, wrap_width_bits) → (width, height).
-    /// Invalidated per-root when text content changes.
-    pub ifc_measure_cache: HashMap<(RawNodeId, u32), (f32, f32)>,
+    /// What the Taffy measure function measured for each IFC root, kept across
+    /// frames, **keyed by root** so invalidating one is O(1).
+    ///
+    /// Two rules drop an entry's sizes, and between them they have to cover
+    /// every input a root's measure is built from (see
+    /// [`IfcRootMeasures`]):
+    ///
+    /// - a **restyle or content change** drops the roots it reaches, through
+    ///   [`NodeTree::forget_ifc_measures`] — the cascade's per-node
+    ///   `same_text_layout_inputs` comparison, `set_text_content`, and the
+    ///   atomic-inline re-measures;
+    /// - a **structural pass** (`ifc_dirty`) recomputes every root's content
+    ///   signature and drops the roots whose signature moved
+    ///   (`RinchDocument::refresh_ifc_signatures`). It used to clear the whole
+    ///   map instead, which re-shaped every paragraph in the document to
+    ///   measure one appended row.
+    ///
+    /// An entry is removed outright when its node is freed
+    /// ([`NodeTree::remove_subtree`]), so a recycled slab id never inherits a
+    /// previous node's sizes.
+    pub ifc_measure_cache: HashMap<RawNodeId, IfcRootMeasures>,
     /// Nodes that have requested scroll-into-view (deferred until after layout).
     pub scroll_into_view_requests: Vec<RawNodeId>,
     /// Scroll offsets clamped by the layout engine, pending event dispatch.
@@ -2125,6 +2191,21 @@ impl NodeTree {
         self.paint_dirty_removed_rects.clear();
     }
 
+    /// Drop the sizes the measure function cached for IFC root `root`, so the
+    /// next compute that measures it shapes it again. O(1): the cache is keyed
+    /// by root (it was a `retain` over every entry, per call, per node).
+    ///
+    /// Keeps the entry's content signature — this is a *style or content*
+    /// invalidation, and whether the root's structure moved is still the
+    /// structural pass's question to answer.
+    pub fn forget_ifc_measures(&mut self, root: RawNodeId) {
+        self.perf
+            .bump(crate::perf::Counter::IfcMeasureInvalidations);
+        if let Some(entry) = self.ifc_measure_cache.get_mut(&root) {
+            entry.sizes.clear();
+        }
+    }
+
     /// Remove a node and all its descendants from the slab.
     pub fn remove_subtree(&mut self, id: RawNodeId) {
         // Collect all descendant IDs first
@@ -2133,6 +2214,9 @@ impl NodeTree {
         for node_id in &to_remove {
             self.active_transitions.remove(node_id);
             self.active_animations.remove(node_id);
+            // The slab recycles ids: a node created later may be handed this
+            // one, and must not inherit this node's measured sizes.
+            self.ifc_measure_cache.remove(node_id);
         }
         for node_id in to_remove {
             self.nodes.remove(node_id);

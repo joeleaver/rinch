@@ -1874,6 +1874,71 @@ when it is a flex or grid item — plus the Taffy `mark_dirty` beside that last
 one, since Taffy caches a leaf measure per available space and serves the stale
 one back otherwise.
 
+**Two text caches survive across frames, and nothing drops either wholesale.**
+Each IFC root keeps its paint layout (`Node::text_layout`) and the sizes the
+measure function returned for it (`NodeTree::ifc_measure_cache`, keyed **by
+root**, one size per available width, at most 8, removed when
+`NodeTree::remove_subtree` frees the node). Exactly two rules drop them, and between them they must cover every
+input a shaped layout is built from:
+
+- **A restyle drops only what changed.** The cascade compares each re-cascaded
+  node's old and new text inputs (`same_text_layout_inputs`: font size, weight,
+  family, style, line height, letter/word spacing, colour — it is baked into the
+  glyphs' brush — text-align, decoration, underline offset, transform,
+  white-space, overflow-wrap, text-overflow, `overflow-x`, and an inline box's
+  background/padding) and calls `invalidate_text_measure_for_node` for the one
+  that moved. An inherited change reaches every descendant that re-cascades,
+  and each is compared on its own. There is **no** eager drop any more:
+  `invalidate_descendant_styles`, `set_attribute`/`remove_attribute` and
+  `set_style` used to drop every text layout under the restyled node, so a
+  colour-only hover re-shaped all of it; now it re-shapes nothing and takes
+  the paint-only path. Regenerated `::before`/`::after`/list-marker content is
+  the one restyle that invalidates regardless, because the nodes an inline
+  layout names were freed and minted again.
+- **A structural pass (`ifc_dirty`) drops only the roots whose content moved**
+  (`refresh_ifc_signatures`, after `compute_inline_block_layouts`). It hashes
+  each root's members — id, parent, sibling index, text, tag, `display` mode,
+  `position`, generated-ness, and an atomic inline's just-computed size — and a
+  root whose signature is new or different loses its measures and paint layout
+  and is marked in Taffy. It used to clear the whole measure cache, which
+  re-shaped every paragraph to measure one appended row (41 shapes on a 40-row
+  list; now 1). The signature is also a second net under the mutation verbs,
+  whose invalidation reaches only the changed node's *parent*: text appended
+  inside a `<span>` inside a paragraph, and a chip resized during a structural
+  pass, both left the paragraph painting its old line before it.
+- **`invalidate_ifc_root` marks the root in Taffy on every route** (and its
+  #466 measure leaf). An inline member is detached from Taffy, so a drop that
+  came through one — a `span`'s own font change, `set_text_content` on text in a
+  `display: contents` wrapper — marked nothing the compute walks, and Taffy
+  served the root its old size (**#878**).
+- **An atomic inline is two roots' business.** An `inline-block` / `-flex` /
+  `-grid` holding text is a member of the IFC around it *and* the root of its
+  own, so `invalidate_ifc_for_node` drops both: reaching only the outer one
+  left a `<button>`'s label in its old colour after a class change. A chip the
+  structural pass finds **changed** is queued for `remeasure_dirty_atomic_inlines`
+  at the end of that pass, because `compute_inline_block_layouts` sized it
+  earlier in the pass with no sign its content had moved.
+- **A node that stops being an IFC root loses its `text_layout`** in the same
+  pass. Caret rects, layer bounds and the ancestor walk read that field as "is a
+  root".
+- `build_ifc_layouts` rebuilds a root that is dirty, has no layout, or has one
+  built at another width — **every** time. It used to skip every non-dirty root
+  before the width check whenever any root was dirty, so a flex item narrowed by
+  a sibling's text edit kept its glyphs broken at the old width.
+
+Not done, and measured by `perf_counter_baselines`: a structural pass still
+runs over the whole document, re-splices every `display: contents` wrapper
+(which dirties each row, so Taffy still *asks* for every row's size — answered
+from the cache), and re-sizes every atomic inline with its own compute (F11). A
+colour-only restyle still drops the root's cached measures along with its
+glyphs. And `set_style` of an **inherited** property never reaches a
+descendant with a cached style — `resolve_styles` skips a child whose Stylo data
+is still present — so the descendant keeps its old font; pre-existing, and
+independent of the text caches.
+`crates/rinch-dom/tests/incremental_text_layout_oracle_tests.rs` is the pin:
+each input above against a fresh layout of the final state, with the mutant
+that kills it named in the PR.
+
 **Absolute positioning.** Taffy resolves an out-of-flow box against its **direct
 parent**, always. CSS resolves an absolute box against its nearest *positioned*
 ancestor — or, when it has none, against the initial containing block. rinch

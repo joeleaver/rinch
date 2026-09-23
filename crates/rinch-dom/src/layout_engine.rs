@@ -257,16 +257,23 @@ impl RinchDocument {
         // node gets re-measured, avoiding the 80ms full-tree Parley rebuild.
         if self.tree.ifc_dirty {
             self.tree.ifc_setup_passes += 1;
-            // Structural change — invalidate all cached IFC measures and
-            // clear dirty_ifc_text_roots so build_ifc_layouts rebuilds ALL
-            // IFC roots. Without this, stale entries from set_text_content
-            // calls during rendering (before setup_inline_formatting_contexts
-            // assigns correct ifc_root values) cause build_ifc_layouts to
-            // skip newly created IFC roots — making their text invisible.
+            // Structural change — clear dirty_ifc_text_roots so
+            // build_ifc_layouts considers ALL IFC roots (and rebuilds every
+            // one without a valid `text_layout`). Without this, stale entries
+            // from set_text_content calls during rendering (before
+            // setup_inline_formatting_contexts assigns correct ifc_root
+            // values) cause build_ifc_layouts to skip newly created IFC roots
+            // — making their text invisible.
+            //
+            // The measure cache is **not** cleared any more. Every insert
+            // into `dirty_ifc_text_roots` dropped that root's sizes when it
+            // was made, so forgetting the set loses nothing; and which roots'
+            // *content* this change touched is answered below, by
+            // `refresh_ifc_signatures`, once the passes that decide it have
+            // run. Clearing the whole cache here re-shaped every IFC root in
+            // the document to measure one appended row.
             let t_ifc = web_time::Instant::now();
             self.tree.perf.bump(Counter::IfcSetupPasses);
-            self.tree.perf.bump(Counter::IfcMeasureCacheClears);
-            self.tree.ifc_measure_cache.clear();
             self.tree.dirty_ifc_text_roots.clear();
 
             // Handle display:contents by rebuilding taffy children for affected nodes
@@ -303,6 +310,11 @@ impl RinchDocument {
             // Pre-compute layout for inline-block children that were detached from Taffy.
             // They need their own subtree measured so walk_inline_children can read dimensions.
             self.compute_inline_block_layouts();
+
+            // Which roots did this change actually reach? Last, because the
+            // signature folds in each atomic inline's size, which the line
+            // above has only just decided.
+            self.refresh_ifc_signatures();
 
             self.tree.ifc_dirty = false;
             self.tree.perf.add_elapsed(Counter::TimeIfcSetupNs, t_ifc);
@@ -698,9 +710,11 @@ impl RinchDocument {
                             // Check persistent IFC measure cache — skip expensive
                             // Parley rebuild if this root's text hasn't changed.
                             if !dirty_ifc_text_roots.contains(&root_id) {
-                                if let Some(&(cached_w, cached_h)) =
-                                    ifc_measure_cache.borrow().get(&(root_id, wrap_bits))
-                                {
+                                let cached = ifc_measure_cache
+                                    .borrow()
+                                    .get(&root_id)
+                                    .and_then(|e| e.get(wrap_bits));
+                                if let Some((cached_w, cached_h)) = cached {
                                     cache_hits.set(cache_hits.get() + 1);
                                     return taffy::Size {
                                         width: known_dims.width.unwrap_or(cached_w),
@@ -720,7 +734,9 @@ impl RinchDocument {
                             // Store in persistent cache
                             ifc_measure_cache
                                 .borrow_mut()
-                                .insert((root_id, wrap_bits), (w, h));
+                                .entry(root_id)
+                                .or_default()
+                                .insert(wrap_bits, (w, h));
 
                             // Measure callback for IFC root
                             taffy::Size {
@@ -2047,65 +2063,70 @@ impl RinchDocument {
     /// set yet (before the first layout pass).
     pub(crate) fn invalidate_ifc_for_node(&mut self, node_id: usize) {
         if let Some(ifc_root_id) = self.tree.nodes.get(node_id).and_then(|n| n.ifc_root) {
-            if let Some(root) = self.tree.nodes.get_mut(ifc_root_id) {
-                root.text_layout = None;
+            self.invalidate_ifc_root(ifc_root_id);
+            // An atomic inline (`inline-block`/`-flex`/`-grid`) is a member of
+            // the IFC it sits in *and* the root of its own text, so its restyle
+            // owes both: the outer layout (its box moved) and its own (its
+            // glyphs changed). Reaching only the outer one left a `<button>`'s
+            // label in its old colour and size after a class change.
+            if self.holds_ifc_layout(node_id) {
+                self.invalidate_ifc_root(node_id);
             }
-            // Invalidate IFC measure cache so style changes (e.g., font-size) trigger re-measurement
-            self.tree.dirty_ifc_text_roots.insert(ifc_root_id);
-            self.tree
-                .perf
-                .bump(crate::perf::Counter::IfcMeasureCacheRetains);
-            self.tree
-                .ifc_measure_cache
-                .retain(|&(root_id, _), _| root_id != ifc_root_id);
-        } else if self
-            .tree
-            .nodes
-            .get(node_id)
-            .map(|n| n.text_layout.is_some())
-            .unwrap_or(false)
-        {
+        } else if self.holds_ifc_layout(node_id) {
             // The node itself IS the IFC root (block element containing inline text)
-            self.tree.nodes[node_id].text_layout = None;
-            self.tree.dirty_ifc_text_roots.insert(node_id);
-            self.tree
-                .perf
-                .bump(crate::perf::Counter::IfcMeasureCacheRetains);
-            self.tree
-                .ifc_measure_cache
-                .retain(|&(root_id, _), _| root_id != node_id);
-            // Mark Taffy dirty so it re-measures this node (triggering IFC rebuild)
-            if let Some(taffy_id) = self.tree.nodes.get(node_id).and_then(|n| n.taffy_id) {
-                let _ = self.tree.taffy.mark_dirty(taffy_id);
-            }
-            // The measure may live on this root's measure leaf, which a mark
-            // on the root does not reach — dirty propagates up, not down (#466).
-            self.mark_ifc_measure_dirty(node_id);
+            self.invalidate_ifc_root(node_id);
         } else {
             // Fallback: walk ancestors to find one with text_layout (the IFC root)
             let mut cur = self.tree.nodes.get(node_id).and_then(|n| n.parent);
             while let Some(pid) = cur {
-                if self
-                    .tree
-                    .nodes
-                    .get(pid)
-                    .map(|p| p.text_layout.is_some())
-                    .unwrap_or(false)
-                {
-                    self.tree.nodes[pid].text_layout = None;
-                    // Invalidate IFC measure cache for this root
-                    self.tree.dirty_ifc_text_roots.insert(pid);
-                    self.tree
-                        .perf
-                        .bump(crate::perf::Counter::IfcMeasureCacheRetains);
-                    self.tree
-                        .ifc_measure_cache
-                        .retain(|&(root_id, _), _| root_id != pid);
+                if self.holds_ifc_layout(pid) {
+                    self.invalidate_ifc_root(pid);
                     break;
                 }
                 cur = self.tree.nodes.get(pid).and_then(|n| n.parent);
             }
         }
+    }
+
+    /// Whether `node_id` holds a layout derived from an inline formatting
+    /// context of its own: a paint layout, or sizes the measure function
+    /// cached for it.
+    fn holds_ifc_layout(&self, node_id: usize) -> bool {
+        self.tree
+            .nodes
+            .get(node_id)
+            .is_some_and(|n| n.text_layout.is_some())
+            || self
+                .tree
+                .ifc_measure_cache
+                .get(&node_id)
+                .is_some_and(|e| !e.sizes.is_empty())
+    }
+
+    /// Drop everything derived from IFC root `root_id`'s content: the paint
+    /// layout (`text_layout`), the measure function's cached sizes, and
+    /// Taffy's own cached size for it — on the root and on its #466 measure
+    /// leaf, since `mark_dirty` propagates up, not down.
+    ///
+    /// The Taffy marks are what make the cache drop reachable. A restyle that
+    /// changes only an inline *member's* typography (a `span` inside the
+    /// paragraph) marks no Taffy node on its way — the member is detached from
+    /// Taffy — so without the mark on the root the compute serves the root's
+    /// cached size and never calls the measure function at all. The member
+    /// branch of [`Self::invalidate_ifc_for_node`] used to drop the paint
+    /// layout and the cache and mark nothing, which was harmless only while an
+    /// eager subtree drop on every attribute write marked the root by another
+    /// route.
+    pub(crate) fn invalidate_ifc_root(&mut self, root_id: usize) {
+        if let Some(root) = self.tree.nodes.get_mut(root_id) {
+            root.text_layout = None;
+        }
+        self.tree.dirty_ifc_text_roots.insert(root_id);
+        self.tree.forget_ifc_measures(root_id);
+        if let Some(taffy_id) = self.tree.nodes.get(root_id).and_then(|n| n.taffy_id) {
+            let _ = self.tree.taffy.mark_dirty(taffy_id);
+        }
+        self.mark_ifc_measure_dirty(root_id);
     }
 
     /// Append `child_taffy` under `parent_taffy`, asserting in debug builds that
@@ -2535,25 +2556,10 @@ impl RinchDocument {
     /// Clears text_layout on the parent and ifc_root on all its inline children.
     /// Also marks the Taffy node dirty so the measure callback re-fires.
     pub(crate) fn invalidate_parent_ifc(&mut self, parent_id: usize) {
-        if let Some(parent) = self.tree.nodes.get_mut(parent_id) {
-            parent.text_layout = None;
-        }
-        // Invalidate IFC measure cache so style changes trigger re-measurement
-        self.tree.dirty_ifc_text_roots.insert(parent_id);
-        self.tree
-            .perf
-            .bump(crate::perf::Counter::IfcMeasureCacheRetains);
-        self.tree
-            .ifc_measure_cache
-            .retain(|&(root_id, _), _| root_id != parent_id);
-        if let Some(taffy_id) = self.tree.nodes.get(parent_id).and_then(|n| n.taffy_id) {
-            let _ = self.tree.taffy.mark_dirty(taffy_id);
-        }
-        // The measure may live on this root's measure leaf, which the mark
-        // above does not reach — dirty propagates up, not down (#466). Without
-        // this, a text edit in a `text + absolute` container serves the leaf's
-        // cached measure and the container's height never changes.
-        self.mark_ifc_measure_dirty(parent_id);
+        // The mark on the #466 measure leaf inside matters here: without it a
+        // text edit in a `text + absolute` container serves the leaf's cached
+        // measure and the container's height never changes.
+        self.invalidate_ifc_root(parent_id);
         // NOTE: Do NOT clear ifc_root on children here. This function handles
         // text/style invalidation where the IFC structure is unchanged. Clearing
         // ifc_root would prevent build_ifc_layouts() from finding this IFC root

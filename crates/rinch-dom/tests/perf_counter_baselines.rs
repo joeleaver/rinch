@@ -301,8 +301,8 @@ fn every_rinch_dom_counter_fires_somewhere() {
         EllipsisBuilds,
         ShapePaint,
         IfcMeasureCacheHits,
-        IfcMeasureCacheClears,
-        IfcMeasureCacheRetains,
+        IfcMeasureInvalidations,
+        IfcSignatureChanges,
         LayoutResolves,
         LayoutSkippedPaintOnly,
         LayoutSkippedTextOnly,
@@ -364,10 +364,14 @@ fn idle_frame() {
 /// `.row:hover { background-color }` on a row with no `display: contents`
 /// inside: a paint-only restyle, no Taffy compute, no IFC setup pass.
 ///
+/// No text is re-shaped: the cascade compares each re-cascaded node's text
+/// inputs and finds none changed, so every IFC keeps its Parley layout and
+/// the frame takes the paint-only path (`shape_ifc_build` was 2 and the path
+/// was the text-only one while every restyle dropped every layout under the
+/// restyled node).
+///
 /// Still more than the minimum (audit F3 / update-path F1.1): the whole row
-/// subtree is re-cascaded (row + span + chip; the minimum is 1), its text is
-/// re-shaped though no typography changed (2 IFC builds; the minimum is 0),
-/// and each invalidated descendant pays an O(cache) retain scan (audit F10).
+/// subtree is re-cascaded (row + span + chip; the minimum is 1).
 #[test]
 fn hover_colour_only_without_wrapper() {
     let mut f = build(false);
@@ -382,10 +386,8 @@ fn hover_colour_only_without_wrapper() {
             (StyleNodesVisited, 5),
             (PseudoElementPasses, 6),
             (TaffyStyleSyncs, 3),
-            (ShapeIfcBuild, 2),
-            (IfcMeasureCacheRetains, 4),
             (LayoutResolves, 1),
-            (LayoutSkippedTextOnly, 1),
+            (LayoutSkippedPaintOnly, 1),
             (PaintNodesVisited, 66),
             (StackingOrderBuilds, 1),
         ],
@@ -395,7 +397,8 @@ fn hover_colour_only_without_wrapper() {
 /// The same hover, on rows that carry a `display: contents` wrapper — what
 /// every `rsx!` reactive text produces. Since #875 the wrapper's re-cascade no
 /// longer rewrites its Taffy style, so this reads like the no-wrapper hover
-/// plus the wrapper's own cascade: no IFC setup pass, no compute.
+/// plus the wrapper's own cascade: no IFC setup pass, no compute, and — as
+/// for the no-wrapper hover — no text re-shaped.
 #[test]
 fn hover_colour_only_with_contents_wrapper() {
     let mut f = build(true);
@@ -410,10 +413,8 @@ fn hover_colour_only_with_contents_wrapper() {
             (StyleNodesVisited, 7),
             (PseudoElementPasses, 8),
             (TaffyStyleSyncs, 4),
-            (ShapeIfcBuild, 2),
-            (IfcMeasureCacheRetains, 6),
             (LayoutResolves, 1),
-            (LayoutSkippedTextOnly, 1),
+            (LayoutSkippedPaintOnly, 1),
             (PaintNodesVisited, 66),
             (StackingOrderBuilds, 1),
         ],
@@ -421,8 +422,8 @@ fn hover_colour_only_with_contents_wrapper() {
 }
 
 /// A class toggle that changes only `background-color` (`.row` ↔ `.row.sel`).
-/// As for the hover, an attribute write re-cascades the whole subtree and
-/// re-shapes its text (audit F3).
+/// As for the hover, an attribute write re-cascades the whole subtree (audit
+/// F3) but re-shapes no text, since no text input changed.
 #[test]
 fn colour_only_class_toggle() {
     let mut f = build(false);
@@ -437,24 +438,35 @@ fn colour_only_class_toggle() {
             (StyleNodesVisited, 5),
             (PseudoElementPasses, 6),
             (TaffyStyleSyncs, 3),
-            (ShapeIfcBuild, 2),
-            (IfcMeasureCacheRetains, 6),
             (LayoutResolves, 1),
-            (LayoutSkippedTextOnly, 1),
+            (LayoutSkippedPaintOnly, 1),
             (PaintNodesVisited, 66),
             (StackingOrderBuilds, 1),
         ],
     );
 }
 
-/// Append one row to the list. A structural change anywhere re-runs the
-/// whole-document IFC setup pass and clears the whole measure cache, so
-/// every row is re-shaped to measure one new one (`shape_measure_ifc` is
-/// ROWS + 1) and every chip is re-sized by its own compute (audit layout F1,
-/// F11). Appending the text into the still-detached row also restyles
-/// synchronously with no style root recorded, which walks the whole document
-/// (`style_nodes_visited`) to cascade one element: `resolve_styles`'
-/// empty-roots fallback.
+/// Append one row to the list. A structural change anywhere still re-runs the
+/// whole-document IFC setup pass, but the pass no longer clears the measure
+/// cache: it compares every root's content signature and drops only the roots
+/// whose content moved — here just the new row (`ifc_signature_changes`), so
+/// **one** root is shaped (`shape_measure_ifc` was ROWS + 1 = 41) and every
+/// other measure is a cache hit.
+///
+/// Still more than the minimum:
+///
+/// - Taffy still *asks* for every row (`taffy_measure_calls`, four available
+///   spaces per row): `sync_display_contents` re-splices every `display:
+///   contents` wrapper in the document on a structural pass, and the
+///   `set_children` that does it dirties each row's Taffy node. The rows'
+///   cached sizes answer (`ifc_measure_cache_hits`), so it costs a lookup,
+///   not a shape. `append_one_row_without_wrappers` is the same append with
+///   no wrapper to re-splice.
+/// - every chip is still re-sized by its own compute (audit layout F11).
+/// - appending the text into the still-detached row also restyles
+///   synchronously with no style root recorded, which walks the whole
+///   document (`style_nodes_visited`) to cascade one element:
+///   `resolve_styles`' empty-roots fallback.
 #[test]
 fn append_one_row() {
     let mut f = build(true);
@@ -477,12 +489,12 @@ fn append_one_row() {
             (FullStyleWalks, 1),
             (TaffyStyleSyncs, 1),
             (TaffyStyleChanges, 1),
-            (ShapeMeasureIfc, 41),
+            (ShapeMeasureIfc, 1),
             (ShapeIfcBuild, 1),
             (ShapeAtomicInline, 40),
-            (IfcMeasureCacheHits, 123),
-            (IfcMeasureCacheClears, 1),
-            (IfcMeasureCacheRetains, 2),
+            (IfcMeasureCacheHits, 163),
+            (IfcMeasureInvalidations, 2),
+            (IfcSignatureChanges, 1),
             (LayoutResolves, 1),
             (IfcSetupPasses, 1),
             (TaffyRootComputes, 1),
@@ -494,9 +506,60 @@ fn append_one_row() {
     );
 }
 
-/// Remove one row: the same whole-document pass as an append. The removed
-/// row's chip is detached, yet `inline_block_computes` stays at ROWS: the
-/// atomic-inline scan walks the whole slab, detached subtrees included.
+/// The same append on rows with no `display: contents` wrapper, so nothing
+/// re-splices the rows' Taffy nodes. Taffy asks each old row **once**
+/// (`taffy_measure_calls` = ROWS + the new row's 4, against
+/// `append_one_row`'s four per row), and rinch's cache answers each
+/// (`ifc_measure_cache_hits`): the column grew by a row, so the available
+/// height every row's final layout is keyed under changed, and Taffy's leaf
+/// cache — which keys a final layout on its available space even when both
+/// of the leaf's own dimensions are already known — misses and calls the
+/// measure function for the content size. That one is Taffy's, not rinch's.
+/// And no chip is re-shaped (`shape_atomic_inline` 0 against 40): their
+/// detached computes hit Taffy's own cache, since nothing re-spliced them.
+#[test]
+fn append_one_row_without_wrappers() {
+    let mut f = build(false);
+    let s = frame(&mut f, |f| {
+        let row = f.doc.create_element("div");
+        f.doc.set_attribute(row, "class", "row");
+        let t = f.doc.create_text("new row");
+        f.doc.append_child(row, t);
+        let list = f.list;
+        f.doc.append_child(list, row);
+    });
+    expect(
+        "append one row (no wrapper)",
+        &s,
+        &[
+            (StyleResolves, 2),
+            (ElementsCascaded, 1),
+            (StyleNodesVisited, 207),
+            (PseudoElementPasses, 2),
+            (FullStyleWalks, 1),
+            (TaffyStyleSyncs, 1),
+            (TaffyStyleChanges, 1),
+            (ShapeMeasureIfc, 1),
+            (ShapeIfcBuild, 1),
+            (IfcMeasureCacheHits, 43),
+            (IfcMeasureInvalidations, 2),
+            (IfcSignatureChanges, 1),
+            (LayoutResolves, 1),
+            (IfcSetupPasses, 1),
+            (TaffyRootComputes, 1),
+            (TaffyMeasureCalls, 44),
+            (InlineBlockComputes, 40),
+            (PaintNodesVisited, 67),
+            (StackingOrderBuilds, 1),
+        ],
+    );
+}
+
+/// Remove one row: the same whole-document pass as an append. No root's
+/// content changed — the list is not an IFC — so nothing is shaped at all
+/// (`shape_measure_ifc` was ROWS - 1 = 39) and every measure is a hit. The
+/// removed row's chip is detached, yet `inline_block_computes` stays at ROWS:
+/// the atomic-inline scan walks the whole slab, detached subtrees included.
 #[test]
 fn remove_one_row() {
     let mut f = build(true);
@@ -509,11 +572,9 @@ fn remove_one_row() {
         "remove one row",
         &s,
         &[
-            (ShapeMeasureIfc, 39),
             (ShapeAtomicInline, 40),
-            (IfcMeasureCacheHits, 117),
-            (IfcMeasureCacheClears, 1),
-            (IfcMeasureCacheRetains, 1),
+            (IfcMeasureCacheHits, 156),
+            (IfcMeasureInvalidations, 1),
             (LayoutResolves, 1),
             (IfcSetupPasses, 1),
             (TaffyRootComputes, 1),
@@ -527,11 +588,13 @@ fn remove_one_row() {
 
 /// Change one text node's content: a text-only layout, no structural pass.
 ///
-/// **`taffy_measure_calls` = 0 here is bug #878, not a saving.** The compute
-/// runs but never re-measures the row's IFC root, so a text change that
-/// should add lines leaves the row at its old height. A fix for #878 must
-/// **raise** `taffy_measure_calls` (and likely `shape_measure_ifc`) above 0;
-/// that is the fix working, not a regression.
+/// The row's IFC is re-measured — four available spaces, each shaped once
+/// (`taffy_measure_calls` = `shape_measure_ifc` = 4). They were **0** before,
+/// which was bug #878: the text sits in a wrapper inside the row, the
+/// invalidation dropped the row's cached measure but marked no Taffy node the
+/// compute would reach (the wrapper is detached from Taffy), so the compute
+/// served the row's old size and a text that grew a line left its box a line
+/// short. `invalidate_ifc_root` now marks the root.
 #[test]
 fn set_text_on_one_row() {
     let mut f = build(true);
@@ -541,8 +604,10 @@ fn set_text_on_one_row() {
         "set_text_content",
         &s,
         &[
+            (ShapeMeasureIfc, 4),
             (ShapeIfcBuild, 1),
-            (IfcMeasureCacheRetains, 3),
+            (IfcMeasureInvalidations, 3),
+            (TaffyMeasureCalls, 4),
             (LayoutResolves, 1),
             (TaffyRootComputes, 1),
             (PaintNodesVisited, 66),
