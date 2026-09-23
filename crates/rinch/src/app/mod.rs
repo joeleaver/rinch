@@ -1042,11 +1042,7 @@ impl RinchApp {
                 d.tree.full_repaint_needed = false;
                 self.scene_dirty = true;
                 #[cfg(software_shell)]
-                {
-                    self.has_previous_frame = false;
-                    self.full_repaint_reason
-                        .get_or_insert(rinch_dom::perf::FullRepaintReason::InsetFastPath);
-                }
+                self.invalidate_previous_frame(rinch_dom::perf::FullRepaintReason::InsetFastPath);
             }
         }
 

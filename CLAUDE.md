@@ -2299,13 +2299,16 @@ Build first with `cargo build -p rinch-mcp-server`. Using `cargo run` instead wo
 **Performance counters** (`rinch_dom::perf`, re-exported as `rinch::perf`). Every
 `NodeTree` carries `perf: PerfCounters`: always-compiled `u64` counters bumped by
 style, layout, text, paint and hit testing, rolled over per frame by
-`RinchApp::end_perf_frame` (desktop: after each redraw; embed: at each `update`).
+`RinchApp::end_perf_frame` (desktop: after each redraw; Android: after each
+present attempt; embed: at each `update`).
 `RINCH_PERF=1` prints one line per frame (the env var is read once), `perf_stats`
 serves them over MCP, and `RinchApp::last_frame_perf` / `doc.tree.perf.frame()`
 serve tests. **Prove a perf fix with a counter, not a timing**:
-`crates/rinch-dom/tests/perf_counter_baselines.rs` asserts today's counts per
-scenario (hover with/without a `display: contents` wrapper, append, remove,
-resize, text edit, transform tick) as ceilings — lower the one your fix beats.
+`crates/rinch-dom/tests/perf_counter_baselines.rs` asserts every counter of the
+frame **exactly** per scenario (hover with/without a `display: contents`
+wrapper, append, remove, resize, text edit, transform tick), so an increment
+that stops counting fails too; a fix updates the numbers it moves, and that
+edit is its proof.
 Guide: `docs/src/guide/performance.md`.
 
 **Discovery mechanism:** Each debug-enabled app writes `~/.rinch/debug/{pid}.json` containing its port, app name, and PID. The MCP server scans this directory to find running apps and auto-connects when only one is running.

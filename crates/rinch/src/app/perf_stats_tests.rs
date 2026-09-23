@@ -7,8 +7,9 @@
 //! painter, driving frames the way `RinchRuntime::paint` does:
 //! `resolve_and_repaint`, `build_pixels`, `end_perf_frame`.
 //!
-//! Like the rinch-dom file, an `exact` assertion pins behaviour that is
-//! already right and a `ceiling` records today's cost for a fix to lower.
+//! Like the rinch-dom file, the numbers are exact: a fix that makes a path
+//! cheaper updates them (that is its proof), and a counter that stops
+//! counting fails instead of reading as a saving.
 
 use super::*;
 use rinch_dom::perf::{Counter, FrameStats};
@@ -99,23 +100,32 @@ fn a_hover_repaints_a_region_and_counts_its_hit_tests() {
     frame(&mut app);
     app.handle_event(PlatformEvent::MouseMove { x: 20.0, y: 30.0 }, SIZE, 1.0);
     let s = frame(&mut app);
-    assert_eq!(s.get(Counter::RepaintPartial), 1, "{s:?}");
-    assert_eq!(s.get(Counter::RepaintFull), 0, "{s:?}");
-    assert!(s.get(Counter::RepaintedPx) < s.get(Counter::SurfacePx) / 2);
-    assert_eq!(
-        s.get(Counter::TaffyRootComputes),
-        0,
-        "a colour hover lays nothing out"
-    );
-    // A mouse move hit-tests twice today: once for `data-onmousemove`
-    // dispatch and once for hover (update-path audit F2.1). The minimum is 1.
-    assert!(s.get(Counter::HitTests) >= 1);
-    assert!(
-        s.get(Counter::HitTests) <= 2,
-        "hit_tests = {}, above its baseline",
-        s.get(Counter::HitTests)
-    );
-    assert!(s.get(Counter::HitTestNodesVisited) > 0);
+    // Exact, like the rinch-dom baselines: a counter that stops counting must
+    // fail here, not read as a saving.
+    for (c, want) in [
+        (Counter::RepaintPartial, 1),
+        (Counter::RepaintFull, 0),
+        (Counter::PaintFrames, 1),
+        // One row's 20px box plus the 4px dirty margin on each side.
+        (Counter::RepaintedPx, 800 * 28),
+        (Counter::SurfacePx, 800 * 600),
+        (Counter::TaffyRootComputes, 0),
+        (Counter::LayoutSkippedTextOnly, 1),
+        (Counter::ElementsCascaded, 1),
+        // The row's text is re-shaped though only its background changed
+        // (update-path audit F1.1). The minimum is 0.
+        (Counter::ShapeIfcBuild, 1),
+        // A mouse move hit-tests twice: once for `data-onmousemove` dispatch
+        // and once for hover (update-path audit F2.1). The minimum is 1.
+        (Counter::HitTests, 2),
+        (Counter::HitTestNodesVisited, 26),
+        // Each hit test builds the body's stacking sequence, and so does
+        // paint: 2 + 1.
+        (Counter::StackingOrderBuilds, 3),
+        (Counter::PaintNodesVisited, 15),
+    ] {
+        assert_eq!(s.get(c), want, "{}: {s:?}", c.name());
+    }
 }
 
 /// Moving an absolute box by its insets takes the inset fast path, which

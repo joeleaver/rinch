@@ -18,9 +18,12 @@
 //! everything since the last [`PerfCounters::reset`].
 //!
 //! The `Time*Ns` counters are wall-clock nanoseconds summed over the frame.
-//! They are measured with one `Instant::now()` pair per *phase* (a resolve,
-//! a paint, a present), never per node, and are the only counters whose
-//! values are not deterministic.
+//! They are measured with one `Instant::now()` pair per *phase call* — each
+//! `resolve_styles`, `apply_stylo_styles_to_taffy`, `resolve_layout`, paint
+//! and present — and never per node. A phase can run several times a frame
+//! (every DOM insertion calls the two style phases synchronously), so that is
+//! a handful of clock reads per insertion, not one per frame. They are the only
+//! counters whose values are not deterministic.
 //!
 //! `RINCH_PERF` (any value) prints one summary line per ended frame to
 //! stderr: the phase times and every non-zero counter. The variable is read
@@ -81,8 +84,10 @@ define_counters! {
     StyleNodesVisited = "style_nodes_visited",
     /// `::before` / `::after` resolution attempts (two per cascaded element).
     PseudoElementPasses = "pseudo_element_passes",
-    /// Full-document restyles, any reason. Each is also counted under one of
-    /// the `full_restyle_*` reasons below.
+    /// Full-document restyle *requests*, any reason. Each is also counted
+    /// under one of the `full_restyle_*` reasons below. Two requests can land
+    /// in one walk (a theme restyle that also changes the root font-size counts
+    /// twice), so this can exceed the number of full walks actually made.
     FullRestyles = "full_restyles",
     /// ...because the viewport size changed (`resolve_layout`).
     FullRestyleViewport = "full_restyle_viewport",
@@ -166,8 +171,9 @@ define_counters! {
     RepaintFullFirstFrame = "repaint_full_first_frame",
     /// ...the surface was resized.
     RepaintFullResize = "repaint_full_resize",
-    /// ...the scene was dirty but no node was paint-dirty, so there was no
-    /// region to limit the repaint to.
+    /// ...the scene was dirty but no dirty region came out: either no node
+    /// was paint-dirty, or the paint-dirty nodes produced no rect (none had a
+    /// layout box).
     RepaintFullNoDirtyNodes = "repaint_full_no_dirty_nodes",
     /// ...the dirty region covered half the surface or more.
     RepaintFullRegionTooLarge = "repaint_full_region_too_large",
@@ -204,7 +210,11 @@ define_counters! {
     HitTestNodesVisited = "hit_test_nodes_visited",
 
     // ── Reactive (folded in by the shell from rinch-core's counters) ───
-    /// Effect bodies run.
+    /// Effect bodies run. A memo's invalidation marker runs through the same
+    /// runner, so each memo invalidated counts one; its lazy recompute does
+    /// not. Per thread: a DevTools window on the same thread
+    /// adds its own effects, and the frame-time signals the shell writes for
+    /// it, to every frame while it is visible.
     EffectRuns = "effect_runs",
     /// Signal change notifications.
     SignalNotifies = "signal_notifies",

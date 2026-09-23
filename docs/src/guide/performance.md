@@ -24,9 +24,10 @@ $ RINCH_PERF=1 cargo run --release -p ui-zoo-desktop
 [PERF] frame 212: style 0.08ms layout 0.02ms paint 1.41ms present 0.35ms | style_resolves=1 elements_cascaded=3 ... repaint_partial=1 repainted_px=41236 surface_px=1382400 ...
 ```
 
-The variable is read once, when the process starts.
+The variable is read once, the first time a frame ends.
 
-On the desktop, one redraw is one frame. On an embedded `RinchContext`, one
+On the desktop, one redraw is one frame. On Android, one pass of the loop that
+tries to present a frame is one frame. On an embedded `RinchContext`, one
 `update()` plus the `scene()` call that follows it is one frame.
 
 ## The `perf_stats` MCP tool
@@ -97,7 +98,7 @@ assert_eq!(frame.get(Counter::TaffyRootComputes), 0, "a colour change must not l
 | | `elements_cascaded` | Elements that went through a full selector match and cascade |
 | | `style_nodes_visited` | Nodes the style walk visited, including cached ones |
 | | `pseudo_element_passes` | `::before`/`::after` resolutions (two per cascaded element) |
-| | `full_restyles`, `full_restyle_{viewport,theme,stylesheet,dpr,root_font_size}` | Whole-document restyles, in total and by reason |
+| | `full_restyles`, `full_restyle_{viewport,theme,stylesheet,dpr,root_font_size}` | Requests for a whole-document restyle, in total and by reason. Two requests can share one walk (a theme change that also changes the root font-size counts twice) |
 | | `full_style_walks` | `resolve_styles` walked from `<html>`, because it had no roots or no layout has completed yet |
 | | `taffy_style_syncs` / `taffy_style_changes` | Nodes synced to Taffy, and how many of those actually changed their Taffy style |
 | Text | `shape_measure_ifc` / `shape_measure_text` | Parley layouts built inside the Taffy measure function |
@@ -114,20 +115,23 @@ assert_eq!(frame.get(Counter::TaffyRootComputes), 0, "a colour change must not l
 | | `calc_fixpoint_passes` | Extra computes run by the `calc(%, px)` fixpoint |
 | Paint | `paint_frames` / `paint_cached_frames` | Frames actually painted, and redraws that reused the cached frame |
 | | `repaint_partial`, `repaint_full` | Software frames limited to a dirty region, and full repaints |
-| | `repaint_full_{first_frame,resize,no_dirty_nodes,region_too_large,empty_region,overlay,inset_fast_path,editor_overlay,theme,invalidated,gpu}` | The reason for each full repaint |
+| | `repaint_full_{first_frame,resize,no_dirty_nodes,region_too_large,empty_region,overlay,inset_fast_path,editor_overlay,theme,invalidated,gpu}` | The reason for each full repaint. `no_dirty_nodes` means no dirty region came out: either nothing was paint-dirty, or what was produced no rect |
 | | `repainted_px` / `surface_px` | Pixels repainted, and pixels in the surface (their ratio is the fraction of the surface repainted) |
 | | `paint_nodes_visited` | Nodes `paint_node` visited |
 | | `stacking_order_builds` | Stacking sequences built, by paint and by hit testing |
 | Input | `hit_tests`, `hit_test_nodes_visited` | Hit tests run, and the nodes they visited |
-| Reactive | `effect_runs`, `signal_notifies` | Effect bodies run, and signal writes |
+| Reactive | `effect_runs`, `signal_notifies` | Effect bodies run (a memo's invalidation marker counts as one; its recompute does not), and signal writes |
 | | `rerender_events_queued` | `ReRender` events queued to the desktop event loop |
-| Time (ns) | `time_style_ns`, `time_layout_ns` (`time_ifc_setup_ns`, `time_taffy_compute_ns`, `time_build_ifc_ns`), `time_paint_ns`, `time_present_ns` | Wall-clock time per phase, measured once per phase and never per node |
+| Time (ns) | `time_style_ns`, `time_layout_ns` (`time_ifc_setup_ns`, `time_taffy_compute_ns`, `time_build_ifc_ns`), `time_paint_ns`, `time_present_ns` | Wall-clock time per phase, summed over the frame. Each phase *call* is timed, never each node; a phase can run several times a frame (every DOM insertion runs the two style phases), so this is a few clock reads per call |
 
 Some limits on what these numbers mean:
 
 - **The reactive counters are per thread.** Two documents on one thread share
   them. A desktop window and its DevTools panel are two such documents, as are
-  two embedded contexts.
+  two embedded contexts. **While DevTools is visible, every frame's
+  `effect_runs` and `signal_notifies` include its own work**: the shell writes
+  its frame-time and FPS signals on every redraw, and its panels re-run. Close
+  DevTools before reading the reactive counters.
 - **The GPU backend always repaints in full.** Every painted frame on that
   backend counts as `repaint_full_gpu`.
 - **A screenshot is a frame.** The debug `screenshot` command paints, and that
@@ -151,12 +155,16 @@ for responsiveness on a 40-row list and asserts today's counter values:
 fills: the full-repaint reasons, the dirty region, hit testing, and the
 reactive deltas.
 
-The tests make two kinds of assertion:
+Each scenario asserts the **whole frame**: every counter's exact value, with
+any counter the baseline does not list expected to be zero. That catches a path
+that got more expensive and, just as important, an increment that stopped
+counting, which an upper bound alone would read as a saving. A test in the same
+file checks that every counter rinch-dom owns fires on some path.
 
-- An **exact** assertion pins behaviour that is already right. For example, a
-  colour-only hover lays nothing out.
-- A **ceiling** records today's cost. A performance fix should lower the
-  ceiling it beats, so that the improvement is locked in.
+A performance fix is expected to change these numbers. Updating the baseline to
+the new values is the proof that the fix worked; say in the PR which counters
+moved and why. `PERF_BASELINE_PRINT=1` prints each scenario's frame in the
+form the baseline is written in.
 
 The file's `#[ignore]`d `perf_scenario_timings` prints wall-clock times for the
 same scenarios. Run it in release:

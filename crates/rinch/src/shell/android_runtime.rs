@@ -814,14 +814,29 @@ fn run_loop(android_app: AndroidApp, mut app: RinchApp) {
             #[cfg(feature = "android-gpu")]
             if let (Some(ctx), Some(s)) = (&mut gpu, &mut surface) {
                 let scene = app.build_scene(scale_factor, logical_size);
+                let present_start = std::time::Instant::now();
                 presented = s.present_scene(&mut ctx.renderer, scene);
+                app.perf_add(
+                    rinch_dom::perf::Counter::TimePresentNs,
+                    present_start.elapsed().as_nanos() as u64,
+                );
             }
 
             #[cfg(not(feature = "android-gpu"))]
             if let Some(ref mut s) = surface {
                 let (pixels, w, h) = app.build_pixels(scale_factor, logical_size, false);
+                let present_start = std::time::Instant::now();
                 presented = s.present_pixels(pixels, w, h);
+                app.perf_add(
+                    rinch_dom::perf::Counter::TimePresentNs,
+                    present_start.elapsed().as_nanos() as u64,
+                );
             }
+
+            // One owed frame is one performance frame (`rinch_dom::perf`),
+            // as one redraw is on the desktop; this is also what prints the
+            // `RINCH_PERF` line on Android.
+            app.end_perf_frame();
         }
 
         // The frame was owed and did not reach the glass, so ask for it again
