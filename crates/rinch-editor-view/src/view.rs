@@ -7,7 +7,7 @@ use std::rc::{Rc, Weak};
 use rinch_core::dom::{DomDocument, NodeFont, NodeHandle};
 use rinch_editor_core::decoration::DecorationSet;
 use rinch_editor_core::serialize::{mark_dom_tag, node_dom_tag};
-use rinch_editor_core::{EditorState, EditorView, Mark, Node, Pos, ViewRequest};
+use rinch_editor_core::{EditorState, EditorView, Mark, Node, Pos, Selection, ViewRequest};
 
 /// A weak handle to the host document. The view upgrades + borrows it briefly to
 /// create/patch nodes; holding only a `Weak` lets the document drop normally.
@@ -568,7 +568,18 @@ pub struct RinchDomEditorView {
     /// resolves land first. (This used to force a full repaint per keystroke,
     /// because a second resolve overwrote that old rect.)
     overlay_dirty: bool,
+    /// The invisible boxes [`Self::position_reveal`] places over a range's end
+    /// and start for [`EditorHandle::scroll_into_view`] to scroll to. Empty
+    /// until the first reveal; kept (and moved) after it, like the caret.
+    ///
+    /// [`EditorHandle::scroll_into_view`]: super::EditorHandle::scroll_into_view
+    reveal_probes: Vec<NodeHandle>,
 }
+
+/// How far above and below a revealed range [`RinchDomEditorView::position_reveal`]
+/// keeps clear, in CSS px, so the words land a little inside the scroller's
+/// edge rather than flush against it.
+pub(crate) const REVEAL_MARGIN: f32 = 16.0;
 
 impl RinchDomEditorView {
     /// Build a view over `state`, rendering its document into `container` (the host
@@ -621,6 +632,7 @@ impl RinchDomEditorView {
             last_preedit: None,
             decorations: DecorationSet::empty(),
             overlay_dirty: false,
+            reveal_probes: Vec::new(),
         };
         view.sync_decorations(state);
         view
@@ -756,18 +768,7 @@ impl EditorView for RinchDomEditorView {
             if self.preedit.is_some() {
                 preedit_font = d.node_font(block_id as u64);
             }
-            let from_parley =
-                d.query_caret_position(block_id as u64, flat_byte)
-                    .map(|(local_x, local_y)| {
-                        let height = d
-                            .query_glyph_bounds(block_id as u64, flat_byte)
-                            .map(|g| g.height)
-                            .unwrap_or(18.0);
-                        let (ox, oy) = self.block_offset_in_container(&*d, block_id);
-                        (ox + local_x, oy + local_y, height)
-                    });
-            from_parley
-                .or_else(|| self.empty_block_caret(&*d, &next.doc, next.selection.head(), block_id))
+            self.caret_geometry(&*d, &next.doc, next.selection.head(), block_id, flat_byte)
         };
         match geometry {
             Some((x, y, height)) => {
@@ -804,6 +805,11 @@ fn scroll_if(moved: bool) -> Vec<ViewRequest> {
 }
 
 impl RinchDomEditorView {
+    /// The editor container (the `doc` node's element).
+    pub(crate) fn container(&self) -> &NodeHandle {
+        &self.root.dom
+    }
+
     /// The host id of the editor container (the `doc` node's element).
     pub(crate) fn container_id(&self) -> usize {
         self.root.dom.node_id().0
@@ -917,6 +923,118 @@ impl RinchDomEditorView {
         // (a no-op on the desktop renderer — default `(0, 0)`).
         let (ix, iy) = d.content_origin_inset(container_id as u64);
         (x - ix, y - iy)
+    }
+
+    /// The caret for `pos` — in textblock `block_id` at `flat_byte`, as
+    /// [`Self::caret_target`] resolved it — as `(x, y, height)` in the
+    /// container's coordinate space: Parley's caret, or an empty block's content
+    /// origin. `None` when the block has no layout yet (desktop: edited since the
+    /// last layout, or collapsed by virtualization). The caret overlay and the
+    /// reveal probes ([`Self::position_reveal`]) are both placed from this.
+    fn caret_geometry(
+        &self,
+        d: &dyn DomDocument,
+        doc: &Node,
+        pos: Pos,
+        block_id: usize,
+        flat_byte: usize,
+    ) -> Option<(f32, f32, f32)> {
+        let from_parley =
+            d.query_caret_position(block_id as u64, flat_byte)
+                .map(|(local_x, local_y)| {
+                    let height = d
+                        .query_glyph_bounds(block_id as u64, flat_byte)
+                        .map(|g| g.height)
+                        .unwrap_or(18.0);
+                    let (ox, oy) = self.block_offset_in_container(d, block_id);
+                    (ox + local_x, oy + local_y, height)
+                });
+        from_parley.or_else(|| self.empty_block_caret(d, doc, pos, block_id))
+    }
+
+    /// Place the reveal probes over `from..to` and answer them in the order to
+    /// scroll them into view: the end first, then the start. Each is a hidden,
+    /// 1px-wide box over the caret line at that position, grown by
+    /// [`REVEAL_MARGIN`] above and below.
+    ///
+    /// Two "nearest" scrolls in that order leave the start in view and as much
+    /// of the range after it as fits: the first brings the end in, and the
+    /// second moves only if that pushed the start out, in which case the start
+    /// lands at the top edge. One box around the whole range would not do it —
+    /// a "nearest" scroll to a box taller than the scroller aligns its *bottom*
+    /// when it lies above, which hides the start.
+    ///
+    /// A position between blocks is revealed at the nearest text position. The
+    /// margin is clamped to the document's own extent (the container's top and
+    /// the last block's bottom), so a probe never makes the scroller's content
+    /// taller than the document.
+    ///
+    /// `None`, leaving the probes where they were, when either end has no
+    /// geometry yet — a block edited since the last layout, or never laid out.
+    pub(crate) fn position_reveal(
+        &mut self,
+        doc: &Node,
+        from: Pos,
+        to: Pos,
+    ) -> Option<Vec<NodeHandle>> {
+        let size = doc.content_size();
+        let (from, to) = (Pos(from.0.min(size)), Pos(to.0.min(size)));
+        let ends: &[(Pos, i32)] = if from == to {
+            &[(from, 1)]
+        } else {
+            &[(to, -1), (from, 1)]
+        };
+        let host = self.doc.upgrade()?;
+        let boxes: Vec<(f32, f32, f32)> = {
+            let d = host.try_borrow().ok()?;
+            let bottom = self
+                .root
+                .children
+                .last()
+                .and_then(|last| {
+                    let id = last.outer.node_id().0;
+                    let (_, _, _, h) = d.query_node_layout(id as u64)?;
+                    let (_, y) = self.block_offset_in_container(&*d, id);
+                    Some(y + h)
+                })
+                .unwrap_or(f32::INFINITY);
+            let mut out = Vec::with_capacity(ends.len());
+            for &(pos, bias) in ends {
+                let (block, byte, pos) = match self.caret_target(doc, pos) {
+                    Some((block, byte)) => (block, byte, pos),
+                    None => {
+                        let near = Selection::near_text(doc, pos, bias)?.head();
+                        let (block, byte) = self.caret_target(doc, near)?;
+                        (block, byte, near)
+                    }
+                };
+                let (x, y, h) = self.caret_geometry(&*d, doc, pos, block.node_id().0, byte)?;
+                let top = (y - REVEAL_MARGIN).max(0.0).min(y);
+                let end = (y + h + REVEAL_MARGIN).min(bottom).max(y + h);
+                out.push((x, top, end - top));
+            }
+            out
+        };
+        while self.reveal_probes.len() < boxes.len() {
+            let probe = create_element(&self.doc, "div")?;
+            probe.set_attribute("data-pm-reveal", "true");
+            probe.set_attribute("aria-hidden", "true");
+            probe.set_styles(&[
+                ("position", "absolute"),
+                ("width", "1px"),
+                ("visibility", "hidden"),
+                ("pointer-events", "none"),
+            ]);
+            self.root.dom.append_child(&probe);
+            self.reveal_probes.push(probe);
+        }
+        for (probe, (x, top, height)) in self.reveal_probes.iter().zip(&boxes) {
+            let left = format!("{x}px");
+            let top = format!("{top}px");
+            let height = format!("{height}px");
+            probe.set_styles(&[("left", &left), ("top", &top), ("height", &height)]);
+        }
+        Some(self.reveal_probes[..boxes.len()].to_vec())
     }
 
     /// Caret geometry for an *empty* textblock (which has no Parley layout, so

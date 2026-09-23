@@ -29,8 +29,8 @@ pub use keys::EditorKey;
 #[cfg(feature = "collaboration")]
 pub use registry::collab_receive_for;
 pub use registry::{
-    begin_drag, drag_anchor, editor_for, editor_for_doc, end_drag, set_overlay_refresher,
-    unregister_editor, update_all_carets,
+    begin_drag, drag_anchor, editor_for, editor_for_doc, end_drag, reveal_owed, set_focus_handler,
+    set_overlay_refresher, unregister_editor, update_all_carets,
 };
 /// The collaboration error type (re-exported from `rinch-editor-collab`) returned by
 /// the [`EditorHandle`] collaboration methods.

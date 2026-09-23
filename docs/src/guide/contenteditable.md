@@ -295,14 +295,57 @@ where they are:
   moves still scroll: they are real selection changes;
 - focus on its own. A click that places the caret scrolls (it moved the
   selection); a click that focuses the editor without moving the caret — a task
-  checkbox, a right-click on an image — does not jump to where the caret was;
+  checkbox, a right-click on an image — does not jump to where the caret was, and
+  neither does [`focus()`](#focus-and-scrolling-from-code);
 - an editor that is not focused: its caret is not drawn, so a programmatic
   `set_selection` on it scrolls when it is next focused, not before.
 
 Not covered: the moving end of a text **range** (Shift+arrow) is not revealed, and
 moving the caret into a block of a virtualized editor that has never been laid out
 (Ctrl+End from the top of a very long document) does not scroll to it until the
-block is on screen (issue #845).
+block is on screen (issue #845). An app that wants either on screen asks for it with
+`scroll_into_view`, below.
+
+### Focus and scrolling from code
+
+Opening a note at a link — select the words the link quotes, bring them on screen,
+put the keyboard there — takes three calls, and no click:
+
+```rust
+handle.set_selection(Selection::text(from, to));
+handle.scroll_into_view(from, to);
+handle.focus();
+```
+
+**`scroll_into_view(from, to)`** scrolls so that the range is on screen: its start,
+and as much of the rest as fits, 16px inside the scroller's edge (where the
+document extends that far). `from == to` reveals a caret position. A range already
+in view moves nothing. It needs no focus and touches neither the selection nor
+focus, and it is the only way to reveal a **range**: `set_selection` brings a caret
+into view on its own, but never a range. The ends may be given in either order; a
+position between blocks reveals the nearest text.
+
+It uses the scroll the caret uses, on two hidden boxes the view places over the
+range's end and then its start, so the rules above apply: on **desktop** it happens
+after the next layout (the call wakes the runtime for one, from an effect or a timer
+as well as from an event handler) and moves the nearest scroll container; on the
+**web** it happens during the call and `scrollIntoView` moves every scrollable
+ancestor, the page included. A virtualized desktop editor lays out the block holding
+`from` for it. The request waits on the handle until there is geometry for it (a
+block edited since the last layout has none on desktop), a later call replaces it,
+local edits carry it along, and `load_html` / `load_doc` drop it.
+
+**`focus()`** gives the editor the keyboard as a press in it would — the previous
+owner loses it the same way (an `<input>` commits its change, another editor hides
+its caret) — without moving the selection or scrolling. The caret or selection
+highlight is drawn where the selection already is. On **desktop** it posts the same
+focus request `NodeHandle::focus` posts (which now focuses an editor container too),
+and the runtime applies it through the focus arbiter after the current event or
+effect; on the **web** it focuses the editor's hidden capture textarea during the
+call (`preventScroll`), as a mousedown does.
+
+Both are **no-ops before the editor is mounted**, and nothing is remembered for the
+mount: call them after the `Editor {}` has rendered.
 
 ### Autocomplete popups: keys, selection and caret geometry
 
