@@ -233,7 +233,7 @@ pub mod prelude {
 
     // New ProseMirror-style rich-text editor (M5+)
     #[cfg(feature = "desktop")]
-    pub use crate::editor::{Editor, EditorHandle, create_editor};
+    pub use crate::editor::{Editor, EditorHandle, EditorKey, create_editor};
 
     // Collaborative editing (M9): the editor's collab error type + the thread-safe
     // inbound route a network transport posts received deltas through.

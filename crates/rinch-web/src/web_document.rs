@@ -1498,6 +1498,30 @@ impl DomDocument for WebDocument {
         ))
     }
 
+    fn query_caret_rect(&self, node_id: u64, byte_offset: usize) -> Option<(f32, f32, f32)> {
+        let block = self.nodes.get(&(node_id as usize))?;
+        // A collapsed `Range` at the text position: the browser's own caret box.
+        if let Some((text_node, off)) = find_text_node_at_byte_offset(block, byte_offset)
+            && let Ok(range) = self.browser_doc.create_range()
+            && range.set_start(&text_node, off).is_ok()
+            && range.set_end(&text_node, off).is_ok()
+        {
+            let r = range.get_bounding_client_rect();
+            if r.height() > 0.0 {
+                return Some((r.x() as f32, r.y() as f32, r.height() as f32));
+            }
+        }
+        // No text node (an empty block): the block's own box, one line high.
+        let el = block.dyn_ref::<web_sys::Element>()?;
+        let r = el.get_bounding_client_rect();
+        let h = if r.height() > 0.0 {
+            r.height() as f32
+        } else {
+            18.0
+        };
+        Some((r.x() as f32, r.y() as f32, h))
+    }
+
     fn query_glyph_bounds(&self, node_id: u64, byte_offset: usize) -> Option<GlyphBounds> {
         let n = self.nodes.get(&(node_id as usize))?;
         let (text_node, utf16_offset) = find_text_node_at_byte_offset(n, byte_offset)?;
