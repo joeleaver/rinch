@@ -577,6 +577,11 @@ impl EditorHandle {
     /// activate), project the current state into it, and register the editor so the
     /// runtime drives its caret and routes input. Returns the container to place in
     /// the tree. The [`Editor`](super::Editor) component calls this on render.
+    ///
+    /// The registration is released when `scope` is disposed (a conditional
+    /// hide, a tab switch): the runtime stops driving this mount and forgets a
+    /// link hover it held, without calling back into the disposed scope. The
+    /// handle itself may live on and be mounted again.
     pub fn mount(&self, scope: &mut RenderScope) -> NodeHandle {
         let container = scope.create_element("div");
         container.set_attribute("data-pm-editor", "true");
@@ -588,7 +593,9 @@ impl EditorHandle {
             .upgrade()
             .map(|d| d.borrow().doc_key())
             .unwrap_or(0);
-        super::registry::register_editor(doc_key, container.node_id().0, self.clone());
+        let container_id = container.node_id().0;
+        super::registry::register_editor(doc_key, container_id, self.clone());
+        scope.on_cleanup(move || super::registry::unregister_editor(doc_key, container_id));
         container
     }
 
@@ -816,8 +823,16 @@ impl EditorHandle {
     /// the secondary button (the context menu keeps its own link handling) or
     /// for a press on an image, which node-selects it. It is called in a
     /// read-only editor too: following a link is not an edit. The editor never
-    /// follows a link by itself; in the browser the native navigation of an
-    /// editor link is prevented whether or not a callback is registered.
+    /// follows a link by itself.
+    ///
+    /// In the browser an editor link is a real `<a href>`, and its click's
+    /// native navigation is prevented when the editor is **editable** (a click
+    /// there is an edit gesture) or has this callback registered. A
+    /// **read-only** editor with no callback leaves its links to the browser:
+    /// a click follows the link, and middle-click or Ctrl/Cmd+click opens it
+    /// in a new tab. Keyboard activation (Enter on a focused editor link) is
+    /// offered here too, as a click with no pointer; claiming it prevents the
+    /// navigation.
     ///
     /// The callback runs with no internal borrow held, so it may re-enter the
     /// handle (read [`doc`](Self::doc), load another document).
@@ -832,6 +847,14 @@ impl EditorHandle {
     pub fn dispatch_link_click(&self, click: &LinkClick) -> bool {
         let cb = self.core().on_link_click.clone();
         cb.is_some_and(|cb| cb(click))
+    }
+
+    /// Whether an [`on_link_click`](Self::on_link_click) callback is
+    /// registered. The browser runtime asks it to decide whether a click on an
+    /// editor link keeps its native navigation: a read-only editor with no
+    /// callback leaves links to the browser.
+    pub fn has_link_click_callback(&self) -> bool {
+        self.core().on_link_click.is_some()
     }
 
     /// Register a callback for the pointer **entering and leaving links**.

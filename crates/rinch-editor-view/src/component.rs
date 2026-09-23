@@ -78,16 +78,8 @@ impl Component for Editor {
         if !self.content.is_empty() {
             handle.load_html(&self.content);
         }
-        let container = handle.mount(scope);
-        // Stop the runtime from driving this mount once the scope is disposed
+        // `mount` also releases the registration when the scope is disposed
         // (conditional hide, tab switch) — the handle itself may live on.
-        let container_id = container.node_id().0;
-        let doc_key = scope
-            .doc_weak()
-            .upgrade()
-            .map(|d| d.borrow().doc_key())
-            .unwrap_or(0);
-        scope.on_cleanup(move || super::registry::unregister_editor(doc_key, container_id));
-        container
+        handle.mount(scope)
     }
 }

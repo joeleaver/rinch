@@ -26,11 +26,21 @@ struct Page {
 }
 
 fn page() -> Page {
+    page_with_css("")
+}
+
+/// [`page`] with an author stylesheet `css` in front of the editor.
+fn page_with_css(css: &'static str) -> Page {
     let slot: Rc<RefCell<Option<(usize, crate::editor::EditorHandle)>>> =
         Rc::new(RefCell::new(None));
     let slot_in = slot.clone();
     let mut app = RinchApp::new(move |scope: &mut RenderScope| {
         let root = scope.create_element("div");
+        if !css.is_empty() {
+            let style = scope.create_element("style");
+            style.append_child(&scope.create_text(css));
+            root.append_child(&style);
+        }
         let (container, handle) = crate::editor::mount_editor(scope);
         handle.load_html(HTML);
         container.set_attribute(
@@ -305,4 +315,167 @@ fn a_move_keeps_its_one_hit_test_with_or_without_hover() {
             assert_eq!(calls.borrow().len(), 1, "positive control: it hovered");
         }
     }
+}
+
+/// The pointer in a textblock's padding, above or below its text, is over no
+/// character — even directly above or below a link. Parley's
+/// `Cluster::from_point_exact` clamps `y` onto the first or last line, so
+/// without `cluster_range_at_point`'s height check a padded block reported the
+/// link on its edge line. Hovered at the link first (positive control), then
+/// in the top padding, then the bottom one: two leaves, no stay.
+#[test]
+fn the_padding_above_and_below_a_link_is_not_on_it() {
+    let mut p = page_with_css("[data-pm-editor] p { padding: 20px 0; }");
+    let seen = record_hovers(&p.handle);
+    let (x, y, h) = p.app.editor_caret_point(&p.handle, Pos(5)).unwrap();
+    let x = x + 2.0;
+    // Positive control: the padding points are inside the paragraph's box, so
+    // the hit lands on the textblock (not the editor root's own padding).
+    {
+        let doc = p.app.doc.clone().unwrap();
+        let d = doc.borrow();
+        for probe in [y - 10.0, y + h + 10.0] {
+            let hit = hit_test(&d.tree, x, probe).expect("a hit");
+            let pm_type = d
+                .tree
+                .get(hit)
+                .and_then(|n| n.attributes.get("data-pm-type"));
+            assert!(
+                pm_type.map(String::as_str) == Some("paragraph"),
+                "the probe at y={probe} is in the paragraph's padding"
+            );
+        }
+    }
+    pointer_move(&mut p.app, (x, y + h / 2.0));
+    assert_eq!(hrefs(&seen), vec![Some("pimble:a/b".into())], "on the link");
+    pointer_move(&mut p.app, (x, y - 10.0)); // top padding, above the link
+    assert_eq!(hrefs(&seen).len(), 2, "the top padding is a leave");
+    pointer_move(&mut p.app, (x, y + h / 2.0));
+    pointer_move(&mut p.app, (x, y + h + 10.0)); // bottom padding, below it
+    assert_eq!(
+        hrefs(&seen),
+        vec![
+            Some("pimble:a/b".into()),
+            None,
+            Some("pimble:a/b".into()),
+            None
+        ],
+        "the bottom padding is a leave too"
+    );
+}
+
+/// Link hover is kept per document: two `RinchApp`s on one thread (a window
+/// and its DevTools panel, two embed contexts) each report their own pointer.
+/// A move in B — over no link — is not a leave of the link A's pointer is on.
+#[test]
+fn a_move_in_another_document_does_not_leave_this_ones_link() {
+    let mut a = page();
+    let mut b = page();
+    let seen_a = record_hovers(&a.handle);
+    let at = over_char(&a, 5, 0.5);
+    pointer_move(&mut a.app, at);
+    assert_eq!(hrefs(&seen_a), vec![Some("pimble:a/b".into())]);
+    pointer_move(&mut b.app, (700.0, 500.0)); // B's pointer, on nothing
+    assert_eq!(
+        hrefs(&seen_a),
+        vec![Some("pimble:a/b".into())],
+        "B's move is not A's leave"
+    );
+    pointer_move(&mut a.app, (700.0, 500.0));
+    assert_eq!(hrefs(&seen_a).len(), 2, "positive control: A's own move is");
+}
+
+/// An editor inside a branch that unmounts, its hover callback reading a
+/// signal the branch owns (as a tooltip's does), and one of its links hovered.
+/// Hovers the link, unmounts, moves away; returns the callback's calls and
+/// whether `link_hover_wanted` still answered `true` right after the unmount.
+/// `strict` reads the signal with `get` (which panics once it is freed);
+/// otherwise with `try_get`, so the call log itself can be inspected.
+fn unmount_while_hovered(strict: bool) -> (Vec<Option<String>>, bool) {
+    let visible = rinch_core::Signal::new(true);
+    let calls: Rc<RefCell<Vec<Option<String>>>> = Rc::default();
+    let slot: Rc<RefCell<Option<crate::editor::EditorHandle>>> = Rc::default();
+    let (calls_in, slot_in) = (calls.clone(), slot.clone());
+    let mut app = RinchApp::new(move |scope: &mut RenderScope| {
+        let root = scope.create_element("div");
+        let parent = NodeHandle::new(root.node_id(), scope.doc_weak());
+        let (calls_in, slot_in) = (calls_in.clone(), slot_in.clone());
+        rinch_core::show_dom(
+            scope,
+            &parent,
+            move || visible.get(),
+            move |s: &mut RenderScope| {
+                let tip = rinch_core::Signal::new(0u32); // owned by this branch
+                let handle = crate::editor::create_editor();
+                handle.load_html(HTML);
+                let container = rinch_core::Component::render(
+                    &crate::editor::Editor {
+                        editor: Some(handle.clone()),
+                        ..Default::default()
+                    },
+                    s,
+                    &[],
+                );
+                container.set_attribute(
+                    "style",
+                    "width: 400px; height: 200px; font-size: 16px; line-height: 24px; \
+                     font-family: sans-serif",
+                );
+                let calls_in = calls_in.clone();
+                handle.on_link_hover(move |h| {
+                    if strict {
+                        let _ = tip.get();
+                    } else {
+                        let _ = tip.try_get();
+                    }
+                    calls_in.borrow_mut().push(h.map(|h| h.link.href.clone()));
+                });
+                *slot_in.borrow_mut() = Some(handle);
+                container
+            },
+            None::<fn(&mut RenderScope) -> NodeHandle>,
+        );
+        root
+    });
+    app.mount_component(800.0, 600.0);
+    app.resolve_and_repaint(800.0, 600.0);
+    let handle = slot.borrow_mut().take().unwrap();
+    let (x0, y, h) = app.editor_caret_point(&handle, Pos(5)).unwrap();
+    drop(handle);
+    pointer_move(&mut app, (x0 + 2.0, y + h / 2.0));
+    assert_eq!(calls.borrow().len(), 1, "positive control: hover entered");
+
+    visible.set(false);
+    app.resolve_and_repaint(800.0, 600.0);
+    let wanted_after_unmount = crate::editor::link_hover_wanted();
+    pointer_move(&mut app, (700.0, 500.0));
+    let calls = calls.borrow().clone();
+    (calls, wanted_after_unmount)
+}
+
+/// Unmount is silent (#147/#183): an editor unmounted while one of its links
+/// is hovered is not called back on the next move. Before the fix the
+/// registry's strong handle delivered `on_link_hover(None)` into the disposed
+/// scope, and this read of a freed signal panicked (review of #892, D1).
+#[test]
+fn unmount_while_hovered_does_not_call_back_into_freed_state() {
+    let (calls, _) = unmount_while_hovered(true);
+    assert_eq!(calls, vec![Some("pimble:a/b".to_string())]);
+}
+
+/// The same with a `try_get` read, so the log is visible: exactly the enter,
+/// no `None` after the unmount, and the unmounted editor no longer counted in
+/// `link_hover_wanted` from the unmount on — not from the next move.
+#[test]
+fn unmount_while_hovered_delivers_nothing_and_releases_the_count() {
+    let (calls, wanted_after_unmount) = unmount_while_hovered(false);
+    assert_eq!(
+        calls,
+        vec![Some("pimble:a/b".to_string())],
+        "no `None` delivered to the unmounted editor"
+    );
+    assert!(
+        !wanted_after_unmount,
+        "the unmount itself released the editor's hover count"
+    );
 }

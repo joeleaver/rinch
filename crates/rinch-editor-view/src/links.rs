@@ -203,6 +203,33 @@ mod tests {
         set_link_hover(Some(1), None);
     }
 
+    /// Unmounting an editor while one of its links is hovered forgets the
+    /// hover **silently**: the next move anywhere does not call the unmounted
+    /// editor back (its callback's captures belong to the disposed scope), and
+    /// the editor stops counting in `link_hover_wanted` at the unmount.
+    #[test]
+    fn unregistering_a_hovered_editor_forgets_the_hover_without_a_call() {
+        use crate::registry::{register_editor, unregister_editor};
+        let h = editor();
+        let calls = record(&h);
+        register_editor(31, 9, h.clone());
+        set_link_hover(Some(31), Some((h.clone(), hover(&h, 4))));
+        assert_eq!(calls.borrow().len(), 1, "positive control: entered");
+
+        unregister_editor(31, 9);
+        drop(h);
+        assert!(
+            !link_hover_wanted(),
+            "the hover entry no longer keeps the unmounted editor counted"
+        );
+        set_link_hover(Some(31), None);
+        assert_eq!(
+            *calls.borrow(),
+            vec![Some("pimble:a/b".to_string())],
+            "no `None` delivered to the unmounted editor"
+        );
+    }
+
     #[test]
     fn link_hover_is_wanted_only_while_an_editor_has_a_callback() {
         let h = editor();

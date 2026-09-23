@@ -198,10 +198,44 @@ pub fn register_editor(doc_key: u64, container_id: usize, handle: EditorHandle) 
 /// driver already drops windows for editors no longer in [`all_editors`] on its
 /// next sweep, and a stale window is never read in between (it is only consulted
 /// for currently-registered editors). So removal from the registry is sufficient.
+///
+/// It also forgets a link hover the editor was holding, **without** calling its
+/// `on_link_hover` back. An unmount is silent, as the focus registry's is
+/// (#147/#183): the callback's captures belong to the scope being disposed, so a
+/// `None` delivered on the next pointer move would read freed signals. Dropping
+/// the entry here is also what releases the editor's count in
+/// [`link_hover_wanted`] at the unmount rather than at the next move, since the
+/// entry held a strong handle.
 pub fn unregister_editor(doc_key: u64, container_id: usize) {
-    EDITORS.with(|e| {
-        e.borrow_mut()
-            .retain(|(dk, id, _)| !(*dk == doc_key && *id == container_id))
+    let removed: Vec<EditorHandle> = EDITORS.with(|e| {
+        let mut e = e.borrow_mut();
+        let mut removed = Vec::new();
+        e.retain(|(dk, id, h)| {
+            let hit = *dk == doc_key && *id == container_id;
+            if hit {
+                removed.push(h.clone());
+            }
+            !hit
+        });
+        removed
+    });
+    if removed.is_empty() {
+        return;
+    }
+    // Taken out of the borrow and dropped after it: dropping the last handle
+    // runs `EditorCore`'s `Drop`, which must not find `LINK_HOVER` borrowed.
+    let _forgotten: Vec<_> = LINK_HOVER.with(|h| {
+        let mut h = h.borrow_mut();
+        let mut forgotten = Vec::new();
+        let mut i = 0;
+        while i < h.len() {
+            if removed.iter().any(|r| r.same_editor(&h[i].1)) {
+                forgotten.push(h.remove(i));
+            } else {
+                i += 1;
+            }
+        }
+        forgotten
     });
 }
 
