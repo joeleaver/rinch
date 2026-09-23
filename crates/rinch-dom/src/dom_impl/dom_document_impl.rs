@@ -951,6 +951,28 @@ impl DomDocument for RinchDocument {
         caret_position_for_offset(self, node_id, byte_offset)
     }
 
+    fn query_caret_rect(&self, node_id: u64, byte_offset: usize) -> Option<(f32, f32, f32)> {
+        let id = node_id as usize;
+        if let Some(rect) = self.text_caret_window_rect(id, byte_offset) {
+            return Some(rect);
+        }
+        // No text geometry. For an element with no text at all (an empty
+        // paragraph) that is its nature: the editor view paints the caret at the
+        // block's own box origin, the box's height tall (clamped the same way,
+        // `RinchDomEditorView::empty_block_caret`). Text without geometry is
+        // text not laid out yet (edited since the last layout), and has no
+        // answer until the next one.
+        if !self.text_content(NodeId(id)).unwrap_or_default().is_empty() {
+            return None;
+        }
+        let node = self.tree.nodes.get(id)?;
+        let bh = node.layout.height;
+        let h = if (4.0..=80.0).contains(&bh) { bh } else { 18.0 };
+        let (x, y) = crate::paint::point_from_painted_box(&self.tree, id, 1.0, 0.0, 0.0);
+        let (_, y2) = crate::paint::point_from_painted_box(&self.tree, id, 1.0, 0.0, h as f64);
+        Some((x as f32, y as f32, (y2 - y).abs() as f32))
+    }
+
     fn query_selection_rects(
         &self,
         node_id: u64,
@@ -1611,6 +1633,36 @@ impl RinchDocument {
         // last painted in however many moves and resolves land before the
         // next paint (`NodeTree::consume_paint_dirty`), so the region covers
         // the old rect as well as the new one.
+    }
+}
+
+impl RinchDocument {
+    /// The text caret at `byte_offset` in the text-bearing element `node_id`, as
+    /// `(x, y, height)` in logical window pixels: Parley's caret position and the
+    /// glyph's line height, in the element's content box, pushed forward through
+    /// the composed transform of its ancestors (#203), so a `scale()` stretches
+    /// the height too. `None` when the element has no text layout: an empty
+    /// paragraph (for which [`DomDocument::query_caret_rect`] answers the box),
+    /// or text changed since the last layout.
+    pub fn text_caret_window_rect(
+        &self,
+        node_id: usize,
+        byte_offset: usize,
+    ) -> Option<(f32, f32, f32)> {
+        let (local_x, local_y) = self.query_caret_position(node_id as u64, byte_offset)?;
+        let height = self
+            .query_glyph_bounds(node_id as u64, byte_offset)
+            .map(|g| g.height)
+            .unwrap_or(18.0);
+        let node = self.tree.get(node_id)?;
+        let pad_l = node.computed_style.padding_left.to_px();
+        let pad_t = node.computed_style.padding_top.to_px();
+        let fwd = |lx: f32, ly: f32| {
+            crate::paint::point_from_painted_box(&self.tree, node_id, 1.0, lx as f64, ly as f64)
+        };
+        let (cx, cy) = fwd(pad_l + local_x, pad_t + local_y);
+        let (_, cy2) = fwd(pad_l + local_x, pad_t + local_y + height);
+        Some((cx as f32, cy as f32, (cy2 - cy).abs() as f32))
     }
 }
 

@@ -35,6 +35,7 @@ use rinch_editor_collab::{CollabError, CollabSession};
 
 #[cfg(feature = "collaboration")]
 use super::collab::CollabBridge;
+use super::keys::EditorKey;
 use super::links::{LinkClick, LinkHover, LinkSpan};
 use super::registry;
 use super::view::RinchDomEditorView;
@@ -71,6 +72,24 @@ struct EditorCore {
     /// counted in [`registry::link_hover_wanted`], which is what lets a
     /// runtime skip link hover entirely on a pointer move when no editor asked.
     on_link_hover: Option<LinkHoverFn>,
+    /// Offered every key press before the editor acts on it — see
+    /// [`EditorHandle::on_key`]. Cloned out and called with no borrow held.
+    on_key: Option<KeyHook>,
+    /// Told when the selection changes — see
+    /// [`EditorHandle::on_selection_change`]. Cloned out and called with no
+    /// borrow held, by [`CoreMutGuard`]'s drop.
+    on_selection_change: Option<SelectionHook>,
+    /// A change of selection is owed to [`Self::on_selection_change`]: set by
+    /// [`Self::note_selection`] when the stored selection changed and a
+    /// callback is registered, taken by [`CoreMutGuard`]'s drop once the
+    /// borrow is released. Never set while no callback is registered.
+    selection_owed: bool,
+    /// Told when the caret pass moved the overlays — see
+    /// [`EditorHandle::on_caret_moved`]. Called by [`CoreMutGuard`]'s drop.
+    on_caret_moved: Option<Rc<dyn Fn()>>,
+    /// A call is owed to [`Self::on_caret_moved`]; set by
+    /// [`EditorHandle::update_caret`] only while a callback is registered.
+    caret_moved_owed: bool,
     /// Selections captured by asynchronous work still in flight — see
     /// [`SelectionAnchor`]. Empty for every editor that has none, so the
     /// mutation path's carry step is a cheap early return.
@@ -91,6 +110,17 @@ struct EditorCore {
     #[cfg(feature = "collaboration")]
     collab: Option<CollabBridge>,
 }
+
+/// The callbacks a mutable borrow owes on its way out — see [`CoreMutGuard`].
+struct Owed {
+    selection: Option<(SelectionHook, Selection)>,
+    caret_moved: Option<Rc<dyn Fn()>>,
+}
+
+/// See [`EditorHandle::on_key`].
+type KeyHook = Rc<dyn Fn(&EditorKey<'_>) -> bool>;
+/// See [`EditorHandle::on_selection_change`].
+type SelectionHook = Rc<dyn Fn(&Selection)>;
 
 /// Whether a [`EditorCore::commit`] should bring the caret into view.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -206,6 +236,7 @@ impl EditorCore {
         if doc_changed {
             self.carry_anchors(&next.doc, mapping);
         }
+        self.note_selection(&prev.selection, &next.selection);
         self.state = next.clone();
         if let Some(view) = self.view.as_mut() {
             view.update_dom(&prev, &next);
@@ -213,6 +244,36 @@ impl EditorCore {
         #[cfg(feature = "collaboration")]
         self.record_local(&prev, &next);
         Some(doc_changed)
+    }
+
+    /// Owe [`EditorHandle::on_selection_change`] a call if the stored selection
+    /// goes from `prev` to a different `next`. Every place that replaces
+    /// `state` calls this: [`Self::commit`] (every local change) and the remote
+    /// integration. The call itself is made by [`CoreMutGuard`]'s drop, after
+    /// the borrow is released, so a mutation path added later needs nothing
+    /// more than to go through `commit`.
+    ///
+    /// Free when no callback is registered: the comparison is skipped.
+    fn note_selection(&mut self, prev: &Selection, next: &Selection) {
+        if self.on_selection_change.is_some() && prev != next {
+            self.selection_owed = true;
+        }
+    }
+
+    /// Take the callbacks owed, if any: the selection callback with the
+    /// selection to report, and the caret-moved callback. See [`CoreMutGuard`].
+    fn take_owed(&mut self) -> Owed {
+        let selection = std::mem::take(&mut self.selection_owed)
+            .then(|| self.on_selection_change.clone())
+            .flatten()
+            .map(|cb| (cb, self.state.selection.clone()));
+        let caret_moved = std::mem::take(&mut self.caret_moved_owed)
+            .then(|| self.on_caret_moved.clone())
+            .flatten();
+        Owed {
+            selection,
+            caret_moved,
+        }
     }
 
     /// Whether the read-only switch refuses the local change `prev → next`.
@@ -447,9 +508,64 @@ impl<B: std::ops::Deref<Target = EditorCore>> std::ops::Deref for CoreGuard<B> {
     }
 }
 
-impl std::ops::DerefMut for CoreGuard<std::cell::RefMut<'_, EditorCore>> {
+/// A **mutable** borrow of an editor's core: [`CoreGuard`]'s flush rules, plus
+/// the calls a mutable borrow can owe on its way out — the
+/// [`on_selection_change`](EditorHandle::on_selection_change) call, and the
+/// [`on_caret_moved`](EditorHandle::on_caret_moved) one (owed by
+/// [`EditorHandle::update_caret`]).
+///
+/// Every change to the stored selection happens under one of these (local
+/// changes in [`EditorCore::commit`], remote ones in the collaboration
+/// integrate), and [`EditorCore::note_selection`] records it there. The drop
+/// releases the borrow and the flush suppression **first**, then makes the
+/// call, so the callback may re-enter the handle freely — read the document,
+/// move the selection again (which owes, and makes, a call of its own), or run
+/// a command.
+///
+/// A drop that unwinds a panic raised while the borrow was held makes no call.
+/// That is judged against `panicking` at the borrow, not by
+/// `std::thread::panicking()` alone: on `wasm32` a panic aborts without
+/// unwinding, the panic count is never taken back, and every later borrow
+/// would read as unwinding — one caught panic would silence every callback
+/// for the page's lifetime.
+struct CoreMutGuard<'a> {
+    borrow: Option<std::cell::RefMut<'a, EditorCore>>,
+    no_flush: Option<rinch_core::reactive::EffectFlushSuppressed>,
+    /// `std::thread::panicking()` when the borrow was taken.
+    panicking: bool,
+}
+
+impl std::ops::Deref for CoreMutGuard<'_> {
+    type Target = EditorCore;
+    fn deref(&self) -> &EditorCore {
+        self.borrow.as_deref().expect("held until drop")
+    }
+}
+
+impl std::ops::DerefMut for CoreMutGuard<'_> {
     fn deref_mut(&mut self) -> &mut EditorCore {
-        &mut self.borrow
+        self.borrow.as_deref_mut().expect("held until drop")
+    }
+}
+
+impl Drop for CoreMutGuard<'_> {
+    fn drop(&mut self) {
+        let Some(owed) = self.borrow.as_deref_mut().map(EditorCore::take_owed) else {
+            return;
+        };
+        // Release in field order — the borrow, then the suppression — before
+        // any user code runs.
+        self.borrow = None;
+        self.no_flush = None;
+        if std::thread::panicking() && !self.panicking {
+            return;
+        }
+        if let Some((cb, selection)) = owed.selection {
+            cb(&selection);
+        }
+        if let Some(cb) = owed.caret_moved {
+            cb();
+        }
     }
 }
 
@@ -463,27 +579,27 @@ impl EditorHandle {
         }
     }
 
-    /// Borrow the core mutably; see [`CoreGuard`].
-    fn core_mut(&self) -> CoreGuard<std::cell::RefMut<'_, EditorCore>> {
+    /// Borrow the core mutably; see [`CoreGuard`] and [`CoreMutGuard`].
+    fn core_mut(&self) -> CoreMutGuard<'_> {
         rinch_core::reactive::flush_pending_effects();
         let no_flush = rinch_core::reactive::suppress_effect_flush();
-        CoreGuard {
-            borrow: self.inner.borrow_mut(),
-            _no_flush: no_flush,
+        CoreMutGuard {
+            borrow: Some(self.inner.borrow_mut()),
+            no_flush: Some(no_flush),
+            panicking: std::thread::panicking(),
         }
     }
 
     /// [`Self::core_mut`], answering `Err` instead of panicking when the core
     /// is already borrowed. Only the collaboration methods need the soft form.
     #[cfg_attr(not(feature = "collaboration"), allow(dead_code))]
-    fn try_core_mut(
-        &self,
-    ) -> Result<CoreGuard<std::cell::RefMut<'_, EditorCore>>, std::cell::BorrowMutError> {
+    fn try_core_mut(&self) -> Result<CoreMutGuard<'_>, std::cell::BorrowMutError> {
         rinch_core::reactive::flush_pending_effects();
         let no_flush = rinch_core::reactive::suppress_effect_flush();
-        Ok(CoreGuard {
-            borrow: self.inner.try_borrow_mut()?,
-            _no_flush: no_flush,
+        Ok(CoreMutGuard {
+            borrow: Some(self.inner.try_borrow_mut()?),
+            no_flush: Some(no_flush),
+            panicking: std::thread::panicking(),
         })
     }
 }
@@ -518,6 +634,11 @@ impl EditorHandle {
                 on_change: None,
                 on_link_click: None,
                 on_link_hover: None,
+                on_key: None,
+                on_selection_change: None,
+                selection_owed: false,
+                on_caret_moved: None,
+                caret_moved_owed: false,
                 anchors: Rc::new(RefCell::new(AnchorMap::default())),
                 read_only: false,
                 scroll: ScrollGate::default(),
@@ -549,6 +670,11 @@ impl EditorHandle {
                 on_change: None,
                 on_link_click: None,
                 on_link_hover: None,
+                on_key: None,
+                on_selection_change: None,
+                selection_owed: false,
+                on_caret_moved: None,
+                caret_moved_owed: false,
                 anchors: Rc::new(RefCell::new(AnchorMap::default())),
                 read_only: false,
                 scroll: ScrollGate::default(),
@@ -909,6 +1035,176 @@ impl EditorHandle {
     /// Whether `self` and `other` are handles to the same editor.
     pub(crate) fn same_editor(&self, other: &EditorHandle) -> bool {
         Rc::ptr_eq(&self.inner, &other.inner)
+    }
+
+    /// Register a callback **offered every key press** in this editor before
+    /// the editor acts on it. Replaces any previously registered callback.
+    ///
+    /// It is called for each key press the focused editor receives, **before**
+    /// caret movement, table-cell Tab, the clipboard chords, the keymap and text
+    /// insertion. Returning `true` consumes the key: the editor does nothing
+    /// with it (and in the browser the `keydown` is `preventDefault`ed and
+    /// stopped, as for a key the editor handles itself). Returning `false`
+    /// leaves the key to the editor exactly as if no callback were registered.
+    /// That is what an autocomplete popup needs — Up/Down/Enter/Tab/Escape
+    /// drive the popup while it is open and the caret otherwise:
+    ///
+    /// ```ignore
+    /// editor.on_key(move |key| {
+    ///     if !picker.is_open() {
+    ///         return false;
+    ///     }
+    ///     match key.key {
+    ///         "ArrowDown" => picker.next(),
+    ///         "ArrowUp" => picker.previous(),
+    ///         "Enter" | "Tab" => picker.accept(),
+    ///         "Escape" => picker.close(),
+    ///         _ => return false, // typing goes on narrowing the list
+    ///     }
+    ///     true
+    /// });
+    /// ```
+    ///
+    /// **What is offered.** A key press the platform delivers as a key event
+    /// while this editor holds the keyboard, auto-repeats included
+    /// ([`EditorKey::repeat`]), in a read-only editor too. On desktop an app's
+    /// document-wide keyboard interceptor (`set_keyboard_interceptor`) runs
+    /// first and may take the key before any editor sees it. **Not offered**:
+    /// a key pressed while an IME composition is in progress (the input method
+    /// owns it, and the composed text arrives as a commit, which is typing); in
+    /// the browser, a soft keyboard's input, which reaches the page as
+    /// `beforeinput` rather than as keys (`key` `"Unidentified"` or `"Process"`
+    /// keys are not offered either); a key released (only presses are).
+    ///
+    /// The callback runs with no internal borrow held, so it may re-enter the
+    /// handle — read the selection, or replace the typed trigger with a link
+    /// through [`update`](Self::update) before consuming Enter.
+    pub fn on_key(&self, cb: impl Fn(&EditorKey<'_>) -> bool + 'static) {
+        self.core_mut().on_key = Some(Rc::new(cb));
+    }
+
+    /// Offer a key press to the [`on_key`](Self::on_key) callback; `true` when
+    /// the callback consumed it. The platform runtime calls this before it
+    /// acts on the key. Answers `false` without calling anything when no
+    /// callback is registered, or while an IME composition is shown (the key
+    /// is the input method's). The callback runs with no borrow held.
+    pub fn offer_key(&self, key: &EditorKey<'_>) -> bool {
+        let cb = {
+            let core = self.core();
+            if core
+                .view
+                .as_ref()
+                .is_some_and(RinchDomEditorView::is_composing)
+            {
+                return false;
+            }
+            core.on_key.clone()
+        };
+        cb.is_some_and(|cb| cb(key))
+    }
+
+    /// Register a callback told **whenever the selection changes**. Replaces
+    /// any previously registered callback.
+    ///
+    /// It is called with the new selection after every change that leaves the
+    /// selection different from what it was: typing (the caret moves on),
+    /// deleting, a click, a drag-select, the arrow keys, a command, an
+    /// [`update`](Self::update) or [`set_selection`](Self::set_selection) from
+    /// the app, a [`load_doc`](Self::load_doc) that resets it, and a peer's
+    /// collaborative edit that maps it
+    /// ([`collab_receive`](Self::collab_receive)). It is **not** called when a
+    /// change leaves the selection as it was: a formatting command over a
+    /// range, a click where the caret already is, a remote edit after the
+    /// caret. One change, one call, whichever path made it; an operation that
+    /// is several changes in a row (typing over a table-cell selection first
+    /// clears the cells) may make one call per change. For an edit that also
+    /// changes the document it comes **before** [`on_change`](Self::on_change).
+    ///
+    /// The callback runs with no internal borrow held, so it may re-enter the
+    /// handle: read the document around the caret (the `[[` of a link picker),
+    /// open or close a popup, even move the selection again —
+    /// which calls it again, from inside itself; a callback that always moves
+    /// the selection recurses without end.
+    ///
+    /// Free when no callback is registered.
+    pub fn on_selection_change(&self, cb: impl Fn(&Selection) + 'static) {
+        self.core_mut().on_selection_change = Some(Rc::new(cb));
+    }
+
+    /// Register a callback told **when the runtime has placed this editor's
+    /// caret (or selection highlight) somewhere new on screen**. Replaces any
+    /// previously registered callback.
+    ///
+    /// This is the moment to position a popup from
+    /// [`caret_rect`](Self::caret_rect): it comes from the runtime's caret pass,
+    /// which runs once the text is laid out, so the geometry it reads is the
+    /// geometry being painted. That matters on desktop, where
+    /// [`on_selection_change`](Self::on_selection_change) and
+    /// [`on_key`](Self::on_key) run *before* the next layout and `caret_rect` of
+    /// a block just edited answers `None`:
+    ///
+    /// ```ignore
+    /// // The picker holds the position its trigger (`[[`) began at.
+    /// editor.on_caret_moved({
+    ///     let editor = editor.clone();
+    ///     move || {
+    ///         if let Some(anchor) = picker.anchor()
+    ///             && let Some(r) = editor.caret_rect(anchor)
+    ///         {
+    ///             popup_at.set((r.x, r.y + r.height));
+    ///         }
+    ///     }
+    /// });
+    /// ```
+    ///
+    /// Called for the **focused** editor only (a blurred editor draws no
+    /// caret), after any change that moved its overlays: an edit, a selection
+    /// move, a reflow (a resize, a peer's edit above the caret). Not called
+    /// when a pass leaves them where they were, and not for a scroll, which
+    /// moves the editor rather than the caret within it. The desktop runtime
+    /// may run a caret pass before an event's layout as well as after it, so
+    /// a call can come with the text not yet laid out (`caret_rect` answers
+    /// `None` for a block just edited); the call after the layout follows in
+    /// the same event. The callback runs with no internal borrow held.
+    ///
+    /// Free when no callback is registered.
+    pub fn on_caret_moved(&self, cb: impl Fn() + 'static) {
+        self.core_mut().on_caret_moved = Some(Rc::new(cb));
+    }
+
+    /// Where a caret at `pos` is on screen: its top-left and height, with zero
+    /// width, in the frame an app positions a popup in. On desktop that is
+    /// logical window pixels (the frame of
+    /// [`NodeHandle::bounds_signal`](rinch_core::dom::NodeHandle::bounds_signal)
+    /// and of `position: fixed` / root-level absolutely positioned elements); in
+    /// the browser it is viewport client pixels (`getBoundingClientRect`). It
+    /// is where the editor paints the caret for `pos` — on a blank line, at the
+    /// line's start — whether or not the caret is there now, so an app can
+    /// anchor a popup to where a typed trigger began rather than to the moving
+    /// caret.
+    ///
+    /// `None` when the editor is not mounted, `pos` is not inside a textblock
+    /// (a node selection's boundary, a position between two blocks), or its
+    /// block has not been laid out (a virtualized block never scrolled into
+    /// view).
+    ///
+    /// **As fresh as the last layout.** The browser lays out on demand, so
+    /// the web answer is always current. The desktop runtime lays out once per
+    /// input event, after the editor has handled it, so asked from inside an
+    /// [`on_selection_change`](Self::on_selection_change) or
+    /// [`on_key`](Self::on_key) callback, a position in a block the edit just
+    /// changed answers `None` (other blocks answer where they were painted).
+    /// Position a popup from [`on_caret_moved`](Self::on_caret_moved), which
+    /// comes after the layout, on both platforms.
+    pub fn caret_rect(&self, pos: Pos) -> Option<rinch_core::reactive::ElementBounds> {
+        let core = self.core();
+        let (x, y, height) = core.view.as_ref()?.caret_rect(&core.state.doc, pos)?;
+        Some(rinch_core::reactive::ElementBounds {
+            x,
+            y,
+            width: 0.0,
+            height,
+        })
     }
 
     /// Whether the named command currently applies (toolbar enablement).
@@ -1633,7 +1929,12 @@ impl EditorHandle {
         {
             anchor.scroll_into_view();
         }
-        view.take_overlay_dirty()
+        let moved = view.take_overlay_dirty();
+        if moved && core.on_caret_moved.is_some() {
+            // Called once the guard releases the borrow.
+            core.caret_moved_owed = true;
+        }
+        moved
     }
 
     /// Hide this editor's overlays (caret + selection highlight) because it isn't
@@ -1866,6 +2167,7 @@ impl EditorHandle {
                 // mapped local steps, so there is no mapping to carry an anchor
                 // across; invalidate instead of guessing (see `carry_anchors`).
                 core.carry_anchors(&next.doc, None);
+                core.note_selection(&prev.selection, &next.selection);
                 core.state = next.clone();
                 if let Some(view) = core.view.as_mut() {
                     view.update_dom(&prev, &next);
@@ -5479,5 +5781,272 @@ mod tests {
             *m += u32::from(ed.is_mark_active("bold"));
         });
         assert_eq!(*model.borrow(), 1, "the effect ran after the handler");
+    }
+
+    /// `on_key`, `on_selection_change` and `caret_rect`: what an app needs to
+    /// drive an autocomplete popup from the editor.
+    mod popup_hooks {
+        use super::*;
+        use std::cell::Cell;
+
+        /// `<p>hello</p><p>world</p>`: "hello" is 1..6, "world" is 8..13.
+        fn two_paragraphs() -> Harness {
+            let s = schema();
+            mount(doc_node(&s, vec![para(&s, "hello"), para(&s, "world")]))
+        }
+
+        /// Record every selection the callback reports.
+        fn record(h: &EditorHandle) -> Rc<RefCell<Vec<Selection>>> {
+            let seen: Rc<RefCell<Vec<Selection>>> = Rc::default();
+            h.on_selection_change({
+                let seen = seen.clone();
+                move |sel| seen.borrow_mut().push(sel.clone())
+            });
+            seen
+        }
+
+        /// The text of the document's `i`th block.
+        fn block_text(h: &EditorHandle, i: usize) -> String {
+            let doc = h.doc();
+            let block = doc.child(i);
+            (0..block.child_count())
+                .filter_map(|j| block.child(j).text().map(str::to_string))
+                .collect()
+        }
+
+        fn key(name: &str) -> EditorKey<'_> {
+            EditorKey {
+                key: name,
+                primary: false,
+                ctrl: false,
+                meta: false,
+                shift: false,
+                alt: false,
+                repeat: false,
+            }
+        }
+
+        #[test]
+        fn the_selection_callback_fires_once_per_change_and_never_for_none() {
+            let h = two_paragraphs().handle;
+            h.set_selection(Selection::cursor(Pos(3)));
+            let seen = record(&h);
+
+            h.set_selection(Selection::cursor(Pos(3)));
+            assert!(seen.borrow().is_empty(), "the caret where it already is");
+
+            assert!(h.insert_text("x"));
+            assert_eq!(
+                *seen.borrow(),
+                vec![Selection::cursor(Pos(4))],
+                "typing moves the caret on: one call, with the new selection"
+            );
+
+            assert!(h.move_cursor(CursorMotion::CharRight, false));
+            assert_eq!(seen.borrow().len(), 2, "an arrow key's motion");
+
+            h.set_selection(Selection::text(Pos(1), Pos(4)));
+            seen.borrow_mut().clear();
+            assert!(h.command("toggleBold"));
+            assert!(
+                seen.borrow().is_empty(),
+                "formatting a range leaves the range as it was"
+            );
+
+            // An app's edit after the caret maps nothing.
+            h.set_selection(Selection::cursor(Pos(2)));
+            seen.borrow_mut().clear();
+            assert!(h.update(|st| {
+                let mut tr = st.tr();
+                let bang = Fragment::from_node(st.schema().text("!").unwrap());
+                tr.replace_with(9, 9, bang).ok()?;
+                Some(tr)
+            }));
+            assert!(seen.borrow().is_empty(), "an edit after the caret");
+
+            // ...and one before it moves it.
+            assert!(h.update(|st| {
+                let mut tr = st.tr();
+                let bang = Fragment::from_node(st.schema().text("!").unwrap());
+                tr.replace_with(1, 1, bang).ok()?;
+                Some(tr)
+            }));
+            assert_eq!(*seen.borrow(), vec![Selection::cursor(Pos(3))]);
+
+            // A load that resets the selection is a change of selection.
+            seen.borrow_mut().clear();
+            assert!(h.load_html("<p>other</p>"));
+            assert_eq!(seen.borrow().len(), 1, "a load that moves the caret");
+        }
+
+        #[test]
+        fn a_refused_edit_reports_nothing() {
+            let h = two_paragraphs().handle;
+            h.set_selection(Selection::cursor(Pos(3)));
+            h.set_read_only(true);
+            let seen = record(&h);
+            assert!(!h.insert_text("x"));
+            assert!(seen.borrow().is_empty(), "read-only refused the typing");
+            h.set_selection(Selection::cursor(Pos(4)));
+            assert_eq!(seen.borrow().len(), 1, "the caret still moves, and says so");
+        }
+
+        /// The callback runs with nothing borrowed: it may read, measure, move the
+        /// selection again (which reports again, from inside itself) and edit.
+        #[test]
+        fn the_selection_callback_may_reenter_the_handle() {
+            let h = two_paragraphs().handle;
+            let calls = Rc::new(Cell::new(0u32));
+            h.on_selection_change({
+                let (h, calls) = (h.clone(), calls.clone());
+                move |sel| {
+                    calls.set(calls.get() + 1);
+                    assert_eq!(&h.selection(), sel, "the state already holds it");
+                    let _ = h.doc();
+                    let _ = h.caret_rect(sel.head());
+                    // Snap every caret in the second paragraph to its start:
+                    // one more change, then none.
+                    if sel.head().0 > 8 {
+                        h.set_selection(Selection::cursor(Pos(8)));
+                    }
+                }
+            });
+            h.set_selection(Selection::cursor(Pos(11)));
+            assert_eq!(h.selection(), Selection::cursor(Pos(8)));
+            assert_eq!(calls.get(), 2, "the move, then the callback's own move");
+
+            // An edit from inside the callback, too.
+            h.on_selection_change({
+                let h = h.clone();
+                move |sel| {
+                    if sel.head() == Pos(3) {
+                        assert!(h.insert_text("Z"));
+                    }
+                }
+            });
+            h.set_selection(Selection::cursor(Pos(3)));
+            assert_eq!(block_text(&h, 0), "heZllo", "the callback's edit landed");
+        }
+
+        #[test]
+        fn a_key_is_offered_to_the_callback_and_its_answer_decides() {
+            let h = two_paragraphs().handle;
+            assert!(!h.offer_key(&key("ArrowDown")), "no callback: not consumed");
+
+            let seen: Rc<RefCell<Vec<String>>> = Rc::default();
+            h.on_key({
+                let (h, seen) = (h.clone(), seen.clone());
+                move |k| {
+                    seen.borrow_mut().push(k.key.to_string());
+                    // Re-entering mutably from the callback must not panic.
+                    if k.key == "Enter" {
+                        assert!(h.insert_text("!"));
+                    }
+                    matches!(k.key, "ArrowDown" | "Enter")
+                }
+            });
+            assert!(h.offer_key(&key("ArrowDown")));
+            assert!(h.offer_key(&key("Enter")));
+            assert!(!h.offer_key(&key("a")), "declined: the editor's to handle");
+            assert_eq!(*seen.borrow(), ["ArrowDown", "Enter", "a"]);
+            assert_eq!(block_text(&h, 0), "!hello");
+        }
+
+        /// A panic already in progress when the handle is borrowed does not
+        /// silence the callbacks. On `wasm32` that is every borrow after any
+        /// panic the page survived: a panic there aborts without unwinding and
+        /// the panic count is never taken back. Simulated natively by editing
+        /// from a destructor that runs while a panic unwinds.
+        #[test]
+        fn a_panic_in_progress_before_the_borrow_does_not_silence_callbacks() {
+            struct EditOnDrop(EditorHandle);
+            impl Drop for EditOnDrop {
+                fn drop(&mut self) {
+                    assert!(std::thread::panicking());
+                    self.0.set_selection(Selection::cursor(Pos(4)));
+                }
+            }
+            let h = two_paragraphs().handle;
+            h.set_selection(Selection::cursor(Pos(2)));
+            let seen = record(&h);
+            let edit = EditOnDrop(h.clone());
+            let unwound = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
+                let _edit = edit;
+                panic!("a panic unrelated to the editor");
+            }));
+            assert!(unwound.is_err());
+            assert_eq!(*seen.borrow(), vec![Selection::cursor(Pos(4))]);
+        }
+
+        /// A key pressed during an IME composition belongs to the input method.
+        #[test]
+        fn no_key_is_offered_while_composing() {
+            let h = two_paragraphs().handle;
+            let offered = Rc::new(Cell::new(0u32));
+            h.on_key({
+                let offered = offered.clone();
+                move |_| {
+                    offered.set(offered.get() + 1);
+                    true
+                }
+            });
+            h.ime_set_preedit("ka", None);
+            assert!(!h.offer_key(&key("ArrowDown")));
+            assert_eq!(offered.get(), 0);
+            h.ime_commit("か");
+            assert!(h.offer_key(&key("ArrowDown")));
+            assert_eq!(offered.get(), 1);
+        }
+
+        /// Geometry needs a host that has some: an unmounted editor and the
+        /// geometry-less mock answer `None` (the desktop and web answers are
+        /// pinned in their own crates).
+        #[test]
+        fn caret_rect_is_none_without_geometry() {
+            let unmounted = crate::create_editor();
+            assert!(unmounted.load_html("<p>hello</p>"));
+            assert_eq!(unmounted.caret_rect(Pos(1)), None, "not mounted");
+
+            let h = two_paragraphs().handle;
+            assert_eq!(h.caret_rect(Pos(1)), None, "the mock has no geometry");
+            assert_eq!(h.caret_rect(Pos(0)), None, "not inside a textblock");
+        }
+
+        /// A peer's edit that maps the caret reports it; one after the caret
+        /// does not.
+        #[cfg(feature = "collaboration")]
+        #[test]
+        fn a_remote_edit_that_moves_the_caret_reports_it() {
+            let s = schema();
+            let host = mount(doc_node(&s, vec![para(&s, "hello")])).handle;
+            let guest = mount(doc_node(&s, vec![para(&s, "")])).handle;
+            let wire: Rc<RefCell<Vec<Vec<u8>>>> = Rc::default();
+            let snapshot = host
+                .start_collaboration_host({
+                    let wire = wire.clone();
+                    move |d| wire.borrow_mut().push(d)
+                })
+                .unwrap();
+            guest.start_collaboration_guest(&snapshot, |_| {}).unwrap();
+            guest.set_selection(Selection::cursor(Pos(3)));
+            let seen = record(&guest);
+            let deliver = || {
+                for d in wire.borrow_mut().drain(..) {
+                    guest.collab_receive(&d);
+                }
+            };
+
+            host.set_selection(Selection::cursor(Pos(6)));
+            assert!(host.insert_text("!"));
+            deliver();
+            assert_eq!(block_text(&guest, 0), "hello!");
+            assert!(seen.borrow().is_empty(), "an edit after the caret");
+
+            host.set_selection(Selection::cursor(Pos(1)));
+            assert!(host.insert_text(">"));
+            deliver();
+            assert_eq!(block_text(&guest, 0), ">hello!");
+            assert_eq!(*seen.borrow(), vec![Selection::cursor(Pos(4))]);
+        }
     }
 }
