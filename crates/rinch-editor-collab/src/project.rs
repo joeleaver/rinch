@@ -219,7 +219,8 @@ impl CollabDoc {
 /// link's range in the CRDT while the model holds it as plain text. Resynced per span,
 /// that clears the whole link and writes it again, and the fresh write reverts a peer's
 /// concurrent change to it (the #193 shape). Resynced per char, only the typed char is
-/// cleared.
+/// cleared — and a char typed right after one is inserted outside the range to begin
+/// with (`splice_min_with_marks`), so usually there is nothing left to clear.
 ///
 /// [`MarkSpec::inclusive`]: rinch_editor_core::MarkSpec::inclusive
 fn non_inclusive_marks(node: &Node, out: &mut BTreeSet<String>) {

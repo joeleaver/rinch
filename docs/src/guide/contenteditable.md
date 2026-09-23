@@ -345,10 +345,11 @@ pixels on desktop, the frame `bounds_signal()` and root-level absolutely positio
 popups use; viewport client pixels (`getBoundingClientRect`) in the browser.
 
 Both are decided by **the character under the pointer**, not by the nearest caret
-position. The two differ at a link's edges: a caret just after a link's last letter
-is "in" the link (`active_link_href()` answers it, and typing there extends the
-link), but the pointer over the space after the link is not on it, and the pointer
-over the right half of the last letter is.
+position. The two differ at a link's edges: a caret at either edge of a link is not
+in it (a link is non-inclusive, so `active_link_href()` answers `None` there and
+typing there is plain), but the pointer over the right half of the link's last
+letter, or over its first letter, is on it — and the pointer over the space after
+the link is not.
 
 Not reported: a double or triple press (they select a word or a block), the
 secondary button (the context menu keeps its own link handling), a press on an image
@@ -746,6 +747,13 @@ other (#860). And **splitting a block right before an image** (Enter) while
 someone else changes that image's attributes loses the change — a split moves
 content, and this is true of any mark change on moved text, not only images
 (#861).
+
+Typing right after a link while someone else changes that link at the same moment
+keeps their change — a new `href`, removing the link, or extending it over the text
+after it — but the character you typed may end up **inside** their link rather than
+plain, because it sits exactly where their change starts or ends. The same is true when they link the text right after yours to
+something else. Nothing is lost and both editors converge; the typed character is
+just formatted where you did not mean it.
 
 A runnable two-pane loopback (both editors in one window, no network)
 lives at `examples/collab-editor-demo/src/main.rs`.

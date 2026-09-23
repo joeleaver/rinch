@@ -240,8 +240,12 @@ example schema and tiptap, so for a link:
 
 `is_mark_active`, `marks_at` and `Transaction::add_stored_mark` read the same rule.
 With collaboration on, the typed character is written to the CRDT outside the link
-as well (a non-inclusive mark is resynced per character, so a peer's concurrent
-change to the link survives).
+as well, in a way that leaves the link's own formatting untouched, so a peer's
+concurrent change to the link — a new `href`, removing it, extending it over the
+text after it — survives. What such a concurrent change *can* do is take the typed
+character with it: when the peer re-writes the link or links the text after it at
+the same moment, the character may end up inside the peer's link. Both editors
+still end up with the same document.
 
 ## Commands, keymap, input rules
 
