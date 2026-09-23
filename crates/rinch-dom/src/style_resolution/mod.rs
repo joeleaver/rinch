@@ -1203,6 +1203,20 @@ impl RinchDocument {
             // re-runs the IFC pass. See `apply_empty_block_line_floor`.
             crate::ifc::apply_empty_block_line_floor(&self.tree.nodes[node_id], &mut taffy_style);
 
+            // A spliced `display: contents` wrapper's Taffy style is not built
+            // from its computed values: `sync_display_contents` owns it and
+            // writes `Display::None`, while `to_taffy_style` maps `contents` to
+            // `Display::Flex`. Comparing those two made every restyle of every
+            // wrapper — `rsx!` emits one per reactive text and per
+            // if/for/match/component site, and a hover invalidates a whole
+            // subtree — look like a display change, set `ifc_dirty`, and
+            // re-run the whole-document structural pass. Compare like with
+            // like. A real crossing into or out of `contents` is caught by the
+            // computed-display check above, not by this comparison.
+            if self.tree.nodes[node_id].taffy_style_owned_by_contents_splice() {
+                taffy_style = crate::node::display_contents_taffy_style();
+            }
+
             // Only call set_style if the Taffy style actually changed.
             // This avoids marking the Taffy tree dirty for paint-only changes
             // (e.g. background-color on hover) which don't affect layout.

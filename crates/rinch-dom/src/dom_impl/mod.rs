@@ -786,6 +786,14 @@ impl RinchDocument {
                 // transition frame collapses a blockified `<input>` to nothing.
                 crate::ifc::apply_empty_block_line_floor(node, &mut taffy_style);
 
+                // A `display: contents` wrapper's Taffy style belongs to
+                // `sync_display_contents`, as in `apply_stylo_styles_to_taffy`;
+                // rebuilding it from the computed values would give the wrapper
+                // a `Display::Flex` box of its own.
+                if node.taffy_style_owned_by_contents_splice() {
+                    taffy_style = crate::node::display_contents_taffy_style();
+                }
+
                 // Only call set_style if the Taffy style actually changed.
                 // set_style() internally calls mark_dirty() which propagates up
                 // the entire ancestor chain — unconditional calls here were causing
@@ -927,6 +935,11 @@ impl RinchDocument {
                 // without this an animation frame drops the childless-block line
                 // floor and the element collapses to zero height.
                 crate::ifc::apply_empty_block_line_floor(node, &mut taffy_style);
+
+                // Same ownership rule as `tick_transitions`.
+                if node.taffy_style_owned_by_contents_splice() {
+                    taffy_style = crate::node::display_contents_taffy_style();
+                }
 
                 let taffy_style_changed = match self.tree.taffy.style(taffy_id) {
                     Ok(old_taffy_style) => old_taffy_style != &taffy_style,
