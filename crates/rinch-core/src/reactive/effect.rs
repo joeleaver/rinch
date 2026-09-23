@@ -455,6 +455,7 @@ pub(super) fn run_effect(id: ObserverId) {
             ObserverGuard::push(id)
         };
 
+        super::count_effect_run();
         body();
         drop(body);
 

@@ -221,6 +221,7 @@ impl<T: 'static> Signal<T> {
     /// signal run in the order they were created — see the "Execution order"
     /// section of the [`reactive`](crate::reactive) module docs.
     fn notify(&self) {
+        super::count_signal_notify();
         let subscribers: Vec<ObserverId> = SIGNAL_STORE.with(|store| {
             store
                 .borrow()
