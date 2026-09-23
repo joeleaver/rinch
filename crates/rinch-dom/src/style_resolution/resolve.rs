@@ -755,6 +755,11 @@ impl RinchDocument {
             .iter()
             .any(|&c| self.tree.nodes.get(c).is_some_and(|n| n.is_pseudo_element));
         if had_pseudo || has_pseudo {
+            // The generated children are new nodes (or gone): a structural
+            // change to this node's child list, which the scoped structural
+            // pass has to be told about like any other.
+            self.tree
+                .seed_ifc(node_id, crate::ifc_scope::IfcSeed::Children);
             if let Some(root) = self.tree.nodes[node_id].ifc_root {
                 self.invalidate_ifc_root(root);
             }

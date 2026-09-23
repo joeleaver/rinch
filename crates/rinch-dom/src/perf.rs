@@ -154,11 +154,31 @@ define_counters! {
     LayoutSkippedPaintOnly = "layout_skipped_paint_only",
     /// ...that skipped Taffy but rebuilt dirty IFC text layouts.
     LayoutSkippedTextOnly = "layout_skipped_text_only",
-    /// Whole-document IFC structural setup passes (the `ifc_dirty` branch:
-    /// `sync_display_contents` + `setup_inline_formatting_contexts` +
-    /// `sync_text_contexts` + `compute_inline_block_layouts`). Same semantics as
-    /// the never-reset `NodeTree::ifc_setup_passes` counter (#875), per frame.
+    /// IFC structural setup passes, whole-document or scoped
+    /// (`sync_display_contents` + `setup_inline_formatting_contexts` +
+    /// `sync_text_contexts` + atomic-inline sizing). Same semantics as the
+    /// never-reset `NodeTree::ifc_setup_passes` counter (#875), per frame.
     IfcSetupPasses = "ifc_setup_passes",
+    /// ...of which covered the **whole document**. Each is also counted under
+    /// one `ifc_full_*` reason below. The common route is the scoped pass;
+    /// a full one is the fallback for a change that did not say where it was.
+    IfcFullPasses = "ifc_full_passes",
+    /// ...the first layout of a document.
+    IfcFullInitial = "ifc_full_initial",
+    /// ...a whole-document restyle (`recompute_all_styles_full`: a theme or
+    /// dark-mode change), which re-derives every node's display.
+    IfcFullTheme = "ifc_full_theme",
+    /// ...`NodeTree::ifc_dirty` was written directly, with no reason and no
+    /// seed — a test forcing a pass, or a structural change nobody scoped.
+    IfcFullUnattributed = "ifc_full_unattributed",
+    /// ...of which were **scoped** (`crate::ifc_scope`): only the formatting
+    /// containers a mutation reached were set up again.
+    IfcScopedPasses = "ifc_scoped_passes",
+    /// Formatting containers a scoped pass set up again.
+    IfcScopeContainers = "ifc_scope_containers",
+    /// Nodes in those containers' scope: the containers, every node of their
+    /// inline/`display: contents` region, and the boxes directly under it.
+    IfcScopeNodes = "ifc_scope_nodes",
     /// Root Taffy computes (`run_taffy_compute`). Mirrors
     /// `NodeTree::taffy_computes`.
     TaffyRootComputes = "taffy_root_computes",

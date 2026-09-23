@@ -1223,7 +1223,8 @@ impl RinchDocument {
                 // while the image was still loading is what stays, however many
                 // frames the wake produces. This is the invalidation that makes
                 // the decoded size actually reach the box.
-                self.tree.ifc_dirty = true;
+                self.tree
+                    .seed_ifc(node_id, crate::ifc_scope::IfcSeed::Subtree);
 
                 layout_changed = true;
             }

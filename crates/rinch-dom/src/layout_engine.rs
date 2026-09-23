@@ -248,6 +248,13 @@ impl RinchDocument {
         // node gets re-measured, avoiding the 80ms full-tree Parley rebuild.
         if self.tree.ifc_dirty {
             self.tree.ifc_setup_passes += 1;
+            self.tree.perf.bump(Counter::IfcFullPasses);
+            match self.tree.ifc_full_reason.take() {
+                Some(reason) => self.tree.perf.bump(reason.counter()),
+                None => self.tree.perf.bump(Counter::IfcFullUnattributed),
+            }
+            // A whole-document pass covers every seed recorded since the last.
+            self.tree.ifc_seeds.clear();
             // Structural change — clear dirty_ifc_text_roots so
             // build_ifc_layouts considers ALL IFC roots (and rebuilds every
             // one without a valid `text_layout`). Without this, stale entries
@@ -268,10 +275,10 @@ impl RinchDocument {
             self.tree.dirty_ifc_text_roots.clear();
 
             // Handle display:contents by rebuilding taffy children for affected nodes
-            self.sync_display_contents();
+            self.sync_display_contents(None);
 
             // Detect and set up inline formatting contexts
-            self.setup_inline_formatting_contexts();
+            self.setup_inline_formatting_contexts(None);
 
             // Sync font-size and the rest of the inherited text properties from
             // parent elements into text node contexts.
@@ -305,9 +312,41 @@ impl RinchDocument {
             // Which roots did this change actually reach? Last, because the
             // signature folds in each atomic inline's size, which the line
             // above has only just decided.
-            self.refresh_ifc_signatures();
+            self.refresh_ifc_signatures(None);
 
             self.tree.ifc_dirty = false;
+            self.tree.perf.add_elapsed(Counter::TimeIfcSetupNs, t_ifc);
+        } else if !self.tree.ifc_seeds.is_empty() {
+            // The scoped structural pass (`crate::ifc_scope`): the same passes,
+            // in the same order, over only the formatting containers the
+            // recorded mutations reached. Everything else keeps its splices,
+            // boxes, marks and measures, and so its Taffy cache.
+            let t_ifc = web_time::Instant::now();
+            let scope = self.compute_ifc_scope();
+            if !scope.is_empty() {
+                self.tree.ifc_setup_passes += 1;
+                self.tree.perf.bump(Counter::IfcSetupPasses);
+                self.tree.perf.bump(Counter::IfcScopedPasses);
+                self.tree
+                    .perf
+                    .add(Counter::IfcScopeContainers, scope.containers.len() as u64);
+                self.tree
+                    .perf
+                    .add(Counter::IfcScopeNodes, scope.nodes.len() as u64);
+                self.sync_display_contents(Some(&scope));
+                self.setup_inline_formatting_contexts(Some(&scope));
+                // Before the atomic inlines are sized, for #625's reason (see
+                // the whole-document branch above).
+                self.sync_scoped_text_contexts(&scope);
+                self.measure_scoped_atomic_inlines(&scope);
+                self.refresh_ifc_signatures(Some(&scope));
+            } else {
+                self.sync_dirty_text_contexts();
+            }
+            // What the scope queued (the atomic inlines around its
+            // containers), what `refresh_ifc_signatures` queued, and what any
+            // other change queued since the last pass.
+            self.remeasure_dirty_atomic_inlines();
             self.tree.perf.add_elapsed(Counter::TimeIfcSetupNs, t_ifc);
         } else {
             // IFC structure unchanged — only sync text contexts for dirty nodes
@@ -532,7 +571,19 @@ impl RinchDocument {
         let font_cx = &mut self.font_cx;
         let layout_cx = &mut self.layout_cx;
         let nodes = &self.tree.nodes;
-        let dirty_ifc_text_roots = &self.tree.dirty_ifc_text_roots;
+        // A root in `dirty_ifc_text_roots` must not be answered from a size
+        // measured before it went dirty. That used to be spelled as a bypass —
+        // every measure of a dirty root shaped, however many times Taffy asked
+        // it the same width in one compute (four shapes for one edited row
+        // where one would do). Dropping the dirty roots' old sizes here says
+        // the same thing and lets this compute reuse what it shapes itself.
+        // (Most routes into the set already dropped them; the virtualized
+        // editor's materialisation is one that does not.)
+        for root in &self.tree.dirty_ifc_text_roots {
+            if let Some(entry) = self.tree.ifc_measure_cache.get_mut(root) {
+                entry.sizes.clear();
+            }
+        }
 
         // Cache for text layouts built during measurement.
         // Key: (node_id, wrap_width as bits) - wrap width is part of key since layout depends on it
@@ -700,7 +751,7 @@ impl RinchDocument {
 
                             // Check persistent IFC measure cache — skip expensive
                             // Parley rebuild if this root's text hasn't changed.
-                            if !dirty_ifc_text_roots.contains(&root_id) {
+                            {
                                 let cached = ifc_measure_cache
                                     .borrow()
                                     .get(&root_id)
@@ -801,6 +852,35 @@ impl RinchDocument {
     /// [`TextContextFields`] is the property list, shared with
     /// [`Self::sync_dirty_text_contexts`] so the full and incremental passes
     /// cannot disagree about what a text node is measured with.
+    /// [`Self::sync_text_contexts`] over a scoped pass's regions (the text
+    /// nodes whose parent — and so whose inherited text style — can have
+    /// changed with the structure), plus whatever a restyle queued in
+    /// `dirty_text_contexts`.
+    pub(crate) fn sync_scoped_text_contexts(&mut self, scope: &crate::ifc_scope::IfcScope) {
+        let mut updates: Vec<(taffy::NodeId, usize, TextContextFields)> = Vec::new();
+        for &(id, _, _) in &scope.region {
+            let Some(node) = self.tree.nodes.get(id) else {
+                continue;
+            };
+            if !matches!(&node.kind, NodeKind::Text(_)) {
+                continue;
+            }
+            let Some(taffy_id) = node.taffy_id else {
+                continue;
+            };
+            let parent = node.parent.and_then(|p| self.tree.nodes.get(p));
+            updates.push((taffy_id, id, TextContextFields::from_parent(parent)));
+        }
+        for (taffy_id, node_id, fields) in updates {
+            if let Some(ctx) = self.tree.taffy.get_node_context_mut(taffy_id)
+                && let NodeContext::Text(tm) = ctx
+            {
+                fields.apply_to(tm, node_id);
+            }
+        }
+        self.sync_dirty_text_contexts();
+    }
+
     pub(crate) fn sync_text_contexts(&mut self) {
         // Every text node is refreshed below, so nothing stays owed.
         self.tree.dirty_text_contexts.clear();
@@ -1336,7 +1416,17 @@ impl RinchDocument {
     /// `Node::contents_spliced`). A departed wrapper additionally gets its own
     /// Taffy child list rebuilt, because the splice moved its children's Taffy
     /// ids into the ancestor's list and nothing else gives them back.
-    pub(crate) fn sync_display_contents(&mut self) {
+    ///
+    /// With a `scope` (`crate::ifc_scope`), only the wrappers in the scope's
+    /// regions are looked at. A `display: contents` wrapper is never a
+    /// formatting container, so every wrapper whose splice could have moved —
+    /// its children changed, it moved, it crossed into or out of `contents` —
+    /// is in the region of a container of the scope, and so is the ancestor
+    /// that holds its splice. Everything else keeps its splice, and the rows
+    /// that hold one are not dirtied (they used to be: every wrapper in the
+    /// document was re-spliced, with a `set_children` and a `mark_dirty` per
+    /// child, on every structural change).
+    pub(crate) fn sync_display_contents(&mut self, scope: Option<&crate::ifc_scope::IfcScope>) {
         use crate::computed_style::values::DisplayValue;
 
         // Find all display:contents nodes and their nearest non-contents ancestors.
@@ -1355,7 +1445,28 @@ impl RinchDocument {
         // children must stop contributing to the flattening ancestor.
         let mut departed_nodes: Vec<usize> = Vec::new();
 
-        for (id, node) in &self.tree.nodes {
+        let candidates: Vec<usize> = match scope {
+            None => self.tree.nodes.iter().map(|(id, _)| id).collect(),
+            // Ascending, as the slab walk visits them. Order matters here and
+            // should not: a wrapper's splice reads `contributes_in_flow_block`
+            // from the *previous* pass (this runs before it is recomputed), so
+            // an element that just stopped being a flex container can read as a
+            // split inline and have its children flattened into the ancestor
+            // — and it is the order in which the affected parents are rebuilt
+            // that decides whether its own list gets them back. The scope's
+            // set iterates in hash order; the whole-document pass in id order.
+            // (Found by the random differential, which tripped over exactly
+            // that and orphaned a text node.)
+            Some(scope) => {
+                let mut v: Vec<usize> = scope.nodes.iter().copied().collect();
+                v.sort_unstable();
+                v
+            }
+        };
+        for id in candidates {
+            let Some(node) = self.tree.nodes.get(id) else {
+                continue;
+            };
             // This pass maintains the DOM flattening of **author** wrappers,
             // and asking an anonymous block box which wrapper holds it is not
             // an unanswerable question — it is the wrong one (#566). Its Taffy

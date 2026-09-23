@@ -81,11 +81,16 @@ struct Fixture {
 }
 
 fn build(contents_wrapper: bool) -> Fixture {
-    build_with(contents_wrapper, "")
+    build_with(ROWS, contents_wrapper, "")
 }
 
-/// [`build`] with `extra_css` loaded after the fixture's own sheet.
-fn build_with(contents_wrapper: bool, extra_css: &str) -> Fixture {
+fn build_n(n_rows: usize, contents_wrapper: bool) -> Fixture {
+    build_with(n_rows, contents_wrapper, "")
+}
+
+/// [`build`] with `n_rows` rows and `extra_css` loaded after the fixture's own
+/// sheet.
+fn build_with(n_rows: usize, contents_wrapper: bool, extra_css: &str) -> Fixture {
     let mut doc = RinchDocument::new();
     doc.load_css(CSS);
     if !extra_css.is_empty() {
@@ -97,7 +102,7 @@ fn build_with(contents_wrapper: bool, extra_css: &str) -> Fixture {
     let mut rows = Vec::new();
     let mut texts = Vec::new();
     let mut chips = Vec::new();
-    for i in 0..ROWS {
+    for i in 0..n_rows {
         let row = doc.create_element("div");
         doc.set_attribute(row, "class", "row");
         let span = doc.create_element("span");
@@ -288,6 +293,13 @@ fn every_rinch_dom_counter_fires_somewhere() {
     doc.resolve_layout(VP.0 + 1.0, VP.1);
     // 801 -> 802 flips nothing: only the `vw` user restyles.
     doc.resolve_layout(VP.0 + 2.0, VP.1);
+    // A structural change (scoped), then a bare whole-document request.
+    let extra = doc.create_element("div");
+    doc.append_child(flex, extra);
+    doc.resolve_layout(VP.0 + 2.0, VP.1);
+    doc.tree.ifc_dirty = true;
+    doc.tree.layout_dirty = true;
+    doc.resolve_layout(VP.0 + 2.0, VP.1);
     let mut painter = TinySkiaPainter::new(VP.0 as u32, VP.1 as u32);
     rinch_dom::paint::paint_document(
         &doc.tree,
@@ -328,6 +340,13 @@ fn every_rinch_dom_counter_fires_somewhere() {
         LayoutSkippedPaintOnly,
         LayoutSkippedTextOnly,
         IfcSetupPasses,
+        IfcFullPasses,
+        IfcFullInitial,
+        IfcFullTheme,
+        IfcFullUnattributed,
+        IfcScopedPasses,
+        IfcScopeContainers,
+        IfcScopeNodes,
         TaffyRootComputes,
         TaffyMeasureCalls,
         InlineBlockComputes,
@@ -532,23 +551,26 @@ fn container_class_a_descendant_rule_depends_on() {
     );
 }
 
-/// Append one row to the list. A structural change anywhere still re-runs the
-/// whole-document IFC setup pass, but the pass no longer clears the measure
-/// cache: it compares every root's content signature and drops only the roots
-/// whose content moved — here just the new row (`ifc_signature_changes`), so
-/// **one** root is shaped (`shape_measure_ifc` was ROWS + 1 = 41) and every
-/// other measure is a cache hit.
+/// Append one row to the list. The structural pass is **scoped**
+/// (`rinch_dom::ifc_scope`): it sets up the list and the new row
+/// (`ifc_scope_containers` = 2, `ifc_scope_nodes` = the list, its 41 rows as
+/// stop nodes, and the row's text) and nothing else. So:
 ///
-/// Still more than the minimum:
+/// - no other row's `display: contents` wrapper is re-spliced, so no row is
+///   dirtied, and Taffy asks each old row **once** (`taffy_measure_calls` =
+///   ROWS + the new row's 4; it was four per row, 164) — the same as
+///   `append_one_row_without_wrappers`, which it now equals counter for
+///   counter;
+/// - no chip is re-sized (`inline_block_computes` 0, was ROWS = 40, and
+///   `shape_atomic_inline` 0, was 40): the new row has none, and every other
+///   chip's IFC is outside the scope;
+/// - the new row is shaped **once** (`shape_measure_ifc` 1): its four measures
+///   in the compute share one shape.
 ///
-/// - Taffy still *asks* for every row (`taffy_measure_calls`, four available
-///   spaces per row): `sync_display_contents` re-splices every `display:
-///   contents` wrapper in the document on a structural pass, and the
-///   `set_children` that does it dirties each row's Taffy node. The rows'
-///   cached sizes answer (`ifc_measure_cache_hits`), so it costs a lookup,
-///   not a shape. `append_one_row_without_wrappers` is the same append with
-///   no wrapper to re-splice.
-/// - every chip is still re-sized by its own compute (audit layout F11).
+/// Still more than the minimum: the ROWS measure calls are Taffy's — the
+/// column grew, so the available height every row's final layout is keyed
+/// under changed, and a leaf's cache misses on it even when both its own
+/// dimensions are known — each answered from rinch's cache.
 ///
 /// The style side is now the minimum: the row is cascaded once and the walk
 /// visits the row alone (`style_nodes_visited` 1; a text node carries no
@@ -582,15 +604,16 @@ fn append_one_row() {
             (TaffyStyleChanges, 1),
             (ShapeMeasureIfc, 1),
             (ShapeIfcBuild, 1),
-            (ShapeAtomicInline, 40),
-            (IfcMeasureCacheHits, 163),
+            (IfcMeasureCacheHits, 43),
             (IfcMeasureInvalidations, 2),
             (IfcSignatureChanges, 1),
             (LayoutResolves, 1),
             (IfcSetupPasses, 1),
+            (IfcScopedPasses, 1),
+            (IfcScopeContainers, 2),
+            (IfcScopeNodes, 43),
             (TaffyRootComputes, 1),
-            (TaffyMeasureCalls, 164),
-            (InlineBlockComputes, 40),
+            (TaffyMeasureCalls, 44),
             (PaintNodesVisited, 67),
             (StackingOrderBuilds, 1),
         ],
@@ -606,8 +629,9 @@ fn append_one_row() {
 /// cache — which keys a final layout on its available space even when both
 /// of the leaf's own dimensions are already known — misses and calls the
 /// measure function for the content size. That one is Taffy's, not rinch's.
-/// And no chip is re-shaped (`shape_atomic_inline` 0 against 40): their
-/// detached computes hit Taffy's own cache, since nothing re-spliced them.
+/// No chip is sized at all (`inline_block_computes` 0, was 40 computes that
+/// each hit Taffy's cache): the scoped pass sizes only the atomic inlines it
+/// placed.
 #[test]
 fn append_one_row_without_wrappers() {
     let mut f = build(false);
@@ -635,20 +659,24 @@ fn append_one_row_without_wrappers() {
             (IfcSignatureChanges, 1),
             (LayoutResolves, 1),
             (IfcSetupPasses, 1),
+            (IfcScopedPasses, 1),
+            (IfcScopeContainers, 2),
+            (IfcScopeNodes, 43),
             (TaffyRootComputes, 1),
             (TaffyMeasureCalls, 44),
-            (InlineBlockComputes, 40),
             (PaintNodesVisited, 67),
             (StackingOrderBuilds, 1),
         ],
     );
 }
 
-/// Remove one row: the same whole-document pass as an append. No root's
-/// content changed — the list is not an IFC — so nothing is shaped at all
-/// (`shape_measure_ifc` was ROWS - 1 = 39) and every measure is a hit. The
-/// removed row's chip is detached, yet `inline_block_computes` stays at ROWS:
-/// the atomic-inline scan walks the whole slab, detached subtrees included.
+/// Remove one row: a scoped pass over the list alone (`ifc_scope_containers`
+/// 1, `ifc_scope_nodes` = the list and its 39 remaining rows). Nothing is
+/// shaped, no row's wrapper is re-spliced, so Taffy asks each row once
+/// (`taffy_measure_calls` 39, was 156 = four per row), and no chip is sized
+/// (`inline_block_computes` 0, was ROWS = 40 — the old scan walked the whole
+/// slab, the removed row's detached chip included). The removed subtree is not
+/// set up at all.
 #[test]
 fn remove_one_row() {
     let mut f = build(true);
@@ -661,14 +689,15 @@ fn remove_one_row() {
         "remove one row",
         &s,
         &[
-            (ShapeAtomicInline, 40),
-            (IfcMeasureCacheHits, 156),
+            (IfcMeasureCacheHits, 39),
             (IfcMeasureInvalidations, 1),
             (LayoutResolves, 1),
             (IfcSetupPasses, 1),
+            (IfcScopedPasses, 1),
+            (IfcScopeContainers, 1),
+            (IfcScopeNodes, 40),
             (TaffyRootComputes, 1),
-            (TaffyMeasureCalls, 156),
-            (InlineBlockComputes, 40),
+            (TaffyMeasureCalls, 39),
             (PaintNodesVisited, 65),
             (StackingOrderBuilds, 1),
         ],
@@ -677,8 +706,11 @@ fn remove_one_row() {
 
 /// Change one text node's content: a text-only layout, no structural pass.
 ///
-/// The row's IFC is re-measured — four available spaces, each shaped once
-/// (`taffy_measure_calls` = `shape_measure_ifc` = 4). They were **0** before,
+/// The row's IFC is re-measured — four calls for its four available spaces,
+/// **one** shape (`shape_measure_ifc` 1, the rest `ifc_measure_cache_hits`):
+/// the measure function used to bypass the cache for a dirty root on every
+/// call, and now drops the root's old sizes once, at the start of the compute,
+/// and reuses what it shapes itself. The calls were **0** before #878,
 /// which was bug #878: the text sits in a wrapper inside the row, the
 /// invalidation dropped the row's cached measure but marked no Taffy node the
 /// compute would reach (the wrapper is detached from Taffy), so the compute
@@ -693,8 +725,9 @@ fn set_text_on_one_row() {
         "set_text_content",
         &s,
         &[
-            (ShapeMeasureIfc, 4),
+            (ShapeMeasureIfc, 1),
             (ShapeIfcBuild, 1),
+            (IfcMeasureCacheHits, 3),
             (IfcMeasureInvalidations, 3),
             (TaffyMeasureCalls, 4),
             (LayoutResolves, 1),
@@ -736,7 +769,7 @@ fn resize_by_1px() {
 /// (`inline_block_computes`).
 #[test]
 fn resize_by_1px_with_viewport_units() {
-    let mut f = build_with(true, ".chip { width: 5vw; }");
+    let mut f = build_with(ROWS, true, ".chip { width: 5vw; }");
     f.doc.resolve_layout(VP.0 + 1.0, VP.1);
     let s = f.doc.tree.perf.end_frame();
     expect(
@@ -861,5 +894,89 @@ fn perf_scenario_timings() {
             ms(Counter::TimePaintNs),
             total
         );
+    }
+}
+
+/// Release wall-clock for the structural paths at scale — one append, one
+/// removal and one `if`-style toggle (a row's chip removed, then put back) on
+/// 500 and 2000 rows, with and without a `display: contents` wrapper per row —
+/// with the counters that say why. Best of `REPS`; nothing asserted.
+///
+/// ```text
+/// cargo test --release -p rinch-dom --test perf_counter_baselines structural_timings_at_scale -- --ignored --nocapture
+/// ```
+#[test]
+#[ignore]
+fn structural_timings_at_scale() {
+    const REPS: usize = 15;
+    type Op = fn(&mut Fixture, usize);
+    let ops: [(&str, Op); 3] = [
+        ("append row", |f, _| {
+            let row = f.doc.create_element("div");
+            f.doc.set_attribute(row, "class", "row");
+            let t = f.doc.create_text("new row");
+            f.doc.append_child(row, t);
+            let list = f.list;
+            f.doc.append_child(list, row);
+        }),
+        ("remove row", |f, r| {
+            let row = f.rows[f.rows.len() / 2 + r];
+            let list = f.list;
+            f.doc.remove_child(list, row);
+        }),
+        ("toggle chip", |f, r| {
+            let row = f.rows[f.rows.len() / 2];
+            let chip = f.chips[f.rows.len() / 2];
+            if r % 2 == 0 {
+                f.doc.remove_child(row, chip);
+            } else {
+                f.doc.append_child(row, chip);
+            }
+        }),
+    ];
+    println!(
+        "{:<12} {:>6} {:>8} {:>10} {:>10} {:>7} {:>7} {:>7} {:>7} {:>8} {:>7} {:>6}",
+        "op",
+        "rows",
+        "wrapper",
+        "layout ms",
+        "total ms",
+        "ifc ms",
+        "taffy",
+        "build",
+        "ib_cmp",
+        "measure",
+        "shapes",
+        "scope"
+    );
+    for rows in [500usize, 2000] {
+        for wrapper in [false, true] {
+            for (name, op) in ops {
+                let mut f = build_n(rows, wrapper);
+                let mut best: Option<(f64, FrameStats)> = None;
+                for r in 0..REPS {
+                    let t = std::time::Instant::now();
+                    op(&mut f, r);
+                    f.doc.resolve_layout(VP.0, VP.1);
+                    let total = t.elapsed().as_secs_f64() * 1000.0;
+                    let stats = f.doc.tree.perf.end_frame();
+                    if best.as_ref().is_none_or(|(b, _)| total < *b) {
+                        best = Some((total, stats));
+                    }
+                }
+                let (total, s) = best.unwrap();
+                println!(
+                    "{name:<12} {rows:>6} {wrapper:>8} {:>10.3} {total:>10.3} {:>7.3} {:>7.3} {:>7.3} {:>7} {:>8} {:>7} {:>6}",
+                    s.get(Counter::TimeLayoutNs) as f64 / 1e6,
+                    s.get(Counter::TimeIfcSetupNs) as f64 / 1e6,
+                    s.get(Counter::TimeTaffyComputeNs) as f64 / 1e6,
+                    s.get(Counter::TimeBuildIfcNs) as f64 / 1e6,
+                    s.get(Counter::InlineBlockComputes),
+                    s.get(Counter::TaffyMeasureCalls),
+                    s.get(Counter::ShapeMeasureIfc) + s.get(Counter::ShapeAtomicInline),
+                    s.get(Counter::IfcScopeNodes),
+                );
+            }
+        }
     }
 }

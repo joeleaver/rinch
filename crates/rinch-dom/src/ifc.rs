@@ -147,10 +147,21 @@ impl RinchDocument {
     ///
     /// Uses the computed width from Taffy as the available width for Parley line breaking.
     pub(crate) fn build_ifc_layouts(&mut self, paint_layout_cx: &mut parley::LayoutContext<Brush>) {
-        // Discover all IFC roots (cheap O(n) walk — just checks a field per node).
+        // Discover all IFC roots. From `NodeTree::ifc_root_registry` rather
+        // than the slab (layout audit F12): every node the structural passes
+        // made a root is registered, and the test below — the one this walk
+        // always applied to every slab node — decides which still are, in the
+        // same ascending order. An entry that fails it is dropped; a node only
+        // becomes a root again through a structural pass, which re-registers it.
         let mut ifc_roots: Vec<usize> = Vec::new();
-        for (id, node) in &self.tree.nodes {
+        let mut stale: Vec<usize> = Vec::new();
+        for &id in &self.tree.ifc_root_registry {
+            let Some(node) = self.tree.nodes.get(id) else {
+                stale.push(id);
+                continue;
+            };
             if !node.is_element() {
+                stale.push(id);
                 continue;
             }
             // Only block containers can be IFC roots — and **this gate is
@@ -216,6 +227,7 @@ impl RinchDocument {
             // site is the only one of the four whose arm nothing can reach in a way
             // that matters.
             if !node.display_mode.is_block_container() {
+                stale.push(id);
                 continue;
             }
             // `ifc_children`, not `children`: an anonymous block box holds its
@@ -229,7 +241,12 @@ impl RinchDocument {
             });
             if is_ifc {
                 ifc_roots.push(id);
+            } else {
+                stale.push(id);
             }
+        }
+        for id in stale {
+            self.tree.ifc_root_registry.remove(&id);
         }
 
         // Only the roots that need it are re-shaped (the expensive part): a
@@ -375,11 +392,16 @@ impl RinchDocument {
     ) {
         use crate::computed_style::{OverflowValue, TextOverflowValue, WhiteSpaceValue};
 
-        // First collect node IDs and their layouts to apply
-        let updates: Vec<(usize, parley::layout::Layout<Brush>)> = self
-            .tree
-            .nodes
-            .iter()
+        // First collect node IDs and their layouts to apply. Only a node the
+        // compute measured can have an entry, so walk the cache's nodes rather
+        // than the slab (layout audit F12): a node absent from the cache was
+        // skipped by every arm below anyway. Ascending, as the slab walk was.
+        let mut measured: Vec<usize> = cache.keys().map(|&(id, _)| id).collect();
+        measured.sort_unstable();
+        measured.dedup();
+        let updates: Vec<(usize, parley::layout::Layout<Brush>)> = measured
+            .into_iter()
+            .filter_map(|id| self.tree.nodes.get(id).map(|node| (id, node)))
             .filter_map(|(id, node)| {
                 if node.ifc_root.is_some() {
                     return None;
@@ -693,8 +715,30 @@ impl RinchDocument {
     ///
     /// It is now the same shape as [`Self::cleanup_ifc_measure_leaves`]: forget
     /// the Taffy node, forget the slab entry, and rebuild whatever list held it.
-    fn cleanup_anonymous_block_boxes(&mut self) {
-        let anon_ids = std::mem::take(&mut self.tree.anonymous_block_boxes);
+    ///
+    /// With a `scope` (a scoped pass, `crate::ifc_scope`), only the boxes the
+    /// scope's containers hold are removed — plus any **orphan**: a box whose
+    /// container has left the slab or no longer lists it, which a freed subtree
+    /// (`set_inner_html`) leaves behind and which no container in any scope
+    /// would ever reach again.
+    fn cleanup_anonymous_block_boxes(&mut self, scope: Option<&crate::ifc_scope::IfcScope>) {
+        let all = std::mem::take(&mut self.tree.anonymous_block_boxes);
+        let anon_ids = match scope {
+            None => all,
+            Some(scope) => {
+                let nodes = &self.tree.nodes;
+                let (go, keep): (Vec<usize>, Vec<usize>) = all.into_iter().partition(|&b| {
+                    let Some(anon) = nodes.get(b) else {
+                        return true;
+                    };
+                    let Some(p) = anon.parent else { return true };
+                    scope.rootable.contains(&p)
+                        || nodes.get(p).is_none_or(|pn| !pn.run_boxes.contains(&b))
+                });
+                self.tree.anonymous_block_boxes = keep;
+                go
+            }
+        };
         if anon_ids.is_empty() {
             return;
         }
@@ -710,11 +754,20 @@ impl RinchDocument {
             let members = anon.run_members.clone();
             if let Some(p) = anon.parent
                 && !parents_affected.contains(&p)
+                && self
+                    .tree
+                    .nodes
+                    .get(p)
+                    .is_some_and(|pn| pn.run_boxes.contains(&anon_id))
             {
                 parents_affected.push(p);
             }
             for m in members {
-                if let Some(member) = self.tree.nodes.get_mut(m) {
+                // Only a member that still names this box: a freed member's
+                // slab id can have been handed to an unrelated node since.
+                if let Some(member) = self.tree.nodes.get_mut(m)
+                    && member.run_box == Some(anon_id)
+                {
                     member.run_box = None;
                     member.ifc_root = None;
                 }
@@ -728,6 +781,16 @@ impl RinchDocument {
 
             // Remove anonymous DOM node from slab
             self.tree.nodes.remove(anon_id);
+            // And its measured sizes, for `remove_subtree`'s reason: the slab
+            // recycles the id, and the box minted next — very often for the
+            // same run, so with the same content signature — would otherwise
+            // be answered sizes measured under the old box's inherited style.
+            // (A box keeps its container's typography, and a restyle of the
+            // container after a move reaches no root the members name: the
+            // move cleared their marks. Found by the scoped pass's random
+            // differential; the whole-document pass hid it by re-minting every
+            // box in a different id order.)
+            self.tree.ifc_measure_cache.remove(&anon_id);
         }
 
         // Rebuild each affected parent's Taffy children through the one
@@ -771,8 +834,28 @@ impl RinchDocument {
     /// this runs first and unconditionally. `taffy.remove` detaches the leaf
     /// from its parent whether or not it is still attached (an interim
     /// `sync_display_contents` rebuild may already have dropped it).
-    fn cleanup_ifc_measure_leaves(&mut self) {
-        let leaves = std::mem::take(&mut self.tree.ifc_measure_leaves);
+    ///
+    /// With a `scope`, only the leaves of roots in it — and of roots that have
+    /// left the slab — are removed.
+    fn cleanup_ifc_measure_leaves(&mut self, scope: Option<&crate::ifc_scope::IfcScope>) {
+        let leaves: Vec<(usize, taffy::NodeId)> = match scope {
+            None => std::mem::take(&mut self.tree.ifc_measure_leaves)
+                .into_iter()
+                .collect(),
+            Some(scope) => {
+                let nodes = &self.tree.nodes;
+                let go: Vec<usize> = self
+                    .tree
+                    .ifc_measure_leaves
+                    .keys()
+                    .copied()
+                    .filter(|r| scope.rootable.contains(r) || !nodes.contains(*r))
+                    .collect();
+                go.into_iter()
+                    .filter_map(|r| self.tree.ifc_measure_leaves.remove(&r).map(|l| (r, l)))
+                    .collect()
+            }
+        };
         for (root_id, leaf) in leaves {
             let _ = self.tree.taffy.remove(leaf);
             // `remove` does not dirty the old parent. The mutation that made
@@ -958,13 +1041,23 @@ impl RinchDocument {
     /// Per CSS spec, when a block container has both inline-level and block-level
     /// children, consecutive runs of inline children are wrapped in anonymous
     /// block boxes. These boxes become IFC roots for text layout.
-    fn create_anonymous_block_boxes(&mut self) {
+    fn create_anonymous_block_boxes(&mut self, scope: Option<&crate::ifc_scope::IfcScope>) {
         // Phase 1: Detect mixed-content block containers
         let mut containers: Vec<(usize, Vec<Vec<usize>>)> = Vec::new();
         // Reused across containers so the per-node walk allocates once.
         let mut effective: Vec<usize> = Vec::new();
 
-        for (id, node) in &self.tree.nodes {
+        // A scoped pass looks only at its own containers: a box is minted for
+        // a block container's run, and every block container that could need
+        // one differently from last pass is a container of the scope.
+        let candidates: Vec<usize> = match scope {
+            None => self.tree.nodes.iter().map(|(id, _)| id).collect(),
+            Some(scope) => scope.containers.clone(),
+        };
+        for id in candidates {
+            let Some(node) = self.tree.nodes.get(id) else {
+                continue;
+            };
             if !node.is_element() || node.is_anonymous_block_box {
                 continue;
             }
@@ -1205,9 +1298,12 @@ impl RinchDocument {
             // so that the detach has something to detach *from*, which is what
             // keeps a member's Taffy node from being left parented to the
             // container.
-            let new_boxes: Vec<usize> = self
-                .tree
-                .anonymous_block_boxes
+            // The container's own `run_boxes` rather than the document-wide
+            // list: the boxes whose parent is this container are exactly the
+            // ones it lists, in the order they were minted, so the filter below
+            // selects the same ones — without an O(every box) scan per container.
+            let new_boxes: Vec<usize> = self.tree.nodes[parent_id]
+                .run_boxes
                 .iter()
                 .copied()
                 .filter(|&b| {
@@ -1273,7 +1369,11 @@ impl RinchDocument {
     /// block box (an in-flow `Block`) contributes `true`.
     fn recompute_contributes_in_flow_block(
         &mut self,
+        scope: Option<&crate::ifc_scope::IfcScope>,
     ) -> Vec<(usize, Option<usize>, Option<usize>)> {
+        if let Some(scope) = scope {
+            return self.recompute_contributes_in_flow_block_scoped(scope);
+        }
         // **The clear is defence, not a fix, and that is measured**: the mutant
         // that deletes these lines survives `-p rinch-dom -p rinch` (51
         // targets), including the transition fixture written to catch exactly
@@ -1431,6 +1531,105 @@ impl RinchDocument {
         changes
     }
 
+    /// [`Self::recompute_contributes_in_flow_block`] over a scoped pass's
+    /// regions only (`crate::ifc_scope`).
+    ///
+    /// The whole-document walk derives every value from the node's position
+    /// under the nearest formatting container, and a formatting container
+    /// **resets** the context its children see — `(Some(itself), false)`,
+    /// whatever lies above it. So each region is walked on its own, from its
+    /// container, and produces the values the whole-document walk would:
+    ///
+    /// - every region node's `hoisted_out_of_flow_to` (a stop node's too — its
+    ///   hoisting is decided by the region it sits in);
+    /// - a transparent node's `contributes_in_flow_block` and
+    ///   `hosts_hoisted_out_of_flow`, folded post-order from its children as
+    ///   the full walk folds them;
+    /// - a stop node's `contributes_in_flow_block`, which for a formatting
+    ///   container is its role alone. Its `hosts_hoisted_out_of_flow` reads
+    ///   its own children and belongs to its own region — left alone unless it
+    ///   is a container of this scope too;
+    /// - the container's own `hosts_hoisted_out_of_flow` and
+    ///   `contributes_in_flow_block` (its own hoisting belongs to its parent's
+    ///   region).
+    fn recompute_contributes_in_flow_block_scoped(
+        &mut self,
+        scope: &crate::ifc_scope::IfcScope,
+    ) -> Vec<(usize, Option<usize>, Option<usize>)> {
+        use crate::ifc_scope::is_inline_transparent;
+        let mut changes: Vec<(usize, Option<usize>, Option<usize>)> = Vec::new();
+        let hosts_of = |nodes: &slab::Slab<Node>, id: usize| -> bool {
+            nodes[id].children.iter().any(|&c| {
+                nodes.get(c).is_some_and(|child| {
+                    child.hoisted_out_of_flow_to.is_some()
+                        || (child.hosts_hoisted_out_of_flow
+                            && (child.inline_flow_role() == InlineFlowRole::Contents
+                                || (child.is_element()
+                                    && child.display_mode == DisplayMode::Inline)))
+                })
+            })
+        };
+        for &container in &scope.containers {
+            // (node, folded, host, crossed)
+            let mut stack: Vec<(usize, bool, Option<usize>, bool)> = self.tree.nodes[container]
+                .children
+                .iter()
+                .map(|&c| (c, false, Some(container), false))
+                .collect();
+            while let Some((id, folded, host, crossed)) = stack.pop() {
+                let Some(node) = self.tree.nodes.get(id) else {
+                    continue;
+                };
+                let role = node.inline_flow_role();
+                let transparent = is_inline_transparent(node);
+                if folded {
+                    let value = node.children.iter().any(|&c| {
+                        self.tree
+                            .nodes
+                            .get(c)
+                            .is_some_and(|child| child.contributes_in_flow_block)
+                    });
+                    let hosts = hosts_of(&self.tree.nodes, id);
+                    let n = &mut self.tree.nodes[id];
+                    n.contributes_in_flow_block = value;
+                    n.hosts_hoisted_out_of_flow = hosts;
+                    continue;
+                }
+                let hoisted_to = if role == InlineFlowRole::OutOfFlow && crossed {
+                    host
+                } else {
+                    None
+                };
+                let old = node.hoisted_out_of_flow_to;
+                if old != hoisted_to {
+                    changes.push((id, old, hoisted_to));
+                }
+                if transparent {
+                    let child_crossed = crossed || role != InlineFlowRole::Contents;
+                    let children = node.children.clone();
+                    self.tree.nodes[id].hoisted_out_of_flow_to = hoisted_to;
+                    stack.push((id, true, host, crossed));
+                    for c in children {
+                        stack.push((c, false, host, child_crossed));
+                    }
+                } else {
+                    let n = &mut self.tree.nodes[id];
+                    n.hoisted_out_of_flow_to = hoisted_to;
+                    n.contributes_in_flow_block = role == InlineFlowRole::InFlowBlock;
+                    if n.children.is_empty() {
+                        n.hosts_hoisted_out_of_flow = false;
+                    }
+                }
+            }
+            let role = self.tree.nodes[container].inline_flow_role();
+            let hosts = hosts_of(&self.tree.nodes, container);
+            let n = &mut self.tree.nodes[container];
+            n.contributes_in_flow_block = role == InlineFlowRole::InFlowBlock;
+            n.hosts_hoisted_out_of_flow = hosts;
+        }
+        changes
+    }
+
     /// Move the Taffy edge of every out-of-flow box whose host changed this
     /// pass (#591) — the record-and-restore half of the hoist, and the sentence
     /// in the design that was wrong ("no record/restore list is needed").
@@ -1551,16 +1750,31 @@ impl RinchDocument {
     /// block relative to the `<a>` while paint reaches it directly from the
     /// container (the `<a>` is not in the box tree and its `layout` is zeroed), so
     /// it is drawn over that sibling.
-    fn split_inline_boxes(&mut self) {
-        let split: Vec<usize> = self
-            .tree
-            .nodes
-            .iter()
-            .filter(|(_, node)| node.is_split_inline())
-            .map(|(id, _)| id)
-            .collect();
+    ///
+    /// With a `scope`, only the scope's region nodes are looked at, and the
+    /// entries the pass did not reach are kept (`kept`: what
+    /// `setup_inline_formatting_contexts` left in the list after taking the
+    /// in-scope ones out to restore).
+    fn split_inline_boxes(&mut self, scope: Option<&crate::ifc_scope::IfcScope>) {
+        let split: Vec<usize> = match scope {
+            None => self
+                .tree
+                .nodes
+                .iter()
+                .filter(|(_, node)| node.is_split_inline())
+                .map(|(id, _)| id)
+                .collect(),
+            Some(scope) => scope
+                .transparent_region()
+                .filter(|&id| self.tree.nodes.get(id).is_some_and(|n| n.is_split_inline()))
+                .collect(),
+        };
+        let kept: Vec<usize> = match scope {
+            None => Vec::new(),
+            Some(_) => std::mem::take(&mut self.tree.split_inlines),
+        };
         if split.is_empty() {
-            self.tree.split_inlines.clear();
+            self.tree.split_inlines = kept;
             return;
         }
 
@@ -1576,7 +1790,9 @@ impl RinchDocument {
             self.rebuild_effective_taffy_children(owner);
         }
 
-        self.tree.split_inlines = split;
+        let mut all = kept;
+        all.extend(split);
+        self.tree.split_inlines = all;
     }
 
     /// Detect IFC roots and mark inline children.
@@ -1586,29 +1802,50 @@ impl RinchDocument {
     /// text children use IFC — this avoids maintaining two measurement
     /// paths (standalone Taffy vs IFC) and the sync bugs that arise when
     /// elements transition between them during editing.
-    pub(crate) fn setup_inline_formatting_contexts(&mut self) {
+    ///
+    /// With a `scope` (`crate::ifc_scope`) every step runs over the scope's
+    /// containers and their regions only, and everything else keeps the state
+    /// the last pass that reached it left: its splices, boxes, splits, leaves,
+    /// marks and root contexts, and so Taffy's cached layout for it.
+    pub(crate) fn setup_inline_formatting_contexts(
+        &mut self,
+        scope: Option<&crate::ifc_scope::IfcScope>,
+    ) {
         // Before everything else: the classification every pass below consumes.
         // `collect_run_units` reads it, so `box_tree_children` and therefore
         // `collect_effective_taffy_children` do — which means the cleanups and
         // the rebuilds below all do. Reading a previous pass's value here would
         // rebuild a Taffy child list from a classification this pass is about to
         // contradict; see the function's own doc.
-        let hoist_changes = self.recompute_contributes_in_flow_block();
+        let hoist_changes = self.recompute_contributes_in_flow_block(scope);
 
         // Clean up the previous pass's measure leaves, anonymous block boxes and
         // splits, then recreate all three for the current DOM state.
-        self.cleanup_ifc_measure_leaves();
-        let was_split = std::mem::take(&mut self.tree.split_inlines);
-        self.cleanup_anonymous_block_boxes();
+        self.cleanup_ifc_measure_leaves(scope);
+        let was_split = match scope {
+            None => std::mem::take(&mut self.tree.split_inlines),
+            Some(scope) => {
+                // Restore the in-scope entries (and any that left the slab);
+                // keep the rest, which `split_inline_boxes` appends to.
+                let nodes = &self.tree.nodes;
+                let (go, keep): (Vec<usize>, Vec<usize>) =
+                    std::mem::take(&mut self.tree.split_inlines)
+                        .into_iter()
+                        .partition(|&id| scope.nodes.contains(&id) || !nodes.contains(id));
+                self.tree.split_inlines = keep;
+                go
+            }
+        };
+        self.cleanup_anonymous_block_boxes(scope);
         self.restore_split_inlines(was_split);
         // Before the boxes are minted, like the split restore, so a host's
         // rebuilt list names members rather than boxes that are about to exist
         // (#591).
         self.rehome_hoisted_out_of_flow(hoist_changes);
-        self.create_anonymous_block_boxes();
+        self.create_anonymous_block_boxes(scope);
         // After the boxes exist, so the container's rebuilt list names them
         // rather than their members (#513).
-        self.split_inline_boxes();
+        self.split_inline_boxes(scope);
 
         // `ifc_root` is *derived* state — "this node's boxes are drawn by that
         // IFC, so the paint tree-walk must skip it" — and the marking pass below
@@ -1622,12 +1859,54 @@ impl RinchDocument {
         // module's contents handling exists to avoid. This pass recomputes every
         // mark, so reset them all first rather than trying to invalidate at each
         // mutation site.
-        for (_id, node) in self.tree.nodes.iter_mut() {
-            node.ifc_root = None;
+        //
+        // A scoped pass resets the marks of its regions only — which include
+        // every stop node, whose mark is its region's to give — and never a
+        // container's own: that one belongs to the region *above* it. The two
+        // registries lose the same entries, and the marking below puts back
+        // the ones that still hold.
+        let candidates: Vec<usize> = match scope {
+            None => {
+                for (_id, node) in self.tree.nodes.iter_mut() {
+                    node.ifc_root = None;
+                }
+                self.tree.ifc_root_registry.clear();
+                self.tree.atomic_inline_registry.clear();
+                self.tree.nodes.iter().map(|(id, _)| id).collect()
+            }
+            Some(scope) => {
+                for &(id, _, stop) in &scope.region {
+                    if let Some(node) = self.tree.nodes.get_mut(id) {
+                        node.ifc_root = None;
+                    }
+                    self.tree.atomic_inline_registry.remove(&id);
+                    if !stop {
+                        self.tree.ifc_root_registry.remove(&id);
+                    }
+                }
+                let mut c: Vec<usize> = Vec::new();
+                for &container in &scope.containers {
+                    self.tree.ifc_root_registry.remove(&container);
+                    c.push(container);
+                    c.extend(self.tree.nodes[container].run_boxes.iter().copied());
+                }
+                c
+            }
+        };
+        // Old boxes (freed by the cleanup above) may still be registered.
+        if let Some(scope) = scope {
+            for &id in &scope.nodes {
+                if !self.tree.nodes.contains(id) {
+                    self.tree.ifc_root_registry.remove(&id);
+                }
+            }
         }
 
         let mut ifc_roots: Vec<usize> = Vec::new();
-        for (id, node) in &self.tree.nodes {
+        for id in candidates {
+            let Some(node) = self.tree.nodes.get(id) else {
+                continue;
+            };
             if !node.is_element() {
                 continue;
             }
@@ -1771,6 +2050,9 @@ impl RinchDocument {
             }
         }
 
+        self.tree
+            .ifc_root_registry
+            .extend(ifc_roots.iter().copied());
         // Put back every box a past marking pass took out and that is no longer
         // the IFC's to hold (#597). After root discovery, because whether a
         // departed box stays out depends on whether its owner is a root *this*
@@ -1780,8 +2062,11 @@ impl RinchDocument {
         // Before the marking pass below, so that a rebuilt list is re-detached
         // by it: the rebuild restores the owner's *whole* effective child list,
         // inline children included, and the pass that follows removes exactly
-        // the ones that are still inline content.
-        self.reattach_departed_ifc_children(&ifc_roots);
+        // the ones that are still inline content. On a scoped pass the roots
+        // are the scope containers' and their run boxes' — and so is every
+        // candidate's owner, since the candidates are the scope's regions — so
+        // the gate stays exact there too.
+        self.reattach_departed_ifc_children(&ifc_roots, scope);
 
         for &root_id in &ifc_roots {
             let root_taffy = match self.tree.nodes[root_id].taffy_id {
@@ -1962,8 +2247,23 @@ impl RinchDocument {
         // stale carrier is deliberately left alone: its measure IS reachable,
         // so clearing it would change measure behaviour. The `children > 0`
         // guard is load-bearing — do not widen it.
+        //
+        // A scoped pass sweeps its own nodes: only a container of the scope can
+        // have stopped being a root (its units are what changed), or a region
+        // node whose own display changed — and that puts it in the scope too.
         let roots_this_pass: std::collections::HashSet<usize> = ifc_roots.iter().copied().collect();
-        for (id, node) in &self.tree.nodes {
+        let sweep: Vec<usize> = match scope {
+            None => self.tree.nodes.iter().map(|(id, _)| id).collect(),
+            Some(scope) => {
+                let mut v: Vec<usize> = scope.rootable.iter().copied().collect();
+                v.sort_unstable();
+                v
+            }
+        };
+        for id in sweep {
+            let Some(node) = self.tree.nodes.get(id) else {
+                continue;
+            };
             if roots_this_pass.contains(&id) {
                 continue;
             }
@@ -1989,7 +2289,27 @@ impl RinchDocument {
 
         #[cfg(debug_assertions)]
         {
-            let violations = self.ifc_leaf_invariant_violations();
+            let mut violations = self.ifc_leaf_invariant_violations();
+            // A scoped pass sets up nothing outside the document: a detached
+            // subtree keeps whatever state it left with (an element emptied by
+            // `set_text_content` and then removed still holds its new text as
+            // a Taffy child of its `InlineRoot`), and attaching it seeds it
+            // again. Everything **connected** must hold — including what the
+            // scope did not reach, which is the claim this checks.
+            if scope.is_some() {
+                let nodes = &self.tree.nodes;
+                let root = self.tree.root_id;
+                violations.retain(|&id| {
+                    let mut cur = Some(id);
+                    while let Some(c) = cur {
+                        if c == root {
+                            return true;
+                        }
+                        cur = nodes.get(c).and_then(|n| n.parent);
+                    }
+                    false
+                });
+            }
             debug_assert!(
                 violations.is_empty(),
                 "IFC leaf invariant violated (#466): Taffy node(s) carrying \
@@ -2976,7 +3296,7 @@ impl RinchDocument {
     /// (`hidden_last_inline_tests`). Asking about the roots this pass actually
     /// found is exact rather than permissive. It is not free — the steady state
     /// walks to each departed node's owner and builds one set of the roots —
-    /// but only on an `ifc_dirty` pass.
+    /// but only on a structural pass, and on a scoped one only over its regions.
     ///
     /// **What the gate is measured to do, and what it is not.** Its first job is
     /// that the steady state costs nothing. Its second is that it does not
@@ -3032,11 +3352,25 @@ impl RinchDocument {
     /// In the steady state it does nothing at all: a node that is still inline
     /// content fails the gate, so no list is rebuilt and no Taffy node is
     /// dirtied on a pass where nothing crossed.
-    fn reattach_departed_ifc_children(&mut self, ifc_roots: &[usize]) {
+    fn reattach_departed_ifc_children(
+        &mut self,
+        ifc_roots: &[usize],
+        scope: Option<&crate::ifc_scope::IfcScope>,
+    ) {
         let mut departed: Vec<usize> = Vec::new();
         let roots: std::collections::HashSet<usize> = ifc_roots.iter().copied().collect();
         let mut owners: Vec<usize> = Vec::new();
-        for (id, node) in &self.tree.nodes {
+        // A node can only stop being inline content of its IFC through a
+        // change to itself or to the container holding it, and either one puts
+        // it in the scope of a scoped pass.
+        let candidates: Vec<usize> = match scope {
+            None => self.tree.nodes.iter().map(|(id, _)| id).collect(),
+            Some(scope) => scope.region.iter().map(|r| r.0).collect(),
+        };
+        for id in candidates {
+            let Some(node) = self.tree.nodes.get(id) else {
+                continue;
+            };
             if !node.ifc_detached {
                 continue;
             }
@@ -3165,6 +3499,9 @@ impl RinchDocument {
                     }
                     if let Some(c) = self.tree.nodes.get_mut(child_id) {
                         c.ifc_root = Some(root_id);
+                        if c.display_mode.is_atomic_inline() {
+                            self.tree.atomic_inline_registry.insert(child_id);
+                        }
                     }
                     self.mark_inline_descendants(root_id, child_id, root_taffy);
                 }
@@ -3186,6 +3523,9 @@ impl RinchDocument {
                     }
                     if let Some(c) = self.tree.nodes.get_mut(child_id) {
                         c.ifc_root = Some(root_id);
+                        if c.display_mode.is_atomic_inline() {
+                            self.tree.atomic_inline_registry.insert(child_id);
+                        }
                     }
                     // Everything inside a `display: inline` element belongs to this
                     // IFC too. Marking the `<a>` and stopping was enough for text —
@@ -3361,9 +3701,18 @@ impl RinchDocument {
     /// #597's second mechanism, and it is the classic way an exemption ends up
     /// wider than its author believes. This seed set cannot acquire it,
     /// because there is nothing to keep in step: one expression, two readers.
+    ///
+    /// It reads `NodeTree::atomic_inline_registry` rather than the slab: every
+    /// node the marking pass ever gave an `ifc_root` to while it was atomic is
+    /// registered, and the predicate below is applied to each entry exactly as
+    /// it was applied to each slab node, so the answer is the same set at
+    /// O(atomic inlines) instead of O(document).
     pub(crate) fn inline_block_measure_roots(&self) -> Vec<taffy::NodeId> {
         let mut out: Vec<(usize, taffy::NodeId)> = Vec::new();
-        for (_id, node) in &self.tree.nodes {
+        for &id in &self.tree.atomic_inline_registry {
+            let Some(node) = self.tree.nodes.get(id) else {
+                continue;
+            };
             if node.ifc_root.is_some()
                 && node.display_mode.is_atomic_inline()
                 && let Some(taffy_id) = node.taffy_id
@@ -3392,6 +3741,63 @@ impl RinchDocument {
         // drift.
         out.sort_by_key(|a| std::cmp::Reverse(a.0));
         out.into_iter().map(|(_, t)| t).collect()
+    }
+
+    /// The scoped pass's share of [`Self::compute_inline_block_layouts`]
+    /// (`crate::ifc_scope`): size the atomic inlines the pass placed — the
+    /// stop nodes of its regions that sit in an IFC — whose Taffy node is
+    /// dirty. One that is clean was measured before and nothing inside it has
+    /// changed since (any change inside it marks it: its subtree is a Taffy
+    /// tree of its own), so its detached compute would be a cache hit.
+    ///
+    /// Queued first, for `remeasure_dirty_atomic_inlines` at the end of the
+    /// pass: every atomic inline **at or above** a container of the scope —
+    /// a change inside a container can resize every one around it, and the
+    /// IFC that lines such a box up is outside this scope, so only the
+    /// before/after comparison that function makes will re-measure that IFC.
+    /// Measured here, a box is taken off that queue: its IFC is in this
+    /// scope and its signature carries the new size.
+    pub(crate) fn measure_scoped_atomic_inlines(&mut self, scope: &crate::ifc_scope::IfcScope) {
+        for &c in &scope.containers {
+            self.mark_atomic_inline_dirty(c);
+        }
+        let mut targets: Vec<(usize, usize, taffy::NodeId)> = Vec::new();
+        for &(id, _, stop) in &scope.region {
+            if !stop {
+                continue;
+            }
+            let Some(node) = self.tree.nodes.get(id) else {
+                continue;
+            };
+            let (Some(_), Some(taffy_id)) = (node.ifc_root, node.taffy_id) else {
+                continue;
+            };
+            if !node.display_mode.is_atomic_inline() {
+                continue;
+            }
+            if !self.tree.taffy.dirty(taffy_id).unwrap_or(true) {
+                continue;
+            }
+            let mut depth = 0usize;
+            let mut cur = node.parent;
+            while let Some(p) = cur {
+                depth += 1;
+                cur = self.tree.nodes.get(p).and_then(|n| n.parent);
+            }
+            targets.push((depth, id, taffy_id));
+        }
+        if targets.is_empty() {
+            return;
+        }
+        // Innermost first, as `inline_block_measure_roots` orders them: an
+        // outer box's compute reads an inner one's size.
+        targets.sort_by_key(|t| std::cmp::Reverse(t.0));
+        let measure: Vec<(taffy::NodeId, Option<f32>)> =
+            targets.iter().map(|&(_, _, t)| (t, None)).collect();
+        self.measure_inline_blocks(&measure);
+        for &(_, id, _) in &targets {
+            self.tree.dirty_atomic_inlines.remove(&id);
+        }
     }
 
     /// Pre-compute layout for inline-block children that were detached from Taffy.
@@ -3514,11 +3920,44 @@ impl RinchDocument {
         }
         let dirty = std::mem::take(&mut self.tree.dirty_atomic_inlines);
 
-        // (depth, node id, taffy id, enclosing IFC root). The predicate is
-        // `inline_block_measure_roots`' — a node may have been removed, or have
-        // stopped being an atomic inline, since it was marked.
-        let mut targets: Vec<(usize, usize, taffy::NodeId, usize)> = Vec::new();
-        for id in dirty {
+        // A worklist keyed (depth, id), popped deepest first — an outer atomic
+        // inline sizes its `InlineBox` from the inner one's `Node::layout`.
+        // Same order, same reason, as `inline_block_measure_roots`.
+        //
+        // The input order this undoes is ascending node id, i.e. creation
+        // order, i.e. shallowest-first for a tree built parent-first — which is
+        // why `dirty_atomic_inlines` is a `BTreeSet` and must stay one. Under a
+        // `HashSet` the order was per-process random and the fixture that pins
+        // this line killed a sort-deleted mutant only **8** times in 25 runs —
+        // it missed it the other 17. It now kills it 25 times in 25. See that
+        // field's doc.
+        let depth_of = |nodes: &slab::Slab<Node>, id: usize| {
+            let mut depth = 0usize;
+            let mut cur = nodes.get(id).and_then(|n| n.parent);
+            while let Some(p) = cur {
+                depth += 1;
+                cur = nodes.get(p).and_then(|n| n.parent);
+            }
+            depth
+        };
+        let mut pending: std::collections::BTreeSet<(usize, usize)> = dirty
+            .into_iter()
+            .map(|id| (depth_of(&self.tree.nodes, id), id))
+            .collect();
+
+        // One box at a time, and each box's IFC invalidated — and every atomic
+        // inline around that IFC queued — **before** the next box is measured.
+        // An outer atomic inline lays its own IFC out around the inner one,
+        // and that IFC's measure is cached on a Taffy node inside the outer
+        // box's subtree: sized in one batch, the outer box read the measure its
+        // IFC had cached against the inner box's *old* size and kept the old
+        // width, and one sized earlier in the pass for another reason was never
+        // sized again (both found by the scoped pass's random differential).
+        let mut changed = false;
+        while let Some((_, id)) = pending.pop_last() {
+            // The predicate is `inline_block_measure_roots`' — a node may have
+            // been removed, or have stopped being an atomic inline, since it
+            // was marked.
             let Some(node) = self.tree.nodes.get(id) else {
                 continue;
             };
@@ -3528,63 +3967,27 @@ impl RinchDocument {
             if !node.display_mode.is_atomic_inline() {
                 continue;
             }
-            let mut depth = 0usize;
-            let mut cur = node.parent;
-            while let Some(p) = cur {
-                depth += 1;
-                cur = self.tree.nodes.get(p).and_then(|n| n.parent);
-            }
-            targets.push((depth, id, taffy_id, root_id));
-        }
-        if targets.is_empty() {
-            return false;
-        }
-        // Deepest first — an outer atomic inline sizes its `InlineBox` from the
-        // inner one's `Node::layout`. Same order, same reason, as
-        // `inline_block_measure_roots`.
-        //
-        // The input order this undoes is ascending node id, i.e. creation
-        // order, i.e. shallowest-first for a tree built parent-first — which is
-        // why `dirty_atomic_inlines` is a `BTreeSet` and must stay one. Under a
-        // `HashSet` the order was per-process random and the fixture that pins
-        // this line killed a sort-deleted mutant only **8** times in 25 runs —
-        // it missed it the other 17. It now kills it 25 times in 25. See that
-        // field's doc.
-        targets.sort_by_key(|t| std::cmp::Reverse(t.0));
-
-        let before: Vec<(f32, f32)> = targets
-            .iter()
-            .map(|&(_, id, _, _)| {
-                let n = &self.tree.nodes[id];
-                (n.layout.width, n.layout.height)
-            })
-            .collect();
-
-        // Taffy caches a measure per (node, available space), and the previous
-        // pass measured these at exactly the available space this one will ask
-        // for — so without a mark the stale size is served straight back.
-        for &(_, _, taffy_id, _) in &targets {
+            let before = (node.layout.width, node.layout.height);
+            // Taffy caches a measure per (node, available space), and the
+            // previous pass measured this box at exactly the available space
+            // this one will ask for — so without a mark the stale size is
+            // served straight back.
             let _ = self.tree.taffy.mark_dirty(taffy_id);
-        }
-        let measure: Vec<(taffy::NodeId, Option<f32>)> =
-            targets.iter().map(|&(_, _, t, _)| (t, None)).collect();
-        self.measure_inline_blocks(&measure);
-
-        // An IFC root that line-broke against the stale box has to break again.
-        // `resolve_percentage_inline_blocks` does the same three things for the
-        // same reason; the fourth, clearing the whole `ifc_measure_cache`, is
-        // deliberately narrowed to the affected roots here — this pass runs for
-        // an ordinary text edit, where flushing every root's cached measure is
-        // the cost the dirty set exists to avoid.
-        let mut changed = false;
-        for (i, &(_, id, _, root_id)) in targets.iter().enumerate() {
+            self.measure_inline_blocks(&[(taffy_id, None)]);
             let now = {
                 let n = &self.tree.nodes[id];
                 (n.layout.width, n.layout.height)
             };
-            if (now.0 - before[i].0).abs() <= 0.5 && (now.1 - before[i].1).abs() <= 0.5 {
+            if (now.0 - before.0).abs() <= 0.5 && (now.1 - before.1).abs() <= 0.5 {
                 continue;
             }
+            // An IFC root that line-broke against the stale box has to break
+            // again. `resolve_percentage_inline_blocks` does the same three
+            // things for the same reason; the fourth, clearing the whole
+            // `ifc_measure_cache`, is deliberately narrowed to the affected
+            // roots here — this pass runs for an ordinary text edit, where
+            // flushing every root's cached measure is the cost the dirty set
+            // exists to avoid.
             changed = true;
             if let Some(root) = self.tree.nodes.get_mut(root_id) {
                 root.text_layout = None;
@@ -3597,6 +4000,18 @@ impl RinchDocument {
             // The measure may live on the root's measure leaf, which a mark on
             // the root does not reach — dirty propagates up, not down (#466).
             self.mark_ifc_measure_dirty(root_id);
+            // That IFC is inside every atomic inline above the box, whose sizes
+            // it feeds: those are measured again, after it.
+            let mut cur = self.tree.nodes.get(id).and_then(|n| n.parent);
+            while let Some(a) = cur {
+                let Some(an) = self.tree.nodes.get(a) else {
+                    break;
+                };
+                if an.display_mode.is_atomic_inline() {
+                    pending.insert((depth_of(&self.tree.nodes, a), a));
+                }
+                cur = an.parent;
+            }
         }
         changed
     }
@@ -3898,7 +4313,22 @@ impl RinchDocument {
         let mut targets: Vec<(taffy::NodeId, Option<f32>)> = Vec::new();
         let mut affected: Vec<(usize, usize, f32, f32)> = Vec::new();
 
-        for (id, node) in &self.tree.nodes {
+        // The registry, not the slab (layout audit F8/F12): this runs after
+        // every root compute, and only an atomic inline in an IFC qualifies.
+        // Entries that no longer qualify are dropped here — a node only gains
+        // an `ifc_root` from the marking pass, which registers it again.
+        {
+            let nodes = &self.tree.nodes;
+            self.tree.atomic_inline_registry.retain(|&id| {
+                nodes
+                    .get(id)
+                    .is_some_and(|n| n.ifc_root.is_some() && n.display_mode.is_atomic_inline())
+            });
+        }
+        for &id in &self.tree.atomic_inline_registry {
+            let Some(node) = self.tree.nodes.get(id) else {
+                continue;
+            };
             let (Some(root_id), Some(taffy_id)) = (node.ifc_root, node.taffy_id) else {
                 continue;
             };
@@ -4982,11 +5412,41 @@ impl RinchDocument {
     /// O(document): one pass over the slab and a hash of every member's text.
     /// That is what the structural pass costs anyway; what this replaces was
     /// a Parley shape of every root.
-    pub(crate) fn ifc_signatures(&self) -> HashMap<usize, u64> {
+    ///
+    /// With a `scope`, only the roots of the scope's containers — each
+    /// container and the anonymous boxes it now holds — are signed, from the
+    /// parents their members can have: those same nodes and the transparent
+    /// nodes of the containers' regions. A root's members are all in its
+    /// container's region, so each signature is the one the whole-document
+    /// walk computes.
+    pub(crate) fn ifc_signatures(
+        &self,
+        scope: Option<&crate::ifc_scope::IfcScope>,
+    ) -> HashMap<usize, u64> {
         use std::hash::{Hash, Hasher};
         let nodes = &self.tree.nodes;
         let mut sigs: HashMap<usize, u64> = HashMap::new();
-        for (parent_id, parent) in nodes.iter() {
+        let (parents, roots): (Vec<usize>, Option<std::collections::HashSet<usize>>) = match scope {
+            None => (nodes.iter().map(|(id, _)| id).collect(), None),
+            Some(scope) => {
+                let mut roots = std::collections::HashSet::new();
+                let mut parents = Vec::new();
+                for &c in &scope.containers {
+                    roots.insert(c);
+                    parents.push(c);
+                    if let Some(cn) = nodes.get(c) {
+                        roots.extend(cn.run_boxes.iter().copied());
+                        parents.extend(cn.run_boxes.iter().copied());
+                    }
+                }
+                parents.extend(scope.transparent_region());
+                (parents, Some(roots))
+            }
+        };
+        for parent_id in parents {
+            let Some(parent) = nodes.get(parent_id) else {
+                continue;
+            };
             for (index, &child_id) in parent.ifc_children().iter().enumerate() {
                 let Some(child) = nodes.get(child_id) else {
                     continue;
@@ -4994,6 +5454,9 @@ impl RinchDocument {
                 let Some(root) = child.ifc_root else {
                     continue;
                 };
+                if roots.as_ref().is_some_and(|r| !r.contains(&root)) {
+                    continue;
+                }
                 let mut h = SigHasher::default();
                 child_id.hash(&mut h);
                 parent_id.hash(&mut h);
@@ -5048,11 +5511,25 @@ impl RinchDocument {
     /// only reach the *parent* of a change: text appended to a `<span>` inside
     /// a paragraph invalidated the span, not the paragraph, and the paragraph
     /// kept painting its old line.
-    pub(crate) fn refresh_ifc_signatures(&mut self) {
-        let sigs = self.ifc_signatures();
-        self.tree
-            .ifc_measure_cache
-            .retain(|root, _| sigs.contains_key(root));
+    ///
+    /// With a `scope`, only the scope's roots are signed and only the scope's
+    /// nodes can lose an entry or a layout: a root outside it was not reached
+    /// by the change, keeps its signature and so keeps both.
+    pub(crate) fn refresh_ifc_signatures(&mut self, scope: Option<&crate::ifc_scope::IfcScope>) {
+        let sigs = self.ifc_signatures(scope);
+        match scope {
+            None => self
+                .tree
+                .ifc_measure_cache
+                .retain(|root, _| sigs.contains_key(root)),
+            Some(scope) => {
+                for &id in &scope.rootable {
+                    if !sigs.contains_key(&id) {
+                        self.tree.ifc_measure_cache.remove(&id);
+                    }
+                }
+            }
+        }
         // A node that is no longer an IFC root keeps no layout from when it
         // was one. `text_layout` is written for IFC roots only (a text leaf's
         // shaped text lives in `cached_text_parley`), and several readers take
@@ -5061,11 +5538,27 @@ impl RinchDocument {
         // which would stop at the stale node instead of the real root.
         //
         // Its glyphs leave the screen with it (a paragraph whose only span
-        // became `display: none`), so it is paint-dirty too.
-        for (id, node) in self.tree.nodes.iter_mut() {
-            if node.text_layout.is_some() && !sigs.contains_key(&id) {
-                node.text_layout = None;
-                self.tree.paint_dirty_nodes.push(id);
+        // became `display: none`), so it is paint-dirty too — in both arms:
+        // the scoped one is the path a `display` flip takes now.
+        match scope {
+            None => {
+                for (id, node) in self.tree.nodes.iter_mut() {
+                    if node.text_layout.is_some() && !sigs.contains_key(&id) {
+                        node.text_layout = None;
+                        self.tree.paint_dirty_nodes.push(id);
+                    }
+                }
+            }
+            Some(scope) => {
+                for &id in &scope.rootable {
+                    if let Some(node) = self.tree.nodes.get_mut(id)
+                        && node.text_layout.is_some()
+                        && !sigs.contains_key(&id)
+                    {
+                        node.text_layout = None;
+                        self.tree.paint_dirty_nodes.push(id);
+                    }
+                }
             }
         }
         let mut changed: u64 = 0;
@@ -5103,6 +5596,27 @@ impl RinchDocument {
                 let _ = self.tree.taffy.mark_dirty(taffy_id);
             }
             self.mark_ifc_measure_dirty(root);
+            // The same holds one level out: an atomic inline that *contains*
+            // this root — a paragraph in an `inline-block`, a flex item's IFC in
+            // an `inline-flex` — was sized earlier in the pass, against the
+            // measure this root had cached in Taffy before its content moved.
+            // Queue every one above it. (Found by the scoped pass's random
+            // differential, on the whole-document pass: a chip turned
+            // `inline-block` inside a flex item of an `inline-flex` left the
+            // `inline-flex` at the width it had without the chip.)
+            if seen_before {
+                let mut cur = self.tree.nodes.get(root).and_then(|n| n.parent);
+                while let Some(a) = cur {
+                    let Some(an) = self.tree.nodes.get(a) else {
+                        break;
+                    };
+                    if an.display_mode.is_atomic_inline() {
+                        self.tree.dirty_atomic_inlines.insert(a);
+                        atomic_changed = true;
+                    }
+                    cur = an.parent;
+                }
+            }
         }
         self.tree
             .perf
