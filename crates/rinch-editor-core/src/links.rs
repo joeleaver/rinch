@@ -2,12 +2,13 @@
 //! link hover.
 //!
 //! A pointer is over a *character*, not over a caret position, and the two
-//! differ exactly at a link's edges: the caret position just after a link's
-//! last character is still "in" the link by [`ResolvedPos::marks`] (every mark
-//! behaves as inclusive, so text typed there would extend the link), but the
-//! character to its right is not linked. [`link_at`] therefore asks about the
-//! character that **starts** at `pos` — the inline content covering
-//! `pos..pos + 1` — and never about the marks a caret at `pos` would inherit.
+//! differ exactly at a link's edges. [`ResolvedPos::marks`] answers what a
+//! caret at a position would inherit — and a link is non-inclusive, so a caret
+//! at either edge of one inherits no link — while the character on one side of
+//! each edge is linked: the one starting at the link's start, and the one
+//! ending at its end. [`link_at`] therefore asks about the character that
+//! **starts** at `pos` — the inline content covering `pos..pos + 1` — and never
+//! about the marks a caret at `pos` would inherit.
 //!
 //! [`ResolvedPos::marks`]: crate::ResolvedPos::marks
 
@@ -50,10 +51,10 @@ fn link_href(node: &Node) -> Option<&str> {
 /// `None` when that character carries no `link` mark (or one without an
 /// `href`), when `pos` is not inside a textblock's content, and at the end of a
 /// textblock (there is no character there). In particular a position just
-/// **after** a link's last character is not on the link, although a caret
-/// there reports the link as active: pointer interaction is about the
-/// character under the pointer, so a platform asks for the position before
-/// that character.
+/// **after** a link's last character is not on the link, and the position at
+/// its **start** is, although a caret at either reports no link (a link is
+/// non-inclusive): pointer interaction is about the character under the
+/// pointer, so a platform asks for the position before that character.
 ///
 /// The mark is found by its name, `"link"`, as
 /// `EditorHandle::active_link_href` finds it; a schema without one has no

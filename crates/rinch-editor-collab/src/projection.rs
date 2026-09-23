@@ -158,7 +158,7 @@
 //! `task_list`/`task_item`), and an embedded value in a block's text, which is not how
 //! this projection writes an atom.
 
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::sync::{Arc, Mutex};
 
 use yrs::types::Attrs as YAttrs;
@@ -739,6 +739,7 @@ pub(crate) fn reconcile_node(
     list: &ArrayRef,
     index: u32,
     target: &NodeData,
+    per_char: &BTreeSet<String>,
 ) -> Result<()> {
     let node = child_map(txn, list, index)
         .ok_or_else(|| CollabError::schema("reconcile_node: missing node"))?;
@@ -793,12 +794,12 @@ pub(crate) fn reconcile_node(
         NodeData::Block(b) => {
             let text = block_text(txn, &node)
                 .ok_or_else(|| CollabError::schema("reconcile_node: missing text"))?;
-            reconcile_text(txn, &text, b)
+            reconcile_text(txn, &text, b, per_char)
         }
         NodeData::Container { children, .. } => {
             let content = node_content(txn, &node)
                 .ok_or_else(|| CollabError::schema("reconcile_node: missing content"))?;
-            reconcile_child_list(txn, &content, children)
+            reconcile_child_list(txn, &content, children, per_char)
         }
     }
 }
@@ -814,15 +815,24 @@ pub(crate) fn reconcile_node(
 /// computes a zero-length delete and an empty insert and issues neither, so even a
 /// corrupt atom that *did* hold text is healed (spliced back to empty) rather than
 /// erroring.
-fn reconcile_text(txn: &mut TransactionMut, text: &TextRef, b: &BlockData) -> Result<()> {
+fn reconcile_text(
+    txn: &mut TransactionMut,
+    text: &TextRef,
+    b: &BlockData,
+    per_char: &BTreeSet<String>,
+) -> Result<()> {
     let (old, old_marks) = read_text_data(txn, text)?;
-    let spliced = old != b.text;
-    if spliced {
-        splice_min(txn, text, &old, &b.text);
-    }
-
     let mut target_marks = b.marks.clone();
     target_marks.sort_by(|a, b| (a.start, a.end, &a.name).cmp(&(b.start, b.end, &b.name)));
+
+    let spliced = old != b.text;
+    if spliced {
+        if inserts_after_non_inclusive(&old, &old_marks, &b.text, per_char) {
+            splice_min_with_marks(txn, text, &old, &b.text, &target_marks);
+        } else {
+            splice_min(txn, text, &old, &b.text);
+        }
+    }
 
     // Marks must be compared *after* the splice: yrs has already shifted existing
     // formatting ranges with the text, and text inserted **inside** a formatted run
@@ -836,7 +846,7 @@ fn reconcile_text(txn: &mut TransactionMut, text: &TextRef, b: &BlockData) -> Re
         (old, old_marks)
     };
     if current_marks != target_marks {
-        resync_marks(txn, text, &current, &current_marks, &target_marks);
+        resync_marks(txn, text, &current, &current_marks, &target_marks, per_char);
     }
     Ok(())
 }
@@ -852,6 +862,7 @@ fn reconcile_child_list(
     txn: &mut TransactionMut,
     content: &ArrayRef,
     target: &[NodeData],
+    per_char: &BTreeSet<String>,
 ) -> Result<()> {
     let cn = content.len(txn) as usize;
     let mut cur = Vec::with_capacity(cn);
@@ -878,7 +889,13 @@ fn reconcile_child_list(
 
     // Reconcile the overlapping changed children in place (keeps identity).
     for k in 0..common {
-        reconcile_node(txn, content, (prefix + k) as u32, &target[prefix + k])?;
+        reconcile_node(
+            txn,
+            content,
+            (prefix + k) as u32,
+            &target[prefix + k],
+            per_char,
+        )?;
     }
     // Insert the extra target children.
     for k in common..tgt_mid {
@@ -899,17 +916,7 @@ fn reconcile_child_list(
 pub(crate) fn splice_min(txn: &mut TransactionMut, text: &TextRef, old: &str, new: &str) {
     let o: Vec<char> = old.chars().collect();
     let n: Vec<char> = new.chars().collect();
-    let mut prefix = 0;
-    while prefix < o.len() && prefix < n.len() && o[prefix] == n[prefix] {
-        prefix += 1;
-    }
-    let mut suffix = 0;
-    while suffix < o.len() - prefix
-        && suffix < n.len() - prefix
-        && o[o.len() - 1 - suffix] == n[n.len() - 1 - suffix]
-    {
-        suffix += 1;
-    }
+    let (prefix, suffix) = splice_bounds(&o, &n);
     let del = o.len() - prefix - suffix;
     let ins: String = n[prefix..n.len() - suffix].iter().collect();
 
@@ -923,6 +930,114 @@ pub(crate) fn splice_min(txn: &mut TransactionMut, text: &TextRef, old: &str, ne
     }
     if !ins.is_empty() {
         text.insert(txn, at, &ins);
+    }
+}
+
+/// The `(prefix, suffix)` [`splice_min`] keeps: the common leading and trailing runs of
+/// `o` and `n`, in chars, never overlapping.
+fn splice_bounds(o: &[char], n: &[char]) -> (usize, usize) {
+    let mut prefix = 0;
+    while prefix < o.len() && prefix < n.len() && o[prefix] == n[prefix] {
+        prefix += 1;
+    }
+    let mut suffix = 0;
+    while suffix < o.len() - prefix
+        && suffix < n.len() - prefix
+        && o[o.len() - 1 - suffix] == n[n.len() - 1 - suffix]
+    {
+        suffix += 1;
+    }
+    (prefix, suffix)
+}
+
+/// Whether the splice turning `old` into `new` inserts text right after a char that
+/// carries a non-inclusive mark (`per_char`) and is not an inline atom: the one case
+/// [`splice_min_with_marks`] is for. An atom is left out on purpose: an insert that
+/// steps past an image's end marker instead of clearing its own char is exposed to a
+/// peer's concurrent `src` change re-writing that marker, and a literal U+FFFC absorbed
+/// into the image's `@atom` range reads back as a second image (measured) — the
+/// insert-then-clear path of [`resync_marks`] is right for an atom.
+fn inserts_after_non_inclusive(
+    old: &str,
+    old_marks: &[SpanMark],
+    new: &str,
+    per_char: &BTreeSet<String>,
+) -> bool {
+    if per_char.is_empty() {
+        return false;
+    }
+    let o: Vec<char> = old.chars().collect();
+    let n: Vec<char> = new.chars().collect();
+    let (prefix, suffix) = splice_bounds(&o, &n);
+    if prefix == 0 || n.len() - prefix - suffix == 0 {
+        return false;
+    }
+    let before = prefix - 1;
+    let on_before = || {
+        old_marks
+            .iter()
+            .filter(move |m| m.start <= before && before < m.end)
+    };
+    on_before().any(|m| per_char.contains(&m.name)) && !on_before().any(|m| m.name == ATOM_MARK)
+}
+
+/// [`splice_min`], but the inserted chars are written **with** the formatting `target`
+/// gives them (`insert_with_attributes`) rather than inheriting whatever surrounds the
+/// insertion point. Used when the text is inserted right after a char carrying a
+/// non-inclusive mark such as `link` ([`inserts_after_non_inclusive`]).
+///
+/// Why it matters (review of #901, D2): a char typed right after a link is plain in the
+/// model, but a plain `insert` puts it *inside* the link's range in the CRDT, and the
+/// clear that [`resync_marks`] then writes over it (`format(X, link: null)`) also
+/// deletes the link's own end marker as redundant. A peer's concurrent formatting that
+/// relied on that marker — extending the link over the text after it, or linking that
+/// text elsewhere — then lost to the typer's null, which governed everything after the
+/// typed char. Inserted with its attributes, the char steps past the existing end
+/// marker (yrs `minimize_attr_changes`) and writes no markers at all, so nothing a peer
+/// depends on is touched; where no end marker exists (the link ends its block) it
+/// writes a clear of its own, which is the same thing the resync would have written.
+///
+/// yrs unsets every current attribute an insert does not name, so each inserted run
+/// carries its **whole** target mark set, not only the per-char ones; the chars are
+/// grouped into runs of equal attributes, one insert per run.
+fn splice_min_with_marks(
+    txn: &mut TransactionMut,
+    text: &TextRef,
+    old: &str,
+    new: &str,
+    target: &[SpanMark],
+) {
+    let o: Vec<char> = old.chars().collect();
+    let n: Vec<char> = new.chars().collect();
+    let (prefix, suffix) = splice_bounds(&o, &n);
+    let del = o.len() - prefix - suffix;
+    let mut at: u32 = o[..prefix].iter().map(|c| c.len_utf16() as u32).sum();
+    let del_u16: u32 = o[prefix..prefix + del]
+        .iter()
+        .map(|c| c.len_utf16() as u32)
+        .sum();
+    if del_u16 > 0 {
+        text.remove_range(txn, at, del_u16);
+    }
+    let attrs_at = |p: usize| -> YAttrs {
+        target
+            .iter()
+            .filter(|m| m.start <= p && p < m.end)
+            .map(|m| (m.name.as_str().into(), encode_mark_value(&m.attrs)))
+            .collect()
+    };
+    let end = n.len() - suffix;
+    let mut i = prefix;
+    while i < end {
+        let attrs = attrs_at(i);
+        let start = i;
+        while i < end && attrs_at(i) == attrs {
+            i += 1;
+        }
+        let run: String = n[start..i].iter().collect();
+        let run_u16: u32 = n[start..i].iter().map(|c| c.len_utf16() as u32).sum();
+        text.insert_with_attributes(txn, at, &run, attrs);
+        at += run_u16;
     }
 }
 
@@ -958,7 +1073,7 @@ fn apply_mark(txn: &mut TransactionMut, text: &TextRef, s: &str, m: &SpanMark) {
 /// new) nets out to exactly the new range.
 ///
 /// An **inline atom**'s [`ATOM_MARK`] attribute is the one exception: it is diffed **per
-/// char** by [`resync_atoms_per_char`], never per span. A span is too coarse for it,
+/// char** by [`resync_per_char`], never per span. A span is too coarse for it,
 /// because yrs extends a formatted range over an insert at its end boundary: a char
 /// typed right after an image lands inside the image's `@atom` range at the CRDT level
 /// while the model holds it as plain text, so the current span covers `[image, typed]`
@@ -969,10 +1084,21 @@ fn apply_mark(txn: &mut TransactionMut, text: &TextRef, s: &str, m: &SpanMark) {
 /// and is not written; only the stray char is cleared. Two *identical adjacent* atoms
 /// coalesce into one span the same way, and per-char diffing stops an edit of one from
 /// rewriting the other — but see the module docs for what yrs still does to that pair
-/// under concurrency. Every other mark stays per span: marks are inclusive in the
-/// model too, so a typed char carries them and there is no stray to clear — and the
-/// review of #838 found that diffing *every* mark per char loses a peer's concurrent
-/// link change in the same typing shape.
+/// under concurrency.
+///
+/// A **non-inclusive** mark (`per_char`: the names the caller found with
+/// `MarkSpec::inclusive == false` on the model — the starter kit's `link`) is the same
+/// shape and is diffed per char for the same reason: a char that lands inside a
+/// link's range in the CRDT while the model holds it plain would, per span, clear the
+/// link and write it again, reverting a peer's concurrent change of its `href` or
+/// bringing back a link the peer removed. (A char *typed* right after a link no longer
+/// lands inside: [`splice_min_with_marks`] inserts it outside the range, because the
+/// clear this pass would write over it also deletes the link's end marker, which a
+/// peer's concurrent extension of the link depends on.) Every other mark
+/// stays per span: it is inclusive in the model too, so a char typed at its end
+/// carries it and there is no stray to clear — and the review of #838 found that
+/// diffing *every* mark per char loses a peer's concurrent link change in a typing
+/// shape of its own.
 ///
 /// A yrs formatting clear is per *attribute key*, so a peer clearing `bold` over the
 /// atom's char cannot take `@atom` with it. Writing the attribute *with* the
@@ -985,10 +1111,15 @@ fn resync_marks(
     current: &str,
     current_marks: &[SpanMark],
     target: &[SpanMark],
+    per_char: &BTreeSet<String>,
 ) {
-    resync_atoms_per_char(txn, text, current, current_marks, target);
+    let is_per_char = |name: &str| name == ATOM_MARK || per_char.contains(name);
+    resync_per_char(txn, text, current, current_marks, target, ATOM_MARK);
+    for name in per_char {
+        resync_per_char(txn, text, current, current_marks, target, name);
+    }
     for m in current_marks {
-        if m.name == ATOM_MARK || target.contains(m) {
+        if is_per_char(&m.name) || target.contains(m) {
             continue;
         }
         let (at, len) = u16_span(current, m.start, m.end);
@@ -1003,35 +1134,33 @@ fn resync_marks(
         );
     }
     for m in target {
-        if m.name != ATOM_MARK && !current_marks.contains(m) {
+        if !is_per_char(&m.name) && !current_marks.contains(m) {
             apply_mark(txn, text, current, m);
         }
     }
 }
 
-/// The [`ATOM_MARK`] half of [`resync_marks`], diffed **per char** (see there for why).
-/// Clears the attribute from every maximal run of chars that carry it now and should
-/// not, then writes it over every maximal run of chars whose target value differs from
-/// the current one — and over nothing else, so an atom whose char already carries its
-/// target value gets no write at all. Costs nothing when neither side holds an atom.
-fn resync_atoms_per_char(
+/// The per-char half of [`resync_marks`] for one attribute `name` — [`ATOM_MARK`], or a
+/// non-inclusive mark (see there for why each). Clears the attribute from every maximal
+/// run of chars that carry it now and should not, then writes it over every maximal run
+/// of chars whose target value differs from the current one — and over nothing else,
+/// so a char that already carries its target value gets no write at all. Costs nothing
+/// when neither side holds the attribute.
+fn resync_per_char(
     txn: &mut TransactionMut,
     text: &TextRef,
     current: &str,
     current_marks: &[SpanMark],
     target: &[SpanMark],
+    name: &str,
 ) {
-    if !current_marks
-        .iter()
-        .chain(target)
-        .any(|m| m.name == ATOM_MARK)
-    {
+    if !current_marks.iter().chain(target).any(|m| m.name == name) {
         return;
     }
     let n = current.chars().count();
     let per_char = |spans: &[SpanMark]| -> Vec<Option<Attrs>> {
         let mut v = vec![None; n];
-        for m in spans.iter().filter(|m| m.name == ATOM_MARK) {
+        for m in spans.iter().filter(|m| m.name == name) {
             for slot in &mut v[m.start.min(n)..m.end.min(n)] {
                 *slot = Some(m.attrs.clone());
             }
@@ -1052,7 +1181,7 @@ fn resync_atoms_per_char(
             i += 1;
         }
         let (at, len) = u16_span(current, start, i);
-        text.format(txn, at, len, YAttrs::from([(ATOM_MARK.into(), Any::Null)]));
+        text.format(txn, at, len, YAttrs::from([(name.into(), Any::Null)]));
     }
     // Then writes: a char whose target value is not what it carries now. A run is
     // extended only while the target value stays the same, so one write never spans two
@@ -1072,7 +1201,7 @@ fn resync_atoms_per_char(
             text,
             current,
             &SpanMark {
-                name: ATOM_MARK.into(),
+                name: name.into(),
                 attrs: want.clone(),
                 start,
                 end: i,

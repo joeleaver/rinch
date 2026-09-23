@@ -82,7 +82,8 @@ contain. The starter-kit catalogue:
   `bullet_list`, `ordered_list`, `list_item`, `horizontal_rule`, `hard_break`,
   `text`, `image{src, alt}`, plus the table nodes.
 - **Marks:** `bold`, `italic`, `underline`, `strike`, `code`, `link{href}`,
-  `highlight{color?}`, `text_color{color}`, `subscript`, `superscript`.
+  `highlight{color?}`, `text_color{color}`, `subscript`, `superscript`. Every mark
+  is inclusive except `link` (see [inherited marks](#state-selection-stored-marks)).
 
 Each node spec carries a **content expression** (e.g. `blockquote > block+`,
 `list_item > block+`, `bullet_list > list_item+`). These compile to a **ContentMatch
@@ -215,6 +216,36 @@ model.
 
 Toggling a mark at a *collapsed cursor* sets `stored_marks`; toggling over a *range*
 emits an `AddMark`/`RemoveMark` step.
+
+**Inherited marks and `inclusive`.** With no stored marks, typed text takes the marks
+of its position (`ResolvedPos::marks`, ProseMirror's `$pos.marks()`):
+
+- inside a text run: that run's marks;
+- at a boundary between two runs: the marks of the run *before* it;
+- at the start of a textblock: the marks of the run after it.
+
+A mark spec's `inclusive` flag (`MarkSpec::inclusive`, default `true`, builder
+`.inclusive(false)`) decides what happens at a mark's **end**. An inclusive mark
+(`bold`) carries on: type right after a bold word and the new text is bold. A
+non-inclusive mark does not: at a boundary it is dropped unless the run after the
+position carries the same mark (same attrs) too, and at a textblock's start it is
+dropped. The starter kit's `link` is the one non-inclusive mark, as in ProseMirror's
+example schema and tiptap, so for a link:
+
+| Caret | Typed text | `active_link_href()` |
+|---|---|---|
+| inside the link | linked | the link's `href` |
+| at the link's start | not linked (the text before decides) | `None` |
+| right after its last character | not linked | `None` |
+
+`is_mark_active`, `marks_at` and `Transaction::add_stored_mark` read the same rule.
+With collaboration on, the typed character is written to the CRDT outside the link
+as well, in a way that leaves the link's own formatting untouched, so a peer's
+concurrent change to the link — a new `href`, removing it, extending it over the
+text after it — survives. What such a concurrent change *can* do is take the typed
+character with it: when the peer re-writes the link or links the text after it at
+the same moment, the character may end up inside the peer's link. Both editors
+still end up with the same document.
 
 ## Commands, keymap, input rules
 

@@ -26,7 +26,7 @@ use rinch_editor_core::serialize::{
 };
 use rinch_editor_core::transform::Mapping;
 use rinch_editor_core::{
-    CursorMotion, EditorState, EditorView, KeyBinding, Node, Plugin, Pos, Schema, Selection,
+    CursorMotion, EditorState, EditorView, KeyBinding, Mark, Node, Plugin, Pos, Schema, Selection,
     Transaction, ViewRequest, apply_input_rules,
 };
 
@@ -791,9 +791,10 @@ impl EditorHandle {
     /// The link carrying the character that starts at `pos`, as the whole run
     /// of adjacent content with the same `href` — [`rinch_editor_core::link_at`]
     /// over the current document. A position just **after** a link's last
-    /// character is not on it (although [`active_link_href`](Self::active_link_href)
-    /// reports the link for a caret there): this is the question a pointer
-    /// asks, about the character under it.
+    /// character is not on it and the position at its start is, while
+    /// [`active_link_href`](Self::active_link_href) reports no link for a caret
+    /// at either: this is the question a pointer asks, about the character
+    /// under it.
     pub fn link_at(&self, pos: Pos) -> Option<LinkSpan> {
         rinch_editor_core::link_at(&self.core().state.doc, pos)
     }
@@ -967,19 +968,38 @@ impl EditorHandle {
         }
     }
 
-    /// The `href` of the `link` mark active at the selection head, or `None` when
-    /// the selection isn't inside a link — for pre-filling an "edit link" dialog
-    /// (`is_mark_active("link")` only reports presence, not the target). Reads
-    /// **state**, never the host.
+    /// The `href` of the link the selection is on, or `None` — for pre-filling an
+    /// "edit link" dialog (`is_mark_active("link")` only reports presence, not the
+    /// target). Reads **state**, never the host.
+    ///
+    /// For a **range**, the first link in it (as `is_mark_active` looks at the range
+    /// too). For a **caret**, the link a character typed there would carry: `link`
+    /// is non-inclusive ([`MarkSpec::inclusive`](rinch_editor_core::MarkSpec::inclusive)),
+    /// so a caret inside a link reports it and a caret at either of its edges does
+    /// not — right after the last letter is outside the link, as typing there is.
     pub fn active_link_href(&self) -> Option<String> {
         let core = self.core();
         let state = &core.state;
         let mt = state.schema().mark_type("link")?;
-        marks_at(state, state.selection.head().0)
-            .iter()
-            .find(|m| &m.typ == mt)
-            .and_then(|m| m.attrs.get_str("href"))
-            .map(str::to_string)
+        let href = |m: &Mark| {
+            (&m.typ == mt)
+                .then(|| m.attrs.get_str("href").map(str::to_string))
+                .flatten()
+        };
+        let sel = &state.selection;
+        if sel.is_empty() {
+            return marks_at(state, sel.head().0).iter().find_map(href);
+        }
+        let mut found = None;
+        state
+            .doc
+            .nodes_between(sel.from().0, sel.to().0, &mut |node, _pos, _parent| {
+                if found.is_none() && node.is_inline() {
+                    found = node.marks().iter().find_map(href);
+                }
+                found.is_none()
+            });
+        found
     }
 
     /// The schema type name of the block the cursor is in (e.g. `"heading"`), or
@@ -2876,6 +2896,108 @@ mod tests {
     }
 
     #[test]
+    fn a_range_over_two_different_links_reports_the_first() {
+        let s = schema();
+        let h = mount(doc_node(&s, vec![para(&s, "one two three")]));
+        // "two" (5..8) and "three" (9..14) link to different targets.
+        h.handle.set_selection(Selection::text(Pos(5), Pos(8)));
+        assert!(h.handle.toggle_link("https://first.example"));
+        h.handle.set_selection(Selection::text(Pos(9), Pos(14)));
+        assert!(h.handle.toggle_link("https://second.example"));
+        // The range starts in plain text before both and ends at the second's end.
+        h.handle.set_selection(Selection::text(Pos(2), Pos(14)));
+        assert_eq!(
+            h.handle.active_link_href().as_deref(),
+            Some("https://first.example")
+        );
+        // Selected the other way round, it is still the first in document order.
+        h.handle.set_selection(Selection::text(Pos(14), Pos(2)));
+        assert_eq!(
+            h.handle.active_link_href().as_deref(),
+            Some("https://first.example")
+        );
+    }
+
+    #[test]
+    fn a_caret_right_after_a_link_is_outside_it_and_typing_there_is_plain() {
+        let s = schema();
+        let h = mount(doc_node(&s, vec![para(&s, "see here now")]));
+        // Link "here" (5..9).
+        h.handle.set_selection(Selection::text(Pos(5), Pos(9)));
+        assert!(h.handle.toggle_link("https://rust-lang.org"));
+        assert_eq!(
+            h.handle.active_link_href().as_deref(),
+            Some("https://rust-lang.org"),
+            "a range over the link reports it, though its end is the link's end"
+        );
+
+        h.handle.set_selection(Selection::cursor(Pos(7)));
+        assert_eq!(
+            h.handle.active_link_href().as_deref(),
+            Some("https://rust-lang.org"),
+            "inside"
+        );
+        assert!(h.handle.is_mark_active("link"));
+        h.handle.set_selection(Selection::cursor(Pos(5)));
+        assert_eq!(h.handle.active_link_href(), None, "at its start");
+        h.handle.set_selection(Selection::cursor(Pos(9)));
+        assert_eq!(h.handle.active_link_href(), None, "right after it");
+        assert!(!h.handle.is_mark_active("link"));
+
+        // Typing there, and the IME's commit, stay outside the link.
+        assert!(h.handle.insert_text("X"));
+        h.handle.ime_commit("ね");
+        assert_eq!(
+            runs_by_mark(&h.handle.doc(), "link"),
+            [
+                ("see ".to_string(), false),
+                ("here".to_string(), true),
+                ("Xね now".to_string(), false)
+            ]
+        );
+        // The host shows the same: the anchor holds only the link's own text.
+        let host_p = children(&h, h.container_id)[0];
+        let anchor = children(&h, host_p)
+            .into_iter()
+            .find(|&c| tag(&h, c).as_deref() == Some("a"))
+            .expect("the link is projected");
+        assert_eq!(text(&h, anchor).as_deref(), Some("here"));
+    }
+
+    #[test]
+    fn a_caret_right_after_bold_still_types_bold() {
+        let s = schema();
+        let h = mount(doc_node(&s, vec![para(&s, "see here now")]));
+        h.handle.set_selection(Selection::text(Pos(5), Pos(9)));
+        assert!(h.handle.command("toggleBold"));
+        h.handle.set_selection(Selection::cursor(Pos(9)));
+        assert!(h.handle.is_mark_active("bold"));
+        assert!(h.handle.insert_text("X"));
+        assert_eq!(
+            runs_by_mark(&h.handle.doc(), "bold"),
+            [
+                ("see ".to_string(), false),
+                ("hereX".to_string(), true),
+                (" now".to_string(), false)
+            ]
+        );
+    }
+
+    /// The first block's text as maximal runs with and without the mark `name`.
+    fn runs_by_mark(doc: &Node, name: &str) -> Vec<(String, bool)> {
+        let mut out: Vec<(String, bool)> = Vec::new();
+        for n in doc.child(0).content().iter() {
+            let on = n.marks().iter().any(|m| m.type_name() == name);
+            let t = n.text().unwrap_or_default();
+            match out.last_mut() {
+                Some((run, last)) if *last == on => run.push_str(t),
+                _ => out.push((t.to_string(), on)),
+            }
+        }
+        out
+    }
+
+    #[test]
     fn paste_text_over_selection_replaces_it() {
         let s = schema();
         let h = mount(doc_node(&s, vec![para(&s, "hello")]));
@@ -3730,6 +3852,36 @@ mod tests {
                 REFRESHES.with(|n| n.get()) >= 1,
                 "the platform was asked to repaint the overlays"
             );
+        }
+
+        /// Typing right after a link, through the handle, reaches the peer as plain
+        /// text: `link` is non-inclusive in the model, and the projection writes that
+        /// into the CRDT rather than leaving the char inside the link's range (where
+        /// yrs puts an insert at a range's end).
+        #[test]
+        fn a_char_typed_after_a_link_reaches_the_peer_outside_it() {
+            let s = schema();
+            let host = mount(doc_node(&s, vec![para(&s, "see here now")])).handle;
+            let guest = mount(doc_node(&s, vec![para(&s, "")])).handle;
+            host.set_selection(Selection::text(Pos(5), Pos(9)));
+            assert!(host.toggle_link("https://rust-lang.org"));
+            loopback(&host, &guest);
+
+            host.set_selection(Selection::cursor(Pos(9)));
+            assert!(host.insert_text("X"));
+            let expected = [
+                ("see ".to_string(), false),
+                ("here".to_string(), true),
+                ("X now".to_string(), false),
+            ];
+            assert_eq!(runs_by_mark(&host.doc(), "link"), expected);
+            assert_eq!(
+                runs_by_mark(&guest.doc(), "link"),
+                expected,
+                "the guest sees the typed char outside the link too"
+            );
+            guest.set_selection(Selection::cursor(Pos(10)));
+            assert_eq!(guest.active_link_href(), None);
         }
 
         // ── Read-only and collaboration ──────────────────────────────────────
