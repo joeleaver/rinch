@@ -1678,9 +1678,15 @@ On a `gpu` build, `App::renderer(Renderer)` chooses (`shell/renderer.rs`):
 and presents with software, logging a warning, when the GPU will not start (no
 surface, adapter or device, or a validation error while configuring them);
 `Renderer::Gpu` panics instead; `Renderer::Software` never touches wgpu. The
-`RINCH_RENDERER` environment variable (`auto`, `gpu`, `software`, `cpu`)
-overrides the app's choice. An app that configured the device itself
-(`gpu_config`, `external_gpu`) gets no fallback. Whether the GPU compositor is
+`RINCH_RENDERER` environment variable (`auto`, `gpu`, `software`, or `cpu` as
+an alias of `software`; trimmed, any case) overrides the app's choice; an empty
+value is ignored and an unrecognised one is logged and ignored. **An app that
+configured the device itself (`gpu_config`, `external_gpu`) always presents on
+the GPU**: it gets no fallback (a GPU that will not start panics), and a
+`Software` choice — the app's own or a user's `RINCH_RENDERER=cpu` — is logged
+as a warning and ignored (`renderer::tries_gpu`), because its pipelines need
+the device `gpu_handle()` hands it. Everywhere else `gpu_handle()` is `None`
+for the whole session while software presents. Whether the GPU compositor is
 presenting is a run-time question on a `gpu` build
 (`renderer::gpu_presenting()`), never `cfg!(not(software_shell))`.
 
@@ -2741,7 +2747,7 @@ registrar.notify_frame_ready();
 rsx! { RenderSurface { surface: Some(surface), style: "flex: 1;" } }
 ```
 
-**Sharing a high-capability GPU device (issue #57):** zero-copy compositing needs your texture on the *same* device rinch composites with (`gpu_handle()` → `device`/`queue`/**`adapter`**). By default that device is created with `Features::default()` / `Limits::default()`. To raise it:
+**Sharing a high-capability GPU device (issue #57):** zero-copy compositing needs your texture on the *same* device rinch composites with (`gpu_handle()` → `device`/`queue`/**`adapter`**). `gpu_handle()` is `None` whenever the window presents with the software renderer (`RINCH_RENDERER=cpu`, or the `Renderer::Auto` fallback), so handle `None` unless you use one of the two entry points below — they always present on the GPU. By default that device is created with `Features::default()` / `Limits::default()`. To raise it:
 
 | Entry point | Ownership | Use when |
 |---|---|---|

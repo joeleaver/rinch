@@ -80,8 +80,13 @@ For zero-copy compositing, use `GpuTextureRegistrar` to provide a `wgpu::Texture
 let surface = create_render_surface();
 let registrar = surface.gpu_registrar();
 
-// Get the shared wgpu Device via gpu_handle()
-let gpu = gpu_handle().unwrap();
+// Get the shared wgpu Device via gpu_handle(). It is None while the window
+// presents with the software renderer (RINCH_RENDERER=cpu, or the fallback
+// when the GPU would not start), so handle that case.
+let Some(gpu) = gpu_handle() else {
+    // No GPU device: submit CPU pixels through surface.writer() instead.
+    return;
+};
 let device = &gpu.device;
 let queue = &gpu.queue;
 
@@ -98,6 +103,8 @@ registrar.notify_frame_ready();
 ```
 
 `GpuTextureRegistrar` is also `Send + Sync + Clone`. The texture must be created on the same `wgpu::Device` (available via `gpu_handle()`).
+
+`gpu_handle()` returns `None` until the window's GPU renderer has started, and for the whole session when the window presents with the software renderer: `Renderer::Software` was chosen, a user set `RINCH_RENDERER=cpu`, or the GPU would not start and `Renderer::Auto` fell back (see [Rendering Backends](windows.md#rendering-backends)). An app that configures the device with `App::gpu_config` or `App::external_gpu` (below) is exempt: it always presents on the GPU, or panics at startup if the GPU will not start, so once its window is up the handle is there.
 
 > **Use `rinch::wgpu`.** rinch pins a patched `wgpu` fork. Construct every `wgpu` type you hand back to rinch (`TextureView`, config features/limits, …) from `rinch::wgpu::…`, not a separately-pinned `wgpu` dependency, or the types won't match.
 
