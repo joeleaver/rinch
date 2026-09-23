@@ -469,6 +469,7 @@ pub(super) fn run_effect(id: ObserverId) {
         if inner.memo.is_none() {
             super::count_effect_run();
         }
+        let _depth = super::ReactiveDepthGuard::enter();
         body();
         drop(body);
 
@@ -573,8 +574,12 @@ fn deps_changed(inner: &EffectInner) -> bool {
     }
     memo_deps.into_iter().any(|(id, generation, seen)| {
         let node = super::MEMO_STORE.with(|store| store.borrow().get_node(id, generation));
-        // A freed memo has no new value for anybody.
-        node.is_some_and(|node| node.refresh() != seen)
+        // A freed memo counts as moved. The reader was computed from its old
+        // value and nothing will ever wake it again (the memo's marker went
+        // with it), so leaving it clean would strand it on that value for good
+        // — a `try_get` reader must get its chance to see `None`. Costs one
+        // recompute, once.
+        node.is_none_or(|node| node.refresh() != seen)
     })
 }
 

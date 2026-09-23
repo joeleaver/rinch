@@ -245,3 +245,45 @@ fn a_real_dark_mode_toggle_keeps_the_loader_spinning() {
     );
     assert_eq!(start_time(&app, oval), expected_start, "…nor restart them");
 }
+
+/// The **thread-global** theme path: a document that follows the global slot
+/// (desktop, web, Android — anything that is not an embed context) restyles
+/// when `set_current_theme_css` changes it, which is what a `ThemeProvider`
+/// dark-mode toggle does. `resolve_and_repaint` notices through the slot's
+/// generation (`ThemeKey::Global`), not a string compare; the fixture above
+/// covers only the owned (embed) arm.
+#[cfg(feature = "theme")]
+#[test]
+fn a_thread_global_theme_change_restyles_a_document_that_follows_it() {
+    // Thread-local slot: this test's thread owns it for the duration.
+    rinch_core::set_current_theme_css(Some(":root { --probe-c: rgb(255, 0, 0); }".into()));
+    let mut app = RinchApp::new(move |scope: &mut RenderScope| {
+        let root = scope.create_element("div");
+        let probe = scope.create_element("div");
+        probe.set_attribute("class", "theme-probe");
+        probe.set_attribute("style", "color: var(--probe-c)");
+        root.append_child(&probe);
+        root
+    });
+    app.mount_component(VIEWPORT.0, VIEWPORT.1);
+    app.resolve_and_repaint(VIEWPORT.0, VIEWPORT.1);
+    let probe = node_with_class(&app, "theme-probe");
+    let color = |app: &RinchApp| {
+        let doc = app.doc.as_ref().unwrap();
+        let d = doc.borrow();
+        d.tree
+            .get(probe)
+            .unwrap()
+            .computed_style
+            .color
+            .map(|c| c.to_rgba8())
+            .map(|c| (c.r, c.g, c.b))
+    };
+    assert_eq!(color(&app), Some((255, 0, 0)), "precondition");
+
+    rinch_core::set_current_theme_css(Some(":root { --probe-c: rgb(0, 0, 255); }".into()));
+    app.resolve_and_repaint(VIEWPORT.0, VIEWPORT.1);
+    assert_eq!(color(&app), Some((0, 0, 255)));
+
+    rinch_core::set_current_theme_css(None);
+}

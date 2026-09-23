@@ -73,7 +73,10 @@ maybe, and runs as usual; signals have no cut-off (`set` notifies whether or not
 the value changed — use `set_if_changed` for that).
 
 The cut-off chains: a memo that reads a memo which recomputed to an equal value
-is re-validated without running its own computation.
+is re-validated without running its own computation. A source memo that has
+been **freed** (its scope disposed) counts as changed, so a reader that falls
+back with `try_get()` recomputes once and sees `None` rather than keeping a value
+computed from a memo that no longer exists.
 
 ## Memos vs Effects
 

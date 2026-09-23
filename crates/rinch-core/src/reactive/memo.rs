@@ -157,6 +157,7 @@ impl<T: Clone + PartialEq + 'static> MemoInner<T> {
         // Retracking: this is the pass that reads the memo's dependencies, so
         // it replaces the set the previous recompute took out (#171).
         let _observer_guard = super::effect::ObserverGuard::push_retracking(self.id);
+        let _depth = super::ReactiveDepthGuard::enter();
 
         let value = (self.f.borrow())();
         let changed = self.value.borrow().as_ref() != Some(&value);

@@ -9,6 +9,8 @@
 #[cfg(test)]
 mod animation_theme_change_tests;
 #[cfg(test)]
+mod batched_handler_focus_tests;
+#[cfg(test)]
 mod blink_and_click_focus_tests;
 #[cfg(all(test, any(feature = "gpu", feature = "android-gpu", feature = "embed")))]
 mod build_scene_consume_tests;
@@ -112,19 +114,20 @@ use std::rc::Rc;
 
 use rinch_core::dom::{DomDocument, NodeHandle, RenderScope, clear_render_scope, set_render_scope};
 
-/// `ReRender` native events queued to the desktop event loop, process-wide
-/// and monotonic. Bumped by the shell's `send_native_event`; folded into the
-/// document's `rerender_events_queued` counter per frame by
-/// [`RinchApp::end_perf_frame`].
 /// Identifies which theme CSS a document is showing without holding the CSS:
 /// the thread-global slot at a [generation](rinch_core::current_theme_css_generation),
 /// or the document's own CSS at [`RinchApp::owned_theme_generation`].
+#[cfg(feature = "theme")]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum ThemeKey {
     Global(u64),
     Owned(u64),
 }
 
+/// `ReRender` native events queued to the desktop event loop, process-wide
+/// and monotonic. Bumped by the shell's `send_native_event`; folded into the
+/// document's `rerender_events_queued` counter per frame by
+/// [`RinchApp::end_perf_frame`].
 pub(crate) static RERENDER_EVENTS_QUEUED: std::sync::atomic::AtomicU64 =
     std::sync::atomic::AtomicU64::new(0);
 use rinch_core::events;
@@ -390,6 +393,7 @@ pub struct RinchApp {
     pub(crate) drag_over_surface: Option<(usize, usize)>,
     /// The [`ThemeKey`] of the theme CSS last loaded into the document (for
     /// change detection).
+    #[cfg(feature = "theme")]
     pub(crate) last_theme_key: Option<ThemeKey>,
     /// Per-document theme CSS owned by this app (issue #138). `None` = follow
     /// the thread-global theme slot (the single-root shell/web/android paths).
@@ -398,6 +402,7 @@ pub struct RinchApp {
     /// which keeps `owned_theme_generation` in step.
     pub(crate) owned_theme_css: Option<String>,
     /// Bumped whenever `owned_theme_css` changes; the owned half of [`ThemeKey`].
+    #[cfg(feature = "theme")]
     pub(crate) owned_theme_generation: u64,
     /// Timestamp of last mouse click (for multi-click detection).
     pub(crate) last_click_time: Instant,
@@ -610,8 +615,10 @@ impl RinchApp {
             pending_drag: None,
             active_dnd: None,
             drag_over_surface: None,
+            #[cfg(feature = "theme")]
             last_theme_key: None,
             owned_theme_css: None,
+            #[cfg(feature = "theme")]
             owned_theme_generation: 0,
             last_click_time: Instant::now(),
             last_click_pos: (0.0, 0.0),
@@ -818,9 +825,6 @@ impl RinchApp {
 
     // ── Component mounting ───────────────────────────────────────────────
 
-    /// The theme CSS this document should be using: the per-document owned CSS
-    /// when set (embed contexts, issue #138), otherwise the thread-global slot
-    /// (the single-root shell/web/android default).
     /// Set (or clear) this document's own theme CSS. Embed contexts are the
     /// only production caller.
     #[cfg(feature = "theme")]
@@ -844,6 +848,9 @@ impl RinchApp {
         }
     }
 
+    /// The theme CSS this document should be using: the per-document owned CSS
+    /// when set (embed contexts, issue #138), otherwise the thread-global slot
+    /// (the single-root shell/web/android default).
     #[cfg(feature = "theme")]
     pub(crate) fn effective_theme_css(&self) -> String {
         match &self.owned_theme_css {

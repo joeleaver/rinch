@@ -372,7 +372,7 @@ impl Drag {
                     .mode
                     .map(state.start_context.mouse_x, state.start_context.mouse_y)
             });
-            on_cancel(x, y);
+            crate::reactive::batch(|| on_cancel(x, y));
         }
     }
 

@@ -179,7 +179,10 @@ pub fn dispatch_dismiss() -> bool {
         if !doc_matches(doc, caller) {
             continue;
         }
-        // One transaction per handler (`crate::reactive::batch`).
+        // A transaction for the handler (`crate::reactive::batch`). From the
+        // Escape path this joins the one `dispatch_keyboard_event` opened; it
+        // is a transaction of its own only for a direct `dispatch_dismiss`
+        // (Android Back).
         let took = crate::reactive::batch(|| match &owner {
             Some(o) => o.run(|| handler()),
             None => handler(),

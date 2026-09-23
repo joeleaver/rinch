@@ -243,3 +243,41 @@ fn an_unread_memo_is_not_recomputed_by_a_write() {
     assert_eq!(m.get(), 4);
     assert_eq!(computes.get(), 2);
 }
+
+/// An effect that reads a signal directly *and* a memo of it runs when the
+/// signal changes even though the memo held: a direct reader is definite, not a
+/// maybe. (With the direct reader demoted to a maybe, the unchanged memos
+/// would skip it and lose the update.) Diamond from PR #882's review.
+#[test]
+fn a_direct_reader_of_a_changed_signal_runs_even_when_its_memos_held() {
+    let s = Signal::new(1i32);
+    let parity = Memo::new(move || s.get() % 2);
+    let tens = Memo::new(move || s.get() / 10);
+    let log = Rc::new(RefCell::new(Vec::new()));
+    let l = Rc::clone(&log);
+    let _e = Effect::new(move || l.borrow_mut().push((parity.get(), tens.get(), s.get())));
+    log.borrow_mut().clear();
+
+    s.set(3); // both memos hold; `s` itself moved
+    s.set(12); // both memos move
+    assert_eq!(*log.borrow(), vec![(1, 0, 3), (0, 1, 12)]);
+}
+
+/// A memo whose upstream memo is freed while it is waiting to be re-validated
+/// recomputes rather than answering from its cache: a freed source counts as
+/// moved. (Counting it as "no new value" left the reader clean on a value
+/// computed from a memo that no longer exists, and nothing would ever wake it
+/// again.) C2 of PR #882's review.
+#[test]
+fn a_freed_upstream_memo_counts_as_changed() {
+    use super::Scope;
+    let n = Signal::new(1i32);
+    let scope = Scope::new();
+    let upstream = scope.run(|| Memo::new(move || n.get() * 2));
+    let downstream = Memo::new(move || upstream.try_get().unwrap_or(-1) + 1);
+    assert_eq!(downstream.get(), 3);
+
+    n.set(5); // upstream Dirty, downstream Check
+    scope.dispose(); // upstream freed before anyone re-validated downstream
+    assert_eq!(downstream.get(), 0, "recomputed against the freed source");
+}

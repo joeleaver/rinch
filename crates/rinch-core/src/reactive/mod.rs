@@ -910,10 +910,14 @@ impl Drop for BatchGuard {
 /// current all the same: a write marks the memos that read it stale
 /// synchronously, and the read recomputes (see `memo`'s module docs).
 ///
-/// Every event-handler dispatch runs inside one (`events::dispatch_event` and
-/// its siblings, the keyboard and paste interceptors, the dismiss stack, `Drag`
-/// callbacks, each main-thread callback, each timer), so a handler that writes
-/// several signals flushes once.
+/// Event-handler dispatch runs inside one (`events::dispatch_event` and its
+/// siblings, the keyboard and paste interceptors, the dismiss stack, `Drag`
+/// callbacks, each drained main-thread callback, each timer — the guide's
+/// "Event handlers run as batches" has the exact list, and what is left out),
+/// so a handler that writes several signals flushes once. A `NodeHandle`
+/// operation inside the batch runs the effects queued so far first
+/// ([`flush_pending_effects`]), so the DOM a handler touches is never behind the
+/// writes it already made.
 ///
 /// # Panics
 ///
@@ -954,6 +958,81 @@ pub fn batch<R>(f: impl FnOnce() -> R) -> R {
     }
 
     result
+}
+
+thread_local! {
+    /// How many effect bodies and memo computations are running on this thread
+    /// right now (nested runs count once each). See [`flush_pending_effects`].
+    static REACTIVE_DEPTH: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+}
+
+/// Marks an effect body or memo computation as running, for
+/// [`flush_pending_effects`]. RAII, so a panicking body cannot strand it.
+pub(crate) struct ReactiveDepthGuard;
+
+impl ReactiveDepthGuard {
+    pub(crate) fn enter() -> Self {
+        REACTIVE_DEPTH.with(|d| d.set(d.get() + 1));
+        ReactiveDepthGuard
+    }
+}
+
+impl Drop for ReactiveDepthGuard {
+    fn drop(&mut self) {
+        let _ = REACTIVE_DEPTH.try_with(|d| d.set(d.get().saturating_sub(1)));
+    }
+}
+
+/// Run, now, the effects the current [`batch`] has queued so far — the flush it
+/// would otherwise run when it exits — and leave the batch open.
+///
+/// This is what keeps an event handler's **program order** intact although
+/// the handler is a batch: every `NodeHandle` operation calls it first, so
+/// `open.set(true); field.focus()` focuses *after* the dialog's effects have
+/// run (and after the dialog's own focus request, which the handler's then
+/// overrides), and `rows.update(..); list.scroll_to_bottom()` scrolls to the
+/// new last row. It is the analogue of a browser flushing pending style when
+/// script asks for layout. Call it yourself before handing control to code
+/// that reads the DOM some other way.
+///
+/// The flush is an ordinary one: the batching flag is lowered while it runs,
+/// so the effects see exactly what the end-of-batch flush would show them
+/// (a write inside one flushes synchronously; a `batch()` inside one flushes
+/// before returning), and raised again afterwards so the handler's later writes
+/// are batched as before. Order is the queue's, so the #154 contract holds.
+///
+/// A no-op outside a batch (writes there have already flushed), when nothing
+/// is queued, and while an effect body or memo computation is running — those
+/// run *inside* a flush, and draining the queue from one would run effects
+/// queued behind it ahead of their turn. The signal-change callbacks (the
+/// host's re-render request) are not called here; the batch's own exit calls
+/// them once.
+pub fn flush_pending_effects() {
+    if REACTIVE_DEPTH.with(|d| d.get()) > 0 {
+        return;
+    }
+    let pending = RUNTIME.with(|rt| {
+        rt.try_borrow()
+            .map(|rt| rt.batching && !rt.pending_effects.is_empty())
+            .unwrap_or(false)
+    });
+    if !pending {
+        return;
+    }
+    /// Lowers the flag for the flush and raises it again — on unwind too.
+    struct Lowered;
+    impl Drop for Lowered {
+        fn drop(&mut self) {
+            let _ = RUNTIME.try_with(|rt| {
+                if let Ok(mut rt) = rt.try_borrow_mut() {
+                    rt.batching = true;
+                }
+            });
+        }
+    }
+    RUNTIME.with(|rt| rt.borrow_mut().batching = false);
+    let _raise = Lowered;
+    flush_effects();
 }
 
 /// Run every pending effect, then the UI re-render callbacks.
@@ -1860,5 +1939,35 @@ mod tests {
         count.set(5);
         assert_eq!(a.get(), 10);
         assert_eq!(b.get(), 10);
+    }
+}
+
+#[cfg(test)]
+mod drain_batching_tests {
+    use super::*;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicI32, Ordering};
+
+    /// Each drained main-thread callback is its own transaction, **not** one
+    /// for the whole drain: callbacks are queued independently, and a later one
+    /// may rely on an earlier one's effects having run. Here the second reads a
+    /// signal an effect derives from the first one's write. With the drain as a
+    /// single batch it read the pre-drain value.
+    ///
+    /// The only test in this crate that drains the process-global queue, so no
+    /// other test's callbacks can land on this thread.
+    #[test]
+    fn each_drained_callback_sees_the_effects_of_the_ones_before_it() {
+        let source = Signal::new(0i32);
+        let derived = Signal::new(0i32);
+        let _derive = Effect::new(move || derived.set(source.get() * 10));
+
+        let seen = Arc::new(AtomicI32::new(i32::MIN));
+        let s = Arc::clone(&seen);
+        queue_main_callback(Box::new(move || source.set(5)));
+        queue_main_callback(Box::new(move || s.store(derived.get(), Ordering::SeqCst)));
+        drain_main_callbacks();
+
+        assert_eq!(seen.load(Ordering::SeqCst), 50);
     }
 }
