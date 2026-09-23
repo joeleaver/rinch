@@ -77,6 +77,12 @@ const CSS: &str = "
     .rel { position: relative; }
     .abs { position: absolute; left: 3px; top: 4px; width: 60px; }
     .narrow { width: 120px; }
+    .hide > * { display: none; }
+    .blockkids > * { display: block; }
+    .cnts > * { display: contents; }
+    .pb::before { content: 'generated inline-block before'; display: inline-block; width: 90px; }
+    .pbb::before { content: 'generated block'; display: block; }
+    .pbi::before { content: 'generated inline'; }
 ";
 
 // ── Snapshot ────────────────────────────────────────────────────────────────
@@ -98,10 +104,12 @@ fn walk(doc: &RinchDocument, id: usize, depth: usize, out: &mut Vec<String>) {
     let Some(node) = doc.tree.get(id) else {
         return;
     };
-    if node.is_pseudo_element {
-        return;
-    }
     let pad = depth * 2;
+    let pseudo = if node.is_pseudo_element {
+        " pseudo"
+    } else {
+        ""
+    };
     match &node.kind {
         NodeKind::Text(t) => {
             // A text node owns no box of its own in an IFC; its glyphs are the
@@ -129,7 +137,7 @@ fn walk(doc: &RinchDocument, id: usize, depth: usize, out: &mut Vec<String>) {
         _ => {
             let l = &node.layout;
             out.push(format!(
-                "{:pad$}<{}> @({}, {}) {}x{}",
+                "{:pad$}<{}{pseudo}> @({}, {}) {}x{}",
                 "",
                 node.tag().unwrap_or("?"),
                 r(l.x),
@@ -629,6 +637,14 @@ const MUTATIONS: &[&str] = &[
     "site_to_inline",
     "set_text_content",
     "replace_first",
+    "remove_node_first",
+    "insert_child_1",
+    "set_inner_html",
+    "class_blockkids",
+    "class_hide",
+    "class_cnts",
+    "pseudo_inline_block",
+    "pseudo_block",
 ];
 
 /// Apply `m` to the context. `false` when the mutation does not apply (the
@@ -727,6 +743,43 @@ fn mutate(ctx: &mut Ctx, m: &str) -> bool {
             }
             None => false,
         },
+        // `NodeHandle::remove`, the verb every reactive helper uses.
+        "remove_node_first" => match kids.first() {
+            Some(&f) => {
+                doc.remove_node(f);
+                true
+            }
+            None => false,
+        },
+        // `NodeHandle::insert_after` and keyed reorders land here too.
+        "insert_child_1" => {
+            let n = fresh_subtree(doc, "chip");
+            doc.insert_child(site, n, 1);
+            true
+        }
+        // Frees the old children (slab ids recycle).
+        "set_inner_html" => {
+            doc.set_inner_html(
+                site,
+                "<span class=\"chip\">html chip</span> text <div>html block</div> tail",
+            );
+            true
+        }
+        // Display flips of the children, driven by a descendant selector on
+        // the site: the cascade, not a verb, records these seeds.
+        "class_blockkids" | "class_hide" | "class_cnts" => {
+            let class = m.trim_start_matches("class_");
+            doc.set_attribute(site, "class", class);
+            true
+        }
+        "pseudo_inline_block" => {
+            doc.set_attribute(site, "class", "pb");
+            true
+        }
+        "pseudo_block" => {
+            doc.set_attribute(site, "class", "pbb");
+            true
+        }
         _ => unreachable!("{m}"),
     }
 }
@@ -794,9 +847,9 @@ fn every_mutation_in_every_context_matches_the_whole_document_pass() {
             scoped_cells += (frame.get(Counter::IfcScopedPasses) != 0) as usize;
         }
     }
-    assert!(cells > 300, "the matrix shrank to {cells} cells");
+    assert!(cells > 400, "the matrix shrank to {cells} cells");
     assert!(
-        scoped_cells > 280,
+        scoped_cells > 380,
         "only {scoped_cells} of {cells} cells ran a scoped pass — the matrix is testing nothing"
     );
     assert!(
@@ -1093,7 +1146,7 @@ fn random_step(doc: &mut RinchDocument, rng: &mut Rng, trace: bool) {
         .copied()
         .filter(|n| doc.tree.get(n.0).is_some_and(|x| x.is_text()))
         .collect();
-    match rng.below(9) {
+    match rng.below(13) {
         0 | 1 => {
             let p = *rng.pick(&elements);
             let n = random_subtree(doc, rng, 3);
@@ -1194,9 +1247,58 @@ fn random_step(doc: &mut RinchDocument, rng: &mut Rng, trace: bool) {
                 doc.replace_node(old, n);
             }
         }
+        9 if !nodes.is_empty() => {
+            let n = *rng.pick(&nodes);
+            if trace {
+                eprintln!("remove_node {}", describe(doc, n));
+            }
+            doc.remove_node(n);
+        }
+        10 => {
+            let p = *rng.pick(&elements);
+            let idx = rng.below(children(doc, p).len() + 1);
+            let n = random_subtree(doc, rng, 2);
+            if trace {
+                eprintln!(
+                    "insert_child {} into {} at {idx}",
+                    describe(doc, n),
+                    describe(doc, p)
+                );
+            }
+            doc.insert_child(p, n, idx);
+        }
+        11 if elements.len() > 1 => {
+            let e = elements[1 + rng.below(elements.len() - 1)];
+            let html = rng.pick(HTMLS);
+            if trace {
+                eprintln!("inner_html {} = {html:?}", describe(doc, e));
+            }
+            doc.set_inner_html(e, html);
+        }
+        12 if elements.len() > 1 => {
+            let e = elements[1 + rng.below(elements.len() - 1)];
+            let class = rng.pick(CLASSES);
+            if trace {
+                eprintln!("class {} = {class:?}", describe(doc, e));
+            }
+            doc.set_attribute(e, "class", class);
+        }
         _ => {}
     }
 }
+
+/// `set_inner_html` bodies for the random run.
+const HTMLS: &[&str] = &[
+    "",
+    "plain text",
+    "<span>inline</span> and <b>bold</b>",
+    "<div>a block</div> text after",
+    "<span style=\"display: inline-block\">chip <span style=\"display: inline-block\">in chip</span></span>",
+];
+
+/// Classes for the random run: display flips of the children through a
+/// descendant selector, and generated content.
+const CLASSES: &[&str] = &["", "hide", "blockkids", "cnts", "pb", "pbb", "pbi"];
 
 /// Run `seeds` random documents for `steps` steps each, a scoped twin and a
 /// whole-document twin in lockstep (the same random choices, by position, on

@@ -194,8 +194,7 @@ pub(crate) struct IfcScope {
     /// container's region in DOM pre-order.
     pub region: Vec<(RawNodeId, RawNodeId, bool)>,
     /// The containers, every region node, and every anonymous block box the
-    /// containers (and any transparent region node that was a block container
-    /// until this change) held when the pass began.
+    /// containers held when the pass began.
     pub nodes: HashSet<RawNodeId>,
     /// The nodes whose **IFC-root status** this pass decides: [`Self::nodes`]
     /// less the stop nodes that are not containers of the scope. A stop node's
@@ -303,9 +302,12 @@ impl RinchDocument {
                 scope.nodes.insert(x);
                 if !stop {
                     // A transparent node holds no boxes of its own — unless it
-                    // was a block container until this change, and those are
-                    // this pass's to take down.
-                    scope.nodes.extend(n.run_boxes.iter().copied());
+                    // was a block container until this change. Those need no
+                    // entry here: `cleanup_anonymous_block_boxes` takes every
+                    // box whose parent is `rootable`, which this node is. (An
+                    // explicit entry was a mutant nothing could kill: the only
+                    // other reader it reached is a measure leaf, and a run never
+                    // holds the out-of-flow box that would give one a leaf.)
                     stack.extend(n.children.iter().rev().copied());
                 }
             }

@@ -1383,7 +1383,9 @@ impl RinchDocument {
         // anonymous block box, which is minted fresh with its value every pass,
         // and a node detached from the document root, which nothing reads while
         // it is detached and which the walk reaches again the moment it is
-        // re-attached (a structural change sets `ifc_dirty`).
+        // re-attached (attaching seeds a structural pass over the subtree).
+        // A *scoped* pass (`crate::ifc_scope`) never clears it: it recomputes
+        // only its own regions and leaves a detached subtree as it was.
         //
         // It is kept because "nothing reads it while detached" is an argument
         // about every current reader, and the direction it fails in is the bad
@@ -3561,7 +3563,7 @@ impl RinchDocument {
                     // on [`NodeContext::InlineRoot`]): the container collapsed to
                     // `h = 0` with its visible text laid out but never given a
                     // box. Detach it like the inline children. When it becomes
-                    // visible again, the display change sets `ifc_dirty` and
+                    // visible again, the display change seeds a structural pass and
                     // `sync_display_contents`'s rebuild re-attaches it from DOM
                     // order. Not marked with `ifc_root` — it is not this IFC's
                     // content, it is nobody's content.
@@ -3582,7 +3584,7 @@ impl RinchDocument {
                     // `read_layout_results` that already exists for exactly this
                     // hazard. Zeroing here as well would be a second authority
                     // for the same fact, and this pass does not run on every
-                    // frame (`ifc_dirty` gates it) while that one does.
+                    // frame (only a structural change runs it) while that one does.
                     if let Some(child_taffy) = child_taffy
                         && root_taffy_children.contains(&child_taffy)
                     {
@@ -3862,11 +3864,15 @@ impl RinchDocument {
     /// dirty a measure without dirtying the IFC structure — a restyle that
     /// changed something, and `set_text_content` — which between them are five
     /// call sites (`dom_impl/mod.rs` twice, `style_resolution/mod.rs`,
-    /// `dom_document_impl.rs`, `layout_engine.rs`). Every *structural* mutation
-    /// sets `ifc_dirty` instead, which measures the lot — and re-measures
-    /// whatever this function marked, see the body; this must not be added to
-    /// those paths, where it would cost an ancestor walk per `append_child` on
-    /// first build and buy nothing.
+    /// `dom_document_impl.rs`, `layout_engine.rs`). A *structural* mutation
+    /// seeds a structural pass instead (`crate::ifc_scope`), which sizes what
+    /// it placed and calls this itself for every container it set up (the
+    /// atomic inlines around a changed container are outside its scope, and
+    /// this set is how they get re-measured) — so the mutation verbs must not
+    /// call it too, where it would cost an ancestor walk per `append_child` on
+    /// first build and buy nothing. Only a pending **whole-document** pass
+    /// (`ifc_dirty`) takes the other arm below, since that pass sizes every
+    /// atomic inline anyway.
     pub(crate) fn mark_atomic_inline_dirty(&mut self, node_id: usize) {
         // On an `ifc_dirty` pass there is nothing to accumulate — that pass
         // measures every atomic inline in the document — but **measuring is not

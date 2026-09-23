@@ -710,12 +710,14 @@ pub struct Node {
     /// that contribute their children's boxes rather than one of their own
     /// (#513).
     ///
-    /// Total over the slab, and derived state: recomputed from scratch at the
-    /// top of every `ifc_dirty` pass by
-    /// `RinchDocument::recompute_contributes_in_flow_block`, exactly as
-    /// `ifc_root` is. Never invalidated per mutation site — creating or
-    /// destroying an in-flow block-level box takes a structural change or a
-    /// `display`/`position` change, and every one of those sets `ifc_dirty`.
+    /// Derived state, recomputed by
+    /// `RinchDocument::recompute_contributes_in_flow_block` at the top of every
+    /// structural pass, exactly as `ifc_root` is: over the whole slab on a
+    /// whole-document pass (`ifc_dirty`), over the regions it sets up on a
+    /// scoped one (`crate::ifc_scope`). Never invalidated per mutation site —
+    /// creating or destroying an in-flow block-level box takes a structural
+    /// change or a `display`/`position` change, and every one of those seeds a
+    /// structural pass reaching the node's region.
     ///
     /// The rule, in one place:
     ///
@@ -2011,9 +2013,10 @@ pub struct NodeTree {
     ///   [`NodeTree::forget_ifc_measures`] — the cascade's per-node
     ///   `same_text_layout_inputs` comparison, `set_text_content`, and the
     ///   atomic-inline re-measures;
-    /// - a **structural pass** (`ifc_dirty`) recomputes every root's content
-    ///   signature and drops the roots whose signature moved
-    ///   (`RinchDocument::refresh_ifc_signatures`). It used to clear the whole
+    /// - a **structural pass** recomputes the content signature of every root
+    ///   it reached — every root on a whole-document pass (`ifc_dirty`), its
+    ///   own containers' roots on a scoped one — and drops the roots whose
+    ///   signature moved (`RinchDocument::refresh_ifc_signatures`). It used to clear the whole
     ///   map instead, which re-shaped every paragraph in the document to
     ///   measure one appended row.
     ///

@@ -756,10 +756,19 @@ impl RinchDocument {
             .any(|&c| self.tree.nodes.get(c).is_some_and(|n| n.is_pseudo_element));
         if had_pseudo || has_pseudo {
             // The generated children are new nodes (or gone): a structural
-            // change to this node's child list, which the scoped structural
-            // pass has to be told about like any other.
+            // change to this node's child list, which the structural pass has
+            // to be told about like any other — and a layout owed, which is
+            // the half nothing else supplies when the content went away. A
+            // regenerated node's first cascade seeds and dirties layout on its
+            // own (its Taffy style is new), so for a *replaced* pseudo-element
+            // this is redundant; for one **removed** with nothing in its place
+            // it is the only notice, and without it no layout ran at all: the
+            // freed node stayed a member of its anonymous box's run
+            // (`scoped_ifc_scenario_tests::probe_pseudo_content_removed_from_a_mixed_container`,
+            // which fails on both passes without these two lines).
             self.tree
                 .seed_ifc(node_id, crate::ifc_scope::IfcSeed::Children);
+            self.tree.layout_dirty = true;
             if let Some(root) = self.tree.nodes[node_id].ifc_root {
                 self.invalidate_ifc_root(root);
             }

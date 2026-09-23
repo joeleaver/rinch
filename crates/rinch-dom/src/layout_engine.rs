@@ -2657,14 +2657,31 @@ impl RinchDocument {
         }
     }
 
-    /// Clear ifc_root on a node and all its descendants.
+    /// Clear ifc_root on a node and all its descendants — and take each out
+    /// of the anonymous block box whose run it was in.
+    ///
+    /// Every verb that moves or removes a subtree calls this. The run is its
+    /// old container's: a scoped structural pass sets the *new* container up
+    /// but reaches the old one only while it is still in the document, and a
+    /// member that kept its `run_box` reads as "claimed by a box" to the new
+    /// container's root detection, which then withheld roothood from a grid
+    /// holding nothing but that text (found by the scoped pass's random
+    /// differential: a text moved out of a mixed container that was removed
+    /// in the same frame). The whole-document pass cleaned every box every
+    /// time, which hid it.
     pub(crate) fn clear_ifc_root_recursive(&mut self, node_id: usize) {
         // Use iterative approach to avoid stack overflow
         let mut stack = vec![node_id];
         while let Some(id) = stack.pop() {
-            if let Some(node) = self.tree.nodes.get_mut(id) {
-                node.ifc_root = None;
-                stack.extend(node.children.iter().copied());
+            let Some(node) = self.tree.nodes.get_mut(id) else {
+                continue;
+            };
+            node.ifc_root = None;
+            stack.extend(node.children.iter().copied());
+            if let Some(b) = node.run_box.take()
+                && let Some(boxx) = self.tree.nodes.get_mut(b)
+            {
+                boxx.run_members.retain(|&m| m != id);
             }
         }
     }

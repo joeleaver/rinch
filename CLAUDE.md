@@ -2124,8 +2124,17 @@ whose owner left the slab (`set_inner_html`, pseudo-element churn) are swept as
 orphans at a scoped pass's start. **`tree.ifc_dirty` is now "run the
 whole-document pass"** — the first layout (`ifc_full_initial`),
 `recompute_all_styles_full` (`ifc_full_theme`), or any direct write
-(`ifc_full_unattributed`) — so a site that forgets to seed is slow, never wrong;
-call `NodeTree::request_full_ifc(reason)` to say why. Counters:
+(`ifc_full_unattributed`) — so a site that still sets `ifc_dirty` directly is
+slow, never wrong; call `NodeTree::request_full_ifc(reason)` to say why. A site
+that changes structure and does **neither** is silently wrong: nothing sets the
+regions it touched up again (the pseudo-element regeneration in `resolve.rs`
+writes `children` directly and seeds its node itself — pinned by
+`scoped_ifc_scenario_tests::probe_pseudo_content_removed_from_a_mixed_container`).
+Every verb that moves or removes a subtree also takes each of its nodes out of
+the anonymous box whose run it was in (`clear_ifc_root_recursive`), because a
+scoped pass reaches the old container only while it is still in the document.
+The virtualized editor's block collapse/materialise (`virtual_window.rs`) seeds
+the toggled block instead of forcing a whole-document pass per scroll. Counters:
 `ifc_scoped_passes`, `ifc_scope_containers`, `ifc_scope_nodes`,
 `ifc_full_passes` and its reasons. The registries `ifc_root_registry` and
 `atomic_inline_registry` replace the slab scans `build_ifc_layouts`,
