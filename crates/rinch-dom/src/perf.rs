@@ -218,6 +218,9 @@ define_counters! {
     /// Software painter: surface-sized masks and layer pixmaps newly
     /// allocated rather than reused from its pool. Zero in a steady state.
     PaintSurfaceAllocs = "paint_surface_allocs",
+    /// Software painter: pooled masks and layer pixmaps released at the end
+    /// of a frame because no recent frame needed that many at once.
+    PaintSurfaceTrims = "paint_surface_trims",
     /// Software painter: images premultiplied at draw time. A cached `<img>`
     /// or `background-image` is premultiplied once, on its first software
     /// paint; a live frame source every draw.

@@ -469,17 +469,25 @@ struct GlyphRun {
     glyphs: std::collections::HashMap<u32, Option<CachedGlyph>>,
 }
 
-/// The rasterised-glyph cache, with a hard memory bound.
+/// The rasterised-glyph cache, bounded by an approximate byte budget.
 ///
 /// Runs are found by a linear scan (a document uses a few dozen font/size
 /// combinations at most, and comparing one is five integer compares plus an
 /// usually empty slice), with a remembered last hit because consecutive runs
 /// almost always share one. The bound is **clear-on-threshold**: when the
-/// cached coverage exceeds [`GLYPH_CACHE_BUDGET`] bytes, or the run count
+/// accounted bytes exceed [`GLYPH_CACHE_BUDGET`], or the run count
 /// [`GLYPH_CACHE_MAX_RUNS`], everything is dropped and the next frame
 /// re-rasterises what it draws. An LRU would keep the warm set warmer across
 /// that one frame; for a working set that fits the budget — any real UI — the
 /// threshold is never reached and the difference never arises.
+///
+/// The accounting is an estimate: each glyph counts its image bytes plus
+/// [`GLYPH_ENTRY_OVERHEAD`] for the hash-map slot, the `CachedGlyph` and the
+/// hash map's spare capacity. Measured with a counting allocator on about
+/// 24 700 small (9-13px) glyphs: the real heap was the image bytes plus about
+/// 118 bytes per entry, so a flat 32 under-counted it 2x, 96 still 1.15x, and
+/// 128 over-counts by about 6% (the conservative side). Large glyphs are
+/// dominated by their image bytes either way.
 #[derive(Default)]
 struct GlyphCache {
     runs: Vec<GlyphRun>,
@@ -488,12 +496,18 @@ struct GlyphCache {
     /// One swash cache key per font file, so swash's own scaler cache
     /// (outlines, hinting state) is hit across calls. `FontRef::from_index`
     /// mints a fresh key every time, which made every `draw_glyphs` call a
-    /// miss there.
+    /// miss there. Cleared with the glyphs: a new font file always opens a
+    /// new run, so this map never outgrows [`GLYPH_CACHE_MAX_RUNS`] entries
+    /// before the run cap clears both.
     font_keys: std::collections::HashMap<(u64, u32), swash::CacheKey>,
 }
 
-/// Bytes of cached glyph images before the cache is cleared.
+/// Accounted bytes before the cache is cleared.
 const GLYPH_CACHE_BUDGET: usize = 16 * 1024 * 1024;
+/// Per-glyph bookkeeping charged on top of the image bytes: the hash-map
+/// slot (`u32` key + `Option<CachedGlyph>`), its share of the map's spare
+/// capacity, and the image allocation's rounding. See [`GlyphCache`].
+const GLYPH_ENTRY_OVERHEAD: usize = 128;
 /// Distinct (font, size, hinting, variation) runs before the cache is cleared.
 const GLYPH_CACHE_MAX_RUNS: usize = 512;
 
@@ -542,6 +556,7 @@ impl GlyphCache {
         self.runs.clear();
         self.last = 0;
         self.bytes = 0;
+        self.font_keys.clear();
     }
 }
 
@@ -576,6 +591,10 @@ pub struct SkiaPainterStats {
     /// `background-image` after its first software paint; a live frame
     /// source (`RenderSurface`, video) is premultiplied per draw.
     pub image_premultiplies: u64,
+    /// Pooled surface-sized buffers released by
+    /// [`TinySkiaPainter::end_frame`] because no recent frame needed that
+    /// many at once.
+    pub surface_trims: u64,
 }
 
 impl SkiaPainterStats {
@@ -590,6 +609,7 @@ impl SkiaPainterStats {
         perf.add(Counter::LayerPx, self.layer_px);
         perf.add(Counter::PaintSurfaceAllocs, self.surface_allocs);
         perf.add(Counter::ImagePremultiplies, self.image_premultiplies);
+        perf.add(Counter::PaintSurfaceTrims, self.surface_trims);
     }
 }
 
@@ -598,6 +618,47 @@ impl SkiaPainterStats {
 /// Pooled surface-sized buffers kept per painter. A frame reaches this depth
 /// only with that many clips or layers open at once.
 const POOL_MAX: usize = 8;
+
+/// How many recent frames' peak buffer use the pool is sized to. A buffer
+/// beyond the largest peak in this window is released at the end of a frame,
+/// so an app that once nested deeply does not keep the extra surfaces for
+/// the rest of the session, while one that alternates between two depths
+/// does not reallocate every other frame.
+const POOL_TRIM_WINDOW: usize = 8;
+
+/// Live and peak counts of one kind of pooled buffer, and the recent peaks
+/// the pool is trimmed to.
+#[derive(Default)]
+struct PoolUse {
+    /// Buffers of this kind currently out of the pool (in the clip stack or
+    /// the layer stack).
+    live: usize,
+    /// The most `live` has been since the last `end_frame`.
+    peak: usize,
+    /// The peaks of the last [`POOL_TRIM_WINDOW`] frames, newest last.
+    recent: std::collections::VecDeque<usize>,
+}
+
+impl PoolUse {
+    fn acquired(&mut self) {
+        self.live += 1;
+        self.peak = self.peak.max(self.live);
+    }
+
+    fn released(&mut self) {
+        self.live = self.live.saturating_sub(1);
+    }
+
+    /// Close a frame and answer how many buffers the pool should keep.
+    fn end_frame(&mut self) -> usize {
+        if self.recent.len() == POOL_TRIM_WINDOW {
+            self.recent.pop_front();
+        }
+        self.recent.push_back(self.peak);
+        self.peak = self.live;
+        self.recent.iter().copied().max().unwrap_or(0)
+    }
+}
 
 /// Software rendering backend using tiny-skia.
 ///
@@ -622,6 +683,8 @@ pub struct TinySkiaPainter {
     /// While a layer is open: the device pixels drawn into it so far. `None`
     /// outside any layer, where nobody needs to know.
     touched: Option<DeviceRect>,
+    mask_use: PoolUse,
+    layer_use: PoolUse,
     stats: SkiaPainterStats,
     /// Paint the way this painter did before its caches and pools existed.
     /// For the pixel-diff oracle only.
@@ -643,6 +706,8 @@ impl TinySkiaPainter {
             mask_pool: Vec::new(),
             layer_pool: Vec::new(),
             touched: None,
+            mask_use: PoolUse::default(),
+            layer_use: PoolUse::default(),
             stats: SkiaPainterStats::default(),
             reference_mode: false,
         }
@@ -681,6 +746,26 @@ impl TinySkiaPainter {
         self.glyph_cache.clear();
     }
 
+    /// Close a frame: release pooled masks and layer pixmaps beyond the
+    /// largest number any of the last [`POOL_TRIM_WINDOW`] frames had open at
+    /// once. The shell calls this after each software paint; a painter nobody
+    /// calls it on keeps what it pooled (bounded by [`POOL_MAX`] of each)
+    /// until it is resized or dropped.
+    pub fn end_frame(&mut self) {
+        let keep_masks = self.mask_use.end_frame();
+        let keep_layers = self.layer_use.end_frame();
+        let trimmed = self.mask_pool.len().saturating_sub(keep_masks)
+            + self.layer_pool.len().saturating_sub(keep_layers);
+        self.mask_pool.truncate(keep_masks);
+        self.layer_pool.truncate(keep_layers);
+        self.stats.surface_trims += trimmed as u64;
+    }
+
+    /// How many (masks, layer pixmaps) the pool holds right now.
+    pub fn pooled_buffers(&self) -> (usize, usize) {
+        (self.mask_pool.len(), self.layer_pool.len())
+    }
+
     /// Resize the painting surface, clearing all content.
     pub fn resize(&mut self, width: u32, height: u32) {
         if width == 0 || height == 0 {
@@ -693,6 +778,8 @@ impl TinySkiaPainter {
             self.touched = None;
             self.mask_pool.clear();
             self.layer_pool.clear();
+            self.mask_use.live = 0;
+            self.layer_use.live = 0;
         }
     }
 
@@ -886,6 +973,7 @@ impl TinySkiaPainter {
 
     /// An all-zero surface-sized mask: from the pool when one is there.
     fn acquire_mask(&mut self) -> Mask {
+        self.mask_use.acquired();
         if !self.reference_mode
             && let Some(m) = self.mask_pool.pop()
         {
@@ -897,6 +985,7 @@ impl TinySkiaPainter {
 
     /// Hand a mask back: zero what it may hold, then pool it.
     fn release_mask(&mut self, mut m: ClipMask) {
+        self.mask_use.released();
         if self.reference_mode
             || self.mask_pool.len() >= POOL_MAX
             || m.mask.width() != self.pixmap.width()
@@ -942,6 +1031,7 @@ impl TinySkiaPainter {
     /// A transparent surface-sized pixmap for a layer: from the pool when one
     /// is there.
     fn acquire_layer(&mut self) -> Pixmap {
+        self.layer_use.acquired();
         if !self.reference_mode
             && let Some(p) = self.layer_pool.pop()
         {
@@ -954,6 +1044,7 @@ impl TinySkiaPainter {
 
     /// Hand a layer pixmap back: clear what was drawn into it, then pool it.
     fn release_layer(&mut self, mut p: Pixmap, drawn: DeviceRect) {
+        self.layer_use.released();
         if self.reference_mode
             || self.layer_pool.len() >= POOL_MAX
             || p.width() != self.pixmap.width()
@@ -976,9 +1067,12 @@ impl TinySkiaPainter {
 impl Painter for TinySkiaPainter {
     fn reset(&mut self) {
         self.pixmap.fill(tiny_skia::Color::TRANSPARENT);
+        // Anything still open is dropped, not pooled: no longer live.
         self.clip_mask = None;
         self.layer_stack.clear();
         self.touched = None;
+        self.mask_use.live = 0;
+        self.layer_use.live = 0;
     }
 
     fn fill(&mut self, fill: Fill, transform: Affine, brush: &Brush, shape: &PaintShape) {
@@ -1163,7 +1257,8 @@ impl Painter for TinySkiaPainter {
                     if !cache.runs[run].glyphs.contains_key(&glyph.id) {
                         self.stats.glyph_cache_misses += 1;
                         let g = scaler.as_mut().and_then(|s| rasterise(s, glyph.id));
-                        cache.bytes += g.as_ref().map_or(0, |g| g.data.len()) + 32;
+                        cache.bytes +=
+                            g.as_ref().map_or(0, |g| g.data.len()) + GLYPH_ENTRY_OVERHEAD;
                         cache.runs[run].glyphs.insert(glyph.id, g);
                     } else {
                         self.stats.glyph_cache_hits += 1;

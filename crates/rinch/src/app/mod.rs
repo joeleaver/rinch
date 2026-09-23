@@ -1683,6 +1683,7 @@ impl RinchApp {
                         Some(_) => Some(FullRepaintReason::RegionTooLarge),
                     }
                 };
+                painter.end_frame();
                 let painter_stats = painter.take_stats();
                 if let Some(doc) = &self.doc {
                     let d = doc.borrow();

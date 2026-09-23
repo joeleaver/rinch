@@ -125,6 +125,7 @@ assert_eq!(frame.get(Counter::TaffyRootComputes), 0, "a colour change must not l
 | | `clip_masks`, `clip_mask_px` | Clip masks pushed, and the mask pixels they were filled and intersected over (each clip's own bounds, not the surface) |
 | | `paint_layers`, `layer_px` | Opacity layers opened, and the layer pixels composited back (the part of each layer anything was drawn into) |
 | | `paint_surface_allocs` | Surface-sized masks and layer pixmaps allocated rather than reused from the painter's pool. Zero in a steady state |
+| | `paint_surface_trims` | Pooled masks and layer pixmaps released at the end of a frame because none of the last 8 frames needed that many at once |
 | | `image_premultiplies` | Images premultiplied at draw time. A cached `<img>` or `background-image` is premultiplied once, on its first software paint; a live frame source (`RenderSurface`, video) on every draw |
 | Input | `hit_tests`, `hit_test_nodes_visited` | Hit tests run, and the nodes they visited |
 | | `hit_extents_computed` | Subtree extents the hit tester computed so it can skip subtrees nowhere near the pointer. They are kept until the document or its layout changes, so a run of moves over a still document computes each one once |
@@ -147,6 +148,13 @@ Some limits on what these numbers mean:
   `take_stats()`), which the shell folds into the frame after each software
   paint. A test painting through `paint_document` directly reads the painter,
   not the document.
+- **What the software painter keeps between frames.** Its glyph cache (cleared
+  past about 16 MB of accounted bytes or 512 font/size runs); a premultiplied
+  copy of each translucent cached image; and a pool of up to 8 clip masks
+  (1 byte per surface pixel each) and 8 layer pixmaps (4 bytes per pixel each —
+  33 MB at 4K). The pool is trimmed after every software frame to the most any
+  of the last 8 frames had open at once, so an app that idles right after a
+  deeply nested frame keeps that frame's buffers until it paints again.
 - **A screenshot is a frame.** The debug `screenshot` command paints, and that
   paint shows up in the counters like any other frame.
 

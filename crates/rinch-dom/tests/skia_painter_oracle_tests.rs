@@ -25,7 +25,7 @@
 //! | glyph key drops the font size | `text_sizes_and_colours`, `partial_repaints`, `one_painter_many_documents` |
 //! | glyph key drops the font id | `scripts_and_fallback_faces`, `one_painter_many_documents` |
 //! | glyph key drops the face index | `faces_of_one_collection` **only** — a `.ttc` built in the test, since a host's CJK collections share their glyph images across faces and CI's fonts are not this machine's |
-//! | glyph key drops the variation coords | `text_sizes_and_colours`, `partial_repaints`, `one_painter_many_documents` — **only on a host with a variable face** (`Segoe UI Variable` here). CI may have none, and then nothing pins this field |
+//! | glyph key drops the variation coords | `text_sizes_and_colours` (1 872 px: the vendored Space Grotesk at five weights), `partial_repaints`, `one_painter_many_documents` |
 //! | a pooled mask is not zeroed on release | `clips_and_scrollers`, `translucent_layers`, `partial_repaints`, `one_painter_many_documents` |
 //! | a clip's recorded bounds are empty (so release zeroes nothing) | `partial_repaints` |
 //! | a pooled layer is not cleared on release | `translucent_layers`, `images`, `partial_repaints`, `one_painter_many_documents` |
@@ -33,7 +33,10 @@
 //! | a stroke is not counted in a layer's drawn area | `translucent_layers` (an underline running past its glyphs under no-break spaces), `partial_repaints`, `one_painter_many_documents` |
 //! | a glyph is not counted in a layer's drawn area | `translucent_layers` (a layer holding only text), `partial_repaints`, `one_painter_many_documents` |
 //! | an image is not counted in a layer's drawn area | `images`, `one_painter_many_documents` |
-//! | the bookkeeping pad is negative | six of the eleven |
+//! | a nested layer's drawn area is not added to its parent layer's | `translucent_layers` (1 155 px: an outer layer that draws nothing itself, around an inner one holding text), `partial_repaints`, `one_painter_many_documents` |
+//! | the intersect walk is narrowed to the parent's bounds, so a child clip wider than its parent keeps coverage outside it | `clips_and_scrollers` (439 px, first paint), `partial_repaints`, `one_painter_many_documents` |
+//! | the end-of-frame pool trim releases nothing | `the_pool_is_trimmed_to_recent_use` |
+//! | the bookkeeping pad is negative | six of the oracle tests (measured when there were eleven) |
 //! | the cached premultiply rounds with `+128` | `images`, `one_painter_many_documents` — which needed reference mode to keep its *own* copy of the old premultiply; sharing the function let this mutant through |
 //!
 //! Two mutants survive. A pad of **0** instead of 2: in every fixture the
@@ -66,6 +69,12 @@ const VH: f32 = 400.0;
 
 const FACE: &[u8] = include_bytes!("../assets/fonts/Inter-Regular.ttf");
 
+/// A variable face (a `wght` axis, 300-700), vendored under the OFL (see
+/// `SpaceGrotesk-OFL.txt` beside it), so the variation-coords field of the
+/// glyph key is pinned on every host rather than only on one that happens to
+/// have a variable font installed.
+const VARIABLE_FACE: &[u8] = include_bytes!("../assets/fonts/SpaceGrotesk-VariableFont_wght.ttf");
+
 fn doc_with(css: &str, html: &str) -> RinchDocument {
     use parley::fontique::{Blob, FontInfoOverride};
     let mut doc = RinchDocument::new();
@@ -73,6 +82,13 @@ fn doc_with(css: &str, html: &str) -> RinchDocument {
         Blob::new(std::sync::Arc::new(FACE)),
         Some(FontInfoOverride {
             family_name: Some("ProbeFace"),
+            ..Default::default()
+        }),
+    );
+    doc.font_cx.collection.register_fonts(
+        Blob::new(std::sync::Arc::new(VARIABLE_FACE)),
+        Some(FontInfoOverride {
+            family_name: Some("ProbeVar"),
             ..Default::default()
         }),
     );
@@ -226,13 +242,17 @@ fn text_sizes_doc() -> RinchDocument {
     // Synthesis: the face has no bold or italic, so both are synthesised.
     html.push_str("<p style=\"margin: 0; font-weight: bold\">Bold synthesised text</p>");
     html.push_str("<p style=\"margin: 0; font-style: italic\">Italic synthesised text</p>");
-    // A variable face at two weights, where the host has one: the same glyph
-    // ids at different variation coordinates.
+    // The vendored variable face at five weights on one line: the same glyph
+    // ids, one font blob, one size, five sets of variation coordinates. A
+    // key without the coords draws the first weight's glyphs at all five.
     html.push_str(
-        "<p style=\"margin: 0; font-family: 'Segoe UI Variable', ProbeFace; \
-         font-weight: 300; font-size: 18px\">Variable weight three hundred</p>\
-         <p style=\"margin: 0; font-family: 'Segoe UI Variable', ProbeFace; \
-         font-weight: 700; font-size: 18px\">Variable weight three hundred</p>",
+        "<p style=\"margin: 0; font-family: ProbeVar; font-size: 18px; \
+          line-height: 24px\">\
+         <span style=\"font-weight: 300\">Weight </span>\
+         <span style=\"font-weight: 400\">Weight </span>\
+         <span style=\"font-weight: 500\">Weight </span>\
+         <span style=\"font-weight: 600\">Weight </span>\
+         <span style=\"font-weight: 700\">Weight</span></p>",
     );
     doc_with("", &html)
 }
@@ -314,7 +334,12 @@ fn clips_doc() -> RinchDocument {
          <div style=\"width: 120px; height: 40px; overflow: hidden\">\
            <span style=\"position: absolute; left: 400px; top: 300px\">escapes</span>\
            clipped content that is long enough to be cut off</div>\
-         <div style=\"height: 0; overflow: hidden\"><div>hidden rows</div></div>",
+         <div style=\"height: 0; overflow: hidden\"><div>hidden rows</div></div>\
+         <div style=\"width: 100px; height: 40px; overflow: hidden; border-radius: 6px; \
+          background: rgb(238, 238, 238)\">\
+           <div style=\"margin-left: 50px; width: 300px; height: 30px; overflow: hidden; \
+            border-radius: 6px; background: rgb(40, 120, 200)\">a child clip wider than its parent</div>\
+         </div>",
     );
     html.push_str("</div>");
     let mut doc = doc_with("", &html);
@@ -338,7 +363,9 @@ fn layers_doc() -> RinchDocument {
     doc_with(
         ".l { width: 150px; height: 70px; margin: 4px; display: inline-block; \
               background: rgb(200, 80, 40); }",
-        "<div style=\"opacity: 0.5; font-size: 22px; line-height: 28px\">Only glyphs in this layer</div>\
+        "<div style=\"opacity: 0.6\"><div style=\"opacity: 0.5\">\
+            <span style=\"font-size: 20px; color: red\">inner-only layer text</span></div></div>\
+         <div style=\"opacity: 0.5; font-size: 22px; line-height: 28px\">Only glyphs in this layer</div>\
          <div style=\"opacity: 0.5; font-size: 22px; line-height: 28px; \
          text-decoration: underline\">\u{a0}\u{a0}\u{a0}\u{a0}\u{a0}\u{a0}ab\
          \u{a0}\u{a0}\u{a0}\u{a0}\u{a0}\u{a0}</div>\
@@ -527,6 +554,46 @@ fn glyph_cache_counts() {
     painter.clear_glyph_cache();
     full_paint(&mut doc, &mut painter);
     assert_eq!(painter.take_stats().glyph_cache_misses, 3);
+}
+
+/// The pool keeps what recent frames needed at once, and gives the rest
+/// back: a frame nesting four translucent layers leaves four pixmaps pooled,
+/// and after a window of frames that need one, three of them are released.
+#[test]
+fn the_pool_is_trimmed_to_recent_use() {
+    let mut deep = doc_with(
+        "",
+        "<div style=\"opacity: 0.9\"><div style=\"opacity: 0.8\">\
+           <div style=\"opacity: 0.7\"><div style=\"opacity: 0.6\">deep</div></div>\
+         </div></div>",
+    );
+    let mut shallow = doc_with("", "<div style=\"opacity: 0.5\">shallow</div>");
+    let mut painter = TinySkiaPainter::new(VW as u32, VH as u32);
+    full_paint(&mut deep, &mut painter);
+    painter.end_frame();
+    assert_eq!(painter.pooled_buffers().1, 4, "four layers open at once");
+    painter.take_stats();
+    // Seven more frames still remember the deep one.
+    for _ in 0..7 {
+        full_paint(&mut shallow, &mut painter);
+        painter.end_frame();
+        assert_eq!(painter.pooled_buffers().1, 4);
+    }
+    assert_eq!(painter.take_stats().surface_trims, 0);
+    // The eighth shallow frame pushes it out of the window.
+    full_paint(&mut shallow, &mut painter);
+    painter.end_frame();
+    assert_eq!(painter.pooled_buffers().1, 1);
+    let s = painter.take_stats();
+    assert_eq!(s.surface_trims, 3, "{s:?}");
+    assert_eq!(
+        s.surface_allocs, 0,
+        "the kept pixmap serves the shallow frame"
+    );
+    // Pixels are unaffected.
+    let mut reference = reference_painter();
+    full_paint(&mut shallow, &mut reference);
+    assert_same("after a trim", reference.pixels(), painter.pixels());
 }
 
 /// A clip costs its own area, not the surface's; a layer composites what
