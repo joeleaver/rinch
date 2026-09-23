@@ -1214,7 +1214,7 @@ impl RinchDomEditorView {
                 ("top", &top),
                 ("width", &width),
                 ("height", &height),
-                ("display", "block"),
+                ("visibility", "visible"),
             ]);
         }
         true
@@ -1228,8 +1228,9 @@ impl RinchDomEditorView {
         }
         self.overlay_dirty = true;
         self.last_node_outline = None;
+        // `visibility`, not `display`: see `set_caret_blink_visible`.
         if let Some(div) = &self.node_outline {
-            div.set_style("display", "none");
+            div.set_style("visibility", "hidden");
         }
     }
 
@@ -1288,7 +1289,7 @@ impl RinchDomEditorView {
         if super::blink::target() == Some((self.doc_key(), self.container_id())) {
             super::blink::reset();
         }
-        // The `display: block` written below always puts this caret in the
+        // The `visibility: visible` written below always puts this caret in the
         // "shown" phase, so a moved caret is never left mid-blink (hidden).
         self.blink_shown = Some(true);
         if self.caret.is_none() {
@@ -1315,7 +1316,7 @@ impl RinchDomEditorView {
                 ("left", &left),
                 ("top", &top),
                 ("height", &h),
-                ("display", "block"),
+                ("visibility", "visible"),
             ]);
         }
         true
@@ -1339,19 +1340,32 @@ impl RinchDomEditorView {
         self.overlay_dirty = true;
         self.last_caret = None;
         self.blink_shown = None;
+        // `visibility`, not `display`: see `set_caret_blink_visible`.
         if let Some(caret) = &self.caret {
-            caret.set_style("display", "none");
+            caret.set_style("visibility", "hidden");
         }
     }
 
     /// Apply a blink phase to the caret: show it (`visible == true`) or hide it.
     /// Returns `None` when there is no active caret to blink (no collapsed cursor),
-    /// `Some(true)` when the caret's `display` actually toggled (the caller should
+    /// `Some(true)` when the caret's `visibility` actually toggled (the caller should
     /// repaint), and `Some(false)` when the phase was already applied (no write —
     /// so a blink tick that doesn't change the phase never re-dirties the tree).
     ///
-    /// Toggles only `display`; the caret's *position* is owned by
+    /// Toggles only `visibility`; the caret's *position* is owned by
     /// [`Self::position_caret`], which always leaves it in the shown phase.
+    ///
+    /// The caret and the node outline are hidden with
+    /// `visibility`, never `display`. On the desktop a `display` change is a
+    /// structural change to rinch-dom: it sets `ifc_dirty`, which drops every
+    /// cached text measure and reshapes every inline formatting context in the
+    /// window, and a caret hidden and shown within one update runs that twice.
+    /// Measured in an app window with a 9,500-word document: 300-400 ms per pass,
+    /// two passes per keystroke; a blink tick made the same change. `visibility`
+    /// is paint-only. (The
+    /// IME composition span still uses `display`: it is toggled once per
+    /// composition rather than per keystroke, and a `visibility: hidden` span
+    /// would keep its inline box in the line; #874.)
     pub(crate) fn set_caret_blink_visible(&mut self, visible: bool) -> Option<bool> {
         // No collapsed-cursor caret present → nothing to blink.
         self.last_caret?;
@@ -1360,7 +1374,7 @@ impl RinchDomEditorView {
         }
         self.blink_shown = Some(visible);
         if let Some(caret) = &self.caret {
-            caret.set_style("display", if visible { "block" } else { "none" });
+            caret.set_style("visibility", if visible { "visible" } else { "hidden" });
         }
         Some(true)
     }
@@ -1744,7 +1758,7 @@ mod tests {
     }
 
     #[test]
-    fn blink_toggles_caret_display_and_guards_redundant_writes() {
+    fn blink_toggles_caret_visibility_and_guards_redundant_writes() {
         let h = harness();
         let s = schema();
         let st = state(s.clone(), doc_node(&s, vec![para(&s, "hi")]));
@@ -1776,6 +1790,61 @@ mod tests {
         view.hide_caret();
         assert_eq!(view.blink_shown, None);
         assert_eq!(view.set_caret_blink_visible(true), None);
+    }
+
+    /// The inline `style` attribute of an overlay node.
+    fn style_of(h: &Harness, node: &NodeHandle) -> String {
+        h.doc
+            .borrow()
+            .get_attribute(node.node_id(), "style")
+            .unwrap_or_default()
+    }
+
+    /// Showing, blinking and hiding the caret and the node outline never write
+    /// `display`: on the desktop that is a structural change that reshapes every
+    /// text block in the window (see `set_caret_blink_visible`).
+    #[test]
+    fn overlays_hide_with_visibility_never_display() {
+        let h = harness();
+        let s = schema();
+        let st = state(s.clone(), doc_node(&s, vec![para(&s, "hi")]));
+        let mut view = RinchDomEditorView::new(h.container.clone(), doc_ref(&h), &st);
+
+        view.position_caret(1.0, 2.0, 18.0);
+        let caret = view.caret.clone().expect("positioning creates the caret");
+        assert!(style_of(&h, &caret).contains("visibility: visible"));
+
+        view.set_caret_blink_visible(false);
+        assert!(style_of(&h, &caret).contains("visibility: hidden"));
+        view.set_caret_blink_visible(true);
+        assert!(style_of(&h, &caret).contains("visibility: visible"));
+
+        view.hide_caret();
+        let caret_style = style_of(&h, &caret);
+        assert!(caret_style.contains("visibility: hidden"));
+        assert!(
+            !caret_style.contains("display"),
+            "caret style: {caret_style}"
+        );
+
+        view.position_node_outline(1.0, 2.0, 30.0, 20.0);
+        let outline = view.node_outline.clone().expect("the outline is created");
+        view.clear_node_selection();
+        let outline_style = style_of(&h, &outline);
+        assert!(outline_style.contains("visibility: hidden"));
+        assert!(
+            !outline_style.contains("display"),
+            "outline style: {outline_style}"
+        );
+
+        // A cleared outline comes back when a node is selected
+        // again (and so does a hidden caret). Kills: `position_node_outline`
+        // not writing `visibility: visible`, which left every node selection
+        // after the first one invisible.
+        view.position_node_outline(40.0, 50.0, 30.0, 20.0);
+        assert!(style_of(&h, &outline).contains("visibility: visible"));
+        view.position_caret(9.0, 2.0, 18.0);
+        assert!(style_of(&h, &caret).contains("visibility: visible"));
     }
 
     #[test]

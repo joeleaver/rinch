@@ -1872,9 +1872,11 @@ fn key_menu_point(
     let editor = node_by_nid(container_nid)?
         .dyn_into::<web_sys::Element>()
         .ok()?;
-    let outline = editor
-        .query_selector("[data-pm-selected]")
-        .ok()
+    // Only a live node selection has an outline to park at. The overlay stays
+    // in the DOM (hidden with `visibility`, which keeps its box) once the
+    // selection moves on, so its client rect alone cannot say it is live.
+    let outline = matches!(handle.selection(), Selection::Node(_))
+        .then(|| editor.query_selector("[data-pm-selected]").ok().flatten())
         .flatten()
         .map(|el| el.get_bounding_client_rect())
         .filter(|r| r.width() > 0.0 && r.height() > 0.0);

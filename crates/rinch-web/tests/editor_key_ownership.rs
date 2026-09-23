@@ -138,6 +138,7 @@ impl Fixture {
                     .unwrap()
                     .unwrap();
                 st.get_property_value("display").unwrap() != "none"
+                    && st.get_property_value("visibility").unwrap() == "visible"
                     && c.get_client_rects().length() > 0
             }
             None => false,
