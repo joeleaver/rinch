@@ -1125,6 +1125,12 @@ fn a_percentage_atomic_inline_tracks_a_viewport_resize() {
 /// that does not dirty its own enclosing root on the way past. Measured against
 /// the mutant: height 30 either way, `text_layout` `Some` with the insert and
 /// `None` without it.
+///
+/// **Since the keep-text-layouts change the insert is belt-and-braces**:
+/// `build_ifc_layouts` now rebuilds any root whose `text_layout` is `None`,
+/// dirty or not, so dropping the insert no longer strands this root and the
+/// mutant is equivalent on its own. The fixture stays as the pin on the
+/// *outcome*: with **both** rules gone the root is left with nothing to paint.
 #[test]
 fn a_remeasured_atomic_inlines_root_keeps_its_shaped_text() {
     const CSS: &str = "

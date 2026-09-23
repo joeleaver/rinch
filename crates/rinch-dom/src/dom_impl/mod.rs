@@ -677,10 +677,15 @@ impl RinchDocument {
                 node.dirty.insert(DirtyFlags::STYLE | DirtyFlags::PAINT);
             }
             self.tree.dirty_nodes.insert(child_id);
-            // Text color (and other inline properties) is baked into the cached
-            // Parley `text_layout`; drop it so the descendant's text re-lays with the
-            // re-resolved color rather than rendering the stale brush.
-            self.invalidate_ifc_for_node(child_id);
+            // No text layout is dropped here. Text colour and every other input
+            // a Parley layout is built from are compared per node when the
+            // descendant is re-cascaded (`apply_stylo_styles_to_taffy`, through
+            // `ComputedStyle::same_text_layout_inputs`), and only a node whose
+            // inputs really changed invalidates its IFC; a `display` or
+            // `position` change is structural and the IFC pass's content
+            // signature catches it. Dropping every layout under the node here
+            // re-shaped all of its text on every hover, class toggle and
+            // attribute write, whatever had changed (audit F1.1).
             self.invalidate_descendant_styles(child_id);
         }
     }

@@ -416,12 +416,7 @@ impl DomDocument for RinchDocument {
             if let Some(root_id) = ifc_root {
                 self.tree.dirty_ifc_text_roots.insert(root_id);
                 // Invalidate cached measure results for this root
-                self.tree
-                    .perf
-                    .bump(crate::perf::Counter::IfcMeasureCacheRetains);
-                self.tree
-                    .ifc_measure_cache
-                    .retain(|&(rid, _), _| rid != root_id);
+                self.tree.forget_ifc_measures(root_id);
             }
         }
         match &mut self.tree.nodes[n].kind {
@@ -560,20 +555,11 @@ impl DomDocument for RinchDocument {
                 self.cache_inline_style(node.0, parse_inline_style(value));
             }
         }
-        // Invalidate IFC if this node belongs to one (style/class changes affect inline layout).
-        // Only for nodes that actually participate in inline formatting — block elements
-        // don't need IFC invalidation and the mark_dirty propagation would defeat Taffy's cache.
-        if (name == "style" || name == "class")
-            && (self.tree.nodes[node.0].ifc_root.is_some()
-                || self.tree.nodes[node.0].is_inline()
-                || self.tree.nodes[node.0].text_layout.is_some())
-        {
-            self.invalidate_ifc_for_node(node.0);
-            // Also invalidate parent's IFC in case this is an inline child
-            if let Some(parent_id) = self.tree.nodes[node.0].parent {
-                self.invalidate_parent_ifc(parent_id);
-            }
-        }
+        // No IFC is invalidated here for a `style`/`class` write: the restyle
+        // below re-cascades this node and its subtree, and the cascade drops
+        // the text layout of exactly the nodes whose text inputs changed
+        // (`ComputedStyle::same_text_layout_inputs`). See
+        // `invalidate_descendant_styles`.
         // Handle <img src="..."> — trigger async image load
         if name == "src" && self.tree.nodes[node.0].tag() == Some("img") {
             self.request_image_load_for_node(node.0, value);
@@ -646,18 +632,8 @@ impl DomDocument for RinchDocument {
         if name == "style" {
             self.tree.nodes[node.0].style_attribute_cache = None;
         }
-        // Invalidate IFC for style/class changes on inline-participating nodes,
-        // mirroring set_attribute.
-        if (name == "style" || name == "class")
-            && (self.tree.nodes[node.0].ifc_root.is_some()
-                || self.tree.nodes[node.0].is_inline()
-                || self.tree.nodes[node.0].text_layout.is_some())
-        {
-            self.invalidate_ifc_for_node(node.0);
-            if let Some(parent_id) = self.tree.nodes[node.0].parent {
-                self.invalidate_parent_ifc(parent_id);
-            }
-        }
+        // Like `set_attribute`, no IFC is invalidated here: the cascade below
+        // decides per node.
         // Symmetric with set_attribute: any attribute can participate in a
         // selector (`[data-highlighted]`, `[aria-selected]`, …), so *removing*
         // one must re-resolve this node and its subtree too — otherwise a style
@@ -1354,25 +1330,18 @@ impl RinchDocument {
 
     /// The normal path after an inline style change: drop the cached Stylo
     /// data so the next `resolve_layout` re-cascades this node from its
-    /// declaration block, and invalidate the inline formatting context it
-    /// takes part in.
+    /// declaration block.
+    ///
+    /// The inline formatting context it takes part in is **not** invalidated
+    /// here. The re-cascade compares the node's old and new text inputs
+    /// (`ComputedStyle::same_text_layout_inputs`) and drops the IFC only when
+    /// they differ, so a `left`/`width`/`background` write — the per-frame
+    /// shape of a drag or an animation driven through `set_style` — no longer
+    /// re-shapes the text inside the node it moves.
     fn invalidate_inline_style(&mut self, node_id: usize) {
         *self.tree.nodes[node_id].stylo_element_data.borrow_mut() = None;
         self.tree.style_roots.push(node_id);
         self.tree.styles_dirty = true;
-        // Only invalidate IFC state for nodes that participate in inline formatting.
-        // Block elements (like slider track) don't affect IFC layout, and the
-        // mark_dirty() in invalidate_parent_ifc would propagate to root, defeating
-        // Taffy's cache for ALL InlineRoot measure callbacks.
-        if self.tree.nodes[node_id].ifc_root.is_some()
-            || self.tree.nodes[node_id].is_inline()
-            || self.tree.nodes[node_id].text_layout.is_some()
-        {
-            self.invalidate_ifc_for_node(node_id);
-            if let Some(parent_id) = self.tree.nodes[node_id].parent {
-                self.invalidate_parent_ifc(parent_id);
-            }
-        }
         self.push_dirty_flags(
             node_id,
             DirtyFlags::STYLE | DirtyFlags::LAYOUT | DirtyFlags::PAINT,

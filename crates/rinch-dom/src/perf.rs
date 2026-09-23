@@ -128,10 +128,13 @@ define_counters! {
     ShapePaint = "shape_paint",
     /// IFC measures served from `ifc_measure_cache` without shaping.
     IfcMeasureCacheHits = "ifc_measure_cache_hits",
-    /// Wholesale `ifc_measure_cache.clear()` calls.
-    IfcMeasureCacheClears = "ifc_measure_cache_clears",
-    /// Per-root `ifc_measure_cache.retain(..)` scans (each is O(cache)).
-    IfcMeasureCacheRetains = "ifc_measure_cache_retains",
+    /// Per-root invalidations of the IFC measure cache by a restyle or a
+    /// content change (`NodeTree::forget_ifc_measures`, O(1) each).
+    IfcMeasureInvalidations = "ifc_measure_invalidations",
+    /// IFC roots the structural pass found new or changed (their content
+    /// signature moved), and so dropped the measures and paint layout of.
+    /// The roots it left alone keep both.
+    IfcSignatureChanges = "ifc_signature_changes",
 
     // ── Layout ─────────────────────────────────────────────────────────
     /// `resolve_layout` calls.
