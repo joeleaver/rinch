@@ -1998,7 +1998,10 @@ impl RinchDocument {
     /// call sites that drift:
     ///
     /// 1. the Parley layout of the IFC that holds the text —
-    ///    [`Self::invalidate_ifc_for_node`];
+    ///    [`Self::invalidate_ifc_for_node`], plus the IFC of each text child,
+    ///    which is an **anonymous box** outside the element tree when the
+    ///    run sits beside a block-level sibling or inside a split inline
+    ///    (#513) and so is reached by no ancestor walk;
     /// 2. the box of any atomic inline above it, which no Taffy compute reaches
     ///    — [`Self::mark_atomic_inline_dirty`];
     /// 3. the `NodeContext::Text` a text child is measured through when it is a
@@ -2033,6 +2036,18 @@ impl RinchDocument {
                 continue;
             }
             let taffy_id = child_node.taffy_id;
+            // A text run beside a block-level sibling is laid out by an
+            // anonymous block box, and one inside a split inline (#513) by the
+            // box around its fragment — neither in the element tree, so the
+            // walk above, which asks this node and its ancestors, never finds
+            // it. The text node's own `ifc_root` names that box. A text node is
+            // never cascaded on its own, so this is the only call that can
+            // reach it.
+            if let Some(root) = child_node.ifc_root
+                && root != node_id
+            {
+                self.invalidate_ifc_root(root);
+            }
             self.tree.dirty_text_contexts.insert(child);
             if let Some(t) = taffy_id {
                 let _ = self.tree.taffy.mark_dirty(t);

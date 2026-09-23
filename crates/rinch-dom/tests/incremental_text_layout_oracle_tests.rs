@@ -136,6 +136,17 @@ fn walk(doc: &RinchDocument, id: usize, depth: usize, out: &mut Vec<String>) {
     for &c in &node.children {
         walk(doc, c, depth + 1, out);
     }
+    // An anonymous block box is in no node's `children` (#566) — it hangs off
+    // its container's `run_boxes` — and it is the IFC root of the run it
+    // stands for, so its box and shaped text are compared here or not at all.
+    for &b in &node.run_boxes {
+        out.push(format!(
+            "{:indent$}(anonymous)",
+            "",
+            indent = (depth + 1) * 2
+        ));
+        walk(doc, b, depth + 1, out);
+    }
 }
 
 fn settle(doc: &mut RinchDocument) {
@@ -1054,5 +1065,127 @@ fn a_width_change_from_a_siblings_text_rebreaks_the_root() {
             st
         },
         |doc, st| doc.set_text_content(*st, "wide side label"),
+    );
+}
+
+// ── A text run laid out by a box the element tree does not hold ─────────────
+
+/// `div.outer > div.a > ["t", li.b > ""]`. `div.a` holds a block child, so its
+/// text run is laid out by an **anonymous block box** (CSS 2.1 §9.2.1.1) that
+/// is not in `div.a`'s `children` — the IFC root of `"t"` is that box, not
+/// `div.a`. State B makes `div.a`'s font-size 16px → 20px through an ancestor
+/// class; the `line-height` is a declared multiple of it, so the line box
+/// grows 20px → 25px on every font set.
+///
+/// The restyle has to reach the anonymous box's measure. It used to reach only
+/// `div.a` itself (which holds no IFC) and its text child's `NodeContext`, so
+/// the box kept its 20px line and `div.a` came out 5px short.
+#[test]
+fn a_font_change_reaches_an_anonymous_block_box() {
+    twin(
+        "a_font_change_reaches_an_anonymous_block_box",
+        ".c .a { font-size: 20px; } .a { line-height: 1.25; } .b { width: 2em; }",
+        |doc, on| {
+            let body = doc.body();
+            let outer = doc.create_element("div");
+            doc.set_attribute(outer, "class", if on { "x c" } else { "x" });
+            doc.append_child(body, outer);
+            let a = doc.create_element("div");
+            doc.set_attribute(a, "class", "a");
+            doc.append_child(outer, a);
+            let t = doc.create_text("t");
+            doc.append_child(a, t);
+            let li = doc.create_element("li");
+            doc.set_attribute(li, "class", "b");
+            doc.append_child(a, li);
+            let t2 = doc.create_text("");
+            doc.append_child(li, t2);
+            outer
+        },
+        |doc, outer| doc.set_attribute(*outer, "class", "x c"),
+    );
+}
+
+/// The block-in-inline shape (#513): `fieldset.c > div > span.b.d > ["t",
+/// fieldset]`. The span holds a block-level child, so it is **split** and its
+/// text run is laid out by an anonymous box around the inline fragment. State
+/// B adds `a` to the span itself, taking its font-size 16px → 20px; the text's
+/// IFC is not the span's (it has none) and not the div's.
+#[test]
+fn a_font_change_on_a_split_inline_reaches_its_anonymous_box() {
+    twin(
+        "a_font_change_on_a_split_inline_reaches_its_anonymous_box",
+        ".c .a { font-size: 20px; } .b { line-height: 1.25; }",
+        |doc, on| {
+            let body = doc.body();
+            let fs = doc.create_element("fieldset");
+            doc.set_attribute(fs, "class", "c");
+            doc.append_child(body, fs);
+            let div = doc.create_element("div");
+            doc.append_child(fs, div);
+            let span = doc.create_element("span");
+            doc.set_attribute(span, "class", if on { "b d a" } else { "b d" });
+            doc.append_child(div, span);
+            let t = doc.create_text("t");
+            doc.append_child(span, t);
+            let inner = doc.create_element("fieldset");
+            doc.append_child(span, inner);
+            span
+        },
+        |doc, span| doc.set_attribute(*span, "class", "b d a"),
+    );
+}
+
+/// The two fixtures above with the line box left to the font's own metrics —
+/// the shape the defect was found in. Twin comparison only, so no literal
+/// here depends on the local font set.
+#[test]
+fn a_font_change_reaches_an_anonymous_block_box_with_a_normal_line_height() {
+    twin(
+        "a_font_change_reaches_an_anonymous_block_box_with_a_normal_line_height",
+        "body { line-height: normal; } .c .a { font-size: 20px; } .b { width: 2em; }",
+        |doc, on| {
+            let body = doc.body();
+            let outer = doc.create_element("div");
+            doc.set_attribute(outer, "class", if on { "x c" } else { "x" });
+            doc.append_child(body, outer);
+            let a = doc.create_element("div");
+            doc.set_attribute(a, "class", "a");
+            doc.append_child(outer, a);
+            let t = doc.create_text("t");
+            doc.append_child(a, t);
+            let li = doc.create_element("li");
+            doc.set_attribute(li, "class", "b");
+            doc.append_child(a, li);
+            let t2 = doc.create_text("");
+            doc.append_child(li, t2);
+            outer
+        },
+        |doc, outer| doc.set_attribute(*outer, "class", "x c"),
+    );
+}
+
+#[test]
+fn a_font_change_on_a_split_inline_with_a_normal_line_height() {
+    twin(
+        "a_font_change_on_a_split_inline_with_a_normal_line_height",
+        "body { line-height: normal; } .c .a { font-size: 20px; }",
+        |doc, on| {
+            let body = doc.body();
+            let fs = doc.create_element("fieldset");
+            doc.set_attribute(fs, "class", "c");
+            doc.append_child(body, fs);
+            let div = doc.create_element("div");
+            doc.append_child(fs, div);
+            let span = doc.create_element("span");
+            doc.set_attribute(span, "class", if on { "b d a" } else { "b d" });
+            doc.append_child(div, span);
+            let t = doc.create_text("t");
+            doc.append_child(span, t);
+            let inner = doc.create_element("fieldset");
+            doc.append_child(span, inner);
+            span
+        },
+        |doc, span| doc.set_attribute(*span, "class", "b d a"),
     );
 }
