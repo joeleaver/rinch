@@ -78,6 +78,10 @@ pub mod testing;
 // here as an inherent-impl module.
 mod project;
 
+// Deep-link anchors (`CollabDoc::sticky_index` / `resolve_sticky`), also an inherent-impl
+// module.
+mod sticky;
+
 /// `CollabSession` and `CollabDoc` must stay **`Send`**: a server holds a session across
 /// an `.await`, so losing the bound breaks downstream consumers at their next upgrade —
 /// as a compile error in *their* tree, which is the worst place to find out.

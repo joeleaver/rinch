@@ -610,7 +610,7 @@ impl CollabDoc {
 /// every index handed to a `Text` goes through here. A char offset past the end clamps
 /// to the end: [`Text::remove_range`] **panics** on an out-of-range index (automerge
 /// returned an error), and a panic here would take the whole app down.
-fn u16_offset(s: &str, chars: usize) -> u32 {
+pub(crate) fn u16_offset(s: &str, chars: usize) -> u32 {
     s.chars().take(chars).map(|c| c.len_utf16() as u32).sum()
 }
 
@@ -625,7 +625,7 @@ fn u16_span(s: &str, start: usize, end: usize) -> (u32, u32) {
 
 /// The map object of the child at `index` of a content array (the root `content` or a
 /// container's nested `content`).
-fn child_map<T: ReadTxn>(txn: &T, list: &ArrayRef, index: u32) -> Option<MapRef> {
+pub(crate) fn child_map<T: ReadTxn>(txn: &T, list: &ArrayRef, index: u32) -> Option<MapRef> {
     match list.get(txn, index) {
         Some(Out::YMap(m)) => Some(m),
         _ => None,
@@ -633,7 +633,7 @@ fn child_map<T: ReadTxn>(txn: &T, list: &ArrayRef, index: u32) -> Option<MapRef>
 }
 
 /// The `text` Text object of a text-block node.
-fn block_text<T: ReadTxn>(txn: &T, node: &MapRef) -> Option<TextRef> {
+pub(crate) fn block_text<T: ReadTxn>(txn: &T, node: &MapRef) -> Option<TextRef> {
     match node.get(txn, TEXT) {
         Some(Out::YText(t)) => Some(t),
         _ => None,
@@ -641,7 +641,7 @@ fn block_text<T: ReadTxn>(txn: &T, node: &MapRef) -> Option<TextRef> {
 }
 
 /// The `content` Array object of a container node.
-fn node_content<T: ReadTxn>(txn: &T, node: &MapRef) -> Option<ArrayRef> {
+pub(crate) fn node_content<T: ReadTxn>(txn: &T, node: &MapRef) -> Option<ArrayRef> {
     match node.get(txn, CONTENT) {
         Some(Out::YArray(a)) => Some(a),
         _ => None,
@@ -649,7 +649,7 @@ fn node_content<T: ReadTxn>(txn: &T, node: &MapRef) -> Option<ArrayRef> {
 }
 
 /// A node's `type` string.
-fn node_type<T: ReadTxn>(txn: &T, node: &MapRef) -> Option<String> {
+pub(crate) fn node_type<T: ReadTxn>(txn: &T, node: &MapRef) -> Option<String> {
     match node.get(txn, TYPE) {
         Some(Out::Any(Any::String(s))) => Some(s.to_string()),
         _ => None,

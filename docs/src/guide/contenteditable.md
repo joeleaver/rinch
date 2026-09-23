@@ -810,6 +810,79 @@ mid-session when a role changes. Two consequences worth knowing:
   editable earlier in the session can hold edits its server lacks; whether to send
   that diff is the app's call (a server that enforces the role will refuse it).
 
+### Sticky positions (deep links)
+
+A `Pos` is a number into *this* editor's document *now*: the next edit before it, yours
+or a peer's, makes it point somewhere else. To remember a place in a shared document (a
+link to a paragraph, a bookmark, a comment anchor), ask for a **sticky index** instead.
+It follows its character through every later edit, on every replica:
+
+```rust
+// Where the caret is, as an address that survives edits.
+let anchor: Vec<u8> = editor.collab_sticky_index(editor.state().selection.head()).unwrap();
+
+// Later, on this editor or on any peer's:
+if let Some(pos) = editor.collab_resolve_sticky(&anchor) {
+    editor.set_selection(Selection::cursor(pos));
+}
+```
+
+What it survives and what it does not:
+
+- **Any edit elsewhere**, local or merged from a peer: it moves with its character.
+- **Its own character deleted:** it resolves to where that character was.
+- **Its block deleted:** `collab_resolve_sticky` answers `None`. Joining a block into
+  the one before it counts (Backspace at a block's start): the projection writes the
+  joined text as a new insert, not a move. Likewise, splitting a block (Enter) before
+  the position moves the tail into a new block, and an index on the tail then resolves
+  to the split point.
+- **An edit next to its paragraph, at the top level of the document.** The projection
+  finds the top-level blocks an edit left alone by node *identity*, and a split or a
+  join rebuilds both nodes it touches, so the paragraph beside it is rewritten even
+  though its text did not change (tracked in #917). In practice:
+  - **Enter at the start of a paragraph** (inserting an empty paragraph above it):
+    every index into that paragraph now resolves into the **new empty paragraph**.
+    That is a wrong position, not `None`.
+  - **Backspace that deletes an empty line above a paragraph:** every index into that
+    paragraph resolves to `None`.
+  - **Toggling a bullet list on a paragraph** replaces the block with one of another
+    kind: `None`.
+
+  Blocks inside a list fare better: that level of the diff compares nodes
+  structurally, so Enter at the start of a paragraph in a list item keeps its indexes.
+
+`collab_sticky_index` answers `None` when not collaborating, for a position that is
+not inside a textblock (between two blocks), for the empty starter paragraph of a
+shared document that has no blocks, and while the session is stalled or poisoned.
+
+**The bytes are plain yrs.** They are a yrs `StickyIndex` in its v1 encoding
+(`StickyIndex::encode_v1`), created on the `text` of the textblock holding the position,
+with `Assoc::After` (or `Assoc::Before` at the very end of a text; an empty text names
+the text itself). Nothing wraps them. So an app that keeps the shared document outside
+the editor (a server, an index) can resolve one with yrs alone:
+`StickyIndex::decode_v1`, then `get_offset` on a transaction of the document, then
+check that `offset.branch` is the `text` of a block still under the `content` root.
+`offset.index` counts UTF-16 code units, like every index of this document, **but only
+if you built your `yrs::Doc` for it.** The offset unit belongs to each `Doc` and is not
+carried in the bytes, and `Doc::new()` defaults to `OffsetKind::Bytes`, under which
+`get_offset` gives a number in neither unit once the text has been edited (7 where the
+UTF-16 answer is 4, after typing `😀ö ` before the position). Build the replica the way
+the adapter builds its own:
+
+```rust
+use yrs::{Doc, OffsetKind, Options};
+
+let doc = Doc::with_options(Options {
+    offset_kind: OffsetKind::Utf16,
+    ..Default::default()
+});
+```
+
+The
+[`CollabDoc::sticky_index` docs](https://docs.rs/rinch-editor-collab) say the same at
+the source. The adapter itself exposes the pair as `CollabSession::sticky_index(doc,
+pos)` / `resolve_sticky(doc, bytes)`, taking the model document the session projects.
+
 ### On the web
 
 The **same** adapter runs in the browser — yrs compiled to wasm. Enable the
