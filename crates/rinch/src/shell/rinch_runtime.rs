@@ -3863,6 +3863,9 @@ mod native_event_queue_tests {
     #[test]
     fn send_native_event_counts_one_rerender_per_drain() {
         use std::sync::atomic::Ordering;
+        let _lock = crate::app::RERENDER_EVENTS_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let _ = NATIVE_EVENT_QUEUE.lock().unwrap().drain();
         let before = crate::app::RERENDER_EVENTS_QUEUED.load(Ordering::Relaxed);
         for _ in 0..6 {

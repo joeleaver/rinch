@@ -89,6 +89,12 @@ mod overlay_z_index_tests;
 #[cfg(test)]
 mod paused_animation_frames_tests;
 #[cfg(all(test, software_shell))]
+mod perf_expect;
+#[cfg(all(test, software_shell, feature = "desktop"))]
+mod perf_regression_editor_tests;
+#[cfg(all(test, software_shell))]
+mod perf_regression_tests;
+#[cfg(all(test, software_shell))]
 mod perf_stats_tests;
 #[cfg(all(test, software_shell))]
 mod repaint_old_rect_tests;
@@ -134,6 +140,12 @@ pub(crate) enum ThemeKey {
 /// [`RinchApp::end_perf_frame`].
 pub(crate) static RERENDER_EVENTS_QUEUED: std::sync::atomic::AtomicU64 =
     std::sync::atomic::AtomicU64::new(0);
+
+/// Held by every test that writes [`RERENDER_EVENTS_QUEUED`] and asserts an
+/// exact delta on it, so two such tests on different threads of one test
+/// binary cannot land inside each other's window.
+#[cfg(test)]
+pub(crate) static RERENDER_EVENTS_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 use rinch_core::events;
 use rinch_dom::RinchDocument;
 use rinch_dom::paint::painter::Painter;

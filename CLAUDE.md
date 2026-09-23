@@ -3908,6 +3908,30 @@ Make changes, rebuild, launch again. The full cycle:
 - RSX macro provides helpful error messages with typo suggestions
 - Transparent windows use an intermediate render texture (swapchain textures don't support STORAGE_BINDING)
 
+## Performance regressions
+
+**The exact counter baselines are the performance contract.** Four files assert
+**whole frames** (every non-timing counter exact, every unlisted counter `0`):
+`crates/rinch-dom/tests/perf_counter_baselines.rs` (#877),
+`crates/rinch-dom/tests/perf_regression_scenarios.rs` (one document per counter
+increment site, #879), `crates/rinch/src/app/perf_regression_tests.rs` and
+`crates/rinch/src/app/perf_regression_editor_tests.rs` (shell scenarios driven
+the way the desktop loop drives them, through `app/perf_expect.rs`).
+`crates/rinch/src/app/perf_stats_tests.rs` is exact on the counters it names,
+not on the whole frame.
+
+- **A PR that changes a baseline says why in its body**, for each moved
+  counter, old → new: a fix, or a cost it accepts
+  (`.github/pull_request_template.md`). A fall to `0` is a fix or an increment
+  that stopped counting — say which. A pinned **finding** names its issue, and
+  a fix must *lower* that number.
+- **Never loosen an assertion to make it pass.**
+- **Fonts:** declared line boxes pin only the vertical axis. Any horizontal
+  text geometry needs the bundled Inter (`perf_expect::new_app`, text set in
+  `sans-serif`), or the number moves with the host's fonts (CI is DejaVu).
+- Updating, reading `RINCH_PERF` / `perf_stats`, and the rest:
+  `docs/src/guide/performance.md#the-baselines-are-the-contract`.
+
 ## Documentation Requirements
 
 **Always update user-facing documentation when adding or changing features:**
