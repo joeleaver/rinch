@@ -388,8 +388,10 @@ if ctx.wants_keyboard() {
 >
 > That inheritance is spec-correct, not a bug — but the overlay idiom that triggers
 > it is the obvious one to reach for, so it is worth designing around up front.
-> (`visibility: hidden` is stronger still: it makes an entire subtree unhittable
-> and *cannot* be re-enabled on a descendant.)
+> (`visibility: hidden` is stronger still on desktop: it makes an entire subtree
+> unhittable, and a descendant that sets `visibility: visible` is painted but
+> still not hittable there — issue #843. A browser, and so `rinch-web`, lets that
+> descendant take pointer events.)
 
 ### Split Layout (Viewport Hole)
 

@@ -1248,6 +1248,25 @@ impl DomDocument for WebDocument {
         el.get_attribute(name)
     }
 
+    /// The `.value` **property** of an `<input>`, `<textarea>` or `<select>`
+    /// (issue #238) — the text the user sees — never the content attribute,
+    /// which typing leaves at whatever was last written programmatically. Any
+    /// other element answers from its `value` attribute, as the trait default
+    /// does. A `file` input's `.value` is the browser's fake path
+    /// (`C:\fakepath\…`), which is what the browser itself reports.
+    fn live_value(&self, node: NodeId) -> Option<String> {
+        let n = self.nodes.get(&node.0)?;
+        if let Some(input) = n.dyn_ref::<web_sys::HtmlInputElement>() {
+            Some(input.value())
+        } else if let Some(textarea) = n.dyn_ref::<web_sys::HtmlTextAreaElement>() {
+            Some(textarea.value())
+        } else if let Some(select) = n.dyn_ref::<web_sys::HtmlSelectElement>() {
+            Some(select.value())
+        } else {
+            n.dyn_ref::<web_sys::Element>()?.get_attribute("value")
+        }
+    }
+
     /// Straight to the browser's own CSSOM, which is why nothing here restates
     /// the property-name rules desktop needs (#711): `setProperty` lowercases a
     /// non-custom name and compares custom ones exactly, and no `rinch-web` code
@@ -1415,6 +1434,33 @@ impl DomDocument for WebDocument {
             .and_then(|n| n.clone().dyn_into::<web_sys::Element>().ok())
             .map(|el| el.client_width() as f64)
             .unwrap_or(0.0)
+    }
+
+    /// Scroll `node` into view **now**, rather than queueing the request the way
+    /// the desktop backend does. The trait defers because Taffy layout has to be
+    /// resolved before an element's position relative to its scroll container is
+    /// known; in the browser layout is synchronous, so by the time a caller holds
+    /// a node its box is already measurable and `scrollIntoView` reads it itself.
+    /// There is correspondingly nothing for `drain_scroll_into_view_requests` to
+    /// return — the default (empty) is right here.
+    ///
+    /// `block`/`inline: "nearest"` is the minimal scroll: an element already in
+    /// view does not move, and one out of view is brought just inside the edge it
+    /// left by. Centring would jump the page on every caret move. The behaviour is
+    /// left at the default (`auto`, i.e. instant) deliberately — `smooth` animates,
+    /// and a caret that keeps typing would chase a still-moving viewport.
+    fn request_scroll_into_view(&mut self, node: NodeId) {
+        let Some(el) = self
+            .nodes
+            .get(&node.0)
+            .and_then(|n| n.clone().dyn_into::<web_sys::Element>().ok())
+        else {
+            return;
+        };
+        let opts = web_sys::ScrollIntoViewOptions::new();
+        opts.set_block(web_sys::ScrollLogicalPosition::Nearest);
+        opts.set_inline(web_sys::ScrollLogicalPosition::Nearest);
+        el.scroll_into_view_with_scroll_into_view_options(&opts);
     }
 
     fn set_inner_html(&mut self, node: NodeId, html: &str) {

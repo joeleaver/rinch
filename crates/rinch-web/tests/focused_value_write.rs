@@ -383,3 +383,125 @@ fn focusout_clears_a_stuck_composing_flag() {
     );
     f.teardown();
 }
+
+// ---------------------------------------------------------------------------
+// `live_value` (issue #238, part 2): what a component reads to ask "what does
+// the field say?". On the web that is the `.value` property; the attribute
+// stays at the last programmatic write while the user types.
+// ---------------------------------------------------------------------------
+
+/// Typing moves the live text and leaves the attribute behind, and
+/// `NodeHandle::live_value` reports the live text — the answer `get_attribute`
+/// cannot give here.
+#[wasm_bindgen_test]
+fn live_value_reads_the_property_the_user_typed_into() {
+    let f = Fixture::mount("input", &[("type", "text"), ("value", "mount")]);
+    let input = f.input();
+
+    // What typing does: the property moves, the attribute does not.
+    input.set_value("typed");
+
+    assert_eq!(f.handle.live_value().as_deref(), Some("typed"));
+    assert_eq!(
+        f.handle.get_attribute("value").as_deref(),
+        Some("mount"),
+        "control: the attribute lags, or this test proves nothing"
+    );
+    f.teardown();
+}
+
+#[wasm_bindgen_test]
+fn live_value_reads_a_textarea_property_too() {
+    let f = Fixture::mount("textarea", &[("value", "mount")]);
+    f.textarea().set_value("typed\nacross lines");
+    assert_eq!(
+        f.handle.live_value().as_deref(),
+        Some("typed\nacross lines")
+    );
+    f.teardown();
+}
+
+/// Not a form control: there is no property, and the attribute is the answer.
+#[wasm_bindgen_test]
+fn live_value_of_a_non_control_is_its_attribute() {
+    let f = Fixture::mount("div", &[("value", "attr")]);
+    assert_eq!(f.handle.live_value().as_deref(), Some("attr"));
+    f.teardown();
+}
+
+/// A controlled `TextInput` writes nothing back for the echo of the user's own
+/// keystroke: the live text already says what `value_fn` returns. The
+/// attribute is the witness — it moves only on a programmatic write, so
+/// "still the mount value" means no write landed.
+#[wasm_bindgen_test]
+fn a_controlled_text_input_does_not_echo_the_keystroke_back() {
+    use rinch::prelude::{Component, TextInput};
+    use rinch_core::InputCallback;
+    use rinch_core::reactive::Signal;
+
+    if let Ok(stale) = document().query_selector_all(&format!("[{HOST_MARKER}]")) {
+        for i in 0..stale.length() {
+            if let Some(node) = stale.item(i)
+                && let Ok(el) = node.dyn_into::<web_sys::Element>()
+            {
+                el.remove();
+            }
+        }
+    }
+    let host = document().create_element("div").unwrap();
+    host.set_attribute(HOST_MARKER, "").unwrap();
+    document().body().unwrap().append_child(&host).unwrap();
+
+    let text = Signal::new(String::new());
+    let heard: Rc<RefCell<Vec<String>>> = Rc::new(RefCell::new(Vec::new()));
+    let heard_in = heard.clone();
+    let root = rinch_web::mount_into(
+        &host,
+        ThemeProviderProps::default(),
+        move |scope: &mut RenderScope| {
+            let heard_in = heard_in.clone();
+            TextInput {
+                value_fn: Some(Rc::new(move || text.get())),
+                oninput: Some(InputCallback::new(move |v: String| {
+                    heard_in.borrow_mut().push(v.clone());
+                    text.set(v);
+                })),
+                ..Default::default()
+            }
+            .render(scope, &[])
+        },
+    );
+
+    let input: web_sys::HtmlInputElement = host
+        .query_selector(".rinch-text-input__input")
+        .unwrap()
+        .expect("the TextInput's <input>")
+        .dyn_into()
+        .unwrap();
+    input.focus().unwrap();
+    input.set_value("abc");
+    let init = web_sys::EventInit::new();
+    init.set_bubbles(true);
+    let ev = web_sys::Event::new_with_event_init_dict("input", &init).unwrap();
+    input.dispatch_event(&ev).unwrap();
+
+    // Positive control: the keystroke reached rinch's delegation and the
+    // component's handler, so the effect did run.
+    assert_eq!(*heard.borrow(), vec!["abc".to_string()]);
+    assert_eq!(text.get(), "abc");
+
+    assert_eq!(input.value(), "abc");
+    assert_eq!(
+        input.get_attribute("value").as_deref(),
+        Some(""),
+        "the echo of the user's own text must not be written back"
+    );
+
+    // Control: a value the field does not already show is written.
+    text.set("xyz".to_string());
+    assert_eq!(input.value(), "xyz");
+    assert_eq!(input.get_attribute("value").as_deref(), Some("xyz"));
+
+    root.unmount();
+    host.remove();
+}

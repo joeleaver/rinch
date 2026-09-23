@@ -163,6 +163,47 @@ inline tags become marks; unknown tags and attributes (`<script>`, inline event
 handlers, …) are dropped at parse time. The document can only ever hold structure
 the schema allows.
 
+### Your own plugins and inline decorations
+
+`add_plugin(Rc<dyn Plugin>) -> bool` installs a plugin of your own — a
+spellchecker, a search highlighter. It rebuilds the editor's state over the
+current document and selection, which **discards the undo history**, so call it
+on a freshly created handle, before content is typed. It is not an edit: a
+read-only editor (collaborating or not) accepts it, nothing is sent to peers and
+`on_change` does not fire. A plugin whose key is already installed is refused
+(`false`), and a refused call changes nothing.
+
+A plugin marks ranges of text through its `decorations()`, without touching the
+document:
+
+```rust
+use rinch_editor_core::decoration::{Decoration, DecorationSet};
+
+impl Plugin for Spellcheck {
+    fn key(&self) -> PluginKey { PluginKey("my-app.spellcheck") }
+    fn decorations(&self, state: &EditorState) -> DecorationSet {
+        DecorationSet::new(
+            self.misspelled(&state.doc)
+                .map(|(from, to)| {
+                    Decoration::inline(from, to, Attrs::new().with("class", "pm-spell-error"))
+                })
+                .collect(),
+        )
+    }
+}
+```
+
+The view wraps each decorated stretch in a `<span data-pm-deco class="…">`.
+The built-in stylesheet draws `pm-spell-error` (red) and `pm-grammar-error`
+(green) as wavy underlines, on desktop and on the web; any other class is yours
+to style. Decorations are recomputed from every new state, and the editor does
+**not** move a range for you when text is inserted before it — a plugin that
+caches ranges maps them through `tr.mapping()` in its `apply`.
+
+A right press over the editor places the caret before an app's
+`data-oncontextmenu` handler runs, on both backends, so a handler that draws its
+own suggestions menu reads the pressed word from `selection()`.
+
 ### Dark mode
 
 The editor's built-in stylesheet has light and dark color schemes; toggle between
@@ -221,6 +262,48 @@ built-in stylesheet uses it to hide the empty-editor placeholder.
 Switching it on drops pending typing state (a clicked "Bold" waiting for text, an IME
 preedit). Switching it off gives everything back, undo history included.
 
+### Keeping the caret in view
+
+A focused editor scrolls its caret into view after the **user** moves it or edits
+at it: typing, Enter, Backspace/Delete, every command and the keys bound to them,
+arrow keys and clicks, `set_selection`, paste, IME commit, `insert_image` and
+`toggle_link`. For a node selection the selected
+node's outline is what is revealed, and for a cell selection the cell under its
+moving (head) corner.
+
+The scroll is the minimal one (`nearest`): a caret already in view moves nothing,
+and one out of view is brought just inside the edge it left by, instantly rather
+than smoothly. On the **web** that is the browser's `scrollIntoView`, which scrolls
+every scrollable ancestor, the page included. On **desktop** only the caret's
+nearest scroll container scrolls (issue #842), so an editor whose scroller is itself
+off screen stays off screen.
+
+It deliberately does **not** scroll when the caret's position on screen changes
+without the user moving it — a user who scrolled away to read something is left
+where they are:
+
+- a collaborator's edit arriving (`collab_receive`), even one above the caret;
+- `load_html` / `load_doc`, and `add_plugin` (neither is an edit);
+- a window resize that reflows the text, and the user's own scrolling (including a
+  long, virtualized editor measuring the blocks it scrolls past);
+- an app transaction through `update(..)` that edits the document and lets the
+  selection be *mapped* rather than setting it. A transaction that calls
+  `tr.set_selection(..)` — as `tr.insert_text` does — scrolls like typing; to reveal
+  the caret after an edit of your own, set the selection explicitly, even to where
+  it already is (`let sel = tr.selection(); tr.set_selection(sel);`);
+- an edit a [read-only](#read-only) editor refuses. A read-only editor's caret
+  moves still scroll: they are real selection changes;
+- focus on its own. A click that places the caret scrolls (it moved the
+  selection); a click that focuses the editor without moving the caret — a task
+  checkbox, a right-click on an image — does not jump to where the caret was;
+- an editor that is not focused: its caret is not drawn, so a programmatic
+  `set_selection` on it scrolls when it is next focused, not before.
+
+Not covered: the moving end of a text **range** (Shift+arrow) is not revealed, and
+moving the caret into a block of a virtualized editor that has never been laid out
+(Ctrl+End from the top of a very long document) does not scroll to it until the
+block is on screen (issue #845).
+
 ## Keyboard shortcuts
 
 The editor handles its own keyboard input. Every shortcut below comes from the
@@ -238,11 +321,19 @@ platform. `Mod` = Ctrl on Windows/Linux, Cmd on macOS.
 | Mod+Shift+0 | Paragraph |
 | Mod+Shift+7 / 8 / 9 | Task / bullet / ordered list |
 | Mod+Shift+B | Blockquote |
+| Mod+Shift+L / E / R / J | Align left / center / right / justify |
 | Mod+Z / Mod+Shift+Z / Mod+Y | Undo / redo |
 | Enter | Split block / new list item |
 | Shift+Enter | Insert a hard break (line break within the block) |
 | Tab / Shift+Tab | Move between table cells, else indent / outdent a list item |
 | Backspace / Delete | Delete backward / forward |
+
+The four alignment chords are the Google Docs ones, and some of them are also
+chords of the browser or the platform, which may take the key before the editor
+sees it. Chrome reserves Ctrl+Shift+J (and Ctrl+Shift+I) for its developer
+tools; Ctrl+Shift+R is the browser's hard reload; some Linux input methods
+(IBus's emoji picker) bind Ctrl+Shift+E. The commands themselves
+(`setTextAlignLeft` / `Center` / `Right` / `Justify`) always work from a toolbar.
 
 (Copy/cut/paste — Mod+C/X/V, and Mod+Shift+V for paste-as-plain — are handled by the
 platform clipboard, not the keymap.) On desktop the same four operations — cut, copy,
@@ -300,6 +391,7 @@ start of a line; inline mark shortcuts fire when you type the closing delimiter:
 |------|---------|
 | `# ` … `###### ` | Heading 1–6 |
 | `` ``` `` | Code block |
+| `---` / `***` | Horizontal rule (fires on the third character, no space) |
 | `> ` | Blockquote |
 | `- ` / `* ` / `+ ` | Bullet list |
 | `1. ` | Ordered list |
@@ -309,6 +401,11 @@ start of a line; inline mark shortcuts fire when you type the closing delimiter:
 | `~~strike~~` | ~~strike~~ |
 | `==highlight==` | highlighted |
 | `` `code` `` | inline `code` |
+
+The horizontal rule fires only when the marker is the paragraph's **whole**
+content: `---` typed in front of existing text, or in a heading, stays text. The
+caret lands in the block after the rule, or in a fresh empty paragraph appended
+after it (inside the same blockquote or list item) when nothing follows.
 
 Inside a task list, **Enter** adds a new (unchecked) item, and **Enter** on an empty
 item exits the list — just like bullet/ordered lists. **Click a task's checkbox** to
@@ -385,6 +482,24 @@ the browser route those native events to it — which also makes focus browser-n
 so keys can't reach the wrong control. Typed characters are still consumed by the
 editor's key handler (and never reach the textarea); only IME composition flows
 through it. This mirrors the CodeMirror / ProseMirror hidden-input technique.
+
+**The editor owns a key only while that textarea holds focus** (issue #271). Tab to a
+button, press a focusable control (a `<button>`, a link, a `tabindex` element, a text
+field), or press blank page, and the editor lets go: the next key — Enter and Space
+included — belongs to whatever has focus now, and the editor stops painting its
+caret, as a blurred editor does on desktop. Press inside the editor to give it the
+keyboard back. A switch to another window and back is meant to leave it in place: the
+textarea stays the page's focused element, and the release waits for focus to move
+within the page.
+
+A press on a **non-focusable** clickable — a DOM menu-bar item, a `div { onclick }`
+toolbar button — leaves the keyboard with the editor, as desktop does for such a
+press. A focusable one takes it, `DropdownMenu`'s `<button>` items included, as on
+desktop. A toolbar of real `<button>`s
+that should leave the keyboard with the editor carries `data-nofocus` (see the
+toolbar note above); the editor-web example's does. A command run while the editor
+keeps the keyboard with no pointer event at all — assistive technology or
+`element.click()` on a toolbar button — still moves the caret with its edit.
 
 **Right-click gets the browser's own editing menu** (issue #814) — Paste, Cut, Copy,
 Select All, and whatever else the browser puts there (emoji, extensions; the hidden
@@ -521,11 +636,30 @@ peer.
 `is_collaborating()`, `stop_collaboration()`, `collab_snapshot()` (a fresh snapshot
 for a *late*-joining peer to `start_collaboration_guest` from), and
 `collab_take_error()` round out the API. The first milestone covers **flat
-text-blocks + marks** (paragraphs, headings, code blocks, bold/italic/link/…) plus
-list containers (bullet/ordered lists and list items, nested to any depth); an edit
+text-blocks + marks** (paragraphs, headings, code blocks, bold/italic/link/…),
+list containers (bullet/ordered lists and list items, nested to any depth),
+horizontal rules, and the inline atoms inside a line — images and hard breaks
+(Shift+Enter). Blockquotes, tables and task lists are still outside it: an edit
 outside that scope fails loud rather than silently diverging —
 `collab_take_error()` surfaces it, and the CRDT is left untouched (the local edit is
-not projected). A runnable two-pane loopback (both editors in one window, no network)
+not projected). Horizontal rules, images and hard breaks all joined that scope
+without a new wire format, so **every peer on a document must be upgraded
+together**: an older build accepts a rule, an image or a hard break from a newer
+peer and then cannot read it, which poisons its session (see below) in both
+directions for as long as that content remains in the document — it heals only
+when the last one is deleted. A peer joining from a snapshot that already holds
+one fails the join instead.
+
+Two concurrent edits to images can still be lost, and both editors still end up
+with the same document when they are. **Two identical images side by side**
+(same `src`, same `alt`, …) whose attributes two people change at the same
+moment: the CRDT sees them as one formatted run, and one change can overwrite the
+other (#860). And **splitting a block right before an image** (Enter) while
+someone else changes that image's attributes loses the change — a split moves
+content, and this is true of any mark change on moved text, not only images
+(#861).
+
+A runnable two-pane loopback (both editors in one window, no network)
 lives at `examples/collab-editor-demo/src/main.rs`.
 
 **Outbound stalls: an out-of-scope edit, and how it un-sticks.** The local edit that

@@ -749,11 +749,48 @@ impl TextAlignValue {
     }
 }
 
-/// CSS text-decoration property values.
-#[derive(Debug, Clone, Default, Serialize)]
+/// CSS `text-decoration-style` — how the decoration line is drawn.
+///
+/// Only [`Solid`](Self::Solid) and [`Wavy`](Self::Wavy) are distinguished when
+/// painting: a wavy underline is the spellcheck squiggle and is drawn by
+/// `paint::text` as a zigzag path, everything else falls back to the straight
+/// line Parley draws from the run metrics. `double`/`dotted`/`dashed` are
+/// **parsed** (so the cascade and `get_computed_styles` report them faithfully)
+/// but render solid until someone needs them.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
+pub enum TextDecorationStyleValue {
+    #[default]
+    Solid,
+    Double,
+    Dotted,
+    Dashed,
+    Wavy,
+}
+
+/// CSS text-decoration property values: the lines (`text-decoration-line`), how
+/// they are drawn (`text-decoration-style`) and in what colour
+/// (`text-decoration-color`). The `text-decoration` shorthand expands to all
+/// three in the cascade, so nothing here parses it separately.
+#[derive(Debug, Clone, Default, PartialEq, Serialize)]
 pub struct TextDecorationValue {
     pub underline: bool,
     pub strikethrough: bool,
+    /// How the line is drawn. `wavy` is the one that changes the painter's path.
+    pub style: TextDecorationStyleValue,
+    /// The line's colour. `None` is CSS's `currentcolor` — the text's own colour,
+    /// which is what Parley uses when no decoration brush is set, so the painter
+    /// needs no fallback of its own.
+    #[serde(serialize_with = "color_serde::serialize")]
+    pub color: Option<peniko::Color>,
+}
+
+impl TextDecorationValue {
+    /// True when this decoration asks for a **wavy underline** — the one case the
+    /// native painter draws itself instead of letting Parley stroke a straight
+    /// line from the run metrics.
+    pub fn is_wavy_underline(&self) -> bool {
+        self.underline && self.style == TextDecorationStyleValue::Wavy
+    }
 }
 
 /// CSS text-transform property values.

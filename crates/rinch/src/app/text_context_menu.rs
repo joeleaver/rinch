@@ -174,6 +174,27 @@ enum TextTarget {
     Editor(usize),
 }
 
+/// An editor context press resolved on the tree as it was pressed — see
+/// [`RinchApp::resolve_editor_context_press`].
+#[cfg(feature = "desktop")]
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct EditorContextPress {
+    /// The editor's container node id.
+    pub(crate) container: usize,
+    /// What the press pointed at; `None` when it missed every textblock.
+    pub(crate) at: Option<EditorPressAt>,
+}
+
+/// What an [`EditorContextPress`] pointed at.
+#[cfg(feature = "desktop")]
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) enum EditorPressAt {
+    /// An image or rule: the node selection a press on it makes.
+    Node(rinch_editor_core::Selection),
+    /// A document position in a textblock.
+    Pos(rinch_editor_core::Pos),
+}
+
 /// Where a press lands relative to the open menu.
 enum MenuHit {
     Item(usize),
@@ -438,13 +459,25 @@ impl RinchApp {
         actions: &mut Vec<AppAction>,
     ) -> Option<TextEditState> {
         let target = self.text_target_at(x, y)?;
-        self.prepare_target(target, x, y, vp_w, vp_h, actions)
+        self.prepare_target(
+            target,
+            x,
+            y,
+            vp_w,
+            vp_h,
+            actions,
+            #[cfg(feature = "desktop")]
+            None,
+        )
     }
 
     /// The whole gesture: [`Self::prepare_text_context_target`], then the
     /// presentation the shell asked for. Returns whether the press landed on a
     /// text target — in which case the click path has run and the caller must
     /// not run it again, whether or not a menu opened.
+    ///
+    /// `press` is an editor press already resolved on the tree as it was
+    /// pressed ([`Self::resolve_editor_context_press`]); `None` resolves it here.
     pub(crate) fn text_context_menu_gesture(
         &mut self,
         x: f32,
@@ -452,12 +485,22 @@ impl RinchApp {
         vp_w: f32,
         vp_h: f32,
         actions: &mut Vec<AppAction>,
+        #[cfg(feature = "desktop")] press: Option<EditorContextPress>,
     ) -> bool {
         let Some(target) = self.text_target_at(x, y) else {
             return false;
         };
         if self
-            .prepare_target(target, x, y, vp_w, vp_h, actions)
+            .prepare_target(
+                target,
+                x,
+                y,
+                vp_w,
+                vp_h,
+                actions,
+                #[cfg(feature = "desktop")]
+                press,
+            )
             .is_none()
         {
             return true;
@@ -523,6 +566,81 @@ impl RinchApp {
         None
     }
 
+    /// Resolve what a context press at `(x, y)` points at in an editor — the
+    /// node it selects (an image, a rule) or the document position it lands on
+    /// — **before** anything moves the caret.
+    ///
+    /// Resolve once, apply later, because applying can invalidate the geometry
+    /// the resolution read. A plugin whose decoration depends on the selection (a
+    /// spellchecker that withdraws its squiggle once the caret enters the word)
+    /// re-renders the pressed run the moment the caret moves, and nothing lays
+    /// the document out again before the next read: a second resolution from
+    /// `(x, y)` then maps the point against a text node with no layout and lands
+    /// at the block start (review of #836, finding 2). So the press is resolved
+    /// here, on the tree as it was pressed, and [`Self::apply_editor_context_press`]
+    /// applies it — from the claimed path and the built-in menu's path alike.
+    ///
+    /// `None` unless the press lands inside an editor.
+    #[cfg(feature = "desktop")]
+    pub(crate) fn resolve_editor_context_press(
+        &self,
+        x: f32,
+        y: f32,
+    ) -> Option<EditorContextPress> {
+        let Some(TextTarget::Editor(container)) = self.text_target_at(x, y) else {
+            return None;
+        };
+        let handle = crate::editor::editor_for_doc(self.doc_key(), container)?;
+        let at = if let Some(leaf) = self.editor_leaf_at(x, y)
+            && let Some(node_sel) = handle.node_selection_at_host(leaf)
+        {
+            Some(EditorPressAt::Node(node_sel))
+        } else if let Some((c, textblock, ifc_byte)) = self.editor_point_address(x, y)
+            && c == container
+            && let Some(pressed) = handle.pos_at(textblock, ifc_byte)
+        {
+            Some(EditorPressAt::Pos(pressed))
+        } else {
+            None
+        };
+        Some(EditorContextPress { container, at })
+    }
+
+    /// Apply the **caret rule** for a press [resolved](Self::resolve_editor_context_press)
+    /// earlier: a press on an image or rule selects the node (unless it is the
+    /// node already selected), a press outside the selection moves the caret to
+    /// the press point, a press inside it keeps the selection, and a press that
+    /// missed every textblock keeps it too. Answers the handle, or `None` when
+    /// the editor is gone.
+    #[cfg(feature = "desktop")]
+    pub(crate) fn apply_editor_context_press(
+        &mut self,
+        press: &EditorContextPress,
+    ) -> Option<crate::editor::EditorHandle> {
+        let handle = crate::editor::editor_for_doc(self.doc_key(), press.container)?;
+        match &press.at {
+            Some(EditorPressAt::Node(node_sel)) => {
+                if handle.selection() != *node_sel {
+                    handle.set_selection(node_sel.clone());
+                }
+            }
+            Some(EditorPressAt::Pos(pressed)) => {
+                let selection = handle.selection();
+                let inside = !selection.is_empty()
+                    && selection.from() <= *pressed
+                    && *pressed <= selection.to();
+                if !inside {
+                    handle.set_selection(rinch_editor_core::Selection::cursor(*pressed));
+                }
+            }
+            None => {}
+        }
+        Some(handle)
+    }
+
+    /// `press` is the editor press the caller already resolved on the tree as it
+    /// was pressed, if any; `None` resolves it here, before the click path runs.
+    #[allow(clippy::too_many_arguments)]
     fn prepare_target(
         &mut self,
         target: TextTarget,
@@ -531,6 +649,7 @@ impl RinchApp {
         vp_w: f32,
         vp_h: f32,
         actions: &mut Vec<AppAction>,
+        #[cfg(feature = "desktop")] press: Option<EditorContextPress>,
     ) -> Option<TextEditState> {
         match target {
             TextTarget::Input(node_id) => {
@@ -598,7 +717,11 @@ impl RinchApp {
             }
             #[cfg(feature = "desktop")]
             TextTarget::Editor(container) => {
-                let handle = crate::editor::editor_for_doc(self.doc_key(), container)?;
+                // Resolved before anything below can re-render the editor.
+                let press = press
+                    .filter(|p| p.container == container)
+                    .or_else(|| self.resolve_editor_context_press(x, y))
+                    .filter(|p| p.container == container)?;
                 // The ordinary right-press path first (a `data-rid` above the
                 // editor, the blur of whatever else held the keyboard), then
                 // the claim the left press would have made. Re-checked after,
@@ -610,27 +733,7 @@ impl RinchApp {
                 crate::editor::editor_for_doc(self.doc_key(), container)?;
                 self.set_focus_target(FocusTarget::Editor(container));
                 self.editor_goal_x = None;
-                use rinch_editor_core::Selection;
-                if let Some(leaf) = self.editor_leaf_at(x, y)
-                    && let Some(node_sel) = handle.node_selection_at_host(leaf)
-                {
-                    // A press on an image or rule selects the node, as a left
-                    // click does — unless it is the node already selected.
-                    if handle.selection() != node_sel {
-                        handle.set_selection(node_sel);
-                    }
-                } else if let Some((c, textblock, ifc_byte)) = self.editor_point_address(x, y)
-                    && c == container
-                    && let Some(pressed) = handle.pos_at(textblock, ifc_byte)
-                {
-                    let selection = handle.selection();
-                    let inside = !selection.is_empty()
-                        && selection.from() <= pressed
-                        && pressed <= selection.to();
-                    if !inside {
-                        handle.set_selection(Selection::cursor(pressed));
-                    }
-                }
+                self.apply_editor_context_press(&press)?;
                 // A press that missed every textblock keeps the selection.
                 self.refresh_editor_overlays();
                 self.resolve_and_repaint(vp_w, vp_h);
@@ -678,10 +781,10 @@ impl RinchApp {
     /// is laid out again each pass (#826; +0.05 ms a pass, release, measured
     /// on a themed page). `visibility: hidden` would not, and was tried: set
     /// through `set_style` it does not reach the rows (#508), and set by a
-    /// stylesheet rule it hides the rows but not their text, which paint
-    /// draws whatever the IFC root's visibility (#829). Not exempted from the
-    /// scroll lock (#474): the panel declares no `overflow`, so it is no scroll
-    /// container and the lock has nothing to refuse on it.
+    /// stylesheet rule it hid the rows but not their text, which paint drew
+    /// whatever the IFC root's visibility until #829 fixed that half. Not
+    /// exempted from the scroll lock (#474): the panel declares no `overflow`,
+    /// so it is no scroll container and the lock has nothing to refuse on it.
     pub fn open_text_context_menu(&mut self, x: f32, y: f32, vp_w: f32, vp_h: f32) -> bool {
         let Some(state) = self.text_edit_state() else {
             return false;

@@ -183,6 +183,7 @@ pub mod textarea;
 pub mod title;
 pub mod tooltip;
 pub mod tree;
+pub mod value_binding;
 
 // Re-export component structs
 pub use accordion::{Accordion, AccordionControl, AccordionItem, AccordionPanel};

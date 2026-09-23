@@ -714,7 +714,7 @@ impl<'a> HtmlParser<'a> {
                 Ok(Some(if active.is_empty() {
                     img
                 } else {
-                    img.mark(active.to_vec())
+                    img.with_marks(active.to_vec())
                 }))
             }
             _ => Ok(None),

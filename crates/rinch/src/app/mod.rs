@@ -32,6 +32,8 @@ mod drawer_open_animation_tests;
 #[cfg(test)]
 mod drawer_scroll_overflow_tests;
 #[cfg(all(test, feature = "desktop"))]
+mod editor_decoration_tests;
+#[cfg(all(test, feature = "desktop"))]
 mod editor_read_only_tests;
 mod event_dispatch;
 mod focus;
@@ -91,6 +93,8 @@ mod textarea_newline_tests;
 mod trap_focus_tests;
 #[cfg(test)]
 mod ua_block_defaults_components_tests;
+#[cfg(all(test, software_shell))]
+mod visibility_hidden_overlay_paint_tests;
 
 pub(crate) use hit_testing::*;
 pub use text_context_menu::{TextContextMenuPresentation, TextEditAction, TextEditState};
@@ -911,6 +915,14 @@ impl RinchApp {
     /// moved, force a full repaint. The caret / selection / node-outline overlays are
     /// absolutely positioned, and the software renderer's dirty-region cache can't
     /// clear a moved absolute element's old rect — so without this they ghost.
+    ///
+    /// A caret that owes a scroll (a local edit or selection move — the handle's
+    /// `ScrollGate`) also queues a `scroll_into_view` on itself. It is
+    /// deliberately **not** applied here: this runs straight out of an input
+    /// handler, so the caret overlay's style has just been rewritten and its
+    /// layout is stale — measuring it now would scroll to where the caret *was*.
+    /// The repaint this schedules resolves layout and drains the queue one frame
+    /// later, with the caret's real box.
     #[cfg(feature = "desktop")]
     pub(crate) fn refresh_editor_overlays(&mut self) {
         if crate::editor::update_all_carets(Some(self.doc_key()), self.focused_editor_id()) {
@@ -1049,6 +1061,15 @@ impl RinchApp {
                 let _ = d.take_dirty_nodes();
                 d.resolve_layout(viewport_width, viewport_height);
             }
+            // A caret that owes a scroll — after a local edit or selection move;
+            // `EditorHandle::update_caret` decides, and queues a
+            // `scroll_into_view` on the caret overlay. The drain at the top of
+            // this frame ran *before* the caret pass, so without this the request
+            // would sit in the queue until some later relayout happened to come
+            // along. The re-resolve just above is what makes it safe to apply here:
+            // the caret's box is current, which is exactly what
+            // `apply_scroll_into_view` measures.
+            self.apply_scroll_into_view();
             self.scene_dirty = true;
             #[cfg(software_shell)]
             {
@@ -8787,6 +8808,205 @@ mod scroll_into_view_tests {
         // bottom as 700 below the container's painted origin and scrolled 500.
         assert_ne!(scaled, 500.0, "the container's own scale must divide out");
     }
+
+    // ── the editor caret ────────────────────────────────────────────────────
+
+    /// The caret moving below the fold of a scroll container scrolls it into view
+    /// — the editor's half of this machinery, end to end over a real editor in a
+    /// real `overflow-y: auto` scroller.
+    ///
+    /// `RinchDomEditorView::update_caret` has always returned
+    /// `ViewRequest::ScrollSelectionIntoView`, and `EditorHandle::update_caret`
+    /// used to throw the vector away, so the request had no consumer anywhere in
+    /// the tree and typing past the bottom of a scroller left the caret off
+    /// screen. The handle now fulfils it as a `scroll_into_view()` on the caret
+    /// element, and the runtime applies it *in the same frame* as the caret pass
+    /// that raised it (the drain at the top of `resolve_and_repaint` runs before
+    /// that pass, so a request made there would otherwise wait for an unrelated
+    /// relayout).
+    ///
+    /// The second half of the test is the gate: the caret pass runs on **every**
+    /// frame, so an ungated request would re-scroll for ever and a user who
+    /// wheel-scrolled away from their caret would be dragged back to it.
+    #[cfg(feature = "desktop")]
+    #[test]
+    fn a_caret_move_below_the_fold_scrolls_the_editor_into_view() {
+        use rinch_editor_core::{Pos, Selection};
+
+        let ids: Rc<Cell<Option<(usize, usize)>>> = Rc::new(Cell::new(None));
+        let ids_in = ids.clone();
+        let handle = crate::editor::create_editor();
+        // 40 paragraphs: far taller than the 120px scroller, so a cursor in the
+        // last one is well below the fold.
+        let html: String = (0..40).map(|i| format!("<p>line {i}</p>")).collect();
+        assert!(handle.load_html(&html));
+        let handle_in = handle.clone();
+        let mut app = RinchApp::new(move |scope: &mut RenderScope| {
+            let root = scope.create_element("div");
+            root.set_attribute("style", "width: 800px; height: 600px");
+            let scroller = scope.create_element("div");
+            scroller.set_attribute("style", "width: 400px; height: 120px; overflow-y: auto");
+            let editor = handle_in.mount(scope);
+            scroller.append_child(&editor);
+            root.append_child(&scroller);
+            ids_in.set(Some((scroller.node_id().0, editor.node_id().0)));
+            root
+        });
+        app.mount_component(800.0, 600.0);
+        app.resolve_and_repaint(800.0, 600.0);
+        let (scroller_id, editor_id) = ids.get().expect("ids captured at mount");
+
+        // The caret pass only renders the *focused* editor's overlays.
+        app.focus_target = FocusTarget::Editor(editor_id);
+
+        let scroll_of = |app: &RinchApp| {
+            app.doc.as_ref().unwrap().borrow().tree.nodes[scroller_id]
+                .scroll_offset
+                .1
+        };
+        // One frame of the real input path: the handler refreshes the overlays
+        // (which moves the caret and raises the request), and the repaint it
+        // schedules resolves layout and applies the scroll.
+        let frame = |app: &mut RinchApp| {
+            app.refresh_editor_overlays();
+            app.resolve_and_repaint(800.0, 600.0);
+        };
+
+        // A cursor at the very top of the document: already visible, no scroll.
+        handle.set_selection(Selection::cursor(Pos(1)));
+        frame(&mut app);
+        assert_eq!(
+            scroll_of(&app),
+            0.0,
+            "a caret already in view must not move the scroller"
+        );
+
+        // Now put the cursor in the last paragraph. doc(p*40) with "line N" in
+        // each: the final paragraph's content starts well past the fold.
+        let doc = handle.doc();
+        handle.set_selection(Selection::cursor(Pos(doc.content_size() - 1)));
+        frame(&mut app);
+
+        let scrolled = scroll_of(&app);
+        assert!(
+            scrolled > 0.0,
+            "a caret below the fold scrolls the container (got {scrolled})"
+        );
+        assert!(caret_is_visible(&app, scroller_id), "and lands it in view");
+
+        // Every subsequent frame re-runs the caret pass with the same selection.
+        // Nothing may move again — this is the gate that keeps a wheel-scroll
+        // from being undone on the next frame.
+        for _ in 0..3 {
+            frame(&mut app);
+        }
+        assert_eq!(
+            scroll_of(&app),
+            scrolled,
+            "a repeat caret pass on an unchanged selection scrolls no further"
+        );
+
+        // And the user scrolling away stays scrolled away.
+        {
+            let doc = app.doc.as_ref().unwrap();
+            let mut d = doc.borrow_mut();
+            d.tree.nodes[scroller_id].scroll_offset.1 = 0.0;
+            d.tree.dirty_nodes.insert(scroller_id);
+        }
+        frame(&mut app);
+        assert_eq!(
+            scroll_of(&app),
+            0.0,
+            "the caret pass must not drag a user who scrolled away back to the caret"
+        );
+    }
+
+    /// The other native path, and why `apply_scroll_into_view` had to be called a
+    /// second time inside `resolve_and_repaint`.
+    ///
+    /// When the caret moves because the *document* changed — typing, a remote
+    /// collaboration delta, a programmatic edit — nothing calls
+    /// `refresh_editor_overlays`; the caret moves in `resolve_and_repaint`'s own
+    /// post-layout pass. That pass runs *after* the frame's one drain, and it then
+    /// consumes the dirty set it produced, so the next frame short-circuits on a
+    /// clean tree and the request sits in the queue until some unrelated relayout
+    /// comes along. Applying it in-frame, against the re-resolve the pass already
+    /// does, is what makes typing past the bottom of a scroller work.
+    #[cfg(feature = "desktop")]
+    #[test]
+    fn typing_below_the_fold_scrolls_within_the_same_frame() {
+        use rinch_editor_core::{Pos, Selection};
+
+        let ids: Rc<Cell<Option<(usize, usize)>>> = Rc::new(Cell::new(None));
+        let ids_in = ids.clone();
+        let handle = crate::editor::create_editor();
+        let html: String = (0..40).map(|i| format!("<p>line {i}</p>")).collect();
+        assert!(handle.load_html(&html));
+        let handle_in = handle.clone();
+        let mut app = RinchApp::new(move |scope: &mut RenderScope| {
+            let root = scope.create_element("div");
+            root.set_attribute("style", "width: 800px; height: 600px");
+            let scroller = scope.create_element("div");
+            scroller.set_attribute("style", "width: 400px; height: 120px; overflow-y: auto");
+            let editor = handle_in.mount(scope);
+            scroller.append_child(&editor);
+            root.append_child(&scroller);
+            ids_in.set(Some((scroller.node_id().0, editor.node_id().0)));
+            root
+        });
+        app.mount_component(800.0, 600.0);
+        app.resolve_and_repaint(800.0, 600.0);
+        let (scroller_id, editor_id) = ids.get().expect("ids captured at mount");
+        app.focus_target = FocusTarget::Editor(editor_id);
+
+        let scroll_of = |app: &RinchApp| {
+            app.doc.as_ref().unwrap().borrow().tree.nodes[scroller_id]
+                .scroll_offset
+                .1
+        };
+        assert_eq!(scroll_of(&app), 0.0);
+
+        // Type at the very end of the document. The edit patches the host, so this
+        // frame does not short-circuit — and the caret it moves is raised inside
+        // the frame's own caret pass, not by an input handler beforehand.
+        let doc = handle.doc();
+        handle.set_selection(Selection::cursor(Pos(doc.content_size() - 1)));
+        assert!(handle.insert_text("!"));
+        app.resolve_and_repaint(800.0, 600.0);
+
+        let scrolled = scroll_of(&app);
+        assert!(
+            scrolled > 0.0,
+            "the scroll must land in the frame that moved the caret (got {scrolled})"
+        );
+        assert!(caret_is_visible(&app, scroller_id));
+    }
+
+    /// Whether the focused editor's caret overlay paints inside `scroller`'s
+    /// visible band — the same question `apply_scroll_into_view` asks, read back.
+    #[cfg(feature = "desktop")]
+    fn caret_is_visible(app: &RinchApp, scroller_id: usize) -> bool {
+        let doc = app.doc.as_ref().unwrap();
+        let d = doc.borrow();
+        let caret = (0..d.tree.nodes.len())
+            .find(|&id| {
+                d.tree
+                    .nodes
+                    .get(id)
+                    .is_some_and(|n| n.attributes.contains_key("data-pm-caret"))
+            })
+            .expect("a caret overlay exists");
+        let painted = rinch_dom::paint::painted_border_box(&d.tree, caret, 1.0);
+        let local = |y: f64| {
+            rinch_dom::paint::point_in_painted_box(&d.tree, scroller_id, 1.0, painted.x0, y)
+                .map(|(_, ly)| ly)
+        };
+        let (Some(top), Some(bottom)) = (local(painted.y0), local(painted.y1)) else {
+            return false;
+        };
+        let visible_height = d.client_height(rinch_core::dom::NodeId(scroller_id));
+        top >= -0.5 && bottom <= visible_height + 0.5
+    }
 }
 
 /// The ordinary click path's half of what `oncontextmenu_viewport_tests` pins
@@ -8919,3 +9139,6 @@ mod click_viewport_tests {
         );
     }
 }
+
+#[cfg(test)]
+mod editor_scroll_gate_tests;

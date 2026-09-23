@@ -137,7 +137,7 @@ impl ComputedStyle {
     /// | [`Self::build_parley_layout`] | `font_size`, `font_family`, `font_weight`, `font_style`, `line_height`, `letter_spacing`, `word_spacing`, `overflow_wrap` |
     /// | `RinchDocument::build_inline_layout`'s `root_text_style` | the above plus `color`, `text_decoration`, `text_underline_offset`, `white_space` (both the collapse mode and whether `max_width` applies at all) and `text_align` |
     /// | `RinchDocument::inline_style_props`, the per-span properties | `font_size`, `font_weight`, `font_style`, `color`, `text_decoration`, `text_underline_offset`, `line_height`, `letter_spacing`, `word_spacing` |
-    /// | `RinchDocument::push_inline_background`, which builds `InlineLayout::background_spans` | `background_color()`, the four paddings, `border_radius_top_left` |
+    /// | `RinchDocument::push_inline_spans`, which builds `InlineLayout::background_spans` and `::decoration_spans` | `background_color()`, the four paddings, `border_radius_top_left`, `text_decoration` |
     /// | the `TextMeasure` context `RinchDocument::sync_text_contexts` fills | `font_size`, `font_weight`, `font_family`, `line_height`, `color`, `white_space`, `letter_spacing`, `word_spacing`, `overflow_wrap`, `text_overflow`, `overflow_x` |
     ///
     /// `letter_spacing` and `word_spacing` reached only the first of those rows
@@ -163,7 +163,7 @@ impl ComputedStyle {
     /// condition, which decides whether the layout is rebuilt truncated. The
     /// background-span row is **gated on `display: inline`**, because only a
     /// non-atomic inline box contributes a span. There are **three**
-    /// `push_inline_background` call sites, all in `walk_inline_children` and
+    /// `push_inline_spans` call sites, all in `walk_inline_children` and
     /// all behind `DisplayMode::Inline`: the `display: inline` arm itself,
     /// which tests `child.display_mode` directly, and the two halves of the
     /// split-inline bridge — one closing the stretches a run member has left,
@@ -218,8 +218,7 @@ impl ComputedStyle {
             && self.word_spacing == other.word_spacing
             && self.color == other.color
             && self.text_align == other.text_align
-            && self.text_decoration.underline == other.text_decoration.underline
-            && self.text_decoration.strikethrough == other.text_decoration.strikethrough
+            && self.text_decoration == other.text_decoration
             && self.text_transform == other.text_transform
             && self.text_underline_offset == other.text_underline_offset
             && self.white_space == other.white_space
@@ -232,7 +231,7 @@ impl ComputedStyle {
     /// The `InlineBackgroundSpan` half of [`Self::same_text_layout_inputs`],
     /// split out so the `display: inline` gate reads as the one condition it
     /// is. See that function's table for why these six and not the rest of the
-    /// box model: `push_inline_background` reads exactly these.
+    /// box model: `push_inline_spans` reads exactly these for the background it pushes.
     fn same_inline_background_inputs(&self, other: &ComputedStyle) -> bool {
         self.background_color() == other.background_color()
             && self.padding_left.to_px() == other.padding_left.to_px()

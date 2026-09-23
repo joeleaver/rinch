@@ -269,15 +269,6 @@ impl Component for ColorInput {
             text_input.set_attribute("readonly", "");
         }
 
-        // The field's live text, as this component last heard it — same role
-        // as ColorPicker's record (GH #231). Every `oninput` records here,
-        // parseable or not: a parse-gated record would survive an edit it no
-        // longer describes and later veto a legitimate rewrite. The display
-        // effect prefers this record over the `value` attribute, which on web
-        // holds only what was last written programmatically. Cleared whenever
-        // the effect rewrites the field.
-        let typed: Rc<RefCell<Option<String>>> = Rc::new(RefCell::new(None));
-
         // The last color the app actually holds: the mount value, then every
         // commit point — a reported typed commit, a dropdown pick, an external
         // `value_fn` write. `current_value` cannot play this role: parseable
@@ -286,16 +277,13 @@ impl Component for ColorInput {
         let last_committed: Rc<RefCell<String>> = Rc::new(RefCell::new(initial_color.clone()));
 
         // Handle text input changes. Per-keystroke this is internal only —
-        // record the live text, parse, and preview through `current_value`
+        // parse the typed text and preview through `current_value`
         // (swatch, dropdown picker). `self.onchange` fires from the commit
         // handler below, not here: the prop promises a committed color, not a
         // live preview per parseable keystroke (issue #226).
         if !disallow_input {
-            let typed_in = typed.clone();
             let handler_id = __scope.register_input_handler(move |value: String| {
-                let parsed = parse_color_with_notation(&value);
-                *typed_in.borrow_mut() = Some(value);
-                if let Some((parsed, notation)) = parsed {
+                if let Some((parsed, notation)) = parse_color_with_notation(&value) {
                     // Previewed at the typed notation's own alpha-carrying
                     // grid, not the display format's: the dropdown picker
                     // judges and merges an inbound value at the inbound
@@ -329,10 +317,8 @@ impl Component for ColorInput {
             // `current_value`, swatch included — to the last committed color,
             // never to the live preview: the preview was never reported, so
             // keeping it would durably display a color the app never
-            // received. Either rewrite clears the typed record, like any
-            // effect rewrite.
+            // received.
             let onchange = self.onchange.clone();
-            let typed_commit = typed.clone();
             let text_input_commit = text_input.clone();
             let last_committed_commit = last_committed.clone();
             let handler_id =
@@ -349,7 +335,6 @@ impl Component for ColorInput {
                             &formatted,
                             color_format,
                         );
-                        *typed_commit.borrow_mut() = None;
                         text_input_commit.set_attribute("value", &formatted);
                         current_value.set_if_changed(formatted.clone());
                         *last_committed_commit.borrow_mut() = formatted.clone();
@@ -365,7 +350,6 @@ impl Component for ColorInput {
                         // field shows it in the display format, like every
                         // other rewrite (GH #237).
                         let committed = last_committed_commit.borrow().clone();
-                        *typed_commit.borrow_mut() = None;
                         text_input_commit
                             .set_attribute("value", &display_spelling(&committed, color_format));
                         current_value.set_if_changed(committed);
@@ -542,9 +526,9 @@ impl Component for ColorInput {
                 // replace the text under the author's caret (GH #231). The
                 // field is rewritten only when the colour moves away from it —
                 // the dropdown picker, an external `value_fn` change. "The
-                // field's text" is the `typed` record when one exists (the
-                // live text on both backends), else the `value` attribute
-                // (which on web is honest only until the first keystroke).
+                // field's text" is its `live_value` (#238), never the `value`
+                // attribute, which on web is honest only until the first
+                // keystroke.
                 //
                 // The rewrite is in the output format's spelling, at the same
                 // grid the guard judges by (GH #237): `val` itself may be a
@@ -553,16 +537,11 @@ impl Component for ColorInput {
                 // what "the same colour" means. The guard is `denotes_same`
                 // unrolled, so the spelling it judges by is the one written.
                 let spelled = display_spelling(&val, color_format);
-                let field_text = typed
-                    .borrow()
-                    .clone()
-                    .or_else(|| text_input.get_attribute("value"));
-                let field_agrees = field_text.is_some_and(|text| {
+                let field_agrees = text_input.live_value().is_some_and(|text| {
                     let text = text.trim();
                     text == val.trim() || display_spelling(text, color_format) == spelled
                 });
                 if !field_agrees {
-                    *typed.borrow_mut() = None;
                     text_input.set_attribute("value", &spelled);
                 }
             });

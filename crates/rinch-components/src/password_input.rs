@@ -268,15 +268,7 @@ impl Component for PasswordInput {
         // escaped string would display literal entities and double-escape on every
         // keystroke (issue #100).
         if let Some(ref value_fn) = self.value_fn {
-            let initial_value = value_fn();
-            input.set_attribute("value", &initial_value);
-
-            let value_fn = value_fn.clone();
-            let input_clone = input.clone();
-            __scope.create_effect(move || {
-                let current_value = value_fn();
-                input_clone.set_attribute("value", &current_value);
-            });
+            crate::value_binding::bind_value_fn(__scope, &input, value_fn);
         } else if !initial_password.is_empty() {
             input.set_attribute("value", &initial_password);
         }

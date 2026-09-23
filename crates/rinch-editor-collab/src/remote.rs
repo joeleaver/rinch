@@ -6,7 +6,9 @@
 //! minimal **block-level** `ReplaceStep` (common-prefix/suffix on blocks, so untouched
 //! blocks keep their identity). Because the model is rebuilt from the *same* CRDT both
 //! peers converge to, `model ≡ project(model)` is restored exactly — no position-math
-//! risk.
+//! risk. Every remote change is therefore a block replace and never a text splice, which
+//! is what makes a block changing *kind* — a paragraph becoming a `horizontal_rule`, or
+//! back — nothing special here; only the caret carry below has to notice.
 //!
 //! There is deliberately no engine type in this file. The convergence-critical path only
 //! ever needs "give me the converged document as a `Node`", which is why swapping the
@@ -128,6 +130,14 @@ fn carried_position(
         // Content positions of a block at `at`: `at + 1 ..= at + 1 + content_size`.
         let inside = pos > old_at && pos < old_at + old_block.node_size();
         if inside {
+            // Both sides must be textblocks for an offset in one to mean anything in
+            // the other. A **block atom** (`horizontal_rule`) is where the two can
+            // differ: a peer replacing a paragraph with a scene break, or a scene break
+            // with a paragraph, changes the block's kind, and there is no text offset to
+            // carry across. `None` hands the caret to the step mapping, which re-anchors
+            // it from the block-level replace the caller already emits — an atom is
+            // never spliced as text. (An atom on the *old* side cannot even reach here:
+            // a leaf is one position wide, so nothing sits `inside` it.)
             if !(old_block.is_textblock() && new_block.is_textblock()) {
                 return None;
             }
@@ -332,6 +342,45 @@ mod tests {
         // "alpha rewritten" is 15 long, so its block is 17 wide, and the caret keeps
         // its place at the end of "beta": 17 + 1 + 4.
         assert_eq!(head_after(&state, &target), 22);
+    }
+
+    /// A peer types before the caret in a line that holds an **inline atom**, which
+    /// the caret has to be measured *across*. `flat_units` gives the atom one unit —
+    /// the same single model position it occupies, and the same U+FFFC the collab
+    /// projection stands it up with — so the offsets on either side of it still line
+    /// up. Counting it as zero (or as its rendered width) would slide the caret by one
+    /// per picture on every keystroke a peer makes.
+    #[test]
+    fn a_caret_after_an_inline_atom_is_carried_across_it() {
+        let schema = Rc::new(Schema::starter_kit());
+        let line = |lead: &str| {
+            let image = schema
+                .create_node(
+                    "image",
+                    rinch_editor_core::Attrs::new()
+                        .with("src", rinch_editor_core::AttrValue::from("cat.png")),
+                    Fragment::empty(),
+                )
+                .unwrap();
+            let para = schema
+                .branch(
+                    "paragraph",
+                    Fragment::from_children(vec![
+                        schema.text(lead).unwrap(),
+                        image,
+                        schema.text("tail").unwrap(),
+                    ]),
+                )
+                .unwrap();
+            schema.branch("doc", Fragment::from_node(para)).unwrap()
+        };
+        // doc(paragraph("ab", image, "tail")): content 1..=8, the caret after "ta".
+        let state = EditorState::create(schema.clone(), line("ab"), vec![]);
+        let mut tr = state.tr();
+        tr.set_selection(Selection::cursor(Pos(6)));
+        let state = state.apply(tr);
+        // The peer types one char before the atom: everything after it shifts by one.
+        assert_eq!(head_after(&state, &line("abX")), 7);
     }
 
     /// The caret sits exactly where the two versions stop agreeing. It belongs to

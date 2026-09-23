@@ -378,13 +378,6 @@ fn a_closed_drawer_traps_no_focus() {
     );
 }
 
-/// The closed drawer paints nothing.
-///
-/// A local pixel oracle, which is the only kind that can see this: the drawer's
-/// overlay is `rgba(0, 0, 0, 0.75)` over the entire viewport, so a closed drawer
-/// that painted would darken **every** pixel. The `visibility: hidden` root has
-/// a real box now, so "no ink" is a claim about paint's visibility skip rather
-/// than about an empty layout.
 /// One pixel out of a full software frame, through the shell's own rasteriser —
 /// `transparent: true` so an unpainted pixel is a zero alpha rather than a
 /// window background.
@@ -396,6 +389,17 @@ fn pixel(app: &mut RinchApp, x: u32, y: u32) -> [u8; 4] {
     [px[idx], px[idx + 1], px[idx + 2], px[idx + 3]]
 }
 
+/// The closed drawer paints nothing.
+///
+/// A local pixel oracle, which is the only kind that can see this: the drawer's
+/// overlay is `rgba(0, 0, 0, 0.75)` over the entire viewport, so a closed drawer
+/// that painted would darken **every** pixel. The `visibility: hidden` root has
+/// a real box now, so "no ink" is a claim about paint's visibility skip rather
+/// than about an empty layout.
+///
+/// It samples one pixel away from the panel's 380px, so it cannot see the
+/// panel's own text — which a closed drawer drew until #829, whenever the
+/// panel was on screen. `visibility_hidden_overlay_paint_tests` pins that half.
 #[cfg(software_shell)]
 #[test]
 fn the_closed_drawer_paints_nothing() {

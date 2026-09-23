@@ -290,8 +290,23 @@ Custom Default: `toggle_visibility` defaults to `true`.
 | `value` | `String` | `""` | |
 | `value_fn` | `Option<ReactiveString>` | `None` | Reactive value binding (auto-wrapped) |
 | `onchange` | `Option<InputCallback>` | `None` | Receives selected value as `String` |
+| `data` | `Vec<SelectOption>` | `[]` | The list of selectable options |
 
-Options are passed as children: `option { value: "us", "United States" }`
+Options are passed via `data`, not as children — the trigger's `_children` param
+is unused. Build a `Vec<SelectOption>` with `SelectOption::new(value, label)` (a
+`SelectOption` is `{ value: String, label: String }`; an empty `label` falls back
+to displaying `value`):
+
+```rust
+Select {
+    data: vec![
+        SelectOption::new("us", "United States"),
+        SelectOption::new("ca", "Canada"),
+    ],
+    value_fn: move || country.get(),
+    onchange: move |v: String| country.set(v),
+}
+```
 
 The trigger is a Tab stop (`tabindex="0"`, `role="combobox"`,
 `aria-haspopup="listbox"`, and an `aria-expanded` that tracks the open state).
@@ -418,9 +433,15 @@ emission could not have spelled folds as an echo, in both directions: on an
 chroma, where it does not move the rendered colour by an 8-bit step, while an
 inbound `hsl()` value that shares a spelling with the picker's current colour
 folds even where 8-bit could tell them apart (a normalizing store re-spelling
-the picker's own hex emission as `hsl()` is indistinguishable from it). The
-text field's write-back guard judges at the same resolution, so field, thumbs
-and store stay in step.
+the picker's own hex emission as `hsl()` is indistinguishable from it). A
+store that re-spells the emission in another notation may also round a *tie*
+its own way — `#797e81`'s hue is exactly 202.5°, which rinch writes as 202 and
+an exact converter as 203 — so an inbound value compared against what the
+picker emits (not what it holds) is accepted at either rounding of the
+emission's exact value, and at nothing farther: `#797e82`'s hue is 206⅔°, so a
+peer's `hsl(206, …)` under a `hex` display still applies. The text field's
+write-back guard judges at the same resolution, so field, thumbs and store stay
+in step.
 
 **Accepted colour notations** (everywhere a colour string is read — `value`,
 `value_fn`, typed text, swatches): hex in 3, 4, 6, or 8 digits (`#rgb`,
@@ -444,6 +465,13 @@ and committed text that parses as no colour reverts to the colour the picker
 holds, so an attribute-reading consumer never sees a stale shorthand outlive
 the gesture that typed it. `ColorInput`'s text field follows the same
 contract.
+
+"The field's text" here is the field's **live** text, read through
+`NodeHandle::live_value` (issue #238) — on the web the `.value` property the
+user types into, never the `value` attribute, which there holds only what was
+last written programmatically. It is the same read the `value_fn` binding of
+`TextInput`, `PasswordInput`, `Textarea` and `NumberInput` makes before
+writing, so the echo of a keystroke is not written back there either.
 
 ### ColorInput
 
@@ -987,7 +1015,7 @@ Custom Default: `with_overlay`, `close_on_click_outside`, `close_on_escape`, `wi
 
 Positioned with `top: var(--rinch-window-top-inset, 0px)`, so it clears any window chrome rinch draws (the Linux in-app menu bar, the `BorderlessWindow` titlebar) and is flush with the top of a plain window. See [Theming](./theming.md#window-chrome-inset).
 
-**Opening slides the panel in over 300ms; closing is instant.** The closed drawer is `visibility: hidden`, not `display: none` (issue #751), which is what lets the slide run: an element that was not being rendered has no before-change style, so a `display` flip and a `transform` retarget in one style pass animate nothing — on either backend, since a browser refuses the same shape. See [The before-change style, and who has one](../architecture/rendering-pipeline.md). Hidden this way the drawer is still excluded from paint, from hit testing and from the Tab order. The close is instant because sliding *out* needs the root to stay visible for the 300ms, i.e. a transition on `visibility`, which rinch's transition engine does not carry (issue #759) — one behaviour on both backends is worth more than the slide-out.
+**Opening slides the panel in over 300ms; closing is instant.** The closed drawer is `visibility: hidden`, not `display: none` (issue #751), which is what lets the slide run: an element that was not being rendered has no before-change style, so a `display` flip and a `transform` retarget in one style pass animate nothing — on either backend, since a browser refuses the same shape. See [The before-change style, and who has one](../architecture/rendering-pipeline.md). Hidden this way the drawer is still excluded from paint — its title and body text included, which desktop drew until issue #829 — from hit testing and from the Tab order. The close is instant because sliding *out* needs the root to stay visible for the 300ms, i.e. a transition on `visibility`, which rinch's transition engine does not carry (issue #759) — one behaviour on both backends is worth more than the slide-out.
 
 | Prop | Type | Default | Description |
 |------|------|---------|-------------|
@@ -1120,6 +1148,8 @@ Two consequences of that spelling:
 | Prop | Type | Default | Description |
 |------|------|---------|-------------|
 | `opened` | `bool` | `false` | |
+| `opened_fn` | `Option<ReactiveBool>` | `None` | Reactive opened getter — use this for fine-grained updates |
+| `on_close` | `Option<Callback>` | `None` | Fired when the user clicks outside the menu or clicks a menu item (with `close_on_click_outside`/`close_on_item_click`); the caller should set their `opened_fn` source to `false` from here |
 | `position` | `String` | `""` | |
 | `offset` | `Option<i32>` | `None` | |
 | `radius` | `String` | `""` | |
@@ -1360,6 +1390,7 @@ Custom Default: `level_offset` defaults to `"md"`, `expand_on_click` defaults to
 | `onselect` | `Option<ValueCallback<String>>` | `None` | |
 | `onexpand` | `Option<ValueCallback<String>>` | `None` | |
 | `oncollapse` | `Option<ValueCallback<String>>` | `None` | |
+| `data_source` | `Option<Rc<dyn Fn() -> Vec<TreeNodeData>>>` | `None` | Reactive data source — when provided, root nodes update when this changes |
 
 **TreeNodeData:** `value: String`, `label: String`, `children: Vec<TreeNodeData>`, `disabled: bool`, `icon: Option<TablerIcon>`, `payload: Option<Rc<dyn Any>>`.
 
@@ -1383,6 +1414,45 @@ Custom Default: `show_minimize`, `show_maximize`, `show_close` all default to `t
 | `on_minimize` | `Option<Callback>` | `None` | |
 | `on_maximize` | `Option<Callback>` | `None` | |
 | `on_close` | `Option<Callback>` | `None` | |
+
+### FloatingPanel
+
+A draggable, resizable floating panel for desktop app patterns — tool panels,
+property inspectors, floating toolbars. Position and size are controlled via
+`Signal<f32>` props (each defaults to an internal signal when not given —
+`x`/`y` default to `50.0`, `width` to `300.0`, `height` to `200.0`); the panel
+writes back to them during drag/resize.
+
+| Prop | Type | Default | Description |
+|------|------|---------|-------------|
+| `title` | `String` | `""` | Displayed in the panel header; header renders no title span when empty |
+| `x` | `Option<Signal<f32>>` | `None` | X position (viewport px) |
+| `y` | `Option<Signal<f32>>` | `None` | Y position (viewport px) |
+| `width` | `Option<Signal<f32>>` | `None` | Width (viewport px) |
+| `height` | `Option<Signal<f32>>` | `None` | Height (viewport px) |
+| `min_width` | `Option<f32>` | `None` | Minimum width constraint (falls back to `200.0`) |
+| `min_height` | `Option<f32>` | `None` | Minimum height constraint (falls back to `100.0`) |
+| `resizable` | `bool` | **`true`** | Whether the panel can be resized |
+| `on_close` | `Option<Callback>` | `None` | Shows a close button in the header when set |
+
+```rust
+let x = Signal::new(100.0);
+let y = Signal::new(100.0);
+let w = Signal::new(300.0);
+let h = Signal::new(200.0);
+
+rsx! {
+    FloatingPanel {
+        title: "Properties",
+        x: x,
+        y: y,
+        width: w,
+        height: h,
+        on_close: move || { /* hide panel */ },
+        div { "Panel content here" }
+    }
+}
+```
 
 ---
 

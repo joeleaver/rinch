@@ -181,6 +181,36 @@ before appending it to its parent — at the write there is no ancestor to walk.
 `crates/rinch-dom/src/attr_name.rs` holds the tag list. The attribute **value**
 is never folded: an `id` still matches `#CamelId` case-sensitively.
 
+### A form control's live text: `live_value`
+
+`get_attribute("value")` reads the `value` **attribute**, and on the web that is
+not what a text field shows once the user has typed: typing moves the element's
+`.value` *property* and leaves the attribute at whatever was last written
+programmatically. `live_value()` asks the question a component usually means —
+"what does the field say right now?" — on either backend (issue #238):
+
+```rust
+if input.live_value().as_deref() != Some(new_text.as_str()) {
+    input.set_attribute("value", &new_text);
+}
+```
+
+- **Desktop** answers with the `value` attribute, which *is* the live text
+  there: the runtime mirrors each edit into it before dispatching `oninput`, and
+  adopts a programmatic write to the focused field back into the text engine.
+- **Web** answers with the `.value` property of an `<input>`, `<textarea>` or
+  `<select>`; any other element answers with its attribute.
+
+`None` means the node carries no value this backend can name — on desktop, a
+control with no `value` attribute yet. A web form control always answers
+`Some`, `""` when empty. Compare against the text you are about to write and
+treat `None` as "differs".
+
+`TextInput`, `PasswordInput`, `Textarea` and `NumberInput` bind `value_fn` with exactly that guard
+(`rinch_components::value_binding::bind_value_fn`), so the echo of the user's own
+keystroke is never written back; a custom component binding a `value_fn` can
+call the same function.
+
 ### Styles
 
 ```rust

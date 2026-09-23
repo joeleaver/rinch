@@ -42,8 +42,11 @@ fn app() -> NodeHandle {
             }
 
             // ── Toolbar (drives the handle, like desktop) ──────────────────────
+            // `data-nofocus`: a press takes the click, not the keyboard, so the
+            // user keeps typing into the editor after pressing Bold (#271).
             div {
                 id: "toolbar",
+                data-nofocus: "",
                 style: "display: flex; flex-wrap: wrap; gap: 6px; margin: 12px 0; padding: 8px; border: 1px solid #d0d7de; border-radius: 8px;",
                 button { id: "tb-bold",      style: btn, onclick: move || { ed_bold.command("toggleBold"); },        "B" }
                 button { id: "tb-italic",    style: btn, onclick: move || { ed_italic.command("toggleItalic"); },    "I" }

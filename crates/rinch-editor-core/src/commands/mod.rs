@@ -1379,6 +1379,11 @@ impl Plugin for BaseCommandsPlugin {
             ("Mod-Shift-9", "toggleOrderedList"),
             ("Mod-Shift-b", "wrapInBlockquote"),
             ("Mod-Shift-0", "setParagraph"),
+            // Text alignment, following the Google Docs convention.
+            ("Mod-Shift-l", "setTextAlignLeft"),
+            ("Mod-Shift-e", "setTextAlignCenter"),
+            ("Mod-Shift-r", "setTextAlignRight"),
+            ("Mod-Shift-j", "setTextAlignJustify"),
             ("Mod-Alt-1", "setHeading1"),
             ("Mod-Alt-2", "setHeading2"),
             ("Mod-Alt-3", "setHeading3"),

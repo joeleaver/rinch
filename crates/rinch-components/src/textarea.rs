@@ -151,15 +151,9 @@ impl Component for Textarea {
 
         // Reactive value binding
         if let Some(ref value_fn) = self.value_fn {
-            let initial_value = value_fn();
-            textarea.set_attribute("value", &initial_value);
-
-            let value_fn = value_fn.clone();
-            let textarea_clone = textarea.clone();
-            __scope.create_effect(move || {
-                let current_value = value_fn();
-                textarea_clone.set_attribute("value", &current_value);
-            });
+            // Written now and on every change — minus the echo of the user's
+            // own keystroke, which the field already shows (#238).
+            crate::value_binding::bind_value_fn(__scope, &textarea, value_fn);
         } else if !self.value.is_empty() {
             textarea.set_attribute("value", &self.value);
         }

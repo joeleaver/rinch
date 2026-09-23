@@ -298,6 +298,44 @@ pub trait DomDocument {
     /// Get an attribute value.
     fn get_attribute(&self, node: NodeId, name: &str) -> Option<String>;
 
+    /// The text a form control **holds right now** — what the user sees and
+    /// what the next keystroke edits — as opposed to its `value` *content
+    /// attribute* (issue #238).
+    ///
+    /// The two are the same thing on desktop and different things in a
+    /// browser, and a component that reads the attribute to ask "what does the
+    /// field say?" gets the wrong answer on the web the moment the user types:
+    ///
+    /// - **Desktop** (`RinchDocument`) keeps them equal by construction. The
+    ///   runtime mirrors the edited text into the `value` attribute *before* it
+    ///   dispatches `oninput`, and adopts a programmatic write to the focused
+    ///   field back into the text engine (#287). So the default — the `value`
+    ///   attribute — is the live text, and desktop does not override it.
+    /// - **Web** (`rinch-web`) answers from the element's `.value` **property**
+    ///   for `<input>`, `<textarea>` and `<select>`. There the attribute holds
+    ///   only what was last written programmatically: typing moves the property
+    ///   and leaves the attribute behind. Any other element answers from the
+    ///   attribute, as the default does.
+    ///
+    /// **What it is for:** a controlled component's `value_fn` effect asks it
+    /// whether the field already shows the value it is about to write, and
+    /// writes nothing if so. That echo — keystroke → `oninput` → signal →
+    /// effect → the same text written back — is the common case, and skipping
+    /// it keeps the write off the focused field altogether. It also lets a
+    /// component tell "the author's text still denotes this value" without
+    /// keeping its own record of every keystroke, which is what `ColorPicker`
+    /// and `ColorInput` did until this existed (GH #231, #235).
+    ///
+    /// `None` means the node carries no value this backend can name — a
+    /// desktop control with no `value` attribute yet, or a node id that no
+    /// longer exists. A web form control always answers `Some`, `""` when
+    /// empty, because the property always has a value. A caller comparing
+    /// against the text it is about to write should therefore treat `None` as
+    /// "differs" and write, which is what the empty-string case costs.
+    fn live_value(&self, node: NodeId) -> Option<String> {
+        self.get_attribute(node, "value")
+    }
+
     /// Set a CSS style property on an element.
     fn set_style(&mut self, node: NodeId, property: &str, value: &str);
 
