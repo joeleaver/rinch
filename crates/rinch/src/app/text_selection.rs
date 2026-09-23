@@ -70,8 +70,10 @@ impl RinchApp {
                     node.attributes.remove("data-text-sel-start");
                     node.attributes.remove("data-text-sel-end");
                 }
-                node.dirty.insert(rinch_dom::DirtyFlags::PAINT);
             }
+            // The highlight is painted from these attributes on the IFC root,
+            // so the root is the damage.
+            d.tree.mark_paint_dirty(ifc_node_id);
         }
     }
 
@@ -85,9 +87,9 @@ impl RinchApp {
                     node.attributes.remove("data-text-sel");
                     node.attributes.remove("data-text-sel-start");
                     node.attributes.remove("data-text-sel-end");
-                    node.dirty.insert(rinch_dom::DirtyFlags::PAINT);
                 }
-                d.tree.dirty_nodes.insert(sel.ifc_node_id);
+                // Where the highlight was painted is the damage.
+                d.tree.mark_paint_dirty(sel.ifc_node_id);
             }
             self.scene_dirty = true;
         }

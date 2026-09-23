@@ -83,8 +83,7 @@ impl RinchDocument {
             // New CSS rules may affect any existing node — invalidate all caches
             // and clear style_roots to force a full tree walk.
             self.tree
-                .perf
-                .full_restyle(crate::perf::FullRestyleReason::Stylesheet);
+                .note_full_restyle(crate::perf::FullRestyleReason::Stylesheet);
             for (nid, _) in self.tree.nodes.iter() {
                 *self.tree.nodes[nid].stylo_element_data.borrow_mut() = None;
             }
@@ -153,8 +152,7 @@ impl RinchDocument {
         // Invalidate all cached styles and force a full re-resolve +
         // relayout, mirroring resolve_layout's viewport-change branch.
         self.tree
-            .perf
-            .full_restyle(crate::perf::FullRestyleReason::Dpr);
+            .note_full_restyle(crate::perf::FullRestyleReason::Dpr);
         for (node_id, _) in self.tree.nodes.iter() {
             *self.tree.nodes[node_id].stylo_element_data.borrow_mut() = None;
         }
@@ -378,8 +376,7 @@ impl RinchDocument {
     /// so that CSS variables are re-resolved. Use this after `update_theme_variables()`.
     pub fn recompute_all_styles_full(&mut self) {
         self.tree
-            .perf
-            .full_restyle(crate::perf::FullRestyleReason::Theme);
+            .note_full_restyle(crate::perf::FullRestyleReason::Theme);
         // Clear cached Stylo element data so styles are recomputed.
         // Also clear text_layout so build_ifc_layouts() doesn't skip
         // IFC roots whose text content hasn't changed but whose style

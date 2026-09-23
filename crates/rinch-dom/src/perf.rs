@@ -167,6 +167,15 @@ define_counters! {
     PaintCachedFrames = "paint_cached_frames",
     /// Software frames repainted inside a dirty region.
     RepaintPartial = "repaint_partial",
+    /// Software frames whose scene was marked dirty but whose damage named
+    /// nothing on screen: every change was attributed to nodes or overlays,
+    /// and none of them reached a visible pixel. The previous pixels were kept
+    /// and nothing was painted.
+    RepaintNone = "repaint_none",
+    /// Rects the partial repaints cleared and painted (at most
+    /// `MAX_DAMAGE_RECTS` per frame). Two changes far apart are two rects, not
+    /// the span between them.
+    DamageRects = "damage_rects",
     /// Full repaints, any reason. Each is also counted under one
     /// `repaint_full_*` reason below.
     RepaintFull = "repaint_full",
@@ -174,16 +183,18 @@ define_counters! {
     RepaintFullFirstFrame = "repaint_full_first_frame",
     /// ...the surface was resized.
     RepaintFullResize = "repaint_full_resize",
-    /// ...the scene was dirty but no dirty region came out: either no node
-    /// was paint-dirty, or the paint-dirty nodes produced no rect (none had a
-    /// layout box).
-    RepaintFullNoDirtyNodes = "repaint_full_no_dirty_nodes",
-    /// ...the dirty region covered half the surface or more.
+    /// ...the scene was marked dirty by something that named no damage
+    /// (`RinchApp::mark_scene_dirty`) and nothing else was damaged, so which
+    /// pixels changed is unknown. Every site the framework itself owns names
+    /// its damage; what is left here is an application or embedder calling
+    /// `mark_scene_dirty`, and the software `GameViewport` compositor frames.
+    RepaintFullUnattributed = "repaint_full_unattributed",
+    /// ...the damage covered half the surface or more (the sum of its rects).
     RepaintFullRegionTooLarge = "repaint_full_region_too_large",
-    /// ...the dirty region had zero area.
-    RepaintFullEmptyRegion = "repaint_full_empty_region",
-    /// ...a drag ghost or the inspect highlight was on screen.
-    RepaintFullOverlay = "repaint_full_overlay",
+    /// ...the whole document was restyled (a stylesheet, the viewport, the
+    /// device pixel ratio or the root font-size changed), which can change any
+    /// node's paint without naming one.
+    RepaintFullRestyle = "repaint_full_restyle",
     /// ...the theme CSS changed.
     RepaintFullTheme = "repaint_full_theme",
     /// ...the previous frame was invalidated for a reason not listed above.
@@ -273,10 +284,9 @@ define_counters! {
 pub enum FullRepaintReason {
     FirstFrame,
     Resize,
-    NoDirtyNodes,
+    Unattributed,
     RegionTooLarge,
-    EmptyRegion,
-    Overlay,
+    Restyle,
     Theme,
     Invalidated,
     Gpu,
@@ -288,10 +298,9 @@ impl FullRepaintReason {
         match self {
             Self::FirstFrame => Counter::RepaintFullFirstFrame,
             Self::Resize => Counter::RepaintFullResize,
-            Self::NoDirtyNodes => Counter::RepaintFullNoDirtyNodes,
+            Self::Unattributed => Counter::RepaintFullUnattributed,
             Self::RegionTooLarge => Counter::RepaintFullRegionTooLarge,
-            Self::EmptyRegion => Counter::RepaintFullEmptyRegion,
-            Self::Overlay => Counter::RepaintFullOverlay,
+            Self::Restyle => Counter::RepaintFullRestyle,
             Self::Theme => Counter::RepaintFullTheme,
             Self::Invalidated => Counter::RepaintFullInvalidated,
             Self::Gpu => Counter::RepaintFullGpu,

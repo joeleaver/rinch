@@ -6,6 +6,7 @@
 mod borders;
 pub mod clip;
 mod contenteditable;
+pub mod damage;
 pub mod image;
 mod layer_bounds;
 pub mod painter;
@@ -21,6 +22,7 @@ pub mod skia_painter;
 use borders::*;
 pub use clip::{border_radii, clip_shape};
 use contenteditable::*;
+pub use damage::{DamageRegion, MAX_DAMAGE_RECTS};
 pub use layer_bounds::{UNBOUNDED, opacity_layer_bounds};
 use layer_bounds::{clip_cuts_nothing, opacity_layer_shape, subtree_is_entirely_outside};
 use svg::*;
@@ -72,6 +74,10 @@ pub const FULL_REPAINT_FRACTION: f64 = 0.5;
 ///
 /// Once the region reaches [`FULL_REPAINT_FRACTION`] of the surface the answer
 /// is the whole surface, and nothing further is measured.
+///
+/// This is the bounding box of [`compute_damage`]'s rects (the whole surface
+/// when that is full), kept for callers that want one rect. The software
+/// renderer paints the rects themselves.
 pub fn compute_dirty_region(
     tree: &NodeTree,
     scale: f64,
@@ -81,19 +87,41 @@ pub fn compute_dirty_region(
     if tree.paint_dirty_nodes.is_empty() {
         return None;
     }
+    let damage = compute_damage(tree, scale, viewport_w, viewport_h);
+    if damage.is_full() {
+        return Some(Rect::new(0.0, 0.0, viewport_w, viewport_h));
+    }
+    damage.bounds()
+}
+
+/// The damage the paint-dirty nodes name, as a short list of rects in
+/// physical pixels ([`DamageRegion`]). The rects are the ones
+/// [`compute_dirty_region`] documents; they are merged only where they overlap
+/// or where one rect is cheaper than two, so two small changes far apart cost
+/// their own areas and not the span between them.
+///
+/// Empty when nothing paint-dirty is on screen. Full once the rects' **total**
+/// area reaches [`FULL_REPAINT_FRACTION`] of the surface, or when a moved
+/// subtree cannot be bounded.
+pub fn compute_damage(
+    tree: &NodeTree,
+    scale: f64,
+    viewport_w: f64,
+    viewport_h: f64,
+) -> DamageRegion {
+    let mut region = DamageRegion::new(viewport_w, viewport_h);
+    if tree.paint_dirty_nodes.is_empty() {
+        return region;
+    }
 
     let margin = 4.0; // pixels margin for anti-aliasing
-    let whole = Rect::new(0.0, 0.0, viewport_w, viewport_h);
-    let limit = viewport_w * viewport_h * FULL_REPAINT_FRACTION;
-    let mut region: Option<Rect> = None;
-    // The area test runs on the clamped rect: a dirty box far off-screen must
-    // not trip it.
     let mut add = |r: Rect| -> bool {
-        let r = Rect::new(r.x0 - margin, r.y0 - margin, r.x1 + margin, r.y1 + margin);
-        let u = region.map_or(r, |prev: Rect| prev.union(r));
-        region = Some(u);
-        let c = u.intersect(whole);
-        c.width().max(0.0) * c.height().max(0.0) >= limit
+        region.add(Rect::new(
+            r.x0 - margin,
+            r.y0 - margin,
+            r.x1 + margin,
+            r.y1 + margin,
+        ))
     };
 
     // Deduplicate — paint_dirty_nodes may have duplicates
@@ -129,7 +157,7 @@ pub fn compute_dirty_region(
         {
             let bounds = opacity_layer_bounds(tree, node_id, scale, ax, ay);
             if bounds == UNBOUNDED {
-                return Some(whole);
+                return DamageRegion::full(viewport_w, viewport_h);
             }
             ink = ink.max(Outsets {
                 left: ax - bounds.x0,
@@ -143,7 +171,7 @@ pub fn compute_dirty_region(
             && h > 0.0
             && add(transform.transform_rect_bbox(ink.grow(Rect::new(ax, ay, ax + w, ay + h))))
         {
-            return Some(whole);
+            return DamageRegion::full(viewport_w, viewport_h);
         }
 
         // A flowed inline element owns no box (`0x0`): its glyphs, its
@@ -172,7 +200,31 @@ pub fn compute_dirty_region(
                 && rh > 0.0
                 && add(rt.transform_rect_bbox(Rect::new(rx, ry, rx + rw, ry + rh)))
             {
-                return Some(whole);
+                return DamageRegion::full(viewport_w, viewport_h);
+            }
+        }
+
+        // A box-less element that is not a flowed inline — a
+        // `display: contents` wrapper, a zero-size parent — still has
+        // children whose paint its restyle can reach (an inherited colour, a
+        // descendant selector). Its own rect is empty, so without this the
+        // change named nothing, and the frame used to repaint in full only
+        // because an empty region *meant* "everything". Cover what its
+        // subtree paints instead.
+        if (w <= 0.0 || h <= 0.0)
+            && node.ifc_root.is_none()
+            && !node.children.is_empty()
+            && !matches!(node.computed_style.display, DisplayValue::None)
+        {
+            let bounds = opacity_layer_bounds(tree, node_id, scale, ax, ay);
+            if bounds == UNBOUNDED {
+                return DamageRegion::full(viewport_w, viewport_h);
+            }
+            if bounds.width() > 0.0
+                && bounds.height() > 0.0
+                && add(transform.transform_rect_bbox(bounds))
+            {
+                return DamageRegion::full(viewport_w, viewport_h);
             }
         }
 
@@ -183,7 +235,7 @@ pub fn compute_dirty_region(
         if let Some(r) = painted_rect_with(tree, node_id, scale, ink)
             && add(r)
         {
-            return Some(whole);
+            return DamageRegion::full(viewport_w, viewport_h);
         }
     }
 
@@ -199,19 +251,12 @@ pub fn compute_dirty_region(
                 (ry + rh) * scale,
             ))
         {
-            return Some(whole);
+            return DamageRegion::full(viewport_w, viewport_h);
         }
     }
 
-    // Clamp to viewport bounds
-    region.map(|r| {
-        Rect::new(
-            r.x0.max(0.0),
-            r.y0.max(0.0),
-            r.x1.min(viewport_w),
-            r.y1.min(viewport_h),
-        )
-    })
+    // Every rect was clamped to the surface as it was added.
+    region
 }
 
 /// How far a node's **own** ink reaches past its border box, in CSS px:
@@ -339,7 +384,7 @@ thread_local! {
 
     /// Dirty region for incremental painting. When set, paint_node can
     /// skip subtrees entirely outside this rect (in physical pixels).
-    static DIRTY_REGION: RefCell<Option<Rect>> = const { RefCell::new(None) };
+    static DIRTY_REGION: RefCell<Option<Vec<Rect>>> = const { RefCell::new(None) };
 
     /// Surface pixel data for inline painting, keyed by surface ID.
     /// Set before paint_document() and cleared after.
@@ -461,7 +506,13 @@ fn viewport_frame_bytes(pixels: &SurfacePixelData) -> Option<usize> {
 /// outside this rect, avoiding expensive glyph rasterization and path
 /// operations for unchanged content. Set to `None` for full repaint.
 pub fn set_dirty_region(region: Option<Rect>) {
-    DIRTY_REGION.with(|v| *v.borrow_mut() = region);
+    DIRTY_REGION.with(|v| *v.borrow_mut() = region.map(|r| vec![r]));
+}
+
+/// [`set_dirty_region`] for several rects: a node is painted when it touches
+/// any of them. `None` means a full repaint; an empty slice culls everything.
+pub fn set_dirty_rects(rects: Option<&[Rect]>) {
+    DIRTY_REGION.with(|v| *v.borrow_mut() = rects.map(<[Rect]>::to_vec));
 }
 
 /// Check whether a node rect intersects the current dirty region.
@@ -472,10 +523,9 @@ fn intersects_dirty_region(x: f64, y: f64, w: f64, h: f64) -> bool {
         let guard = v.borrow();
         match guard.as_ref() {
             None => true, // No dirty region → full repaint, paint everything
-            Some(dr) => {
-                // AABB intersection test
-                x < dr.x1 && x + w > dr.x0 && y < dr.y1 && y + h > dr.y0
-            }
+            Some(rects) => rects
+                .iter()
+                .any(|dr| x < dr.x1 && x + w > dr.x0 && y < dr.y1 && y + h > dr.y0),
         }
     });
     if !inside_dirty {

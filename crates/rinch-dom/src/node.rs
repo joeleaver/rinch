@@ -1656,6 +1656,13 @@ pub struct NodeTree {
     /// Stored at removal time because the nodes are deleted from the tree
     /// before `compute_dirty_region` runs.
     pub paint_dirty_removed_rects: Vec<(f64, f64, f64, f64)>,
+    /// Set when the whole document was restyled (a stylesheet, the theme, the
+    /// viewport, the device pixel ratio or the root font-size changed —
+    /// [`NodeTree::note_full_restyle`]). Such a restyle can change the paint of
+    /// any node while pushing none of them to `paint_dirty_nodes`, so the paint
+    /// that consumes it repaints in full. Cleared by
+    /// [`NodeTree::consume_paint_dirty`].
+    pub whole_document_damaged: bool,
     /// IDs of nodes whose styles were recomputed and need Taffy sync.
     pub style_dirty_nodes: Vec<RawNodeId>,
     /// Roots of subtrees needing style resolution. When non-empty,
@@ -2043,6 +2050,7 @@ impl NodeTree {
             dirty_nodes: HashSet::new(),
             paint_dirty_nodes: Vec::new(),
             paint_dirty_removed_rects: Vec::new(),
+            whole_document_damaged: false,
             style_dirty_nodes: Vec::new(),
             style_roots: Vec::new(),
             styles_dirty: true, // Initial render needs styles
@@ -2168,6 +2176,24 @@ impl NodeTree {
             .any(|anim| !anim.is_paused() && !anim.fill_settled)
     }
 
+    /// Record a whole-document restyle: count it under `reason`, and mark the
+    /// document damaged everywhere ([`Self::whole_document_damaged`]).
+    pub fn note_full_restyle(&mut self, reason: crate::perf::FullRestyleReason) {
+        self.perf.full_restyle(reason);
+        self.whole_document_damaged = true;
+    }
+
+    /// Mark `id` paint-dirty: its pixels changed without any DOM write the
+    /// document saw (a shell-owned attribute such as the read-only selection's
+    /// `data-text-sel`, a scroll offset). The paint then repaints where it is
+    /// and where it was last painted.
+    pub fn mark_paint_dirty(&mut self, id: RawNodeId) {
+        if let Some(node) = self.nodes.get_mut(id) {
+            node.dirty.insert(DirtyFlags::PAINT);
+            self.push_dirty(id);
+        }
+    }
+
     /// Push a node ID to the dirty list (deduplicated).
     pub fn push_dirty(&mut self, id: RawNodeId) {
         self.hit_cache.invalidate();
@@ -2201,6 +2227,7 @@ impl NodeTree {
             }
         }
         self.paint_dirty_removed_rects.clear();
+        self.whole_document_damaged = false;
     }
 
     /// Drop the sizes the measure function cached for IFC root `root`, so the

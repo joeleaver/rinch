@@ -66,6 +66,8 @@ mod key_event_data_tests;
 mod key_repeat_tests;
 #[cfg(test)]
 mod late_children_716_tests;
+#[cfg(all(test, software_shell))]
+mod named_damage_tests;
 #[cfg(test)]
 mod node_ime_tests;
 #[cfg(all(test, feature = "desktop"))]
@@ -460,6 +462,18 @@ pub struct RinchApp {
     /// screen until something else happens to dirty that area (#173).
     #[cfg(software_shell)]
     pub(crate) last_ghost_rect: Option<peniko::kurbo::Rect>,
+    /// The framebuffer rect the inspect highlight covered in the frame on
+    /// screen, in device pixels — the ghost's twin, for the same reason: no
+    /// DOM node owns those pixels, so the frame that moves or drops the
+    /// highlight is told where it was.
+    #[cfg(software_shell)]
+    pub(crate) last_inspect_rect: Option<peniko::kurbo::Rect>,
+    /// Set by [`Self::mark_scene_dirty`]: something asked for a repaint
+    /// without naming what it changed. A frame whose damage is otherwise empty
+    /// then repaints in full (`repaint_full_unattributed`). Every framework
+    /// site names its damage (a paint-dirty node, or an overlay rect) and
+    /// goes through [`Self::request_repaint`] instead.
+    pub(crate) repaint_unattributed: bool,
     /// The data-oninput handler ID for the currently focused text input.
     pub(crate) focused_input_handler_id: Option<usize>,
     /// Current accumulated text value for the focused text input.
@@ -639,6 +653,9 @@ impl RinchApp {
             perf_rerender_seen: RERENDER_EVENTS_QUEUED.load(std::sync::atomic::Ordering::Relaxed),
             #[cfg(software_shell)]
             last_ghost_rect: None,
+            #[cfg(software_shell)]
+            last_inspect_rect: None,
+            repaint_unattributed: false,
             focused_input_handler_id: None,
             focused_input_value: String::new(),
             focused_input_baseline: String::new(),
@@ -1358,11 +1375,10 @@ impl RinchApp {
             let clamped = new_scroll.clamp(0.0, max_scroll);
             if let Some(node) = d.tree.nodes.get_mut(container_id) {
                 node.scroll_offset.1 = clamped;
-                node.dirty.insert(rinch_dom::DirtyFlags::PAINT);
             }
-            // A scroll moves every box inside the container.
-            d.tree.hit_cache.invalidate();
-            d.tree.dirty_nodes.insert(container_id);
+            // A scroll moves every box inside the container: repaint the
+            // container, as the wheel does (which also drops the hit cache).
+            d.tree.mark_paint_dirty(container_id);
             self.scene_dirty = true;
         }
     }
@@ -1451,6 +1467,7 @@ impl RinchApp {
         }
 
         self.scene_dirty = false;
+        self.repaint_unattributed = false;
         // This frame consumed the dirty lists, so the software pixmap — if a
         // window ever presents with software again after presenting with the
         // GPU (a `show_window` re-creation can switch) — no longer has a
@@ -1517,94 +1534,92 @@ impl RinchApp {
             // all (the debug screenshot), marking the node only guarantees it
             // repaints *without* its pixels.
 
-            let has_previous_frame_at_start = self.has_previous_frame;
-            // Compute dirty region before clearing paint_dirty_nodes
-            let dirty_region = if self.has_previous_frame && !resized {
-                let from_nodes = self.doc.as_ref().and_then(|doc| {
-                    let d = doc.borrow();
-                    rinch_dom::paint::compute_dirty_region(&d.tree, scale, w as f64, h as f64)
-                });
-                // Where the ghost sat in the frame on screen belongs to no DOM
-                // node, so it has to be added by hand or the frame that stops
-                // drawing it leaves it painted there (#173).
-                Self::union_ghost_rect(from_nodes, self.last_ghost_rect)
+            use rinch_dom::perf::{Counter, FullRepaintReason};
+
+            // The overlays paint straight into the framebuffer after the
+            // document, so no DOM node owns their pixels: their rects in the
+            // frame on screen and in this one are added by hand. Both rects,
+            // always, while an overlay is up — the ghost and the highlight are
+            // translucent, so the pixels under them have to be repainted before
+            // they are drawn again, even when they did not move (#173).
+            let ghost_now = self.active_dnd.as_ref().and_then(|drag| {
+                if !rinch_core::events::is_drag_ghost_visible() {
+                    return None;
+                }
+                let (tx, ty) = drag.ghost_translate(scale);
+                Self::ghost_overlay_rect(
+                    tx as i32,
+                    ty as i32,
+                    drag.snapshot_width,
+                    drag.snapshot_height,
+                    w,
+                    h,
+                )
+            });
+            let inspect_now = self
+                .inspect_highlight
+                .and_then(|hl| Self::inspect_overlay_rect(scale, hl, w, h));
+
+            // Why this frame repaints in full, if it does. The first reason
+            // recorded before this paint wins over anything decided here.
+            let invalidated = self.full_repaint_reason.take();
+            let unattributed = std::mem::take(&mut self.repaint_unattributed);
+            let whole_document = self
+                .doc
+                .as_ref()
+                .is_some_and(|doc| doc.borrow().tree.whole_document_damaged);
+            let mut damage = rinch_dom::paint::DamageRegion::new(w as f64, h as f64);
+            let full_reason = if first_frame {
+                Some(FullRepaintReason::FirstFrame)
+            } else if resized {
+                Some(FullRepaintReason::Resize)
+            } else if let Some(reason) = invalidated {
+                Some(reason)
+            } else if !self.has_previous_frame {
+                Some(FullRepaintReason::Invalidated)
+            } else if whole_document {
+                Some(FullRepaintReason::Restyle)
             } else {
-                None // Full repaint: first frame or resize
+                if let Some(doc) = &self.doc {
+                    let d = doc.borrow();
+                    damage = rinch_dom::paint::compute_damage(&d.tree, scale, w as f64, h as f64);
+                }
+                for r in [
+                    self.last_ghost_rect,
+                    ghost_now,
+                    self.last_inspect_rect,
+                    inspect_now,
+                ]
+                .into_iter()
+                .flatten()
+                {
+                    damage.add(r);
+                }
+                if damage.is_full() {
+                    Some(FullRepaintReason::RegionTooLarge)
+                } else if damage.is_empty() && unattributed {
+                    // Something marked the scene dirty without saying what it
+                    // changed, and nothing else named any damage: which pixels
+                    // moved is unknown, so all of them are repainted.
+                    Some(FullRepaintReason::Unattributed)
+                } else {
+                    None
+                }
             };
 
-            // Drain paint_dirty_nodes now that we've computed the region, and
-            // record that their pixels are where their boxes now are.
+            // Drain paint_dirty_nodes now that the damage is known, and record
+            // that their pixels are where their boxes now are.
             if let Some(doc) = &self.doc {
                 doc.borrow_mut().tree.consume_paint_dirty();
             }
 
-            // Check if dirty region is small enough to benefit from caching
-            // (less than 50% of viewport area)
-            // Disable dirty region when inspect highlight or drag overlay is active
-            // (overlays are painted after document and dirty tracking doesn't cover them).
-            let use_dirty_region = self.inspect_highlight.is_none()
-                && self.active_dnd.is_none()
-                && dirty_region.is_some_and(|r| {
-                    let region_area = r.width() * r.height();
-                    let viewport_area = w as f64 * h as f64;
-                    region_area < viewport_area * rinch_dom::paint::FULL_REPAINT_FRACTION
-                        && region_area > 0.0
-                });
-
-            if use_dirty_region {
-                let region = dirty_region.unwrap();
-
-                // Clear only the dirty region
-                let rx = region.x0 as u32;
-                let ry = region.y0 as u32;
-                let rw = region.width().ceil() as u32;
-                let rh = region.height().ceil() as u32;
-                if transparent {
-                    painter.clear_rect_transparent(rx, ry, rw, rh);
-                } else {
-                    painter.clear_rect_white(rx, ry, rw, rh);
-                }
-
-                // Set dirty region so paint_node can skip subtrees outside it
-                use peniko::kurbo::Rect;
-                rinch_dom::paint::set_dirty_region(Some(Rect::new(
-                    region.x0, region.y0, region.x1, region.y1,
-                )));
-
-                // Push a clip rect to prevent drawing outside the dirty region
-                let clip_shape = rinch_dom::paint::painter::PaintShape::Rect(Rect::new(
-                    region.x0, region.y0, region.x1, region.y1,
-                ));
-                painter.push_clip(
-                    peniko::Fill::NonZero,
-                    peniko::kurbo::Affine::IDENTITY,
-                    &clip_shape,
-                );
-
-                if let Some(doc) = &self.doc {
-                    let mut d = doc.borrow_mut();
-                    let d = &mut *d;
-                    rinch_dom::paint::paint_document(
-                        &d.tree,
-                        painter,
-                        scale,
-                        (size.0 as f32, size.1 as f32),
-                        &mut d.font_cx,
-                        &mut d.layout_cx,
-                    );
-                }
-
-                painter.pop_layer();
-                rinch_dom::paint::set_dirty_region(None);
-            } else {
-                // Full repaint
+            if full_reason.is_some() {
                 painter.reset();
                 if transparent {
                     painter.fill_transparent();
                 } else {
                     painter.fill_white();
                 }
-
                 if let Some(doc) = &self.doc {
                     let mut d = doc.borrow_mut();
                     let d = &mut *d;
@@ -1617,95 +1632,108 @@ impl RinchApp {
                         &mut d.layout_cx,
                     );
                 }
-            }
-
-            // Paint drag-and-drop snapshot overlay (if not suppressed by drop target)
-            let mut ghost_rect = None;
-            if let Some(ref drag) = self.active_dnd {
-                if rinch_core::events::is_drag_ghost_visible() {
-                    // Logical → device pixels, like the Vello twin above (#299):
-                    // the blit lands in a physical-pixel pixmap.
-                    let (tx, ty) = drag.ghost_translate(scale);
-                    let (dx, dy) = (tx as i32, ty as i32);
-                    Self::blit_drag_overlay(
-                        painter.pixels_mut(),
-                        w,
-                        h,
-                        &drag.snapshot_pixels,
-                        drag.snapshot_width,
-                        drag.snapshot_height,
-                        dx,
-                        dy,
-                    );
-                    ghost_rect = Self::ghost_overlay_rect(
-                        dx,
-                        dy,
-                        drag.snapshot_width,
-                        drag.snapshot_height,
-                        w,
-                        h,
+            } else if !damage.is_empty() {
+                // Clear and repaint only the damaged rects. Each is cleared on
+                // its own; the paint prunes every subtree that touches none of
+                // them, and draws through one clip: their union.
+                for r in damage.rects() {
+                    let (rx, ry) = (r.x0 as u32, r.y0 as u32);
+                    let (rw, rh) = (r.width() as u32, r.height() as u32);
+                    if transparent {
+                        painter.clear_rect_transparent(rx, ry, rw, rh);
+                    } else {
+                        painter.clear_rect_white(rx, ry, rw, rh);
+                    }
+                }
+                rinch_dom::paint::set_dirty_rects(Some(damage.rects()));
+                let clip_shape = match damage.rects() {
+                    [one] => rinch_dom::paint::painter::PaintShape::Rect(*one),
+                    _ => rinch_dom::paint::painter::PaintShape::BezPath(damage.clip_path()),
+                };
+                painter.push_clip(
+                    peniko::Fill::NonZero,
+                    peniko::kurbo::Affine::IDENTITY,
+                    &clip_shape,
+                );
+                if let Some(doc) = &self.doc {
+                    let mut d = doc.borrow_mut();
+                    let d = &mut *d;
+                    rinch_dom::paint::paint_document(
+                        &d.tree,
+                        painter,
+                        scale,
+                        (size.0 as f32, size.1 as f32),
+                        &mut d.font_cx,
+                        &mut d.layout_cx,
                     );
                 }
+                painter.pop_layer();
+                rinch_dom::paint::set_dirty_region(None);
             }
-            // Carried into the next frame's dirty region so those pixels get
+            // Otherwise nothing on screen changed: every change this frame was
+            // attributed, and none reached a visible pixel. The pixels on
+            // screen are this frame's pixels. No overlay is up either — an
+            // overlay always damages its own rect.
+
+            // Paint drag-and-drop snapshot overlay (if not suppressed by drop target)
+            if let (Some(drag), Some(_)) = (&self.active_dnd, ghost_now) {
+                // Logical → device pixels, like the Vello twin above (#299):
+                // the blit lands in a physical-pixel pixmap.
+                let (tx, ty) = drag.ghost_translate(scale);
+                Self::blit_drag_overlay(
+                    painter.pixels_mut(),
+                    w,
+                    h,
+                    &drag.snapshot_pixels,
+                    drag.snapshot_width,
+                    drag.snapshot_height,
+                    tx as i32,
+                    ty as i32,
+                );
+            }
+            // Carried into the next frame's damage so those pixels get
             // cleared when the ghost moves on or disappears (#173).
-            self.last_ghost_rect = ghost_rect;
+            self.last_ghost_rect = ghost_now;
 
             // Paint inspect mode highlight overlay (after all document painting)
             if let Some((x, y, w_r, h_r)) = self.inspect_highlight {
                 Self::paint_inspect_overlay(painter, scale, x, y, w_r, h_r);
             }
+            self.last_inspect_rect = inspect_now;
+
+            // Close the painter's frame (#885's pool trim) only when something
+            // was painted: a frame whose damage named nothing touched no mask
+            // or layer, and counting it would let an idle stream of such frames
+            // shrink the trim window's view of real frames.
+            let painted = full_reason.is_some() || !damage.is_empty();
+            if painted {
+                painter.end_frame();
+            }
+            let painter_stats = painter.take_stats();
 
             // Record what this frame cost and, for a full repaint, why.
-            // Instrumentation only: the decision above is already made.
-            {
-                use rinch_dom::perf::{Counter, FullRepaintReason};
+            if let Some(doc) = &self.doc {
+                let d = doc.borrow();
+                let perf = &d.tree.perf;
+                painter_stats.add_to(perf);
                 let surface_px = w as u64 * h as u64;
-                let invalidated = self.full_repaint_reason.take();
-                let full_reason = if use_dirty_region {
-                    None
-                } else if first_frame {
-                    Some(FullRepaintReason::FirstFrame)
-                } else if resized {
-                    Some(FullRepaintReason::Resize)
-                } else if let Some(reason) = invalidated {
-                    Some(reason)
-                } else if !has_previous_frame_at_start {
-                    Some(FullRepaintReason::Invalidated)
-                } else if self.inspect_highlight.is_some() || self.active_dnd.is_some() {
-                    Some(FullRepaintReason::Overlay)
-                } else {
-                    match dirty_region {
-                        None => Some(FullRepaintReason::NoDirtyNodes),
-                        Some(r) if r.width() * r.height() <= 0.0 => {
-                            Some(FullRepaintReason::EmptyRegion)
-                        }
-                        Some(_) => Some(FullRepaintReason::RegionTooLarge),
+                match full_reason {
+                    Some(reason) => {
+                        perf.bump(Counter::PaintFrames);
+                        perf.add(Counter::SurfacePx, surface_px);
+                        perf.full_repaint(reason);
+                        perf.add(Counter::RepaintedPx, surface_px);
                     }
-                };
-                painter.end_frame();
-                let painter_stats = painter.take_stats();
-                if let Some(doc) = &self.doc {
-                    let d = doc.borrow();
-                    let perf = &d.tree.perf;
-                    painter_stats.add_to(perf);
-                    perf.bump(Counter::PaintFrames);
-                    perf.add(Counter::SurfacePx, surface_px);
-                    match full_reason {
-                        Some(reason) => {
-                            perf.full_repaint(reason);
-                            perf.add(Counter::RepaintedPx, surface_px);
-                        }
-                        None => {
-                            perf.bump(Counter::RepaintPartial);
-                            if let Some(r) = dirty_region {
-                                let area = (r.width().ceil() * r.height().ceil()) as u64;
-                                perf.add(Counter::RepaintedPx, area.min(surface_px));
-                            }
-                        }
+                    None if damage.is_empty() => perf.bump(Counter::RepaintNone),
+                    None => {
+                        perf.bump(Counter::PaintFrames);
+                        perf.add(Counter::SurfacePx, surface_px);
+                        perf.bump(Counter::RepaintPartial);
+                        perf.add(Counter::DamageRects, damage.rects().len() as u64);
+                        perf.add(Counter::RepaintedPx, (damage.area() as u64).min(surface_px));
                     }
-                    perf.add_elapsed(Counter::TimePaintNs, paint_start);
                 }
+                perf.add_elapsed(Counter::TimePaintNs, paint_start);
             }
 
             self.scene_dirty = false;
@@ -1744,24 +1772,6 @@ impl RinchApp {
         Some(peniko::kurbo::Rect::new(
             x0 as f64, y0 as f64, x1 as f64, y1 as f64,
         ))
-    }
-
-    /// Fold the previous frame's ghost rect into the dirty region.
-    ///
-    /// `None` in stays `None` out even with a ghost pending: no dirty node
-    /// means the caller takes the full-repaint path, which clears the whole
-    /// framebuffer and so erases the ghost anyway. Answering the ghost's rect
-    /// there would shrink an existing full repaint down to it — a different,
-    /// unrelated change.
-    #[cfg(software_shell)]
-    fn union_ghost_rect(
-        from_nodes: Option<peniko::kurbo::Rect>,
-        ghost: Option<peniko::kurbo::Rect>,
-    ) -> Option<peniko::kurbo::Rect> {
-        match (from_nodes, ghost) {
-            (Some(a), Some(b)) => Some(a.union(b)),
-            (a, _) => a,
-        }
     }
 
     /// Blit premultiplied RGBA source pixels onto a destination buffer with
@@ -1820,8 +1830,27 @@ impl RinchApp {
         }
     }
 
-    /// Mark the scene as needing a repaint on the next frame.
+    /// Mark the scene as needing a repaint on the next frame, **without
+    /// saying what changed**.
+    ///
+    /// The software renderer repaints only what the frame's damage names —
+    /// the paint-dirty nodes and the overlays' rects — and a frame that names
+    /// nothing keeps the pixels on screen. A caller of this method changed
+    /// something none of those see (pixels drawn from outside the document), so
+    /// if nothing else is damaged the next frame repaints in full and counts
+    /// `repaint_full_unattributed`. A change the document already knows about —
+    /// any `DomDocument` write, or a node pushed with
+    /// `NodeTree::mark_paint_dirty` — needs only [`Self::request_repaint`].
     pub fn mark_scene_dirty(&mut self) {
+        self.scene_dirty = true;
+        self.repaint_unattributed = true;
+    }
+
+    /// Schedule a paint whose damage is already named: paint-dirty nodes, a
+    /// removal's recorded rects, or an overlay rect `build_pixels` tracks
+    /// itself (the drag ghost, the inspect highlight). An empty damage then
+    /// means nothing on screen changed, and the frame keeps its pixels.
+    pub fn request_repaint(&mut self) {
         self.scene_dirty = true;
     }
 
@@ -1933,6 +1962,29 @@ impl RinchApp {
             })
             .unwrap_or(false)
             || self.has_pending_images()
+    }
+
+    /// The framebuffer rect `paint_inspect_overlay` touches for `highlight`
+    /// (logical x, y, w, h), in device pixels and clamped to the `w` x `h`
+    /// surface: the box grown by its 1px stroke plus a pixel of anti-aliasing.
+    /// `None` when that lands entirely off the surface.
+    #[cfg(software_shell)]
+    fn inspect_overlay_rect(
+        scale: f64,
+        highlight: (f32, f32, f32, f32),
+        w: u32,
+        h: u32,
+    ) -> Option<peniko::kurbo::Rect> {
+        let (x, y, hw, hh) = highlight;
+        let reach = scale.ceil() + 1.0;
+        let r = peniko::kurbo::Rect::new(
+            x as f64 * scale - reach,
+            y as f64 * scale - reach,
+            (x + hw) as f64 * scale + reach,
+            (y + hh) as f64 * scale + reach,
+        )
+        .intersect(peniko::kurbo::Rect::new(0.0, 0.0, w as f64, h as f64));
+        (r.width() > 0.0 && r.height() > 0.0).then_some(r)
     }
 
     /// Paint a semi-transparent inspect highlight overlay on the given painter.
@@ -2405,9 +2457,11 @@ impl RinchApp {
             node.attributes.remove("data-cursor-pos");
             node.attributes.remove("data-selection-start");
             node.attributes.remove("data-preedit");
-            node.dirty.insert(rinch_dom::DirtyFlags::PAINT);
         }
-        d.tree.dirty_nodes.insert(node_id);
+        // The blurred field's caret and selection highlight go with these
+        // attributes, and paint reads them straight off the node: name it, or
+        // a partial frame leaves the caret drawn.
+        d.tree.mark_paint_dirty(node_id);
     }
 
     // ── Tab navigation ─────────────────────────────────────────────────
@@ -4363,43 +4417,8 @@ mod drag_ghost_dirty_region_tests {
         assert_eq!(r, Rect::new(1000.0, 800.0, 1478.0, 880.0));
     }
 
-    /// The bug: releasing outside a drop target still dirties something small
-    /// (the placeholder clearing, the source card losing its dragging style),
-    /// so the frame takes the dirty-region path — with a region that misses the
-    /// ghost entirely and leaves it painted.
-    #[test]
-    fn the_end_of_drag_region_covers_where_the_ghost_was() {
-        let from_nodes = Rect::new(47.0, 295.0, 290.0, 345.0); // the To Do column
-        let ghost = RinchApp::ghost_overlay_rect(297, 501, 239, 40, 900, 700).unwrap();
-        assert!(
-            from_nodes.intersect(ghost).is_zero_area(),
-            "the fixture must reproduce the bug: a dirty region disjoint from the ghost"
-        );
-
-        let region = RinchApp::union_ghost_rect(Some(from_nodes), Some(ghost)).unwrap();
-        assert!(region.contains((ghost.x0 + 0.5, ghost.y0 + 0.5)));
-        assert!(region.contains((ghost.x1 - 0.5, ghost.y1 - 0.5)));
-        assert!(region.contains((from_nodes.x0 + 0.5, from_nodes.y0 + 0.5)));
-    }
-
-    /// An `ondragend` that changes nothing leaves no dirty node at all, and
-    /// `None` is the caller's signal to repaint everything — which clears the
-    /// ghost by itself. The ghost must not turn that into a partial repaint.
-    #[test]
-    fn no_dirty_node_still_means_a_full_repaint() {
-        let ghost = Rect::new(297.0, 501.0, 536.0, 541.0);
-        assert_eq!(RinchApp::union_ghost_rect(None, Some(ghost)), None);
-    }
-
-    #[test]
-    fn a_frame_with_no_ghost_leaves_the_region_alone() {
-        let from_nodes = Rect::new(47.0, 295.0, 290.0, 345.0);
-        assert_eq!(
-            RinchApp::union_ghost_rect(Some(from_nodes), None),
-            Some(from_nodes)
-        );
-        assert_eq!(RinchApp::union_ghost_rect(None, None), None);
-    }
+    // The ghost's old and new rects join the frame's damage in
+    // `build_pixels`; `app::named_damage_tests` pins that with pixels.
 }
 
 // ── #358: an inline video is subject to the dirty-region cache ───────────────
