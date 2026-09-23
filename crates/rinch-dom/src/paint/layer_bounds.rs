@@ -430,6 +430,39 @@ pub fn opacity_layer_bounds(
     }
 }
 
+/// Where `node_id`'s subtree paints, for a damage computation: `Some(rect)`,
+/// `Some` of an empty rect when it provably paints nothing, `None` when the
+/// walk cannot bound it.
+///
+/// [`opacity_layer_bounds`] folds "nothing" into [`UNBOUNDED`], which is right
+/// for a layer about to be drawn into and wrong for damage: a box-less block
+/// whose only content was just hidden paints nothing, and reading that as
+/// unbounded repainted the whole surface.
+pub(super) fn subtree_paint_extent(
+    tree: &NodeTree,
+    node_id: RawNodeId,
+    scale: f64,
+    x: f64,
+    y: f64,
+) -> Option<Rect> {
+    let node = tree.get(node_id)?;
+    let offset_x = x - node.layout.x as f64 * scale;
+    let offset_y = y - node.layout.y as f64 * scale;
+    let mut walk = Walk {
+        tree,
+        scale,
+        budget: MAX_VISITS,
+        skip_root_clip: false,
+        absolutes_escape_clips: false,
+        clipper_below_cb: false,
+    };
+    match walk.node(node_id, offset_x, offset_y, Affine::IDENTITY, true, 0) {
+        Extent::Nothing => Some(Rect::ZERO),
+        Extent::Within(r) => Some(r),
+        Extent::Unknown | Extent::Escapes => None,
+    }
+}
+
 /// Would `node_id`'s clip bracket cut anything that is actually drawn?
 ///
 /// `false` means "it might, or I could not tell", and is the answer this

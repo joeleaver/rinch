@@ -1610,13 +1610,6 @@ impl RinchDocument {
         // rather than their members (#513).
         self.split_inline_boxes();
 
-        // Put back every box a past marking pass took out and that is no longer
-        // the IFC's to hold (#597). Before the marking pass below, so that a
-        // rebuilt list is re-detached by it: the rebuild restores the owner's
-        // *whole* effective child list, inline children included, and the pass
-        // that follows removes exactly the ones that are still inline content.
-        self.reattach_departed_ifc_children();
-
         // `ifc_root` is *derived* state — "this node's boxes are drawn by that
         // IFC, so the paint tree-walk must skip it" — and the marking pass below
         // only ever *sets* it. Nothing clears it when a node stops being inline
@@ -1777,6 +1770,18 @@ impl RinchDocument {
                 }
             }
         }
+
+        // Put back every box a past marking pass took out and that is no longer
+        // the IFC's to hold (#597). After root discovery, because whether a
+        // departed box stays out depends on whether its owner is a root *this*
+        // pass, not merely whether it could be one: a block whose last inline
+        // child went `display: none` is no root, and its hidden children must
+        // rejoin its Taffy list as they would in a document built that way.
+        // Before the marking pass below, so that a rebuilt list is re-detached
+        // by it: the rebuild restores the owner's *whole* effective child list,
+        // inline children included, and the pass that follows removes exactly
+        // the ones that are still inline content.
+        self.reattach_departed_ifc_children(&ifc_roots);
 
         for &root_id in &ifc_roots {
             let root_taffy = match self.tree.nodes[root_id].taffy_id {
@@ -2914,26 +2919,6 @@ impl RinchDocument {
         }
     }
 
-    /// Whether `owner` could be discovered as an IFC root by
-    /// [`Self::setup_inline_formatting_contexts`]' root scan — the half of that
-    /// scan that reads the node alone, without asking whether it currently
-    /// holds any inline content.
-    ///
-    /// Deliberately the *looser* half. A caller wanting "will the marking pass
-    /// detach my child again" gets `true` from this for a container that has
-    /// since lost all its inline content, and heals a node the pass then leaves
-    /// attached — which is correct, because such a container is not an IFC root
-    /// and the box belongs in its list. The converse mistake, answering `true`
-    /// for a node that cannot be a root at all, is the one that strands a box,
-    /// so the two clauses here must stay exactly the root scan's two.
-    fn can_establish_ifc(nodes: &slab::Slab<Node>, owner: usize) -> bool {
-        nodes.get(owner).is_some_and(|n| {
-            n.is_element()
-                && n.display_mode.is_block_container()
-                && n.computed_style.display != crate::computed_style::values::DisplayValue::Contents
-        })
-    }
-
     /// Restore every box a previous [`Self::mark_inline_descendants`] pass
     /// detached and that is no longer inline content (#597).
     ///
@@ -2965,8 +2950,9 @@ impl RinchDocument {
     /// - the node's own role today. Only `Inline`, `Comment` and `NoBox` are
     ///   ever detached, so a departed node whose role is now `InFlowBlock` or
     ///   `OutOfFlow` is one no IFC will take back.
-    /// - whether its owner can still *be* an IFC root
-    ///   ([`Self::can_establish_ifc`]). The role half alone leaves a text node
+    /// - whether its owner **is** an IFC root on this pass — the `ifc_roots`
+    ///   the root scan just found, which is why this runs after that scan. The
+    ///   role half alone leaves a text node
     ///   stranded for ever when the **container** stops being a block container:
     ///   a text node's role is `Inline` whatever happens to it, so the gate
     ///   skipped it, while no marking pass runs for a root that is no longer
@@ -2979,12 +2965,18 @@ impl RinchDocument {
     /// A child that is still hidden under an owner that is still a root keeps
     /// its record and stays out.
     ///
-    /// The owner half is only ever *permissive*: it heals a node the marking
-    /// pass is about to re-detach at worst, which is the direction this whole
-    /// function is safe in (see the ordering section below). It is not free —
-    /// the steady state now walks to each departed node's owner rather than
-    /// stopping at its role — but that walk already ran for every node the gate
-    /// let through, and only on an `ifc_dirty` pass.
+    /// The owner half used to ask only whether the owner *could* be a root —
+    /// a block container that is not `display: contents` — and that stranded a
+    /// box. A block whose last rendered inline child is switched to
+    /// `display: none` can still establish an IFC but no longer does, so no
+    /// marking pass runs for it, and every child it had detached (the newly
+    /// hidden span, and a hidden sibling detached under #487) stayed out of its
+    /// Taffy list for good. The block kept the one-line box it measured as a
+    /// root: 22px where the same document built hidden measures 0
+    /// (`hidden_last_inline_tests`). Asking about the roots this pass actually
+    /// found is exact rather than permissive. It is not free — the steady state
+    /// walks to each departed node's owner and builds one set of the roots —
+    /// but only on an `ifc_dirty` pass.
     ///
     /// **What the gate is measured to do, and what it is not.** Its first job is
     /// that the steady state costs nothing. Its second is that it does not
@@ -3040,8 +3032,9 @@ impl RinchDocument {
     /// In the steady state it does nothing at all: a node that is still inline
     /// content fails the gate, so no list is rebuilt and no Taffy node is
     /// dirtied on a pass where nothing crossed.
-    fn reattach_departed_ifc_children(&mut self) {
+    fn reattach_departed_ifc_children(&mut self, ifc_roots: &[usize]) {
         let mut departed: Vec<usize> = Vec::new();
+        let roots: std::collections::HashSet<usize> = ifc_roots.iter().copied().collect();
         let mut owners: Vec<usize> = Vec::new();
         for (id, node) in &self.tree.nodes {
             if !node.ifc_detached {
@@ -3056,7 +3049,7 @@ impl RinchDocument {
                 // detach it. Keep the record and leave it alone; otherwise fall
                 // through and heal.
                 InlineFlowRole::Inline | InlineFlowRole::Comment | InlineFlowRole::NoBox
-                    if owner.is_some_and(|o| Self::can_establish_ifc(&self.tree.nodes, o)) =>
+                    if owner.is_some_and(|o| roots.contains(&o)) =>
                 {
                     continue;
                 }
