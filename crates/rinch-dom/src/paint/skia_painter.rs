@@ -1404,7 +1404,9 @@ impl Painter for TinySkiaPainter {
             // Hardening, not a fix for anything reachable — say so rather than
             // let it read as a closed defect. No `push_clip` call site in the
             // workspace can produce a shape `shape_to_path` refuses: every one
-            // passes a `Rect` or a `RoundedRect`, `clip_shape` builds its rect
+            // passes a `Rect` or a `RoundedRect` — except `build_pixels`' damage
+            // clip, a `BezPath` of non-empty whole-pixel rects inside the
+            // surface (`DamageRegion::clip_path`) — `clip_shape` builds its rect
             // from non-negative layout dimensions so it is never inverted, and
             // `select.rs` clamps its own with `.max(text_x)`. Reaching here needs
             // a geometrically inverted or non-finite rect. Degenerate rects,
