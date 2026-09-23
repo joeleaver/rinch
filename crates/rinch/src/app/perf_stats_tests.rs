@@ -133,9 +133,38 @@ fn a_hover_repaints_a_region_and_counts_its_hit_tests() {
         (Counter::HitExtentsComputed, 14),
         (Counter::StackingOrderBuilds, 2),
         (Counter::PaintNodesVisited, 15),
+        // The software painter. One clip: the dirty region's own, whose
+        // mask is filled over the region plus its 2px bookkeeping pad
+        // (800 x 32), not the surface's 480 000. The glyphs of the three
+        // "row N" lines the region touches come from the cache the first
+        // frame filled: 15 hits, no rasterising.
+        (Counter::ClipMasks, 1),
+        (Counter::ClipMaskPx, 800 * 32),
+        (Counter::GlyphCacheMisses, 0),
+        (Counter::GlyphCacheHits, 15),
+        // The first frame was a full repaint and pushed no clip, so the pool
+        // was empty: this frame allocates the one mask every later partial
+        // frame reuses (`a_second_partial_frame_allocates_nothing`).
+        (Counter::PaintSurfaceAllocs, 1),
+        (Counter::PaintLayers, 0),
     ] {
         assert_eq!(s.get(c), want, "{}: {s:?}", c.name());
     }
+}
+
+/// The pool the first partial frame filled serves every later one.
+#[test]
+fn a_second_partial_frame_allocates_nothing() {
+    let (mut app, _) = mount();
+    frame(&mut app);
+    app.handle_event(PlatformEvent::MouseMove { x: 20.0, y: 30.0 }, SIZE, 1.0);
+    frame(&mut app);
+    app.handle_event(PlatformEvent::MouseMove { x: 20.0, y: 70.0 }, SIZE, 1.0);
+    let s = frame(&mut app);
+    assert_eq!(s.get(Counter::RepaintPartial), 1, "{s:?}");
+    assert_eq!(s.get(Counter::PaintSurfaceAllocs), 0, "{s:?}");
+    assert_eq!(s.get(Counter::GlyphCacheMisses), 0, "{s:?}");
+    assert!(s.get(Counter::GlyphCacheHits) > 0, "{s:?}");
 }
 
 /// Moving an absolute box by its insets takes the inset fast path, which

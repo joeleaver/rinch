@@ -1289,8 +1289,10 @@ pub fn paint_document(
 /// clips, so leaving them on the stack across the run is exactly what pushing
 /// and popping each time would do — and the run is the common shape, since the
 /// rows of one scroller are contiguous in tree order and usually all at `z: 0`.
-/// It matters because `TinySkiaPainter::push_clip` allocates a full-surface
-/// `Mask` per push.
+/// It matters because every push costs `TinySkiaPainter` a mask fill and an
+/// intersection with the enclosing mask over the clip's bounds. (It used to
+/// cost a freshly allocated full-surface `Mask` as well; the painter pools its
+/// masks now, but a push is still not free.)
 #[allow(clippy::too_many_arguments)]
 fn paint_children_with_stacking(
     tree: &NodeTree,
@@ -1532,9 +1534,12 @@ fn paint_node(
     // `pop_layer` is therefore work with no output.
     //
     // Skipping the group rather than painting it is worth a great deal more
-    // than it looks, because of what the group *costs* in the software painter:
-    // `TinySkiaPainter::push_layer` allocates a second pixmap the size of the
-    // whole surface and `pop_layer` composites all of it back. The idiom this
+    // than it looks, because of what the group *cost* in the software painter
+    // when this was written: `TinySkiaPainter::push_layer` allocated a second
+    // pixmap the size of the whole surface and `pop_layer` composited all of it
+    // back. (The painter now pools its layer pixmaps and composites only the
+    // part anything was drawn into, which removes most of that cost, but every
+    // draw inside the group is still work with no output.) The idiom this
     // was found in is the always-mounted bottom sheet — a full-screen scrim
     // that fades in, parked at `opacity: 0` until a chip is tapped. On the
     // moto g stylus 5G, at 1080×2460, one such scrim cost about 48ms a frame

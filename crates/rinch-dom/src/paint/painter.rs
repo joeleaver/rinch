@@ -112,6 +112,11 @@ pub struct PaintImage<'a> {
     pub data: &'a [u8],
     pub width: u32,
     pub height: u32,
+    /// The cache entry `data` came from, when it came from one. A backend
+    /// that needs the pixels in another form (the software painter wants them
+    /// premultiplied) can keep that form on the entry instead of converting
+    /// on every draw. `None` for a live frame source.
+    pub decoded: Option<&'a crate::image_cache::DecodedImage>,
 }
 
 // ── Glyph run ───────────────────────────────────────────────────────────────
