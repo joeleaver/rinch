@@ -604,8 +604,8 @@ pub fn respells_emitted(parsed: Hsva, notation: Notation, emitted: &str) -> bool
     };
     // A float slack far below any genuine gap: an 8-bit colour's hsl channels
     // are rationals whose distance from a half step is at least 1/1020 of a
-    // step, and an integer hsl colour's 8-bit channels are further still from
-    // anything the float pipeline could blur.
+    // step, and an integer hsl colour's 8-bit channels at least 5e-5 of a step
+    // (e.g. `hsl(7, 59%, 29%)`'s red is 40.49995) — both far above this slack.
     const HALF_STEP: f64 = 0.5 + 1e-6;
     let within = |a: f64, b: f64| (a - b).abs() <= HALF_STEP;
     let on_grid = |c: Hsva| -> [f64; 4] {
@@ -632,7 +632,9 @@ pub fn respells_emitted(parsed: Hsva, notation: Notation, emitted: &str) -> bool
     };
     let (p, e) = (on_grid(parsed), on_grid(exact));
     let first_matches = if notation == Notation::Hsl {
-        // Hue is circular: 359.6° and 0° are 0.4° apart.
+        // Hue is circular: 359.6° and 0° are 0.4° apart. (Defensive: unreachable
+        // for 8-bit emissions today, since rinch spells an exact 359.5° as
+        // `hsl(0, …)` — no test witnesses this branch.)
         let d = (p[0] - e[0]).rem_euclid(360.0);
         d.min(360.0 - d) <= HALF_STEP
     } else {
