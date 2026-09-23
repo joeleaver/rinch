@@ -1363,8 +1363,9 @@ impl RinchDomEditorView {
     /// Measured in an app window with a 9,500-word document: 300-400 ms per pass,
     /// two passes per keystroke; a blink tick made the same change. `visibility`
     /// is paint-only. (The
-    /// IME composition span still uses `display`: it holds text, and rinch-dom
-    /// paints a hidden box's text until #829 is fixed.)
+    /// IME composition span still uses `display`: it is toggled once per
+    /// composition rather than per keystroke, and a `visibility: hidden` span
+    /// would keep its inline box in the line; #874.)
     pub(crate) fn set_caret_blink_visible(&mut self, visible: bool) -> Option<bool> {
         // No collapsed-cursor caret present → nothing to blink.
         self.last_caret?;
