@@ -321,7 +321,7 @@ impl DimensionValue {
 }
 
 /// CSS length-percentage value (padding, border-width, gap).
-#[derive(Debug, Clone, Copy, Default, Serialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize)]
 pub enum LengthPercentageValue {
     #[default]
     Zero,

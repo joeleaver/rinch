@@ -107,6 +107,8 @@ impl DomDocument for RinchDocument {
     }
 
     fn append_child(&mut self, parent: NodeId, child: NodeId) {
+        // Anything this can move invalidates the hit tester's memo.
+        self.tree.hit_cache.invalidate();
         let p = parent.0;
         let c = child.0;
         // Invalidate old IFC if child was in one
@@ -159,6 +161,8 @@ impl DomDocument for RinchDocument {
     }
 
     fn remove_child(&mut self, parent: NodeId, child: NodeId) {
+        // Anything this can move invalidates the hit tester's memo.
+        self.tree.hit_cache.invalidate();
         let p = parent.0;
         let c = child.0;
         // Clear IFC state on removed child
@@ -182,6 +186,8 @@ impl DomDocument for RinchDocument {
     }
 
     fn insert_before(&mut self, parent: NodeId, child: NodeId, reference: NodeId) {
+        // Anything this can move invalidates the hit tester's memo.
+        self.tree.hit_cache.invalidate();
         let p = parent.0;
         let c = child.0;
         let r = reference.0;
@@ -242,6 +248,8 @@ impl DomDocument for RinchDocument {
     }
 
     fn replace_node(&mut self, old: NodeId, new: NodeId) {
+        // Anything this can move invalidates the hit tester's memo.
+        self.tree.hit_cache.invalidate();
         // Replacing a node with itself is a no-op the browser accepts (the DOM
         // spec re-inserts `node` before its own next sibling), and the same must
         // hold here. Without this guard the "detach `new` from its old parent"
@@ -320,6 +328,8 @@ impl DomDocument for RinchDocument {
     }
 
     fn remove_node(&mut self, node: NodeId) {
+        // Anything this can move invalidates the hit tester's memo.
+        self.tree.hit_cache.invalidate();
         // Mark the removed subtree as paint-dirty so the dirty region
         // includes the old layout positions (e.g., borders, backgrounds).
         // Without this, the old pixels aren't cleared on repaint.
@@ -396,6 +406,9 @@ impl DomDocument for RinchDocument {
             }
             _ => {}
         }
+        // Past the no-op return: an identical write moves nothing, and must
+        // not leave the next pointer move with a cold hit cache.
+        self.tree.hit_cache.invalidate();
 
         // Invalidate IFC if this node belongs to one
         self.invalidate_ifc_for_node(n);
@@ -531,6 +544,8 @@ impl DomDocument for RinchDocument {
         {
             return;
         }
+        // Past the no-op return, like `set_text_content`'s.
+        self.tree.hit_cache.invalidate();
 
         // An `<option>`'s selectedness moves on the *transition* into the
         // `selected` attribute, never on a re-write of one already there — the
@@ -540,6 +555,9 @@ impl DomDocument for RinchDocument {
             && self.tree.nodes[node.0].tag() == Some("option")
             && !self.tree.nodes[node.0].attributes.contains_key(name);
 
+        if name == "data-onmousemove" && !self.tree.nodes[node.0].attributes.contains_key(name) {
+            self.tree.mousemove_handlers += 1;
+        }
         self.tree.nodes[node.0].write_attribute(name, value);
         if selects_this_option {
             crate::select::set_option_selectedness(&mut self.tree, node.0, true);
@@ -616,12 +634,17 @@ impl DomDocument for RinchDocument {
         if !self.tree.nodes[node.0].attributes.contains_key(name) {
             return;
         }
+        // Past the no-op return, like `set_attribute`'s.
+        self.tree.hit_cache.invalidate();
         // The option is losing a `selected` it really carries (#692). The early
         // return above already guarantees the attribute is present, so this
         // clause only has to decide that the node is an `<option>`.
         let deselects_this_option =
             name == "selected" && self.tree.nodes[node.0].tag() == Some("option");
 
+        if name == "data-onmousemove" {
+            self.tree.mousemove_handlers = self.tree.mousemove_handlers.saturating_sub(1);
+        }
         self.tree.nodes[node.0].erase_attribute(name);
         // Losing the attribute deselects the option (#692). Nothing takes its
         // place: with no option selected, `resolve_select_model` falls to its
@@ -659,10 +682,14 @@ impl DomDocument for RinchDocument {
     }
 
     fn set_style(&mut self, node: NodeId, property: &str, value: &str) {
+        // Anything this can move invalidates the hit tester's memo.
+        self.tree.hit_cache.invalidate();
         self.set_styles(node, &[(property, value)]);
     }
 
     fn set_styles(&mut self, node: NodeId, properties: &[(&str, &str)]) {
+        // Anything this can move invalidates the hit tester's memo.
+        self.tree.hit_cache.invalidate();
         // Merge into the inline style attribute and parse it once; both paths
         // below store exactly this string and this declaration block.
         let style_str = self.merged_inline_style(node.0, properties);
@@ -726,6 +753,8 @@ impl DomDocument for RinchDocument {
     }
 
     fn insert_child(&mut self, parent: NodeId, child: NodeId, index: usize) {
+        // Anything this can move invalidates the hit tester's memo.
+        self.tree.hit_cache.invalidate();
         let p = parent.0;
         let c = child.0;
         // Invalidate old IFC
@@ -793,6 +822,8 @@ impl DomDocument for RinchDocument {
     }
 
     fn set_scroll_top(&mut self, node: NodeId, scroll_top: f64) {
+        // Anything this can move invalidates the hit tester's memo.
+        self.tree.hit_cache.invalidate();
         if let Some(n) = self.tree.nodes.get_mut(node.0) {
             n.scroll_offset.1 = scroll_top;
         }
@@ -800,6 +831,8 @@ impl DomDocument for RinchDocument {
     }
 
     fn set_inner_html(&mut self, node: NodeId, html: &str) {
+        // Anything this can move invalidates the hit tester's memo.
+        self.tree.hit_cache.invalidate();
         use crate::html_parser::parse_html_string;
 
         // Clear existing children (including taffy sync)
@@ -1013,6 +1046,8 @@ impl DomDocument for RinchDocument {
     }
 
     fn set_scroll_left(&mut self, node: NodeId, scroll_left: f64) {
+        // Anything this can move invalidates the hit tester's memo.
+        self.tree.hit_cache.invalidate();
         if let Some(n) = self.tree.nodes.get_mut(node.0) {
             n.scroll_offset.0 = scroll_left;
         }

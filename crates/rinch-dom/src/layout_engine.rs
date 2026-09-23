@@ -146,6 +146,7 @@ impl RinchDocument {
     /// then reads layout results back into each node's `layout` field.
     /// Text nodes are measured using Parley for accurate text layout.
     pub fn resolve_layout(&mut self, width: f32, height: f32) {
+        self.tree.hit_cache.invalidate();
         use crate::perf::Counter;
         // Layout time is this call's wall clock minus the style time spent
         // inside it (`resolve_styles` / `apply_stylo_styles_to_taffy` time

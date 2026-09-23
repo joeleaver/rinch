@@ -112,6 +112,17 @@ impl RinchApp {
         // `resolve_and_repaint` below.
         let (vp_w, vp_h) = Self::layout_viewport(window_size, scale_factor);
 
+        // A drag move deferred its layout to the frame. Anything but another
+        // move is settled against it first: a press, release, wheel or drop
+        // hit-tests, and must see the dragged box where the last move put it,
+        // as it did when the drag arm laid out per move — through the desktop
+        // shell (which flushes the move right before the release), an MCP
+        // `mouse_move` + `mouse_up` in one wake, embed's `update(&[move, up])`
+        // and Android alike, since all of them come through here.
+        if self.drag_layout_owed && !matches!(event, PlatformEvent::MouseMove { .. }) {
+            self.resolve_and_repaint(vp_w, vp_h);
+        }
+
         // The built-in text context menu (issue #813) lives exactly as long as
         // its target holds the keyboard and is in the document. Checked on
         // every event rather than cleared by a second one — a removal, a
@@ -162,16 +173,34 @@ impl RinchApp {
                     return actions;
                 }
 
+                // One hit test per move, shared by the `data-onmousemove`
+                // dispatch, the drop-target search and hover (update-path
+                // audit F2.1). A handler that mutates the document bumps the
+                // hit cache's generation, and `move_hit` re-tests after that,
+                // so sharing never answers from a tree a handler changed.
+                let mut shared_hit: Option<(u64, Option<usize>)> = None;
+
                 // Additive: fire data-onmousemove before any drag/scroll/hover
-                // logic below (which can early-return).
-                self.dispatch_mouse_attr(
-                    "data-onmousemove",
-                    x,
-                    y,
-                    events::MouseButton::Left,
-                    vp_w,
-                    vp_h,
-                );
+                // logic below (which can early-return). Skipped outright —
+                // walk and hit test alike — when no node carries the
+                // attribute, which is what every pointer move of an app
+                // without a mousemove handler used to pay for.
+                if self
+                    .doc
+                    .as_ref()
+                    .is_some_and(|doc| doc.borrow().tree.mousemove_handlers > 0)
+                {
+                    let hit = self.move_hit(&mut shared_hit, x, y);
+                    self.dispatch_mouse_attr_at(
+                        "data-onmousemove",
+                        hit,
+                        x,
+                        y,
+                        events::MouseButton::Left,
+                        vp_w,
+                        vp_h,
+                    );
+                }
 
                 // ── Drag-and-drop: pending → active transition ────────────
                 if let Some(ref pending) = self.pending_drag {
@@ -204,11 +233,9 @@ impl RinchApp {
                     drag.cursor = (x, y);
 
                     // Hit test for drop targets — check both DOM elements and surfaces
-                    let hit_id = if let Some(doc) = &self.doc {
-                        let d = doc.borrow();
-                        hit_test(&d.tree, x, y)
-                    } else {
-                        None
+                    let hit_id = self.move_hit(&mut shared_hit, x, y);
+                    let Some(drag) = self.active_dnd.as_mut() else {
+                        return actions; // the enclosing `if let` matched it
                     };
 
                     // Check if mouse is over a render surface
@@ -354,7 +381,15 @@ impl RinchApp {
                 let (drag_active, drag_forward_surface) =
                     rinch_core::update_drag_with_button(x, y, rinch_core::PrimaryButton::Unknown);
                 if drag_active && !drag_forward_surface {
-                    self.resolve_and_repaint(vp_w, vp_h);
+                    // No layout here. `on_move` wrote its signals and their
+                    // effects have already patched the DOM; the layout that
+                    // makes it visible runs once, at `AboutToWait` or in the
+                    // paint preamble, however many moves arrived before it.
+                    // Resolving per move laid the document out once per
+                    // pointer event — several times a frame on a high-rate
+                    // mouse (update-path audit F2.2). Owed, so that any other
+                    // event settles it first (see the top of this function).
+                    self.drag_layout_owed = true;
                     actions.push(AppAction::RequestRedraw);
                     return actions;
                 }
@@ -464,8 +499,8 @@ impl RinchApp {
                 // Update hover state and cursor
                 if let Some(doc) = &self.doc {
                     let (hovered, cursor_style, old_hovered) = {
+                        let h = self.move_hit(&mut shared_hit, x, y);
                         let d = doc.borrow();
-                        let h = hit_test(&d.tree, x, y);
                         let mut cs = h
                             .and_then(|id| d.tree.get(id))
                             .map(|n| cursor_value_to_style(&n.computed_style.cursor))
@@ -2247,9 +2282,52 @@ impl RinchApp {
         vp_h: f32,
     ) {
         let Some(doc) = &self.doc else { return };
+        let hit = hit_test(&doc.borrow().tree, x, y);
+        self.dispatch_mouse_attr_at(attr, hit, x, y, button, vp_w, vp_h);
+    }
+
+    /// The hit test for the pointer move being handled, shared across its
+    /// consumers. `shared` holds the last answer and the hit cache's
+    /// generation it was computed at; a generation that has moved since —
+    /// a handler that mutated the document in between — re-tests, so the
+    /// answer is always the one a fresh `hit_test` would give.
+    pub(super) fn move_hit(
+        &self,
+        shared: &mut Option<(u64, Option<usize>)>,
+        x: f32,
+        y: f32,
+    ) -> Option<usize> {
+        let doc = self.doc.as_ref()?;
+        let d = doc.borrow();
+        let generation = d.tree.hit_cache.generation();
+        if let Some((at, hit)) = *shared
+            && at == generation
+        {
+            return hit;
+        }
+        let hit = hit_test(&d.tree, x, y);
+        // The hit test itself invalidates nothing, so the generation read
+        // before it still describes the tree it answered for.
+        *shared = Some((generation, hit));
+        hit
+    }
+
+    /// [`Self::dispatch_mouse_attr`] for a hit test the caller already ran.
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn dispatch_mouse_attr_at(
+        &self,
+        attr: &str,
+        hit: Option<usize>,
+        x: f32,
+        y: f32,
+        button: events::MouseButton,
+        vp_w: f32,
+        vp_h: f32,
+    ) {
+        let Some(doc) = &self.doc else { return };
         let handler_info = {
             let d = doc.borrow();
-            let Some(hit_id) = hit_test(&d.tree, x, y) else {
+            let Some(hit_id) = hit else {
                 return;
             };
             let mut current = Some(hit_id);

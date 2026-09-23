@@ -435,9 +435,9 @@ pub fn dispatch_event(id: EventHandlerId) -> bool {
     });
 
     if let Some(h) = handler {
-        tracing::info!("dispatch_event: Calling handler {:?}", id);
+        tracing::trace!("dispatch_event: calling handler {:?}", id);
         h();
-        tracing::info!("dispatch_event: Handler {:?} completed", id);
+        tracing::trace!("dispatch_event: handler {:?} completed", id);
         true
     } else {
         // `debug!`, and no registry dump: since #141 a miss is an expected

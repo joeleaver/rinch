@@ -1197,7 +1197,7 @@ Set these attributes on elements to participate in element-to-element drag-and-d
 | `data-ondragstart` | Source | Drag begins |
 | `data-ondragmove` | Source | Pointer moves during drag |
 | `data-ondragenter` | Target | Drag enters a drop target |
-| `data-ondragover` | Target | Pointer moves over drop target (every motion event) |
+| `data-ondragover` | Target | Pointer moves over drop target (every coalesced move) |
 | `data-ondragleave` | Target | Drag leaves a drop target |
 | `data-ondrop` | Target | Drop on target |
 | `data-ondragend` | Source | Drag finishes |
@@ -1249,6 +1249,27 @@ Drag::cancel();
 // Check if active
 Drag::is_active();
 ```
+
+**Pointer moves are coalesced, and a drag lays out once per frame.** The
+desktop shell keeps only the newest `PointerMoved` winit reports and hands it
+to the app before the next other event (so a press is judged where the pointer
+last was) or in `about_to_wait` — the browser's one-`pointermove`-per-frame
+model. `on_move`, `data-ondragmove`/`data-ondragover`, `onmousemove` and hover
+all see the latest position once per batch, not every raw report. The drag arm
+of `MouseMove` no longer calls `resolve_and_repaint`: `on_move`'s signal writes
+patch the DOM, and the layout runs once at `AboutToWait` or in the paint
+preamble. `perf_stats_tests::queued_drag_moves_lay_out_once` pins it (5 moves,
+1 layout; it was 5). The layout is **owed**, not skipped
+(`RinchApp::drag_layout_owed`): `handle_event` settles it before any event
+other than a move, so a release, press or wheel delivered in the same batch as
+the last move — the coalescer flushes the move right before it, and so do an
+MCP `mouse_move` + `mouse_up` in one wake and an embed `update(&[move, up])` —
+is hit-tested against the box where that move put the dragged element.
+`a_release_right_after_a_drag_move_sees_the_moved_box` and
+`tests/embed_drag_release.rs` pin it. A fast sweep also skips the drop targets
+it crossed between two batches, so an intermediate `data-ondragenter` /
+`data-ondragleave` pair never fires, as in a browser. Embed and Android feed moves themselves and are not
+coalesced, but get the once-per-frame drag layout.
 
 **A drag belongs to the document that armed it (issue #139).** `Drag` state is a
 single thread-local, but a thread can pump several documents' pointer streams
@@ -2156,6 +2177,46 @@ correct, and each has a fixture in
 Hit testing tests a link's **rect only**, ignoring its radii, matching the
 `check_children` gate it stands in for; paint pushes the rounded shape. That is
 the pre-existing rounded-corner divergence, not a new one.
+
+**Hit testing prunes and caches** (update-path audit F2.1). A pointer move used
+to run two full hit tests, each O(document): every stacking root rebuilt its
+`PaintOrder`, and a non-clipping box probed all its children because they may
+overflow it, so every off-screen row of a scroller was visited. Now one hit test
+per move is shared by `data-onmousemove`, the drop-target search and hover
+(`RinchApp::move_hit`, which re-tests if a handler mutated the document in
+between), and the `data-onmousemove` walk is skipped outright while
+`NodeTree::mousemove_handlers` is 0. The walk skips a child whose **flow
+extent** misses the point — the union of every box `hit_test_node` can test when
+it enters that child as an ordinary node (its own box, plus its non-hoisted
+children's extents unless it clips). Only in-flow and positioned `z-index: auto`
+entries are pruned; a stacking context is always entered, since its hoisted
+descendants can be anywhere. Extents and hit-test stacking sequences live in
+`NodeTree::hit_cache` (`rinch_dom::hit_cache`), valid until its generation
+moves: every mutating `DomDocument` method that changes something (an identical
+attribute or text write returns first), `resolve_styles`, `resolve_layout`,
+`NodeTree::push_dirty` and `remove_subtree` bump it, and so does a transition
+or animation tick — **only** for a node whose `HitStyleKey` it changed (the
+`computed_style` inputs the cache depends on: `display`, `position`,
+`overflow`, `opacity < 1`, `visibility`, whether `transform` is the identity,
+`z-index`, `pointer-events`, left/top padding and border). `AboutToWait` ticks
+after every batch, so an unconditional tick invalidation made every real move
+cold, and a colour animation (a `Loader`) must not either. The transform
+**value** is deliberately not keyed — a transformed box is a stacking context,
+so no flow extent or cached sequence offset holds it, and `descend` reads it
+live — which keeps a `Drawer`/`Popover` slide warm. Only opacity, transform,
+padding and border widths are animatable, so only those key fields have tick
+fixtures (`prune_tests::a_*_tick_*`, each killing the mutant that drops its
+field). **A write straight into `tree.nodes[..]` that changes
+`layout`, `scroll_offset` or `computed_style` without going through one of
+those must call `tree.hit_cache.invalidate()`**, or the next hit test answers
+from the old geometry. `app::hit_testing::prune_tests` is the oracle: the walk
+as it was before, verbatim, compared point by point with the pruned one over 60
+generated documents (positioned, fixed, transformed, clipped and scrolled
+boxes, `z-index`, `pointer-events: none`, `display: contents`) before and after
+a scroll, a restyle and a removal. Measured: a warm move over a 500-row
+scroller went from 2 hit tests visiting 1986 nodes to 1 visiting 4, including
+with `AboutToWait` between moves (`a_move_after_about_to_wait_is_warm`,
+`a_colour_animation_keeps_moves_warm`).
 
 **Two behaviour changes that follow from the rules, are CSS-correct, and will
 still surprise someone.**

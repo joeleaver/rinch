@@ -205,6 +205,13 @@ pub struct RinchRuntime {
     /// drains: `DebugCommandKind::Screenshot` calls [`Self::paint`] from inside
     /// the drain, and the `RedrawRequested` arm drains before painting (#153).
     draining_native_events: bool,
+    /// The newest pointer position winit has reported that the app has not
+    /// been handed yet (logical px). See [`Self::flush_pointer_move`].
+    pending_pointer_move: Option<(f32, f32)>,
+    /// The cursor last applied to the window, so an unchanged
+    /// `AppAction::SetCursor` — which hover emits on every pointer move — does
+    /// not reach the windowing system. Reset when the window is dropped.
+    applied_cursor: Option<rinch_platform::CursorStyle>,
 
     // ── DevTools ─────────────────────────────────────────────────
     /// Shared DevTools store (persists across open/close cycles).
@@ -274,6 +281,8 @@ impl RinchRuntime {
             modifiers: winit::keyboard::ModifiersState::empty(),
             native_menu: None,
             draining_native_events: false,
+            pending_pointer_move: None,
+            applied_cursor: None,
             devtools_store: None,
             devtools_app: None,
             devtools_window: None,
@@ -699,6 +708,8 @@ impl RinchRuntime {
         drop(self.renderer.take());
         drop(self.soft_renderer.take());
         drop(self.window.take());
+        // A re-created window starts on the default cursor.
+        self.applied_cursor = None;
     }
 
     /// Show a previously hidden window by recreating the OS window and GPU surface.
@@ -1329,7 +1340,11 @@ impl RinchRuntime {
                     }
                 }
                 AppAction::SetCursor(style) => {
+                    if self.applied_cursor == Some(style) {
+                        continue;
+                    }
                     if let Some(w) = &self.window {
+                        self.applied_cursor = Some(style);
                         w.window.set_cursor(winit::cursor::Cursor::from(
                             Self::cursor_style_to_winit(style),
                         ));
@@ -1678,6 +1693,9 @@ impl ApplicationHandler for RinchRuntime {
     }
 
     fn proxy_wake_up(&mut self, event_loop: &dyn ActiveEventLoop) {
+        // Keep the pointer ahead of whatever the wake carries (an injected
+        // press, a debug command that reads the hover state).
+        self.flush_pointer_move(event_loop);
         // Track whether any reactive state changes while we drain queued work,
         // so the redraw decision below can key off the actual cause (a signal
         // changed) instead of repainting on every wake.
@@ -1720,6 +1738,26 @@ impl ApplicationHandler for RinchRuntime {
             self.handle_devtools_window_event(event_loop, event);
             return;
         }
+
+        // Pointer moves are coalesced (update-path audit F2.2): a high-rate
+        // mouse reports several per frame, and each used to run hover, the
+        // `data-onmousemove` walk and — during a component drag — a whole
+        // layout. Only the newest position is kept; it reaches the app before
+        // anything else does (so a press is still judged at the position the
+        // pointer last reported) and at the end of the batch, in
+        // `about_to_wait`. That is the browser's model: one `pointermove` per
+        // frame at most.
+        if let WindowEvent::PointerMoved { position, .. } = &event {
+            // winit reports the pointer in **physical** pixels; every
+            // `PlatformEvent` coordinate is logical (#299). This is the
+            // conversion for the whole pointer stream: `MouseDown`, `MouseUp`
+            // and `MouseWheel` below all read the position back out of
+            // `app.cursor_pos`, which the flushed move sets.
+            let (lx, ly) = to_logical_point((position.x, position.y), self.scale_factor());
+            self.pending_pointer_move = Some((lx as f32, ly as f32));
+            return;
+        }
+        self.flush_pointer_move(event_loop);
 
         let platform_event = match event {
             WindowEvent::CloseRequested => PlatformEvent::CloseRequested,
@@ -1769,18 +1807,8 @@ impl ApplicationHandler for RinchRuntime {
                 }
                 return;
             }
-            WindowEvent::PointerMoved { position, .. } => {
-                // winit reports the pointer in **physical** pixels; every
-                // `PlatformEvent` coordinate is logical (#299). This is the
-                // conversion for the whole pointer stream: `MouseDown`,
-                // `MouseUp` and `MouseWheel` below all read the position back
-                // out of `app.cursor_pos`, which this event sets.
-                let (lx, ly) = to_logical_point((position.x, position.y), self.scale_factor());
-                PlatformEvent::MouseMove {
-                    x: lx as f32,
-                    y: ly as f32,
-                }
-            }
+            // Coalesced above; never reaches this match.
+            WindowEvent::PointerMoved { .. } => return,
             WindowEvent::PointerButton {
                 state: ElementState::Pressed,
                 button,
@@ -2017,7 +2045,30 @@ impl ApplicationHandler for RinchRuntime {
             WindowEvent::DragLeft { .. } => PlatformEvent::FileHoverCancelled,
             _ => return,
         };
+        self.dispatch_main_event(platform_event, event_loop);
+    }
 
+    fn about_to_wait(&mut self, event_loop: &dyn ActiveEventLoop) {
+        // The batch's last pointer move, before anything is laid out.
+        self.flush_pointer_move(event_loop);
+        self.about_to_wait_inner(event_loop);
+    }
+}
+
+impl RinchRuntime {
+    /// Hand the app the pointer move [`Self::window_event`] held back, if any.
+    fn flush_pointer_move(&mut self, event_loop: &dyn ActiveEventLoop) {
+        if let Some((x, y)) = self.pending_pointer_move.take() {
+            self.dispatch_main_event(PlatformEvent::MouseMove { x, y }, event_loop);
+        }
+    }
+
+    /// Dispatch one main-window event to the app and act on what it asks for.
+    fn dispatch_main_event(
+        &mut self,
+        platform_event: PlatformEvent,
+        event_loop: &dyn ActiveEventLoop,
+    ) {
         // Inspect mode: intercept mouse events for hit-testing
         if let Some(store) = &self.devtools_store {
             if store.inspect_mode.get() {
@@ -2039,7 +2090,7 @@ impl ApplicationHandler for RinchRuntime {
         self.process_actions(actions, event_loop);
     }
 
-    fn about_to_wait(&mut self, event_loop: &dyn ActiveEventLoop) {
+    fn about_to_wait_inner(&mut self, event_loop: &dyn ActiveEventLoop) {
         let size = self.window_size();
         let scale = self.scale_factor();
         let actions = self

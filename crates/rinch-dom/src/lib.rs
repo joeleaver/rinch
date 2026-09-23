@@ -10,6 +10,7 @@ mod calc_layout;
 pub mod computed_style;
 mod dom_impl;
 pub mod fonts;
+pub mod hit_cache;
 pub mod html_parser;
 pub mod html_serializer;
 mod ifc;

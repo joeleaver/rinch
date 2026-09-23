@@ -1825,6 +1825,15 @@ pub struct NodeTree {
     /// Per-frame performance counters (see [`crate::perf`]). Instrumentation,
     /// not state: nothing reads them to decide anything.
     pub perf: crate::perf::PerfCounters,
+    /// The hit tester's memo (subtree extents, stacking sequences), valid
+    /// until something bumps its generation. See [`crate::hit_cache`].
+    pub hit_cache: crate::hit_cache::HitCache,
+    /// How many `data-onmousemove` attributes `set_attribute` has written and
+    /// `remove_attribute` has not taken back. Never under-counts (a node freed
+    /// with the attribute on keeps its share), so `0` proves no node in the
+    /// document carries one and the shell can skip the dispatch walk on a
+    /// pointer move.
+    pub mousemove_handlers: usize,
     /// Text nodes whose Taffy measure context (`NodeContext::Text`) no longer
     /// matches the typography their parent now computes (issue #678).
     ///
@@ -2062,6 +2071,8 @@ impl NodeTree {
             taffy_computes: 0,
             ifc_setup_passes: 0,
             perf: crate::perf::PerfCounters::default(),
+            hit_cache: Default::default(),
+            mousemove_handlers: 0,
             dirty_text_contexts: HashSet::new(),
             dirty_atomic_inlines: BTreeSet::new(),
             ifc_measure_cache: HashMap::new(),
@@ -2159,6 +2170,7 @@ impl NodeTree {
 
     /// Push a node ID to the dirty list (deduplicated).
     pub fn push_dirty(&mut self, id: RawNodeId) {
+        self.hit_cache.invalidate();
         self.dirty_nodes.insert(id);
         self.paint_dirty_nodes.push(id);
     }
@@ -2208,6 +2220,7 @@ impl NodeTree {
 
     /// Remove a node and all its descendants from the slab.
     pub fn remove_subtree(&mut self, id: RawNodeId) {
+        self.hit_cache.invalidate();
         // Collect all descendant IDs first
         let mut to_remove = Vec::new();
         self.collect_descendants(id, &mut to_remove);

@@ -207,6 +207,11 @@ define_counters! {
     HitTests = "hit_tests",
     /// Nodes the hit tests visited.
     HitTestNodesVisited = "hit_test_nodes_visited",
+    /// Subtree extents the hit tester computed so it could skip subtrees
+    /// nowhere near the pointer. Memoised until the tree or its layout
+    /// changes, so a run of pointer moves over a still document computes each
+    /// once.
+    HitExtentsComputed = "hit_extents_computed",
 
     // ── Reactive (folded in by the shell from rinch-core's counters) ───
     /// Effect bodies run. A memo's invalidation marker runs through the same

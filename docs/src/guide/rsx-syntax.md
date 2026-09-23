@@ -182,7 +182,7 @@ rsx! {
             }
         },
         onmouseup: || println!("released"),
-        onmousemove: || { /* fires on every move over this element */ },
+        onmousemove: || { /* fires on each (coalesced) move over this element */ },
         onmouseenter: || println!("hover in"),
         onmouseleave: || println!("hover out"),
         oncontextmenu: || println!("right-click menu"),
@@ -197,7 +197,7 @@ Supported HTML-element event attributes:
 |---|---|---|
 | `onclick` | Primary press (dispatched on pointerdown), or Enter/Space on the focused element — see [Keyboard activation](#keyboard-activation) | `Fn()` |
 | `onmousedown` / `onmouseup` | Pointer press / release (any button) | `Fn()` |
-| `onmousemove` | Pointer moves over the element | `Fn()` |
+| `onmousemove` | Pointer moves over the element — at most once per event-loop batch on desktop, at the newest position (see [Pointer moves are coalesced](#pointer-moves-are-coalesced)) | `Fn()` |
 | `onmouseenter` / `onmouseleave` | Pointer enters / leaves the element | `Fn()` |
 | `oncontextmenu` | Right-click, or a 500ms long press on Android (suppresses the native menu when handled) | `Fn()` |
 | `oninput` | `<input>`/`<textarea>` value change, per keystroke | `Fn(String)` |
@@ -205,6 +205,17 @@ Supported HTML-element event attributes:
 | `onscroll` | Scroll container scrolls, on either axis | `Fn(ScrollEvent)` — `ev.scroll_top` and `ev.scroll_left` |
 | `ondragstart` … `ondrop`, `ondragend` | Element drag-and-drop | `Fn()` |
 | `onfiledrop`, `onfiledragenter`/`onfiledragleave` | OS → app file drop | `Fn(Vec<PathBuf>)` / `Fn()` |
+
+### Pointer moves are coalesced
+
+On desktop, winit can report several pointer moves between two frames — a
+1000 Hz mouse does. The shell keeps only the newest one and hands it to the app
+before the next other event (so a press is judged where the pointer last was)
+or at the end of the batch. Hover, `onmousemove`, `data-ondragover` /
+`data-ondragmove` and a `Drag::absolute()` / `Drag::percent()` `on_move` all
+see one move per batch, at the latest position. This is the browser's model:
+it dispatches `pointermove` at most once per frame. A component drag's layout
+runs once per frame too, not once per move.
 
 `onscroll` fires once per container that moved, whichever axis moved it, and
 its [`ScrollEvent`] payload carries **both** offsets — so a horizontal-only

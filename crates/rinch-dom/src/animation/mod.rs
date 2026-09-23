@@ -215,6 +215,7 @@ pub fn tick_animations(tree: &mut NodeTree, current_time_ms: f64) -> bool {
         let mut needs_layout = false;
         let mut needs_paint = false;
         let mut kept_animations = Vec::new();
+        let hit_key = crate::hit_cache::HitStyleKey::of(&tree.nodes[node_id].computed_style);
 
         for anim in &animations {
             if anim.is_paused() {
@@ -280,6 +281,13 @@ pub fn tick_animations(tree: &mut NodeTree, current_time_ms: f64) -> bool {
                     // Completed with no fill — drop it
                 }
             }
+        }
+
+        // A colour or opacity animation (a `Loader`, a shimmer) leaves every
+        // hit-test input alone, so it must not cost every pointer move its
+        // memo; a `transform` or `visibility` step does (`HitStyleKey`).
+        if hit_key != crate::hit_cache::HitStyleKey::of(&tree.nodes[node_id].computed_style) {
+            tree.hit_cache.invalidate();
         }
 
         // Mark dirty
