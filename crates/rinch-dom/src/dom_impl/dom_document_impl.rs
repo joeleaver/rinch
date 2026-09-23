@@ -127,6 +127,7 @@ impl DomDocument for RinchDocument {
             self.detach_subtree_styles_if_moved_out(c, old_parent, p);
         }
         self.tree.nodes[c].parent = Some(p);
+        self.note_first_child(p);
         self.tree.nodes[p].children.push(c);
         // Sync taffy
         if let (Some(parent_taffy), Some(child_taffy)) =
@@ -155,6 +156,7 @@ impl DomDocument for RinchDocument {
         // An inserted `<option>` carrying selectedness takes the selection with
         // it, as it does in a browser (#692).
         crate::select::options_inserted(&mut self.tree, c);
+        self.note_select_content_changed(p);
 
         // If a text node is appended to a <style> element, load its content as CSS
         self.maybe_load_style_css(p);
@@ -183,6 +185,7 @@ impl DomDocument for RinchDocument {
         self.tree.layout_dirty = true; // Structural change needs full layout
         self.tree.ifc_dirty = true; // Tree structure changed
         self.push_dirty_flags(p, DirtyFlags::LAYOUT | DirtyFlags::CHILDREN);
+        self.note_select_content_changed(p);
     }
 
     fn insert_before(&mut self, parent: NodeId, child: NodeId, reference: NodeId) {
@@ -205,6 +208,7 @@ impl DomDocument for RinchDocument {
             self.detach_subtree_styles_if_moved_out(c, old_parent, p);
         }
         self.tree.nodes[c].parent = Some(p);
+        self.note_first_child(p);
         let insert_pos = if let Some(pos) = self.tree.nodes[p].children.iter().position(|&x| x == r)
         {
             self.tree.nodes[p].children.insert(pos, c);
@@ -245,6 +249,7 @@ impl DomDocument for RinchDocument {
         // not. So an `<option selected>` rendered in a list reaches its select
         // through this method for every position but the last.
         crate::select::options_inserted(&mut self.tree, c);
+        self.note_select_content_changed(p);
     }
 
     fn replace_node(&mut self, old: NodeId, new: NodeId) {
@@ -324,6 +329,7 @@ impl DomDocument for RinchDocument {
             // `resolve_select_model` falls back to the first enabled option,
             // which is what a browser does too.
             crate::select::options_inserted(&mut self.tree, new.0);
+            self.note_select_content_changed(parent_id);
         }
     }
 
@@ -378,6 +384,7 @@ impl DomDocument for RinchDocument {
             self.tree.layout_dirty = true; // Structural change needs full layout
             self.tree.ifc_dirty = true; // Tree structure changed
             self.push_dirty_flags(parent_id, DirtyFlags::LAYOUT | DirtyFlags::CHILDREN);
+            self.note_select_content_changed(parent_id);
         }
         self.tree.nodes[node.0].parent = None;
         // The whole removed subtree loses its before-change style, so a
@@ -469,6 +476,7 @@ impl DomDocument for RinchDocument {
                     }
                 }
                 self.tree.nodes[n].children.clear();
+                self.note_first_child(n);
                 // Create text child with taffy node and context
                 let text_id = self.tree.nodes.vacant_key();
                 let mut text_node = Node::text(text_id, text, self.tree.guard.clone());
@@ -506,6 +514,7 @@ impl DomDocument for RinchDocument {
         }
         self.tree.layout_dirty = true; // Text content change affects layout
         self.push_dirty(n);
+        self.note_select_content_changed(n);
 
         // If this node is a <style> element, reload its CSS
         self.maybe_load_style_css(n);
@@ -771,6 +780,7 @@ impl DomDocument for RinchDocument {
             self.detach_subtree_styles_if_moved_out(c, old_parent, p);
         }
         self.tree.nodes[c].parent = Some(p);
+        self.note_first_child(p);
         let len = self.tree.nodes[p].children.len();
         let actual_index = if index >= len {
             self.tree.nodes[p].children.push(c);
@@ -802,6 +812,7 @@ impl DomDocument for RinchDocument {
         // 150 hands the selection to a `selected` option inserted *before* an
         // already-selected one.
         crate::select::options_inserted(&mut self.tree, c);
+        self.note_select_content_changed(p);
     }
 
     fn parent_node(&self, node: NodeId) -> Option<NodeId> {
@@ -1373,6 +1384,52 @@ impl RinchDocument {
     /// they differ, so a `left`/`width`/`background` write — the per-frame
     /// shape of a drag or an animation driven through `set_style` — no longer
     /// re-shapes the text inside the node it moves.
+    /// Called just before a child is added to `parent`: when `parent` has no
+    /// children yet, queue it for a Taffy style re-sync.
+    ///
+    /// A childless block container carries a one-line `min-height` floor on
+    /// its Taffy style (`ifc::apply_empty_block_line_floor`), and nothing but a
+    /// re-sync from its computed values takes it off again — the IFC pass only
+    /// ever *applies* it. The sync used to happen by accident: the first layout
+    /// re-cascaded the whole document through its viewport branch, so every
+    /// element built childless and filled before then lost its floor there.
+    /// An element that gained its first child after the first layout never
+    /// did, and kept a line-tall minimum under content shorter than a line (a
+    /// `height: 10px` block child left its parent 20px tall).
+    fn note_first_child(&mut self, parent: usize) {
+        let node = &self.tree.nodes[parent];
+        if node.children.is_empty() && node.is_element() {
+            self.tree.style_dirty_nodes.push(parent);
+            self.tree.styles_dirty = true;
+        }
+    }
+
+    /// Called when the children or text under `node` changed: when `node` is,
+    /// or sits inside the options of, a `<select>`, queue that select for a
+    /// Taffy style re-sync. An unstyled closed select is as wide as its widest
+    /// option label (`apply_stylo_styles_to_taffy`), which is an input no
+    /// selector and no style of the select's own carries. Walks at most the
+    /// `option` / `optgroup` levels a select's content can have.
+    fn note_select_content_changed(&mut self, node: usize) {
+        let mut current = Some(node);
+        for _ in 0..4 {
+            let Some(id) = current else { return };
+            let Some(n) = self.tree.nodes.get(id) else {
+                return;
+            };
+            match n.tag() {
+                Some("select") => {
+                    self.tree.style_dirty_nodes.push(id);
+                    self.tree.styles_dirty = true;
+                    return;
+                }
+                Some("option" | "optgroup") => current = n.parent,
+                None if !n.is_element() => current = n.parent,
+                _ => return,
+            }
+        }
+    }
+
     fn invalidate_inline_style(&mut self, node_id: usize) {
         *self.tree.nodes[node_id].stylo_element_data.borrow_mut() = None;
         self.tree.style_roots.push(node_id);

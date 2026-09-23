@@ -88,6 +88,7 @@ impl RinchDocument {
                 *self.tree.nodes[nid].stylo_element_data.borrow_mut() = None;
             }
             self.tree.style_roots.clear();
+            self.tree.full_style_walk = true;
             self.tree.styles_dirty = true;
             self.resolve_styles();
             self.apply_stylo_styles_to_taffy();
@@ -102,29 +103,147 @@ impl RinchDocument {
 
     /// Set viewport dimensions for the Stylo Device.
     /// Call this when the window is resized to update media queries and viewport units.
+    ///
+    /// Marks every stylesheet origin dirty, so the next flush rebuilds the
+    /// cascade data whatever changed; it does **not** invalidate any element.
+    /// `resolve_layout`'s own viewport handling goes through
+    /// [`Self::restyle_for_viewport_change`] instead, which asks Stylo what the
+    /// new size actually changes.
     pub fn set_stylist_viewport(&mut self, width: f32, height: f32) {
-        use style::shared_lock::StylesheetGuards;
         use style::stylesheets::Origin;
 
-        // Update our internal viewport tracking
-        self.tree.viewport = crate::layout::Viewport { width, height };
-
-        // Create a new Device with the updated viewport. Everything else the
-        // Device carries is rebuilt from `device_params`, so a resize cannot
-        // silently reset the root font-size (#279) or the device pixel ratio
-        // (#211) back to their defaults.
-        let device = crate::dom_impl::build_device(width, height, &self.device_params);
-
-        // Update the stylist's device using StylesheetGuards
-        let guard = self.tree.guard.read();
-        let guards = StylesheetGuards::same(&guard);
-        self.stylist.set_device(device, &guards);
+        self.install_device(width, height);
 
         // Mark all stylesheet origins as dirty to force style recomputation with new viewport
         self.stylist
             .force_stylesheet_origins_dirty(Origin::UserAgent.into());
         self.stylist
             .force_stylesheet_origins_dirty(Origin::Author.into());
+    }
+
+    /// Replace the Stylo `Device` with one for a `width` x `height` viewport,
+    /// and answer the stylesheet origins whose **media-query results** differ
+    /// under it (`Stylist::set_device`, which asks
+    /// `media_features_change_changed_style`).
+    ///
+    /// Everything else the Device carries is rebuilt from `device_params`, so
+    /// a resize cannot silently reset the root font-size (#279) or the device
+    /// pixel ratio (#211) back to their defaults.
+    ///
+    /// Before the old Device goes, whether it resolved a viewport unit is
+    /// folded into `viewport_units_used`: Stylo's own flag lives on the Device
+    /// and starts `false` on every new one, while a style computed under an
+    /// older Device can still be cached and still hold a `vw` resolved against
+    /// it.
+    fn install_device(&mut self, width: f32, height: f32) -> style::stylesheets::OriginSet {
+        use style::shared_lock::StylesheetGuards;
+
+        self.viewport_units_used |= self.stylist.device().used_viewport_units();
+        self.tree.viewport = crate::layout::Viewport { width, height };
+        let device = crate::dom_impl::build_device(width, height, &self.device_params);
+        let guard = self.tree.guard.read();
+        let guards = StylesheetGuards::same(&guard);
+        self.stylist.set_device(device, &guards)
+    }
+
+    /// Restyle for a viewport resize: only what the new size can change.
+    ///
+    /// A viewport size reaches a computed style through exactly two doors, and
+    /// Stylo tracks both:
+    ///
+    /// - **A media query** (`@media (min-width: …)`, `orientation`,
+    ///   `aspect-ratio`, …). `Stylist::set_device` compares every sheet's
+    ///   media-query results under the new Device against the ones its cascade
+    ///   data was built with. An origin whose results flipped is rebuilt and
+    ///   the whole document restyled, as before — a rule appearing or
+    ///   disappearing can reach any element.
+    /// - **A viewport unit** (`vw`, `vh`, `vmin`, `vmax`, …). Stylo sets
+    ///   `USES_VIEWPORT_UNITS` on a style that resolved one, which the cascade
+    ///   copies onto [`Node::uses_viewport_units`](crate::node::Node). Those
+    ///   elements are restyled, with their subtrees, since a `font-size: 2vw`
+    ///   reaches every descendant through inheritance.
+    ///
+    /// Nothing else in a computed style depends on the viewport: a percentage
+    /// is resolved by layout, not by the cascade, and so is a `position: fixed`
+    /// box's viewport-sized containing block (`out_of_flow`). Layout is always
+    /// re-run — the viewport is the root's available space.
+    ///
+    /// Before this, every resize (one per `Resized` event during a live window
+    /// drag) rebuilt every origin's cascade data and re-cascaded every element.
+    ///
+    /// Container queries are not covered because rinch does not implement them
+    /// (`query_container_size` answers nothing), so no style can depend on a
+    /// container's size.
+    pub(crate) fn restyle_for_viewport_change(&mut self, width: f32, height: f32) {
+        let affected = self.install_device(width, height);
+        if !affected.is_empty() {
+            self.stylist.force_stylesheet_origins_dirty(affected);
+            self.tree
+                .note_full_restyle(crate::perf::FullRestyleReason::Viewport);
+            for (node_id, _) in self.tree.nodes.iter() {
+                *self.tree.nodes[node_id].stylo_element_data.borrow_mut() = None;
+            }
+            self.tree.style_roots.clear(); // Force full tree walk
+            self.tree.full_style_walk = true;
+            self.tree.styles_dirty = true;
+        } else if self.viewport_units_used {
+            let users: Vec<usize> = self
+                .tree
+                .nodes
+                .iter()
+                .filter(|(_, n)| n.uses_viewport_units.get())
+                .map(|(id, _)| id)
+                .collect();
+            for id in users {
+                self.tree
+                    .perf
+                    .bump(crate::perf::Counter::ViewportUnitRestyles);
+                self.invalidate_subtree_styles(id);
+            }
+        }
+        // A `position: fixed` box, and an `absolute` one whose containing block
+        // is the initial one, has the viewport's size baked into its Taffy
+        // style (`out_of_flow::apply_out_of_flow_size_overrides`), so its style
+        // is re-synced — the cascade itself has nothing to redo for it.
+        let out_of_flow: Vec<usize> = self
+            .tree
+            .nodes
+            .iter()
+            .filter(|(_, n)| {
+                matches!(
+                    n.computed_style.position,
+                    crate::computed_style::PositionValue::Fixed
+                        | crate::computed_style::PositionValue::Absolute
+                )
+            })
+            .map(|(id, _)| id)
+            .collect();
+        if !out_of_flow.is_empty() {
+            self.tree.style_dirty_nodes.extend(out_of_flow);
+            self.tree.styles_dirty = true;
+        }
+        // The viewport IS the root's available space. A size change must
+        // force a Taffy recompute even when no node's Taffy *style* changed
+        // (e.g. an all-`auto`/fixed tree): otherwise auto-sized content stays
+        // laid out at the previous viewport width. Without this, the early
+        // `if !layout_dirty { return }` in `resolve_layout` strands the tree at
+        // its old size — visible as prose that keeps a narrow first-layout
+        // width (often min-content) after the window grows.
+        self.tree.layout_dirty = true;
+    }
+
+    /// Drop the cached style of `node_id` and of its whole subtree, and record
+    /// `node_id` as a style root, so the next `resolve_styles` re-cascades all
+    /// of it.
+    pub(crate) fn invalidate_subtree_styles(&mut self, node_id: usize) {
+        if !self.tree.contains(node_id) {
+            return;
+        }
+        *self.tree.nodes[node_id].stylo_element_data.borrow_mut() = None;
+        self.tree.style_roots.push(node_id);
+        self.tree.styles_dirty = true;
+        self.push_dirty_flags(node_id, DirtyFlags::STYLE | DirtyFlags::PAINT);
+        self.invalidate_descendant_styles(node_id);
     }
 
     /// Set the device pixel ratio (DPI scale factor) for the Stylo Device
@@ -157,6 +276,7 @@ impl RinchDocument {
             *self.tree.nodes[node_id].stylo_element_data.borrow_mut() = None;
         }
         self.tree.style_roots.clear();
+        self.tree.full_style_walk = true;
         self.tree.styles_dirty = true;
         self.tree.layout_dirty = true;
     }
@@ -429,6 +549,7 @@ impl RinchDocument {
         // re-cascaded — and re-extracts the stops.
         // Clear roots to force full tree walk
         self.tree.style_roots.clear();
+        self.tree.full_style_walk = true;
         // Resolve styles using Stylo
         self.tree.styles_dirty = true;
         self.tree.refreshing_animations = true;
@@ -442,17 +563,6 @@ impl RinchDocument {
         // reaching the ifc_dirty branch.
         self.tree.ifc_dirty = true;
         self.tree.layout_dirty = true;
-    }
-
-    /// Recompute taffy styles for all element nodes.
-    /// Called when viewport dimensions change to update vh/vw-dependent styles.
-    #[allow(dead_code)]
-    pub(crate) fn recompute_all_styles(&mut self) {
-        // When viewport changes, Stylo needs to know about it to recalculate vh/vw units
-        // For now, just resolve styles and apply to Taffy
-        self.tree.styles_dirty = true;
-        self.resolve_styles();
-        self.apply_stylo_styles_to_taffy();
     }
 
     /// Recompute styles recursively for a node and all its descendants.

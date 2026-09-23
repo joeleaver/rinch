@@ -43,9 +43,10 @@
 //!
 //! # Every document is measured at one viewport
 //!
-//! A viewport change of more than half a pixel restyles the whole document,
-//! which is a second route to most of these numbers; only `resize_by_1px`
-//! takes it on purpose.
+//! A viewport change of more than half a pixel re-runs layout, and restyles
+//! whatever a media query or a viewport unit ties to the size — a second route
+//! to most of these numbers; only the `resize_by_1px*` scenarios take it on
+//! purpose.
 
 #![cfg(feature = "software-renderer")]
 
@@ -80,8 +81,16 @@ struct Fixture {
 }
 
 fn build(contents_wrapper: bool) -> Fixture {
+    build_with(contents_wrapper, "")
+}
+
+/// [`build`] with `extra_css` loaded after the fixture's own sheet.
+fn build_with(contents_wrapper: bool, extra_css: &str) -> Fixture {
     let mut doc = RinchDocument::new();
     doc.load_css(CSS);
+    if !extra_css.is_empty() {
+        doc.load_css(extra_css);
+    }
     let body = doc.body();
     let list = doc.create_element("div");
     doc.set_attribute(list, "class", "list");
@@ -218,6 +227,9 @@ fn every_rinch_dom_counter_fires_somewhere() {
                 text-overflow: ellipsis; }
         .calc { width: calc(50% - 10px); height: 10px; }
         .z { position: relative; z-index: 1; }
+        .vw { width: 10vw; height: 4px; }
+        .gen::before { content: \"*\"; }
+        @media (min-width: 801px) { .mq { color: rgb(0, 0, 255); } }
         ",
     );
     let body = doc.body();
@@ -251,6 +263,10 @@ fn every_rinch_dom_counter_fires_somewhere() {
     let input = doc.create_element("input");
     doc.set_attribute(input, "value", "typed");
     doc.append_child(body, input);
+    // A viewport-unit user, generated content, and a media-query dependant.
+    let vw = doc.create_element("div");
+    doc.set_attribute(vw, "class", "vw gen mq");
+    doc.append_child(body, vw);
 
     doc.resolve_layout(VP.0, VP.1);
     // A text edit: cache retains, and hits on the second measure.
@@ -268,7 +284,10 @@ fn every_rinch_dom_counter_fires_somewhere() {
     doc.append_child(style, css);
     doc.append_child(body, style);
     doc.load_css("html { font-size: 20px; }");
+    // 800 -> 801 flips the `min-width: 801px` query: a full restyle.
     doc.resolve_layout(VP.0 + 1.0, VP.1);
+    // 801 -> 802 flips nothing: only the `vw` user restyles.
+    doc.resolve_layout(VP.0 + 2.0, VP.1);
     let mut painter = TinySkiaPainter::new(VP.0 as u32, VP.1 as u32);
     rinch_dom::paint::paint_document(
         &doc.tree,
@@ -291,6 +310,7 @@ fn every_rinch_dom_counter_fires_somewhere() {
         FullRestyleStylesheet,
         FullRestyleDpr,
         FullRestyleRootFontSize,
+        ViewportUnitRestyles,
         FullStyleWalks,
         TaffyStyleSyncs,
         TaffyStyleChanges,
@@ -372,6 +392,10 @@ fn idle_frame() {
 ///
 /// Still more than the minimum (audit F3 / update-path F1.1): the whole row
 /// subtree is re-cascaded (row + span + chip; the minimum is 1).
+///
+/// No `::before` / `::after` pass: no stylesheet here has a rule for either,
+/// so no element is matched against them (`pseudo_element_passes` was two per
+/// cascaded element).
 #[test]
 fn hover_colour_only_without_wrapper() {
     let mut f = build(false);
@@ -384,7 +408,6 @@ fn hover_colour_only_without_wrapper() {
             (StyleResolves, 1),
             (ElementsCascaded, 3),
             (StyleNodesVisited, 5),
-            (PseudoElementPasses, 6),
             (TaffyStyleSyncs, 3),
             (LayoutResolves, 1),
             (LayoutSkippedPaintOnly, 1),
@@ -411,7 +434,6 @@ fn hover_colour_only_with_contents_wrapper() {
             (StyleResolves, 1),
             (ElementsCascaded, 4),
             (StyleNodesVisited, 7),
-            (PseudoElementPasses, 8),
             (TaffyStyleSyncs, 4),
             (LayoutResolves, 1),
             (LayoutSkippedPaintOnly, 1),
@@ -436,7 +458,6 @@ fn colour_only_class_toggle() {
             (StyleResolves, 1),
             (ElementsCascaded, 3),
             (StyleNodesVisited, 5),
-            (PseudoElementPasses, 6),
             (TaffyStyleSyncs, 3),
             (LayoutResolves, 1),
             (LayoutSkippedPaintOnly, 1),
@@ -463,10 +484,16 @@ fn colour_only_class_toggle() {
 ///   not a shape. `append_one_row_without_wrappers` is the same append with
 ///   no wrapper to re-splice.
 /// - every chip is still re-sized by its own compute (audit layout F11).
-/// - appending the text into the still-detached row also restyles
-///   synchronously with no style root recorded, which walks the whole
-///   document (`style_nodes_visited`) to cascade one element:
-///   `resolve_styles`' empty-roots fallback.
+///
+/// The style side is now the minimum: the row is cascaded once and the walk
+/// visits the row and its text (`style_nodes_visited` 2). It was 287 — the
+/// whole document — because the synchronous insertion restyle consumed its own
+/// style root and left `styles_dirty` set, and `resolve_styles` read an empty
+/// root list as "walk everything". It now walks everything only when a
+/// whole-document restyle asked it to (`NodeTree::full_style_walk`).
+/// `taffy_style_syncs` is 2, not 1: the new row was childless when its text
+/// went in, so its Taffy style is re-synced to drop the empty-block line floor
+/// (`note_first_child`).
 #[test]
 fn append_one_row() {
     let mut f = build(true);
@@ -484,10 +511,8 @@ fn append_one_row() {
         &[
             (StyleResolves, 2),
             (ElementsCascaded, 1),
-            (StyleNodesVisited, 287),
-            (PseudoElementPasses, 2),
-            (FullStyleWalks, 1),
-            (TaffyStyleSyncs, 1),
+            (StyleNodesVisited, 2),
+            (TaffyStyleSyncs, 2),
             (TaffyStyleChanges, 1),
             (ShapeMeasureIfc, 1),
             (ShapeIfcBuild, 1),
@@ -534,10 +559,8 @@ fn append_one_row_without_wrappers() {
         &[
             (StyleResolves, 2),
             (ElementsCascaded, 1),
-            (StyleNodesVisited, 207),
-            (PseudoElementPasses, 2),
-            (FullStyleWalks, 1),
-            (TaffyStyleSyncs, 1),
+            (StyleNodesVisited, 2),
+            (TaffyStyleSyncs, 2),
             (TaffyStyleChanges, 1),
             (ShapeMeasureIfc, 1),
             (ShapeIfcBuild, 1),
@@ -616,10 +639,13 @@ fn set_text_on_one_row() {
     );
 }
 
-/// Resize the viewport by one pixel: a full-document restyle (the stylist
-/// rebuilds its device and every element is re-cascaded, two pseudo-element
-/// passes each) and a re-measure of every row (audit layout F4). Since #875
-/// no wrapper rewrites its Taffy style, so there is no IFC setup pass.
+/// Resize the viewport by one pixel. No media query in the sheet changes its
+/// answer and no rule uses a viewport unit, so **nothing is restyled**: the
+/// cascade data is not rebuilt and no element is re-cascaded. Only layout
+/// runs, and it re-measures every row at the new width.
+///
+/// It used to be a full-document restyle on every resize event (163 elements
+/// cascaded, the stylist's cascade data rebuilt).
 #[test]
 fn resize_by_1px() {
     let mut f = build(true);
@@ -629,20 +655,43 @@ fn resize_by_1px() {
         "resize 1px",
         &s,
         &[
-            (StyleResolves, 1),
-            (ElementsCascaded, 163),
-            (StyleNodesVisited, 283),
-            (PseudoElementPasses, 326),
-            (FullRestyles, 1),
-            (FullRestyleViewport, 1),
-            (FullStyleWalks, 1),
-            (TaffyStyleSyncs, 163),
             (ShapeMeasureIfc, 40),
             (ShapeIfcBuild, 40),
             (IfcMeasureCacheHits, 120),
             (LayoutResolves, 1),
             (TaffyRootComputes, 1),
             (TaffyMeasureCalls, 160),
+        ],
+    );
+}
+
+/// The same resize with the chips sized in `vw`: exactly the 40 chips restyle
+/// (`viewport_unit_restyles`, one cascade each; the walk visits each chip and
+/// its text), and nothing else does. Their new widths re-size them
+/// (`inline_block_computes`).
+#[test]
+fn resize_by_1px_with_viewport_units() {
+    let mut f = build_with(true, ".chip { width: 5vw; }");
+    f.doc.resolve_layout(VP.0 + 1.0, VP.1);
+    let s = f.doc.tree.perf.end_frame();
+    expect(
+        "resize 1px (vw chips)",
+        &s,
+        &[
+            (StyleResolves, 1),
+            (ElementsCascaded, 40),
+            (StyleNodesVisited, 80),
+            (ViewportUnitRestyles, 40),
+            (TaffyStyleSyncs, 40),
+            (TaffyStyleChanges, 40),
+            (ShapeMeasureIfc, 40),
+            (ShapeIfcBuild, 40),
+            (ShapeAtomicInline, 40),
+            (IfcMeasureCacheHits, 120),
+            (LayoutResolves, 1),
+            (TaffyRootComputes, 1),
+            (TaffyMeasureCalls, 160),
+            (InlineBlockComputes, 40),
         ],
     );
 }

@@ -139,6 +139,19 @@ pub struct RinchDocument {
     /// unconditionally (see `node_is_focus_sensitive`). Recomputed whenever a
     /// stylesheet is loaded or the theme sheet is replaced.
     pub(crate) has_bare_focus_rules: bool,
+    /// Whether any cascade so far resolved a viewport unit, on this Device or
+    /// an earlier one (Stylo's `Device::used_viewport_units` resets with each
+    /// Device a resize installs). Sticky: once a document has used one, every
+    /// media-neutral resize scans for the elements that did
+    /// ([`Node::uses_viewport_units`](crate::node::Node)); until then a resize
+    /// restyles nothing.
+    pub(crate) viewport_units_used: bool,
+    /// Whether any loaded stylesheet has a `::before` rule — refreshed after
+    /// every stylist flush. When it has none, no element pays a `::before`
+    /// matching pass.
+    pub(crate) has_before_rules: bool,
+    /// The same for `::after`.
+    pub(crate) has_after_rules: bool,
 }
 
 impl Default for RinchDocument {
@@ -188,6 +201,9 @@ impl RinchDocument {
             theme_stylesheet: None,
             author_stylesheets: Vec::new(),
             has_bare_focus_rules: false,
+            viewport_units_used: false,
+            has_before_rules: true,
+            has_after_rules: true,
         };
 
         // Set up default file-based image loader
