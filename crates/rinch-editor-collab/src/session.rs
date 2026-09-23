@@ -96,7 +96,7 @@ use yrs::updates::decoder::Decode;
 use yrs::updates::encoder::Encode;
 use yrs::{StateVector, Update};
 
-use rinch_editor_core::{EditorState, Node, Schema};
+use rinch_editor_core::{EditorState, Node, Pos, Schema};
 
 use crate::error::{CollabError, Result};
 use crate::projection::CollabDoc;
@@ -478,6 +478,33 @@ impl CollabSession {
         self.guard()?;
         other.guard()?;
         self.cdoc.merge_from(&other.cdoc)
+    }
+
+    /// The sticky index of model position `pos` of `doc` (this session's editor
+    /// document), for a deep link that follows the text through every later edit, on
+    /// this replica or any other. The bytes are a plain yrs `StickyIndex`, v1-encoded:
+    /// see [`CollabDoc::sticky_index`] for the encoding, how to resolve it with yrs
+    /// alone, and when it is `None`.
+    ///
+    /// Also `None` while the session is [poisoned](Self::is_poisoned) or outbound is
+    /// [stalled](Self::outbound_stall): then the editor document holds content the CRDT
+    /// does not, so its positions cannot be trusted to name the CRDT's blocks.
+    pub fn sticky_index(&self, doc: &Node, pos: Pos) -> Option<Vec<u8>> {
+        if self.poisoned.is_some() || self.stalled.is_some() {
+            return None;
+        }
+        self.cdoc.sticky_index(doc, pos)
+    }
+
+    /// Where the sticky index `bytes` points now, as a position of `doc` (this
+    /// session's editor document). See [`CollabDoc::resolve_sticky`] for when it is
+    /// `None`; also `None` while the session is poisoned or outbound is stalled, as
+    /// for [`Self::sticky_index`].
+    pub fn resolve_sticky(&self, doc: &Node, bytes: &[u8]) -> Option<Pos> {
+        if self.poisoned.is_some() || self.stalled.is_some() {
+            return None;
+        }
+        self.cdoc.resolve_sticky(doc, bytes)
     }
 
     /// The model document the CRDT currently projects to — the canonical converged
