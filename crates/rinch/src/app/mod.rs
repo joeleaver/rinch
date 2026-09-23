@@ -10,6 +10,8 @@
 mod animation_theme_change_tests;
 #[cfg(test)]
 mod blink_and_click_focus_tests;
+#[cfg(all(test, software_shell, feature = "desktop"))]
+mod caret_visibility_paint_tests;
 mod click_handling;
 #[cfg(test)]
 mod color_input_dismiss_465_tests;

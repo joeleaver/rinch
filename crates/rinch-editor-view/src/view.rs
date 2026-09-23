@@ -1835,6 +1835,15 @@ mod tests {
             !outline_style.contains("display"),
             "outline style: {outline_style}"
         );
+
+        // A cleared outline comes back when a node is selected
+        // again (and so does a hidden caret). Kills: `position_node_outline`
+        // not writing `visibility: visible`, which left every node selection
+        // after the first one invisible.
+        view.position_node_outline(40.0, 50.0, 30.0, 20.0);
+        assert!(style_of(&h, &outline).contains("visibility: visible"));
+        view.position_caret(9.0, 2.0, 18.0);
+        assert!(style_of(&h, &caret).contains("visibility: visible"));
     }
 
     #[test]
