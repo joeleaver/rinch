@@ -946,6 +946,15 @@ pub fn batch<R>(f: impl FnOnce() -> R) -> R {
     let guard = BatchGuard::raise();
     let outermost = !guard.prev;
 
+    // An outermost batch is its own flush context, even when it is opened from
+    // inside an effect body (an effect that dispatches a handler, a web
+    // `focus()` that fires one synchronously). The effect depth that makes
+    // `flush_pending_effects` a no-op inside effect bodies is set aside for its
+    // duration, so a DOM call in the batch still sees the batch's own writes.
+    // Library suppression (`suppress_effect_flush`) is deliberately NOT set
+    // aside: a borrow the library holds is still held.
+    let _depth = outermost.then(DepthSetAside::enter);
+
     let result = f();
 
     // Restore the flag *before* flushing: `Signal::set` inside a flushed
@@ -964,6 +973,66 @@ thread_local! {
     /// How many effect bodies and memo computations are running on this thread
     /// right now (nested runs count once each). See [`flush_pending_effects`].
     static REACTIVE_DEPTH: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+}
+
+/// Saves [`REACTIVE_DEPTH`], zeroes it, and puts it back on drop — for an
+/// outermost [`batch`], which is a flush context of its own.
+struct DepthSetAside(u32);
+
+impl DepthSetAside {
+    fn enter() -> Self {
+        DepthSetAside(REACTIVE_DEPTH.with(|d| d.replace(0)))
+    }
+}
+
+impl Drop for DepthSetAside {
+    fn drop(&mut self) {
+        let saved = self.0;
+        let _ = REACTIVE_DEPTH.try_with(|d| d.set(saved));
+    }
+}
+
+thread_local! {
+    /// Open [`suppress_effect_flush`] guards on this thread.
+    static FLUSH_SUPPRESSED: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+}
+
+/// While the returned guard lives, [`flush_pending_effects`] — and therefore
+/// every `NodeHandle` operation — runs no effects.
+///
+/// For **library code that touches the DOM while it holds a borrow of its own
+/// state**. A `NodeHandle` operation made inside a batch runs the effects the
+/// batch has queued so far, and a user effect is free to call back into the
+/// library — which, under a held `RefCell` borrow, is a `BorrowMutError`. The
+/// editor is the shape: `EditorHandle::command` holds its core mutably while
+/// the view patches the DOM, and a toolbar effect reading
+/// `is_mark_active` would run in the middle of it. Take the guard *with* the
+/// borrow and drop it after; the pending effects run at the next DOM access
+/// outside it, or when the batch ends.
+///
+/// Library code should also call [`flush_pending_effects`] **before** taking
+/// such a borrow, so that the caller's earlier writes have reached the DOM the
+/// library is about to work on (program order, as for any DOM access).
+///
+/// Unlike the effect depth, suppression is not set aside by a [`batch`]
+/// opened inside it: a batch does not release the borrow.
+#[must_use = "the suppression ends when the guard is dropped"]
+pub fn suppress_effect_flush() -> EffectFlushSuppressed {
+    FLUSH_SUPPRESSED.with(|s| s.set(s.get() + 1));
+    EffectFlushSuppressed {
+        _not_send: std::marker::PhantomData,
+    }
+}
+
+/// The guard [`suppress_effect_flush`] returns.
+pub struct EffectFlushSuppressed {
+    _not_send: std::marker::PhantomData<*const ()>,
+}
+
+impl Drop for EffectFlushSuppressed {
+    fn drop(&mut self) {
+        let _ = FLUSH_SUPPRESSED.try_with(|s| s.set(s.get().saturating_sub(1)));
+    }
 }
 
 /// Marks an effect body or memo computation as running, for
@@ -1002,13 +1071,14 @@ impl Drop for ReactiveDepthGuard {
 /// are batched as before. Order is the queue's, so the #154 contract holds.
 ///
 /// A no-op outside a batch (writes there have already flushed), when nothing
-/// is queued, and while an effect body or memo computation is running — those
+/// is queued, while an effect body or memo computation is running — those
 /// run *inside* a flush, and draining the queue from one would run effects
-/// queued behind it ahead of their turn. The signal-change callbacks (the
+/// queued behind it ahead of their turn (an outermost `batch` opened inside
+/// one is its own context again) — and under [`suppress_effect_flush`]. The signal-change callbacks (the
 /// host's re-render request) are not called here; the batch's own exit calls
 /// them once.
 pub fn flush_pending_effects() {
-    if REACTIVE_DEPTH.with(|d| d.get()) > 0 {
+    if REACTIVE_DEPTH.with(|d| d.get()) > 0 || FLUSH_SUPPRESSED.with(|s| s.get()) > 0 {
         return;
     }
     let pending = RUNTIME.with(|rt| {

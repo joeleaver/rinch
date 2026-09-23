@@ -815,7 +815,16 @@ the overlay effect's own `focus_into`, so the handler's request wins
 -scroll sees the new DOM (`rinch-core/src/batch_dom_order_tests.rs`). The flush
 lowers the batch flag while it runs (a normal flush) and raises it after; it is
 a no-op outside a batch and inside any effect body or memo computation
-(`REACTIVE_DEPTH`), whose queue is the running flush's own. Memos are current
+(`REACTIVE_DEPTH`), whose queue is the running flush's own — except that an
+**outermost** `batch()` (a handler dispatched from inside an effect) sets that
+depth aside and is its own flush context — and under
+`rinch_core::suppress_effect_flush()`. **Library code that touches the DOM while
+holding a `RefCell` borrow of its own must hold that guard with the borrow** (and
+call `flush_pending_effects()` just before borrowing, for program order), or a
+user effect run by its own `NodeHandle` call re-enters it: `BorrowMutError`. The
+editor routes every borrow of its core through `EditorHandle::core`/`core_mut`
+(`CoreGuard`) for exactly this; the PR #882 audit of every other such site is in
+that PR. Memos are current
 inside a batch (the eager marking above). A freed memo dependency counts as
 *changed*. Guide: `docs/src/guide/reactivity.md#event-handlers-run-as-batches`.
 On desktop the resulting signal-change callback queues at most **one** pending

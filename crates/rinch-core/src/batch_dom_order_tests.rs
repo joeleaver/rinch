@@ -204,3 +204,179 @@ fn flush_pending_effects_outside_a_batch_is_a_no_op() {
     flush_pending_effects();
     assert_eq!(runs.get(), 2);
 }
+
+/// A handler dispatched synchronously from inside an effect body keeps program
+/// order too: its batch is its own flush context, so a DOM read after its write
+/// sees the write. (The effect depth that disables the flush inside effect
+/// bodies is set aside for the handler's batch.) PR #882 review, E2.
+#[test]
+fn a_handler_dispatched_from_inside_an_effect_keeps_program_order() {
+    let doc = doc();
+    let mut scope = scope(&doc);
+    let node = scope.create_element("div");
+    scope.body_handle().append_child(&node);
+    let cls = Signal::new("a".to_string());
+    let n = node.clone();
+    let _bind = Effect::new(move || n.set_attribute("class", &cls.get()));
+
+    let seen: Rc<RefCell<Option<String>>> = Rc::new(RefCell::new(None));
+    let s = Rc::clone(&seen);
+    let target = node.clone();
+    let id = register_handler(Rc::new(move || {
+        cls.set("b".to_string());
+        *s.borrow_mut() = target.get_attribute("class");
+    }));
+    let go = Signal::new(false);
+    let _driver = Effect::new(move || {
+        if go.get() {
+            dispatch_event(id);
+        }
+    });
+    go.set(true);
+    assert_eq!(seen.borrow().as_deref(), Some("b"));
+}
+
+/// Library code that touches the DOM while holding its own internal borrow
+/// wraps that work in `suppress_effect_flush`, so no user effect runs there.
+/// (An effect that re-borrowed the same cell would otherwise panic.) The
+/// pending effect still runs — at the next DOM access after the guard, or at
+/// the batch's end.
+#[test]
+fn suppress_effect_flush_keeps_user_effects_out_of_a_library_borrow() {
+    use crate::reactive::suppress_effect_flush;
+    let doc = doc();
+    let mut scope = scope(&doc);
+    let node = scope.create_element("div");
+    scope.body_handle().append_child(&node);
+
+    let state = Rc::new(RefCell::new(0u32));
+    let tick = Signal::new(0u32);
+    let st = Rc::clone(&state);
+    let reads = Rc::new(Cell::new(0));
+    let r = Rc::clone(&reads);
+    let _reader = Effect::new(move || {
+        tick.get();
+        let _ = *st.borrow(); // would panic under the library's borrow_mut
+        r.set(r.get() + 1);
+    });
+
+    let st = Rc::clone(&state);
+    let n = node.clone();
+    let id = register_handler(Rc::new(move || {
+        tick.set(1);
+        let _no_flush = suppress_effect_flush();
+        let mut guard = st.borrow_mut();
+        *guard += 1;
+        n.set_attribute("data-x", "1"); // no flush here
+    }));
+    assert!(dispatch_event(id));
+    assert_eq!(reads.get(), 2, "the effect ran, after the borrow");
+}
+
+/// The mid-batch flush is an *ordinary* flush: the batching flag is down while
+/// it runs, so a `batch()` inside an effect it runs is outermost and flushes
+/// before returning — as it would at the batch's end. (With the flag left up,
+/// that inner batch joined the handler's and the effect read a stale value.)
+#[test]
+fn a_mid_batch_flush_runs_effects_with_the_batch_flag_down() {
+    let doc = doc();
+    let mut scope = scope(&doc);
+    let node = scope.create_element("div");
+    scope.body_handle().append_child(&node);
+
+    let b = Signal::new(0);
+    let derived = Rc::new(Cell::new(0));
+    let d = Rc::clone(&derived);
+    let _derive = Effect::new(move || d.set(b.get() * 10));
+
+    let a = Signal::new(0);
+    let seen = Rc::new(Cell::new(-1));
+    let s = Rc::clone(&seen);
+    let d = Rc::clone(&derived);
+    let _writer = Effect::new(move || {
+        if a.get() == 1 {
+            crate::reactive::batch(|| b.set(4));
+            s.set(d.get());
+        }
+    });
+
+    let n = node.clone();
+    let id = register_handler(Rc::new(move || {
+        a.set(1);
+        let _ = n.get_attribute("class"); // runs `_writer` now, mid-batch
+    }));
+    assert!(dispatch_event(id));
+    assert_eq!(seen.get(), 40);
+}
+
+/// A panic in an effect run by a mid-batch flush restores both flags: later
+/// batches still flush at their end, and their DOM accesses still flush early.
+#[test]
+fn a_panic_in_a_mid_batch_flush_leaves_batching_working() {
+    let doc = doc();
+    let mut scope = scope(&doc);
+    let node = scope.create_element("div");
+    scope.body_handle().append_child(&node);
+    let boom = Signal::new(false);
+    let _bad = Effect::new(move || {
+        if boom.get() {
+            panic!("boom");
+        }
+    });
+    let n = Signal::new(0);
+    let seen = Rc::new(Cell::new(0));
+    let s = Rc::clone(&seen);
+    let _good = Effect::new(move || s.set(n.get()));
+
+    let node2 = node.clone();
+    let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        crate::reactive::batch(|| {
+            boom.set(true);
+            node2.set_attribute("x", "1"); // flushes -> panics
+        })
+    }));
+    assert!(r.is_err());
+    boom.set(false);
+    crate::reactive::batch(|| n.set(7));
+    assert_eq!(seen.get(), 7);
+    crate::reactive::batch(|| {
+        n.set(8);
+        node.set_attribute("y", "1");
+        assert_eq!(seen.get(), 8, "mid-batch flush still works after the panic");
+    });
+}
+
+/// A memo computation that reads the DOM is inside a flush's territory too:
+/// its DOM read must not run the effects the handler queued, one of which reads
+/// this very memo and would recompute it again, nested, before the outer
+/// computation has stored its value.
+#[test]
+fn a_dom_read_inside_a_memo_computation_does_not_drain_the_queue() {
+    use crate::reactive::Memo;
+    let doc = doc();
+    let mut scope = scope(&doc);
+    let node = scope.create_element("div");
+    node.set_attribute("data-n", "7");
+    scope.body_handle().append_child(&node);
+
+    let x = Signal::new(0);
+    let computes = Rc::new(Cell::new(0));
+    let c = Rc::clone(&computes);
+    let n = node.clone();
+    let m = Memo::new(move || {
+        c.set(c.get() + 1);
+        let from_dom: i32 = n.get_attribute("data-n").unwrap().parse().unwrap();
+        x.get() + from_dom
+    });
+    let _reader = Effect::new(move || {
+        let _ = m.get();
+    });
+    computes.set(0);
+
+    let id = register_handler(Rc::new(move || {
+        x.set(1); // `_reader` pending, `m` dirty
+        assert_eq!(m.get(), 8); // recompute reads the DOM
+    }));
+    assert!(dispatch_event(id));
+    assert_eq!(computes.get(), 1, "computed once, not re-entered");
+}

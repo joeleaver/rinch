@@ -380,10 +380,77 @@ pub struct EditorHandle {
     inner: Rc<RefCell<EditorCore>>,
 }
 
+/// A borrow of an editor's core, held together with a
+/// [`suppress_effect_flush`](rinch_core::reactive::suppress_effect_flush)
+/// guard.
+///
+/// The view patches the DOM through `NodeHandle`s while the core is borrowed,
+/// and a `NodeHandle` operation made inside a batch (every event handler is
+/// one) runs the effects the batch has queued so far. Those are user effects,
+/// and a toolbar effect that reads `is_mark_active` would re-borrow the core
+/// mid-patch: a `BorrowMutError` (PR #882 review, E1). Every borrow of the core
+/// therefore goes through [`EditorHandle::core`] / [`EditorHandle::core_mut`],
+/// which first run the pending effects (so the caller's earlier writes are in
+/// the DOM, as program order says) and then suppress the flush for as long as
+/// the borrow lives. Fields drop in order: the borrow first, then the guard.
+struct CoreGuard<B> {
+    borrow: B,
+    _no_flush: rinch_core::reactive::EffectFlushSuppressed,
+}
+
+impl<B: std::ops::Deref<Target = EditorCore>> std::ops::Deref for CoreGuard<B> {
+    type Target = EditorCore;
+    fn deref(&self) -> &EditorCore {
+        &self.borrow
+    }
+}
+
+impl std::ops::DerefMut for CoreGuard<std::cell::RefMut<'_, EditorCore>> {
+    fn deref_mut(&mut self) -> &mut EditorCore {
+        &mut self.borrow
+    }
+}
+
+impl EditorHandle {
+    /// Borrow the core immutably; see [`CoreGuard`].
+    fn core(&self) -> CoreGuard<std::cell::Ref<'_, EditorCore>> {
+        rinch_core::reactive::flush_pending_effects();
+        let no_flush = rinch_core::reactive::suppress_effect_flush();
+        CoreGuard {
+            borrow: self.inner.borrow(),
+            _no_flush: no_flush,
+        }
+    }
+
+    /// Borrow the core mutably; see [`CoreGuard`].
+    fn core_mut(&self) -> CoreGuard<std::cell::RefMut<'_, EditorCore>> {
+        rinch_core::reactive::flush_pending_effects();
+        let no_flush = rinch_core::reactive::suppress_effect_flush();
+        CoreGuard {
+            borrow: self.inner.borrow_mut(),
+            _no_flush: no_flush,
+        }
+    }
+
+    /// [`Self::core_mut`], answering `Err` instead of panicking when the core
+    /// is already borrowed. Only the collaboration methods need the soft form.
+    #[cfg_attr(not(feature = "collaboration"), allow(dead_code))]
+    fn try_core_mut(
+        &self,
+    ) -> Result<CoreGuard<std::cell::RefMut<'_, EditorCore>>, std::cell::BorrowMutError> {
+        rinch_core::reactive::flush_pending_effects();
+        let no_flush = rinch_core::reactive::suppress_effect_flush();
+        Ok(CoreGuard {
+            borrow: self.inner.try_borrow_mut()?,
+            _no_flush: no_flush,
+        })
+    }
+}
+
 impl fmt::Debug for EditorHandle {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         // The state/view aren't `Debug`; the host id is the useful identity.
-        let mounted = self.inner.borrow().view.is_some();
+        let mounted = self.core().view.is_some();
         f.debug_struct("EditorHandle")
             .field("mounted", &mounted)
             .finish_non_exhaustive()
@@ -452,7 +519,7 @@ impl EditorHandle {
     /// to the host document. Re-attaching a handle that is already mounted replaces
     /// its view (the old projection is abandoned).
     pub(crate) fn attach(&self, container: NodeHandle, doc_ref: Weak<RefCell<dyn DomDocument>>) {
-        let mut core = self.inner.borrow_mut();
+        let mut core = self.core_mut();
         let view = RinchDomEditorView::new(container, doc_ref, &core.state);
         // The switch lives on the handle, so one set before mount (or across a
         // re-mount) is on the new container from its first frame.
@@ -509,7 +576,7 @@ impl EditorHandle {
         build: impl FnOnce(&EditorState) -> Option<Transaction>,
         input: bool,
     ) -> bool {
-        let mut core = self.inner.borrow_mut();
+        let mut core = self.core_mut();
         let Some(tr) = build(&core.state) else {
             return false;
         };
@@ -555,7 +622,7 @@ impl EditorHandle {
     /// Returns whether the plugin was added. It is all-or-nothing: `false` leaves
     /// the plugin list untouched, so a later call can still add it.
     pub fn add_plugin(&self, plugin: Rc<dyn Plugin>) -> bool {
-        let mut core = self.inner.borrow_mut();
+        let mut core = self.core_mut();
         if core.plugins.iter().any(|p| p.key() == plugin.key()) {
             return false;
         }
@@ -586,7 +653,7 @@ impl EditorHandle {
     /// whether it applied — a [read-only](Self::set_read_only) editor refuses every
     /// command that would change the document. The toolbar/keymap entry point.
     pub fn command(&self, name: &str) -> bool {
-        let mut core = self.inner.borrow_mut();
+        let mut core = self.core_mut();
         let Some((next, mapping)) = core.state.run_mapped(name) else {
             return false;
         };
@@ -614,7 +681,7 @@ impl EditorHandle {
     /// The anchor releases itself when dropped, and reports `None` from
     /// [`SelectionAnchor::selection`] once its document has been replaced.
     pub fn anchor_selection(&self) -> SelectionAnchor {
-        let core = self.inner.borrow();
+        let core = self.core();
         let anchors = core.anchors.clone();
         let id = {
             let mut map = anchors.borrow_mut();
@@ -657,13 +724,13 @@ impl EditorHandle {
     /// });
     /// ```
     pub fn on_change(&self, cb: impl Fn() + 'static) {
-        self.inner.borrow_mut().on_change = Some(Rc::new(cb));
+        self.core_mut().on_change = Some(Rc::new(cb));
     }
 
     /// Invoke the change callback, if any, with **no borrow held** — the callback
     /// commonly re-enters the handle, which would otherwise double-borrow.
     fn notify_change(&self) {
-        let cb = self.inner.borrow().on_change.clone();
+        let cb = self.core().on_change.clone();
         if let Some(cb) = cb {
             cb();
         }
@@ -689,7 +756,7 @@ impl EditorHandle {
     /// own would see it fire from a query — no command in `rinch-editor-core` has
     /// one. Tracked for a cheaper answer.
     pub fn can_run(&self, name: &str) -> bool {
-        let core = self.inner.borrow();
+        let core = self.core();
         if !core.read_only {
             return core.state.can_run(name);
         }
@@ -708,8 +775,7 @@ impl EditorHandle {
     /// every platform (design §5).
     pub fn dispatch_key(&self, binding: KeyBinding) -> Option<bool> {
         let name = self
-            .inner
-            .borrow()
+            .core()
             .state
             .keymap()
             .command_for(&binding)
@@ -720,7 +786,7 @@ impl EditorHandle {
     /// Whether the mark named `mark` is active for the current selection (toolbar
     /// "on" state) — reads **state**, never the host.
     pub fn is_mark_active(&self, mark: &str) -> bool {
-        let core = self.inner.borrow();
+        let core = self.core();
         match core.state.schema().mark_type(mark) {
             Some(mt) => is_mark_active(&core.state, mt),
             None => false,
@@ -732,7 +798,7 @@ impl EditorHandle {
     /// (`is_mark_active("link")` only reports presence, not the target). Reads
     /// **state**, never the host.
     pub fn active_link_href(&self) -> Option<String> {
-        let core = self.inner.borrow();
+        let core = self.core();
         let state = &core.state;
         let mt = state.schema().mark_type("link")?;
         marks_at(state, state.selection.head().0)
@@ -745,52 +811,47 @@ impl EditorHandle {
     /// The schema type name of the block the cursor is in (e.g. `"heading"`), or
     /// `None` across a multi-block selection.
     pub fn current_block_type(&self) -> Option<String> {
-        current_block_type(&self.inner.borrow().state).map(|nt| nt.name().to_string())
+        current_block_type(&self.core().state).map(|nt| nt.name().to_string())
     }
 
     /// Whether the selection is inside a node of the given type (e.g. `"blockquote"`,
     /// `"bullet_list"`) — drives the List/Blockquote toolbar active states (A6).
     pub fn in_node_type(&self, type_name: &str) -> bool {
-        in_node_type(&self.inner.borrow().state, type_name)
+        in_node_type(&self.core().state, type_name)
     }
 
     /// The current document (the save shape; serialize with `to_doc()` under the
     /// `serde` feature).
     pub fn doc(&self) -> Node {
-        self.inner.borrow().state.doc.clone()
+        self.core().state.doc.clone()
     }
 
     /// A snapshot of the whole editor state.
     pub fn state(&self) -> EditorState {
-        self.inner.borrow().state.clone()
+        self.core().state.clone()
     }
 
     /// The current selection.
     pub fn selection(&self) -> Selection {
-        self.inner.borrow().state.selection.clone()
+        self.core().state.selection.clone()
     }
 
     /// The host id of the editor container element, or `0` if not yet mounted.
     pub fn container_id(&self) -> usize {
-        self.inner
-            .borrow()
-            .view
-            .as_ref()
-            .map_or(0, |v| v.container_id())
+        self.core().view.as_ref().map_or(0, |v| v.container_id())
     }
 
     /// The host caret address `(textblock element id, flat UTF-8 byte offset)` for a
     /// model `pos` (used by app-side geometry: caret point, vertical movement).
     pub fn caret_address(&self, pos: Pos) -> Option<(usize, usize)> {
-        let core = self.inner.borrow();
+        let core = self.core();
         core.view.as_ref()?.caret_address(&core.state.doc, pos)
     }
 
     /// Map a host caret address `(textblock element id, flat UTF-8 byte offset)` —
     /// e.g. from a pointer hit-test — to a model [`Pos`] (without moving the cursor).
     pub fn pos_at(&self, textblock_dom_id: usize, ifc_byte: usize) -> Option<Pos> {
-        self.inner
-            .borrow()
+        self.core()
             .view
             .as_ref()?
             .pos_at(textblock_dom_id, ifc_byte)
@@ -805,7 +866,7 @@ impl EditorHandle {
     /// past an atom. `None` at the document edge. Mirrors the desktop `vertical_step`
     /// stuck-path so both platforms behave the same.
     pub fn vertical_block_fallback(&self, down: bool) -> Option<Selection> {
-        let core = self.inner.borrow();
+        let core = self.core();
         let doc = &core.state.doc;
         let head = core.state.selection.head();
         let r = doc.resolve(head).ok()?;
@@ -833,7 +894,7 @@ impl EditorHandle {
     ///
     /// [`Selection::Node`]: rinch_editor_core::Selection::Node
     pub fn node_selection_at_host(&self, host_id: usize) -> Option<Selection> {
-        let core = self.inner.borrow();
+        let core = self.core();
         let (pos, node) = core.view.as_ref()?.node_pos_for_host(host_id)?;
         // Node-views are *leaf* atoms (image / horizontal rule). A block container
         // (paragraph, list, blockquote) is `selectable` in the schema but is never
@@ -1055,7 +1116,7 @@ impl EditorHandle {
     /// stylesheet uses it to hide the empty-editor placeholder, which would
     /// otherwise invite typing.
     pub fn set_read_only(&self, read_only: bool) {
-        let mut core = self.inner.borrow_mut();
+        let mut core = self.core_mut();
         if core.read_only == read_only {
             return;
         }
@@ -1103,7 +1164,7 @@ impl EditorHandle {
     /// built-in stylesheet. A no-op before mount. The app should trigger a repaint
     /// afterward (toolbar/keyboard handlers already do).
     pub fn set_dark_mode(&self, dark: bool) {
-        if let Some(view) = self.inner.borrow().view.as_ref() {
+        if let Some(view) = self.core().view.as_ref() {
             view.set_dark_mode(dark);
         }
     }
@@ -1128,7 +1189,7 @@ impl EditorHandle {
     /// [`Self::load_doc`], answering whether the document was loaded (`false`:
     /// refused by a read-only, collaborating editor).
     fn load_doc_checked(&self, doc: Node) -> bool {
-        let mut core = self.inner.borrow_mut();
+        let mut core = self.core_mut();
         let doc = if doc.child_count() == 0 {
             empty_paragraph_doc(&core.schema).unwrap_or(doc)
         } else {
@@ -1153,7 +1214,7 @@ impl EditorHandle {
     /// not a block-less doc. Returns `false` if `html` fails to parse at all, or if
     /// the editor is read-only and collaborating (see [`Self::load_doc`]).
     pub fn load_html(&self, html: &str) -> bool {
-        let schema = self.inner.borrow().schema.clone();
+        let schema = self.core().schema.clone();
         let Ok(slice) = slice_from_html(&schema, html) else {
             return false;
         };
@@ -1176,7 +1237,7 @@ impl EditorHandle {
     /// rich payload (round-trips back via [`Self::replace_selection_with_html`]);
     /// the plain text is the `text/plain` alternative.
     pub fn selection_clipboard(&self) -> Option<(String, String)> {
-        let core = self.inner.borrow();
+        let core = self.core();
         let sel = &core.state.selection;
         if sel.is_empty() {
             return None;
@@ -1188,7 +1249,7 @@ impl EditorHandle {
     /// Replace the current selection with a parsed (schema-whitelisted) HTML
     /// payload — the rich paste path. Returns whether anything was inserted.
     pub fn replace_selection_with_html(&self, html: &str) -> bool {
-        let schema = self.inner.borrow().schema.clone();
+        let schema = self.core().schema.clone();
         match slice_from_html(&schema, html) {
             Ok(slice) if slice.content.child_count() > 0 => self.replace_selection_slice(slice),
             _ => false,
@@ -1200,7 +1261,7 @@ impl EditorHandle {
     /// changed (the schema rejects an image where inline content isn't allowed).
     pub fn insert_image(&self, src: &str, alt: &str) -> bool {
         let cmd = rinch_editor_core::commands::insert_image(src.to_string(), alt.to_string());
-        let mut core = self.inner.borrow_mut();
+        let mut core = self.core_mut();
         let Some((next, mapping)) = core.state.run_command_mapped(&cmd) else {
             return false;
         };
@@ -1227,7 +1288,7 @@ impl EditorHandle {
     /// an edit dialog, use [`active_link_href`](Self::active_link_href).
     pub fn toggle_link(&self, href: &str) -> bool {
         let cmd = rinch_editor_core::commands::toggle_link(href.to_string());
-        let mut core = self.inner.borrow_mut();
+        let mut core = self.core_mut();
         let Some((next, mapping)) = core.state.run_command_mapped(&cmd) else {
             return false;
         };
@@ -1245,7 +1306,7 @@ impl EditorHandle {
     /// Replace the current selection with plain text (one paragraph per line) —
     /// the plain-text paste path. Returns whether anything was inserted.
     pub fn replace_selection_with_text(&self, text: &str) -> bool {
-        let schema = self.inner.borrow().schema.clone();
+        let schema = self.core().schema.clone();
         match slice_from_text(&schema, text) {
             Ok(slice) if slice.content.child_count() > 0 => self.replace_selection_slice(slice),
             _ => false,
@@ -1298,7 +1359,7 @@ impl EditorHandle {
     /// all cause without the caret moving in the document; scrolling on those
     /// would pull a user who scrolled away back to the caret.
     pub fn update_caret(&self) -> bool {
-        let mut guard = self.inner.borrow_mut();
+        let mut guard = self.core_mut();
         let core = &mut *guard;
         let Some(view) = core.view.as_mut() else {
             return false;
@@ -1327,7 +1388,7 @@ impl EditorHandle {
     /// that isn't the focused one. A no-op before mount. Returns whether an overlay
     /// was actually cleared (so the runtime can schedule a repaint).
     pub fn hide_overlays(&self) -> bool {
-        match self.inner.borrow_mut().view.as_mut() {
+        match self.core_mut().view.as_mut() {
             Some(view) => {
                 view.hide_overlays();
                 view.take_overlay_dirty()
@@ -1341,8 +1402,7 @@ impl EditorHandle {
     /// cursor), `Some(true)` if the caret's visibility actually toggled (repaint
     /// needed), or `Some(false)` if the phase was already applied.
     pub fn set_caret_blink(&self, visible: bool) -> Option<bool> {
-        self.inner
-            .borrow_mut()
+        self.core_mut()
             .view
             .as_mut()?
             .set_caret_blink_visible(visible)
@@ -1365,7 +1425,7 @@ impl EditorHandle {
     /// it would lead to is refused, so the overlay would be text that can never
     /// land.
     pub fn ime_set_preedit(&self, text: &str, _cursor: Option<(usize, usize)>) {
-        let mut core = self.inner.borrow_mut();
+        let mut core = self.core_mut();
         let text = if core.read_only { "" } else { text };
         if let Some(view) = core.view.as_mut() {
             view.set_preedit(text);
@@ -1375,7 +1435,7 @@ impl EditorHandle {
     /// Clear the IME composition overlay without inserting anything (composition
     /// cancelled / disabled). A no-op before mount.
     pub fn ime_clear_preedit(&self) {
-        if let Some(view) = self.inner.borrow_mut().view.as_mut() {
+        if let Some(view) = self.core_mut().view.as_mut() {
             view.set_preedit("");
         }
     }
@@ -1384,7 +1444,7 @@ impl EditorHandle {
     /// the selection as one ordinary edit (so it joins the undo history like
     /// typing). An empty commit just clears the overlay.
     pub fn ime_commit(&self, text: &str) {
-        if let Some(view) = self.inner.borrow_mut().view.as_mut() {
+        if let Some(view) = self.core_mut().view.as_mut() {
             view.set_preedit("");
         }
         if !text.is_empty() {
@@ -1399,7 +1459,7 @@ impl EditorHandle {
     /// would cross a block boundary the schema rejects). Only reached once a backend
     /// advertises surrounding-text support.
     pub fn ime_delete_surrounding(&self, before: usize, after: usize) {
-        if let Some(view) = self.inner.borrow_mut().view.as_mut() {
+        if let Some(view) = self.core_mut().view.as_mut() {
             view.set_preedit("");
         }
         if before == 0 && after == 0 {
@@ -1464,7 +1524,7 @@ impl EditorHandle {
         &self,
         outbound: impl Fn(Vec<u8>) + 'static,
     ) -> Result<Vec<u8>, CollabError> {
-        let mut core = self.inner.borrow_mut();
+        let mut core = self.core_mut();
         let session = CollabSession::new(&core.state)?;
         let snapshot = session.snapshot();
         core.collab = Some(CollabBridge::new(session, Box::new(outbound)));
@@ -1494,11 +1554,11 @@ impl EditorHandle {
         // one written over what its peers share. A read-only editor depends on the
         // same thing: with no session attached, a load is never refused. Then
         // attach the matching session.
-        let schema = self.inner.borrow().schema.clone();
+        let schema = self.core().schema.clone();
         let doc = session.projected_doc(&schema)?;
-        self.inner.borrow_mut().collab = None;
+        self.core_mut().collab = None;
         self.load_doc(doc);
-        self.inner.borrow_mut().collab = Some(CollabBridge::new(session, Box::new(outbound)));
+        self.core_mut().collab = Some(CollabBridge::new(session, Box::new(outbound)));
         Ok(())
     }
 
@@ -1532,7 +1592,7 @@ impl EditorHandle {
         // `outbound` runs while a local edit holds this handle's borrow; a self-
         // wired sink that calls back in here would otherwise hit an already-borrowed
         // panic. Fail soft instead.
-        let Ok(mut core) = self.inner.try_borrow_mut() else {
+        let Ok(mut core) = self.try_core_mut() else {
             return false;
         };
         if core.collab.is_none() {
@@ -1571,7 +1631,7 @@ impl EditorHandle {
 
     /// Whether this editor currently has a collaboration session attached.
     pub fn is_collaborating(&self) -> bool {
-        self.inner.borrow().collab.is_some()
+        self.core().collab.is_some()
     }
 
     /// Whether the attached collaboration session is **poisoned** (issue #196): an
@@ -1609,11 +1669,7 @@ impl EditorHandle {
     /// exchange state vectors instead ([`Self::collab_state_vector`] /
     /// [`Self::collab_sync_diff`]).
     pub fn collab_snapshot(&self) -> Option<Vec<u8>> {
-        self.inner
-            .borrow()
-            .collab
-            .as_ref()
-            .map(|b| b.session.snapshot())
+        self.core().collab.as_ref().map(|b| b.session.snapshot())
     }
 
     /// This editor's CRDT **state vector**: the opaque summary of what it has seen, to
@@ -1650,7 +1706,7 @@ impl EditorHandle {
     /// document and the broadcast watermark untouched, so a caller may answer any number
     /// of peers without disturbing the live delta stream.
     pub fn collab_sync_diff(&self, remote_state_vector: &[u8]) -> Option<Vec<u8>> {
-        let mut core = self.inner.try_borrow_mut().ok()?;
+        let mut core = self.try_core_mut().ok()?;
         let bridge = core.collab.as_mut()?;
         match bridge.session.sync_diff(remote_state_vector) {
             Ok(diff) => Some(diff),
@@ -1664,7 +1720,7 @@ impl EditorHandle {
     /// Detach the collaboration session (stop projecting and broadcasting). The
     /// document is unchanged; subsequent edits are local-only again.
     pub fn stop_collaboration(&self) {
-        self.inner.borrow_mut().collab = None;
+        self.core_mut().collab = None;
     }
 
     /// Why this editor's **outbound** collaboration is currently refusing, if it is
@@ -1705,8 +1761,7 @@ impl EditorHandle {
     /// condition — outbound stays stalled until the content is removed. Use
     /// [`Self::collab_outbound_stall`] for the *state*; this is the one-shot event.
     pub fn collab_take_error(&self) -> Option<CollabError> {
-        self.inner
-            .borrow_mut()
+        self.core_mut()
             .collab
             .as_mut()
             .and_then(|b| b.last_error.take())
@@ -4755,5 +4810,114 @@ mod tests {
                 );
             }
         }
+    }
+
+    // ── A handler that writes and runs editor commands (PR #882 review, E1) ─
+    //
+    // Every handler is a batch, and a `NodeHandle` operation made in one runs
+    // the effects queued so far. The editor patches its DOM through
+    // `NodeHandle`s while it holds `inner` mutably, so without the guards in
+    // `core_mut` a pending toolbar effect that reads editor state ran right
+    // there and panicked with `BorrowMutError`.
+    /// Toolbar pattern: an effect reads a signal and the editor's state; a
+    /// handler writes the signal, then runs a command. Unbatched (main) the
+    /// effect ran at the write; batched, the first NodeHandle op the command's
+    /// view patch makes flushes it while `command` holds `inner.borrow_mut()`.
+    #[test]
+    fn batched_write_then_command_in_one_batch() {
+        use rinch_core::reactive::{Effect, Signal, batch};
+        let s = schema();
+        let h = mount(doc_node(&s, vec![para(&s, "hello"), para(&s, "world")]));
+        let tick = Signal::new(0u32);
+        let ed = h.handle.clone();
+        let seen = Rc::new(RefCell::new(Vec::new()));
+        let sn = seen.clone();
+        let _e = Effect::new(move || {
+            let t = tick.get();
+            sn.borrow_mut().push((t, ed.is_mark_active("bold")));
+        });
+        h.handle.set_selection(Selection::text(Pos(1), Pos(4)));
+        let ed2 = h.handle.clone();
+        batch(|| {
+            tick.set(1);
+            ed2.command("toggleBold");
+        });
+        // Program order: the command's entry runs the effect the write queued,
+        // so it sees `tick == 1` *before* the command made the text bold —
+        // what it saw unbatched. (Deferred to the batch's end, it saw bold.)
+        assert_eq!(*seen.borrow(), vec![(0, false), (1, false)]);
+    }
+
+    /// Two commands in one handler, with the documented on_change → signal
+    /// bump driving a toolbar effect that reads editor state.
+    #[test]
+    fn batched_two_commands_with_on_change_tick() {
+        use rinch_core::reactive::{Effect, Signal, batch};
+        let s = schema();
+        let h = mount(doc_node(&s, vec![para(&s, "hello"), para(&s, "world")]));
+        let tick = Signal::new(0u32);
+        h.handle.on_change(move || tick.update(|t| *t += 1));
+        let ed = h.handle.clone();
+        let _e = Effect::new(move || {
+            let _ = tick.get();
+            let _ = ed.is_mark_active("bold");
+        });
+        h.handle.set_selection(Selection::text(Pos(1), Pos(4)));
+        let ed2 = h.handle.clone();
+        batch(|| {
+            ed2.command("toggleBold");
+            ed2.command("toggleItalic");
+        });
+    }
+
+    /// A signal written *during* the view's DOM patch — here by a
+    /// child-inserted observer on the editor's own container, the hook
+    /// `List`/`Stepper` use — leaves an effect pending while the core is
+    /// borrowed. The patch's next `NodeHandle` operation must not run it: the
+    /// effect reads editor state and would re-borrow the core mid-patch. The
+    /// entry flush cannot cover this one (nothing was pending at the entry);
+    /// only the suppression held with the borrow does.
+    #[test]
+    fn batched_a_write_made_during_the_patch_does_not_run_inside_it() {
+        use rinch_core::reactive::{Effect, Signal, batch};
+        let s = schema();
+        let h = mount(doc_node(&s, vec![para(&s, "hello"), para(&s, "world")]));
+        let tick = Signal::new(0u32);
+        let container = NodeHandle::new(h.container_id, Rc::downgrade(&h.doc));
+        rinch_core::dom::on_child_inserted(&container, move |_| tick.update(|t| *t += 1));
+        let ed = h.handle.clone();
+        let runs = Rc::new(std::cell::Cell::new(0));
+        let r = runs.clone();
+        let _e = Effect::new(move || {
+            let _ = tick.get();
+            let _ = ed.is_mark_active("bold");
+            r.set(r.get() + 1);
+        });
+        h.handle.set_selection(Selection::text(Pos(1), Pos(4)));
+        let ed2 = h.handle.clone();
+        batch(|| {
+            ed2.command("toggleBold");
+        });
+        assert!(tick.get() > 0, "precondition: the patch inserted a node");
+        assert!(runs.get() >= 2, "the effect ran, after the patch");
+    }
+
+    /// Control: the same, unbatched (what dispatch_event did on main).
+    #[test]
+    fn batched_control_unbatched() {
+        use rinch_core::reactive::{Effect, Signal};
+        let s = schema();
+        let h = mount(doc_node(&s, vec![para(&s, "hello"), para(&s, "world")]));
+        let tick = Signal::new(0u32);
+        h.handle.on_change(move || tick.update(|t| *t += 1));
+        let ed = h.handle.clone();
+        let _e = Effect::new(move || {
+            let _ = tick.get();
+            let _ = ed.is_mark_active("bold");
+        });
+        h.handle.set_selection(Selection::text(Pos(1), Pos(4)));
+        tick.set(5);
+        h.handle.command("toggleBold");
+        h.handle.command("toggleItalic");
     }
 }
