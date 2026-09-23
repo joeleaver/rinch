@@ -335,6 +335,27 @@ impl RinchApp {
                 actions.push(AppAction::RequestRedraw);
                 DebugResult::Json { data: json!(null) }
             }
+            DebugCommandKind::PerfStats { reset } => {
+                let Some(doc) = &self.doc else {
+                    return DebugResult::Error {
+                        message: "No document".into(),
+                    };
+                };
+                let data = {
+                    let d = doc.borrow();
+                    let perf = &d.tree.perf;
+                    json!({
+                        "frames": perf.frames(),
+                        "last_frame": perf.last_frame().to_json(),
+                        "current_frame": perf.frame().to_json(),
+                        "total": perf.total().to_json(),
+                    })
+                };
+                if reset {
+                    self.reset_perf();
+                }
+                DebugResult::Json { data }
+            }
             DebugCommandKind::WaitFrame => {
                 // Layout is resolved at the logical viewport, not the physical
                 // surface size (see `RinchApp::layout_viewport`).
@@ -874,5 +895,45 @@ mod tests {
             (0.0, 0.0),
             "a negative delta must undo it"
         );
+    }
+
+    /// `perf_stats` answers the document's counters as JSON keyed by counter
+    /// name, and `reset: true` zeroes them after the read.
+    #[test]
+    fn perf_stats_reports_and_resets_the_counters() {
+        let ids: Rc<Cell<Option<(usize, usize)>>> = Rc::new(Cell::new(None));
+        let mut app = app_with_scroller(ids);
+        app.end_perf_frame();
+        let mut actions = Vec::new();
+        let DebugResult::Json { data } = app.execute_debug_command(
+            DebugCommandKind::PerfStats { reset: true },
+            &mut actions,
+            1.0,
+            VIEWPORT,
+        ) else {
+            panic!("perf_stats answers JSON");
+        };
+        assert_eq!(data["frames"], 1);
+        assert!(
+            data["last_frame"]["layout_resolves"].as_u64().unwrap() > 0,
+            "the mount's layout is in the frame it ended: {data}"
+        );
+        assert!(data["total"]["elements_cascaded"].as_u64().unwrap() > 0);
+        assert!(data["current_frame"].is_object());
+        assert_eq!(
+            data["last_frame"].as_object().unwrap().len(),
+            rinch_dom::perf::Counter::COUNT
+        );
+
+        let DebugResult::Json { data } = app.execute_debug_command(
+            DebugCommandKind::PerfStats { reset: false },
+            &mut actions,
+            1.0,
+            VIEWPORT,
+        ) else {
+            panic!("perf_stats answers JSON");
+        };
+        assert_eq!(data["frames"], 0, "reset zeroed the frame count: {data}");
+        assert_eq!(data["total"]["elements_cascaded"], 0);
     }
 }

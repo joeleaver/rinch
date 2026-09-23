@@ -146,8 +146,27 @@ impl RinchDocument {
     /// then reads layout results back into each node's `layout` field.
     /// Text nodes are measured using Parley for accurate text layout.
     pub fn resolve_layout(&mut self, width: f32, height: f32) {
-        let perf = std::env::var("RINCH_PERF").is_ok();
+        use crate::perf::Counter;
+        // Layout time is this call's wall clock minus the style time spent
+        // inside it (`resolve_styles` / `apply_stylo_styles_to_taffy` time
+        // themselves), so the two phases never double count.
         let t0 = web_time::Instant::now();
+        let style_before = self.tree.perf.get(Counter::TimeStyleNs);
+        self.tree.perf.bump(Counter::LayoutResolves);
+        self.resolve_layout_inner(width, height);
+        let total = t0.elapsed().as_nanos() as u64;
+        let style = self
+            .tree
+            .perf
+            .get(Counter::TimeStyleNs)
+            .wrapping_sub(style_before);
+        self.tree
+            .perf
+            .add(Counter::TimeLayoutNs, total.saturating_sub(style));
+    }
+
+    fn resolve_layout_inner(&mut self, width: f32, height: f32) {
+        use crate::perf::Counter;
 
         let old_viewport = self.tree.viewport;
         self.tree.viewport = crate::layout::Viewport { width, height };
@@ -156,6 +175,9 @@ impl RinchDocument {
         // so that vh/vw units are recomputed with the new viewport dimensions
         if (old_viewport.width - width).abs() > 0.5 || (old_viewport.height - height).abs() > 0.5 {
             self.set_stylist_viewport(width, height);
+            self.tree
+                .perf
+                .full_restyle(crate::perf::FullRestyleReason::Viewport);
 
             // Invalidate all cached stylo_element_data so styles are recomputed with new viewport
             for (node_id, _) in self.tree.nodes.iter() {
@@ -191,22 +213,8 @@ impl RinchDocument {
 
         // Resolve Stylo styles and apply to Taffy nodes (only if dirty)
         if self.tree.styles_dirty {
-            let t = web_time::Instant::now();
             self.resolve_styles();
-            if perf {
-                eprintln!(
-                    "  [PERF] resolve_styles: {:.2}ms",
-                    t.elapsed().as_secs_f64() * 1000.0
-                );
-            }
-            let t = web_time::Instant::now();
             self.apply_stylo_styles_to_taffy();
-            if perf {
-                eprintln!(
-                    "  [PERF] apply_to_taffy: {:.2}ms",
-                    t.elapsed().as_secs_f64() * 1000.0
-                );
-            }
             self.tree.styles_dirty = false;
         }
 
@@ -223,23 +231,16 @@ impl RinchDocument {
         // For these, skip Taffy but still rebuild the affected IFC text layouts.
         if !self.tree.layout_dirty {
             if !self.tree.dirty_ifc_text_roots.is_empty() {
-                let t = web_time::Instant::now();
+                self.tree.perf.bump(Counter::LayoutSkippedTextOnly);
                 self.sync_dirty_text_contexts();
+                let t = web_time::Instant::now();
                 let mut temp_layout_cx = std::mem::take(&mut self.layout_cx);
                 self.build_ifc_layouts(&mut temp_layout_cx);
                 self.layout_cx = temp_layout_cx;
+                self.tree.perf.add_elapsed(Counter::TimeBuildIfcNs, t);
                 self.tree.dirty_ifc_text_roots.clear();
-                if perf {
-                    eprintln!(
-                        "  [PERF] layout SKIPPED (text-only IFC rebuild) {:.2}ms",
-                        t.elapsed().as_secs_f64() * 1000.0
-                    );
-                }
-            } else if perf {
-                eprintln!(
-                    "  [PERF] layout SKIPPED (paint-only) {:.2}ms",
-                    t0.elapsed().as_secs_f64() * 1000.0
-                );
+            } else {
+                self.tree.perf.bump(Counter::LayoutSkippedPaintOnly);
             }
             return;
         }
@@ -262,28 +263,17 @@ impl RinchDocument {
             // calls during rendering (before setup_inline_formatting_contexts
             // assigns correct ifc_root values) cause build_ifc_layouts to
             // skip newly created IFC roots — making their text invisible.
+            let t_ifc = web_time::Instant::now();
+            self.tree.perf.bump(Counter::IfcSetupPasses);
+            self.tree.perf.bump(Counter::IfcMeasureCacheClears);
             self.tree.ifc_measure_cache.clear();
             self.tree.dirty_ifc_text_roots.clear();
 
             // Handle display:contents by rebuilding taffy children for affected nodes
-            let t = web_time::Instant::now();
             self.sync_display_contents();
-            if perf {
-                eprintln!(
-                    "  [PERF] sync_display_contents: {:.2}ms",
-                    t.elapsed().as_secs_f64() * 1000.0
-                );
-            }
 
             // Detect and set up inline formatting contexts
-            let t = web_time::Instant::now();
             self.setup_inline_formatting_contexts();
-            if perf {
-                eprintln!(
-                    "  [PERF] setup_ifc: {:.2}ms",
-                    t.elapsed().as_secs_f64() * 1000.0
-                );
-            }
 
             // Sync font-size and the rest of the inherited text properties from
             // parent elements into text node contexts.
@@ -308,37 +298,17 @@ impl RinchDocument {
             // measured, by putting the two calls back in their old order with
             // everything else in #592 kept: `inline-block` stays correct and the
             // other two regress to 211x22.
-            let t = web_time::Instant::now();
             self.sync_text_contexts();
-            if perf {
-                eprintln!(
-                    "  [PERF] sync_text_contexts: {:.2}ms",
-                    t.elapsed().as_secs_f64() * 1000.0
-                );
-            }
 
             // Pre-compute layout for inline-block children that were detached from Taffy.
             // They need their own subtree measured so walk_inline_children can read dimensions.
-            let t = web_time::Instant::now();
             self.compute_inline_block_layouts();
-            if perf {
-                eprintln!(
-                    "  [PERF] inline_block_layouts: {:.2}ms",
-                    t.elapsed().as_secs_f64() * 1000.0
-                );
-            }
 
             self.tree.ifc_dirty = false;
+            self.tree.perf.add_elapsed(Counter::TimeIfcSetupNs, t_ifc);
         } else {
             // IFC structure unchanged — only sync text contexts for dirty nodes
-            let t = web_time::Instant::now();
             self.sync_dirty_text_contexts();
-            if perf {
-                eprintln!(
-                    "  [PERF] sync_dirty_text_contexts: {:.2}ms",
-                    t.elapsed().as_secs_f64() * 1000.0
-                );
-            }
 
             // An atomic inline is detached from its parent's Taffy child list,
             // so the compute below cannot reach it and the branch above — the
@@ -346,14 +316,7 @@ impl RinchDocument {
             // ones something actually changed under (issue #661), before the
             // compute, because the enclosing IFC line-breaks against the box
             // this produces.
-            let t = web_time::Instant::now();
-            let moved = self.remeasure_dirty_atomic_inlines();
-            if perf && moved {
-                eprintln!(
-                    "  [PERF] remeasure_atomic_inlines: {:.2}ms",
-                    t.elapsed().as_secs_f64() * 1000.0
-                );
-            }
+            self.remeasure_dirty_atomic_inlines();
         }
 
         let available_space = taffy::Size {
@@ -361,7 +324,7 @@ impl RinchDocument {
             height: taffy::AvailableSpace::Definite(height),
         };
 
-        let mut text_layout_cache = self.run_taffy_compute(root_taffy, available_space, perf);
+        let mut text_layout_cache = self.run_taffy_compute(root_taffy, available_space);
 
         // #120: an inline-block with a percentage main size is pre-measured detached
         // from Taffy under `MaxContent` (see `compute_inline_block_layouts`), where it
@@ -371,7 +334,7 @@ impl RinchDocument {
         // changed size, re-run the compute so the enclosing IFCs line-break against the
         // corrected boxes. Costs nothing when no percentage inline-block exists.
         if self.resolve_percentage_inline_blocks() {
-            text_layout_cache = self.run_taffy_compute(root_taffy, available_space, perf);
+            text_layout_cache = self.run_taffy_compute(root_taffy, available_space);
         }
 
         // #278: a mixed `calc(%, px)` value has no Taffy representation (see
@@ -390,7 +353,8 @@ impl RinchDocument {
         // stderr once per process rather than hiding it.
         let mut calc_passes = 0;
         while self.resolve_layout_calcs() {
-            text_layout_cache = self.run_taffy_compute(root_taffy, available_space, perf);
+            self.tree.perf.bump(Counter::CalcFixpointPasses);
+            text_layout_cache = self.run_taffy_compute(root_taffy, available_space);
             calc_passes += 1;
             if calc_passes >= 8 {
                 static CAP_WARNING: std::sync::Once = std::sync::Once::new();
@@ -404,7 +368,6 @@ impl RinchDocument {
         }
 
         // Read layout results back into nodes
-        let t = web_time::Instant::now();
         self.read_layout_results(self.tree.root_id);
         // The walk above is over the **element** tree, and an anonymous block
         // box is not in it (#566) — so nothing above visits one, and its
@@ -417,12 +380,6 @@ impl RinchDocument {
         // handful of boxes. This is O(boxes) and off the per-node path.
         for anon_id in self.tree.anonymous_block_boxes.clone() {
             self.read_layout_results_for_box(anon_id);
-        }
-        if perf {
-            eprintln!(
-                "  [PERF] read_layout: {:.2}ms",
-                t.elapsed().as_secs_f64() * 1000.0
-            );
         }
 
         // Clamp scroll offsets to valid range after layout.
@@ -437,30 +394,11 @@ impl RinchDocument {
         let mut temp_layout_cx = std::mem::take(&mut self.layout_cx);
         self.build_ifc_layouts(&mut temp_layout_cx);
         self.layout_cx = temp_layout_cx;
+        self.tree.perf.add_elapsed(Counter::TimeBuildIfcNs, t);
         self.tree.dirty_ifc_text_roots.clear();
-        if perf {
-            eprintln!(
-                "  [PERF] build_ifc: {:.2}ms",
-                t.elapsed().as_secs_f64() * 1000.0
-            );
-        }
 
         // Copy cached text layouts to nodes (use the exact layouts from measurement)
-        let t = web_time::Instant::now();
         self.copy_cached_text_layouts(text_layout_cache);
-        if perf {
-            eprintln!(
-                "  [PERF] copy_text_layouts: {:.2}ms",
-                t.elapsed().as_secs_f64() * 1000.0
-            );
-        }
-
-        if perf {
-            eprintln!(
-                "  [PERF] resolve_layout TOTAL: {:.2}ms",
-                t0.elapsed().as_secs_f64() * 1000.0
-            );
-        }
 
         // Arm transitions now that the first layout has completed, so nothing
         // transitions into existence on page load.
@@ -577,9 +515,17 @@ impl RinchDocument {
         &mut self,
         root_taffy: taffy::NodeId,
         available_space: taffy::Size<taffy::AvailableSpace>,
-        perf: bool,
     ) -> HashMap<(usize, u32), parley::layout::Layout<Brush>> {
+        use crate::perf::Counter;
         self.tree.taffy_computes += 1;
+        self.tree.perf.bump(Counter::TaffyRootComputes);
+        // The measure closure borrows `self.tree.nodes` while the compute
+        // borrows `self.tree.taffy` mutably, so it counts into locals that are
+        // folded into `self.tree.perf` after the compute.
+        let measure_calls = std::cell::Cell::new(0u64);
+        let shape_ifc = std::cell::Cell::new(0u64);
+        let shape_text = std::cell::Cell::new(0u64);
+        let cache_hits = std::cell::Cell::new(0u64);
         let font_cx = &mut self.font_cx;
         let layout_cx = &mut self.layout_cx;
         let nodes = &self.tree.nodes;
@@ -602,6 +548,7 @@ impl RinchDocument {
                 root_taffy,
                 available_space,
                 |known_dims, avail_space, _node_id, context, _style| {
+                    measure_calls.set(measure_calls.get() + 1);
                     let max_width = match avail_space.width {
                         taffy::AvailableSpace::Definite(w) => Some(w),
                         taffy::AvailableSpace::MaxContent => None,
@@ -626,6 +573,7 @@ impl RinchDocument {
                                 return taffy::Size::ZERO;
                             }
 
+                            shape_text.set(shape_text.get() + 1);
                             let mut builder =
                                 layout_cx.ranged_builder(font_cx, &text.content, 1.0, true);
                             builder.push_default(parley::style::StyleProperty::FontSize(
@@ -753,6 +701,7 @@ impl RinchDocument {
                                 if let Some(&(cached_w, cached_h)) =
                                     ifc_measure_cache.borrow().get(&(root_id, wrap_bits))
                                 {
+                                    cache_hits.set(cache_hits.get() + 1);
                                     return taffy::Size {
                                         width: known_dims.width.unwrap_or(cached_w),
                                         height: known_dims.height.unwrap_or(cached_h),
@@ -761,6 +710,7 @@ impl RinchDocument {
                             }
 
                             // Full Parley rebuild (text changed or cache miss)
+                            shape_ifc.set(shape_ifc.get() + 1);
                             let inline_layout = Self::build_inline_layout(
                                 nodes, root_id, max_width, 1.0, font_cx, layout_cx,
                             );
@@ -787,12 +737,12 @@ impl RinchDocument {
         // Restore the persistent IFC measure cache (dirty_ifc_text_roots cleared after build_ifc)
         self.tree.ifc_measure_cache = ifc_measure_cache.into_inner();
 
-        if perf {
-            eprintln!(
-                "  [PERF] taffy_compute: {:.2}ms",
-                t.elapsed().as_secs_f64() * 1000.0
-            );
-        }
+        let perf = &self.tree.perf;
+        perf.add(Counter::TaffyMeasureCalls, measure_calls.get());
+        perf.add(Counter::ShapeMeasureIfc, shape_ifc.get());
+        perf.add(Counter::ShapeMeasureText, shape_text.get());
+        perf.add(Counter::IfcMeasureCacheHits, cache_hits.get());
+        perf.add_elapsed(Counter::TimeTaffyComputeNs, t);
 
         text_layout_cache.into_inner()
     }
@@ -2105,6 +2055,9 @@ impl RinchDocument {
             // Invalidate IFC measure cache so style changes (e.g., font-size) trigger re-measurement
             self.tree.dirty_ifc_text_roots.insert(ifc_root_id);
             self.tree
+                .perf
+                .bump(crate::perf::Counter::IfcMeasureCacheRetains);
+            self.tree
                 .ifc_measure_cache
                 .retain(|&(root_id, _), _| root_id != ifc_root_id);
         } else if self
@@ -2117,6 +2070,9 @@ impl RinchDocument {
             // The node itself IS the IFC root (block element containing inline text)
             self.tree.nodes[node_id].text_layout = None;
             self.tree.dirty_ifc_text_roots.insert(node_id);
+            self.tree
+                .perf
+                .bump(crate::perf::Counter::IfcMeasureCacheRetains);
             self.tree
                 .ifc_measure_cache
                 .retain(|&(root_id, _), _| root_id != node_id);
@@ -2141,6 +2097,9 @@ impl RinchDocument {
                     self.tree.nodes[pid].text_layout = None;
                     // Invalidate IFC measure cache for this root
                     self.tree.dirty_ifc_text_roots.insert(pid);
+                    self.tree
+                        .perf
+                        .bump(crate::perf::Counter::IfcMeasureCacheRetains);
                     self.tree
                         .ifc_measure_cache
                         .retain(|&(root_id, _), _| root_id != pid);
@@ -2583,6 +2542,9 @@ impl RinchDocument {
         }
         // Invalidate IFC measure cache so style changes trigger re-measurement
         self.tree.dirty_ifc_text_roots.insert(parent_id);
+        self.tree
+            .perf
+            .bump(crate::perf::Counter::IfcMeasureCacheRetains);
         self.tree
             .ifc_measure_cache
             .retain(|&(root_id, _), _| root_id != parent_id);

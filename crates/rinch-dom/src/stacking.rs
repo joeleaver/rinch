@@ -330,6 +330,7 @@ pub fn stacking_paint_order(
     offset_x: f64,
     offset_y: f64,
 ) -> PaintOrder {
+    tree.perf.bump(crate::perf::Counter::StackingOrderBuilds);
     let Some(_node) = tree.get(node_id) else {
         return PaintOrder::default();
     };

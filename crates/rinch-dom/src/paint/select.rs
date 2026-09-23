@@ -74,6 +74,7 @@ pub(super) fn paint_select_value(
     };
 
     let scaled_font_size = font_size * scale as f32;
+    tree.perf.bump(crate::perf::Counter::ShapePaint);
     let mut builder = layout_cx.ranged_builder(font_cx, label, 1.0, true);
     builder.push_default(parley::style::StyleProperty::FontSize(scaled_font_size));
     builder.push_default(parley::style::StyleProperty::Brush(Brush::Solid(

@@ -19,6 +19,7 @@ mod layout_engine;
 pub mod node;
 mod out_of_flow;
 pub mod paint;
+pub mod perf;
 pub mod select;
 pub mod stacking;
 mod style_resolution;

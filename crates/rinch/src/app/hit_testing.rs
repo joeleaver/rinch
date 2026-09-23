@@ -8,6 +8,7 @@ use rinch_dom::stacking::{paints_at_stacking_root, stacking_paint_order};
 /// are tested before visually-behind siblings, and CSS transforms so that a
 /// transformed subtree is hit where it is *painted* (#199).
 pub(crate) fn hit_test(tree: &rinch_dom::NodeTree, x: f32, y: f32) -> Option<usize> {
+    tree.perf.bump(rinch_dom::perf::Counter::HitTests);
     hit_test_node(tree, tree.body_id, 0.0, 0.0, x, y, x, y)
 }
 
@@ -161,6 +162,8 @@ fn hit_test_node(
     vx: f32,
     vy: f32,
 ) -> Option<usize> {
+    tree.perf
+        .bump(rinch_dom::perf::Counter::HitTestNodesVisited);
     let node = tree.get(node_id)?;
 
     // The `position: fixed` hoist, the IFC content-box offset, the transform

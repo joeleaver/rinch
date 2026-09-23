@@ -98,6 +98,15 @@ pub enum DebugCommandKind {
     GetCaretPosition { node_id: usize, byte_offset: usize },
     #[serde(rename = "get_glyph_bounds")]
     GetGlyphBounds { node_id: usize, byte_offset: usize },
+    /// The document's performance counters (`rinch_dom::perf`): the last
+    /// completed frame, the frame in progress, the running total and the
+    /// frame count, each counter keyed by its `snake_case` name. `reset`
+    /// zeroes them all after they are read.
+    #[serde(rename = "perf_stats")]
+    PerfStats {
+        #[serde(default)]
+        reset: bool,
+    },
 }
 
 /// Result of a debug command.

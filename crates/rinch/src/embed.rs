@@ -221,6 +221,10 @@ impl RinchContext {
     pub fn update(&mut self, events: &[PlatformEvent]) -> Vec<AppAction> {
         let mut all_actions = Vec::new();
 
+        // One `update` (plus the `scene` that follows it) is one performance
+        // frame: close the previous one before this one's work starts.
+        self.app.end_perf_frame();
+
         // Run the per-frame housekeeping the desktop runtime does ahead of each
         // paint, in the same order it does.
         //
@@ -263,6 +267,23 @@ impl RinchContext {
         all_actions.extend(transition_actions);
 
         all_actions
+    }
+
+    /// The last completed performance frame: every [`rinch_dom::perf`]
+    /// counter for the previous `update` + `scene`.
+    pub fn perf_last_frame(&self) -> rinch_dom::perf::FrameStats {
+        self.app.last_frame_perf()
+    }
+
+    /// Every performance counter since the context was created or last
+    /// [`reset_perf`](Self::reset_perf), the current frame included.
+    pub fn perf_total(&self) -> rinch_dom::perf::FrameStats {
+        self.app.total_perf()
+    }
+
+    /// Zero the performance counters.
+    pub fn reset_perf(&mut self) {
+        self.app.reset_perf();
     }
 
     /// Get the current Vello scene. Rebuilds only if dirty.

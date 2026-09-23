@@ -1206,6 +1206,7 @@ fn paint_node(
     layout_cx: &mut parley::LayoutContext<Brush>,
     parent_transform: Affine,
 ) {
+    tree.perf.bump(crate::perf::Counter::PaintNodesVisited);
     let Some(node) = tree.get(node_id) else {
         return;
     };
@@ -2157,6 +2158,7 @@ fn paint_node(
                 if matches!(node.tag(), Some("input" | "textarea")) {
                     paint_input_value(
                         node,
+                        &tree.perf,
                         painter,
                         scale,
                         x,
@@ -2543,6 +2545,7 @@ fn paint_node(
             // glyph advances don't scale perfectly linearly, make this layout's width
             // diverge from the width the box was measured at — breaking the wrap
             // constraint below at fractional scale factors.)
+            tree.perf.bump(crate::perf::Counter::ShapePaint);
             let mut builder = layout_cx.ranged_builder(font_cx, &text_data.content, 1.0, true);
             builder.push_default(parley::style::StyleProperty::FontSize(font_size));
             builder.push_default(parley::style::StyleProperty::Brush(Brush::Solid(color)));

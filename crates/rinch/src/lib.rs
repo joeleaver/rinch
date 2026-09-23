@@ -45,6 +45,12 @@
 #[cfg(any(feature = "desktop", feature = "android", feature = "embed"))]
 pub mod app;
 
+/// Per-frame performance counters (`RINCH_PERF`, the `perf_stats` debug
+/// command, [`app::RinchApp::last_frame_perf`]). Re-exported from rinch-dom;
+/// guide: `docs/src/guide/performance.md`.
+#[cfg(any(feature = "desktop", feature = "android", feature = "embed"))]
+pub use rinch_dom::perf;
+
 /// The [`App`] builder — the single entry point that composes every startup
 /// option (issue #493).
 #[cfg(any(feature = "desktop", all(feature = "android", target_os = "android")))]

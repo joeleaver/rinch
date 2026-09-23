@@ -885,6 +885,50 @@ pub(crate) fn flush_effects_and_notify() {
 }
 
 // ============================================================================
+// Performance counters
+// ============================================================================
+
+/// Cumulative reactive-runtime counters for this thread, since the thread
+/// started. Monotonic: a consumer that wants per-frame numbers keeps the last
+/// snapshot and subtracts (the desktop shell folds the deltas into the
+/// document's `rinch_dom::perf` counters at the end of each frame).
+///
+/// Thread-local, not per document, so two documents on one thread (a window
+/// and its DevTools panel, two embedded contexts) share them.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct ReactiveCounters {
+    /// Effect bodies run (an effect skipped as disposed or re-entered is not
+    /// counted).
+    pub effect_runs: u64,
+    /// `Signal` change notifications (`set`, `update`, and the other writers).
+    pub signal_notifies: u64,
+}
+
+thread_local! {
+    static EFFECT_RUNS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+    static SIGNAL_NOTIFIES: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+/// A snapshot of this thread's [`ReactiveCounters`].
+pub fn reactive_counters() -> ReactiveCounters {
+    ReactiveCounters {
+        effect_runs: EFFECT_RUNS.with(|c| c.get()),
+        signal_notifies: SIGNAL_NOTIFIES.with(|c| c.get()),
+    }
+}
+
+#[inline]
+pub(crate) fn count_effect_run() {
+    EFFECT_RUNS.with(|c| c.set(c.get().wrapping_add(1)));
+}
+
+#[inline]
+pub(crate) fn count_signal_notify() {
+    SIGNAL_NOTIFIES.with(|c| c.set(c.get().wrapping_add(1)));
+}
+
+// ============================================================================
 // Utility functions
 // ============================================================================
 

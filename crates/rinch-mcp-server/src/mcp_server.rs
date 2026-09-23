@@ -152,6 +152,14 @@ pub struct GlyphBoundsParams {
     pub byte_offset: u64,
 }
 
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct PerfStatsParams {
+    /// Zero every counter after reading them, so the next call reports only
+    /// what happened in between.
+    #[serde(default)]
+    pub reset: bool,
+}
+
 #[tool_router]
 impl RinchMcpServer {
     pub fn new() -> Self {
@@ -467,6 +475,19 @@ impl RinchMcpServer {
     ) -> Result<CallToolResult, McpError> {
         self.forward_json_command(DebugCommandKind::GetComputedStyles {
             id: params.0.id as usize,
+        })
+        .await
+    }
+
+    #[tool(
+        description = "Get the app's performance counters: style cascades, Parley shapes, IFC setup passes, Taffy computes, full repaints by reason, dirty-region area, hit-test visits, effect runs and phase timings. Returns last_frame (the last completed redraw), current_frame, total (since the last reset) and frames. Pass reset: true to zero them after reading, then drive the app and call again to measure one interaction."
+    )]
+    async fn perf_stats(
+        &self,
+        params: Parameters<PerfStatsParams>,
+    ) -> Result<CallToolResult, McpError> {
+        self.forward_json_command(DebugCommandKind::PerfStats {
+            reset: params.0.reset,
         })
         .await
     }

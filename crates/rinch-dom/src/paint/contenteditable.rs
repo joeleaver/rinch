@@ -175,6 +175,7 @@ pub(super) fn parse_px(value: &str) -> Option<f32> {
 #[allow(clippy::too_many_arguments)]
 pub(super) fn paint_input_value(
     node: &Node,
+    perf: &crate::perf::PerfCounters,
     painter: &mut dyn Painter,
     scale: f64,
     x: f64,
@@ -299,6 +300,7 @@ pub(super) fn paint_input_value(
     // (crates/rinch/src/app/click_handling.rs) — a property added here and not
     // there moves the painted text out from under the caret. Both should move to
     // `ComputedStyle::build_parley_layout` together (#320).
+    perf.bump(crate::perf::Counter::ShapePaint);
     let mut builder = layout_cx.ranged_builder(font_cx, text, 1.0, true);
     builder.push_default(parley::style::StyleProperty::FontSize(scaled_font_size));
     builder.push_default(parley::style::StyleProperty::Brush(Brush::Solid(color)));
