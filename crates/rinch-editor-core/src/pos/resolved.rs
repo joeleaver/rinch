@@ -215,10 +215,18 @@ impl ResolvedPos {
     }
 
     /// The set of marks active *at* this position — the marks a character typed
-    /// here would inherit. Inside a text node, the node's own marks; at a boundary,
-    /// the marks of the node immediately before (or, if none, the node after). Port
-    /// of `ResolvedPos.marks` (without the `inclusive` spec flag, which this engine
-    /// does not model — every mark behaves as inclusive).
+    /// here would inherit. Port of `ResolvedPos.marks`, including the `inclusive`
+    /// spec flag ([`MarkSpec::inclusive`](crate::MarkSpec::inclusive)):
+    ///
+    /// - **Inside** a text node: that node's own marks, inclusive or not.
+    /// - **At a boundary** between two inline nodes: the marks of the node *before*
+    ///   the position, minus every non-inclusive mark the node *after* does not carry
+    ///   too. So a caret right after a link (a non-inclusive mark) reports no link,
+    ///   while one right after bold text reports bold.
+    /// - **At a link's start** mid-paragraph: the node before decides, as it does for
+    ///   every mark, so the link is not reported there either.
+    /// - **At the start** of a textblock (no node before): the marks of the node after,
+    ///   minus every non-inclusive one (there is nothing before it to continue).
     pub fn marks(&self) -> Vec<Mark> {
         let parent = self.parent();
         if parent.content().size() == 0 {
@@ -231,8 +239,19 @@ impl ResolvedPos {
         let before = index
             .checked_sub(1)
             .and_then(|i| parent.content().maybe_child(i));
-        let main = before.or_else(|| parent.content().maybe_child(index));
-        main.map(|n| n.marks().to_vec()).unwrap_or_default()
+        let after = parent.content().maybe_child(index);
+        let (main, other) = match before {
+            Some(b) => (Some(b), after),
+            None => (after, None),
+        };
+        let Some(main) = main else {
+            return Vec::new();
+        };
+        main.marks()
+            .iter()
+            .filter(|m| m.typ.spec().inclusive || other.is_some_and(|o| m.is_in(o.marks())))
+            .cloned()
+            .collect()
     }
 
     /// If the position is inside (or at the left edge of) a text node, return that
@@ -254,5 +273,121 @@ impl ResolvedPos {
         debug_assert!(before >= start, "text_node: content position underflow");
         let child_start_offset = before - start;
         Some((child, self.parent_offset - child_start_offset))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::model::{Attrs, Fragment, Mark, Node};
+    use crate::pos::Pos;
+    use crate::{AttrValue, Schema};
+
+    fn link(s: &Schema, href: &str) -> Mark {
+        let attrs = Attrs::from_iter([("href", AttrValue::from(href.to_string()))]);
+        Mark::new(s.mark_type("link").unwrap().clone(), attrs)
+    }
+
+    fn bold(s: &Schema) -> Mark {
+        Mark::simple(s.mark_type("bold").unwrap().clone())
+    }
+
+    /// A one-paragraph doc from `(text, marks)` runs. The paragraph opens at 0, so
+    /// its content starts at position 1.
+    fn doc(s: &Schema, runs: Vec<(&str, Vec<Mark>)>) -> Node {
+        let inline: Vec<Node> = runs
+            .into_iter()
+            .map(|(t, m)| s.text_with_marks(t, m).unwrap())
+            .collect();
+        let p = s
+            .branch("paragraph", Fragment::from_children(inline))
+            .unwrap();
+        s.branch("doc", Fragment::from_node(p)).unwrap()
+    }
+
+    fn names(d: &Node, pos: usize) -> Vec<String> {
+        d.resolve(Pos(pos))
+            .unwrap()
+            .marks()
+            .iter()
+            .map(|m| m.type_name().to_string())
+            .collect()
+    }
+
+    // "see " 1..5, link "here" 5..9, " now" 9..13.
+    fn linked(s: &Schema, m: Vec<Mark>) -> Node {
+        doc(s, vec![("see ", vec![]), ("here", m), (" now", vec![])])
+    }
+
+    #[test]
+    fn a_link_is_reported_inside_it_but_not_at_either_edge() {
+        let s = Schema::starter_kit();
+        let d = linked(&s, vec![link(&s, "https://a.example")]);
+        assert!(
+            names(&d, 5).is_empty(),
+            "at its start the text before decides"
+        );
+        assert_eq!(names(&d, 6), ["link"], "inside");
+        assert_eq!(names(&d, 8), ["link"], "before its last character");
+        assert!(names(&d, 9).is_empty(), "right after its last character");
+    }
+
+    #[test]
+    fn bold_stays_inclusive_at_its_end() {
+        let s = Schema::starter_kit();
+        let d = linked(&s, vec![bold(&s)]);
+        assert!(
+            names(&d, 5).is_empty(),
+            "at its start the text before decides"
+        );
+        assert_eq!(names(&d, 9), ["bold"], "right after its last character");
+    }
+
+    #[test]
+    fn at_a_link_end_the_inclusive_marks_on_it_are_kept() {
+        let s = Schema::starter_kit();
+        let d = linked(&s, vec![bold(&s), link(&s, "https://a.example")]);
+        assert_eq!(names(&d, 9), ["bold"]);
+    }
+
+    #[test]
+    fn a_link_that_goes_on_after_the_boundary_is_kept() {
+        // The same link, with a bold part: the boundary between the two runs is
+        // inside the link, not at its end.
+        let s = Schema::starter_kit();
+        let l = link(&s, "https://a.example");
+        let d = doc(&s, vec![("ab", vec![l.clone()]), ("cd", vec![bold(&s), l])]);
+        assert_eq!(names(&d, 3), ["link"]);
+    }
+
+    #[test]
+    fn a_different_link_after_the_boundary_does_not_continue_the_first() {
+        let s = Schema::starter_kit();
+        let d = doc(
+            &s,
+            vec![
+                ("ab", vec![link(&s, "https://a.example")]),
+                ("cd", vec![link(&s, "https://b.example")]),
+            ],
+        );
+        assert!(names(&d, 3).is_empty());
+    }
+
+    #[test]
+    fn at_a_textblock_edge_a_link_is_not_reported() {
+        let s = Schema::starter_kit();
+        let d = doc(
+            &s,
+            vec![("here", vec![bold(&s), link(&s, "https://a.example")])],
+        );
+        assert_eq!(
+            names(&d, 1),
+            ["bold"],
+            "at the start: the node after, minus the link"
+        );
+        assert_eq!(
+            names(&d, 5),
+            ["bold"],
+            "at the end: the node before, minus the link"
+        );
     }
 }

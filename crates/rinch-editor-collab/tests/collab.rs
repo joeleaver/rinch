@@ -1776,10 +1776,10 @@ fn all_text(node: &Node) -> String {
 // the stray char and the image char are one coalesced span with one value, so clearing
 // it cleared the image too and re-applied the image's *old* attrs as a fresh write —
 // which outlived a peer's concurrent `src` change on every replica. Both peers still
-// converged, on the old picture; nothing errored. A `link` mark in the same shape never
-// did this (every mark here is inclusive, so the typed char is linked in the model too
-// and there is nothing to resync) — `typing_after_a_link_while_a_peer_changes_its_href_keeps_the_new_href`
-// is that baseline.
+// converged, on the old picture; nothing errored. A `link` mark is the same shape since
+// links became non-inclusive (the typed char is plain in the model too), and it is
+// resynced per char for the same reason —
+// `typing_after_a_link_while_a_peer_changes_its_href_keeps_the_new_href` pins it.
 //
 // Every fixture runs under **both** yrs client-id orders, because which concurrent
 // formatting write wins is decided by the client-id tie-break: a test run once with
@@ -1901,38 +1901,138 @@ fn a_literal_placeholder_typed_after_an_image_keeps_a_peers_concurrent_src_chang
     );
 }
 
+fn link_mark(schema: &Schema, href: &str) -> Mark {
+    Mark::new(
+        schema.mark_type("link").unwrap().clone(),
+        Attrs::new().with("href", AttrValue::from(href)),
+    )
+}
+
+/// `ab` linked to `old`, then plain `cd`: the position right after the link is block
+/// offset 3.
+fn line_with_link(schema: &Schema) -> Node {
+    para_of(
+        schema,
+        vec![
+            schema
+                .text_with_marks("ab", vec![link_mark(schema, "old")])
+                .unwrap(),
+            schema.text("cd").unwrap(),
+        ],
+    )
+}
+
+/// One peer types `X` right after the link while the other runs `change` over the
+/// link; under every client-id order and with either peer as the typer. Returns the
+/// failing combinations (empty = pass), judged by `ok` on the converged document.
+fn typing_after_link_vs(
+    change: impl Fn(&mut Peer, usize),
+    ok: impl Fn(&str) -> bool,
+) -> Vec<String> {
+    let mut failures = Vec::new();
+    for ids in ID_ORDERS {
+        for a_types in [true, false] {
+            let schema = Rc::new(Schema::starter_kit());
+            let (mut a, mut b) = two_peers_with_ids(&schema, vec![line_with_link(&schema)], ids);
+            let s = block_start(&a.state.doc, 0);
+            let (typer, changer) = if a_types {
+                (&mut a, &mut b)
+            } else {
+                (&mut b, &mut a)
+            };
+            typer.type_at(s + 3, "X");
+            change(changer, s);
+            sync(&mut a, &mut b);
+            assert_converged(&a, &b, &schema);
+            let n = norm(&a.state.doc);
+            if !ok(&n) {
+                failures.push(format!(
+                    "ids {ids:?}, typer {}: {n}",
+                    if a_types { "A" } else { "B" }
+                ));
+            }
+        }
+    }
+    failures
+}
+
 #[test]
 fn typing_after_a_link_while_a_peer_changes_its_href_keeps_the_new_href() {
-    // The baseline the atom cases are measured against: the same shape with an
-    // attr-carrying *mark*. It never lost the update, because the typed char is linked
-    // in the model too (every mark is inclusive), so there is nothing to resync.
-    for ids in ID_ORDERS {
-        let schema = Rc::new(Schema::starter_kit());
-        let link = |h: &str| {
-            Mark::new(
-                schema.mark_type("link").unwrap().clone(),
-                Attrs::new().with("href", AttrValue::from(h)),
-            )
-        };
-        let line = para_of(
-            &schema,
-            vec![
-                schema.text_with_marks("ab", vec![link("old")]).unwrap(),
-                schema.text("cd").unwrap(),
-            ],
-        );
-        let (mut a, mut b) = two_peers_with_ids(&schema, vec![line], ids);
-        let s = block_start(&a.state.doc, 0);
-        a.type_at(s + 3, "X");
-        let l = link("new");
-        b.local(|tr| {
-            tr.add_mark(s + 1, s + 3, l).unwrap();
-        });
-        sync(&mut a, &mut b);
-        assert_converged(&a, &b, &schema);
-        let n = norm(&a.state.doc);
-        assert!(n.contains("\"new\""), "ids {ids:?}: {n}");
-    }
+    // The typed char is plain in the model (a link is non-inclusive) but lands inside
+    // the link's range in the CRDT (yrs extends a range over an insert at its end), so
+    // the typer resyncs. Per span, that rewrote the whole link with the old href and
+    // reverted the peer's change; per char it clears only the typed char.
+    let failures = typing_after_link_vs(
+        |p, s| {
+            let l = link_mark(p.state.schema(), "new");
+            p.local(|tr| {
+                tr.add_mark(s + 1, s + 3, l).unwrap();
+            });
+        },
+        |n| n.contains("«ab|link[href=Str(\"new\")]»«Xcd|»") && !n.contains("\"old\""),
+    );
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+#[test]
+fn typing_after_a_link_while_a_peer_removes_it_does_not_bring_it_back() {
+    let failures = typing_after_link_vs(
+        |p, s| {
+            let l = link_mark(p.state.schema(), "old");
+            p.local(|tr| {
+                tr.remove_mark(s + 1, s + 3, l).unwrap();
+            });
+        },
+        |n| n == "<paragraph >«abXcd|»</>",
+    );
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+#[test]
+fn a_char_typed_after_a_link_reaches_the_peer_unlinked() {
+    // The model says the typed char is not linked (`link` is non-inclusive); the
+    // projection must say so in the CRDT itself — an explicit clear over that char —
+    // or a peer would rebuild it inside the link.
+    let schema = Rc::new(Schema::starter_kit());
+    let (mut a, mut b) = two_peers_with_ids(&schema, vec![line_with_link(&schema)], (11, 22));
+    let s = block_start(&a.state.doc, 0);
+    a.type_at(s + 3, "X");
+    assert_eq!(
+        norm(&a.state.doc),
+        "<paragraph >«ab|link[href=Str(\"old\")]»«Xcd|»</>"
+    );
+    assert_eq!(
+        raw_block0_attr_chunks(&raw_replica(&a.session), "link"),
+        vec![("ab".to_string(), true), ("Xcd".to_string(), false)],
+        "the CRDT holds the typed char outside the link"
+    );
+    let delta = a.session.save_incremental().unwrap();
+    b.state = b
+        .session
+        .integrate_incremental(&b.state, &delta)
+        .unwrap()
+        .expect("the delta changes B");
+    assert_converged(&a, &b, &schema);
+    assert_eq!(norm(&b.state.doc), norm(&a.state.doc));
+
+    // Bold stays inclusive: a char typed after it is bold on both sides.
+    let bold_line = para_of(
+        &schema,
+        vec![
+            schema
+                .text_with_marks(
+                    "ab",
+                    vec![Mark::simple(schema.mark_type("bold").unwrap().clone())],
+                )
+                .unwrap(),
+            schema.text("cd").unwrap(),
+        ],
+    );
+    let (mut a, mut b) = two_peers_with_ids(&schema, vec![bold_line], (11, 22));
+    a.type_at(s + 3, "X");
+    sync(&mut a, &mut b);
+    assert_converged(&a, &b, &schema);
+    assert_eq!(norm(&b.state.doc), "<paragraph >«abX|bold[]»«cd|»</>");
 }
 
 #[test]
@@ -1970,6 +2070,12 @@ fn two_adjacent_identical_images_edited_concurrently_converge() {
 
 /// Block 0's text in raw yrs terms: `(chunk string, carries "@atom")` per diff chunk.
 fn raw_block0_chunks(doc: &yrs::Doc) -> Vec<(String, bool)> {
+    raw_block0_attr_chunks(doc, "@atom")
+}
+
+/// Block 0's text in raw yrs terms: `(chunk string, carries attribute key)` per diff
+/// chunk — the CRDT's own formatting, before any projection back into a model.
+fn raw_block0_attr_chunks(doc: &yrs::Doc, key: &str) -> Vec<(String, bool)> {
     use yrs::{Array, Map, Text, Transact};
     let content = doc.get_or_insert_array("content");
     let txn = doc.transact();
@@ -1985,11 +2091,11 @@ fn raw_block0_chunks(doc: &yrs::Doc) -> Vec<(String, bool)> {
             let yrs::Out::Any(yrs::Any::String(s)) = &d.insert else {
                 panic!("block 0 holds only string chunks");
             };
-            let atom = d
+            let on = d
                 .attributes
                 .as_ref()
-                .is_some_and(|a| a.get("@atom").is_some_and(|v| *v != yrs::Any::Null));
-            (s.to_string(), atom)
+                .is_some_and(|a| a.get(key).is_some_and(|v| *v != yrs::Any::Null));
+            (s.to_string(), on)
         })
         .collect()
 }
