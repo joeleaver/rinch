@@ -65,6 +65,9 @@ static NATIVE_EVENT_QUEUE: Mutex<VecDeque<RinchNativeEvent>> = Mutex::new(VecDeq
 
 /// Queue a native event and wake the event loop.
 pub(crate) fn send_native_event(event: RinchNativeEvent) {
+    if matches!(event, RinchNativeEvent::ReRender) {
+        crate::app::RERENDER_EVENTS_QUEUED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    }
     NATIVE_EVENT_QUEUE.lock().unwrap().push_back(event);
     if let Some(proxy) = GLOBAL_PROXY.get() {
         proxy.wake_up();
@@ -811,11 +814,13 @@ impl RinchRuntime {
         }
         self.last_paint_time = Some(paint_start);
 
+        // One redraw is one performance frame (`rinch_dom::perf`).
+        self.app.end_perf_frame();
+
         result
     }
 
     fn paint_software(&mut self) -> Result<(), String> {
-        let paint_start = std::time::Instant::now();
         let Some(window) = &self.window else {
             return Ok(());
         };
@@ -994,24 +999,20 @@ impl RinchRuntime {
             ));
         }
 
+        let present_start = std::time::Instant::now();
         if let Some(renderer) = &mut self.soft_renderer {
             renderer.present_pixels(pixels, w, h);
         }
-
-        if std::env::var("RINCH_PERF").is_ok() {
-            let elapsed = paint_start.elapsed();
-            eprintln!(
-                "[PERF] paint (software): {:.2}ms",
-                elapsed.as_secs_f64() * 1000.0
-            );
-        }
+        self.app.perf_add(
+            rinch_dom::perf::Counter::TimePresentNs,
+            present_start.elapsed().as_nanos() as u64,
+        );
 
         Ok(())
     }
 
     #[cfg(feature = "gpu")]
     fn paint_gpu(&mut self) -> Result<(), String> {
-        let paint_start = std::time::Instant::now();
         let Some(renderer) = &mut self.renderer else {
             return Ok(());
         };
@@ -1236,12 +1237,12 @@ impl RinchRuntime {
         rinch_dom::paint::set_surface_pixels(None);
 
         // Render to screen
+        let present_start = std::time::Instant::now();
         renderer.paint(scene, transparent)?;
-
-        if std::env::var("RINCH_PERF").is_ok() {
-            let elapsed = paint_start.elapsed();
-            eprintln!("[PERF] paint: {:.2}ms", elapsed.as_secs_f64() * 1000.0);
-        }
+        self.app.perf_add(
+            rinch_dom::perf::Counter::TimePresentNs,
+            present_start.elapsed().as_nanos() as u64,
+        );
 
         Ok(())
     }

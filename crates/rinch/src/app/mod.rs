@@ -80,6 +80,8 @@ mod overlay_scroll_lock_tests;
 mod overlay_z_index_tests;
 #[cfg(test)]
 mod paused_animation_frames_tests;
+#[cfg(all(test, software_shell))]
+mod perf_stats_tests;
 mod select_widget;
 #[cfg(test)]
 mod stepper_state_709_tests;
@@ -105,6 +107,13 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use rinch_core::dom::{DomDocument, NodeHandle, RenderScope, clear_render_scope, set_render_scope};
+
+/// `ReRender` native events queued to the desktop event loop, process-wide
+/// and monotonic. Bumped by the shell's `send_native_event`; folded into the
+/// document's `rerender_events_queued` counter per frame by
+/// [`RinchApp::end_perf_frame`].
+pub(crate) static RERENDER_EVENTS_QUEUED: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
 use rinch_core::events;
 use rinch_dom::RinchDocument;
 use rinch_dom::paint::painter::Painter;
@@ -404,6 +413,15 @@ pub struct RinchApp {
     /// Whether we have a previous frame's pixels for dirty region caching.
     #[cfg(software_shell)]
     pub(crate) has_previous_frame: bool,
+    /// Why `has_previous_frame` was last cleared, for the next frame's
+    /// `repaint_full_*` counter (see [`Self::invalidate_previous_frame`]).
+    #[cfg(software_shell)]
+    pub(crate) full_repaint_reason: Option<rinch_dom::perf::FullRepaintReason>,
+    /// The reactive counters as of the last [`Self::end_perf_frame`], so the
+    /// next one folds in only the delta.
+    pub(crate) perf_reactive_seen: rinch_core::reactive::ReactiveCounters,
+    /// [`RERENDER_EVENTS_QUEUED`] as of the last [`Self::end_perf_frame`].
+    pub(crate) perf_rerender_seen: u64,
     /// The framebuffer rect the drag ghost occupied in the frame currently on
     /// screen, in device pixels — `None` when the last frame drew no ghost.
     ///
@@ -583,6 +601,10 @@ impl RinchApp {
             device_pixel_ratio: 1.0,
             #[cfg(software_shell)]
             has_previous_frame: false,
+            #[cfg(software_shell)]
+            full_repaint_reason: None,
+            perf_reactive_seen: rinch_core::reactive::reactive_counters(),
+            perf_rerender_seen: RERENDER_EVENTS_QUEUED.load(std::sync::atomic::Ordering::Relaxed),
             #[cfg(software_shell)]
             last_ghost_rect: None,
             focused_input_handler_id: None,
@@ -931,9 +953,7 @@ impl RinchApp {
         if crate::editor::update_all_carets(Some(self.doc_key()), self.focused_editor_id()) {
             self.scene_dirty = true;
             #[cfg(software_shell)]
-            {
-                self.has_previous_frame = false;
-            }
+            self.invalidate_previous_frame(rinch_dom::perf::FullRepaintReason::EditorOverlay);
         }
     }
 
@@ -969,9 +989,7 @@ impl RinchApp {
                 // styles but doesn't populate paint_dirty_nodes, so the software
                 // renderer's dirty region optimization would skip most of the screen.
                 #[cfg(software_shell)]
-                {
-                    self.has_previous_frame = false;
-                }
+                self.invalidate_previous_frame(rinch_dom::perf::FullRepaintReason::Theme);
             }
         }
 
@@ -1011,8 +1029,6 @@ impl RinchApp {
             }
         }
 
-        let frame_start = Instant::now();
-
         // Resolve layout
         {
             let mut d = doc.borrow_mut();
@@ -1028,6 +1044,8 @@ impl RinchApp {
                 #[cfg(software_shell)]
                 {
                     self.has_previous_frame = false;
+                    self.full_repaint_reason
+                        .get_or_insert(rinch_dom::perf::FullRepaintReason::InsetFastPath);
                 }
             }
         }
@@ -1075,9 +1093,7 @@ impl RinchApp {
             self.apply_scroll_into_view();
             self.scene_dirty = true;
             #[cfg(software_shell)]
-            {
-                self.has_previous_frame = false;
-            }
+            self.invalidate_previous_frame(rinch_dom::perf::FullRepaintReason::EditorOverlay);
         }
 
         // Dispatch deferred scroll events for offsets the layout clamped, now
@@ -1088,17 +1104,6 @@ impl RinchApp {
         self.refresh_bounds_signals();
 
         self.scene_dirty = true;
-
-        // Log frame time if RINCH_PERF is set
-        if std::env::var("RINCH_PERF").is_ok() {
-            let elapsed = frame_start.elapsed();
-            let fps = 1.0 / elapsed.as_secs_f64();
-            eprintln!(
-                "[PERF] resolve: {:.2}ms ({:.0} fps)",
-                elapsed.as_secs_f64() * 1000.0,
-                fps
-            );
-        }
 
         true
     }
@@ -1340,10 +1345,13 @@ impl RinchApp {
     /// underlying `vello::Scene` is returned for the GPU renderer.
     #[cfg(any(feature = "gpu", feature = "android-gpu", feature = "embed"))]
     pub fn build_scene(&mut self, scale: f64, size: (u32, u32)) -> &Scene {
+        use rinch_dom::perf::{Counter, FullRepaintReason};
         if !self.scene_dirty {
+            self.perf_add(Counter::PaintCachedFrames, 1);
             return self.painter.scene();
         }
 
+        let paint_start = Instant::now();
         self.painter.reset();
         if let Some(doc) = &self.doc {
             let mut d = doc.borrow_mut();
@@ -1376,6 +1384,20 @@ impl RinchApp {
             Self::paint_inspect_overlay(&mut self.painter, scale, x, y, w, h);
         }
 
+        // The GPU path has no dirty region: every painted frame re-encodes
+        // the whole scene and rasterises the whole surface.
+        if let Some(doc) = &self.doc {
+            let d = doc.borrow();
+            let perf = &d.tree.perf;
+            let surface_px =
+                ((size.0 as f64 * scale).round() * (size.1 as f64 * scale).round()) as u64;
+            perf.bump(Counter::PaintFrames);
+            perf.full_repaint(FullRepaintReason::Gpu);
+            perf.add(Counter::RepaintedPx, surface_px);
+            perf.add(Counter::SurfacePx, surface_px);
+            perf.add_elapsed(Counter::TimePaintNs, paint_start);
+        }
+
         self.scene_dirty = false;
         self.painter.scene()
     }
@@ -1401,6 +1423,7 @@ impl RinchApp {
         let h = (size.1 as f64 * scale).round() as u32;
 
         // Lazily create or resize the painter
+        let first_frame = self.skia_painter.is_none();
         let resized = match &mut self.skia_painter {
             None => {
                 self.skia_painter = Some(TinySkiaPainter::new(w, h));
@@ -1416,6 +1439,9 @@ impl RinchApp {
                 r
             }
         };
+        if !self.scene_dirty {
+            self.perf_add(rinch_dom::perf::Counter::PaintCachedFrames, 1);
+        }
         let painter = self.skia_painter.as_mut().unwrap();
 
         if self.scene_dirty {
@@ -1431,6 +1457,7 @@ impl RinchApp {
             // all (the debug screenshot), marking the node only guarantees it
             // repaints *without* its pixels.
 
+            let has_previous_frame_at_start = self.has_previous_frame;
             // Compute dirty region before clearing paint_dirty_nodes
             let dirty_region = if self.has_previous_frame && !resized {
                 let from_nodes = self.doc.as_ref().and_then(|doc| {
@@ -1569,24 +1596,52 @@ impl RinchApp {
                 Self::paint_inspect_overlay(painter, scale, x, y, w_r, h_r);
             }
 
-            // Log paint timing if RINCH_PERF is set
-            if std::env::var("RINCH_PERF").is_ok() {
-                let elapsed = paint_start.elapsed();
-                if use_dirty_region {
-                    let region = dirty_region.unwrap();
-                    let pct = (region.width() * region.height()) / (w as f64 * h as f64) * 100.0;
-                    eprintln!(
-                        "[PERF] paint (dirty region {:.0}x{:.0}, {:.1}%): {:.2}ms",
-                        region.width(),
-                        region.height(),
-                        pct,
-                        elapsed.as_secs_f64() * 1000.0,
-                    );
+            // Record what this frame cost and, for a full repaint, why.
+            // Instrumentation only: the decision above is already made.
+            {
+                use rinch_dom::perf::{Counter, FullRepaintReason};
+                let surface_px = w as u64 * h as u64;
+                let invalidated = self.full_repaint_reason.take();
+                let full_reason = if use_dirty_region {
+                    None
+                } else if first_frame {
+                    Some(FullRepaintReason::FirstFrame)
+                } else if resized {
+                    Some(FullRepaintReason::Resize)
+                } else if let Some(reason) = invalidated {
+                    Some(reason)
+                } else if !has_previous_frame_at_start {
+                    Some(FullRepaintReason::Invalidated)
+                } else if self.inspect_highlight.is_some() || self.active_dnd.is_some() {
+                    Some(FullRepaintReason::Overlay)
                 } else {
-                    eprintln!(
-                        "[PERF] paint (full): {:.2}ms",
-                        elapsed.as_secs_f64() * 1000.0,
-                    );
+                    match dirty_region {
+                        None => Some(FullRepaintReason::NoDirtyNodes),
+                        Some(r) if r.width() * r.height() <= 0.0 => {
+                            Some(FullRepaintReason::EmptyRegion)
+                        }
+                        Some(_) => Some(FullRepaintReason::RegionTooLarge),
+                    }
+                };
+                if let Some(doc) = &self.doc {
+                    let d = doc.borrow();
+                    let perf = &d.tree.perf;
+                    perf.bump(Counter::PaintFrames);
+                    perf.add(Counter::SurfacePx, surface_px);
+                    match full_reason {
+                        Some(reason) => {
+                            perf.full_repaint(reason);
+                            perf.add(Counter::RepaintedPx, surface_px);
+                        }
+                        None => {
+                            perf.bump(Counter::RepaintPartial);
+                            if let Some(r) = dirty_region {
+                                let area = (r.width().ceil() * r.height().ceil()) as u64;
+                                perf.add(Counter::RepaintedPx, area.min(surface_px));
+                            }
+                        }
+                    }
+                    perf.add_elapsed(Counter::TimePaintNs, paint_start);
                 }
             }
 
@@ -1705,6 +1760,79 @@ impl RinchApp {
     /// Mark the scene as needing a repaint on the next frame.
     pub fn mark_scene_dirty(&mut self) {
         self.scene_dirty = true;
+    }
+
+    /// Throw the software renderer's previous frame away, so the next frame
+    /// repaints in full, and remember `reason` for the `repaint_full_*`
+    /// counter. The first reason recorded before a paint wins.
+    #[cfg(software_shell)]
+    pub(crate) fn invalidate_previous_frame(&mut self, reason: rinch_dom::perf::FullRepaintReason) {
+        self.has_previous_frame = false;
+        self.full_repaint_reason.get_or_insert(reason);
+    }
+
+    /// Add `n` to one of the document's performance counters (no-op before a
+    /// document is mounted). See [`rinch_dom::perf`].
+    pub fn perf_add(&self, counter: rinch_dom::perf::Counter, n: u64) {
+        if let Some(doc) = &self.doc {
+            doc.borrow().tree.perf.add(counter, n);
+        }
+    }
+
+    /// End the current performance frame: fold in the reactive runtime's
+    /// counters since the last call, then roll the document's counters over
+    /// (see [`rinch_dom::perf::PerfCounters::end_frame`], which also prints
+    /// the `RINCH_PERF` line). The desktop shell calls this after each
+    /// present and the embed context after each `update`. Returns the frame
+    /// that ended.
+    pub fn end_perf_frame(&mut self) -> Option<rinch_dom::perf::FrameStats> {
+        use rinch_dom::perf::Counter;
+        let reactive = rinch_core::reactive::reactive_counters();
+        let rerender = RERENDER_EVENTS_QUEUED.load(std::sync::atomic::Ordering::Relaxed);
+        let seen = std::mem::replace(&mut self.perf_reactive_seen, reactive);
+        let rerender_seen = std::mem::replace(&mut self.perf_rerender_seen, rerender);
+        let doc = self.doc.as_ref()?;
+        let mut d = doc.borrow_mut();
+        let perf = &mut d.tree.perf;
+        perf.add(
+            Counter::EffectRuns,
+            reactive.effect_runs.wrapping_sub(seen.effect_runs),
+        );
+        perf.add(
+            Counter::SignalNotifies,
+            reactive.signal_notifies.wrapping_sub(seen.signal_notifies),
+        );
+        perf.add(
+            Counter::RerenderEventsQueued,
+            rerender.wrapping_sub(rerender_seen),
+        );
+        Some(perf.end_frame())
+    }
+
+    /// The last completed performance frame (see [`Self::end_perf_frame`]).
+    pub fn last_frame_perf(&self) -> rinch_dom::perf::FrameStats {
+        self.doc
+            .as_ref()
+            .map(|d| d.borrow().tree.perf.last_frame())
+            .unwrap_or_default()
+    }
+
+    /// Every counter since the last reset, the current frame included.
+    pub fn total_perf(&self) -> rinch_dom::perf::FrameStats {
+        self.doc
+            .as_ref()
+            .map(|d| d.borrow().tree.perf.total())
+            .unwrap_or_default()
+    }
+
+    /// Zero the document's performance counters (current frame, last frame,
+    /// total and frame count).
+    pub fn reset_perf(&mut self) {
+        self.perf_reactive_seen = rinch_core::reactive::reactive_counters();
+        self.perf_rerender_seen = RERENDER_EVENTS_QUEUED.load(std::sync::atomic::Ordering::Relaxed);
+        if let Some(doc) = &self.doc {
+            doc.borrow_mut().tree.perf.reset();
+        }
     }
 
     /// Check if there are dirty nodes that need repaint.
