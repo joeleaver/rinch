@@ -23,9 +23,10 @@ pub fn paint_image(
     object_fit: ObjectFitValue,
     node_transform: Affine,
 ) {
-    paint_image_data(
+    paint_image_pixels(
         painter,
         &decoded.data,
+        Some(decoded),
         decoded.width,
         decoded.height,
         rect,
@@ -45,6 +46,31 @@ pub fn paint_image(
 pub fn paint_image_data(
     painter: &mut dyn Painter,
     data: &[u8],
+    width: u32,
+    height: u32,
+    rect: Rect,
+    _scale: f64,
+    object_fit: ObjectFitValue,
+    node_transform: Affine,
+) {
+    paint_image_pixels(
+        painter,
+        data,
+        None,
+        width,
+        height,
+        rect,
+        _scale,
+        object_fit,
+        node_transform,
+    );
+}
+
+#[allow(clippy::too_many_arguments)]
+fn paint_image_pixels(
+    painter: &mut dyn Painter,
+    data: &[u8],
+    decoded: Option<&DecodedImage>,
     width: u32,
     height: u32,
     rect: Rect,
@@ -122,6 +148,7 @@ pub fn paint_image_data(
         data,
         width,
         height,
+        decoded,
     };
     painter.draw_image(&paint_image, img_transform);
 

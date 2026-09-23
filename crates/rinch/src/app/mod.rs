@@ -1683,9 +1683,11 @@ impl RinchApp {
                         Some(_) => Some(FullRepaintReason::RegionTooLarge),
                     }
                 };
+                let painter_stats = painter.take_stats();
                 if let Some(doc) = &self.doc {
                     let d = doc.borrow();
                     let perf = &d.tree.perf;
+                    painter_stats.add_to(perf);
                     perf.bump(Counter::PaintFrames);
                     perf.add(Counter::SurfacePx, surface_px);
                     match full_reason {

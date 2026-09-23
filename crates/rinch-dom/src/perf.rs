@@ -201,6 +201,27 @@ define_counters! {
     /// Stacking-order sequences built (`stacking_paint_order`), by paint and
     /// hit testing alike.
     StackingOrderBuilds = "stacking_order_builds",
+    /// Software painter: glyphs drawn from its rasterised-glyph cache.
+    GlyphCacheHits = "glyph_cache_hits",
+    /// Software painter: glyphs it had to rasterise (and then cached).
+    GlyphCacheMisses = "glyph_cache_misses",
+    /// Software painter: clip masks pushed.
+    ClipMasks = "clip_masks",
+    /// Software painter: mask pixels those clips were filled and intersected
+    /// over — each clip's own bounds, not the surface.
+    ClipMaskPx = "clip_mask_px",
+    /// Software painter: opacity layers opened.
+    PaintLayers = "paint_layers",
+    /// Software painter: layer pixels composited back onto their parent —
+    /// the part of each layer something was drawn into.
+    LayerPx = "layer_px",
+    /// Software painter: surface-sized masks and layer pixmaps newly
+    /// allocated rather than reused from its pool. Zero in a steady state.
+    PaintSurfaceAllocs = "paint_surface_allocs",
+    /// Software painter: images premultiplied at draw time. A cached `<img>`
+    /// or `background-image` is premultiplied once, on its first software
+    /// paint; a live frame source every draw.
+    ImagePremultiplies = "image_premultiplies",
 
     // ── Input ──────────────────────────────────────────────────────────
     /// Hit tests run (`RinchApp::hit_test`).

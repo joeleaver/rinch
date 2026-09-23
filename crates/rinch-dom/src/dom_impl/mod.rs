@@ -1013,11 +1013,7 @@ impl RinchDocument {
                         let (w, h) = (rgba.width(), rgba.height());
                         self.tree.image_cache.insert_decoded(
                             src.to_string(),
-                            crate::image_cache::DecodedImage {
-                                data: rgba.into_raw(),
-                                width: w,
-                                height: h,
-                            },
+                            crate::image_cache::DecodedImage::new(rgba.into_raw(), w, h),
                         );
                     }
                     Err(e) => {

@@ -9,14 +9,70 @@ use std::sync::{Arc, Mutex};
 
 use rinch_core::image::{ImageLoadResult, ImageLoader};
 
-/// A decoded image ready for Vello rendering.
+/// A decoded image ready to paint.
 pub struct DecodedImage {
-    /// Raw RGBA8 pixel data.
+    /// Raw RGBA8 pixel data, straight (not premultiplied) alpha.
     pub data: Vec<u8>,
     /// Image width in pixels.
     pub width: u32,
     /// Image height in pixels.
     pub height: u32,
+    /// The same pixels premultiplied, made on the first software paint and
+    /// kept (the software painter needs premultiplied pixels, and making them
+    /// is a pass over the whole image). `None` inside means every pixel is
+    /// opaque, so the premultiplied pixels *are* `data` and no copy is kept.
+    /// Never filled on the GPU path, which takes straight alpha.
+    premultiplied: std::sync::OnceLock<Option<Vec<u8>>>,
+}
+
+impl DecodedImage {
+    /// A decoded image over straight-alpha RGBA8 `data`.
+    pub fn new(data: Vec<u8>, width: u32, height: u32) -> Self {
+        Self {
+            data,
+            width,
+            height,
+            premultiplied: std::sync::OnceLock::new(),
+        }
+    }
+
+    /// The pixels premultiplied, as the software painter draws them. Computed
+    /// once per image and cached; `data` itself when every pixel is opaque.
+    pub fn premultiplied(&self) -> &[u8] {
+        let cached = self.premultiplied.get_or_init(|| {
+            if self.data.chunks(4).all(|px| px.get(3) == Some(&255)) {
+                None
+            } else {
+                Some(premultiply_rgba(&self.data))
+            }
+        });
+        cached.as_deref().unwrap_or(&self.data)
+    }
+}
+
+/// Straight-alpha RGBA8 to premultiplied, rounding to nearest: the
+/// arithmetic the software painter's `draw_image` has always used, so a
+/// cached copy draws exactly the pixels a per-draw premultiply would.
+pub fn premultiply_rgba(data: &[u8]) -> Vec<u8> {
+    let mut premul = Vec::with_capacity(data.len());
+    for chunk in data.chunks(4) {
+        let r = chunk[0];
+        let g = chunk[1];
+        let b = chunk[2];
+        let a = chunk[3];
+        if a == 255 {
+            premul.extend_from_slice(&[r, g, b, a]);
+        } else if a == 0 {
+            premul.extend_from_slice(&[0, 0, 0, 0]);
+        } else {
+            let af = a as f32 / 255.0;
+            premul.push((r as f32 * af + 0.5) as u8);
+            premul.push((g as f32 * af + 0.5) as u8);
+            premul.push((b as f32 * af + 0.5) as u8);
+            premul.push(a);
+        }
+    }
+    premul
 }
 
 /// State of an image in the cache.
@@ -163,11 +219,7 @@ pub fn request_image_load(doc_key: u64, src: String, loader: Arc<dyn ImageLoader
                     PendingImage {
                         doc_key,
                         src,
-                        result: Ok(DecodedImage {
-                            data: rgba.into_raw(),
-                            width: w,
-                            height: h,
-                        }),
+                        result: Ok(DecodedImage::new(rgba.into_raw(), w, h)),
                     }
                 }
                 Err(e) => PendingImage {
@@ -261,11 +313,7 @@ mod tests {
             .push(PendingImage {
                 doc_key,
                 src: src.to_string(),
-                result: Ok(DecodedImage {
-                    data: vec![0; 4],
-                    width: 1,
-                    height: 1,
-                }),
+                result: Ok(DecodedImage::new(vec![0; 4], 1, 1)),
             });
     }
 

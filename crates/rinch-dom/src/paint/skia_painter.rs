@@ -252,6 +252,144 @@ fn to_skia_stroke(stroke: &KurboStroke) -> SkStroke {
     }
 }
 
+// ── Device-space rectangles ───────────────────────────────────────────────
+
+/// A half-open rectangle of whole device pixels, `[x0, x1) x [y0, y1)`.
+///
+/// The painter's bookkeeping unit for *where pixels may have been written*:
+/// a clip mask's non-zero area, the part of a layer anything was drawn into.
+/// It is always a conservative over-estimate — every rule that uses one is
+/// "outside this rect nothing changed", never the converse.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct DeviceRect {
+    x0: u32,
+    y0: u32,
+    x1: u32,
+    y1: u32,
+}
+
+impl DeviceRect {
+    const EMPTY: DeviceRect = DeviceRect {
+        x0: 0,
+        y0: 0,
+        x1: 0,
+        y1: 0,
+    };
+
+    fn full(w: u32, h: u32) -> Self {
+        DeviceRect {
+            x0: 0,
+            y0: 0,
+            x1: w,
+            y1: h,
+        }
+    }
+
+    fn is_empty(self) -> bool {
+        self.x0 >= self.x1 || self.y0 >= self.y1
+    }
+
+    fn area(self) -> u64 {
+        if self.is_empty() {
+            0
+        } else {
+            (self.x1 - self.x0) as u64 * (self.y1 - self.y0) as u64
+        }
+    }
+
+    fn intersect(self, o: DeviceRect) -> DeviceRect {
+        let r = DeviceRect {
+            x0: self.x0.max(o.x0),
+            y0: self.y0.max(o.y0),
+            x1: self.x1.min(o.x1),
+            y1: self.y1.min(o.y1),
+        };
+        if r.is_empty() { Self::EMPTY } else { r }
+    }
+
+    fn union(self, o: DeviceRect) -> DeviceRect {
+        if self.is_empty() {
+            return o;
+        }
+        if o.is_empty() {
+            return self;
+        }
+        DeviceRect {
+            x0: self.x0.min(o.x0),
+            y0: self.y0.min(o.y0),
+            x1: self.x1.max(o.x1),
+            y1: self.y1.max(o.y1),
+        }
+    }
+
+    /// The device pixels a local-space rect can touch under `ts`, padded by
+    /// `pad` device pixels and clamped to a `w x h` surface. The padding is
+    /// what covers anti-aliasing and nearest-neighbour rounding at the edges;
+    /// it is applied in floating point before the cast, because `as` on a
+    /// float saturates and adding to the result of one can overflow.
+    ///
+    /// A transform that produces a non-finite corner answers the whole
+    /// surface: a guess narrower than the truth is the one wrong answer.
+    #[allow(clippy::too_many_arguments)]
+    fn from_local(
+        x0: f32,
+        y0: f32,
+        x1: f32,
+        y1: f32,
+        ts: Transform,
+        pad: f32,
+        w: u32,
+        h: u32,
+    ) -> DeviceRect {
+        let mut min_x = f32::INFINITY;
+        let mut min_y = f32::INFINITY;
+        let mut max_x = f32::NEG_INFINITY;
+        let mut max_y = f32::NEG_INFINITY;
+        for (px, py) in [(x0, y0), (x1, y0), (x0, y1), (x1, y1)] {
+            let dx = ts.sx * px + ts.kx * py + ts.tx;
+            let dy = ts.ky * px + ts.sy * py + ts.ty;
+            min_x = min_x.min(dx);
+            min_y = min_y.min(dy);
+            max_x = max_x.max(dx);
+            max_y = max_y.max(dy);
+        }
+        if !(min_x.is_finite() && min_y.is_finite() && max_x.is_finite() && max_y.is_finite()) {
+            return DeviceRect::full(w, h);
+        }
+        let c = |v: f32, limit: u32| -> u32 { (v as f64).clamp(0.0, limit as f64) as u32 };
+        let r = DeviceRect {
+            x0: c((min_x - pad).floor(), w),
+            y0: c((min_y - pad).floor(), h),
+            x1: c((max_x + pad).ceil(), w),
+            y1: c((max_y + pad).ceil(), h),
+        };
+        if r.is_empty() { DeviceRect::EMPTY } else { r }
+    }
+}
+
+/// Anti-aliased coverage can reach the pixel past a geometric edge, and a
+/// nearest-sampled pixmap can round one pixel either way; two pixels covers
+/// both with a pixel to spare. Bookkeeping only — no pixel depends on it.
+const DEVICE_PAD: f32 = 2.0;
+
+// ── Clip masks ────────────────────────────────────────────────────────────
+
+/// A clip mask plus the part of it that can be non-zero.
+///
+/// tiny-skia takes a mask only at the size of the pixmap it masks, so a mask
+/// is always surface-sized; what `bounds` buys is that nothing ever *touches*
+/// more of it than the clip covers. Creating one costs nothing (it comes
+/// zeroed out of the pool), filling it costs its path, intersecting it with
+/// its parent costs its bounds, and returning it to the pool costs zeroing its
+/// bounds again. Before, every one of those was a whole-surface pass — the
+/// allocation's zeroing included — per clip push (card K24, #F3 of the paint
+/// audit).
+struct ClipMask {
+    mask: Mask,
+    /// Outside this rect every byte of `mask` is zero.
+    bounds: DeviceRect,
+}
+
 // ── Layer state ───────────────────────────────────────────────────────────
 
 /// Saved state for clip/layer operations.
@@ -267,16 +405,199 @@ enum LayerState {
     /// rule stated in [`TinySkiaPainter::push_clip`].
     Noop,
     /// A clip layer — just a saved mask to restore on pop.
-    Clip { previous_mask: Option<Mask> },
+    Clip { previous_mask: Option<ClipMask> },
     /// An opacity/blend layer — content drawn to a temporary pixmap.
+    ///
+    /// The clip mask in force at the push is left in place for the layer's
+    /// content (balanced pushes and pops inside the layer restore it before
+    /// the matching pop), so nothing about it is saved here.
     Opacity {
         parent_pixmap: Pixmap,
-        parent_mask: Option<Mask>,
+        /// The parent's written-area bookkeeping, restored on pop.
+        parent_touched: Option<DeviceRect>,
         opacity: f32,
     },
 }
 
+// ── Glyph cache ───────────────────────────────────────────────────────────
+
+/// One rasterised glyph, as swash produced it for one font, size, hinting
+/// setting and variation instance.
+///
+/// **No sub-pixel position is in the key, because none is in the image.**
+/// This painter asks swash for a glyph at the origin (no `Render::offset`)
+/// and places it by translating the finished image with nearest-neighbour
+/// sampling, so a glyph at `x = 10.25` and one at `x = 10.75` are the same
+/// coverage bytes drawn one sample apart. Caching per sub-pixel bucket would
+/// store identical images several times over. If glyphs are ever rasterised
+/// at their fractional offset (a quality change: better spacing, different
+/// pixels), that offset — bucketed — has to join [`GlyphRunKey`], and
+/// `skia_painter_oracle_tests` is what fails when it does not.
+///
+/// The synthesis a run carries is not in the key either, for the same
+/// reason: `draw_glyphs` has never applied `glyph_transform` (faux italic)
+/// on this backend, and Parley's faux bold reaches no painter.
+struct CachedGlyph {
+    left: i32,
+    top: i32,
+    width: u32,
+    height: u32,
+    /// `true`: `data` is straight-alpha RGBA and the brush is ignored (a COLR
+    /// glyph). `false`: `data` is one coverage byte per pixel.
+    color: bool,
+    data: Vec<u8>,
+}
+
+/// Everything about a glyph run that changes a glyph's pixels, except the
+/// glyph id.
+struct GlyphRunKey {
+    /// `Blob::id()` of the font file's bytes: unique per blob for the life of
+    /// the process, so a font dropped and another loaded can never alias.
+    font_id: u64,
+    font_index: u32,
+    /// `f32::to_bits` of the physical font size. Exact, not bucketed: two
+    /// sizes one ulp apart rasterise differently often enough to matter to a
+    /// pixel oracle, and real documents use a handful of sizes.
+    size_bits: u32,
+    hint: bool,
+    coords: Box<[i16]>,
+}
+
+struct GlyphRun {
+    key: GlyphRunKey,
+    /// `None` is a cached *empty* glyph (a space): swash rendered nothing.
+    glyphs: std::collections::HashMap<u32, Option<CachedGlyph>>,
+}
+
+/// The rasterised-glyph cache, with a hard memory bound.
+///
+/// Runs are found by a linear scan (a document uses a few dozen font/size
+/// combinations at most, and comparing one is five integer compares plus an
+/// usually empty slice), with a remembered last hit because consecutive runs
+/// almost always share one. The bound is **clear-on-threshold**: when the
+/// cached coverage exceeds [`GLYPH_CACHE_BUDGET`] bytes, or the run count
+/// [`GLYPH_CACHE_MAX_RUNS`], everything is dropped and the next frame
+/// re-rasterises what it draws. An LRU would keep the warm set warmer across
+/// that one frame; for a working set that fits the budget — any real UI — the
+/// threshold is never reached and the difference never arises.
+#[derive(Default)]
+struct GlyphCache {
+    runs: Vec<GlyphRun>,
+    last: usize,
+    bytes: usize,
+    /// One swash cache key per font file, so swash's own scaler cache
+    /// (outlines, hinting state) is hit across calls. `FontRef::from_index`
+    /// mints a fresh key every time, which made every `draw_glyphs` call a
+    /// miss there.
+    font_keys: std::collections::HashMap<(u64, u32), swash::CacheKey>,
+}
+
+/// Bytes of cached glyph images before the cache is cleared.
+const GLYPH_CACHE_BUDGET: usize = 16 * 1024 * 1024;
+/// Distinct (font, size, hinting, variation) runs before the cache is cleared.
+const GLYPH_CACHE_MAX_RUNS: usize = 512;
+
+impl GlyphCache {
+    fn run_index(
+        &mut self,
+        font_id: u64,
+        font_index: u32,
+        size: f32,
+        hint: bool,
+        coords: &[i16],
+    ) -> usize {
+        let size_bits = size.to_bits();
+        let matches = |k: &GlyphRunKey| {
+            k.font_id == font_id
+                && k.font_index == font_index
+                && k.size_bits == size_bits
+                && k.hint == hint
+                && *k.coords == *coords
+        };
+        if self.runs.get(self.last).is_some_and(|r| matches(&r.key)) {
+            return self.last;
+        }
+        if let Some(i) = self.runs.iter().position(|r| matches(&r.key)) {
+            self.last = i;
+            return i;
+        }
+        if self.runs.len() >= GLYPH_CACHE_MAX_RUNS {
+            self.clear();
+        }
+        self.runs.push(GlyphRun {
+            key: GlyphRunKey {
+                font_id,
+                font_index,
+                size_bits,
+                hint,
+                coords: coords.into(),
+            },
+            glyphs: std::collections::HashMap::new(),
+        });
+        self.last = self.runs.len() - 1;
+        self.last
+    }
+
+    fn clear(&mut self) {
+        self.runs.clear();
+        self.last = 0;
+        self.bytes = 0;
+    }
+}
+
+// ── Painter statistics ────────────────────────────────────────────────────
+
+/// What the software painter did, for the perf counters.
+///
+/// The painter has no document to count into, so it counts here and the
+/// shell folds a frame's worth into the document's
+/// [`PerfCounters`](crate::perf::PerfCounters) with
+/// [`TinySkiaPainter::take_stats`]. See `docs/src/guide/performance.md`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct SkiaPainterStats {
+    /// Glyphs drawn from the rasterised-glyph cache.
+    pub glyph_cache_hits: u64,
+    /// Glyphs swash had to rasterise (then cached).
+    pub glyph_cache_misses: u64,
+    /// Clip masks pushed (`push_clip` calls).
+    pub clip_masks: u64,
+    /// Mask pixels those pushes worked over: the clip's bounds, filled and
+    /// intersected. A surface-sized clip costs the surface; a small one its
+    /// own area.
+    pub clip_mask_px: u64,
+    /// Opacity layers opened (`push_layer` calls that allocated a layer).
+    pub layers: u64,
+    /// Layer pixels composited back onto their parent.
+    pub layer_px: u64,
+    /// Surface-sized buffers (masks and layer pixmaps) newly allocated, as
+    /// opposed to reused from the pool. Zero in a steady state.
+    pub surface_allocs: u64,
+    /// Images premultiplied at draw time. Zero for a cached `<img>` or
+    /// `background-image` after its first software paint; a live frame
+    /// source (`RenderSurface`, video) is premultiplied per draw.
+    pub image_premultiplies: u64,
+}
+
+impl SkiaPainterStats {
+    /// Add these counts to the current frame of `perf`.
+    pub fn add_to(&self, perf: &crate::perf::PerfCounters) {
+        use crate::perf::Counter;
+        perf.add(Counter::GlyphCacheHits, self.glyph_cache_hits);
+        perf.add(Counter::GlyphCacheMisses, self.glyph_cache_misses);
+        perf.add(Counter::ClipMasks, self.clip_masks);
+        perf.add(Counter::ClipMaskPx, self.clip_mask_px);
+        perf.add(Counter::PaintLayers, self.layers);
+        perf.add(Counter::LayerPx, self.layer_px);
+        perf.add(Counter::PaintSurfaceAllocs, self.surface_allocs);
+        perf.add(Counter::ImagePremultiplies, self.image_premultiplies);
+    }
+}
+
 // ── TinySkiaPainter ───────────────────────────────────────────────────────
+
+/// Pooled surface-sized buffers kept per painter. A frame reaches this depth
+/// only with that many clips or layers open at once.
+const POOL_MAX: usize = 8;
 
 /// Software rendering backend using tiny-skia.
 ///
@@ -285,11 +606,26 @@ enum LayerState {
 pub struct TinySkiaPainter {
     pixmap: Pixmap,
     /// Current clip mask (intersection of all active clip layers).
-    clip_mask: Option<Mask>,
+    clip_mask: Option<ClipMask>,
     /// Stack of saved layer states.
     layer_stack: Vec<LayerState>,
     /// Reusable swash scale context for glyph rasterization.
     scale_context: swash::scale::ScaleContext,
+    /// Rasterised glyphs, reused across calls and frames.
+    glyph_cache: GlyphCache,
+    /// Scratch RGBA buffer a glyph is coloured into before it is drawn.
+    glyph_scratch: Vec<u8>,
+    /// All-zero surface-sized masks ready for reuse.
+    mask_pool: Vec<Mask>,
+    /// Fully transparent surface-sized pixmaps ready for reuse as layers.
+    layer_pool: Vec<Pixmap>,
+    /// While a layer is open: the device pixels drawn into it so far. `None`
+    /// outside any layer, where nobody needs to know.
+    touched: Option<DeviceRect>,
+    stats: SkiaPainterStats,
+    /// Paint the way this painter did before its caches and pools existed.
+    /// For the pixel-diff oracle only.
+    reference_mode: bool,
 }
 
 impl TinySkiaPainter {
@@ -302,7 +638,47 @@ impl TinySkiaPainter {
             clip_mask: None,
             layer_stack: Vec::new(),
             scale_context: swash::scale::ScaleContext::new(),
+            glyph_cache: GlyphCache::default(),
+            glyph_scratch: Vec::new(),
+            mask_pool: Vec::new(),
+            layer_pool: Vec::new(),
+            touched: None,
+            stats: SkiaPainterStats::default(),
+            reference_mode: false,
         }
+    }
+
+    /// Turn every cache and pool off and paint exactly as the painter did
+    /// before they existed: every glyph rasterised on every draw, every clip
+    /// and layer a fresh surface-sized buffer composited whole, every image
+    /// premultiplied per draw.
+    ///
+    /// Exists so a test can paint the same document both ways in one process
+    /// and demand identical pixels (`skia_painter_oracle_tests`). Not for
+    /// application use; it only makes things slower.
+    #[doc(hidden)]
+    pub fn set_reference_mode(&mut self, on: bool) {
+        self.reference_mode = on;
+    }
+
+    /// The counts since the last [`take_stats`](Self::take_stats).
+    pub fn stats(&self) -> SkiaPainterStats {
+        self.stats
+    }
+
+    /// The counts since the last call, zeroing them.
+    pub fn take_stats(&mut self) -> SkiaPainterStats {
+        std::mem::take(&mut self.stats)
+    }
+
+    /// How many bytes of glyph images the cache holds.
+    pub fn glyph_cache_bytes(&self) -> usize {
+        self.glyph_cache.bytes
+    }
+
+    /// Drop every cached glyph image.
+    pub fn clear_glyph_cache(&mut self) {
+        self.glyph_cache.clear();
     }
 
     /// Resize the painting surface, clearing all content.
@@ -314,6 +690,9 @@ impl TinySkiaPainter {
             self.pixmap = Pixmap::new(width, height).expect("invalid pixmap dimensions");
             self.clip_mask = None;
             self.layer_stack.clear();
+            self.touched = None;
+            self.mask_pool.clear();
+            self.layer_pool.clear();
         }
     }
 
@@ -328,6 +707,7 @@ impl TinySkiaPainter {
 
     /// Get mutable access to the raw premultiplied pixel data.
     pub fn pixels_mut(&mut self) -> &mut [u8] {
+        self.touch_all();
         self.pixmap.data_mut()
     }
 
@@ -357,6 +737,7 @@ impl TinySkiaPainter {
     /// Clear a rectangular region to a specific premultiplied RGBA color.
     #[allow(clippy::too_many_arguments)]
     fn clear_rect_rgba(&mut self, x: u32, y: u32, w: u32, h: u32, r: u8, g: u8, b: u8, a: u8) {
+        self.touch_all();
         let pw = self.pixmap.width();
         let ph = self.pixmap.height();
         let x1 = (x + w).min(pw);
@@ -380,11 +761,13 @@ impl TinySkiaPainter {
 
     /// Fill the entire surface with an opaque white background.
     pub fn fill_white(&mut self) {
+        self.touch_all();
         self.pixmap.fill(tiny_skia::Color::WHITE);
     }
 
     /// Fill the entire surface with a fully transparent background.
     pub fn fill_transparent(&mut self) {
+        self.touch_all();
         self.pixmap.fill(tiny_skia::Color::TRANSPARENT);
     }
 
@@ -398,6 +781,7 @@ impl TinySkiaPainter {
     /// Used as the base layer when composite surfaces are present,
     /// matching the GPU compositor's black clear color.
     pub fn fill_black(&mut self) {
+        self.touch_all();
         self.pixmap.fill(tiny_skia::Color::BLACK);
     }
 
@@ -424,6 +808,7 @@ impl TinySkiaPainter {
         if pixels.len() < expected {
             return;
         }
+        self.touch_all();
 
         // Create a pixmap from the source RGBA data.
         // tiny-skia expects premultiplied alpha, so premultiply in-place.
@@ -463,6 +848,129 @@ impl TinySkiaPainter {
             None,
         );
     }
+
+    // ── Bookkeeping ────────────────────────────────────────────────────
+
+    fn surface_rect(&self) -> DeviceRect {
+        DeviceRect::full(self.pixmap.width(), self.pixmap.height())
+    }
+
+    /// Record that `r` may have been written, if a layer is open. Narrowed to
+    /// the clip in force, since a masked draw writes nothing outside it.
+    #[inline]
+    fn touch(&mut self, r: DeviceRect) {
+        if let Some(t) = self.touched.as_mut() {
+            let r = match &self.clip_mask {
+                Some(m) => r.intersect(m.bounds),
+                None => r,
+            };
+            *t = t.union(r);
+        }
+    }
+
+    fn touch_all(&mut self) {
+        let full = self.surface_rect();
+        if let Some(t) = self.touched.as_mut() {
+            *t = full;
+        }
+    }
+
+    fn touch_local(&mut self, x0: f32, y0: f32, x1: f32, y1: f32, ts: Transform) {
+        if self.touched.is_none() {
+            return;
+        }
+        let (w, h) = (self.pixmap.width(), self.pixmap.height());
+        let r = DeviceRect::from_local(x0, y0, x1, y1, ts, DEVICE_PAD, w, h);
+        self.touch(r);
+    }
+
+    /// An all-zero surface-sized mask: from the pool when one is there.
+    fn acquire_mask(&mut self) -> Mask {
+        if !self.reference_mode
+            && let Some(m) = self.mask_pool.pop()
+        {
+            return m;
+        }
+        self.stats.surface_allocs += 1;
+        Mask::new(self.pixmap.width(), self.pixmap.height()).expect("failed to create clip mask")
+    }
+
+    /// Hand a mask back: zero what it may hold, then pool it.
+    fn release_mask(&mut self, mut m: ClipMask) {
+        if self.reference_mode
+            || self.mask_pool.len() >= POOL_MAX
+            || m.mask.width() != self.pixmap.width()
+            || m.mask.height() != self.pixmap.height()
+        {
+            return;
+        }
+        let b = m.bounds;
+        if !b.is_empty() {
+            let stride = m.mask.width() as usize;
+            let data = m.mask.data_mut();
+            for y in b.y0 as usize..b.y1 as usize {
+                data[y * stride + b.x0 as usize..y * stride + b.x1 as usize].fill(0);
+            }
+        }
+        self.mask_pool.push(m.mask);
+    }
+
+    /// A copy of `m`: its bounds copied into a pooled mask.
+    fn clone_mask(&mut self, m: &ClipMask) -> ClipMask {
+        if self.reference_mode {
+            self.stats.surface_allocs += 1;
+            return ClipMask {
+                mask: m.mask.clone(),
+                bounds: m.bounds,
+            };
+        }
+        let mut mask = self.acquire_mask();
+        let b = m.bounds;
+        if !b.is_empty() {
+            let stride = mask.width() as usize;
+            let src = m.mask.data();
+            let dst = mask.data_mut();
+            for y in b.y0 as usize..b.y1 as usize {
+                let row = y * stride;
+                dst[row + b.x0 as usize..row + b.x1 as usize]
+                    .copy_from_slice(&src[row + b.x0 as usize..row + b.x1 as usize]);
+            }
+        }
+        ClipMask { mask, bounds: b }
+    }
+
+    /// A transparent surface-sized pixmap for a layer: from the pool when one
+    /// is there.
+    fn acquire_layer(&mut self) -> Pixmap {
+        if !self.reference_mode
+            && let Some(p) = self.layer_pool.pop()
+        {
+            return p;
+        }
+        self.stats.surface_allocs += 1;
+        Pixmap::new(self.pixmap.width(), self.pixmap.height())
+            .expect("failed to create layer pixmap")
+    }
+
+    /// Hand a layer pixmap back: clear what was drawn into it, then pool it.
+    fn release_layer(&mut self, mut p: Pixmap, drawn: DeviceRect) {
+        if self.reference_mode
+            || self.layer_pool.len() >= POOL_MAX
+            || p.width() != self.pixmap.width()
+            || p.height() != self.pixmap.height()
+        {
+            return;
+        }
+        if !drawn.is_empty() {
+            let stride = p.width() as usize * 4;
+            let data = p.data_mut();
+            for y in drawn.y0 as usize..drawn.y1 as usize {
+                data[y * stride + drawn.x0 as usize * 4..y * stride + drawn.x1 as usize * 4]
+                    .fill(0);
+            }
+        }
+        self.layer_pool.push(p);
+    }
 }
 
 impl Painter for TinySkiaPainter {
@@ -470,6 +978,7 @@ impl Painter for TinySkiaPainter {
         self.pixmap.fill(tiny_skia::Color::TRANSPARENT);
         self.clip_mask = None;
         self.layer_stack.clear();
+        self.touched = None;
     }
 
     fn fill(&mut self, fill: Fill, transform: Affine, brush: &Brush, shape: &PaintShape) {
@@ -500,8 +1009,15 @@ impl Painter for TinySkiaPainter {
         }
         let ts = affine_to_transform(transform);
         let fill_rule = to_fill_rule(fill);
-        self.pixmap
-            .fill_path(&path, &paint, fill_rule, ts, self.clip_mask.as_ref());
+        self.touch_local(
+            bounds.left(),
+            bounds.top(),
+            bounds.right(),
+            bounds.bottom(),
+            ts,
+        );
+        let mask = self.clip_mask.as_ref().map(|m| &m.mask);
+        self.pixmap.fill_path(&path, &paint, fill_rule, ts, mask);
     }
 
     fn stroke(
@@ -524,8 +1040,22 @@ impl Painter for TinySkiaPainter {
         }
         let ts = affine_to_transform(transform);
         let sk_stroke = to_skia_stroke(stroke);
-        self.pixmap
-            .stroke_path(&path, &paint, &sk_stroke, ts, self.clip_mask.as_ref());
+        if self.touched.is_some() {
+            // How far a stroke can reach past its path, in path space: half
+            // the width, times the miter limit where a miter join can spike
+            // (a square cap reaches `sqrt 2` half-widths, which `1.5` covers).
+            let reach = sk_stroke.width * 0.5 * sk_stroke.miter_limit.max(1.5);
+            let b = path.bounds();
+            self.touch_local(
+                b.left() - reach,
+                b.top() - reach,
+                b.right() + reach,
+                b.bottom() + reach,
+                ts,
+            );
+        }
+        let mask = self.clip_mask.as_ref().map(|m| &m.mask);
+        self.pixmap.stroke_path(&path, &paint, &sk_stroke, ts, mask);
     }
 
     fn draw_glyphs(
@@ -540,9 +1070,17 @@ impl Painter for TinySkiaPainter {
         glyphs: &[PaintGlyph],
     ) {
         let font_data: &[u8] = font.data.as_ref();
-        let Some(font_ref) = swash::FontRef::from_index(font_data, font.index as usize) else {
+        let Some(mut font_ref) = swash::FontRef::from_index(font_data, font.index as usize) else {
             return;
         };
+        let font_id = font.data.id();
+        if !self.reference_mode {
+            font_ref.key = *self
+                .glyph_cache
+                .font_keys
+                .entry((font_id, font.index))
+                .or_insert(font_ref.key);
+        }
 
         // Resolve brush color (only solid colors for now)
         let color = match brush {
@@ -552,87 +1090,149 @@ impl Painter for TinySkiaPainter {
         let rgba = color.to_rgba8();
         let (cr, cg, cb, ca) = (rgba.r, rgba.g, rgba.b, rgba.a);
 
-        // Rasterize all glyphs first to avoid borrow conflict with self
-        let rendered: Vec<_> = {
-            let mut scaler = self
-                .scale_context
+        let ts = affine_to_transform(transform);
+        let glyph_ts = glyph_transform.map(affine_to_transform);
+
+        let render = swash::scale::Render::new(&[
+            swash::scale::Source::ColorOutline(0),
+            swash::scale::Source::Outline,
+        ]);
+        let rasterise = |s: &mut swash::scale::Scaler<'_>, id: u32| -> Option<CachedGlyph> {
+            let image = render.render(s, id as u16)?;
+            if image.placement.width == 0 || image.placement.height == 0 {
+                return None;
+            }
+            let (color, data) = match image.content {
+                swash::scale::image::Content::Mask => (false, image.data),
+                swash::scale::image::Content::Color => (true, image.data),
+                swash::scale::image::Content::SubpixelMask => (
+                    false,
+                    image
+                        .data
+                        .chunks(4)
+                        .map(|px| px.get(3).copied().unwrap_or(0))
+                        .collect(),
+                ),
+            };
+            Some(CachedGlyph {
+                left: image.placement.left,
+                top: image.placement.top,
+                width: image.placement.width,
+                height: image.placement.height,
+                color,
+                data,
+            })
+        };
+
+        let run = if self.reference_mode {
+            None
+        } else {
+            Some(self.glyph_cache.run_index(
+                font_id,
+                font.index,
+                font_size,
+                hint,
+                normalized_coords,
+            ))
+        };
+
+        // Built only when something misses: a fully cached run never pays
+        // for a scaler (which is where swash sets up hinting state).
+        let needs_scaler = match run {
+            Some(run) => {
+                let cached = &self.glyph_cache.runs[run].glyphs;
+                glyphs.iter().any(|g| !cached.contains_key(&g.id))
+            }
+            None => true,
+        };
+        let mut scaler = needs_scaler.then(|| {
+            self.scale_context
                 .builder(font_ref)
                 .size(font_size)
                 .hint(hint)
                 .normalized_coords(normalized_coords)
-                .build();
+                .build()
+        });
 
-            let render = swash::scale::Render::new(&[
-                swash::scale::Source::ColorOutline(0),
-                swash::scale::Source::Outline,
-            ]);
-
-            glyphs
-                .iter()
-                .filter_map(|glyph| {
-                    let image = render.render(&mut scaler, glyph.id as u16)?;
-                    if image.placement.width == 0 || image.placement.height == 0 {
-                        return None;
+        for glyph in glyphs {
+            // Look the glyph up, rasterising it on a miss.
+            let owned;
+            let cached: Option<&CachedGlyph> = match run {
+                Some(run) => {
+                    let cache = &mut self.glyph_cache;
+                    if !cache.runs[run].glyphs.contains_key(&glyph.id) {
+                        self.stats.glyph_cache_misses += 1;
+                        let g = scaler.as_mut().and_then(|s| rasterise(s, glyph.id));
+                        cache.bytes += g.as_ref().map_or(0, |g| g.data.len()) + 32;
+                        cache.runs[run].glyphs.insert(glyph.id, g);
+                    } else {
+                        self.stats.glyph_cache_hits += 1;
                     }
-                    let gx = glyph.x + image.placement.left as f32;
-                    let gy = glyph.y - image.placement.top as f32;
-                    Some((image, gx, gy))
-                })
-                .collect()
-        };
-
-        let ts = affine_to_transform(transform);
-        let glyph_ts = glyph_transform.map(affine_to_transform);
-
-        for (image, gx, gy) in &rendered {
-            match image.content {
-                swash::scale::image::Content::Mask => {
-                    self.blit_alpha_mask(
-                        &image.data,
-                        image.placement.width,
-                        image.placement.height,
-                        *gx,
-                        *gy,
-                        cr,
-                        cg,
-                        cb,
-                        ca,
-                        ts,
-                        glyph_ts,
-                    );
+                    cache.runs[run].glyphs[&glyph.id].as_ref()
                 }
-                swash::scale::image::Content::Color => {
-                    self.blit_color_glyph(
-                        &image.data,
-                        image.placement.width,
-                        image.placement.height,
-                        *gx,
-                        *gy,
-                        ts,
-                        glyph_ts,
-                    );
+                None => {
+                    self.stats.glyph_cache_misses += 1;
+                    owned = scaler.as_mut().and_then(|s| rasterise(s, glyph.id));
+                    owned.as_ref()
                 }
-                swash::scale::image::Content::SubpixelMask => {
-                    let alpha_data: Vec<u8> = image
-                        .data
-                        .chunks(4)
-                        .map(|px| px.get(3).copied().unwrap_or(0))
-                        .collect();
-                    self.blit_alpha_mask(
-                        &alpha_data,
-                        image.placement.width,
-                        image.placement.height,
-                        *gx,
-                        *gy,
-                        cr,
-                        cg,
-                        cb,
-                        ca,
-                        ts,
-                        glyph_ts,
-                    );
+            };
+            let Some(g) = cached else {
+                continue;
+            };
+            let gx = glyph.x + g.left as f32;
+            let gy = glyph.y - g.top as f32;
+            if self.touched.is_some() {
+                let (w, h) = (self.pixmap.width(), self.pixmap.height());
+                let r = DeviceRect::from_local(
+                    gx,
+                    gy,
+                    gx + g.width as f32,
+                    gy + g.height as f32,
+                    ts,
+                    DEVICE_PAD,
+                    w,
+                    h,
+                );
+                if let Some(t) = self.touched.as_mut() {
+                    let r = match &self.clip_mask {
+                        Some(m) => r.intersect(m.bounds),
+                        None => r,
+                    };
+                    *t = t.union(r);
                 }
             }
+            let mask = self.clip_mask.as_ref().map(|m| &m.mask);
+            if g.color {
+                blit_color_glyph_into(
+                    &mut self.pixmap,
+                    mask,
+                    &mut self.glyph_scratch,
+                    &g.data,
+                    g.width,
+                    g.height,
+                    gx,
+                    gy,
+                    ts,
+                );
+            } else {
+                blit_alpha_mask_into(
+                    &mut self.pixmap,
+                    mask,
+                    &mut self.glyph_scratch,
+                    &g.data,
+                    g.width,
+                    g.height,
+                    gx,
+                    gy,
+                    [cr, cg, cb, ca],
+                    ts,
+                );
+            }
+        }
+        let _ = glyph_ts;
+
+        if self.glyph_cache.bytes > GLYPH_CACHE_BUDGET {
+            self.glyph_cache.clear();
         }
     }
 
@@ -641,37 +1241,41 @@ impl Painter for TinySkiaPainter {
             return;
         }
 
-        // Convert straight alpha RGBA to premultiplied (tiny-skia requirement)
-        let mut premul = Vec::with_capacity(image.data.len());
-        for chunk in image.data.chunks(4) {
-            let r = chunk[0];
-            let g = chunk[1];
-            let b = chunk[2];
-            let a = chunk[3];
-            if a == 255 {
-                premul.extend_from_slice(&[r, g, b, a]);
-            } else if a == 0 {
-                premul.extend_from_slice(&[0, 0, 0, 0]);
-            } else {
-                let af = a as f32 / 255.0;
-                premul.push((r as f32 * af + 0.5) as u8);
-                premul.push((g as f32 * af + 0.5) as u8);
-                premul.push((b as f32 * af + 0.5) as u8);
-                premul.push(a);
+        // The premultiplied pixels: the image cache's copy when the image came
+        // from one (computed on its first software paint and kept), otherwise
+        // made here, per draw — a live frame source has no cache to keep it in.
+        let cached = if self.reference_mode {
+            None
+        } else {
+            image.decoded.map(|d| d.premultiplied())
+        };
+        let owned;
+        let premul: &[u8] = match cached {
+            Some(p) => p,
+            None => {
+                self.stats.image_premultiplies += 1;
+                owned = if self.reference_mode {
+                    reference_premultiply(image.data)
+                } else {
+                    crate::image_cache::premultiply_rgba(image.data)
+                };
+                &owned
             }
-        }
+        };
 
-        let Some(src) = PixmapRef::from_bytes(&premul, image.width, image.height) else {
+        let Some(src) = PixmapRef::from_bytes(premul, image.width, image.height) else {
             return;
         };
 
         let ts = affine_to_transform(transform);
+        self.touch_local(0.0, 0.0, image.width as f32, image.height as f32, ts);
         let paint = PixmapPaint::default();
-        self.pixmap
-            .draw_pixmap(0, 0, src, &paint, ts, self.clip_mask.as_ref());
+        let mask = self.clip_mask.as_ref().map(|m| &m.mask);
+        self.pixmap.draw_pixmap(0, 0, src, &paint, ts, mask);
     }
 
     fn push_clip(&mut self, fill: Fill, transform: Affine, shape: &PaintShape) {
+        self.stats.clip_masks += 1;
         let previous_mask = self.clip_mask.take();
 
         // Both give-up branches below share one rule, and it is a rule about
@@ -717,7 +1321,7 @@ impl Painter for TinySkiaPainter {
             // shape we could not read, and this is the file where a guess about
             // an unmappable region is already called out as the one way to get
             // clipping wrong (see the intersect note below).
-            self.clip_mask = previous_mask.clone();
+            self.clip_mask = previous_mask.as_ref().map(|m| self.clone_mask(m));
             self.layer_stack.push(LayerState::Clip { previous_mask });
             return;
         };
@@ -729,78 +1333,93 @@ impl Painter for TinySkiaPainter {
             // `overflow: hidden` box (card J1's collapsed group) go on painting
             // its rows at full size, in their old position, forever. A path
             // whose bounds round to nothing is the *strictest* clip there is,
-            // not the absence of one: nothing behind it should show, and
-            // `Mask::new` already hands back exactly that — a mask of zeroes —
-            // so installing it costs nothing an ordinary clip wasn't already
-            // going to pay a few lines below.
+            // not the absence of one: nothing behind it should show, and an
+            // all-zero mask is exactly that.
             //
             // This is also the branch that used to leak the enclosing clip, per
             // the rule above; the all-zero mask is stricter than `previous_mask`
             // by construction, so it settles both halves at once.
-            let w = self.pixmap.width();
-            let h = self.pixmap.height();
-            let mask = Mask::new(w, h).expect("failed to create clip mask");
-            self.clip_mask = Some(mask);
+            let mask = self.acquire_mask();
+            self.clip_mask = Some(ClipMask {
+                mask,
+                bounds: DeviceRect::EMPTY,
+            });
             self.layer_stack.push(LayerState::Clip { previous_mask });
             return;
         }
 
         let w = self.pixmap.width();
         let h = self.pixmap.height();
-        let mut mask = Mask::new(w, h).expect("failed to create clip mask");
+        let mut mask = self.acquire_mask();
         let ts = affine_to_transform(transform);
         let fill_rule = to_fill_rule(fill);
         mask.fill_path(&path, fill_rule, true, ts);
 
-        // If there was a previous mask, intersect with it — but only over the
-        // part of the surface the new clip path actually reaches.
+        // Where the new mask can be non-zero: the path's device-space bounds.
         //
-        // `Mask::new` hands back a mask of zeroes and `fill_path` writes only
-        // inside the path, so every byte outside the path's device-space bounds
-        // is still zero, and zero times whatever the parent mask holds is zero.
-        // Multiplying those bytes is arithmetic whose answer is already in the
-        // buffer. Running the loop over the whole mask regardless is what made
-        // a clip cost the surface rather than the box: at 1080×2460 that is
-        // 2.66 million multiply-and-divides per nested clip, and the library
-        // screen pushes seventeen clips a frame — every `overflow: hidden` box,
-        // every scroller, every rounded thumbnail — for about 35ms of a 90ms
-        // frame on the moto g stylus 5G. See card K24.
+        // `acquire_mask` hands back a mask of zeroes and `fill_path` writes only
+        // inside the path, so every byte outside those bounds is still zero,
+        // and zero times whatever the parent mask holds is zero. Multiplying
+        // those bytes is arithmetic whose answer is already in the buffer.
+        // Running the loop over the whole mask regardless is what made a clip
+        // cost the surface rather than the box: at 1080×2460 that is 2.66
+        // million multiply-and-divides per nested clip, and the library screen
+        // pushes seventeen clips a frame — every `overflow: hidden` box, every
+        // scroller, every rounded thumbnail — for about 35ms of a 90ms frame on
+        // the moto g stylus 5G. See card K24.
         //
-        // The bounds are padded by a pixel because `fill_path` is called with
+        // The bounds are padded because `fill_path` is called with
         // anti-aliasing on and its coverage can spill into the pixel outside
-        // the geometric edge. The padding is done in floating point, before
-        // the cast: `as i64` saturates, so adding to the result of one can
-        // overflow.
+        // the geometric edge.
         //
         // If the bounds cannot be mapped into device space the whole surface
-        // is walked. Narrowing on a guess would be the one way to get this
+        // is used. Narrowing on a guess would be the one way to get this
         // wrong — outside the region it walks, the parent mask is never
-        // applied, and content paints straight through the enclosing clip.
+        // applied, and content paints straight through the enclosing clip. The
+        // same bounds decide what `release_mask` zeroes before pooling the
+        // mask, so a narrow guess there would also leave coverage behind for
+        // the next clip to inherit.
+        let path_rect = if self.reference_mode {
+            DeviceRect::full(w, h)
+        } else {
+            DeviceRect::from_local(
+                bounds.left(),
+                bounds.top(),
+                bounds.right(),
+                bounds.bottom(),
+                ts,
+                DEVICE_PAD,
+                w,
+                h,
+            )
+        };
+        let mut new_bounds = path_rect;
+        let mut worked = path_rect.area();
         if let Some(ref prev) = previous_mask {
-            let px = |v: f32, limit: u32| -> usize { (v as f64).clamp(0.0, limit as f64) as usize };
-            let (x0, x1, y0, y1) = match bounds.transform(ts) {
-                Some(device) => (
-                    px((device.left() - 1.0).floor(), w),
-                    px((device.right() + 1.0).ceil(), w),
-                    px((device.top() - 1.0).floor(), h),
-                    px((device.bottom() + 1.0).ceil(), h),
-                ),
-                None => (0, w as usize, 0, h as usize),
-            };
+            // In reference mode, the whole-surface walk the painter used to
+            // make before card K24 narrowed it; otherwise the path's bounds.
+            let walk = path_rect;
             let stride = w as usize;
             let mask_data = mask.data_mut();
-            let prev_data = prev.data();
-            for y in y0..y1 {
+            let prev_data = prev.mask.data();
+            for y in walk.y0 as usize..walk.y1 as usize {
                 let row = y * stride;
-                let m = &mut mask_data[row + x0..row + x1];
-                let p = &prev_data[row + x0..row + x1];
+                let m = &mut mask_data[row + walk.x0 as usize..row + walk.x1 as usize];
+                let p = &prev_data[row + walk.x0 as usize..row + walk.x1 as usize];
                 for (m, p) in m.iter_mut().zip(p.iter()) {
                     *m = ((*m as u16 * *p as u16 + 127) / 255) as u8;
                 }
             }
+            worked += walk.area();
+            // Outside the parent's bounds the parent is zero, so the product is.
+            new_bounds = new_bounds.intersect(prev.bounds);
         }
+        self.stats.clip_mask_px += worked;
 
-        self.clip_mask = Some(mask);
+        self.clip_mask = Some(ClipMask {
+            mask,
+            bounds: new_bounds,
+        });
         self.layer_stack.push(LayerState::Clip { previous_mask });
     }
 
@@ -847,33 +1466,23 @@ impl Painter for TinySkiaPainter {
             // second painted a hundred pixels outside it. Both are in
             // `opacity_layer_clip_tests`.
             //
-            // Saving the mask instead, the way [`Self::push_clip`]'s give-up
-            // branches do, would also be correct and is the wrong trade here:
-            // it means cloning a full-surface `Mask` (2.66MB at 1080x2460, per
-            // the cost note in `push_clip`) on the one path whose entire
-            // purpose is to cost nothing. Saving nothing is both cheaper and
-            // the more honest statement — see [`LayerState::Noop`].
+            // Saving nothing is both cheaper and the more honest statement —
+            // see [`LayerState::Noop`].
             self.layer_stack.push(LayerState::Noop);
             return;
         }
 
-        // Save current pixmap and mask, draw to a fresh pixmap
-        let w = self.pixmap.width();
-        let h = self.pixmap.height();
-        let parent_pixmap = std::mem::replace(
-            &mut self.pixmap,
-            Pixmap::new(w, h).expect("failed to create layer pixmap"),
-        );
-        let parent_mask = self.clip_mask.take();
-
-        // Restore clip mask on the new layer (clone it)
-        if let Some(ref m) = parent_mask {
-            self.clip_mask = Some(m.clone());
-        }
+        // Draw the layer's content into a fresh (or pooled, already
+        // transparent) pixmap. The clip mask in force stays in force: the
+        // layer's content is clipped exactly as it would be drawn directly.
+        self.stats.layers += 1;
+        let layer = self.acquire_layer();
+        let parent_pixmap = std::mem::replace(&mut self.pixmap, layer);
+        let parent_touched = self.touched.replace(DeviceRect::EMPTY);
 
         self.layer_stack.push(LayerState::Opacity {
             parent_pixmap,
-            parent_mask,
+            parent_touched,
             opacity,
         });
     }
@@ -889,29 +1498,70 @@ impl Painter for TinySkiaPainter {
             // `None` above all — would be inventing state this push never took.
             LayerState::Noop => {}
             LayerState::Clip { previous_mask } => {
-                self.clip_mask = previous_mask;
+                if let Some(m) = std::mem::replace(&mut self.clip_mask, previous_mask) {
+                    self.release_mask(m);
+                }
             }
             LayerState::Opacity {
                 mut parent_pixmap,
-                parent_mask,
+                parent_touched,
                 opacity,
             } => {
-                // Composite the layer pixmap back onto the parent with opacity
-                let layer_ref = self.pixmap.as_ref();
+                // Composite the layer back onto the parent — only the part of
+                // it anything was drawn into. Everywhere else the layer is
+                // transparent, and `SourceOver` of transparent is the identity.
+                let drawn = if self.reference_mode {
+                    self.surface_rect()
+                } else {
+                    self.touched.unwrap_or(DeviceRect::EMPTY)
+                };
                 let paint = PixmapPaint {
                     opacity,
                     blend_mode: tiny_skia::BlendMode::SourceOver,
                     quality: tiny_skia::FilterQuality::Nearest,
                 };
-                parent_pixmap.draw_pixmap(0, 0, layer_ref, &paint, Transform::identity(), None);
+                if drawn == self.surface_rect() {
+                    parent_pixmap.draw_pixmap(
+                        0,
+                        0,
+                        self.pixmap.as_ref(),
+                        &paint,
+                        Transform::identity(),
+                        None,
+                    );
+                } else if !drawn.is_empty()
+                    && let Some(rect) = tiny_skia::IntRect::from_xywh(
+                        drawn.x0 as i32,
+                        drawn.y0 as i32,
+                        drawn.x1 - drawn.x0,
+                        drawn.y1 - drawn.y0,
+                    )
+                    && let Some(part) = self.pixmap.clone_rect(rect)
+                {
+                    parent_pixmap.draw_pixmap(
+                        drawn.x0 as i32,
+                        drawn.y0 as i32,
+                        part.as_ref(),
+                        &paint,
+                        Transform::identity(),
+                        None,
+                    );
+                }
+                self.stats.layer_px += drawn.area();
 
-                self.pixmap = parent_pixmap;
-                self.clip_mask = parent_mask;
+                let layer = std::mem::replace(&mut self.pixmap, parent_pixmap);
+                self.release_layer(layer, drawn);
+                self.touched = parent_touched;
+                // What the layer drew is now drawn into the parent.
+                if let Some(t) = self.touched.as_mut() {
+                    *t = t.union(drawn);
+                }
             }
         }
     }
 
     fn append(&mut self, other: &Self) {
+        self.touch_all();
         let src = other.pixmap.as_ref();
         let paint = PixmapPaint::default();
         self.pixmap
@@ -919,13 +1569,142 @@ impl Painter for TinySkiaPainter {
     }
 }
 
+/// `draw_image`'s premultiply as it was written before the image cache kept a
+/// premultiplied copy, for reference mode only.
+///
+/// A deliberate second copy of [`crate::image_cache::premultiply_rgba`]: if
+/// reference mode called that function, a change to its arithmetic would move
+/// both sides of `skia_painter_oracle_tests` together and the oracle would
+/// pass against it (measured — a `+128` rounding mutant survived until this
+/// copy existed).
+fn reference_premultiply(data: &[u8]) -> Vec<u8> {
+    let mut premul = Vec::with_capacity(data.len());
+    for chunk in data.chunks(4) {
+        let (r, g, b, a) = (chunk[0], chunk[1], chunk[2], chunk[3]);
+        if a == 255 {
+            premul.extend_from_slice(&[r, g, b, a]);
+        } else if a == 0 {
+            premul.extend_from_slice(&[0, 0, 0, 0]);
+        } else {
+            let af = a as f32 / 255.0;
+            premul.push((r as f32 * af + 0.5) as u8);
+            premul.push((g as f32 * af + 0.5) as u8);
+            premul.push((b as f32 * af + 0.5) as u8);
+            premul.push(a);
+        }
+    }
+    premul
+}
+
 // ── Glyph blitting helpers ────────────────────────────────────────────────
 
+/// Blit an alpha mask glyph onto `pixmap` with the given straight-alpha
+/// colour.
+///
+/// The glyph is coloured into `scratch` (reused across glyphs, so no
+/// allocation per glyph) and drawn with `draw_pixmap()`, so that the full
+/// transform (including rotation/skew) is applied by tiny-skia.
+#[allow(clippy::too_many_arguments)]
+fn blit_alpha_mask_into(
+    pixmap: &mut Pixmap,
+    clip: Option<&Mask>,
+    scratch: &mut Vec<u8>,
+    mask_data: &[u8],
+    glyph_w: u32,
+    glyph_h: u32,
+    gx: f32,
+    gy: f32,
+    [cr, cg, cb, ca]: [u8; 4],
+    transform: Transform,
+) {
+    if glyph_w == 0 || glyph_h == 0 {
+        return;
+    }
+    let n = (glyph_w * glyph_h) as usize;
+    scratch.clear();
+    scratch.resize(n * 4, 0);
+
+    for (i, &alpha) in mask_data.iter().enumerate().take(n) {
+        if alpha == 0 {
+            continue;
+        }
+        // Combine glyph alpha with brush alpha → premultiplied RGBA
+        let a = ((alpha as u16 * ca as u16 + 127) / 255) as u8;
+        if a == 0 {
+            continue;
+        }
+        let idx = i * 4;
+        scratch[idx] = premultiply_channel(cr, a);
+        scratch[idx + 1] = premultiply_channel(cg, a);
+        scratch[idx + 2] = premultiply_channel(cb, a);
+        scratch[idx + 3] = a;
+    }
+
+    let Some(src) = PixmapRef::from_bytes(scratch, glyph_w, glyph_h) else {
+        return;
+    };
+    // Compose the transform: first translate to glyph position, then apply the node transform
+    let ts = transform.pre_concat(Transform::from_translate(gx, gy));
+    pixmap.draw_pixmap(0, 0, src, &PixmapPaint::default(), ts, clip);
+}
+
+/// Blit a color (RGBA) glyph onto `pixmap`, converting it to premultiplied
+/// alpha in `scratch` first.
+#[allow(clippy::too_many_arguments)]
+fn blit_color_glyph_into(
+    pixmap: &mut Pixmap,
+    clip: Option<&Mask>,
+    scratch: &mut Vec<u8>,
+    rgba_data: &[u8],
+    glyph_w: u32,
+    glyph_h: u32,
+    gx: f32,
+    gy: f32,
+    transform: Transform,
+) {
+    if glyph_w == 0 || glyph_h == 0 {
+        return;
+    }
+    let pixel_count = (glyph_w * glyph_h) as usize;
+    scratch.clear();
+    scratch.resize(pixel_count * 4, 0);
+
+    for i in 0..pixel_count.min(rgba_data.len() / 4) {
+        let src_idx = i * 4;
+        let sr = rgba_data[src_idx];
+        let sg = rgba_data[src_idx + 1];
+        let sb = rgba_data[src_idx + 2];
+        let sa = rgba_data[src_idx + 3];
+
+        if sa == 0 {
+            continue;
+        }
+
+        let dst_idx = i * 4;
+        if sa == 255 {
+            scratch[dst_idx] = sr;
+            scratch[dst_idx + 1] = sg;
+            scratch[dst_idx + 2] = sb;
+            scratch[dst_idx + 3] = 255;
+        } else {
+            // Convert straight alpha to premultiplied
+            scratch[dst_idx] = premultiply_channel(sr, sa);
+            scratch[dst_idx + 1] = premultiply_channel(sg, sa);
+            scratch[dst_idx + 2] = premultiply_channel(sb, sa);
+            scratch[dst_idx + 3] = sa;
+        }
+    }
+
+    let Some(src) = PixmapRef::from_bytes(scratch, glyph_w, glyph_h) else {
+        return;
+    };
+    let ts = transform.pre_concat(Transform::from_translate(gx, gy));
+    pixmap.draw_pixmap(0, 0, src, &PixmapPaint::default(), ts, clip);
+}
+
+#[cfg(test)]
 impl TinySkiaPainter {
     /// Blit an alpha mask glyph onto the pixmap with the given color.
-    ///
-    /// Uses a temporary pixmap + `draw_pixmap()` so that the full transform
-    /// (including rotation/skew) is applied by tiny-skia.
     #[allow(clippy::too_many_arguments)]
     fn blit_alpha_mask(
         &mut self,
@@ -941,50 +1720,22 @@ impl TinySkiaPainter {
         transform: Transform,
         _glyph_transform: Option<Transform>,
     ) {
-        if glyph_w == 0 || glyph_h == 0 {
-            return;
-        }
-
-        // Build a temporary RGBA pixmap from the alpha mask + brush color
-        let mut glyph_pm = match Pixmap::new(glyph_w, glyph_h) {
-            Some(pm) => pm,
-            None => return,
-        };
-        let glyph_pixels = glyph_pm.data_mut();
-
-        for (i, &alpha) in mask_data
-            .iter()
-            .enumerate()
-            .take((glyph_w * glyph_h) as usize)
-        {
-            if alpha == 0 {
-                continue;
-            }
-            // Combine glyph alpha with brush alpha → premultiplied RGBA
-            let a = ((alpha as u16 * ca as u16 + 127) / 255) as u8;
-            if a == 0 {
-                continue;
-            }
-            let idx = i * 4;
-            glyph_pixels[idx] = premultiply_channel(cr, a);
-            glyph_pixels[idx + 1] = premultiply_channel(cg, a);
-            glyph_pixels[idx + 2] = premultiply_channel(cb, a);
-            glyph_pixels[idx + 3] = a;
-        }
-
-        // Compose the transform: first translate to glyph position, then apply the node transform
-        let glyph_offset = Transform::from_translate(gx, gy);
-        let ts = transform.pre_concat(glyph_offset);
-
-        let paint = PixmapPaint::default();
-        self.pixmap
-            .draw_pixmap(0, 0, glyph_pm.as_ref(), &paint, ts, self.clip_mask.as_ref());
+        let clip = self.clip_mask.as_ref().map(|m| &m.mask);
+        blit_alpha_mask_into(
+            &mut self.pixmap,
+            clip,
+            &mut self.glyph_scratch,
+            mask_data,
+            glyph_w,
+            glyph_h,
+            gx,
+            gy,
+            [cr, cg, cb, ca],
+            transform,
+        );
     }
 
     /// Blit a color (RGBA) glyph onto the pixmap.
-    ///
-    /// Uses a temporary pixmap + `draw_pixmap()` so that the full transform
-    /// (including rotation/skew) is applied by tiny-skia.
     #[allow(clippy::too_many_arguments)]
     fn blit_color_glyph(
         &mut self,
@@ -996,51 +1747,18 @@ impl TinySkiaPainter {
         transform: Transform,
         _glyph_transform: Option<Transform>,
     ) {
-        if glyph_w == 0 || glyph_h == 0 {
-            return;
-        }
-
-        // Build a temporary pixmap from the RGBA glyph data (convert to premultiplied)
-        let mut glyph_pm = match Pixmap::new(glyph_w, glyph_h) {
-            Some(pm) => pm,
-            None => return,
-        };
-        let glyph_pixels = glyph_pm.data_mut();
-
-        let pixel_count = (glyph_w * glyph_h) as usize;
-        for i in 0..pixel_count.min(rgba_data.len() / 4) {
-            let src_idx = i * 4;
-            let sr = rgba_data[src_idx];
-            let sg = rgba_data[src_idx + 1];
-            let sb = rgba_data[src_idx + 2];
-            let sa = rgba_data[src_idx + 3];
-
-            if sa == 0 {
-                continue;
-            }
-
-            let dst_idx = i * 4;
-            if sa == 255 {
-                glyph_pixels[dst_idx] = sr;
-                glyph_pixels[dst_idx + 1] = sg;
-                glyph_pixels[dst_idx + 2] = sb;
-                glyph_pixels[dst_idx + 3] = 255;
-            } else {
-                // Convert straight alpha to premultiplied
-                glyph_pixels[dst_idx] = premultiply_channel(sr, sa);
-                glyph_pixels[dst_idx + 1] = premultiply_channel(sg, sa);
-                glyph_pixels[dst_idx + 2] = premultiply_channel(sb, sa);
-                glyph_pixels[dst_idx + 3] = sa;
-            }
-        }
-
-        // Compose the transform: first translate to glyph position, then apply the node transform
-        let glyph_offset = Transform::from_translate(gx, gy);
-        let ts = transform.pre_concat(glyph_offset);
-
-        let paint = PixmapPaint::default();
-        self.pixmap
-            .draw_pixmap(0, 0, glyph_pm.as_ref(), &paint, ts, self.clip_mask.as_ref());
+        let clip = self.clip_mask.as_ref().map(|m| &m.mask);
+        blit_color_glyph_into(
+            &mut self.pixmap,
+            clip,
+            &mut self.glyph_scratch,
+            rgba_data,
+            glyph_w,
+            glyph_h,
+            gx,
+            gy,
+            transform,
+        );
     }
 }
 

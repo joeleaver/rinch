@@ -121,6 +121,11 @@ assert_eq!(frame.get(Counter::TaffyRootComputes), 0, "a colour change must not l
 | | `repainted_px` / `surface_px` | Pixels repainted, and pixels in the surface (their ratio is the fraction of the surface repainted) |
 | | `paint_nodes_visited` | Nodes `paint_node` visited |
 | | `stacking_order_builds` | Stacking sequences built, by paint and by hit testing |
+| Software painter | `glyph_cache_hits` / `glyph_cache_misses` | Glyphs drawn from the rasterised-glyph cache, and glyphs rasterised (then cached). A steady frame has no misses |
+| | `clip_masks`, `clip_mask_px` | Clip masks pushed, and the mask pixels they were filled and intersected over (each clip's own bounds, not the surface) |
+| | `paint_layers`, `layer_px` | Opacity layers opened, and the layer pixels composited back (the part of each layer anything was drawn into) |
+| | `paint_surface_allocs` | Surface-sized masks and layer pixmaps allocated rather than reused from the painter's pool. Zero in a steady state |
+| | `image_premultiplies` | Images premultiplied at draw time. A cached `<img>` or `background-image` is premultiplied once, on its first software paint; a live frame source (`RenderSurface`, video) on every draw |
 | Input | `hit_tests`, `hit_test_nodes_visited` | Hit tests run, and the nodes they visited |
 | | `hit_extents_computed` | Subtree extents the hit tester computed so it can skip subtrees nowhere near the pointer. They are kept until the document or its layout changes, so a run of moves over a still document computes each one once |
 | Reactive | `effect_runs`, `signal_notifies` | Effect bodies run, and signal writes. A memo's internal marker (which passes a wake on to the memo's dependents) is **not** counted, nor is a recompute, nor is a dependent the equality cut-off skipped: `effect_runs` is the effect bodies that actually ran |
@@ -137,6 +142,11 @@ Some limits on what these numbers mean:
   DevTools before reading the reactive counters.
 - **The GPU backend always repaints in full.** Every painted frame on that
   backend counts as `repaint_full_gpu`.
+- **The software-painter counters are the desktop and Android shells' only.**
+  `TinySkiaPainter` counts into its own `SkiaPainterStats` (`stats()`,
+  `take_stats()`), which the shell folds into the frame after each software
+  paint. A test painting through `paint_document` directly reads the painter,
+  not the document.
 - **A screenshot is a frame.** The debug `screenshot` command paints, and that
   paint shows up in the counters like any other frame.
 

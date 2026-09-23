@@ -24,8 +24,9 @@
 //! `push_layer` in this crate is handed a *bounds* shape along with the opacity.
 //! The two painters read that shape very differently.
 //! [`TinySkiaPainter::push_layer`](super::skia_painter::TinySkiaPainter) names
-//! the parameter `_bounds` and never looks at it — its layer is a pixmap the
-//! size of the whole surface, composited back whole — while
+//! the parameter `_bounds` and never looks at it — its layer is a
+//! surface-sized pixmap, composited back over whatever area the painter itself
+//! saw drawn into it (its own bookkeeping, not this module's bounds) — while
 //! [`VelloPainter::push_layer`](super::vello_painter::VelloPainter) passes it
 //! straight to `vello::Scene::push_layer`, which *clips* every command inside
 //! the layer to it.
