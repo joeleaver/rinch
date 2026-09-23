@@ -132,6 +132,26 @@ impl RinchApp {
         self.debug_cmd_rx = Some(rx);
     }
 
+    /// A `ModifiersChanged` a debug command synthesizes. A *real* one clears
+    /// `debug_modifiers_to_restore` (it supersedes what a modified
+    /// `mouse_down` remembered); a synthesized one is part of the debug
+    /// sequence itself, so the remembered state is kept across it.
+    fn debug_modifiers_changed(
+        &mut self,
+        m: Modifiers,
+        window_size: (u32, u32),
+        scale_factor: f64,
+    ) -> Vec<AppAction> {
+        let remembered = self.debug_modifiers_to_restore;
+        let actions = self.handle_event(
+            PlatformEvent::ModifiersChanged(m),
+            window_size,
+            scale_factor,
+        );
+        self.debug_modifiers_to_restore = remembered;
+        actions
+    }
+
     pub(crate) fn execute_debug_command(
         &mut self,
         kind: DebugCommandKind,
@@ -229,11 +249,7 @@ impl RinchApp {
                 self.cursor_pos = Some((x, y));
                 let before = self.modifiers;
                 if let Some(m) = requested {
-                    actions.extend(self.handle_event(
-                        PlatformEvent::ModifiersChanged(m),
-                        window_size,
-                        scale_factor,
-                    ));
+                    actions.extend(self.debug_modifiers_changed(m, window_size, scale_factor));
                 }
                 actions.extend(self.handle_event(
                     PlatformEvent::MouseDown {
@@ -254,11 +270,7 @@ impl RinchApp {
                     scale_factor,
                 ));
                 if requested.is_some() {
-                    actions.extend(self.handle_event(
-                        PlatformEvent::ModifiersChanged(before),
-                        window_size,
-                        scale_factor,
-                    ));
+                    actions.extend(self.debug_modifiers_changed(before, window_size, scale_factor));
                 }
                 actions.push(AppAction::RequestRedraw);
                 DebugResult::Json { data: json!(null) }
@@ -283,13 +295,14 @@ impl RinchApp {
                 let mouse_button = parse_button(button);
                 self.cursor_pos = Some((x, y));
                 if let Some(m) = requested {
-                    self.debug_modifiers_to_restore
-                        .get_or_insert(self.modifiers);
-                    actions.extend(self.handle_event(
-                        PlatformEvent::ModifiersChanged(m),
-                        window_size,
-                        scale_factor,
-                    ));
+                    // Read before the change, remembered after it: the change
+                    // itself clears the remembered state (a real modifier
+                    // change supersedes it — see `handle_event`), and the
+                    // helper keeps that clear from reaching a save made by an
+                    // earlier press.
+                    let prev = self.modifiers;
+                    actions.extend(self.debug_modifiers_changed(m, window_size, scale_factor));
+                    self.debug_modifiers_to_restore.get_or_insert(prev);
                 }
                 actions.extend(self.handle_event(
                     PlatformEvent::MouseDown {
@@ -325,11 +338,7 @@ impl RinchApp {
                     .take()
                     .or(requested.map(|_| self.modifiers));
                 if let Some(m) = requested {
-                    actions.extend(self.handle_event(
-                        PlatformEvent::ModifiersChanged(m),
-                        window_size,
-                        scale_factor,
-                    ));
+                    actions.extend(self.debug_modifiers_changed(m, window_size, scale_factor));
                 }
                 actions.extend(self.handle_event(
                     PlatformEvent::MouseUp {
@@ -341,11 +350,7 @@ impl RinchApp {
                     scale_factor,
                 ));
                 if let Some(m) = restore {
-                    actions.extend(self.handle_event(
-                        PlatformEvent::ModifiersChanged(m),
-                        window_size,
-                        scale_factor,
-                    ));
+                    actions.extend(self.debug_modifiers_changed(m, window_size, scale_factor));
                 }
                 actions.push(AppAction::RequestRedraw);
                 DebugResult::Json { data: json!(null) }
@@ -1392,5 +1397,126 @@ mod tests {
             *seen.borrow(),
             vec![("down", ALT), ("click", ALT), ("up", ALT)]
         );
+    }
+
+    fn press_ctrl(app: &mut RinchApp) {
+        run(
+            app,
+            DebugCommandKind::MouseDown {
+                x: 50.0,
+                y: 50.0,
+                button: None,
+                modifiers: names(&["ctrl"]),
+            },
+        );
+        assert_eq!(mods(app.modifiers), CTRL);
+    }
+
+    /// A modified `mouse_down` whose `mouse_up` never comes (the client went
+    /// away): a real modifier change supersedes it, so a real click is not
+    /// modified, and a later debug `mouse_up` does not resurrect the ctrl
+    /// the press remembered.
+    #[test]
+    fn a_real_modifier_change_supersedes_a_stranded_modified_press() {
+        let seen: Seen = Rc::default();
+        let mut app = app_with_button(seen.clone());
+        press_ctrl(&mut app);
+        // The release is lost; the user then presses and releases a real key.
+        app.handle_event(
+            PlatformEvent::MouseUp {
+                x: 50.0,
+                y: 50.0,
+                button: MouseButton::Left,
+            },
+            VIEWPORT,
+            1.0,
+        );
+        hold(&mut app, Modifiers::default());
+        assert_eq!(app.debug_modifiers_to_restore, None);
+        seen.borrow_mut().clear();
+        for event in [
+            PlatformEvent::MouseDown {
+                x: 50.0,
+                y: 50.0,
+                button: MouseButton::Left,
+            },
+            PlatformEvent::MouseUp {
+                x: 50.0,
+                y: 50.0,
+                button: MouseButton::Left,
+            },
+        ] {
+            app.handle_event(event, VIEWPORT, 1.0);
+        }
+        assert_eq!(
+            *seen.borrow(),
+            vec![("down", NONE), ("click", NONE), ("up", NONE)]
+        );
+
+        // Hold alt for real; a later unmodified debug release keeps it.
+        hold(
+            &mut app,
+            Modifiers {
+                alt: true,
+                ..Default::default()
+            },
+        );
+        run(
+            &mut app,
+            DebugCommandKind::MouseUp {
+                x: 50.0,
+                y: 50.0,
+                button: None,
+                modifiers: None,
+            },
+        );
+        assert_eq!(mods(app.modifiers), ALT, "ctrl is not resurrected");
+    }
+
+    /// A modified click between a modified press and its release is part of
+    /// the debug sequence, not a real change: the release still restores.
+    #[test]
+    fn a_modified_click_inside_a_held_press_keeps_the_remembered_state() {
+        let seen: Seen = Rc::default();
+        let mut app = app_with_button(seen.clone());
+        press_ctrl(&mut app);
+        run(&mut app, click(names(&["shift"])));
+        assert_eq!(
+            mods(app.modifiers),
+            CTRL,
+            "the click put back the press's ctrl"
+        );
+        run(
+            &mut app,
+            DebugCommandKind::MouseUp {
+                x: 50.0,
+                y: 50.0,
+                button: None,
+                modifiers: None,
+            },
+        );
+        assert_eq!(mods(app.modifiers), NONE);
+    }
+
+    /// Losing the window's keyboard releases what a debug press is holding.
+    #[test]
+    fn window_blur_releases_a_debug_press_s_modifiers() {
+        let seen: Seen = Rc::default();
+        let mut app = app_with_button(seen.clone());
+        hold(
+            &mut app,
+            Modifiers {
+                alt: true,
+                ..Default::default()
+            },
+        );
+        press_ctrl(&mut app);
+        app.handle_event(PlatformEvent::WindowFocus(false), VIEWPORT, 1.0);
+        assert_eq!(
+            mods(app.modifiers),
+            ALT,
+            "back to the state before the press"
+        );
+        assert_eq!(app.debug_modifiers_to_restore, None);
     }
 }
