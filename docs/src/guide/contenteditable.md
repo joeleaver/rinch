@@ -356,12 +356,39 @@ handle — load another document, read the selection. A pointer move pays nothin
 hover while no editor on the thread has an `on_link_hover` callback; with one it
 reuses the move's own hit test on desktop.
 
-In the browser an editor link is a real `<a href>`, and the click that follows a
-press would navigate even though the editor cancels the press. rinch prevents the
-default action of every primary click, and every middle click, on a link inside an
-editor, whether or not a callback is registered. The right-click menu is untouched:
-it is the browser's own link menu, whose "Open link" still works (see
+The callbacks are not run inside a `batch()` (like `on_change`): a callback that
+writes several signals flushes effects after each write. Wrap its body in
+`batch(|| …)` if that matters.
+
+**In the browser** an editor link is a real `<a href>`, and the click that follows
+a press would navigate even though the editor cancels the press. Whether the
+browser follows it is decided per editor:
+
+| Editor | A click, middle click or Ctrl/Cmd+click on a link |
+|--------|---------------------------------------------------|
+| **Editable** | Never navigates. A click in an editable editor is an edit gesture (it placed the caret), so following the link is always wrong. |
+| **Read-only, with an `on_link_click` callback** | Never navigates. The callback is where the app says what a link does, even when it declines the press. |
+| **Read-only, no `on_link_click` callback** | The browser's own behaviour: a click follows the link, and a middle click or Ctrl/Cmd+click opens it in a new tab. |
+
+The same rule covers an `<a href>` inside the editor that is not a link mark, but
+such an anchor is never offered to `on_link_click`. The right-click menu is never
+touched: it is the browser's own link menu, whose "Open link" still works (see
 [On the web](#on-the-web-rinch-web)).
+
+**Keyboard activation.** The editor container is not `contenteditable`, so an
+editor link is an ordinary Tab stop, and the browser turns Enter on a focused link
+into a click with no press before it. That click is offered to `on_link_click` with
+the whole link and the modifiers held; claiming it prevents the navigation. With no
+claim, the table above decides.
+
+> **Migration note (web).** Before link events, a click on a link in an **editable**
+> web editor followed the link as it placed the caret, which was a bug; it no longer
+> does. A **read-only** editor used as a document viewer keeps native link behaviour
+> as long as it registers no `on_link_click`. Registering one makes the app
+> responsible for every link in that editor, middle click and Ctrl/Cmd+click
+> included. To open links in an editable editor, register `on_link_click` and open
+> `click.link.href` yourself (for example on `click.primary`, the Ctrl/Cmd+click
+> convention). Desktop never navigates: there is no browser to follow the link.
 
 ## Keyboard shortcuts
 

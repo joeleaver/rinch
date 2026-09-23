@@ -58,10 +58,12 @@
 //! **Links are the app's.** An editor link is an `<a href>` in the page, which the
 //! browser would follow on a click. A primary press on one is offered to the
 //! editor's `on_link_click` first ([`handle_mousedown`]), the pointer entering and
-//! leaving links is reported to `on_link_hover` ([`update_link_hover`]), and the
-//! native navigation of a click on an editor link is always prevented
-//! ([`prevent_link_navigation`]). The right-click menu keeps the browser's own
-//! link menu (Open link, Copy link address).
+//! leaving links is reported to `on_link_hover` ([`update_link_hover`]). A
+//! click is where keyboard activation is offered and where the editor decides
+//! whether the browser follows the link ([`handle_link_click`]): not in an
+//! editable editor or one with a link-click callback, natively in a read-only
+//! one without either. The right-click menu keeps the browser's own link menu
+//! (Open link, Copy link address).
 
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
@@ -1464,17 +1466,103 @@ fn update_link_hover(event: &web_sys::MouseEvent, doc: &web_sys::Document) {
     registry::set_link_hover(None, hovered);
 }
 
-/// Keep the browser from following an editor link. A primary click on one would
-/// navigate (the `mousedown` the editor cancels does not cancel the click's default
-/// action), and a middle click would open it in a new tab; what a link does is the
-/// app's `on_link_click`. The right-click menu's "Open link" is left alone.
-fn prevent_link_navigation(event: &web_sys::MouseEvent) {
-    let on_editor_link = event
+/// The first text node under `node`, in document order.
+fn first_text_node(node: &web_sys::Node) -> Option<web_sys::Node> {
+    let kids = node.child_nodes();
+    for i in 0..kids.length() {
+        let kid = kids.item(i)?;
+        if kid.node_type() == web_sys::Node::TEXT_NODE {
+            return Some(kid);
+        }
+        if let Some(found) = first_text_node(&kid) {
+            return Some(found);
+        }
+    }
+    None
+}
+
+/// The link whose `<a data-pm-mark="link">` element is `anchor`, as the model's
+/// whole run: the link carrying the element's first character, if it has the
+/// element's `href`. For a click with no pointer (keyboard activation), where
+/// there is no point to ask the character under.
+fn link_of_anchor(anchor: &web_sys::Element, handle: &EditorHandle) -> Option<LinkSpan> {
+    if anchor.get_attribute("data-pm-mark").as_deref() != Some("link") {
+        return None; // an `<a>` a plugin's widget drew: not a link mark
+    }
+    let href = anchor.get_attribute("href").unwrap_or_default();
+    let textblock = {
+        let mut cur = anchor.parent_element();
+        loop {
+            let el = cur?;
+            if el.has_attribute("data-pm-editor") {
+                return None;
+            }
+            if el.has_attribute("data-pm-type") {
+                break el;
+            }
+            cur = el.parent_element();
+        }
+    };
+    let textblock_nid = get_nid(&textblock.clone().into())?.0;
+    let text = first_text_node(anchor)?;
+    let byte = compute_byte_offset_in_block(&textblock, &text, 0);
+    let pos = handle.pos_at(textblock_nid, byte)?;
+    handle.link_at(pos).filter(|link| link.href == href)
+}
+
+/// A `click` (or middle-button `auxclick`) on an `<a href>` inside an editor.
+///
+/// **Keyboard activation first.** An editor link is an ordinary Tab stop (the
+/// editor is not `contenteditable`), and Enter on a focused one arrives as a
+/// `click` with `detail == 0` and no `mousedown` before it, so nothing has
+/// offered it to `on_link_click` yet. It is offered here, with the link found
+/// from the element rather than from a point; a claim prevents the navigation.
+///
+/// **Then the default action.** It is prevented when the editor is
+/// **editable** — a click in an editable editor is an edit gesture (it placed
+/// the caret), so the browser following the link is always wrong, which was a
+/// bug before link events existed — or when it has an `on_link_click`
+/// callback, which is where the app says what a link does. A **read-only**
+/// editor with no callback keeps native link behaviour: a click follows the
+/// link, and a middle click or Ctrl/Cmd+click opens it in a new tab. An
+/// `<a href>` that a plugin's decoration widget drew follows the same rule, and
+/// is never offered to `on_link_click`, which is about link marks. The
+/// right-click menu's "Open link" is never touched.
+fn handle_link_click(event: &web_sys::MouseEvent) {
+    let Some(anchor) = event
         .target()
         .and_then(|t| t.dyn_into::<web_sys::Element>().ok())
-        .and_then(|el| el.closest("[data-pm-editor] a[href]").ok().flatten())
-        .is_some();
-    if on_editor_link {
+        .and_then(|el| el.closest("a[href]").ok().flatten())
+    else {
+        return;
+    };
+    let Some(editor_el) = anchor.closest("[data-pm-editor]").ok().flatten() else {
+        return;
+    };
+    let Some(handle) = get_nid(&editor_el.into()).and_then(|nid| registry::editor_for(nid.0))
+    else {
+        return;
+    };
+    if event.type_() == "click"
+        && event.button() == 0
+        && event.detail() == 0
+        && let Some(link) = link_of_anchor(&anchor, &handle)
+    {
+        let (ctrl, meta) = (event.ctrl_key(), event.meta_key());
+        let claimed = handle.dispatch_link_click(&LinkClick {
+            link,
+            primary: if is_mac() { meta } else { ctrl },
+            ctrl,
+            meta,
+            shift: event.shift_key(),
+            alt: event.alt_key(),
+        });
+        if claimed {
+            event.prevent_default();
+            return;
+        }
+    }
+    if !handle.is_read_only() || handle.has_link_click_callback() {
         event.prevent_default();
     }
 }
@@ -2304,13 +2392,14 @@ pub(crate) fn install(browser_doc: &web_sys::Document) {
             registry::set_link_hover(None, None);
         }
     });
-    // Editor links never navigate by themselves (see `prevent_link_navigation`).
+    // Whether an editor link navigates, and keyboard activation of one (see
+    // `handle_link_click`).
     add_capture(browser_doc, "click", |e: web_sys::MouseEvent| {
-        prevent_link_navigation(&e);
+        handle_link_click(&e);
     });
     add_capture(browser_doc, "auxclick", |e: web_sys::MouseEvent| {
         if e.button() == 1 {
-            prevent_link_navigation(&e);
+            handle_link_click(&e);
         }
     });
     let doc = browser_doc.clone();
