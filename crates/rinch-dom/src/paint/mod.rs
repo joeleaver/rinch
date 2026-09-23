@@ -57,14 +57,18 @@ pub const FULL_REPAINT_FRACTION: f64 = 0.5;
 ///   rather than the node, and when its ink or transform changed in the same
 ///   frame.
 ///
-/// An **out-of-flow** box whose position changed also grows both rects by how
-/// far its painted subtree reaches past it ([`opacity_layer_bounds`]): a
-/// dragged panel's overflowing children move with it without being dirty
-/// themselves. Descendants that *are* dirty or removed bring their own painted
-/// rects, which is what keeps a child that closed or flipped side in the same
-/// frame covered. In-flow boxes are not walked: one moved by reflow sits in a
-/// parent that resized, and walking every shifted row made a reflow frame cost
-/// O(rows × subtree).
+/// A **positioned** box (`absolute`, `fixed` or `relative`) whose position
+/// changed also grows both rects by how far its painted subtree reaches past
+/// it ([`opacity_layer_bounds`]): a dragged panel's overflowing children move
+/// with it without being dirty themselves, and so does the absolute badge of a
+/// `relative` row, whether an author moved it or reflow shifted it — the
+/// resized parent's rect does not reach a descendant that overflows it.
+/// Descendants that *are* dirty or removed bring their own painted rects,
+/// which is what keeps a child that closed or flipped side in the same frame
+/// covered. Static boxes are not walked: walking every row a reflow shifts
+/// made a frame cost O(rows × subtree). What that leaves out is a static
+/// box's in-flow child whose own ink (a spread shadow) reaches past a parent
+/// that reflow shifted.
 ///
 /// Once the region reaches [`FULL_REPAINT_FRACTION`] of the surface the answer
 /// is the whole surface, and nothing further is measured.
@@ -110,7 +114,7 @@ pub fn compute_dirty_region(
         let h = node.layout.height as f64 * scale;
 
         let mut ink = Outsets::from_css(own_ink_outsets(&node.computed_style), scale);
-        // An out-of-flow box that moved carries its whole painted subtree with
+        // A positioned box that moved carries its whole painted subtree with
         // it (see the doc above). A subtree the walk cannot bound answers
         // `UNBOUNDED` and the frame repaints in full.
         let moved = node.painted.is_some()
@@ -120,7 +124,7 @@ pub fn compute_dirty_region(
             && h > 0.0
             && matches!(
                 node.computed_style.position,
-                PositionValue::Absolute | PositionValue::Fixed
+                PositionValue::Absolute | PositionValue::Fixed | PositionValue::Relative
             )
         {
             let bounds = opacity_layer_bounds(tree, node_id, scale, ax, ay);

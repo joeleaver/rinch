@@ -480,6 +480,193 @@ fn a_shadow_added_in_place_is_painted_whole() {
     );
 }
 
+// ── Round 2 of the review of #880 ─────────────────────────────────────────
+
+/// Mount whatever `build` makes; it returns the root and the handles a test
+/// needs.
+fn mount_with(
+    build: impl Fn(&mut RenderScope) -> (NodeHandle, Vec<NodeHandle>) + 'static,
+) -> (RinchApp, Vec<NodeHandle>) {
+    let slot: Rc<RefCell<Vec<NodeHandle>>> = Rc::new(RefCell::new(Vec::new()));
+    let slot_in = slot.clone();
+    let mut app = RinchApp::new(move |scope: &mut RenderScope| {
+        let (root, hs) = build(scope);
+        *slot_in.borrow_mut() = hs;
+        root
+    });
+    app.mount_component(SIZE.0 as f32, SIZE.1 as f32);
+    app.resolve_and_repaint(SIZE.0 as f32, SIZE.1 as f32);
+    let hs = slot.borrow().clone();
+    (app, hs)
+}
+
+/// A `div` styled `style`, appended to `parent`.
+fn el(scope: &mut RenderScope, parent: &NodeHandle, style: &str) -> NodeHandle {
+    let e = scope.create_element("div");
+    e.set_attribute("style", style);
+    parent.append_child(&e);
+    e
+}
+
+/// An in-flow `position: relative` row in a narrow column is shifted down by
+/// reflow (a spacer above it grows). Its absolute badge hangs far outside the
+/// column, so neither the row's box nor the column's reaches it: only the
+/// row's subtree walk does. `relative` is in the walk's gate for this.
+#[test]
+fn a_relative_row_shifted_by_reflow_takes_its_overflowing_badge_along() {
+    let (mut app, hs) = mount_with(|scope| {
+        let outer = scope.create_element("div");
+        outer.set_attribute("style", "width: 600px; height: 400px");
+        let col = el(scope, &outer, "width: 100px");
+        let spacer = el(scope, &col, "height: 100px");
+        let row = el(
+            scope,
+            &col,
+            "position: relative; height: 40px; background: rgb(0, 200, 0)",
+        );
+        el(
+            scope,
+            &row,
+            "position: absolute; left: 200px; top: 0px; width: 40px; height: 40px; \
+             background: rgb(200, 0, 0)",
+        );
+        (outer, vec![spacer])
+    });
+    assert_clean_after(&mut app, (200, 100, 240, 140), |app| {
+        hs[0].set_style("height", "200px");
+        resolve(app);
+    });
+}
+
+/// A `position: relative` box moved by its own insets — an author move, not
+/// reflow — takes its overflowing absolute child along.
+#[test]
+fn a_relative_box_moved_by_its_insets_takes_its_overflowing_child_along() {
+    let (mut app, hs) = mount_with(|scope| {
+        let outer = scope.create_element("div");
+        outer.set_attribute("style", "width: 600px; height: 400px");
+        let p = el(
+            scope,
+            &outer,
+            "position: relative; left: 200px; top: 150px; width: 40px; height: 40px; \
+             background: rgb(0, 0, 200)",
+        );
+        el(
+            scope,
+            &p,
+            "position: absolute; left: 60px; top: 0px; width: 40px; height: 40px; \
+             background: rgb(200, 0, 0)",
+        );
+        (outer, vec![p])
+    });
+    assert_clean_after(&mut app, (260, 150, 300, 190), |app| {
+        hs[0].set_style("left", "20px");
+        hs[0].set_style("top", "300px");
+        resolve(app);
+    });
+}
+
+/// An inline-block chip moved by its IFC — the text before it grew, which
+/// does not push the chip paint-dirty — and painted there by an incremental
+/// frame; then its overflowing child is removed. The child's painted rect is
+/// summed through the chip's `prev_layout`, which only the IFC's own position
+/// write keeps level (`write_inline_positions`). Every frame here is
+/// incremental: a full repaint in between would hide nothing, but it is not
+/// what a running app paints.
+#[test]
+fn a_child_of_an_ifc_moved_chip_is_cleared_where_it_was_painted() {
+    let (mut app, hs) = mount_with(|scope| {
+        let outer = scope.create_element("div");
+        outer.set_attribute("style", "width: 600px; height: 400px");
+        let p = el(
+            scope,
+            &outer,
+            "width: 200px; font-size: 16px; line-height: 20px; font-family: sans-serif",
+        );
+        let t = scope.create_text("a");
+        p.append_child(&t);
+        let chip = scope.create_element("span");
+        chip.set_attribute(
+            "style",
+            "display: inline-block; position: relative; width: 40px; height: 16px; \
+             background: rgb(0, 0, 200)",
+        );
+        p.append_child(&chip);
+        let kid = el(
+            scope,
+            &chip,
+            "position: absolute; left: 300px; top: 100px; width: 40px; height: 40px; \
+             background: rgb(200, 0, 0)",
+        );
+        (outer, vec![kid, t])
+    });
+    let _ = full_frame(&mut app);
+    // Longer text pushes the chip right; its kid moves with it.
+    hs[1].set_text("aaaaaaaaaaaa");
+    resolve(&mut app);
+    let (shown, stats) = incremental_frame(&mut app);
+    assert_incremental(&stats);
+    let kid = {
+        let d = app.doc.as_ref().unwrap().borrow();
+        rinch_dom::paint::painted_border_box(&d.tree, hs[0].node_id().0, 1.0)
+    };
+    let kid = (kid.x0 as i32, kid.y0 as i32, kid.x1 as i32, kid.y1 as i32);
+    assert!(
+        ink_in(&shown, kid) > 1000,
+        "positive control: the moved kid is painted at {kid:?}"
+    );
+    hs[0].remove();
+    resolve(&mut app);
+    let (inc, stats) = incremental_frame(&mut app);
+    assert_incremental(&stats);
+    let full = full_frame(&mut app);
+    assert_eq!(diff_in(&inc, &full, kid), 0, "the kid ghosts at {kid:?}");
+    assert_eq!(
+        diff_in(&inc, &full, (0, 0, 600, 400)),
+        0,
+        "incremental frame != full frame"
+    );
+}
+
+/// A shadow **offset up and left** reaches past the left and top of the box
+/// by its offset: the left reach is `reach - offset_x`, so a sign slip there
+/// is invisible at offset 0 — where every other fixture sits. Dropped in
+/// place rather than moved: a moved positioned box walks its subtree, which
+/// measures the shadow itself and would cover a wrong own-ink reach. Here the
+/// ink the box was *painted* with is the only thing that reaches the band.
+/// The whole-frame check catches the top band too.
+#[test]
+fn a_shadow_offset_up_and_left_dropped_in_place_is_cleared() {
+    let (mut app, b) = panel("box-shadow: -16px -16px 0 0 rgb(0, 0, 0)");
+    assert_clean_after(&mut app, (4, 136, 14, 172), |app| {
+        b.set_style("box-shadow", "none");
+        resolve(app);
+    });
+}
+
+/// The same the other way round: a shadow offset down and right, on a box
+/// that is removed. The band right of the box is outside the union of the
+/// holder and the bare box.
+#[test]
+fn a_removed_box_clears_a_shadow_offset_down_and_right() {
+    let (mut app, b) = panel("box-shadow: 16px 16px 0 0 rgb(0, 0, 0)");
+    assert_clean_after(&mut app, (66, 168, 76, 204), |app| {
+        b.remove();
+        resolve(app);
+    });
+}
+
+/// An `outline` is painted outside the border box, `width + offset` away —
+/// dropped in place, for the same reason as the offset shadow above.
+#[test]
+fn an_outline_dropped_in_place_is_cleared() {
+    let (mut app, b) = panel("outline: 10px solid rgb(0, 0, 0); outline-offset: 4px");
+    assert_clean_after(&mut app, (6, 152, 15, 188), |app| {
+        b.set_style("outline", "none");
+        resolve(app);
+    });
+}
+
 // ── Cost ─────────────────────────────────────────────────────────────────
 
 /// `compute_dirty_region` on a reflow that shifts every row: a header grows

@@ -632,18 +632,22 @@ impl RinchDocument {
                     parley::layout::PositionedLayoutItem::InlineBox(positioned_box) => {
                         let child_id = positioned_box.id as usize;
                         if let Some(child) = self.tree.nodes.get_mut(child_id) {
-                            // Not pushed paint-dirty: the IFC root it flows in
-                            // is what repaints the line. So its painted box
-                            // moves with it — unless it has a move of its own
-                            // still waiting for a paint, whose old rect stays.
-                            // Left behind, the stale offset would misplace the
-                            // painted rect of everything inside it
-                            // (`paint::previous_painted_rect` sums the chain).
-                            let settled = child.prev_layout == child.layout;
+                            // A move is a move, whoever makes it: push the box
+                            // paint-dirty like any other layout change, so the
+                            // region clears where it was painted and draws where
+                            // it went — its own box *and* anything it carries
+                            // outside the IFC root's box (an absolute child),
+                            // which the root's own rect does not reach. Its
+                            // `prev_layout` stays the painted box until a paint
+                            // consumes it. Review of #880, probe N: unpushed, the
+                            // chip's absolute kid was neither drawn at its new
+                            // spot nor cleared from its old one.
+                            let moved = child.layout.x != positioned_box.x
+                                || child.layout.y != positioned_box.y;
                             child.layout.x = positioned_box.x;
                             child.layout.y = positioned_box.y;
-                            if settled {
-                                child.prev_layout = child.layout;
+                            if moved {
+                                self.tree.paint_dirty_nodes.push(child_id);
                             }
                         }
                     }
