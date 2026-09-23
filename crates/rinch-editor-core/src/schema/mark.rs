@@ -19,6 +19,17 @@ pub struct MarkSpec {
     /// Whether this mark spans across nodes
     pub spanning: bool,
 
+    /// Whether the mark is **inherited at its end** (ProseMirror's
+    /// `MarkSpec.inclusive`, default `true`). A caret sitting right after the last
+    /// character of a run of an inclusive mark (`bold`) reports it, and a character
+    /// typed there carries it. A non-inclusive mark (`link` in
+    /// [`Schema::starter_kit`](super::Schema::starter_kit)) is not: at its end
+    /// boundary [`ResolvedPos::marks`](crate::ResolvedPos::marks) leaves it out unless
+    /// the content *after* the position carries the same mark too, so text typed
+    /// right after a link is plain. Inside the run a non-inclusive mark behaves like
+    /// any other.
+    pub inclusive: bool,
+
     /// Marks that this mark excludes (can't coexist with).
     /// None = excludes nothing.
     /// Some("") = excludes all other marks.
@@ -36,6 +47,7 @@ impl MarkSpec {
             name: name.to_string(),
             attrs: BTreeMap::new(),
             spanning: true,
+            inclusive: true,
             excludes: None,
             parse_html_tags: Vec::new(),
         }
@@ -47,6 +59,7 @@ impl MarkSpec {
             name: name.to_string(),
             attrs,
             spanning: true,
+            inclusive: true,
             excludes: None,
             parse_html_tags: Vec::new(),
         }
@@ -99,6 +112,13 @@ impl MarkSpecBuilder {
         self
     }
 
+    /// Set whether this mark is inherited at its end boundary (see
+    /// [`MarkSpec::inclusive`]; the default is `true`).
+    pub fn inclusive(mut self, inclusive: bool) -> Self {
+        self.spec.inclusive = inclusive;
+        self
+    }
+
     /// Set whether this mark spans across nodes.
     pub fn spanning(mut self, spanning: bool) -> Self {
         self.spec.spanning = spanning;
@@ -121,6 +141,10 @@ mod tests {
         assert_eq!(spec.name, "bold");
         assert!(spec.attrs.is_empty());
         assert!(spec.spanning);
+        assert!(
+            spec.inclusive,
+            "marks are inclusive unless a spec says otherwise"
+        );
         assert!(spec.excludes.is_none());
     }
 
@@ -176,5 +200,7 @@ mod tests {
         assert_eq!(spec.parse_html_tags, vec!["a"]);
         assert!(spec.excludes_mark("code"));
         assert!(!spec.excludes_mark("bold"));
+        assert!(spec.inclusive);
+        assert!(!MarkSpec::builder("link").inclusive(false).build().inclusive);
     }
 }
