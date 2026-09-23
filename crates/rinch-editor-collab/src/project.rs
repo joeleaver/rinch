@@ -29,6 +29,8 @@
 //! carries a starter paragraph the CRDT does not. That case skips the diff entirely and
 //! inserts the whole of `after`.
 
+use std::collections::BTreeSet;
+
 use yrs::{Array, Transact};
 
 use rinch_editor_core::{Node, Transaction};
@@ -128,6 +130,13 @@ impl CollabDoc {
             // Validate (and discard) each block being deleted — fail loud if out of scope.
             read_node(before.child(idx))?;
         }
+        // The non-inclusive marks the reconciled blocks carry, on either side: their
+        // formatting is resynced per char, not per span (see `resync_marks`).
+        let mut per_char = BTreeSet::new();
+        for k in 0..common {
+            non_inclusive_marks(before.child(prefix + k), &mut per_char);
+            non_inclusive_marks(after.child(prefix + k), &mut per_char);
+        }
 
         // Pre-pass gate 3, CRDT side (issue #194): read back every CRDT node the write
         // phase will read — the blocks being reconciled in place, recursively (a
@@ -161,7 +170,7 @@ impl CollabDoc {
         // Reconcile the overlapping changed blocks in place (keeps identity). A changed
         // top-level list reconciles recursively, touching only the edited descendant.
         for (k, target) in targets.iter().take(common).enumerate() {
-            reconcile_node(&mut txn, &content, (prefix + k) as u32, target)?;
+            reconcile_node(&mut txn, &content, (prefix + k) as u32, target, &per_char)?;
         }
         // Insert the extra post blocks (e.g. the tail of a split). `targets` has
         // exactly `post_mid` entries, so skipping `common` yields indices
@@ -198,6 +207,29 @@ impl CollabDoc {
             insert_node(&mut txn, &content, i as u32, nd)?;
         }
         Ok(())
+    }
+}
+
+/// Add the name of every non-inclusive mark ([`MarkSpec::inclusive`] `false`, the
+/// starter kit's `link`) found anywhere in `node` to `out`.
+///
+/// The CRDT carries mark *names* only, so this is where the projection learns which of
+/// them are non-inclusive: from the model's own mark types. yrs extends a formatted
+/// range over an insert at its end, so a char typed right after a link lands inside the
+/// link's range in the CRDT while the model holds it as plain text. Resynced per span,
+/// that clears the whole link and writes it again, and the fresh write reverts a peer's
+/// concurrent change to it (the #193 shape). Resynced per char, only the typed char is
+/// cleared.
+///
+/// [`MarkSpec::inclusive`]: rinch_editor_core::MarkSpec::inclusive
+fn non_inclusive_marks(node: &Node, out: &mut BTreeSet<String>) {
+    for m in node.marks() {
+        if !m.typ.spec().inclusive {
+            out.insert(m.type_name().to_string());
+        }
+    }
+    for i in 0..node.child_count() {
+        non_inclusive_marks(node.child(i), out);
     }
 }
 

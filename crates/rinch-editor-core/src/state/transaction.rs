@@ -530,6 +530,82 @@ mod tests {
         );
     }
 
+    /// `"see "` + `mark("here")` + `" now"`, typed into at `pos`: the runs of the
+    /// result as `(text, mark names)`.
+    fn type_into_marked(mark: &str, pos: usize) -> Vec<(String, Vec<String>)> {
+        let s = sk();
+        let mt = s.mark_type(mark).unwrap().clone();
+        let m = if mark == "link" {
+            Mark::new(
+                mt,
+                crate::Attrs::from_iter([("href", crate::AttrValue::from("https://a.example"))]),
+            )
+        } else {
+            Mark::simple(mt)
+        };
+        let p = s
+            .branch(
+                "paragraph",
+                Fragment::from_children(vec![
+                    s.text("see ").unwrap(),
+                    s.text_with_marks("here", vec![m]).unwrap(),
+                    s.text(" now").unwrap(),
+                ]),
+            )
+            .unwrap();
+        let d = doc(&s, vec![p]);
+        let mut tr = Transaction::new(s.clone(), d, Selection::cursor(Pos(pos)), None);
+        tr.insert_text("X").unwrap();
+        tr.doc()
+            .child(0)
+            .content()
+            .iter()
+            .map(|n| {
+                let names = n.marks().iter().map(|m| m.type_name().to_string());
+                (n.text().unwrap().to_string(), names.collect())
+            })
+            .collect()
+    }
+
+    fn runs(r: &[(&str, &[&str])]) -> Vec<(String, Vec<String>)> {
+        r.iter()
+            .map(|(t, m)| (t.to_string(), m.iter().map(|m| m.to_string()).collect()))
+            .collect()
+    }
+
+    #[test]
+    fn typing_right_after_a_link_is_not_linked() {
+        assert_eq!(
+            type_into_marked("link", 9),
+            runs(&[("see ", &[]), ("here", &["link"]), ("X now", &[])])
+        );
+    }
+
+    #[test]
+    fn typing_inside_a_link_is_linked() {
+        assert_eq!(
+            type_into_marked("link", 7),
+            runs(&[("see ", &[]), ("heXre", &["link"]), (" now", &[])])
+        );
+    }
+
+    #[test]
+    fn typing_at_a_link_start_is_not_linked() {
+        // As for every mark: at a boundary the text before decides.
+        assert_eq!(
+            type_into_marked("link", 5),
+            runs(&[("see X", &[]), ("here", &["link"]), (" now", &[])])
+        );
+    }
+
+    #[test]
+    fn typing_right_after_bold_is_bold() {
+        assert_eq!(
+            type_into_marked("bold", 9),
+            runs(&[("see ", &[]), ("hereX", &["bold"]), (" now", &[])])
+        );
+    }
+
     #[test]
     fn selection_maps_forward_through_a_leading_insert() {
         let s = sk();
