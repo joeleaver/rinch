@@ -115,7 +115,7 @@ assert_eq!(frame.get(Counter::TaffyRootComputes), 0, "a colour change must not l
 | | `calc_fixpoint_passes` | Extra computes run by the `calc(%, px)` fixpoint |
 | Paint | `paint_frames` / `paint_cached_frames` | Frames actually painted, and redraws that reused the cached frame |
 | | `repaint_partial`, `repaint_full` | Software frames limited to a dirty region, and full repaints |
-| | `repaint_full_{first_frame,resize,no_dirty_nodes,region_too_large,empty_region,overlay,inset_fast_path,editor_overlay,theme,invalidated,gpu}` | The reason for each full repaint. `no_dirty_nodes` means no dirty region came out: either nothing was paint-dirty, or what was produced no rect |
+| | `repaint_full_{first_frame,resize,no_dirty_nodes,region_too_large,empty_region,overlay,theme,invalidated,gpu}` | The reason for each full repaint. `no_dirty_nodes` means no dirty region came out: either nothing was paint-dirty, or what was produced no rect |
 | | `repainted_px` / `surface_px` | Pixels repainted, and pixels in the surface (their ratio is the fraction of the surface repainted) |
 | | `paint_nodes_visited` | Nodes `paint_node` visited |
 | | `stacking_order_builds` | Stacking sequences built, by paint and by hit testing |

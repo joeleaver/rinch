@@ -1325,7 +1325,7 @@ impl EditorHandle {
     /// Hide this editor's overlays (caret + selection highlight) because it isn't
     /// focused. The runtime's focus-aware caret pass calls this for every editor
     /// that isn't the focused one. A no-op before mount. Returns whether an overlay
-    /// was actually cleared (so the runtime can force a full repaint).
+    /// was actually cleared (so the runtime can schedule a repaint).
     pub fn hide_overlays(&self) -> bool {
         match self.inner.borrow_mut().view.as_mut() {
             Some(view) => {

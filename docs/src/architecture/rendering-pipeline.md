@@ -234,6 +234,8 @@ fn paint_software(&mut self) {
 
 The software renderer includes **dirty region caching**: when only a small part of the UI changes (e.g., cursor blink, hover feedback), only the affected rectangular region is cleared and repainted. Nodes outside the dirty region are skipped entirely during the paint traversal.
 
+A node that moved or resized contributes two rects: where it is now, and where it was **last painted** — `Node::prev_layout`, which layout never writes and only the paint that consumes the region advances (`NodeTree::consume_paint_dirty`, called by the software frame, a full repaint and a GPU scene build alike). So any number of layout passes between two paints still clears the old pixels. A node that moved is also padded by how far its painted subtree reaches past its box (a `box-shadow`, an outline, an overflowing child), at both rects. That is what lets an editor keystroke, a caret move or a dragged absolute panel repaint a region instead of the whole window. Not covered yet: a `transform` change that leaves the layout alone adds only the new transformed rect, so a transform that moves a box off its old pixels leaves them behind unless something else covers them.
+
 The region is the union of the changed *nodes'* rects, so anything painted **outside** the node tree has to contribute its own. The drag ghost is the one such overlay: it is blitted into the framebuffer after the document paint, so `RinchApp` remembers the rect it covered and folds that into the next frame's dirty region — otherwise the frame that stops drawing the ghost would never clear where it had been, leaving it stuck on screen (issue #173). The GPU backend rebuilds the whole Vello scene every dirty frame and so has no equivalent case.
 
 ## Incremental Updates

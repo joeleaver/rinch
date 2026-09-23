@@ -606,6 +606,19 @@ impl RinchDocument {
                     .paint_dirty_removed_rects
                     .push((r.x0, r.y0, r.width(), r.height()));
             }
+            // A node that moved since the last paint and is removed before the
+            // next one has its pixels at the box it was last *painted* in, not
+            // the one it is removed from — a caret overlay moved and then torn
+            // down in one frame. Record that rect too, then bring
+            // `prev_layout` level: the old pixels are accounted for here, and
+            // a detached node re-inserted later must not carry the stale box.
+            if let Some(r) = crate::paint::previous_painted_rect(&self.tree, node_id, 1.0) {
+                self.tree
+                    .paint_dirty_removed_rects
+                    .push((r.x0, r.y0, r.width(), r.height()));
+            }
+            let node = &mut self.tree.nodes[node_id];
+            node.prev_layout = node.layout;
             let children = self.tree.nodes[node_id].children.clone();
             for child_id in children {
                 self.mark_subtree_paint_dirty(child_id);

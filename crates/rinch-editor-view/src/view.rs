@@ -269,7 +269,7 @@ fn byte_of_char(text: &str, i: usize) -> usize {
 /// the native side gets the same cascade through rinch-dom — so one `class` attr
 /// covers both with no per-backend painting code in the view. It also survives
 /// reflow for free: an overlay would have to be re-measured after every layout,
-/// on every line, and would ghost the way the caret does (see
+/// on every line, and re-laid out and repainted whenever it moved (see
 /// [`RinchDomEditorView::overlay_dirty`]). And it is invisible to the rest of the
 /// view: an inline element contributes nothing to the inline formatting context's
 /// flat text, so the caret map (`textblock_flat_byte`/`ifc_byte_to_char`, both
@@ -561,10 +561,12 @@ pub struct RinchDomEditorView {
     decorations: DecorationSet,
     /// Set whenever the post-layout pass writes an overlay's geometry (caret,
     /// selection rect, or node outline). The runtime reads it via
-    /// [`Self::take_overlay_dirty`] to force a full repaint: these overlays are
-    /// absolutely positioned, and the software renderer's dirty-region cache can't
-    /// clear an absolute element's *old* rect when it moves, so a moved overlay
-    /// would otherwise ghost.
+    /// [`Self::take_overlay_dirty`] to re-resolve layout and schedule a repaint,
+    /// since the overlays' new boxes only exist after a layout pass. A
+    /// dirty-region repaint: rinch-dom keeps each overlay's last *painted* rect
+    /// until the paint consumes it, so the old caret is cleared however many
+    /// resolves land first. (This used to force a full repaint per keystroke,
+    /// because a second resolve overwrote that old rect.)
     overlay_dirty: bool,
 }
 
@@ -924,10 +926,9 @@ impl RinchDomEditorView {
         Some((ox, oy, h))
     }
 
-    /// Take and clear the "an overlay moved" flag. The runtime forces a full repaint
-    /// when set, because the caret / selection / node-outline overlays are absolutely
-    /// positioned and the software renderer's dirty-region cache can't clear their
-    /// *old* rect when they move (otherwise they ghost — see [`Self::overlay_dirty`]).
+    /// Take and clear the "an overlay moved" flag. The runtime re-resolves layout
+    /// and schedules a repaint when set, so the caret / selection / node-outline
+    /// overlays are drawn at their new boxes (see [`Self::overlay_dirty`]).
     pub(crate) fn take_overlay_dirty(&mut self) -> bool {
         std::mem::take(&mut self.overlay_dirty)
     }

@@ -129,16 +129,26 @@ fn a_hover_repaints_a_region_and_counts_its_hit_tests() {
 }
 
 /// Moving an absolute box by its insets takes the inset fast path, which
-/// throws the whole previous frame away (#280). Recorded under its own
-/// reason so the fix for #280 can show the count go to zero.
+/// used to throw the whole previous frame away (#280). It repaints a region
+/// now: the box's old rect and its new one.
 #[test]
-fn the_inset_fast_path_is_a_full_repaint_for_that_reason() {
+fn the_inset_fast_path_repaints_a_region() {
     let (mut app, float) = mount();
+    frame(&mut app);
+    // A warm-up move. The first Taffy pass after mount also reports the
+    // direct text children of every IFC root, whose `layout` the IFC pass
+    // wrote and the Taffy read then zeroes — a one-off, whole-width region
+    // that has nothing to do with the box (pre-existing).
+    float.set_style("left", "20px");
     frame(&mut app);
     float.set_style("left", "40px");
     let s = frame(&mut app);
-    assert_eq!(s.get(Counter::RepaintFull), 1, "{s:?}");
-    assert_eq!(s.get(Counter::RepaintFullInsetFastPath), 1, "{s:?}");
+    assert_eq!(s.get(Counter::RepaintFull), 0, "{s:?}");
+    assert_eq!(s.get(Counter::RepaintPartial), 1, "{s:?}");
+    assert!(
+        s.get(Counter::RepaintedPx) < s.get(Counter::SurfacePx) / 10,
+        "{s:?}"
+    );
 }
 
 #[test]

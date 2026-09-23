@@ -40,8 +40,10 @@ use crate::stacking::{ClipSpan, PaintKind, paints_at_stacking_root, stacking_pai
 
 /// Compute the dirty region (union of all paint-dirty node rects) in physical pixels.
 ///
-/// Returns `None` if no nodes are dirty. Includes both current and previous
-/// layout positions so moved/resized nodes get their old area cleared too.
+/// Returns `None` if no nodes are dirty. Includes both the current box and
+/// the box each node was last **painted** in (`prev_layout`, advanced only by
+/// [`NodeTree::consume_paint_dirty`]), so moved/resized nodes get their old
+/// area cleared too — however many layout passes ran since the last paint.
 /// Expands the region by a margin to account for anti-aliasing and box-shadows.
 pub fn compute_dirty_region(
     tree: &NodeTree,
@@ -70,8 +72,43 @@ pub fn compute_dirty_region(
         if let Some(node) = tree.get(node_id) {
             let w = node.layout.width as f64 * scale;
             let h = node.layout.height as f64 * scale;
+
+            // A box that moved or resized since it was painted carries
+            // everything it paints with it: its shadow, its outline, a child
+            // that overflows it. None of that is inside the border box the
+            // margin below pads, so measure how far the subtree's ink reaches
+            // past the box (the walk `push_layer` bounds come from) and pad
+            // both the old rect and the new one by it. A dragged panel's
+            // `box-shadow` otherwise leaves a trail, and its new shadow is
+            // clipped by the region. Only for a box whose *position* changed:
+            // one that stayed put has not moved its ink, and a resize alone
+            // (every ancestor of a growing line) would walk whole documents
+            // for nothing. A subtree the walk cannot bound (more than its
+            // visit budget, or something it cannot place) answers `UNBOUNDED`
+            // and the frame repaints in full, which is what every inset move
+            // and editor-overlay move did before the old rect was kept.
+            let moved = node.prev_layout.x != node.layout.x || node.prev_layout.y != node.layout.y;
+            let mut ink = Outsets::ZERO;
+            if w > 0.0
+                && h > 0.0
+                && moved
+                && node.prev_layout.width > 0.0
+                && node.prev_layout.height > 0.0
+            {
+                let bounds = opacity_layer_bounds(tree, node_id, scale, ax, ay);
+                if bounds == UNBOUNDED {
+                    return Some(Rect::new(0.0, 0.0, viewport_w, viewport_h));
+                }
+                ink = Outsets {
+                    left: (ax - bounds.x0).max(0.0),
+                    top: (ay - bounds.y0).max(0.0),
+                    right: (bounds.x1 - (ax + w)).max(0.0),
+                    bottom: (bounds.y1 - (ay + h)).max(0.0),
+                };
+            }
+
             if w > 0.0 && h > 0.0 {
-                let r = transform.transform_rect_bbox(Rect::new(ax, ay, ax + w, ay + h));
+                let r = transform.transform_rect_bbox(ink.grow(Rect::new(ax, ay, ax + w, ay + h)));
                 let r = Rect::new(r.x0 - margin, r.y0 - margin, r.x1 + margin, r.y1 + margin);
                 region = Some(region.map_or(r, |prev| prev.union(r)));
             }
@@ -105,20 +142,9 @@ pub fn compute_dirty_region(
                 }
             }
 
-            // Previous position (for moved/resized nodes)
-            let pw = node.prev_layout.width as f64 * scale;
-            let ph = node.prev_layout.height as f64 * scale;
-            if (pw > 0.0 && ph > 0.0) && node.prev_layout != node.layout {
-                // Approximate old absolute position: use current abs pos adjusted
-                // by the difference in layout offsets, under the current transform
-                // chain. Not perfectly accurate for deep ancestor layout changes
-                // (or a simultaneous transform change), but covers the common case.
-                let dx = (node.layout.x - node.prev_layout.x) as f64 * scale;
-                let dy = (node.layout.y - node.prev_layout.y) as f64 * scale;
-                let old_x = ax - dx;
-                let old_y = ay - dy;
-                let r =
-                    transform.transform_rect_bbox(Rect::new(old_x, old_y, old_x + pw, old_y + ph));
+            // Previous position (for moved/resized nodes): where it was last
+            // *painted*, however many layout passes have run since.
+            if let Some(r) = previous_painted_rect_at(node, ax, ay, transform, scale, ink) {
                 let r = Rect::new(r.x0 - margin, r.y0 - margin, r.x1 + margin, r.y1 + margin);
                 region = Some(region.map_or(r, |prev| prev.union(r)));
             }
@@ -148,6 +174,81 @@ pub fn compute_dirty_region(
             r.y1.min(viewport_h),
         )
     })
+}
+
+/// The rect `node` was last painted in, when its box has moved or resized
+/// since — `None` when it has not, or when that box was empty.
+///
+/// `(ax, ay, transform)` is the node's **current** painted origin and
+/// transform chain ([`compute_absolute_position_and_transform`]); the old rect
+/// is that origin moved back by the change in the node's own layout offset.
+/// Not exact under an ancestor that moved too (the ancestor's own old rect
+/// usually covers it) or a simultaneous transform change, but exact for the
+/// common case — a caret, a selection rect, a dragged panel — and, since
+/// `prev_layout` is only advanced by the paint that consumes the region
+/// ([`NodeTree::consume_paint_dirty`]), exact however many layout passes ran
+/// between the two paints.
+///
+/// `ink` pads the old box by how far the node's painted subtree reaches past
+/// its border box (measured on the current subtree, which for a move is the
+/// same subtree translated).
+fn previous_painted_rect_at(
+    node: &Node,
+    ax: f64,
+    ay: f64,
+    transform: Affine,
+    scale: f64,
+    ink: Outsets,
+) -> Option<Rect> {
+    let pw = node.prev_layout.width as f64 * scale;
+    let ph = node.prev_layout.height as f64 * scale;
+    if pw <= 0.0 || ph <= 0.0 || node.prev_layout == node.layout {
+        return None;
+    }
+    let old_x = ax - (node.layout.x - node.prev_layout.x) as f64 * scale;
+    let old_y = ay - (node.layout.y - node.prev_layout.y) as f64 * scale;
+    Some(transform.transform_rect_bbox(ink.grow(Rect::new(old_x, old_y, old_x + pw, old_y + ph))))
+}
+
+/// How far past a border box a node's painted subtree reaches, per side, in
+/// physical pixels. Never negative.
+#[derive(Clone, Copy)]
+struct Outsets {
+    left: f64,
+    top: f64,
+    right: f64,
+    bottom: f64,
+}
+
+impl Outsets {
+    const ZERO: Self = Self {
+        left: 0.0,
+        top: 0.0,
+        right: 0.0,
+        bottom: 0.0,
+    };
+
+    fn grow(self, r: Rect) -> Rect {
+        Rect::new(
+            r.x0 - self.left,
+            r.y0 - self.top,
+            r.x1 + self.right,
+            r.y1 + self.bottom,
+        )
+    }
+}
+
+/// [`previous_painted_rect_at`] for a node looked up by id: the rect its old
+/// pixels are in, if its box has changed since it was last painted. The
+/// removal path needs it — a node moved and then removed before a paint has
+/// pixels at its *previous* box, not the one it was removed from.
+pub fn previous_painted_rect(tree: &NodeTree, node_id: RawNodeId, scale: f64) -> Option<Rect> {
+    let node = tree.get(node_id)?;
+    if node.prev_layout == node.layout {
+        return None;
+    }
+    let (ax, ay, transform) = compute_absolute_position_and_transform(tree, node_id, scale);
+    previous_painted_rect_at(node, ax, ay, transform, scale, Outsets::ZERO)
 }
 
 use std::cell::{Cell, RefCell};
