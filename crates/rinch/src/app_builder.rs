@@ -73,6 +73,8 @@ pub struct App<F> {
     pub(crate) fonts: Vec<crate::font::AppFont>,
     #[cfg(feature = "desktop")]
     pub(crate) menus: Option<Vec<(String, crate::menu::Menu)>>,
+    #[cfg(feature = "desktop")]
+    pub(crate) renderer: crate::shell::renderer::Renderer,
     #[cfg(feature = "gpu")]
     pub(crate) gpu: Option<crate::shell::desktop::GpuInit>,
 }
@@ -92,6 +94,8 @@ where
             fonts: Vec::new(),
             #[cfg(feature = "desktop")]
             menus: None,
+            #[cfg(feature = "desktop")]
+            renderer: crate::shell::renderer::Renderer::Auto,
             #[cfg(feature = "gpu")]
             gpu: None,
         }
@@ -222,6 +226,29 @@ where
         self
     }
 
+    /// Choose the renderer the window presents with.
+    ///
+    /// [`Renderer::Auto`](crate::Renderer::Auto), the default, presents on the
+    /// GPU when the build has the `gpu` feature and the GPU starts, and falls
+    /// back to the software renderer (with a warning in the log) when it does
+    /// not. [`Renderer::Software`](crate::Renderer::Software) never touches
+    /// the GPU; [`Renderer::Gpu`](crate::Renderer::Gpu) panics rather than
+    /// fall back. The `RINCH_RENDERER` environment variable (`auto`, `gpu`,
+    /// `software` or `cpu`) overrides this, so a user can force a renderer
+    /// without a rebuild.
+    ///
+    /// An app that configures the GPU device itself
+    /// ([`gpu_config`](App::gpu_config), [`external_gpu`](App::external_gpu))
+    /// always presents on the GPU, because its own pipelines need that device:
+    /// it gets no fallback (a GPU that will not start panics), and a
+    /// `Software` choice, from this method or from `RINCH_RENDERER`, is logged
+    /// as a warning and ignored.
+    #[cfg(feature = "desktop")]
+    pub fn renderer(mut self, renderer: crate::shell::renderer::Renderer) -> Self {
+        self.renderer = renderer;
+        self
+    }
+
     /// Run on an embedder-provided GPU device.
     ///
     /// The embedder creates the whole GPU stack with its own `DeviceDescriptor`
@@ -253,6 +280,7 @@ where
             theme: self.theme.unwrap_or_default(),
             fonts: self.fonts,
             menus: self.menus,
+            renderer: self.renderer,
             #[cfg(feature = "gpu")]
             gpu: self.gpu,
             component: self.component,
@@ -269,10 +297,13 @@ where
     ///
     /// # Panics
     ///
-    /// Startup does not report failure — it aborts. The event loop, the window,
-    /// the presentation surface, and (on the `gpu` feature) the adapter,
-    /// device and renderer each panic rather than returning an error, on both
-    /// the default software backend and the GPU one.
+    /// Startup does not report failure — it aborts. The event loop, the window
+    /// and the software presentation surface each panic rather than returning
+    /// an error. On the `gpu` feature a GPU that will not start (adapter,
+    /// surface, device, renderer) falls back to the software renderer under
+    /// [`Renderer::Auto`](crate::Renderer::Auto) and panics under
+    /// [`Renderer::Gpu`](crate::Renderer::Gpu) or with an app-configured
+    /// device (see [`renderer`](App::renderer)).
     ///
     /// Two cases are worth separating from that:
     ///
@@ -289,10 +320,12 @@ where
             theme,
             fonts,
             menus,
+            renderer,
             #[cfg(feature = "gpu")]
             gpu,
         } = self.into_startup();
 
+        crate::shell::renderer::set_requested(renderer);
         #[cfg(feature = "gpu")]
         if let Some(gpu) = gpu {
             crate::shell::desktop::set_gpu_init(gpu);
@@ -508,6 +541,8 @@ pub(crate) struct Startup<F> {
     /// Faces to register before the first layout pass.
     pub(crate) fonts: Vec<crate::font::AppFont>,
     pub(crate) menus: Option<Vec<(String, crate::menu::Menu)>>,
+    /// The renderer the app asked for (`RINCH_RENDERER` still overrides it).
+    pub(crate) renderer: crate::shell::renderer::Renderer,
     #[cfg(feature = "gpu")]
     pub(crate) gpu: Option<crate::shell::desktop::GpuInit>,
 }

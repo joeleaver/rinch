@@ -9,7 +9,7 @@ A GUI framework for Rust that uses HTML and CSS for layout, renders natively, an
 - **HTML/CSS layout** — The layout system that billions of people have already debugged for you, powered by Servo's Stylo and Taffy's flexbox.
 - **Fine-grained reactivity** — Signal changes update *one DOM node*, not a component tree. No virtual DOM. No diffing.
 - **Components run once** — Your function builds the DOM, closures keep it updated. That's the whole model.
-- **Native performance** — GPU rendering via Vello/wgpu, or software rendering via tiny-skia. Pick at compile time.
+- **Native performance** — GPU rendering via Vello/wgpu, or software rendering via tiny-skia. A `gpu` build carries both, picks at run time, and falls back to software when the GPU will not start.
 - **WASM too** — Same components, same signals, browser-native DOM. ~3MB binary, zero JavaScript.
 
 ## Quick Example

@@ -173,7 +173,7 @@ pub trait Painter {
 }
 ```
 
-Application code never interacts with the Painter directly — the backend is selected at compile time via Cargo features.
+Application code never interacts with the Painter directly. Cargo features decide which backends a build carries, and a `gpu` build picks one of its two when the window opens (see below).
 
 ### Vello (GPU Backend)
 
@@ -188,7 +188,7 @@ A GPU-accelerated 2D graphics library (enabled with `features = ["gpu"]`):
 
 ### tiny-skia (Software Backend)
 
-A CPU-based rasterizer (the default when `gpu` is not enabled):
+A CPU-based rasterizer, carried by every `desktop` build: the only backend without `gpu`, and the fallback with it:
 
 - Direct pixel rendering to an RGBA buffer
 - Presented via softbuffer (no GPU required)
@@ -200,15 +200,17 @@ A CPU-based rasterizer (the default when `gpu` is not enabled):
 
 ### Choosing a Backend
 
-Set it in your `Cargo.toml`:
+Your `Cargo.toml` decides which backends the build carries:
 
 ```toml
-# GPU mode (recommended for most apps):
+# GPU, with software as the fallback (recommended for most apps):
 rinch = { workspace = true, features = ["desktop", "gpu"] }
 
-# Software mode (default — no GPU required):
+# Software only (no GPU required, smaller build):
 rinch = { workspace = true, features = ["desktop"] }
 ```
+
+A `gpu` build then chooses when the window opens (`crates/rinch/src/shell/renderer.rs`): `App::renderer(Renderer::Auto)`, the default, tries the GPU and presents with software when it will not start; `Renderer::Gpu` panics instead; `Renderer::Software` skips the GPU. The `RINCH_RENDERER` environment variable (`auto`, `gpu`, `software`, `cpu`) overrides the app's choice. An app that configured the GPU device itself (`gpu_config` / `external_gpu`) always presents on the GPU. The details are in [Rendering Backends](../guide/windows.md#rendering-backends).
 
 ### GPU Rendering Flow
 

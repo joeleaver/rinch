@@ -111,11 +111,12 @@ use rinch_dom::paint::painter::Painter;
 
 use crate::font::{AppFont, GenericFamily};
 // Painter selection is ADDITIVE (issue #140): the software painter is compiled
-// whenever a native shell presents via TinySkia (`software_shell`, emitted by
-// build.rs = desktop/android without gpu/android-gpu), and the Vello painter
-// whenever anything drives `build_scene` (gpu/android-gpu/embed). Under
-// desktop(software) + embed BOTH are present: the winit shell uses
-// `build_pixels` while embed `RinchContext`s use `build_scene`.
+// whenever a native shell can present via TinySkia (`software_shell`, emitted
+// by build.rs = every desktop build, and android without android-gpu), and the
+// Vello painter whenever anything drives `build_scene` (gpu/android-gpu/embed).
+// Under desktop + embed BOTH are present (the winit shell uses `build_pixels`
+// while embed `RinchContext`s use `build_scene`), and under desktop + gpu too:
+// the winit shell picks one of the two at run time (`shell::renderer`).
 #[cfg(software_shell)]
 use rinch_dom::paint::skia_painter::TinySkiaPainter;
 #[cfg(any(feature = "gpu", feature = "android-gpu", feature = "embed"))]

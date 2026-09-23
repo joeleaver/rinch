@@ -14,8 +14,9 @@ re-renders.
 
 **Desktop pipeline:** component → `RenderScope`/`NodeHandle` → `RinchDocument`
 (Stylo CSS + Taffy layout + Parley text) → `Painter` → window.
-The `Painter` is **tiny-skia + softbuffer by default**; the `gpu` feature swaps in
-Vello + wgpu.
+The `Painter` is **tiny-skia + softbuffer by default**; the `gpu` feature adds
+Vello + wgpu beside it, and the window chooses one at run time, falling back to
+software when the GPU will not start (`shell/renderer.rs`).
 
 **Web pipeline:** the same component code → `WebDocument` (`rinch-web`) → real browser
 DOM. No Taffy/Parley/Vello — the browser lays out, shapes and paints.

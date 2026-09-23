@@ -517,9 +517,14 @@ fn restore_window(saved: WindowState) -> WindowHandle {
 
 ## Rendering Backends
 
-Rinch supports two rendering backends, selected at compile time:
+Rinch has two rendering backends. Every `desktop` build carries the software one; the `gpu` feature adds the GPU one beside it, and a `gpu` build chooses between them **at run time**, when the window opens.
 
-### GPU Mode (`features = ["gpu"]`)
+| Build | Renderers it carries |
+|-------|----------------------|
+| `features = ["desktop"]` | Software only |
+| `features = ["desktop", "gpu"]` | GPU and software, chosen at run time |
+
+### GPU (`features = ["gpu"]`)
 
 Windows are rendered using Vello, a GPU-accelerated 2D graphics library via wgpu. This provides:
 
@@ -528,11 +533,47 @@ Windows are rendered using Vello, a GPU-accelerated 2D graphics library via wgpu
 - Efficient GPU-accelerated repaints
 - Cross-platform consistency (Vulkan, Metal, DX12, WebGPU)
 
-### Software Mode (default)
+### Software (always available on desktop)
 
-Without the `gpu` feature, windows are rendered using tiny-skia (CPU rasterizer) and presented via softbuffer. This provides:
+Windows are rendered using tiny-skia (CPU rasterizer) and presented via softbuffer. It is the only renderer of a build without the `gpu` feature, and the fallback of a build with it. This provides:
 
 - No GPU required — works in headless, CI, containers, SSH sessions
-- Full rendering fidelity (same visual output as GPU mode)
+- Full rendering fidelity (same visual output as the GPU renderer)
 - Dirty region caching — only changed areas are repainted for fast incremental updates
 - Subtree pruning — nodes outside the dirty region are skipped during paint
+
+### Choosing the renderer at run time
+
+On a `gpu` build, `App::renderer` picks which renderer presents the window:
+
+```rust
+use rinch::prelude::*;
+
+App::new(app)
+    .renderer(Renderer::Auto) // the default
+    .run();
+```
+
+| `Renderer` | What it does |
+|------------|--------------|
+| `Auto` (default) | Presents on the GPU. When the GPU will not start (no adapter, no surface, no device, or a validation error while setting them up), logs a warning and presents with the software renderer instead |
+| `Gpu` | Presents on the GPU, and panics when the GPU will not start |
+| `Software` | Presents with the software renderer without touching the GPU |
+
+On a build without `gpu` there is only the software renderer, whatever you choose; asking for `Renderer::Gpu` there logs a warning.
+
+**`RINCH_RENDERER` overrides the app's choice**, so a user can force a renderer without a rebuild:
+
+```bash
+RINCH_RENDERER=cpu ./my-app      # software
+RINCH_RENDERER=gpu ./my-app      # GPU, panic if it will not start
+```
+
+It accepts `auto`, `gpu`, `software`, and `cpu` (an alias of `software`), trimmed and in any case. An empty value is ignored, and any other value is logged as a warning and ignored, so the app's own choice applies.
+
+**An app that configures the GPU device itself always presents on the GPU.** `App::gpu_config` and `App::external_gpu` exist so the app can build its own pipelines on rinch's device (see [Game Engine Integration](game-engine.md)), and that app needs the device `gpu_handle()` hands it. So for such an app:
+
+- there is no fallback: a GPU that will not start panics at startup, even under `Renderer::Auto`;
+- a `Software` choice, whether from `App::renderer` or from a user's `RINCH_RENDERER=cpu`, is logged as a warning and ignored.
+
+Everywhere else, `gpu_handle()` returns `None` for the whole session while the software renderer presents, so code that reads it should handle `None`.

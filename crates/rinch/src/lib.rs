@@ -141,6 +141,8 @@ pub mod prelude {
         run as run_android, run_with_theme as run_android_with_theme,
     };
     #[cfg(feature = "desktop")]
+    pub use crate::shell::renderer::Renderer;
+    #[cfg(feature = "desktop")]
     #[allow(deprecated)]
     pub use crate::shell::{run, run_with_theme};
     #[cfg(all(feature = "android", target_os = "android"))]
@@ -278,6 +280,8 @@ pub use rinch_core::{
     Effect, Memo, Owner, Scope, Signal, batch, current_owner, derived, unowned, untracked,
 };
 pub use rinch_macros::{component, rsx};
+#[cfg(feature = "desktop")]
+pub use shell::renderer::Renderer;
 #[cfg(feature = "desktop")]
 #[allow(deprecated)]
 pub use shell::{

@@ -184,8 +184,9 @@ pub struct RinchRuntime {
     /// GPU renderer (only available with `gpu` feature).
     #[cfg(feature = "gpu")]
     renderer: Option<WgpuRenderer>,
-    /// Software renderer (CPU pixel presentation via softbuffer).
-    #[cfg(not(feature = "gpu"))]
+    /// Software renderer (CPU pixel presentation via softbuffer). Every
+    /// desktop build has it; a `gpu` build presents with it when `renderer` is
+    /// `None` (software chosen, or the GPU could not start).
     soft_renderer: Option<super::softbuffer_renderer::SoftbufferRenderer>,
     /// Event loop proxy for sending events.
     proxy: Option<EventLoopProxy>,
@@ -212,8 +213,7 @@ pub struct RinchRuntime {
     /// DevTools GPU renderer.
     #[cfg(feature = "gpu")]
     devtools_renderer: Option<WgpuRenderer>,
-    /// DevTools software renderer.
-    #[cfg(not(feature = "gpu"))]
+    /// DevTools software renderer (used whenever `devtools_renderer` is `None`).
     devtools_soft_renderer: Option<super::softbuffer_renderer::SoftbufferRenderer>,
     /// DevTools keyboard modifier state.
     devtools_modifiers: winit::keyboard::ModifiersState,
@@ -263,7 +263,6 @@ impl RinchRuntime {
             window: None,
             #[cfg(feature = "gpu")]
             renderer: None,
-            #[cfg(not(feature = "gpu"))]
             soft_renderer: None,
             proxy: None,
             title: title.to_string(),
@@ -277,7 +276,6 @@ impl RinchRuntime {
             devtools_window: None,
             #[cfg(feature = "gpu")]
             devtools_renderer: None,
-            #[cfg(not(feature = "gpu"))]
             devtools_soft_renderer: None,
             devtools_modifiers: winit::keyboard::ModifiersState::empty(),
             devtools_prev_hovered: None,
@@ -312,7 +310,6 @@ impl RinchRuntime {
         // 4. Drop renderer before window — Surface holds a window handle reference.
         #[cfg(feature = "gpu")]
         drop(self.renderer.take());
-        #[cfg(not(feature = "gpu"))]
         drop(self.soft_renderer.take());
 
         // 5. Window can now be dropped safely.
@@ -366,11 +363,20 @@ impl RinchRuntime {
         let size = window.surface_size();
         let dt_scale = window.scale_factor();
 
+        // DevTools presents the way the main window does: on the GPU only when
+        // the main window is, and with software if the GPU will not start for
+        // this window too.
         #[cfg(feature = "gpu")]
-        {
-            let gpu = WgpuRenderer::new(&*window, size.width.max(1), size.height.max(1));
-            self.devtools_renderer = Some(gpu);
+        if self.renderer.is_some() {
+            match WgpuRenderer::try_new(&*window, size.width.max(1), size.height.max(1)) {
+                Ok(gpu) => self.devtools_renderer = Some(gpu),
+                Err(e) => {
+                    tracing::warn!("DevTools: GPU renderer unavailable ({e}); using software")
+                }
+            }
         }
+        #[cfg(not(feature = "gpu"))]
+        let _ = size;
 
         let winit_window = WinitWindow::new(window);
         self.devtools_window = Some(winit_window);
@@ -423,7 +429,6 @@ impl RinchRuntime {
         // Drop renderer before window
         #[cfg(feature = "gpu")]
         drop(self.devtools_renderer.take());
-        #[cfg(not(feature = "gpu"))]
         drop(self.devtools_soft_renderer.take());
 
         drop(self.devtools_window.take());
@@ -506,16 +511,12 @@ impl RinchRuntime {
     /// Paint the DevTools window.
     fn paint_devtools(&mut self) -> Result<(), String> {
         #[cfg(feature = "gpu")]
-        {
-            self.paint_devtools_gpu()
+        if self.devtools_renderer.is_some() {
+            return self.paint_devtools_gpu();
         }
-        #[cfg(not(feature = "gpu"))]
-        {
-            self.paint_devtools_software()
-        }
+        self.paint_devtools_software()
     }
 
-    #[cfg(not(feature = "gpu"))]
     fn paint_devtools_software(&mut self) -> Result<(), String> {
         let Some(window) = &self.devtools_window else {
             return Ok(());
@@ -644,12 +645,14 @@ impl RinchRuntime {
         let size = window.surface_size();
         let scale = window.scale_factor();
 
-        // Create renderer
+        // Create the GPU renderer when the choice wants one and it starts; the
+        // software renderer is created lazily by the first software paint.
         #[cfg(feature = "gpu")]
         {
-            let gpu = WgpuRenderer::new(&*window, size.width.max(1), size.height.max(1));
-            self.renderer = Some(gpu);
+            self.renderer = start_gpu_renderer(&*window);
         }
+        #[cfg(not(feature = "gpu"))]
+        announce_software_renderer();
 
         // Attach native menu bar to the window if configured
         if let Some(menu) = &self.native_menu {
@@ -691,7 +694,6 @@ impl RinchRuntime {
         // Drop renderer first — it holds a reference to the window surface.
         #[cfg(feature = "gpu")]
         drop(self.renderer.take());
-        #[cfg(not(feature = "gpu"))]
         drop(self.soft_renderer.take());
         drop(self.window.take());
     }
@@ -744,9 +746,7 @@ impl RinchRuntime {
 
         #[cfg(feature = "gpu")]
         {
-            let size = window.surface_size();
-            let gpu = WgpuRenderer::new(&*window, size.width.max(1), size.height.max(1));
-            self.renderer = Some(gpu);
+            self.renderer = start_gpu_renderer(&*window);
         }
 
         let winit_window = WinitWindow::new(window);
@@ -773,7 +773,11 @@ impl RinchRuntime {
         let result = {
             #[cfg(feature = "gpu")]
             {
-                self.paint_gpu()
+                if self.renderer.is_some() {
+                    self.paint_gpu()
+                } else {
+                    self.paint_software()
+                }
             }
             #[cfg(not(feature = "gpu"))]
             {
@@ -810,7 +814,6 @@ impl RinchRuntime {
         result
     }
 
-    #[cfg(not(feature = "gpu"))]
     fn paint_software(&mut self) -> Result<(), String> {
         let paint_start = std::time::Instant::now();
         let Some(window) = &self.window else {
@@ -1263,7 +1266,7 @@ impl RinchRuntime {
     ///
     /// Only the software debug-screenshot path needs this; the paint paths
     /// derive it from the `window` they already hold.
-    #[cfg(all(feature = "debug", not(feature = "gpu")))]
+    #[cfg(feature = "debug")]
     fn logical_size(&self) -> (u32, u32) {
         // `self.width`/`self.height` are already the requested *logical* size
         // (`create_window` hands them to winit as a `LogicalSize`), so the
@@ -1556,36 +1559,27 @@ impl RinchRuntime {
     /// Capture a screenshot from whichever renderer is active.
     #[cfg(feature = "debug")]
     fn capture_screenshot_impl(&mut self) -> DebugResult {
-        #[cfg(not(feature = "gpu"))]
-        {
-            let scale = self.scale_factor();
-            let size = self.logical_size();
-            // Screenshot: pass empty layers (captures UI only, not live surfaces)
-            let (pixels, w, h) = self.app.build_pixels(scale, size, false);
-            let png_bytes = screenshot::encode_png(pixels, w, h);
-            DebugResult::Bytes {
-                data: base64::engine::general_purpose::STANDARD.encode(&png_bytes),
-            }
-        }
         #[cfg(feature = "gpu")]
-        {
-            if let Some(renderer) = &self.renderer {
-                match renderer.capture_screenshot() {
-                    Ok((w, h, rgba)) => {
-                        let png_bytes = screenshot::encode_png(&rgba, w, h);
-                        DebugResult::Bytes {
-                            data: base64::engine::general_purpose::STANDARD.encode(&png_bytes),
-                        }
+        if let Some(renderer) = &self.renderer {
+            return match renderer.capture_screenshot() {
+                Ok((w, h, rgba)) => {
+                    let png_bytes = screenshot::encode_png(&rgba, w, h);
+                    DebugResult::Bytes {
+                        data: base64::engine::general_purpose::STANDARD.encode(&png_bytes),
                     }
-                    Err(e) => DebugResult::Error {
-                        message: format!("Screenshot capture failed: {}", e),
-                    },
                 }
-            } else {
-                DebugResult::Error {
-                    message: "No renderer".into(),
-                }
-            }
+                Err(e) => DebugResult::Error {
+                    message: format!("Screenshot capture failed: {}", e),
+                },
+            };
+        }
+        let scale = self.scale_factor();
+        let size = self.logical_size();
+        // Screenshot: pass empty layers (captures UI only, not live surfaces)
+        let (pixels, w, h) = self.app.build_pixels(scale, size, false);
+        let png_bytes = screenshot::encode_png(pixels, w, h);
+        DebugResult::Bytes {
+            data: base64::engine::general_purpose::STANDARD.encode(&png_bytes),
         }
     }
 
@@ -2555,6 +2549,63 @@ fn black_backdrop_layer(
     }
 }
 
+// ── Renderer choice ──────────────────────────────────────────────────────────
+
+/// The GPU renderer for `window`, or `None` to present with software: when
+/// software was chosen (and the app did not configure the GPU device itself,
+/// see `renderer::tries_gpu`), or when the GPU would not start under
+/// [`Renderer::Auto`](super::renderer::Renderer::Auto). Also records which one
+/// presents (`renderer::gpu_presenting`) and logs it.
+///
+/// # Panics
+///
+/// When the GPU would not start and the choice does not allow a fallback
+/// (`Renderer::Gpu`, or a device the app configured itself).
+#[cfg(feature = "gpu")]
+fn start_gpu_renderer(window: &dyn winit::window::Window) -> Option<WgpuRenderer> {
+    use super::renderer::{OnGpuFailure, on_gpu_failure, resolved, set_gpu_presenting, tries_gpu};
+
+    let choice = resolved();
+    if !tries_gpu(choice, super::desktop::gpu_init_installed()) {
+        set_gpu_presenting(false);
+        tracing::info!("rinch: presenting with the software renderer (chosen)");
+        return None;
+    }
+    let size = window.surface_size();
+    match WgpuRenderer::try_new(window, size.width.max(1), size.height.max(1)) {
+        Ok(gpu) => {
+            set_gpu_presenting(true);
+            Some(gpu)
+        }
+        Err(e) => match on_gpu_failure(choice, super::desktop::gpu_init_installed()) {
+            OnGpuFailure::FallBack => {
+                set_gpu_presenting(false);
+                tracing::warn!(
+                    "rinch: the GPU renderer could not start ({e}); presenting with the \
+                     software renderer"
+                );
+                None
+            }
+            OnGpuFailure::Panic => panic!("{e}"),
+        },
+    }
+}
+
+/// A build without `gpu` has only the software renderer: say so, and say it
+/// louder when the app or `RINCH_RENDERER` asked for the GPU.
+#[cfg(not(feature = "gpu"))]
+fn announce_software_renderer() {
+    use super::renderer::{Renderer, resolved};
+    if resolved() == Renderer::Gpu {
+        tracing::warn!(
+            "rinch: the GPU renderer was requested, but this build has no `gpu` feature; \
+             presenting with the software renderer"
+        );
+    } else {
+        tracing::info!("rinch: presenting with the software renderer");
+    }
+}
+
 // ── Software compositor blit helper ──────────────────────────────────────────
 
 /// Nearest-neighbor blit of an RGBA source into a destination pixel buffer.
@@ -2563,7 +2614,6 @@ fn black_backdrop_layer(
 /// (blit_x, blit_y, blit_w, blit_h) within the `dst` buffer (dst_w x dst_h).
 /// Clips to both destination bounds and an optional clip rect from a parent
 /// overflow container.
-#[cfg(not(feature = "gpu"))]
 #[allow(clippy::too_many_arguments)]
 fn blit_rgba(
     dst: &mut [u8],
