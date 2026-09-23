@@ -277,6 +277,140 @@ fn a_real_display_change_into_or_out_of_contents_still_invalidates() {
     );
 }
 
+/// Stylesheet for the two tick fixtures below: a `display: contents` wrapper
+/// that carries a `width` transition or a `width` animation. `width` is a
+/// layout property, so a tick marks the wrapper `LAYOUT`-dirty and it reaches
+/// the tick passes' Taffy re-sync — which is the code under test.
+const CONTENTS_TICK_CSS: &str = "
+    @keyframes pulse { from { width: 10px; } to { width: 100px; } }
+    .sans { font-family: sans-serif; font-size: 16px; line-height: 20px; }
+    .red  { font-family: sans-serif; font-size: 16px; line-height: 20px; color: rgb(255,0,0); }
+    .ifc  { width: 100px; }
+    .w    { display: contents; width: 10px; transition: width 1000ms linear; }
+    .w.wide { width: 100px; }
+    .w.anim { animation: pulse 1000ms linear infinite; }
+";
+
+/// `div.<root_class> > div.ifc > span.w.<wrapper_extra> > text`, laid out once
+/// with transitions enabled.
+fn contents_tick_doc(root_class: &str, wrapper_extra: &str) -> (RinchDocument, NodeId, NodeId) {
+    let mut doc = RinchDocument::new();
+    doc.load_css(CONTENTS_TICK_CSS);
+    let body = doc.body();
+    let root = doc.create_element("div");
+    doc.set_attribute(root, "class", root_class);
+    doc.append_child(body, root);
+    let ifc = doc.create_element("div");
+    doc.set_attribute(ifc, "class", "ifc");
+    doc.append_child(root, ifc);
+    let wrapper = doc.create_element("span");
+    doc.set_attribute(wrapper, "class", &format!("w {wrapper_extra}"));
+    doc.append_child(ifc, wrapper);
+    let text = doc.create_text("hello world hello world");
+    doc.append_child(wrapper, text);
+    doc.tree.transitions_enabled = true;
+    doc.resolve_layout(800.0, 600.0);
+    (doc, root, wrapper)
+}
+
+/// The counters a tick fixture holds flat, plus the positive control that the
+/// first layout moved them at all.
+fn structural_counters(doc: &RinchDocument) -> (u64, u64) {
+    let c = (doc.tree.ifc_setup_passes, doc.tree.taffy_computes);
+    assert!(
+        c.0 > 0 && c.1 > 0,
+        "positive control: the first layout must run a structural pass and a \
+         compute, or a flat counter proves nothing"
+    );
+    c
+}
+
+/// A transition ticking on a `display: contents` wrapper leaves its Taffy style
+/// `sync_display_contents`' `Display::None`, so neither the tick nor the next
+/// colour-only restyle re-runs the structural pass.
+///
+/// `tick_transitions` rebuilds a `LAYOUT`-dirty node's Taffy style from its
+/// computed values. Without the contents substitution there it writes a
+/// `Display::Flex` style onto the wrapper — a box of its own, mid-splice — and
+/// the next re-cascade compares that with the `Display::None` it rebuilds and
+/// runs the whole-document pass. The cascade fixture above cannot see this: it
+/// never ticks.
+#[test]
+fn a_transition_ticking_on_a_contents_wrapper_keeps_the_cheap_path() {
+    let (mut doc, root, wrapper) = contents_tick_doc("sans", "");
+    doc.set_attribute(wrapper, "class", "w wide");
+    doc.resolve_layout(800.0, 600.0);
+    let _ = doc.take_dirty_nodes();
+    let before = structural_counters(&doc);
+
+    for t in doc
+        .tree
+        .active_transitions
+        .get_mut(&wrapper.0)
+        .expect("positive control: the class change started a width transition on the wrapper")
+        .values_mut()
+    {
+        // Mid-transition, so the tick interpolates rather than finishing.
+        t.start_time_ms -= 500.0;
+    }
+    doc.tick_transitions();
+    doc.resolve_layout(800.0, 600.0);
+    assert_eq!(
+        (doc.tree.ifc_setup_passes, doc.tree.taffy_computes),
+        before,
+        "a width transition ticking on a contents wrapper must not give it a \
+         Taffy box, re-run the structural pass or compute"
+    );
+
+    doc.set_attribute(root, "class", "red");
+    doc.resolve_layout(800.0, 600.0);
+    assert_eq!(
+        doc.tree.ifc_setup_passes, before.0,
+        "a colour-only restyle after the tick must not re-run the structural pass"
+    );
+    assert_eq!(
+        doc.tree.taffy_computes, before.1,
+        "a colour-only restyle after the tick must not compute"
+    );
+}
+
+/// The animation twin: `tick_animations` carries its own copy of the re-sync,
+/// and a copy with no fixture behind it is free to drift.
+#[test]
+fn an_animation_ticking_on_a_contents_wrapper_keeps_the_cheap_path() {
+    let (mut doc, root, wrapper) = contents_tick_doc("sans", "anim");
+    let _ = doc.take_dirty_nodes();
+    let before = structural_counters(&doc);
+
+    for a in doc
+        .tree
+        .active_animations
+        .get_mut(&wrapper.0)
+        .expect("positive control: the wrapper's class started a width animation")
+    {
+        a.start_time_ms -= 500.0;
+    }
+    doc.tick_animations();
+    doc.resolve_layout(800.0, 600.0);
+    assert_eq!(
+        (doc.tree.ifc_setup_passes, doc.tree.taffy_computes),
+        before,
+        "a width animation ticking on a contents wrapper must not give it a \
+         Taffy box, re-run the structural pass or compute"
+    );
+
+    doc.set_attribute(root, "class", "red");
+    doc.resolve_layout(800.0, 600.0);
+    assert_eq!(
+        doc.tree.ifc_setup_passes, before.0,
+        "a colour-only restyle after the tick must not re-run the structural pass"
+    );
+    assert_eq!(
+        doc.tree.taffy_computes, before.1,
+        "a colour-only restyle after the tick must not compute"
+    );
+}
+
 // ---------------------------------------------------------------- #661 -----
 
 const ATOMIC_CSS: &str = "
