@@ -822,13 +822,17 @@ fn reconcile_text(
     per_char: &BTreeSet<String>,
 ) -> Result<()> {
     let (old, old_marks) = read_text_data(txn, text)?;
-    let spliced = old != b.text;
-    if spliced {
-        splice_min(txn, text, &old, &b.text);
-    }
-
     let mut target_marks = b.marks.clone();
     target_marks.sort_by(|a, b| (a.start, a.end, &a.name).cmp(&(b.start, b.end, &b.name)));
+
+    let spliced = old != b.text;
+    if spliced {
+        if inserts_after_non_inclusive(&old, &old_marks, &b.text, per_char) {
+            splice_min_with_marks(txn, text, &old, &b.text, &target_marks);
+        } else {
+            splice_min(txn, text, &old, &b.text);
+        }
+    }
 
     // Marks must be compared *after* the splice: yrs has already shifted existing
     // formatting ranges with the text, and text inserted **inside** a formatted run
@@ -912,17 +916,7 @@ fn reconcile_child_list(
 pub(crate) fn splice_min(txn: &mut TransactionMut, text: &TextRef, old: &str, new: &str) {
     let o: Vec<char> = old.chars().collect();
     let n: Vec<char> = new.chars().collect();
-    let mut prefix = 0;
-    while prefix < o.len() && prefix < n.len() && o[prefix] == n[prefix] {
-        prefix += 1;
-    }
-    let mut suffix = 0;
-    while suffix < o.len() - prefix
-        && suffix < n.len() - prefix
-        && o[o.len() - 1 - suffix] == n[n.len() - 1 - suffix]
-    {
-        suffix += 1;
-    }
+    let (prefix, suffix) = splice_bounds(&o, &n);
     let del = o.len() - prefix - suffix;
     let ins: String = n[prefix..n.len() - suffix].iter().collect();
 
@@ -936,6 +930,114 @@ pub(crate) fn splice_min(txn: &mut TransactionMut, text: &TextRef, old: &str, ne
     }
     if !ins.is_empty() {
         text.insert(txn, at, &ins);
+    }
+}
+
+/// The `(prefix, suffix)` [`splice_min`] keeps: the common leading and trailing runs of
+/// `o` and `n`, in chars, never overlapping.
+fn splice_bounds(o: &[char], n: &[char]) -> (usize, usize) {
+    let mut prefix = 0;
+    while prefix < o.len() && prefix < n.len() && o[prefix] == n[prefix] {
+        prefix += 1;
+    }
+    let mut suffix = 0;
+    while suffix < o.len() - prefix
+        && suffix < n.len() - prefix
+        && o[o.len() - 1 - suffix] == n[n.len() - 1 - suffix]
+    {
+        suffix += 1;
+    }
+    (prefix, suffix)
+}
+
+/// Whether the splice turning `old` into `new` inserts text right after a char that
+/// carries a non-inclusive mark (`per_char`) and is not an inline atom: the one case
+/// [`splice_min_with_marks`] is for. An atom is left out on purpose: an insert that
+/// steps past an image's end marker instead of clearing its own char is exposed to a
+/// peer's concurrent `src` change re-writing that marker, and a literal U+FFFC absorbed
+/// into the image's `@atom` range reads back as a second image (measured) — the
+/// insert-then-clear path of [`resync_marks`] is right for an atom.
+fn inserts_after_non_inclusive(
+    old: &str,
+    old_marks: &[SpanMark],
+    new: &str,
+    per_char: &BTreeSet<String>,
+) -> bool {
+    if per_char.is_empty() {
+        return false;
+    }
+    let o: Vec<char> = old.chars().collect();
+    let n: Vec<char> = new.chars().collect();
+    let (prefix, suffix) = splice_bounds(&o, &n);
+    if prefix == 0 || n.len() - prefix - suffix == 0 {
+        return false;
+    }
+    let before = prefix - 1;
+    let on_before = || {
+        old_marks
+            .iter()
+            .filter(move |m| m.start <= before && before < m.end)
+    };
+    on_before().any(|m| per_char.contains(&m.name)) && !on_before().any(|m| m.name == ATOM_MARK)
+}
+
+/// [`splice_min`], but the inserted chars are written **with** the formatting `target`
+/// gives them (`insert_with_attributes`) rather than inheriting whatever surrounds the
+/// insertion point. Used when the text is inserted right after a char carrying a
+/// non-inclusive mark such as `link` ([`inserts_after_non_inclusive`]).
+///
+/// Why it matters (review of #901, D2): a char typed right after a link is plain in the
+/// model, but a plain `insert` puts it *inside* the link's range in the CRDT, and the
+/// clear that [`resync_marks`] then writes over it (`format(X, link: null)`) also
+/// deletes the link's own end marker as redundant. A peer's concurrent formatting that
+/// relied on that marker — extending the link over the text after it, or linking that
+/// text elsewhere — then lost to the typer's null, which governed everything after the
+/// typed char. Inserted with its attributes, the char steps past the existing end
+/// marker (yrs `minimize_attr_changes`) and writes no markers at all, so nothing a peer
+/// depends on is touched; where no end marker exists (the link ends its block) it
+/// writes a clear of its own, which is the same thing the resync would have written.
+///
+/// yrs unsets every current attribute an insert does not name, so each inserted run
+/// carries its **whole** target mark set, not only the per-char ones; the chars are
+/// grouped into runs of equal attributes, one insert per run.
+fn splice_min_with_marks(
+    txn: &mut TransactionMut,
+    text: &TextRef,
+    old: &str,
+    new: &str,
+    target: &[SpanMark],
+) {
+    let o: Vec<char> = old.chars().collect();
+    let n: Vec<char> = new.chars().collect();
+    let (prefix, suffix) = splice_bounds(&o, &n);
+    let del = o.len() - prefix - suffix;
+    let mut at: u32 = o[..prefix].iter().map(|c| c.len_utf16() as u32).sum();
+    let del_u16: u32 = o[prefix..prefix + del]
+        .iter()
+        .map(|c| c.len_utf16() as u32)
+        .sum();
+    if del_u16 > 0 {
+        text.remove_range(txn, at, del_u16);
+    }
+    let attrs_at = |p: usize| -> YAttrs {
+        target
+            .iter()
+            .filter(|m| m.start <= p && p < m.end)
+            .map(|m| (m.name.as_str().into(), encode_mark_value(&m.attrs)))
+            .collect()
+    };
+    let end = n.len() - suffix;
+    let mut i = prefix;
+    while i < end {
+        let attrs = attrs_at(i);
+        let start = i;
+        while i < end && attrs_at(i) == attrs {
+            i += 1;
+        }
+        let run: String = n[start..i].iter().collect();
+        let run_u16: u32 = n[start..i].iter().map(|c| c.len_utf16() as u32).sum();
+        text.insert_with_attributes(txn, at, &run, attrs);
+        at += run_u16;
     }
 }
 
@@ -986,10 +1088,13 @@ fn apply_mark(txn: &mut TransactionMut, text: &TextRef, s: &str, m: &SpanMark) {
 ///
 /// A **non-inclusive** mark (`per_char`: the names the caller found with
 /// `MarkSpec::inclusive == false` on the model — the starter kit's `link`) is the same
-/// shape and is diffed per char for the same reason: a char typed right after a link
-/// is plain in the model and inside the link's range in the CRDT, and a per-span
-/// resync would clear the link and write it again, reverting a peer's concurrent
-/// change of its `href` or bringing back a link the peer removed. Every other mark
+/// shape and is diffed per char for the same reason: a char that lands inside a
+/// link's range in the CRDT while the model holds it plain would, per span, clear the
+/// link and write it again, reverting a peer's concurrent change of its `href` or
+/// bringing back a link the peer removed. (A char *typed* right after a link no longer
+/// lands inside: [`splice_min_with_marks`] inserts it outside the range, because the
+/// clear this pass would write over it also deletes the link's end marker, which a
+/// peer's concurrent extension of the link depends on.) Every other mark
 /// stays per span: it is inclusive in the model too, so a char typed at its end
 /// carries it and there is no stray to clear — and the review of #838 found that
 /// diffing *every* mark per char loses a peer's concurrent link change in a typing

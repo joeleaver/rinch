@@ -1958,10 +1958,18 @@ fn typing_after_link_vs(
 
 #[test]
 fn typing_after_a_link_while_a_peer_changes_its_href_keeps_the_new_href() {
-    // The typed char is plain in the model (a link is non-inclusive) but lands inside
-    // the link's range in the CRDT (yrs extends a range over an insert at its end), so
-    // the typer resyncs. Per span, that rewrote the whole link with the old href and
-    // reverted the peer's change; per char it clears only the typed char.
+    // The typed char is plain in the model (a link is non-inclusive). Resynced per
+    // span, the typer rewrote the whole link with the old href and reverted the peer's
+    // change; the typed char is now inserted with its own (empty) link attribute, and
+    // the old href never comes back.
+    //
+    // **Known limitation, pinned:** the peer's href change deletes the link's end marker
+    // and writes a new one at the same spot, and the typed char sits right after the
+    // old one. yrs orders those two siblings by client id, so in one order (the typer's
+    // id is the lower) the typed char ends up *inside* the re-written link. Nobody's
+    // edit is lost and the replicas converge; the typed char is linked where the typer
+    // meant it plain. It is Yjs's concurrent-formatting boundary semantics — a peer
+    // bolding the text after the link concurrently makes the char bold the same way.
     let failures = typing_after_link_vs(
         |p, s| {
             let l = link_mark(p.state.schema(), "new");
@@ -1969,7 +1977,10 @@ fn typing_after_a_link_while_a_peer_changes_its_href_keeps_the_new_href() {
                 tr.add_mark(s + 1, s + 3, l).unwrap();
             });
         },
-        |n| n.contains("«ab|link[href=Str(\"new\")]»«Xcd|»") && !n.contains("\"old\""),
+        |n| {
+            n == "<paragraph >«ab|link[href=Str(\"new\")]»«Xcd|»</>"
+                || n == "<paragraph >«abX|link[href=Str(\"new\")]»«cd|»</>"
+        },
     );
     assert!(failures.is_empty(), "{}", failures.join("\n"));
 }
@@ -1986,6 +1997,208 @@ fn typing_after_a_link_while_a_peer_removes_it_does_not_bring_it_back() {
         |n| n == "<paragraph >«abXcd|»</>",
     );
     assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+// The next two are the review of #901's D2: a peer's concurrent link over the text
+// *after* the link. The typed char's projection used to be insert-then-clear: yrs put
+// it inside the link, and `format(X, link: null)` cleared it — which also deleted the
+// link's own end marker as redundant. The peer's formatting relied on that very marker,
+// so after the merge the typer's null governed everything after `X` and the peer's link
+// over `cd` was gone (extending: both client-id orders; a different href: one). Now the
+// char is inserted **with** its attributes (`insert_with_attributes`), which steps past
+// the existing end marker instead of writing markers of its own.  The price is that the
+// typed char can end up inside the peer's link (pinned below and on the href fixture):
+// a char formatted where the typer did not mean it, not a peer's edit lost.
+
+#[test]
+fn typing_after_a_link_while_a_peer_extends_it_over_the_next_text_keeps_the_extension() {
+    let failures = typing_after_link_vs(
+        |p, s| {
+            let l = link_mark(p.state.schema(), "old");
+            p.local(|tr| {
+                tr.add_mark(s + 1, s + 5, l).unwrap();
+            });
+        },
+        |n| {
+            n == "<paragraph >«abXcd|link[href=Str(\"old\")]»</>"
+                || n == "<paragraph >«ab|link[href=Str(\"old\")]»«X|»«cd|link[href=Str(\"old\")]»</>"
+        },
+    );
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+#[test]
+fn typing_after_a_link_while_a_peer_links_the_next_text_elsewhere_keeps_both_links() {
+    let failures = typing_after_link_vs(
+        |p, s| {
+            let l = link_mark(p.state.schema(), "other");
+            p.local(|tr| {
+                tr.add_mark(s + 3, s + 5, l).unwrap();
+            });
+        },
+        |n| {
+            // **Known limitation, pinned:** the peer's link starts at the old link's end
+            // marker, before the typed char in every order, so the typed char joins it
+            // (see the href-change fixture above for the mechanism). The peer's link is
+            // what must survive.
+            n == "<paragraph >«ab|link[href=Str(\"old\")]»«X|»«cd|link[href=Str(\"other\")]»</>"
+                || n == "<paragraph >«ab|link[href=Str(\"old\")]»«Xcd|link[href=Str(\"other\")]»</>"
+        },
+    );
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+/// A line that is only a link (nothing follows it in the block).
+fn only_link_line(schema: &Schema) -> Node {
+    para_of(
+        schema,
+        vec![
+            schema
+                .text_with_marks("ab", vec![link_mark(schema, "old")])
+                .unwrap(),
+        ],
+    )
+}
+
+#[test]
+fn typing_repeatedly_after_a_link_at_the_end_of_its_block_stays_plain() {
+    // Nothing follows the link, so there is no end marker to step past: the insert has
+    // to write a clear of its own, and every later char typed after it must stay plain.
+    for ids in ID_ORDERS {
+        let schema = Rc::new(Schema::starter_kit());
+        let (mut a, mut b) = two_peers_with_ids(&schema, vec![only_link_line(&schema)], ids);
+        let s = block_start(&a.state.doc, 0);
+        a.type_at(s + 3, "X");
+        sync(&mut a, &mut b);
+        a.type_at(s + 4, "Y");
+        sync(&mut a, &mut b);
+        b.type_at(s + 5, "Z");
+        sync(&mut a, &mut b);
+        assert_converged(&a, &b, &schema);
+        assert_eq!(
+            norm(&a.state.doc),
+            "<paragraph >«ab|link[href=Str(\"old\")]»«XYZ|»</>",
+            "ids {ids:?}"
+        );
+        assert_eq!(
+            raw_block0_attr_chunks(&raw_replica(&a.session), "link"),
+            vec![("ab".to_string(), true), ("XYZ".to_string(), false)],
+            "ids {ids:?}"
+        );
+    }
+}
+
+#[test]
+fn typing_after_a_link_at_the_end_of_its_block_while_a_peer_removes_it_brings_nothing_back() {
+    // With nothing after the link, the typed char's insert writes a clear before itself
+    // and yrs puts the link's value back after it — an empty range at the block's end.
+    // That restore must not resurrect a link the peer removed concurrently, over the
+    // typed char or over anything typed after it.
+    let mut failures = vec![];
+    for ids in ID_ORDERS {
+        for a_types in [true, false] {
+            let schema = Rc::new(Schema::starter_kit());
+            let (mut a, mut b) = two_peers_with_ids(&schema, vec![only_link_line(&schema)], ids);
+            let s = block_start(&a.state.doc, 0);
+            let (t, c) = if a_types {
+                (&mut a, &mut b)
+            } else {
+                (&mut b, &mut a)
+            };
+            t.type_at(s + 3, "X");
+            let l = link_mark(c.state.schema(), "old");
+            c.local(|tr| {
+                tr.remove_mark(s + 1, s + 3, l).unwrap();
+            });
+            sync(&mut a, &mut b);
+            a.type_at(s + 4, "Y");
+            b.type_at(s + 4, "Z");
+            sync(&mut a, &mut b);
+            assert_converged(&a, &b, &schema);
+            let n = norm(&a.state.doc);
+            if n != "<paragraph >«abXYZ|»</>" && n != "<paragraph >«abXZY|»</>" {
+                failures.push(format!("{ids:?} typer A {a_types}: {n}"));
+            }
+        }
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+#[test]
+fn both_peers_typing_after_a_link_at_once_both_stay_plain() {
+    let mut failures = vec![];
+    for ids in ID_ORDERS {
+        let schema = Rc::new(Schema::starter_kit());
+        let (mut a, mut b) = two_peers_with_ids(&schema, vec![line_with_link(&schema)], ids);
+        let s = block_start(&a.state.doc, 0);
+        a.type_at(s + 3, "X");
+        b.type_at(s + 3, "Y");
+        sync(&mut a, &mut b);
+        assert_converged(&a, &b, &schema);
+        let n = norm(&a.state.doc);
+        let plain = |t: &str| format!("<paragraph >«ab|link[href=Str(\"old\")]»«{t}|»</>");
+        if n != plain("XYcd") && n != plain("YXcd") {
+            failures.push(format!("{ids:?}: {n}"));
+        }
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+#[test]
+fn typing_inside_a_link_while_a_peer_changes_its_href_keeps_the_new_href() {
+    let mut failures = vec![];
+    for ids in ID_ORDERS {
+        for a_types in [true, false] {
+            let schema = Rc::new(Schema::starter_kit());
+            let (mut a, mut b) = two_peers_with_ids(&schema, vec![line_with_link(&schema)], ids);
+            let s = block_start(&a.state.doc, 0);
+            let (t, c) = if a_types {
+                (&mut a, &mut b)
+            } else {
+                (&mut b, &mut a)
+            };
+            t.type_at(s + 2, "X");
+            let l = link_mark(c.state.schema(), "new");
+            c.local(|tr| {
+                tr.add_mark(s + 1, s + 3, l).unwrap();
+            });
+            sync(&mut a, &mut b);
+            assert_converged(&a, &b, &schema);
+            let n = norm(&a.state.doc);
+            if n != "<paragraph >«aXb|link[href=Str(\"new\")]»«cd|»</>" {
+                failures.push(format!("{ids:?} typer A {a_types}: {n}"));
+            }
+        }
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+#[test]
+fn typing_after_a_link_followed_by_an_image_keeps_a_peers_src_change() {
+    for ids in ID_ORDERS {
+        let schema = Rc::new(Schema::starter_kit());
+        let line = para_of(
+            &schema,
+            vec![
+                schema
+                    .text_with_marks("ab", vec![link_mark(&schema, "old")])
+                    .unwrap(),
+                image(&schema, "c.png"),
+                schema.text("cd").unwrap(),
+            ],
+        );
+        let (mut a, mut b) = two_peers_with_ids(&schema, vec![line], ids);
+        let s = block_start(&a.state.doc, 0);
+        a.type_at(s + 3, "X");
+        set_src(&mut b, s + 3, "new.png");
+        sync(&mut a, &mut b);
+        assert_converged(&a, &b, &schema);
+        let n = norm(&a.state.doc);
+        assert!(
+            n.contains("new.png") && n.contains("«ab|link[href=Str(\"old\")]»«X|»"),
+            "{ids:?}: {n}"
+        );
+    }
 }
 
 #[test]
