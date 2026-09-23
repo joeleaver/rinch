@@ -24,7 +24,9 @@ pub use clip::{border_radii, clip_shape};
 use contenteditable::*;
 pub use damage::{DamageRegion, MAX_DAMAGE_RECTS};
 pub use layer_bounds::{UNBOUNDED, opacity_layer_bounds};
-use layer_bounds::{clip_cuts_nothing, opacity_layer_shape, subtree_is_entirely_outside};
+use layer_bounds::{
+    clip_cuts_nothing, opacity_layer_shape, subtree_is_entirely_outside, subtree_paint_extent,
+};
 use svg::*;
 use text::*;
 
@@ -225,10 +227,12 @@ pub fn compute_damage(
             && !node.children.is_empty()
             && !matches!(node.computed_style.display, DisplayValue::None)
         {
-            let bounds = opacity_layer_bounds(tree, node_id, scale, ax, ay);
-            if bounds == UNBOUNDED {
+            // A subtree that paints nothing now — a block whose only content
+            // was just hidden — adds nothing here; its old pixels are named by
+            // its painted rect below.
+            let Some(bounds) = subtree_paint_extent(tree, node_id, scale, ax, ay) else {
                 return DamageRegion::full(viewport_w, viewport_h);
-            }
+            };
             if bounds.width() > 0.0 && bounds.height() > 0.0 {
                 if add(transform.transform_rect_bbox(bounds)) {
                     return DamageRegion::full(viewport_w, viewport_h);
@@ -302,7 +306,7 @@ pub fn compute_damage(
 
 /// The ancestor whose paint covers `node_id` when `node_id` names no rect of
 /// its own: a `<select>` for anything inside it (it paints its options), else
-/// the nearest ancestor with a non-empty box. `None` when the node is not in
+/// the nearest ancestor with a non-empty box, now or as it was last painted. `None` when the node is not in
 /// the document or has a `display: none` *ancestor* (other than a select's
 /// options) — it paints nothing, so there is nothing to repaint. The node's own
 /// `display` is not asked: one that has just become `display: none` still has
@@ -339,7 +343,13 @@ fn boxed_owner(tree: &NodeTree, node_id: RawNodeId) -> Option<RawNodeId> {
         if hidden(n) {
             return None;
         }
-        if n.layout.width > 0.0 && n.layout.height > 0.0 {
+        // A box now, or a box it was painted with: the node's old pixels are
+        // inside whichever it had last frame. A paragraph whose only span was
+        // just hidden collapses to 0 tall, and asking only about today's box
+        // climbed past it to the page and repainted everything.
+        let painted_box =
+            n.painted.is_some() && n.prev_layout.width > 0.0 && n.prev_layout.height > 0.0;
+        if (n.layout.width > 0.0 && n.layout.height > 0.0) || painted_box {
             return Some(id);
         }
         cur = n.parent;
