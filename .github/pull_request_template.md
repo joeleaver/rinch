@@ -23,3 +23,7 @@ paint now culls a scroller's rows outside its viewport.
 Regenerate with PERF_BASELINE_PRINT=1 (a failing assertion also prints the
 paste-ready frame).
 -->
+
+- [ ] The `Perf` job's instruction counts rose past the threshold, and this PR
+      carries the `perf-regression-accepted` label: which benchmark, by how
+      much, and why the cost is accepted.
