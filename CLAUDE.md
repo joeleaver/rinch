@@ -2294,6 +2294,19 @@ Build first with `cargo build -p rinch-mcp-server`. Using `cargo run` instead wo
 | `get_glyph_bounds` | The box of the **one** glyph cluster at a given `byte_offset` in a text node — not every glyph; same #421 caveat |
 | `disconnect` | Disconnect from the app without closing it |
 | `launch_app` | Launch a rinch app via `cargo run -p <package>`, wait for debug registration, auto-connect |
+| `perf_stats` | The app's per-frame performance counters (cascades, Parley shapes, IFC setup passes, Taffy computes, full repaints by reason, repainted px, hit tests, effect runs, phase times) as `last_frame` / `current_frame` / `total` JSON; `reset: true` zeroes them after reading. Use it, not DevTools, to measure an interaction |
+
+**Performance counters** (`rinch_dom::perf`, re-exported as `rinch::perf`). Every
+`NodeTree` carries `perf: PerfCounters`: always-compiled `u64` counters bumped by
+style, layout, text, paint and hit testing, rolled over per frame by
+`RinchApp::end_perf_frame` (desktop: after each redraw; embed: at each `update`).
+`RINCH_PERF=1` prints one line per frame (the env var is read once), `perf_stats`
+serves them over MCP, and `RinchApp::last_frame_perf` / `doc.tree.perf.frame()`
+serve tests. **Prove a perf fix with a counter, not a timing**:
+`crates/rinch-dom/tests/perf_counter_baselines.rs` asserts today's counts per
+scenario (hover with/without a `display: contents` wrapper, append, remove,
+resize, text edit, transform tick) as ceilings — lower the one your fix beats.
+Guide: `docs/src/guide/performance.md`.
 
 **Discovery mechanism:** Each debug-enabled app writes `~/.rinch/debug/{pid}.json` containing its port, app name, and PID. The MCP server scans this directory to find running apps and auto-connects when only one is running.
 
@@ -3701,6 +3714,7 @@ Documentation locations:
 - `docs/src/guide/components.md` - Component library
 - `docs/src/guide/contenteditable.md` - Using the rich-text editor (Editor component, EditorHandle, commands)
 - `docs/src/guide/editor.md` - Rich-text editor internals (model, schema, steps, plugins, view)
+- `docs/src/guide/performance.md` - Performance counters, `RINCH_PERF`, the `perf_stats` MCP tool
 - `docs/src/SUMMARY.md` - Table of contents (update when adding new pages)
 
 Architecture documentation:
