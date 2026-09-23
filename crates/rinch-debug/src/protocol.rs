@@ -37,6 +37,14 @@ pub enum DebugCommandKind {
         y: f32,
         #[serde(default)]
         button: Option<String>,
+        /// Modifier names held for this click, in the shape `key_press`
+        /// accepts (folded by [`fold_modifier_names`]; unknown names are an
+        /// error). The runtime emits `ModifiersChanged` with exactly these
+        /// before the press and restores the previous state after the
+        /// release. Absent: the click sees whatever modifier state the app
+        /// already holds, as before this field existed.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        modifiers: Option<Vec<String>>,
     },
     #[serde(rename = "type_text")]
     TypeText { text: String },
@@ -54,6 +62,11 @@ pub enum DebugCommandKind {
         y: f32,
         #[serde(default)]
         button: Option<String>,
+        /// Modifier names to hold from this press on (see `Click`). They stay
+        /// held — through `mouse_move`s, for a Shift- or Alt-drag — until the
+        /// next `mouse_up`, which restores the state from before this press.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        modifiers: Option<Vec<String>>,
     },
     #[serde(rename = "mouse_up")]
     MouseUp {
@@ -61,6 +74,11 @@ pub enum DebugCommandKind {
         y: f32,
         #[serde(default)]
         button: Option<String>,
+        /// Modifier names held for this release (see `Click`). Whether or not
+        /// it is given, a `mouse_up` after a `mouse_down` that set modifiers
+        /// restores the state from before that press, after the release.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        modifiers: Option<Vec<String>>,
     },
     #[serde(rename = "scroll")]
     Scroll {
@@ -153,7 +171,8 @@ pub struct HandshakeResponse {
     pub pid: u32,
 }
 
-/// Fold a `key_press` `modifiers` name array into flat modifier booleans.
+/// Fold a `modifiers` name array (`key_press`, `click`, `mouse_down`,
+/// `mouse_up`) into flat modifier booleans.
 ///
 /// Recognized names (case-insensitive): `"ctrl"`/`"control"`, `"shift"`,
 /// `"alt"`/`"option"`, `"meta"`/`"cmd"`/`"super"`. Returns the offending name
@@ -306,5 +325,58 @@ mod key_press_modifiers_tests {
         )
         .unwrap();
         assert!(s && c && a && m);
+    }
+}
+
+#[cfg(test)]
+mod pointer_modifiers_tests {
+    use super::*;
+
+    fn modifiers_of(command: DebugCommandKind) -> Option<Vec<String>> {
+        match command {
+            DebugCommandKind::Click { modifiers, .. }
+            | DebugCommandKind::MouseDown { modifiers, .. }
+            | DebugCommandKind::MouseUp { modifiers, .. } => modifiers,
+            other => panic!("not a pointer command: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn click_mouse_down_and_mouse_up_take_a_modifiers_array() {
+        for method in ["click", "mouse_down", "mouse_up"] {
+            let req: Request = serde_json::from_str(&format!(
+                r#"{{"id":1,"method":"{method}","params":{{"x":1,"y":2,"modifiers":["ctrl","Shift"]}}}}"#
+            ))
+            .unwrap();
+            assert_eq!(
+                modifiers_of(req.command),
+                Some(vec!["ctrl".to_string(), "Shift".to_string()]),
+                "{method}"
+            );
+        }
+    }
+
+    #[test]
+    fn an_absent_modifiers_field_is_none_and_is_not_sent() {
+        for method in ["click", "mouse_down", "mouse_up"] {
+            let req: Request = serde_json::from_str(&format!(
+                r#"{{"id":1,"method":"{method}","params":{{"x":1,"y":2}}}}"#
+            ))
+            .unwrap();
+            // Written back without the field, so a client that never asks for
+            // modifiers sends exactly the bytes it sent before.
+            let json = serde_json::to_string(&req).unwrap();
+            assert!(!json.contains("modifiers"), "{json}");
+            assert_eq!(modifiers_of(req.command), None, "{method}");
+        }
+    }
+
+    #[test]
+    fn an_empty_modifiers_array_is_not_an_absent_one() {
+        let req: Request = serde_json::from_str(
+            r#"{"id":1,"method":"click","params":{"x":1,"y":2,"modifiers":[]}}"#,
+        )
+        .unwrap();
+        assert_eq!(modifiers_of(req.command), Some(vec![]));
     }
 }

@@ -2515,12 +2515,12 @@ Build first with `cargo build -p rinch-mcp-server`. Using `cargo run` instead wo
 | `get_node` | Get detailed info for a specific node by ID (includes computed styles, display mode) |
 | `get_computed_styles` | Get computed CSS styles for a specific DOM node |
 | `get_text_content` | Get text content within a node subtree |
-| `click` | Simulate a mouse click at (x, y) coordinates |
+| `click` | Simulate a mouse click at (x, y) coordinates. Optional `modifiers` (the `key_press` names, e.g. `["ctrl"]`, `["shift"]`, `["meta"]`) are held for the click: a `ModifiersChanged` before the press, another after the release restoring what was held — the only way to drive Ctrl/Cmd+click (following an editor link), Shift+click or Alt+click. Absent: whatever the app already holds |
 | `type_text` | Simulate keyboard text input |
 | `wait_frame` | Wait for the next render frame |
 | `close_app` | Close the connected app gracefully |
 | `right_click` | Simulate a right-click at (x, y) |
-| `mouse_down` / `mouse_move` / `mouse_up` | The pointer primitives. **This trio is the only way to drive a drag** — `click` cannot, so any test of the DnD suite or a scrollbar thumb needs these |
+| `mouse_down` / `mouse_move` / `mouse_up` | The pointer primitives. **This trio is the only way to drive a drag** — `click` cannot, so any test of the DnD suite or a scrollbar thumb needs these. `mouse_down`'s `modifiers` stay held (through moves: a Shift- or Alt-drag) until the next `mouse_up`, which restores the state from before that press after its release; `mouse_up` takes its own `modifiers` for the release |
 | `scroll` | Scroll a container at (x, y) |
 | `key_press` | Press a single key (with modifiers), as distinct from `type_text`'s literal text |
 | `get_caret_position` | The text caret's rect — note it mixes logical and physical px at scale != 1 (#421) |

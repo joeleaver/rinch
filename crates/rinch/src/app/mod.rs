@@ -627,6 +627,10 @@ pub struct RinchApp {
     /// Debug server handle (kept alive).
     #[cfg(feature = "debug")]
     pub(crate) _debug_server: Option<rinch_debug::DebugServer>,
+    /// The modifier state from before a debug `mouse_down` that carried
+    /// `modifiers`; the next debug `mouse_up` restores it after its release.
+    #[cfg(feature = "debug")]
+    pub(crate) debug_modifiers_to_restore: Option<Modifiers>,
 }
 
 impl RinchApp {
@@ -707,6 +711,8 @@ impl RinchApp {
             debug_cmd_rx: None,
             #[cfg(feature = "debug")]
             _debug_server: None,
+            #[cfg(feature = "debug")]
+            debug_modifiers_to_restore: None,
         }
     }
 
