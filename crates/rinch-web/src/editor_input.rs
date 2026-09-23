@@ -950,6 +950,70 @@ fn install_capture_listeners(ta: &web_sys::HtmlTextAreaElement) {
     add_target_listener(target, "compositionend", |e: web_sys::CompositionEvent| {
         on_composition_end(&e);
     });
+    // Focus leaving the textarea for somewhere else in the page releases the
+    // editor (issue #271): it owns no key from then on (`handle_keydown`), so it
+    // must paint no caret either — desktop hides a blurred editor's overlays
+    // (`focus.rs`). Typed as a plain `Event`, since page script can dispatch a
+    // bare one named `blur`.
+    add_target_listener(target, "blur", |_e: web_sys::Event| on_capture_blur());
+}
+
+/// The capture textarea lost focus. Release the editor unless the textarea is
+/// still the document's focused element or the page itself lost focus — what a
+/// *window* blur leaves (alt-tab away: focus comes back to it on return, as
+/// desktop's `WindowFocus(false)` keeps the claim, #226). No guard for a #814
+/// menu cycle: a press or key that moves focus ends the cycle first
+/// (`end_context_menu_cycle`), and the `editor_native_context_menu` suite passes
+/// without one.
+fn on_capture_blur() {
+    let Some(doc) = web_sys::window().and_then(|w| w.document()) else {
+        return;
+    };
+    let still_focused = capture_target().is_some_and(|ta| {
+        let ta: &web_sys::Element = ta.as_ref();
+        doc.active_element().as_ref() == Some(ta)
+    });
+    let page_has_focus = doc.has_focus().unwrap_or(false);
+    if still_focused || !page_has_focus {
+        return;
+    }
+    if focused_editor().is_some() {
+        set_focused_editor(None);
+        refresh_caret();
+    }
+}
+
+/// Whether an editor holds the keyboard right now: one is focused and the
+/// capture textarea is the document's focused element.
+fn editor_owns_keyboard(doc: &web_sys::Document) -> bool {
+    let on_capture = capture_target().is_some_and(|ta| {
+        let ta: &web_sys::Element = ta.as_ref();
+        doc.active_element().as_ref() == Some(ta)
+    });
+    on_capture && focused_handle().is_some()
+}
+
+/// What a browser moves focus to on a press: the nearest ancestor that is one
+/// of these. (A superset is harmless here — it only decides that a press is
+/// left to the browser.)
+const FOCUSABLE_SELECTOR: &str = "button, a[href], input, select, textarea, [tabindex], \
+     [contenteditable], summary, iframe, audio[controls], video[controls]";
+
+/// Whether a press at `target` lands on a `data-rid` handler with nothing
+/// focusable anywhere on its ancestor chain — a DOM menu-bar item, a
+/// `div { onclick }` toolbar button. (A `DropdownMenu` item is a `<button>`, so it is focusable.) The
+/// browser would move focus to `<body>` for such a press; desktop keeps the
+/// editor focused for it (`click_handling.rs`: a press on a `data-rid` preserves
+/// editor focus, only a focusable node claims it), and so does this module, by
+/// `preventDefault`ing the `mousedown`.
+fn is_non_focusable_handler_press(target: &web_sys::Element) -> bool {
+    if target.closest("[data-rid]").ok().flatten().is_none() {
+        return false;
+    }
+    // Any focusable on the chain — the handler itself, inside it, or an
+    // ancestor of it (a `Tree` chevron inside its `tabindex` row) — is what
+    // the browser focuses, as desktop does: leave the press alone.
+    target.closest(FOCUSABLE_SELECTOR).ok().flatten().is_none()
 }
 
 // ── Clipboard (copy / cut / paste) ─────────────────────────────────────────────
@@ -1310,16 +1374,20 @@ fn handle_mousedown(event: &web_sys::MouseEvent, doc: &web_sys::Document) -> boo
         target = beneath;
     }
     let Some(editor_el) = target.closest("[data-pm-editor]").ok().flatten() else {
-        // Outside any editor. Blur only when moving to another text field, so a
-        // toolbar click keeps the editor focused (and its selection visible).
-        if target
-            .closest("input, textarea, [contenteditable], [data-pm-editor]")
-            .ok()
-            .flatten()
-            .is_some()
-        {
+        // Outside any editor (issue #271). A press on another text field — the
+        // rule keyboard activation uses — takes the keyboard. A press on a
+        // non-focusable `data-rid` handler leaves it with the editor: the browser
+        // would move focus to `<body>`, so the default is prevented. Any other
+        // press (a focusable control, blank page) moves focus natively, and the
+        // capture textarea's `blur` releases the editor and hides its caret.
+        if crate::event_delegation::in_text_control(&target) {
             set_focused_editor(None);
             blur_capture_target();
+        } else if event.button() == 0
+            && editor_owns_keyboard(doc)
+            && is_non_focusable_handler_press(&target)
+        {
+            event.prevent_default();
         }
         return false;
     };
@@ -1557,18 +1625,21 @@ fn handle_keydown(event: &web_sys::KeyboardEvent, doc: &web_sys::Document) -> bo
     if event.key() == "ContextMenu" {
         MENU_KEY_TO_APP.with(|c| c.set(false));
     }
-    // Never hijack a key destined for a real form control / editable element (e.g. a
-    // search box the user clicked) — but our own hidden capture textarea
-    // (`data-pm-capture`) IS the editor's focus target, so let its keys through.
-    if let Some(t) = event
+    // The editor owns a key only while its capture textarea holds the keyboard
+    // (issue #271). This listener is on `document` in the capture phase, so it
+    // sees every key on the page: a key whose target is anything else — a search
+    // box, a `<button>` or `tabindex` control the user tabbed or clicked to, the
+    // page body after a click on blank space — belongs to that element. Routing
+    // it to the last editor clicked used to split that editor's paragraph on
+    // Enter and swallow the key, so keyboard activation went inert page-wide once
+    // any editor had been clicked. (A toolbar that must not take the keyboard
+    // from the editor says so with `data-nofocus`, which keeps the capture
+    // textarea focused through the press.)
+    let on_capture = event
         .target()
         .and_then(|t| t.dyn_into::<web_sys::Element>().ok())
-        && !t.has_attribute("data-pm-capture")
-        && t.closest("input, textarea, select, [contenteditable]")
-            .ok()
-            .flatten()
-            .is_some()
-    {
+        .is_some_and(|t| t.has_attribute("data-pm-capture"));
+    if !on_capture {
         return false;
     }
     // During an IME composition, yield every key to the textarea + IME — the composed
@@ -2140,9 +2211,17 @@ pub(crate) fn install(browser_doc: &web_sys::Document) {
             refresh_caret();
         }
     }) as Box<dyn FnMut(web_sys::Event)>);
-    browser_doc
-        .add_event_listener_with_callback("mousedown", refresh.as_ref().unchecked_ref())
-        .ok();
+    // The same after a command run with no pointer event while the editor keeps
+    // the keyboard (issue #271): assistive technology or `element.click()` on a
+    // toolbar `<button>` fires only a `click`, and no input event this module
+    // refreshes from. (A command run by Enter or Space on a focused toolbar
+    // control needs no refresh: focus left the capture textarea, whose `blur`
+    // released the editor, so it paints no caret to move.)
+    for name in ["mousedown", "click"] {
+        browser_doc
+            .add_event_listener_with_callback(name, refresh.as_ref().unchecked_ref())
+            .ok();
+    }
     refresh.forget();
 
     // Caret blink (530 ms half-period — the platform default).
