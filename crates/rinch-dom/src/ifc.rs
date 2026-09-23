@@ -232,29 +232,22 @@ impl RinchDocument {
             }
         }
 
-        // Only rebuild Parley TextLayouts for dirty IFC roots (the expensive part).
-        // When dirty_ifc_text_roots is empty, rebuild all (structural IFC change).
-        let rebuild_all = self.tree.dirty_ifc_text_roots.is_empty();
-
+        // Only the roots that need it are re-shaped (the expensive part): a
+        // root is rebuilt when it is dirty, has no layout, or has a layout
+        // built at a different width — the check after `max_width` below.
+        //
+        // There used to be a second, earlier skip: whenever *any* root was
+        // dirty, every non-dirty root was skipped before its width was
+        // looked at. So a width change with no restyle of its own — a flex
+        // item narrowed because a sibling's text grew, the sibling being the
+        // dirty one — kept its glyphs broken at the old width, overflowing its
+        // box. A root with no layout was skipped the same way, and would have
+        // had nothing to paint. The width comparison below is the whole rule.
         for root_id in ifc_roots {
             // Skip collapsed blocks (virtualized) — no Parley work needed.
             // Drop any existing text_layout to free memory.
             if self.tree.nodes[root_id].estimated_height.is_some() {
                 self.tree.nodes[root_id].text_layout = None;
-                continue;
-            }
-
-            // Skip IFC roots that aren't dirty (scoped rebuild).
-            // This turns O(all_roots) Parley work into O(dirty_roots).
-            //
-            // A root with no layout at all is never skipped, dirty or not:
-            // skipping it would leave it with nothing to paint. Whatever
-            // dropped its layout — an invalidation, or the structural pass
-            // finding its content changed — is the reason it needs one.
-            if !rebuild_all
-                && !self.tree.dirty_ifc_text_roots.contains(&root_id)
-                && self.tree.nodes[root_id].text_layout.is_some()
-            {
                 continue;
             }
 
@@ -5062,12 +5055,25 @@ impl RinchDocument {
         self.tree
             .ifc_measure_cache
             .retain(|root, _| sigs.contains_key(root));
+        // A node that is no longer an IFC root keeps no layout from when it
+        // was one. `text_layout` is written for IFC roots only (a text leaf's
+        // shaped text lives in `cached_text_parley`), and several readers take
+        // its presence to mean "this is a root" — caret and selection rects,
+        // layer bounds, and the ancestor walk in `invalidate_ifc_for_node`,
+        // which would stop at the stale node instead of the real root.
+        for (id, node) in self.tree.nodes.iter_mut() {
+            if node.text_layout.is_some() && !sigs.contains_key(&id) {
+                node.text_layout = None;
+            }
+        }
         let mut changed: u64 = 0;
+        let mut atomic_changed = false;
         for (root, sig) in sigs {
             let entry = self.tree.ifc_measure_cache.entry(root).or_default();
             if entry.signature == Some(sig) {
                 continue;
             }
+            let seen_before = entry.signature.is_some();
             entry.signature = Some(sig);
             entry.sizes.clear();
             changed += 1;
@@ -5075,10 +5081,20 @@ impl RinchDocument {
                 continue;
             };
             node.text_layout = None;
-            // An atomic inline was just measured by its own compute in
-            // `compute_inline_block_layouts`, from scratch; the root compute
-            // never reaches it, so there is nothing of Taffy's to dirty.
+            // An atomic inline is sized by its own detached compute, which
+            // `compute_inline_block_layouts` ran *earlier in this pass* —
+            // against the cached measures this loop is only now dropping, and
+            // with no signal that its content had changed. So it is queued
+            // for the same re-measure a text edit inside it gets, which runs
+            // below once every changed root has been seen. A root seen for
+            // the first time is not: it has no earlier measure to be stale
+            // against, and re-measuring every new chip would size each one
+            // twice on a first layout.
             if node.display_mode.is_atomic_inline() {
+                if seen_before {
+                    self.tree.dirty_atomic_inlines.insert(root);
+                    atomic_changed = true;
+                }
                 continue;
             }
             if let Some(taffy_id) = node.taffy_id {
@@ -5089,5 +5105,8 @@ impl RinchDocument {
         self.tree
             .perf
             .add(crate::perf::Counter::IfcSignatureChanges, changed);
+        if atomic_changed {
+            self.remeasure_dirty_atomic_inlines();
+        }
     }
 }

@@ -2064,6 +2064,14 @@ impl RinchDocument {
     pub(crate) fn invalidate_ifc_for_node(&mut self, node_id: usize) {
         if let Some(ifc_root_id) = self.tree.nodes.get(node_id).and_then(|n| n.ifc_root) {
             self.invalidate_ifc_root(ifc_root_id);
+            // An atomic inline (`inline-block`/`-flex`/`-grid`) is a member of
+            // the IFC it sits in *and* the root of its own text, so its restyle
+            // owes both: the outer layout (its box moved) and its own (its
+            // glyphs changed). Reaching only the outer one left a `<button>`'s
+            // label in its old colour and size after a class change.
+            if self.holds_ifc_layout(node_id) {
+                self.invalidate_ifc_root(node_id);
+            }
         } else if self.holds_ifc_layout(node_id) {
             // The node itself IS the IFC root (block element containing inline text)
             self.invalidate_ifc_root(node_id);

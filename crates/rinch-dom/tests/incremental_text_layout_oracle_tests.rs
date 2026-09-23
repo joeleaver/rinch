@@ -738,3 +738,321 @@ fn reorder_text_inside_one_ifc() {
         },
     );
 }
+
+// ── An atomic inline is an IFC root *and* a member of another ────────────────
+//
+// An `inline-block` / `inline-flex` / `inline-grid` holding text is the IFC
+// root of that text and, at the same time, a member of the IFC it sits in. A
+// restyle of it has to drop **both** layouts: the outer one (its box moved)
+// and its own (its glyphs changed). The member branch of
+// `invalidate_ifc_for_node` used to reach only the outer one, which was
+// invisible while every restyle also dropped every layout under the restyled
+// node — the atomic's own included, through its text child.
+
+/// `p.box > ["alpha beta gamma ", span.chip > "chip label", " theta …"]`.
+fn chip_doc(doc: &mut RinchDocument, on: bool) -> NodeId {
+    let body = doc.body();
+    let wrap = doc.create_element("div");
+    doc.set_attribute(wrap, "class", if on { "wrap on" } else { "wrap" });
+    let p = doc.create_element("p");
+    doc.set_attribute(p, "class", "box");
+    let t1 = doc.create_text("alpha beta gamma ");
+    doc.append_child(p, t1);
+    let c = doc.create_element("span");
+    doc.set_attribute(c, "class", "chip");
+    let ct = doc.create_text("chip label");
+    doc.append_child(c, ct);
+    doc.append_child(p, c);
+    let t3 = doc.create_text(" theta iota kappa lambda mu");
+    doc.append_child(p, t3);
+    doc.append_child(wrap, p);
+    doc.append_child(body, wrap);
+    wrap
+}
+
+fn chip_of(doc: &RinchDocument, wrap: NodeId) -> NodeId {
+    let p = doc.tree.get(wrap.0).unwrap().children[0];
+    NodeId(doc.tree.get(p).unwrap().children[1])
+}
+
+/// The chip's font size, inherited from an ancestor rule.
+#[test]
+fn an_atomic_members_own_text_takes_an_ancestor_font_size() {
+    twin(
+        "an_atomic_members_own_text_takes_an_ancestor_font_size",
+        ".on .chip { font-size: 23px; }",
+        chip_doc,
+        toggle_on,
+    );
+}
+
+/// The chip's colour, from a class written on the chip itself.
+#[test]
+fn an_atomic_members_own_text_takes_its_class_colour() {
+    twin(
+        "an_atomic_members_own_text_takes_its_class_colour",
+        ".chip.hot { color: rgb(200, 10, 10); }",
+        |doc, on| {
+            let w = chip_doc(doc, false);
+            let c = chip_of(doc, w);
+            if on {
+                doc.set_attribute(c, "class", "chip hot");
+            }
+            c
+        },
+        |doc, c| doc.set_attribute(*c, "class", "chip hot"),
+    );
+}
+
+/// The shape users meet first: two plain `<button>`s (UA `inline-block`) side
+/// by side in a `div`, one gaining a class that changes its colour and weight.
+#[test]
+fn a_button_in_a_row_of_buttons_takes_its_class_colour_and_weight() {
+    twin(
+        "a_button_in_a_row_of_buttons_takes_its_class_colour_and_weight",
+        "button.active { color: rgb(200, 10, 10); font-weight: 700; }",
+        |doc, on| {
+            let body = doc.body();
+            let d = doc.create_element("div");
+            let a = doc.create_element("button");
+            let at = doc.create_text("Save");
+            doc.append_child(a, at);
+            let b = doc.create_element("button");
+            let bt = doc.create_text("Cancel");
+            doc.append_child(b, bt);
+            doc.append_child(d, a);
+            doc.append_child(d, b);
+            doc.append_child(body, d);
+            if on {
+                doc.set_attribute(a, "class", "active");
+            }
+            a
+        },
+        |doc, a| doc.set_attribute(*a, "class", "active"),
+    );
+}
+
+fn paint_pixels(doc: &mut RinchDocument) -> Vec<[u8; 4]> {
+    let mut painter =
+        rinch_dom::paint::skia_painter::TinySkiaPainter::new(VP.0 as u32, VP.1 as u32);
+    rinch_dom::paint::paint_document(
+        &doc.tree,
+        &mut painter,
+        1.0,
+        VP,
+        &mut doc.font_cx,
+        &mut doc.layout_cx,
+    );
+    painter.pixels().as_chunks::<4>().0.to_vec()
+}
+
+/// The chip-colour case read off the pixels: red ink, counted on both sides.
+/// (A local pixel oracle — the incremental frame against a fresh one — rather
+/// than a glyph-run description, so it also covers what paint does with it.)
+#[test]
+fn an_atomic_members_class_colour_reaches_the_pixels() {
+    let css = ".chip.hot { color: rgb(200, 10, 10); }";
+    let make = |on: bool| {
+        let mut d = RinchDocument::new();
+        d.load_css(BASE_CSS);
+        d.load_css(css);
+        let w = chip_doc(&mut d, false);
+        let c = chip_of(&d, w);
+        if on {
+            d.set_attribute(c, "class", "chip hot");
+        }
+        settle(&mut d);
+        (d, c)
+    };
+    let red = |px: &[[u8; 4]]| {
+        px.iter()
+            .filter(|p| p[3] > 0 && p[0] as i32 > p[1] as i32 + 80)
+            .count()
+    };
+    let (mut d, c) = make(false);
+    assert_eq!(
+        red(&paint_pixels(&mut d)),
+        0,
+        "counter-oracle: no red ink yet"
+    );
+    d.set_attribute(c, "class", "chip hot");
+    d.resolve_layout(VP.0, VP.1);
+    let incremental = red(&paint_pixels(&mut d));
+    let (mut f, _) = make(true);
+    let fresh = red(&paint_pixels(&mut f));
+    assert!(fresh > 0, "counter-oracle: the fresh chip draws red ink");
+    assert_eq!(incremental, fresh, "red ink, incremental vs fresh");
+}
+
+/// Text appended two levels below a chip (inside a `<b>` in it): the verb
+/// invalidates the `<b>`, which is neither the chip nor the paragraph. The
+/// structural pass's signature finds the chip changed — and has to size the
+/// chip again, since `compute_inline_block_layouts` measured it earlier in the
+/// same pass against the cached sizes the signature is only now dropping.
+#[test]
+fn text_appended_inside_an_element_inside_a_chip() {
+    twin(
+        "text_appended_inside_an_element_inside_a_chip",
+        "",
+        |doc, on| {
+            let body = doc.body();
+            let p = doc.create_element("p");
+            doc.set_attribute(p, "class", "box");
+            let t = doc.create_text("before the chip ");
+            doc.append_child(p, t);
+            let chip = doc.create_element("span");
+            doc.set_attribute(chip, "class", "chip");
+            let b = doc.create_element("b");
+            let bt = doc.create_text("c");
+            doc.append_child(b, bt);
+            doc.append_child(chip, b);
+            doc.append_child(p, chip);
+            let t2 = doc.create_text(" after");
+            doc.append_child(p, t2);
+            doc.append_child(body, p);
+            if on {
+                let x = doc.create_text(" and much more chip text");
+                doc.append_child(b, x);
+            }
+            b
+        },
+        |doc, b| {
+            let x = doc.create_text(" and much more chip text");
+            doc.append_child(*b, x);
+        },
+    );
+}
+
+// ── Content the verbs do not report to the root ──────────────────────────────
+
+/// `set_inner_html` on a span inside a paragraph frees the span's text node
+/// and mints a new one — which the slab hands the **same** id, under the same
+/// parent at the same index — and invalidates only the span. So the
+/// paragraph's content signature differs from before **only in the text**:
+/// this is the witness for hashing text content into the signature.
+#[test]
+fn set_inner_html_on_a_span_inside_the_root() {
+    const NEW: &str = "a far longer replacement that wraps onto more lines than before";
+    twin(
+        "set_inner_html_on_a_span_inside_the_root",
+        "",
+        |doc, on| {
+            let w = ifc_doc(doc, false);
+            let p = doc.tree.get(w.0).unwrap().children[0];
+            let s = NodeId(doc.tree.get(p).unwrap().children[1]);
+            if on {
+                doc.set_inner_html(s, NEW);
+            }
+            s
+        },
+        |doc, s| doc.set_inner_html(*s, NEW),
+    );
+}
+
+// ── A node that stops being an IFC root loses its layout ─────────────────────
+//
+// Several readers take `text_layout.is_some()` to mean "this node is an IFC
+// root" (caret and selection rects, layer bounds, the ancestor walk in
+// `invalidate_ifc_for_node`). A node that was a root and no longer is must not
+// keep the layout it built then.
+
+/// A span goes `inline → inline-block → inline`: while atomic it is a root and
+/// builds a layout of its own; back inline, it is a member again.
+#[test]
+fn a_span_that_was_briefly_atomic_keeps_no_layout_of_its_own() {
+    let css = ".on span { display: inline-block; width: 50px; }";
+    let make = || {
+        let mut d = RinchDocument::new();
+        d.load_css(BASE_CSS);
+        d.load_css(css);
+        let w = ifc_doc(&mut d, false);
+        settle(&mut d);
+        (d, w)
+    };
+    let (mut d, w) = make();
+    let a = snapshot(&d);
+    d.set_attribute(w, "class", "wrap on");
+    d.resolve_layout(VP.0, VP.1);
+    assert_ne!(
+        a,
+        snapshot(&d),
+        "counter-oracle: the atomic span lays out differently"
+    );
+    d.set_attribute(w, "class", "wrap");
+    d.resolve_layout(VP.0, VP.1);
+    assert_eq!(
+        snapshot(&d),
+        a,
+        "back to the first state, and nothing left over"
+    );
+}
+
+/// The paragraph goes `block → flex → block`: while a flex container it is no
+/// root, its text runs are flex items, and one of them is edited meanwhile.
+#[test]
+fn a_root_that_was_briefly_flex_keeps_no_stale_layout() {
+    let css = ".on .box { display: flex; }";
+    let make = || {
+        let mut d = RinchDocument::new();
+        d.load_css(BASE_CSS);
+        d.load_css(css);
+        let w = ifc_doc(&mut d, false);
+        settle(&mut d);
+        (d, w)
+    };
+    let first_text = |d: &RinchDocument, w: NodeId| {
+        let p = d.tree.get(w.0).unwrap().children[0];
+        NodeId(d.tree.get(p).unwrap().children[0])
+    };
+    let (mut d, w) = make();
+    let a = snapshot(&d);
+    d.set_attribute(w, "class", "wrap on");
+    d.resolve_layout(VP.0, VP.1);
+    assert_ne!(
+        a,
+        snapshot(&d),
+        "counter-oracle: flex lays the paragraph out differently"
+    );
+    let t = first_text(&d, w);
+    d.set_text_content(t, "short ");
+    d.resolve_layout(VP.0, VP.1);
+    d.set_attribute(w, "class", "wrap");
+    d.resolve_layout(VP.0, VP.1);
+    let incremental = snapshot(&d);
+    let (mut f, w2) = make();
+    let t2 = first_text(&f, w2);
+    f.set_text_content(t2, "short ");
+    settle(&mut f);
+    assert_eq!(incremental, snapshot(&f));
+}
+
+// ── Width alone ──────────────────────────────────────────────────────────────
+
+/// A paragraph whose width changes because a flex sibling's text grew, while
+/// the sibling's IFC is the one in the dirty set: the paragraph's own text is
+/// not dirty, but it has to be re-broken at its new width.
+#[test]
+fn a_width_change_from_a_siblings_text_rebreaks_the_root() {
+    twin(
+        "a_width_change_from_a_siblings_text_rebreaks_the_root",
+        ".row2 { display: flex; width: 300px; } .row2 > p { flex: 1; margin: 0; } \
+         .row2 > div { flex: none; }",
+        |doc, on| {
+            let body = doc.body();
+            let r = doc.create_element("div");
+            doc.set_attribute(r, "class", "row2");
+            let p = doc.create_element("p");
+            let t =
+                doc.create_text("paragraph text that wraps across several lines in the flex item");
+            doc.append_child(p, t);
+            let side = doc.create_element("div");
+            let st = doc.create_text(if on { "wide side label" } else { "s" });
+            doc.append_child(side, st);
+            doc.append_child(r, p);
+            doc.append_child(r, side);
+            doc.append_child(body, r);
+            st
+        },
+        |doc, st| doc.set_text_content(*st, "wide side label"),
+    );
+}

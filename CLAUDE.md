@@ -1911,8 +1911,20 @@ input a shaped layout is built from:
   came through one — a `span`'s own font change, `set_text_content` on text in a
   `display: contents` wrapper — marked nothing the compute walks, and Taffy
   served the root its old size (**#878**).
-- `build_ifc_layouts` never skips a root that has **no** paint layout, dirty or
-  not — a root left at `None` has nothing to paint.
+- **An atomic inline is two roots' business.** An `inline-block` / `-flex` /
+  `-grid` holding text is a member of the IFC around it *and* the root of its
+  own, so `invalidate_ifc_for_node` drops both: reaching only the outer one
+  left a `<button>`'s label in its old colour after a class change. A chip the
+  structural pass finds **changed** is queued for `remeasure_dirty_atomic_inlines`
+  at the end of that pass, because `compute_inline_block_layouts` sized it
+  earlier in the pass with no sign its content had moved.
+- **A node that stops being an IFC root loses its `text_layout`** in the same
+  pass. Caret rects, layer bounds and the ancestor walk read that field as "is a
+  root".
+- `build_ifc_layouts` rebuilds a root that is dirty, has no layout, or has one
+  built at another width — **every** time. It used to skip every non-dirty root
+  before the width check whenever any root was dirty, so a flex item narrowed by
+  a sibling's text edit kept its glyphs broken at the old width.
 
 Not done, and measured by `perf_counter_baselines`: a structural pass still
 runs over the whole document, re-splices every `display: contents` wrapper
