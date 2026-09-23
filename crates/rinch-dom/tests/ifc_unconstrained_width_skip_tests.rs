@@ -6,7 +6,8 @@
 //! (a zero-width box, or one inside `display: none`) is built with `max_width:
 //! None`, stored as `f32::INFINITY`, and the skip compared widths with
 //! `(old - new).abs() < 0.01`: `INFINITY - INFINITY` is NaN, so every such root
-//! was reshaped by Parley on every layout pass. In Pimble's window that was
+//! was reshaped by Parley on every layout pass that changed no text. In
+//! Pimble's window that was
 //! 1,503 roots (collapsed tree rows, closed menus) on every keystroke, about
 //! 125 ms of a 150 ms frame.
 
@@ -101,4 +102,31 @@ fn an_unconstrained_root_that_gains_a_width_is_rebuilt() {
 
     assert!(!was_kept(&doc, root), "a width change still rebuilds");
     assert_eq!(max_width(&doc, root), 300.0);
+}
+
+/// The width comparison itself, with nothing else invalidating the layout: a
+/// viewport change alone moves the root across the unconstrained boundary, in
+/// both directions. (`an_unconstrained_root_that_gains_a_width_is_rebuilt`
+/// changes the root's own `style`, which clears `text_layout` before the
+/// comparison runs — it passes with the comparison replaced by `if true`.)
+#[test]
+fn a_root_crossing_the_unconstrained_boundary_by_viewport_alone_is_rebuilt() {
+    for (from, to, want) in [(800.0, 1100.0, 300.0), (1100.0, 800.0, f32::INFINITY)] {
+        let mut doc = RinchDocument::new();
+        let body = doc.body();
+        let root = text_block(
+            &mut doc,
+            body,
+            "width: max(0px, calc(100% - 800px))",
+            "crosses the boundary",
+        );
+        doc.resolve_layout(from, 600.0);
+        stamp(&mut doc, root);
+        doc.resolve_layout(to, 600.0);
+        assert!(
+            !was_kept(&doc, root),
+            "{from} -> {to}: the root changed width class and must be rebuilt"
+        );
+        assert_eq!(max_width(&doc, root), want, "{from} -> {to}");
+    }
 }

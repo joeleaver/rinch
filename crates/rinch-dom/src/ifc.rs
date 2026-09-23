@@ -299,7 +299,7 @@ impl RinchDocument {
                     // `==` first: an unconstrained root stores `INFINITY`, and
                     // `INFINITY - INFINITY` is NaN, which no tolerance admits, so
                     // without it every such root was reshaped on every layout
-                    // pass (ifc_unconstrained_width_skip_tests).
+                    // pass that changed no text (ifc_unconstrained_width_skip_tests).
                     if old_max_width == new_max_width
                         || (old_max_width - new_max_width).abs() < 0.01
                     {
