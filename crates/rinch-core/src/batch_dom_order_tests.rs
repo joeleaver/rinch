@@ -380,3 +380,25 @@ fn a_dom_read_inside_a_memo_computation_does_not_drain_the_queue() {
     assert!(dispatch_event(id));
     assert_eq!(computes.get(), 1, "computed once, not re-entered");
 }
+
+/// A `suppress_effect_flush` guard that outlives the batch it was taken in
+/// would turn the mid-batch flush off on this thread for good. Debug builds
+/// catch it at the outermost batch's exit.
+#[cfg(debug_assertions)]
+#[test]
+#[should_panic(expected = "outlived it")]
+fn a_leaked_suppression_guard_trips_the_batch_exit_assertion() {
+    crate::reactive::batch(|| {
+        std::mem::forget(crate::reactive::suppress_effect_flush());
+    });
+}
+
+/// …while a batch opened *under* a guard the caller still holds (library code
+/// calling user code that batches) is not a leak.
+#[test]
+fn a_batch_opened_under_a_held_guard_is_not_a_leak() {
+    let _held = crate::reactive::suppress_effect_flush();
+    let n = Signal::new(0);
+    crate::reactive::batch(|| n.set(1));
+    assert_eq!(n.get(), 1);
+}

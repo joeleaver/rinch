@@ -823,7 +823,9 @@ holding a `RefCell` borrow of its own must hold that guard with the borrow** (an
 call `flush_pending_effects()` just before borrowing, for program order), or a
 user effect run by its own `NodeHandle` call re-enters it: `BorrowMutError`. The
 editor routes every borrow of its core through `EditorHandle::core`/`core_mut`
-(`CoreGuard`) for exactly this; the PR #882 audit of every other such site is in
+(`CoreGuard`) for exactly this — only the mutable ones flush at entry, since a
+query does no DOM work and must not run a user effect under the caller's own
+borrows; a leaked guard trips a `debug_assert` at the outermost batch's exit; the PR #882 audit of every other such site is in
 that PR. Memos are current
 inside a batch (the eager marking above). A freed memo dependency counts as
 *changed*. Guide: `docs/src/guide/reactivity.md#event-handlers-run-as-batches`.

@@ -390,9 +390,16 @@ pub struct EditorHandle {
 /// and a toolbar effect that reads `is_mark_active` would re-borrow the core
 /// mid-patch: a `BorrowMutError` (PR #882 review, E1). Every borrow of the core
 /// therefore goes through [`EditorHandle::core`] / [`EditorHandle::core_mut`],
-/// which first run the pending effects (so the caller's earlier writes are in
-/// the DOM, as program order says) and then suppress the flush for as long as
-/// the borrow lives. Fields drop in order: the borrow first, then the guard.
+/// which suppress the flush for as long as the borrow lives. Fields drop in
+/// order: the borrow first, then the guard.
+///
+/// Only the **mutable** borrows also run the pending effects first (so the
+/// caller's earlier writes are in the DOM the patch works on — program order).
+/// A query (`is_mark_active`, `doc()`, `selection()`, …) reads model state no
+/// effect makes stale and does no DOM work, so it must not run user effects:
+/// a caller holding a `RefCell` of its own that one of those effects borrows
+/// would panic inside a plain read (PR #882 review, E3). The one immutable
+/// borrow that does DOM work, [`EditorHandle::set_dark_mode`], flushes itself.
 struct CoreGuard<B> {
     borrow: B,
     _no_flush: rinch_core::reactive::EffectFlushSuppressed,
@@ -414,7 +421,6 @@ impl std::ops::DerefMut for CoreGuard<std::cell::RefMut<'_, EditorCore>> {
 impl EditorHandle {
     /// Borrow the core immutably; see [`CoreGuard`].
     fn core(&self) -> CoreGuard<std::cell::Ref<'_, EditorCore>> {
-        rinch_core::reactive::flush_pending_effects();
         let no_flush = rinch_core::reactive::suppress_effect_flush();
         CoreGuard {
             borrow: self.inner.borrow(),
@@ -1164,6 +1170,9 @@ impl EditorHandle {
     /// built-in stylesheet. A no-op before mount. The app should trigger a repaint
     /// afterward (toolbar/keyboard handlers already do).
     pub fn set_dark_mode(&self, dark: bool) {
+        // A DOM write, so program order: run what the caller queued first
+        // (`core()` does not, being the query path).
+        rinch_core::reactive::flush_pending_effects();
         if let Some(view) = self.core().view.as_ref() {
             view.set_dark_mode(dark);
         }
@@ -4919,5 +4928,60 @@ mod tests {
         tick.set(5);
         h.handle.command("toggleBold");
         h.handle.command("toggleItalic");
+    }
+
+    /// on_change runs with the suppression guard dropped: a DOM read in it
+    /// sees effects of a write made earlier in the same callback.
+    #[test]
+    fn batched_on_change_keeps_program_order() {
+        use rinch_core::reactive::{Effect, Signal, batch};
+        let s = schema();
+        let h = mount(doc_node(&s, vec![para(&s, "hello")]));
+        let probe = NodeHandle::new(
+            h.doc.borrow_mut().create_element("span"),
+            Rc::downgrade(&h.doc),
+        );
+        let cls = Signal::new(String::from("a"));
+        let p2 = probe.clone();
+        let _e = Effect::new(move || p2.set_attribute("class", &cls.get()));
+        let seen = Rc::new(RefCell::new(None));
+        let sn = seen.clone();
+        let p3 = probe.clone();
+        h.handle.on_change(move || {
+            cls.set("b".into());
+            *sn.borrow_mut() = p3.get_attribute("class");
+        });
+        h.handle.set_selection(Selection::text(Pos(1), Pos(4)));
+        let ed = h.handle.clone();
+        batch(|| {
+            ed.command("toggleBold");
+        });
+        assert_eq!(seen.borrow().as_deref(), Some("b"));
+    }
+
+    /// An editor *query* made under a caller's own RefCell borrow runs no
+    /// effect: a query does no DOM work, so `core()` does not flush (PR #882
+    /// review, E3). When it did, an effect borrowing the same RefCell panicked
+    /// inside the read. The effect still runs, at the batch's end.
+    #[test]
+    fn batched_a_query_under_the_callers_own_borrow_runs_no_effect() {
+        use rinch_core::reactive::{Effect, Signal, batch};
+        let s = schema();
+        let h = mount(doc_node(&s, vec![para(&s, "hello")]));
+        let model = Rc::new(RefCell::new(0u32));
+        let flag = Signal::new(0u32);
+        let m2 = model.clone();
+        let _e = Effect::new(move || {
+            let f = flag.get();
+            *m2.borrow_mut() += f;
+        });
+        let ed = h.handle.clone();
+        let m3 = model.clone();
+        batch(|| {
+            flag.set(1);
+            let mut m = m3.borrow_mut();
+            *m += u32::from(ed.is_mark_active("bold"));
+        });
+        assert_eq!(*model.borrow(), 1, "the effect ran after the handler");
     }
 }

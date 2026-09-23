@@ -954,8 +954,25 @@ pub fn batch<R>(f: impl FnOnce() -> R) -> R {
     // Library suppression (`suppress_effect_flush`) is deliberately NOT set
     // aside: a borrow the library holds is still held.
     let _depth = outermost.then(DepthSetAside::enter);
+    // What suppression the outermost batch was opened under (library code can
+    // legitimately open one while holding a guard), so its exit can check that
+    // nothing taken inside it outlived it.
+    let suppressed_at_entry = outermost.then(|| FLUSH_SUPPRESSED.with(|s| s.get()));
 
     let result = f();
+
+    // A leaked `suppress_effect_flush` guard (`mem::forget`, a guard stashed
+    // in a struct that outlives the handler) would silently switch the
+    // mid-batch flush off on this thread for good, and nothing else would ever
+    // notice: every handler would just lose program order again.
+    if let Some(at_entry) = suppressed_at_entry {
+        debug_assert_eq!(
+            FLUSH_SUPPRESSED.with(|s| s.get()),
+            at_entry,
+            "a suppress_effect_flush() guard taken inside this batch outlived it; \
+             mid-batch flushing would stay off on this thread"
+        );
+    }
 
     // Restore the flag *before* flushing: `Signal::set` inside a flushed
     // effect must see `batching = false` again, and a `batch()` opened there
