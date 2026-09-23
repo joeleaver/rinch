@@ -2145,7 +2145,7 @@ measure function no longer bypasses the IFC measure cache for a dirty root: it
 drops that root's old sizes at the start of the compute and reuses what it
 shapes itself (one shape for a new row where there were four).
 `crates/rinch-dom/tests/scoped_ifc_oracle_tests.rs` is the oracle: every
-mutation shape in 16 contexts, plus a lockstep randomized differential, each
+mutation shape in 17 contexts, plus a lockstep randomized differential, each
 comparing the scoped pass with the whole-document pass on the same history and
 both with a fresh layout; its module doc lists what it found.
 

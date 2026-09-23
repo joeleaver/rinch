@@ -436,6 +436,7 @@ const CONTEXTS: &[&str] = &[
     "abs_under_inline",
     "table",
     "list",
+    "last_inline",
 ];
 
 fn build_context(kind: &str) -> Ctx {
@@ -588,6 +589,19 @@ fn build_context(kind: &str) -> Ctx {
             }
             ul
         }
+        // #919's shape: a block whose only rendered inline content is one
+        // span, beside a hidden block (detached under #487). Hiding the span
+        // (`last_element_to_none`) leaves a block that is no IFC root, whose
+        // hidden children must rejoin its Taffy list.
+        "last_inline" => {
+            let d = el(&mut doc, body, "div", "");
+            styled(&mut doc, d, "p", "display: none");
+            let s = el(&mut doc, d, "span", "");
+            let inner = el(&mut doc, s, "span", "");
+            text(&mut doc, inner, "the only rendered text");
+            el(&mut doc, s, "input", "");
+            d
+        }
         _ => unreachable!("{kind}"),
     };
     let other = el(&mut doc, body, "div", "");
@@ -645,6 +659,8 @@ const MUTATIONS: &[&str] = &[
     "class_cnts",
     "pseudo_inline_block",
     "pseudo_block",
+    "last_element_to_none",
+    "site_font_size",
 ];
 
 /// Apply `m` to the context. `false` when the mutation does not apply (the
@@ -778,6 +794,26 @@ fn mutate(ctx: &mut Ctx, m: &str) -> bool {
         }
         "pseudo_block" => {
             doc.set_attribute(site, "class", "pbb");
+            true
+        }
+        // #919: the last element child is the site's last rendered inline in
+        // `last_inline`; elsewhere it is one more display flip.
+        "last_element_to_none" => match children(doc, site)
+            .into_iter()
+            .rev()
+            .find(|c| doc.tree.get(c.0).is_some_and(|x| x.is_element()))
+        {
+            Some(c) => {
+                doc.set_attribute(c, "style", "display: none");
+                true
+            }
+            None => false,
+        },
+        // #918: a typography change with a declared line-height, reaching the
+        // anonymous box (`anon`) or the split fragment's box (`split`) that
+        // lays the text out. A restyle, not a structural change.
+        "site_font_size" => {
+            doc.set_attribute(site, "style", "font-size: 20px; line-height: 1.25");
             true
         }
         _ => unreachable!("{m}"),
