@@ -106,7 +106,9 @@ assert_eq!(frame.get(Counter::TaffyRootComputes), 0, "a colour change must not l
 | | `shape_atomic_inline` | Parley layouts built while sizing an `inline-block`/`-flex`/`-grid` box |
 | | `ellipsis_builds` | `text-overflow: ellipsis` truncations (each one shapes several candidates) |
 | | `shape_paint` | Parley layouts built by paint itself: input values, `<select>` labels, the fallback for uncached text |
-| | `ifc_measure_cache_hits` / `_clears` / `_retains` | IFC measure-cache hits, whole-cache clears, and per-root O(cache) scans |
+| | `ifc_measure_cache_hits` | IFC measures answered from the per-root measure cache without shaping |
+| | `ifc_measure_invalidations` | Roots whose cached measures a restyle or content change dropped (O(1) each) |
+| | `ifc_signature_changes` | Roots a structural pass found new or changed, and so re-measures; every other root keeps its cached measures and paint layout |
 | Layout | `layout_resolves`, `layout_skipped_paint_only`, `layout_skipped_text_only` | `resolve_layout` calls, and how many of them took each early return |
 | | `ifc_setup_passes` | Whole-document IFC setup passes (the `ifc_dirty` branch) |
 | | `taffy_root_computes` | Root Taffy computes (the same count as `NodeTree::taffy_computes`) |
