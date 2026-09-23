@@ -617,6 +617,22 @@ pub trait DomDocument {
         Vec::new()
     }
 
+    /// Where a text caret at `byte_offset` inside the text-bearing element
+    /// `node_id` is **on screen**, as `(x, y, height)`: its top, in the frame an
+    /// app positions a popup in. Logical window pixels on desktop (the frame of
+    /// [`NodeHandle::bounds_signal`] and of a `position: fixed` element), viewport
+    /// client pixels in the browser (`getBoundingClientRect`).
+    ///
+    /// An element with no text to measure (an empty paragraph) answers its own
+    /// box's origin, one line high, which is where an editor paints the caret on
+    /// a blank line. `None` when the node is unknown or has not been laid out.
+    ///
+    /// Backs `EditorHandle::caret_rect`. Default `None`: a host with no geometry
+    /// (the mock document) has no screen to answer for.
+    fn query_caret_rect(&self, _node_id: u64, _byte_offset: usize) -> Option<(f32, f32, f32)> {
+        None
+    }
+
     /// Get the tag name of an element node.
     ///
     /// Returns `Some("div")`, `Some("p")`, etc. for elements, `None` for text/comment nodes.

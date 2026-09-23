@@ -1883,6 +1883,31 @@ fn handle_keydown(event: &web_sys::KeyboardEvent, doc: &web_sys::Document) -> bo
         return false;
     };
     let key = event.key();
+    // The app's `EditorHandle::on_key` sees the key before anything below acts on
+    // it, and may take it: an open autocomplete popup's arrows, Enter and Escape.
+    // A consumed key is `preventDefault`ed and stopped like one the editor
+    // handles. `Unidentified` / `Process` are a soft keyboard's and an input
+    // method's: their input arrives through `beforeinput` and composition.
+    if key != "Unidentified" && key != "Process" {
+        let offered = rinch_editor_view::EditorKey {
+            key: &key,
+            primary: if is_mac() {
+                event.meta_key()
+            } else {
+                event.ctrl_key()
+            },
+            ctrl: event.ctrl_key(),
+            meta: event.meta_key(),
+            shift: event.shift_key(),
+            alt: event.alt_key(),
+            repeat: event.repeat(),
+        };
+        if handle.offer_key(&offered) {
+            // The callback may have edited or moved the selection.
+            refresh_caret();
+            return true;
+        }
+    }
     // The PHYSICAL key, for keymap lookup — `event.key()` is the *resolved* char ("*" for
     // Shift+8, "¡" for Alt+1) which would never match the keymap's physical-key bindings.
     let code = event.code();
@@ -1907,7 +1932,7 @@ fn handle_keydown(event: &web_sys::KeyboardEvent, doc: &web_sys::Document) -> bo
     // no menu of its own — nor at the release, where Windows opens it (by reading
     // Chromium), which is what `MENU_KEY_TO_APP` withholds.
     if key == "ContextMenu" || (key == "F10" && shift) {
-        let point = key_menu_point(&handle, doc, container_nid);
+        let point = key_menu_point(&handle, container_nid);
         if let Some((menu_el, id)) = key_menu_app_handler(&handle, container_nid) {
             set_click_context_for(
                 &menu_el,
@@ -2014,7 +2039,7 @@ fn vertical_step(
     extend: bool,
 ) -> bool {
     let head = handle.selection().head();
-    let Some((hx, hy, hh)) = head_screen_rect(handle, doc, head) else {
+    let Some((hx, hy, hh)) = head_screen_rect(handle, head) else {
         return false;
     };
     let gx = goal_x().unwrap_or(hx);
@@ -2034,7 +2059,7 @@ fn vertical_step(
             if handle.caret_address(p).map(|(t, _)| t) != head_tb {
                 return true; // different textblock — a real line change
             }
-            match head_screen_rect(handle, doc, p) {
+            match head_screen_rect(handle, p) {
                 Some((_, py, _)) if down => py > hy + hh * 0.5,
                 Some((_, py, _)) => py < hy - hh * 0.5,
                 None => false,
@@ -2058,34 +2083,12 @@ fn vertical_step(
     true
 }
 
-/// The viewport `(x, y, height)` of the caret at model `pos`. Prefers a collapsed
-/// `Range` at the host text node; for an *empty* block (no text node) falls back to the
-/// block element's own box so vertical motion off a blank line still works.
-fn head_screen_rect(
-    handle: &EditorHandle,
-    doc: &web_sys::Document,
-    pos: Pos,
-) -> Option<(f32, f32, f32)> {
-    let (tb_nid, byte) = handle.caret_address(pos)?;
-    let block = node_by_nid(tb_nid)?;
-    if let Some((text_node, off)) = find_text_node_at_byte_offset(&block, byte)
-        && let Ok(range) = doc.create_range()
-        && range.set_start(&text_node, off).is_ok()
-        && range.set_end(&text_node, off).is_ok()
-    {
-        let r = range.get_bounding_client_rect();
-        if r.height() > 0.0 {
-            return Some((r.x() as f32, r.y() as f32, r.height() as f32));
-        }
-    }
-    let el = block.dyn_into::<web_sys::Element>().ok()?;
-    let r = el.get_bounding_client_rect();
-    let h = if r.height() > 0.0 {
-        r.height() as f32
-    } else {
-        18.0
-    };
-    Some((r.x() as f32, r.y() as f32, h))
+/// The viewport `(x, y, height)` of the caret at model `pos`:
+/// [`EditorHandle::caret_rect`], the same answer an app gets (a collapsed `Range`
+/// at the host text node; an *empty* block's own box, so vertical motion off a
+/// blank line still works).
+fn head_screen_rect(handle: &EditorHandle, pos: Pos) -> Option<(f32, f32, f32)> {
+    handle.caret_rect(pos).map(|r| (r.x, r.y, r.height))
 }
 
 /// Where a key-invoked menu opens, in viewport coordinates: at the caret, on its
@@ -2093,12 +2096,8 @@ fn head_screen_rect(
 /// position, and nor does Select All in a document ending with one — at the
 /// selected node's outline, and failing that at the editor's own box, so a park
 /// there still carries the selection the menu's Copy acts on.
-fn key_menu_point(
-    handle: &EditorHandle,
-    doc: &web_sys::Document,
-    container_nid: usize,
-) -> Option<(f32, f32)> {
-    if let Some((x, y, h)) = head_screen_rect(handle, doc, handle.selection().head()) {
+fn key_menu_point(handle: &EditorHandle, container_nid: usize) -> Option<(f32, f32)> {
+    if let Some((x, y, h)) = head_screen_rect(handle, handle.selection().head()) {
         return Some((x, y + h / 2.0));
     }
     let editor = node_by_nid(container_nid)?
@@ -2417,7 +2416,6 @@ pub(crate) fn install(browser_doc: &web_sys::Document) {
     });
     // The menu key's release, for the same platform (issue #814). One whose press
     // went to an app's `data-oncontextmenu` is withheld from the browser as well.
-    let doc = browser_doc.clone();
     add_capture(browser_doc, "keyup", move |e: web_sys::KeyboardEvent| {
         if e.key() != "ContextMenu" {
             return;
@@ -2428,7 +2426,7 @@ pub(crate) fn install(browser_doc: &web_sys::Document) {
         }
         repark_on_release(MenuTrigger::Key, |_| {
             focused_handle()
-                .and_then(|(id, handle)| key_menu_point(&handle, &doc, id))
+                .and_then(|(id, handle)| key_menu_point(&handle, id))
                 .map(|(x, y)| park_right_of(x, y))
         });
     });
