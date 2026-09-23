@@ -40,6 +40,8 @@ mod drawer_scroll_overflow_tests;
 #[cfg(all(test, feature = "desktop"))]
 mod editor_decoration_tests;
 #[cfg(all(test, feature = "desktop"))]
+mod editor_focus_and_reveal_tests;
+#[cfg(all(test, feature = "desktop"))]
 mod editor_link_tests;
 #[cfg(all(test, feature = "desktop"))]
 mod editor_popup_hooks_tests;
@@ -1116,6 +1118,7 @@ impl RinchApp {
                 && !d.tree.styles_dirty
                 && !theme_changed
                 && !rinch_dom::image_cache::has_pending(d.doc_key())
+                && !self.has_owed_editor_reveal()
             {
                 return false;
             }
@@ -1962,6 +1965,27 @@ impl RinchApp {
             })
             .unwrap_or(false)
             || self.has_pending_images()
+            || self.has_owed_editor_reveal()
+    }
+
+    /// Whether an editor in this document asked to
+    /// [`scroll_into_view`](crate::editor::EditorHandle::scroll_into_view)
+    /// since the last overlay pass. It dirties nothing (the request waits on
+    /// the handle for a pass with geometry), so, like a decoded image, it is
+    /// folded into both "is there anything to do?" predicates and the resolve
+    /// short-circuit: an app may ask from an effect or a timer, with no input
+    /// event to run the pass for it.
+    fn has_owed_editor_reveal(&self) -> bool {
+        #[cfg(feature = "desktop")]
+        {
+            self.doc
+                .as_ref()
+                .is_some_and(|d| crate::editor::reveal_owed(d.borrow().doc_key()))
+        }
+        #[cfg(not(feature = "desktop"))]
+        {
+            false
+        }
     }
 
     /// Check if there are pending layout changes that need resolving
@@ -1978,6 +2002,7 @@ impl RinchApp {
             })
             .unwrap_or(false)
             || self.has_pending_images()
+            || self.has_owed_editor_reveal()
     }
 
     /// The framebuffer rect `paint_inspect_overlay` touches for `highlight`
@@ -3442,6 +3467,23 @@ impl RinchApp {
         // an `<input>` is no exception (issue #315) — the check sits above the
         // branch so it covers the input and generic-node paths alike.
         if Self::node_is_disabled_in_tree(&d.tree, node_id) {
+            return;
+        }
+
+        // A rich-text editor's container (`EditorHandle::focus`, or a
+        // `NodeHandle::focus` on the container): take the keyboard as a press
+        // in it does — through the arbiter, which tears the previous owner
+        // down — but leave the selection where it is, and scroll nothing
+        // (`EditorHandle::scroll_into_view` is the app's to ask for). The
+        // overlay pass draws its caret or highlight; its layout is current or
+        // the next frame's resolve makes it so, as after a click.
+        #[cfg(feature = "desktop")]
+        if crate::editor::editor_for_doc(d.doc_key(), node_id).is_some() {
+            drop(d);
+            self.set_focus_target(FocusTarget::Editor(node_id));
+            self.editor_goal_x = None;
+            self.refresh_editor_overlays();
+            self.scene_dirty = true;
             return;
         }
 

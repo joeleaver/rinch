@@ -86,6 +86,16 @@ pub(crate) fn pre_layout(doc: &mut RinchDocument, focused: Option<usize>) {
             }
             let protected = protected_block(doc, handle, container, focused);
             vw.pre_layout_update(doc, &protected);
+            // A pending `scroll_into_view` needs its start's block laid out,
+            // wherever the window is: the reveal is what moves the window
+            // there.
+            if let Some(block) = handle
+                .pending_reveal()
+                .and_then(|from| handle.caret_address(from))
+                .and_then(|(textblock, _)| top_block(doc, textblock, container))
+            {
+                vw.materialize(doc, block);
+            }
         }
     });
 }
@@ -124,22 +134,32 @@ pub(crate) fn post_layout(doc: &mut RinchDocument, focused: Option<usize>, vw_w:
     });
 }
 
-/// The cursor's top-level block (must never be collapsed) for the focused editor.
+/// The top-level blocks that must never be collapsed: the cursor's, for the
+/// focused editor, and — for any editor — the one holding the start of a
+/// pending `EditorHandle::scroll_into_view`, which needs that block laid out
+/// to know where to scroll (focused or not: a reveal does not need focus).
 fn protected_block(
     doc: &RinchDocument,
     handle: &EditorHandle,
     container: usize,
     focused: Option<usize>,
 ) -> Vec<usize> {
-    if Some(container) != focused {
-        return Vec::new();
-    }
-    let Some((textblock, _)) = handle.caret_address(handle.selection().head()) else {
-        return Vec::new();
+    let mut out = Vec::new();
+    let mut protect = |pos| {
+        if let Some((textblock, _)) = handle.caret_address(pos)
+            && let Some(block) = top_block(doc, textblock, container)
+            && !out.contains(&block)
+        {
+            out.push(block);
+        }
     };
-    top_block(doc, textblock, container)
-        .map(|b| vec![b])
-        .unwrap_or_default()
+    if Some(container) == focused {
+        protect(handle.selection().head());
+    }
+    if let Some(from) = handle.pending_reveal() {
+        protect(from);
+    }
+    out
 }
 
 /// Walk up from `id` to the direct child of `container`.

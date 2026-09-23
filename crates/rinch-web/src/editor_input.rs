@@ -507,6 +507,27 @@ fn focus_capture_target(doc: &web_sys::Document, handle: &EditorHandle) {
     }
 }
 
+/// Give the editor at `container_nid` the keyboard without a press —
+/// [`EditorHandle::focus`], through [`registry::set_focus_handler`]. The focusing
+/// half of [`handle_mousedown`]: the editor becomes the focused one, the capture
+/// textarea takes the browser's focus (`preventScroll`, so nothing jumps; any
+/// other field blurs natively and commits its `change`), and the overlay pass
+/// draws the editor's caret or selection where it already is. Nothing is
+/// selected and nothing scrolls.
+fn focus_editor(container_nid: usize) {
+    let Some(handle) = registry::editor_for(container_nid) else {
+        return;
+    };
+    let Some(doc) = web_sys::window().and_then(|w| w.document()) else {
+        return;
+    };
+    end_context_menu_cycle();
+    set_focused_editor(Some(container_nid));
+    set_goal_x(None);
+    focus_capture_target(&doc, &handle);
+    refresh_caret();
+}
+
 /// Blur the capture target (when focus leaves the editor for another field).
 fn blur_capture_target() {
     end_context_menu_cycle();
@@ -2327,6 +2348,10 @@ pub(crate) fn install(browser_doc: &web_sys::Document) {
     // `EditorHandle::set_read_only` arrives through none of them either, and the
     // same refresh is what carries it to the capture textarea's `readonly`.
     registry::set_overlay_refresher(refresh_caret);
+    // `EditorHandle::focus`: the keyboard reaches an editor only through the
+    // capture textarea, so a programmatic focus has to go through the same
+    // steps a press does.
+    registry::set_focus_handler(focus_editor);
 
     let doc = browser_doc.clone();
     add_capture(browser_doc, "keydown", move |e: web_sys::KeyboardEvent| {
