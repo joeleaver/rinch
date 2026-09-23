@@ -145,6 +145,7 @@ impl RinchCapture {
             x: x as f32,
             y: y as f32,
             button: None,
+            modifiers: None,
         })?;
         Ok(())
     }

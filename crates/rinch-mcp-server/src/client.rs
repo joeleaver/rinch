@@ -35,6 +35,10 @@ pub enum DebugCommandKind {
         y: f32,
         #[serde(default)]
         button: Option<String>,
+        /// Modifier names held for the press/release (the `key_press` array
+        /// shape). Mirrored from rinch-debug in lockstep.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        modifiers: Option<Vec<String>>,
     },
     #[serde(rename = "type_text")]
     TypeText { text: String },
@@ -52,6 +56,10 @@ pub enum DebugCommandKind {
         y: f32,
         #[serde(default)]
         button: Option<String>,
+        /// Modifier names held for the press/release (the `key_press` array
+        /// shape). Mirrored from rinch-debug in lockstep.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        modifiers: Option<Vec<String>>,
     },
     #[serde(rename = "mouse_up")]
     MouseUp {
@@ -59,6 +67,10 @@ pub enum DebugCommandKind {
         y: f32,
         #[serde(default)]
         button: Option<String>,
+        /// Modifier names held for the press/release (the `key_press` array
+        /// shape). Mirrored from rinch-debug in lockstep.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        modifiers: Option<Vec<String>>,
     },
     #[serde(rename = "scroll")]
     Scroll {
