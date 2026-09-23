@@ -305,6 +305,9 @@ impl Schema {
         link_attrs.insert("target".into(), AttrSpec::optional(""));
         let mut link = MarkSpec::with_attrs("link", link_attrs);
         link.parse_html_tags = vec!["a".into()];
+        // Non-inclusive, as ProseMirror's own example schema and tiptap's Link have
+        // it: text typed right after a link is not part of it.
+        link.inclusive = false;
         builder = builder.mark("link", link);
 
         // highlight
@@ -784,6 +787,16 @@ mod tests {
         let link = schema.mark("link").unwrap();
         assert!(link.attrs["href"].required);
         assert!(!link.attrs["title"].required);
+        assert!(
+            !link.inclusive,
+            "a link does not extend over text typed after it"
+        );
+        for name in ["bold", "italic", "underline", "strike", "code", "highlight"] {
+            assert!(
+                schema.mark(name).unwrap().inclusive,
+                "{name} stays inclusive"
+            );
+        }
     }
 
     #[test]

@@ -104,6 +104,10 @@ Command names are case-sensitive. The full catalogue:
 > command. Use `handle.toggle_link(href)` to add (or, over an existing link, remove)
 > a link, `handle.command("removeLink")` to clear one unconditionally, and
 > `handle.active_link_href()` to read the current link's target for an edit dialog.
+> Text typed right after a link is not part of it (`link` is a non-inclusive mark),
+> so a link does not grow as the user keeps typing past it. The one exception is a
+> link that runs straight into a *different* link: text typed at that seam continues
+> the first one (see [inherited marks](./editor.md#state-selection-stored-marks)).
 
 > Alignment applies to the textblocks (`paragraph` / `heading`) overlapping the
 > selection, including ones nested in lists, blockquotes, and table cells.
@@ -153,7 +157,7 @@ rsx! { Editor { editor: editor.clone() } }
 | `doc() -> Node` | The current document (the save shape; serialize it under the `serde` feature). |
 | `insert_image(src, alt)` | Insert an image node (e.g. a `data:` URL), replacing the selection. |
 | `toggle_link(href) -> bool` | Add a `link` mark with `href` across the selection, or remove it if the selection is already linked. No-op (returns `false`) for a collapsed cursor. |
-| `active_link_href() -> Option<String>` | The `href` of the link at the selection head, for pre-filling an "edit link" dialog. `None` when not inside a link. |
+| `active_link_href() -> Option<String>` | The `href` of the link the selection is on, for pre-filling an "edit link" dialog: for a range, the first link in it; for a caret, the link text typed there would carry. A link is not inclusive, so a caret inside it answers its `href` and a caret at its start or right after its last character answers `None` — except where it runs straight into a different link, where the caret is in the first. |
 | `replace_selection_with_html(&str)` | Replace the selection with parsed HTML (the rich-paste path). |
 | `selection_clipboard()` | The current selection serialized as `(html, plain_text)` for the clipboard. |
 | `anchor_selection() -> SelectionAnchor` | Capture the selection for a later insertion, kept pointing at the same content as the user keeps editing. See [Pasting is asynchronous](#pasting-is-asynchronous). |
@@ -343,10 +347,11 @@ pixels on desktop, the frame `bounds_signal()` and root-level absolutely positio
 popups use; viewport client pixels (`getBoundingClientRect`) in the browser.
 
 Both are decided by **the character under the pointer**, not by the nearest caret
-position. The two differ at a link's edges: a caret just after a link's last letter
-is "in" the link (`active_link_href()` answers it, and typing there extends the
-link), but the pointer over the space after the link is not on it, and the pointer
-over the right half of the last letter is.
+position. The two differ at a link's edges: a caret at either edge of a link is not
+in it (a link is non-inclusive, so `active_link_href()` answers `None` there and
+typing there is plain), but the pointer over the right half of the link's last
+letter, or over its first letter, is on it — and the pointer over the space after
+the link is not.
 
 Not reported: a double or triple press (they select a word or a block), the
 secondary button (the context menu keeps its own link handling), a press on an image
@@ -744,6 +749,14 @@ other (#860). And **splitting a block right before an image** (Enter) while
 someone else changes that image's attributes loses the change — a split moves
 content, and this is true of any mark change on moved text, not only images
 (#861).
+
+Typing right after a link while someone else changes that link at the same moment
+keeps their change — a new `href`, removing the link, or extending it over the text
+after it — but the character you typed may end up **inside** their link rather than
+plain, because it sits exactly where their change starts or ends. The same is true when they link the text right after yours to
+something else. Nothing is lost and both editors converge; the typed character is
+just formatted where you did not mean it (#923). A link is never brought back over text
+someone unlinked, and never spreads over text nobody linked.
 
 A runnable two-pane loopback (both editors in one window, no network)
 lives at `examples/collab-editor-demo/src/main.rs`.
