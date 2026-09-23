@@ -417,6 +417,9 @@ impl DomDocument for RinchDocument {
                 self.tree.dirty_ifc_text_roots.insert(root_id);
                 // Invalidate cached measure results for this root
                 self.tree
+                    .perf
+                    .bump(crate::perf::Counter::IfcMeasureCacheRetains);
+                self.tree
                     .ifc_measure_cache
                     .retain(|&(rid, _), _| rid != root_id);
             }

@@ -82,6 +82,9 @@ impl RinchDocument {
             self.load_stylo_css(&css);
             // New CSS rules may affect any existing node — invalidate all caches
             // and clear style_roots to force a full tree walk.
+            self.tree
+                .perf
+                .full_restyle(crate::perf::FullRestyleReason::Stylesheet);
             for (nid, _) in self.tree.nodes.iter() {
                 *self.tree.nodes[nid].stylo_element_data.borrow_mut() = None;
             }
@@ -149,6 +152,9 @@ impl RinchDocument {
 
         // Invalidate all cached styles and force a full re-resolve +
         // relayout, mirroring resolve_layout's viewport-change branch.
+        self.tree
+            .perf
+            .full_restyle(crate::perf::FullRestyleReason::Dpr);
         for (node_id, _) in self.tree.nodes.iter() {
             *self.tree.nodes[node_id].stylo_element_data.borrow_mut() = None;
         }
@@ -371,6 +377,9 @@ impl RinchDocument {
     /// Recompute taffy styles for all element nodes, clearing cached style props
     /// so that CSS variables are re-resolved. Use this after `update_theme_variables()`.
     pub fn recompute_all_styles_full(&mut self) {
+        self.tree
+            .perf
+            .full_restyle(crate::perf::FullRestyleReason::Theme);
         // Clear cached Stylo element data so styles are recomputed.
         // Also clear text_layout so build_ifc_layouts() doesn't skip
         // IFC roots whose text content hasn't changed but whose style
@@ -596,7 +605,7 @@ impl RinchDocument {
         if dirty_node_ids.is_empty() {
             return;
         }
-        let perf = std::env::var("RINCH_PERF").is_ok();
+        let t_style = web_time::Instant::now();
         let style_dirty_count = dirty_node_ids.len();
         let taffy_style_changed_count = std::cell::Cell::new(0u32);
 
@@ -1253,13 +1262,16 @@ impl RinchDocument {
                 taffy_style_changed_count.set(taffy_style_changed_count.get() + 1);
             }
         }
-        if perf {
-            eprintln!(
-                "  [PERF] apply_to_taffy: style_dirty_nodes={} taffy_changed={}",
-                style_dirty_count,
-                taffy_style_changed_count.get()
-            );
-        }
+        let perf = &self.tree.perf;
+        perf.add(
+            crate::perf::Counter::TaffyStyleSyncs,
+            style_dirty_count as u64,
+        );
+        perf.add(
+            crate::perf::Counter::TaffyStyleChanges,
+            u64::from(taffy_style_changed_count.get()),
+        );
+        perf.add_elapsed(crate::perf::Counter::TimeStyleNs, t_style);
     }
 
     /// Whether a transition may be **started** on `node_id` by this cascade.

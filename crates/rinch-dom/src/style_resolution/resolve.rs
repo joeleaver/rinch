@@ -15,6 +15,15 @@ impl RinchDocument {
     /// roots are tracked (initial render, stylesheet reload, viewport
     /// resize).
     pub fn resolve_styles(&mut self) {
+        let t = web_time::Instant::now();
+        self.tree.perf.bump(crate::perf::Counter::StyleResolves);
+        self.resolve_styles_inner();
+        self.tree
+            .perf
+            .add_elapsed(crate::perf::Counter::TimeStyleNs, t);
+    }
+
+    fn resolve_styles_inner(&mut self) {
         use crate::stylo_impl::RinchNode;
         use style::shared_lock::StylesheetGuards;
 
@@ -32,6 +41,7 @@ impl RinchDocument {
         // - First layout hasn't completed yet (DOM still being constructed,
         //   parent classes may not be resolved when children are appended)
         if roots.is_empty() || !self.tree.transitions_enabled {
+            self.tree.perf.bump(crate::perf::Counter::FullStyleWalks);
             let html_id = self.tree.html_id;
             self.resolve_styles_recursive(html_id, None);
             return;
@@ -228,6 +238,7 @@ impl RinchDocument {
 
             (is_element, children, cached_style)
         };
+        self.tree.perf.bump(crate::perf::Counter::StyleNodesVisited);
 
         // Skip non-element nodes
         if !is_element {
@@ -366,6 +377,7 @@ impl RinchDocument {
 
             // Mark this node as needing Taffy sync (style was recomputed)
             self.tree.style_dirty_nodes.push(node_id);
+            self.tree.perf.bump(crate::perf::Counter::ElementsCascaded);
 
             computed.clone()
         };
@@ -383,6 +395,9 @@ impl RinchDocument {
 
         // Check for ::before and ::after pseudo-elements
         use style::selector_parser::PseudoElement;
+        self.tree
+            .perf
+            .add(crate::perf::Counter::PseudoElementPasses, 2);
         self.resolve_pseudo_element(node_id, &computed, PseudoElement::Before);
         self.resolve_pseudo_element(node_id, &computed, PseudoElement::After);
 
@@ -424,6 +439,9 @@ impl RinchDocument {
         }
         self.device_params.root_font_size = size;
         device.set_root_font_size(size);
+        self.tree
+            .perf
+            .full_restyle(crate::perf::FullRestyleReason::RootFontSize);
 
         // Descendants cached before this change resolved `rem` against the
         // old basis — clear them so the walk we're inside recascades them.

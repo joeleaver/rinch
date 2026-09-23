@@ -308,6 +308,7 @@ impl RinchDocument {
                 }
             }
 
+            self.tree.perf.bump(crate::perf::Counter::ShapeIfcBuild);
             let mut inline_layout = Self::build_inline_layout(
                 &self.tree.nodes,
                 root_id,
@@ -334,6 +335,7 @@ impl RinchDocument {
                     // Collect text content from the inline layout
                     let full_text = inline_layout.text_content.clone();
                     if !full_text.is_empty() {
+                        self.tree.perf.bump(crate::perf::Counter::EllipsisBuilds);
                         inline_layout = Self::build_ellipsis_layout(
                             &self.tree.nodes,
                             root_id,
@@ -463,6 +465,7 @@ impl RinchDocument {
 
         // Rebuild layouts for text nodes that need ellipsis truncation
         for (id, content, available_width) in ellipsis_rebuilds {
+            self.tree.perf.bump(crate::perf::Counter::EllipsisBuilds);
             let parent_id = self.tree.nodes[id].parent;
             let parent = parent_id.and_then(|p| self.tree.nodes.get(p));
             let font_size = parent.map(|p| p.computed_style.font_size).unwrap_or(16.0);
@@ -3574,6 +3577,9 @@ impl RinchDocument {
             }
             self.tree.dirty_ifc_text_roots.insert(root_id);
             self.tree
+                .perf
+                .bump(crate::perf::Counter::IfcMeasureCacheRetains);
+            self.tree
                 .ifc_measure_cache
                 .retain(|&(rid, _), _| rid != root_id);
             if let Some(root_taffy) = self.tree.nodes.get(root_id).and_then(|n| n.taffy_id) {
@@ -3603,6 +3609,8 @@ impl RinchDocument {
         // Split-borrow so the closure captures only `tree.nodes`, leaving
         // `tree.nodes.get_mut` free after the call returns.
         let nodes = &tree.nodes;
+        let perf = &tree.perf;
+        perf.bump(crate::perf::Counter::InlineBlockComputes);
         let _ = tree.taffy.compute_layout_with_measure(
             taffy_id,
             avail,
@@ -3621,6 +3629,7 @@ impl RinchDocument {
                                 height: known_dims.height.unwrap_or(est_h),
                             };
                         }
+                        perf.bump(crate::perf::Counter::ShapeAtomicInline);
                         let inline_layout = Self::build_inline_layout(
                             nodes, root_id, max_width, 1.0, font_cx, layout_cx,
                         );
@@ -3633,6 +3642,7 @@ impl RinchDocument {
                         if text.content.is_empty() {
                             return taffy::Size::ZERO;
                         }
+                        perf.bump(crate::perf::Counter::ShapeAtomicInline);
                         let mut builder =
                             layout_cx.ranged_builder(font_cx, &text.content, 1.0, true);
                         builder
@@ -3939,6 +3949,9 @@ impl RinchDocument {
         if changed {
             // Measures cached under the stale inline-block sizes would be served
             // straight back on the second pass, re-introducing the collapse.
+            self.tree
+                .perf
+                .bump(crate::perf::Counter::IfcMeasureCacheClears);
             self.tree.ifc_measure_cache.clear();
         }
         changed

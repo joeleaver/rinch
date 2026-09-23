@@ -1726,6 +1726,9 @@ pub struct NodeTree {
     /// pin the cheap path (issue #678, whose repair widens what sets
     /// `layout_dirty` and so could have swallowed it). One `u64` increment per
     /// compute.
+    ///
+    /// Kept beside [`perf`](Self::perf)'s `taffy_root_computes`, which counts
+    /// the same thing per frame; this one is never reset.
     pub taffy_computes: u64,
     /// How many times `resolve_layout` has taken its `ifc_dirty` branch — the
     /// structural pass (`sync_display_contents`, IFC setup, anonymous boxes,
@@ -1734,7 +1737,13 @@ pub struct NodeTree {
     /// Instrumentation, like [`Self::taffy_computes`]: a restyle that changes
     /// no structure must not pay for this pass, and nothing else observable
     /// says whether it ran.
+    ///
+    /// Twin of [`perf`](Self::perf)'s `ifc_setup_passes`, which counts the
+    /// same pass per frame; this one is never reset.
     pub ifc_setup_passes: u64,
+    /// Per-frame performance counters (see [`crate::perf`]). Instrumentation,
+    /// not state: nothing reads them to decide anything.
+    pub perf: crate::perf::PerfCounters,
     /// Text nodes whose Taffy measure context (`NodeContext::Text`) no longer
     /// matches the typography their parent now computes (issue #678).
     ///
@@ -1955,6 +1964,7 @@ impl NodeTree {
             dirty_ifc_text_roots: HashSet::new(),
             taffy_computes: 0,
             ifc_setup_passes: 0,
+            perf: crate::perf::PerfCounters::default(),
             dirty_text_contexts: HashSet::new(),
             dirty_atomic_inlines: BTreeSet::new(),
             ifc_measure_cache: HashMap::new(),
