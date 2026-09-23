@@ -407,6 +407,12 @@ pub struct RinchApp {
     pub(crate) modifiers: Modifiers,
     /// Whether the Vello scene needs to be rebuilt.
     pub(crate) scene_dirty: bool,
+    /// A component drag's `on_move` changed the document and the layout that
+    /// shows it has not run: the drag arm of `MouseMove` defers it to the
+    /// frame. Any event other than a move settles it first (`handle_event`),
+    /// so a release, press or wheel in the same batch is judged against the
+    /// box where the last move put it. Cleared by `resolve_and_repaint`.
+    pub(crate) drag_layout_owed: bool,
     /// Text rendering scale for HiDPI/mobile (applied to Parley font sizes).
     pub(crate) text_scale: f32,
     /// Display scale factor pushed into Stylo's `Device` (issue #211): drives
@@ -601,6 +607,7 @@ impl RinchApp {
             window_props: None,
             modifiers: Modifiers::default(),
             scene_dirty: true,
+            drag_layout_owed: false,
             text_scale: 1.0,
             device_pixel_ratio: 1.0,
             #[cfg(software_shell)]
@@ -966,6 +973,7 @@ impl RinchApp {
     /// Re-resolve layout after signal changes. Returns `true` if a redraw
     /// is needed.
     pub fn resolve_and_repaint(&mut self, viewport_width: f32, viewport_height: f32) -> bool {
+        self.drag_layout_owed = false;
         let Some(doc) = self.doc.clone() else {
             return false;
         };

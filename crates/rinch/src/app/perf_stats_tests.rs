@@ -223,6 +223,14 @@ const ROWS: usize = 500;
 /// A 400px scroller holding `ROWS` 20px rows, each a text row with a nested
 /// span, so an unpruned walk visits every row's whole subtree.
 fn mount_long_list(with_mousemove: Option<Rc<Cell<u32>>>) -> (RinchApp, NodeHandle) {
+    mount_long_list_with_rows(with_mousemove, "height: 20px")
+}
+
+/// [`mount_long_list`] with each row styled `row_style`.
+fn mount_long_list_with_rows(
+    with_mousemove: Option<Rc<Cell<u32>>>,
+    row_style: &'static str,
+) -> (RinchApp, NodeHandle) {
     let out: Rc<RefCell<Option<NodeHandle>>> = Rc::new(RefCell::new(None));
     let out2 = out.clone();
     let mut app = RinchApp::new(move |scope: &mut RenderScope| {
@@ -235,7 +243,7 @@ fn mount_long_list(with_mousemove: Option<Rc<Cell<u32>>>) -> (RinchApp, NodeHand
         }
         for i in 0..ROWS {
             let row = scope.create_element("div");
-            row.set_attribute("style", "height: 20px");
+            row.set_attribute("style", row_style);
             let span = scope.create_element("span");
             let t = scope.create_text(&format!("row {i}"));
             span.append_child(&t);
@@ -401,13 +409,273 @@ fn pointer_move_timing() {
     let t = std::time::Instant::now();
     for i in 0..rounds {
         // Inside one row, so hover does not change and nothing re-lays out.
+        // Each move is followed by `AboutToWait`, as the shell's coalescer
+        // hands the app one move per batch and then ticks.
         pointer_move(&mut app, 40.0 + (i % 50) as f32, 105.0);
+        app.handle_event(PlatformEvent::AboutToWait, SIZE, 1.0);
     }
     let per = t.elapsed().as_secs_f64() * 1e6 / rounds as f64;
     let s = app.end_perf_frame().unwrap();
     eprintln!(
-        "[pointer_move_timing] {ROWS} rows: {per:.2} us per move; {} hit tests, {} nodes visited",
+        "[pointer_move_timing] {ROWS} rows: {per:.2} us per move + AboutToWait; {} hit tests, {} nodes visited, {} extents computed",
         s.get(Counter::HitTests),
-        s.get(Counter::HitTestNodesVisited)
+        s.get(Counter::HitTestNodesVisited),
+        s.get(Counter::HitExtentsComputed)
     );
+}
+
+/// The real loop: the shell hands the app one coalesced move per batch and
+/// then `AboutToWait`, which ticks transitions and animations. With nothing
+/// animating the tick changes nothing, so the next move must find the hit
+/// cache warm. It used to be cold on every move — both ticks invalidated
+/// unconditionally (review of #881, D1).
+#[test]
+fn a_move_after_about_to_wait_is_warm() {
+    let (mut app, scroller) = mount_long_list(None);
+    frame(&mut app);
+    scroller.set_scroll_top(4000.0);
+    frame(&mut app);
+    pointer_move(&mut app, 50.0, 105.0);
+    app.handle_event(PlatformEvent::AboutToWait, SIZE, 1.0);
+    let _ = app.end_perf_frame();
+    pointer_move(&mut app, 60.0, 107.0);
+    let s = app.end_perf_frame().unwrap();
+    for (c, want) in [
+        (Counter::HitTests, 1),
+        (Counter::HitTestNodesVisited, 4),
+        (Counter::HitExtentsComputed, 0),
+        (Counter::StackingOrderBuilds, 0),
+    ] {
+        assert_eq!(s.get(c), want, "{}: {s:?}", c.name());
+    }
+}
+
+/// A long list beside a box running an infinite `@keyframes` animation of
+/// `property` (`color` or `transform`).
+fn mount_long_list_beside_animation(property: &str) -> RinchApp {
+    let css = format!(
+        "@keyframes k {{ from {{ {property}: {from}; }} to {{ {property}: {to}; }} }}
+         .anim {{ width: 20px; height: 20px; animation: k 1s linear infinite; }}",
+        from = if property == "color" {
+            "red"
+        } else {
+            "translateX(0px)"
+        },
+        to = if property == "color" {
+            "blue"
+        } else {
+            "translateX(10px)"
+        },
+    );
+    let mut app = RinchApp::new(move |scope: &mut RenderScope| {
+        let root = scope.create_element("div");
+        let style = scope.create_element("style");
+        let text = scope.create_text(&css);
+        style.append_child(&text);
+        root.append_child(&style);
+        let anim = scope.create_element("div");
+        anim.set_attribute("class", "anim");
+        root.append_child(&anim);
+        let scroller = scope.create_element("div");
+        scroller.set_attribute("style", "height: 400px; overflow-y: auto");
+        for i in 0..ROWS {
+            let row = scope.create_element("div");
+            row.set_attribute("style", "height: 20px");
+            let t = scope.create_text(&format!("row {i}"));
+            row.append_child(&t);
+            scroller.append_child(&row);
+        }
+        root.append_child(&scroller);
+        root
+    });
+    app.mount_component(SIZE.0 as f32, SIZE.1 as f32);
+    app
+}
+
+/// Move, `AboutToWait` (which ticks the animation), move; returns the second
+/// move's frame. The pointer is over the list, well away from the animated box.
+fn move_tick_move(app: &mut RinchApp) -> FrameStats {
+    frame(app);
+    pointer_move(app, 50.0, 205.0);
+    std::thread::sleep(std::time::Duration::from_millis(5));
+    app.handle_event(PlatformEvent::AboutToWait, SIZE, 1.0);
+    let ticked = app.end_perf_frame().unwrap();
+    assert!(
+        ticked.get(Counter::EffectRuns) > 0 || app.has_dirty_nodes() || app.scene_dirty,
+        "positive control: the animation ticked"
+    );
+    assert!(
+        app.doc
+            .as_ref()
+            .unwrap()
+            .borrow()
+            .tree
+            .has_running_animations(),
+        "positive control: the animation is running"
+    );
+    pointer_move(app, 60.0, 207.0);
+    app.end_perf_frame().unwrap()
+}
+
+/// A `Loader`-style colour animation writes `computed_style` every frame, but
+/// nothing hit testing reads — so it must not cost every pointer move the
+/// memo. (A running colour animation made every move cold.)
+#[test]
+fn a_colour_animation_keeps_moves_warm() {
+    let mut app = mount_long_list_beside_animation("color");
+    let s = move_tick_move(&mut app);
+    assert_eq!(s.get(Counter::HitExtentsComputed), 0, "{s:?}");
+    assert_eq!(s.get(Counter::StackingOrderBuilds), 0, "{s:?}");
+}
+
+/// The discriminating half: a `transform` animation does change what a hit
+/// test answers, so its tick does invalidate, and the next move is cold.
+#[test]
+fn a_transform_animation_does_invalidate() {
+    let mut app = mount_long_list_beside_animation("transform");
+    let s = move_tick_move(&mut app);
+    assert!(s.get(Counter::HitExtentsComputed) > 0, "{s:?}");
+}
+
+/// A wheel scroll moves the rows under a warm hit cache. The wheel arm writes
+/// `scroll_offset` straight into the slab and reaches the cache only through
+/// `NodeTree::push_dirty`, so this is what fails if that invalidation goes.
+///
+/// The rows are `position: relative`, because that is what makes the scroll
+/// matter to the cache: a positioned row is an entry of the body's stacking
+/// sequence, whose offsets have the scroller's scroll offset baked in. A plain
+/// row's extent is relative to the row, and the scroller clips, so a scroll
+/// leaves every cached extent true and a flow-only list cannot see a stale
+/// cache at all (measured: this fixture with static rows survives the mutant).
+#[test]
+fn a_wheel_scroll_is_not_answered_from_a_stale_cache() {
+    let (mut app, _scroller) = mount_long_list_with_rows(None, "height: 20px; position: relative");
+    frame(&mut app);
+    pointer_move(&mut app, 50.0, 105.0); // warms the cache
+    let before = {
+        let d = app.doc.as_ref().unwrap().borrow();
+        super::hit_testing::hit_test(&d.tree, 50.0, 105.0)
+    };
+    app.handle_event(
+        PlatformEvent::MouseWheel {
+            x: 50.0,
+            y: 105.0,
+            delta_x: 0.0,
+            delta_y: -100.0,
+        },
+        SIZE,
+        1.0,
+    );
+    let d = app.doc.as_ref().unwrap().borrow();
+    let got = super::hit_testing::hit_test(&d.tree, 50.0, 105.0);
+    d.tree.hit_cache.invalidate();
+    let fresh = super::hit_testing::hit_test(&d.tree, 50.0, 105.0);
+    assert_ne!(before, fresh, "positive control: the wheel moved the rows");
+    assert_eq!(got, fresh, "a wheel scroll left the hit cache stale");
+}
+
+/// A panel dragged with `Drag::absolute`, released in the same batch as the
+/// last move (the coalescer flushes the move right before the release, and an
+/// MCP `mouse_move` + `mouse_up` or an embed `update(&[move, up])` do the
+/// same). The release's `data-onmouseup` must be judged against the box where
+/// the move put the panel. (Review of #881, D2: it was judged against the
+/// pre-move layout, because the drag arm now defers its layout.)
+#[test]
+fn a_release_right_after_a_drag_move_sees_the_moved_box() {
+    let ups = Rc::new(Cell::new(0u32));
+    let ups2 = ups.clone();
+    let out: Rc<RefCell<Option<NodeHandle>>> = Rc::new(RefCell::new(None));
+    let out2 = out.clone();
+    let mut app = RinchApp::new(move |scope: &mut RenderScope| {
+        let root = scope.create_element("div");
+        let panel = scope.create_element("div");
+        panel.set_attribute(
+            "style",
+            "position: absolute; left: 0px; top: 0px; width: 50px; height: 50px",
+        );
+        let u = ups2.clone();
+        let id = scope.register_handler(move || u.set(u.get() + 1));
+        panel.set_attribute("data-onmouseup", &id.0.to_string());
+        root.append_child(&panel);
+        *out2.borrow_mut() = Some(panel.clone());
+        root
+    });
+    app.mount_component(SIZE.0 as f32, SIZE.1 as f32);
+    frame(&mut app);
+    let panel = out.borrow().clone().unwrap();
+    let x = rinch_core::reactive::Signal::new(0.0f32);
+    let _e = rinch_core::reactive::Effect::new(move || {
+        panel.set_style("left", &format!("{}px", x.get()));
+    });
+    frame(&mut app);
+    rinch_core::Drag::absolute()
+        .on_move(move |px, _| x.set(px - 25.0))
+        .start();
+    pointer_move(&mut app, 400.0, 25.0);
+    app.handle_event(
+        PlatformEvent::MouseUp {
+            x: 400.0,
+            y: 25.0,
+            button: MouseButton::Left,
+        },
+        SIZE,
+        1.0,
+    );
+    rinch_core::Drag::cancel();
+    assert_eq!(
+        ups.get(),
+        1,
+        "the release over the moved panel reached its data-onmouseup"
+    );
+}
+
+/// The transition tick's half of `a_transform_animation_does_invalidate`: a
+/// `transform` transition in flight (a `Drawer` sliding in) moves what a hit
+/// test answers on every tick, so each tick must invalidate, or taps land on
+/// the panel where it was when the cache was filled.
+#[test]
+fn a_transform_transition_does_invalidate() {
+    let out: Rc<RefCell<Option<NodeHandle>>> = Rc::new(RefCell::new(None));
+    let out2 = out.clone();
+    let mut app = RinchApp::new(move |scope: &mut RenderScope| {
+        let root = scope.create_element("div");
+        let style = scope.create_element("style");
+        let css = scope.create_text(
+            ".slide { width: 40px; height: 40px; transition: transform 1s linear; }
+             .slide.open { transform: translateX(300px); }",
+        );
+        style.append_child(&css);
+        root.append_child(&style);
+        let slide = scope.create_element("div");
+        slide.set_attribute("class", "slide");
+        root.append_child(&slide);
+        *out2.borrow_mut() = Some(slide);
+        root
+    });
+    app.mount_component(SIZE.0 as f32, SIZE.1 as f32);
+    frame(&mut app);
+    frame(&mut app);
+    out.borrow()
+        .as_ref()
+        .unwrap()
+        .set_attribute("class", "slide open");
+    frame(&mut app);
+    assert!(
+        !app.doc
+            .as_ref()
+            .unwrap()
+            .borrow()
+            .tree
+            .active_transitions
+            .is_empty(),
+        "positive control: the transition is running"
+    );
+    pointer_move(&mut app, 500.0, 500.0);
+    let _ = app.end_perf_frame();
+    std::thread::sleep(std::time::Duration::from_millis(5));
+    app.handle_event(PlatformEvent::AboutToWait, SIZE, 1.0);
+    let _ = app.end_perf_frame();
+    pointer_move(&mut app, 501.0, 500.0);
+    let s = app.end_perf_frame().unwrap();
+    assert!(s.get(Counter::StackingOrderBuilds) > 0, "{s:?}");
 }

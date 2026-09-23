@@ -174,7 +174,6 @@ pub fn start_transitions(
 /// 3. Mark node dirty (PAINT, and LAYOUT if layout-affecting)
 /// 4. Remove completed transitions
 pub fn tick_transitions(tree: &mut NodeTree, current_time_ms: f64) -> bool {
-    tree.hit_cache.invalidate();
     let node_ids: Vec<RawNodeId> = tree.active_transitions.keys().copied().collect();
     let mut any_active = false;
 
@@ -192,6 +191,7 @@ pub fn tick_transitions(tree: &mut NodeTree, current_time_ms: f64) -> bool {
         let mut completed = Vec::new();
         let mut needs_layout = false;
         let mut needs_paint = false;
+        let hit_key = crate::hit_cache::HitStyleKey::of(&tree.nodes[node_id].computed_style);
 
         for (prop, transition) in &transitions {
             if transition.is_complete(current_time_ms) {
@@ -217,6 +217,12 @@ pub fn tick_transitions(tree: &mut NodeTree, current_time_ms: f64) -> bool {
                 }
                 any_active = true;
             }
+        }
+
+        // A colour or opacity fade leaves every hit-test input alone; only a
+        // write that changes one costs the next pointer move its memo.
+        if hit_key != crate::hit_cache::HitStyleKey::of(&tree.nodes[node_id].computed_style) {
+            tree.hit_cache.invalidate();
         }
 
         // Mark dirty

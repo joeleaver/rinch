@@ -112,6 +112,17 @@ impl RinchApp {
         // `resolve_and_repaint` below.
         let (vp_w, vp_h) = Self::layout_viewport(window_size, scale_factor);
 
+        // A drag move deferred its layout to the frame. Anything but another
+        // move is settled against it first: a press, release, wheel or drop
+        // hit-tests, and must see the dragged box where the last move put it,
+        // as it did when the drag arm laid out per move — through the desktop
+        // shell (which flushes the move right before the release), an MCP
+        // `mouse_move` + `mouse_up` in one wake, embed's `update(&[move, up])`
+        // and Android alike, since all of them come through here.
+        if self.drag_layout_owed && !matches!(event, PlatformEvent::MouseMove { .. }) {
+            self.resolve_and_repaint(vp_w, vp_h);
+        }
+
         // The built-in text context menu (issue #813) lives exactly as long as
         // its target holds the keyboard and is in the document. Checked on
         // every event rather than cleared by a second one — a removal, a
@@ -376,7 +387,9 @@ impl RinchApp {
                     // paint preamble, however many moves arrived before it.
                     // Resolving per move laid the document out once per
                     // pointer event — several times a frame on a high-rate
-                    // mouse (update-path audit F2.2).
+                    // mouse (update-path audit F2.2). Owed, so that any other
+                    // event settles it first (see the top of this function).
+                    self.drag_layout_owed = true;
                     actions.push(AppAction::RequestRedraw);
                     return actions;
                 }

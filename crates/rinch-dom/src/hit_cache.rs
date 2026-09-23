@@ -13,8 +13,10 @@
 //!
 //! **What bumps the generation** is everything that can move a box, change the
 //! tree's shape, or change a style a hit test reads: every mutating
-//! `DomDocument` method on `RinchDocument`, `resolve_styles`,
-//! `resolve_layout`, the transition and animation ticks, every
+//! `DomDocument` method on `RinchDocument` that changes something (an
+//! identical attribute or text write returns first), `resolve_styles`,
+//! `resolve_layout`, a transition or animation tick that changes a node's
+//! [`HitStyleKey`], every
 //! `NodeTree::push_dirty` (which every scroll write in the shell makes), and
 //! the shell's scroll writes explicitly. A write that reaches into
 //! `tree.nodes[..]` and changes `layout`, `scroll_offset` or `computed_style`
@@ -27,7 +29,78 @@ use std::collections::HashMap;
 use std::fmt;
 use std::rc::Rc;
 
+use crate::computed_style::{
+    ComputedStyle, DisplayValue, LengthPercentageValue, OverflowValue, PointerEventsValue,
+    PositionValue, TransformValue, VisibilityValue,
+};
 use crate::stacking::PaintOrder;
+
+/// Every `computed_style` input hit testing reads, and nothing else — so a
+/// write that leaves it equal cannot change any hit-test answer.
+///
+/// The transition and animation ticks write `computed_style` directly, every
+/// frame, with no `resolve_layout` around them. Invalidating the cache on
+/// every tick made every pointer move cold whenever anything animated (a
+/// `Loader`, a `Skeleton` shimmer) and, since the shell's `AboutToWait` ticks
+/// after every batch, even when nothing did. A tick compares this key before
+/// and after each node it writes and invalidates only on a difference.
+///
+/// The readers, which is how the list was drawn up:
+/// - `stacking::paints_at_stacking_root` / `Node::creates_stacking_context`:
+///   `position`, `z_index`, `opacity < 1`, `transform`;
+/// - `Node::clips_overflow` and `paint::clip_shape`: `overflow_x`/`_y`
+///   (the radii only shape paint; hit testing tests the rect);
+/// - `hit_testing::descend` / `local_point`: `position` (the fixed hoist),
+///   `transform` with its origin, `display` (`contents`);
+/// - `paint::ifc_content_box_offset`: an IFC root's `padding` and
+///   `border` left/top;
+/// - `hit_test_node`: `visibility`, `pointer_events`;
+/// - `RinchDocument::box_tree_children`: `display`.
+///
+/// Geometry itself (`layout`) is not here: it changes only inside
+/// `resolve_layout`, which invalidates on entry. A tick that animates `width`
+/// changes the box at the next layout, not at the tick.
+#[derive(PartialEq)]
+pub struct HitStyleKey {
+    display: DisplayValue,
+    position: PositionValue,
+    overflow_x: OverflowValue,
+    overflow_y: OverflowValue,
+    translucent: bool,
+    visibility: VisibilityValue,
+    transform: TransformValue,
+    transform_origin_x: LengthPercentageValue,
+    transform_origin_y: LengthPercentageValue,
+    z_index: Option<i32>,
+    pointer_events: PointerEventsValue,
+    padding_left: LengthPercentageValue,
+    padding_top: LengthPercentageValue,
+    border_left_width: LengthPercentageValue,
+    border_top_width: LengthPercentageValue,
+}
+
+impl HitStyleKey {
+    /// The key of `cs`.
+    pub fn of(cs: &ComputedStyle) -> Self {
+        Self {
+            display: cs.display,
+            position: cs.position,
+            overflow_x: cs.overflow_x,
+            overflow_y: cs.overflow_y,
+            translucent: cs.opacity < 1.0,
+            visibility: cs.visibility,
+            transform: cs.transform.clone(),
+            transform_origin_x: cs.transform_origin_x,
+            transform_origin_y: cs.transform_origin_y,
+            z_index: cs.z_index,
+            pointer_events: cs.pointer_events,
+            padding_left: cs.padding_left,
+            padding_top: cs.padding_top,
+            border_left_width: cs.border_left_width,
+            border_top_width: cs.border_top_width,
+        }
+    }
+}
 
 /// A subtree extent: `[x0, y0, x1, y1]` relative to the node's own border-box
 /// origin, in layout px. Opaque to this module.

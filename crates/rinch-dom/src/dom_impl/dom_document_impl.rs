@@ -389,8 +389,6 @@ impl DomDocument for RinchDocument {
     }
 
     fn set_text_content(&mut self, node: NodeId, text: &str) {
-        // Anything this can move invalidates the hit tester's memo.
-        self.tree.hit_cache.invalidate();
         let n = node.0;
 
         // Fast path: skip if content is already identical.
@@ -408,6 +406,9 @@ impl DomDocument for RinchDocument {
             }
             _ => {}
         }
+        // Past the no-op return: an identical write moves nothing, and must
+        // not leave the next pointer move with a cold hit cache.
+        self.tree.hit_cache.invalidate();
 
         // Invalidate IFC if this node belongs to one
         self.invalidate_ifc_for_node(n);
@@ -515,8 +516,6 @@ impl DomDocument for RinchDocument {
     }
 
     fn set_attribute(&mut self, node: NodeId, name: &str, value: &str) {
-        // Anything this can move invalidates the hit tester's memo.
-        self.tree.hit_cache.invalidate();
         // #688: in HTML content the name is ASCII case-insensitive, so it is
         // stored folded — every reader below and in `stylo_impl` looks an
         // attribute up by a lowercase literal (`"style"`, `"class"`, `"id"`,
@@ -545,6 +544,8 @@ impl DomDocument for RinchDocument {
         {
             return;
         }
+        // Past the no-op return, like `set_text_content`'s.
+        self.tree.hit_cache.invalidate();
 
         // An `<option>`'s selectedness moves on the *transition* into the
         // `selected` attribute, never on a re-write of one already there — the
@@ -606,8 +607,6 @@ impl DomDocument for RinchDocument {
     }
 
     fn remove_attribute(&mut self, node: NodeId, name: &str) {
-        // Anything this can move invalidates the hit tester's memo.
-        self.tree.hit_cache.invalidate();
         // Folded exactly as the write was (#688) — `NodeHandle::write_attribute`
         // turns a falsey boolean attribute into a `remove_attribute` with the
         // caller's own spelling, so a fold on one side and not the other could
@@ -635,6 +634,8 @@ impl DomDocument for RinchDocument {
         if !self.tree.nodes[node.0].attributes.contains_key(name) {
             return;
         }
+        // Past the no-op return, like `set_attribute`'s.
+        self.tree.hit_cache.invalidate();
         // The option is losing a `selected` it really carries (#692). The early
         // return above already guarantees the attribute is present, so this
         // clause only has to decide that the node is an `<option>`.
