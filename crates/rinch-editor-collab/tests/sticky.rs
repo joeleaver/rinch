@@ -18,7 +18,7 @@ use yrs::updates::decoder::Decode;
 use yrs::updates::encoder::Encode;
 use yrs::{
     Array, ArrayRef, Assoc, Doc, GetString, IndexedSequence, Map, MapRef, OffsetKind, Options, Out,
-    ReadTxn, StickyIndex, TextRef, Transact, Update,
+    ReadTxn, StickyIndex, Text, TextRef, Transact, Update,
 };
 
 // --- harness -------------------------------------------------------------------
@@ -488,6 +488,43 @@ fn a_stalled_session_gives_no_sticky_index() {
     assert_eq!(peer.resolve(&bytes), None);
 }
 
+#[test]
+fn a_poisoned_session_gives_no_sticky_index() {
+    // Interior damage with shared lineage (the #196 shape from `tests/poison.rs`): a
+    // peer parks an embed inside block 0's text, which poisons the session. Block 1 is
+    // untouched, so its path and text still match the CRDT: only the poison guard can
+    // say no.
+    let s = schema();
+    let mut peer = Peer::host(&s, vec![para(&s, "alpha"), para(&s, "beta")]);
+    let _ = peer.session.save_incremental().unwrap();
+    assert_eq!(char_at(&peer.state.doc, 9), Some('e'));
+    let bytes = peer.sticky(9).unwrap();
+
+    let foreign = Doc::new();
+    foreign
+        .transact_mut()
+        .apply_update(Update::decode_v1(&peer.session.snapshot()).unwrap())
+        .unwrap();
+    {
+        let content = foreign.get_or_insert_array("content");
+        let mut txn = foreign.transact_mut();
+        let text = raw_text(&txn, &content, 0);
+        text.insert_embed(&mut txn, 2, yrs::Any::Bool(true));
+    }
+    let delta = {
+        let sv = yrs::StateVector::decode_v1(&peer.session.state_vector()).unwrap();
+        foreign.transact().encode_diff_v1(&sv)
+    };
+    assert!(
+        peer.session
+            .integrate_incremental(&peer.state, &delta)
+            .is_err()
+    );
+    assert!(peer.session.is_poisoned());
+    assert_eq!(peer.sticky(9), None);
+    assert_eq!(peer.resolve(&bytes), None);
+}
+
 // --- the bytes are plain yrs ---------------------------------------------------
 
 /// A raw yrs replica of `peer`'s CRDT, built the way the adapter builds its own.
@@ -563,4 +600,40 @@ fn an_external_resolver_with_yrs_alone_agrees_with_the_editor() {
     assert_eq!(offset.index, 5);
     assert_eq!(peer.resolve(&h), Some(7));
     assert_eq!(char_at(&peer.state.doc, 7), Some('h'));
+}
+
+/// The resolver's `Doc` must be built with `OffsetKind::Utf16`: the offset kind is per
+/// `Doc`, not in the bytes, and a default `Doc::new()` (`OffsetKind::Bytes`) answers
+/// `get_offset` in another unit once there is an edited item to the left. This is the
+/// construction the guide and the rustdoc tell an outside resolver to use.
+#[test]
+fn an_external_resolver_needs_a_utf16_doc() {
+    let s = schema();
+    let mut peer = Peer::host(&s, vec![para(&s, "hello")]);
+    let h = peer.sticky(1).unwrap();
+    peer.type_at(1, "😀ö ");
+    assert_eq!(peer.resolve(&h), Some(4)); // 1 + three chars
+    assert_eq!(char_at(&peer.state.doc, 4), Some('h'));
+
+    let offset_in = |doc: &Doc| {
+        let txn = doc.transact();
+        StickyIndex::decode_v1(&h)
+            .unwrap()
+            .get_offset(&txn)
+            .unwrap()
+            .index
+    };
+    // "😀ö " is 4 UTF-16 code units.
+    assert_eq!(offset_in(&raw_replica(&peer)), 4);
+
+    let default_doc = Doc::new();
+    default_doc
+        .transact_mut()
+        .apply_update(Update::decode_v1(&peer.session.snapshot()).unwrap())
+        .unwrap();
+    assert_ne!(
+        offset_in(&default_doc),
+        4,
+        "a default Doc must not be mistaken for a UTF-16 resolver"
+    );
 }

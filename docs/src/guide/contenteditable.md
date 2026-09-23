@@ -750,6 +750,20 @@ What it survives and what it does not:
   joined text as a new insert, not a move. Likewise, splitting a block (Enter) before
   the position moves the tail into a new block, and an index on the tail then resolves
   to the split point.
+- **An edit next to its paragraph, at the top level of the document.** The projection
+  finds the top-level blocks an edit left alone by node *identity*, and a split or a
+  join rebuilds both nodes it touches, so the paragraph beside it is rewritten even
+  though its text did not change (tracked in #917). In practice:
+  - **Enter at the start of a paragraph** (inserting an empty paragraph above it):
+    every index into that paragraph now resolves into the **new empty paragraph**.
+    That is a wrong position, not `None`.
+  - **Backspace that deletes an empty line above a paragraph:** every index into that
+    paragraph resolves to `None`.
+  - **Toggling a bullet list on a paragraph** replaces the block with one of another
+    kind: `None`.
+
+  Blocks inside a list fare better: that level of the diff compares nodes
+  structurally, so Enter at the start of a paragraph in a list item keeps its indexes.
 
 `collab_sticky_index` answers `None` when not collaborating, for a position that is
 not inside a textblock (between two blocks), for the empty starter paragraph of a
@@ -762,7 +776,23 @@ the text itself). Nothing wraps them. So an app that keeps the shared document o
 the editor (a server, an index) can resolve one with yrs alone:
 `StickyIndex::decode_v1`, then `get_offset` on a transaction of the document, then
 check that `offset.branch` is the `text` of a block still under the `content` root.
-`offset.index` counts UTF-16 code units, like every index of this document. The
+`offset.index` counts UTF-16 code units, like every index of this document, **but only
+if you built your `yrs::Doc` for it.** The offset unit belongs to each `Doc` and is not
+carried in the bytes, and `Doc::new()` defaults to `OffsetKind::Bytes`, under which
+`get_offset` gives a number in neither unit once the text has been edited (7 where the
+UTF-16 answer is 4, after typing `😀ö ` before the position). Build the replica the way
+the adapter builds its own:
+
+```rust
+use yrs::{Doc, OffsetKind, Options};
+
+let doc = Doc::with_options(Options {
+    offset_kind: OffsetKind::Utf16,
+    ..Default::default()
+});
+```
+
+The
 [`CollabDoc::sticky_index` docs](https://docs.rs/rinch-editor-collab) say the same at
 the source. The adapter itself exposes the pair as `CollabSession::sticky_index(doc,
 pos)` / `resolve_sticky(doc, bytes)`, taking the model document the session projects.

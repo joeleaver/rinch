@@ -16,7 +16,21 @@
 //! any replica of the document: [`StickyIndex::decode_v1`], then
 //! [`StickyIndex::get_offset`], then check that `offset.branch` is the `text` of a live
 //! textblock under the `content` root. The index is in UTF-16 code units, as every
-//! index of this projection is (`OffsetKind::Utf16`).
+//! index of this projection is (`OffsetKind::Utf16`) — **but only if the resolver's
+//! own `yrs::Doc` was built for it**. The offset kind belongs to each `Doc`, not to
+//! the bytes, and [`yrs::Doc::new`] defaults to `OffsetKind::Bytes`, under which
+//! `get_offset` answers a number in neither unit once the text has been edited (it
+//! mixes the clock's UTF-16 units with the byte lengths of the items to the left).
+//! Build the resolver's replica as the adapter builds its own:
+//!
+//! ```
+//! use yrs::{Doc, OffsetKind, Options};
+//! let doc = Doc::with_options(Options {
+//!     offset_kind: OffsetKind::Utf16,
+//!     ..Default::default()
+//! });
+//! # let _ = doc;
+//! ```
 //!
 //! The association is [`Assoc::After`] (the index sticks to the character that
 //! *starts* at the position), except at the very end of a text, where there is no such
@@ -37,6 +51,21 @@
 //!   [`crate::project`]). A sticky index on the moved characters then points into a
 //!   deleted `Text` (joined) or at a tombstone at the split point (split, which
 //!   resolves to the end of the first half).
+//! * **An edit next to its block, at the top level of the document**, can end it or
+//!   move it even though the block's own text did not change. The projection finds
+//!   the unchanged top-level blocks by node *identity*, and a split or a join rebuilds
+//!   both nodes it touches, so the untouched paragraph is rewritten through its
+//!   neighbour's `Text` (tracked in #917). Concretely:
+//!   - **Enter at the start of a paragraph** (a new empty paragraph above it): every
+//!     index into that paragraph resolves into the **new empty paragraph**, a wrong
+//!     position and not `None`.
+//!   - **Backspace that deletes an empty line above a paragraph**: every index into
+//!     that paragraph resolves to `None`.
+//!   - **Toggling a bullet list on a paragraph** (the node's kind changes, so the
+//!     block is replaced whole): `None`.
+//!
+//!   Inside a list the child diff compares structurally, so the same Enter at the
+//!   start of a paragraph in a list item keeps its indexes.
 //!
 //! ## Why the model document is a parameter
 //!
@@ -83,12 +112,20 @@ impl CollabDoc {
     /// alone: [`StickyIndex::decode_v1`], [`StickyIndex::get_offset`] on a transaction
     /// of any replica, then check that `offset.branch` is the `text` of a block still
     /// under the `content` root (a deleted block's text is not); `offset.index` is a
-    /// UTF-16 offset into that text.
+    /// UTF-16 offset into that text **provided the resolver's `yrs::Doc` was built
+    /// with `Options { offset_kind: OffsetKind::Utf16, .. }`**. The offset kind is per
+    /// `Doc` and not in the bytes, and a default [`yrs::Doc::new`] (`OffsetKind::Bytes`)
+    /// gives an index in neither unit once the text has been edited.
     ///
     /// It follows its character through any edit elsewhere; a deleted character
     /// resolves to where it was; it ends with its block. The projection has no
     /// "move", so a block **joined** into the one before it ends it too, and a
-    /// **split** before it leaves it at the split point.
+    /// **split** before it leaves it at the split point. At the top level, Enter at
+    /// the start of its paragraph moves it into the new empty paragraph above, and
+    /// deleting an empty line above its paragraph or toggling a list on it ends it
+    /// (tracked in #917): the projection finds unchanged top-level blocks by node
+    /// identity, and a split or join rebuilds both nodes it touches. Inside a list the
+    /// comparison is structural and the same Enter keeps the index.
     ///
     /// `doc` must be the model document this CRDT projects (the editor's current
     /// document): the projection mirrors the model's tree index for index, which is
@@ -130,14 +167,11 @@ impl CollabDoc {
         }
 
         let at = u16_offset(&crdt_text, rp.parent_offset());
-        let len = u16_offset(&crdt_text, usize::MAX);
-        let assoc = if at < len {
-            Assoc::After
-        } else {
-            Assoc::Before
-        };
+        // yrs refuses `After` at the end of a text (there is no character there to
+        // stick to), including the only offset of an empty one; `Before` then sticks
+        // to the last character, or names the `Text` itself when there is none.
         let sticky = text
-            .sticky_index(&txn, at, assoc)
+            .sticky_index(&txn, at, Assoc::After)
             .or_else(|| text.sticky_index(&txn, at, Assoc::Before))?;
         Some(sticky.encode_v1())
     }
