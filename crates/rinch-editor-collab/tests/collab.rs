@@ -1963,7 +1963,7 @@ fn typing_after_a_link_while_a_peer_changes_its_href_keeps_the_new_href() {
     // change; the typed char is now inserted with its own (empty) link attribute, and
     // the old href never comes back.
     //
-    // **Known limitation, pinned:** the peer's href change deletes the link's end marker
+    // **Known limitation, pinned (#923):** the peer's href change deletes the link's end marker
     // and writes a new one at the same spot, and the typed char sits right after the
     // old one. yrs orders those two siblings by client id, so in one order (the typer's
     // id is the lower) the typed char ends up *inside* the re-written link. Nobody's
@@ -2037,7 +2037,7 @@ fn typing_after_a_link_while_a_peer_links_the_next_text_elsewhere_keeps_both_lin
             });
         },
         |n| {
-            // **Known limitation, pinned:** the peer's link starts at the old link's end
+            // **Known limitation, pinned (#923):** the peer's link starts at the old link's end
             // marker, before the typed char in every order, so the typed char joins it
             // (see the href-change fixture above for the mechanism). The peer's link is
             // what must survive.

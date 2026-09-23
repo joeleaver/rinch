@@ -251,7 +251,7 @@ as well, in a way that leaves the link's own formatting untouched, so a peer's
 concurrent change to the link — a new `href`, removing it, extending it over the
 text after it — survives. What such a concurrent change *can* do is take the typed
 character with it: when the peer re-writes the link or links the text after it at
-the same moment, the character may end up inside the peer's link. Both editors
+the same moment, the character may end up inside the peer's link (#923). Both editors
 still end up with the same document.
 
 ## Commands, keymap, input rules

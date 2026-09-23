@@ -105,7 +105,9 @@ Command names are case-sensitive. The full catalogue:
 > a link, `handle.command("removeLink")` to clear one unconditionally, and
 > `handle.active_link_href()` to read the current link's target for an edit dialog.
 > Text typed right after a link is not part of it (`link` is a non-inclusive mark),
-> so a link does not grow as the user keeps typing past it.
+> so a link does not grow as the user keeps typing past it. The one exception is a
+> link that runs straight into a *different* link: text typed at that seam continues
+> the first one (see [inherited marks](./editor.md#state-selection-stored-marks)).
 
 > Alignment applies to the textblocks (`paragraph` / `heading`) overlapping the
 > selection, including ones nested in lists, blockquotes, and table cells.
@@ -155,7 +157,7 @@ rsx! { Editor { editor: editor.clone() } }
 | `doc() -> Node` | The current document (the save shape; serialize it under the `serde` feature). |
 | `insert_image(src, alt)` | Insert an image node (e.g. a `data:` URL), replacing the selection. |
 | `toggle_link(href) -> bool` | Add a `link` mark with `href` across the selection, or remove it if the selection is already linked. No-op (returns `false`) for a collapsed cursor. |
-| `active_link_href() -> Option<String>` | The `href` of the link the selection is on, for pre-filling an "edit link" dialog: for a range, the first link in it; for a caret, the link text typed there would carry. A link is not inclusive, so a caret inside it answers its `href` and a caret at its start or right after its last character answers `None`. |
+| `active_link_href() -> Option<String>` | The `href` of the link the selection is on, for pre-filling an "edit link" dialog: for a range, the first link in it; for a caret, the link text typed there would carry. A link is not inclusive, so a caret inside it answers its `href` and a caret at its start or right after its last character answers `None` — except where it runs straight into a different link, where the caret is in the first. |
 | `replace_selection_with_html(&str)` | Replace the selection with parsed HTML (the rich-paste path). |
 | `selection_clipboard()` | The current selection serialized as `(html, plain_text)` for the clipboard. |
 | `anchor_selection() -> SelectionAnchor` | Capture the selection for a later insertion, kept pointing at the same content as the user keeps editing. See [Pasting is asynchronous](#pasting-is-asynchronous). |
@@ -753,7 +755,7 @@ keeps their change — a new `href`, removing the link, or extending it over the
 after it — but the character you typed may end up **inside** their link rather than
 plain, because it sits exactly where their change starts or ends. The same is true when they link the text right after yours to
 something else. Nothing is lost and both editors converge; the typed character is
-just formatted where you did not mean it. A link is never brought back over text
+just formatted where you did not mean it (#923). A link is never brought back over text
 someone unlinked, and never spreads over text nobody linked.
 
 A runnable two-pane loopback (both editors in one window, no network)

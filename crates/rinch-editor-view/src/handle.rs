@@ -977,6 +977,8 @@ impl EditorHandle {
     /// is non-inclusive ([`MarkSpec::inclusive`](rinch_editor_core::MarkSpec::inclusive)),
     /// so a caret inside a link reports it and a caret at either of its edges does
     /// not — right after the last letter is outside the link, as typing there is.
+    /// The one exception is the seam of two different links, where the caret is in
+    /// the first (`ResolvedPos::marks`' departure from ProseMirror).
     pub fn active_link_href(&self) -> Option<String> {
         let core = self.core();
         let state = &core.state;

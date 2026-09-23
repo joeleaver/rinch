@@ -25,9 +25,11 @@ pub struct MarkSpec {
     /// typed there carries it. A non-inclusive mark (`link` in
     /// [`Schema::starter_kit`](super::Schema::starter_kit)) is not: at its end
     /// boundary [`ResolvedPos::marks`](crate::ResolvedPos::marks) leaves it out unless
-    /// the content *after* the position carries the same mark too, so text typed
-    /// right after a link is plain. Inside the run a non-inclusive mark behaves like
-    /// any other.
+    /// the content *after* the position carries a mark of the same type too, so text
+    /// typed right after a link is plain — except at the seam of two different links,
+    /// where it continues the first (a deliberate departure from ProseMirror; see
+    /// `ResolvedPos::marks`). Inside the run a non-inclusive mark behaves like any
+    /// other.
     pub inclusive: bool,
 
     /// Marks that this mark excludes (can't coexist with).
