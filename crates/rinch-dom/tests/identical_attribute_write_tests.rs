@@ -8,7 +8,10 @@
 //! nodes.
 
 use rinch_core::dom::{DomDocument, NodeId};
+use rinch_core::image::{ImageLoadResult, ImageLoader};
 use rinch_dom::RinchDocument;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 /// A laid-out document with a styled, classed element holding a child, and no
 /// dirty state left over.
@@ -65,4 +68,36 @@ fn a_changed_attribute_still_restyles() {
         doc.get_attribute(div, "style").as_deref(),
         Some("width: 100px; color: blue")
     );
+}
+
+/// Counts load attempts; every load fails.
+struct CountingLoader(Arc<AtomicUsize>);
+impl ImageLoader for CountingLoader {
+    fn load(&self, _src: &str) -> ImageLoadResult {
+        self.0.fetch_add(1, Ordering::SeqCst);
+        ImageLoadResult::Failed("nope".into())
+    }
+}
+
+/// `src` is exempt from the skip: an identical write still requests a load the
+/// cache never started (no loader was installed when `src` was first written).
+#[test]
+fn an_identical_src_write_still_requests_a_load_never_started() {
+    let mut doc = RinchDocument::new();
+    doc.tree.image_loader = None;
+    let body = doc.body();
+    let img = doc.create_element("img");
+    doc.append_child(body, img);
+    doc.set_attribute(img, "src", "identical-write-late.png");
+    let count = Arc::new(AtomicUsize::new(0));
+    doc.tree.image_loader = Some(Arc::new(CountingLoader(count.clone())));
+    doc.set_attribute(img, "src", "identical-write-late.png");
+    let requested = (0..200).any(|_| {
+        if count.load(Ordering::SeqCst) >= 1 {
+            return true;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        false
+    });
+    assert!(requested, "an identical src re-write must request the load");
 }

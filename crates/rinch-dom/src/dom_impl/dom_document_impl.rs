@@ -520,8 +520,10 @@ impl DomDocument for RinchDocument {
         // same answer is the common case (a toolbar's fifteen button styles,
         // re-written on every keystroke, restyled about a hundred nodes).
         // `set_text_content` has always skipped identical text the same way.
-        // `src` is the exception: re-setting an image's source is how a failed
-        // load is retried.
+        // `src` keeps its old behaviour: an identical write re-applies a cached
+        // image's intrinsic size and requests a load the cache has not started
+        // (no loader was installed at the first write). It does not retry a
+        // failed load — a `Failed` entry stays cached.
         if name != "src"
             && self.tree.nodes[node.0]
                 .attributes
