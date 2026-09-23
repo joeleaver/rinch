@@ -186,7 +186,8 @@ fn a_claimed_ctrl_click_leaves_the_selection_and_arms_no_drag() {
 /// The right half of a link's last letter is on the link, and the left half
 /// of the space after it is not — although the nearest caret boundary is the
 /// link's end in both cases. That boundary is where a caret-based lookup
-/// looks, and every mark is inclusive there.
+/// looks, and it answers the same for both (no link: a link is non-inclusive),
+/// so only the character under the pointer can tell them apart.
 #[test]
 fn the_character_under_the_pointer_decides_not_the_nearest_caret() {
     let mut p = page();

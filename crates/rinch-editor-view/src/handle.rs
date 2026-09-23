@@ -791,9 +791,10 @@ impl EditorHandle {
     /// The link carrying the character that starts at `pos`, as the whole run
     /// of adjacent content with the same `href` — [`rinch_editor_core::link_at`]
     /// over the current document. A position just **after** a link's last
-    /// character is not on it (although [`active_link_href`](Self::active_link_href)
-    /// reports the link for a caret there): this is the question a pointer
-    /// asks, about the character under it.
+    /// character is not on it and the position at its start is, while
+    /// [`active_link_href`](Self::active_link_href) reports no link for a caret
+    /// at either: this is the question a pointer asks, about the character
+    /// under it.
     pub fn link_at(&self, pos: Pos) -> Option<LinkSpan> {
         rinch_editor_core::link_at(&self.core().state.doc, pos)
     }
@@ -2891,6 +2892,29 @@ mod tests {
         assert_eq!(
             h.handle.active_link_href().as_deref(),
             Some("https://rust-lang.org")
+        );
+    }
+
+    #[test]
+    fn a_range_over_two_different_links_reports_the_first() {
+        let s = schema();
+        let h = mount(doc_node(&s, vec![para(&s, "one two three")]));
+        // "two" (5..8) and "three" (9..14) link to different targets.
+        h.handle.set_selection(Selection::text(Pos(5), Pos(8)));
+        assert!(h.handle.toggle_link("https://first.example"));
+        h.handle.set_selection(Selection::text(Pos(9), Pos(14)));
+        assert!(h.handle.toggle_link("https://second.example"));
+        // The range starts in plain text before both and ends at the second's end.
+        h.handle.set_selection(Selection::text(Pos(2), Pos(14)));
+        assert_eq!(
+            h.handle.active_link_href().as_deref(),
+            Some("https://first.example")
+        );
+        // Selected the other way round, it is still the first in document order.
+        h.handle.set_selection(Selection::text(Pos(14), Pos(2)));
+        assert_eq!(
+            h.handle.active_link_href().as_deref(),
+            Some("https://first.example")
         );
     }
 
