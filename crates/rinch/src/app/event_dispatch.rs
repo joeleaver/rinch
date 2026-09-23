@@ -591,6 +591,15 @@ impl RinchApp {
                             );
                         }
                     }
+
+                    // Link hover for editors that asked for it: the move's one
+                    // hit test, and nothing at all while no editor has a hover
+                    // callback. Last, because the callbacks are app code that
+                    // may change the document the hit above was taken in.
+                    #[cfg(feature = "desktop")]
+                    if crate::editor::link_hover_wanted() {
+                        self.update_editor_link_hover(hovered, x, y);
+                    }
                 }
             }
             PlatformEvent::MouseDown {
@@ -654,7 +663,7 @@ impl RinchApp {
                     scale_factor,
                     window_size,
                     self.click_count,
-                    self.modifiers.shift,
+                    self.modifier_state(),
                 ) {
                     actions.push(AppAction::RequestRedraw);
                     return actions;
@@ -3656,6 +3665,133 @@ impl RinchApp {
         None
     }
 
+    /// The link on the character under logical point `(x, y)`, given the hit
+    /// test's answer `hit` for that point: `(editor container, its handle, the
+    /// link)`. `None` unless the point is over a glyph (not beside a line's end,
+    /// not in padding: no snapping to the nearest block, unlike
+    /// [`Self::editor_point_address`]) and that character carries a link.
+    ///
+    /// Takes the hit rather than testing itself so a pointer move can share its
+    /// one hit test with hover and cursor (update-path audit F2.1).
+    pub(crate) fn editor_link_at_hit(
+        &self,
+        hit: usize,
+        x: f32,
+        y: f32,
+    ) -> Option<(
+        usize,
+        crate::editor::EditorHandle,
+        rinch_editor_core::LinkSpan,
+    )> {
+        let doc = self.doc.clone()?;
+        let (container, tb, byte) = {
+            let d = doc.borrow();
+            let mut textblock = None;
+            let mut container = None;
+            let mut cur = Some(hit);
+            while let Some(id) = cur {
+                let node = d.tree.get(id)?;
+                if textblock.is_none() && Self::is_editor_textblock(&d.tree, id) {
+                    textblock = Some(id);
+                }
+                if node.attributes.get("data-pm-editor").map(String::as_str) == Some("true") {
+                    container = Some(id);
+                    break;
+                }
+                cur = node.parent;
+            }
+            let (container, tb) = (container?, textblock?);
+            let node = d.tree.get(tb)?;
+            let layout = node.text_layout.as_ref()?;
+            // The same mapping into the textblock's layout space as
+            // `editor_point_address_in`.
+            let (local_x, local_y) = pointer_in_node(&d.tree, tb, x, y);
+            let rel_x =
+                local_x - node.computed_style.padding_left.to_px() + node.scroll_offset.0 as f32;
+            let rel_y =
+                local_y - node.computed_style.padding_top.to_px() + node.scroll_offset.1 as f32;
+            let range =
+                rinch_dom::text_query::cluster_range_at_point(&layout.layout, rel_x, rel_y)?;
+            (container, tb, range.start)
+        };
+        let handle = crate::editor::editor_for_doc(self.doc_key(), container)?;
+        let pos = handle.pos_at(tb, byte)?;
+        let link = handle.link_at(pos)?;
+        Some((container, handle, link))
+    }
+
+    /// Where `link` is painted, in logical window coordinates: the union of its
+    /// per-line boxes, pushed through the composed transform like
+    /// [`Self::editor_caret_point`]. A zero rect when it has no geometry yet.
+    fn editor_link_rect(
+        &self,
+        handle: &crate::editor::EditorHandle,
+        link: &rinch_editor_core::LinkSpan,
+    ) -> rinch_core::ElementBounds {
+        let rect = || {
+            let (tb, a) = handle.caret_address(link.from)?;
+            let (tb_end, b) = handle.caret_address(link.to)?;
+            if tb != tb_end {
+                return None; // a link is inline content: one textblock
+            }
+            let doc = self.doc.clone()?;
+            let d = doc.borrow();
+            let node = d.tree.get(tb)?;
+            let layout = node.text_layout.as_ref()?;
+            let pad_l = node.computed_style.padding_left.to_px() - node.scroll_offset.0 as f32;
+            let pad_t = node.computed_style.padding_top.to_px() - node.scroll_offset.1 as f32;
+            let fwd = |lx: f32, ly: f32| {
+                let (wx, wy) = rinch_dom::paint::point_from_painted_box(
+                    &d.tree,
+                    tb,
+                    1.0,
+                    (pad_l + lx) as f64,
+                    (pad_t + ly) as f64,
+                );
+                (wx as f32, wy as f32)
+            };
+            let mut bounds: Option<(f32, f32, f32, f32)> = None;
+            for (lx, ly, w, h) in
+                rinch_dom::text_query::selection_rects_for_layout(&layout.layout, a, b)
+            {
+                for (px, py) in [
+                    fwd(lx, ly),
+                    fwd(lx + w, ly + h),
+                    fwd(lx + w, ly),
+                    fwd(lx, ly + h),
+                ] {
+                    bounds = Some(match bounds {
+                        None => (px, py, px, py),
+                        Some((x0, y0, x1, y1)) => (x0.min(px), y0.min(py), x1.max(px), y1.max(py)),
+                    });
+                }
+            }
+            let (x0, y0, x1, y1) = bounds?;
+            Some(rinch_core::ElementBounds {
+                x: x0,
+                y: y0,
+                width: x1 - x0,
+                height: y1 - y0,
+            })
+        };
+        rect().unwrap_or_default()
+    }
+
+    /// Report the link under the pointer to [`crate::editor::set_link_hover`],
+    /// which fires the editors' `on_link_hover` callbacks on a change. `hit` is
+    /// the pointer move's shared hit test. The caller has checked
+    /// [`crate::editor::link_hover_wanted`], so an app without a hover
+    /// callback never gets here.
+    pub(crate) fn update_editor_link_hover(&self, hit: Option<usize>, x: f32, y: f32) {
+        let hovered =
+            hit.and_then(|hit| self.editor_link_at_hit(hit, x, y))
+                .map(|(_, handle, link)| {
+                    let rect = self.editor_link_rect(&handle, &link);
+                    (handle, crate::editor::LinkHover { link, rect })
+                });
+        crate::editor::set_link_hover(self.input_doc(), hovered);
+    }
+
     /// Focus the new editor under a pointer click at logical `(x, y)` and set the
     /// selection per the click gesture. Returns whether the click landed in an
     /// editor.
@@ -3675,6 +3811,10 @@ impl RinchApp {
     /// Shift+click drags from the existing anchor). The only click that keeps the
     /// prior selection is one that resolves to no textblock at all (an empty editor
     /// with no addressable block).
+    ///
+    /// A single press on a linked character is first offered to the editor's
+    /// [`on_link_click`](crate::editor::EditorHandle::on_link_click) callback;
+    /// one it claims changes nothing but focus.
     pub(crate) fn try_new_editor_click(
         &mut self,
         x: f32,
@@ -3682,8 +3822,9 @@ impl RinchApp {
         scale: f64,
         window_size: (u32, u32),
         click_count: u8,
-        shift: bool,
+        modifiers: events::ModifierState,
     ) -> bool {
+        let shift = modifiers.shift;
         let Some(container) = self.editor_container_at(x, y) else {
             return false;
         };
@@ -3696,6 +3837,37 @@ impl RinchApp {
         // A click places the cursor at a new column, so abandon any vertical goal
         // column from a prior Up/Down run.
         self.editor_goal_x = None;
+        // A press on a link is the app's first (`EditorHandle::on_link_click`),
+        // before anything below moves the caret. Asked about the character
+        // under the pointer, so a press just past a link's end is not on it.
+        if click_count == 1
+            && let Some(hit) = self
+                .doc
+                .as_ref()
+                .and_then(|d| hit_test(&d.borrow().tree, x, y))
+            && let Some((c, link_handle, link)) = self.editor_link_at_hit(hit, x, y)
+            && c == container
+        {
+            let click = crate::editor::LinkClick {
+                link,
+                primary: if cfg!(target_os = "macos") {
+                    modifiers.meta
+                } else {
+                    modifiers.ctrl
+                },
+                ctrl: modifiers.ctrl,
+                meta: modifiers.meta,
+                shift: modifiers.shift,
+                alt: modifiers.alt,
+            };
+            if link_handle.dispatch_link_click(&click) {
+                crate::editor::end_drag(self.input_doc());
+                self.refresh_editor_overlays();
+                let (w, h) = Self::layout_viewport(window_size, scale);
+                self.resolve_and_repaint(w, h);
+                return true;
+            }
+        }
         // A click in a task item's checkbox gutter toggles its `checked` state instead
         // of placing a caret (the checkbox is a CSS `::before`, so the hit is geometric,
         // not a real element). Resolve the nearest textblock for a document position,

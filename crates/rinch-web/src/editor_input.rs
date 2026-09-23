@@ -54,6 +54,16 @@
 //! For that cycle the field holds the editor's selection between two sentinels
 //! rather than the mirror. See [`start_context_menu_cycle`] for the whole cycle,
 //! CodeMirror 5's `TextareaInput.onContextMenu` for the prior art.
+//!
+//! **Links are the app's.** An editor link is an `<a href>` in the page, which the
+//! browser would follow on a click. A primary press on one is offered to the
+//! editor's `on_link_click` first ([`handle_mousedown`]), the pointer entering and
+//! leaving links is reported to `on_link_hover` ([`update_link_hover`]). A
+//! click is where keyboard activation is offered and where the editor decides
+//! whether the browser follows the link ([`handle_link_click`]): not in an
+//! editable editor or one with a link-click callback, natively in a read-only
+//! one without either. The right-click menu keeps the browser's own link menu
+//! (Open link, Copy link address).
 
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
@@ -62,7 +72,7 @@ use wasm_bindgen::JsCast;
 use wasm_bindgen::prelude::*;
 
 use rinch_editor_core::{CursorMotion, Pos, Selection};
-use rinch_editor_view::{EditorHandle, registry};
+use rinch_editor_view::{EditorHandle, LinkClick, LinkHover, LinkSpan, registry};
 
 use crate::event_delegation::{
     compute_byte_offset_in_block, drag_machine, modifiers_from_key_event, nearest_handler,
@@ -1349,6 +1359,214 @@ fn on_input() {
 
 // ── Pointer ──────────────────────────────────────────────────────────────────
 
+/// The link on the character under viewport point `(x, y)`, given the element the
+/// pointer is over (`target`) inside the editor `editor_el`.
+///
+/// The browser's own hit test decides *whether* a link is under the pointer — the
+/// `<a data-pm-mark="link">` it found — and the model decides which one, as a
+/// whole run. `caretRangeFromPoint` answers the nearest caret boundary, which is
+/// the start **or the end** of the character under the pointer, so the character
+/// is the one after that boundary if it carries the element's `href`, and else the
+/// one before it. That is what keeps the space after a link off the link: no `<a>`
+/// is under the pointer there.
+fn link_under_pointer(
+    doc: &web_sys::Document,
+    target: &web_sys::Element,
+    editor_el: &web_sys::Element,
+    handle: &EditorHandle,
+    container_nid: usize,
+    x: f32,
+    y: f32,
+) -> Option<LinkSpan> {
+    let anchor = target
+        .closest("a[data-pm-mark='link']")
+        .ok()
+        .flatten()
+        .filter(|a| editor_el.contains(Some(a)))?;
+    let href = anchor.get_attribute("href").unwrap_or_default();
+    let hit = resolve_editor_point(doc, x, y).filter(|hit| hit.container_nid == container_nid)?;
+    let pos = handle.pos_at(hit.textblock_nid, hit.byte)?;
+    handle
+        .link_at(pos)
+        .filter(|link| link.href == href)
+        .or_else(|| {
+            let before = pos.0.checked_sub(1)?;
+            handle.link_at(Pos(before)).filter(|link| link.href == href)
+        })
+}
+
+/// The client rect of `link`'s run: a DOM `Range` from its first character to past
+/// its last, measured by the browser (a wrapped link is the union of its lines).
+fn link_client_rect(
+    handle: &EditorHandle,
+    doc: &web_sys::Document,
+    link: &LinkSpan,
+) -> Option<rinch_core::ElementBounds> {
+    let (from_nid, from_byte) = handle.caret_address(link.from)?;
+    let (to_nid, to_byte) = handle.caret_address(link.to)?;
+    let (start, start_off) = find_text_node_at_byte_offset(&node_by_nid(from_nid)?, from_byte)?;
+    let (end, end_off) = find_text_node_at_byte_offset(&node_by_nid(to_nid)?, to_byte)?;
+    let range = doc.create_range().ok()?;
+    range.set_start(&start, start_off).ok()?;
+    range.set_end(&end, end_off).ok()?;
+    let r = range.get_bounding_client_rect();
+    Some(rinch_core::ElementBounds {
+        x: r.x() as f32,
+        y: r.y() as f32,
+        width: r.width() as f32,
+        height: r.height() as f32,
+    })
+}
+
+/// Offer a primary press on a link to the editor's `on_link_click`. `true` when the
+/// app claimed it — the caller then places no caret, starts no drag and leaves the
+/// selection alone.
+fn offer_link_click(
+    event: &web_sys::MouseEvent,
+    doc: &web_sys::Document,
+    target: &web_sys::Element,
+    editor_el: &web_sys::Element,
+    handle: &EditorHandle,
+    container_nid: usize,
+) -> bool {
+    let (x, y) = (event.client_x() as f32, event.client_y() as f32);
+    let Some(link) = link_under_pointer(doc, target, editor_el, handle, container_nid, x, y) else {
+        return false;
+    };
+    let (ctrl, meta) = (event.ctrl_key(), event.meta_key());
+    handle.dispatch_link_click(&LinkClick {
+        link,
+        primary: if is_mac() { meta } else { ctrl },
+        ctrl,
+        meta,
+        shift: event.shift_key(),
+        alt: event.alt_key(),
+    })
+}
+
+/// Report the link under the pointer to the editors' `on_link_hover` callbacks,
+/// which the registry fires only on a change. Called for a `mousemove` that is not
+/// a drag-select, and only while some editor has a hover callback. A move over no
+/// link element costs one `closest` walk.
+fn update_link_hover(event: &web_sys::MouseEvent, doc: &web_sys::Document) {
+    let hovered = (|| {
+        let target = event
+            .target()
+            .and_then(|t| t.dyn_into::<web_sys::Element>().ok())?;
+        // Cheap first: no link element under the pointer, no link.
+        target.closest("a[data-pm-mark='link']").ok().flatten()?;
+        let editor_el = target.closest("[data-pm-editor]").ok().flatten()?;
+        let container_nid = get_nid(&editor_el.clone().into())?.0;
+        let handle = registry::editor_for(container_nid)?;
+        let (x, y) = (event.client_x() as f32, event.client_y() as f32);
+        let link = link_under_pointer(doc, &target, &editor_el, &handle, container_nid, x, y)?;
+        let rect = link_client_rect(&handle, doc, &link).unwrap_or_default();
+        Some((handle, LinkHover { link, rect }))
+    })();
+    registry::set_link_hover(None, hovered);
+}
+
+/// The first text node under `node`, in document order.
+fn first_text_node(node: &web_sys::Node) -> Option<web_sys::Node> {
+    let kids = node.child_nodes();
+    for i in 0..kids.length() {
+        let kid = kids.item(i)?;
+        if kid.node_type() == web_sys::Node::TEXT_NODE {
+            return Some(kid);
+        }
+        if let Some(found) = first_text_node(&kid) {
+            return Some(found);
+        }
+    }
+    None
+}
+
+/// The link whose `<a data-pm-mark="link">` element is `anchor`, as the model's
+/// whole run: the link carrying the element's first character, if it has the
+/// element's `href`. For a click with no pointer (keyboard activation), where
+/// there is no point to ask the character under.
+fn link_of_anchor(anchor: &web_sys::Element, handle: &EditorHandle) -> Option<LinkSpan> {
+    if anchor.get_attribute("data-pm-mark").as_deref() != Some("link") {
+        return None; // an `<a>` a plugin's widget drew: not a link mark
+    }
+    let href = anchor.get_attribute("href").unwrap_or_default();
+    let textblock = {
+        let mut cur = anchor.parent_element();
+        loop {
+            let el = cur?;
+            if el.has_attribute("data-pm-editor") {
+                return None;
+            }
+            if el.has_attribute("data-pm-type") {
+                break el;
+            }
+            cur = el.parent_element();
+        }
+    };
+    let textblock_nid = get_nid(&textblock.clone().into())?.0;
+    let text = first_text_node(anchor)?;
+    let byte = compute_byte_offset_in_block(&textblock, &text, 0);
+    let pos = handle.pos_at(textblock_nid, byte)?;
+    handle.link_at(pos).filter(|link| link.href == href)
+}
+
+/// A `click` (or middle-button `auxclick`) on an `<a href>` inside an editor.
+///
+/// **Keyboard activation first.** An editor link is an ordinary Tab stop (the
+/// editor is not `contenteditable`), and Enter on a focused one arrives as a
+/// `click` with `detail == 0` and no `mousedown` before it, so nothing has
+/// offered it to `on_link_click` yet. It is offered here, with the link found
+/// from the element rather than from a point; a claim prevents the navigation.
+///
+/// **Then the default action.** It is prevented when the editor is
+/// **editable** — a click in an editable editor is an edit gesture (it placed
+/// the caret), so the browser following the link is always wrong, which was a
+/// bug before link events existed — or when it has an `on_link_click`
+/// callback, which is where the app says what a link does. A **read-only**
+/// editor with no callback keeps native link behaviour: a click follows the
+/// link, and a middle click or Ctrl/Cmd+click opens it in a new tab. An
+/// `<a href>` that a plugin's decoration widget drew follows the same rule, and
+/// is never offered to `on_link_click`, which is about link marks. The
+/// right-click menu's "Open link" is never touched.
+fn handle_link_click(event: &web_sys::MouseEvent) {
+    let Some(anchor) = event
+        .target()
+        .and_then(|t| t.dyn_into::<web_sys::Element>().ok())
+        .and_then(|el| el.closest("a[href]").ok().flatten())
+    else {
+        return;
+    };
+    let Some(editor_el) = anchor.closest("[data-pm-editor]").ok().flatten() else {
+        return;
+    };
+    let Some(handle) = get_nid(&editor_el.into()).and_then(|nid| registry::editor_for(nid.0))
+    else {
+        return;
+    };
+    if event.type_() == "click"
+        && event.button() == 0
+        && event.detail() == 0
+        && let Some(link) = link_of_anchor(&anchor, &handle)
+    {
+        let (ctrl, meta) = (event.ctrl_key(), event.meta_key());
+        let claimed = handle.dispatch_link_click(&LinkClick {
+            link,
+            primary: if is_mac() { meta } else { ctrl },
+            ctrl,
+            meta,
+            shift: event.shift_key(),
+            alt: event.alt_key(),
+        });
+        if claimed {
+            event.prevent_default();
+            return;
+        }
+    }
+    if !handle.is_read_only() || handle.has_link_click_callback() {
+        event.prevent_default();
+    }
+}
+
 /// Handle a `mousedown`. Returns whether it landed in an editor (so the listener
 /// consumes it). Mirrors `try_new_editor_click`.
 fn handle_mousedown(event: &web_sys::MouseEvent, doc: &web_sys::Document) -> bool {
@@ -1410,6 +1628,20 @@ fn handle_mousedown(event: &web_sys::MouseEvent, doc: &web_sys::Document) -> boo
         .flatten()
         .and_then(|leaf| get_nid(&leaf.into()).map(|n| n.0))
         .and_then(|leaf_nid| handle.node_selection_at_host(leaf_nid));
+
+    // A single primary press on a link is the app's first (`on_link_click`),
+    // before anything below moves the caret. Not a press on an image (it
+    // node-selects), not a context press, not a double or triple press.
+    if leaf_selection.is_none()
+        && event.button() == 0
+        && !is_context_press(event)
+        && event.detail() <= 1
+        && offer_link_click(event, doc, &target, &editor_el, &handle, container_nid)
+    {
+        registry::end_drag(None);
+        refresh_caret();
+        return true;
+    }
 
     // A context press — the right button, or a Control-click on macOS: the caret
     // rule native editors follow — a press *inside* the selection keeps it (that is
@@ -2150,6 +2382,24 @@ pub(crate) fn install(browser_doc: &web_sys::Document) {
     add_capture(browser_doc, "mousemove", move |e: web_sys::MouseEvent| {
         if handle_mousemove(&e, &doc) {
             e.prevent_default();
+        } else if registry::link_hover_wanted() {
+            update_link_hover(&e, &doc);
+        }
+    });
+    // The pointer leaving the window leaves whatever link it was over.
+    add_capture(browser_doc, "mouseout", |e: web_sys::MouseEvent| {
+        if e.related_target().is_none() && registry::link_hover_wanted() {
+            registry::set_link_hover(None, None);
+        }
+    });
+    // Whether an editor link navigates, and keyboard activation of one (see
+    // `handle_link_click`).
+    add_capture(browser_doc, "click", |e: web_sys::MouseEvent| {
+        handle_link_click(&e);
+    });
+    add_capture(browser_doc, "auxclick", |e: web_sys::MouseEvent| {
+        if e.button() == 1 {
+            handle_link_click(&e);
         }
     });
     let doc = browser_doc.clone();

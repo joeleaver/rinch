@@ -35,7 +35,14 @@ use rinch_editor_collab::{CollabError, CollabSession};
 
 #[cfg(feature = "collaboration")]
 use super::collab::CollabBridge;
+use super::links::{LinkClick, LinkHover, LinkSpan};
+use super::registry;
 use super::view::RinchDomEditorView;
+
+/// An [`EditorHandle::on_link_click`] callback.
+type LinkClickFn = Rc<dyn Fn(&LinkClick) -> bool>;
+/// An [`EditorHandle::on_link_hover`] callback.
+type LinkHoverFn = Rc<dyn Fn(Option<&LinkHover>)>;
 
 /// The owned editor: its state, its desktop projection, and the schema/plugins
 /// needed to rebuild a fresh state on `load_doc`.
@@ -57,6 +64,13 @@ struct EditorCore {
     /// re-enters the handle (an autosave reads `doc()`), which would otherwise
     /// panic with a `RefCell` double-borrow.
     on_change: Option<Rc<dyn Fn()>>,
+    /// See [`EditorHandle::on_link_click`]. An `Rc` for the same reason as
+    /// `on_change`: it is cloned out and called with no borrow held.
+    on_link_click: Option<LinkClickFn>,
+    /// See [`EditorHandle::on_link_hover`]. While it is `Some` this editor is
+    /// counted in [`registry::link_hover_wanted`], which is what lets a
+    /// runtime skip link hover entirely on a pointer move when no editor asked.
+    on_link_hover: Option<LinkHoverFn>,
     /// Selections captured by asynchronous work still in flight — see
     /// [`SelectionAnchor`]. Empty for every editor that has none, so the
     /// mutation path's carry step is a cheap early return.
@@ -136,6 +150,16 @@ impl ScrollGate {
             return true;
         }
         false
+    }
+}
+
+impl Drop for EditorCore {
+    /// An editor with a hover callback leaves the count of editors that want
+    /// link hover when its last handle goes.
+    fn drop(&mut self) {
+        if self.on_link_hover.is_some() {
+            registry::link_hover_listener_removed();
+        }
     }
 }
 
@@ -380,6 +404,17 @@ pub struct EditorHandle {
     inner: Rc<RefCell<EditorCore>>,
 }
 
+/// A weak [`EditorHandle`] (tests only).
+#[cfg(test)]
+pub(crate) struct WeakEditorHandle(Weak<RefCell<EditorCore>>);
+
+#[cfg(test)]
+impl WeakEditorHandle {
+    pub(crate) fn upgrade(&self) -> Option<EditorHandle> {
+        self.0.upgrade().map(|inner| EditorHandle { inner })
+    }
+}
+
 /// A borrow of an editor's core, held together with a
 /// [`suppress_effect_flush`](rinch_core::reactive::suppress_effect_flush)
 /// guard.
@@ -481,6 +516,8 @@ impl EditorHandle {
                 schema,
                 plugins,
                 on_change: None,
+                on_link_click: None,
+                on_link_hover: None,
                 anchors: Rc::new(RefCell::new(AnchorMap::default())),
                 read_only: false,
                 scroll: ScrollGate::default(),
@@ -510,6 +547,8 @@ impl EditorHandle {
                 schema,
                 plugins,
                 on_change: None,
+                on_link_click: None,
+                on_link_hover: None,
                 anchors: Rc::new(RefCell::new(AnchorMap::default())),
                 read_only: false,
                 scroll: ScrollGate::default(),
@@ -538,6 +577,11 @@ impl EditorHandle {
     /// activate), project the current state into it, and register the editor so the
     /// runtime drives its caret and routes input. Returns the container to place in
     /// the tree. The [`Editor`](super::Editor) component calls this on render.
+    ///
+    /// The registration is released when `scope` is disposed (a conditional
+    /// hide, a tab switch): the runtime stops driving this mount and forgets a
+    /// link hover it held, without calling back into the disposed scope. The
+    /// handle itself may live on and be mounted again.
     pub fn mount(&self, scope: &mut RenderScope) -> NodeHandle {
         let container = scope.create_element("div");
         container.set_attribute("data-pm-editor", "true");
@@ -549,7 +593,9 @@ impl EditorHandle {
             .upgrade()
             .map(|d| d.borrow().doc_key())
             .unwrap_or(0);
-        super::registry::register_editor(doc_key, container.node_id().0, self.clone());
+        let container_id = container.node_id().0;
+        super::registry::register_editor(doc_key, container_id, self.clone());
+        scope.on_cleanup(move || super::registry::unregister_editor(doc_key, container_id));
         container
     }
 
@@ -740,6 +786,128 @@ impl EditorHandle {
         if let Some(cb) = cb {
             cb();
         }
+    }
+
+    /// The link carrying the character that starts at `pos`, as the whole run
+    /// of adjacent content with the same `href` — [`rinch_editor_core::link_at`]
+    /// over the current document. A position just **after** a link's last
+    /// character is not on it (although [`active_link_href`](Self::active_link_href)
+    /// reports the link for a caret there): this is the question a pointer
+    /// asks, about the character under it.
+    pub fn link_at(&self, pos: Pos) -> Option<LinkSpan> {
+        rinch_editor_core::link_at(&self.core().state.doc, pos)
+    }
+
+    /// Register a callback for a primary-button **press on a link**. Replaces
+    /// any previously registered callback.
+    ///
+    /// The runtime calls it when a single press of the primary button lands on
+    /// a linked character, **before** it places the caret. Return `true` to
+    /// claim the press: the caret does not move, no drag-select starts and the
+    /// selection is left exactly as it was (the editor still takes keyboard
+    /// focus, as any press in it does). Return `false` and the press is an
+    /// ordinary one: it places the caret, extends with Shift, and arms a drag.
+    /// So the usual "Ctrl/Cmd+click opens a link, a plain click edits it" is
+    ///
+    /// ```ignore
+    /// editor.on_link_click(move |click| {
+    ///     if !click.primary {
+    ///         return false; // a plain click puts the caret in the link
+    ///     }
+    ///     open(&click.link.href);
+    ///     true
+    /// });
+    /// ```
+    ///
+    /// Not called for a double or triple press (word and block selection), for
+    /// the secondary button (the context menu keeps its own link handling) or
+    /// for a press on an image, which node-selects it. It is called in a
+    /// read-only editor too: following a link is not an edit. The editor never
+    /// follows a link by itself.
+    ///
+    /// In the browser an editor link is a real `<a href>`, and its click's
+    /// native navigation is prevented when the editor is **editable** (a click
+    /// there is an edit gesture) or has this callback registered. A
+    /// **read-only** editor with no callback leaves its links to the browser:
+    /// a click follows the link, and middle-click or Ctrl/Cmd+click opens it
+    /// in a new tab. Keyboard activation (Enter on a focused editor link) is
+    /// offered here too, as a click with no pointer; claiming it prevents the
+    /// navigation.
+    ///
+    /// The callback runs with no internal borrow held, so it may re-enter the
+    /// handle (read [`doc`](Self::doc), load another document).
+    pub fn on_link_click(&self, cb: impl Fn(&LinkClick) -> bool + 'static) {
+        self.core_mut().on_link_click = Some(Rc::new(cb));
+    }
+
+    /// Offer a press on a link to the [`on_link_click`](Self::on_link_click)
+    /// callback; `true` when the callback claimed it. Answers `false` with no
+    /// callback registered. The platform runtime calls this; the callback runs
+    /// with no internal borrow held.
+    pub fn dispatch_link_click(&self, click: &LinkClick) -> bool {
+        let cb = self.core().on_link_click.clone();
+        cb.is_some_and(|cb| cb(click))
+    }
+
+    /// Whether an [`on_link_click`](Self::on_link_click) callback is
+    /// registered. The browser runtime asks it to decide whether a click on an
+    /// editor link keeps its native navigation: a read-only editor with no
+    /// callback leaves links to the browser.
+    pub fn has_link_click_callback(&self) -> bool {
+        self.core().on_link_click.is_some()
+    }
+
+    /// Register a callback for the pointer **entering and leaving links**.
+    /// Replaces any previously registered callback.
+    ///
+    /// It is called with `Some(hover)` when the pointer comes to rest over a
+    /// link — from plain text, from outside the editor, or from a different
+    /// link — and with `None` when it leaves every link of this editor. It is
+    /// called only when that answer changes, never once per pointer move, so
+    /// it is the place to show and hide a tooltip:
+    ///
+    /// ```ignore
+    /// editor.on_link_hover(move |hover| match hover {
+    ///     Some(h) => tooltip.set(Some((h.link.href.clone(), h.rect))),
+    ///     None => tooltip.set(None),
+    /// });
+    /// ```
+    ///
+    /// [`LinkHover::rect`] says where the link is painted, in the frame an app
+    /// positions a popup in. Hover is not tracked during a drag-select or a
+    /// drag-and-drop, and is only as fresh as the last pointer move: an edit
+    /// that moves a link out from under a resting pointer is reported on the
+    /// next move.
+    ///
+    /// A pointer move costs the runtime nothing extra while no mounted or
+    /// unmounted editor on the thread has a hover callback. The callback runs
+    /// with no internal borrow held, so it may re-enter the handle.
+    pub fn on_link_hover(&self, cb: impl Fn(Option<&LinkHover>) + 'static) {
+        let mut core = self.core_mut();
+        if core.on_link_hover.is_none() {
+            registry::link_hover_listener_added();
+        }
+        core.on_link_hover = Some(Rc::new(cb));
+    }
+
+    /// Invoke the hover callback, if any, with no borrow held.
+    pub(crate) fn notify_link_hover(&self, hover: Option<&LinkHover>) {
+        let cb = self.core().on_link_hover.clone();
+        if let Some(cb) = cb {
+            cb(hover);
+        }
+    }
+
+    /// A handle that does not keep the editor alive, for tests whose callbacks
+    /// re-enter the handle they are registered on.
+    #[cfg(test)]
+    pub(crate) fn downgrade_for_tests(&self) -> WeakEditorHandle {
+        WeakEditorHandle(Rc::downgrade(&self.inner))
+    }
+
+    /// Whether `self` and `other` are handles to the same editor.
+    pub(crate) fn same_editor(&self, other: &EditorHandle) -> bool {
+        Rc::ptr_eq(&self.inner, &other.inner)
     }
 
     /// Whether the named command currently applies (toolbar enablement).
