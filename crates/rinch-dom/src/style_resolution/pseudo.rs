@@ -127,7 +127,11 @@ impl RinchDocument {
         let counter_values = self.compute_list_item_counters(parent_id);
 
         // Extract text content from the content property
-        let text = Self::extract_content_text_with_counters(&pseudo_computed, &counter_values);
+        let text = Self::extract_content_text_with_counters(
+            &pseudo_computed,
+            &counter_values,
+            &self.tree.nodes[parent_id].attributes,
+        );
         if text.is_empty() {
             return;
         }
@@ -200,6 +204,7 @@ impl RinchDocument {
     pub(crate) fn extract_content_text_with_counters(
         computed: &ComputedValues,
         counter_values: &std::collections::HashMap<String, i32>,
+        attributes: &std::collections::HashMap<String, String>,
     ) -> String {
         use style::values::generics::counters::{Content, ContentItem};
 
@@ -230,8 +235,17 @@ impl RinchDocument {
                             }
                             let _ = separator; // TODO: nested counter separator support
                         }
+                        // `attr(name)`: the originating element's attribute, or
+                        // the fallback when it has none. An attribute change on
+                        // an element with generated content restyles it
+                        // (`invalidation::note_attribute_change`), which is
+                        // what keeps this current.
+                        ContentItem::Attr(attr) => match attributes.get(attr.attribute.as_ref()) {
+                            Some(value) => result.push_str(value),
+                            None => result.push_str(attr.fallback.as_ref()),
+                        },
                         _ => {
-                            // Skip other content items (attr, image, quotes, etc.)
+                            // Skip other content items (image, quotes, etc.)
                         }
                     }
                 }

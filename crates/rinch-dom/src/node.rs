@@ -859,6 +859,11 @@ pub struct Node {
     /// elements carrying this flag (and what inherits from them), instead of
     /// the whole document. See `RinchDocument::restyle_for_viewport_change`.
     pub uses_viewport_units: Cell<bool>,
+    /// Some descendant of this element needs its style recomputed — the path
+    /// Stylo's invalidator marks from an invalidated element down to each
+    /// descendant it invalidated (`TElement::set_dirty_descendants`), and the
+    /// one `resolve_styles` follows. Cleared as the resolve walks it.
+    pub style_dirty_descendants: Cell<bool>,
 
     /// When set, this block uses a fixed estimated height in Taffy instead of
     /// measuring via Parley. Used by contenteditable block virtualization to
@@ -1027,6 +1032,7 @@ impl Node {
             active_sensitive: Cell::new(false),
             focus_sensitive: Cell::new(false),
             uses_viewport_units: Cell::new(false),
+            style_dirty_descendants: Cell::new(false),
             estimated_height: None,
             contents_spliced: false,
             ifc_detached: false,
@@ -1084,6 +1090,7 @@ impl Node {
             active_sensitive: Cell::new(false),
             focus_sensitive: Cell::new(false),
             uses_viewport_units: Cell::new(false),
+            style_dirty_descendants: Cell::new(false),
             estimated_height: None,
             contents_spliced: false,
             ifc_detached: false,
@@ -1140,6 +1147,7 @@ impl Node {
             active_sensitive: Cell::new(false),
             focus_sensitive: Cell::new(false),
             uses_viewport_units: Cell::new(false),
+            style_dirty_descendants: Cell::new(false),
             estimated_height: None,
             contents_spliced: false,
             ifc_detached: false,
@@ -1194,6 +1202,7 @@ impl Node {
             active_sensitive: Cell::new(false),
             focus_sensitive: Cell::new(false),
             uses_viewport_units: Cell::new(false),
+            style_dirty_descendants: Cell::new(false),
             estimated_height: None,
             contents_spliced: false,
             ifc_detached: false,

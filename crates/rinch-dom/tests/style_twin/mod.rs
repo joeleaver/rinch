@@ -10,7 +10,8 @@
 //! - rinch's own `ComputedStyle` (what layout and paint actually read), as
 //!   JSON;
 //! - the generated `::before` / `::after` / list-marker nodes and their text;
-//! - the layout box.
+//! - the layout box (outside `display: none` subtrees, where it means
+//!   nothing).
 //!
 //! The walk pairs nodes by tree position, so the two documents must have the
 //! same shape; a fixture that builds different shapes fails loudly on the
@@ -44,18 +45,30 @@ pub fn stylo_fingerprint(cv: &ComputedValues) -> String {
         .inherited
         .iter()
         .chain(custom.non_inherited.iter())
-        .map(|(k, v)| format!("--{k}: {v:?}"))
+        .map(|(k, v)| {
+            // The value's own `css` text, out of its Debug form (the type
+            // exposes no accessor for it).
+            let dbg = format!("{v:?}");
+            let css = dbg
+                .split_once("css: \"")
+                .and_then(|(_, rest)| rest.split_once('"'))
+                .map_or(dbg.as_str(), |(css, _)| css)
+                .to_string();
+            format!("--{k}={css}")
+        })
         .collect();
     vars.sort();
-    for v in vars {
-        out.push_str(&v);
-        out.push('\n');
-    }
+    // One line, so the line-by-line diff stays aligned when the sets differ.
+    out.push_str("custom: ");
+    out.push_str(&vars.join(" "));
+    out.push('\n');
     out
 }
 
-/// The fingerprint of one node (not its children).
-pub fn node_fingerprint(doc: &RinchDocument, id: usize) -> String {
+/// The fingerprint of one node (not its children). `hidden`: the node is in a
+/// `display: none` subtree, where the layout box means nothing and is left
+/// out.
+pub fn node_fingerprint(doc: &RinchDocument, id: usize, hidden: bool) -> String {
     let node = &doc.tree.nodes[id];
     let mut out = String::new();
     if let Some(text) = node.text_content() {
@@ -80,30 +93,42 @@ pub fn node_fingerprint(doc: &RinchDocument, id: usize) -> String {
     }
     out.push_str(&serde_json::to_string(&node.computed_style).unwrap());
     out.push('\n');
-    let l = node.layout;
-    out.push_str(&format!(
-        "box {:.2} {:.2} {:.2} {:.2}\n",
-        l.x, l.y, l.width, l.height
-    ));
+    if !hidden {
+        let l = node.layout;
+        out.push_str(&format!(
+            "box {:.2} {:.2} {:.2} {:.2}\n",
+            l.x, l.y, l.width, l.height
+        ));
+    }
     out
 }
 
 /// Every node under (and including) `root`, in tree order, with its path.
-pub fn tree_fingerprint(doc: &RinchDocument, root: usize) -> Vec<(String, String)> {
+pub fn tree_fingerprint(doc: &RinchDocument, root: usize, boxes: bool) -> Vec<(String, String)> {
     let mut out = Vec::new();
-    walk(doc, root, "0".to_string(), &mut out);
+    walk(doc, root, "0".to_string(), !boxes, &mut out);
     out
 }
 
-fn walk(doc: &RinchDocument, id: usize, path: String, out: &mut Vec<(String, String)>) {
-    out.push((path.clone(), node_fingerprint(doc, id)));
+fn walk(
+    doc: &RinchDocument,
+    id: usize,
+    path: String,
+    hidden: bool,
+    out: &mut Vec<(String, String)>,
+) {
+    let hidden = hidden
+        || (doc.tree.nodes[id].is_element()
+            && doc.tree.nodes[id].computed_style.display
+                == rinch_dom::computed_style::DisplayValue::None);
+    out.push((path.clone(), node_fingerprint(doc, id, hidden)));
     let children = doc.tree.nodes[id].children.clone();
     out.push((
         format!("{path}#children"),
         format!("{} children", children.len()),
     ));
     for (i, c) in children.into_iter().enumerate() {
-        walk(doc, c, format!("{path}/{i}"), out);
+        walk(doc, c, format!("{path}/{i}"), hidden, out);
     }
 }
 
@@ -112,10 +137,27 @@ fn walk(doc: &RinchDocument, id: usize, path: String, out: &mut Vec<(String, Str
 /// that differ.
 #[track_caller]
 pub fn assert_twin(incremental: &RinchDocument, fresh: &RinchDocument, label: &str) {
-    let a = tree_fingerprint(incremental, incremental.tree.html_id);
-    let b = tree_fingerprint(fresh, fresh.tree.html_id);
+    assert_twin_opts(incremental, fresh, label, true);
+}
+
+/// [`assert_twin`], comparing layout boxes only when `boxes` is set.
+#[track_caller]
+pub fn assert_twin_opts(
+    incremental: &RinchDocument,
+    fresh: &RinchDocument,
+    label: &str,
+    boxes: bool,
+) {
+    let a = tree_fingerprint(incremental, incremental.tree.html_id, boxes);
+    let b = tree_fingerprint(fresh, fresh.tree.html_id, boxes);
+    let mut report = Vec::new();
     for (i, ((pa, fa), (pb, fb))) in a.iter().zip(b.iter()).enumerate() {
-        assert_eq!(pa, pb, "{label}: tree shape differs at entry {i}");
+        assert_eq!(
+            pa,
+            pb,
+            "{label}: tree shape differs at entry {i}\n{}",
+            report.join("\n")
+        );
         if fa != fb {
             let diff: Vec<String> = fa
                 .lines()
@@ -123,13 +165,16 @@ pub fn assert_twin(incremental: &RinchDocument, fresh: &RinchDocument, label: &s
                 .filter(|(x, y)| x != y)
                 .map(|(x, y)| format!("    incremental: {x}\n    fresh:       {y}"))
                 .collect();
-            panic!(
-                "{label}: node {pa} differs between the incrementally restyled \
-                 document and a fresh one built in the final state:\n{}\n\
-                 (incremental node:\n{fa})",
-                diff.join("\n")
-            );
+            let tag = fa.lines().next().unwrap_or("");
+            report.push(format!("node {pa} ({tag}):\n{}", diff.join("\n")));
         }
     }
+    assert!(
+        report.is_empty(),
+        "{label}: {} node(s) differ between the incrementally restyled document \
+         and a fresh one built in the final state:\n{}",
+        report.len(),
+        report.join("\n")
+    );
     assert_eq!(a.len(), b.len(), "{label}: node counts differ");
 }

@@ -23,7 +23,7 @@ use style::{Atom, LocalName, Namespace};
 use stylo_dom::ElementState;
 
 // Re-import selectors types from style to ensure version compatibility
-use selectors::attr::{AttrSelectorOperation, AttrSelectorOperator, NamespaceConstraint};
+use selectors::attr::{AttrSelectorOperation, NamespaceConstraint};
 use selectors::matching::{ElementSelectorFlags, MatchingContext};
 use selectors::sink::Push;
 use selectors::{Element, OpaqueElement};
@@ -328,31 +328,13 @@ impl<'a> Element for RinchNode<'a> {
         let Some(attr_value) = self.node().attributes.get(local_name.as_ref()) else {
             return false;
         };
-
-        match operation {
-            AttrSelectorOperation::Exists => true,
-            AttrSelectorOperation::WithValue {
-                operator,
-                case_sensitivity: _,
-                value,
-            } => {
-                let value = value.as_ref();
-                match operator {
-                    AttrSelectorOperator::Equal => attr_value == value,
-                    AttrSelectorOperator::Includes => attr_value
-                        .split_ascii_whitespace()
-                        .any(|word| word == value),
-                    AttrSelectorOperator::DashMatch => {
-                        attr_value.starts_with(value)
-                            && (attr_value.len() == value.len()
-                                || attr_value.chars().nth(value.len()) == Some('-'))
-                    }
-                    AttrSelectorOperator::Prefix => attr_value.starts_with(value),
-                    AttrSelectorOperator::Substring => attr_value.contains(value),
-                    AttrSelectorOperator::Suffix => attr_value.ends_with(value),
-                }
-            }
-        }
+        // The selectors crate's own evaluator: the same one Stylo's
+        // invalidation snapshots use (`ServoElementSnapshot::attr_matches` →
+        // `AttrValue::eval_selector`), so an element and its snapshot can
+        // never disagree about what an attribute selector means — and it
+        // honours the `[attr=v i]` / `[attr=v s]` case flags, which a
+        // hand-rolled comparison used to drop.
+        operation.eval_str(attr_value)
     }
 
     fn match_non_ts_pseudo_class(
@@ -499,8 +481,11 @@ impl<'a> Element for RinchNode<'a> {
         false
     }
 
+    /// `:empty` (Selectors 4 §14.2): no element children and no text of
+    /// non-zero length — comments and generated `::before` / `::after` boxes
+    /// do not count.
     fn is_empty(&self) -> bool {
-        self.node().children.is_empty()
+        node_is_empty(self.tree, self.id)
     }
 
     fn is_root(&self) -> bool {
@@ -584,20 +569,7 @@ impl<'a> TElement for RinchNode<'a> {
     }
 
     fn state(&self) -> ElementState {
-        let mut state = ElementState::empty();
-        if self.node().is_hovered {
-            state |= ElementState::HOVER;
-        }
-        if self.node().is_focused {
-            state |= ElementState::FOCUS;
-        }
-        if self.node().is_focus_visible {
-            state |= ElementState::FOCUSRING;
-        }
-        if self.node().is_active {
-            state |= ElementState::ACTIVE;
-        }
-        state
+        element_state(self.node())
     }
 
     fn has_part_attr(&self) -> bool {
@@ -651,12 +623,7 @@ impl<'a> TElement for RinchNode<'a> {
     }
 
     fn has_dirty_descendants(&self) -> bool {
-        // Check if any child has STYLE dirty flag
-        self.node().children.iter().any(|&id| {
-            self.tree.nodes[id]
-                .dirty
-                .contains(crate::node::DirtyFlags::STYLE)
-        })
+        self.node().style_dirty_descendants.get()
     }
 
     fn has_snapshot(&self) -> bool {
@@ -671,14 +638,14 @@ impl<'a> TElement for RinchNode<'a> {
         self.node().snapshot_handled.store(true, Ordering::SeqCst);
     }
 
+    /// Stylo's invalidator marks the path from an invalidated element down to
+    /// every invalidated descendant; `resolve_styles` follows it.
     unsafe fn set_dirty_descendants(&self) {
-        // Mark this node as needing style recalc
-        // Note: We can't mutate through a shared reference, so this would need
-        // interior mutability in production. For now, we track dirty state separately.
+        self.node().style_dirty_descendants.set(true);
     }
 
     unsafe fn unset_dirty_descendants(&self) {
-        // Clear dirty descendants flag
+        self.node().style_dirty_descendants.set(false);
     }
 
     fn store_children_to_process(&self, _n: isize) {
@@ -1020,6 +987,44 @@ impl<'a> TElement for RinchNode<'a> {
 /// handles the long tail (table cells `td`/`tr`/`th`, custom elements, …) by
 /// interning on first use and caching the leaked atom. The set of distinct tag
 /// names a document uses is small and finite, so the bounded leak is intentional.
+/// The element state Stylo sees for `node`: the interaction states rinch
+/// tracks, plus `CHECKED` from the `checked` attribute — the same fact
+/// `:checked` is matched from, so Stylo's state-dependency map can say which
+/// selectors a checkbox toggle reaches. Shared by [`TElement::state`] and the
+/// invalidation snapshots, which must agree.
+pub(crate) fn element_state(node: &Node) -> ElementState {
+    let mut state = ElementState::empty();
+    if node.is_hovered {
+        state |= ElementState::HOVER;
+    }
+    if node.is_focused {
+        state |= ElementState::FOCUS;
+    }
+    if node.is_focus_visible {
+        state |= ElementState::FOCUSRING;
+    }
+    if node.is_active {
+        state |= ElementState::ACTIVE;
+    }
+    if node.attributes.contains_key("checked") {
+        state |= ElementState::CHECKED;
+    }
+    state
+}
+
+/// `:empty`: no child element other than a generated pseudo-element box, and
+/// no text node with any text. Comments do not count.
+pub(crate) fn node_is_empty(tree: &NodeTree, id: RawNodeId) -> bool {
+    tree.nodes[id].children.iter().all(|&c| {
+        let child = &tree.nodes[c];
+        match &child.kind {
+            NodeKind::Element(_) => child.is_pseudo_element,
+            NodeKind::Text(t) => t.content.is_empty(),
+            _ => true,
+        }
+    })
+}
+
 fn intern_local_name(tag: &str) -> &'static BorrowedLocalName {
     use std::collections::HashMap;
     use std::sync::{Mutex, OnceLock};

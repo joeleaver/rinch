@@ -166,6 +166,15 @@ pub struct RinchDocument {
     pub(crate) has_before_rules: bool,
     /// The same for `::after`.
     pub(crate) has_after_rules: bool,
+    /// Element snapshots taken before an attribute or state change, consumed
+    /// by Stylo's invalidator at the next `resolve_styles`
+    /// (`style_resolution::invalidation`).
+    pub(crate) snapshots: style::selector_parser::SnapshotMap,
+    /// The elements in `snapshots`, in the order they were first changed.
+    pub(crate) snapshot_ids: Vec<usize>,
+    /// The ancestor bloom filter the style walk matches descendant
+    /// combinators against. Boxed: it is a few kilobytes.
+    pub(crate) style_bloom: Box<selectors::bloom::BloomFilter>,
 }
 
 impl Default for RinchDocument {
@@ -218,6 +227,9 @@ impl RinchDocument {
             viewport_units_used: false,
             has_before_rules: true,
             has_after_rules: true,
+            snapshots: style::selector_parser::SnapshotMap::new(),
+            snapshot_ids: Vec::new(),
+            style_bloom: Box::default(),
         };
 
         // Set up default file-based image loader

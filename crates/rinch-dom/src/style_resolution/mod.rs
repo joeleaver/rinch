@@ -1,5 +1,6 @@
 //! Style resolution: Stylo CSS cascade, Taffy sync, hover, and theme operations.
 
+mod invalidation;
 mod pseudo;
 mod resolve;
 mod state_tracking;
@@ -722,6 +723,9 @@ impl RinchDocument {
         // Nodes whose `display` was `none` when this cascade started. See the
         // push site below and [`Self::is_rendered_for_transition`] (#703).
         let mut was_hidden: Vec<usize> = Vec::new();
+        // Absolute descendants of a node that stopped or started being their
+        // containing block; re-synced after this pass.
+        let mut resync_absolutes: Vec<usize> = Vec::new();
 
         for node_id in dirty_node_ids {
             // Skip root and html nodes - their Taffy styles are manually set
@@ -890,6 +894,9 @@ impl RinchDocument {
 
             // Capture old display before transitions overwrite computed_style
             let old_display = self.tree.nodes[node_id].computed_style.display;
+            // …and whether it was a containing block for absolute descendants.
+            let was_abs_containing_block =
+                self.tree.nodes[node_id].establishes_abs_containing_block();
 
             // A node whose display was `none` *before* this cascade is recorded
             // for the ancestor walk below (#703). The cascade pushes parents
@@ -1144,6 +1151,19 @@ impl RinchDocument {
 
             // Mark node as styled so future changes can trigger transitions
             self.tree.nodes[node_id].has_been_styled = true;
+
+            // Whether an absolute descendant resolves against the initial
+            // containing block is decided by the ancestors' `position` and
+            // `transform` (`out_of_flow::out_of_flow_kind`), and such a box
+            // has the viewport baked into its Taffy style. A node that starts
+            // or stops being a containing block therefore owes its absolute
+            // descendants a Taffy re-sync — which no cascade of theirs will
+            // provide now that a restyle no longer re-cascades the subtree.
+            if was_abs_containing_block
+                != self.tree.nodes[node_id].establishes_abs_containing_block()
+            {
+                self.collect_absolute_descendants(node_id, &mut resync_absolutes);
+            }
 
             // Drop the Parley layout the old typography was baked into, and
             // every measurement taken from it (#654, #661, #678) —
@@ -1401,6 +1421,24 @@ impl RinchDocument {
             u64::from(taffy_style_changed_count.get()),
         );
         perf.add_elapsed(crate::perf::Counter::TimeStyleNs, t_style);
+        if !resync_absolutes.is_empty() {
+            self.tree.style_dirty_nodes.extend(resync_absolutes);
+            self.apply_stylo_styles_to_taffy();
+        }
+    }
+
+    /// Every `position: absolute` element under `node_id` (not the node).
+    fn collect_absolute_descendants(&self, node_id: usize, out: &mut Vec<usize>) {
+        for &c in &self.tree.nodes[node_id].children {
+            let child = &self.tree.nodes[c];
+            if matches!(
+                child.computed_style.position,
+                crate::computed_style::PositionValue::Absolute
+            ) {
+                out.push(c);
+            }
+            self.collect_absolute_descendants(c, out);
+        }
     }
 
     /// Whether a transition may be **started** on `node_id` by this cascade.

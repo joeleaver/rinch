@@ -1462,8 +1462,10 @@ fn running(
     active
 }
 
-/// **(a) The bug.** An unrelated restyle — here a `data-` attribute nobody's
-/// selector reads — re-resolves the node, and the resolved `width` is still the
+/// **(a) The bug.** An unrelated restyle — here an inline `outline-width`
+/// write, which re-cascades the node and moves no box (a `data-` attribute no
+/// selector reads used to serve, until attribute changes stopped restyling
+/// what no selector depends on) — re-resolves the node, and the resolved `width` is still the
 /// same 30px the running transition is already heading for. The transition must
 /// be left exactly as it is.
 ///
@@ -1480,7 +1482,7 @@ fn an_unrelated_restyle_leaves_a_running_transition_alone() {
 
     let (mut doc, div, start) = running_width_transition(LINEAR_20_TO_30, 50.0);
 
-    doc.set_attribute(div, "data-probe", "1");
+    doc.set_style(div, "outline-width", "1px");
     doc.resolve_layout(800.0, 600.0);
 
     let t = width_transition(&doc, div).expect("the transition must still be running");
@@ -1520,7 +1522,7 @@ fn the_leave_alone_path_keeps_the_interpolated_value_in_the_computed_style() {
 
     let (mut doc, div, _start) = running_width_transition(LINEAR_20_TO_30_SECONDS, 50_000.0);
 
-    doc.set_attribute(div, "data-probe", "1");
+    doc.set_style(div, "outline-width", "1px");
     doc.resolve_layout(800.0, 600.0);
 
     // 50s into 150s of 20 → 30 is 23.333px. The restyle costs wall clock the
@@ -1550,7 +1552,7 @@ fn repeated_restyles_do_not_extend_a_transitions_declared_duration() {
     let (mut doc, div, start) = running_width_transition(LINEAR_20_TO_30, 50.0);
 
     for i in 0..10 {
-        doc.set_attribute(div, "data-probe", &i.to_string());
+        doc.set_style(div, "outline-width", &format!("{}px", i + 1));
         doc.resolve_layout(800.0, 600.0);
     }
 
@@ -1591,7 +1593,7 @@ fn repeated_restyles_do_not_extend_an_ease_transition_either() {
     );
 
     for i in 0..10 {
-        doc.set_attribute(div, "data-probe", &i.to_string());
+        doc.set_style(div, "outline-width", &format!("{}px", i + 1));
         doc.resolve_layout(800.0, 600.0);
     }
 
@@ -1630,7 +1632,7 @@ fn an_unrelated_restyle_during_a_transitions_delay_does_not_restart_it() {
         50.0,
     );
 
-    doc.set_attribute(div, "data-probe", "1");
+    doc.set_style(div, "outline-width", "1px");
     doc.resolve_layout(800.0, 600.0);
 
     assert_eq!(

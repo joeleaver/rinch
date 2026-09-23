@@ -365,7 +365,7 @@ Measured on the desktop engine:
 | descendant / `>` / `+` / `~` | works | |
 | `[attr]`, `[attr=v]`, `~=`, `\|=`, `^=`, `$=`, `*=` | works | |
 | an UPPERCASE attribute *name*, in the selector or the markup (`[DATA-X]`, `<div ID="up">`) | works | as of #688 — attribute names are stored ASCII-lowercased in HTML content, and Stylo lowercases the selector's name itself. `viewBox` and the other camelCase SVG attributes are kept verbatim |
-| `[attr=v i]` (case-insensitive flag) | **ignored** | the `i` is discarded, so the match stays case-sensitive. This is the *value*; the name above is a different question |
+| `[attr=v i]` / `[attr=v s]` (case flags) | works | since the style-invalidation work: attribute matching goes through the selectors crate's own evaluator, the same one Stylo's invalidation snapshots use. This is the *value*; the name above is a different question |
 | `:hover`, `:active`, `:focus`, `:focus-visible` | works | |
 | `:enabled`, `:disabled`, `:checked` | works | form controls only, by design |
 | `:link`, `:any-link` | works | `<a>`/`<area>` with an `href` |
