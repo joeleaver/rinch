@@ -270,8 +270,12 @@ Every read therefore comes in three shapes, on every platform:
 
 `paste_html` / `paste_image` have the same three. `paste_rich` resolves
 `text/html` → bitmap → `text/plain` in **one** read and answers with a
-`RichPaste`, so a rich-paste consumer never stacks three worst-case waits — it is
-what the built-in editor's Ctrl+V uses.
+`RichPaste`, so a rich-paste consumer never stacks three worst-case waits.
+`paste_rich_with_text` (and its `_timeout` / `_async`) answers the same plus the
+`text/plain` offered beside an html answer, `(RichPaste, Option<String>)`, still in
+one read — it is what the built-in editor's Ctrl+V uses, so the editor's paste hook
+(`Plugin::handle_paste`) can tell a pasted URL by its text even when the copy also
+carried html.
 
 On native, all of them are served by a single clipboard worker thread that owns
 the system clipboard. That is what makes the timeout worth having: giving up does

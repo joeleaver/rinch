@@ -296,7 +296,9 @@ History, tables, links, input rules, and (later) collaboration and accessibility
 **all plugins** — none is special-cased in the core. A plugin can contribute schema
 nodes/marks, commands, keymap bindings, input rules, per-document state, decorations
 (a widget such as the placeholder, or an inline class over a document range — a
-spellcheck squiggle, a search highlight), and node-views. An app adds its own with
+spellcheck squiggle, a search highlight), node-views, and a claim on a paste
+(`handle_paste`: the transaction to apply instead of the default paste, asked in
+plugin order through `EditorState::handle_paste`). An app adds its own with
 `EditorHandle::add_plugin`. This is how
 features compose without bloating the core.
 

@@ -52,7 +52,7 @@ pub use keymap::{Key, KeyBinding, Keymap, Modifiers};
 pub use links::{LinkSpan, link_at};
 pub use model::{AttrValue, Attrs, Fragment, Mark, MarkType, Node, NodeType, Slice};
 pub use motion::{CursorMotion, block_range_at, resolve_cursor_motion, word_range_at};
-pub use plugin::{Plugin, PluginKey};
+pub use plugin::{PasteContent, Plugin, PluginKey};
 pub use plugins::{HistoryPlugin, MarkdownInputRulesPlugin, PlaceholderPlugin};
 pub use pos::{Pos, ResolvedPos};
 pub use schema::{
