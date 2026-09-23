@@ -1771,6 +1771,20 @@ mod compositor_routing_tests {
              paints inline instead (#358)"
         );
 
+        // A `gpu` build decides at run time: the same surface is routed to the
+        // compositor once the GPU renderer is the one presenting.
+        #[cfg(feature = "gpu")]
+        {
+            crate::shell::renderer::set_gpu_presenting(true);
+            video.writer().submit_frame(&[10, 20, 30, 255], 1, 1);
+            let blitted = collect_surface_frames();
+            crate::shell::renderer::set_gpu_presenting(false);
+            assert!(
+                blitted.iter().any(|(name, ..)| name == "test-video"),
+                "a gpu build presenting on the GPU routes video to the compositor"
+            );
+        }
+
         unregister_render_surface(video.id());
     }
 

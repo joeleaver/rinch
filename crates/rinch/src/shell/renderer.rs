@@ -26,7 +26,9 @@ pub enum Renderer {
     /// not run than run slowly. A build without the `gpu` feature has no GPU
     /// renderer to insist on and presents with software (it logs a warning).
     Gpu,
-    /// Software (CPU) rendering, without touching the GPU at all.
+    /// Software (CPU) rendering, without touching the GPU at all. Ignored,
+    /// with a warning, by an app that configured the GPU device itself
+    /// (`App::gpu_config` / `App::external_gpu`), which presents on the GPU.
     Software,
 }
 
@@ -95,6 +97,27 @@ pub(crate) fn on_gpu_failure(choice: Renderer, app_configured_gpu: bool) -> OnGp
     }
 }
 
+/// Whether to try the GPU at all. `Software` skips it, except for an app that
+/// configured the device itself (`App::gpu_config` / `App::external_gpu`):
+/// that app builds its own pipelines on rinch's device and reads it through
+/// `gpu_handle()`, so a `RINCH_RENDERER=cpu` set by a *user* must not take the
+/// device away from it (it would find `gpu_handle()` answering `None` for
+/// good). The override is reported and ignored there.
+#[cfg(feature = "gpu")]
+pub(crate) fn tries_gpu(choice: Renderer, app_configured_gpu: bool) -> bool {
+    if choice != Renderer::Software {
+        return true;
+    }
+    if app_configured_gpu {
+        tracing::warn!(
+            "rinch: the software renderer was requested, but this app configured the GPU \
+             device itself (gpu_config / external_gpu); presenting on the GPU"
+        );
+        return true;
+    }
+    false
+}
+
 #[cfg(feature = "gpu")]
 static GPU_PRESENTING: AtomicBool = AtomicBool::new(false);
 
@@ -153,5 +176,14 @@ mod tests {
         );
         assert_eq!(on_gpu_failure(Renderer::Auto, true), OnGpuFailure::Panic);
         assert_eq!(on_gpu_failure(Renderer::Gpu, false), OnGpuFailure::Panic);
+    }
+
+    #[cfg(feature = "gpu")]
+    #[test]
+    fn software_does_not_take_the_device_from_an_app_that_configured_it() {
+        assert!(!tries_gpu(Renderer::Software, false));
+        assert!(tries_gpu(Renderer::Software, true));
+        assert!(tries_gpu(Renderer::Auto, false));
+        assert!(tries_gpu(Renderer::Gpu, true));
     }
 }

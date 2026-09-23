@@ -2552,7 +2552,8 @@ fn black_backdrop_layer(
 // ── Renderer choice ──────────────────────────────────────────────────────────
 
 /// The GPU renderer for `window`, or `None` to present with software: when
-/// software was chosen, or when the GPU would not start under
+/// software was chosen (and the app did not configure the GPU device itself,
+/// see `renderer::tries_gpu`), or when the GPU would not start under
 /// [`Renderer::Auto`](super::renderer::Renderer::Auto). Also records which one
 /// presents (`renderer::gpu_presenting`) and logs it.
 ///
@@ -2562,10 +2563,10 @@ fn black_backdrop_layer(
 /// (`Renderer::Gpu`, or a device the app configured itself).
 #[cfg(feature = "gpu")]
 fn start_gpu_renderer(window: &dyn winit::window::Window) -> Option<WgpuRenderer> {
-    use super::renderer::{OnGpuFailure, Renderer, on_gpu_failure, resolved, set_gpu_presenting};
+    use super::renderer::{OnGpuFailure, on_gpu_failure, resolved, set_gpu_presenting, tries_gpu};
 
     let choice = resolved();
-    if choice == Renderer::Software {
+    if !tries_gpu(choice, super::desktop::gpu_init_installed()) {
         set_gpu_presenting(false);
         tracing::info!("rinch: presenting with the software renderer (chosen)");
         return None;

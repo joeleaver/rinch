@@ -220,6 +220,12 @@ where
     /// That is unreachable rather than dangerous: a second `run` panics first,
     /// at `EventLoop::new`, because winit permits one event loop per process
     /// and answers `RecreationAttempt` after the first.
+    #[cfg(feature = "gpu")]
+    pub fn gpu_config(mut self, gpu: crate::shell::desktop::RinchGpuConfig) -> Self {
+        self.gpu = Some(crate::shell::desktop::GpuInit::Config(gpu));
+        self
+    }
+
     /// Choose the renderer the window presents with.
     ///
     /// [`Renderer::Auto`](crate::Renderer::Auto), the default, presents on the
@@ -233,16 +239,13 @@ where
     ///
     /// An app that configures the GPU device itself
     /// ([`gpu_config`](App::gpu_config), [`external_gpu`](App::external_gpu))
-    /// gets no fallback: its own pipelines need that device.
+    /// always presents on the GPU, because its own pipelines need that device:
+    /// it gets no fallback (a GPU that will not start panics), and a
+    /// `Software` choice, from this method or from `RINCH_RENDERER`, is logged
+    /// as a warning and ignored.
     #[cfg(feature = "desktop")]
     pub fn renderer(mut self, renderer: crate::shell::renderer::Renderer) -> Self {
         self.renderer = renderer;
-        self
-    }
-
-    #[cfg(feature = "gpu")]
-    pub fn gpu_config(mut self, gpu: crate::shell::desktop::RinchGpuConfig) -> Self {
-        self.gpu = Some(crate::shell::desktop::GpuInit::Config(gpu));
         self
     }
 

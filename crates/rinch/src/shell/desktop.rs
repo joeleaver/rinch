@@ -36,10 +36,18 @@ static GPU_HANDLE: OnceLock<GpuHandle> = OnceLock::new();
 
 /// Get the shared GPU handle, if the renderer has been initialized.
 ///
-/// Returns `None` before `rinch::shell::run()` creates the wgpu device.
-/// After that, returns the `Arc<Device>`, `Arc<Queue>`, and `Arc<Adapter>` that
-/// rinch uses internally, allowing external renderers to share the same GPU
-/// device.
+/// Returns `None` until the window's GPU renderer has started. After that,
+/// returns the `Arc<Device>`, `Arc<Queue>`, and `Arc<Adapter>` that rinch uses
+/// internally, allowing external renderers to share the same GPU device.
+///
+/// It stays `None` for the whole session when the window presents with the
+/// software renderer: `Renderer::Software` was chosen (by
+/// [`App::renderer`](crate::App::renderer) or `RINCH_RENDERER`), or the GPU
+/// would not start under `Renderer::Auto` and rinch fell back. An app that
+/// configured the device itself ([`App::gpu_config`](crate::App::gpu_config),
+/// [`App::external_gpu`](crate::App::external_gpu)) is exempt from both: it
+/// always presents on the GPU, or panics at startup when the GPU will not
+/// start, so once its window is up the handle is there.
 pub fn gpu_handle() -> Option<&'static GpuHandle> {
     GPU_HANDLE.get()
 }
