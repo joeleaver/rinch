@@ -177,8 +177,7 @@ impl RinchDocument {
         if (old_viewport.width - width).abs() > 0.5 || (old_viewport.height - height).abs() > 0.5 {
             self.set_stylist_viewport(width, height);
             self.tree
-                .perf
-                .full_restyle(crate::perf::FullRestyleReason::Viewport);
+                .note_full_restyle(crate::perf::FullRestyleReason::Viewport);
 
             // Invalidate all cached stylo_element_data so styles are recomputed with new viewport
             for (node_id, _) in self.tree.nodes.iter() {

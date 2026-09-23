@@ -253,15 +253,18 @@ pub(crate) fn set_option_selectedness(tree: &mut NodeTree, option_id: RawNodeId,
         return;
     };
     node.selectedness = Some(on);
-    if !on {
-        return;
-    }
     // An option set while it is detached — which is every option `rsx!` builds,
     // since it writes the attributes before appending — has no select to clear.
     // `options_inserted` runs the same rule when it arrives in one.
     let Some(select_id) = owning_select(tree, option_id) else {
         return;
     };
+    // The closed select paints the selected option's label; the option itself
+    // has no box (`display: none`), so the select is what changed on screen.
+    tree.mark_paint_dirty(select_id);
+    if !on {
+        return;
+    }
     let mut others = Vec::new();
     collect_option_ids(tree, select_id, &mut others);
     for id in others {

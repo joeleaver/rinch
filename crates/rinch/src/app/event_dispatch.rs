@@ -2531,6 +2531,9 @@ impl RinchApp {
             cursor,
             over_target: None,
         });
+        // The ghost appears now, not on the next move: `build_pixels` names
+        // its rect as the frame's damage.
+        self.scene_dirty = true;
     }
 }
 
@@ -3105,9 +3108,10 @@ impl RinchApp {
                     node.attributes.remove("data-preedit");
                 }
             }
-            node.dirty.insert(rinch_dom::DirtyFlags::PAINT);
         }
-        d.tree.dirty_nodes.insert(node_id);
+        // The composition is painted inline from `data-preedit`: name the
+        // field, or a partial frame keeps the old composition on screen.
+        d.tree.mark_paint_dirty(node_id);
     }
 
     /// The focused `<input>`'s caret rect in logical window space, for the IME

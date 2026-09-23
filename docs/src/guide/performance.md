@@ -116,8 +116,10 @@ assert_eq!(frame.get(Counter::TaffyRootComputes), 0, "a colour change must not l
 | | `inline_block_computes` | Standalone Taffy computes that size an atomic inline |
 | | `calc_fixpoint_passes` | Extra computes run by the `calc(%, px)` fixpoint |
 | Paint | `paint_frames` / `paint_cached_frames` | Frames actually painted, and redraws that reused the cached frame |
-| | `repaint_partial`, `repaint_full` | Software frames limited to a dirty region, and full repaints |
-| | `repaint_full_{first_frame,resize,no_dirty_nodes,region_too_large,empty_region,overlay,theme,invalidated,gpu}` | The reason for each full repaint. `no_dirty_nodes` means no dirty region came out: either nothing was paint-dirty, or what was produced no rect |
+| | `repaint_partial`, `repaint_full` | Software frames limited to their damage, and full repaints |
+| | `repaint_none` | Software frames whose scene was marked dirty but whose damage named nothing on screen, so the pixels on screen were kept and nothing was painted (an alt-tab, a focus move onto a box no rule styles) |
+| | `damage_rects` | Rects the partial repaints cleared and painted. The damage is a short list (at most 8) of disjoint rects, so two small changes far apart cost their own areas and not the span between them |
+| | `repaint_full_{first_frame,resize,unattributed,region_too_large,restyle,theme,invalidated,gpu}` | The reason for each full repaint. `region_too_large`: the damage's rects add up to half the surface or more. `restyle`: the whole document was restyled (a stylesheet, the viewport, the device pixel ratio or the root font-size changed). `unattributed`: something called `RinchApp::mark_scene_dirty`, which asks for a frame without saying what changed, and nothing else named any damage. Everything the framework itself changes names its damage, so on a running app this counts only an embedder's own calls and the software `GameViewport` compositor frames |
 | | `repainted_px` / `surface_px` | Pixels repainted, and pixels in the surface (their ratio is the fraction of the surface repainted) |
 | | `paint_nodes_visited` | Nodes `paint_node` visited |
 | | `stacking_order_builds` | Stacking sequences built, by paint and by hit testing |
@@ -141,6 +143,12 @@ Some limits on what these numbers mean:
   `effect_runs` and `signal_notifies` include its own work**: the shell writes
   its frame-time and FPS signals on every redraw, and its panels re-run. Close
   DevTools before reading the reactive counters.
+- **A frame repaints what its damage names, and nothing else.** The damage is
+  the paint-dirty nodes (where each is now and where it was last painted),
+  the rects of removed nodes, and the drag ghost's and inspect highlight's
+  old and new rects. A change that reaches pixels without a `DomDocument`
+  write must name its node (`NodeTree::mark_paint_dirty`) or call
+  `RinchApp::mark_scene_dirty`, which is counted as `repaint_full_unattributed`.
 - **The GPU backend always repaints in full.** Every painted frame on that
   backend counts as `repaint_full_gpu`.
 - **The software-painter counters are the desktop and Android shells' only.**

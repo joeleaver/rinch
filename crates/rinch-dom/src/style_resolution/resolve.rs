@@ -467,8 +467,7 @@ impl RinchDocument {
         self.device_params.root_font_size = size;
         device.set_root_font_size(size);
         self.tree
-            .perf
-            .full_restyle(crate::perf::FullRestyleReason::RootFontSize);
+            .note_full_restyle(crate::perf::FullRestyleReason::RootFontSize);
 
         // Descendants cached before this change resolved `rem` against the
         // old basis — clear them so the walk we're inside recascades them.

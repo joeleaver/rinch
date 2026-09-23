@@ -355,6 +355,11 @@ impl RinchDocument {
             self.write_inline_positions(root_id, &inline_layout);
 
             self.tree.nodes[root_id].text_layout = Some(Box::new(inline_layout));
+            // New glyphs are a paint change whether or not the root's box
+            // moved: a span that left the line (`display: none`) or changed
+            // its text reaches the screen only through this root. Paint-only:
+            // the layout that asked for this rebuild has already run.
+            self.tree.paint_dirty_nodes.push(root_id);
         }
     }
 
@@ -5061,9 +5066,13 @@ impl RinchDocument {
         // its presence to mean "this is a root" — caret and selection rects,
         // layer bounds, and the ancestor walk in `invalidate_ifc_for_node`,
         // which would stop at the stale node instead of the real root.
+        //
+        // Its glyphs leave the screen with it (a paragraph whose only span
+        // became `display: none`), so it is paint-dirty too.
         for (id, node) in self.tree.nodes.iter_mut() {
             if node.text_layout.is_some() && !sigs.contains_key(&id) {
                 node.text_layout = None;
+                self.tree.paint_dirty_nodes.push(id);
             }
         }
         let mut changed: u64 = 0;

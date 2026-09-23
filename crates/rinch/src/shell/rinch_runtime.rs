@@ -514,7 +514,8 @@ impl RinchRuntime {
                 // Turning off: clear highlights
                 store.hovered_node_id.set(None);
                 self.app.inspect_highlight = None;
-                self.app.mark_scene_dirty();
+                // The highlight's last rect is the damage (`last_inspect_rect`).
+                self.app.request_repaint();
                 if let Some(w) = &self.window {
                     w.request_redraw();
                 }
@@ -549,7 +550,8 @@ impl RinchRuntime {
 
         if self.app.inspect_highlight != new_rect {
             self.app.inspect_highlight = new_rect;
-            self.app.mark_scene_dirty();
+            // Its old and new rects are the damage (`last_inspect_rect`).
+            self.app.request_repaint();
         }
     }
 
@@ -828,8 +830,9 @@ impl RinchRuntime {
             window_arc.request_redraw();
         }));
 
-        // Trigger a full repaint of the existing DOM
-        self.app.scene_dirty = true;
+        // Trigger a full repaint of the existing DOM: a new surface, and
+        // nothing named what it should show.
+        self.app.mark_scene_dirty();
         self.window.as_ref().unwrap().request_redraw();
     }
 
@@ -924,8 +927,9 @@ impl RinchRuntime {
         // Surfaces are painted inline during paint_document() (like <img> elements).
         let surface_pixels = crate::render_surface::collect_surface_pixels_by_id();
         if !surface_pixels.is_empty() {
-            // Mark scene dirty so build_pixels() actually repaints
-            self.app.mark_scene_dirty();
+            // Mark scene dirty so build_pixels() actually repaints — the
+            // damage is the surface nodes, marked just below.
+            self.app.request_repaint();
             // ...and mark the surface nodes themselves, for the same reason the
             // video viewports are marked below: inline painting is subject to
             // the dirty-region cache, and a small dirty region elsewhere would
@@ -957,6 +961,9 @@ impl RinchRuntime {
         // Collect compositor-path surface frames (video, GameViewport).
         let compositor_frames = crate::render_surface::collect_surface_frames();
         if !compositor_frames.is_empty() {
+            // Unattributed on purpose: these frames are blitted over the
+            // finished pixels, after paint, with no damage of their own
+            // (#361), and a full repaint is what keeps a HUD drawn over them.
             self.app.mark_scene_dirty();
         }
 
@@ -986,7 +993,8 @@ impl RinchRuntime {
         // this backend.
         let video_frames = crate::render_surface::collect_video_frames_by_name();
         if !video_frames.is_empty() {
-            self.app.mark_scene_dirty();
+            // The damage is the viewport nodes, marked just below.
+            self.app.request_repaint();
             // Inline painting is subject to the dirty-region cache, so the
             // viewport nodes have to be marked explicitly or a small dirty
             // region elsewhere (the controls' ticking timestamp) freezes the
@@ -1899,7 +1907,7 @@ impl ApplicationHandler for RinchRuntime {
                             store.inspect_mode.set(false);
                             store.hovered_node_id.set(None);
                             self.app.inspect_highlight = None;
-                            self.app.mark_scene_dirty();
+                            self.app.request_repaint();
                             if let Some(w) = &self.window {
                                 w.request_redraw();
                             }
