@@ -2530,6 +2530,8 @@ frame **exactly** per scenario (hover with/without a `display: contents`
 wrapper, append, remove, resize, text edit, transform tick), so an increment
 that stops counting fails too; a fix updates the numbers it moves, and that
 edit is its proof.
+The cost side (instruction counts in CI) is under **Performance regressions**
+below.
 Guide: `docs/src/guide/performance.md`.
 
 **Discovery mechanism:** Each debug-enabled app writes `~/.rinch/debug/{pid}.json` containing its port, app name, and PID. The MCP server scans this directory to find running apps and auto-connects when only one is running.
@@ -3941,6 +3943,20 @@ not on the whole frame.
   `sans-serif`), or the number moves with the host's fonts (CI is DejaVu).
 - Updating, reading `RINCH_PERF` / `perf_stats`, and the rest:
   `docs/src/guide/performance.md#the-baselines-are-the-contract`.
+
+**The baselines say which work a frame did; CI's `Perf` workflow says what it
+cost** (`.github/workflows/perf.yml`, benchmarks in `crates/rinch-bench`).
+It records Callgrind instruction counts (Gungraun) for twelve benchmarks, on the
+PR's merge commit and on its first parent (the current `main` tip). The report
+is a table in the job summary and one PR comment. The job fails past +3%
+(`vars.PERF_REGRESSION_THRESHOLD`), or when a base that has the benchmarks
+cannot run them. The `perf-regression-accepted` label turns either failure into
+a warning, and the PR then explains the cost the same way a baseline change
+does. Inside the measured operation the bench binary bump-allocates
+(`rinch_bench::alloc`): glibc's malloc cost depends on heap history and moved
+one count 7% between identical runs, and with the bump allocator runs agree to
+about 0.03%. Counts are comparable only between runs on one machine.
+`docs/src/guide/performance.md#ci-regression-job`.
 
 ## Documentation Requirements
 

@@ -334,3 +334,156 @@ out why a number moved, run the same interaction in a live app:
 
 Or set `RINCH_PERF=1` and read the one line each frame prints. Close DevTools
 before you read the reactive counters (see the limits above).
+
+## CI regression job
+
+Counters say *what* a frame did; they do not say how much it cost. The `Perf`
+workflow (`.github/workflows/perf.yml`) covers cost. On every pull request it
+counts the **instructions** each hot path executes. It counts them on the merge
+commit GitHub builds for the PR, and on that commit's first parent, the tip of
+`main` it was merged onto. It fails when one count grew by more than a
+threshold. Every run re-bases on `main` as it is at that moment, so the Δ says
+what merging the PR would do now. Changes other PRs landed on `main` are not
+counted against it.
+
+It counts instructions and not time because a hosted runner's timings move with
+whatever else shares the machine, while an instruction count moves only when
+the code does. The counts come from Valgrind's Callgrind, driven by
+[Gungraun](https://github.com/gungraun/gungraun) (the renamed `iai-callgrind`).
+The benchmarks live in `crates/rinch-bench`:
+
+| Benchmark | What one run measures |
+|---|---|
+| `dom::hover.list_500` | `:hover` on one row of a 500-row list (`display: contents` wrappers, an `inline-block` chip per row), then layout |
+| `dom::class_toggle.list_500` | A colour-only class change on one row, then layout |
+| `dom::append_row.list_500` / `remove_row` | Append or remove one row, then layout |
+| `dom::resize_1px.list_500` | Layout at a viewport 1px wider |
+| `dom::set_text_content.list_500` | `set_text_content` on one row's wrapped text, then layout |
+| `dom::full_paint.text_page_warm` | A full `TinySkiaPainter` paint of 40 wrapped paragraphs, with the glyph cache already warm |
+| `shell::pointer_move_warm.warm_x50` | 50 pointer moves inside one row of a 500-row scroller, each followed by `AboutToWait` |
+| `shell::pointer_move_cold.cold` | The first move after a layout, which builds the hit-test cache |
+| `shell::hover_frame.partial_repaint` | A move onto another row, then the frame: layout and a partial software repaint |
+| `shell::keyed_for.reverse_200` | Reverse a keyed `for` of 200 rows, then the frame |
+| `shell::memo_flush.selection_40` | Move the selection among 40 rows, each with a `Memo<bool>` and an effect: the signal write and its effect flush |
+
+Each benchmark builds its fixture in a setup that Callgrind does not count. The
+setup also runs the operation once where that warms a cache, so what is counted
+is the second hover and not the first. All text is set in the bundled
+`Inter-Regular.ttf`, so no scenario measures or draws through the host's
+fonts. That does not make a count portable: `resize_1px` is 111.2M
+instructions on the CI runner and 147.6M on a developer workstation, because
+the toolchain, glibc's CPU-specific `memcpy` and the CPU all move it. Compare
+two counts only when one machine produced both. The CI job runs base and head
+on the same runner for this reason, and a local before/after is only
+comparable with another local run.
+
+### Reading the report
+
+The job writes a table to its summary page and to one comment on the PR, which
+it edits in place on each push. A row looks like this (the numbers are from a
+deliberately slowed `update_hover`):
+
+| Benchmark | base | head | Δ | |
+|---|--:|--:|--:|---|
+| `dom::hover.list_500` | 177,782 | 185,785 | +4.50% | ❌ regression |
+
+The columns are Callgrind's `Ir`, instructions executed inside the measured
+operation. Two runs of the same binary agree to within about **0.03%**. The
+remaining noise comes from hash-table probing, whose seeds vary per process. So
+any Δ larger than a fraction of a percent is the code.
+
+The base run uses the head's copy of `crates/rinch-bench`, so both sides run
+the same scenarios. When the base cannot run them, the outcome depends on
+whether the base has the crate at all:
+
+- **The base has no `crates/rinch-bench`.** The report shows the head alone and
+  the job passes. No merge commit's first parent can lack the crate once it is
+  on `main`, so this applies only to PRs based before then.
+- **The base has the crate and the run still failed.** The job fails. Usually a
+  PR changed an API the benchmarks call without updating them, or a benchmark
+  panics on the base. Otherwise, breaking the benchmarks would be a way past the
+  check. The `perf-regression-accepted` label downgrades this failure to a
+  warning, the same as a regression.
+
+If the head's own benchmarks do not build or run, the job fails. The PR comment
+then says so, rather than keeping the previous run's table.
+
+### The threshold and the escape hatch
+
+The job fails when any benchmark's `Ir` grows by more than **3%**. Change the
+threshold with the repository variable `PERF_REGRESSION_THRESHOLD`, a number of
+percent.
+
+A PR that makes a path more expensive on purpose can carry the
+**`perf-regression-accepted`** label. With the label, the regression is still
+reported, as a warning, and the job passes. Adding or removing the label runs
+the job again. Say in the PR which benchmark moved and why, in the pull request
+template's *Performance* section, the same way a counter-baseline update does
+(see [The baselines are the contract](#the-baselines-are-the-contract)). The
+two checks complement each other. The baselines are exact and say *which* work
+a frame did, while the instruction counts say what that work *cost*. A change
+can move one without the other.
+
+The comment is posted by a separate `comment` job, which is the only job with
+`pull-requests: write` and runs none of the PR's code. It updates the comment
+that carries the `<!-- rinch-perf-bench -->` marker **and** is authored by
+`github-actions[bot]`, so a human comment that quotes the marker is left alone.
+A pull request from a fork gets a read-only token and cannot comment. For those
+PRs the report is on the job's summary page only. A PR that changes only
+`docs/**` or Markdown files does not run the job.
+
+The cargo cache holds only dependency artifacts. A fresh checkout makes every
+workspace crate look stale to cargo, so those rebuild on every run anyway. Only
+a push to `main` writes the cache, and only when its key misses. The key hashes
+every `Cargo.lock` and `Cargo.toml`, the toolchain and the compiler environment.
+Pull requests only read it.
+
+### Allocation is not what it costs in a real frame
+
+glibc's `malloc` and `free` cost a different number of instructions depending
+on what the heap already holds. Which blocks can merge and which bin a free
+lands in depend on everything the process did before, and the order of a
+setup's allocations follows `HashMap` iteration, which std seeds randomly.
+Measured on `set_text_content`, identical runs gave 5.34M, 5.71M and 5.83M
+instructions, and every instruction of the difference was inside `malloc.c`.
+
+So the benchmark binary installs `rinch_bench::alloc::BenchAlloc`. Inside the
+measured operation, every allocation bumps a pointer into a region reserved in
+setup, and every free does nothing. Both cost the same few instructions each
+time. Outside the operation, the system allocator handles everything. The cost:
+an allocation counts as a few instructions instead of glibc's 50 to 150, so a
+change that only adds allocations moves the count less than it moves a real
+frame. The code that builds what it allocates is still counted in full.
+
+### Running it locally
+
+You need Valgrind and the Gungraun runner, at exactly the version of the
+`gungraun` library in `Cargo.lock`:
+
+```text
+sudo apt-get install valgrind
+cargo install gungraun-runner --version 0.19.4 --locked
+cargo bench -p rinch-bench                      # all benchmarks, human-readable
+cargo bench -p rinch-bench -- '*::hover::*'     # one benchmark (a glob over the module path)
+```
+
+Each run is compared with the previous run of the same benchmark on disk, so
+running before and after a change prints the Δ directly. To reproduce the CI
+table, save each side as JSON and compare the two files:
+
+```text
+cargo bench -p rinch-bench -- --output-format=json --callgrind-args=--cache-sim=no > before.jsonl
+# ...make the change...
+cargo bench -p rinch-bench -- --output-format=json --callgrind-args=--cache-sim=no > after.jsonl
+python3 .github/scripts/perf_compare.py --base before.jsonl --head after.jsonl
+```
+
+Each benchmark leaves a Callgrind profile at
+`target/gungraun/rinch-bench/hot_paths/<group>/<bench>/callgrind.*.out`.
+`callgrind_annotate --inclusive=yes <file>` or KCachegrind shows where the
+instructions went.
+
+A full run takes about 40 seconds on a 24-core workstation with
+`--parallel=4`. Valgrind runs code about 50 times slower than native, and the
+benchmarks are sized for that: 500 rows where the operation touches one row,
+200 where it touches every row.

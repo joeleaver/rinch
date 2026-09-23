@@ -1,0 +1,33 @@
+[package]
+name = "rinch-bench"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+description = "Instruction-count benchmarks (Gungraun/Callgrind) for rinch's hot paths; run by the `perf` CI workflow."
+
+[lib]
+# The scenarios live in the library so the bench harness stays declarative.
+# There is nothing to unit-test here, and `test = false` keeps
+# `cargo test --workspace` from building the dev-dependency (Gungraun).
+test = false
+doctest = false
+bench = false
+
+[[bench]]
+name = "hot_paths"
+harness = false
+
+[dependencies]
+rinch-core = { workspace = true }
+rinch-dom = { workspace = true, features = ["software-renderer"] }
+# `desktop` without `gpu`: the software shell (`build_pixels`, hit testing,
+# the partial repaint) is what the shell-level scenarios drive.
+rinch = { workspace = true, features = ["desktop"] }
+rinch-platform = { workspace = true }
+parley = { workspace = true }
+
+[dev-dependencies]
+# The runner binary must be the SAME version: the `perf` workflow installs
+# `gungraun-runner` at the version Cargo.lock resolves this to.
+gungraun = "=0.19.4"
