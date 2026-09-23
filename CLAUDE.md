@@ -1087,13 +1087,13 @@ fn app() -> NodeHandle {
 
 | Category | Methods |
 |----------|---------|
-| **Dispatch** | `command(name) -> bool`, `update(\|state\| -> Option<Transaction>)`, `insert_text(&str)`, `replace_selection_with_html/text(&str)`, `insert_image(src, alt)`, `toggle_link(href)` |
+| **Dispatch** | `command(name) -> bool`, `update(\|state\| -> Option<Transaction>)`, `insert_text(&str)`, `paste(&PasteContent) -> bool` (the user's paste: plugins first, then the default), `replace_selection_with_html/text(&str)` (the default alone), `insert_image(src, alt)`, `toggle_link(href)` |
 | **Query (read state)** | `can_run(name)`, `is_mark_active(mark)`, `active_link_href() -> Option<String>` (a range: its first link; a caret: only strictly inside a link, or at the seam of two different links — then the first), `current_block_type()`, `in_node_type(type)`, `doc() -> Node`, `state()`, `selection()` |
 | **Content / selection** | `load_html(&str)`, `load_doc(Node)`, `set_selection(Selection)`, `selection_clipboard()`, `anchor_selection()`, `set_dark_mode(bool)` |
 | **Notification** | `on_change(impl Fn() + 'static)` — the autosave / dirty-marking hook |
 | **Links** | `on_link_click(impl Fn(&LinkClick) -> bool)` — a single primary press on a linked character, before the caret moves; `true` claims it. `on_link_hover(impl Fn(Option<&LinkHover>))` — enter / change / leave only. `link_at(pos) -> Option<LinkSpan>` |
 | **Access** | `set_read_only(bool)`, `is_read_only() -> bool` — a runtime switch; `Editor { read_only: true }` sets it at mount |
-| **Plugins** | `add_plugin(Rc<dyn Plugin>) -> bool` — the seam for an app's own plugin (a spellchecker's decorations). Rebuilds the state over the current doc and selection, so it **discards undo history**: a construction-time call. Not an edit — a read-only (even collaborating) editor accepts it, nothing is broadcast, `on_change` does not fire; all-or-nothing, and a key already installed answers `false` |
+| **Plugins** | `add_plugin(Rc<dyn Plugin>) -> bool` — the seam for an app's own plugin (a spellchecker's decorations, a paste hook). Rebuilds the state over the current doc and selection, so it **discards undo history**: a construction-time call. Not an edit — a read-only (even collaborating) editor accepts it, nothing is broadcast, `on_change` does not fire; all-or-nothing, and a key already installed answers `false` |
 
 `anchor_selection() -> SelectionAnchor` captures the selection for an insertion that
 completes **later** (an async paste, an image upload, a model completion). Every
@@ -1104,6 +1104,8 @@ typed meanwhile; it answers `None` once the document is *replaced* (`load_doc`/
 what makes the asynchronous Ctrl+V (#149) land in the right place — desktop's
 `dispatch_editor_paste` anchors, reads the clipboard off-thread, then inserts at the
 anchor.
+
+**Seeing and rewriting a paste: `Plugin::handle_paste(&self, &EditorState, &PasteContent) -> Option<Transaction>`.** Every editor paste on both platforms goes through `EditorHandle::paste(&PasteContent { text, html })`: desktop's Ctrl+V, Ctrl+Shift+V and context-menu Paste (`apply_paste_at_anchor`, at the anchor, in `event_dispatch.rs`) and the web's `paste` event (`on_paste`, `editor_input.rs`). It asks `EditorState::handle_paste`, which offers the paste to each plugin in order; the first `Some` is dispatched as the paste (one transaction, so one undo step; `input: true`, so it scrolls; `commit`, so read-only refuses it and collaboration records it), and a claim that is refused does **not** fall through. No claim: html (`replace_selection_with_html`), else text. An empty paste asks no one; an image-only paste never reaches the hook (desktop's `RichPaste::Image`, the web's image-file branch). Desktop reads the text beside an html answer in the **same** clipboard job (`rinch_clipboard::paste_rich_with_text_async`), so a plugin sees both flavours on both platforms: a copied link's html is an `<a>` whose text may be a title, and the text is how a plugin tells a pasted URL. The web keeps its order html → image file → text: a bitmap with no html goes in as an image, as desktop's probe orders it. `set_paste_interceptor` still skips editor pastes; this is the editor's hook. Pins: `rinch-editor-core/tests/paste_hook.rs`, `rinch-editor-view/tests/paste_hook.rs`, `rinch/tests/editor_paste_hook.rs` (a real Ctrl+V through the clipboard worker; its own process because the completion needs a registered main thread), `rinch-web/tests/editor_paste_hook.rs`.
 
 `on_change` fires only for **local, document-changing** edits: `update` (which typing, paste and IME commit all funnel through), `command`, `insert_image`, and `toggle_link`. Those are the four `notify_change()` call sites in `rinch-editor-view/src/handle.rs`; if you add a fifth mutation path, it needs one too. It deliberately does **not** fire for selection-only changes, for `load_doc`/`load_html` (a programmatic load isn't a user edit — firing would make an autosave consumer immediately re-save what it just loaded), or for `collab_receive` (already in the shared CRDT). The callback runs with no internal borrow held, so it may re-enter the handle freely — e.g. call `doc()` to serialize for the save.
 
@@ -2586,7 +2588,9 @@ platform: `paste_text()` (blocks, unbounded), `paste_text_timeout(Duration)` (bl
 `Err(ClipboardError::TimedOut)` after that), `paste_text_async(cb)` (never blocks).
 Same three for `paste_html`/`paste_image`. `paste_rich`/`paste_rich_async` resolve
 `text/html` → bitmap → `text/plain` in **one** read (→ `RichPaste`), so a rich paste
-never stacks three worst-case waits. `copy_text_async`/`copy_html_async` queue a write
+never stacks three worst-case waits. `paste_rich_with_text*` answer the same plus the
+`text/plain` offered beside an html answer, still one read (the editor's Ctrl+V uses it
+so its paste hook sees both flavours). `copy_text_async`/`copy_html_async` queue a write
 without waiting.
 
 On native all of them are served by **one clipboard worker thread** owning the

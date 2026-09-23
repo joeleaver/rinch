@@ -107,3 +107,21 @@ pub fn paste_rich_timeout(_timeout: Duration) -> ClipboardResult<RichPaste> {
 pub fn paste_rich_async(on_done: impl FnOnce(ClipboardResult<RichPaste>) + Send + 'static) {
     on_done(paste_rich());
 }
+
+/// [`paste_rich`] and no text beside it: Android's bridge offers text only, so
+/// the answer is always a [`RichPaste::Text`], which carries its own text.
+pub fn paste_rich_with_text() -> ClipboardResult<(RichPaste, Option<String>)> {
+    paste_rich().map(|rich| (rich, None))
+}
+
+pub fn paste_rich_with_text_timeout(
+    _timeout: Duration,
+) -> ClipboardResult<(RichPaste, Option<String>)> {
+    paste_rich_with_text()
+}
+
+pub fn paste_rich_with_text_async(
+    on_done: impl FnOnce(ClipboardResult<(RichPaste, Option<String>)>) + Send + 'static,
+) {
+    on_done(paste_rich_with_text());
+}

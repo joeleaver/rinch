@@ -276,6 +276,41 @@ pub fn paste_rich_timeout(_timeout: Duration) -> ClipboardResult<RichPaste> {
     paste_rich()
 }
 
+/// [`paste_rich`], and the buffered `text/plain` beside an html answer. See the
+/// native `paste_rich_with_text`.
+pub fn paste_rich_with_text() -> ClipboardResult<(RichPaste, Option<String>)> {
+    let rich = paste_rich()?;
+    let text = match rich {
+        RichPaste::Html(_) => paste_text().ok().filter(|t| !t.is_empty()),
+        RichPaste::Image(_) | RichPaste::Text(_) => None,
+    };
+    Ok((rich, text))
+}
+
+/// [`paste_rich_with_text`]; the timeout is unused because the read cannot block.
+pub fn paste_rich_with_text_timeout(
+    _timeout: Duration,
+) -> ClipboardResult<(RichPaste, Option<String>)> {
+    paste_rich_with_text()
+}
+
+/// [`paste_rich_with_text`] delivered by callback. The html and the text beside
+/// it both come from the buffers the `paste` event filled; with no html, the
+/// text is read as [`paste_rich_async`] reads it.
+pub fn paste_rich_with_text_async(
+    on_done: impl FnOnce(ClipboardResult<(RichPaste, Option<String>)>) + Send + 'static,
+) {
+    paste_rich_async(move |result| {
+        on_done(result.map(|rich| {
+            let text = match rich {
+                RichPaste::Html(_) => paste_text().ok().filter(|t| !t.is_empty()),
+                RichPaste::Image(_) | RichPaste::Text(_) => None,
+            };
+            (rich, text)
+        }))
+    });
+}
+
 /// [`paste_rich`] delivered by callback.
 ///
 /// HTML comes from the buffer; when there is none, the plain text is read through
