@@ -131,6 +131,152 @@ fn a_colour_only_restyle_still_skips_taffy() {
     );
 }
 
+// ------------------------------------------------- display: contents -----
+
+/// `typography_doc` with the text wrapped in a `display: contents` `<span>` —
+/// the shape `rsx!` emits for every `{|| …}` reactive text and every
+/// if/for/match/component site. Returns the wrapper as well.
+fn contents_doc(class: &str) -> (RinchDocument, NodeId, NodeId, NodeId) {
+    let mut doc = RinchDocument::new();
+    doc.load_css(TYPOGRAPHY_CSS);
+    let body = doc.body();
+    let root = doc.create_element("div");
+    doc.set_attribute(root, "class", class);
+    doc.append_child(body, root);
+    let ifc = doc.create_element("div");
+    doc.set_attribute(ifc, "class", "ifc");
+    doc.append_child(root, ifc);
+    let wrapper = doc.create_element("span");
+    doc.set_attribute(wrapper, "style", "display: contents");
+    doc.append_child(ifc, wrapper);
+    let text = doc.create_text("hello world hello world");
+    doc.append_child(wrapper, text);
+    (doc, root, ifc, wrapper)
+}
+
+/// The cheap path survives a `display: contents` wrapper in the restyled
+/// subtree.
+///
+/// `sync_display_contents` stores a wrapper's Taffy style as `Display::None`,
+/// and the cascade used to rebuild it from the computed values as
+/// `Display::Flex` — so the comparison in `apply_stylo_styles_to_taffy` saw a
+/// display change on **every** re-cascade of a wrapper, set `ifc_dirty` and
+/// `layout_dirty`, and ran the whole-document structural pass plus a compute.
+/// A class change re-cascades the whole subtree (as a `:hover` does), so this
+/// colour-only change reaches the wrapper. At 2000 rows that made a hover cost
+/// 82ms where the same hover without wrappers costs 0.12ms.
+///
+/// `a_colour_only_restyle_still_skips_taffy` above could not see it: its
+/// fixture has no wrapper.
+#[test]
+fn a_colour_only_restyle_over_a_contents_wrapper_still_skips_taffy() {
+    let (mut doc, root, _ifc, _wrapper) = contents_doc("sans");
+    doc.resolve_layout(800.0, 600.0);
+    let computes = doc.tree.taffy_computes;
+    let passes = doc.tree.ifc_setup_passes;
+    assert!(
+        computes > 0 && passes > 0,
+        "positive control: the first layout must run a compute and a structural \
+         pass, or this fixture cannot tell a skipped one from a broken counter"
+    );
+
+    // Twice: the first restyle after mount and a steady-state one must both
+    // take the cheap path.
+    for class in ["red", "sans"] {
+        doc.set_attribute(root, "class", class);
+        doc.resolve_layout(800.0, 600.0);
+        assert_eq!(
+            doc.tree.ifc_setup_passes, passes,
+            "a colour-only restyle over a contents wrapper (to `.{class}`) must \
+             not re-run the structural IFC pass"
+        );
+        assert_eq!(
+            doc.tree.taffy_computes, computes,
+            "a colour-only restyle over a contents wrapper (to `.{class}`) must \
+             take the early return, not a Taffy compute"
+        );
+    }
+
+    // Positive control: the same document, a typography change — the compute
+    // must happen, so the assertions above are not passing on a dead counter.
+    doc.set_attribute(root, "class", "mono");
+    doc.resolve_layout(800.0, 600.0);
+    assert!(
+        doc.tree.taffy_computes > computes,
+        "positive control: a typography change must run a compute"
+    );
+}
+
+/// The other side of the same comparison: a **real** crossing into or out of
+/// `display: contents` still re-runs the structural pass and lays the wrapper
+/// out as what it now is.
+///
+/// The fix makes the cascade rebuild a wrapper's Taffy style as the
+/// `Display::None` style `sync_display_contents` writes, keyed on the
+/// **computed** display. Keying it on `contents_spliced` instead looks
+/// equivalent and is not: on the way *out* of `contents` that flag is still set
+/// when the cascade runs (the sync pass clears it later), so the wrapper keeps
+/// `Display::None` and never gets its box back — this fixture's `200.0` check
+/// fails on that mutant (measured: `0.0`). Also covered: both directions,
+/// twice, and `flex -> contents`, whose Taffy displays used to compare equal
+/// (#520).
+#[test]
+fn a_real_display_change_into_or_out_of_contents_still_invalidates() {
+    let (mut doc, _root, ifc, wrapper) = contents_doc("sans");
+    doc.resolve_layout(800.0, 600.0);
+    let contents_height = height(&doc, ifc);
+
+    for round in 0..2 {
+        let passes = doc.tree.ifc_setup_passes;
+        doc.set_attribute(wrapper, "style", "display: block; height: 200px");
+        doc.resolve_layout(800.0, 600.0);
+        assert!(
+            doc.tree.ifc_setup_passes > passes,
+            "round {round}: contents -> block must re-run the structural pass"
+        );
+        assert_eq!(
+            height(&doc, wrapper),
+            200.0,
+            "round {round}: the wrapper must get its own box back"
+        );
+        assert_ne!(
+            height(&doc, ifc),
+            contents_height,
+            "round {round}: counter-oracle: the container must grow around the \
+             wrapper's own box"
+        );
+
+        let passes = doc.tree.ifc_setup_passes;
+        doc.set_attribute(wrapper, "style", "display: contents; height: 200px");
+        doc.resolve_layout(800.0, 600.0);
+        assert!(
+            doc.tree.ifc_setup_passes > passes,
+            "round {round}: block -> contents must re-run the structural pass"
+        );
+        assert_eq!(
+            height(&doc, ifc),
+            contents_height,
+            "round {round}: the wrapper must be spliced again, its height ignored"
+        );
+    }
+
+    doc.set_attribute(wrapper, "style", "display: flex; height: 200px");
+    doc.resolve_layout(800.0, 600.0);
+    assert_eq!(height(&doc, wrapper), 200.0, "flex: the wrapper has a box");
+    let passes = doc.tree.ifc_setup_passes;
+    doc.set_attribute(wrapper, "style", "display: contents; height: 200px");
+    doc.resolve_layout(800.0, 600.0);
+    assert!(
+        doc.tree.ifc_setup_passes > passes,
+        "flex -> contents must re-run the structural pass"
+    );
+    assert_eq!(
+        height(&doc, ifc),
+        contents_height,
+        "flex -> contents splices"
+    );
+}
+
 // ---------------------------------------------------------------- #661 -----
 
 const ATOMIC_CSS: &str = "

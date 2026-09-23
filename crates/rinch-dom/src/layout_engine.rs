@@ -255,6 +255,7 @@ impl RinchDocument {
         // existing IFC structure and Taffy's internal cache — only the dirty text
         // node gets re-measured, avoiding the 80ms full-tree Parley rebuild.
         if self.tree.ifc_dirty {
+            self.tree.ifc_setup_passes += 1;
             // Structural change — invalidate all cached IFC measures and
             // clear dirty_ifc_text_roots so build_ifc_layouts rebuilds ALL
             // IFC roots. Without this, stale entries from set_text_content
@@ -1517,13 +1518,10 @@ impl RinchDocument {
         for node_id in all_contents_nodes {
             self.tree.nodes[node_id].contents_spliced = true;
             if let Some(node_taffy) = self.tree.nodes[node_id].taffy_id {
-                let _ = self.tree.taffy.set_style(
-                    node_taffy,
-                    taffy::Style {
-                        display: taffy::Display::None,
-                        ..Default::default()
-                    },
-                );
+                let _ = self
+                    .tree
+                    .taffy
+                    .set_style(node_taffy, crate::node::display_contents_taffy_style());
             }
         }
     }

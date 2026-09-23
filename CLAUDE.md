@@ -1853,6 +1853,17 @@ both used to be closed on changes that move a box:
   pre-pass fires only for `font-size` while a `transition: width` on a box
   *inside* an `inline-block` is #661's own symptom reached without the cascade
   (found by the review of #694).
+- **A `display: contents` wrapper's Taffy style is `sync_display_contents`'s,
+  not the cascade's.** That pass stores it as `Display::None`
+  (`node::display_contents_taffy_style`), while `to_taffy_style` maps `contents`
+  to `Display::Flex`; every pass that rebuilds a Taffy style from computed
+  values and compares it (`apply_stylo_styles_to_taffy`, both tick re-syncs)
+  substitutes the stored form when `Node::taffy_style_owned_by_contents_splice`
+  says so. Before that, any re-cascade of a wrapper — `rsx!` emits one per
+  reactive text and per if/for/match/component site, and a hover re-cascades a
+  whole subtree — read as a display change and ran the whole-document
+  `ifc_dirty` pass: 91ms for a colour-only hover over 2000 rows, 0.18ms after.
+  `frozen_box_remeasure_tests` pins both halves through `tree.ifc_setup_passes`.
 
 `RinchDocument::invalidate_text_measure_for_node` is the one place that knows
 what a typography change owes: the IFC's Parley layout, the box of any atomic

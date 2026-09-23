@@ -859,7 +859,44 @@ impl std::fmt::Debug for Node {
     }
 }
 
+/// The Taffy style of a `display: contents` wrapper: `Display::None` over
+/// every other field's default.
+///
+/// **The one spelling of it.** `sync_display_contents` writes it when it
+/// splices the wrapper's children into the nearest box-generating ancestor, and
+/// every pass that rebuilds a Taffy style from `computed_style` and compares it
+/// with the stored one must produce this same value for such a node — see
+/// [`Node::taffy_style_owned_by_contents_splice`]. `ComputedStyle::to_taffy_style`
+/// maps `contents` to `Display::Flex`, so a comparison that used it saw a
+/// "display change" on every restyle of every wrapper, set `ifc_dirty`, and
+/// turned a colour-only `:hover` over any `rsx!` reactive text into a
+/// whole-document IFC setup pass and Taffy compute.
+pub(crate) fn display_contents_taffy_style() -> taffy::Style {
+    taffy::Style {
+        display: taffy::Display::None,
+        ..Default::default()
+    }
+}
+
 impl Node {
+    /// Whether this node's Taffy style belongs to `sync_display_contents`
+    /// rather than to its computed style: an **author** element computing
+    /// `display: contents`. Its Taffy style is
+    /// [`display_contents_taffy_style`], and a pass rebuilding Taffy styles
+    /// from computed values must use that, or it compares unlike with unlike.
+    ///
+    /// An anonymous block box can compute `contents` too (it inherits the
+    /// value from a wrapper, [`ComputedStyle::for_anonymous_box`]), but it is a
+    /// real box whose Taffy style `create_anonymous_block_boxes` owns, and
+    /// `sync_display_contents` skips it — so it is excluded here by the same
+    /// guard.
+    ///
+    /// [`ComputedStyle::for_anonymous_box`]: crate::computed_style::ComputedStyle::for_anonymous_box
+    pub(crate) fn taffy_style_owned_by_contents_splice(&self) -> bool {
+        self.computed_style.display == crate::computed_style::DisplayValue::Contents
+            && !self.is_anonymous_block_box
+    }
+
     /// Write one attribute, keeping the interned `id` in step (#675).
     ///
     /// The write path that keeps the interned `id` correct, and therefore the
@@ -1690,6 +1727,14 @@ pub struct NodeTree {
     /// `layout_dirty` and so could have swallowed it). One `u64` increment per
     /// compute.
     pub taffy_computes: u64,
+    /// How many times `resolve_layout` has taken its `ifc_dirty` branch — the
+    /// structural pass (`sync_display_contents`, IFC setup, anonymous boxes,
+    /// atomic-inline sizing) over the whole document.
+    ///
+    /// Instrumentation, like [`Self::taffy_computes`]: a restyle that changes
+    /// no structure must not pay for this pass, and nothing else observable
+    /// says whether it ran.
+    pub ifc_setup_passes: u64,
     /// Text nodes whose Taffy measure context (`NodeContext::Text`) no longer
     /// matches the typography their parent now computes (issue #678).
     ///
@@ -1909,6 +1954,7 @@ impl NodeTree {
             image_loader: None,
             dirty_ifc_text_roots: HashSet::new(),
             taffy_computes: 0,
+            ifc_setup_passes: 0,
             dirty_text_contexts: HashSet::new(),
             dirty_atomic_inlines: BTreeSet::new(),
             ifc_measure_cache: HashMap::new(),
