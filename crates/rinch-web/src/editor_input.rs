@@ -61,7 +61,7 @@ use std::rc::Rc;
 use wasm_bindgen::JsCast;
 use wasm_bindgen::prelude::*;
 
-use rinch_editor_core::{CursorMotion, Pos, Selection};
+use rinch_editor_core::{CursorMotion, PasteContent, Pos, Selection};
 use rinch_editor_view::{EditorHandle, registry};
 
 use crate::event_delegation::{
@@ -1067,7 +1067,13 @@ fn on_cut(event: &web_sys::ClipboardEvent) {
 }
 
 /// Paste over the selection, preferring rich `text/html`, then a raw image file
-/// (encoded as a `data:` URL via `FileReader`), then `text/plain`.
+/// (encoded as a `data:` URL via `FileReader`), then `text/plain` — the order
+/// desktop's clipboard probe resolves them in.
+///
+/// Text and html go through `EditorHandle::paste`, the entry point the desktop's
+/// Ctrl+V shares, so the editor's plugins see both flavours first
+/// (`Plugin::handle_paste`) and the default inserts what none claims. A bitmap
+/// with no html wrapper goes in as an image and reaches no plugin, as on desktop.
 fn on_paste(event: &web_sys::ClipboardEvent) {
     end_context_menu_cycle();
     let Some((_, handle)) = focused_handle() else {
@@ -1077,11 +1083,13 @@ fn on_paste(event: &web_sys::ClipboardEvent) {
     let Some(dt) = event.clipboard_data() else {
         return;
     };
-    // 1. Rich HTML — preserves structure, links, marks, and URL-referenced images.
-    if let Ok(html) = dt.get_data("text/html")
-        && !html.trim().is_empty()
-        && handle.replace_selection_with_html(&html)
-    {
+    let paste = PasteContent::new(
+        dt.get_data("text/plain").ok(),
+        dt.get_data("text/html").ok(),
+    );
+    // 1. Html (structure, links, marks, URL-referenced images), offered to the
+    //    plugins first with the text beside it; its text if it parses to nothing.
+    if paste.html.is_some() && handle.paste(&paste) {
         refresh_caret();
         return;
     }
@@ -1090,11 +1098,8 @@ fn on_paste(event: &web_sys::ClipboardEvent) {
     if paste_image_from(&dt, &handle) {
         return;
     }
-    // 3. Plain text.
-    if let Ok(text) = dt.get_data("text/plain")
-        && !text.is_empty()
-        && handle.replace_selection_with_text(&text)
-    {
+    // 3. Plain text, offered to the plugins first.
+    if paste.html.is_none() && handle.paste(&paste) {
         refresh_caret();
     }
 }
