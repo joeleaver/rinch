@@ -628,11 +628,33 @@ impl RinchDocument {
                 continue;
             }
 
-            // Skip elements that should never participate in layout
+            // Skip elements that should never participate in layout — but
+            // record that they are not rendered. The UA sheet says so
+            // (`display: none`), and this skip used to leave their
+            // `computed_style` at the default (`Flex`), so everything reading
+            // it treated a `<style>` as a rendered box: the IFC pass laid out
+            // its CSS text as an inline run (whose layout then flipped between
+            // the IFC's write and Taffy's zero on every structural pass, pushing
+            // it paint-dirty), and the paint-damage fallback climbed from it to
+            // the page root (#886 review, P3).
             if matches!(
                 node.tag(),
                 Some("style" | "script" | "head" | "meta" | "link" | "title")
             ) {
+                let taffy_id = node.taffy_id;
+                if node.computed_style.display != crate::computed_style::DisplayValue::None {
+                    self.tree.nodes[node_id].computed_style.display =
+                        crate::computed_style::DisplayValue::None;
+                    if let Some(t) = taffy_id
+                        && let Ok(old) = self.tree.taffy.style(t)
+                        && old.display != taffy::Display::None
+                    {
+                        let mut st = old.clone();
+                        st.display = taffy::Display::None;
+                        let _ = self.tree.taffy.set_style(t, st);
+                        self.tree.layout_dirty = true;
+                    }
+                }
                 continue;
             }
 

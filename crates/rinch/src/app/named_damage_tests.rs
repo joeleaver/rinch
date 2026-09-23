@@ -833,3 +833,146 @@ fn damage_rects_snap_to_whole_pixels_at_fractional_scales() {
         assert_eq!(stats.get(Counter::DamageRects), 2, "{scale}: {stats:?}");
     }
 }
+
+// ── Review round 2 ─────────────────────────────────────────────────────────
+
+/// A span that becomes `display: none` takes its text off the line. It has no
+/// box of its own and, once hidden, is no IFC member, so it names no rect; its
+/// paragraph's text layout is rebuilt, and the paragraph is the damage. It
+/// used to paint nothing and leave the span's text on screen.
+#[test]
+fn a_span_set_to_display_none_leaves_its_line() {
+    let mut page = Page::mount(
+        (300, 200),
+        1.0,
+        Box::new(|scope, out| {
+            let root = el(
+                scope,
+                "div",
+                "position: relative; width: 300px; height: 200px",
+            );
+            let para = el(
+                scope,
+                "p",
+                "position: absolute; left: 10px; top: 130px; margin: 0; font-size: 20px",
+            );
+            // The span alone on its line, and a span beside text that stays.
+            let span = scope.create_element("span");
+            let text = scope.create_text("Hidden soon");
+            span.append_child(&text);
+            para.append_child(&span);
+            root.append_child(&para);
+            let para2 = el(
+                scope,
+                "p",
+                "position: absolute; left: 10px; top: 20px; margin: 0; font-size: 20px",
+            );
+            let keep = scope.create_text("Keep ");
+            para2.append_child(&keep);
+            let span2 = scope.create_element("span");
+            let text2 = scope.create_text("this goes");
+            span2.append_child(&text2);
+            para2.append_child(&span2);
+            root.append_child(&para2);
+            out.borrow_mut().push(span);
+            out.borrow_mut().push(span2);
+            root
+        }),
+    );
+    for i in 0..2 {
+        let stats = page.assert_repaints(&format!("span {i} display none"), |p| {
+            p.node(i).set_style("display", "none");
+        });
+        assert_eq!(stats.get(Counter::RepaintPartial), 1, "{stats:?}");
+        let stats = page.assert_repaints(&format!("span {i} shown again"), |p| {
+            p.node(i).set_style("display", "inline");
+        });
+        assert_eq!(stats.get(Counter::RepaintPartial), 1, "{stats:?}");
+    }
+}
+
+/// A text edit in a flex item repaints the item, not the page, even with a
+/// `<style>` element in the tree. The `<style>`'s CSS text used to be laid out
+/// as a line of an IFC the `<style>` was mistaken for (its computed `display`
+/// was the default, not the UA sheet's `none`), so every structural pass
+/// flipped that text node's box and pushed it; the damage fallback then climbed
+/// from it to the page root and made the edit a full repaint.
+#[test]
+fn a_text_edit_beside_a_style_element_repaints_a_small_region() {
+    let mut page = Page::mount(
+        (400, 300),
+        1.0,
+        Box::new(|scope, out| {
+            let root = el(scope, "div", "padding: 10px");
+            let style = scope.create_element("style");
+            let css = scope.create_text(".q { background: rgb(0, 0, 255); }");
+            style.append_child(&css);
+            root.append_child(&style);
+            let q = el(scope, "div", "width: 50px; height: 20px");
+            q.set_attribute("class", "q");
+            root.append_child(&q);
+            let flex = el(scope, "div", "display: flex; font-size: 16px");
+            let text = scope.create_text("flexy");
+            flex.append_child(&text);
+            root.append_child(&flex);
+            out.borrow_mut().push(text);
+            out.borrow_mut().push(style);
+            root
+        }),
+    );
+    {
+        let d = page.app.doc.as_ref().unwrap().borrow();
+        let style = d.tree.get(page.node(1).node_id().0).unwrap();
+        assert_eq!(
+            style.computed_style.display,
+            rinch_dom::computed_style::DisplayValue::None,
+            "a <style> element is not rendered"
+        );
+    }
+    let stats = page.assert_repaints("flex text", |p| {
+        p.node(0).set_text("WWWWWWW");
+    });
+    assert_eq!(stats.get(Counter::RepaintPartial), 1, "{stats:?}");
+    assert!(
+        stats.get(Counter::RepaintedPx) <= 4000,
+        "the flex item's line, not the page: {stats:?}"
+    );
+}
+
+/// The fallback damages the owner where it was **painted** as well as where it
+/// is: here the 40px `<select>` moves far down in the same frame its option
+/// changes, because its 10px-tall holder takes a top margin, and the select itself is
+/// not pushed (its parent-relative box did not change). The holder is, but
+/// the select overflows it, and the page root has a fixed height so it is not
+/// pushed either: only the owner's last-painted rect covers the select's old
+/// lower part.
+#[test]
+fn an_option_change_while_its_select_moves_clears_the_old_select() {
+    let mut page = Page::mount(
+        (600, 400),
+        1.0,
+        Box::new(|scope, out| {
+            let root = el(scope, "div", "padding: 10px; width: 200px; height: 380px");
+            let holder = el(scope, "div", "height: 10px");
+            let select = el(
+                scope,
+                "select",
+                "width: 150px; height: 40px; font-size: 16px",
+            );
+            let option = el(scope, "option", "");
+            let text = scope.create_text("Alpha");
+            option.append_child(&text);
+            select.append_child(&option);
+            holder.append_child(&select);
+            root.append_child(&holder);
+            out.borrow_mut().push(holder);
+            out.borrow_mut().push(text);
+            root
+        }),
+    );
+    let stats = page.assert_repaints("select moved and relabelled", |p| {
+        p.node(0).set_style("margin-top", "250px");
+        p.node(1).set_text("WWWWWWW");
+    });
+    assert_eq!(stats.get(Counter::RepaintPartial), 1, "{stats:?}");
+}

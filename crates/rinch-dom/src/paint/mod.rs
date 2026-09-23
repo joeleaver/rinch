@@ -303,8 +303,10 @@ pub fn compute_damage(
 /// The ancestor whose paint covers `node_id` when `node_id` names no rect of
 /// its own: a `<select>` for anything inside it (it paints its options), else
 /// the nearest ancestor with a non-empty box. `None` when the node is not in
-/// the document or sits in a `display: none` subtree other than a select's
-/// options — it paints nothing, so there is nothing to repaint.
+/// the document or has a `display: none` *ancestor* (other than a select's
+/// options) — it paints nothing, so there is nothing to repaint. The node's own
+/// `display` is not asked: one that has just become `display: none` still has
+/// last frame's pixels on screen.
 fn boxed_owner(tree: &NodeTree, node_id: RawNodeId) -> Option<RawNodeId> {
     // Connected to the document at all? A removed or not-yet-inserted node
     // keeps whatever layout it last had and must not name its old ancestors.
@@ -320,14 +322,14 @@ fn boxed_owner(tree: &NodeTree, node_id: RawNodeId) -> Option<RawNodeId> {
     if !connected {
         return None;
     }
+    // Only an *ancestor* being hidden means "paints nothing": the node itself
+    // may have just become `display: none` (a span leaving its line), and what
+    // it painted last frame is still on screen.
     let hidden = |n: &Node| {
         n.tag().is_some()
             && matches!(n.computed_style.display, DisplayValue::None)
             && !matches!(n.tag(), Some("option" | "optgroup"))
     };
-    if hidden(tree.get(node_id)?) {
-        return None;
-    }
     let mut cur = tree.get(node_id)?.parent;
     while let Some(id) = cur {
         let n = tree.get(id)?;
