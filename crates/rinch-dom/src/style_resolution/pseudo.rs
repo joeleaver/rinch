@@ -57,17 +57,21 @@ impl RinchDocument {
 
             let mut applicable_declarations = ApplicableDeclarationList::new();
 
-            // Get the style attribute from the parent element
-            let style_attribute = rinch_node
-                .node()
-                .style_attribute_cache
-                .as_ref()
-                .map(|arc| arc.borrow_arc());
-
+            // No style attribute: an inline `style` applies to the element,
+            // never to its pseudo-elements. Stylo's rule collector pushes
+            // whatever block it is handed at the style-attribute level whether
+            // or not a pseudo is being matched, so passing the element's own
+            // block here made the declaration list non-empty for every
+            // inline-styled element — the early return below never fired, and
+            // each restyle of such an element paid two full pseudo cascades
+            // only for `ineffective_content_property` to throw them away. (The
+            // generated box's own style did not change: measured, a
+            // `style="width: 100px"` element's `::before` computes `width:
+            // auto` either way.)
             self.stylist.push_applicable_declarations(
                 rinch_node,
                 Some(&pseudo),
-                style_attribute,
+                None,
                 None,
                 Default::default(),
                 RuleInclusion::All,
@@ -104,6 +108,15 @@ impl RinchDocument {
                 &mut rule_cache_conditions,
             )
         };
+
+        // A generated box sized in viewport units makes its element a
+        // viewport-unit user too (`restyle_for_viewport_change`).
+        if pseudo_computed
+            .flags
+            .intersects(style::computed_value_flags::ComputedValueFlags::USES_VIEWPORT_UNITS)
+        {
+            self.tree.nodes[parent_id].uses_viewport_units.set(true);
+        }
 
         // Check content property - if none/normal/empty, skip
         if pseudo_computed.ineffective_content_property() {

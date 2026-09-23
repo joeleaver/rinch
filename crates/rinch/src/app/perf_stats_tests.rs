@@ -196,7 +196,11 @@ fn a_resize_is_a_full_repaint_for_that_reason() {
     frame(&mut app);
     let s = frame_at(&mut app, (801, 600));
     assert_eq!(s.get(Counter::RepaintFullResize), 1, "{s:?}");
-    assert_eq!(s.get(Counter::FullRestyleViewport), 1, "{s:?}");
+    // The resize flips no media query and nothing here is sized in viewport
+    // units, so it restyles nothing: only layout and paint run
+    // (`RinchDocument::restyle_for_viewport_change`).
+    assert_eq!(s.get(Counter::FullRestyleViewport), 0, "{s:?}");
+    assert_eq!(s.get(Counter::ElementsCascaded), 0, "{s:?}");
 }
 
 /// A previous frame thrown away by something that recorded no reason still

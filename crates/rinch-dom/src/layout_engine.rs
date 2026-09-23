@@ -172,27 +172,11 @@ impl RinchDocument {
         let old_viewport = self.tree.viewport;
         self.tree.viewport = crate::layout::Viewport { width, height };
 
-        // When viewport changes, update Stylo's Device and invalidate all cached styles
-        // so that vh/vw units are recomputed with the new viewport dimensions
+        // A viewport change restyles only what the new size reaches — a
+        // flipped media query restyles everything, a viewport unit its users —
+        // and always re-runs layout. See `restyle_for_viewport_change`.
         if (old_viewport.width - width).abs() > 0.5 || (old_viewport.height - height).abs() > 0.5 {
-            self.set_stylist_viewport(width, height);
-            self.tree
-                .note_full_restyle(crate::perf::FullRestyleReason::Viewport);
-
-            // Invalidate all cached stylo_element_data so styles are recomputed with new viewport
-            for (node_id, _) in self.tree.nodes.iter() {
-                *self.tree.nodes[node_id].stylo_element_data.borrow_mut() = None;
-            }
-            self.tree.style_roots.clear(); // Force full tree walk
-            self.tree.styles_dirty = true;
-            // The viewport IS the root's available space. A size change must
-            // force a Taffy recompute even when no node's Taffy *style* changed
-            // (e.g. an all-`auto`/fixed tree): otherwise auto-sized content stays
-            // laid out at the previous viewport width. Without this, the early
-            // `if !layout_dirty { return }` below strands the tree at its old
-            // size — visible as prose that keeps a narrow first-layout width
-            // (often min-content) after the window grows.
-            self.tree.layout_dirty = true;
+            self.restyle_for_viewport_change(width, height);
         }
 
         // Drain completed image loads and update intrinsic dimensions.

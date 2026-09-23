@@ -1954,6 +1954,25 @@ when it is a flex or grid item — plus the Taffy `mark_dirty` beside that last
 one, since Taffy caches a leaf measure per available space and serves the stale
 one back otherwise.
 
+**A resize restyles only what the size reaches** (`RinchDocument::restyle_for_viewport_change`).
+`Stylist::set_device` answers which stylesheet origins' media-query results
+flipped; only such a flip rebuilds the cascade data and re-cascades the whole
+document (`full_restyle_viewport`). Otherwise the only restyled elements are the
+ones whose last cascade resolved a viewport unit — Stylo's
+`USES_VIEWPORT_UNITS`, copied onto `Node::uses_viewport_units` by the cascade,
+`::before`/`::after` included — each with its subtree
+(`viewport_unit_restyles`). Two rinch-side inputs ride along without a cascade:
+every `position: fixed`/`absolute` box is queued for a Taffy re-sync, because
+`out_of_flow` bakes the viewport size into its Taffy style. The first layout no
+longer re-cascades everything either, which is what used to hide two other
+non-cascade inputs of `apply_stylo_styles_to_taffy`: a childless block's
+one-line floor (`note_first_child` re-syncs a block when its first child
+arrives) and an unstyled `<select>`'s widest-option width
+(`note_select_content_changed`). `resolve_styles` walks the whole document
+only when a whole-document restyle asks (`NodeTree::full_style_walk`) — an
+empty `style_roots` means nothing to do, not "walk everything".
+`crates/rinch-dom/tests/viewport_restyle_tests.rs` is the twin oracle.
+
 **Two text caches survive across frames, and nothing drops either wholesale.**
 Each IFC root keeps its paint layout (`Node::text_layout`) and the sizes the
 measure function returned for it (`NodeTree::ifc_measure_cache`, keyed **by
@@ -3474,7 +3493,7 @@ style, and take the new duration and delay. A paused animation keeps its frozen
 elapsed *time* across a re-timing, as Chrome keeps `currentTime`. That is
 `recompute_all_styles_full` **only**, and it is not the only pass that
 re-cascades the whole document: a `<style>` append (`maybe_load_style_css`) and
-a viewport change in `resolve_layout` do too, and set no flag — measured, a
+a viewport change that flips a media query do too, and set no flag — measured, a
 `<style>` appended after the first layout with a redefined `@keyframes` body
 leaves the running animation on its old one (tracked on **#781**). On those two
 passes and on every targeted restyle, an edited `@keyframes` body (**#766**), a

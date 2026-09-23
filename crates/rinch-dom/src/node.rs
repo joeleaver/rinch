@@ -850,6 +850,15 @@ pub struct Node {
     pub active_sensitive: Cell<bool>,
     /// Set by Stylo when `:focus` is evaluated during selector matching.
     pub focus_sensitive: Cell<bool>,
+    /// Whether this element's last cascade resolved a viewport unit (`vw`,
+    /// `vh`, `vmin`, `vmax`, and their `s`/`l`/`d` variants) — in its own
+    /// style or in one of its `::before` / `::after` styles. Read from Stylo's
+    /// `ComputedValueFlags::USES_VIEWPORT_UNITS` at every cascade of the node.
+    ///
+    /// A viewport resize that flips no media query restyles exactly the
+    /// elements carrying this flag (and what inherits from them), instead of
+    /// the whole document. See `RinchDocument::restyle_for_viewport_change`.
+    pub uses_viewport_units: Cell<bool>,
 
     /// When set, this block uses a fixed estimated height in Taffy instead of
     /// measuring via Parley. Used by contenteditable block virtualization to
@@ -1017,6 +1026,7 @@ impl Node {
             hover_sensitive: Cell::new(false),
             active_sensitive: Cell::new(false),
             focus_sensitive: Cell::new(false),
+            uses_viewport_units: Cell::new(false),
             estimated_height: None,
             contents_spliced: false,
             ifc_detached: false,
@@ -1073,6 +1083,7 @@ impl Node {
             hover_sensitive: Cell::new(false),
             active_sensitive: Cell::new(false),
             focus_sensitive: Cell::new(false),
+            uses_viewport_units: Cell::new(false),
             estimated_height: None,
             contents_spliced: false,
             ifc_detached: false,
@@ -1128,6 +1139,7 @@ impl Node {
             hover_sensitive: Cell::new(false),
             active_sensitive: Cell::new(false),
             focus_sensitive: Cell::new(false),
+            uses_viewport_units: Cell::new(false),
             estimated_height: None,
             contents_spliced: false,
             ifc_detached: false,
@@ -1181,6 +1193,7 @@ impl Node {
             hover_sensitive: Cell::new(false),
             active_sensitive: Cell::new(false),
             focus_sensitive: Cell::new(false),
+            uses_viewport_units: Cell::new(false),
             estimated_height: None,
             contents_spliced: false,
             ifc_detached: false,
@@ -1669,6 +1682,18 @@ pub struct NodeTree {
     /// `resolve_styles()` resolves only these subtrees instead of the
     /// full tree — turning O(tree) into O(changed_subtree).
     pub style_roots: Vec<RawNodeId>,
+    /// The next `resolve_styles()` walks the whole document from `<html>`,
+    /// whatever `style_roots` holds.
+    ///
+    /// Set by every whole-document restyle (a stylesheet, theme, device pixel
+    /// ratio or media-query change) after it drops every node's cached style.
+    /// Nothing else asks for a full walk: an empty `style_roots` with this flag
+    /// clear means nothing was invalidated, and the resolve does no walk at
+    /// all. It used to walk the whole document whenever `style_roots` was
+    /// empty, which a synchronous insertion restyle leaves it — so the frame
+    /// after appending one row visited every node in the document to cascade
+    /// none of them.
+    pub full_style_walk: bool,
     /// True if any style-affecting change occurred since last resolve.
     pub styles_dirty: bool,
     /// True if any layout-affecting Taffy style changed since last compute.
@@ -2053,8 +2078,9 @@ impl NodeTree {
             whole_document_damaged: false,
             style_dirty_nodes: Vec::new(),
             style_roots: Vec::new(),
-            styles_dirty: true, // Initial render needs styles
-            layout_dirty: true, // Initial render needs layout
+            full_style_walk: true, // The first resolve styles everything
+            styles_dirty: true,    // Initial render needs styles
+            layout_dirty: true,    // Initial render needs layout
             suppress_inline_restyle: false,
             ifc_dirty: true, // Initial render needs IFC setup
             taffy,

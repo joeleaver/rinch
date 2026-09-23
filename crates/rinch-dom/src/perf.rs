@@ -90,6 +90,9 @@ define_counters! {
     /// twice), so this can exceed the number of full walks actually made.
     FullRestyles = "full_restyles",
     /// ...because the viewport size changed (`resolve_layout`).
+    /// Only when the resize flipped a media query's result; a resize that
+    /// flips none restyles just the viewport-unit users
+    /// (`viewport_unit_restyles`).
     FullRestyleViewport = "full_restyle_viewport",
     /// ...because the theme or another whole-document style input changed
     /// (`recompute_all_styles_full`).
@@ -100,8 +103,12 @@ define_counters! {
     FullRestyleDpr = "full_restyle_dpr",
     /// ...because the root element's font-size (the `rem` basis) changed.
     FullRestyleRootFontSize = "full_restyle_root_font_size",
-    /// `resolve_styles` walked the whole document from `<html>` because no
-    /// style root was recorded or the first layout has not completed yet.
+    /// Elements a media-neutral viewport resize restyled because their last
+    /// cascade resolved a viewport unit (each with its subtree).
+    ViewportUnitRestyles = "viewport_unit_restyles",
+    /// `resolve_styles` walked the whole document from `<html>` because a
+    /// whole-document restyle asked for it or the first layout has not
+    /// completed yet.
     FullStyleWalks = "full_style_walks",
     /// Nodes `apply_stylo_styles_to_taffy` processed.
     TaffyStyleSyncs = "taffy_style_syncs",

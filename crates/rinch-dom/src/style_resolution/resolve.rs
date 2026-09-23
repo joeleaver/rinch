@@ -34,17 +34,30 @@ impl RinchDocument {
             let guards = StylesheetGuards::same(&guard);
             self.stylist.flush::<RinchNode>(&guards, None, None);
         }
+        self.refresh_pseudo_rule_presence();
 
         let roots = std::mem::take(&mut self.tree.style_roots);
 
         // Full tree walk when:
-        // - No specific roots tracked (stylesheet reload, viewport resize)
-        // - First layout hasn't completed yet (DOM still being constructed,
-        //   parent classes may not be resolved when children are appended)
-        if roots.is_empty() || !self.tree.transitions_enabled {
+        // - a whole-document restyle asked for one (`full_style_walk`: a
+        //   stylesheet, theme, device pixel ratio or media-query change, and
+        //   the very first resolve);
+        // - the first layout hasn't completed yet (DOM still being constructed,
+        //   parent classes may not be resolved when children are appended).
+        //
+        // An empty `style_roots` alone is **not** a reason to walk: it means
+        // nothing was invalidated. It used to be one, and a synchronous
+        // insertion restyle — which consumes its own root — left the list
+        // empty with `styles_dirty` still set, so the next frame's resolve
+        // visited every node in the document and cascaded none of them.
+        if self.tree.full_style_walk || !self.tree.transitions_enabled {
+            self.tree.full_style_walk = false;
             self.tree.perf.bump(crate::perf::Counter::FullStyleWalks);
             let html_id = self.tree.html_id;
             self.resolve_styles_recursive(html_id, None);
+            return;
+        }
+        if roots.is_empty() {
             return;
         }
 
@@ -130,6 +143,21 @@ impl RinchDocument {
             self.resolve_styles_recursive(root_id, parent_style);
             resolved_roots.push(root_id);
         }
+    }
+
+    /// Recompute [`Self::has_before_rules`] / [`Self::has_after_rules`] from
+    /// the flushed cascade data: whether any origin has a `::before` /
+    /// `::after` rule at all. A handful of hash lookups per resolve.
+    fn refresh_pseudo_rule_presence(&mut self) {
+        use style::selector_parser::PseudoElement;
+        let has = |pseudo: PseudoElement| {
+            self.stylist.iter_origins().any(|(data, _)| {
+                data.normal_rules(std::slice::from_ref(&pseudo))
+                    .is_some_and(|map| !map.is_empty())
+            })
+        };
+        self.has_before_rules = has(PseudoElement::Before);
+        self.has_after_rules = has(PseudoElement::After);
     }
 
     /// Walk up to find the nearest ancestor with a valid computed style.
@@ -401,13 +429,30 @@ impl RinchDocument {
             self.sync_root_font_size(&computed);
         }
 
-        // Check for ::before and ::after pseudo-elements
+        // Viewport-unit usage, for `restyle_for_viewport_change`. The pseudo
+        // resolutions below OR their own usage in.
+        self.tree.nodes[node_id].uses_viewport_units.set(
+            computed
+                .flags
+                .intersects(style::computed_value_flags::ComputedValueFlags::USES_VIEWPORT_UNITS),
+        );
+
+        // Check for ::before and ::after pseudo-elements — only when some
+        // stylesheet has a rule for that pseudo at all. The UA sheet has none,
+        // so an app that declares none pays nothing here.
         use style::selector_parser::PseudoElement;
-        self.tree
-            .perf
-            .add(crate::perf::Counter::PseudoElementPasses, 2);
-        self.resolve_pseudo_element(node_id, &computed, PseudoElement::Before);
-        self.resolve_pseudo_element(node_id, &computed, PseudoElement::After);
+        if self.has_before_rules {
+            self.tree
+                .perf
+                .bump(crate::perf::Counter::PseudoElementPasses);
+            self.resolve_pseudo_element(node_id, &computed, PseudoElement::Before);
+        }
+        if self.has_after_rules {
+            self.tree
+                .perf
+                .bump(crate::perf::Counter::PseudoElementPasses);
+            self.resolve_pseudo_element(node_id, &computed, PseudoElement::After);
+        }
 
         // Generate list markers for <li> elements (if no CSS ::before exists)
         self.resolve_list_marker(node_id);
@@ -457,6 +502,8 @@ impl RinchDocument {
         // Keep the root style pointer fresh too — root font metrics
         // (rex/rch/ric) resolve through it.
         device.set_root_style(root_style);
+        // …and remembered, so a Device rebuilt by a resize carries it too.
+        self.device_params.root_style = Some(root_style.clone());
 
         let size = root_style
             .effective_zoom

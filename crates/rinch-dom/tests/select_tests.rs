@@ -260,3 +260,42 @@ fn explicit_width_is_respected_over_intrinsic() {
     let w = doc.tree.get(sel.0).unwrap().layout.width;
     assert!((w - 90.0).abs() < 1.0, "explicit width respected, got {w}");
 }
+
+/// Editing an option's text in place — `set_text_content` on its text node —
+/// moves the widest label, so the closed select's width follows: the text
+/// change re-syncs the select (`note_select_content_changed`), which no cascade
+/// of the select's own would (review of #887, p18).
+#[test]
+fn editing_an_option_label_in_place_resizes_the_select() {
+    let label = "a much much longer option label";
+    let mut doc = RinchDocument::new();
+    let body = doc.body();
+    let sel = doc.create_element("select");
+    doc.append_child(body, sel);
+    let o = doc.create_element("option");
+    doc.append_child(sel, o);
+    let t = doc.create_text("a");
+    doc.append_child(o, t);
+    doc.resolve_layout(1000.0, 800.0);
+    let narrow = doc.tree.get(sel.0).unwrap().layout.width;
+    doc.set_text_content(t, label);
+    doc.resolve_layout(1000.0, 800.0);
+    let edited = doc.tree.get(sel.0).unwrap().layout.width;
+
+    let mut fresh = RinchDocument::new();
+    let body = fresh.body();
+    let fsel = fresh.create_element("select");
+    fresh.append_child(body, fsel);
+    let fo = fresh.create_element("option");
+    fresh.append_child(fsel, fo);
+    let ft = fresh.create_text(label);
+    fresh.append_child(fo, ft);
+    fresh.resolve_layout(1000.0, 800.0);
+    let expected = fresh.tree.get(fsel.0).unwrap().layout.width;
+
+    assert!(
+        expected > narrow + 50.0,
+        "precondition: the label widens it"
+    );
+    assert_eq!(edited, expected, "the edited select sizes to its new label");
+}
