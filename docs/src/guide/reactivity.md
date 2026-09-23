@@ -140,7 +140,7 @@ Effects are still de-duplicated per flush: an effect observing two signals that 
 
 ## Batching Updates
 
-When you update multiple signals, effects run after each update. To avoid redundant runs, use `batch()`:
+Outside a batch, effects run after each update. To avoid redundant runs, use `batch()`:
 
 ```rust
 batch(|| {
@@ -153,7 +153,19 @@ batch(|| {
 
 A top-level `batch()` flushes synchronously: by the time it returns, every effect its writes woke has run. Batches also **nest** — a `batch()` called inside another batch's closure joins the outer transaction, and the single flush happens when the outermost batch exits. (A `batch()` opened from inside an effect *run by a flush* is its own outermost batch — the flag is restored before the flush begins — so it still flushes before returning. An effect body that runs while a batch is still *open* is different: `Effect::new` runs its body immediately, so an effect created inside a batch closure runs inside that batch, and a `batch()` opened there joins the outer transaction instead of flushing.)
 
-Until the flush, nothing has run: inside the closure — including after a nested `batch()` returns — effects have not executed, and `Memo::get` still returns the pre-batch value.
+Until the flush, no effect has run: inside the closure — including after a nested `batch()` returns — effects have not executed, so DOM an effect maintains still shows the pre-batch state. **Memos are different: `Memo::get` inside the batch returns the new value.** A write marks every memo that reads it stale synchronously, and the read recomputes it (see [Memos](./memos.md#the-equality-cut-off)). It used to return the pre-batch value, which made a handler that wrote a signal and then read a memo of it act on stale data.
+
+### Every event handler is a batch
+
+You rarely need to call `batch()` yourself: **rinch runs each dispatched handler as one**. That covers `onclick` and every other `data-rid` handler, `oninput`/`onchange`, `onscroll`, file drops, the keyboard interceptor and the Escape dismiss stack, the paste interceptor, `Drag` `on_move`/`on_end`, menu and tray callbacks (and their shortcuts), and each callback drained from the main-thread queue (`Signal::send` and `run_on_main_thread` from another thread, `set_timeout`, `rinch-http`/`rinch-ws` completions) — on desktop, on the web (the delegated listeners go through the same `rinch_core::events::dispatch_*` functions) and in embed.
+
+So a handler that writes five signals flushes effects **once**, when it returns, and the host is told once (on desktop, one `ReRender`, not five). What that means inside the handler:
+
+- **Memos are current.** Write, then read a memo of what you wrote: you get the new value.
+- **Effects have not run yet.** Anything an effect derives — the DOM it patches, a signal it writes — still shows the state from before the handler. A handler that writes a signal and then synchronously reads a DOM node that an effect of that signal would have changed sees the old node. Read the signal (or a memo) instead. If you really need the effect to have run first, do the follow-up after the handler — `set_timeout(0, …)` runs it as its own transaction once this one has flushed (`run_on_main_thread` would not: called *on* the main thread it runs its closure immediately). A nested `batch()` will not do it: it joins the handler's transaction.
+- **Glitch-free.** An effect that reads several of the signals the handler wrote runs once, and sees all of the writes, never a mix of old and new.
+
+Callbacks queued to the main thread are batched **one per callback**, not one for the whole drain, because they were queued independently and a later one may rely on an earlier one's effects.
 
 If the closure **panics**, the panic propagates and the batching flag is restored on the way out, so later writes flush normally. Nothing is flushed during the unwind itself — the effects the aborted batch queued stay pending and run at the next flush (the next unbatched write or outermost batch exit; the runtime does not schedule one on its own).
 

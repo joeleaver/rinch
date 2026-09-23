@@ -1,4 +1,21 @@
 //! Memo: a cached computed value that only recomputes when dependencies change.
+//!
+//! # Staleness and the equality cut-off
+//!
+//! A memo is **push-dirty, pull-value**. A write to a signal marks every memo
+//! that reads it [`Dirty`](MemoState::Dirty) *synchronously*, and every memo
+//! downstream of those [`Check`](MemoState::Check) — so a read made straight
+//! after the write, even inside a [`batch`](super::batch), recomputes and sees
+//! the new value. Nothing is recomputed until somebody reads.
+//!
+//! Each memo carries a **version** that moves only when a recompute produces a
+//! value *unequal* (`PartialEq`) to the one before it. Every observer records
+//! the version of each memo it read, and an observer woken only *through* a
+//! memo (not by a signal it reads directly) is a "maybe": the flush brings those
+//! memos up to date and compares versions before running it. A memo that
+//! recomputed to the same value therefore wakes nobody. A `Check` memo resolves
+//! the same way — it re-validates its own memo sources and recomputes only if
+//! one of them actually moved.
 
 use std::any::Any;
 use std::cell::{Cell, RefCell};
@@ -13,7 +30,14 @@ use super::{MEMO_STORE, ObserverId, RUNTIME};
 /// A cached computed value that only recomputes when dependencies change.
 ///
 /// Memos are lazily evaluated and cache their result until one of their
-/// dependencies changes.
+/// dependencies changes. A recompute that yields a value **equal** to the
+/// previous one (hence the `T: PartialEq` bound) does not wake the memo's
+/// dependents: an effect that reads `Memo::new(move || selected.get() == id)`
+/// re-runs only when *its* row's answer flips, not on every selection change.
+///
+/// A read is always current, even inside a [`batch`](super::batch) or an event
+/// handler that has just written one of the memo's sources: the write marks the
+/// memo stale synchronously, and the read recomputes it.
 ///
 /// # Example
 ///
@@ -41,11 +65,46 @@ impl<T: 'static> Clone for Memo<T> {
     }
 }
 
+/// How current a memo's cached value is. See the module docs.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum MemoState {
+    /// The cached value is current.
+    Clean,
+    /// A memo this one reads may have changed; re-validate those before
+    /// deciding whether to recompute.
+    Check,
+    /// A signal this memo reads changed (or it has never run): recompute.
+    Dirty,
+}
+
+/// The type-erased face of a memo, for the parts of the runtime that hold an
+/// [`ObserverId`] or a slot key rather than a `Memo<T>`: the eager staleness
+/// walk in `Signal::notify` and the version check in `flush_effects`.
+pub(crate) trait MemoNode {
+    /// Bring the cached value up to date — recompute if `Dirty`, re-validate if
+    /// `Check` — and return the memo's version.
+    fn refresh(&self) -> u64;
+    /// Mark `Dirty`. Returns whether it was `Clean`, i.e. whether its
+    /// dependents still need marking `Check` (a memo that was already stale
+    /// has stale dependents by construction).
+    fn mark_dirty(&self) -> bool;
+    /// `Clean` → `Check`. Returns whether that transition happened.
+    fn mark_check(&self) -> bool;
+    /// A snapshot of the observers subscribed to this memo.
+    fn subscriber_snapshot(&self) -> Vec<ObserverId>;
+    /// Whether anything is subscribed to this memo.
+    fn has_subscribers(&self) -> bool;
+}
+
 struct MemoInner<T> {
     id: ObserverId,
     value: RefCell<Option<T>>,
     f: RefCell<Box<dyn Fn() -> T>>,
-    dirty: Cell<bool>,
+    state: Cell<MemoState>,
+    /// Moves only when a recompute produces a value unequal to the previous one
+    /// (the first computation moves it from 0 to 1). Observers record the
+    /// version they read; see the module docs.
+    version: Cell<u64>,
     /// The context root current when this memo was created, re-entered around
     /// the recompute in [`Memo::get`].
     ///
@@ -74,7 +133,82 @@ struct MemoInner<T> {
     subscribers: Rc<RefCell<BTreeSet<ObserverId>>>,
 }
 
-impl<T: Clone + 'static> Memo<T> {
+impl<T: Clone + PartialEq + 'static> MemoInner<T> {
+    /// Run the user computation and store its result, moving the version only
+    /// if the result differs from the cached value.
+    ///
+    /// The computation runs HERE, at the first read after invalidation — not in
+    /// the dirty-marker effect. So the marker's root is irrelevant to it, and
+    /// the memo must re-enter its own creation root, or a memo created in one
+    /// context but first read from another resolves the wrong stores (issue
+    /// #136 follow-up). Both guards are RAII so a panic in the user computation
+    /// cannot strand state (issue #141).
+    ///
+    /// The owner is restored for the same structural reason as the root: the
+    /// computation runs in the *reader's* frame, so a memo created in one
+    /// component but first read from another would otherwise attribute the
+    /// resources it creates to whatever happened to be rendering.
+    fn recompute(&self) {
+        // Clone the owner out before pushing: the user computation below can
+        // reach `Memo::leak` on this same memo, which takes `owner` mutably.
+        let owner = self.owner.borrow().clone();
+        let _root_guard = crate::context::push_context_root(self.root);
+        let _owner_guard = owner.push();
+        // Retracking: this is the pass that reads the memo's dependencies, so
+        // it replaces the set the previous recompute took out (#171).
+        let _observer_guard = super::effect::ObserverGuard::push_retracking(self.id);
+
+        let value = (self.f.borrow())();
+        let changed = self.value.borrow().as_ref() != Some(&value);
+        // Stored even when equal: a reader gets the latest computation; only
+        // the *notification* is cut off.
+        *self.value.borrow_mut() = Some(value);
+        if changed {
+            self.version.set(self.version.get().wrapping_add(1));
+        }
+        self.state.set(MemoState::Clean);
+    }
+}
+
+impl<T: Clone + PartialEq + 'static> MemoNode for MemoInner<T> {
+    fn refresh(&self) -> u64 {
+        match self.state.get() {
+            MemoState::Clean => {}
+            MemoState::Dirty => self.recompute(),
+            MemoState::Check => {
+                if super::effect::memo_sources_changed(self.id) {
+                    self.recompute();
+                } else {
+                    self.state.set(MemoState::Clean);
+                }
+            }
+        }
+        self.version.get()
+    }
+
+    fn mark_dirty(&self) -> bool {
+        self.state.replace(MemoState::Dirty) == MemoState::Clean
+    }
+
+    fn mark_check(&self) -> bool {
+        if self.state.get() == MemoState::Clean {
+            self.state.set(MemoState::Check);
+            true
+        } else {
+            false
+        }
+    }
+
+    fn subscriber_snapshot(&self) -> Vec<ObserverId> {
+        self.subscribers.borrow().iter().copied().collect()
+    }
+
+    fn has_subscribers(&self) -> bool {
+        !self.subscribers.borrow().is_empty()
+    }
+}
+
+impl<T: Clone + PartialEq + 'static> Memo<T> {
     /// Create a new memo with the given computation function.
     pub fn new<F: Fn() -> T + 'static>(f: F) -> Self {
         let id = RUNTIME.with(|rt| {
@@ -89,14 +223,19 @@ impl<T: Clone + 'static> Memo<T> {
             id,
             value: RefCell::new(None),
             f: RefCell::new(Box::new(f)),
-            dirty: Cell::new(true),
+            state: Cell::new(MemoState::Dirty),
+            version: Cell::new(0),
             root: crate::context::current_context_root(),
             owner: RefCell::new(super::Owner::current()),
             subscribers: Rc::clone(&subscribers),
         });
 
-        // Store memo as an effect so it can be notified. We store a "marker"
-        // effect that marks the memo as dirty.
+        // The memo's "marker": an observer registered under the memo's own id,
+        // so it is what the memo's sources hold. Its body does NOT mark or
+        // recompute anything — the write that queued it already marked the
+        // memo stale, synchronously (`Signal::notify`). All it does is pass the
+        // wake on to the memo's dependents as *maybe*s: `flush_effects` runs
+        // each one only if a memo it read really moved to a new value.
         //
         // Built before the registry is touched, not inside the borrow: the
         // constructor reads two other thread-locals (the context root and the
@@ -105,8 +244,6 @@ impl<T: Clone + 'static> Memo<T> {
         let memo_inner = Rc::clone(&inner);
         let marker = Rc::new(EffectInner {
             f: RefCell::new(Box::new(move || {
-                memo_inner.dirty.set(true);
-                // Notify memo's subscribers
                 let subscribers: Vec<_> = memo_inner.subscribers.borrow().iter().copied().collect();
                 RUNTIME.with(|rt| {
                     let mut rt = rt.borrow_mut();
@@ -119,9 +256,9 @@ impl<T: Clone + 'static> Memo<T> {
             })),
             disposed: Cell::new(false),
             root: crate::context::current_context_root(),
-            // Inert: the marker closure only flips a flag and queues
-            // observers, so it allocates nothing to attribute. Set for
-            // uniformity with every other `EffectInner`.
+            // Inert: the marker closure only queues observers, so it allocates
+            // nothing to attribute. Set for uniformity with every other
+            // `EffectInner`.
             owner: super::Owner::current(),
             // Not inert: this is where the *memo's* own subscriptions are
             // recorded, since the lazy recompute runs under the marker's id
@@ -130,16 +267,18 @@ impl<T: Clone + 'static> Memo<T> {
             // …and the recompute, not this body, is what re-reads them. A run of
             // this marker must therefore leave them alone.
             body_tracks_deps: false,
+            memo: Some(Rc::clone(&inner) as Rc<dyn MemoNode>),
         });
         register(id, marker);
 
         // Store in MEMO_STORE and return Copy handle. The marker's ObserverId
         // rides along so freeing the slot can also remove the EFFECTS entry — the marker
         // holds the second strong Rc to this same MemoInner.
+        let node: Rc<dyn MemoNode> = Rc::clone(&inner) as Rc<dyn MemoNode>;
         let (store_id, generation) = MEMO_STORE.with(|store| {
             store
                 .borrow_mut()
-                .alloc(inner as Rc<dyn Any>, id, subscribers)
+                .alloc(inner as Rc<dyn Any>, node, id, subscribers)
         });
 
         // Attribute this memo to the ambient owner, if any (issue #141). The
@@ -188,11 +327,18 @@ impl<T: Clone + 'static> Memo<T> {
             .downcast::<MemoInner<T>>()
             .expect("Memo type mismatch (internal error)");
 
-        // Subscribe the current observer to this memo, and record the
-        // subscription on it so a dispose (or its next run) releases it — the
-        // memo half of issue #171. Same "only when the insert is new" rule as
-        // `Signal::track`.
+        // The reader, captured before the refresh pushes the memo's own id.
         let observer = RUNTIME.with(|rt| rt.borrow().observer_stack.last().copied());
+
+        // Bring the value up to date first, so the version recorded below is
+        // the version of the value this read returns.
+        let version = inner.refresh();
+
+        // Subscribe the current observer to this memo, and record the
+        // subscription on it — with the version it saw — so a dispose (or its
+        // next run) releases it (the memo half of issue #171), and so a later
+        // flush can tell whether the memo has moved on since. Same "only when
+        // the insert is new" rule as `Signal::track`.
         if let Some(observer) = observer
             && inner.subscribers.borrow_mut().insert(observer)
         {
@@ -201,36 +347,9 @@ impl<T: Clone + 'static> Memo<T> {
                 super::DepKey::Memo {
                     id: self.id,
                     generation: self.generation,
+                    seen: version,
                 },
             );
-        }
-
-        // Recompute if dirty.
-        //
-        // The computation runs HERE, at the first read after invalidation — not
-        // in the dirty-marker effect. So the marker's root is irrelevant to it,
-        // and the memo must re-enter its own creation root, or a memo created in
-        // one context but first read from another resolves the wrong stores
-        // (issue #136 follow-up). Both guards are RAII so a panic in the user
-        // computation cannot strand state (issue #141).
-        //
-        // The owner is restored for the same structural reason as the root: the
-        // computation runs in the *reader's* frame, so a memo created in one
-        // component but first read from another would otherwise attribute the
-        // resources it creates to whatever happened to be rendering.
-        if inner.dirty.get() {
-            // Clone the owner out before pushing: the user computation below can
-            // reach `Memo::leak` on this same memo, which takes `owner` mutably.
-            let owner = inner.owner.borrow().clone();
-            let _root_guard = crate::context::push_context_root(inner.root);
-            let _owner_guard = owner.push();
-            // Retracking: this is the pass that reads the memo's dependencies,
-            // so it replaces the set the previous recompute took out (#171).
-            let _observer_guard = super::effect::ObserverGuard::push_retracking(inner.id);
-
-            let value = (inner.f.borrow())();
-            *inner.value.borrow_mut() = Some(value);
-            inner.dirty.set(false);
         }
 
         Some(
@@ -311,7 +430,7 @@ impl<T: 'static> Memo<T> {
     }
 }
 
-impl<T: fmt::Debug + Clone + 'static> fmt::Debug for Memo<T> {
+impl<T: fmt::Debug + Clone + PartialEq + 'static> fmt::Debug for Memo<T> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let inner_any = MEMO_STORE.with(|store| store.borrow().get_inner(self.id, self.generation));
         if let Some(inner_any) = inner_any
@@ -320,7 +439,7 @@ impl<T: fmt::Debug + Clone + 'static> fmt::Debug for Memo<T> {
             return f
                 .debug_struct("Memo")
                 .field("value", &*inner.value.borrow())
-                .field("dirty", &inner.dirty.get())
+                .field("state", &inner.state.get())
                 .finish();
         }
         f.debug_struct("Memo").field("error", &"freed").finish()

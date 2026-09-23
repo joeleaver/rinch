@@ -73,6 +73,8 @@
 mod bounds;
 mod effect;
 mod memo;
+#[cfg(test)]
+mod memo_cutoff_tests;
 mod poll;
 mod scope;
 mod scoped;
@@ -138,6 +140,12 @@ pub(crate) struct Runtime {
     /// was written for.
     pub(crate) pending_effects_set: HashSet<ObserverId, effect::ObserverIdBuildHasher>,
 
+    /// The pending observers that were queued by a **signal** they read — as
+    /// opposed to being woken through a memo. These run unconditionally; any
+    /// other pending observer is a "maybe" that `flush_effects` runs only if a
+    /// memo it read moved to a new version (the memo equality cut-off).
+    pub(crate) definite_effects: HashSet<ObserverId, effect::ObserverIdBuildHasher>,
+
     /// Whether we're currently in a batch
     pub(crate) batching: bool,
 
@@ -175,6 +183,7 @@ impl Runtime {
             observer_stack: Vec::new(),
             pending_effects: VecDeque::new(),
             pending_effects_set: HashSet::default(),
+            definite_effects: HashSet::default(),
             batching: false,
             next_id: 0,
             owner_stack: Vec::new(),
@@ -396,8 +405,11 @@ pub fn queue_main_callback(f: Box<dyn FnOnce() + Send>) -> bool {
 /// own host, because a signal change notifies every subscriber (issue #134).
 pub fn drain_main_callbacks() {
     let callbacks: Vec<Box<dyn FnOnce() + Send>> = MAIN_QUEUE.lock().unwrap().drain(..).collect();
+    // One transaction per callback, not one for the whole drain: callbacks are
+    // queued independently (a `Signal::send`, a timer, a parked continuation),
+    // and a later one may rely on an earlier one's effects having run.
     for callback in callbacks {
-        callback();
+        batch(callback);
     }
 }
 
@@ -478,8 +490,18 @@ pub(crate) struct ObserverId(pub(crate) usize);
 /// `run_effect` that finds nothing to run.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) enum DepKey {
-    Signal { id: u32, generation: u32 },
-    Memo { id: u32, generation: u32 },
+    Signal {
+        id: u32,
+        generation: u32,
+    },
+    /// `seen` is the memo's version as of the read that took the
+    /// subscription out — what `flush_effects` compares against to decide
+    /// whether an observer woken through this memo really has to run.
+    Memo {
+        id: u32,
+        generation: u32,
+        seen: u64,
+    },
 }
 
 impl DepKey {
@@ -499,7 +521,7 @@ impl DepKey {
                     slot.subscribers.remove(&observer);
                 }
             }),
-            DepKey::Memo { id, generation } => {
+            DepKey::Memo { id, generation, .. } => {
                 MEMO_STORE.with(|store| store.borrow().unsubscribe(id, generation, observer));
             }
         }
@@ -626,6 +648,10 @@ thread_local! {
 
 struct MemoSlot {
     inner: Rc<dyn Any>, // Type-erased Rc<MemoInner<T>>
+    /// The same allocation as `inner`, as the runtime's type-erased memo
+    /// interface: the version check in `flush_effects` starts from a
+    /// [`DepKey`] and has to refresh the memo without knowing its `T`.
+    node: Rc<dyn memo::MemoNode>,
     /// The memo's dirty-marker effect, which holds the *second* strong
     /// reference to the same `MemoInner`. Recorded here because the slot is
     /// type-erased: freeing a memo has to remove the marker's `EFFECTS` entry
@@ -659,6 +685,7 @@ impl MemoStore {
     pub(crate) fn alloc(
         &mut self,
         inner: Rc<dyn Any>,
+        node: Rc<dyn memo::MemoNode>,
         observer: ObserverId,
         subscribers: Rc<RefCell<BTreeSet<ObserverId>>>,
     ) -> (u32, u32) {
@@ -670,6 +697,7 @@ impl MemoStore {
 
         let slot = MemoSlot {
             inner,
+            node,
             observer,
             subscribers,
             generation,
@@ -691,6 +719,16 @@ impl MemoStore {
             .as_ref()
             .filter(|s| s.generation == generation)
             .map(|s| Rc::clone(&s.inner))
+    }
+
+    /// The memo in this slot as a [`MemoNode`](memo::MemoNode), if the slot
+    /// still holds the memo the caller recorded.
+    pub(crate) fn get_node(&self, id: u32, generation: u32) -> Option<Rc<dyn memo::MemoNode>> {
+        self.slots
+            .get(id as usize)?
+            .as_ref()
+            .filter(|s| s.generation == generation)
+            .map(|s| Rc::clone(&s.node))
     }
 
     /// Remove an observer from a memo's subscriber set, if this slot still
@@ -761,6 +799,47 @@ pub(crate) fn free_memo(id: u32, generation: u32) {
 }
 
 // ============================================================================
+// Memo staleness
+// ============================================================================
+
+/// The memo a registered observer stands for, if it is a memo's marker.
+fn memo_node_of(observer: ObserverId) -> Option<Rc<dyn memo::MemoNode>> {
+    effect::EFFECTS.with(|effects| {
+        effects
+            .borrow()
+            .get(&observer)
+            .and_then(|inner| inner.memo.clone())
+    })
+}
+
+/// Mark stale, synchronously, every memo among a written signal's
+/// `subscribers` (`Dirty`), and every memo downstream of those (`Check`).
+///
+/// This is the *push* half of the memo model: it is what lets a read made
+/// straight after a write — inside a [`batch`], inside an event handler that
+/// has not returned yet — see the new value, where a memo invalidated only
+/// when its queued marker ran would answer from its cache until the flush.
+/// It computes nothing. The walk stops at a memo that was already stale,
+/// because a stale memo's dependents were marked when it became stale.
+pub(crate) fn mark_memos_stale(subscribers: &[ObserverId]) {
+    let mut to_check: Vec<ObserverId> = Vec::new();
+    for &observer in subscribers {
+        if let Some(node) = memo_node_of(observer)
+            && node.mark_dirty()
+        {
+            to_check.extend(node.subscriber_snapshot());
+        }
+    }
+    while let Some(observer) = to_check.pop() {
+        if let Some(node) = memo_node_of(observer)
+            && node.mark_check()
+        {
+            to_check.extend(node.subscriber_snapshot());
+        }
+    }
+}
+
+// ============================================================================
 // Batching
 // ============================================================================
 
@@ -826,10 +905,15 @@ impl Drop for BatchGuard {
 /// batch with an RAII window (raise flag → batch writes → drop flag) and
 /// needs observers to run inside the window must account for this case.
 ///
-/// Until the flush, nothing has run: inside the closure — including after a
-/// *nested* `batch()` returns — effects have not executed, and [`Memo::get`]
-/// still returns the pre-batch value (a memo is re-marked dirty by a queued
-/// marker effect, which is itself deferred by the batch).
+/// Until the flush, no effect has run: inside the closure — including after a
+/// *nested* `batch()` returns — effects have not executed. [`Memo::get`] is
+/// current all the same: a write marks the memos that read it stale
+/// synchronously, and the read recomputes (see `memo`'s module docs).
+///
+/// Every event-handler dispatch runs inside one (`events::dispatch_event` and
+/// its siblings, the keyboard and paste interceptors, the dismiss stack, `Drag`
+/// callbacks, each main-thread callback, each timer), so a handler that writes
+/// several signals flushes once.
 ///
 /// # Panics
 ///
@@ -936,7 +1020,7 @@ pub(crate) fn count_signal_notify() {
 ///
 /// This is a convenience function that creates a memo and returns it
 /// as a signal-like value.
-pub fn derived<T: Clone + 'static>(f: impl Fn() -> T + 'static) -> Memo<T> {
+pub fn derived<T: Clone + PartialEq + 'static>(f: impl Fn() -> T + 'static) -> Memo<T> {
     Memo::new(f)
 }
 

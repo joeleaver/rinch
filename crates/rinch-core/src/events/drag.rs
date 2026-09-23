@@ -484,7 +484,9 @@ pub fn update_drag_with_button(mouse_x: f32, mouse_y: f32, primary: PrimaryButto
         })
     });
     if let Some((on_move, x, y, forward)) = pending {
-        on_move(x, y);
+        // One transaction per callback (`crate::reactive::batch`): a slider's
+        // `on_move` that writes a value and a label flushes once.
+        crate::reactive::batch(|| on_move(x, y));
         (true, forward)
     } else {
         (false, false)
@@ -507,7 +509,7 @@ pub fn finish_drag(mouse_x: f32, mouse_y: f32) {
     }
     let on_end = ACTIVE_DRAG.with(|drag| drag.borrow_mut().take().and_then(|s| s.on_end));
     if let Some(cb) = on_end {
-        cb(mouse_x, mouse_y);
+        crate::reactive::batch(|| cb(mouse_x, mouse_y));
     }
 }
 

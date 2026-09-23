@@ -123,8 +123,8 @@ assert_eq!(frame.get(Counter::TaffyRootComputes), 0, "a colour change must not l
 | | `stacking_order_builds` | Stacking sequences built, by paint and by hit testing |
 | Input | `hit_tests`, `hit_test_nodes_visited` | Hit tests run, and the nodes they visited |
 | | `hit_extents_computed` | Subtree extents the hit tester computed so it can skip subtrees nowhere near the pointer. They are kept until the document or its layout changes, so a run of moves over a still document computes each one once |
-| Reactive | `effect_runs`, `signal_notifies` | Effect bodies run (a memo's invalidation marker counts as one; its recompute does not), and signal writes |
-| | `rerender_events_queued` | `ReRender` events queued to the desktop event loop |
+| Reactive | `effect_runs`, `signal_notifies` | Effect bodies run, and signal writes. A memo's internal marker (which passes a wake on to the memo's dependents) is **not** counted, nor is a recompute, nor is a dependent the equality cut-off skipped: `effect_runs` is the effect bodies that actually ran |
+| | `rerender_events_queued` | `ReRender` events queued to the desktop event loop. At most one is queued at a time — writes between two event-loop turns coalesce into it — so this counts turns that had something to resolve, not writes |
 | Time (ns) | `time_style_ns`, `time_layout_ns` (`time_ifc_setup_ns`, `time_taffy_compute_ns`, `time_build_ifc_ns`), `time_paint_ns`, `time_present_ns` | Wall-clock time per phase, summed over the frame. Each phase *call* is timed, never each node; a phase can run several times a frame (every DOM insertion runs the two style phases), so this is a few clock reads per call |
 
 Some limits on what these numbers mean:

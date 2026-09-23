@@ -179,10 +179,11 @@ pub fn dispatch_dismiss() -> bool {
         if !doc_matches(doc, caller) {
             continue;
         }
-        let took = match &owner {
+        // One transaction per handler (`crate::reactive::batch`).
+        let took = crate::reactive::batch(|| match &owner {
             Some(o) => o.run(|| handler()),
             None => handler(),
-        };
+        });
         if took {
             consumed = true;
             break;

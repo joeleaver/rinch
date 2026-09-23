@@ -178,14 +178,39 @@ pub fn stored_effect_count() -> usize {
 #[cfg(feature = "theme")]
 thread_local! {
     static CURRENT_THEME_CSS: RefCell<Option<String>> = const { RefCell::new(None) };
+    /// Bumped every time [`set_current_theme_css`] actually changes the slot.
+    static CURRENT_THEME_CSS_GENERATION: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
 }
 
 /// Set the current theme CSS for snapshot creation.
+///
+/// Setting the same CSS again changes nothing, including the
+/// [generation](current_theme_css_generation).
 #[cfg(feature = "theme")]
 pub fn set_current_theme_css(css: Option<String>) {
-    CURRENT_THEME_CSS.with(|theme_css| {
-        *theme_css.borrow_mut() = css;
+    let changed = CURRENT_THEME_CSS.with(|theme_css| {
+        let mut slot = theme_css.borrow_mut();
+        if *slot == css {
+            false
+        } else {
+            *slot = css;
+            true
+        }
     });
+    if changed {
+        CURRENT_THEME_CSS_GENERATION.with(|g| g.set(g.get().wrapping_add(1)));
+    }
+}
+
+/// A counter that moves whenever the current theme CSS changes.
+///
+/// The cheap way to ask "has the theme changed since I last looked?": the CSS
+/// itself is tens of kilobytes (every palette in ten shades), and a host that
+/// cloned and compared it on every signal flush paid for that on every
+/// re-render.
+#[cfg(feature = "theme")]
+pub fn current_theme_css_generation() -> u64 {
+    CURRENT_THEME_CSS_GENERATION.with(|g| g.get())
 }
 
 /// Get the current theme CSS for snapshot creation.

@@ -1638,6 +1638,14 @@ mod tests {
         probe: Signal<u32>,
     }
 
+    /// `Memo<T>` needs `T: PartialEq`. Never equal, so a recompute always
+    /// counts as a change, and comparing reads no signal.
+    impl PartialEq for ReadsSignalOnDrop {
+        fn eq(&self, _: &Self) -> bool {
+            false
+        }
+    }
+
     impl Drop for ReadsSignalOnDrop {
         fn drop(&mut self) {
             let _ = self.probe.get();

@@ -235,7 +235,19 @@ fn ensure_global_init() {
         // Theme CSS is page-global (one shared `<style>`). On any signal change
         // (e.g. dark-mode toggle), refresh it once — regardless of which root
         // changed. Fine-grained DOM updates are handled by effects directly.
+        //
+        // Keyed on the theme's generation, so a flush that did not touch the
+        // theme costs one integer compare rather than a clone of the whole
+        // stylesheet string.
         rinch_core::set_on_signal_change(|| {
+            thread_local! {
+                static APPLIED_THEME_GENERATION: std::cell::Cell<Option<u64>> =
+                    const { std::cell::Cell::new(None) };
+            }
+            let generation = rinch_core::current_theme_css_generation();
+            if APPLIED_THEME_GENERATION.with(|g| g.replace(Some(generation))) == Some(generation) {
+                return;
+            }
             if let Some(css) = rinch_core::get_current_theme_css() {
                 web_document::update_theme_style_global(&css);
             }

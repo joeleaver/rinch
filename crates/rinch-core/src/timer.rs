@@ -89,7 +89,11 @@ pub fn clear_timeout(handle: TimeoutHandle) {
 /// app API — prefer [`set_timeout`] / [`clear_timeout`].
 #[doc(hidden)]
 pub fn fire_timeout(id: u64) {
-    resume_main_callback(MainCallbackId::from_raw(id), ());
+    // One transaction per callback, like every event handler
+    // (`crate::reactive::batch`). The desktop path is already inside one (the
+    // main-thread drain batches each callback); a browser `setTimeout` calls
+    // this directly.
+    crate::reactive::batch(|| resume_main_callback(MainCallbackId::from_raw(id), ()));
 }
 
 fn schedule(id: u64, delay_ms: u32) {

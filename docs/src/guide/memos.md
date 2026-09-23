@@ -17,12 +17,22 @@ doubled.get(); // 6 (cached — no recomputation)
 
 `Memo<T>` is `Copy`, just like `Signal<T>`. Use it in multiple closures without `.clone()`.
 
+The value type must be `Clone + PartialEq`. `PartialEq` is what the equality
+cut-off below compares with; a type that cannot implement it meaningfully can
+implement it as "never equal" (`fn eq(&self, _: &Self) -> bool { false }`),
+which gives back the old behaviour of waking every dependent on every recompute.
+
 ## How Memos Work
 
 1. **Lazy** — only computes when you call `.get()`
 2. **Cached** — returns the cached result if dependencies haven't changed
 3. **Tracked** — automatically discovers which signals it reads
 4. **Composable** — memos can depend on other memos
+5. **Cut off on equality** — a recompute that produces a value *equal* to the
+   previous one wakes none of the memo's dependents
+6. **Always current** — a read straight after a write to one of its sources sees
+   the new value, even inside a `batch()` or an event handler that has not
+   returned yet
 
 ```
 Signal(count) ──► Memo(doubled) ──► cached value
@@ -33,6 +43,37 @@ Signal(count) ──► Memo(doubled) ──► cached value
  marks memo       recomputes if
  as "dirty"          dirty
 ```
+
+### The equality cut-off
+
+The pattern it exists for is per-row derived state:
+
+```rust
+let selected = Signal::new(3);
+
+for row in rows.get() {
+    let id = row.id;
+    let is_selected = Memo::new(move || selected.get() == id);
+    div { key: id, class: {move || if is_selected.get() { "row selected" } else { "row" }} }
+}
+```
+
+Every row's memo reads `selected`, so a selection change recomputes all of
+them — a comparison each. But only two answers change (the row that lost the
+selection and the row that gained it), so only those two rows' `class` effects
+run. Without the cut-off every row's effect ran on every click.
+
+How it works: a write marks the memos that read it stale **at once** (so a read
+straight after the write is current), and a memo's dependents are woken as
+*maybes*. Before running a maybe, the flush brings the memos it read up to date
+and compares each one's **version** — a counter that moves only when a recompute
+produces an unequal value — with the version the dependent saw last time. None
+moved: it is skipped. An effect that also reads a *signal* that changed is not a
+maybe, and runs as usual; signals have no cut-off (`set` notifies whether or not
+the value changed — use `set_if_changed` for that).
+
+The cut-off chains: a memo that reads a memo which recomputed to an equal value
+is re-validated without running its own computation.
 
 ## Memos vs Effects
 

@@ -211,8 +211,10 @@ fn a_real_dark_mode_toggle_keeps_the_loader_spinning() {
     let mut app = mount_loader();
     // Take the document's theme off the thread-global slot, so this test cannot
     // be perturbed by (or perturb) anything else on the thread.
-    app.owned_theme_css = Some(":root { --rinch-primary-color: #4dabf7; }".to_string());
-    app.last_theme_css = Some(app.effective_theme_css());
+    app.set_owned_theme_css(Some(
+        ":root { --rinch-primary-color: #4dabf7; }".to_string(),
+    ));
+    app.last_theme_key = Some(app.theme_key());
 
     let oval = node_with_class(&app, OVAL);
     assert_eq!(
@@ -223,13 +225,17 @@ fn a_real_dark_mode_toggle_keeps_the_loader_spinning() {
     let expected_start = backdate(&mut app, oval, 400.0);
 
     // "Dark mode on": a different theme sheet. `resolve_and_repaint` compares it
-    // against `last_theme_css` and takes the full-restyle branch by itself.
-    app.owned_theme_css = Some(":root { --rinch-primary-color: #1864ab; }".to_string());
+    // against `last_theme_key` and takes the full-restyle branch by itself.
+    let light = app.theme_key();
+    app.set_owned_theme_css(Some(
+        ":root { --rinch-primary-color: #1864ab; }".to_string(),
+    ));
+    assert_ne!(app.theme_key(), light, "precondition: the theme key moved");
     app.resolve_and_repaint(VIEWPORT.0, VIEWPORT.1);
 
     assert_eq!(
-        app.last_theme_css.as_deref(),
-        Some(":root { --rinch-primary-color: #1864ab; }"),
+        app.last_theme_key,
+        Some(app.theme_key()),
         "precondition: `resolve_and_repaint` really did take the theme-change branch"
     );
     assert_eq!(

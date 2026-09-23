@@ -109,7 +109,8 @@ pub fn has_paste_interceptor() -> bool {
 /// different interceptor, for instance) without a double borrow.
 pub fn dispatch_paste_event(data: &PasteEventData) -> bool {
     match crate::reactive::read_doc_scoped_slot(&PASTE_INTERCEPTOR) {
-        Some(cb) => cb(data),
+        // One transaction per handler (`crate::reactive::batch`).
+        Some(cb) => crate::reactive::batch(|| cb(data)),
         None => false,
     }
 }

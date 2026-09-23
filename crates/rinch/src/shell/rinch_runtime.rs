@@ -59,16 +59,72 @@ thread_local! {
 // Global (Send+Sync) proxy for waking the event loop from any thread.
 pub(crate) static GLOBAL_PROXY: OnceLock<EventLoopProxy> = OnceLock::new();
 
+/// The native events waiting for the next `proxy_wake_up`, with at most one
+/// [`RinchNativeEvent::ReRender`] among them.
+///
+/// `ReRender` means "signals changed since the last resolve", and one resolve
+/// answers any number of changes — so a second one queued behind the first is
+/// pure cost: a mutex, an event-loop wake and a `resolve_and_repaint` preamble
+/// that finds nothing to do. It used to be queued once per signal flush, which
+/// a handler writing *n* signals outside a batch turned into *n* events.
+///
+/// `rerender_pending` is cleared by [`Self::drain`] **under the same lock** that
+/// empties the queue: a `ReRender` sent after the drain (from an effect the
+/// drained events run, or from another thread) finds the flag down and queues
+/// afresh, and one sent before it is already in the drained batch. Clearing the
+/// flag outside the lock would leave a window in which a send saw it up,
+/// queued nothing, and then had its wake-up discarded.
+pub(crate) struct NativeEventQueue {
+    events: VecDeque<RinchNativeEvent>,
+    rerender_pending: bool,
+}
+
+impl NativeEventQueue {
+    const fn new() -> Self {
+        Self {
+            events: VecDeque::new(),
+            rerender_pending: false,
+        }
+    }
+
+    /// Queue `event`. Returns `false` for a `ReRender` that coalesced into one
+    /// already queued — nothing was added and no wake is owed.
+    pub(crate) fn push(&mut self, event: RinchNativeEvent) -> bool {
+        if matches!(event, RinchNativeEvent::ReRender) {
+            if self.rerender_pending {
+                return false;
+            }
+            self.rerender_pending = true;
+        }
+        self.events.push_back(event);
+        true
+    }
+
+    /// Take every queued event, and let the next `ReRender` queue again.
+    pub(crate) fn drain(&mut self) -> Vec<RinchNativeEvent> {
+        self.rerender_pending = false;
+        self.events.drain(..).collect()
+    }
+
+    pub(crate) fn is_empty(&self) -> bool {
+        self.events.is_empty()
+    }
+}
+
 // Queue of native events to process on the next proxy_wake_up.
 // winit 0.31 removes send_event(T); we queue events and call proxy.wake_up().
-static NATIVE_EVENT_QUEUE: Mutex<VecDeque<RinchNativeEvent>> = Mutex::new(VecDeque::new());
+static NATIVE_EVENT_QUEUE: Mutex<NativeEventQueue> = Mutex::new(NativeEventQueue::new());
 
-/// Queue a native event and wake the event loop.
+/// Queue a native event and wake the event loop. A `ReRender` while one is
+/// already queued is dropped — see [`NativeEventQueue`].
 pub(crate) fn send_native_event(event: RinchNativeEvent) {
-    if matches!(event, RinchNativeEvent::ReRender) {
+    let is_rerender = matches!(event, RinchNativeEvent::ReRender);
+    if !NATIVE_EVENT_QUEUE.lock().unwrap().push(event) {
+        return;
+    }
+    if is_rerender {
         crate::app::RERENDER_EVENTS_QUEUED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     }
-    NATIVE_EVENT_QUEUE.lock().unwrap().push_back(event);
     if let Some(proxy) = GLOBAL_PROXY.get() {
         proxy.wake_up();
     }
@@ -2277,7 +2333,7 @@ impl RinchRuntime {
             return;
         }
         self.draining_native_events = true;
-        let events: Vec<_> = NATIVE_EVENT_QUEUE.lock().unwrap().drain(..).collect();
+        let events = NATIVE_EVENT_QUEUE.lock().unwrap().drain();
         for event in events {
             self.handle_native_event(event, event_loop);
         }
@@ -3762,5 +3818,75 @@ mod bundled_font_tests {
             .as_ref()
             .expect("window props must reach the app");
         assert_eq!(carried.app_id.as_deref(), Some("com.example.carried"));
+    }
+}
+
+#[cfg(test)]
+mod native_event_queue_tests {
+    use super::*;
+
+    fn rerenders(events: &[RinchNativeEvent]) -> usize {
+        events
+            .iter()
+            .filter(|e| matches!(e, RinchNativeEvent::ReRender))
+            .count()
+    }
+
+    /// Any number of `ReRender`s between two drains queue one event, and only
+    /// the first asks for a wake.
+    #[test]
+    fn rerenders_coalesce_until_the_queue_is_drained() {
+        let mut q = NativeEventQueue::new();
+        let accepted: Vec<bool> = (0..7).map(|_| q.push(RinchNativeEvent::ReRender)).collect();
+        assert_eq!(accepted, [true, false, false, false, false, false, false]);
+        assert_eq!(rerenders(&q.drain()), 1);
+
+        // Drained: the next one queues again, and again coalesces its followers.
+        assert!(q.push(RinchNativeEvent::ReRender));
+        assert!(!q.push(RinchNativeEvent::ReRender));
+        assert_eq!(rerenders(&q.drain()), 1);
+        assert!(q.is_empty());
+    }
+
+    /// Through the real entry point: `rerender_events_queued` (what
+    /// `perf_stats` reports) counts the events actually queued, so a burst of
+    /// signal flushes between two drains counts one. The only test in the
+    /// process that sends a `ReRender` through the static queue.
+    #[test]
+    fn send_native_event_counts_one_rerender_per_drain() {
+        use std::sync::atomic::Ordering;
+        let _ = NATIVE_EVENT_QUEUE.lock().unwrap().drain();
+        let before = crate::app::RERENDER_EVENTS_QUEUED.load(Ordering::Relaxed);
+        for _ in 0..6 {
+            send_native_event(RinchNativeEvent::ReRender);
+        }
+        assert_eq!(
+            crate::app::RERENDER_EVENTS_QUEUED.load(Ordering::Relaxed) - before,
+            1
+        );
+        assert_eq!(rerenders(&NATIVE_EVENT_QUEUE.lock().unwrap().drain()), 1);
+        send_native_event(RinchNativeEvent::ReRender);
+        assert_eq!(
+            crate::app::RERENDER_EVENTS_QUEUED.load(Ordering::Relaxed) - before,
+            2,
+            "a drain re-arms it"
+        );
+        let _ = NATIVE_EVENT_QUEUE.lock().unwrap().drain();
+    }
+
+    /// Only `ReRender` coalesces: every other event is a distinct request, and
+    /// the `ReRender` keeps the position it was first queued at.
+    #[test]
+    fn other_events_are_never_coalesced() {
+        let mut q = NativeEventQueue::new();
+        assert!(q.push(RinchNativeEvent::MinimizeWindow));
+        assert!(q.push(RinchNativeEvent::ReRender));
+        assert!(q.push(RinchNativeEvent::MinimizeWindow));
+        assert!(!q.push(RinchNativeEvent::ReRender));
+        assert!(q.push(RinchNativeEvent::ShowWindow));
+        let drained = q.drain();
+        assert_eq!(drained.len(), 4, "{drained:?}");
+        assert!(matches!(drained[1], RinchNativeEvent::ReRender));
+        assert_eq!(rerenders(&drained), 1);
     }
 }

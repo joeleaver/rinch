@@ -116,6 +116,15 @@ use rinch_core::dom::{DomDocument, NodeHandle, RenderScope, clear_render_scope, 
 /// and monotonic. Bumped by the shell's `send_native_event`; folded into the
 /// document's `rerender_events_queued` counter per frame by
 /// [`RinchApp::end_perf_frame`].
+/// Identifies which theme CSS a document is showing without holding the CSS:
+/// the thread-global slot at a [generation](rinch_core::current_theme_css_generation),
+/// or the document's own CSS at [`RinchApp::owned_theme_generation`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ThemeKey {
+    Global(u64),
+    Owned(u64),
+}
+
 pub(crate) static RERENDER_EVENTS_QUEUED: std::sync::atomic::AtomicU64 =
     std::sync::atomic::AtomicU64::new(0);
 use rinch_core::events;
@@ -379,13 +388,17 @@ pub struct RinchApp {
     /// Surface currently being dragged over (for DragEnter/DragLeave dispatch).
     /// Stores (surface_id, dom_node_id).
     pub(crate) drag_over_surface: Option<(usize, usize)>,
-    /// Last theme CSS loaded into the document (for change detection).
-    pub(crate) last_theme_css: Option<String>,
+    /// The [`ThemeKey`] of the theme CSS last loaded into the document (for
+    /// change detection).
+    pub(crate) last_theme_key: Option<ThemeKey>,
     /// Per-document theme CSS owned by this app (issue #138). `None` = follow
     /// the thread-global theme slot (the single-root shell/web/android paths).
     /// Embed contexts set this so creating another context on the same thread
-    /// never restyles this one.
+    /// never restyles this one. Written through [`Self::set_owned_theme_css`],
+    /// which keeps `owned_theme_generation` in step.
     pub(crate) owned_theme_css: Option<String>,
+    /// Bumped whenever `owned_theme_css` changes; the owned half of [`ThemeKey`].
+    pub(crate) owned_theme_generation: u64,
     /// Timestamp of last mouse click (for multi-click detection).
     pub(crate) last_click_time: Instant,
     /// Position of last mouse click.
@@ -597,8 +610,9 @@ impl RinchApp {
             pending_drag: None,
             active_dnd: None,
             drag_over_surface: None,
-            last_theme_css: None,
+            last_theme_key: None,
             owned_theme_css: None,
+            owned_theme_generation: 0,
             last_click_time: Instant::now(),
             last_click_pos: (0.0, 0.0),
             click_count: 0,
@@ -807,6 +821,29 @@ impl RinchApp {
     /// The theme CSS this document should be using: the per-document owned CSS
     /// when set (embed contexts, issue #138), otherwise the thread-global slot
     /// (the single-root shell/web/android default).
+    /// Set (or clear) this document's own theme CSS. Embed contexts are the
+    /// only production caller.
+    #[cfg(feature = "theme")]
+    #[cfg_attr(not(any(feature = "gpu", feature = "embed")), allow(dead_code))]
+    pub(crate) fn set_owned_theme_css(&mut self, css: Option<String>) {
+        if self.owned_theme_css != css {
+            self.owned_theme_css = css;
+            self.owned_theme_generation = self.owned_theme_generation.wrapping_add(1);
+        }
+    }
+
+    /// Which theme CSS [`Self::effective_theme_css`] would return, as a cheap
+    /// key: it changes exactly when that CSS does. `resolve_and_repaint` asks
+    /// this on every pass — every `ReRender` — and used to clone and compare
+    /// the whole stylesheet string instead.
+    #[cfg(feature = "theme")]
+    pub(crate) fn theme_key(&self) -> ThemeKey {
+        match self.owned_theme_css {
+            Some(_) => ThemeKey::Owned(self.owned_theme_generation),
+            None => ThemeKey::Global(rinch_core::current_theme_css_generation()),
+        }
+    }
+
     #[cfg(feature = "theme")]
     pub(crate) fn effective_theme_css(&self) -> String {
         match &self.owned_theme_css {
@@ -864,7 +901,7 @@ impl RinchApp {
         // Remember the initial theme CSS so we can detect changes later
         #[cfg(feature = "theme")]
         {
-            self.last_theme_css = Some(self.effective_theme_css());
+            self.last_theme_key = Some(self.theme_key());
         }
 
         // An embed context namespaces its stores/contexts under the document's
@@ -989,11 +1026,12 @@ impl RinchApp {
         let mut theme_changed = false;
         #[cfg(feature = "theme")]
         {
-            let current_theme = self.effective_theme_css();
-            theme_changed = self.last_theme_css.as_deref() != Some(current_theme.as_str());
+            let key = self.theme_key();
+            theme_changed = self.last_theme_key != Some(key);
 
             if theme_changed {
-                self.last_theme_css = Some(current_theme.clone());
+                self.last_theme_key = Some(key);
+                let current_theme = self.effective_theme_css();
                 if !current_theme.is_empty() {
                     let mut d = doc.borrow_mut();
                     d.update_theme_variables(&current_theme);

@@ -682,7 +682,8 @@ Component functions run **once** to build the DOM. Reactive closures (`{|| expr}
 | Primitive | Purpose |
 |-----------|---------|
 | `Signal::new(value)` | Reactive state that triggers updates |
-| `Memo::new(closure)` | Cached computed values |
+| `Memo::new(closure)` | Cached computed values (`T: Clone + PartialEq`; an equal recompute wakes nobody) |
+| `batch(closure)` | One transaction: effects flush once at the end. Every event handler already runs in one |
 | `create_store(value)` | Share a store across components (recommended for shared state) |
 | `use_store::<T>()` | Access a shared store (panics if missing) |
 | `try_use_store::<T>()` | Try to access a shared store (returns Option<T>) |
@@ -779,6 +780,37 @@ let multiplier = Signal::new(2);
 // Automatically tracks count and multiplier
 let result = Memo::new(move || count.get() * multiplier.get());
 ```
+
+**A memo has an equality cut-off, and its value type must be `PartialEq`**
+(a breaking change; `Clone + PartialEq` is the bound on `Memo::new`/`get`/
+`derived`). A recompute that yields an *equal* value wakes none of its
+dependents, so `Memo::new(move || selected.get() == id)` per row re-runs two row
+effects on a selection change, not every row's. The model is **push-dirty,
+pull-value**: `Signal::notify` marks every memo reading the signal `Dirty` and
+everything downstream `Check` *synchronously* (`mark_memos_stale`), nothing is
+computed until a read; each memo carries a **version** that moves only on an
+unequal recompute, every observer records the version it read in its
+`DepKey::Memo { seen }`, and `flush_effects` runs an observer woken only through
+a memo (a *maybe* — not in `Runtime::definite_effects`) only if one of those
+versions moved. A memo's marker effect is never cut off (it cannot know what its
+dependents saw) and is **not counted** in `effect_runs`. Skipping never reorders
+anything, so the #154 contract holds for whatever runs
+(`reactive/memo_cutoff_tests.rs`). A type with no meaningful equality can
+implement `PartialEq` as always-`false` to get the old wake-everything behaviour.
+
+**Every event handler is a `batch()`** — `events::dispatch_event`/`_input_`/
+`_scroll_`/`_file_drop_`, the keyboard and paste interceptors, the dismiss
+stack, `Drag` `on_move`/`on_end`, menu callbacks, each drained main-thread
+callback and each timer — on desktop, web and embed alike. A handler's writes
+flush effects **once**, when it returns. Inside the handler memos are current
+(the eager marking above) but **effects have not run**, so DOM an effect
+maintains still shows the pre-handler state; an inner `batch()` joins the
+handler's rather than flushing. Guide: `docs/src/guide/reactivity.md#every-event-handler-is-a-batch`.
+On desktop the resulting signal-change callback queues at most **one** pending
+`ReRender` (`shell::rinch_runtime::NativeEventQueue`, cleared under the queue
+lock by the drain), and `resolve_and_repaint` detects a theme change from a
+generation counter (`rinch_core::current_theme_css_generation`,
+`RinchApp::theme_key`) instead of cloning and comparing the theme CSS string.
 
 **`create_store` / `use_store`** - Shared state across components:
 ```rust
