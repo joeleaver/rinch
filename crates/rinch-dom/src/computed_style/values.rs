@@ -963,7 +963,7 @@ pub struct BoxShadowValue {
 /// position in the list. So four coefficients suffice however many translate
 /// functions appear, and `compose_node_transform` resolves them with two
 /// multiply-adds once the box is known.
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 pub struct TransformValue {
     /// Pre-computed 2D affine matrix [a, b, c, d, e, f], with the percentage
     /// part of every `translate` excluded (see the type doc).

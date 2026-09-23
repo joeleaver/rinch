@@ -31,7 +31,7 @@ use std::rc::Rc;
 
 use crate::computed_style::{
     ComputedStyle, DisplayValue, LengthPercentageValue, OverflowValue, PointerEventsValue,
-    PositionValue, TransformValue, VisibilityValue,
+    PositionValue, VisibilityValue,
 };
 use crate::stacking::PaintOrder;
 
@@ -47,15 +47,33 @@ use crate::stacking::PaintOrder;
 ///
 /// The readers, which is how the list was drawn up:
 /// - `stacking::paints_at_stacking_root` / `Node::creates_stacking_context`:
-///   `position`, `z_index`, `opacity < 1`, `transform`;
+///   `position`, `z_index`, `opacity < 1`, whether `transform` is the identity;
+/// - `Node::establishes_abs_containing_block` (the clip chain's truncation
+///   point): `position`, whether `transform` is the identity;
 /// - `Node::clips_overflow` and `paint::clip_shape`: `overflow_x`/`_y`
 ///   (the radii only shape paint; hit testing tests the rect);
 /// - `hit_testing::descend` / `local_point`: `position` (the fixed hoist),
-///   `transform` with its origin, `display` (`contents`);
+///   `display` (`contents`) — and the transform's *value*, but `descend`
+///   reads that live on every probe, and nothing cached holds it (below);
 /// - `paint::ifc_content_box_offset`: an IFC root's `padding` and
 ///   `border` left/top;
 /// - `hit_test_node`: `visibility`, `pointer_events`;
 /// - `RinchDocument::box_tree_children`: `display`.
+///
+/// **Only transform identity is keyed, not the value**, so a `Drawer` or
+/// `Popover` slide keeps pointer moves warm: nothing the cache holds depends
+/// on the value. A transformed box creates a stacking context, so it is never
+/// inside any flow extent (`flow_extent` skips it and `flow_subtree_may_contain`
+/// never prunes it); a stacking sequence's offsets are accumulated through
+/// untransformed boxes only (the collector never crosses a stacking context);
+/// and its clip rects live in the collecting root's own space. The value
+/// matters only to `descend`'s inverse, which is recomputed per probe.
+///
+/// Of these, only `opacity`, `transform`, the padding and the border widths
+/// can be written by a tick at all (`TransitionProperty` has no `display`,
+/// `position`, `overflow`, `z-index`, `visibility` or `pointer-events`
+/// variant); the rest are here so that a future animatable property is
+/// covered the day it is added, not the day its bug is found.
 ///
 /// Geometry itself (`layout`) is not here: it changes only inside
 /// `resolve_layout`, which invalidates on entry. A tick that animates `width`
@@ -68,9 +86,7 @@ pub struct HitStyleKey {
     overflow_y: OverflowValue,
     translucent: bool,
     visibility: VisibilityValue,
-    transform: TransformValue,
-    transform_origin_x: LengthPercentageValue,
-    transform_origin_y: LengthPercentageValue,
+    transformed: bool,
     z_index: Option<i32>,
     pointer_events: PointerEventsValue,
     padding_left: LengthPercentageValue,
@@ -89,9 +105,7 @@ impl HitStyleKey {
             overflow_y: cs.overflow_y,
             translucent: cs.opacity < 1.0,
             visibility: cs.visibility,
-            transform: cs.transform.clone(),
-            transform_origin_x: cs.transform_origin_x,
-            transform_origin_y: cs.transform_origin_y,
+            transformed: !cs.transform.is_identity,
             z_index: cs.z_index,
             pointer_events: cs.pointer_events,
             padding_left: cs.padding_left,

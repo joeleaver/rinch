@@ -2196,11 +2196,17 @@ moves: every mutating `DomDocument` method that changes something (an identical
 attribute or text write returns first), `resolve_styles`, `resolve_layout`,
 `NodeTree::push_dirty` and `remove_subtree` bump it, and so does a transition
 or animation tick — **only** for a node whose `HitStyleKey` it changed (the
-`computed_style` inputs hit testing reads: `display`, `position`, `overflow`,
-`opacity < 1`, `visibility`, `transform` and its origin, `z-index`,
-`pointer-events`, left/top padding and border). `AboutToWait` ticks after every
-batch, so an unconditional tick invalidation made every real move cold, and a
-colour animation (a `Loader`) must not either. **A write straight into `tree.nodes[..]` that changes
+`computed_style` inputs the cache depends on: `display`, `position`,
+`overflow`, `opacity < 1`, `visibility`, whether `transform` is the identity,
+`z-index`, `pointer-events`, left/top padding and border). `AboutToWait` ticks
+after every batch, so an unconditional tick invalidation made every real move
+cold, and a colour animation (a `Loader`) must not either. The transform
+**value** is deliberately not keyed — a transformed box is a stacking context,
+so no flow extent or cached sequence offset holds it, and `descend` reads it
+live — which keeps a `Drawer`/`Popover` slide warm. Only opacity, transform,
+padding and border widths are animatable, so only those key fields have tick
+fixtures (`prune_tests::a_*_tick_*`, each killing the mutant that drops its
+field). **A write straight into `tree.nodes[..]` that changes
 `layout`, `scroll_offset` or `computed_style` without going through one of
 those must call `tree.hit_cache.invalidate()`**, or the next hit test answers
 from the old geometry. `app::hit_testing::prune_tests` is the oracle: the walk
