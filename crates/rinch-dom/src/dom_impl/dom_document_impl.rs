@@ -1374,16 +1374,6 @@ impl RinchDocument {
         serialize_declarations(&decls)
     }
 
-    /// The normal path after an inline style change: drop the cached Stylo
-    /// data so the next `resolve_layout` re-cascades this node from its
-    /// declaration block.
-    ///
-    /// The inline formatting context it takes part in is **not** invalidated
-    /// here. The re-cascade compares the node's old and new text inputs
-    /// (`ComputedStyle::same_text_layout_inputs`) and drops the IFC only when
-    /// they differ, so a `left`/`width`/`background` write — the per-frame
-    /// shape of a drag or an animation driven through `set_style` — no longer
-    /// re-shapes the text inside the node it moves.
     /// Called just before a child is added to `parent`: when `parent` has no
     /// children yet, queue it for a Taffy style re-sync.
     ///
@@ -1430,6 +1420,16 @@ impl RinchDocument {
         }
     }
 
+    /// The normal path after an inline style change: drop the cached Stylo
+    /// data so the next `resolve_layout` re-cascades this node from its
+    /// declaration block.
+    ///
+    /// The inline formatting context it takes part in is **not** invalidated
+    /// here. The re-cascade compares the node's old and new text inputs
+    /// (`ComputedStyle::same_text_layout_inputs`) and drops the IFC only when
+    /// they differ, so a `left`/`width`/`background` write — the per-frame
+    /// shape of a drag or an animation driven through `set_style` — no longer
+    /// re-shapes the text inside the node it moves.
     fn invalidate_inline_style(&mut self, node_id: usize) {
         *self.tree.nodes[node_id].stylo_element_data.borrow_mut() = None;
         self.tree.style_roots.push(node_id);

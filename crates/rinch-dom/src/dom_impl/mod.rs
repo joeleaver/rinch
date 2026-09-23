@@ -53,7 +53,7 @@ impl style::servo::media_queries::FontMetricsProvider for SimpleFontMetricsProvi
 /// its default by the first window resize. Anything that has to persist lives
 /// here instead, and [`build_device`] re-applies it on every construction
 /// (issues #279, #211).
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Clone)]
 pub(crate) struct DeviceParams {
     /// The computed font-size of the root (`<html>`) element in CSS px — the
     /// basis every `rem` length resolves against (#279). Kept in sync by
@@ -64,6 +64,15 @@ pub(crate) struct DeviceParams {
     /// snapping (#211). Does not affect layout geometry: 1 CSS px stays
     /// 1 layout unit regardless.
     pub device_pixel_ratio: f32,
+    /// The root (`<html>`) element's last computed style — what the
+    /// root-relative font-metric units other than `rem` (`rex`, `rch`, `rcap`,
+    /// `ric`) resolve against (`Device::set_root_style`). Kept in sync by
+    /// `sync_root_font_size` beside `root_font_size`; `None` until `<html>` is
+    /// first cascaded. A resize installs a new Device and restyles only what
+    /// the size reaches, so `<html>` is usually not re-cascaded after one —
+    /// without this, every later cascade would read the fresh Device's
+    /// default root style (16px, the initial font).
+    pub root_style: Option<ServoArc<ComputedValues>>,
 }
 
 impl Default for DeviceParams {
@@ -71,6 +80,7 @@ impl Default for DeviceParams {
         Self {
             root_font_size: 16.0,
             device_pixel_ratio: 1.0,
+            root_style: None,
         }
     }
 }
@@ -100,6 +110,10 @@ pub(crate) fn build_device(width: f32, height: f32, params: &DeviceParams) -> De
     // A fresh Device starts at the 16px initial — restore the root element's
     // font-size so a rebuild doesn't erase the `rem` basis.
     device.set_root_font_size(params.root_font_size);
+    // …and the root style the other root-relative units read.
+    if let Some(root_style) = &params.root_style {
+        device.set_root_style(root_style);
+    }
     device
 }
 

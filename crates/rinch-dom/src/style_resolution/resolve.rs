@@ -502,6 +502,8 @@ impl RinchDocument {
         // Keep the root style pointer fresh too — root font metrics
         // (rex/rch/ric) resolve through it.
         device.set_root_style(root_style);
+        // …and remembered, so a Device rebuilt by a resize carries it too.
+        self.device_params.root_style = Some(root_style.clone());
 
         let size = root_style
             .effective_zoom

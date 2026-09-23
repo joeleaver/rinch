@@ -174,3 +174,58 @@ fn an_inline_style_does_not_reach_the_pseudo_elements() {
     );
     assert_eq!(ps.padding_left.to_px(), 0.0);
 }
+
+/// A resize installs a new Stylo `Device`, and restyles only what the size
+/// reaches — so `<html>` is usually not re-cascaded after one. The root-relative
+/// units other than `rem` (`rch`, `rex`, `rcap`, `ric`) resolve against the
+/// Device's root *style*, which therefore has to survive the rebuild the way
+/// the root font-size does (`DeviceParams::root_style`). Without it, every
+/// cascade after a resize read the fresh Device's default root style: 16px and
+/// the initial font (review of #887, p20).
+#[test]
+fn root_relative_units_survive_resizes_that_restyle_nothing() {
+    let css = "html { font-size: 30px; } .a { width: 5rem; } .a.on { width: 6rem; height: 2rch; }";
+    let mut doc = RinchDocument::new();
+    doc.load_css(css);
+    let body = doc.body();
+    let a = el(&mut doc, body, "a");
+    doc.resolve_layout(800.0, 600.0);
+    doc.resolve_layout(800.0, 600.0);
+    for w in [810.0, 820.0, 830.0] {
+        doc.resolve_layout(w, 600.0);
+        doc.resolve_layout(w, 600.0);
+    }
+    doc.set_attribute(a, "class", "a on");
+    doc.resolve_layout(830.0, 600.0);
+
+    let mut fresh = RinchDocument::new();
+    fresh.load_css(css);
+    let body = fresh.body();
+    el(&mut fresh, body, "a on");
+    fresh.resolve_layout(830.0, 600.0);
+    fresh.resolve_layout(830.0, 600.0);
+    assert_twin(&doc, &fresh, "a class toggle using rch after three resizes");
+}
+
+/// The same for a node inserted after a resize: it cascades under the new
+/// Device (review of #887, p2c).
+#[test]
+fn root_relative_units_in_a_node_inserted_after_a_resize() {
+    let css = "html { font-size: 30px; font-family: monospace; } \
+               .x { width: 10rch; height: 10rex; }";
+    let mut doc = RinchDocument::new();
+    doc.load_css(css);
+    doc.resolve_layout(800.0, 600.0);
+    doc.resolve_layout(1000.0, 700.0);
+    let body = doc.body();
+    el(&mut doc, body, "x");
+    doc.resolve_layout(1000.0, 700.0);
+
+    let mut fresh = RinchDocument::new();
+    fresh.load_css(css);
+    let body = fresh.body();
+    el(&mut fresh, body, "x");
+    fresh.resolve_layout(1000.0, 700.0);
+    fresh.resolve_layout(1000.0, 700.0);
+    assert_twin(&doc, &fresh, "an rch/rex node inserted after a resize");
+}
