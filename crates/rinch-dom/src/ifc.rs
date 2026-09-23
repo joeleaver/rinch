@@ -632,8 +632,19 @@ impl RinchDocument {
                     parley::layout::PositionedLayoutItem::InlineBox(positioned_box) => {
                         let child_id = positioned_box.id as usize;
                         if let Some(child) = self.tree.nodes.get_mut(child_id) {
+                            // Not pushed paint-dirty: the IFC root it flows in
+                            // is what repaints the line. So its painted box
+                            // moves with it — unless it has a move of its own
+                            // still waiting for a paint, whose old rect stays.
+                            // Left behind, the stale offset would misplace the
+                            // painted rect of everything inside it
+                            // (`paint::previous_painted_rect` sums the chain).
+                            let settled = child.prev_layout == child.layout;
                             child.layout.x = positioned_box.x;
                             child.layout.y = positioned_box.y;
+                            if settled {
+                                child.prev_layout = child.layout;
+                            }
                         }
                     }
                 }

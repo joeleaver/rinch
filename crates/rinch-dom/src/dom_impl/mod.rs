@@ -591,38 +591,48 @@ impl RinchDocument {
     /// from the tree before `compute_dirty_region` runs.
     pub(crate) fn mark_subtree_paint_dirty(&mut self, node_id: usize) {
         if self.tree.contains(node_id) {
-            // Save the node's absolute rect before it's removed from the tree.
-            // compute_dirty_region won't be able to look up deleted nodes.
-            let node = &self.tree.nodes[node_id];
-            let w = node.layout.width as f64;
-            let h = node.layout.height as f64;
-            if w > 0.0 && h > 0.0 {
-                // The rect to clear is the one the node was *painted* in, so a
-                // transformed subtree leaves no trail behind when it is removed
-                // (#203) — `compute_absolute_position` would hand back the
-                // untransformed layout box the software renderer never drew.
-                let r = crate::paint::painted_border_box(&self.tree, node_id, 1.0);
+            // Save the rect the node's pixels are in before it leaves the
+            // tree: compute_dirty_region won't be able to reach it after.
+            //
+            // That is the rect it was last *painted* in, with the ink it was
+            // painted with (`previous_painted_rect`): not the box it is removed
+            // from, which after a move since the last paint was never drawn,
+            // and not its bare border box, which leaves an outset
+            // `box-shadow` or `outline` behind. Placed from the painted state
+            // of its whole chain, so a child removed after its parent moved
+            // is cleared where it was drawn, and a transformed subtree leaves
+            // no trail (#203).
+            let painted = crate::paint::previous_painted_rect(&self.tree, node_id, 1.0);
+            let r = match painted {
+                Some(r) => Some(r),
+                // Never painted since it was created (or removed): nothing of
+                // it is on screen. Its current box is recorded anyway, as
+                // before — over-repaint at worst, for a node a full repaint
+                // drew without a paint ever consuming it.
+                None if self.tree.nodes[node_id].painted.is_none() => {
+                    let node = &self.tree.nodes[node_id];
+                    (node.layout.width > 0.0 && node.layout.height > 0.0)
+                        .then(|| crate::paint::painted_border_box(&self.tree, node_id, 1.0))
+                }
+                None => None,
+            };
+            if let Some(r) = r {
                 self.tree
                     .paint_dirty_removed_rects
                     .push((r.x0, r.y0, r.width(), r.height()));
             }
-            // A node that moved since the last paint and is removed before the
-            // next one has its pixels at the box it was last *painted* in, not
-            // the one it is removed from — a caret overlay moved and then torn
-            // down in one frame. Record that rect too, then bring
-            // `prev_layout` level: the old pixels are accounted for here, and
-            // a detached node re-inserted later must not carry the stale box.
-            if let Some(r) = crate::paint::previous_painted_rect(&self.tree, node_id, 1.0) {
-                self.tree
-                    .paint_dirty_removed_rects
-                    .push((r.x0, r.y0, r.width(), r.height()));
-            }
-            let node = &mut self.tree.nodes[node_id];
-            node.prev_layout = node.layout;
+            // Children first: their painted rects are summed through this
+            // node's painted state, which is forgotten below.
             let children = self.tree.nodes[node_id].children.clone();
             for child_id in children {
                 self.mark_subtree_paint_dirty(child_id);
             }
+            // Its old pixels are accounted for, and after the next paint it
+            // has none: a detached node re-inserted later must not carry a
+            // painted box it no longer occupies.
+            let node = &mut self.tree.nodes[node_id];
+            node.painted = None;
+            node.prev_layout = node.layout;
         }
     }
 

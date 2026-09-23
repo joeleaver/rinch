@@ -83,7 +83,17 @@ fn assert_incremental(stats: &FrameStats) {
 /// does not reach the rects under test and cannot cover a missing one.
 /// Returns the app and the box.
 fn panel(extra: &'static str) -> (RinchApp, NodeHandle) {
-    let slot: Rc<RefCell<Option<NodeHandle>>> = Rc::new(RefCell::new(None));
+    let (app, b, _) = panel_with(extra, None);
+    (app, b)
+}
+
+/// [`panel`], with an optional child of the box styled `child`.
+fn panel_with(
+    extra: &'static str,
+    child: Option<&'static str>,
+) -> (RinchApp, NodeHandle, Option<NodeHandle>) {
+    type Slot = Option<(NodeHandle, Option<NodeHandle>)>;
+    let slot: Rc<RefCell<Slot>> = Rc::new(RefCell::new(None));
     let slot_in = slot.clone();
     let mut app = RinchApp::new(move |scope: &mut RenderScope| {
         let outer = scope.create_element("div");
@@ -100,13 +110,19 @@ fn panel(extra: &'static str) -> (RinchApp, NodeHandle) {
             ),
         );
         root.append_child(&b);
-        *slot_in.borrow_mut() = Some(b);
+        let c = child.map(|style| {
+            let c = scope.create_element("div");
+            c.set_attribute("style", style);
+            b.append_child(&c);
+            c
+        });
+        *slot_in.borrow_mut() = Some((b, c));
         outer
     });
     app.mount_component(SIZE.0 as f32, SIZE.1 as f32);
     app.resolve_and_repaint(SIZE.0 as f32, SIZE.1 as f32);
-    let b = slot.borrow().clone().unwrap();
-    (app, b)
+    let (b, c) = slot.borrow().clone().unwrap();
+    (app, b, c)
 }
 
 fn resolve(app: &mut RinchApp) {
@@ -221,40 +237,315 @@ fn a_box_moved_then_removed_before_the_paint_is_cleared_where_it_was_painted() {
 }
 
 /// A `transform` change moves where a box is painted without changing its
-/// layout, so `prev_layout` says nothing about it: the old painted rect has
-/// to come from somewhere else, and today nothing supplies it.
+/// layout, so `prev_layout` says nothing about it: the old painted rect comes
+/// from the transform it was painted with (`PaintedState::transform`).
 ///
-/// **Known failing, and older than the fix this file pins** (paint audit F9):
-/// `compute_dirty_region` adds only the node's *current* transformed rect,
-/// so a transform that moves a box off its old pixels leaves them painted.
-/// It is usually masked because the big sliding panels that animate
-/// `transform` (a `Drawer`) cover half the window and repaint in full. The
-/// cure is to record the painted (transformed) bbox wherever a transform
-/// changes — the cascade, `tick_transitions`, `tick_animations` — or to keep
-/// a per-node painted transform beside `prev_layout`. Un-ignore when it lands.
+/// Older than this file (paint audit F9): the region used to take only the
+/// node's *current* transformed rect, so a transform that moved a box off its
+/// old pixels left them painted — masked in practice because the big sliding
+/// panels that animate `transform` (a `Drawer`) cover half the window and
+/// repaint in full.
 #[test]
-#[ignore = "pre-existing: a transform change does not clear its old painted rect (audit F9)"]
 fn a_transform_change_clears_the_old_painted_rect() {
-    let (mut app, b) = panel("transform: translate(0px, 0px)");
-    let before = full_frame(&mut app);
-    let old = (20, 150, 60, 190);
-    assert!(ink_in(&before, old) > 1000, "positive control");
+    // Two steps, one per direction: a transformed box whose transform goes
+    // away (painted transformed, now the identity), then an untransformed one
+    // that gains one. Neither starts from the identity it ends at, which would
+    // pass with the painted transform ignored.
+    let (mut app, b) = panel("transform: translate(40px, 0px)");
+    for (transform, old) in [
+        ("none", (60, 150, 100, 190)),
+        ("translate(280px, -130px)", (20, 150, 60, 190)),
+    ] {
+        let before = full_frame(&mut app);
+        assert!(ink_in(&before, old) > 1000, "positive control: {old:?}");
+        b.set_style("transform", transform);
+        resolve(&mut app);
+        let (inc, stats) = incremental_frame(&mut app);
+        assert_incremental(&stats);
+        assert_eq!(
+            ink_in(&inc, old),
+            0,
+            "the box ghosts where it was painted before `transform: {transform}`"
+        );
+        let full = full_frame(&mut app);
+        assert_eq!(
+            diff_in(&inc, &full, (0, 0, 600, 400)),
+            0,
+            "incremental frame != full frame"
+        );
+    }
+}
 
-    b.set_style("transform", "translate(280px, -130px)");
-    resolve(&mut app);
-    let (inc, stats) = incremental_frame(&mut app);
-    assert_incremental(&stats);
-    assert_eq!(
-        ink_in(&inc, old),
-        0,
-        "the box ghosts where it was painted before the transform"
+// ── A move and an ink change in one frame (review of #880) ───────────────
+//
+// The forced full repaint on the inset path also hid these: a box moves and,
+// before the next paint, what it paints changes too. The old rect has to be
+// the one it was painted with — its own ink, and its children where *they*
+// were drawn — not today's ink moved back by the box's delta.
+
+/// Outside the 4px margin, inside `spread + blur / 2` of the box at (20, 150).
+const SHADOW_BAND: (i32, i32, i32, i32) = (4, 150, 12, 190);
+const SHADOW: &str = "box-shadow: 0 0 24px 8px rgb(0, 0, 0)";
+/// An absolute child overflowing the box to its right.
+const CHILD: &str = "position: absolute; left: 60px; top: 0px; width: 40px; height: 40px; \
+                     background: rgb(200, 0, 0)";
+/// Where [`CHILD`] is painted while the box is at `left: 200px`.
+const CHILD_OLD: (i32, i32, i32, i32) = (260, 150, 300, 190);
+
+/// An incremental frame after `step`, checked against a from-scratch frame
+/// over `rect` (which the positive control says held ink before) and over the
+/// whole surface. Every move here is diagonal, away from `rect`: the region
+/// is one bounding rect, and a move that keeps `rect` inside the union of the
+/// new rects covers a missing old rect by accident.
+fn assert_clean_after(
+    app: &mut RinchApp,
+    rect: (i32, i32, i32, i32),
+    step: impl FnOnce(&mut RinchApp),
+) {
+    let before = full_frame(app);
+    assert!(
+        ink_in(&before, rect) > 100,
+        "positive control: {rect:?} holds ink"
     );
-    let full = full_frame(&mut app);
+    step(app);
+    let (inc, stats) = incremental_frame(app);
+    assert_incremental(&stats);
+    let full = full_frame(app);
+    assert_eq!(diff_in(&inc, &full, rect), 0, "ghost in {rect:?}");
     assert_eq!(
         diff_in(&inc, &full, (0, 0, 600, 400)),
         0,
         "incremental frame != full frame"
     );
+}
+
+/// A drag ends: the box moves one last time and drops its drag shadow, in
+/// one resolve. The shadow it was painted with is gone from the tree.
+#[test]
+fn a_box_that_moves_and_drops_its_shadow_clears_the_old_shadow() {
+    let (mut app, b) = panel(SHADOW);
+    assert_clean_after(&mut app, SHADOW_BAND, |app| {
+        b.set_style("left", "300px");
+        b.set_style("box-shadow", "none");
+        resolve(app);
+    });
+}
+
+/// The same, with the move resolved before the shadow goes.
+#[test]
+fn a_box_that_moves_then_drops_its_shadow_clears_the_old_shadow() {
+    let (mut app, b) = panel(SHADOW);
+    assert_clean_after(&mut app, SHADOW_BAND, |app| {
+        b.set_style("left", "300px");
+        resolve(app);
+        b.set_style("box-shadow", "none");
+        resolve(app);
+    });
+}
+
+/// The box moves diagonally away, then its overflowing child is removed: the
+/// child was painted at the box's *old* position plus its offset.
+#[test]
+fn a_child_removed_after_its_parent_moved_is_cleared_where_it_was_painted() {
+    let (mut app, b, c) = panel_with("left: 200px", Some(CHILD));
+    assert_clean_after(&mut app, CHILD_OLD, |app| {
+        b.set_style("top", "300px");
+        b.set_style("left", "20px");
+        resolve(app);
+        c.unwrap().remove();
+        resolve(app);
+    });
+}
+
+/// The box moves (resolved), then is removed with its overflowing child
+/// still inside. The child was painted at the box's *old* position: its
+/// painted rect is summed through the box's painted state, so the removal has
+/// to record the child before it forgets the box's.
+#[test]
+fn a_moved_box_removed_with_its_child_clears_the_child_where_it_was_painted() {
+    let (mut app, b, _) = panel_with("left: 200px", Some(CHILD));
+    assert_clean_after(&mut app, CHILD_OLD, |app| {
+        b.set_style("top", "300px");
+        b.set_style("left", "20px");
+        resolve(app);
+        b.remove();
+        resolve(app);
+    });
+}
+
+/// The box moves and takes its overflowing child with it, untouched. The
+/// child is not paint-dirty at all: only the moved box's subtree reach
+/// (`opacity_layer_bounds`) says it was painted outside the box.
+#[test]
+fn an_overflowing_child_moves_with_its_parent_and_leaves_nothing_behind() {
+    let (mut app, b, _) = panel_with("left: 200px", Some(CHILD));
+    assert_clean_after(&mut app, CHILD_OLD, |app| {
+        b.set_style("top", "300px");
+        b.set_style("left", "20px");
+        resolve(app);
+    });
+}
+
+/// The box moves and its overflowing child flips to the other side, in one
+/// resolve — a popover re-anchored while its arrow flips.
+#[test]
+fn a_child_that_flips_side_while_its_parent_moves_is_cleared() {
+    let (mut app, b, c) = panel_with("left: 200px", Some(CHILD));
+    assert_clean_after(&mut app, CHILD_OLD, |app| {
+        b.set_style("top", "300px");
+        b.set_style("left", "20px");
+        c.unwrap().set_style("left", "-100px");
+        resolve(app);
+    });
+}
+
+/// The box moves and its overflowing child goes `display: none`.
+#[test]
+fn a_child_hidden_while_its_parent_moves_is_cleared() {
+    let (mut app, b, c) = panel_with("left: 200px", Some(CHILD));
+    assert_clean_after(&mut app, CHILD_OLD, |app| {
+        b.set_style("top", "300px");
+        b.set_style("left", "20px");
+        c.unwrap().set_style("display", "none");
+        resolve(app);
+    });
+}
+
+/// The box moves and its overflowing child goes `visibility: hidden`.
+#[test]
+fn a_child_made_invisible_while_its_parent_moves_is_cleared() {
+    let (mut app, b, c) = panel_with("left: 200px", Some(CHILD));
+    assert_clean_after(&mut app, CHILD_OLD, |app| {
+        b.set_style("top", "300px");
+        b.set_style("left", "20px");
+        c.unwrap().set_style("visibility", "hidden");
+        resolve(app);
+    });
+}
+
+/// A shadowed box moves (resolved), then is removed before the paint.
+#[test]
+fn a_shadowed_box_moved_then_removed_clears_its_old_shadow() {
+    let (mut app, b) = panel(SHADOW);
+    assert_clean_after(&mut app, SHADOW_BAND, |app| {
+        b.set_style("left", "300px");
+        b.set_style("top", "20px");
+        resolve(app);
+        b.remove();
+        resolve(app);
+    });
+}
+
+/// With no move at all: a shadowed box goes `display: none`. Its box is
+/// zeroed, and the shadow outside it used to stay (pre-existing).
+#[test]
+fn a_shadowed_box_hidden_clears_its_shadow() {
+    let (mut app, b) = panel(SHADOW);
+    assert_clean_after(&mut app, SHADOW_BAND, |app| {
+        b.set_style("display", "none");
+        resolve(app);
+    });
+}
+
+/// With no move at all: a shadowed box is removed. The removal recorded its
+/// border box only, and the shadow outside it used to stay (pre-existing).
+#[test]
+fn a_shadowed_box_removed_clears_its_shadow() {
+    let (mut app, b) = panel(SHADOW);
+    assert_clean_after(&mut app, SHADOW_BAND, |app| {
+        b.remove();
+        resolve(app);
+    });
+}
+
+/// A shadow added to a box that stays put reaches past the 4px margin, and
+/// used to be clipped by the region (pre-existing).
+#[test]
+fn a_shadow_added_in_place_is_painted_whole() {
+    let (mut app, b) = panel("");
+    let _ = full_frame(&mut app);
+    b.set_style("box-shadow", "0 0 24px 8px rgb(0, 0, 0)");
+    resolve(&mut app);
+    let (inc, stats) = incremental_frame(&mut app);
+    assert_incremental(&stats);
+    let full = full_frame(&mut app);
+    assert!(
+        ink_in(&full, SHADOW_BAND) > 100,
+        "positive control: the new shadow is there"
+    );
+    assert_eq!(
+        diff_in(&inc, &full, (0, 0, 600, 400)),
+        0,
+        "incremental frame != full frame"
+    );
+}
+
+// ── Cost ─────────────────────────────────────────────────────────────────
+
+/// `compute_dirty_region` on a reflow that shifts every row: a header grows
+/// above `rows` flex rows of `per_row` children each. Best of 10, in µs, and
+/// the number of paint-dirty entries it walked.
+fn reflow_region_micros(rows: usize, per_row: usize, width: u32) -> (u128, usize) {
+    let slot: Rc<RefCell<Option<NodeHandle>>> = Rc::new(RefCell::new(None));
+    let slot_in = slot.clone();
+    let mut app = RinchApp::new(move |scope: &mut RenderScope| {
+        let root = scope.create_element("div");
+        root.set_attribute("style", &format!("width: {width}px"));
+        let head = scope.create_element("div");
+        head.set_attribute("style", "height: 10px");
+        root.append_child(&head);
+        for _ in 0..rows {
+            let r = scope.create_element("div");
+            r.set_attribute("style", "height: 20px; display: flex");
+            for _ in 0..per_row {
+                let s = scope.create_element("div");
+                s.set_attribute("style", "width: 1px; height: 4px; background: red");
+                r.append_child(&s);
+            }
+            root.append_child(&r);
+        }
+        *slot_in.borrow_mut() = Some(head);
+        root
+    });
+    app.mount_component(SIZE.0 as f32, SIZE.1 as f32);
+    app.resolve_and_repaint(SIZE.0 as f32, SIZE.1 as f32);
+    let _ = full_frame(&mut app);
+    let head = slot.borrow().clone().unwrap();
+    let mut best = u128::MAX;
+    let mut dirty = 0;
+    for i in 0..10 {
+        head.set_style("height", if i % 2 == 0 { "30px" } else { "10px" });
+        app.resolve_and_repaint(SIZE.0 as f32, SIZE.1 as f32);
+        let doc = app.doc.as_ref().unwrap().clone();
+        let t = std::time::Instant::now();
+        {
+            let d = doc.borrow();
+            dirty = d.tree.paint_dirty_nodes.len();
+            let _ = rinch_dom::paint::compute_dirty_region(&d.tree, 1.0, 600.0, 400.0);
+        }
+        best = best.min(t.elapsed().as_micros());
+        let _ = incremental_frame(&mut app);
+    }
+    (best, dirty)
+}
+
+/// The review of #880 measured this shape at 29 µs on `main` and 3579 µs on
+/// the first cut of #880 (100 × 500, release), from a subtree walk per
+/// shifted row. Run in release with `-- --ignored --nocapture`.
+#[test]
+#[ignore = "timing harness; prints, asserts nothing"]
+fn reflow_region_cost() {
+    // The first two are the review's shapes: the rows span the window, so
+    // the region passes the full-repaint fraction at the first rect and the
+    // measuring stops. The third keeps the region under it (a 50px-wide
+    // column), so every dirty row is measured — the cost of the walk itself.
+    for (rows, per_row, width) in [(400, 10, 600), (100, 500, 600), (100, 500, 50)] {
+        let (us, dirty) = reflow_region_micros(rows, per_row, width);
+        eprintln!(
+            "REFLOW rows={rows} per_row={per_row} width={width} dirty_nodes={dirty} \
+             compute_dirty_region best {us} us"
+        );
+    }
 }
 
 // ── The rich-text editor's overlays ──────────────────────────────────────

@@ -10,6 +10,8 @@
 mod animation_theme_change_tests;
 #[cfg(test)]
 mod blink_and_click_focus_tests;
+#[cfg(all(test, any(feature = "gpu", feature = "android-gpu", feature = "embed")))]
+mod build_scene_consume_tests;
 #[cfg(all(test, software_shell, feature = "desktop"))]
 mod caret_visibility_paint_tests;
 mod click_handling;
@@ -1394,6 +1396,14 @@ impl RinchApp {
         }
 
         self.scene_dirty = false;
+        // This frame consumed the dirty lists, so the software pixmap — if a
+        // window ever presents with software again after presenting with the
+        // GPU (a `show_window` re-creation can switch) — no longer has a
+        // region that would bring it up to date. Its next frame is a full one.
+        #[cfg(software_shell)]
+        {
+            self.has_previous_frame = false;
+        }
         self.painter.scene()
     }
 
@@ -1482,7 +1492,8 @@ impl RinchApp {
                 && dirty_region.is_some_and(|r| {
                     let region_area = r.width() * r.height();
                     let viewport_area = w as f64 * h as f64;
-                    region_area < viewport_area * 0.5 && region_area > 0.0
+                    region_area < viewport_area * rinch_dom::paint::FULL_REPAINT_FRACTION
+                        && region_area > 0.0
                 });
 
             if use_dirty_region {

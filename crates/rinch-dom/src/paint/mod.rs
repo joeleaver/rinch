@@ -38,13 +38,36 @@ use crate::computed_style::{
 use crate::node::{Node, NodeKind, NodeTree, RawNodeId};
 use crate::stacking::{ClipSpan, PaintKind, paints_at_stacking_root, stacking_paint_order};
 
+/// The fraction of the surface at or above which a dirty region is not worth
+/// clipping to, and the software renderer repaints in full instead.
+/// [`compute_dirty_region`] stops measuring once its region reaches it.
+pub const FULL_REPAINT_FRACTION: f64 = 0.5;
+
 /// Compute the dirty region (union of all paint-dirty node rects) in physical pixels.
 ///
-/// Returns `None` if no nodes are dirty. Includes both the current box and
-/// the box each node was last **painted** in (`prev_layout`, advanced only by
-/// [`NodeTree::consume_paint_dirty`]), so moved/resized nodes get their old
-/// area cleared too — however many layout passes ran since the last paint.
-/// Expands the region by a margin to account for anti-aliasing and box-shadows.
+/// Returns `None` if no nodes are dirty. For every dirty node the region takes
+/// two rects:
+///
+/// - **where it is now**, grown by how far its own ink (outset `box-shadow`,
+///   `outline`) reaches past its box;
+/// - **where it was last painted** ([`previous_painted_rect`]), from the
+///   parent-relative state the last paint recorded
+///   ([`NodeTree::consume_paint_dirty`]) summed up its box-tree chain — so it
+///   is exact however many layout passes ran since, when an ancestor moved
+///   rather than the node, and when its ink or transform changed in the same
+///   frame.
+///
+/// An **out-of-flow** box whose position changed also grows both rects by how
+/// far its painted subtree reaches past it ([`opacity_layer_bounds`]): a
+/// dragged panel's overflowing children move with it without being dirty
+/// themselves. Descendants that *are* dirty or removed bring their own painted
+/// rects, which is what keeps a child that closed or flipped side in the same
+/// frame covered. In-flow boxes are not walked: one moved by reflow sits in a
+/// parent that resized, and walking every shifted row made a reflow frame cost
+/// O(rows × subtree).
+///
+/// Once the region reaches [`FULL_REPAINT_FRACTION`] of the surface the answer
+/// is the whole surface, and nothing further is measured.
 pub fn compute_dirty_region(
     tree: &NodeTree,
     scale: f64,
@@ -55,8 +78,19 @@ pub fn compute_dirty_region(
         return None;
     }
 
-    let margin = 4.0; // pixels margin for anti-aliasing / shadows
+    let margin = 4.0; // pixels margin for anti-aliasing
+    let whole = Rect::new(0.0, 0.0, viewport_w, viewport_h);
+    let limit = viewport_w * viewport_h * FULL_REPAINT_FRACTION;
     let mut region: Option<Rect> = None;
+    // The area test runs on the clamped rect: a dirty box far off-screen must
+    // not trip it.
+    let mut add = |r: Rect| -> bool {
+        let r = Rect::new(r.x0 - margin, r.y0 - margin, r.x1 + margin, r.y1 + margin);
+        let u = region.map_or(r, |prev: Rect| prev.union(r));
+        region = Some(u);
+        let c = u.intersect(whole);
+        c.width().max(0.0) * c.height().max(0.0) >= limit
+    };
 
     // Deduplicate — paint_dirty_nodes may have duplicates
     let mut seen = HashSet::new();
@@ -64,104 +98,104 @@ pub fn compute_dirty_region(
         if !seen.insert(node_id) {
             continue;
         }
+        let Some(node) = tree.get(node_id) else {
+            continue;
+        };
 
         // Current position. CSS transforms displace where a node renders, so
         // use the transform-aware absolute rect — the region must cover the
         // node's visual position, not its untransformed layout rect (#143).
         let (ax, ay, transform) = compute_absolute_position_and_transform(tree, node_id, scale);
-        if let Some(node) = tree.get(node_id) {
-            let w = node.layout.width as f64 * scale;
-            let h = node.layout.height as f64 * scale;
+        let w = node.layout.width as f64 * scale;
+        let h = node.layout.height as f64 * scale;
 
-            // A box that moved or resized since it was painted carries
-            // everything it paints with it: its shadow, its outline, a child
-            // that overflows it. None of that is inside the border box the
-            // margin below pads, so measure how far the subtree's ink reaches
-            // past the box (the walk `push_layer` bounds come from) and pad
-            // both the old rect and the new one by it. A dragged panel's
-            // `box-shadow` otherwise leaves a trail, and its new shadow is
-            // clipped by the region. Only for a box whose *position* changed:
-            // one that stayed put has not moved its ink, and a resize alone
-            // (every ancestor of a growing line) would walk whole documents
-            // for nothing. A subtree the walk cannot bound (more than its
-            // visit budget, or something it cannot place) answers `UNBOUNDED`
-            // and the frame repaints in full, which is what every inset move
-            // and editor-overlay move did before the old rect was kept.
-            let moved = node.prev_layout.x != node.layout.x || node.prev_layout.y != node.layout.y;
-            let mut ink = Outsets::ZERO;
-            if w > 0.0
-                && h > 0.0
-                && moved
-                && node.prev_layout.width > 0.0
-                && node.prev_layout.height > 0.0
+        let mut ink = Outsets::from_css(own_ink_outsets(&node.computed_style), scale);
+        // An out-of-flow box that moved carries its whole painted subtree with
+        // it (see the doc above). A subtree the walk cannot bound answers
+        // `UNBOUNDED` and the frame repaints in full.
+        let moved = node.painted.is_some()
+            && (node.prev_layout.x != node.layout.x || node.prev_layout.y != node.layout.y);
+        if moved
+            && w > 0.0
+            && h > 0.0
+            && matches!(
+                node.computed_style.position,
+                PositionValue::Absolute | PositionValue::Fixed
+            )
+        {
+            let bounds = opacity_layer_bounds(tree, node_id, scale, ax, ay);
+            if bounds == UNBOUNDED {
+                return Some(whole);
+            }
+            ink = ink.max(Outsets {
+                left: ax - bounds.x0,
+                top: ay - bounds.y0,
+                right: bounds.x1 - (ax + w),
+                bottom: bounds.y1 - (ay + h),
+            });
+        }
+
+        if w > 0.0
+            && h > 0.0
+            && add(transform.transform_rect_bbox(ink.grow(Rect::new(ax, ay, ax + w, ay + h))))
+        {
+            return Some(whole);
+        }
+
+        // A flowed inline element owns no box (`0x0`): its glyphs, its
+        // decorations and its background are drawn by the IFC root it
+        // flows into. So a restyle that changes only how it *paints* —
+        // `visibility` above all, which is read at paint time and moves
+        // nothing (#829) — has to dirty that root's rect, or the change
+        // never reaches the incremental frame. Only for a box-less node:
+        // anything with a box of its own is covered by that box.
+        //
+        // Deliberately NOT recorded in `seen`: the root may be paint-dirty
+        // in its own right (it moved), and its own entry must still add
+        // its *previous* rect. Marking it seen here skipped that and left
+        // the line painted where it used to be (#844 review, round 2). A
+        // root reached from several spans adds the same rect repeatedly,
+        // which the union absorbs.
+        if (w <= 0.0 || h <= 0.0)
+            && let Some(root_id) = node.ifc_root
+            && root_id != node_id
+            && let Some(root) = tree.get(root_id)
+        {
+            let (rx, ry, rt) = compute_absolute_position_and_transform(tree, root_id, scale);
+            let rw = root.layout.width as f64 * scale;
+            let rh = root.layout.height as f64 * scale;
+            if rw > 0.0
+                && rh > 0.0
+                && add(rt.transform_rect_bbox(Rect::new(rx, ry, rx + rw, ry + rh)))
             {
-                let bounds = opacity_layer_bounds(tree, node_id, scale, ax, ay);
-                if bounds == UNBOUNDED {
-                    return Some(Rect::new(0.0, 0.0, viewport_w, viewport_h));
-                }
-                ink = Outsets {
-                    left: (ax - bounds.x0).max(0.0),
-                    top: (ay - bounds.y0).max(0.0),
-                    right: (bounds.x1 - (ax + w)).max(0.0),
-                    bottom: (bounds.y1 - (ay + h)).max(0.0),
-                };
+                return Some(whole);
             }
+        }
 
-            if w > 0.0 && h > 0.0 {
-                let r = transform.transform_rect_bbox(ink.grow(Rect::new(ax, ay, ax + w, ay + h)));
-                let r = Rect::new(r.x0 - margin, r.y0 - margin, r.x1 + margin, r.y1 + margin);
-                region = Some(region.map_or(r, |prev| prev.union(r)));
-            }
-
-            // A flowed inline element owns no box (`0x0`): its glyphs, its
-            // decorations and its background are drawn by the IFC root it
-            // flows into. So a restyle that changes only how it *paints* —
-            // `visibility` above all, which is read at paint time and moves
-            // nothing (#829) — has to dirty that root's rect, or the change
-            // never reaches the incremental frame. Only for a box-less node:
-            // anything with a box of its own is covered by that box.
-            //
-            // Deliberately NOT recorded in `seen`: the root may be paint-dirty
-            // in its own right (it moved), and its own entry must still add
-            // its *previous* rect. Marking it seen here skipped that and left
-            // the line painted where it used to be (#844 review, round 2). A
-            // root reached from several spans adds the same rect repeatedly,
-            // which the union absorbs.
-            if (w <= 0.0 || h <= 0.0)
-                && let Some(root_id) = node.ifc_root
-                && root_id != node_id
-                && let Some(root) = tree.get(root_id)
-            {
-                let (rx, ry, rt) = compute_absolute_position_and_transform(tree, root_id, scale);
-                let rw = root.layout.width as f64 * scale;
-                let rh = root.layout.height as f64 * scale;
-                if rw > 0.0 && rh > 0.0 {
-                    let r = rt.transform_rect_bbox(Rect::new(rx, ry, rx + rw, ry + rh));
-                    let r = Rect::new(r.x0 - margin, r.y0 - margin, r.x1 + margin, r.y1 + margin);
-                    region = Some(region.map_or(r, |prev| prev.union(r)));
-                }
-            }
-
-            // Previous position (for moved/resized nodes): where it was last
-            // *painted*, however many layout passes have run since.
-            if let Some(r) = previous_painted_rect_at(node, ax, ay, transform, scale, ink) {
-                let r = Rect::new(r.x0 - margin, r.y0 - margin, r.x1 + margin, r.y1 + margin);
-                region = Some(region.map_or(r, |prev| prev.union(r)));
-            }
+        // Where it was last painted, with the ink it was painted with — and,
+        // for a moved out-of-flow box, the subtree reach measured above (the
+        // same subtree, translated; a descendant that changed brings its own
+        // painted rect).
+        if let Some(r) = painted_rect_with(tree, node_id, scale, ink)
+            && add(r)
+        {
+            return Some(whole);
         }
     }
 
     // Include rects from removed nodes (saved before deletion).
     for &(rx, ry, rw, rh) in &tree.paint_dirty_removed_rects {
-        if rw > 0.0 && rh > 0.0 {
-            // Rects stored at scale=1; apply current scale
-            let r = Rect::new(
-                rx * scale - margin,
-                ry * scale - margin,
-                (rx + rw) * scale + margin,
-                (ry + rh) * scale + margin,
-            );
-            region = Some(region.map_or(r, |prev| prev.union(r)));
+        // Rects stored at scale=1; apply current scale
+        if rw > 0.0
+            && rh > 0.0
+            && add(Rect::new(
+                rx * scale,
+                ry * scale,
+                (rx + rw) * scale,
+                (ry + rh) * scale,
+            ))
+        {
+            return Some(whole);
         }
     }
 
@@ -176,42 +210,66 @@ pub fn compute_dirty_region(
     })
 }
 
-/// The rect `node` was last painted in, when its box has moved or resized
-/// since — `None` when it has not, or when that box was empty.
-///
-/// `(ax, ay, transform)` is the node's **current** painted origin and
-/// transform chain ([`compute_absolute_position_and_transform`]); the old rect
-/// is that origin moved back by the change in the node's own layout offset.
-/// Not exact under an ancestor that moved too (the ancestor's own old rect
-/// usually covers it) or a simultaneous transform change, but exact for the
-/// common case — a caret, a selection rect, a dragged panel — and, since
-/// `prev_layout` is only advanced by the paint that consumes the region
-/// ([`NodeTree::consume_paint_dirty`]), exact however many layout passes ran
-/// between the two paints.
-///
-/// `ink` pads the old box by how far the node's painted subtree reaches past
-/// its border box (measured on the current subtree, which for a move is the
-/// same subtree translated).
-fn previous_painted_rect_at(
-    node: &Node,
-    ax: f64,
-    ay: f64,
-    transform: Affine,
-    scale: f64,
-    ink: Outsets,
-) -> Option<Rect> {
-    let pw = node.prev_layout.width as f64 * scale;
-    let ph = node.prev_layout.height as f64 * scale;
-    if pw <= 0.0 || ph <= 0.0 || node.prev_layout == node.layout {
-        return None;
+/// How far a node's **own** ink reaches past its border box, in CSS px:
+/// `[left, top, right, bottom]`. Outset `box-shadow` (the whole blur radius
+/// plus spread, around its offset — the same slack `layer_bounds` allows) and
+/// `outline` (width plus a positive offset). Inset shadows paint inside the
+/// box. Never negative.
+pub(crate) fn own_ink_outsets(cs: &crate::computed_style::ComputedStyle) -> [f32; 4] {
+    let mut o = [0.0_f32; 4];
+    for shadow in &cs.box_shadow {
+        if shadow.inset {
+            continue;
+        }
+        let reach = shadow.blur_radius.abs() + shadow.spread_radius.abs();
+        o[0] = o[0].max(reach - shadow.offset_x);
+        o[1] = o[1].max(reach - shadow.offset_y);
+        o[2] = o[2].max(reach + shadow.offset_x);
+        o[3] = o[3].max(reach + shadow.offset_y);
     }
-    let old_x = ax - (node.layout.x - node.prev_layout.x) as f64 * scale;
-    let old_y = ay - (node.layout.y - node.prev_layout.y) as f64 * scale;
-    Some(transform.transform_rect_bbox(ink.grow(Rect::new(old_x, old_y, old_x + pw, old_y + ph))))
+    if cs.outline_width > 0.0 {
+        let reach = cs.outline_width + cs.outline_offset.max(0.0);
+        for side in &mut o {
+            *side = side.max(reach);
+        }
+    }
+    o
 }
 
-/// How far past a border box a node's painted subtree reaches, per side, in
-/// physical pixels. Never negative.
+/// The rect `node_id`'s pixels are in from the last paint, in physical pixels
+/// — `None` when it has not been painted since it was created (or removed), or
+/// was painted with an empty box.
+///
+/// Its position is the painted-frame sum up its box-tree chain
+/// ([`Frame::Painted`]), so it is right whether the node or an ancestor moved
+/// since, and under a transform that changed since; it is grown by the ink the
+/// node was painted with. The removal path records it for every node of a
+/// removed subtree; [`compute_dirty_region`] adds it for every dirty node.
+pub fn previous_painted_rect(tree: &NodeTree, node_id: RawNodeId, scale: f64) -> Option<Rect> {
+    painted_rect_with(tree, node_id, scale, Outsets::ZERO)
+}
+
+/// [`previous_painted_rect`], additionally grown by `extra` (physical px).
+fn painted_rect_with(
+    tree: &NodeTree,
+    node_id: RawNodeId,
+    scale: f64,
+    extra: Outsets,
+) -> Option<Rect> {
+    let node = tree.get(node_id)?;
+    let painted = node.painted.as_ref()?;
+    let pw = node.prev_layout.width as f64 * scale;
+    let ph = node.prev_layout.height as f64 * scale;
+    if pw <= 0.0 || ph <= 0.0 {
+        return None;
+    }
+    let (px, py, pt) = position_and_transform_in(tree, node_id, scale, Frame::Painted);
+    let ink = Outsets::from_css(painted.ink, scale).max(extra);
+    Some(pt.transform_rect_bbox(ink.grow(Rect::new(px, py, px + pw, py + ph))))
+}
+
+/// How far past a border box something reaches, per side, in physical pixels.
+/// Never negative.
 #[derive(Clone, Copy)]
 struct Outsets {
     left: f64,
@@ -228,6 +286,24 @@ impl Outsets {
         bottom: 0.0,
     };
 
+    fn from_css(o: [f32; 4], scale: f64) -> Self {
+        Self {
+            left: o[0] as f64 * scale,
+            top: o[1] as f64 * scale,
+            right: o[2] as f64 * scale,
+            bottom: o[3] as f64 * scale,
+        }
+    }
+
+    fn max(self, o: Self) -> Self {
+        Self {
+            left: self.left.max(o.left).max(0.0),
+            top: self.top.max(o.top).max(0.0),
+            right: self.right.max(o.right).max(0.0),
+            bottom: self.bottom.max(o.bottom).max(0.0),
+        }
+    }
+
     fn grow(self, r: Rect) -> Rect {
         Rect::new(
             r.x0 - self.left,
@@ -236,19 +312,6 @@ impl Outsets {
             r.y1 + self.bottom,
         )
     }
-}
-
-/// [`previous_painted_rect_at`] for a node looked up by id: the rect its old
-/// pixels are in, if its box has changed since it was last painted. The
-/// removal path needs it — a node moved and then removed before a paint has
-/// pixels at its *previous* box, not the one it was removed from.
-pub fn previous_painted_rect(tree: &NodeTree, node_id: RawNodeId, scale: f64) -> Option<Rect> {
-    let node = tree.get(node_id)?;
-    if node.prev_layout == node.layout {
-        return None;
-    }
-    let (ax, ay, transform) = compute_absolute_position_and_transform(tree, node_id, scale);
-    previous_painted_rect_at(node, ax, ay, transform, scale, Outsets::ZERO)
 }
 
 use std::cell::{Cell, RefCell};
@@ -609,6 +672,36 @@ pub fn compose_node_transform(
     if tf.is_identity {
         return parent_transform;
     }
+    let cs = &node.computed_style;
+    let origin = (
+        cs.transform_origin_x.resolve(node.layout.width),
+        cs.transform_origin_y.resolve(node.layout.height),
+    );
+    compose_transform_parts(
+        tf,
+        origin,
+        (node.layout.width, node.layout.height),
+        x,
+        y,
+        scale,
+        parent_transform,
+    )
+}
+
+/// The arithmetic of [`compose_node_transform`], over explicit inputs: the
+/// transform, its origin resolved in CSS px, and the box it resolves a
+/// percentage translate against. The painted frame
+/// ([`Frame::Painted`]) composes the transform a node was *painted* with this
+/// way, from [`crate::node::PaintedState`].
+fn compose_transform_parts(
+    tf: &crate::computed_style::TransformValue,
+    origin: (f32, f32),
+    size: (f32, f32),
+    x: f64,
+    y: f64,
+    scale: f64,
+    parent_transform: Affine,
+) -> Affine {
     let mut m = tf.matrix;
     // A percentage translate resolves against the element's own border box —
     // but *in the frame its position in the function list establishes*, so its
@@ -616,7 +709,7 @@ pub fn compose_node_transform(
     // of pixel offsets added to the end of the composed matrix (#212).
     // `TransformValue` carries the four coefficients; this is where the box
     // they multiply finally arrives.
-    let (w, h) = (node.layout.width as f64, node.layout.height as f64);
+    let (w, h) = (size.0 as f64, size.1 as f64);
     m[4] += tf.pct_translate_w[0] * w + tf.pct_translate_h[0] * h;
     m[5] += tf.pct_translate_w[1] * w + tf.pct_translate_h[1] * h;
     // The translate components are *lengths*: `m[4]`/`m[5]` come from the
@@ -627,11 +720,8 @@ pub fn compose_node_transform(
     // and must NOT be scaled (#202).
     m[4] *= scale;
     m[5] *= scale;
-    let cs = &node.computed_style;
-    let ox = cs.transform_origin_x.resolve(node.layout.width);
-    let oy = cs.transform_origin_y.resolve(node.layout.height);
-    let cx = x + ox as f64 * scale;
-    let cy = y + oy as f64 * scale;
+    let cx = x + origin.0 as f64 * scale;
+    let cy = y + origin.1 as f64 * scale;
     parent_transform * Affine::translate((cx, cy)) * Affine::new(m) * Affine::translate((-cx, -cy))
 }
 
@@ -650,13 +740,67 @@ fn compose_transform_step(
     y: f64,
     scale: f64,
     parent_transform: Affine,
+    frame: Frame,
 ) -> Affine {
+    let layout = frame.layout(node);
     if node.computed_style.display == DisplayValue::Contents
-        && (node.layout.width == 0.0 || node.layout.height == 0.0)
+        && (layout.width == 0.0 || layout.height == 0.0)
     {
         return parent_transform;
     }
-    compose_node_transform(node, x, y, scale, parent_transform)
+    match frame.painted(node) {
+        Some(painted) => match &painted.transform {
+            Some(t) => compose_transform_parts(
+                &t.value,
+                t.origin,
+                (layout.width, layout.height),
+                x,
+                y,
+                scale,
+                parent_transform,
+            ),
+            None => parent_transform,
+        },
+        None => compose_node_transform(node, x, y, scale, parent_transform),
+    }
+}
+
+/// Which state of the tree a position is asked about.
+///
+/// [`Frame::Current`] is the tree as laid out now — what the next paint draws.
+/// [`Frame::Painted`] is the tree as the **last paint drew it**: each node's
+/// `prev_layout` and [`crate::node::PaintedState`] where it has one, and its
+/// current values where it has not been painted (a node created since, or an
+/// anonymous box the last IFC pass minted, whose descendants were painted under
+/// a box that no longer exists — the current one is the best answer there).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Frame {
+    Current,
+    Painted,
+}
+
+impl Frame {
+    fn painted(self, node: &Node) -> Option<&crate::node::PaintedState> {
+        match self {
+            Frame::Current => None,
+            Frame::Painted => node.painted.as_ref(),
+        }
+    }
+
+    fn layout(self, node: &Node) -> crate::node::LayoutResult {
+        if self.painted(node).is_some() {
+            node.prev_layout
+        } else {
+            node.layout
+        }
+    }
+
+    fn is_identity(self, node: &Node) -> bool {
+        match self.painted(node) {
+            Some(p) => p.transform.is_none(),
+            None => node.computed_style.transform.is_identity,
+        }
+    }
 }
 
 /// The transform every hoisted `position: fixed` box paints under.
@@ -673,13 +817,17 @@ fn compose_transform_step(
 /// [`compute_absolute_position_and_transform`] reports it in, whichever root
 /// happens to own it.
 fn body_paint_transform(tree: &NodeTree, scale: f64) -> Affine {
+    body_transform_in(tree, scale, Frame::Current)
+}
+
+fn body_transform_in(tree: &NodeTree, scale: f64, frame: Frame) -> Affine {
     let Some(body) = tree.get(tree.body_id) else {
         return Affine::IDENTITY;
     };
     // Through the same origin step the chain below uses, so the body's
     // transform is composed about the same point either way in.
-    let (bx, by) = painted_origin_step(tree, body, 0.0, 0.0, scale);
-    compose_transform_step(body, bx, by, scale, Affine::IDENTITY)
+    let (bx, by) = painted_origin_step(tree, body, 0.0, 0.0, scale, frame);
+    compose_transform_step(body, bx, by, scale, Affine::IDENTITY, frame)
 }
 
 /// One step of the descent: the node's own painted origin, given the origin its
@@ -702,11 +850,13 @@ fn painted_origin_step(
     off_x: f64,
     off_y: f64,
     scale: f64,
+    frame: Frame,
 ) -> (f64, f64) {
     let (dx, dy) = ifc_content_box_offset(tree, node);
+    let layout = frame.layout(node);
     (
-        off_x + (node.layout.x + dx) as f64 * scale,
-        off_y + (node.layout.y + dy) as f64 * scale,
+        off_x + (layout.x + dx) as f64 * scale,
+        off_y + (layout.y + dy) as f64 * scale,
     )
 }
 
@@ -745,13 +895,23 @@ pub fn compute_absolute_position_and_transform(
     node_id: RawNodeId,
     scale: f64,
 ) -> (f64, f64, Affine) {
+    position_and_transform_in(tree, node_id, scale, Frame::Current)
+}
+
+/// [`compute_absolute_position_and_transform`] in either [`Frame`].
+fn position_and_transform_in(
+    tree: &NodeTree,
+    node_id: RawNodeId,
+    scale: f64,
+    frame: Frame,
+) -> (f64, f64, Affine) {
     // First pass: does anything on the chain transform (cheap pointer walk)?
     let mut any_transform = false;
     let mut hoisted_fixed = false;
     let mut current = Some(node_id);
     while let Some(id) = current {
         let Some(node) = tree.get(id) else { break };
-        any_transform |= !node.computed_style.transform.is_identity;
+        any_transform |= !frame.is_identity(node);
         if node.computed_style.position == PositionValue::Fixed {
             hoisted_fixed = true;
             break;
@@ -763,7 +923,7 @@ pub fn compute_absolute_position_and_transform(
     }
     // A hoisted fixed box drops its ancestors' transforms but not the body's.
     if hoisted_fixed && let Some(body) = tree.get(tree.body_id) {
-        any_transform |= !body.computed_style.transform.is_identity;
+        any_transform |= !frame.is_identity(body);
     }
 
     if !any_transform {
@@ -773,7 +933,7 @@ pub fn compute_absolute_position_and_transform(
         let mut current = Some(node_id);
         while let Some(id) = current {
             let Some(node) = tree.get(id) else { break };
-            let (nx, ny) = painted_origin_step(tree, node, x, y, scale);
+            let (nx, ny) = painted_origin_step(tree, node, x, y, scale, frame);
             x = nx;
             y = ny;
             if node.computed_style.position == PositionValue::Fixed || id == tree.body_id {
@@ -813,17 +973,17 @@ pub fn compute_absolute_position_and_transform(
     // *is* that box, in which case the loop below composes it and seeding here
     // would apply it twice.
     let mut transform = if hoisted_fixed && chain.last() != Some(&tree.body_id) {
-        body_paint_transform(tree, scale)
+        body_transform_in(tree, scale, frame)
     } else {
         Affine::IDENTITY
     };
     let (mut x, mut y) = (0.0_f64, 0.0_f64);
     for &id in chain.iter().rev() {
         let Some(node) = tree.get(id) else { break };
-        let (nx, ny) = painted_origin_step(tree, node, off_x, off_y, scale);
+        let (nx, ny) = painted_origin_step(tree, node, off_x, off_y, scale, frame);
         x = nx;
         y = ny;
-        transform = compose_transform_step(node, x, y, scale, transform);
+        transform = compose_transform_step(node, x, y, scale, transform, frame);
         // Children resolve against this node's scroll-adjusted origin.
         off_x = x - node.scroll_offset.0 * scale;
         off_y = y - node.scroll_offset.1 * scale;
