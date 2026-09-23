@@ -558,8 +558,39 @@ pub struct Node {
     pub taffy_id: Option<taffy::NodeId>,
     /// Computed layout result.
     pub layout: LayoutResult,
-    /// Previous frame's layout (for dirty region computation).
+    /// The box this node was last **painted** in, for dirty-region
+    /// computation: where its old pixels are, and so what a frame that moves it
+    /// has to clear.
+    ///
+    /// Not "the previous layout pass's box". Layout never writes this field;
+    /// it changes `layout` and pushes the node to `paint_dirty_nodes`, and
+    /// [`NodeTree::consume_paint_dirty`] — run by the paint that consumes the
+    /// region — brings it level with `layout`. So any number of layout passes
+    /// between two paints is safe. It used to be overwritten by every pass,
+    /// which lost the painted rect whenever a frame resolved twice (the
+    /// editor's caret pass does, and so do two pointer moves between paints)
+    /// and left the old caret, selection or dragged panel painted where it
+    /// was — papered over with a full repaint per keystroke until the
+    /// ownership moved here.
+    ///
+    /// Meaningful only while [`Self::painted`] is `Some`: a node that has not
+    /// been painted since it was created or removed has no old pixels.
     pub prev_layout: LayoutResult,
+    /// The rest of what this node was last painted *with*, beside
+    /// `prev_layout`: its own ink reach and its own transform. `None` until a
+    /// paint consumes the node, and again once a removal has recorded its old
+    /// rect. Written only by [`NodeTree::consume_paint_dirty`].
+    ///
+    /// Everything here is **parent-relative**, like `prev_layout`, so the
+    /// absolute rect a node was painted in is the sum of these up its box-tree
+    /// chain (`paint::previous_painted_rect`) — exact whether it was the node
+    /// or an ancestor that moved, and exact when its ink or transform changed
+    /// in the same frame, because what is summed is what was painted rather
+    /// than today's values moved back by a delta. Relative storage is also why
+    /// only the nodes a paint consumes need updating: a node that was not
+    /// paint-dirty was not moved, restyled or re-transformed, so what it was
+    /// painted with is still what it has.
+    pub painted: Option<PaintedState>,
     /// CSS display mode (parsed from style attribute).
     pub display_mode: DisplayMode,
     /// If this node is an inline child, which IFC root owns it.
@@ -953,6 +984,7 @@ impl Node {
             taffy_id: None,
             layout: LayoutResult::default(),
             prev_layout: LayoutResult::default(),
+            painted: None,
             display_mode: DisplayMode::Block,
             ifc_root: None,
             text_layout: None,
@@ -1008,6 +1040,7 @@ impl Node {
             taffy_id: None,
             layout: LayoutResult::default(),
             prev_layout: LayoutResult::default(),
+            painted: None,
             display_mode,
             ifc_root: None,
             text_layout: None,
@@ -1062,6 +1095,7 @@ impl Node {
             taffy_id: None,
             layout: LayoutResult::default(),
             prev_layout: LayoutResult::default(),
+            painted: None,
             display_mode: DisplayMode::Inline,
             ifc_root: None,
             text_layout: None,
@@ -1114,6 +1148,7 @@ impl Node {
             taffy_id: None,
             layout: LayoutResult::default(),
             prev_layout: LayoutResult::default(),
+            painted: None,
             display_mode: DisplayMode::Inline,
             ifc_root: None,
             text_layout: None,
@@ -1587,9 +1622,6 @@ pub struct NodeTree {
     /// Used during bulk DOM operations (block re-render) to batch style resolution
     /// into a single pass instead of one per child.
     pub suppress_inline_restyle: bool,
-    /// True when an absolute/fixed element moved via the inset fast path.
-    /// The app checks this to force a full scene repaint (clearing old position).
-    pub full_repaint_needed: bool,
     /// True if the tree structure changed (node insert/remove) or display mode
     /// changed since last IFC setup. When false, IFC rebuild is skipped and
     /// Taffy's internal cache is preserved — only dirty nodes get re-measured.
@@ -1941,7 +1973,6 @@ impl NodeTree {
             styles_dirty: true, // Initial render needs styles
             layout_dirty: true, // Initial render needs layout
             suppress_inline_restyle: false,
-            full_repaint_needed: false,
             ifc_dirty: true, // Initial render needs IFC setup
             taffy,
             taffy_map,
@@ -2064,6 +2095,34 @@ impl NodeTree {
     pub fn push_dirty(&mut self, id: RawNodeId) {
         self.dirty_nodes.insert(id);
         self.paint_dirty_nodes.push(id);
+    }
+
+    /// The paint that consumed `paint_dirty_nodes` has run: forget them, and
+    /// record that each one's pixels are now at its current box
+    /// (`prev_layout = layout`, see [`Node::prev_layout`]).
+    ///
+    /// Every paint that drains the dirty lists must call this — the software
+    /// dirty-region frame, a full software repaint and a GPU scene build alike
+    /// — or a node's `prev_layout` keeps naming a box it has since been
+    /// repainted out of, and a later frame clears that stale rect too
+    /// (over-repaint, never ghosting, but it can push a small change over the
+    /// full-repaint threshold). Every writer of `layout` that changes it in
+    /// `read_layout_results` pushes the node to `paint_dirty_nodes`, which is
+    /// what makes the list enough to find every node whose `prev_layout` is
+    /// behind.
+    ///
+    /// It also snapshots what each one was painted *with* into
+    /// [`Node::painted`] — own ink reach and own transform — which is O(1) per
+    /// node: nothing here walks a subtree.
+    pub fn consume_paint_dirty(&mut self) {
+        let nodes = &mut self.nodes;
+        for id in self.paint_dirty_nodes.drain(..) {
+            if let Some(node) = nodes.get_mut(id) {
+                node.prev_layout = node.layout;
+                node.painted = Some(PaintedState::of(node));
+            }
+        }
+        self.paint_dirty_removed_rects.clear();
     }
 
     /// Remove a node and all its descendants from the slab.
@@ -2226,4 +2285,43 @@ pub fn tag_is_disableable(tag: Option<&str>) -> bool {
         tag,
         Some("button" | "input" | "select" | "textarea" | "option" | "optgroup" | "fieldset")
     )
+}
+
+/// What a node was last painted with, besides its box ([`Node::painted`]).
+#[derive(Clone, Debug, Default)]
+pub struct PaintedState {
+    /// How far the node's **own** ink reached past its border box, in CSS px:
+    /// `[left, top, right, bottom]` — outset `box-shadow` and `outline`. Its
+    /// descendants carry their own.
+    pub ink: [f32; 4],
+    /// The node's own transform, with its origin resolved against the box it
+    /// was painted in. `None` for the identity.
+    pub transform: Option<Box<PaintedTransform>>,
+}
+
+/// A painted transform: the value and its resolved origin, in CSS px.
+#[derive(Clone, Debug)]
+pub struct PaintedTransform {
+    pub value: crate::computed_style::TransformValue,
+    pub origin: (f32, f32),
+}
+
+impl PaintedState {
+    /// What `node` paints with now.
+    pub fn of(node: &Node) -> Self {
+        let cs = &node.computed_style;
+        let transform = (!cs.transform.is_identity).then(|| {
+            Box::new(PaintedTransform {
+                value: cs.transform.clone(),
+                origin: (
+                    cs.transform_origin_x.resolve(node.layout.width),
+                    cs.transform_origin_y.resolve(node.layout.height),
+                ),
+            })
+        });
+        Self {
+            ink: crate::paint::own_ink_outsets(cs),
+            transform,
+        }
+    }
 }

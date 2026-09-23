@@ -10,6 +10,8 @@
 mod animation_theme_change_tests;
 #[cfg(test)]
 mod blink_and_click_focus_tests;
+#[cfg(all(test, any(feature = "gpu", feature = "android-gpu", feature = "embed")))]
+mod build_scene_consume_tests;
 #[cfg(all(test, software_shell, feature = "desktop"))]
 mod caret_visibility_paint_tests;
 mod click_handling;
@@ -82,6 +84,8 @@ mod overlay_z_index_tests;
 mod paused_animation_frames_tests;
 #[cfg(all(test, software_shell))]
 mod perf_stats_tests;
+#[cfg(all(test, software_shell))]
+mod repaint_old_rect_tests;
 mod select_widget;
 #[cfg(test)]
 mod stepper_state_709_tests;
@@ -937,9 +941,13 @@ impl RinchApp {
 
     /// Run the post-layout overlay pass for mounted editors (from an input handler,
     /// where a selection-only change doesn't dirty the document) and, if any overlay
-    /// moved, force a full repaint. The caret / selection / node-outline overlays are
-    /// absolutely positioned, and the software renderer's dirty-region cache can't
-    /// clear a moved absolute element's old rect — so without this they ghost.
+    /// moved, schedule a repaint. A dirty-region repaint, not a full one: the
+    /// overlays' style writes dirty them, the next resolve lays them out, and
+    /// `prev_layout` still names the box each was last *painted* in however many
+    /// resolves land first (`NodeTree::consume_paint_dirty`), so the region clears
+    /// the old caret as well as drawing the new one. This used to throw the whole
+    /// previous frame away on every keystroke, because the layout pass overwrote
+    /// that old rect.
     ///
     /// A caret that owes a scroll (a local edit or selection move — the handle's
     /// `ScrollGate`) also queues a `scroll_into_view` on itself. It is
@@ -952,8 +960,6 @@ impl RinchApp {
     pub(crate) fn refresh_editor_overlays(&mut self) {
         if crate::editor::update_all_carets(Some(self.doc_key()), self.focused_editor_id()) {
             self.scene_dirty = true;
-            #[cfg(software_shell)]
-            self.invalidate_previous_frame(rinch_dom::perf::FullRepaintReason::EditorOverlay);
         }
     }
 
@@ -1034,16 +1040,6 @@ impl RinchApp {
             let mut d = doc.borrow_mut();
             let _ = d.take_dirty_nodes();
             d.resolve_layout(viewport_width, viewport_height);
-
-            // Check if the inset fast path requested a full repaint
-            // (absolute element moved — dirty region caching can't track the
-            // old position reliably, so force full scene rebuild).
-            if d.tree.full_repaint_needed {
-                d.tree.full_repaint_needed = false;
-                self.scene_dirty = true;
-                #[cfg(software_shell)]
-                self.invalidate_previous_frame(rinch_dom::perf::FullRepaintReason::InsetFastPath);
-            }
         }
 
         // Apply deferred scroll-into-view now that layout is fresh
@@ -1068,9 +1064,11 @@ impl RinchApp {
         // New-editor phase 2 (design A3): render each mounted editor's caret from
         // its selection now that layout geometry is fresh. If an overlay (caret /
         // selection / node-outline) actually moved, re-resolve so its new absolute
-        // position is current, then force a full repaint — the software renderer's
-        // dirty-region cache can't clear a moved absolute element's *old* rect, so
-        // the overlay would otherwise ghost.
+        // position is current. The dirty region then covers the overlay's old
+        // rect as well as its new one: this second resolve does not overwrite
+        // `prev_layout`, which only the consuming paint advances
+        // (`NodeTree::consume_paint_dirty`). It used to, and every keystroke
+        // repainted the whole window to hide the ghost that left.
         #[cfg(feature = "desktop")]
         if crate::editor::update_all_carets(Some(self.doc_key()), self.focused_editor_id()) {
             {
@@ -1088,8 +1086,6 @@ impl RinchApp {
             // `apply_scroll_into_view` measures.
             self.apply_scroll_into_view();
             self.scene_dirty = true;
-            #[cfg(software_shell)]
-            self.invalidate_previous_frame(rinch_dom::perf::FullRepaintReason::EditorOverlay);
         }
 
         // Dispatch deferred scroll events for offsets the layout clamped, now
@@ -1352,6 +1348,11 @@ impl RinchApp {
         if let Some(doc) = &self.doc {
             let mut d = doc.borrow_mut();
             let d = &mut *d;
+            // No dirty region here, but the lists still have to be consumed:
+            // they only ever grew on a GPU build, and `prev_layout` must be
+            // advanced by the paint that draws the new boxes
+            // (`NodeTree::consume_paint_dirty`).
+            d.tree.consume_paint_dirty();
             rinch_dom::paint::paint_document(
                 &d.tree,
                 &mut self.painter,
@@ -1395,6 +1396,14 @@ impl RinchApp {
         }
 
         self.scene_dirty = false;
+        // This frame consumed the dirty lists, so the software pixmap — if a
+        // window ever presents with software again after presenting with the
+        // GPU (a `show_window` re-creation can switch) — no longer has a
+        // region that would bring it up to date. Its next frame is a full one.
+        #[cfg(software_shell)]
+        {
+            self.has_previous_frame = false;
+        }
         self.painter.scene()
     }
 
@@ -1468,11 +1477,10 @@ impl RinchApp {
                 None // Full repaint: first frame or resize
             };
 
-            // Drain paint_dirty_nodes now that we've computed the region
+            // Drain paint_dirty_nodes now that we've computed the region, and
+            // record that their pixels are where their boxes now are.
             if let Some(doc) = &self.doc {
-                let mut d = doc.borrow_mut();
-                d.tree.paint_dirty_nodes.clear();
-                d.tree.paint_dirty_removed_rects.clear();
+                doc.borrow_mut().tree.consume_paint_dirty();
             }
 
             // Check if dirty region is small enough to benefit from caching
@@ -1484,7 +1492,8 @@ impl RinchApp {
                 && dirty_region.is_some_and(|r| {
                     let region_area = r.width() * r.height();
                     let viewport_area = w as f64 * h as f64;
-                    region_area < viewport_area * 0.5 && region_area > 0.0
+                    region_area < viewport_area * rinch_dom::paint::FULL_REPAINT_FRACTION
+                        && region_area > 0.0
                 });
 
             if use_dirty_region {
@@ -1762,6 +1771,7 @@ impl RinchApp {
     /// repaints in full, and remember `reason` for the `repaint_full_*`
     /// counter. The first reason recorded before a paint wins.
     #[cfg(software_shell)]
+    #[cfg_attr(not(feature = "theme"), allow(dead_code))] // the theme change is its one caller
     pub(crate) fn invalidate_previous_frame(&mut self, reason: rinch_dom::perf::FullRepaintReason) {
         self.has_previous_frame = false;
         self.full_repaint_reason.get_or_insert(reason);

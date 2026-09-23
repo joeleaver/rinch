@@ -632,8 +632,23 @@ impl RinchDocument {
                     parley::layout::PositionedLayoutItem::InlineBox(positioned_box) => {
                         let child_id = positioned_box.id as usize;
                         if let Some(child) = self.tree.nodes.get_mut(child_id) {
+                            // A move is a move, whoever makes it: push the box
+                            // paint-dirty like any other layout change, so the
+                            // region clears where it was painted and draws where
+                            // it went — its own box *and* anything it carries
+                            // outside the IFC root's box (an absolute child),
+                            // which the root's own rect does not reach. Its
+                            // `prev_layout` stays the painted box until a paint
+                            // consumes it. Review of #880, probe N: unpushed, the
+                            // chip's absolute kid was neither drawn at its new
+                            // spot nor cleared from its old one.
+                            let moved = child.layout.x != positioned_box.x
+                                || child.layout.y != positioned_box.y;
                             child.layout.x = positioned_box.x;
                             child.layout.y = positioned_box.y;
+                            if moved {
+                                self.tree.paint_dirty_nodes.push(child_id);
+                            }
                         }
                     }
                 }

@@ -181,10 +181,6 @@ define_counters! {
     RepaintFullEmptyRegion = "repaint_full_empty_region",
     /// ...a drag ghost or the inspect highlight was on screen.
     RepaintFullOverlay = "repaint_full_overlay",
-    /// ...`NodeTree::full_repaint_needed` (the inset fast path, #280).
-    RepaintFullInsetFastPath = "repaint_full_inset_fast_path",
-    /// ...an editor caret / selection / outline overlay moved.
-    RepaintFullEditorOverlay = "repaint_full_editor_overlay",
     /// ...the theme CSS changed.
     RepaintFullTheme = "repaint_full_theme",
     /// ...the previous frame was invalidated for a reason not listed above.
@@ -249,8 +245,6 @@ pub enum FullRepaintReason {
     RegionTooLarge,
     EmptyRegion,
     Overlay,
-    InsetFastPath,
-    EditorOverlay,
     Theme,
     Invalidated,
     Gpu,
@@ -266,8 +260,6 @@ impl FullRepaintReason {
             Self::RegionTooLarge => Counter::RepaintFullRegionTooLarge,
             Self::EmptyRegion => Counter::RepaintFullEmptyRegion,
             Self::Overlay => Counter::RepaintFullOverlay,
-            Self::InsetFastPath => Counter::RepaintFullInsetFastPath,
-            Self::EditorOverlay => Counter::RepaintFullEditorOverlay,
             Self::Theme => Counter::RepaintFullTheme,
             Self::Invalidated => Counter::RepaintFullInvalidated,
             Self::Gpu => Counter::RepaintFullGpu,

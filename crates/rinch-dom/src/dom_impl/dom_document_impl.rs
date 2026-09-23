@@ -1477,9 +1477,12 @@ impl RinchDocument {
         // silently kept where it was.
         self.tree.layout_dirty = true;
         self.push_dirty_flags(node_id, DirtyFlags::LAYOUT | DirtyFlags::PAINT);
-        // Dirty-region paint cannot see an out-of-flow move before layout has
-        // run; rebuild the whole scene.
-        self.tree.full_repaint_needed = true;
+        // No full repaint (#280). The move reaches the dirty region the way
+        // any other layout change does: `read_layout_results` pushes the node
+        // when its box changes, and `prev_layout` still names the box it was
+        // last painted in however many moves and resolves land before the
+        // next paint (`NodeTree::consume_paint_dirty`), so the region covers
+        // the old rect as well as the new one.
     }
 }
 

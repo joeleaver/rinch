@@ -896,7 +896,6 @@ impl RinchDocument {
             height: taffy_layout.size.height,
         };
         let node = &mut self.tree.nodes[anon_id];
-        node.prev_layout = node.layout;
         if node.layout != new_layout {
             node.layout = new_layout;
             self.tree.paint_dirty_nodes.push(anon_id);
@@ -907,9 +906,9 @@ impl RinchDocument {
     ///
     /// For a subtree that generates no boxes at all — a `display: none` element
     /// and its descendants (#543). Keeps [`Self::read_layout_results`]'s
-    /// bookkeeping: `prev_layout` is carried and a node whose box actually
-    /// changed is pushed to `paint_dirty_nodes`, so the frame that hides
-    /// something repaints where it used to be.
+    /// bookkeeping: a node whose box actually changed is pushed to
+    /// `paint_dirty_nodes` (its `prev_layout` still names the painted box), so
+    /// the frame that hides something repaints where it used to be.
     ///
     /// Iterative: a hidden subtree is arbitrary author markup and may be deep.
     fn zero_subtree_layout(&mut self, node_id: usize) {
@@ -920,7 +919,6 @@ impl RinchDocument {
                 continue;
             };
             if node.layout != zero {
-                node.prev_layout = node.layout;
                 node.layout = zero;
                 self.tree.paint_dirty_nodes.push(id);
             }
@@ -947,7 +945,6 @@ impl RinchDocument {
             let node = &mut self.tree.nodes[node_id];
             let zero = LayoutResult::default();
             if node.layout != zero {
-                node.prev_layout = node.layout;
                 node.layout = zero;
                 self.tree.paint_dirty_nodes.push(node_id);
             }
@@ -986,7 +983,6 @@ impl RinchDocument {
             let node = &mut self.tree.nodes[node_id];
             let zero = LayoutResult::default();
             if node.layout != zero {
-                node.prev_layout = node.layout;
                 node.layout = zero;
                 self.tree.paint_dirty_nodes.push(node_id);
             }
@@ -1020,7 +1016,6 @@ impl RinchDocument {
             let node = &mut self.tree.nodes[node_id];
             let zero = LayoutResult::default();
             if node.layout != zero {
-                node.prev_layout = node.layout;
                 node.layout = zero;
                 self.tree.paint_dirty_nodes.push(node_id);
             }
@@ -1058,7 +1053,7 @@ impl RinchDocument {
         // is nothing further down for the normal path to compute. A
         // `display: contents` node inside the hidden subtree is zeroed by the
         // helper exactly as that branch would zero it. The helper carries this
-        // function's bookkeeping (`prev_layout`, `paint_dirty_nodes`) so the
+        // function's bookkeeping (`paint_dirty_nodes`) so the
         // frame that hides something still repaints where it used to be.
         if self.tree.nodes[node_id].computed_style.display
             == crate::computed_style::DisplayValue::None
@@ -1235,9 +1230,12 @@ impl RinchDocument {
                 }
             }
 
-            // Save previous layout for dirty region computation
+            // `prev_layout` is deliberately not written: it is the box this
+            // node was last *painted* in, and only the paint that consumes
+            // `paint_dirty_nodes` may move it (`NodeTree::consume_paint_dirty`).
+            // A second resolve before that paint must not overwrite it, or the
+            // old rect is lost and the move ghosts.
             let node = &mut self.tree.nodes[node_id];
-            node.prev_layout = node.layout;
             if node.layout != new_layout {
                 node.layout = new_layout;
                 self.tree.paint_dirty_nodes.push(node_id);
