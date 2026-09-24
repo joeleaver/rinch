@@ -1158,6 +1158,19 @@ impl DomDocument for RinchDocument {
         self.tree.scroll_into_view_requests.push(node.0);
     }
 
+    fn request_scroll_to_fraction(&mut self, node: NodeId, fraction: f32, margin: f32) {
+        self.tree
+            .scroll_to_fraction_requests
+            .push((node.0, fraction, margin));
+    }
+
+    fn drain_scroll_to_fraction_requests(&mut self) -> Vec<(NodeId, f32, f32)> {
+        std::mem::take(&mut self.tree.scroll_to_fraction_requests)
+            .into_iter()
+            .map(|(n, f, m)| (NodeId(n), f, m))
+            .collect()
+    }
+
     fn drain_scroll_into_view_requests(&mut self) -> Vec<NodeId> {
         std::mem::take(&mut self.tree.scroll_into_view_requests)
             .into_iter()

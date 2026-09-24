@@ -19,7 +19,7 @@
 use rinch_core::dom::RenderScope;
 use rinch_core::element::ThemeProviderProps;
 use rinch_editor_core::{Pos, Selection};
-use rinch_web::{EditorHandle, RootHandle, create_editor};
+use rinch_web::{EditorHandle, RootHandle, ScrollAlign, create_editor};
 use wasm_bindgen::JsCast;
 use wasm_bindgen_test::*;
 
@@ -60,6 +60,12 @@ impl Fixture {
     /// 40 paragraphs in a 120px scroller, with a text field above it. Nothing
     /// is focused.
     fn mount() -> Self {
+        Self::mount_with(true)
+    }
+
+    /// The same, with `in_scroller: false` putting the editor straight in the
+    /// page (the page is what scrolls).
+    fn mount_with(in_scroller: bool) -> Self {
         if let Some(stale) = LIVE_ROOT.with(|r| r.take()) {
             stale.unmount();
         }
@@ -103,8 +109,11 @@ impl Fixture {
             ThemeProviderProps::default(),
             move |scope: &mut RenderScope| {
                 let scroller = scope.create_element("div");
-                scroller.set_attribute("data-reveal-scroller", "");
-                scroller.set_attribute("style", "height: 120px; width: 300px; overflow-y: auto");
+                if in_scroller {
+                    scroller.set_attribute("data-reveal-scroller", "");
+                    scroller
+                        .set_attribute("style", "height: 120px; width: 300px; overflow-y: auto");
+                }
                 scroller.append_child(&mounted.mount(scope));
                 scroller
             },
@@ -336,5 +345,154 @@ fn select_reveal_focus_then_typing_replaces_the_words() {
     assert!(f.capture_has_focus());
     type_key("z", "KeyZ");
     assert_eq!(f.para_text(33), "line z");
+    f.teardown();
+}
+
+// ── scroll_into_view_aligned ─────────────────────────────────────────────
+
+const THIRD: ScrollAlign = ScrollAlign::Fraction(1.0 / 3.0);
+
+impl Fixture {
+    /// How far below the scroller's top edge the caret line at `pos` sits.
+    fn offset_in_view(&self, pos: Pos) -> f64 {
+        let top = self.scroller().get_bounding_client_rect().top();
+        self.line_at(pos).0 - top
+    }
+
+    fn max_scroll(&self) -> i32 {
+        let s = self.scroller();
+        s.scroll_height() - s.client_height()
+    }
+}
+
+#[wasm_bindgen_test]
+fn a_far_range_lands_a_third_of_the_way_down() {
+    let f = Fixture::mount();
+    let (from, to) = (start_of(30), end_of(31));
+    f.handle.set_selection(Selection::text(from, to));
+    assert!(!f.on_screen(from), "control: the range starts off screen");
+
+    f.handle.scroll_into_view_aligned(from, to, THIRD);
+    let at = f.offset_in_view(from);
+    assert!(
+        (at - 40.0).abs() <= 2.0,
+        "the start sits a third of the way down the 120px view (got {at})"
+    );
+    assert!(f.on_screen(to), "and the end, which fits below it");
+    assert_eq!(window().scroll_y().unwrap(), 0.0, "the page did not move");
+    assert!(!f.capture_has_focus(), "nothing was focused");
+    f.teardown();
+}
+
+#[wasm_bindgen_test]
+fn a_placed_range_above_the_view_lands_at_the_same_place() {
+    let f = Fixture::mount();
+    f.scroller().set_scroll_top(f.max_scroll());
+    assert!(!f.on_screen(start_of(20)), "control: scrolled past it");
+    f.handle
+        .scroll_into_view_aligned(start_of(20), end_of(20), THIRD);
+    let at = f.offset_in_view(start_of(20));
+    assert!((at - 40.0).abs() <= 2.0, "got {at}");
+    f.teardown();
+}
+
+#[wasm_bindgen_test]
+fn a_range_near_the_top_of_the_document_stays_near_the_top() {
+    let f = Fixture::mount();
+    f.scroller().set_scroll_top(700);
+    f.handle
+        .scroll_into_view_aligned(start_of(0), end_of(0), THIRD);
+    assert_eq!(f.scroller().scroll_top(), 0, "clamped to the top");
+    assert!(f.on_screen(start_of(0)));
+    f.teardown();
+}
+
+#[wasm_bindgen_test]
+fn a_range_near_the_end_of_the_document_stops_at_the_bottom() {
+    let f = Fixture::mount();
+    f.handle
+        .scroll_into_view_aligned(start_of(39), end_of(39), THIRD);
+    assert!(
+        (f.scroller().scroll_top() - f.max_scroll()).abs() <= 1,
+        "clamped to the end: {} of {}",
+        f.scroller().scroll_top(),
+        f.max_scroll()
+    );
+    assert!(f.on_screen(start_of(39)));
+    assert!(f.offset_in_view(start_of(39)) > 40.0);
+    f.teardown();
+}
+
+#[wasm_bindgen_test]
+fn a_placed_range_moves_even_when_it_is_in_view() {
+    let f = Fixture::mount();
+    let pos = start_of(2);
+    assert!(f.on_screen(pos), "control");
+    assert!(f.offset_in_view(pos) > 20.0, "control: below the margin");
+    f.handle
+        .scroll_into_view_aligned(pos, end_of(2), ScrollAlign::Fraction(0.0));
+    let at = f.offset_in_view(pos);
+    assert!(
+        (at - 16.0).abs() <= 1.5,
+        "Fraction(0.0) is the top edge plus the margin (got {at})"
+    );
+    f.teardown();
+}
+
+#[wasm_bindgen_test]
+fn a_range_taller_than_the_space_below_still_puts_its_start_there() {
+    let f = Fixture::mount();
+    let (from, to) = (start_of(20), end_of(29));
+    f.handle.scroll_into_view_aligned(from, to, THIRD);
+    let at = f.offset_in_view(from);
+    assert!((at - 40.0).abs() <= 2.0, "got {at}");
+    assert!(!f.on_screen(to), "control: the rest runs off the bottom");
+    f.teardown();
+}
+
+#[wasm_bindgen_test]
+fn nearest_is_scroll_into_view() {
+    let f = Fixture::mount();
+    f.handle
+        .scroll_into_view_aligned(start_of(0), end_of(0), ScrollAlign::Nearest);
+    assert_eq!(
+        f.scroller().scroll_top(),
+        0,
+        "a range in view moves nothing"
+    );
+
+    f.handle
+        .scroll_into_view_aligned(start_of(30), end_of(31), ScrollAlign::Nearest);
+    let bottom = f.scroller().get_bounding_client_rect().bottom();
+    let (_, end_bottom) = f.line_at(end_of(31));
+    assert!(
+        (bottom - end_bottom - 16.0).abs() <= 1.5,
+        "the end comes in at the bottom with the margin (got {})",
+        bottom - end_bottom
+    );
+    f.teardown();
+}
+
+#[wasm_bindgen_test]
+fn with_no_scroller_the_page_is_placed() {
+    let f = Fixture::mount_with(false);
+    // Room below the document, so the page can scroll paragraph 35 up to a
+    // third of the way down whatever the window's height.
+    let room = document().create_element("div").unwrap();
+    room.set_attribute("style", "height: 3000px").unwrap();
+    f.host.append_child(&room).unwrap();
+    let viewport = window().inner_height().unwrap().as_f64().unwrap();
+    let pos = start_of(35);
+    assert!(
+        f.line_at(pos).0 > viewport,
+        "control: paragraph 35 is below the fold of a {viewport}px window"
+    );
+    f.handle.scroll_into_view_aligned(pos, end_of(35), THIRD);
+    let at = f.line_at(pos).0;
+    assert!(
+        (at - viewport / 3.0).abs() <= 2.0,
+        "a third of the way down the window (got {at} of {viewport})"
+    );
+    assert!(window().scroll_y().unwrap() > 0.0);
     f.teardown();
 }

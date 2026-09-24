@@ -347,3 +347,153 @@ fn select_reveal_focus_then_typing_replaces_the_words() {
     type_char(&mut p.app, KeyCode::KeyZ, "Z");
     assert_eq!(para_text(&p, 33), "line Z");
 }
+
+// ── scroll_into_view_aligned ─────────────────────────────────────────────
+
+use crate::editor::ScrollAlign;
+
+const THIRD: ScrollAlign = ScrollAlign::Fraction(1.0 / 3.0);
+
+/// How far below the scroller's top edge the caret line at `pos` sits.
+fn offset_in_view(page: &Page, pos: Pos) -> f32 {
+    let (top, _) = scroller_span(page);
+    let (line_top, _) = line_at(page, pos);
+    line_top - top
+}
+
+fn max_scroll(page: &Page) -> f64 {
+    let doc = page.app.doc.as_ref().unwrap();
+    let d = doc.borrow();
+    let id = rinch_core::dom::NodeId(page.scroller);
+    d.scroll_height(id) - d.client_height(id)
+}
+
+#[test]
+fn a_far_range_lands_a_third_of_the_way_down() {
+    let mut p = page();
+    let (from, to) = (start_of(30), end_of(31));
+    p.handle.set_selection(Selection::text(from, to));
+    idle(&mut p.app);
+    assert!(!on_screen(&p, from), "control: the range starts off screen");
+
+    p.handle.scroll_into_view_aligned(from, to, THIRD);
+    assert!(
+        p.app.has_pending_layout(),
+        "the request wakes the runtime with nothing dirty"
+    );
+    idle(&mut p.app);
+    let at = offset_in_view(&p, from);
+    assert!(
+        (at - 160.0 / 3.0).abs() <= 2.0,
+        "the start sits a third of the way down the 160px view (got {at})"
+    );
+    assert!(on_screen(&p, to), "and the end, which fits below it");
+    assert_eq!(p.app.focus_target, FocusTarget::None, "focus untouched");
+    assert!(!p.app.has_pending_layout(), "and the runtime goes idle");
+}
+
+#[test]
+fn a_placed_range_above_the_view_lands_at_the_same_place() {
+    let mut p = page();
+    set_scroll(&mut p, 900.0);
+    idle(&mut p.app);
+    assert!(!on_screen(&p, start_of(20)), "control: scrolled past it");
+    p.handle
+        .scroll_into_view_aligned(start_of(20), end_of(20), THIRD);
+    idle(&mut p.app);
+    let at = offset_in_view(&p, start_of(20));
+    assert!((at - 160.0 / 3.0).abs() <= 2.0, "got {at}");
+}
+
+#[test]
+fn a_range_near_the_top_of_the_document_stays_near_the_top() {
+    let mut p = page();
+    set_scroll(&mut p, 700.0);
+    idle(&mut p.app);
+    // Paragraph 0's line is 17px down the content: a third of the way down
+    // the view would need a negative scroll.
+    p.handle
+        .scroll_into_view_aligned(start_of(0), end_of(0), THIRD);
+    idle(&mut p.app);
+    assert_eq!(scroll_of(&p), 0.0, "clamped to the top");
+    assert!(on_screen(&p, start_of(0)));
+}
+
+#[test]
+fn a_range_near_the_end_of_the_document_stops_at_the_bottom() {
+    let mut p = page();
+    p.handle
+        .scroll_into_view_aligned(start_of(39), end_of(39), THIRD);
+    idle(&mut p.app);
+    assert!(
+        (scroll_of(&p) - max_scroll(&p)).abs() <= 0.5,
+        "clamped to the end: {} of {}",
+        scroll_of(&p),
+        max_scroll(&p)
+    );
+    assert!(on_screen(&p, start_of(39)));
+    assert!(offset_in_view(&p, start_of(39)) > 160.0 / 3.0);
+}
+
+#[test]
+fn a_placed_range_moves_even_when_it_is_in_view() {
+    let mut p = page();
+    // Paragraph 2's line is 94px down the content, on screen at scroll 0.
+    assert!(on_screen(&p, start_of(2)), "control");
+    p.handle
+        .scroll_into_view_aligned(start_of(2), end_of(2), ScrollAlign::Fraction(0.0));
+    idle(&mut p.app);
+    let at = offset_in_view(&p, start_of(2));
+    assert!(
+        (at - 16.0).abs() <= 1.5,
+        "Fraction(0.0) is the top edge plus the margin (got {at})"
+    );
+}
+
+#[test]
+fn a_range_taller_than_the_space_below_still_puts_its_start_there() {
+    let mut p = page();
+    let (from, to) = (start_of(20), end_of(29));
+    p.handle.scroll_into_view_aligned(from, to, THIRD);
+    idle(&mut p.app);
+    let at = offset_in_view(&p, from);
+    assert!((at - 160.0 / 3.0).abs() <= 2.0, "got {at}");
+    assert!(!on_screen(&p, to), "control: the rest runs off the bottom");
+}
+
+#[test]
+fn nearest_is_scroll_into_view() {
+    let mut p = page();
+    p.handle
+        .scroll_into_view_aligned(start_of(1), end_of(2), ScrollAlign::Nearest);
+    idle(&mut p.app);
+    assert_eq!(scroll_of(&p), 0.0, "a range in view moves nothing");
+
+    p.handle
+        .scroll_into_view_aligned(start_of(30), end_of(31), ScrollAlign::Nearest);
+    idle(&mut p.app);
+    let (_, bottom) = scroller_span(&p);
+    let (_, end_bottom) = line_at(&p, end_of(31));
+    assert!(
+        (bottom - end_bottom - 16.0).abs() <= 1.5,
+        "the end comes in at the bottom with the margin (got {})",
+        bottom - end_bottom
+    );
+}
+
+#[test]
+fn a_placed_reveal_waits_for_a_virtualized_block_to_be_laid_out() {
+    let mut p = page_with(150, true);
+    p.handle
+        .scroll_into_view_aligned(start_of(120), end_of(120), THIRD);
+    idle(&mut p.app);
+    assert!(on_screen(&p, start_of(120)), "to the block");
+    // Not exact: the blocks the scroll brings into the window were laid out
+    // at their estimated heights when the scroll was computed, and settle to
+    // their measured ones after it, moving the start by a fraction of a line.
+    let at = offset_in_view(&p, start_of(120));
+    assert!(
+        (at - 160.0 / 3.0).abs() <= 24.0,
+        "about a third down (got {at})"
+    );
+}
