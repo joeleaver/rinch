@@ -4,6 +4,7 @@
 use std::cell::RefCell;
 use std::rc::{Rc, Weak};
 
+use crate::handle::ScrollAlign;
 use rinch_core::dom::{DomDocument, NodeFont, NodeHandle};
 use rinch_editor_core::decoration::DecorationSet;
 use rinch_editor_core::serialize::{mark_dom_tag, node_dom_tag};
@@ -969,6 +970,10 @@ impl RinchDomEditorView {
     /// the last block's bottom), so a probe never makes the scroller's content
     /// taller than the document.
     ///
+    /// With [`ScrollAlign::Fraction`] there is one probe, over the start's
+    /// caret line and not grown: the scroll places that box itself
+    /// ([`NodeHandle::scroll_to_fraction`]), margin included.
+    ///
     /// `None`, leaving the probes where they were, when either end has no
     /// geometry yet — a block edited since the last layout, or never laid out.
     pub(crate) fn position_reveal(
@@ -976,14 +981,17 @@ impl RinchDomEditorView {
         doc: &Node,
         from: Pos,
         to: Pos,
+        align: ScrollAlign,
     ) -> Option<Vec<NodeHandle>> {
         let size = doc.content_size();
         let (from, to) = (Pos(from.0.min(size)), Pos(to.0.min(size)));
-        let ends: &[(Pos, i32)] = if from == to {
+        let placed = matches!(align, ScrollAlign::Fraction(_));
+        let ends: &[(Pos, i32)] = if from == to || placed {
             &[(from, 1)]
         } else {
             &[(to, -1), (from, 1)]
         };
+        let margin = if placed { 0.0 } else { REVEAL_MARGIN };
         let host = self.doc.upgrade()?;
         let boxes: Vec<(f32, f32, f32)> = {
             let d = host.try_borrow().ok()?;
@@ -1009,8 +1017,8 @@ impl RinchDomEditorView {
                     }
                 };
                 let (x, y, h) = self.caret_geometry(&*d, doc, pos, block.node_id().0, byte)?;
-                let top = (y - REVEAL_MARGIN).max(0.0).min(y);
-                let end = (y + h + REVEAL_MARGIN).min(bottom).max(y + h);
+                let top = (y - margin).max(0.0).min(y);
+                let end = (y + h + margin).min(bottom).max(y + h);
                 out.push((x, top, end - top));
             }
             out

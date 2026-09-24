@@ -109,7 +109,7 @@ struct EditorCore {
     /// Fulfilled and cleared by [`EditorHandle::reveal_pass`] on the first pass
     /// with geometry for it; carried through local edits, dropped by a load.
     /// `None` for every editor that never asked, so the pass is one check.
-    reveal: Option<(Pos, Pos)>,
+    reveal: Option<(Pos, Pos, ScrollAlign)>,
     /// The collaboration session + outbound delta sink, when this editor is
     /// collaborating (design M9). `None` for a non-collaborative editor — the
     /// common case — so the mutation path's collab hook is a cheap early return.
@@ -184,6 +184,30 @@ enum Scroll {
     /// No — a load, an app transaction that only mapped the selection, a
     /// stored-marks reset.
     No,
+}
+
+/// Where [`EditorHandle::scroll_into_view_aligned`] puts a range in the view.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum ScrollAlign {
+    /// The least scroll that shows the range, 16px inside the edge it comes in
+    /// by; nothing moves when it is already in view. What
+    /// [`EditorHandle::scroll_into_view`] does.
+    Nearest,
+    /// The start's line this fraction of the way down the scroll container's
+    /// visible height — `0.0` the top edge, `1.0 / 3.0` a third down — kept
+    /// 16px inside either edge, the scroll clamped to what the content allows.
+    /// Clamped to `0.0..=1.0` (NaN reads as `0.0`).
+    Fraction(f32),
+}
+
+impl ScrollAlign {
+    fn clamped(self) -> ScrollAlign {
+        match self {
+            ScrollAlign::Fraction(f) if f.is_nan() => ScrollAlign::Fraction(0.0),
+            ScrollAlign::Fraction(f) => ScrollAlign::Fraction(f.clamp(0.0, 1.0)),
+            nearest => nearest,
+        }
+    }
 }
 
 /// Whether the caret owes a scroll into view: ProseMirror's
@@ -308,12 +332,12 @@ impl EditorCore {
     /// edge stays outside), or drop it on a load (`mapping` is `None`): a range
     /// in the replaced document names nothing in the new one.
     fn carry_reveal(&mut self, mapping: Option<&Mapping>) {
-        let Some((from, to)) = self.reveal else {
+        let Some((from, to, align)) = self.reveal else {
             return;
         };
         self.reveal = mapping.map(|m| {
             let from = m.map(from.0, 1);
-            (Pos(from), Pos(m.map(to.0, -1).max(from)))
+            (Pos(from), Pos(m.map(to.0, -1).max(from)), align)
         });
     }
 
@@ -2123,13 +2147,48 @@ impl EditorHandle {
     /// Positions between blocks reveal the nearest text position.
     ///
     /// **Before mount, a no-op.**
+    ///
+    /// The same as [`Self::scroll_into_view_aligned`] with
+    /// [`ScrollAlign::Nearest`]; to put the range at a set place in the view
+    /// (a third of the way down, say, for context above it), use that.
     pub fn scroll_into_view(&self, from: Pos, to: Pos) {
+        self.scroll_into_view_aligned(from, to, ScrollAlign::Nearest);
+    }
+
+    /// [`Self::scroll_into_view`] with a choice of where the range lands:
+    ///
+    /// - [`ScrollAlign::Nearest`] — the least scroll that shows the range, as
+    ///   `scroll_into_view` does; a range already in view moves nothing.
+    /// - [`ScrollAlign::Fraction(f)`](ScrollAlign::Fraction) — the start's line
+    ///   `f` of the way down the scroll container's visible height (`0.0` the
+    ///   top, `1.0 / 3.0` a third down; clamped to `0.0..=1.0`), but never
+    ///   nearer than 16px to either edge. It scrolls even when the range is
+    ///   already in view. The scroll is clamped to what the content allows, so
+    ///   a range near the top of the document stays near the top of the view
+    ///   (and one near the end, lower down). A range taller than the space
+    ///   below `f` still puts its start at `f`; the rest runs off the bottom.
+    ///
+    /// ```ignore
+    /// // Open a note at a deep link's words, with context above them.
+    /// handle.set_selection(Selection::text(from, to));
+    /// handle.scroll_into_view_aligned(from, to, ScrollAlign::Fraction(1.0 / 3.0));
+    /// handle.focus();
+    /// ```
+    ///
+    /// Everything else — when it happens, what waits and what is carried or
+    /// dropped, which containers move — is as [`Self::scroll_into_view`]
+    /// describes, with one difference for `Fraction`: on the **web** the
+    /// nearest scroll container (the page's scrolling element when no ancestor
+    /// scrolls) is set to the computed `scrollTop`, and the start is then
+    /// brought into view of the scrollers further out, the page included, the
+    /// "nearest" way.
+    pub fn scroll_into_view_aligned(&self, from: Pos, to: Pos, align: ScrollAlign) {
         let doc_key = {
             let mut core = self.core_mut();
             let Some(doc_key) = core.view.as_ref().map(|v| v.doc_key()) else {
                 return;
             };
-            core.reveal = Some((from.min(to), from.max(to)));
+            core.reveal = Some((from.min(to), from.max(to), align.clamped()));
             doc_key
         };
         crate::registry::owe_reveal(doc_key);
@@ -2147,16 +2206,21 @@ impl EditorHandle {
         }
         let mut guard = self.core_mut();
         let core = &mut *guard;
-        let (Some((from, to)), Some(view)) = (core.reveal, core.view.as_mut()) else {
+        let (Some((from, to, align)), Some(view)) = (core.reveal, core.view.as_mut()) else {
             return false;
         };
-        let Some(probes) = view.position_reveal(&core.state.doc, from, to) else {
+        let Some(probes) = view.position_reveal(&core.state.doc, from, to, align) else {
             return false;
         };
         core.reveal = None;
         drop(guard);
         for probe in probes {
-            probe.scroll_into_view();
+            match align {
+                ScrollAlign::Nearest => probe.scroll_into_view(),
+                ScrollAlign::Fraction(f) => {
+                    probe.scroll_to_fraction(f, crate::view::REVEAL_MARGIN);
+                }
+            }
         }
         true
     }
@@ -2166,7 +2230,7 @@ impl EditorHandle {
     /// holding it laid out, so a reveal of a collapsed block can be fulfilled.
     #[doc(hidden)]
     pub fn pending_reveal(&self) -> Option<Pos> {
-        self.inner.borrow().reveal.map(|(from, _)| from)
+        self.inner.borrow().reveal.map(|(from, _, _)| from)
     }
 
     /// Hide this editor's overlays (caret + selection highlight) because it isn't
@@ -6511,6 +6575,67 @@ mod tests {
                 None,
                 "a load names a new document"
             );
+        }
+
+        /// The placed requests the reveal queued, `(probe, fraction, margin)`.
+        fn drain_placed(h: &Harness) -> Vec<(NodeId, f32, f32)> {
+            h.mock.borrow_mut().drain_scroll_to_fraction_requests()
+        }
+
+        #[test]
+        fn a_fraction_places_one_unmargined_probe_over_the_start() {
+            let h = measured();
+            h.handle
+                .scroll_into_view_aligned(Pos(3), Pos(7), ScrollAlign::Fraction(1.0 / 3.0));
+            assert!(h.handle.reveal_pass());
+            assert!(drain(&h).is_empty(), "no nearest scroll");
+            let placed = drain_placed(&h);
+            assert_eq!(placed.len(), 1, "one placement: {placed:?}");
+            let (probe, fraction, margin) = placed[0];
+            // Paragraph 1's line (y 20, 20 tall), not grown: the placement
+            // keeps the margin itself.
+            assert_eq!(probe_box(&h, probe), (px(20.0), px(20.0)));
+            assert!((fraction - 1.0 / 3.0).abs() < 1e-6);
+            assert_eq!(margin, crate::view::REVEAL_MARGIN);
+            assert_eq!(h.handle.pending_reveal(), None, "fulfilled");
+        }
+
+        #[test]
+        fn a_fraction_is_clamped_and_nearest_is_what_scroll_into_view_does() {
+            let h = measured();
+            h.handle
+                .scroll_into_view_aligned(Pos(5), Pos(5), ScrollAlign::Fraction(4.0));
+            h.handle.reveal_pass();
+            assert_eq!(drain_placed(&h)[0].1, 1.0);
+            h.handle
+                .scroll_into_view_aligned(Pos(5), Pos(5), ScrollAlign::Fraction(f32::NAN));
+            h.handle.reveal_pass();
+            assert_eq!(drain_placed(&h)[0].1, 0.0);
+
+            h.handle
+                .scroll_into_view_aligned(Pos(3), Pos(7), ScrollAlign::Nearest);
+            h.handle.reveal_pass();
+            let requests = drain(&h);
+            assert!(drain_placed(&h).is_empty());
+            assert_eq!(probe_box(&h, requests[0]), (px(44.0), px(52.0)));
+            assert_eq!(probe_box(&h, requests[1]), (px(4.0), px(52.0)));
+        }
+
+        #[test]
+        fn a_placed_reveal_waits_for_geometry_and_is_carried_by_edits() {
+            let h = five();
+            h.handle
+                .scroll_into_view_aligned(Pos(5), Pos(7), ScrollAlign::Fraction(0.5));
+            assert!(!h.handle.reveal_pass(), "nothing is laid out");
+            assert!(drain_placed(&h).is_empty(), "so nothing scrolls");
+            h.handle.set_selection(Selection::cursor(Pos(1)));
+            assert!(h.handle.insert_text("x"));
+            assert_eq!(h.handle.pending_reveal(), Some(Pos(6)), "carried");
+            measure(&h, &[0.0, 20.0, 40.0, 60.0, 80.0]);
+            assert!(h.handle.reveal_pass(), "the first pass with geometry");
+            let placed = drain_placed(&h);
+            assert_eq!(placed.len(), 1);
+            assert_eq!(placed[0].1, 0.5, "still placed, not nearest");
         }
 
         #[test]

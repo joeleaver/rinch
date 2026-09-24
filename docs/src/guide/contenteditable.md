@@ -410,6 +410,33 @@ ancestor, the page included. A virtualized desktop editor lays out the block hol
 block edited since the last layout has none on desktop), a later call replaces it,
 local edits carry it along, and `load_html` / `load_doc` drop it.
 
+**`scroll_into_view_aligned(from, to, align)`** chooses where the range lands.
+`ScrollAlign::Nearest` is `scroll_into_view` itself. `ScrollAlign::Fraction(f)` puts
+the start's line `f` of the way down the scroll container's visible height (`0.0`
+the top edge, `1.0 / 3.0` a third down; clamped to `0.0..=1.0`), never nearer than
+16px to either edge, and it scrolls even when the range is already in view. The
+scroll is clamped to what the content allows, so a range near the top of the
+document stays near the top of the view and one near the end sits lower. A range
+taller than the space below `f` still puts its start at `f`. To open a note at a link
+with some context above the words:
+
+```rust
+handle.set_selection(Selection::text(from, to));
+handle.scroll_into_view_aligned(from, to, ScrollAlign::Fraction(1.0 / 3.0));
+handle.focus();
+```
+
+It waits, carries and drops exactly as `scroll_into_view` does, and scrolls the same
+containers on **desktop** (the nearest scroll container, vertically). On the
+**web** it sets the nearest scroll container's `scrollTop` (the page's, when no
+ancestor scrolls) and then brings the start into the view of the scrollers further
+out, the page included, the "nearest" way. One limit: in a virtualized desktop
+editor the blocks the scroll brings into the window were laid out at their
+estimated heights when the scroll was computed and settle to their measured ones
+after it, so the start can land a fraction of a line off `f`. Both are built on
+`NodeHandle::scroll_to_fraction(fraction, margin)`
+(`DomDocument::request_scroll_to_fraction`), which any element can use.
+
 **`focus()`** gives the editor the keyboard as a press in it would — the previous
 owner loses it the same way (an `<input>` commits its change, another editor hides
 its caret) — without moving the selection or scrolling. The caret or selection

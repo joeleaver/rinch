@@ -1307,12 +1307,25 @@ impl RinchApp {
     /// scroll offset to make the target element visible.
     fn apply_scroll_into_view(&mut self) {
         let Some(doc) = &self.doc else { return };
-        let requests = doc.borrow_mut().drain_scroll_into_view_requests();
-        if requests.is_empty() {
+        let (nearest, placed) = {
+            let mut d = doc.borrow_mut();
+            (
+                d.drain_scroll_into_view_requests(),
+                d.drain_scroll_to_fraction_requests(),
+            )
+        };
+        if nearest.is_empty() && placed.is_empty() {
             return;
         }
+        // The "nearest" requests first, then the placed ones
+        // (`NodeHandle::scroll_to_fraction`): a placement asked for in the same
+        // frame as a caret's scroll is where the view ends up.
+        let requests = nearest
+            .into_iter()
+            .map(|n| (n, None))
+            .chain(placed.into_iter().map(|(n, f, m)| (n, Some((f, m)))));
 
-        for target_nid in requests {
+        for (target_nid, placement) in requests {
             let mut d = doc.borrow_mut();
 
             // Walk ancestors to find nearest scroll container
@@ -1387,7 +1400,17 @@ impl RinchApp {
             let content_height = d.scroll_height(container_nid);
             let max_scroll = (content_height - visible_height).max(0.0);
 
-            let new_scroll = if elem_top < 0.0 {
+            let new_scroll = if let Some((fraction, margin)) = placement {
+                // Placed: the element's top at `fraction` of the visible
+                // height, at least `margin` inside either edge (the top edge
+                // wins when the element is too tall for both).
+                let (fraction, margin) = (f64::from(fraction), f64::from(margin));
+                let height = elem_bottom - elem_top;
+                let at = (fraction * visible_height)
+                    .min(visible_height - margin - height)
+                    .max(margin);
+                current_scroll + elem_top - at
+            } else if elem_top < 0.0 {
                 // Element is above the visible area — scroll up
                 current_scroll + elem_top
             } else if elem_bottom > visible_height {

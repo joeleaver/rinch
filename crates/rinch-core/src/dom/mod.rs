@@ -838,6 +838,32 @@ impl NodeHandle {
         }
     }
 
+    /// Request that this element be scrolled to a set place in its scroll
+    /// container: its top `fraction` of the way down the container's visible
+    /// height (clamped to `0.0..=1.0`), kept at least `margin` px inside either
+    /// edge, and the scroll clamped to what the content allows — so an element
+    /// near the top of the content stays near the top. It moves even an element
+    /// already in view.
+    ///
+    /// - **desktop** (`rinch-dom`) defers it until after the next layout pass
+    ///   and moves the **nearest** scroll container only, vertically, as
+    ///   [`Self::scroll_into_view`] does.
+    /// - **web** (`rinch-web`) sets the nearest scroll container's `scrollTop`
+    ///   at once (the page's, when no ancestor scrolls), then brings the element
+    ///   into the page's view the way [`Self::scroll_into_view`] does.
+    /// - the test `MockDomDocument` only queues the request.
+    pub fn scroll_to_fraction(&self, fraction: f32, margin: f32) {
+        let fraction = if fraction.is_nan() {
+            0.0
+        } else {
+            fraction.clamp(0.0, 1.0)
+        };
+        if let Some(doc) = self.accessed_doc() {
+            doc.borrow_mut()
+                .request_scroll_to_fraction(self.node_id, fraction, margin.max(0.0));
+        }
+    }
+
     /// Replace this element's children by parsing an HTML string.
     ///
     /// This atomically removes all existing children and replaces them with

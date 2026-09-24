@@ -25,7 +25,7 @@ mod styles;
 mod view;
 
 pub use component::Editor;
-pub use handle::{EditorHandle, SelectionAnchor};
+pub use handle::{EditorHandle, ScrollAlign, SelectionAnchor};
 pub use keys::EditorKey;
 pub use links::{LinkClick, LinkHover, LinkSpan};
 #[cfg(feature = "collaboration")]

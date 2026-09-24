@@ -19,6 +19,9 @@ pub struct MockDomDocument {
     /// order. The mock queues them exactly as the desktop backend does — there is
     /// no layout here to scroll, so the queue *is* the observable behaviour.
     scroll_into_view_requests: Vec<NodeId>,
+    /// Pending [`DomDocument::request_scroll_to_fraction`] requests, queued the
+    /// same way.
+    scroll_to_fraction_requests: Vec<(NodeId, f32, f32)>,
 }
 
 struct MockNode {
@@ -105,6 +108,7 @@ impl MockDomDocument {
             body_id: NodeId(0),
             layout: std::collections::HashMap::new(),
             scroll_into_view_requests: Vec::new(),
+            scroll_to_fraction_requests: Vec::new(),
         };
 
         // Create root and body
@@ -538,6 +542,15 @@ impl DomDocument for MockDomDocument {
 
     fn drain_scroll_into_view_requests(&mut self) -> Vec<NodeId> {
         std::mem::take(&mut self.scroll_into_view_requests)
+    }
+
+    fn request_scroll_to_fraction(&mut self, node: NodeId, fraction: f32, margin: f32) {
+        self.scroll_to_fraction_requests
+            .push((node, fraction, margin));
+    }
+
+    fn drain_scroll_to_fraction_requests(&mut self) -> Vec<(NodeId, f32, f32)> {
+        std::mem::take(&mut self.scroll_to_fraction_requests)
     }
 
     fn tag_name(&self, node: NodeId) -> Option<String> {

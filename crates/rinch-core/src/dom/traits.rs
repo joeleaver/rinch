@@ -709,6 +709,27 @@ pub trait DomDocument {
         Vec::new()
     }
 
+    /// Request that `node` be scrolled to a set place in its scroll container:
+    /// its top `fraction` of the way down the container's visible height
+    /// (`0.0` the top edge, `1.0` the bottom), but never nearer than `margin`
+    /// px to either edge, with the scroll clamped to what the content allows.
+    /// Unlike [`Self::request_scroll_into_view`] it moves even when `node` is
+    /// already in view. Deferred until after the next layout, like that one.
+    ///
+    /// The default treats it as a plain [`Self::request_scroll_into_view`], so
+    /// a backend that does not implement it still brings the node on screen.
+    fn request_scroll_to_fraction(&mut self, node: NodeId, fraction: f32, margin: f32) {
+        let _ = (fraction, margin);
+        self.request_scroll_into_view(node);
+    }
+
+    /// Drain the pending [`Self::request_scroll_to_fraction`] requests as
+    /// `(node, fraction, margin)`. Called by the runtime right after
+    /// [`Self::drain_scroll_into_view_requests`], and applied after those.
+    fn drain_scroll_to_fraction_requests(&mut self) -> Vec<(NodeId, f32, f32)> {
+        Vec::new()
+    }
+
     /// Drain the scroll offsets clamped during layout, as (node, clamped
     /// offset) pairs — coalesced to one entry per node (last value wins).
     ///
