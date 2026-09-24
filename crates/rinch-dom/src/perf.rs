@@ -103,6 +103,9 @@ define_counters! {
     FullRestyleDpr = "full_restyle_dpr",
     /// ...because the root element's font-size (the `rem` basis) changed.
     FullRestyleRootFontSize = "full_restyle_root_font_size",
+    /// Elements whose attribute or state change Stylo's invalidator examined
+    /// (one per snapshotted element per resolve).
+    StyleInvalidations = "style_invalidations",
     /// Elements a media-neutral viewport resize restyled because their last
     /// cascade resolved a viewport unit (each with its subtree).
     ViewportUnitRestyles = "viewport_unit_restyles",

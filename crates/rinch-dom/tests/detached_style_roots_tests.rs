@@ -366,11 +366,18 @@ fn a_node_skipped_while_detached_is_styled_when_it_attaches() {
 /// exactly why the resolve-time spelling matters — it is what keeps that branch
 /// safe if anything ever does.
 ///
-/// `neighbour` is a positive control. `resolve_styles` falls back to a **full
-/// tree walk** when `style_roots` comes out empty, which reaches every
-/// connected node and would make this fixture pass without the targeted path
-/// running at all. One connected entry in the list forces the branch under
-/// test, and the assertion before the layout says so.
+/// `neighbour` is a positive control that the pass ran. It used to guard
+/// against `resolve_styles`' fallback to a **full tree walk** on an empty
+/// `style_roots`, which would have made this fixture pass without the targeted
+/// path running at all; that fallback is gone (a full walk now needs
+/// `NodeTree::full_style_walk`), and an attribute write no longer records a
+/// root at all — it records an invalidation snapshot, which becomes a root at
+/// resolve time if some selector's answer changed.
+///
+/// The child's class is written while it is parentless and unstyled, so no
+/// snapshot can be taken; what carries its style is the suppressed insertion,
+/// which defers the subtree's cascade by recording it as a style root instead
+/// of resolving on the spot.
 #[test]
 fn a_node_attached_before_the_next_resolve_is_not_skipped() {
     let mut doc = RinchDocument::new();
@@ -393,8 +400,8 @@ fn a_node_attached_before_the_next_resolve_is_not_skipped() {
     // ...alongside a connected entry, so the list cannot empty out.
     doc.set_attribute(neighbour, "class", "n");
     assert!(
-        doc.tree.style_roots.contains(&child.0) && doc.tree.style_roots.contains(&neighbour.0),
-        "positive control: the targeted path, not the empty-list full walk"
+        doc.tree.style_roots.contains(&child.0) && doc.has_pending_style_snapshot(neighbour),
+        "positive control: the deferred insertion is a root, the class write a snapshot"
     );
     doc.resolve_layout(800.0, 600.0);
 
@@ -490,9 +497,9 @@ fn a_detached_node_is_still_readable() {
 /// would newly refuse it — silently, since the full-walk branch starts at
 /// `html_id` and never reaches it either.
 ///
-/// `anchor`'s write is load-bearing twice over: it is the positive control that
-/// the pass ran, and it keeps `style_roots` non-empty so `resolve_styles` cannot
-/// fall back to the full walk and mask the difference.
+/// `anchor`'s write is the positive control that the pass ran. (It also used
+/// to keep `style_roots` non-empty so `resolve_styles` could not fall back to a
+/// full walk and mask the difference; that fallback is gone.)
 #[test]
 fn a_sibling_of_html_is_connected_because_the_anchor_is_the_document_node() {
     let mut doc = RinchDocument::new();
@@ -508,8 +515,8 @@ fn a_sibling_of_html_is_connected_because_the_anchor_is_the_document_node() {
     doc.set_attribute(extra, "class", "x");
     doc.set_attribute(anchor, "class", "t");
     assert!(
-        doc.tree.style_roots.contains(&anchor.0),
-        "positive control: the targeted path, not the empty-list full walk"
+        doc.has_pending_style_snapshot(anchor) && doc.has_pending_style_snapshot(extra),
+        "positive control: both class writes are pending invalidations"
     );
     doc.resolve_layout(800.0, 600.0);
 
@@ -535,18 +542,19 @@ fn a_sibling_of_html_is_connected_because_the_anchor_is_the_document_node() {
 /// walk starts at `root_id`'s parent, finds `None`, and answers "detached" for
 /// the one node that is the document.
 ///
-/// Reaching it needs `set_attribute` on the document node — again, something no
-/// rinch code does, and again pinned because the self-case is otherwise a line
-/// with no witness that reads as dead.
+/// No DOM verb records the document node as a style root any more — every
+/// route that records one (an insertion, a restyle hint, an invalidation) is
+/// element-only — so the fixture writes the entry itself. The self-case is
+/// still load-bearing on another path: `detach_subtree_styles_if_moved_out`
+/// asks `depth_if_connected` about a move's destination, which is the document
+/// node for an `append_child` onto it.
 ///
 /// The observable difference needs a cascade whose answer has *changed*, or
 /// re-resolving and not re-resolving look identical. `load_css` merges a
 /// stylesheet without invalidating any cached style, so the new `.kid` width
-/// sits unused until something recascades; the `set_attribute` on the document
-/// node is what clears every descendant's cached data and asks for that
-/// recascade. Resolving from the document node walks the whole tree, so `kid`
-/// picks the new width up in the same pass. Skipping it leaves `kid` at the old
-/// one.
+/// sits unused until something recascades; dropping the cached styles under
+/// the document node is what asks for that recascade, and the walk from the
+/// document node is what reaches it. Skipping the entry leaves `kid` at the old width.
 #[test]
 fn the_document_nodes_own_entry_is_resolved() {
     let mut doc = RinchDocument::new();
@@ -563,8 +571,13 @@ fn the_document_nodes_own_entry_is_resolved() {
     );
 
     doc.load_css(".kid { width: 33px; height: 7px; }");
-    let document_node = rinch_core::dom::NodeId(doc.tree.root_id);
-    doc.set_attribute(document_node, "data-x", "1");
+    // What `set_attribute` on the document node used to do: drop every
+    // element's cached style under it, and record the document node itself.
+    for id in [doc.tree.html_id, doc.tree.body_id, kid.0] {
+        *doc.tree.nodes[id].stylo_element_data.borrow_mut() = None;
+    }
+    doc.tree.style_roots.push(doc.tree.root_id);
+    doc.tree.styles_dirty = true;
     assert_eq!(
         doc.tree.style_roots.as_slice(),
         &[doc.tree.root_id],

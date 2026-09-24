@@ -118,7 +118,8 @@ impl DomDocument for RinchDocument {
         // must remove the node's *contribution*, not just its own id — a
         // spliced `display: contents` node's slots are its children's (#517).
         if let Some(old_parent) = self.tree.nodes[c].parent {
-            self.tree.nodes[old_parent].children.retain(|&x| x != c);
+            let old_index = self.remove_from_children(old_parent, c);
+            self.note_child_list_changed(old_parent, old_index);
             // Remove from old taffy parent
             if let Some(old_taffy_parent) = self.tree.nodes[old_parent].taffy_id {
                 self.taffy_detach_contribution(old_taffy_parent, c);
@@ -147,10 +148,18 @@ impl DomDocument for RinchDocument {
         // the new nodes' layout positions after layout runs.
         self.mark_subtree_paint_dirty_ids(c);
 
+        // Siblings a structural selector ties to the new child (`+`, `~`,
+        // `:nth-child`, `:last-child`, the parent's `:empty`).
+        self.note_child_inserted(p, c, true);
+
         // Recompute styles for the inserted subtree to pick up ancestor-based selectors.
         // Suppressed during bulk DOM operations (render_block_at) to batch into one pass.
         if !self.tree.suppress_inline_restyle {
             self.recompute_node_styles_recursive(c);
+        } else {
+            // Deferred, not skipped: the subtree is left unstyled and recorded
+            // as a style root, so the next `resolve_styles` cascades it.
+            self.invalidate_subtree_styles(c);
         }
 
         // An inserted `<option>` carrying selectedness takes the selection with
@@ -172,8 +181,9 @@ impl DomDocument for RinchDocument {
         // The subtree is leaving the document, so it has no before-change style
         // to animate from if it ever comes back (#699).
         self.detach_subtree_styles(c);
-        self.tree.nodes[p].children.retain(|&x| x != c);
+        let old_index = self.remove_from_children(p, c);
         self.tree.nodes[c].parent = None;
+        self.note_child_list_changed(p, old_index);
         // Sync taffy: remove the child's contribution — for a spliced
         // `display: contents` child that is its children's slots, not its
         // own already-detached id (#517).
@@ -200,7 +210,8 @@ impl DomDocument for RinchDocument {
         // Remove from old parent if any — the node's contribution, not just
         // its own id (#517, see `taffy_detach_contribution`)
         if let Some(old_parent) = self.tree.nodes[c].parent {
-            self.tree.nodes[old_parent].children.retain(|&x| x != c);
+            let old_index = self.remove_from_children(old_parent, c);
+            self.note_child_list_changed(old_parent, old_index);
             if let Some(old_taffy_parent) = self.tree.nodes[old_parent].taffy_id {
                 self.taffy_detach_contribution(old_taffy_parent, c);
             }
@@ -239,6 +250,8 @@ impl DomDocument for RinchDocument {
         // the new nodes' layout positions after layout runs.
         self.mark_subtree_paint_dirty_ids(c);
 
+        self.note_child_inserted(p, c, true);
+
         // Recompute styles for the inserted subtree to pick up ancestor-based selectors
         self.recompute_node_styles_recursive(c);
 
@@ -266,6 +279,11 @@ impl DomDocument for RinchDocument {
         if old == new {
             return;
         }
+        // A non-empty child swapped for a non-empty one leaves the parent's
+        // `:empty` where it was (the editor's view diff does this for every
+        // mark it applies).
+        let keeps_nonempty = crate::stylo_impl::child_defeats_empty(&self.tree.nodes[old.0])
+            && crate::stylo_impl::child_defeats_empty(&self.tree.nodes[new.0]);
         self.invalidate_ifc_for_node(old.0);
         self.clear_ifc_root_recursive(old.0);
         self.invalidate_ifc_for_node(new.0);
@@ -274,7 +292,8 @@ impl DomDocument for RinchDocument {
             // Remove new from its old parent if any — the node's
             // contribution, not just its own id (#517)
             if let Some(old_parent) = self.tree.nodes[new.0].parent {
-                self.tree.nodes[old_parent].children.retain(|&x| x != new.0);
+                let old_index = self.remove_from_children(old_parent, new.0);
+                self.note_child_list_changed(old_parent, old_index);
                 if let Some(old_taffy_parent) = self.tree.nodes[old_parent].taffy_id {
                     self.taffy_detach_contribution(old_taffy_parent, new.0);
                 }
@@ -318,6 +337,8 @@ impl DomDocument for RinchDocument {
             self.tree.ifc_dirty = true; // Tree structure changed
             self.push_dirty_flags(parent_id, DirtyFlags::LAYOUT | DirtyFlags::CHILDREN);
 
+            self.note_child_inserted(parent_id, new.0, !keeps_nonempty);
+
             // Recompute styles for the new subtree to pick up ancestor-based selectors
             self.recompute_node_styles_recursive(new.0);
 
@@ -343,7 +364,8 @@ impl DomDocument for RinchDocument {
 
         self.clear_ifc_root_recursive(node.0);
         if let Some(parent_id) = self.tree.nodes[node.0].parent {
-            self.tree.nodes[parent_id].children.retain(|&x| x != node.0);
+            let old_index = self.remove_from_children(parent_id, node.0);
+            self.note_child_list_changed(parent_id, old_index);
             // Sync taffy: remove this node's *contribution* to the parent's
             // Taffy child list, which for a `display: contents` wrapper is its
             // spliced-in descendants rather than its own (detached) id.
@@ -439,6 +461,16 @@ impl DomDocument for RinchDocument {
                 self.tree.forget_ifc_measures(root_id);
             }
         }
+        // Text can flip its parent's `:empty` (an empty text node does not
+        // stop an element being empty); an element's children are replaced
+        // outright below.
+        if let Some(parent_id) = self.tree.nodes[n].parent
+            && let NodeKind::Text(t) = &self.tree.nodes[n].kind
+            && t.content.is_empty() != text.is_empty()
+        {
+            self.note_text_emptiness_changed(parent_id, n);
+        }
+        let replaces_children = self.tree.nodes[n].is_element();
         match &mut self.tree.nodes[n].kind {
             NodeKind::Text(t) => {
                 t.content = text.to_string();
@@ -512,6 +544,13 @@ impl DomDocument for RinchDocument {
                 self.tree.ifc_dirty = true; // Structural change (children replaced)
             }
         }
+        // After the replacement, not before: whether `:empty` can have
+        // flipped is judged on the children the element now has. Before it,
+        // two old non-empty children read as "cannot flip" and
+        // `set_text_content(el, "")` left `el:empty` stale.
+        if replaces_children {
+            self.note_child_list_changed(n, 0);
+        }
         self.tree.layout_dirty = true; // Text content change affects layout
         self.push_dirty(n);
         self.note_select_content_changed(n);
@@ -567,6 +606,8 @@ impl DomDocument for RinchDocument {
         if name == "data-onmousemove" && !self.tree.nodes[node.0].attributes.contains_key(name) {
             self.tree.mousemove_handlers += 1;
         }
+        // Before the write: the invalidation snapshot holds the old value.
+        self.note_attribute_change(node.0, name);
         self.tree.nodes[node.0].write_attribute(name, value);
         if selects_this_option {
             crate::select::set_option_selectedness(&mut self.tree, node.0, true);
@@ -592,27 +633,21 @@ impl DomDocument for RinchDocument {
             self.request_image_load_for_node(node.0, value);
         }
 
-        // Any attribute can participate in a selector — `[data-state=open]`,
-        // `[aria-selected]`, `[data-pm-theme=dark] h1`, attribute-based component
-        // styling, etc. — so an attribute change must re-resolve styles, not only
-        // for `class`/`style`. (Browsers use a per-attribute invalidation map keyed
-        // on which selectors reference the attribute; rinch-dom doesn't track that
-        // yet, so it conservatively restyles this node and its subtree. This is
-        // cheap in practice: most `set_attribute` calls happen at element creation
-        // when the node has no descendants, and post-render attribute changes are
-        // rare — the per-frame hot path uses `set_style`/`set_text`, which have
-        // their own paths.)
+        // Which elements the change restyles is decided at the next
+        // `resolve_styles`, by Stylo's invalidator against the snapshot
+        // `note_attribute_change` took above: this element, its descendants or
+        // its later siblings — exactly the ones some selector's answer
+        // changed for (`style_resolution::invalidation`). It used to be this
+        // element and its whole subtree, for every attribute, whether or not
+        // any selector named it, and never a sibling.
         //
-        // Invalidate cached Stylo data (deferred to resolve_layout) and mark the
-        // subtree so descendant/sibling selectors re-match against the new value.
-        *self.tree.nodes[node.0].stylo_element_data.borrow_mut() = None;
-        self.tree.style_roots.push(node.0);
-        self.tree.styles_dirty = true;
+        // The node is still marked dirty for layout and paint whatever the
+        // selectors say: an attribute can reach paint without reaching style
+        // (an `<input>`'s `value` is painted from the attribute).
         self.push_dirty_flags(
             node.0,
             DirtyFlags::STYLE | DirtyFlags::LAYOUT | DirtyFlags::PAINT,
         );
-        self.invalidate_descendant_styles(node.0);
     }
 
     fn remove_attribute(&mut self, node: NodeId, name: &str) {
@@ -654,6 +689,8 @@ impl DomDocument for RinchDocument {
         if name == "data-onmousemove" {
             self.tree.mousemove_handlers = self.tree.mousemove_handlers.saturating_sub(1);
         }
+        // Before the erase, as in `set_attribute`.
+        self.note_attribute_change(node.0, name);
         self.tree.nodes[node.0].erase_attribute(name);
         // Losing the attribute deselects the option (#692). Nothing takes its
         // place: with no option selected, `resolve_select_model` falls to its
@@ -664,22 +701,13 @@ impl DomDocument for RinchDocument {
         if name == "style" {
             self.tree.nodes[node.0].style_attribute_cache = None;
         }
-        // Like `set_attribute`, no IFC is invalidated here: the cascade below
-        // decides per node.
-        // Symmetric with set_attribute: any attribute can participate in a
-        // selector (`[data-highlighted]`, `[aria-selected]`, …), so *removing*
-        // one must re-resolve this node and its subtree too — otherwise a style
-        // that matched only while the attribute was present stays applied (e.g. a
-        // popup option keeps its highlight background after the attribute is
-        // cleared).
-        *self.tree.nodes[node.0].stylo_element_data.borrow_mut() = None;
-        self.tree.style_roots.push(node.0);
-        self.tree.styles_dirty = true;
+        // Symmetric with `set_attribute`: removing an attribute a selector
+        // named (`[data-highlighted]`, `[aria-selected]`) restyles what
+        // Stylo's invalidator says it reaches.
         self.push_dirty_flags(
             node.0,
             DirtyFlags::STYLE | DirtyFlags::LAYOUT | DirtyFlags::PAINT,
         );
-        self.invalidate_descendant_styles(node.0);
     }
 
     fn get_attribute(&self, node: NodeId, name: &str) -> Option<String> {
@@ -709,6 +737,15 @@ impl DomDocument for RinchDocument {
         }
         let pdb = parse_inline_style(&style_str);
         let insets = self.inset_fast_path_values(node.0, properties, &pdb);
+        // Before the write, as `set_attribute` does: a `[style*=…]` selector
+        // sees the change. Off the fast path the element is restyled too; on
+        // it, the inset is written directly and a snapshot is taken only if
+        // some rule names the `style` attribute.
+        if insets.is_none() {
+            self.note_attribute_change(node.0, "style");
+        } else {
+            self.note_inset_style_write(node.0);
+        }
 
         self.tree.nodes[node.0]
             .attributes
@@ -772,7 +809,8 @@ impl DomDocument for RinchDocument {
         // Remove from old parent if any — the node's contribution, not just
         // its own id (#517, see `taffy_detach_contribution`)
         if let Some(old_parent) = self.tree.nodes[c].parent {
-            self.tree.nodes[old_parent].children.retain(|&x| x != c);
+            let old_index = self.remove_from_children(old_parent, c);
+            self.note_child_list_changed(old_parent, old_index);
             if let Some(old_taffy_parent) = self.tree.nodes[old_parent].taffy_id {
                 self.taffy_detach_contribution(old_taffy_parent, c);
             }
@@ -803,6 +841,8 @@ impl DomDocument for RinchDocument {
         self.tree.layout_dirty = true; // Structural change needs full layout
         self.tree.ifc_dirty = true; // Tree structure changed
         self.push_dirty_flags(p, DirtyFlags::LAYOUT | DirtyFlags::CHILDREN);
+
+        self.note_child_inserted(p, c, true);
 
         // Recompute styles for the inserted subtree to pick up ancestor-based selectors
         self.recompute_node_styles_recursive(c);
@@ -861,6 +901,10 @@ impl DomDocument for RinchDocument {
             self.tree.remove_subtree(child);
         }
         self.tree.nodes[node.0].children.clear();
+        // `:empty` on the node, and whatever a structural selector ties to
+        // its children, can have moved (each re-append below notes its own
+        // insertion; a clear-to-empty has none).
+        self.note_child_list_changed(node.0, 0);
         // Clearing a subtree is a structural change: without these flags a
         // clear-to-empty `set_inner_html` (nothing re-appended below) leaves
         // `resolve_layout`'s dirty gate closed and the old geometry — the
@@ -1431,9 +1475,10 @@ impl RinchDocument {
     /// shape of a drag or an animation driven through `set_style` — no longer
     /// re-shapes the text inside the node it moves.
     fn invalidate_inline_style(&mut self, node_id: usize) {
-        *self.tree.nodes[node_id].stylo_element_data.borrow_mut() = None;
-        self.tree.style_roots.push(node_id);
-        self.tree.styles_dirty = true;
+        // Restyle this element (the snapshot above told the invalidator about
+        // the attribute), keeping its old style for the cascade to compare
+        // against: its children follow only if something they inherit moved.
+        self.mark_restyle(node_id, false);
         self.push_dirty_flags(
             node_id,
             DirtyFlags::STYLE | DirtyFlags::LAYOUT | DirtyFlags::PAINT,

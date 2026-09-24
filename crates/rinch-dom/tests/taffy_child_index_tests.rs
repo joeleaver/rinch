@@ -572,14 +572,13 @@ fn an_insert_after_a_wrapper_restyled_off_contents_still_clears_its_slots() {
     // Between frames: the wrapper stops being `contents`, but nothing has
     // re-synced the Taffy list yet.
     doc.set_attribute(wrapper, "style", "display: block");
-    // A style attribute alone only queues a style root; the *next* DOM
-    // mutation is what flushes it (`append_child` →
-    // `recompute_node_styles_recursive` → `resolve_styles`, which resolves
-    // every pending root, not just its own). Any unrelated insertion does it —
-    // this one is elsewhere in the document on purpose, so the fixture's own
-    // shape is untouched.
-    let elsewhere = doc.create_element("div");
-    doc.append_child(body, elsewhere);
+    // A style attribute alone only queues a style root; resolve it and copy
+    // the result into `computed_style` now, without the layout pass that
+    // would re-sync the Taffy list. (An unrelated insertion used to do both
+    // as a side effect; since #894 an insertion cascades only its own subtree
+    // and leaves other pending roots for the frame's resolve.)
+    doc.resolve_styles();
+    doc.apply_stylo_styles_to_taffy();
     assert!(
         doc.tree.nodes[wrapper.0].contents_spliced,
         "precondition: the splice is still recorded"

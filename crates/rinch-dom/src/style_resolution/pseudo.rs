@@ -50,7 +50,13 @@ impl RinchDocument {
                     VisitedHandlingMode::AllLinksUnvisited,
                     IncludeStartingStyle::No,
                     self.stylist.quirks_mode(),
-                    NeedsSelectorFlags::No,
+                    // Recorded, as for the element's own match: a structural
+                    // selector that only a pseudo rule uses
+                    // (`li:last-child::after`, Breadcrumbs'
+                    // `:not(:last-child)::after`, `:empty::before`) must flag
+                    // the parent too, or an insertion or removal never
+                    // restyles the sibling it moves (`invalidation.rs`).
+                    NeedsSelectorFlags::Yes,
                     MatchingForInvalidation::No,
                 );
             matching_context.extra_data.originating_element_style = Some(parent_style);
@@ -118,6 +124,20 @@ impl RinchDocument {
             self.tree.nodes[parent_id].uses_viewport_units.set(true);
         }
 
+        // `content: attr(x)` reads an attribute no selector need name, so
+        // the element is flagged for `note_attribute_change` to restyle on any
+        // attribute write — including the one that *adds* `x`, when there is
+        // no generated box yet (an absent attribute yields empty content).
+        if let style::values::generics::counters::Content::Items(items) =
+            &pseudo_computed.get_counters().content
+            && items
+                .items
+                .iter()
+                .any(|i| matches!(i, style::values::generics::counters::ContentItem::Attr(_)))
+        {
+            self.tree.nodes[parent_id].content_reads_attrs.set(true);
+        }
+
         // Check content property - if none/normal/empty, skip
         if pseudo_computed.ineffective_content_property() {
             return;
@@ -127,13 +147,18 @@ impl RinchDocument {
         let counter_values = self.compute_list_item_counters(parent_id);
 
         // Extract text content from the content property
-        let text = Self::extract_content_text_with_counters(&pseudo_computed, &counter_values);
+        let text = Self::extract_content_text_with_counters(
+            &pseudo_computed,
+            &counter_values,
+            &self.tree.nodes[parent_id].attributes,
+        );
         if text.is_empty() {
             return;
         }
 
         // Convert pseudo computed style to our ComputedStyle
         let pseudo_style = ComputedStyle::from_stylo(&pseudo_computed);
+        self.tree.note_background_image(&pseudo_style);
 
         // Create a wrapper span element for the pseudo-element
         use rinch_core::dom::DomDocument;
@@ -200,6 +225,7 @@ impl RinchDocument {
     pub(crate) fn extract_content_text_with_counters(
         computed: &ComputedValues,
         counter_values: &std::collections::HashMap<String, i32>,
+        attributes: &std::collections::HashMap<String, String>,
     ) -> String {
         use style::values::generics::counters::{Content, ContentItem};
 
@@ -230,8 +256,17 @@ impl RinchDocument {
                             }
                             let _ = separator; // TODO: nested counter separator support
                         }
+                        // `attr(name)`: the originating element's attribute, or
+                        // the fallback when it has none. An attribute change on
+                        // an element with generated content restyles it
+                        // (`invalidation::note_attribute_change`), which is
+                        // what keeps this current.
+                        ContentItem::Attr(attr) => match attributes.get(attr.attribute.as_ref()) {
+                            Some(value) => result.push_str(value),
+                            None => result.push_str(attr.fallback.as_ref()),
+                        },
                         _ => {
-                            // Skip other content items (attr, image, quotes, etc.)
+                            // Skip other content items (image, quotes, etc.)
                         }
                     }
                 }

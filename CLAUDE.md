@@ -1981,6 +1981,54 @@ only when a whole-document restyle asks (`NodeTree::full_style_walk`) — an
 empty `style_roots` means nothing to do, not "walk everything".
 `crates/rinch-dom/tests/viewport_restyle_tests.rs` is the twin oracle.
 
+**Style invalidation: what a change restyles** (`style_resolution/invalidation.rs`,
+`resolve.rs`). An attribute, class, id or `:hover`/`:focus`/`:active` change used
+to re-cascade the element's whole subtree whatever the selectors said, and never
+a sibling — so `+`, `~`, `:nth-child`, `:first-/:last-/:only-child` and `:empty`
+went stale on class toggles, insertions and removals. Now:
+
+- **Attributes and state go through Stylo's own invalidator.** `set_attribute`,
+  `remove_attribute`, `set_styles` and `update_hover`/`update_focus`/
+  `update_active`/`set_focus_visible` take a `ServoElementSnapshot` **before**
+  the change (`note_attribute_change` / `note_state_change`, once per element
+  per resolve); `resolve_styles` runs Stylo's `StateAndAttrInvalidationProcessor`
+  over all of them (`process_snapshots`), which marks exactly the elements a
+  selector's answer changed for — self, descendants (e.g. `.card:hover .title`)
+  or later siblings — with restyle hints. One change from Stylo's own: the
+  descendants of a `display: none` element are processed too
+  (`EveryDescendant`), because rinch styles hidden subtrees and a change made
+  while hidden must land (#703). `:checked` is element state
+  (`stylo_impl::element_state`); `:disabled`/`:enabled`/`:link` are read from
+  attributes, so `disabled` and `href` force self + subtree + later siblings.
+  `style`, `rows` (textarea), `start` (ol), `value` (li) and any attribute on an
+  element with generated content (`content: attr()` now works) force what they
+  feed. `:nth-child(… of S)` needs nothing extra: Stylo's maps record the
+  selectors inside `of S`.
+- **Child-list changes use selector flags.** Matching runs with
+  `NeedsSelectorFlags::Yes`; `note_child_list_changed` restyles the siblings the
+  parent's `HAS_SLOW_SELECTOR*` / `HAS_EDGE_CHILD_SELECTOR` /
+  `HAS_EMPTY_SELECTOR` flags say an insertion or removal can reach, and an
+  `<ol>`'s later `<li>` markers. `:empty` follows the spec: no element child
+  (generated boxes aside) and no non-empty text.
+- **The cascade propagates, it does not blanket.** `resolve_styles_recursive`
+  cascades a node that has no style or a hint, then asks `child_cascade(old,
+  new)`: children follow when an inherited struct, a custom property, the
+  inherited flags, zoom, writing mode or `display` moved; only
+  `INHERITS_RESET_STYLE` children when just reset properties moved; none when
+  nothing did. It descends elsewhere only along `style_dirty_descendants`. A
+  colour-only `:hover` cascades **one** element. The `*_sensitive` flags are no
+  longer cleared on re-cascade (a card re-cascaded alone would lose the flag its
+  descendants' matching set).
+- **Non-cascade inputs of `apply_stylo_styles_to_taffy` are re-synced
+  explicitly**: a node that starts or stops being a containing block re-syncs its
+  absolute descendants (ICB sizing), alongside the resize/floor/select re-syncs
+  above.
+- **Per-element cost**: a bloom filter of the ancestors (pushed and popped by
+  the walk) rejects descendant combinators early.
+
+`crates/rinch-dom/tests/style_invalidation_twin_tests.rs` is the oracle (named
+scenarios plus a seeded random differential, `RINCH_TWIN_SEEDS=n` for more).
+
 **Two text caches survive across frames, and nothing drops either wholesale.**
 Each IFC root keeps its paint layout (`Node::text_layout`) and the sizes the
 measure function returned for it (`NodeTree::ifc_measure_cache`, keyed **by
@@ -2045,10 +2093,9 @@ runs over the whole document, re-splices every `display: contents` wrapper
 (which dirties each row, so Taffy still *asks* for every row's size — answered
 from the cache), and re-sizes every atomic inline with its own compute (F11). A
 colour-only restyle still drops the root's cached measures along with its
-glyphs. And `set_style` of an **inherited** property never reaches a
-descendant with a cached style — `resolve_styles` skips a child whose Stylo data
-is still present — so the descendant keeps its old font; pre-existing, and
-independent of the text caches.
+glyphs. (`set_style` of an **inherited** property used to reach no
+descendant with a cached style; the cascade now re-cascades the children of any
+element whose inherited style moved — see **Style invalidation** below.)
 `crates/rinch-dom/tests/incremental_text_layout_oracle_tests.rs` is the pin:
 each input above against a fresh layout of the final state, with the mutant
 that kills it named in the PR.
@@ -3908,7 +3955,7 @@ Make changes, rebuild, launch again. The full cycle:
 - **Components sitting side by side where you expected a column**: `display: inline-flex` is **inline-level** (#595) — an *atomic inline*, like `inline-block`: it joins the line around it and shrink-wraps, and only its inside is a flex container. `Button`, `Badge`, `Checkbox`, `Switch`, `Avatar`, `ActionIcon`, `CloseButton`, `Loader`, `Pagination` and `Center` all declare it, so two of them in a plain `<div>` share a line, exactly as in a browser and as on rinch-web. Put them in a `Stack` (or any `display: flex` parent) to stack them — CSS blockifies a flex item, so the `inline-flex` is `flex` there and nothing about this applies. `display: inline-grid` is inline-level too, and has been since #607 — an atomic inline whose *inside* is a grid container rather than a flex one. `display: inline-block` is the third, and its **inside is a block container** (#592): its children stack, its inline runs get anonymous block boxes, and its own `font-size`/`font-weight`/`line-height` size its box. It laid its children out in a row until #592, because the Taffy container it built was a flex one
 - **A heading suddenly got bigger and bold**: since #627 the UA stylesheet gives `<h1>`–`<h6>` the browser's typography (`2em`…`0.67em`, `font-weight: bold`, `em` block margins) and `<th>` `font-weight: bold` plus a centring, so a bare heading renders as a heading on desktop the way it always did on rinch-web. They are cascade rules, so any author `font-size`/`font-weight`/`margin` still wins — which is why `Title`, `Modal`, `Drawer` and the editor's own stylesheet are unmoved. `<th>` gets no `display`: rinch has no table formatting context, so `table` stays `display: block` and the cells stay `inline`. **The `<th>` centring is conditional and is spelled `text-align: -moz-center-or-inherit`, not `center`** — the HTML Standard's rule matches only a `th` "whose parent node's computed `text-align` is its initial value", so a header cell under an alignment its parent declares inherits that instead (measured in Chrome 150: `right` under a `text-align: right` ancestor). Stylo carries that value for exactly this rule and parses it for any **non-author** origin, so an app stylesheet cannot use it — the declaration is dropped there
 - **A `<p>`, list or `<pre>` suddenly has space around it, or an `<hr>` appeared**: #674 finished the UA-stylesheet audit #627 started. `p`, `blockquote`, `figure`, `ul`, `ol`, `menu`, `dir` and `pre` now carry the browser's `margin-block: 1em`; `blockquote`/`figure` also `margin-inline: 40px` and `dd` `margin-inline-start: 40px`; a list nested in a list carries **none**, spelled `:is(ul, ol, menu, dir) :is(…)` as Chrome spells it (a *descendant* combinator — a `<ul>` under an `<li>` counts; `:is()` verified to match in this Stylo build, unlike `:has()`). `menu` and `dir` were in **no** rinch UA rule at all and so were `display: inline`; Chrome gives both exactly `ul`'s treatment, `padding-left: 40px` included. `<pre>` gets `white-space: pre`, so it finally preserves its newlines. `code`/`kbd`/`samp`/`pre` get `font-family: monospace` from the **UA sheet** rather than only from the theme. `small`/`sub`/`sup` get `font-size: smaller` (Chrome's 1.2 divisor — 13.3333px from a 16px parent, and it compounds). And `<hr>`, which rendered **nothing** before because the sheet's own `* { border-width: 0 }` reset applied to it, now carries `color: gray; border: 1px inset; margin-block: 0.5em; margin-inline: auto; height: 0; overflow: hidden` — a 2px grey rule. Every value measured in Chrome 150; all cascade rules, so any author declaration wins, which is why `Divider`, `List`, `Blockquote`, `Breadcrumbs`, `Tree` and `Image` are unmoved (they all declare `margin: 0`) — `Code` had to be given one. **The editor has one exception**: its stylesheet declares `margin`, `font-family` and `white-space` for every tag it renders but no `font-size` for `sub`/`sup`, so editor subscripts and superscripts now take `smaller` — correct, and what rinch-web always did, pinned by `the_editors_sub_and_sup_do_take_the_new_smaller_rule`. **Three consequences worth knowing.** The `<hr>` border is `currentcolor` over a UA `color: gray`, so `<hr style="color: red">` gives a red rule. A bare `<hr>` in a `Stack` collapses to a 2px dot and centres, because auto cross-axis margins suppress a flex item's stretch — that is what a browser does too (measured); use `Divider`, or `width: 100%`. And rinch does **not** reproduce Chrome's monospace font-*size* quirk (13px for a `medium` monospace element), so `<code>` keeps the inherited size. Still not done, and tracked separately: `vertical-align: sub`/`super` on `<sub>`/`<sup>` (#724 — `ComputedStyle` has no `vertical_align` field) and `display: list-item` markers on `<li>` (#725 — `DisplayValue` has no `ListItem`; desktop draws **no** list marker anywhere, `List`'s ignored `list-style-type` and the editor's bullet lists included — the editor's only marker is its task-list checkbox)
-- **A stylesheet rule that matches nothing**: desktop's **selector** surface is narrower than a browser's and every gap is silent — the rule parses, then matches nothing, with no warning. `#id` works as of **#675**: `TElement::id()` now hands Stylo a stored, interned `Atom` (`Node::id_atom`, written by `Node::write_attribute` / `erase_attribute`), where it returned a hard `None` before, so `SelectorMap::get_all_matching_rules` never consulted the id bucket and `has_id` — correct all along — never ran **for a rule whose rightmost compound carries the id**. An ancestor-side id (`#a > p`, bucketed by `p`) always worked, which is the asymmetry that hid it. An UPPERCASE attribute name — `<div ID="up">`, `[DATA-X]` — works as of **#688**: the store folds the name in HTML content and Stylo already hands `attr_matches` a lowercased selector name, so both ends meet. Still silently dropped, measured in the same sweep: `:has()`, the `[attr=v i]` case-insensitive flag, camelCase SVG type selectors (`linearGradient`), presentational attributes (`<img width=100>`), and the whole `:required` / `:optional` / `:read-only` / `:read-write` / `:placeholder-shown` / `:indeterminate` / `:valid` / `:default` / `:defined` / `:target` / `:focus-within` / `:fullscreen` / `:lang()` family, which falls through a catch-all `_ => false` in `match_non_ts_pseudo_class`. `docs/src/guide/theming.md` has the measured table. All of them work on `rinch-web` (the browser matches), so a rule that works in the browser and not on desktop is probably one of these; a class selector is the spelling with no gap on either backend
+- **A stylesheet rule that matches nothing**: desktop's **selector** surface is narrower than a browser's and every gap is silent — the rule parses, then matches nothing, with no warning. `#id` works as of **#675**: `TElement::id()` now hands Stylo a stored, interned `Atom` (`Node::id_atom`, written by `Node::write_attribute` / `erase_attribute`), where it returned a hard `None` before, so `SelectorMap::get_all_matching_rules` never consulted the id bucket and `has_id` — correct all along — never ran **for a rule whose rightmost compound carries the id**. An ancestor-side id (`#a > p`, bucketed by `p`) always worked, which is the asymmetry that hid it. An UPPERCASE attribute name — `<div ID="up">`, `[DATA-X]` — works as of **#688**: the store folds the name in HTML content and Stylo already hands `attr_matches` a lowercased selector name, so both ends meet. The `[attr=v i]` case-insensitive flag works too, since `attr_matches` delegates to the selectors crate's `AttrSelectorOperation::eval_str` — the evaluator Stylo's invalidation snapshots use, so an element and its snapshot cannot disagree. Still silently dropped, measured in the same sweep: `:has()`, camelCase SVG type selectors (`linearGradient`), presentational attributes (`<img width=100>`), and the whole `:required` / `:optional` / `:read-only` / `:read-write` / `:placeholder-shown` / `:indeterminate` / `:valid` / `:default` / `:defined` / `:target` / `:focus-within` / `:fullscreen` / `:lang()` family, which falls through a catch-all `_ => false` in `match_non_ts_pseudo_class`. `docs/src/guide/theming.md` has the measured table. All of them work on `rinch-web` (the browser matches), so a rule that works in the browser and not on desktop is probably one of these; a class selector is the spelling with no gap on either backend
 - **`width: max-content` filled the container instead of shrink-wrapping**: rinch implements **no** intrinsic sizing keyword on a box's own size (#626). `max-content`, `min-content`, `fit-content`, `fit-content(<length-percentage>)`, `stretch` and `-webkit-fill-available` all parse — stylo's `static_prefs::pref!` is a *compile-time* macro in `stylo_static_prefs` that hard-codes those gates to `true`, and is unrelated to the runtime `stylo_config` store `RinchDocument::new` pokes — and are then laid out as `auto`, on `width`, `height`, `min-width`, `min-height`, `max-width`, `max-height` and `flex-basis` alike. This is **not** a missing match arm. `taffy::Dimension` is a newtype over `CompactLength`, and while that type carries `MIN_CONTENT_TAG`/`MAX_CONTENT_TAG`/`FIT_CONTENT_*_TAG`, only the **grid track sizing** functions read them — `Dimension` implements `TaffyAuto` but not `TaffyMaxContent`, so there is no safe constructor; its resolver ends `_ => unreachable!()`, so a `size`/`min_size`/`max_size` carrying one **panics** in layout. So **`grid-template-columns: max-content` works** and a box's own `width: max-content` cannot, and implementing the latter needs a rinch-side measurement pass. What the substitution costs depends on the box, and the two halves are **mirror images** (measured, Chrome 150): the three intrinsic keywords are already correct wherever `auto` is content-sized — a block's `height`, an `inline-block`'s or a flex-row item's `width` — and wrong wherever `auto` fills — a block's `width`, any `min-width`/`max-width`, a flex-column or grid item's `width`; `stretch` is correct exactly where `auto` fills and wrong where `auto` is content-sized. The declaration is no longer *discarded*, only unimplemented: `DimensionValue::Intrinsic` carries it, so `get_computed_styles` reports what the author wrote, and style conversion prints one line per property and keyword per process instead of dropping it in silence. The measured table and the Taffy pin live in `crates/rinch-dom/tests/intrinsic_sizing_tests.rs`
 - **Text not updating**: Verify signal/effect wiring in the component
 - **No display (headless)**: Use Xvfb with `DISPLAY=:99` when running without a monitor

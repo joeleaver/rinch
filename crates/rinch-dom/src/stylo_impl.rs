@@ -23,7 +23,7 @@ use style::{Atom, LocalName, Namespace};
 use stylo_dom::ElementState;
 
 // Re-import selectors types from style to ensure version compatibility
-use selectors::attr::{AttrSelectorOperation, AttrSelectorOperator, NamespaceConstraint};
+use selectors::attr::{AttrSelectorOperation, NamespaceConstraint};
 use selectors::matching::{ElementSelectorFlags, MatchingContext};
 use selectors::sink::Push;
 use selectors::{Element, OpaqueElement};
@@ -269,33 +269,37 @@ impl<'a> Element for RinchNode<'a> {
         false
     }
 
+    /// The previous sibling that is an element — and not a generated
+    /// `::before` / `::after` / list-marker box. rinch keeps those in the
+    /// child list, but they are not children for selector matching:
+    /// `:nth-child`, `:first-child` and `+` count element children only
+    /// (Selectors 4 §14). Counting them made an element's index depend on
+    /// whether its parent's generated content existed yet — and change,
+    /// unrestyled, when it appeared.
     fn prev_sibling_element(&self) -> Option<Self> {
-        let mut n = 1;
-        while let Some(node) = self.backward(n) {
-            if node.is_element() {
-                return Some(node);
-            }
-            n += 1;
-        }
-        None
+        let parent = &self.tree.nodes[self.node().parent?];
+        let pos = parent.children.iter().position(|&c| c == self.id)?;
+        parent.children[..pos]
+            .iter()
+            .rev()
+            .find(|&&c| is_matchable_element(&self.tree.nodes[c]))
+            .map(|&c| self.with(c))
     }
 
     fn next_sibling_element(&self) -> Option<Self> {
-        let mut n = 1;
-        while let Some(node) = self.forward(n) {
-            if node.is_element() {
-                return Some(node);
-            }
-            n += 1;
-        }
-        None
+        let parent = &self.tree.nodes[self.node().parent?];
+        let pos = parent.children.iter().position(|&c| c == self.id)?;
+        parent.children[pos + 1..]
+            .iter()
+            .find(|&&c| is_matchable_element(&self.tree.nodes[c]))
+            .map(|&c| self.with(c))
     }
 
     fn first_element_child(&self) -> Option<Self> {
         self.node()
             .children
             .iter()
-            .find(|&&id| self.tree.nodes[id].is_element())
+            .find(|&&id| is_matchable_element(&self.tree.nodes[id]))
             .map(|&id| self.with(id))
     }
 
@@ -328,31 +332,13 @@ impl<'a> Element for RinchNode<'a> {
         let Some(attr_value) = self.node().attributes.get(local_name.as_ref()) else {
             return false;
         };
-
-        match operation {
-            AttrSelectorOperation::Exists => true,
-            AttrSelectorOperation::WithValue {
-                operator,
-                case_sensitivity: _,
-                value,
-            } => {
-                let value = value.as_ref();
-                match operator {
-                    AttrSelectorOperator::Equal => attr_value == value,
-                    AttrSelectorOperator::Includes => attr_value
-                        .split_ascii_whitespace()
-                        .any(|word| word == value),
-                    AttrSelectorOperator::DashMatch => {
-                        attr_value.starts_with(value)
-                            && (attr_value.len() == value.len()
-                                || attr_value.chars().nth(value.len()) == Some('-'))
-                    }
-                    AttrSelectorOperator::Prefix => attr_value.starts_with(value),
-                    AttrSelectorOperator::Substring => attr_value.contains(value),
-                    AttrSelectorOperator::Suffix => attr_value.ends_with(value),
-                }
-            }
-        }
+        // The selectors crate's own evaluator: the same one Stylo's
+        // invalidation snapshots use (`ServoElementSnapshot::attr_matches` →
+        // `AttrValue::eval_selector`), so an element and its snapshot can
+        // never disagree about what an attribute selector means — and it
+        // honours the `[attr=v i]` / `[attr=v s]` case flags, which a
+        // hand-rolled comparison used to drop.
+        operation.eval_str(attr_value)
     }
 
     fn match_non_ts_pseudo_class(
@@ -499,8 +485,11 @@ impl<'a> Element for RinchNode<'a> {
         false
     }
 
+    /// `:empty` (Selectors 4 §14.2): no element children and no text of
+    /// non-zero length — comments and generated `::before` / `::after` boxes
+    /// do not count.
     fn is_empty(&self) -> bool {
-        self.node().children.is_empty()
+        node_is_empty(self.tree, self.id)
     }
 
     fn is_root(&self) -> bool {
@@ -584,20 +573,7 @@ impl<'a> TElement for RinchNode<'a> {
     }
 
     fn state(&self) -> ElementState {
-        let mut state = ElementState::empty();
-        if self.node().is_hovered {
-            state |= ElementState::HOVER;
-        }
-        if self.node().is_focused {
-            state |= ElementState::FOCUS;
-        }
-        if self.node().is_focus_visible {
-            state |= ElementState::FOCUSRING;
-        }
-        if self.node().is_active {
-            state |= ElementState::ACTIVE;
-        }
-        state
+        element_state(self.node())
     }
 
     fn has_part_attr(&self) -> bool {
@@ -651,12 +627,7 @@ impl<'a> TElement for RinchNode<'a> {
     }
 
     fn has_dirty_descendants(&self) -> bool {
-        // Check if any child has STYLE dirty flag
-        self.node().children.iter().any(|&id| {
-            self.tree.nodes[id]
-                .dirty
-                .contains(crate::node::DirtyFlags::STYLE)
-        })
+        self.node().style_dirty_descendants.get()
     }
 
     fn has_snapshot(&self) -> bool {
@@ -671,14 +642,14 @@ impl<'a> TElement for RinchNode<'a> {
         self.node().snapshot_handled.store(true, Ordering::SeqCst);
     }
 
+    /// Stylo's invalidator marks the path from an invalidated element down to
+    /// every invalidated descendant; `resolve_styles` follows it.
     unsafe fn set_dirty_descendants(&self) {
-        // Mark this node as needing style recalc
-        // Note: We can't mutate through a shared reference, so this would need
-        // interior mutability in production. For now, we track dirty state separately.
+        self.node().style_dirty_descendants.set(true);
     }
 
     unsafe fn unset_dirty_descendants(&self) {
-        // Clear dirty descendants flag
+        self.node().style_dirty_descendants.set(false);
     }
 
     fn store_children_to_process(&self, _n: isize) {
@@ -1012,6 +983,82 @@ impl<'a> TElement for RinchNode<'a> {
         // Return full damage for now - can optimize later
         style::selector_parser::RestyleDamage::all()
     }
+}
+
+/// The element state Stylo sees for `node`: the interaction states rinch
+/// tracks, plus `CHECKED` from the `checked` attribute — the same fact
+/// `:checked` is matched from, so Stylo's state-dependency map can say which
+/// selectors a checkbox toggle reaches. Shared by [`TElement::state`] and the
+/// invalidation snapshots, which must agree.
+pub(crate) fn element_state(node: &Node) -> ElementState {
+    let mut state = ElementState::empty();
+    if node.is_hovered {
+        state |= ElementState::HOVER;
+    }
+    if node.is_focused {
+        state |= ElementState::FOCUS;
+    }
+    if node.is_focus_visible {
+        state |= ElementState::FOCUSRING;
+    }
+    if node.is_active {
+        state |= ElementState::ACTIVE;
+    }
+    if node.attributes.contains_key("checked") {
+        state |= ElementState::CHECKED;
+    }
+    state
+}
+
+/// An element child as selectors count children: an element, and not a
+/// generated pseudo-element box.
+fn is_matchable_element(node: &Node) -> bool {
+    matches!(node.kind, NodeKind::Element(_)) && !node.is_pseudo_element
+}
+
+/// `:empty`: no child element other than a generated pseudo-element box, and
+/// no text node with any text. Comments do not count.
+pub(crate) fn node_is_empty(tree: &NodeTree, id: RawNodeId) -> bool {
+    tree.nodes[id]
+        .children
+        .iter()
+        .all(|&c| !child_defeats_empty(&tree.nodes[c]))
+}
+
+/// Whether `node`, as a child, makes its parent not `:empty`.
+pub(crate) fn child_defeats_empty(child: &Node) -> bool {
+    match &child.kind {
+        NodeKind::Element(_) => !child.is_pseudo_element,
+        NodeKind::Text(t) => !t.content.is_empty(),
+        _ => false,
+    }
+}
+
+/// Whether some child of `id` other than `except` keeps `id` from being
+/// `:empty`.
+pub(crate) fn other_children_defeat_empty(
+    tree: &NodeTree,
+    id: RawNodeId,
+    except: RawNodeId,
+) -> bool {
+    tree.nodes[id]
+        .children
+        .iter()
+        .any(|&c| c != except && child_defeats_empty(&tree.nodes[c]))
+}
+
+/// Whether one child change (an insertion, a removal, a text edit) can have
+/// flipped `id`'s `:empty`: only if, after it, at most one child keeps `id`
+/// from being empty. Anything more and `id` was non-empty before the change
+/// and is after it. What keeps a list build under an `:empty` rule from
+/// restyling the list (and its subtree) on every row.
+pub(crate) fn empty_can_have_flipped(tree: &NodeTree, id: RawNodeId) -> bool {
+    tree.nodes[id]
+        .children
+        .iter()
+        .filter(|&&c| child_defeats_empty(&tree.nodes[c]))
+        .nth(1)
+        .is_none()
 }
 
 /// Intern an arbitrary tag name into a `'static` [`BorrowedLocalName`] so stylo's

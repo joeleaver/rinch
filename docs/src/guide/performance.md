@@ -99,6 +99,7 @@ assert_eq!(frame.get(Counter::TaffyRootComputes), 0, "a colour change must not l
 | | `style_nodes_visited` | Nodes the style walk visited, including cached ones |
 | | `pseudo_element_passes` | `::before`/`::after` resolutions: one per cascaded element for each of the two that some stylesheet has a rule for, so none in a document with no such rule |
 | | `full_restyles`, `full_restyle_{viewport,theme,stylesheet,dpr,root_font_size}` | Requests for a whole-document restyle, in total and by reason. Two requests can share one walk (a theme change that also changes the root font-size counts twice). A resize counts under `viewport` only when it flips a media query's answer |
+| | `style_invalidations` | Elements whose attribute or state change Stylo's invalidator examined — one per changed element per resolve. What it restyled shows in `elements_cascaded` |
 | | `viewport_unit_restyles` | Elements a resize that flipped no media query restyled because their last cascade resolved a `vw`/`vh`/`vmin`/`vmax` (each with its subtree). A resize restyles nothing else |
 | | `full_style_walks` | `resolve_styles` walked from `<html>`, because a whole-document restyle asked it to or no layout has completed yet |
 | | `taffy_style_syncs` / `taffy_style_changes` | Nodes synced to Taffy, and how many of those actually changed their Taffy style |
@@ -175,6 +176,8 @@ for responsiveness on a 40-row list and asserts today's counter values:
 - idle
 - a colour-only hover, with and without a `display: contents` wrapper
 - a colour-only class toggle
+- an attribute no selector reads (nothing is cascaded)
+- a container class a descendant rule depends on
 - appending a row
 - removing a row
 - setting one text node's content

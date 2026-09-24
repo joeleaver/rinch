@@ -4,7 +4,88 @@ use servo_arc::Arc as ServoArc;
 
 use style::properties::ComputedValues;
 
+use style::computed_value_flags::ComputedValueFlags;
+use style::invalidation::element::restyle_hints::RestyleHint;
+
 use crate::RinchDocument;
+use crate::node::DirtyFlags;
+
+/// What an element's new style requires of its children's styles.
+///
+/// Ordered: each variant asks for at least what the one before it does.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) enum ChildCascade {
+    /// Nothing a child inherits changed.
+    Skip,
+    /// Only reset properties changed; a child that explicitly `inherit`s one
+    /// (`ComputedValueFlags::INHERITS_RESET_STYLE`) is re-cascaded.
+    IfInheritReset,
+    /// Something inherited changed: every child is re-cascaded (and each
+    /// decides for its own children).
+    Cascade,
+    /// Every descendant is re-matched and re-cascaded — a restyle hint for the
+    /// whole subtree (`RESTYLE_DESCENDANTS`).
+    Subtree,
+}
+
+/// Compare an element's style before and after a cascade, and answer what its
+/// children need — Stylo's `accumulate_damage_for` / `ChildRestyleRequirement`,
+/// which lives in Stylo's own traversal and so never runs for rinch's.
+///
+/// Children must follow when anything they can read from the parent changed:
+/// an inherited style struct (font, inherited text / box / table / UI, list),
+/// a custom property, the inherited computed-value flags (text-decoration
+/// propagation among them), the effective zoom, the writing mode, or the
+/// `display` (blockification of children and `display: contents` read it).
+/// Otherwise only a child that explicitly inherits a reset property can
+/// differ. Servo's own `compute_style_difference` never says "reset only"
+/// (a FIXME there), so it would re-cascade every child on any change — this
+/// is what lets a `:hover { background }` cascade one element instead of its
+/// subtree.
+pub(crate) fn child_cascade(old: Option<&ComputedValues>, new: &ComputedValues) -> ChildCascade {
+    let Some(old) = old else {
+        return ChildCascade::Cascade;
+    };
+    if std::ptr::eq(old, new) {
+        return ChildCascade::Skip;
+    }
+    fn same<T: PartialEq>(a: &T, b: &T) -> bool {
+        std::ptr::eq(a, b) || a == b
+    }
+    let inherited_same = old.flags.maybe_inherited() == new.flags.maybe_inherited()
+        && old.effective_zoom == new.effective_zoom
+        && old.writing_mode == new.writing_mode
+        && same(old.get_font(), new.get_font())
+        && same(old.get_inherited_text(), new.get_inherited_text())
+        && same(old.get_inherited_box(), new.get_inherited_box())
+        && same(old.get_inherited_table(), new.get_inherited_table())
+        && same(old.get_inherited_ui(), new.get_inherited_ui())
+        && same(old.get_list(), new.get_list())
+        && old.custom_properties_equal(new)
+        && old.clone_display() == new.clone_display();
+    if !inherited_same {
+        return ChildCascade::Cascade;
+    }
+    let reset_same = same(old.get_background(), new.get_background())
+        && same(old.get_border(), new.get_border())
+        && same(old.get_box(), new.get_box())
+        && same(old.get_column(), new.get_column())
+        && same(old.get_counters(), new.get_counters())
+        && same(old.get_effects(), new.get_effects())
+        && same(old.get_margin(), new.get_margin())
+        && same(old.get_outline(), new.get_outline())
+        && same(old.get_padding(), new.get_padding())
+        && same(old.get_position(), new.get_position())
+        && same(old.get_svg(), new.get_svg())
+        && same(old.get_table(), new.get_table())
+        && same(old.get_text(), new.get_text())
+        && same(old.get_ui(), new.get_ui());
+    if reset_same {
+        ChildCascade::Skip
+    } else {
+        ChildCascade::IfInheritReset
+    }
+}
 
 impl RinchDocument {
     /// Resolve styles for elements that need it.
@@ -35,6 +116,10 @@ impl RinchDocument {
             self.stylist.flush::<RinchNode>(&guards, None, None);
         }
         self.refresh_pseudo_rule_presence();
+        // Attribute and state changes since the last resolve: Stylo's
+        // invalidator turns their snapshots into restyle hints and style
+        // roots (`invalidation.rs`).
+        self.process_snapshots();
 
         let roots = std::mem::take(&mut self.tree.style_roots);
 
@@ -54,7 +139,12 @@ impl RinchDocument {
             self.tree.full_style_walk = false;
             self.tree.perf.bump(crate::perf::Counter::FullStyleWalks);
             let html_id = self.tree.html_id;
-            self.resolve_styles_recursive(html_id, None);
+            // The one place the filter is zeroed outright: a rare
+            // whole-document walk, which also discards any counts a walk that
+            // unwound early (a panic) may have left behind.
+            self.style_bloom.clear();
+            self.style_bloom_filled.clear();
+            self.resolve_styles_recursive(html_id, None, ChildCascade::Skip, true);
             return;
         }
         if roots.is_empty() {
@@ -118,9 +208,11 @@ impl RinchDocument {
         // `depth_if_connected` — the same walk, so the two cannot disagree
         // about what "connected" means.
         //
-        // Sort by depth (shallowest first) so that if both a parent and
-        // child appear, the parent is resolved first and the child can
-        // be skipped (it will be covered by the parent's subtree walk).
+        // Sort by depth (shallowest first): a root's ancestors are resolved
+        // before it, so the parent style it cascades against is current, and
+        // a root an earlier walk already reached — every node a walk cascades
+        // has its hint and dirty-descendants bit cleared — is skipped as
+        // having nothing left to do.
         let mut sorted: Vec<(usize, usize)> = roots
             .into_iter()
             .filter_map(|id| Some((id, self.depth_if_connected(id)?)))
@@ -128,20 +220,188 @@ impl RinchDocument {
         sorted.sort_unstable_by_key(|&(_, depth)| depth);
         sorted.dedup_by_key(|entry| entry.0);
 
-        // Track which roots have been resolved so we can skip
-        // descendants that are already covered.
-        let mut resolved_roots: Vec<usize> = Vec::with_capacity(sorted.len());
-
         for (root_id, _depth) in sorted {
-            // If this root is a descendant of an already-resolved root,
-            // it was already handled by that root's subtree walk.
-            if self.is_ancestor_in(&resolved_roots, root_id) {
+            // A non-element root (the document node) is walked for whatever
+            // below it needs a visit.
+            if self.tree.nodes[root_id].is_element() && !self.node_needs_style_visit(root_id) {
                 continue;
             }
-
             let parent_style = self.find_parent_computed_style(root_id);
-            self.resolve_styles_recursive(root_id, parent_style);
-            resolved_roots.push(root_id);
+            self.fill_style_bloom_for(root_id);
+            self.resolve_styles_recursive(root_id, parent_style, ChildCascade::Skip, false);
+        }
+    }
+
+    /// Mark a node the style walk re-cascaded as paint-dirty. Only the paint
+    /// list, not `dirty_nodes`: the walk runs inside `resolve_layout`, after
+    /// the shell has taken `dirty_nodes`, and an entry left there would read as
+    /// "something is pending" and ask the next idle frame for a redraw.
+    pub(crate) fn mark_restyled_for_paint(&mut self, node_id: usize) {
+        if let Some(node) = self.tree.nodes.get_mut(node_id) {
+            node.dirty.insert(DirtyFlags::STYLE | DirtyFlags::PAINT);
+            self.tree.paint_dirty_nodes.push(node_id);
+        }
+    }
+
+    /// Cascade just the freshly inserted (and unstyled) subtree at `node_id`,
+    /// leaving every other pending style change for the next
+    /// `resolve_styles`. Answers `false`, doing nothing, when that would be
+    /// wrong and the caller should run a full `resolve_styles` instead:
+    ///
+    /// - no layout has completed yet, or a whole-document walk is pending;
+    /// - the node is not connected (a detached node is not styled at all —
+    ///   `resolve_styles` drops such a root, #651);
+    /// - some ancestor is itself waiting for a restyle (no style, a restyle
+    ///   hint, a pending snapshot, or a marked descendant path): the subtree
+    ///   would cascade against an ancestor style this frame is about to
+    ///   replace, and its next cascade would then read as a *change* — a
+    ///   transition on a node that was only just inserted.
+    pub(crate) fn resolve_inserted_subtree(&mut self, node_id: usize) -> bool {
+        use crate::stylo_impl::RinchNode;
+        use style::shared_lock::StylesheetGuards;
+
+        if self.tree.full_style_walk || !self.tree.transitions_enabled {
+            return false;
+        }
+        if self.depth_if_connected(node_id).is_none() {
+            return false;
+        }
+        let mut current = self.tree.nodes[node_id].parent;
+        while let Some(id) = current {
+            let n = &self.tree.nodes[id];
+            if n.is_element() {
+                if n.has_snapshot || n.style_dirty_descendants.get() {
+                    return false;
+                }
+                let data = n.stylo_element_data.borrow();
+                match data.as_ref() {
+                    Some(d) if d.styles.primary.is_some() && d.hint.is_empty() => {}
+                    _ => return false,
+                }
+            }
+            current = n.parent;
+        }
+
+        self.tree.hit_cache.invalidate();
+        let t = web_time::Instant::now();
+        self.tree.perf.bump(crate::perf::Counter::StyleResolves);
+        {
+            let guard = self.tree.guard.read();
+            let guards = StylesheetGuards::same(&guard);
+            self.stylist.flush::<RinchNode>(&guards, None, None);
+        }
+        self.refresh_pseudo_rule_presence();
+        let parent_style = self.find_parent_computed_style(node_id);
+        self.fill_style_bloom_for(node_id);
+        self.resolve_styles_recursive(node_id, parent_style, ChildCascade::Skip, false);
+        self.tree
+            .perf
+            .add_elapsed(crate::perf::Counter::TimeStyleNs, t);
+        true
+    }
+
+    /// Whether the style walk has anything to do at `node_id`: it has no
+    /// style yet, carries a restyle hint, or some descendant does.
+    fn node_needs_style_visit(&self, node_id: usize) -> bool {
+        let Some(node) = self.tree.nodes.get(node_id) else {
+            return false;
+        };
+        if !node.is_element() {
+            return false;
+        }
+        if node.style_dirty_descendants.get() {
+            return true;
+        }
+        let data = node.stylo_element_data.borrow();
+        match data.as_ref() {
+            None => true,
+            Some(d) => d.styles.primary.is_none() || !d.hint.is_empty(),
+        }
+    }
+
+    /// Reset the style bloom filter to hold exactly `node_id`'s ancestor
+    /// elements, for a walk starting at `node_id`.
+    ///
+    /// A walk leaves the filter as it found it (`resolve_style_children`
+    /// pops every element it pushed), so what is in it on entry is exactly
+    /// the previous fill's ancestor chain, whose hashes `style_bloom_filled`
+    /// recorded. Removing those is a handful of counter updates where
+    /// `clear()` zeroed all 4096 of them — on every hover and every
+    /// insertion. The recorded hashes are removed, not recomputed, so an
+    /// ancestor whose attributes changed since cannot unbalance a counter.
+    fn fill_style_bloom_for(&mut self, node_id: usize) {
+        use selectors::bloom::BLOOM_HASH_MASK;
+        for hash in self.style_bloom_filled.drain(..) {
+            self.style_bloom.remove_hash(hash);
+        }
+        let mut current = self.tree.nodes.get(node_id).and_then(|n| n.parent);
+        while let Some(id) = current {
+            if self.tree.nodes[id].is_element() {
+                let bloom = &mut self.style_bloom;
+                let filled = &mut self.style_bloom_filled;
+                style::bloom::each_relevant_element_hash(
+                    crate::stylo_impl::RinchNode::new(id, &self.tree),
+                    |hash| {
+                        let hash = hash & BLOOM_HASH_MASK;
+                        bloom.insert_hash(hash);
+                        filled.push(hash);
+                    },
+                );
+            }
+            current = self.tree.nodes[id].parent;
+        }
+    }
+
+    /// Add `node_id`'s tag, id, classes and attribute names to the style bloom
+    /// filter, which descendant-combinator matching consults to reject a
+    /// selector whose ancestor compounds no ancestor can satisfy.
+    fn push_style_bloom(&mut self, node_id: usize) {
+        use selectors::bloom::BLOOM_HASH_MASK;
+        let bloom = &mut self.style_bloom;
+        style::bloom::each_relevant_element_hash(
+            crate::stylo_impl::RinchNode::new(node_id, &self.tree),
+            |hash| bloom.insert_hash(hash & BLOOM_HASH_MASK),
+        );
+    }
+
+    /// Undo [`Self::push_style_bloom`] for `node_id` (its hashes are recomputed
+    /// from the same, unchanged attributes).
+    fn pop_style_bloom(&mut self, node_id: usize) {
+        use selectors::bloom::BLOOM_HASH_MASK;
+        let bloom = &mut self.style_bloom;
+        style::bloom::each_relevant_element_hash(
+            crate::stylo_impl::RinchNode::new(node_id, &self.tree),
+            |hash| bloom.remove_hash(hash & BLOOM_HASH_MASK),
+        );
+    }
+
+    /// Walk `node_id`'s children after `node_id` was visited with `style`:
+    /// every child when `cascade` forces some or `visit_all` is set, otherwise
+    /// only those [`Self::node_needs_style_visit`] names.
+    fn resolve_style_children(
+        &mut self,
+        node_id: usize,
+        style: &ServoArc<ComputedValues>,
+        cascade: ChildCascade,
+        visit_all: bool,
+    ) {
+        let children: Vec<usize> = self.tree.nodes[node_id].children.clone();
+        let mut pushed = false;
+        for child_id in children {
+            let visit = visit_all
+                || (cascade != ChildCascade::Skip && self.tree.nodes[child_id].is_element())
+                || self.node_needs_style_visit(child_id);
+            if !visit {
+                continue;
+            }
+            if !pushed {
+                self.push_style_bloom(node_id);
+                pushed = true;
+            }
+            self.resolve_styles_recursive(child_id, Some(style.clone()), cascade, visit_all);
+        }
+        if pushed {
+            self.pop_style_bloom(node_id);
         }
     }
 
@@ -172,18 +432,6 @@ impl RinchDocument {
             current = node.parent;
         }
         None
-    }
-
-    /// Check whether `node_id` is a descendant of any node in `ancestors`.
-    fn is_ancestor_in(&self, ancestors: &[usize], node_id: usize) -> bool {
-        let mut current = self.tree.nodes.get(node_id).and_then(|n| n.parent);
-        while let Some(pid) = current {
-            if ancestors.contains(&pid) {
-                return true;
-            }
-            current = self.tree.nodes.get(pid).and_then(|n| n.parent);
-        }
-        false
     }
 
     /// The node's depth below the document node (0 = the document node
@@ -230,10 +478,18 @@ impl RinchDocument {
     }
 
     /// Recursively resolve styles for a node and its descendants.
+    ///
+    /// `inherited` is what the parent's cascade requires of this node (its
+    /// [`child_cascade`] answer). A node is cascaded when it has no style,
+    /// carries a restyle hint, or `inherited` asks; its children are then
+    /// walked as its own `child_cascade` requires, and otherwise only where
+    /// something below is marked (`style_dirty_descendants`).
     pub(crate) fn resolve_styles_recursive(
         &mut self,
         node_id: usize,
         parent_style: Option<ServoArc<ComputedValues>>,
+        inherited: ChildCascade,
+        visit_all: bool,
     ) {
         use selectors::matching::{
             IncludeStartingStyle, MatchingContext, MatchingForInvalidation, MatchingMode,
@@ -249,41 +505,58 @@ impl RinchDocument {
 
         use crate::stylo_impl::RinchNode;
 
-        // Extract node info in a block to release borrows before recursion
-        let (is_element, children, cached_style) = {
-            let node = match self.tree.nodes.get(node_id) {
-                Some(n) => n,
-                None => return,
-            };
-
-            let is_element = node.is_element();
-            let children: Vec<usize> = node.children.clone();
-
-            // Check for cached style
-            let cached_style = {
-                let stylo_data = node.stylo_element_data.borrow();
-                stylo_data.as_ref().and_then(|d| d.styles.primary.clone())
-            };
-
-            (is_element, children, cached_style)
+        let Some(node) = self.tree.nodes.get(node_id) else {
+            return;
         };
         self.tree.perf.bump(crate::perf::Counter::StyleNodesVisited);
-
-        // Skip non-element nodes
-        if !is_element {
-            // For text nodes, just recurse to children (shouldn't have any)
-            for child_id in children {
-                self.resolve_styles_recursive(child_id, parent_style.clone());
+        if !node.is_element() {
+            // Text and comment nodes carry no style and have no children; the
+            // document node has children and passes the walk on to them.
+            if !node.children.is_empty() {
+                let children = node.children.clone();
+                for child_id in children {
+                    if visit_all || self.node_needs_style_visit(child_id) {
+                        self.resolve_styles_recursive(
+                            child_id,
+                            parent_style.clone(),
+                            inherited,
+                            visit_all,
+                        );
+                    }
+                }
             }
             return;
         }
+        let dirty_descendants = node.style_dirty_descendants.replace(false);
+        let (old_style, hint) = {
+            let mut data = node.stylo_element_data.borrow_mut();
+            match data.as_mut() {
+                Some(d) => (
+                    d.styles.primary.clone(),
+                    std::mem::replace(&mut d.hint, RestyleHint::empty()),
+                ),
+                None => (None, RestyleHint::empty()),
+            }
+        };
+        let needs_cascade = match &old_style {
+            None => true,
+            Some(old) => {
+                !hint.is_empty()
+                    || inherited >= ChildCascade::Cascade
+                    || (inherited == ChildCascade::IfInheritReset
+                        && old.flags.contains(ComputedValueFlags::INHERITS_RESET_STYLE))
+            }
+        };
+        let subtree = inherited == ChildCascade::Subtree
+            || hint
+                .intersects(RestyleHint::RESTYLE_DESCENDANTS | RestyleHint::RECASCADE_DESCENDANTS);
 
-        // PERFORMANCE: Skip nodes that already have computed styles (cache hit)
-        // When a node's style changes, its stylo_element_data is set to None,
-        // causing it to be recomputed. Nodes with valid cached styles are skipped.
-        if let Some(computed) = cached_style {
-            for child_id in children {
-                self.resolve_styles_recursive(child_id, Some(computed.clone()));
+        // Nothing to redo here: the style stays, and the walk goes on only
+        // where something below is marked.
+        if !needs_cascade {
+            let computed = old_style.expect("a node with no style is always cascaded");
+            if dirty_descendants || visit_all {
+                self.resolve_style_children(node_id, &computed, ChildCascade::Skip, visit_all);
             }
             return;
         }
@@ -325,11 +598,14 @@ impl RinchDocument {
             }
         }
 
-        // Clear sensitivity flags before re-resolution so Stylo's matching
-        // can re-set them accurately for the current class/selector state.
-        self.tree.nodes[node_id].hover_sensitive.set(false);
-        self.tree.nodes[node_id].active_sensitive.set(false);
-        self.tree.nodes[node_id].focus_sensitive.set(false);
+        // The `*_sensitive` flags are **not** cleared here. They are set on
+        // whatever element a `:hover` / `:active` / `:focus` compound is
+        // evaluated against — which for `.card:hover .title` is the *card*,
+        // while the title is being matched. A card re-cascaded on its own (its
+        // class changed, nothing below it did) would lose the flag its
+        // descendants' matching set, and its hover would then invalidate
+        // nothing. They only ever over-state a dependency, which costs a
+        // snapshot that Stylo's invalidator answers with no restyle.
 
         // Compute styles in a block so borrows are dropped before recursion
         let computed = {
@@ -341,14 +617,20 @@ impl RinchDocument {
             let guards = StylesheetGuards::same(&guard);
 
             let mut selector_caches = SelectorCaches::default();
+            // The bloom filter holds this node's ancestors (the walk pushes
+            // each element before descending into it), so a descendant
+            // combinator whose ancestor compounds no ancestor carries is
+            // rejected without walking the chain. Selector flags are
+            // recorded: they are how an insertion or removal knows which
+            // siblings a structural selector ties to it (`invalidation.rs`).
             let mut matching_context = MatchingContext::new_for_visited(
                 MatchingMode::Normal,
-                None, // bloom filter - could add for performance
+                Some(&*self.style_bloom),
                 &mut selector_caches,
                 VisitedHandlingMode::AllLinksUnvisited,
                 IncludeStartingStyle::No,
                 self.stylist.quirks_mode(),
-                NeedsSelectorFlags::No,
+                NeedsSelectorFlags::Yes,
                 MatchingForInvalidation::No,
             );
 
@@ -437,6 +719,9 @@ impl RinchDocument {
                 .intersects(style::computed_value_flags::ComputedValueFlags::USES_VIEWPORT_UNITS),
         );
 
+        // Re-derived by the pseudo passes below.
+        self.tree.nodes[node_id].content_reads_attrs.set(false);
+
         // Check for ::before and ::after pseudo-elements — only when some
         // stylesheet has a rule for that pseudo at all. The UA sheet has none,
         // so an app that declares none pays nothing here.
@@ -475,14 +760,30 @@ impl RinchDocument {
             }
             self.invalidate_ifc_root(node_id);
         }
-
-        // Re-read children list since pseudo-element resolution may have added nodes
-        let children: Vec<usize> = self.tree.nodes[node_id].children.clone();
-
-        // Now we can recurse without holding borrows
-        for child_id in children {
-            self.resolve_styles_recursive(child_id, Some(computed.clone()));
+        // Generated content that went away and did not come back is a
+        // structural change nothing else reports: a regenerated box is a new
+        // node whose first Taffy style sync sets both flags, but a removed one
+        // leaves no node behind to do it (an `attr()` whose attribute was
+        // removed, a class that took the `content` rule away).
+        if had_pseudo && !has_pseudo {
+            self.tree.layout_dirty = true;
+            self.tree.ifc_dirty = true;
         }
+
+        // A re-cascaded style is a paint change for this node's box: the
+        // software renderer's dirty region must cover it.
+        if old_style.is_some() {
+            self.mark_restyled_for_paint(node_id);
+        }
+
+        // What the new style asks of the children (`child_cascade`), then the
+        // walk. Pseudo-element resolution above may have added children.
+        let cascade = if subtree {
+            ChildCascade::Subtree
+        } else {
+            child_cascade(old_style.as_deref(), &computed)
+        };
+        self.resolve_style_children(node_id, &computed, cascade, visit_all);
     }
 
     /// Feed the root (`<html>`) element's computed font-size back to the

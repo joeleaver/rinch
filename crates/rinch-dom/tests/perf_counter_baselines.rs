@@ -310,6 +310,7 @@ fn every_rinch_dom_counter_fires_somewhere() {
         FullRestyleStylesheet,
         FullRestyleDpr,
         FullRestyleRootFontSize,
+        StyleInvalidations,
         ViewportUnitRestyles,
         FullStyleWalks,
         TaffyStyleSyncs,
@@ -390,8 +391,12 @@ fn idle_frame() {
 /// was the text-only one while every restyle dropped every layout under the
 /// restyled node).
 ///
-/// Still more than the minimum (audit F3 / update-path F1.1): the whole row
-/// subtree is re-cascaded (row + span + chip; the minimum is 1).
+/// **One element is cascaded** — the row — which is the minimum. Stylo's
+/// invalidator (`style_invalidations`, one per snapshotted element) finds that
+/// `.row:hover` reaches only the row itself; its new style changes only a reset
+/// property, so its children are visited to check for an explicit `inherit`
+/// (`style_nodes_visited`) and none is re-cascaded. The whole row subtree used
+/// to be re-cascaded (3 elements).
 ///
 /// No `::before` / `::after` pass: no stylesheet here has a rule for either,
 /// so no element is matched against them (`pseudo_element_passes` was two per
@@ -406,9 +411,10 @@ fn hover_colour_only_without_wrapper() {
         &s,
         &[
             (StyleResolves, 1),
-            (ElementsCascaded, 3),
-            (StyleNodesVisited, 5),
-            (TaffyStyleSyncs, 3),
+            (ElementsCascaded, 1),
+            (StyleNodesVisited, 3),
+            (StyleInvalidations, 1),
+            (TaffyStyleSyncs, 1),
             (LayoutResolves, 1),
             (LayoutSkippedPaintOnly, 1),
             (PaintNodesVisited, 66),
@@ -418,7 +424,8 @@ fn hover_colour_only_without_wrapper() {
 }
 
 /// The same hover, on rows that carry a `display: contents` wrapper — what
-/// every `rsx!` reactive text produces. Since #875 the wrapper's re-cascade no
+/// every `rsx!` reactive text produces. One element cascaded (it was 4: the
+/// row, its span, its chip and the wrapper). Since #875 the wrapper's re-cascade no
 /// longer rewrites its Taffy style, so this reads like the no-wrapper hover
 /// plus the wrapper's own cascade: no IFC setup pass, no compute, and — as
 /// for the no-wrapper hover — no text re-shaped.
@@ -432,9 +439,10 @@ fn hover_colour_only_with_contents_wrapper() {
         &s,
         &[
             (StyleResolves, 1),
-            (ElementsCascaded, 4),
-            (StyleNodesVisited, 7),
-            (TaffyStyleSyncs, 4),
+            (ElementsCascaded, 1),
+            (StyleNodesVisited, 4),
+            (StyleInvalidations, 1),
+            (TaffyStyleSyncs, 1),
             (LayoutResolves, 1),
             (LayoutSkippedPaintOnly, 1),
             (PaintNodesVisited, 66),
@@ -444,8 +452,9 @@ fn hover_colour_only_with_contents_wrapper() {
 }
 
 /// A class toggle that changes only `background-color` (`.row` ↔ `.row.sel`).
-/// As for the hover, an attribute write re-cascades the whole subtree (audit
-/// F3) but re-shapes no text, since no text input changed.
+/// As for the hover, one element is cascaded: `.row.sel` depends on the class
+/// only in its rightmost compound, so Stylo's invalidator restyles the row and
+/// nothing under it (the subtree used to be re-cascaded, audit F3).
 #[test]
 fn colour_only_class_toggle() {
     let mut f = build(false);
@@ -456,12 +465,68 @@ fn colour_only_class_toggle() {
         &s,
         &[
             (StyleResolves, 1),
-            (ElementsCascaded, 3),
-            (StyleNodesVisited, 5),
-            (TaffyStyleSyncs, 3),
+            (ElementsCascaded, 1),
+            (StyleNodesVisited, 3),
+            (StyleInvalidations, 1),
+            (TaffyStyleSyncs, 1),
             (LayoutResolves, 1),
             (LayoutSkippedPaintOnly, 1),
             (PaintNodesVisited, 66),
+            (StackingOrderBuilds, 1),
+        ],
+    );
+}
+
+/// An attribute no selector reads (`data-foo` on a row): Stylo's invalidator
+/// finds no dependency and **nothing is cascaded**. The node is still marked
+/// dirty for paint (an attribute can reach paint without reaching style), so
+/// the frame is otherwise a paint-only one. It re-cascaded the row's subtree.
+#[test]
+fn unselected_attribute_write() {
+    let mut f = build(false);
+    let row = f.rows[ROWS / 2];
+    let s = frame(&mut f, |f| f.doc.set_attribute(row, "data-foo", "1"));
+    expect(
+        "unselected attribute",
+        &s,
+        &[
+            (StyleResolves, 1),
+            (StyleInvalidations, 1),
+            (LayoutResolves, 1),
+            (LayoutSkippedPaintOnly, 1),
+            (PaintNodesVisited, 66),
+            (StackingOrderBuilds, 1),
+        ],
+    );
+}
+
+/// A class on the list container that a descendant rule depends on
+/// (`.list.dense .row`): every row is restyled — through Stylo's descendant
+/// invalidation, not a subtree re-cascade — and the rows' own children are
+/// visited but not re-cascaded, since only the rows' padding (a reset
+/// property) moved.
+#[test]
+fn container_class_a_descendant_rule_depends_on() {
+    let mut f = build_with(false, ".list.dense .row { padding: 3px; }");
+    let list = f.list;
+    let s = frame(&mut f, |f| f.doc.set_attribute(list, "class", "list dense"));
+    expect(
+        "container class (descendant rule)",
+        &s,
+        &[
+            (StyleResolves, 1),
+            (ElementsCascaded, 40),
+            (StyleNodesVisited, 121),
+            (StyleInvalidations, 1),
+            (TaffyStyleSyncs, 40),
+            (TaffyStyleChanges, 40),
+            (ShapeMeasureIfc, 40),
+            (ShapeIfcBuild, 40),
+            (IfcMeasureCacheHits, 120),
+            (LayoutResolves, 1),
+            (TaffyRootComputes, 1),
+            (TaffyMeasureCalls, 160),
+            (PaintNodesVisited, 65),
             (StackingOrderBuilds, 1),
         ],
     );
@@ -486,7 +551,8 @@ fn colour_only_class_toggle() {
 /// - every chip is still re-sized by its own compute (audit layout F11).
 ///
 /// The style side is now the minimum: the row is cascaded once and the walk
-/// visits the row and its text (`style_nodes_visited` 2). It was 287 — the
+/// visits the row alone (`style_nodes_visited` 1; a text node carries no
+/// style and is not visited). It was 287 — the
 /// whole document — because the synchronous insertion restyle consumed its own
 /// style root and left `styles_dirty` set, and `resolve_styles` read an empty
 /// root list as "walk everything". It now walks everything only when a
@@ -511,7 +577,7 @@ fn append_one_row() {
         &[
             (StyleResolves, 2),
             (ElementsCascaded, 1),
-            (StyleNodesVisited, 2),
+            (StyleNodesVisited, 1),
             (TaffyStyleSyncs, 2),
             (TaffyStyleChanges, 1),
             (ShapeMeasureIfc, 1),
@@ -559,7 +625,7 @@ fn append_one_row_without_wrappers() {
         &[
             (StyleResolves, 2),
             (ElementsCascaded, 1),
-            (StyleNodesVisited, 2),
+            (StyleNodesVisited, 1),
             (TaffyStyleSyncs, 2),
             (TaffyStyleChanges, 1),
             (ShapeMeasureIfc, 1),
@@ -666,8 +732,7 @@ fn resize_by_1px() {
 }
 
 /// The same resize with the chips sized in `vw`: exactly the 40 chips restyle
-/// (`viewport_unit_restyles`, one cascade each; the walk visits each chip and
-/// its text), and nothing else does. Their new widths re-size them
+/// (`viewport_unit_restyles`, one cascade each), and nothing else does. Their new widths re-size them
 /// (`inline_block_computes`).
 #[test]
 fn resize_by_1px_with_viewport_units() {
@@ -680,7 +745,7 @@ fn resize_by_1px_with_viewport_units() {
         &[
             (StyleResolves, 1),
             (ElementsCascaded, 40),
-            (StyleNodesVisited, 80),
+            (StyleNodesVisited, 40),
             (ViewportUnitRestyles, 40),
             (TaffyStyleSyncs, 40),
             (TaffyStyleChanges, 40),

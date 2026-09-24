@@ -327,7 +327,7 @@ fn root_font_size_shrink_recascades() {
 }
 
 /// The "not too much" direction: a root recascade that does NOT change the
-/// root font-size (here, a `color` change on `<html>`) must not clear
+/// root font-size (here, a `background-color` change on `<html>`) must not clear
 /// descendant caches — without the equality gate, any root restyle defeats
 /// targeted invalidation tree-wide. Cache retention is observed directly
 /// via ServoArc pointer identity of the descendant's cached primary style.
@@ -352,9 +352,10 @@ fn unchanged_basis_keeps_descendant_caches() {
         .and_then(|d| d.styles.primary.clone())
         .expect("descendant has a cached style");
 
-    // Recascade the root without touching its font-size.
+    // Recascade the root without touching its font-size — or anything else
+    // a child inherits, so nothing but the rem basis could reach the child.
     let html = NodeId(doc.tree.html_id);
-    doc.set_style(html, "color", "red");
+    doc.set_style(html, "background-color", "red");
     doc.resolve_layout(800.0, 600.0);
 
     let arc_after = doc.tree.nodes[div.0]

@@ -162,6 +162,11 @@ impl HitCache {
         self.generation.get()
     }
 
+    // `#[inline]`: this sits under every `extent` lookup of a pointer move's
+    // hit test, and whether rustc inlines it on its own flips with unrelated
+    // changes elsewhere in the crate (+6% on `shell::pointer_move_warm`
+    // when it did not, #894).
+    #[inline]
     fn state(&self) -> std::cell::RefMut<'_, State> {
         let mut s = self.state.borrow_mut();
         // `generation` starts at 0 and `filled_at` at 0 too, but a fresh state
@@ -175,6 +180,7 @@ impl HitCache {
     }
 
     /// The extent stored for `id` in the current generation.
+    #[inline]
     pub fn extent(&self, id: usize) -> Option<Extent> {
         self.state().extents.get(id).copied().flatten()
     }
