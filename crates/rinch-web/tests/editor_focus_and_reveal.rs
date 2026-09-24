@@ -66,6 +66,11 @@ impl Fixture {
     /// The same, with `in_scroller: false` putting the editor straight in the
     /// page (the page is what scrolls).
     fn mount_with(in_scroller: bool) -> Self {
+        Self::mount_styled(in_scroller, "")
+    }
+
+    /// [`Self::mount_with`], with `extra` appended to the scroller's style.
+    fn mount_styled(in_scroller: bool, extra: &'static str) -> Self {
         if let Some(stale) = LIVE_ROOT.with(|r| r.take()) {
             stale.unmount();
         }
@@ -111,8 +116,10 @@ impl Fixture {
                 let scroller = scope.create_element("div");
                 if in_scroller {
                     scroller.set_attribute("data-reveal-scroller", "");
-                    scroller
-                        .set_attribute("style", "height: 120px; width: 300px; overflow-y: auto");
+                    scroller.set_attribute(
+                        "style",
+                        &format!("height: 120px; width: 300px; overflow-y: auto; {extra}"),
+                    );
                 }
                 scroller.append_child(&mounted.mount(scope));
                 scroller
@@ -494,5 +501,57 @@ fn with_no_scroller_the_page_is_placed() {
         "a third of the way down the window (got {at} of {viewport})"
     );
     assert!(window().scroll_y().unwrap() > 0.0);
+    f.teardown();
+}
+
+/// The twin of desktop's `a_fraction_is_of_a_bordered_padded_scrollers_padding_box`:
+/// `Fraction(f)` is `f` of the padding box (`clientHeight`), from the inside of
+/// the top border (`clientTop`).
+#[wasm_bindgen_test]
+fn a_fraction_is_of_a_bordered_padded_scrollers_padding_box() {
+    let f = Fixture::mount_styled(true, "border-top: 10px solid black; padding: 30px 0");
+    let s = f.scroller();
+    let padding_box = f64::from(s.client_height());
+    f.handle
+        .scroll_into_view_aligned(start_of(20), end_of(20), ScrollAlign::Fraction(0.5));
+    let at = f.offset_in_view(start_of(20));
+    let want = 10.0 + 0.5 * padding_box;
+    assert!(
+        (at - want).abs() <= 1.5,
+        "half way down the padding box, below the border: want {want}, got {at}"
+    );
+    f.teardown();
+}
+
+/// A scroller below the page's fold: the scroller is placed, then the page
+/// brought round to it the `nearest` way — which must not undo the placement
+/// (#842: the web's `scrollIntoView` moves every scrollable ancestor).
+#[wasm_bindgen_test]
+fn a_placed_scroller_below_the_fold_is_placed_and_brought_on_screen() {
+    let f = Fixture::mount();
+    let spacer = document().create_element("div").unwrap();
+    spacer.set_attribute("style", "height: 3000px").unwrap();
+    f.host.prepend_with_node_1(&spacer).unwrap();
+    let after = document().create_element("div").unwrap();
+    after.set_attribute("style", "height: 3000px").unwrap();
+    f.host.append_child(&after).unwrap();
+    let viewport = window().inner_height().unwrap().as_f64().unwrap();
+    assert!(
+        f.scroller().get_bounding_client_rect().top() > viewport,
+        "control: the scroller is below the fold"
+    );
+    f.handle
+        .scroll_into_view_aligned(start_of(30), end_of(30), THIRD);
+    let at = f.offset_in_view(start_of(30));
+    assert!(
+        (at - 40.0).abs() <= 2.0,
+        "placed in the scroller (got {at})"
+    );
+    assert!(window().scroll_y().unwrap() > 0.0, "the page moved");
+    let (top, bottom) = f.line_at(start_of(30));
+    assert!(
+        top >= 0.0 && bottom <= viewport,
+        "and the line is in the window ({top}..{bottom} of {viewport})"
+    );
     f.teardown();
 }
