@@ -40,6 +40,8 @@ mod drawer_scroll_overflow_tests;
 #[cfg(all(test, feature = "desktop"))]
 mod editor_decoration_tests;
 #[cfg(all(test, feature = "desktop"))]
+mod editor_focus_and_reveal_tests;
+#[cfg(all(test, feature = "desktop"))]
 mod editor_link_tests;
 #[cfg(all(test, feature = "desktop"))]
 mod editor_popup_hooks_tests;
@@ -1122,6 +1124,7 @@ impl RinchApp {
                 && !d.tree.styles_dirty
                 && !theme_changed
                 && !rinch_dom::image_cache::has_pending(d.doc_key())
+                && !self.has_owed_editor_reveal()
             {
                 return false;
             }
@@ -1304,12 +1307,25 @@ impl RinchApp {
     /// scroll offset to make the target element visible.
     fn apply_scroll_into_view(&mut self) {
         let Some(doc) = &self.doc else { return };
-        let requests = doc.borrow_mut().drain_scroll_into_view_requests();
-        if requests.is_empty() {
+        let (nearest, placed) = {
+            let mut d = doc.borrow_mut();
+            (
+                d.drain_scroll_into_view_requests(),
+                d.drain_scroll_to_fraction_requests(),
+            )
+        };
+        if nearest.is_empty() && placed.is_empty() {
             return;
         }
+        // The "nearest" requests first, then the placed ones
+        // (`NodeHandle::scroll_to_fraction`): a placement asked for in the same
+        // frame as a caret's scroll is where the view ends up.
+        let requests = nearest
+            .into_iter()
+            .map(|n| (n, None))
+            .chain(placed.into_iter().map(|(n, f, m)| (n, Some((f, m)))));
 
-        for target_nid in requests {
+        for (target_nid, placement) in requests {
             let mut d = doc.borrow_mut();
 
             // Walk ancestors to find nearest scroll container
@@ -1384,7 +1400,30 @@ impl RinchApp {
             let content_height = d.scroll_height(container_nid);
             let max_scroll = (content_height - visible_height).max(0.0);
 
-            let new_scroll = if elem_top < 0.0 {
+            let new_scroll = if let Some((fraction, margin)) = placement {
+                // Placed: the element's top at `fraction` of the visible
+                // height, at least `margin` inside either edge (the top edge
+                // wins when the element is too tall for both).
+                //
+                // "Visible" is the container's **padding** box, from the
+                // inside of its top border — what a browser scrolls content
+                // through (`clientTop` / `clientHeight`), and so what the web
+                // backend measures against. `elem_top` is from the border
+                // box's top and `client_height` is the content box here, so
+                // both are corrected; the nearest branch below keeps its
+                // pre-existing reading (#769's shape).
+                let cs = &d.tree.nodes[container_id].computed_style;
+                let border_top = f64::from(cs.border_top_width.to_px());
+                let padding_box = visible_height
+                    + f64::from(cs.padding_top.to_px())
+                    + f64::from(cs.padding_bottom.to_px());
+                let (fraction, margin) = (f64::from(fraction), f64::from(margin));
+                let height = elem_bottom - elem_top;
+                let at = (fraction * padding_box)
+                    .min(padding_box - margin - height)
+                    .max(margin);
+                current_scroll + elem_top - border_top - at
+            } else if elem_top < 0.0 {
                 // Element is above the visible area — scroll up
                 current_scroll + elem_top
             } else if elem_bottom > visible_height {
@@ -1968,6 +2007,27 @@ impl RinchApp {
             })
             .unwrap_or(false)
             || self.has_pending_images()
+            || self.has_owed_editor_reveal()
+    }
+
+    /// Whether an editor in this document asked to
+    /// [`scroll_into_view`](crate::editor::EditorHandle::scroll_into_view)
+    /// since the last overlay pass. It dirties nothing (the request waits on
+    /// the handle for a pass with geometry), so, like a decoded image, it is
+    /// folded into both "is there anything to do?" predicates and the resolve
+    /// short-circuit: an app may ask from an effect or a timer, with no input
+    /// event to run the pass for it.
+    fn has_owed_editor_reveal(&self) -> bool {
+        #[cfg(feature = "desktop")]
+        {
+            self.doc
+                .as_ref()
+                .is_some_and(|d| crate::editor::reveal_owed(d.borrow().doc_key()))
+        }
+        #[cfg(not(feature = "desktop"))]
+        {
+            false
+        }
     }
 
     /// Check if there are pending layout changes that need resolving
@@ -1984,6 +2044,7 @@ impl RinchApp {
             })
             .unwrap_or(false)
             || self.has_pending_images()
+            || self.has_owed_editor_reveal()
     }
 
     /// The framebuffer rect `paint_inspect_overlay` touches for `highlight`
@@ -3448,6 +3509,24 @@ impl RinchApp {
         // an `<input>` is no exception (issue #315) — the check sits above the
         // branch so it covers the input and generic-node paths alike.
         if Self::node_is_disabled_in_tree(&d.tree, node_id) {
+            return;
+        }
+
+        // A rich-text editor's container (`EditorHandle::focus`, or a
+        // `NodeHandle::focus` on the container): take the keyboard as a press
+        // in it does — through the arbiter, which tears the previous owner
+        // down — but leave the selection where it is, and ask for no scroll
+        // (`EditorHandle::scroll_into_view` is the app's to ask for); a caret
+        // scroll the handle already owes is performed by the caret pass. The
+        // overlay pass draws its caret or highlight; its layout is current or
+        // the next frame's resolve makes it so, as after a click.
+        #[cfg(feature = "desktop")]
+        if crate::editor::editor_for_doc(d.doc_key(), node_id).is_some() {
+            drop(d);
+            self.set_focus_target(FocusTarget::Editor(node_id));
+            self.editor_goal_x = None;
+            self.refresh_editor_overlays();
+            self.scene_dirty = true;
             return;
         }
 

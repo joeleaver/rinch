@@ -1463,6 +1463,72 @@ impl DomDocument for WebDocument {
         el.scroll_into_view_with_scroll_into_view_options(&opts);
     }
 
+    /// Place `node` in its scroll container **now** (see
+    /// [`Self::request_scroll_into_view`] for why the browser needs no queue):
+    /// the nearest ancestor whose `overflow-y` scrolls, or the page's scrolling
+    /// element when none does, gets the `scrollTop` that puts the node's top
+    /// `fraction` of the way down its visible height (at least `margin` inside
+    /// either edge), clamped to `0..=scrollHeight - clientHeight`. The node then
+    /// gets the same "nearest" `scrollIntoView` a caret gets, which leaves that
+    /// container alone (the node is inside it now) and brings it into the view
+    /// of every scroller further out, the page included.
+    fn request_scroll_to_fraction(&mut self, node: NodeId, fraction: f32, margin: f32) {
+        let Some(el) = self
+            .nodes
+            .get(&node.0)
+            .and_then(|n| n.clone().dyn_into::<web_sys::Element>().ok())
+        else {
+            return;
+        };
+        let Some(window) = web_sys::window() else {
+            return;
+        };
+        let mut scroller = None;
+        let mut cur = el.parent_element();
+        while let Some(ancestor) = cur {
+            let scrolls = window
+                .get_computed_style(&ancestor)
+                .ok()
+                .flatten()
+                .and_then(|cs| cs.get_property_value("overflow-y").ok())
+                .is_some_and(|o| o == "auto" || o == "scroll");
+            if scrolls {
+                scroller = Some(ancestor);
+                break;
+            }
+            cur = ancestor.parent_element();
+        }
+        let page = scroller.is_none();
+        let Some(scroller) =
+            scroller.or_else(|| window.document().and_then(|d| d.scrolling_element()))
+        else {
+            return;
+        };
+        let rect = el.get_bounding_client_rect();
+        // The top of the scroller's visible area in client px: the page's is
+        // the viewport's top; an element's is its padding box's top.
+        let view_top = if page {
+            0.0
+        } else {
+            scroller.get_bounding_client_rect().top() + f64::from(scroller.client_top())
+        };
+        let visible = f64::from(scroller.client_height());
+        let (fraction, margin) = (f64::from(fraction), f64::from(margin));
+        let at = (fraction * visible)
+            .min(visible - margin - rect.height())
+            .max(margin);
+        let current = f64::from(scroller.scroll_top());
+        let max = f64::from(scroller.scroll_height() - scroller.client_height()).max(0.0);
+        let target = (current + (rect.top() - view_top) - at).clamp(0.0, max);
+        scroller.set_scroll_top(target.round() as i32);
+        if !page {
+            let opts = web_sys::ScrollIntoViewOptions::new();
+            opts.set_block(web_sys::ScrollLogicalPosition::Nearest);
+            opts.set_inline(web_sys::ScrollLogicalPosition::Nearest);
+            el.scroll_into_view_with_scroll_into_view_options(&opts);
+        }
+    }
+
     fn set_inner_html(&mut self, node: NodeId, html: &str) {
         if let Some(n) = self.nodes.get(&node.0)
             && let Ok(el) = n.clone().dyn_into::<web_sys::Element>()

@@ -370,14 +370,100 @@ where they are:
   moves still scroll: they are real selection changes;
 - focus on its own. A click that places the caret scrolls (it moved the
   selection); a click that focuses the editor without moving the caret — a task
-  checkbox, a right-click on an image — does not jump to where the caret was;
+  checkbox, a right-click on an image — does not jump to where the caret was, and
+  neither does [`focus()`](#focus-and-scrolling-from-code) when nothing is owed;
 - an editor that is not focused: its caret is not drawn, so a programmatic
   `set_selection` on it scrolls when it is next focused, not before.
 
 Not covered: the moving end of a text **range** (Shift+arrow) is not revealed, and
 moving the caret into a block of a virtualized editor that has never been laid out
 (Ctrl+End from the top of a very long document) does not scroll to it until the
-block is on screen (issue #845).
+block is on screen (issue #845). An app that wants either on screen asks for it with
+`scroll_into_view`, below.
+
+### Focus and scrolling from code
+
+Opening a note at a link — select the words the link quotes, bring them on screen,
+put the keyboard there — takes three calls, and no click:
+
+```rust
+handle.set_selection(Selection::text(from, to));
+handle.scroll_into_view(from, to);
+handle.focus();
+```
+
+**`scroll_into_view(from, to)`** scrolls so that the range is on screen: its start,
+and as much of the rest as fits, 16px inside the scroller's edge (where the
+document extends that far). `from == to` reveals a caret position. A range already
+in view moves nothing. It needs no focus and touches neither the selection nor
+focus, and it is the only way to reveal a **range**: `set_selection` brings a caret
+into view on its own, but never a range. The ends may be given in either order; a
+position between blocks reveals the nearest text.
+
+It uses the scroll the caret uses, on two hidden boxes the view places over the
+range's end and then its start, so the rules above apply: on **desktop** it happens
+after the next layout (the call wakes the runtime for one, from an effect or a timer
+as well as from an event handler) and moves the nearest scroll container; on the
+**web** it happens during the call and `scrollIntoView` moves every scrollable
+ancestor, the page included. A virtualized desktop editor lays out the blocks holding
+`from` and `to` for it. The request waits on the handle until there is geometry for
+its start (a block edited since the last layout has none on desktop); if the end has
+none by then, the start alone is revealed. A later call replaces it, local edits
+carry it along (text typed exactly at either edge stays outside the range), and
+`load_html` / `load_doc` drop it.
+
+A request that cannot be fulfilled does not wait for good. In an editor that is not
+rendered (`display: none`, an inactive tab) the boxes are laid out at zero size on
+both backends, so the request is used up at once and scrolls nothing; one whose start
+has no geometry at all for `REVEAL_PATIENCE` (8) overlay passes in a row is dropped.
+Either way nothing scrolls when the editor is shown later: ask again then.
+
+**`scroll_into_view_aligned(from, to, align)`** chooses where the range lands.
+`ScrollAlign::Nearest` is `scroll_into_view` itself. `ScrollAlign::Fraction(f)` puts
+the start's line `f` of the way down the scroll container's visible height — its
+padding box, inside the border, as a browser measures it (`0.0` the top edge, `1.0 / 3.0` a third down; clamped to `0.0..=1.0`), never nearer than
+16px to either edge, and it scrolls even when the range is already in view. The
+scroll is clamped to what the content allows, so a range near the top of the
+document stays near the top of the view and one near the end sits lower. A range
+taller than the space below `f` still puts its start at `f`. To open a note at a link
+with some context above the words:
+
+```rust
+handle.set_selection(Selection::text(from, to));
+handle.scroll_into_view_aligned(from, to, ScrollAlign::Fraction(1.0 / 3.0));
+handle.focus();
+```
+
+It waits, carries and drops exactly as `scroll_into_view` does, and scrolls the same
+containers on **desktop** (the nearest scroll container, vertically). On the
+**web** it sets the nearest scroll container's `scrollTop` (the page's, when no
+ancestor scrolls) and then brings the start into the view of the scrollers further
+out, the page included, the "nearest" way. One limit: in a virtualized desktop
+editor the blocks the scroll brings into the window were laid out at their
+estimated heights when the scroll was computed and settle to their measured ones
+after it, so the start can land a fraction of a line off `f`. Both are built on
+`NodeHandle::scroll_to_fraction(fraction, margin)`
+(`DomDocument::request_scroll_to_fraction`), which any element can use.
+
+**`focus()`** gives the editor the keyboard as a press in it would — the previous
+owner loses it the same way (an `<input>` commits its change, another editor hides
+its caret) — without moving the selection. It never asks for a scroll of its own,
+so giving the keyboard back after a dialog closes does not jump to a caret the user
+scrolled away from. It does **perform a caret scroll already owed**: a
+`set_selection` of a caret (or an edit through `update` that sets the selection) on
+an editor that is not focused asks for its caret to be shown, and only a focused
+editor draws a caret, so that scroll waits and happens when `focus()` lands. That is
+what makes `set_selection(Selection::cursor(pos)); focus()` show the caret. A
+*range* selection owes nothing (a range is never revealed on its own), which is why
+the deep-link example above asks with `scroll_into_view`. The caret or selection
+highlight is drawn where the selection already is. On **desktop** it posts the same
+focus request `NodeHandle::focus` posts (which now focuses an editor container too),
+and the runtime applies it through the focus arbiter after the current event or
+effect; on the **web** it focuses the editor's hidden capture textarea during the
+call (`preventScroll`), as a mousedown does.
+
+Both are **no-ops before the editor is mounted**, and nothing is remembered for the
+mount: call them after the `Editor {}` has rendered.
 
 ### Links: clicking and hovering
 

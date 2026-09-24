@@ -2026,6 +2026,10 @@ pub struct NodeTree {
     pub ifc_measure_cache: HashMap<RawNodeId, IfcRootMeasures>,
     /// Nodes that have requested scroll-into-view (deferred until after layout).
     pub scroll_into_view_requests: Vec<RawNodeId>,
+    /// Nodes that have requested a scroll to a fraction of their scroll
+    /// container's height, as `(node, fraction, margin)` (deferred until after
+    /// layout, applied after `scroll_into_view_requests`).
+    pub scroll_to_fraction_requests: Vec<(RawNodeId, f32, f32)>,
     /// Scroll offsets clamped by the layout engine, pending event dispatch.
     /// Layout must not mutate observable scroll state silently (#144), but it
     /// also can't fire handlers mid-resolve (the facade holds the document
@@ -2207,6 +2211,7 @@ impl NodeTree {
             styled_unrendered: Vec::new(),
             ifc_measure_cache: HashMap::new(),
             scroll_into_view_requests: Vec::new(),
+            scroll_to_fraction_requests: Vec::new(),
             pending_scroll_clamps: Vec::new(),
             text_scale: 1.0,
             taffy_attach_faults: 0,
