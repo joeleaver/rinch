@@ -719,7 +719,18 @@ fn every_inline_role_kind_still_flows_and_is_marked() {
 // proposes, and it would silently delete the *only* route that reaches either arm.
 // If you are that change: these arms need a new witness in the same commit, or an
 // explicit decision that they are dead (#615 is the history, and "no test covers it"
-// was already not good enough once). Deleting these fixtures as obsolete is the
+// was already not good enough once).
+//
+// **Half of #628 has landed: the scoped structural pass** (`rinch_dom::ifc_scope`).
+// A structural change now sets up only the formatting containers it reached, and a
+// seed on a node that is not connected to the document is dropped — so the pass a
+// *removal* asks for no longer reaches the removed subtree, and routes 1 and 3 below
+// lost their route. The **whole-document** pass still iterates the slab and still
+// reaches it, and it is still what the first layout, a theme restyle and any bare
+// `tree.ifc_dirty = true` run. So those two fixtures now force it after the
+// removal, and remain the witnesses; route 2 needs nothing, because a never-attached
+// subtree's first layout is a whole-document pass anyway. If the whole-document pass
+// ever stops walking detached subtrees too, this is the decision to make again. Deleting these fixtures as obsolete is the
 // `ANCHOR-MISSING` failure mode; they are the witnesses, not decoration. A
 // reachability skip also has to seed `tree.anonymous_block_boxes` explicitly — a box
 // is not in the element tree (#566), so a naive walk over `children` skips every one
@@ -860,6 +871,10 @@ fn a_removed_subtree_still_stops_the_mark_and_the_walk_at_a_block() {
     );
 
     doc.remove_child(body, container);
+    // The **whole-document** structural pass, which still walks detached
+    // subtrees; the scoped pass a removal now asks for does not (see the
+    // section comment above on #628).
+    doc.tree.ifc_dirty = true;
     // A changed viewport, or `resolve_layout` early-returns on `!layout_dirty`
     // and neither pass runs at all.
     doc.resolve_layout(VW - 7.0, VH);
@@ -957,6 +972,8 @@ fn a_detached_contents_wrapper_answers_transparent_inside_a_detached_inline() {
     );
 
     doc.remove_child(body, container);
+    // The whole-document pass, which still reaches a detached subtree (#628).
+    doc.tree.ifc_dirty = true;
     doc.resolve_layout(VW - 7.0, VH);
 
     // Preconditions: the detached route reopened, one level deeper than the two

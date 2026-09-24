@@ -14,6 +14,7 @@ pub mod hit_cache;
 pub mod html_parser;
 pub mod html_serializer;
 mod ifc;
+pub mod ifc_scope;
 pub mod image_cache;
 pub mod layout;
 mod layout_engine;

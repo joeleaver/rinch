@@ -710,12 +710,14 @@ pub struct Node {
     /// that contribute their children's boxes rather than one of their own
     /// (#513).
     ///
-    /// Total over the slab, and derived state: recomputed from scratch at the
-    /// top of every `ifc_dirty` pass by
-    /// `RinchDocument::recompute_contributes_in_flow_block`, exactly as
-    /// `ifc_root` is. Never invalidated per mutation site — creating or
-    /// destroying an in-flow block-level box takes a structural change or a
-    /// `display`/`position` change, and every one of those sets `ifc_dirty`.
+    /// Derived state, recomputed by
+    /// `RinchDocument::recompute_contributes_in_flow_block` at the top of every
+    /// structural pass, exactly as `ifc_root` is: over the whole slab on a
+    /// whole-document pass (`ifc_dirty`), over the regions it sets up on a
+    /// scoped one (`crate::ifc_scope`). Never invalidated per mutation site —
+    /// creating or destroying an in-flow block-level box takes a structural
+    /// change or a `display`/`position` change, and every one of those seeds a
+    /// structural pass reaching the node's region.
     ///
     /// The rule, in one place:
     ///
@@ -1733,10 +1735,42 @@ pub struct NodeTree {
     /// Used during bulk DOM operations (block re-render) to batch style resolution
     /// into a single pass instead of one per child.
     pub suppress_inline_restyle: bool,
-    /// True if the tree structure changed (node insert/remove) or display mode
-    /// changed since last IFC setup. When false, IFC rebuild is skipped and
-    /// Taffy's internal cache is preserved — only dirty nodes get re-measured.
+    /// A **whole-document** IFC structural pass is pending.
+    ///
+    /// Since the scoped pass (`crate::ifc_scope`) this is the fallback, not the
+    /// common route: the mutation verbs record *where* the tree changed in
+    /// [`Self::ifc_seeds`] and the next layout re-sets-up only the formatting
+    /// containers those seeds reach. Setting this flag instead asks for the old
+    /// behaviour — every splice, anonymous box, split, measure leaf and atomic
+    /// inline in the document rebuilt — and it is what every writer that does
+    /// not say where it changed the tree gets. So a direct `ifc_dirty = true`
+    /// (a test forcing a pass, or a site nobody converted) stays **correct**,
+    /// merely slow; say why through [`Self::request_full_ifc`] so the
+    /// `ifc_full_*` counters can attribute it.
     pub ifc_dirty: bool,
+    /// Why [`Self::ifc_dirty`] was set, for the `ifc_full_*` counters. `None`
+    /// with the flag set means somebody wrote the flag directly
+    /// (`ifc_full_unattributed`).
+    pub ifc_full_reason: Option<crate::ifc_scope::IfcFullReason>,
+    /// Where the tree changed since the last structural pass: the seeds of the
+    /// next **scoped** IFC setup pass (`crate::ifc_scope`). Ignored — and
+    /// cleared — when [`Self::ifc_dirty`] asks for a whole-document pass.
+    pub ifc_seeds: Vec<(RawNodeId, crate::ifc_scope::IfcSeed)>,
+    /// Every node the structural passes made an IFC root, as of the last pass
+    /// that reached it. A **superset**: readers filter it with the same
+    /// predicate `build_ifc_layouts` always used (a block container one of
+    /// whose IFC children names it), which is what makes it safe for a root to
+    /// stop being one between passes (a subtree moved out from under it clears
+    /// the marks). It exists so paint-layout building iterates roots instead of
+    /// scanning the slab for them (layout audit F12).
+    pub ifc_root_registry: BTreeSet<RawNodeId>,
+    /// Every atomic inline the structural passes placed in an IFC, as of the
+    /// last pass that reached it. A superset, filtered at use by
+    /// `inline_block_measure_roots`' own predicate, for the same reason as
+    /// [`Self::ifc_root_registry`]: the percentage re-measure that runs after
+    /// every compute and the whole-document inline-block pass iterate this
+    /// rather than the slab.
+    pub atomic_inline_registry: BTreeSet<RawNodeId>,
     /// Taffy layout tree.
     pub taffy: taffy::TaffyTree<NodeContext>,
     /// Reverse map from Taffy node ID to slab node ID.
@@ -1979,9 +2013,10 @@ pub struct NodeTree {
     ///   [`NodeTree::forget_ifc_measures`] — the cascade's per-node
     ///   `same_text_layout_inputs` comparison, `set_text_content`, and the
     ///   atomic-inline re-measures;
-    /// - a **structural pass** (`ifc_dirty`) recomputes every root's content
-    ///   signature and drops the roots whose signature moved
-    ///   (`RinchDocument::refresh_ifc_signatures`). It used to clear the whole
+    /// - a **structural pass** recomputes the content signature of every root
+    ///   it reached — every root on a whole-document pass (`ifc_dirty`), its
+    ///   own containers' roots on a scoped one — and drops the roots whose
+    ///   signature moved (`RinchDocument::refresh_ifc_signatures`). It used to clear the whole
     ///   map instead, which re-shaped every paragraph in the document to
     ///   measure one appended row.
     ///
@@ -2138,6 +2173,10 @@ impl NodeTree {
             layout_dirty: true,    // Initial render needs layout
             suppress_inline_restyle: false,
             ifc_dirty: true, // Initial render needs IFC setup
+            ifc_full_reason: Some(crate::ifc_scope::IfcFullReason::Initial),
+            ifc_seeds: Vec::new(),
+            ifc_root_registry: BTreeSet::new(),
+            atomic_inline_registry: BTreeSet::new(),
             taffy,
             taffy_map,
             viewport: crate::layout::Viewport::default(),

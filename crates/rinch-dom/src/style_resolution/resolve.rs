@@ -755,20 +755,31 @@ impl RinchDocument {
             .iter()
             .any(|&c| self.tree.nodes.get(c).is_some_and(|n| n.is_pseudo_element));
         if had_pseudo || has_pseudo {
+            // The generated children are new nodes (or gone): a structural
+            // change to this node's child list, which the structural pass has
+            // to be told about like any other — and a layout owed, which is
+            // the half nothing else supplies when the content went away. A
+            // regenerated node's first cascade seeds and dirties layout on its
+            // own (its Taffy style is new), so for a *replaced* pseudo-element
+            // this is redundant; for one **removed** with nothing in its place
+            // it is the only notice, and without it no layout ran at all: the
+            // freed node stayed a member of its anonymous box's run
+            // (`scoped_ifc_scenario_tests::probe_pseudo_content_removed_from_a_mixed_container`,
+            // which fails on both passes without these two lines).
+            self.tree
+                .seed_ifc(node_id, crate::ifc_scope::IfcSeed::Children);
+            self.tree.layout_dirty = true;
             if let Some(root) = self.tree.nodes[node_id].ifc_root {
                 self.invalidate_ifc_root(root);
             }
             self.invalidate_ifc_root(node_id);
         }
-        // Generated content that went away and did not come back is a
-        // structural change nothing else reports: a regenerated box is a new
-        // node whose first Taffy style sync sets both flags, but a removed one
-        // leaves no node behind to do it (an `attr()` whose attribute was
-        // removed, a class that took the `content` rule away).
-        if had_pseudo && !has_pseudo {
-            self.tree.layout_dirty = true;
-            self.tree.ifc_dirty = true;
-        }
+        // Generated content that went away and did not come back (an `attr()`
+        // whose attribute was removed, a class that took the `content` rule
+        // away) is covered by the block above: `had_pseudo && !has_pseudo` is
+        // one of its cases, and it seeds this node's region and owes a layout.
+        // #894 fixed the same case with a bare `ifc_dirty = true`, which is a
+        // whole-document structural pass per removal; the seed is exact.
 
         // A re-cascaded style is a paint change for this node's box: the
         // software renderer's dirty region must cover it.

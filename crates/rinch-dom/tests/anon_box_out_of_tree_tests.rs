@@ -848,11 +848,14 @@ fn moving_a_run_member_between_passes_is_legal_and_r_is_not_an_any_time_rule() {
         "moving a node between containers is ordinary, not corruption"
     );
     // R, asked at this moment, reports the stale run — which is why it is not
-    // asked at this moment.
+    // asked at this moment. Since the scoped structural pass the move takes the
+    // member out of its box's run at once (`clear_ifc_root_recursive`), so the
+    // box is left **memberless** rather than listing a member that is not its
+    // container's unit; either is R, and neither is an any-time fact.
     assert!(
         doc.run_bookkeeping_violations()
             .iter()
-            .any(|s| s.starts_with("R not a unit")),
+            .any(|s| s.starts_with("R not a unit") || s.starts_with("R memberless box")),
         "the mid-mutation window must be real, or this fixture pins nothing"
     );
 

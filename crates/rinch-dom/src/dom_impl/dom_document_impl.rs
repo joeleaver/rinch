@@ -11,6 +11,7 @@ use style::values::generics::position::GenericInset;
 use style::values::specified::{LengthPercentage, NoCalcLength};
 
 use crate::computed_style::{LengthPercentageAutoValue, PositionValue};
+use crate::ifc_scope::IfcSeed;
 use crate::node::{DirtyFlags, DisplayMode, Node, NodeContext, NodeKind, TextMeasure};
 
 use super::{RinchDocument, parse_inline_style};
@@ -118,6 +119,7 @@ impl DomDocument for RinchDocument {
         // must remove the node's *contribution*, not just its own id — a
         // spliced `display: contents` node's slots are its children's (#517).
         if let Some(old_parent) = self.tree.nodes[c].parent {
+            self.tree.seed_ifc(old_parent, IfcSeed::Children);
             let old_index = self.remove_from_children(old_parent, c);
             self.note_child_list_changed(old_parent, old_index);
             // Remove from old taffy parent
@@ -141,7 +143,10 @@ impl DomDocument for RinchDocument {
         // Invalidate parent's IFC (structure changed)
         self.invalidate_parent_ifc(p);
         self.tree.layout_dirty = true; // Structural change needs full layout
-        self.tree.ifc_dirty = true; // Tree structure changed
+        // Where the tree changed, for the scoped structural pass
+        // (`crate::ifc_scope`).
+        self.tree.seed_ifc(p, IfcSeed::Children);
+        self.tree.seed_ifc(c, IfcSeed::Subtree);
         self.push_dirty_flags(p, DirtyFlags::LAYOUT | DirtyFlags::CHILDREN);
 
         // Mark inserted subtree as paint-dirty so the dirty region includes
@@ -193,7 +198,9 @@ impl DomDocument for RinchDocument {
         // Invalidate parent's IFC
         self.invalidate_parent_ifc(p);
         self.tree.layout_dirty = true; // Structural change needs full layout
-        self.tree.ifc_dirty = true; // Tree structure changed
+        // Where the tree changed, for the scoped structural pass
+        // (`crate::ifc_scope`).
+        self.tree.seed_ifc(p, IfcSeed::Children);
         self.push_dirty_flags(p, DirtyFlags::LAYOUT | DirtyFlags::CHILDREN);
         self.note_select_content_changed(p);
     }
@@ -210,6 +217,7 @@ impl DomDocument for RinchDocument {
         // Remove from old parent if any — the node's contribution, not just
         // its own id (#517, see `taffy_detach_contribution`)
         if let Some(old_parent) = self.tree.nodes[c].parent {
+            self.tree.seed_ifc(old_parent, IfcSeed::Children);
             let old_index = self.remove_from_children(old_parent, c);
             self.note_child_list_changed(old_parent, old_index);
             if let Some(old_taffy_parent) = self.tree.nodes[old_parent].taffy_id {
@@ -243,7 +251,10 @@ impl DomDocument for RinchDocument {
         }
         self.invalidate_parent_ifc(p);
         self.tree.layout_dirty = true; // Structural change needs full layout
-        self.tree.ifc_dirty = true; // Tree structure changed
+        // Where the tree changed, for the scoped structural pass
+        // (`crate::ifc_scope`).
+        self.tree.seed_ifc(p, IfcSeed::Children);
+        self.tree.seed_ifc(c, IfcSeed::Subtree);
         self.push_dirty_flags(p, DirtyFlags::LAYOUT | DirtyFlags::CHILDREN);
 
         // Mark inserted subtree as paint-dirty so the dirty region includes
@@ -292,6 +303,7 @@ impl DomDocument for RinchDocument {
             // Remove new from its old parent if any — the node's
             // contribution, not just its own id (#517)
             if let Some(old_parent) = self.tree.nodes[new.0].parent {
+                self.tree.seed_ifc(old_parent, IfcSeed::Children);
                 let old_index = self.remove_from_children(old_parent, new.0);
                 self.note_child_list_changed(old_parent, old_index);
                 if let Some(old_taffy_parent) = self.tree.nodes[old_parent].taffy_id {
@@ -334,7 +346,8 @@ impl DomDocument for RinchDocument {
             self.detach_subtree_styles(old.0);
             self.invalidate_parent_ifc(parent_id);
             self.tree.layout_dirty = true; // Structural change needs full layout
-            self.tree.ifc_dirty = true; // Tree structure changed
+            self.tree.seed_ifc(parent_id, IfcSeed::Children);
+            self.tree.seed_ifc(new.0, IfcSeed::Subtree);
             self.push_dirty_flags(parent_id, DirtyFlags::LAYOUT | DirtyFlags::CHILDREN);
 
             self.note_child_inserted(parent_id, new.0, !keeps_nonempty);
@@ -404,7 +417,7 @@ impl DomDocument for RinchDocument {
             }
             self.invalidate_parent_ifc(parent_id);
             self.tree.layout_dirty = true; // Structural change needs full layout
-            self.tree.ifc_dirty = true; // Tree structure changed
+            self.tree.seed_ifc(parent_id, IfcSeed::Children);
             self.push_dirty_flags(parent_id, DirtyFlags::LAYOUT | DirtyFlags::CHILDREN);
             self.note_select_content_changed(parent_id);
         }
@@ -541,7 +554,8 @@ impl DomDocument for RinchDocument {
                 if let Some(parent_taffy) = self.tree.nodes[n].taffy_id {
                     self.taffy_add_child_checked(parent_taffy, taffy_id);
                 }
-                self.tree.ifc_dirty = true; // Structural change (children replaced)
+                // Structural change (children replaced).
+                self.tree.seed_ifc(n, IfcSeed::Children);
             }
         }
         // After the replacement, not before: whether `:empty` can have
@@ -809,6 +823,7 @@ impl DomDocument for RinchDocument {
         // Remove from old parent if any — the node's contribution, not just
         // its own id (#517, see `taffy_detach_contribution`)
         if let Some(old_parent) = self.tree.nodes[c].parent {
+            self.tree.seed_ifc(old_parent, IfcSeed::Children);
             let old_index = self.remove_from_children(old_parent, c);
             self.note_child_list_changed(old_parent, old_index);
             if let Some(old_taffy_parent) = self.tree.nodes[old_parent].taffy_id {
@@ -839,7 +854,10 @@ impl DomDocument for RinchDocument {
         }
         self.invalidate_parent_ifc(p);
         self.tree.layout_dirty = true; // Structural change needs full layout
-        self.tree.ifc_dirty = true; // Tree structure changed
+        // Where the tree changed, for the scoped structural pass
+        // (`crate::ifc_scope`).
+        self.tree.seed_ifc(p, IfcSeed::Children);
+        self.tree.seed_ifc(c, IfcSeed::Subtree);
         self.push_dirty_flags(p, DirtyFlags::LAYOUT | DirtyFlags::CHILDREN);
 
         self.note_child_inserted(p, c, true);
@@ -910,7 +928,11 @@ impl DomDocument for RinchDocument {
         // `resolve_layout`'s dirty gate closed and the old geometry — the
         // removed children's sizes included — stays on screen (#517).
         self.tree.layout_dirty = true;
-        self.tree.ifc_dirty = true;
+        // The children are freed, not detached: whatever IFC state they held
+        // (anonymous boxes, splits, measure leaves) is swept as orphaned by
+        // the scoped pass. The parsed children seed themselves as they are
+        // appended below.
+        self.tree.seed_ifc(node.0, IfcSeed::Children);
 
         // Parse HTML and create nodes
         if let Some(parsed_nodes) = parse_html_string(html) {

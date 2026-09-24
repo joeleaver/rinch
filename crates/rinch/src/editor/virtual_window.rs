@@ -86,10 +86,10 @@ impl CeVirtualWindow {
         if active {
             for &child_id in &children[mat_end..] {
                 doc.tree.nodes[child_id].estimated_height = Some(DEFAULT_ESTIMATED_HEIGHT);
+                seed_block(doc, child_id);
                 doc.tree.style_dirty_nodes.push(child_id);
             }
             doc.tree.layout_dirty = true;
-            doc.tree.ifc_dirty = true;
             doc.tree.styles_dirty = true;
         }
 
@@ -155,6 +155,7 @@ impl CeVirtualWindow {
                 }
                 let est_h = self.measured_heights[abs_i].unwrap_or(DEFAULT_ESTIMATED_HEIGHT);
                 doc.tree.nodes[child_id].estimated_height = Some(est_h);
+                seed_block(doc, child_id);
                 doc.tree.style_dirty_nodes.push(child_id);
             }
         }
@@ -165,6 +166,7 @@ impl CeVirtualWindow {
             if abs_i < old_start || abs_i >= old_end {
                 if doc.tree.nodes[child_id].estimated_height.is_some() {
                     doc.tree.nodes[child_id].estimated_height = None;
+                    seed_block(doc, child_id);
                     doc.tree.style_dirty_nodes.push(child_id);
                     doc.tree.dirty_ifc_text_roots.insert(child_id);
                 }
@@ -175,7 +177,6 @@ impl CeVirtualWindow {
         self.mat_end = new_end;
 
         doc.tree.layout_dirty = true;
-        doc.tree.ifc_dirty = true;
         doc.tree.styles_dirty = true;
 
         true
@@ -252,6 +253,7 @@ impl CeVirtualWindow {
                     && (est - DEFAULT_ESTIMATED_HEIGHT).abs() < 1.0
                 {
                     doc.tree.nodes[child_id].estimated_height = Some(avg);
+                    seed_block(doc, child_id);
                     doc.tree.style_dirty_nodes.push(child_id);
                 }
             }
@@ -275,10 +277,10 @@ impl CeVirtualWindow {
         }
 
         doc.tree.nodes[block_node_id].estimated_height = None;
+        seed_block(doc, block_node_id);
         doc.tree.style_dirty_nodes.push(block_node_id);
         doc.tree.dirty_ifc_text_roots.insert(block_node_id);
         doc.tree.layout_dirty = true;
-        doc.tree.ifc_dirty = true;
         doc.tree.styles_dirty = true;
 
         if idx < self.mat_start {
@@ -300,11 +302,11 @@ impl CeVirtualWindow {
                 for &child_id in &children {
                     if doc.tree.nodes[child_id].estimated_height.is_some() {
                         doc.tree.nodes[child_id].estimated_height = None;
+                        seed_block(doc, child_id);
                         doc.tree.style_dirty_nodes.push(child_id);
                     }
                 }
                 doc.tree.layout_dirty = true;
-                doc.tree.ifc_dirty = true;
                 doc.tree.styles_dirty = true;
             }
             self.active = false;
@@ -322,16 +324,17 @@ impl CeVirtualWindow {
             if i >= self.mat_start && i < self.mat_end {
                 if doc.tree.nodes[child_id].estimated_height.is_some() {
                     doc.tree.nodes[child_id].estimated_height = None;
+                    seed_block(doc, child_id);
                     doc.tree.style_dirty_nodes.push(child_id);
                 }
             } else if doc.tree.nodes[child_id].estimated_height.is_none() {
                 doc.tree.nodes[child_id].estimated_height = Some(DEFAULT_ESTIMATED_HEIGHT);
+                seed_block(doc, child_id);
                 doc.tree.style_dirty_nodes.push(child_id);
             }
         }
 
         doc.tree.layout_dirty = true;
-        doc.tree.ifc_dirty = true;
         doc.tree.styles_dirty = true;
     }
 
@@ -371,6 +374,18 @@ fn block_children_of(doc: &RinchDocument, ce_node_id: usize, filter_blocks: bool
                 .is_some_and(|n| n.attributes.contains_key("data-pm-type"))
         })
         .collect()
+}
+
+/// A block collapsed to, or materialized from, its estimated height changes
+/// its own IFC (the root measures to the estimate and paints nothing while
+/// collapsed; `estimated_height` is part of its content signature) and
+/// nothing structural anywhere else — so it seeds a **scoped** structural pass
+/// over itself (`rinch_dom::ifc_scope`) rather than asking for the
+/// whole-document one, which every scroll that moved the materialized window
+/// used to pay.
+fn seed_block(doc: &mut RinchDocument, block: usize) {
+    doc.tree
+        .seed_ifc(block, rinch_dom::ifc_scope::IfcSeed::Children);
 }
 
 #[cfg(test)]

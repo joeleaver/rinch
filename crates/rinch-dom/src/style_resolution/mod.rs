@@ -562,7 +562,8 @@ impl RinchDocument {
         // the updated computed styles (text brush is baked into Parley layout).
         // Also set layout_dirty so resolve_layout doesn't early-return before
         // reaching the ifc_dirty branch.
-        self.tree.ifc_dirty = true;
+        self.tree
+            .request_full_ifc(crate::ifc_scope::IfcFullReason::Theme);
         self.tree.layout_dirty = true;
     }
 
@@ -1299,7 +1300,8 @@ impl RinchDocument {
             // reads the same enum — and makes a mode added later trigger by
             // default rather than by remembering to widen a `matches!`.
             if old_display_mode != display_mode {
-                self.tree.ifc_dirty = true;
+                self.tree
+                    .seed_ifc(node_id, crate::ifc_scope::IfcSeed::Subtree);
                 self.tree.layout_dirty = true;
             }
 
@@ -1314,7 +1316,8 @@ impl RinchDocument {
             if (old_display == crate::computed_style::DisplayValue::Contents)
                 != (new_style.display == crate::computed_style::DisplayValue::Contents)
             {
-                self.tree.ifc_dirty = true;
+                self.tree
+                    .seed_ifc(node_id, crate::ifc_scope::IfcSeed::Subtree);
                 self.tree.layout_dirty = true;
             }
 
@@ -1410,7 +1413,8 @@ impl RinchDocument {
                     if old_taffy_style.display != taffy_style.display
                         || old_taffy_style.position != taffy_style.position
                     {
-                        self.tree.ifc_dirty = true;
+                        self.tree
+                            .seed_ifc(node_id, crate::ifc_scope::IfcSeed::Subtree);
                     }
                     let _ = self.tree.taffy.set_style(taffy_id, taffy_style);
                     self.tree.layout_dirty = true;
@@ -1423,7 +1427,8 @@ impl RinchDocument {
             } else {
                 let _ = self.tree.taffy.set_style(taffy_id, taffy_style);
                 self.tree.layout_dirty = true;
-                self.tree.ifc_dirty = true;
+                self.tree
+                    .seed_ifc(node_id, crate::ifc_scope::IfcSeed::Subtree);
                 taffy_style_changed_count.set(taffy_style_changed_count.get() + 1);
             }
         }

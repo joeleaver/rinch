@@ -1889,8 +1889,11 @@ value fails safe.
 **Layout invalidation: three paths, two flags.** `resolve_layout` early-returns
 when `tree.layout_dirty` is false (styles resolve, dirty Parley layouts rebuild,
 **no Taffy compute**), and runs the inline-formatting-context setup passes only
-when `tree.ifc_dirty` is true. Both gates are load-bearing for frame cost and
-both used to be closed on changes that move a box:
+when a structural change is pending — **scoped** to where it happened
+(`tree.ifc_seeds`), or over the whole document when `tree.ifc_dirty` asks for
+the fallback (see **The structural pass is scoped** below). Both gates are
+load-bearing for frame cost and both used to be closed on changes that move a
+box:
 
 - **A typography change is a layout change (#678).** `font-family`,
   `font-weight`, `font-style`, `line-height`, `letter-spacing`, `word-spacing`,
@@ -2052,8 +2055,9 @@ input a shaped layout is built from:
   the paint-only path. Regenerated `::before`/`::after`/list-marker content is
   the one restyle that invalidates regardless, because the nodes an inline
   layout names were freed and minted again.
-- **A structural pass (`ifc_dirty`) drops only the roots whose content moved**
-  (`refresh_ifc_signatures`, after `compute_inline_block_layouts`). It hashes
+- **A structural pass drops only the roots whose content moved**
+  (`refresh_ifc_signatures`, after the atomic inlines are sized; a scoped pass
+  signs only its own containers' roots). It hashes
   each root's members — id, parent, sibling index, text, tag, `display` mode,
   `position`, generated-ness, and an atomic inline's just-computed size — and a
   root whose signature is new or different loses its measures and paint layout
@@ -2081,7 +2085,9 @@ input a shaped layout is built from:
   left a `<button>`'s label in its old colour after a class change. A chip the
   structural pass finds **changed** is queued for `remeasure_dirty_atomic_inlines`
   at the end of that pass, because `compute_inline_block_layouts` sized it
-  earlier in the pass with no sign its content had moved.
+  earlier in the pass with no sign its content had moved — and so is every
+  atomic inline *containing* a root the pass found changed (a paragraph in an
+  `inline-block`, a flex item's IFC in an `inline-flex`), for the same reason.
 - **A node that stops being an IFC root loses its `text_layout`** in the same
   pass. Caret rects, layer bounds and the ancestor walk read that field as "is a
   root".
@@ -2090,14 +2096,71 @@ input a shaped layout is built from:
   before the width check whenever any root was dirty, so a flex item narrowed by
   a sibling's text edit kept its glyphs broken at the old width.
 
-Not done, and measured by `perf_counter_baselines`: a structural pass still
-runs over the whole document, re-splices every `display: contents` wrapper
-(which dirties each row, so Taffy still *asks* for every row's size — answered
-from the cache), and re-sizes every atomic inline with its own compute (F11). A
-colour-only restyle still drops the root's cached measures along with its
-glyphs. (`set_style` of an **inherited** property used to reach no
-descendant with a cached style; the cascade now re-cascades the children of any
-element whose inherited style moved — see **Style invalidation** below.)
+**The structural pass is scoped** (`crates/rinch-dom/src/ifc_scope.rs`, module
+doc). An append, removal, reorder, `if` toggle, component re-render or
+`display`/`position` flip no longer re-runs the IFC setup over the whole
+document. The mutation verbs record **seeds** — `NodeTree::seed_ifc(node,
+IfcSeed::Children | IfcSeed::Subtree)` — and the next layout re-sets-up only the
+**formatting containers** they reach, with their **regions**: a formatting
+container is any node that is not *transparent* (`display: contents`, or a
+non-atomic `display: inline` element — exactly what
+`recompute_contributes_in_flow_block`, `collect_run_units` and
+`mark_inline_descendants` walk *through*), and its region is everything reached
+from its children through transparent nodes, down to and including the **stop
+nodes** (the formatting containers directly beneath it). Every decision the
+passes make — splices, contributes/hoisting, anonymous boxes, splits, measure
+leaves, roots, marks, stale contexts, signatures — is taken by one container
+from its region alone, and a container's own role never depends on its content.
+So everything outside the scope keeps its state *and its Taffy cache*. The one
+fact that crosses a container boundary is an **atomic inline's size**: the pass
+queues every atomic inline at or above a scope container, and
+`remeasure_dirty_atomic_inlines` sizes them innermost-first, one at a time,
+re-queueing the atomic inlines around any IFC whose chip changed size. A
+`Subtree` seed sets up the whole subtree (a moved subtree has had its marks
+cleared by the verb that moved it). A seed on a node **not connected to the
+document** is dropped: detached subtrees are no longer set up at all, and
+attaching one re-seeds it (#628's optimisation, half-landed — the
+`ifc_classifier_tests` detached-route fixtures now force the whole-document pass,
+which still walks detached subtrees). Anonymous boxes, splits and measure leaves
+whose owner left the slab (`set_inner_html`, pseudo-element churn) are swept as
+orphans at a scoped pass's start. **`tree.ifc_dirty` is now "run the
+whole-document pass"** — the first layout (`ifc_full_initial`),
+`recompute_all_styles_full` (`ifc_full_theme`), or any direct write
+(`ifc_full_unattributed`) — so a site that still sets `ifc_dirty` directly is
+slow, never wrong; call `NodeTree::request_full_ifc(reason)` to say why. A site
+that changes structure and does **neither** is silently wrong: nothing sets the
+regions it touched up again (the pseudo-element regeneration in `resolve.rs`
+writes `children` directly and seeds its node itself — pinned by
+`scoped_ifc_scenario_tests::probe_pseudo_content_removed_from_a_mixed_container`).
+Every verb that moves or removes a subtree also takes each of its nodes out of
+the anonymous box whose run it was in (`clear_ifc_root_recursive`), because a
+scoped pass reaches the old container only while it is still in the document.
+The virtualized editor's block collapse/materialise (`virtual_window.rs`) seeds
+the toggled block instead of forcing a whole-document pass per scroll. Counters:
+`ifc_scoped_passes`, `ifc_scope_containers`, `ifc_scope_nodes`,
+`ifc_full_passes` and its reasons. The registries `ifc_root_registry` and
+`atomic_inline_registry` replace the slab scans `build_ifc_layouts`,
+`inline_block_measure_roots` and `resolve_percentage_inline_blocks` did every
+layout; each is a superset filtered at use by the predicate the scan applied.
+`copy_cached_text_layouts` walks the measure cache's nodes, not the slab. The
+measure function no longer bypasses the IFC measure cache for a dirty root: it
+drops that root's old sizes at the start of the compute and reuses what it
+shapes itself (one shape for a new row where there were four).
+`crates/rinch-dom/tests/scoped_ifc_oracle_tests.rs` is the oracle: every
+mutation shape in 17 contexts, plus a lockstep randomized differential, each
+comparing the scoped pass with the whole-document pass on the same history and
+both with a fresh layout; its module doc lists what it found.
+
+Still not done, and measured by `perf_counter_baselines`: appending a row still
+has Taffy *ask* every sibling row for its size once (a leaf's final-layout cache
+entry is keyed on the available space, which changes when the column grows —
+Taffy's, answered from rinch's measure cache); the per-pass walks
+`read_layout_results`, `clamp_scroll_offsets`, `resolve_layout_calcs` and
+`request_background_image_loads` are still O(document). A colour-only restyle
+still drops the root's cached measures along with its glyphs. (`set_style` of an
+**inherited** property used to reach no descendant with a cached style; the
+cascade now re-cascades the children of any element whose inherited style moved
+— see **Style invalidation** above.)
 `crates/rinch-dom/tests/incremental_text_layout_oracle_tests.rs` is the pin:
 each input above against a fresh layout of the final state, with the mutant
 that kills it named in the PR.

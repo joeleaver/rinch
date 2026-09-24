@@ -112,7 +112,9 @@ assert_eq!(frame.get(Counter::TaffyRootComputes), 0, "a colour change must not l
 | | `ifc_measure_invalidations` | Roots whose cached measures a restyle or content change dropped (O(1) each) |
 | | `ifc_signature_changes` | Roots a structural pass found new or changed, and so re-measures; every other root keeps its cached measures and paint layout |
 | Layout | `layout_resolves`, `layout_skipped_paint_only`, `layout_skipped_text_only` | `resolve_layout` calls, and how many of them took each early return |
-| | `ifc_setup_passes` | Whole-document IFC setup passes (the `ifc_dirty` branch) |
+| | `ifc_setup_passes` | IFC structural setup passes, scoped or whole-document |
+| | `ifc_scoped_passes`, `ifc_scope_containers`, `ifc_scope_nodes` | Passes scoped to the formatting containers a structural change reached, and how many containers and nodes they set up again. Everything else keeps its splices, boxes, marks and Taffy cache |
+| | `ifc_full_passes`, `ifc_full_{initial,theme,unattributed}` | Passes over the whole document, and why: the first layout, a whole-document restyle, or `NodeTree::ifc_dirty` written directly with no reason |
 | | `taffy_root_computes` | Root Taffy computes (the same count as `NodeTree::taffy_computes`) |
 | | `taffy_measure_calls` | Calls to the measure function during root computes |
 | | `inline_block_computes` | Standalone Taffy computes that size an atomic inline |
@@ -205,7 +207,9 @@ moved and why. `PERF_BASELINE_PRINT=1` prints each scenario's frame in the
 form the baseline is written in.
 
 The file's `#[ignore]`d `perf_scenario_timings` prints wall-clock times for the
-same scenarios. Run it in release:
+same scenarios, and `structural_timings_at_scale` times an append, a removal and
+a toggle on 500 and 2000 rows, with and without a `display: contents` wrapper
+per row. Run them in release:
 
 ```text
 cargo test --release -p rinch-dom --test perf_counter_baselines -- --ignored --nocapture
