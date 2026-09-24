@@ -158,7 +158,8 @@ rsx! { Editor { editor: editor.clone() } }
 | `insert_image(src, alt)` | Insert an image node (e.g. a `data:` URL), replacing the selection. |
 | `toggle_link(href) -> bool` | Add a `link` mark with `href` across the selection, or remove it if the selection is already linked. No-op (returns `false`) for a collapsed cursor. |
 | `active_link_href() -> Option<String>` | The `href` of the link the selection is on, for pre-filling an "edit link" dialog: for a range, the first link in it; for a caret, the link text typed there would carry. A link is not inclusive, so a caret inside it answers its `href` and a caret at its start or right after its last character answers `None` — except where it runs straight into a different link, where the caret is in the first. |
-| `replace_selection_with_html(&str)` | Replace the selection with parsed HTML (the rich-paste path). |
+| `paste(&PasteContent) -> bool` | Paste `text/plain` and/or `text/html` over the selection the way the user's paste does: your plugins first, then the default. See [Seeing and rewriting a paste](#seeing-and-rewriting-a-paste). |
+| `replace_selection_with_html(&str)` | Replace the selection with parsed HTML (the default rich paste; no plugin sees it). |
 | `selection_clipboard()` | The current selection serialized as `(html, plain_text)` for the clipboard. |
 | `anchor_selection() -> SelectionAnchor` | Capture the selection for a later insertion, kept pointing at the same content as the user keeps editing. See [Pasting is asynchronous](#pasting-is-asynchronous). |
 
@@ -207,6 +208,74 @@ caches ranges maps them through `tr.mapping()` in its `apply`.
 A right press over the editor places the caret before an app's
 `data-oncontextmenu` handler runs, on both backends, so a handler that draws its
 own suggestions menu reads the pressed word from `selection()`.
+
+### Seeing and rewriting a paste
+
+A plugin can claim a paste before the editor inserts it, through
+`Plugin::handle_paste`. It is handed the editor's state at the paste and the
+clipboard's `text/plain` and `text/html` flavours (`PasteContent`), and answers
+the transaction to apply instead, or `None` to leave the paste alone. This is
+the one place to do it on every platform: Ctrl+V, Ctrl+Shift+V and the context
+menu's Paste on desktop, and the browser's `paste` event on the web, all reach
+`EditorHandle::paste`, which asks the plugins first.
+
+A URL pasted over selected words that links them instead of replacing them:
+
+```rust
+use rinch_editor_core::{
+    AttrValue, Attrs, EditorState, Mark, PasteContent, Plugin, PluginKey, Transaction,
+};
+
+struct LinkOnPaste;
+
+impl Plugin for LinkOnPaste {
+    fn key(&self) -> PluginKey { PluginKey("my-app.link-on-paste") }
+
+    fn handle_paste(&self, state: &EditorState, paste: &PasteContent) -> Option<Transaction> {
+        let url = paste.text.as_deref()?.trim();
+        if !url.starts_with("https://") || url.contains(char::is_whitespace) {
+            return None; // not ours: the default paste
+        }
+        let (from, to) = (state.selection.from().0, state.selection.to().0);
+        if from == to {
+            return None; // nothing selected: paste the URL as text
+        }
+        let link = state.schema().mark_type("link")?.clone();
+        let mut tr = state.tr();
+        tr.add_mark(from, to, Mark::new(link, Attrs::from_iter([("href", AttrValue::from(url))])))
+            .ok()?;
+        Some(tr)
+    }
+}
+
+editor.add_plugin(Rc::new(LinkOnPaste));
+```
+
+- **Order.** Plugins are asked in the order they were installed (the built-ins
+  first, then `add_plugin`'s, which claim no paste); the first `Some` wins and
+  later plugins are not asked. With no claim the default runs: `text/html`
+  parsed into structure, else `text/plain` one paragraph per line.
+- **Flavours.** Either may be `None`. A browser's copy usually carries both, so
+  read the text when you want to know whether the paste *is* a URL: a copied
+  link's html is an `<a>` whose text may be its title. Ctrl+Shift+V offers the
+  text alone. An image-only paste (a screenshot) never reaches the hook. On
+  desktop the text beside the html comes from the same clipboard read
+  (`paste_rich_with_text_async`).
+- **Where.** `state.selection` is where the paste lands; on desktop that is
+  where Ctrl+V was pressed, mapped through anything typed while the clipboard
+  was read (see [Pasting is asynchronous](#pasting-is-asynchronous)).
+- **What a claim is.** One transaction: one undo step, `on_change` if the
+  document changed, the caret scrolled into view, and on a collaborating editor
+  recorded and broadcast like any local edit. `Some(state.tr())` swallows the
+  paste. A read-only editor refuses the claim as it refuses every edit (and on
+  desktop starts no clipboard read at all).
+- **Borrowing.** `handle_paste` runs while the editor is borrowed, like a
+  command, so it must not call the `EditorHandle`. Anything it needs (a note's
+  title for a link, say) has to be at hand already.
+
+`EditorHandle::paste(&PasteContent)` is the same entry point for an app of its
+own: a "Paste link" menu item that read the clipboard itself goes through the
+plugins exactly as Ctrl+V does.
 
 ### Dark mode
 

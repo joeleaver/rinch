@@ -3307,11 +3307,13 @@ impl RinchApp {
         // leaves this thread. It is dropped unrun if the editor's component
         // unmounts first (rinch-core's parked-callback lifetime rule), which also
         // releases the anchor.
-        let id = rinch_core::park_main_callback::<ClipboardResult<RichPaste>>(move |result| {
-            if let Ok(content) = result {
-                apply_paste_at_anchor(&handle, &anchor, content);
-            }
-        });
+        let id = rinch_core::park_main_callback::<ClipboardResult<(RichPaste, Option<String>)>>(
+            move |result| {
+                if let Ok((content, text)) = result {
+                    apply_paste_at_anchor(&handle, &anchor, content, text);
+                }
+            },
+        );
         let deliver = move |result| {
             rinch_core::run_on_main_thread(move || rinch_core::resume_main_callback(id, result));
         };
@@ -3319,9 +3321,14 @@ impl RinchApp {
             // Ctrl+Shift+V wants `text/plain` specifically — not "the text this
             // html reduces to" — so it reads that flavour and nothing else. One
             // read, so there is nothing for the combined probe to save here.
-            crate::clipboard::paste_text_async(move |result| deliver(result.map(RichPaste::Text)));
+            crate::clipboard::paste_text_async(move |result| {
+                deliver(result.map(|text| (RichPaste::Text(text), None)))
+            });
         } else {
-            crate::clipboard::paste_rich_async(deliver);
+            // The text beside an html answer rides the same worker job: the
+            // editor's paste hook (`Plugin::handle_paste`) sees both flavours,
+            // as it does on the web, where the `paste` event carries both.
+            crate::clipboard::paste_rich_with_text_async(deliver);
         }
         true
     }
@@ -3991,29 +3998,37 @@ impl RinchApp {
 }
 
 /// Insert clipboard `content` into `handle` at `anchor` — the completion half of
-/// the asynchronous paste, always on the main thread.
+/// the asynchronous paste, always on the main thread. `text` is the `text/plain`
+/// flavour offered beside an html `content` (`paste_rich_with_text`).
 ///
 /// The anchor, not the live selection, is the insertion point: see
 /// [`RinchApp::dispatch_editor_paste`]. An anchor that no longer resolves means the
 /// document the user aimed at was replaced while the read was in flight, and the
 /// paste is dropped rather than aimed at whatever now occupies those offsets.
+///
+/// Text and html go through `EditorHandle::paste`, the one paste entry point both
+/// platforms share, so the editor's plugins see the paste (`Plugin::handle_paste`)
+/// at the anchor before the default inserts it. A bitmap has no plugin hook and
+/// goes in as an image node.
 #[cfg(all(feature = "desktop", feature = "clipboard"))]
 fn apply_paste_at_anchor(
     handle: &crate::editor::EditorHandle,
     anchor: &crate::editor::SelectionAnchor,
     content: rinch_clipboard::RichPaste,
+    text: Option<String>,
 ) -> bool {
     use rinch_clipboard::RichPaste;
+    use rinch_editor_core::PasteContent;
 
     let Some(selection) = anchor.selection() else {
         return false;
     };
     handle.set_selection(selection);
     match content {
-        RichPaste::Html(html) => handle.replace_selection_with_html(&html),
+        RichPaste::Html(html) => handle.paste(&PasteContent::new(text, Some(html))),
         RichPaste::Image(img) => image_rgba_to_png_data_url(img.width, img.height, &img.bytes)
             .is_some_and(|url| handle.insert_image(&url, "")),
-        RichPaste::Text(text) => !text.is_empty() && handle.replace_selection_with_text(&text),
+        RichPaste::Text(text) => handle.paste(&PasteContent::text(text)),
     }
 }
 
@@ -4079,7 +4094,8 @@ mod async_paste_tests {
         assert!(apply_paste_at_anchor(
             &handle,
             &anchor,
-            RichPaste::Text("THERE".into())
+            RichPaste::Text("THERE".into()),
+            None
         ));
         assert_eq!(text_of(&handle), "helloTHERE world!");
     }
@@ -4098,7 +4114,8 @@ mod async_paste_tests {
         assert!(apply_paste_at_anchor(
             &handle,
             &anchor,
-            RichPaste::Text("X".into())
+            RichPaste::Text("X".into()),
+            None
         ));
         assert_eq!(text_of(&handle), "ABhelloX world");
     }
@@ -4123,7 +4140,7 @@ mod async_paste_tests {
                 let anchor = handle.anchor_selection();
                 handle.set_read_only(locked_meanwhile);
                 assert_eq!(
-                    apply_paste_at_anchor(&handle, &anchor, paste),
+                    apply_paste_at_anchor(&handle, &anchor, paste, None),
                     !locked_meanwhile
                 );
                 let expected = if locked_meanwhile {
@@ -4171,7 +4188,8 @@ mod async_paste_tests {
         assert!(apply_paste_at_anchor(
             &handle,
             &anchor,
-            RichPaste::Html("<strong>BOLD</strong>".into())
+            RichPaste::Html("<strong>BOLD</strong>".into()),
+            None
         ));
         assert_eq!(text_of(&handle), "aBOLDb");
         handle.set_selection(Selection::text(Pos(3), Pos(7)));
@@ -4192,7 +4210,7 @@ mod async_paste_tests {
         handle.load_html("<p>completely different</p>");
 
         assert!(
-            !apply_paste_at_anchor(&handle, &anchor, RichPaste::Text("X".into())),
+            !apply_paste_at_anchor(&handle, &anchor, RichPaste::Text("X".into()), None),
             "an anchor into a replaced document must not resolve"
         );
         assert_eq!(text_of(&handle), "completely different");
@@ -4208,7 +4226,8 @@ mod async_paste_tests {
         assert!(!apply_paste_at_anchor(
             &handle,
             &anchor,
-            RichPaste::Text(String::new())
+            RichPaste::Text(String::new()),
+            None
         ));
         assert_eq!(text_of(&handle), "ab");
     }
@@ -4226,7 +4245,8 @@ mod async_paste_tests {
         assert!(apply_paste_at_anchor(
             &handle,
             &anchor,
-            RichPaste::Image(img)
+            RichPaste::Image(img),
+            None
         ));
 
         let doc = handle.doc();
