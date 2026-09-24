@@ -183,6 +183,54 @@ fn a_claimed_ctrl_click_leaves_the_selection_and_arms_no_drag() {
     assert_ne!(c.handle.selection().head(), Pos(6), "control: it dragged");
 }
 
+/// The debug port's `click` with the primary modifier's name follows a link:
+/// the editor reads the click's modifiers from the app's held state, which
+/// only `ModifiersChanged` sets, so before `click` took `modifiers` a
+/// Ctrl/Cmd+click could not be driven over the port at all.
+#[cfg(feature = "debug")]
+#[test]
+fn a_debug_click_with_the_primary_modifier_is_a_primary_link_click() {
+    use rinch_debug::{DebugCommandKind, DebugResult};
+    let mut p = page();
+    let seen = record_clicks(&p.handle, true);
+    let (x, y) = over_char(&p, 5, 0.5);
+    let primary_name = if cfg!(target_os = "macos") {
+        "cmd"
+    } else {
+        "ctrl"
+    };
+    let mut actions = Vec::new();
+    let result = p.app.execute_debug_command(
+        DebugCommandKind::Click {
+            x,
+            y,
+            button: None,
+            modifiers: Some(vec![primary_name.to_string()]),
+        },
+        &mut actions,
+        1.0,
+        VP,
+    );
+    assert!(matches!(result, DebugResult::Json { .. }));
+    assert_eq!(*seen.borrow(), vec![("pimble:a/b".to_string(), 4, 8, true)]);
+    assert_eq!(p.app.modifiers, Modifiers::default(), "released afterwards");
+
+    // Control: the same click without the field is a plain one.
+    p.app.last_click_pos = (-1000.0, -1000.0);
+    p.app.execute_debug_command(
+        DebugCommandKind::Click {
+            x,
+            y,
+            button: None,
+            modifiers: None,
+        },
+        &mut actions,
+        1.0,
+        VP,
+    );
+    assert_eq!(seen.borrow()[1], ("pimble:a/b".to_string(), 4, 8, false));
+}
+
 /// The right half of a link's last letter is on the link, and the left half
 /// of the space after it is not — although the nearest caret boundary is the
 /// link's end in both cases. That boundary is where a caret-based lookup

@@ -1215,8 +1215,27 @@ impl RinchApp {
             }
             PlatformEvent::ModifiersChanged(mods) => {
                 self.modifiers = mods;
+                // A real modifier change supersedes what a modified debug
+                // `mouse_down` remembered, so a `mouse_up` that never came
+                // (the MCP client went away) cannot replay it later. Debug
+                // commands' own synthesized changes keep it
+                // (`debug_modifiers_changed`).
+                #[cfg(feature = "debug")]
+                {
+                    self.debug_modifiers_to_restore = None;
+                }
             }
             PlatformEvent::WindowFocus(focused) => {
+                // Modifiers a debug `mouse_down` is holding are released with
+                // the keyboard, as a physical key would be: a window that lost
+                // focus holds no key down, and the matching debug `mouse_up`
+                // may never come.
+                #[cfg(feature = "debug")]
+                if !focused {
+                    if let Some(m) = self.debug_modifiers_to_restore.take() {
+                        self.modifiers = m;
+                    }
+                }
                 // Notify-and-retain (issue #147, decision 1): the in-document
                 // claim survives an alt-tab — releasing it would fire
                 // `data-onchange` on every window switch, a straight #226

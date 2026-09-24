@@ -55,6 +55,12 @@ pub struct ClickParams {
     /// Mouse button: "left" (default), "right", or "middle"
     #[serde(default)]
     pub button: Option<String>,
+    /// Modifiers held for this click, e.g. ["ctrl"] (a Ctrl+click) or
+    /// ["shift"]. Same names as key_press: "ctrl"/"control", "shift",
+    /// "alt"/"option", "meta"/"cmd"/"super". Set before the press, restored
+    /// after the release. Omitted: whatever the app already holds.
+    #[serde(default)]
+    pub modifiers: Option<Vec<String>>,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -74,6 +80,11 @@ pub struct MouseDownParams {
     /// Mouse button: "left" (default), "right", or "middle"
     #[serde(default)]
     pub button: Option<String>,
+    /// Modifiers to hold from this press until the next mouse_up (which
+    /// restores the previous state), e.g. ["shift"] for a Shift-drag. Same
+    /// names as key_press. Omitted: whatever the app already holds.
+    #[serde(default)]
+    pub modifiers: Option<Vec<String>>,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -85,6 +96,11 @@ pub struct MouseUpParams {
     /// Mouse button: "left" (default), "right", or "middle"
     #[serde(default)]
     pub button: Option<String>,
+    /// Modifiers held for this release. Same names as key_press. Whether or
+    /// not given, a mouse_up after a mouse_down with modifiers restores the
+    /// state from before that press.
+    #[serde(default)]
+    pub modifiers: Option<Vec<String>>,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -158,6 +174,22 @@ pub struct PerfStatsParams {
     /// what happened in between.
     #[serde(default)]
     pub reset: bool,
+}
+
+/// The tool error for the first name in a `modifiers` array the runtime does
+/// not know, so an unknown name is rejected before anything reaches the app.
+/// The names are those of `rinch_debug::fold_modifier_names`, which the app
+/// applies.
+fn unknown_modifier_error(names: &[String]) -> Option<CallToolResult> {
+    let name = names.iter().find(|name| {
+        !matches!(
+            name.to_ascii_lowercase().as_str(),
+            "ctrl" | "control" | "shift" | "alt" | "option" | "meta" | "cmd" | "super"
+        )
+    })?;
+    Some(CallToolResult::error(vec![Content::text(format!(
+        "Unknown modifier name: {name:?} (expected ctrl/control, shift, alt/option, meta/cmd/super)"
+    ))]))
 }
 
 #[tool_router]
@@ -340,28 +372,36 @@ impl RinchMcpServer {
     }
 
     #[tool(
-        description = "Simulate a mouse click at the given screen coordinates. Use the `absolute.x`/`absolute.y` of a node from get_node/query_selector (its `layout` x/y are parent-relative, not screen coordinates)."
+        description = "Simulate a mouse click at the given screen coordinates. Use the `absolute.x`/`absolute.y` of a node from get_node/query_selector (its `layout` x/y are parent-relative, not screen coordinates). `modifiers` (e.g. [\"ctrl\"], [\"shift\"], [\"meta\"]) are held for the click and restored after it: a Ctrl/Cmd+click, Shift+click or Alt+click."
     )]
     async fn click(&self, params: Parameters<ClickParams>) -> Result<CallToolResult, McpError> {
+        if let Some(err) = unknown_modifier_error(params.0.modifiers.as_deref().unwrap_or(&[])) {
+            return Ok(err);
+        }
         self.forward_json_command(DebugCommandKind::Click {
             x: params.0.x as f32,
             y: params.0.y as f32,
             button: params.0.button,
+            modifiers: params.0.modifiers,
         })
         .await
     }
 
     #[tool(
-        description = "Simulate a right-click (context menu click) at the given coordinates. Equivalent to click with button='right'."
+        description = "Simulate a right-click (context menu click) at the given coordinates. Equivalent to click with button='right', and takes the same `modifiers`."
     )]
     async fn right_click(
         &self,
         params: Parameters<ClickParams>,
     ) -> Result<CallToolResult, McpError> {
+        if let Some(err) = unknown_modifier_error(params.0.modifiers.as_deref().unwrap_or(&[])) {
+            return Ok(err);
+        }
         self.forward_json_command(DebugCommandKind::Click {
             x: params.0.x as f32,
             y: params.0.y as f32,
             button: Some("right".to_string()),
+            modifiers: params.0.modifiers,
         })
         .await
     }
@@ -381,31 +421,39 @@ impl RinchMcpServer {
     }
 
     #[tool(
-        description = "Simulate a mouse button press (without release) at the given coordinates. Use with mouse_move and mouse_up for drag operations."
+        description = "Simulate a mouse button press (without release) at the given coordinates. Use with mouse_move and mouse_up for drag operations. `modifiers` stay held until the next mouse_up, which restores the previous state (a Shift- or Alt-drag)."
     )]
     async fn mouse_down(
         &self,
         params: Parameters<MouseDownParams>,
     ) -> Result<CallToolResult, McpError> {
+        if let Some(err) = unknown_modifier_error(params.0.modifiers.as_deref().unwrap_or(&[])) {
+            return Ok(err);
+        }
         self.forward_json_command(DebugCommandKind::MouseDown {
             x: params.0.x as f32,
             y: params.0.y as f32,
             button: params.0.button,
+            modifiers: params.0.modifiers,
         })
         .await
     }
 
     #[tool(
-        description = "Simulate a mouse button release at the given coordinates. Use after mouse_down to complete a click or drag."
+        description = "Simulate a mouse button release at the given coordinates. Use after mouse_down to complete a click or drag. Restores any modifiers the mouse_down set, after the release."
     )]
     async fn mouse_up(
         &self,
         params: Parameters<MouseUpParams>,
     ) -> Result<CallToolResult, McpError> {
+        if let Some(err) = unknown_modifier_error(params.0.modifiers.as_deref().unwrap_or(&[])) {
+            return Ok(err);
+        }
         self.forward_json_command(DebugCommandKind::MouseUp {
             x: params.0.x as f32,
             y: params.0.y as f32,
             button: params.0.button,
+            modifiers: params.0.modifiers,
         })
         .await
     }
@@ -445,17 +493,15 @@ impl RinchMcpServer {
         let mut shift = params.0.shift;
         let mut ctrl = params.0.ctrl;
         let mut alt = params.0.alt;
+        if let Some(err) = unknown_modifier_error(&params.0.modifiers) {
+            return Ok(err);
+        }
         for name in &params.0.modifiers {
             match name.to_ascii_lowercase().as_str() {
                 "ctrl" | "control" => ctrl = true,
                 "shift" => shift = true,
                 "alt" | "option" => alt = true,
-                "meta" | "cmd" | "super" => {}
-                _ => {
-                    return Ok(CallToolResult::error(vec![Content::text(format!(
-                        "Unknown modifier name: {name:?} (expected ctrl/control, shift, alt/option, meta/cmd/super)"
-                    ))]));
-                }
+                _ => {}
             }
         }
         self.forward_json_command(DebugCommandKind::KeyPress {
@@ -824,5 +870,53 @@ mod key_press_params_tests {
             serde_json::from_str(r#"{"key":"End","ctrl":true,"shift":true}"#).unwrap();
         assert!(p.ctrl && p.shift && !p.alt);
         assert!(p.modifiers.is_empty());
+    }
+}
+
+#[cfg(test)]
+mod pointer_modifiers_params_tests {
+    use super::{ClickParams, MouseDownParams, MouseUpParams, unknown_modifier_error};
+
+    #[test]
+    fn click_mouse_down_and_mouse_up_accept_a_modifiers_array() {
+        let json = r#"{"x":1,"y":2,"modifiers":["ctrl"]}"#;
+        let ctrl = Some(vec!["ctrl".to_string()]);
+        assert_eq!(
+            serde_json::from_str::<ClickParams>(json).unwrap().modifiers,
+            ctrl
+        );
+        assert_eq!(
+            serde_json::from_str::<MouseDownParams>(json)
+                .unwrap()
+                .modifiers,
+            ctrl
+        );
+        assert_eq!(
+            serde_json::from_str::<MouseUpParams>(json)
+                .unwrap()
+                .modifiers,
+            ctrl
+        );
+        let p: ClickParams = serde_json::from_str(r#"{"x":1,"y":2}"#).unwrap();
+        assert_eq!(p.modifiers, None);
+    }
+
+    #[test]
+    fn every_known_name_passes_and_an_unknown_one_is_an_error() {
+        let known: Vec<String> = [
+            "ctrl", "Control", "shift", "alt", "option", "meta", "CMD", "super",
+        ]
+        .iter()
+        .map(|n| n.to_string())
+        .collect();
+        assert!(unknown_modifier_error(&known).is_none());
+        let err = unknown_modifier_error(&["ctrl".into(), "hyper".into()])
+            .expect("an unknown name is an error");
+        assert_eq!(err.is_error, Some(true));
+        let text = format!("{:?}", err.content);
+        assert!(
+            text.contains("Unknown modifier name") && text.contains("hyper"),
+            "{text}"
+        );
     }
 }

@@ -8,6 +8,30 @@ fn parse_button(s: &Option<String>) -> MouseButton {
     }
 }
 
+/// The error a `modifiers` array with a name `fold_modifier_names` does not
+/// know answers with — the same sentence for `key_press` and the pointer
+/// commands.
+fn unknown_modifier(name: &str) -> DebugResult {
+    DebugResult::Error {
+        message: format!(
+            "Unknown modifier name: {name:?} (expected ctrl/control, shift, alt/option, meta/cmd/super)"
+        ),
+    }
+}
+
+/// A pointer command's `modifiers` array as the exact modifier state to hold:
+/// `Ok(None)` when the field was absent, the named modifiers (and no others)
+/// when present, an error naming the first unknown name.
+fn pointer_modifiers(names: &Option<Vec<String>>) -> Result<Option<Modifiers>, DebugResult> {
+    let Some(names) = names else {
+        return Ok(None);
+    };
+    let mut m = Modifiers::default();
+    rinch_debug::fold_modifier_names(names, &mut m.shift, &mut m.ctrl, &mut m.alt, &mut m.meta)
+        .map_err(|name| unknown_modifier(&name))?;
+    Ok(Some(m))
+}
+
 /// Map a printable character to a physical `KeyCode` for synthesizing keystrokes
 /// (the `text` field carries the actual character). Characters without a
 /// dedicated keycode map to `KeyCode::Other` — exactly how real hardware
@@ -108,6 +132,26 @@ impl RinchApp {
         self.debug_cmd_rx = Some(rx);
     }
 
+    /// A `ModifiersChanged` a debug command synthesizes. A *real* one clears
+    /// `debug_modifiers_to_restore` (it supersedes what a modified
+    /// `mouse_down` remembered); a synthesized one is part of the debug
+    /// sequence itself, so the remembered state is kept across it.
+    fn debug_modifiers_changed(
+        &mut self,
+        m: Modifiers,
+        window_size: (u32, u32),
+        scale_factor: f64,
+    ) -> Vec<AppAction> {
+        let remembered = self.debug_modifiers_to_restore;
+        let actions = self.handle_event(
+            PlatformEvent::ModifiersChanged(m),
+            window_size,
+            scale_factor,
+        );
+        self.debug_modifiers_to_restore = remembered;
+        actions
+    }
+
     pub(crate) fn execute_debug_command(
         &mut self,
         kind: DebugCommandKind,
@@ -183,13 +227,30 @@ impl RinchApp {
                     data: json!(rinch_dom::testing::get_text_content(&d.tree, id)),
                 }
             }
-            DebugCommandKind::Click { x, y, ref button } => {
+            DebugCommandKind::Click {
+                x,
+                y,
+                ref button,
+                ref modifiers,
+            } => {
                 // Route through the REAL input path (press + release) so MCP
                 // exercises exactly what a real mouse does — `handle_event` owns all
                 // the click logic (contextmenu, focus, editor, drag). Injecting via a
                 // parallel path here is what hid the dual-arm MouseDown bug.
+                //
+                // Requested modifiers arrive the way a keyboard delivers them:
+                // a `ModifiersChanged` before the press, and another after the
+                // release putting back what was held before.
+                let requested = match pointer_modifiers(modifiers) {
+                    Ok(m) => m,
+                    Err(e) => return e,
+                };
                 let mouse_button = parse_button(button);
                 self.cursor_pos = Some((x, y));
+                let before = self.modifiers;
+                if let Some(m) = requested {
+                    actions.extend(self.debug_modifiers_changed(m, window_size, scale_factor));
+                }
                 actions.extend(self.handle_event(
                     PlatformEvent::MouseDown {
                         x,
@@ -208,13 +269,41 @@ impl RinchApp {
                     window_size,
                     scale_factor,
                 ));
+                if requested.is_some() {
+                    actions.extend(self.debug_modifiers_changed(before, window_size, scale_factor));
+                }
                 actions.push(AppAction::RequestRedraw);
                 DebugResult::Json { data: json!(null) }
             }
-            DebugCommandKind::MouseDown { x, y, ref button } => {
+            DebugCommandKind::MouseDown {
+                x,
+                y,
+                ref button,
+                ref modifiers,
+            } => {
                 // Route through the real input path so MCP matches a real press.
+                //
+                // Requested modifiers stay held after the press (a Shift- or
+                // Alt-drag goes on through `mouse_move`s); the next `mouse_up`
+                // restores the state remembered here. A second modified press
+                // before that release keeps the first remembered state, so the
+                // release still returns to what was held before either.
+                let requested = match pointer_modifiers(modifiers) {
+                    Ok(m) => m,
+                    Err(e) => return e,
+                };
                 let mouse_button = parse_button(button);
                 self.cursor_pos = Some((x, y));
+                if let Some(m) = requested {
+                    // Read before the change, remembered after it: the change
+                    // itself clears the remembered state (a real modifier
+                    // change supersedes it — see `handle_event`), and the
+                    // helper keeps that clear from reaching a save made by an
+                    // earlier press.
+                    let prev = self.modifiers;
+                    actions.extend(self.debug_modifiers_changed(m, window_size, scale_factor));
+                    self.debug_modifiers_to_restore.get_or_insert(prev);
+                }
                 actions.extend(self.handle_event(
                     PlatformEvent::MouseDown {
                         x,
@@ -227,10 +316,30 @@ impl RinchApp {
                 actions.push(AppAction::RequestRedraw);
                 DebugResult::Json { data: json!(null) }
             }
-            DebugCommandKind::MouseUp { x, y, ref button } => {
+            DebugCommandKind::MouseUp {
+                x,
+                y,
+                ref button,
+                ref modifiers,
+            } => {
                 // Route through the real input path so MCP matches a real release.
+                //
+                // Its own `modifiers` are held for the release; afterwards the
+                // state from before this release (or, if a modified
+                // `mouse_down` came first, from before that press) comes back.
+                let requested = match pointer_modifiers(modifiers) {
+                    Ok(m) => m,
+                    Err(e) => return e,
+                };
                 let mouse_button = parse_button(button);
                 self.cursor_pos = Some((x, y));
+                let restore = self
+                    .debug_modifiers_to_restore
+                    .take()
+                    .or(requested.map(|_| self.modifiers));
+                if let Some(m) = requested {
+                    actions.extend(self.debug_modifiers_changed(m, window_size, scale_factor));
+                }
                 actions.extend(self.handle_event(
                     PlatformEvent::MouseUp {
                         x,
@@ -240,6 +349,9 @@ impl RinchApp {
                     window_size,
                     scale_factor,
                 ));
+                if let Some(m) = restore {
+                    actions.extend(self.debug_modifiers_changed(m, window_size, scale_factor));
+                }
                 actions.push(AppAction::RequestRedraw);
                 DebugResult::Json { data: json!(null) }
             }
@@ -403,11 +515,7 @@ impl RinchApp {
                 if let Err(name) = rinch_debug::fold_modifier_names(
                     &modifiers, &mut shift, &mut ctrl, &mut alt, &mut meta,
                 ) {
-                    return DebugResult::Error {
-                        message: format!(
-                            "Unknown modifier name: {name:?} (expected ctrl/control, shift, alt/option, meta/cmd/super)"
-                        ),
-                    };
+                    return unknown_modifier(&name);
                 }
                 // Unknown multi-char key names fail loud too — a silent no-text
                 // `Other` press would be indistinguishable from a dead key (#151).
@@ -720,7 +828,7 @@ mod tests {
     //! nothing whenever `debug` is off.
 
     use super::*;
-    use std::cell::Cell;
+    use std::cell::{Cell, RefCell};
 
     /// Physical == logical; every other test in this crate mounts at 800x600.
     const VIEWPORT: (u32, u32) = (800, 600);
@@ -935,5 +1043,480 @@ mod tests {
         };
         assert_eq!(data["frames"], 0, "reset zeroed the frame count: {data}");
         assert_eq!(data["total"]["elements_cascaded"], 0);
+    }
+
+    // ── Modified clicks: `click` / `mouse_down` / `mouse_up` `modifiers` ──
+
+    /// `(shift, ctrl, alt, meta)`, as a handler read it from its
+    /// `ClickContext`, or as `RinchApp::modifiers` holds it.
+    type Mods = (bool, bool, bool, bool);
+
+    /// What each handler saw: `("down" | "up" | "click", modifiers)`.
+    type Seen = Rc<RefCell<Vec<(&'static str, Mods)>>>;
+
+    fn mods(m: Modifiers) -> Mods {
+        (m.shift, m.ctrl, m.alt, m.meta)
+    }
+
+    const NONE: Mods = (false, false, false, false);
+    const SHIFT: Mods = (true, false, false, false);
+    const CTRL: Mods = (false, true, false, false);
+    const ALT: Mods = (false, false, true, false);
+
+    /// A 200x100 box at the origin with a click handler (`data-rid`) and
+    /// `data-onmousedown`/`data-onmouseup` handlers, each recording the
+    /// modifiers its `ClickContext` carries.
+    fn app_with_button(seen: Seen) -> RinchApp {
+        let mut app = RinchApp::new(move |scope: &mut RenderScope| {
+            let root = scope.create_element("div");
+            let button = scope.create_element("div");
+            button.set_attribute("style", "width: 200px; height: 100px");
+            for (attr, name) in [
+                ("data-rid", "click"),
+                ("data-onmousedown", "down"),
+                ("data-onmouseup", "up"),
+            ] {
+                let seen = seen.clone();
+                let id = scope.register_handler(move || {
+                    let m = events::get_click_context().modifiers;
+                    seen.borrow_mut()
+                        .push((name, (m.shift, m.ctrl, m.alt, m.meta)));
+                });
+                button.set_attribute(attr, &id.0.to_string());
+            }
+            root.append_child(&button);
+            root
+        });
+        app.mount_component(800.0, 600.0);
+        app.resolve_and_repaint(800.0, 600.0);
+        app
+    }
+
+    fn run(app: &mut RinchApp, kind: DebugCommandKind) -> DebugResult {
+        let mut actions = Vec::new();
+        app.execute_debug_command(kind, &mut actions, 1.0, VIEWPORT)
+    }
+
+    fn names(names: &[&str]) -> Option<Vec<String>> {
+        Some(names.iter().map(|n| n.to_string()).collect())
+    }
+
+    fn click(modifiers: Option<Vec<String>>) -> DebugCommandKind {
+        DebugCommandKind::Click {
+            x: 50.0,
+            y: 50.0,
+            button: None,
+            modifiers,
+        }
+    }
+
+    fn hold(app: &mut RinchApp, m: Modifiers) {
+        app.handle_event(PlatformEvent::ModifiersChanged(m), VIEWPORT, 1.0);
+    }
+
+    /// The feature: a click with `["ctrl"]` reaches every handler with Ctrl
+    /// held, and afterwards the app holds no modifier again.
+    #[test]
+    fn a_ctrl_click_reaches_the_app_with_ctrl_held_and_then_releases_it() {
+        let seen: Seen = Rc::default();
+        let mut app = app_with_button(seen.clone());
+        assert!(matches!(
+            run(&mut app, click(names(&["ctrl"]))),
+            DebugResult::Json { .. }
+        ));
+        assert_eq!(
+            *seen.borrow(),
+            vec![("down", CTRL), ("click", CTRL), ("up", CTRL)]
+        );
+        assert_eq!(mods(app.modifiers), NONE, "released after the click");
+    }
+
+    /// The requested set is exact for the click (a held Shift is not added
+    /// to `["ctrl"]`), and what was held before comes back afterwards.
+    #[test]
+    fn a_modified_click_restores_the_state_held_before_it() {
+        let seen: Seen = Rc::default();
+        let mut app = app_with_button(seen.clone());
+        hold(
+            &mut app,
+            Modifiers {
+                shift: true,
+                ..Default::default()
+            },
+        );
+        run(&mut app, click(names(&["Control"])));
+        assert_eq!(
+            *seen.borrow(),
+            vec![("down", CTRL), ("click", CTRL), ("up", CTRL)]
+        );
+        assert_eq!(mods(app.modifiers), SHIFT, "the held Shift is back");
+    }
+
+    /// Every alias `key_press` takes, folded the same way.
+    #[test]
+    fn the_modifier_names_are_key_press_names() {
+        let seen: Seen = Rc::default();
+        let mut app = app_with_button(seen.clone());
+        run(&mut app, click(names(&["shift", "option", "cmd"])));
+        assert_eq!(seen.borrow()[1], ("click", (true, false, true, true)));
+        seen.borrow_mut().clear();
+        run(&mut app, click(names(&["SUPER", "alt", "meta"])));
+        assert_eq!(seen.borrow()[1], ("click", (false, false, true, true)));
+    }
+
+    /// An unknown name fails loud, with `key_press`'s sentence, before any
+    /// input reaches the app — on all three commands.
+    #[test]
+    fn an_unknown_modifier_name_is_rejected_and_nothing_is_pressed() {
+        let seen: Seen = Rc::default();
+        let mut app = app_with_button(seen.clone());
+        let commands = [
+            click(names(&["ctrl", "hyper"])),
+            DebugCommandKind::MouseDown {
+                x: 50.0,
+                y: 50.0,
+                button: None,
+                modifiers: names(&["hyper"]),
+            },
+            DebugCommandKind::MouseUp {
+                x: 50.0,
+                y: 50.0,
+                button: None,
+                modifiers: names(&["hyper"]),
+            },
+        ];
+        for command in commands {
+            let DebugResult::Error { message } = run(&mut app, command) else {
+                panic!("an unknown modifier name is an error");
+            };
+            assert_eq!(
+                message,
+                "Unknown modifier name: \"hyper\" (expected ctrl/control, shift, alt/option, meta/cmd/super)"
+            );
+        }
+        assert!(seen.borrow().is_empty(), "nothing was pressed or released");
+        assert_eq!(mods(app.modifiers), NONE);
+        assert_eq!(app.debug_modifiers_to_restore, None);
+    }
+
+    /// Without the field, a click is what it always was: it sees the
+    /// modifiers the app holds and leaves them held.
+    #[test]
+    fn without_modifiers_a_click_sees_and_keeps_the_held_state() {
+        let seen: Seen = Rc::default();
+        let mut app = app_with_button(seen.clone());
+        run(&mut app, click(None));
+        assert_eq!(
+            *seen.borrow(),
+            vec![("down", NONE), ("click", NONE), ("up", NONE)]
+        );
+        seen.borrow_mut().clear();
+        hold(
+            &mut app,
+            Modifiers {
+                shift: true,
+                ..Default::default()
+            },
+        );
+        run(&mut app, click(None));
+        assert_eq!(
+            *seen.borrow(),
+            vec![("down", SHIFT), ("click", SHIFT), ("up", SHIFT)]
+        );
+        assert_eq!(mods(app.modifiers), SHIFT, "still held: nothing restored");
+    }
+
+    /// An empty array is not an absent field: it asks for no modifier, and
+    /// what was held comes back afterwards.
+    #[test]
+    fn an_empty_array_clicks_with_no_modifier() {
+        let seen: Seen = Rc::default();
+        let mut app = app_with_button(seen.clone());
+        hold(
+            &mut app,
+            Modifiers {
+                shift: true,
+                ..Default::default()
+            },
+        );
+        run(&mut app, click(names(&[])));
+        assert_eq!(seen.borrow()[1], ("click", NONE));
+        assert_eq!(mods(app.modifiers), SHIFT);
+    }
+
+    /// Separate press and release: the press sets the modifiers and they stay
+    /// held (through a move) for a release that names none; that release
+    /// restores the state from before the press.
+    #[test]
+    fn mouse_down_holds_its_modifiers_until_mouse_up_restores_them() {
+        let seen: Seen = Rc::default();
+        let mut app = app_with_button(seen.clone());
+        run(
+            &mut app,
+            DebugCommandKind::MouseDown {
+                x: 50.0,
+                y: 50.0,
+                button: None,
+                modifiers: names(&["shift"]),
+            },
+        );
+        assert_eq!(mods(app.modifiers), SHIFT, "held after the press");
+        run(&mut app, DebugCommandKind::MouseMove { x: 60.0, y: 50.0 });
+        assert_eq!(mods(app.modifiers), SHIFT, "held through a move");
+        run(
+            &mut app,
+            DebugCommandKind::MouseUp {
+                x: 60.0,
+                y: 50.0,
+                button: None,
+                modifiers: None,
+            },
+        );
+        assert_eq!(
+            *seen.borrow(),
+            vec![("down", SHIFT), ("click", SHIFT), ("up", SHIFT)]
+        );
+        assert_eq!(mods(app.modifiers), NONE, "the release restored them");
+        assert_eq!(app.debug_modifiers_to_restore, None);
+    }
+
+    /// A release that names its own modifiers holds them for the release, and
+    /// still returns to the state from before the modified press.
+    #[test]
+    fn mouse_up_with_its_own_modifiers_returns_to_the_state_before_the_press() {
+        let seen: Seen = Rc::default();
+        let mut app = app_with_button(seen.clone());
+        hold(
+            &mut app,
+            Modifiers {
+                ctrl: true,
+                ..Default::default()
+            },
+        );
+        run(
+            &mut app,
+            DebugCommandKind::MouseDown {
+                x: 50.0,
+                y: 50.0,
+                button: None,
+                modifiers: names(&["shift"]),
+            },
+        );
+        run(
+            &mut app,
+            DebugCommandKind::MouseUp {
+                x: 50.0,
+                y: 50.0,
+                button: None,
+                modifiers: names(&["alt"]),
+            },
+        );
+        assert_eq!(
+            *seen.borrow(),
+            vec![("down", SHIFT), ("click", SHIFT), ("up", ALT)]
+        );
+        assert_eq!(mods(app.modifiers), CTRL, "the state before the press");
+
+        // A lone modified release restores its own prior state.
+        seen.borrow_mut().clear();
+        run(
+            &mut app,
+            DebugCommandKind::MouseUp {
+                x: 50.0,
+                y: 50.0,
+                button: None,
+                modifiers: names(&["alt"]),
+            },
+        );
+        assert_eq!(seen.borrow()[0], ("up", ALT));
+        assert_eq!(mods(app.modifiers), CTRL);
+    }
+
+    /// Two modified presses before one release: the release goes back to
+    /// what was held before the first, not to the first press's modifiers.
+    #[test]
+    fn a_second_modified_press_keeps_the_first_remembered_state() {
+        let seen: Seen = Rc::default();
+        let mut app = app_with_button(seen.clone());
+        for m in [&["shift"], &["alt"]] {
+            run(
+                &mut app,
+                DebugCommandKind::MouseDown {
+                    x: 50.0,
+                    y: 50.0,
+                    button: None,
+                    modifiers: names(m),
+                },
+            );
+        }
+        assert_eq!(mods(app.modifiers), ALT);
+        run(
+            &mut app,
+            DebugCommandKind::MouseUp {
+                x: 50.0,
+                y: 50.0,
+                button: None,
+                modifiers: None,
+            },
+        );
+        assert_eq!(mods(app.modifiers), NONE);
+    }
+
+    /// Unmodified press and release are what they always were: nothing is
+    /// remembered, nothing restored.
+    #[test]
+    fn unmodified_mouse_down_and_up_leave_the_held_state_alone() {
+        let seen: Seen = Rc::default();
+        let mut app = app_with_button(seen.clone());
+        hold(
+            &mut app,
+            Modifiers {
+                alt: true,
+                ..Default::default()
+            },
+        );
+        for kind in [
+            DebugCommandKind::MouseDown {
+                x: 50.0,
+                y: 50.0,
+                button: None,
+                modifiers: None,
+            },
+            DebugCommandKind::MouseUp {
+                x: 50.0,
+                y: 50.0,
+                button: None,
+                modifiers: None,
+            },
+        ] {
+            run(&mut app, kind);
+            assert_eq!(app.debug_modifiers_to_restore, None);
+            assert_eq!(mods(app.modifiers), ALT);
+        }
+        assert_eq!(
+            *seen.borrow(),
+            vec![("down", ALT), ("click", ALT), ("up", ALT)]
+        );
+    }
+
+    fn press_ctrl(app: &mut RinchApp) {
+        run(
+            app,
+            DebugCommandKind::MouseDown {
+                x: 50.0,
+                y: 50.0,
+                button: None,
+                modifiers: names(&["ctrl"]),
+            },
+        );
+        assert_eq!(mods(app.modifiers), CTRL);
+    }
+
+    /// A modified `mouse_down` whose `mouse_up` never comes (the client went
+    /// away): a real modifier change supersedes it, so a real click is not
+    /// modified, and a later debug `mouse_up` does not resurrect the ctrl
+    /// the press remembered.
+    #[test]
+    fn a_real_modifier_change_supersedes_a_stranded_modified_press() {
+        let seen: Seen = Rc::default();
+        let mut app = app_with_button(seen.clone());
+        press_ctrl(&mut app);
+        // The release is lost; the user then presses and releases a real key.
+        app.handle_event(
+            PlatformEvent::MouseUp {
+                x: 50.0,
+                y: 50.0,
+                button: MouseButton::Left,
+            },
+            VIEWPORT,
+            1.0,
+        );
+        hold(&mut app, Modifiers::default());
+        assert_eq!(app.debug_modifiers_to_restore, None);
+        seen.borrow_mut().clear();
+        for event in [
+            PlatformEvent::MouseDown {
+                x: 50.0,
+                y: 50.0,
+                button: MouseButton::Left,
+            },
+            PlatformEvent::MouseUp {
+                x: 50.0,
+                y: 50.0,
+                button: MouseButton::Left,
+            },
+        ] {
+            app.handle_event(event, VIEWPORT, 1.0);
+        }
+        assert_eq!(
+            *seen.borrow(),
+            vec![("down", NONE), ("click", NONE), ("up", NONE)]
+        );
+
+        // Hold alt for real; a later unmodified debug release keeps it.
+        hold(
+            &mut app,
+            Modifiers {
+                alt: true,
+                ..Default::default()
+            },
+        );
+        run(
+            &mut app,
+            DebugCommandKind::MouseUp {
+                x: 50.0,
+                y: 50.0,
+                button: None,
+                modifiers: None,
+            },
+        );
+        assert_eq!(mods(app.modifiers), ALT, "ctrl is not resurrected");
+    }
+
+    /// A modified click between a modified press and its release is part of
+    /// the debug sequence, not a real change: the release still restores.
+    #[test]
+    fn a_modified_click_inside_a_held_press_keeps_the_remembered_state() {
+        let seen: Seen = Rc::default();
+        let mut app = app_with_button(seen.clone());
+        press_ctrl(&mut app);
+        run(&mut app, click(names(&["shift"])));
+        assert_eq!(
+            mods(app.modifiers),
+            CTRL,
+            "the click put back the press's ctrl"
+        );
+        run(
+            &mut app,
+            DebugCommandKind::MouseUp {
+                x: 50.0,
+                y: 50.0,
+                button: None,
+                modifiers: None,
+            },
+        );
+        assert_eq!(mods(app.modifiers), NONE);
+    }
+
+    /// Losing the window's keyboard releases what a debug press is holding.
+    #[test]
+    fn window_blur_releases_a_debug_press_s_modifiers() {
+        let seen: Seen = Rc::default();
+        let mut app = app_with_button(seen.clone());
+        hold(
+            &mut app,
+            Modifiers {
+                alt: true,
+                ..Default::default()
+            },
+        );
+        press_ctrl(&mut app);
+        app.handle_event(PlatformEvent::WindowFocus(false), VIEWPORT, 1.0);
+        assert_eq!(
+            mods(app.modifiers),
+            ALT,
+            "back to the state before the press"
+        );
+        assert_eq!(app.debug_modifiers_to_restore, None);
     }
 }
