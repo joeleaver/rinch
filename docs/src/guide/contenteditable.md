@@ -466,6 +466,105 @@ claim, the table above decides.
 > `click.link.href` yourself (for example on `click.primary`, the Ctrl/Cmd+click
 > convention). Desktop never navigates: there is no browser to follow the link.
 
+### Autocomplete popups: keys, selection and caret geometry
+
+Four handle methods are what an app needs to run a popup off the editor, like a
+`[[` link picker or an `@` mention list. They are the same on desktop and on the
+web.
+
+| Method | What it does |
+|--------|--------------|
+| `on_key(\|key: &EditorKey\| -> bool)` | Offered every key press **before** the editor moves the caret, runs a binding or types. `true` consumes it: the editor does nothing (on the web the `keydown` is `preventDefault`ed and stopped). `false` leaves it to the editor. |
+| `on_selection_change(\|sel: &Selection\|)` | Called after every change that leaves the selection different: typing, deleting, clicks, arrows, commands, app transactions, a load that resets it, a peer's edit that maps it. Not called when the selection is unchanged. |
+| `on_caret_moved(\|\|)` | Called once the runtime has placed the focused editor's caret somewhere new, **after layout**. The moment to position the popup. |
+| `caret_rect(pos) -> Option<ElementBounds>` | Where a caret at `pos` is on screen (zero width), whether or not the caret is there: logical window pixels on desktop, client pixels on the web. The frame of a `position: fixed` popup. |
+
+`EditorKey` speaks the browser's `KeyboardEvent`: `key` is `"ArrowDown"`,
+`"Enter"`, `"Escape"`, `"Tab"` for named keys and the typed text for printable
+ones (`"["`, `"A"` with Shift, `" "` for the space bar); `primary` is Cmd on macOS
+and Ctrl elsewhere, beside `ctrl`, `meta`, `shift`, `alt` and `repeat`.
+
+```rust
+use rinch_editor_core::Pos;
+
+let picker: Signal<Option<Pos>> = Signal::new(None);  // where `[[` began
+let popup_at: Signal<(f32, f32)> = Signal::new((0.0, 0.0));
+
+// Open and close from the text before the caret.
+editor.on_selection_change({
+    let editor = editor.clone();
+    move |sel| picker.set(link_trigger_before(&editor.doc(), sel.head()))
+});
+// Position once the text is laid out.
+editor.on_caret_moved({
+    let editor = editor.clone();
+    move || {
+        if let Some(anchor) = picker.get()
+            && let Some(r) = editor.caret_rect(anchor)
+        {
+            popup_at.set((r.x, r.y + r.height));
+        }
+    }
+});
+// Drive the list while it is open; every other key stays the editor's.
+editor.on_key(move |key| {
+    if picker.get().is_none() {
+        return false;
+    }
+    match key.key {
+        "ArrowDown" => list.next(),
+        "ArrowUp" => list.previous(),
+        "Enter" | "Tab" => list.accept(),   // e.g. replace `[[query` with a link via `update`
+        "Escape" => picker.set(None),
+        _ => return false,                  // typing narrows the list
+    }
+    true
+});
+```
+
+Every callback runs with no internal borrow held, so each may call back into the
+handle: read the document, run `update(..)` or `toggle_link(..)`, move the
+selection. A selection move made from `on_selection_change` calls it again, from
+inside itself. Each is one callback per handle (a second registration replaces the
+first), like `on_change`, and costs nothing while none is registered.
+
+**Why `on_caret_moved` and not `on_selection_change` for geometry.** On the web the
+browser lays out on demand, so `caret_rect` is always current. The desktop runtime
+lays out once per input event, after the editor has handled it, so from
+`on_selection_change` or `on_key` a position in the block just edited answers
+`None` (it has no layout yet). `on_caret_moved` comes from the caret pass after the
+layout. The desktop may run a caret pass before an event's layout as well, so a
+call can come with `None` for the edited block; the one after the layout follows
+in the same event. It is not called for a scroll: the caret moves with the editor
+then, and a `position: fixed` popup does not.
+
+**What `on_key` is not offered.** A key while an IME composition is in progress (the
+input method owns it; the composed text arrives as a commit, which is typing); on
+the web, a soft keyboard's input, which arrives as `beforeinput` rather than keys
+(`"Unidentified"` and `"Process"` keys are not offered); key releases. A modifier
+pressed alone is offered (`"Shift"`, `"Control"`); ignore it.
+
+**With an input method on** (on Linux, IBus or Wayland `text-input`, which the editor
+switches on while it has focus), plain printable characters can arrive as input-method
+*commits* rather than as keys, so `on_key` may never see the `[` of a `[[` trigger.
+Named keys (arrows, Enter, Tab, Escape) still arrive as keys. Detect a typed trigger
+from `on_selection_change` and the document around the caret, which sees the result
+however the text came in.
+
+**What runs before `on_key`.** Only a menu shortcut (a chord registered by an app menu
+or the DOM menu bar). `on_key` comes **before** the document-wide
+`set_keyboard_interceptor` and before the dismiss stack — `Modal`, `Drawer` and
+`Popover`'s `close_on_escape`, the DOM menu bar, a `<select>` popup — on desktop and
+in the browser alike. So a popup that claims Escape closes itself and leaves a `Modal`
+around the editor open; an Escape it does not claim goes on and closes the modal.
+
+**Callbacks follow their component.** `on_key`, `on_selection_change`, `on_caret_moved`
+and `on_change` remember the component that was rendering when they were registered,
+and stop being called once it unmounts, even if the `EditorHandle` lives on (an
+app-level handle handed to a view that comes and goes). A live callback runs inside
+that component, so a signal it creates belongs to it. A callback registered outside
+any render (from `main`, a timer) keeps app lifetime.
+
 ## Keyboard shortcuts
 
 The editor handles its own keyboard input. Every shortcut below comes from the

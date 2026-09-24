@@ -42,6 +42,8 @@ mod editor_decoration_tests;
 #[cfg(all(test, feature = "desktop"))]
 mod editor_link_tests;
 #[cfg(all(test, feature = "desktop"))]
+mod editor_popup_hooks_tests;
+#[cfg(all(test, feature = "desktop"))]
 mod editor_read_only_tests;
 mod event_dispatch;
 mod focus;

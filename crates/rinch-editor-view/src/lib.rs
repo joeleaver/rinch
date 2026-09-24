@@ -18,6 +18,7 @@ mod blink;
 mod collab;
 mod component;
 mod handle;
+mod keys;
 mod links;
 pub mod registry;
 mod styles;
@@ -25,6 +26,7 @@ mod view;
 
 pub use component::Editor;
 pub use handle::{EditorHandle, SelectionAnchor};
+pub use keys::EditorKey;
 pub use links::{LinkClick, LinkHover, LinkSpan};
 #[cfg(feature = "collaboration")]
 pub use registry::collab_receive_for;

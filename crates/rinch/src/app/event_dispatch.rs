@@ -1309,6 +1309,48 @@ impl RinchApp {
 
                 tracing::trace!(?key, ?text, ?key_str, shift, ctrl, alt, "KeyDown event");
 
+                // The focused editor's `EditorHandle::on_key` sees the key
+                // first — before the document-level interceptor and the
+                // dismiss stack in step 1 — which is the order the browser
+                // gives it (rinch-web's editor listener is a `document`
+                // capture listener; the interceptor and the dismiss stack run
+                // from the bubble-phase delegate). That is what lets an
+                // autocomplete popup in an editor inside a `Modal` take
+                // Escape: the popup closes and the modal stays. A key the
+                // callback leaves goes on through step 1 as always, and is not
+                // offered a second time in the arbiter's editor arm. The built-in
+                // text context menu (step 1.5) owns the keyboard while it is
+                // open, so nothing is offered then. Menu chords won before
+                // this, in the shell, on both backends.
+                #[cfg(feature = "desktop")]
+                let mut editor_key_offered = false;
+                #[cfg(feature = "desktop")]
+                if let FocusTarget::Editor(container) = self.focus_target
+                    && self.open_text_menu.is_none()
+                    && let Some(ks) = key_str.as_deref()
+                    && let Some(handle) = crate::editor::editor_for_doc(self.doc_key(), container)
+                {
+                    editor_key_offered = true;
+                    let offered = crate::editor::EditorKey {
+                        // The browser's spelling, which `on_key` speaks on
+                        // both platforms.
+                        key: if ks == "Space" { " " } else { ks },
+                        primary: ctrl,
+                        ctrl: modifiers.ctrl,
+                        meta: modifiers.meta,
+                        shift,
+                        alt,
+                        repeat: repeat == KeyRepeat::Repeat,
+                    };
+                    if handle.offer_key(&offered) {
+                        // The callback may have edited or moved the selection.
+                        self.refresh_editor_overlays();
+                        self.resolve_and_repaint(vp_w, vp_h);
+                        actions.push(AppAction::RequestRedraw);
+                        return actions;
+                    }
+                }
+
                 // 1. User keyboard hooks (document-level interceptor). A user
                 //    handler that consumes the key wins and stops here, like a
                 //    capturing DOM listener. Render surfaces no longer hijack this
@@ -1354,15 +1396,35 @@ impl RinchApp {
                         if let Some(handle) =
                             crate::editor::editor_for_doc(self.doc_key(), container)
                         {
-                            self.dispatch_new_editor_key(
-                                &handle,
-                                key,
-                                logical_key.as_deref(),
-                                text.as_deref(),
-                                shift,
-                                ctrl,
-                                alt,
-                            );
+                            // The app's `EditorHandle::on_key` sees the key before
+                            // the editor moves the caret or runs a binding, and
+                            // may take it (an open autocomplete popup's arrows).
+                            // Normally it was offered above, ahead of step 1; it
+                            // is offered here only if it was not (the text
+                            // context menu was open and let the key through).
+                            let offered = (!editor_key_offered)
+                                .then_some(key_str.as_deref())
+                                .flatten()
+                                .map(|k| crate::editor::EditorKey {
+                                    key: if k == "Space" { " " } else { k },
+                                    primary: ctrl,
+                                    ctrl: modifiers.ctrl,
+                                    meta: modifiers.meta,
+                                    shift,
+                                    alt,
+                                    repeat: repeat == KeyRepeat::Repeat,
+                                });
+                            if !offered.is_some_and(|k| handle.offer_key(&k)) {
+                                self.dispatch_new_editor_key(
+                                    &handle,
+                                    key,
+                                    logical_key.as_deref(),
+                                    text.as_deref(),
+                                    shift,
+                                    ctrl,
+                                    alt,
+                                );
+                            }
                             // Position the caret against the current layout (dirtying
                             // its block if it reparented), re-layout, then the
                             // post-layout caret pass finalizes it with fresh geometry.
@@ -3502,26 +3564,9 @@ impl RinchApp {
     ) -> Option<(f32, f32, f32)> {
         let (tb, flat) = handle.caret_address(pos)?;
         let doc = self.doc.clone()?;
-        let d = doc.borrow();
-        let (local_x, local_y) = d.query_caret_position(tb as u64, flat)?;
-        let height = d
-            .query_glyph_bounds(tb as u64, flat)
-            .map(|g| g.height)
-            .unwrap_or(18.0);
-        let node = d.tree.get(tb)?;
-        let pad_l = node.computed_style.padding_left.to_px();
-        let pad_t = node.computed_style.padding_top.to_px();
-        // Parley's `local_x`/`local_y` and the glyph height are in the
-        // textblock's own space; push all three forward through the composed
-        // transform so the answer is in window coordinates (#203). The height
-        // is measured as the image of a vertical step, which is what a
-        // `scale()` ancestor stretches.
-        let fwd = |lx: f32, ly: f32| {
-            rinch_dom::paint::point_from_painted_box(&d.tree, tb, 1.0, lx as f64, ly as f64)
-        };
-        let (cx, cy) = fwd(pad_l + local_x, pad_t + local_y);
-        let (_, cy2) = fwd(pad_l + local_x, pad_t + local_y + height);
-        Some((cx as f32, cy as f32, (cy2 - cy).abs() as f32))
+        // Text only: vertical motion falls back to the model on a blank line,
+        // where `DomDocument::query_caret_rect` would answer the block's box.
+        doc.borrow().text_caret_window_rect(tb, flat)
     }
 
     /// One vertical cursor step (Up / Down), as a text cursor. First tries the

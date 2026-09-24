@@ -850,6 +850,24 @@ impl RinchDomEditorView {
             .map(|(dom, byte)| (dom.node_id().0, byte))
     }
 
+    /// The on-screen caret for `pos` as `(x, y, height)`, in the host's popup
+    /// frame ([`DomDocument::query_caret_rect`]). `None` when `pos` is not in a
+    /// textblock, the host document is gone or busy, or the block has no box.
+    pub(crate) fn caret_rect(&self, doc: &Node, pos: Pos) -> Option<(f32, f32, f32)> {
+        let (block, byte) = self.caret_target(doc, pos)?;
+        let host = self.doc.upgrade()?;
+        // A soft borrow: an app may ask from a callback while a runtime holds
+        // the document; that answers "no geometry" rather than panicking.
+        let host = host.try_borrow().ok()?;
+        host.query_caret_rect(block.node_id().0 as u64, byte)
+    }
+
+    /// Whether an IME composition (preedit) is being shown — the input method
+    /// owns the keyboard until it commits or cancels.
+    pub(crate) fn is_composing(&self) -> bool {
+        self.preedit.is_some()
+    }
+
     /// Resolve a model [`Pos`] to the host caret address `(textblock element, flat
     /// UTF-8 byte offset)` for the Parley layout query (the A15 char→byte IFC map).
     /// `None` when the position is not inside a textblock.
