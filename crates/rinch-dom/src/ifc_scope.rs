@@ -90,7 +90,7 @@
 //! and measure leaves whose owner is gone are swept at its start (an O(boxes)
 //! check, not O(document)).
 
-use std::collections::{HashMap, HashSet};
+use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
 
 use crate::RinchDocument;
 use crate::node::{DisplayMode, InlineFlowRole, Node, NodeKind, NodeTree, RawNodeId};
@@ -225,7 +225,7 @@ impl RinchDocument {
         let root = self.tree.root_id;
 
         // Connectivity, memoised along every walk.
-        let mut connected: HashMap<RawNodeId, bool> = HashMap::new();
+        let mut connected: HashMap<RawNodeId, bool> = HashMap::default();
         connected.insert(root, true);
         let mut is_connected = |id: RawNodeId| -> bool {
             let mut path = Vec::new();
@@ -256,8 +256,8 @@ impl RinchDocument {
             None
         };
 
-        let mut containers: HashSet<RawNodeId> = HashSet::new();
-        let mut walked: HashSet<RawNodeId> = HashSet::new();
+        let mut containers: HashSet<RawNodeId> = HashSet::default();
+        let mut walked: HashSet<RawNodeId> = HashSet::default();
         for (id, seed) in seeds {
             if !nodes.contains(id) || !is_connected(id) {
                 continue;
