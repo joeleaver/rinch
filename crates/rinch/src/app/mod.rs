@@ -3502,8 +3502,9 @@ impl RinchApp {
         // A rich-text editor's container (`EditorHandle::focus`, or a
         // `NodeHandle::focus` on the container): take the keyboard as a press
         // in it does — through the arbiter, which tears the previous owner
-        // down — but leave the selection where it is, and scroll nothing
-        // (`EditorHandle::scroll_into_view` is the app's to ask for). The
+        // down — but leave the selection where it is, and ask for no scroll
+        // (`EditorHandle::scroll_into_view` is the app's to ask for); a caret
+        // scroll the handle already owes is performed by the caret pass. The
         // overlay pass draws its caret or highlight; its layout is current or
         // the next frame's resolve makes it so, as after a click.
         #[cfg(feature = "desktop")]

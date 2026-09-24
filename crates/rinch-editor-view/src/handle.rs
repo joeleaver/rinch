@@ -110,6 +110,9 @@ struct EditorCore {
     /// with geometry for it; carried through local edits, dropped by a load.
     /// `None` for every editor that never asked, so the pass is one check.
     reveal: Option<(Pos, Pos, ScrollAlign)>,
+    /// Overlay passes the pending `reveal` has found no geometry on; it is
+    /// dropped at [`REVEAL_PATIENCE`]. Reset by each new request.
+    reveal_misses: u8,
     /// The collaboration session + outbound delta sink, when this editor is
     /// collaborating (design M9). `None` for a non-collaborative editor — the
     /// common case — so the mutation path's collab hook is a cheap early return.
@@ -171,6 +174,14 @@ impl<F: ?Sized> Hook<F> {
     }
 }
 
+/// How many overlay passes in a row a pending
+/// [`EditorHandle::scroll_into_view`] may find no geometry for its start before
+/// it is dropped. A reachable reveal needs one or two (a virtualized editor's
+/// block is laid out by the pass after the request, and desktop may run a
+/// caret pass before an event's layout as well as after it); the margin is for
+/// a runtime that runs more than one pass before its first layout.
+pub const REVEAL_PATIENCE: u8 = 8;
+
 /// See [`EditorHandle::on_key`].
 type KeyHook = Hook<dyn Fn(&EditorKey<'_>) -> bool>;
 /// See [`EditorHandle::on_selection_change`].
@@ -222,6 +233,10 @@ impl ScrollAlign {
 /// for the same reason (giving the keyboard back after a dialog must not
 /// jump); an app that wants something shown asks with
 /// [`EditorHandle::scroll_into_view`], which does not go through this gate.
+/// But a gate armed while the editor was blurred (a `set_selection` of a
+/// caret) stays armed until a caret pass of the *focused* editor fulfils it,
+/// so the next `focus()` performs it: focus arms nothing, and fulfils what
+/// was already owed.
 /// Never by a remote edit (`collab_receive` does not
 /// commit), a load, a resize, a scroll or a virtualized block being measured —
 /// those change the caret's *geometry* without the user moving it, and a gate on
@@ -738,6 +753,7 @@ impl EditorHandle {
                 read_only: false,
                 scroll: ScrollGate::default(),
                 reveal: None,
+                reveal_misses: 0,
                 #[cfg(feature = "collaboration")]
                 collab: None,
             })),
@@ -775,6 +791,7 @@ impl EditorHandle {
                 read_only: false,
                 scroll: ScrollGate::default(),
                 reveal: None,
+                reveal_misses: 0,
                 #[cfg(feature = "collaboration")]
                 collab: None,
             })),
@@ -2080,9 +2097,16 @@ impl EditorHandle {
     /// the keyboard before loses it the way a click elsewhere takes it (an
     /// `<input>` commits its change, another editor hides its caret).
     ///
-    /// It does **not** scroll — call [`Self::scroll_into_view`] for that — so
-    /// giving the keyboard back to an editor after a dialog closes does not
-    /// jump to a caret the user scrolled away from.
+    /// It never **asks** for a scroll — call [`Self::scroll_into_view`] for
+    /// that — so giving the keyboard back to an editor after a dialog closes
+    /// does not jump to a caret the user scrolled away from. It does
+    /// **perform a caret scroll already owed**: a [`set_selection`](Self::set_selection)
+    /// of a caret (or an [`update`](Self::update) that sets one) on a blurred
+    /// editor asks for its caret to be shown, and only the focused editor's
+    /// caret pass can show it, so that scroll waits for the focus. So
+    /// `set_selection(Selection::cursor(pos)); focus()` shows the caret, while
+    /// a range selection — which never owes a scroll — needs
+    /// [`Self::scroll_into_view`].
     ///
     /// - **Desktop** posts a focus request (the same one
     ///   [`NodeHandle::focus`](rinch_core::dom::NodeHandle::focus) posts, which
@@ -2128,14 +2152,16 @@ impl EditorHandle {
     /// ```
     ///
     /// The request is kept on the handle and fulfilled on the first overlay
-    /// pass that has geometry for both ends. It uses the same scroll the caret
+    /// pass that has geometry for its start. The end is revealed with it when
+    /// it has geometry too; when it does not (a virtualized editor whose end
+    /// block is still collapsed), the start alone is revealed. It uses the same scroll the caret
     /// uses ([`NodeHandle::scroll_into_view`](rinch_core::dom::NodeHandle::scroll_into_view)),
     /// on two hidden probe boxes the view places over the range's end and then
     /// its start:
     ///
     /// - **Desktop** applies it after the next layout (the call wakes the
     ///   runtime for one), and moves the **nearest** scroll container only. A
-    ///   virtualized editor lays out the block holding `from` for it.
+    ///   virtualized editor lays out the blocks holding `from` and `to` for it.
     /// - **Web** applies it immediately (the call runs the overlay refresh an
     ///   input event would), and `scrollIntoView` moves every scrollable
     ///   ancestor, the page included.
@@ -2145,6 +2171,17 @@ impl EditorHandle {
     /// [`load_doc`](Self::load_doc)/[`load_html`](Self::load_html); a peer's
     /// edit leaves the positions as they are (clamped to the document).
     /// Positions between blocks reveal the nearest text position.
+    ///
+    /// **A reveal that cannot be fulfilled does not wait for good.** In an
+    /// editor that is not rendered (`display: none`, an inactive tab) its
+    /// boxes are laid out at zero size, on both backends, so the first pass
+    /// consumes the request and its scroll moves nothing. If instead
+    /// [`REVEAL_PATIENCE`] overlay passes in a row find no geometry at all for
+    /// the start — an editor whose blocks are never laid out — the request is
+    /// dropped. Either way it is not kept to scroll the view much later, once
+    /// the editor is shown and the user has moved on: ask again then.
+    /// Overlay passes run with the runtime's frames and input events; an idle
+    /// app runs none and uses none of the patience.
     ///
     /// **Before mount, a no-op.**
     ///
@@ -2189,6 +2226,7 @@ impl EditorHandle {
                 return;
             };
             core.reveal = Some((from.min(to), from.max(to), align.clamped()));
+            core.reveal_misses = 0;
             doc_key
         };
         crate::registry::owe_reveal(doc_key);
@@ -2210,6 +2248,10 @@ impl EditorHandle {
             return false;
         };
         let Some(probes) = view.position_reveal(&core.state.doc, from, to, align) else {
+            core.reveal_misses += 1;
+            if core.reveal_misses >= REVEAL_PATIENCE {
+                core.reveal = None;
+            }
             return false;
         };
         core.reveal = None;
@@ -2231,6 +2273,13 @@ impl EditorHandle {
     #[doc(hidden)]
     pub fn pending_reveal(&self) -> Option<Pos> {
         self.inner.borrow().reveal.map(|(from, _, _)| from)
+    }
+
+    /// Both ends of a pending [`Self::scroll_into_view`] range, `from <= to`.
+    /// Desktop block virtualization keeps the blocks holding both laid out.
+    #[doc(hidden)]
+    pub fn pending_reveal_range(&self) -> Option<(Pos, Pos)> {
+        self.inner.borrow().reveal.map(|(from, to, _)| (from, to))
     }
 
     /// Hide this editor's overlays (caret + selection highlight) because it isn't
@@ -6636,6 +6685,96 @@ mod tests {
             let placed = drain_placed(&h);
             assert_eq!(placed.len(), 1);
             assert_eq!(placed[0].1, 0.5, "still placed, not nearest");
+        }
+
+        /// An insertion exactly at a pending range's edges stays outside it:
+        /// the start maps forward, the end back. Pins the direction of each
+        /// bias, which an insertion strictly before the range cannot (#922's
+        /// review, M4).
+        #[test]
+        fn an_insertion_at_either_edge_of_a_pending_reveal_stays_outside_it() {
+            let h = five();
+            h.handle.scroll_into_view(Pos(5), Pos(7));
+            // At the start (paragraph 2 is empty, 5 is its content start).
+            h.handle.set_selection(Selection::cursor(Pos(5)));
+            assert!(h.handle.insert_text("x"));
+            assert_eq!(
+                h.handle.pending_reveal_range(),
+                Some((Pos(6), Pos(8))),
+                "the start moves past text inserted at it"
+            );
+            // At the end: paragraph 3's content now starts at 8.
+            h.handle.set_selection(Selection::cursor(Pos(8)));
+            assert!(h.handle.insert_text("y"));
+            assert_eq!(
+                h.handle.pending_reveal_range(),
+                Some((Pos(6), Pos(8))),
+                "the end stays before text inserted at it"
+            );
+        }
+
+        /// A range whose end has no geometry (a virtualized editor's end
+        /// block, still collapsed) reveals its start alone rather than waiting
+        /// for good (#922's review, D3).
+        #[test]
+        fn a_range_whose_end_has_no_geometry_reveals_its_start() {
+            let h = five();
+            // Paragraphs 0..=2 measured; paragraph 4 (the end) is not.
+            measure(&h, &[0.0, 20.0, 40.0]);
+            h.handle.scroll_into_view(Pos(3), Pos(9));
+            assert!(h.handle.reveal_pass(), "fulfilled on the start alone");
+            let requests = drain(&h);
+            assert_eq!(requests.len(), 1, "one scroll: {requests:?}");
+            assert_eq!(probe_box(&h, requests[0]), (px(4.0), px(52.0)));
+            assert_eq!(h.handle.pending_reveal(), None);
+        }
+
+        /// The start stays required: with no geometry for it the reveal waits.
+        #[test]
+        fn a_range_whose_start_has_no_geometry_waits() {
+            let h = five();
+            measure(&h, &[0.0]);
+            h.handle.scroll_into_view(Pos(3), Pos(9));
+            assert!(!h.handle.reveal_pass());
+            assert!(drain(&h).is_empty());
+            assert_eq!(h.handle.pending_reveal(), Some(Pos(3)));
+        }
+
+        /// A reveal that no pass can fulfil (no geometry, ever) is dropped after
+        /// `REVEAL_PATIENCE` passes, not kept to scroll much later; one short
+        /// of that it still waits and is fulfilled. A new request starts the
+        /// count again.
+        #[test]
+        fn an_unfulfillable_reveal_expires_after_its_patience() {
+            let h = five();
+            h.handle.scroll_into_view(Pos(7), Pos(7));
+            for _ in 1..REVEAL_PATIENCE {
+                assert!(!h.handle.reveal_pass());
+            }
+            assert_eq!(h.handle.pending_reveal(), Some(Pos(7)), "one short: waits");
+            measure(&h, &[0.0, 20.0, 40.0, 60.0, 80.0]);
+            assert!(h.handle.reveal_pass(), "and is fulfilled");
+            drain(&h);
+
+            let h = five();
+            h.handle.scroll_into_view(Pos(7), Pos(7));
+            for _ in 1..REVEAL_PATIENCE {
+                h.handle.reveal_pass();
+            }
+            h.handle.scroll_into_view(Pos(5), Pos(5));
+            h.handle.reveal_pass();
+            assert_eq!(
+                h.handle.pending_reveal(),
+                Some(Pos(5)),
+                "a new request, a new count"
+            );
+            for _ in 1..REVEAL_PATIENCE {
+                h.handle.reveal_pass();
+            }
+            assert_eq!(h.handle.pending_reveal(), None, "expired");
+            measure(&h, &[0.0, 20.0, 40.0, 60.0, 80.0]);
+            assert!(!h.handle.reveal_pass(), "shown later, it scrolls nothing");
+            assert!(drain(&h).is_empty());
         }
 
         #[test]

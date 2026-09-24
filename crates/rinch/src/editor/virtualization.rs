@@ -86,15 +86,20 @@ pub(crate) fn pre_layout(doc: &mut RinchDocument, focused: Option<usize>) {
             }
             let protected = protected_block(doc, handle, container, focused);
             vw.pre_layout_update(doc, &protected);
-            // A pending `scroll_into_view` needs its start's block laid out,
-            // wherever the window is: the reveal is what moves the window
-            // there.
-            if let Some(block) = handle
-                .pending_reveal()
-                .and_then(|from| handle.caret_address(from))
-                .and_then(|(textblock, _)| top_block(doc, textblock, container))
-            {
-                vw.materialize(doc, block);
+            // A pending `scroll_into_view` needs the blocks holding its start
+            // and its end laid out, wherever the window is: the reveal is what
+            // moves the window there. Both, because a range whose end block
+            // stayed collapsed had no geometry for its end (#922's review, D3);
+            // the view reveals the start alone if the end still has none.
+            if let Some((from, to)) = handle.pending_reveal_range() {
+                for pos in [from, to] {
+                    if let Some(block) = handle
+                        .caret_address(pos)
+                        .and_then(|(textblock, _)| top_block(doc, textblock, container))
+                    {
+                        vw.materialize(doc, block);
+                    }
+                }
             }
         }
     });
@@ -135,9 +140,9 @@ pub(crate) fn post_layout(doc: &mut RinchDocument, focused: Option<usize>, vw_w:
 }
 
 /// The top-level blocks that must never be collapsed: the cursor's, for the
-/// focused editor, and — for any editor — the one holding the start of a
-/// pending `EditorHandle::scroll_into_view`, which needs that block laid out
-/// to know where to scroll (focused or not: a reveal does not need focus).
+/// focused editor, and — for any editor — the ones holding the start and the
+/// end of a pending `EditorHandle::scroll_into_view`, which needs them laid
+/// out to know where to scroll (focused or not: a reveal does not need focus).
 fn protected_block(
     doc: &RinchDocument,
     handle: &EditorHandle,
@@ -156,8 +161,9 @@ fn protected_block(
     if Some(container) == focused {
         protect(handle.selection().head());
     }
-    if let Some(from) = handle.pending_reveal() {
+    if let Some((from, to)) = handle.pending_reveal_range() {
         protect(from);
+        protect(to);
     }
     out
 }

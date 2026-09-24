@@ -201,10 +201,12 @@ impl CeVirtualWindow {
         if node.estimated_height.take().is_none() {
             return false;
         }
+        // A scoped structural pass over the block alone (#895), as every
+        // other materialization here does — not the whole-document one.
+        seed_block(doc, block);
         doc.tree.style_dirty_nodes.push(block);
         doc.tree.dirty_ifc_text_roots.insert(block);
         doc.tree.layout_dirty = true;
-        doc.tree.ifc_dirty = true;
         doc.tree.styles_dirty = true;
         true
     }

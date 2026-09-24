@@ -371,7 +371,7 @@ where they are:
 - focus on its own. A click that places the caret scrolls (it moved the
   selection); a click that focuses the editor without moving the caret — a task
   checkbox, a right-click on an image — does not jump to where the caret was, and
-  neither does [`focus()`](#focus-and-scrolling-from-code);
+  neither does [`focus()`](#focus-and-scrolling-from-code) when nothing is owed;
 - an editor that is not focused: its caret is not drawn, so a programmatic
   `set_selection` on it scrolls when it is next focused, not before.
 
@@ -405,10 +405,18 @@ range's end and then its start, so the rules above apply: on **desktop** it happ
 after the next layout (the call wakes the runtime for one, from an effect or a timer
 as well as from an event handler) and moves the nearest scroll container; on the
 **web** it happens during the call and `scrollIntoView` moves every scrollable
-ancestor, the page included. A virtualized desktop editor lays out the block holding
-`from` for it. The request waits on the handle until there is geometry for it (a
-block edited since the last layout has none on desktop), a later call replaces it,
-local edits carry it along, and `load_html` / `load_doc` drop it.
+ancestor, the page included. A virtualized desktop editor lays out the blocks holding
+`from` and `to` for it. The request waits on the handle until there is geometry for
+its start (a block edited since the last layout has none on desktop); if the end has
+none by then, the start alone is revealed. A later call replaces it, local edits
+carry it along (text typed exactly at either edge stays outside the range), and
+`load_html` / `load_doc` drop it.
+
+A request that cannot be fulfilled does not wait for good. In an editor that is not
+rendered (`display: none`, an inactive tab) the boxes are laid out at zero size on
+both backends, so the request is used up at once and scrolls nothing; one whose start
+has no geometry at all for `REVEAL_PATIENCE` (8) overlay passes in a row is dropped.
+Either way nothing scrolls when the editor is shown later: ask again then.
 
 **`scroll_into_view_aligned(from, to, align)`** chooses where the range lands.
 `ScrollAlign::Nearest` is `scroll_into_view` itself. `ScrollAlign::Fraction(f)` puts
@@ -439,7 +447,15 @@ after it, so the start can land a fraction of a line off `f`. Both are built on
 
 **`focus()`** gives the editor the keyboard as a press in it would — the previous
 owner loses it the same way (an `<input>` commits its change, another editor hides
-its caret) — without moving the selection or scrolling. The caret or selection
+its caret) — without moving the selection. It never asks for a scroll of its own,
+so giving the keyboard back after a dialog closes does not jump to a caret the user
+scrolled away from. It does **perform a caret scroll already owed**: a
+`set_selection` of a caret (or an edit through `update` that sets the selection) on
+an editor that is not focused asks for its caret to be shown, and only a focused
+editor draws a caret, so that scroll waits and happens when `focus()` lands. That is
+what makes `set_selection(Selection::cursor(pos)); focus()` show the caret. A
+*range* selection owes nothing (a range is never revealed on its own), which is why
+the deep-link example above asks with `scroll_into_view`. The caret or selection
 highlight is drawn where the selection already is. On **desktop** it posts the same
 focus request `NodeHandle::focus` posts (which now focuses an editor container too),
 and the runtime applies it through the focus arbiter after the current event or

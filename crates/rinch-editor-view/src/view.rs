@@ -1007,16 +1007,30 @@ impl RinchDomEditorView {
                 })
                 .unwrap_or(f32::INFINITY);
             let mut out = Vec::with_capacity(ends.len());
-            for &(pos, bias) in ends {
-                let (block, byte, pos) = match self.caret_target(doc, pos) {
-                    Some((block, byte)) => (block, byte, pos),
-                    None => {
-                        let near = Selection::near_text(doc, pos, bias)?.head();
-                        let (block, byte) = self.caret_target(doc, near)?;
-                        (block, byte, near)
+            for (i, &(pos, bias)) in ends.iter().enumerate() {
+                let geometry = (|| {
+                    let (block, byte, pos) = match self.caret_target(doc, pos) {
+                        Some((block, byte)) => (block, byte, pos),
+                        None => {
+                            let near = Selection::near_text(doc, pos, bias)?.head();
+                            let (block, byte) = self.caret_target(doc, near)?;
+                            (block, byte, near)
+                        }
+                    };
+                    self.caret_geometry(&*d, doc, pos, block.node_id().0, byte)
+                })();
+                // The start (always last) is required. The end of a range is
+                // not: in a virtualized editor it can sit in a block that is
+                // still collapsed to its estimated height, with no caret to
+                // measure, and waiting for it would leave the reveal pending
+                // for good (#922's review, D3). The start alone is revealed
+                // then — the start is what a reveal promises first anyway.
+                let Some((x, y, h)) = geometry else {
+                    if i + 1 < ends.len() {
+                        continue;
                     }
+                    return None;
                 };
-                let (x, y, h) = self.caret_geometry(&*d, doc, pos, block.node_id().0, byte)?;
                 let top = (y - margin).max(0.0).min(y);
                 let end = (y + h + margin).min(bottom).max(y + h);
                 out.push((x, top, end - top));

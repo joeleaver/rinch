@@ -497,3 +497,104 @@ fn a_placed_reveal_waits_for_a_virtualized_block_to_be_laid_out() {
         "about a third down (got {at})"
     );
 }
+
+/// `focus()` arms no scroll of its own, but a caret scroll already owed is
+/// fulfilled when the editor gains focus: `set_selection` of a caret on a
+/// blurred editor arms the caret's `ScrollGate`, which only the focused
+/// editor's caret pass fulfils, so it waits for the focus (the deep-link
+/// shape `set_selection(caret); focus()`). With nothing owed, `focus()`
+/// scrolls nothing — the dialog-return case (#922's review, D4).
+#[test]
+fn focus_performs_a_caret_scroll_already_owed_and_arms_none() {
+    let mut p = page();
+    p.handle.set_selection(Selection::cursor(end_of(35)));
+    idle(&mut p.app);
+    assert_eq!(
+        scroll_of(&p),
+        0.0,
+        "control: a blurred editor does not scroll"
+    );
+    p.handle.focus();
+    idle(&mut p.app);
+    assert_eq!(p.app.focus_target, FocusTarget::Editor(p.editor));
+    assert!(scroll_of(&p) > 0.0, "the owed caret scroll is performed");
+    assert!(on_screen(&p, end_of(35)), "to the caret");
+
+    // Give the keyboard away, scroll back to the top by hand, and hand it
+    // back: nothing is owed now, and focus arms nothing.
+    rinch_core::request_focus(p.app.doc_key(), p.other);
+    idle(&mut p.app);
+    assert_eq!(p.app.focus_target, FocusTarget::Node(p.other));
+    set_scroll(&mut p, 0.0);
+    idle(&mut p.app);
+    p.handle.focus();
+    idle(&mut p.app);
+    assert_eq!(p.app.focus_target, FocusTarget::Editor(p.editor));
+    assert_eq!(
+        scroll_of(&p),
+        0.0,
+        "focus with nothing owed scrolls nothing"
+    );
+}
+
+/// A virtualized editor, a range spanning three blocks far below: both end
+/// blocks are laid out for it, and it is revealed (#922's review, D3). It
+/// used to lay out the start's block only, find no geometry for the end, and
+/// stay pending with the scroll at 0 for good.
+#[test]
+fn a_virtualized_multi_block_range_is_revealed() {
+    let mut p = page_with(150, true);
+    p.handle.scroll_into_view(start_of(120), end_of(122));
+    idle(&mut p.app);
+    assert_eq!(p.handle.pending_reveal(), None, "fulfilled");
+    assert!(scroll_of(&p) > 0.0, "it scrolled");
+    assert!(on_screen(&p, start_of(120)), "to the range's start");
+    // And its end: both end blocks were laid out, so the whole range fits.
+    // Revealing the start alone (the fallback for an end with no geometry)
+    // scrolls it to the bottom edge and leaves the end below the view.
+    assert!(on_screen(&p, end_of(122)), "and its end");
+}
+
+/// The one-block control for the fixture above.
+#[test]
+fn a_virtualized_one_block_range_is_revealed() {
+    let mut p = page_with(150, true);
+    p.handle.scroll_into_view(start_of(120), end_of(120));
+    idle(&mut p.app);
+    assert!(scroll_of(&p) > 0.0, "it scrolled");
+    assert!(on_screen(&p, start_of(120)));
+}
+
+/// A reveal in an editor that is not rendered (`display: none`, an inactive
+/// tab) does not wait to scroll the view when the editor is shown much later:
+/// the hidden editor's boxes are laid out at zero size, so the first pass
+/// consumes the request and its scroll moves nothing, as on the web. (A
+/// reveal whose start has no geometry at all expires after
+/// `REVEAL_PATIENCE` passes instead; `rinch-editor-view`'s
+/// `an_unfulfillable_reveal_expires_after_its_patience` pins that.)
+#[test]
+fn a_reveal_in_a_hidden_editor_is_dropped_and_scrolls_nothing_when_shown() {
+    use rinch_core::dom::{DomDocument, NodeId};
+    let mut p = page();
+    let style = |p: &mut Page, style: &str| {
+        let doc = p.app.doc.as_ref().unwrap().clone();
+        doc.borrow_mut()
+            .set_attribute(NodeId(p.scroller), "style", style);
+        idle(&mut p.app);
+    };
+    style(&mut p, "display: none");
+    p.handle.scroll_into_view(start_of(30), end_of(30));
+    idle(&mut p.app);
+    assert_eq!(p.handle.pending_reveal(), None, "not kept pending");
+    assert_eq!(scroll_of(&p), 0.0);
+    style(
+        &mut p,
+        "width: 400px; height: 160px; overflow-y: auto; font-size: 16px; \
+         line-height: 24px; font-family: sans-serif",
+    );
+    assert_eq!(scroll_of(&p), 0.0, "shown later, it scrolls nothing");
+    assert!(
+        !on_screen(&p, start_of(30)),
+        "control: the range is off screen"
+    );
+}
