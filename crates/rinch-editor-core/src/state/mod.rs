@@ -15,7 +15,7 @@ use crate::decoration::DecorationSet;
 use crate::input_rules::InputRule;
 use crate::keymap::Keymap;
 use crate::model::{Mark, Node};
-use crate::plugin::{Plugin, PluginKey};
+use crate::plugin::{PasteContent, Plugin, PluginKey};
 use crate::schema::Schema;
 use crate::selection::Selection;
 use crate::transform::Mapping;
@@ -164,6 +164,20 @@ impl EditorState {
             set.merge(p.decorations(self));
         }
         set
+    }
+
+    /// The transaction the first plugin that claims `paste` builds for it
+    /// ([`Plugin::handle_paste`], in plugin order), or `None` when no plugin
+    /// claims it and the default paste applies. An empty `paste` is claimed by
+    /// no one.
+    pub fn handle_paste(&self, paste: &PasteContent) -> Option<Transaction> {
+        if paste.is_empty() {
+            return None;
+        }
+        self.config
+            .plugins
+            .iter()
+            .find_map(|p| p.handle_paste(self, paste))
     }
 
     /// A plugin's folded state, downcast to `T`.

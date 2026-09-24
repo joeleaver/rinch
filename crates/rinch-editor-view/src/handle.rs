@@ -26,8 +26,8 @@ use rinch_editor_core::serialize::{
 };
 use rinch_editor_core::transform::Mapping;
 use rinch_editor_core::{
-    CursorMotion, EditorState, EditorView, KeyBinding, Mark, Node, Plugin, Pos, Schema, Selection,
-    Transaction, ViewRequest, apply_input_rules,
+    CursorMotion, EditorState, EditorView, KeyBinding, Mark, Node, PasteContent, Plugin, Pos,
+    Schema, Selection, Transaction, ViewRequest, apply_input_rules,
 };
 
 #[cfg(feature = "collaboration")]
@@ -1445,8 +1445,60 @@ impl EditorHandle {
         Some((slice_to_html(&slice), slice_to_text(&slice)))
     }
 
+    /// Paste `paste` over the current selection: the entry point for every
+    /// paste the platform reports as a paste event, which desktop (Ctrl+V,
+    /// Ctrl+Shift+V, the context menu's Paste) and the web (the `paste` event)
+    /// both call. A mobile keyboard's clipboard chip inserts text directly and
+    /// does not come through here. Returns whether anything was applied.
+    ///
+    /// Every plugin is offered the paste first ([`Plugin::handle_paste`], in
+    /// plugin order): the first to return a transaction claims it, and that
+    /// transaction is applied as the paste. No claim leaves the default:
+    /// `text/html` parsed into structure ([`Self::replace_selection_with_html`]),
+    /// else, when the html is absent or parses to nothing, `text/plain` one
+    /// paragraph per line ([`Self::replace_selection_with_text`]). An empty
+    /// `paste` does nothing and asks no plugin.
+    ///
+    /// Either way the paste is one transaction, so one undo step; it is the
+    /// user's input, so it scrolls the caret into view, a collaborating editor
+    /// records and broadcasts it, and [`on_change`](Self::on_change) fires if the
+    /// document changed. A [read-only](Self::set_read_only) editor refuses it,
+    /// a plugin's transaction included, and a refused claim does **not** fall
+    /// through to the default.
+    ///
+    /// The plugins run with the editor borrowed, as a command does, so one must
+    /// not call back into this handle.
+    pub fn paste(&self, paste: &PasteContent) -> bool {
+        if paste.is_empty() {
+            return false;
+        }
+        let mut claimed = false;
+        let applied = self.dispatch(
+            |state| {
+                let tr = state.handle_paste(paste);
+                claimed = tr.is_some();
+                tr
+            },
+            true,
+        );
+        if claimed {
+            return applied;
+        }
+        if let Some(html) = &paste.html
+            && self.replace_selection_with_html(html)
+        {
+            return true;
+        }
+        paste
+            .text
+            .as_deref()
+            .is_some_and(|text| self.replace_selection_with_text(text))
+    }
+
     /// Replace the current selection with a parsed (schema-whitelisted) HTML
-    /// payload — the rich paste path. Returns whether anything was inserted.
+    /// payload. The rich half of the default paste: a user's paste goes through
+    /// [`Self::paste`], which offers it to the plugins first. Returns whether
+    /// anything was inserted.
     pub fn replace_selection_with_html(&self, html: &str) -> bool {
         let schema = self.core().schema.clone();
         match slice_from_html(&schema, html) {
@@ -1502,8 +1554,10 @@ impl EditorHandle {
         true
     }
 
-    /// Replace the current selection with plain text (one paragraph per line) —
-    /// the plain-text paste path. Returns whether anything was inserted.
+    /// Replace the current selection with plain text (one paragraph per line).
+    /// The plain half of the default paste: a user's paste goes through
+    /// [`Self::paste`], which offers it to the plugins first. Returns whether
+    /// anything was inserted.
     pub fn replace_selection_with_text(&self, text: &str) -> bool {
         let schema = self.core().schema.clone();
         match slice_from_text(&schema, text) {
@@ -2294,6 +2348,46 @@ mod tests {
         h.handle.set_selection(Selection::cursor(Pos(1)));
         h.handle.update_caret();
         assert_eq!(drain(&h).len(), 1, "a read-only caret move scrolls");
+    }
+
+    /// A paste is the user's input, so a plugin's claim scrolls the caret into
+    /// view even when its transaction only maps the selection — the very
+    /// transaction that, dispatched through `update`, is an edit elsewhere and
+    /// does not scroll (above).
+    #[test]
+    fn a_claimed_paste_scrolls_even_when_it_does_not_set_the_selection() {
+        struct InsertsAbove;
+        impl Plugin for InsertsAbove {
+            fn key(&self) -> rinch_editor_core::PluginKey {
+                rinch_editor_core::PluginKey("test.inserts-above")
+            }
+            fn handle_paste(
+                &self,
+                state: &EditorState,
+                _paste: &PasteContent,
+            ) -> Option<Transaction> {
+                let mut tr = state.tr();
+                let text = state.schema().text("x").unwrap();
+                tr.replace_with(1, 1, Fragment::from_node(text)).unwrap();
+                Some(tr)
+            }
+        }
+        let h = gate_rig();
+        assert!(h.handle.add_plugin(Rc::new(InsertsAbove)));
+        h.handle.update_caret();
+        assert!(
+            drain(&h).is_empty(),
+            "positive control: adding it scrolls nothing"
+        );
+        let sel = h.handle.selection();
+        assert!(h.handle.paste(&PasteContent::text("y")));
+        assert_ne!(
+            h.handle.selection(),
+            sel,
+            "positive control: the caret was mapped, not set"
+        );
+        h.handle.update_caret();
+        assert_eq!(drain(&h).len(), 1, "the paste brings the caret into view");
     }
 
     /// The gate's state machine directly: movement alone never scrolls, an owed
