@@ -526,7 +526,7 @@ fn unselected_attribute_write() {
 /// property) moved.
 #[test]
 fn container_class_a_descendant_rule_depends_on() {
-    let mut f = build_with(false, ".list.dense .row { padding: 3px; }");
+    let mut f = build_with(ROWS, false, ".list.dense .row { padding: 3px; }");
     let list = f.list;
     let s = frame(&mut f, |f| f.doc.set_attribute(list, "class", "list dense"));
     expect(

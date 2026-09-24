@@ -774,15 +774,12 @@ impl RinchDocument {
             }
             self.invalidate_ifc_root(node_id);
         }
-        // Generated content that went away and did not come back is a
-        // structural change nothing else reports: a regenerated box is a new
-        // node whose first Taffy style sync sets both flags, but a removed one
-        // leaves no node behind to do it (an `attr()` whose attribute was
-        // removed, a class that took the `content` rule away).
-        if had_pseudo && !has_pseudo {
-            self.tree.layout_dirty = true;
-            self.tree.ifc_dirty = true;
-        }
+        // Generated content that went away and did not come back (an `attr()`
+        // whose attribute was removed, a class that took the `content` rule
+        // away) is covered by the block above: `had_pseudo && !has_pseudo` is
+        // one of its cases, and it seeds this node's region and owes a layout.
+        // #894 fixed the same case with a bare `ifc_dirty = true`, which is a
+        // whole-document structural pass per removal; the seed is exact.
 
         // A re-cascaded style is a paint change for this node's box: the
         // software renderer's dirty region must cover it.
