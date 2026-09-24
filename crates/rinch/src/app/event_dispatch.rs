@@ -4119,6 +4119,65 @@ mod async_paste_tests {
         assert_eq!(text_of(&handle), "ABhelloX world");
     }
 
+    /// A plugin that claims the paste (`Plugin::handle_paste`) is handed the
+    /// anchor's selection *mapped through* what was typed while the clipboard
+    /// read was in flight, not the live caret: its transaction lands where the
+    /// user pressed Ctrl+V. The typing is in front of the anchor, so the mapped
+    /// position (8) differs from the raw one (6) and from the live caret (3).
+    #[test]
+    fn a_claiming_plugin_pastes_at_the_mapped_anchor() {
+        use rinch_editor_core::{
+            EditorState, Fragment, PasteContent, Plugin, PluginKey, Transaction,
+        };
+        use std::cell::Cell;
+        use std::rc::Rc;
+
+        /// Wraps the pasted text in brackets at the selection it was handed,
+        /// and records where that was.
+        struct Bracketer(Rc<Cell<Option<usize>>>);
+        impl Plugin for Bracketer {
+            fn key(&self) -> PluginKey {
+                PluginKey("test.bracketer")
+            }
+            fn handle_paste(
+                &self,
+                state: &EditorState,
+                paste: &PasteContent,
+            ) -> Option<Transaction> {
+                let at = state.selection.from().0;
+                self.0.set(Some(at));
+                let text = format!("[{}]", paste.text.as_deref()?);
+                let node = state.schema().text_with_marks(&text, vec![]).ok()?;
+                let mut tr = state.tr();
+                tr.replace_with(at, at, Fragment::from_node(node)).ok()?;
+                Some(tr)
+            }
+        }
+
+        let handle = editor_with("<p>hello world</p>");
+        let offered_at = Rc::new(Cell::new(None));
+        assert!(handle.add_plugin(Rc::new(Bracketer(offered_at.clone()))));
+        handle.set_selection(Selection::cursor(Pos(6))); // "hello| world"
+        let anchor = handle.anchor_selection();
+
+        // The user types in front of the anchor while the read is pending.
+        handle.set_selection(Selection::cursor(Pos(1)));
+        assert!(handle.insert_text("AB"));
+
+        assert!(apply_paste_at_anchor(
+            &handle,
+            &anchor,
+            RichPaste::Text("X".into()),
+            None
+        ));
+        assert_eq!(
+            offered_at.get(),
+            Some(8),
+            "the plugin saw the mapped anchor"
+        );
+        assert_eq!(text_of(&handle), "ABhello[X] world");
+    }
+
     /// Ctrl+V on a writable editor, and the editor goes read-only (a role changed)
     /// while the clipboard read is in flight: the late insertion is refused where
     /// every other edit is, whatever the payload. A check at dispatch could not

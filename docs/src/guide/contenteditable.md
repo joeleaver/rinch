@@ -214,10 +214,12 @@ own suggestions menu reads the pressed word from `selection()`.
 A plugin can claim a paste before the editor inserts it, through
 `Plugin::handle_paste`. It is handed the editor's state at the paste and the
 clipboard's `text/plain` and `text/html` flavours (`PasteContent`), and answers
-the transaction to apply instead, or `None` to leave the paste alone. This is
-the one place to do it on every platform: Ctrl+V, Ctrl+Shift+V and the context
-menu's Paste on desktop, and the browser's `paste` event on the web, all reach
-`EditorHandle::paste`, which asks the plugins first.
+the transaction to apply instead, or `None` to leave the paste alone. Every
+paste the platform reports as a paste event reaches it: Ctrl+V / Cmd+V,
+Ctrl+Shift+V and the context menu's Paste on desktop, and the browser's `paste`
+event on the web, all go through `EditorHandle::paste`, which asks the plugins
+first. A mobile keyboard's clipboard chip is the exception: it inserts text
+directly, as if typed, and does not reach the hook.
 
 A URL pasted over selected words that links them instead of replacing them:
 

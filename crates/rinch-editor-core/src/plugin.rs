@@ -131,11 +131,13 @@ pub trait Plugin {
     ///
     /// Consulted in plugin order by
     /// [`EditorState::handle_paste`](crate::state::EditorState::handle_paste),
-    /// which every editor paste goes through on desktop and on the web (Ctrl+V,
-    /// Ctrl+Shift+V, the context menu's Paste, the browser's `paste` event), so
-    /// this one method is how an app sees and rewrites what the user pasted: a
-    /// URL pasted over selected words that links them instead of replacing them,
-    /// say. The first `Some` wins, and later plugins are not asked.
+    /// which every paste the platform reports as a paste event goes through on
+    /// desktop and on the web (Ctrl+V / Cmd+V, Ctrl+Shift+V, the context menu's
+    /// Paste, the browser's `paste` event), so this one method is how an app
+    /// sees and rewrites what the user pasted. A mobile keyboard's clipboard
+    /// chip inserts text directly and does not reach it. A typical claim: a URL
+    /// pasted over selected words that links them instead of replacing them.
+    /// The first `Some` wins, and later plugins are not asked.
     ///
     /// `state` is the editor's state **at the paste**: its selection is where
     /// the paste lands (on desktop, where Ctrl+V was pressed, mapped through

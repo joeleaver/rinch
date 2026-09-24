@@ -1445,10 +1445,11 @@ impl EditorHandle {
         Some((slice_to_html(&slice), slice_to_text(&slice)))
     }
 
-    /// Paste `paste` over the current selection: the one entry point for a
-    /// user's paste, which desktop (Ctrl+V, Ctrl+Shift+V, the context menu's
-    /// Paste) and the web (the `paste` event) both call. Returns whether
-    /// anything was applied.
+    /// Paste `paste` over the current selection: the entry point for every
+    /// paste the platform reports as a paste event, which desktop (Ctrl+V,
+    /// Ctrl+Shift+V, the context menu's Paste) and the web (the `paste` event)
+    /// both call. A mobile keyboard's clipboard chip inserts text directly and
+    /// does not come through here. Returns whether anything was applied.
     ///
     /// Every plugin is offered the paste first ([`Plugin::handle_paste`], in
     /// plugin order): the first to return a transaction claims it, and that
