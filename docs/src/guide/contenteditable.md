@@ -420,8 +420,8 @@ Either way nothing scrolls when the editor is shown later: ask again then.
 
 **`scroll_into_view_aligned(from, to, align)`** chooses where the range lands.
 `ScrollAlign::Nearest` is `scroll_into_view` itself. `ScrollAlign::Fraction(f)` puts
-the start's line `f` of the way down the scroll container's visible height (`0.0`
-the top edge, `1.0 / 3.0` a third down; clamped to `0.0..=1.0`), never nearer than
+the start's line `f` of the way down the scroll container's visible height — its
+padding box, inside the border, as a browser measures it (`0.0` the top edge, `1.0 / 3.0` a third down; clamped to `0.0..=1.0`), never nearer than
 16px to either edge, and it scrolls even when the range is already in view. The
 scroll is clamped to what the content allows, so a range near the top of the
 document stays near the top of the view and one near the end sits lower. A range

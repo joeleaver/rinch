@@ -710,8 +710,9 @@ pub trait DomDocument {
     }
 
     /// Request that `node` be scrolled to a set place in its scroll container:
-    /// its top `fraction` of the way down the container's visible height
-    /// (`0.0` the top edge, `1.0` the bottom), but never nearer than `margin`
+    /// its top `fraction` of the way down the container's visible height —
+    /// its padding box, from the inside of its top border, a browser's
+    /// `clientTop` / `clientHeight` (`0.0` the top edge, `1.0` the bottom), but never nearer than `margin`
     /// px to either edge, with the scroll clamped to what the content allows.
     /// Unlike [`Self::request_scroll_into_view`] it moves even when `node` is
     /// already in view. Deferred until after the next layout, like that one.

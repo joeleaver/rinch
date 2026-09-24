@@ -38,6 +38,11 @@ struct Page {
 /// editor container the scroller itself (which virtualizes at 60 blocks).
 /// Nothing is focused.
 fn page_with(blocks: usize, editor_is_scroller: bool) -> Page {
+    page_styled(blocks, editor_is_scroller, "")
+}
+
+/// [`page_with`], with `extra` appended to the scroller's style.
+fn page_styled(blocks: usize, editor_is_scroller: bool, extra: &'static str) -> Page {
     let ids: Rc<Cell<(usize, usize, usize)>> = Rc::default();
     let ids_in = ids.clone();
     let handle = crate::editor::create_editor();
@@ -54,6 +59,8 @@ fn page_with(blocks: usize, editor_is_scroller: bool) -> Page {
         let editor = handle_in.mount(scope);
         let style = "width: 400px; height: 160px; overflow-y: auto; font-size: 16px; \
                      line-height: 24px; font-family: sans-serif";
+        let style = format!("{style}; {extra}");
+        let style = style.as_str();
         let scroller = if editor_is_scroller {
             editor.set_attribute("style", style);
             root.append_child(&editor);
@@ -596,5 +603,26 @@ fn a_reveal_in_a_hidden_editor_is_dropped_and_scrolls_nothing_when_shown() {
     assert!(
         !on_screen(&p, start_of(30)),
         "control: the range is off screen"
+    );
+}
+
+/// A bordered, padded scroller: the visible area is its **padding** box, the
+/// one a browser scrolls content through (`clientHeight`, measured from the
+/// inside of the top border) — so `Fraction(f)` is `f` of that box, from its
+/// top, on desktop as on the web. Measured from the border box and against
+/// the content box instead, the start landed 40px higher here.
+#[test]
+fn a_fraction_is_of_a_bordered_padded_scrollers_padding_box() {
+    let mut p = page_styled(40, false, "border-top: 10px solid black; padding: 30px 0");
+    let (top, bottom) = scroller_span(&p);
+    let padding_box = bottom - top - 10.0;
+    p.handle
+        .scroll_into_view_aligned(start_of(20), end_of(20), ScrollAlign::Fraction(0.5));
+    idle(&mut p.app);
+    let at = offset_in_view(&p, start_of(20));
+    let want = 10.0 + 0.5 * padding_box;
+    assert!(
+        (at - want).abs() <= 1.5,
+        "half way down the padding box, below the border: want {want}, got {at}"
     );
 }

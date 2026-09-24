@@ -1404,12 +1404,25 @@ impl RinchApp {
                 // Placed: the element's top at `fraction` of the visible
                 // height, at least `margin` inside either edge (the top edge
                 // wins when the element is too tall for both).
+                //
+                // "Visible" is the container's **padding** box, from the
+                // inside of its top border — what a browser scrolls content
+                // through (`clientTop` / `clientHeight`), and so what the web
+                // backend measures against. `elem_top` is from the border
+                // box's top and `client_height` is the content box here, so
+                // both are corrected; the nearest branch below keeps its
+                // pre-existing reading (#769's shape).
+                let cs = &d.tree.nodes[container_id].computed_style;
+                let border_top = f64::from(cs.border_top_width.to_px());
+                let padding_box = visible_height
+                    + f64::from(cs.padding_top.to_px())
+                    + f64::from(cs.padding_bottom.to_px());
                 let (fraction, margin) = (f64::from(fraction), f64::from(margin));
                 let height = elem_bottom - elem_top;
-                let at = (fraction * visible_height)
-                    .min(visible_height - margin - height)
+                let at = (fraction * padding_box)
+                    .min(padding_box - margin - height)
                     .max(margin);
-                current_scroll + elem_top - at
+                current_scroll + elem_top - border_top - at
             } else if elem_top < 0.0 {
                 // Element is above the visible area — scroll up
                 current_scroll + elem_top
