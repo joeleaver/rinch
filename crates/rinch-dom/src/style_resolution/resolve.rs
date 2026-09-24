@@ -139,7 +139,11 @@ impl RinchDocument {
             self.tree.full_style_walk = false;
             self.tree.perf.bump(crate::perf::Counter::FullStyleWalks);
             let html_id = self.tree.html_id;
+            // The one place the filter is zeroed outright: a rare
+            // whole-document walk, which also discards any counts a walk that
+            // unwound early (a panic) may have left behind.
             self.style_bloom.clear();
+            self.style_bloom_filled.clear();
             self.resolve_styles_recursive(html_id, None, ChildCascade::Skip, true);
             return;
         }
@@ -317,12 +321,32 @@ impl RinchDocument {
 
     /// Reset the style bloom filter to hold exactly `node_id`'s ancestor
     /// elements, for a walk starting at `node_id`.
+    ///
+    /// A walk leaves the filter as it found it (`resolve_style_children`
+    /// pops every element it pushed), so what is in it on entry is exactly
+    /// the previous fill's ancestor chain, whose hashes `style_bloom_filled`
+    /// recorded. Removing those is a handful of counter updates where
+    /// `clear()` zeroed all 4096 of them — on every hover and every
+    /// insertion. The recorded hashes are removed, not recomputed, so an
+    /// ancestor whose attributes changed since cannot unbalance a counter.
     fn fill_style_bloom_for(&mut self, node_id: usize) {
-        self.style_bloom.clear();
+        use selectors::bloom::BLOOM_HASH_MASK;
+        for hash in self.style_bloom_filled.drain(..) {
+            self.style_bloom.remove_hash(hash);
+        }
         let mut current = self.tree.nodes.get(node_id).and_then(|n| n.parent);
         while let Some(id) = current {
             if self.tree.nodes[id].is_element() {
-                self.push_style_bloom(id);
+                let bloom = &mut self.style_bloom;
+                let filled = &mut self.style_bloom_filled;
+                style::bloom::each_relevant_element_hash(
+                    crate::stylo_impl::RinchNode::new(id, &self.tree),
+                    |hash| {
+                        let hash = hash & BLOOM_HASH_MASK;
+                        bloom.insert_hash(hash);
+                        filled.push(hash);
+                    },
+                );
             }
             current = self.tree.nodes[id].parent;
         }

@@ -158,6 +158,7 @@ impl RinchDocument {
 
         // Convert pseudo computed style to our ComputedStyle
         let pseudo_style = ComputedStyle::from_stylo(&pseudo_computed);
+        self.tree.note_background_image(&pseudo_style);
 
         // Create a wrapper span element for the pseudo-element
         use rinch_core::dom::DomDocument;

@@ -118,8 +118,7 @@ impl DomDocument for RinchDocument {
         // must remove the node's *contribution*, not just its own id — a
         // spliced `display: contents` node's slots are its children's (#517).
         if let Some(old_parent) = self.tree.nodes[c].parent {
-            let old_index = self.child_index(old_parent, c);
-            self.tree.nodes[old_parent].children.retain(|&x| x != c);
+            let old_index = self.remove_from_children(old_parent, c);
             self.note_child_list_changed(old_parent, old_index);
             // Remove from old taffy parent
             if let Some(old_taffy_parent) = self.tree.nodes[old_parent].taffy_id {
@@ -151,8 +150,7 @@ impl DomDocument for RinchDocument {
 
         // Siblings a structural selector ties to the new child (`+`, `~`,
         // `:nth-child`, `:last-child`, the parent's `:empty`).
-        let at = self.child_index(p, c);
-        self.note_child_list_changed(p, at);
+        self.note_child_inserted(p, c, true);
 
         // Recompute styles for the inserted subtree to pick up ancestor-based selectors.
         // Suppressed during bulk DOM operations (render_block_at) to batch into one pass.
@@ -183,8 +181,7 @@ impl DomDocument for RinchDocument {
         // The subtree is leaving the document, so it has no before-change style
         // to animate from if it ever comes back (#699).
         self.detach_subtree_styles(c);
-        let old_index = self.child_index(p, c);
-        self.tree.nodes[p].children.retain(|&x| x != c);
+        let old_index = self.remove_from_children(p, c);
         self.tree.nodes[c].parent = None;
         self.note_child_list_changed(p, old_index);
         // Sync taffy: remove the child's contribution — for a spliced
@@ -213,8 +210,7 @@ impl DomDocument for RinchDocument {
         // Remove from old parent if any — the node's contribution, not just
         // its own id (#517, see `taffy_detach_contribution`)
         if let Some(old_parent) = self.tree.nodes[c].parent {
-            let old_index = self.child_index(old_parent, c);
-            self.tree.nodes[old_parent].children.retain(|&x| x != c);
+            let old_index = self.remove_from_children(old_parent, c);
             self.note_child_list_changed(old_parent, old_index);
             if let Some(old_taffy_parent) = self.tree.nodes[old_parent].taffy_id {
                 self.taffy_detach_contribution(old_taffy_parent, c);
@@ -254,8 +250,7 @@ impl DomDocument for RinchDocument {
         // the new nodes' layout positions after layout runs.
         self.mark_subtree_paint_dirty_ids(c);
 
-        let at = self.child_index(p, c);
-        self.note_child_list_changed(p, at);
+        self.note_child_inserted(p, c, true);
 
         // Recompute styles for the inserted subtree to pick up ancestor-based selectors
         self.recompute_node_styles_recursive(c);
@@ -297,8 +292,7 @@ impl DomDocument for RinchDocument {
             // Remove new from its old parent if any — the node's
             // contribution, not just its own id (#517)
             if let Some(old_parent) = self.tree.nodes[new.0].parent {
-                let old_index = self.child_index(old_parent, new.0);
-                self.tree.nodes[old_parent].children.retain(|&x| x != new.0);
+                let old_index = self.remove_from_children(old_parent, new.0);
                 self.note_child_list_changed(old_parent, old_index);
                 if let Some(old_taffy_parent) = self.tree.nodes[old_parent].taffy_id {
                     self.taffy_detach_contribution(old_taffy_parent, new.0);
@@ -343,8 +337,7 @@ impl DomDocument for RinchDocument {
             self.tree.ifc_dirty = true; // Tree structure changed
             self.push_dirty_flags(parent_id, DirtyFlags::LAYOUT | DirtyFlags::CHILDREN);
 
-            let at = self.child_index(parent_id, new.0);
-            self.note_child_list_changed_with(parent_id, at, !keeps_nonempty);
+            self.note_child_inserted(parent_id, new.0, !keeps_nonempty);
 
             // Recompute styles for the new subtree to pick up ancestor-based selectors
             self.recompute_node_styles_recursive(new.0);
@@ -371,8 +364,7 @@ impl DomDocument for RinchDocument {
 
         self.clear_ifc_root_recursive(node.0);
         if let Some(parent_id) = self.tree.nodes[node.0].parent {
-            let old_index = self.child_index(parent_id, node.0);
-            self.tree.nodes[parent_id].children.retain(|&x| x != node.0);
+            let old_index = self.remove_from_children(parent_id, node.0);
             self.note_child_list_changed(parent_id, old_index);
             // Sync taffy: remove this node's *contribution* to the parent's
             // Taffy child list, which for a `display: contents` wrapper is its
@@ -817,8 +809,7 @@ impl DomDocument for RinchDocument {
         // Remove from old parent if any — the node's contribution, not just
         // its own id (#517, see `taffy_detach_contribution`)
         if let Some(old_parent) = self.tree.nodes[c].parent {
-            let old_index = self.child_index(old_parent, c);
-            self.tree.nodes[old_parent].children.retain(|&x| x != c);
+            let old_index = self.remove_from_children(old_parent, c);
             self.note_child_list_changed(old_parent, old_index);
             if let Some(old_taffy_parent) = self.tree.nodes[old_parent].taffy_id {
                 self.taffy_detach_contribution(old_taffy_parent, c);
@@ -851,8 +842,7 @@ impl DomDocument for RinchDocument {
         self.tree.ifc_dirty = true; // Tree structure changed
         self.push_dirty_flags(p, DirtyFlags::LAYOUT | DirtyFlags::CHILDREN);
 
-        let at = self.child_index(p, c);
-        self.note_child_list_changed(p, at);
+        self.note_child_inserted(p, c, true);
 
         // Recompute styles for the inserted subtree to pick up ancestor-based selectors
         self.recompute_node_styles_recursive(c);

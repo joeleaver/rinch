@@ -950,6 +950,8 @@ impl RinchDocument {
                 .computed_style
                 .same_measured_text_inputs(&new_style);
 
+            self.tree.note_background_image(&new_style);
+
             // Extract transition specs from Stylo
             let transition_specs = TransitionSpec::extract_from_stylo(&computed_values);
             self.tree.nodes[node_id].transition_specs = transition_specs;

@@ -72,6 +72,14 @@ use crate::RinchDocument;
 use crate::node::DirtyFlags;
 use crate::stylo_impl::RinchNode;
 
+/// The parent flags [`RinchDocument::note_child_list_changed_with`] acts on.
+/// A parent carrying none of them (and not an `<ol>`) is untouched by a
+/// change to its child list, so the note returns before copying the list.
+const CHILD_LIST_FLAGS: ElementSelectorFlags = ElementSelectorFlags::HAS_SLOW_SELECTOR
+    .union(ElementSelectorFlags::HAS_SLOW_SELECTOR_LATER_SIBLINGS)
+    .union(ElementSelectorFlags::HAS_EDGE_CHILD_SELECTOR)
+    .union(ElementSelectorFlags::HAS_EMPTY_SELECTOR);
+
 /// Attributes whose value rinch reads to answer a pseudo-class (or pseudo
 /// state an ancestor passes down), and that Stylo's attribute maps therefore
 /// cannot see a dependency on. Each restyles its element, the element's
@@ -502,8 +510,11 @@ impl RinchDocument {
             return;
         }
         let flags = *p.selector_flags.borrow();
-        let children = p.children.clone();
         let is_ol = p.tag() == Some("ol");
+        if !is_ol && !flags.intersects(CHILD_LIST_FLAGS) {
+            return;
+        }
+        let children = p.children.clone();
         if flags.contains(ElementSelectorFlags::HAS_SLOW_SELECTOR) {
             for &c in &children {
                 self.mark_restyle(c, true);
@@ -587,6 +598,43 @@ impl RinchDocument {
         if siblings_selected {
             self.mark_later_siblings(parent, true);
         }
+    }
+
+    /// Take `child` out of `parent`'s child list and answer the index it
+    /// held (the list's length if it was not there), for
+    /// [`Self::note_child_list_changed`]. One scan, where finding the index
+    /// and then `retain`ing the rest was two.
+    pub(crate) fn remove_from_children(&mut self, parent: usize, child: usize) -> usize {
+        let children = &mut self.tree.nodes[parent].children;
+        match children.iter().position(|&c| c == child) {
+            Some(i) => {
+                children.remove(i);
+                i
+            }
+            None => children.len(),
+        }
+    }
+
+    /// [`Self::note_child_list_changed_with`] for `child`, just inserted into
+    /// `parent`, finding its index only if a selector can care: a parent no
+    /// structural selector was ever matched under (and no `<ol>`) costs no
+    /// scan of its children.
+    pub(crate) fn note_child_inserted(
+        &mut self,
+        parent: usize,
+        child: usize,
+        empty_may_flip: bool,
+    ) {
+        let Some(p) = self.tree.nodes.get(parent) else {
+            return;
+        };
+        if !p.is_element()
+            || (p.tag() != Some("ol") && !p.selector_flags.borrow().intersects(CHILD_LIST_FLAGS))
+        {
+            return;
+        }
+        let at = self.child_index(parent, child);
+        self.note_child_list_changed_with(parent, at, empty_may_flip);
     }
 
     /// The index `child` occupies in its parent's child list, for

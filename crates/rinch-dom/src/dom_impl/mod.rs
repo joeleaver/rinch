@@ -175,6 +175,12 @@ pub struct RinchDocument {
     /// The ancestor bloom filter the style walk matches descendant
     /// combinators against. Boxed: it is a few kilobytes.
     pub(crate) style_bloom: Box<selectors::bloom::BloomFilter>,
+    /// The hashes `fill_style_bloom_for` inserted for a walk's ancestor
+    /// chain, so the next fill can take exactly those out again instead of
+    /// zeroing the whole 4 KB filter. Zeroing it per walk root was a 4 KB
+    /// memset on every hover and every insertion (#894's perf job:
+    /// 800k instructions over a 200-row keyed reorder).
+    pub(crate) style_bloom_filled: Vec<u32>,
 }
 
 impl Default for RinchDocument {
@@ -230,6 +236,7 @@ impl RinchDocument {
             snapshots: style::selector_parser::SnapshotMap::new(),
             snapshot_ids: Vec::new(),
             style_bloom: Box::default(),
+            style_bloom_filled: Vec::new(),
         };
 
         // Set up default file-based image loader
@@ -1121,23 +1128,17 @@ impl RinchDocument {
             return;
         };
 
-        // Collect URLs that need loading
-        let urls_to_load: Vec<String> = self
-            .tree
-            .nodes
-            .iter()
-            .filter_map(|(_, node)| {
-                if let crate::computed_style::BackgroundValue::Image { url } =
-                    &node.computed_style.background
-                    && !self.tree.image_cache.contains(url)
-                {
-                    return Some(url.clone());
-                }
-                None
-            })
-            .collect();
-
-        for url in urls_to_load {
+        // Only URLs a cascade produced since the last call (see
+        // `NodeTree::pending_background_urls`), never a walk of the slab.
+        if self.tree.pending_background_urls.is_empty() {
+            return;
+        }
+        for url in std::mem::take(&mut self.tree.pending_background_urls) {
+            // A URL two nodes share, or one that finished loading since it
+            // was noted, is started once.
+            if self.tree.image_cache.contains(&url) {
+                continue;
+            }
             self.tree.image_cache.mark_loading(url.clone());
             crate::image_cache::request_image_load(self.doc_key, url, loader.clone());
         }

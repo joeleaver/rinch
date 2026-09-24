@@ -1857,6 +1857,15 @@ pub struct NodeTree {
     pub image_cache: ImageCache,
     /// Image loader for fetching image data (file, network, etc.).
     pub image_loader: Option<Arc<dyn ImageLoader>>,
+    /// `background-image` URLs a cascade produced that were not in
+    /// `image_cache` at the time, for `request_background_image_loads` to
+    /// start. The cascade is the only producer of a
+    /// `BackgroundValue::Image` (`from_stylo`, in `resolve_styles` and the
+    /// pseudo-element path), so collecting there replaces a walk of every
+    /// node in the slab on every layout — which was O(document) on a
+    /// one-row hover. Kept (not drained) while `image_loader` is `None`,
+    /// so a loader installed later still starts them.
+    pub pending_background_urls: Vec<String>,
     /// IFC roots whose text content changed since last layout.
     /// Used to skip expensive Parley rebuilds for unchanged IFC roots.
     pub dirty_ifc_text_roots: HashSet<RawNodeId>,
@@ -2030,6 +2039,19 @@ impl Default for NodeTree {
 }
 
 impl NodeTree {
+    /// Record `style`'s `background-image` URL for
+    /// `RinchDocument::request_background_image_loads` if it is not cached
+    /// yet. Called by the cascade for every style it produces.
+    #[inline]
+    pub(crate) fn note_background_image(&mut self, style: &crate::computed_style::ComputedStyle) {
+        if let crate::computed_style::BackgroundValue::Image { url } = &style.background
+            && !self.image_cache.contains(url)
+            && !self.pending_background_urls.iter().any(|u| u == url)
+        {
+            self.pending_background_urls.push(url.clone());
+        }
+    }
+
     /// Create a new node tree with root and body nodes.
     pub fn new() -> Self {
         let mut nodes = slab::Slab::new();
@@ -2134,6 +2156,7 @@ impl NodeTree {
             refreshing_animations: false,
             image_cache: ImageCache::new(),
             image_loader: None,
+            pending_background_urls: Vec::new(),
             dirty_ifc_text_roots: HashSet::new(),
             taffy_computes: 0,
             ifc_setup_passes: 0,
