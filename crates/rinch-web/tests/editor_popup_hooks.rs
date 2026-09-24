@@ -478,3 +478,43 @@ fn caret_moved_reports_the_painted_geometry() {
     );
     f.teardown();
 }
+
+/// A dismiss-stack entry standing in for a `Modal`'s `close_on_escape`. The
+/// web backend marks no document, so any key reaches it.
+fn modal_entry() -> (Rc<RefCell<u32>>, rinch_core::DismissHandle) {
+    let dismissed: Rc<RefCell<u32>> = Rc::default();
+    let handle = rinch_core::push_dismiss_handler(0, {
+        let dismissed = dismissed.clone();
+        move || {
+            *dismissed.borrow_mut() += 1;
+            true
+        }
+    });
+    (dismissed, handle)
+}
+
+/// Twin of desktop's `on_key_sees_escape_before_the_dismiss_stack`: an
+/// autocomplete popup in an editor inside a `Modal` takes Escape, and the
+/// modal stays open.
+#[wasm_bindgen_test]
+fn on_key_sees_escape_before_the_dismiss_stack() {
+    let f = Fixture::focused();
+    let (dismissed, entry) = modal_entry();
+    let seen = offer_keys(&f, |k| k == "Escape");
+    assert!(keydown(&f, "Escape", "Escape", Mods::default()));
+    assert_eq!((seen.borrow().len(), *dismissed.borrow()), (1, 0));
+    drop(entry);
+    f.teardown();
+}
+
+/// Twin of desktop's `an_escape_on_key_leaves_still_closes_the_modal`.
+#[wasm_bindgen_test]
+fn an_escape_on_key_leaves_still_closes_the_modal() {
+    let f = Fixture::focused();
+    let (dismissed, entry) = modal_entry();
+    let seen = offer_keys(&f, |_| false);
+    keydown(&f, "Escape", "Escape", Mods::default());
+    assert_eq!((seen.borrow().len(), *dismissed.borrow()), (1, 1));
+    drop(entry);
+    f.teardown();
+}

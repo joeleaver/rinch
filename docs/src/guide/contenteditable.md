@@ -541,9 +541,29 @@ then, and a `position: fixed` popup does not.
 **What `on_key` is not offered.** A key while an IME composition is in progress (the
 input method owns it; the composed text arrives as a commit, which is typing); on
 the web, a soft keyboard's input, which arrives as `beforeinput` rather than keys
-(`"Unidentified"` and `"Process"` keys are not offered); key releases. On desktop an
-app's document-wide `set_keyboard_interceptor` runs before any editor, and may take
-a key first. A modifier pressed alone is offered (`"Shift"`, `"Control"`); ignore it.
+(`"Unidentified"` and `"Process"` keys are not offered); key releases. A modifier
+pressed alone is offered (`"Shift"`, `"Control"`); ignore it.
+
+**With an input method on** (on Linux, IBus or Wayland `text-input`, which the editor
+switches on while it has focus), plain printable characters can arrive as input-method
+*commits* rather than as keys, so `on_key` may never see the `[` of a `[[` trigger.
+Named keys (arrows, Enter, Tab, Escape) still arrive as keys. Detect a typed trigger
+from `on_selection_change` and the document around the caret, which sees the result
+however the text came in.
+
+**What runs before `on_key`.** Only a menu shortcut (a chord registered by an app menu
+or the DOM menu bar). `on_key` comes **before** the document-wide
+`set_keyboard_interceptor` and before the dismiss stack — `Modal`, `Drawer` and
+`Popover`'s `close_on_escape`, the DOM menu bar, a `<select>` popup — on desktop and
+in the browser alike. So a popup that claims Escape closes itself and leaves a `Modal`
+around the editor open; an Escape it does not claim goes on and closes the modal.
+
+**Callbacks follow their component.** `on_key`, `on_selection_change`, `on_caret_moved`
+and `on_change` remember the component that was rendering when they were registered,
+and stop being called once it unmounts, even if the `EditorHandle` lives on (an
+app-level handle handed to a view that comes and goes). A live callback runs inside
+that component, so a signal it creates belongs to it. A callback registered outside
+any render (from `main`, a timer) keeps app lifetime.
 
 ## Keyboard shortcuts
 

@@ -378,3 +378,51 @@ fn caret_moved_comes_after_layout_with_the_painted_geometry() {
     p.app.resolve_and_repaint(800.0, 600.0);
     assert_eq!(moved.borrow().len(), calls, "a pass that moves nothing");
 }
+
+/// A dismiss-stack entry standing in for a `Modal`'s `close_on_escape`,
+/// counting how often it closed.
+fn modal_entry(page: &Page) -> (Rc<std::cell::Cell<u32>>, rinch_core::DismissHandle) {
+    let dismissed = Rc::new(std::cell::Cell::new(0u32));
+    let handle = rinch_core::push_dismiss_handler(page.app.doc_key(), {
+        let dismissed = dismissed.clone();
+        move || {
+            dismissed.set(dismissed.get() + 1);
+            true
+        }
+    });
+    (dismissed, handle)
+}
+
+/// An autocomplete popup in an editor inside a `Modal`: the popup's `on_key`
+/// claims Escape, so the popup closes and the modal stays open. That is the
+/// browser's order — rinch-web's editor listener is a `document` capture
+/// listener, ahead of the bubble-phase delegate that runs the dismiss stack —
+/// and desktop offers the key before step 1 to match. It used to run the
+/// dismiss stack first and never offer Escape at all.
+#[test]
+fn on_key_sees_escape_before_the_dismiss_stack() {
+    let mut page = page();
+    let (dismissed, _entry) = modal_entry(&page);
+    let seen = offer_keys(&page, |k| k == "Escape");
+    key(&mut page.app, KeyCode::Escape);
+    assert_eq!(
+        (seen.borrow().len(), dismissed.get()),
+        (1, 0),
+        "the popup takes Escape and the modal stays open"
+    );
+}
+
+/// The other half: an Escape `on_key` leaves (no popup open) falls through to
+/// the dismiss stack and closes the modal, and is offered exactly once.
+#[test]
+fn an_escape_on_key_leaves_still_closes_the_modal() {
+    let mut page = page();
+    let (dismissed, _entry) = modal_entry(&page);
+    let seen = offer_keys(&page, |_| false);
+    key(&mut page.app, KeyCode::Escape);
+    assert_eq!(
+        (seen.borrow().len(), dismissed.get()),
+        (1, 1),
+        "offered once, then the modal closes"
+    );
+}

@@ -1309,6 +1309,48 @@ impl RinchApp {
 
                 tracing::trace!(?key, ?text, ?key_str, shift, ctrl, alt, "KeyDown event");
 
+                // The focused editor's `EditorHandle::on_key` sees the key
+                // first — before the document-level interceptor and the
+                // dismiss stack in step 1 — which is the order the browser
+                // gives it (rinch-web's editor listener is a `document`
+                // capture listener; the interceptor and the dismiss stack run
+                // from the bubble-phase delegate). That is what lets an
+                // autocomplete popup in an editor inside a `Modal` take
+                // Escape: the popup closes and the modal stays. A key the
+                // callback leaves goes on through step 1 as always, and is not
+                // offered a second time in the arbiter's editor arm. The built-in
+                // text context menu (step 1.5) owns the keyboard while it is
+                // open, so nothing is offered then. Menu chords won before
+                // this, in the shell, on both backends.
+                #[cfg(feature = "desktop")]
+                let mut editor_key_offered = false;
+                #[cfg(feature = "desktop")]
+                if let FocusTarget::Editor(container) = self.focus_target
+                    && self.open_text_menu.is_none()
+                    && let Some(ks) = key_str.as_deref()
+                    && let Some(handle) = crate::editor::editor_for_doc(self.doc_key(), container)
+                {
+                    editor_key_offered = true;
+                    let offered = crate::editor::EditorKey {
+                        // The browser's spelling, which `on_key` speaks on
+                        // both platforms.
+                        key: if ks == "Space" { " " } else { ks },
+                        primary: ctrl,
+                        ctrl: modifiers.ctrl,
+                        meta: modifiers.meta,
+                        shift,
+                        alt,
+                        repeat: repeat == KeyRepeat::Repeat,
+                    };
+                    if handle.offer_key(&offered) {
+                        // The callback may have edited or moved the selection.
+                        self.refresh_editor_overlays();
+                        self.resolve_and_repaint(vp_w, vp_h);
+                        actions.push(AppAction::RequestRedraw);
+                        return actions;
+                    }
+                }
+
                 // 1. User keyboard hooks (document-level interceptor). A user
                 //    handler that consumes the key wins and stops here, like a
                 //    capturing DOM listener. Render surfaces no longer hijack this
@@ -1357,10 +1399,13 @@ impl RinchApp {
                             // The app's `EditorHandle::on_key` sees the key before
                             // the editor moves the caret or runs a binding, and
                             // may take it (an open autocomplete popup's arrows).
-                            let offered = key_str.as_deref().map(|k| {
-                                crate::editor::EditorKey {
-                                    // The browser's spelling, which `on_key`
-                                    // speaks on both platforms.
+                            // Normally it was offered above, ahead of step 1; it
+                            // is offered here only if it was not (the text
+                            // context menu was open and let the key through).
+                            let offered = (!editor_key_offered)
+                                .then_some(key_str.as_deref())
+                                .flatten()
+                                .map(|k| crate::editor::EditorKey {
                                     key: if k == "Space" { " " } else { k },
                                     primary: ctrl,
                                     ctrl: modifiers.ctrl,
@@ -1368,8 +1413,7 @@ impl RinchApp {
                                     shift,
                                     alt,
                                     repeat: repeat == KeyRepeat::Repeat,
-                                }
-                            });
+                                });
                             if !offered.is_some_and(|k| handle.offer_key(&k)) {
                                 self.dispatch_new_editor_key(
                                     &handle,

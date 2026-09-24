@@ -19,6 +19,7 @@ use std::fmt;
 use std::rc::{Rc, Weak};
 
 use rinch_core::dom::{DomDocument, NodeHandle, RenderScope};
+use rinch_core::reactive::{Owner, current_owner, unowned};
 use rinch_editor_core::commands::{current_block_type, in_node_type, is_mark_active, marks_at};
 use rinch_editor_core::model::{Fragment, Slice};
 use rinch_editor_core::serialize::{
@@ -64,7 +65,7 @@ struct EditorCore {
     /// it out and invoke it with **no** borrow held: the callback commonly
     /// re-enters the handle (an autosave reads `doc()`), which would otherwise
     /// panic with a `RefCell` double-borrow.
-    on_change: Option<Rc<dyn Fn()>>,
+    on_change: Option<Hook<dyn Fn()>>,
     /// See [`EditorHandle::on_link_click`]. An `Rc` for the same reason as
     /// `on_change`: it is cloned out and called with no borrow held.
     on_link_click: Option<LinkClickFn>,
@@ -86,7 +87,7 @@ struct EditorCore {
     selection_owed: bool,
     /// Told when the caret pass moved the overlays — see
     /// [`EditorHandle::on_caret_moved`]. Called by [`CoreMutGuard`]'s drop.
-    on_caret_moved: Option<Rc<dyn Fn()>>,
+    on_caret_moved: Option<Hook<dyn Fn()>>,
     /// A call is owed to [`Self::on_caret_moved`]; set by
     /// [`EditorHandle::update_caret`] only while a callback is registered.
     caret_moved_owed: bool,
@@ -114,13 +115,61 @@ struct EditorCore {
 /// The callbacks a mutable borrow owes on its way out — see [`CoreMutGuard`].
 struct Owed {
     selection: Option<(SelectionHook, Selection)>,
-    caret_moved: Option<Rc<dyn Fn()>>,
+    caret_moved: Option<Hook<dyn Fn()>>,
+}
+
+/// An app callback and the component that registered it (#147/#183).
+///
+/// The owner is the ambient scope at registration — the component rendering
+/// when `on_change`/`on_key`/`on_selection_change`/`on_caret_moved` was called,
+/// whose signals the closure most likely captured. Once that scope is disposed
+/// the callback is **not called** any more, because the handle can outlive the
+/// component: an app-level `EditorHandle` handed to a note view that registers
+/// its popup hooks and then unmounts, after which the app `load_html`s the next
+/// note. A live callback runs *inside* its owner, so a signal it creates
+/// belongs to that component. Registered outside any render (from `main`, a
+/// timer), there is no owner and the callback keeps **app lifetime**, running
+/// `unowned` — the menu registry's rule.
+struct Hook<F: ?Sized> {
+    cb: Rc<F>,
+    /// `None` for app lifetime. An `Owner` is a `Weak`: this keeps nothing
+    /// alive.
+    owner: Option<Owner>,
+}
+
+impl<F: ?Sized> Clone for Hook<F> {
+    fn clone(&self) -> Self {
+        Hook {
+            cb: self.cb.clone(),
+            owner: self.owner.clone(),
+        }
+    }
+}
+
+impl<F: ?Sized> Hook<F> {
+    /// Wrap `cb`, recording the ambient owner.
+    fn new(cb: Rc<F>) -> Self {
+        Hook {
+            cb,
+            owner: current_owner(),
+        }
+    }
+
+    /// Run `call` on the callback inside its owner — or not at all, answering
+    /// `None`, once the owner is disposed.
+    fn invoke<R>(&self, call: impl FnOnce(&F) -> R) -> Option<R> {
+        match &self.owner {
+            Some(owner) if !owner.is_alive() => None,
+            Some(owner) => Some(owner.run(|| call(&self.cb))),
+            None => Some(unowned(|| call(&self.cb))),
+        }
+    }
 }
 
 /// See [`EditorHandle::on_key`].
-type KeyHook = Rc<dyn Fn(&EditorKey<'_>) -> bool>;
+type KeyHook = Hook<dyn Fn(&EditorKey<'_>) -> bool>;
 /// See [`EditorHandle::on_selection_change`].
-type SelectionHook = Rc<dyn Fn(&Selection)>;
+type SelectionHook = Hook<dyn Fn(&Selection)>;
 
 /// Whether a [`EditorCore::commit`] should bring the caret into view.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -561,10 +610,10 @@ impl Drop for CoreMutGuard<'_> {
             return;
         }
         if let Some((cb, selection)) = owed.selection {
-            cb(&selection);
+            cb.invoke(|cb| cb(&selection));
         }
         if let Some(cb) = owed.caret_moved {
-            cb();
+            cb.invoke(|cb| cb());
         }
     }
 }
@@ -901,8 +950,13 @@ impl EditorHandle {
     ///     move || schedule_autosave(editor.doc())
     /// });
     /// ```
+    ///
+    /// Registered while a component renders, the callback belongs to that
+    /// component: it runs inside it, and is not called any more once it
+    /// unmounts, though the handle lives on (#147/#183). Registered outside any
+    /// render it keeps app lifetime.
     pub fn on_change(&self, cb: impl Fn() + 'static) {
-        self.core_mut().on_change = Some(Rc::new(cb));
+        self.core_mut().on_change = Some(Hook::new(Rc::new(cb)));
     }
 
     /// Invoke the change callback, if any, with **no borrow held** — the callback
@@ -910,7 +964,7 @@ impl EditorHandle {
     fn notify_change(&self) {
         let cb = self.core().on_change.clone();
         if let Some(cb) = cb {
-            cb();
+            cb.invoke(|cb| cb());
         }
     }
 
@@ -1067,20 +1121,45 @@ impl EditorHandle {
     ///
     /// **What is offered.** A key press the platform delivers as a key event
     /// while this editor holds the keyboard, auto-repeats included
-    /// ([`EditorKey::repeat`]), in a read-only editor too. On desktop an app's
-    /// document-wide keyboard interceptor (`set_keyboard_interceptor`) runs
-    /// first and may take the key before any editor sees it. **Not offered**:
+    /// ([`EditorKey::repeat`]), in a read-only editor too.
+    ///
+    /// **Who sees it first.** Only a menu shortcut (a chord an app menu or the
+    /// DOM menu bar registered) wins over `on_key`. Everything else comes
+    /// after it, on both backends: the document-wide keyboard interceptor
+    /// (`set_keyboard_interceptor`) and the dismiss stack — `Modal`, `Drawer`
+    /// and `Popover`'s `close_on_escape`, the DOM menu bar, a `<select>`
+    /// popup. So a popup that claims Escape closes itself and leaves the
+    /// `Modal` around the editor open; an Escape it leaves (`false`) goes on to
+    /// the dismiss stack and closes the modal as before. (In the browser this
+    /// is the capture phase against the bubble phase; desktop offers the key
+    /// before either to match.)
+    ///
+    /// **Not offered**:
     /// a key pressed while an IME composition is in progress (the input method
     /// owns it, and the composed text arrives as a commit, which is typing); in
     /// the browser, a soft keyboard's input, which reaches the page as
     /// `beforeinput` rather than as keys (`key` `"Unidentified"` or `"Process"`
     /// keys are not offered either); a key released (only presses are).
     ///
+    /// **With an input method active** (on Linux, IBus or Wayland
+    /// `text-input`, which the editor switches on while it has focus), plain
+    /// printable characters can arrive as input-method *commits* rather than
+    /// as keys, and then `on_key` never sees them. Named keys — arrows, Enter,
+    /// Tab, Escape — still arrive as keys. Detect a typed trigger such as `[[`
+    /// from [`on_selection_change`](Self::on_selection_change) and the
+    /// document around the caret, which sees the result whichever way the text
+    /// came in.
+    ///
     /// The callback runs with no internal borrow held, so it may re-enter the
     /// handle — read the selection, or replace the typed trigger with a link
     /// through [`update`](Self::update) before consuming Enter.
+    ///
+    /// Registered while a component renders, the callback belongs to that
+    /// component: it runs inside it, and is not called any more once it
+    /// unmounts, though the handle lives on (#147/#183). Registered outside any
+    /// render it keeps app lifetime.
     pub fn on_key(&self, cb: impl Fn(&EditorKey<'_>) -> bool + 'static) {
-        self.core_mut().on_key = Some(Rc::new(cb));
+        self.core_mut().on_key = Some(Hook::new(Rc::new(cb)));
     }
 
     /// Offer a key press to the [`on_key`](Self::on_key) callback; `true` when
@@ -1100,7 +1179,7 @@ impl EditorHandle {
             }
             core.on_key.clone()
         };
-        cb.is_some_and(|cb| cb(key))
+        cb.and_then(|cb| cb.invoke(|cb| cb(key))).unwrap_or(false)
     }
 
     /// Register a callback told **whenever the selection changes**. Replaces
@@ -1127,8 +1206,13 @@ impl EditorHandle {
     /// the selection recurses without end.
     ///
     /// Free when no callback is registered.
+    ///
+    /// Registered while a component renders, the callback belongs to that
+    /// component: it runs inside it, and is not called any more once it
+    /// unmounts, though the handle lives on (#147/#183). Registered outside any
+    /// render it keeps app lifetime.
     pub fn on_selection_change(&self, cb: impl Fn(&Selection) + 'static) {
-        self.core_mut().on_selection_change = Some(Rc::new(cb));
+        self.core_mut().on_selection_change = Some(Hook::new(Rc::new(cb)));
     }
 
     /// Register a callback told **when the runtime has placed this editor's
@@ -1168,8 +1252,13 @@ impl EditorHandle {
     /// the same event. The callback runs with no internal borrow held.
     ///
     /// Free when no callback is registered.
+    ///
+    /// Registered while a component renders, the callback belongs to that
+    /// component: it runs inside it, and is not called any more once it
+    /// unmounts, though the handle lives on (#147/#183). Registered outside any
+    /// render it keeps app lifetime.
     pub fn on_caret_moved(&self, cb: impl Fn() + 'static) {
-        self.core_mut().on_caret_moved = Some(Rc::new(cb));
+        self.core_mut().on_caret_moved = Some(Hook::new(Rc::new(cb)));
     }
 
     /// Where a caret at `pos` is on screen: its top-left and height, with zero
@@ -5788,6 +5877,88 @@ mod tests {
     mod popup_hooks {
         use super::*;
         use std::cell::Cell;
+
+        /// A callback registered while a component's scope is ambient stops
+        /// once that scope is disposed (#147/#183): a component that mounts an
+        /// app-level handle, registers the popup hooks against its own signals
+        /// and unmounts, after which the app moves the still-live handle's
+        /// selection. Before the owner was recorded this read a freed signal
+        /// and panicked.
+        #[test]
+        fn selection_callback_stops_when_its_scope_is_disposed() {
+            use rinch_core::reactive::{Scope, Signal};
+            let h = two_paragraphs();
+            let scope = Scope::new();
+            let fired = Rc::new(Cell::new(0u32));
+            scope.run(|| {
+                let sig = Signal::new(0u32);
+                let fired = fired.clone();
+                h.handle.on_selection_change(move |_| {
+                    fired.set(fired.get() + 1);
+                    let _ = sig.get();
+                });
+            });
+            h.handle.set_selection(Selection::cursor(Pos(3)));
+            assert_eq!(fired.get(), 1, "control: live");
+            scope.dispose();
+            h.handle.set_selection(Selection::cursor(Pos(4)));
+            assert_eq!(
+                fired.get(),
+                1,
+                "a disposed component's callback must not run"
+            );
+        }
+
+        /// `on_change` and `on_key` follow the same owner rule; a callback
+        /// registered outside any scope keeps app lifetime.
+        #[test]
+        fn change_and_key_callbacks_stop_with_their_scope_and_ownerless_ones_live_on() {
+            use rinch_core::reactive::{Scope, Signal};
+            let h = two_paragraphs();
+            let scope = Scope::new();
+            let changes = Rc::new(Cell::new(0u32));
+            let keys = Rc::new(Cell::new(0u32));
+            scope.run(|| {
+                let sig = Signal::new(0u32);
+                h.handle.on_change({
+                    let changes = changes.clone();
+                    move || {
+                        changes.set(changes.get() + 1);
+                        let _ = sig.get();
+                    }
+                });
+                h.handle.on_key({
+                    let keys = keys.clone();
+                    move |_| {
+                        keys.set(keys.get() + 1);
+                        let _ = sig.get();
+                        true
+                    }
+                });
+            });
+            let esc = key("Escape");
+            h.handle.set_selection(Selection::cursor(Pos(3)));
+            h.handle.insert_text("x");
+            assert!(h.handle.offer_key(&esc), "control: a live on_key claims");
+            assert_eq!((changes.get(), keys.get()), (1, 1), "control: live");
+            scope.dispose();
+            h.handle.insert_text("y");
+            assert!(!h.handle.offer_key(&esc), "a dead on_key claims nothing");
+            assert_eq!(
+                (changes.get(), keys.get()),
+                (1, 1),
+                "neither runs after dispose"
+            );
+
+            // Registered with no ambient owner: app lifetime.
+            let late = Rc::new(Cell::new(0u32));
+            h.handle.on_change({
+                let late = late.clone();
+                move || late.set(late.get() + 1)
+            });
+            h.handle.insert_text("z");
+            assert_eq!(late.get(), 1, "an ownerless callback keeps firing");
+        }
 
         /// `<p>hello</p><p>world</p>`: "hello" is 1..6, "world" is 8..13.
         fn two_paragraphs() -> Harness {
