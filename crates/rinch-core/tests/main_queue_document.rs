@@ -17,9 +17,12 @@ use rinch_core::{
     current_dispatching_doc, drain_main_callbacks, push_dispatching_doc, queue_main_callback,
 };
 
+/// Which closure ran, and the document it ran under.
+type Seen = Arc<Mutex<Vec<(&'static str, Option<u64>)>>>;
+
 #[test]
 fn a_queued_closure_runs_under_the_document_that_queued_it() {
-    let seen: Arc<Mutex<Vec<(&'static str, Option<u64>)>>> = Arc::new(Mutex::new(Vec::new()));
+    let seen: Seen = Arc::new(Mutex::new(Vec::new()));
 
     {
         let _doc1 = push_dispatching_doc(1);
