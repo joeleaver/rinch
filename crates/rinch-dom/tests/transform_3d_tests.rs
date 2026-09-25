@@ -943,3 +943,88 @@ fn a_tiny_turned_box_is_judged_with_chromes_epsilon() {
     }
     assert!(bad.is_empty(), "{bad:#?}");
 }
+
+// ------------------------------------------------------ a singular 4×4 (#1051)
+
+/// A box whose 4×4 transform is singular is neither drawn nor hit, even where
+/// its flattening onto `z = 0` is invertible — `scaleZ(0)` flattens to the
+/// identity (#1051). Measured in Chrome 153 on a red 100×40 box, screenshot
+/// pixels and `elementFromPoint` at its centre: every row marked `false` paints
+/// no pixel and is not hit, subtree included, whatever its
+/// `backface-visibility`. (Its `getBoundingClientRect()` is still the
+/// flattened rect; rinch's painted rect is not, as for a plane behind the
+/// viewer.)
+///
+/// Chrome's cut is the determinant against the smallest normal `f32`:
+/// `scaleZ(2.5e-38)` is drawn and `scaleZ(1e-38)` — or `scaleZ(1e-20)` twice —
+/// is not; a determinant that is merely small (`scaleZ(0.001)`,
+/// `scaleZ(1e-20)`, a near-singular rotation sandwich) is drawn. Chrome's
+/// `elementFromPoint` is unreliable on the near-singular drawn rows
+/// (`rotateY(20deg) scaleZ(1e-12)` is drawn and not hit), so only the rows it
+/// does hit are asserted hit.
+#[test]
+fn a_singular_transform_is_neither_drawn_nor_hit() {
+    let mut bad = vec![];
+    // (transform, drawn, hit asserted)
+    for (tf, drawn, hit_too) in [
+        ("scaleZ(0)", false, false),
+        ("scaleZ(-0)", false, false),
+        ("scale3d(1, 1, 0)", false, false),
+        ("scale3d(0.5, 0.5, 0)", false, false),
+        ("rotateY(180deg) scaleZ(0)", false, false),
+        (
+            "rotateY(180deg) scaleZ(0); backface-visibility: hidden",
+            false,
+            false,
+        ),
+        ("rotateX(45deg) scaleZ(0)", false, false),
+        ("scaleZ(0) rotateX(45deg)", false, false),
+        ("rotateY(20deg) scaleZ(0)", false, false),
+        ("rotateX(30deg) scaleZ(0) rotateY(20deg)", false, false),
+        // Row 0 reaches every column, so the Laplace signs matter (review of #1055).
+        (
+            "rotate3d(1,2,3,37deg) scaleZ(0) rotate3d(3,1,2,53deg)",
+            false,
+            false,
+        ),
+        ("matrix3d(1,0,0,0, 0,1,0,0, 0,0,0,0, 0,0,0,1)", false, false),
+        ("matrix3d(1,0,0,0, 0,1,0,0, 1,0,0,0, 0,0,0,1)", false, false),
+        ("perspective(100px) scaleZ(0)", false, false),
+        ("translateZ(10px) scaleZ(0)", false, false),
+        ("scaleZ(0); transform-origin: 50% 50% 30px", false, false),
+        ("scaleZ(1e-20) scaleZ(1e-20)", false, false),
+        ("scaleZ(1e-38)", false, false),
+        // Drawn: invertible, however nearly singular.
+        ("scaleZ(0.001)", true, true),
+        ("scaleZ(1e-20)", true, true),
+        ("scaleZ(1e-37)", true, true),
+        ("scaleZ(2.5e-38)", true, false),
+        ("scaleZ(-1)", true, true),
+        ("rotateX(30deg) scaleZ(1e-20) rotateY(20deg)", true, false),
+        ("rotateY(20deg) scaleZ(1e-12)", true, false),
+    ] {
+        let mut s = scene(200.0, 100.0, &format!("transform: {tf}"), None);
+        let (red, _) = s.painted();
+        let hit = s.hits(s.parent, 250.0, 120.0);
+        if (red > 0) != drawn || (hit_too && !hit) || (!drawn && hit) {
+            bad.push(format!(
+                "{tf}: {red} red px, hit={hit}, Chrome drawn={drawn}"
+            ));
+        }
+    }
+    assert!(bad.is_empty(), "{bad:#?}");
+}
+
+/// A singular box hides its whole subtree, a child with a transform of its own
+/// that would undo it included — Chrome 153 paints neither the red parent nor
+/// the blue child, and hits neither.
+#[test]
+fn a_singular_transform_hides_the_subtree() {
+    for child in ["", "transform: scaleZ(1000)"] {
+        let mut s = scene(400.0, 200.0, "transform: scaleZ(0)", Some(child));
+        let c = s.child.unwrap();
+        assert_eq!(s.painted(), (0, 0), "child `{child}`");
+        assert!(!s.hits(c, 425.0, 210.0), "child `{child}` is not hit");
+        assert!(!s.hits(s.parent, 450.0, 220.0));
+    }
+}
