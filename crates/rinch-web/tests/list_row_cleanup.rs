@@ -92,7 +92,10 @@ fn a_removed_for_rows_cleanup_sees_its_own_live_node() {
 
     // Positive control: the rows are real elements in the page, so the
     // cleanup's page query below can see one.
-    assert!(in_page("for-b"), "precondition: row b is mounted in the page");
+    assert!(
+        in_page("for-b"),
+        "precondition: row b is mounted in the page"
+    );
 
     items.set(vec!["a".to_string(), "c".to_string()]);
 

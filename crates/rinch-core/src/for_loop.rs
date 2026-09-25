@@ -321,7 +321,10 @@ pub(crate) fn release_parked(parked: Vec<ParkedRow>, still_shown: impl Fn(NodeId
 
 /// Whether `node` is the node of a row `state` still holds.
 fn shown_in(state: &RefCell<HashMap<String, ItemState>>, node: NodeId) -> bool {
-    state.borrow().values().any(|row| row.node.node_id() == node)
+    state
+        .borrow()
+        .values()
+        .any(|row| row.node.node_id() == node)
 }
 
 /// Tear down an [`ItemState`] that a duplicate key displaced out of `items_state`.

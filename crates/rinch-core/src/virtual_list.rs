@@ -1067,7 +1067,9 @@ mod tests {
                 }
             },
         );
-        let window = shared.parent_node().expect("precondition: the shared row is mounted");
+        let window = shared
+            .parent_node()
+            .expect("precondition: the shared row is mounted");
 
         items.set(vec![1u32, 3]);
 
