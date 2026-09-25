@@ -91,9 +91,14 @@ thread_local! {
     /// The largest mask side each of the last [`SCRATCH_WINDOW`] paints
     /// rasterised, newest last; and this paint's so far.
     #[cfg(feature = "software-renderer")]
-    static SCRATCH_USE: std::cell::RefCell<(Vec<(u32, u32)>, (u32, u32))> =
+    static SCRATCH_USE: std::cell::RefCell<ScratchUse> =
         const { std::cell::RefCell::new((Vec::new(), (0, 0))) };
 }
+
+/// The largest mask size each of the last paints needed, newest last, and
+/// this paint's so far.
+#[cfg(feature = "software-renderer")]
+type ScratchUse = (Vec<(u32, u32)>, (u32, u32));
 
 /// How many paints the scratch pixmap's size answers to.
 #[cfg(feature = "software-renderer")]

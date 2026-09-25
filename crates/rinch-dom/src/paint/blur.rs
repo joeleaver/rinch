@@ -96,7 +96,9 @@ impl Blur1d {
 
     /// Blur every column of the `w` x `h` row-major `mask` in place,
     /// sweeping rows so the mask is read in memory order. Column for column
-    /// the same sums as [`apply`](Self::apply), in the same order.
+    /// the same sums as [`apply`](Self::apply), in the same order. Used by
+    /// the text-shadow mask, which only the software rasteriser draws.
+    #[cfg_attr(not(feature = "software-renderer"), allow(dead_code))]
     pub(super) fn apply_columns(&self, mask: &mut [f32], w: usize, h: usize, src: &mut Vec<f32>) {
         if w == 0 || h == 0 {
             return;
@@ -221,7 +223,7 @@ mod tests {
                 );
             }
             // Its tail reaches three sigma: the sample just inside it is lit.
-            let edge = line[(n / 2) as usize + reach as usize];
+            let edge = line[n / 2 + reach as usize];
             assert!(
                 edge > 0.0,
                 "sigma {sigma}: nothing at {reach} samples, the kernel stops short of 3 sigma"

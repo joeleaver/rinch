@@ -402,7 +402,7 @@ fn the_fallback_blurs_by_the_shadow_alone() {
     assert_eq!(taps(0), 13, "a 100-glyph shadow gets the full kernel");
     assert_eq!(taps(1), 5, "a 300-glyph shadow gets the 5-tap cross");
     assert_eq!(taps(2), 1, "a 600-glyph shadow is drawn unblurred");
-    assert!(rinch_dom::paint::TAP_GLYPHS_PER_SHADOW < 600 * 5);
+    const { assert!(rinch_dom::paint::TAP_GLYPHS_PER_SHADOW < 600 * 5) };
 }
 
 /// Where the software rasteriser is compiled in, a blurred shadow reaches the
