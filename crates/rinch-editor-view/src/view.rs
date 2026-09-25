@@ -2200,6 +2200,159 @@ mod tests {
         assert_eq!(text(&h, blocks[1]).as_deref(), Some("b"));
     }
 
+    /// The text of each block the container holds, in order (overlays have
+    /// no `data-pm-type` and are skipped).
+    fn block_texts(h: &Harness) -> Vec<(NodeId, String)> {
+        children(h, h.container_id)
+            .into_iter()
+            .filter(|&id| pm_type(h, id).is_some())
+            .map(|id| (id, text(h, id).unwrap_or_default()))
+            .collect()
+    }
+
+    /// The host element currently showing `t`.
+    fn host_of(h: &Harness, t: &str) -> NodeId {
+        block_texts(h)
+            .into_iter()
+            .find(|(_, s)| s == t)
+            .unwrap_or_else(|| panic!("no block shows {t:?}"))
+            .0
+    }
+
+    /// Splitting a block in the **middle** of the document keeps every block
+    /// after it on its own host node (issue #905).
+    ///
+    /// The diff used to be purely positional, so inserting one block shifted
+    /// every later model block onto its predecessor's host: each one's text
+    /// was rewritten (`set_text`) and every paragraph below the caret was
+    /// re-shaped on the desktop — 31 shapes for one Enter in 30 paragraphs.
+    /// Matching the unchanged (`same_ref`) prefix and suffix first leaves them
+    /// alone. Off the fixed point: the split is neither the first nor the last
+    /// block, and two blocks follow it, so a positional diff moves both.
+    #[test]
+    fn a_split_in_the_middle_keeps_the_blocks_after_it_on_their_hosts() {
+        let h = harness();
+        let s = schema();
+        let mut st = state(
+            s.clone(),
+            doc_node(
+                &s,
+                vec![para(&s, "a"), para(&s, "bc"), para(&s, "d"), para(&s, "e")],
+            ),
+        );
+        let mut view = RinchDomEditorView::new(h.container.clone(), doc_ref(&h), &st);
+        let (a, bc, d, e) = (
+            host_of(&h, "a"),
+            host_of(&h, "bc"),
+            host_of(&h, "d"),
+            host_of(&h, "e"),
+        );
+        let (d_text, e_text) = (children(&h, d)[0], children(&h, e)[0]);
+
+        // 0[p 1 a 2]3[p 4 b 5 c 6]7 — split between "b" and "c".
+        st.selection = Selection::cursor(rinch_editor_core::Pos(5));
+        let next = st.run("splitBlock").expect("split applies");
+        view.update_dom(&st, &next);
+
+        let after: Vec<String> = block_texts(&h).into_iter().map(|(_, t)| t).collect();
+        assert_eq!(
+            after,
+            ["a", "b", "c", "d", "e"],
+            "the host reads as the model"
+        );
+        assert_eq!(host_of(&h, "a"), a, "the block before is untouched");
+        assert_eq!(host_of(&h, "b"), bc, "the split block is patched in place");
+        assert_eq!(host_of(&h, "d"), d, "#905: `d` stays on its own host");
+        assert_eq!(host_of(&h, "e"), e, "#905: `e` stays on its own host");
+        assert_eq!(children(&h, d)[0], d_text, "and on its own text node");
+        assert_eq!(children(&h, e)[0], e_text, "and on its own text node");
+    }
+
+    /// Joining two blocks in the middle of the document keeps the blocks after
+    /// the join on their hosts, and discards the joined-away block's host — not
+    /// the last one (issue #905).
+    #[test]
+    fn a_join_in_the_middle_discards_the_joined_block_not_the_last() {
+        let h = harness();
+        let s = schema();
+        let mut st = state(
+            s.clone(),
+            doc_node(
+                &s,
+                vec![
+                    para(&s, "a"),
+                    para(&s, "b"),
+                    para(&s, "c"),
+                    para(&s, "d"),
+                    para(&s, "e"),
+                ],
+            ),
+        );
+        let mut view = RinchDomEditorView::new(h.container.clone(), doc_ref(&h), &st);
+        let (b, c, d, e) = (
+            host_of(&h, "b"),
+            host_of(&h, "c"),
+            host_of(&h, "d"),
+            host_of(&h, "e"),
+        );
+
+        // 0[p1 a 2]3[p4 b 5]6[p7 c 8]9 — Backspace at the start of "c".
+        st.selection = Selection::cursor(rinch_editor_core::Pos(7));
+        let next = st.run("deleteCharBackward").expect("join applies");
+        view.update_dom(&st, &next);
+
+        let after: Vec<String> = block_texts(&h).into_iter().map(|(_, t)| t).collect();
+        assert_eq!(after, ["a", "bc", "d", "e"], "the host reads as the model");
+        assert_eq!(host_of(&h, "bc"), b, "the joined block is patched in place");
+        assert_eq!(host_of(&h, "d"), d, "#905: `d` stays on its own host");
+        assert_eq!(host_of(&h, "e"), e, "#905: `e` stays on its own host");
+        assert_eq!(tag(&h, c), None, "#719: the joined-away block is discarded");
+    }
+
+    /// Whatever the edit, the host's blocks read as the model's, in order —
+    /// inserted and removed at the start, the middle and the end, several at
+    /// once, and with a changed block between two unchanged ones.
+    #[test]
+    fn the_host_reads_as_the_model_after_inserts_and_removals_anywhere() {
+        let s = schema();
+        let texts = |v: &[&str]| -> Node { doc_node(&s, v.iter().map(|t| para(&s, t)).collect()) };
+        let cases: &[(&[&str], &[&str])] = &[
+            (&["a", "b", "c"], &["x", "a", "b", "c"]),
+            (&["a", "b", "c"], &["a", "b", "c", "x"]),
+            (&["a", "b", "c"], &["a", "x", "y", "b", "c"]),
+            (&["a", "b", "c", "d"], &["a", "d"]),
+            (&["a", "b", "c", "d"], &["b", "c", "d"]),
+            (&["a", "b", "c", "d"], &["a", "b", "c"]),
+            (&["a", "b", "c"], &["a", "x", "c"]),
+            (&["a", "b", "c"], &["a", "x", "y", "z", "c"]),
+            (&["a", "b", "c", "d"], &["a", "x", "d"]),
+            (&["a"], &["x", "y"]),
+        ];
+        for (before, after) in cases {
+            let h = harness();
+            let old = texts(before);
+            let st = state(s.clone(), old.clone());
+            let mut view = RinchDomEditorView::new(h.container.clone(), doc_ref(&h), &st);
+            // Keep the unchanged blocks as the SAME `Rc`s, as a real
+            // transaction does, so the diff can match them.
+            let blocks: Vec<Node> = after
+                .iter()
+                .map(|t| {
+                    (0..old.child_count())
+                        .map(|i| old.child(i))
+                        .find(|c| c.child(0).text() == Some(*t))
+                        .cloned()
+                        .unwrap_or_else(|| para(&s, t))
+                })
+                .collect();
+            let mut next = st.clone();
+            next.doc = doc_node(&s, blocks);
+            view.update_dom(&st, &next);
+            let got: Vec<String> = block_texts(&h).into_iter().map(|(_, t)| t).collect();
+            assert_eq!(&got, after, "{before:?} -> {after:?}");
+        }
+    }
+
     #[test]
     fn wrap_in_blockquote_restructures_host() {
         let h = harness();
