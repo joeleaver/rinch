@@ -111,6 +111,8 @@ mod perf_regression_tests;
 mod perf_stats_tests;
 #[cfg(all(test, software_shell))]
 mod repaint_old_rect_tests;
+#[cfg(all(test, software_shell))]
+mod screenshot_capture_tests;
 mod select_widget;
 #[cfg(test)]
 mod stepper_state_709_tests;
@@ -1596,6 +1598,12 @@ impl RinchApp {
             self.has_previous_frame = false;
         }
         self.painter.scene()
+    }
+
+    /// The pixels a software debug screenshot captures.
+    #[cfg(software_shell)]
+    pub fn screenshot_pixels(&mut self, scale: f64, size: (u32, u32)) -> (&[u8], u32, u32) {
+        self.build_pixels(scale, size, false)
     }
 
     /// Build pixels via TinySkiaPainter for software rendering.
