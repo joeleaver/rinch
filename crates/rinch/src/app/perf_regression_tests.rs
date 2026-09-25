@@ -468,8 +468,11 @@ fn row_count(app: &RinchApp) -> usize {
 ///   (`paint::clip_chain_bounds`). The glyphs of the rows in the band that
 ///   no longer repaints went with it (`glyph_cache_hits` 201 → 138 over both
 ///   fixes).
-/// - **Two clip masks cover 367 044 px** for that 122 816 px repaint: the
-///   damage's own clip and the scroller's, each filled over its bounds.
+/// - **Two clip masks cover 245 640 px** for that 122 816 px repaint: the
+///   damage's own clip (124 236 with its pad) and the scroller's (121 404),
+///   each filled over its bounds (since #907 the scroller's is not
+///   intersected with the damage's). Before #909 the damage mask alone was
+///   183 600.
 /// - **#914, fixed:** the moved row is neither re-cascaded nor re-shaped
 ///   (`elements_cascaded` 0, `shape_*` 0): a move within one parent keeps its
 ///   style (`keeps_style_across_move`) and its own IFC layout
@@ -505,7 +508,7 @@ fn a_keyed_for_moves_one_row() {
             (StackingOrderBuilds, 1),
             (GlyphCacheHits, 138),
             (ClipMasks, 2),
-            (ClipMaskPx, 367044),
+            (ClipMaskPx, 245640),
             (PaintSurfaceAllocs, 1),
             (EffectRuns, 1),
             (SignalNotifies, 1),
@@ -558,7 +561,7 @@ fn a_keyed_for_inserts_one_row_in_the_middle() {
             (StackingOrderBuilds, 1),
             (GlyphCacheHits, 137),
             (ClipMasks, 2),
-            (ClipMaskPx, 367044),
+            (ClipMaskPx, 245640),
             (PaintSurfaceAllocs, 1),
             (EffectRuns, 1),
             (SignalNotifies, 1),
@@ -596,7 +599,7 @@ fn a_keyed_for_removes_one_row_from_the_middle() {
             (StackingOrderBuilds, 1),
             (GlyphCacheHits, 137),
             (ClipMasks, 2),
-            (ClipMaskPx, 367044),
+            (ClipMaskPx, 245640),
             (PaintSurfaceAllocs, 1),
             (EffectRuns, 1),
             (SignalNotifies, 1),
@@ -639,7 +642,7 @@ fn a_keyed_for_replaces_every_row() {
             (StackingOrderBuilds, 1),
             (GlyphCacheHits, 168),
             (ClipMasks, 2),
-            (ClipMaskPx, 367044),
+            (ClipMaskPx, 245640),
             (PaintSurfaceAllocs, 1),
             (EffectRuns, 1),
             (SignalNotifies, 1),
@@ -718,7 +721,7 @@ fn a_wheel_scroll_repaints_the_scroller_and_restyles_nothing() {
             (StackingOrderBuilds, 2),
             (GlyphCacheHits, 121),
             (ClipMasks, 2),
-            (ClipMaskPx, 367044),
+            (ClipMaskPx, 245640),
             (PaintSurfaceAllocs, 1),
             (HitTests, 2),
             (HitTestNodesVisited, 8),
