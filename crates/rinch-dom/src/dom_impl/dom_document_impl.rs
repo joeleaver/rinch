@@ -1625,7 +1625,12 @@ impl RinchDocument {
     /// already sorted by the cascade — and reads only the important levels'
     /// declaration blocks, so a node with no important rule pays the walk and
     /// nothing else. An `inset` shorthand is stored as its four longhands, so
-    /// `inset: 0 !important` answers for every side.
+    /// `inset: 0 !important` answers for every side. A *logical* inset
+    /// (`inset-inline-start`, `inset-block-end`, and the `inset-inline` /
+    /// `inset-block` shorthands that expand to them) is its own longhand that
+    /// the cascade maps to a physical side only later, by writing mode and
+    /// direction; any important one answers `true` for every side rather than
+    /// repeating that mapping here.
     ///
     /// Conservative on purpose: it does not ask *which* important declaration
     /// wins, so a node whose own style attribute already carried an
@@ -1649,8 +1654,22 @@ impl RinchDocument {
                 && rule.style_source().is_some_and(|source| {
                     source
                         .read(&guard)
-                        .get(PropertyDeclarationId::Longhand(id))
-                        .is_some_and(|(_, importance)| importance.important())
+                        .declaration_importance_iter()
+                        .any(|(decl, importance)| {
+                            importance.important()
+                                && matches!(
+                                    decl.id(),
+                                    PropertyDeclarationId::Longhand(l)
+                                        if l == id
+                                            || matches!(
+                                                l,
+                                                LonghandId::InsetInlineStart
+                                                    | LonghandId::InsetInlineEnd
+                                                    | LonghandId::InsetBlockStart
+                                                    | LonghandId::InsetBlockEnd
+                                            )
+                                )
+                        })
                 })
         })
     }
