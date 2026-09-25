@@ -2192,22 +2192,6 @@ impl RinchDocument {
         }
     }
 
-    /// Whether `node_id` has a text child that no IFC holds — a text **leaf**,
-    /// the text of a flex or grid item, in a block-level container or inside
-    /// an `inline-flex` / `inline-grid`. Such text is painted from the layout
-    /// its measure built (`Node::cached_text_parley`), which only a compute
-    /// rebuilds (#904).
-    pub(crate) fn has_text_leaf_child(&self, node_id: usize) -> bool {
-        self.tree.nodes.get(node_id).is_some_and(|n| {
-            n.children.iter().any(|&c| {
-                self.tree
-                    .nodes
-                    .get(c)
-                    .is_some_and(|c| matches!(c.kind, NodeKind::Text(_)) && c.ifc_root.is_none())
-            })
-        })
-    }
-
     /// Invalidate the IFC that owns a node (if any).
     ///
     /// Clears the IFC root's cached text_layout so it rebuilds on next layout pass.

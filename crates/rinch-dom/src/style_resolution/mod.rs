@@ -962,16 +962,6 @@ impl RinchDocument {
                 .computed_style
                 .same_measured_text_inputs(&new_style);
 
-            // …and, for a text **leaf**'s cached layout (#904), whether an
-            // input other than colour moved: paint applies the colour itself.
-            // Asked only when something did move, since it clones a style.
-            let leaf_layout_stale = text_layout_stale && {
-                let old = &self.tree.nodes[node_id].computed_style;
-                let mut same_colour = new_style.clone();
-                same_colour.color = old.color;
-                !old.same_text_layout_inputs(&same_colour)
-            };
-
             self.tree.note_background_image(&new_style);
 
             // Extract transition specs from Stylo
@@ -1268,17 +1258,6 @@ impl RinchDocument {
             // must still take the cheap path, which is what the early return in
             // `resolve_layout` exists for.
             if measured_size_stale || animated_text_measure {
-                self.tree.layout_dirty = true;
-            }
-
-            // A text **leaf** (a flex or grid item's own text) is painted from
-            // the layout its measure built, and only a compute rebuilds that
-            // (#904): its alignment and `text-overflow` are applied when the
-            // compute's layouts are copied, not at paint. So a change to one of
-            // those needs a compute even though it moves no box. **Colour does
-            // not**: paint draws a leaf in its parent's current colour, so a
-            // colour-only change — the common hover — stays on the cheap path.
-            if leaf_layout_stale && !measured_size_stale && self.has_text_leaf_child(node_id) {
                 self.tree.layout_dirty = true;
             }
 
