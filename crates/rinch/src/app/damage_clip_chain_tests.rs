@@ -634,7 +634,8 @@ fn a_row_replacing_a_node_inside_a_clipper_is_cleared_where_it_was() {
 /// (a separate, pre-existing issue).
 #[test]
 fn a_moved_absolute_under_a_positioned_contents_wrapper_is_repainted() {
-    for wrapper_style in ["display: contents; position: relative"] {
+    {
+        let wrapper_style = "display: contents; position: relative";
         type Slot = Option<NodeHandle>;
         let slot: Rc<RefCell<Slot>> = Rc::new(RefCell::new(None));
         let slot_in = slot.clone();
