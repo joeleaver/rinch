@@ -29,7 +29,7 @@
 //! |---|---|
 //! | `div(margin: 100px 0 0 50px; 200x100) > contents+relative > abs(inset: 0)` | abs `0,0,vw,vh` |
 //! | `div(margin: 40px 0 0 60px; 100x100; overflow: hidden) > contents+relative > abs(10,20 300x250)` | abs `10,20,300,250`; `elementFromPoint(200,200)` is the abs (outside the clip) |
-//! | `div(margin-left: 500px; 50x50; overflow: hidden) > contents+translateX(5px) > abs(left: 430px; top: 7px)` | abs `430,7,100,100` — the transform does nothing (rinch matches this in layout; paint still clips it, #1038) |
+//! | `div(margin-left: 500px; 50x50; overflow: hidden) > contents+translateX(5px) > abs(left: 430px; top: 7px)` | abs `430,7,100,100` — the transform does nothing (and since #1038 it is no stacking context either, so paint does not clip it) |
 //!
 //! No fixture sits on a fixed point: every parent is off the page origin (so a
 //! parent-relative box and an ICB box differ in position as well as size), and
@@ -98,10 +98,10 @@ fn a_positioned_contents_wrapper_is_not_the_containing_block() {
 /// `transform` does not apply to a `display: contents` element, so it does not
 /// make one a containing block either.
 ///
-/// **Layout only.** Such a wrapper still creates a stacking context in rinch
-/// (#1038), and the collector does not descend into one, so in paint and hit
-/// testing an absolute under it stays clipped by an `overflow` box above the
-/// wrapper — Chrome 153 does not clip it. This pins the box's size and place.
+/// **Layout only.** This pins the box's size and place; that such a wrapper is
+/// no stacking context either, so paint and hit testing do not clip the
+/// absolute by an `overflow` box above it, is
+/// `display_contents_stacking_tests` (#1038).
 #[test]
 fn a_transformed_contents_wrapper_is_not_the_containing_block() {
     let (doc, _outer, _wrapper, abs) =

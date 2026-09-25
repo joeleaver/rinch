@@ -2390,7 +2390,8 @@ transition frame. **A component whose overlay must cover its parent (e.g.
 it the overlay now covers the window, as it always has on the web.
 
 **Overflow clipping.** One predicate — `Node::clips_overflow()`, "either axis is
-not `visible`, and the box is not a non-atomic `display: inline` element" — and
+not `visible`, and the box is neither a non-atomic `display: inline` element nor
+`display: contents`" (which generates no box to clip to, #1038) — and
 one shape, `paint::clip_shape` (the rounded border box).
 Everything that needs either asks those: paint's clip bracket, its dirty-region
 subtree prune, the layer-bounds walk, a hoisted entry's clip chain, hit
@@ -2491,6 +2492,16 @@ them clips.
 **Stacking contexts and the clip chain.** `Node::creates_stacking_context()`
 answers: a positioned box with an explicit `z-index`, `position: fixed` or
 `sticky` whatever the `z-index`, `opacity < 1`, a non-identity `transform`.
+**None of them on a `display: contents` element** (#1038): it generates no box,
+so it is neither a stacking context nor a positioned layer (`is_positioned_z_auto`),
+its `opacity`/`transform` do not reach its children and its `z-index` scopes
+nothing (all measured in Chrome 153). Where a box is *anchored* depends on the
+same fact, so a coordinate walk asks `Node::box_position()` — the computed
+`position`, `static` for `display: contents` — not `computed_style.position`: a
+`display: contents; position: fixed` wrapper's `0,0` layout used to be read as
+a viewport position, and the walks that stop at a fixed ancestor
+(`position_and_transform_in`, hit testing's `descend`, the damage clip chain,
+`layer_bounds`) put its subtree at the window's origin.
 
 That is **not** the whole CSS list, and the shortfall is not only about what
 `ComputedStyle` can hold. `clip-path`, `mask`, `isolation`, `mix-blend-mode`,
