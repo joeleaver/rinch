@@ -7,7 +7,6 @@ use std::cell::Cell;
 use std::rc::Rc;
 
 use rinch_core::dom::{NodeHandle, RenderScope};
-use rinch_core::reactive::untracked;
 use rinch_core::{Component, Drag, InputCallback, Signal, batch, get_click_context};
 
 use crate::color_swatch::ColorSwatch;
@@ -590,18 +589,19 @@ impl Component for ColorPicker {
                         return;
                     }
                 }
-                // Untracked: the handler runs inside this effect's frame,
-                // and a controlled handler routinely reads the store it
-                // writes (`if value != store.get() { store.set(value) }`).
-                // Tracked, that read would subscribe this effect to the
-                // store, and a peer's later write would re-run it — ahead of
-                // the consumer's own `value_fn` effect — re-emitting the
-                // stale colour for the handler to write back over the peer's.
+                // The handler runs inside this effect's frame, and a
+                // controlled handler routinely reads the store it writes
+                // (`if value != store.get() { store.set(value) }`). That read
+                // must not subscribe this effect to the store — a peer's
+                // later write would re-run it ahead of the consumer's own
+                // `value_fn` effect and re-emit the stale colour over the
+                // peer's. `invoke` itself runs untracked (GH #285), which is
+                // what keeps it out; this site used to wrap it by hand.
                 //
                 // The `emitting` window spans the call: an apply the handler
                 // provokes lands in it and arms no marker (GH #283).
                 let _emitting = ApplyGuard::raise(&emitting);
-                untracked(|| onchange.invoke(format_color(hsv, color_format)));
+                onchange.invoke(format_color(hsv, color_format));
             });
         }
 

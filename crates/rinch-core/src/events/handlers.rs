@@ -36,8 +36,11 @@ impl InputCallback {
     }
 
     /// Invoke the callback with the input value.
+    ///
+    /// Runs untracked (issue #285): called from inside an effect, the
+    /// handler's signal reads do not subscribe that effect.
     pub fn invoke(&self, value: String) {
-        (self.0)(value)
+        crate::reactive::untracked_handler(|| (self.0)(value))
     }
 }
 
@@ -78,8 +81,11 @@ impl FileDropCallback {
     }
 
     /// Invoke the callback with the dropped file paths.
+    ///
+    /// Runs untracked (issue #285): called from inside an effect, the
+    /// handler's signal reads do not subscribe that effect.
     pub fn invoke(&self, paths: Vec<PathBuf>) {
-        (self.0)(paths)
+        crate::reactive::untracked_handler(|| (self.0)(paths))
     }
 }
 
@@ -158,8 +164,11 @@ impl ScrollCallback {
     }
 
     /// Invoke the callback with the container's current scroll offsets.
+    ///
+    /// Runs untracked (issue #285): called from inside an effect, the
+    /// handler's signal reads do not subscribe that effect.
     pub fn invoke(&self, event: ScrollEvent) {
-        (self.0)(event)
+        crate::reactive::untracked_handler(|| (self.0)(event))
     }
 }
 

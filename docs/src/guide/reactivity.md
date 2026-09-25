@@ -224,6 +224,37 @@ Effect::new(move || {
 // This effect only re-runs when `count` changes, not when `name` changes
 ```
 
+`untracked` hides only the observer directly above it. That matters only while
+an effect's run is nested inside another effect's run — the first run of an
+`Effect::new` written inside another effect's body, for instance. A read inside
+`untracked` there is recorded on the outer effect. Later re-runs of the inner
+effect normally come from a flush with no effect beneath them and are unaffected (issue
+#932).
+
+### App handlers never subscribe the effect that calls them
+
+A component often calls its app's handler from inside one of its own effects — a
+coordinating effect that ends in `onchange`, a `value_fn` binding that reports
+back. The handler is app code, and it routinely reads signals: the controlled
+idiom `onchange: move |v| if v != store.get() { store.set(v) }` reads the store
+it writes. If that read counted, the component's internal effect would be
+subscribed to the app's store, and a write to the store from anywhere else would
+re-run it out of turn.
+
+So every app-callback type's `invoke` — `Callback`, `ValueCallback<T>`,
+`InputCallback`, `FileDropCallback` and `ScrollCallback` — runs the handler with
+**no** observer in view, however many effects deep the call is (issue #285).
+Handlers respond to events; effects respond to signals. A component author does
+not need to wrap `cb.invoke(..)` in `untracked` any more.
+
+Only tracking changes: batching is untouched, so a handler's writes inside an
+event handler still flush once, when the batch ends. An effect the handler
+creates, or one its writes run, tracks normally.
+
+This covers those five types. A closure a component stores and calls itself —
+an `Rc<dyn Fn()>`, a `render_fn` — is an ordinary call and is tracked like any
+other code in the effect; that is what a `_fn` prop such as `value_fn` relies on.
+
 ## Memory Management with Scopes
 
 Reactive resources continue to exist until something disposes them. Usually that

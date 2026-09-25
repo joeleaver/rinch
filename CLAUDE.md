@@ -614,6 +614,16 @@ impl Component for MyButton {
 }
 ```
 
+**Every app-callback `invoke` runs untracked** (`Callback`, `ValueCallback`,
+`InputCallback`, `FileDropCallback`, `ScrollCallback`; issue #285): called from
+inside a component's own effect, the handler's signal reads subscribe no effect
+at any nesting depth — it suspends the whole observer stack
+(`reactive::untracked_handler`), where `untracked` pops only the top frame
+(which leaks to an outer effect only during a run nested inside that outer
+effect's run — #932).
+Batching and flushing are unchanged. So `onchange.invoke(v)` in a coordinating
+effect needs no hand-written `untracked`.
+
 ## Component Props
 
 For a complete reference of every component's props (fields, types, defaults), see [`docs/src/guide/component-props.md`](docs/src/guide/component-props.md).
