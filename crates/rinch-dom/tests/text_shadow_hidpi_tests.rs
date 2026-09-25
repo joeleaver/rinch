@@ -67,6 +67,10 @@ const BOX: &str = "width: 260px; margin: 20px 0 0 30px; font-size: 32px; line-he
 const TEXT: &str = "HxH";
 
 fn document(style: &str) -> (RinchDocument, rinch_core::dom::NodeId) {
+    document_with(style, TEXT)
+}
+
+fn document_with(style: &str, text: &str) -> (RinchDocument, rinch_core::dom::NodeId) {
     use parley::fontique::{Blob, FontInfoOverride};
     let mut doc = RinchDocument::new();
     let registered = doc.font_cx.collection.register_fonts(
@@ -82,7 +86,7 @@ fn document(style: &str) -> (RinchDocument, rinch_core::dom::NodeId) {
     let c = doc.create_element("div");
     doc.set_attribute(c, "style", style);
     doc.append_child(body, c);
-    let t = doc.create_text(TEXT);
+    let t = doc.create_text(text);
     doc.append_child(c, t);
     doc.resolve_layout(VW, VH);
     (doc, c)
@@ -367,5 +371,64 @@ fn opacity_layer_bounds_reach_the_scaled_shadow() {
              physical px; the shadow is drawn {} px right of the text",
             100.0 * scale
         );
+    }
+}
+
+// ── A glyph off its run's baseline ─────────────────────────────────────────
+
+/// `TEXT` has no mark-positioned glyph: every `glyph.y` is 0 and `glyph.x`
+/// is 0 for plain Latin shaping, so the fixtures above cannot see the scale on
+/// either (the fixed-point trap `glyph_y_ydown_tests` documents). `a` + U+0301
+/// + U+0308 shapes the diaeresis as a separate glyph at a non-zero GPOS offset.
+/// Scale 0.75 is included: the shadow pass has no `max` to hide behind below 1.
+///
+/// Kills: `glyph.y` unscaled in the shadow pass, `glyph.x` unscaled, and the
+/// shadow pass's sign flipped back to `gy - glyph.y * sf` (review of #979).
+#[test]
+fn a_mark_positioned_glyph_casts_its_shadow_at_scale() {
+    for scale in [0.75, 1.5, 2.0] {
+        let style = BOX.replace("13px 50px", "3px 5px");
+        assert_ne!(style, BOX, "the offset was rewritten");
+        let (mut doc, _) = document_with(&style, "Ha\u{0301}\u{0308}H");
+
+        let mut painter = Recorder::default();
+        let mut cx: parley::LayoutContext<Brush> = parley::LayoutContext::new();
+        rinch_dom::paint::paint_document(
+            &doc.tree,
+            &mut painter,
+            scale,
+            (VW, VH),
+            &mut doc.font_cx,
+            &mut cx,
+        );
+        let flat = |red: bool| -> Vec<(u32, Point, f32)> {
+            painter
+                .runs
+                .iter()
+                .filter(|r| r.red == red)
+                .flat_map(|r| r.glyphs.iter().map(move |&(id, p)| (id, p, r.font_size)))
+                .collect()
+        };
+        let (shadow, main) = (flat(true), flat(false));
+
+        // Positive control: some glyph sits off its neighbours' baseline.
+        let ys: Vec<f64> = main.iter().map(|g| g.1.y).collect();
+        assert!(
+            ys.iter().any(|y| (y - ys[0]).abs() > 1.0),
+            "no glyph carries a mark offset at scale {scale} ({ys:?}); this fixture measures nothing"
+        );
+        assert_eq!(shadow.len(), main.len(), "every glyph casts a shadow");
+        for ((sid, sp, sfs), (mid, mp, mfs)) in shadow.iter().zip(&main) {
+            assert_eq!(sid, mid);
+            assert_eq!(sfs, mfs, "at scale {scale} the shadow font size");
+            let (dx, dy) = (sp.x - mp.x, sp.y - mp.y);
+            assert!(
+                (dx - 3.0 * scale).abs() < 1e-3 && (dy - 5.0 * scale).abs() < 1e-3,
+                "at scale {scale} glyph {sid}'s shadow is ({dx:.3}, {dy:.3}) from it, \
+                 not ({}, {}) (#409)",
+                3.0 * scale,
+                5.0 * scale
+            );
+        }
     }
 }
