@@ -523,6 +523,16 @@ two worked examples: both keep their panel rendered while closed, `Drawer` slide
 its `transform` and `Popover` fades its `opacity`. See [the transitions section
 of the rendering pipeline](../architecture/rendering-pipeline.md).
 
+**To animate the close as well, delay the hide.** Put `transition: visibility 0s
+linear <duration>` on the *hidden* state only: the box stays `visible` through
+the transition's delay, then hides, and the shown state — which declares no
+`visibility` transition — cancels a pending hide if the overlay reopens first.
+`Drawer` and `Popover` both do this. `visibility` is transitionable on desktop
+since issue #759, interpolated as CSS says (every step strictly inside a
+transition with a `visible` end is `visible`), and unlike any other property
+there its animated value reaches the descendants that inherit it, so the panel's
+content stays on screen with it.
+
 A `visibility: hidden` subtree is excluded from paint, from hit testing and from
 the Tab order, which is most of what `display: none` was doing — but not all of
 it, and the difference is that the box is still **there**. Two consequences to
