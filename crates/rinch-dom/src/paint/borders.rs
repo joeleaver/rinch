@@ -858,20 +858,21 @@ pub(super) fn paint_inset_box_shadow(
         let hole_empty = hole.width() <= 0.0 || hole.height() <= 0.0;
 
         if blur > 0.0 && !hole_empty {
-            if let Some((origin, image)) =
-                blurred_inset_image(pad, hole, hole_radii, blur * 0.5, color, transform)
-            {
+            let images = blurred_inset_images(pad, hole, hole_radii, blur * 0.5, color, transform);
+            if !images.is_empty() {
                 painter.push_clip(clip_fill, transform, &clip);
-                painter.draw_image(
-                    &super::painter::PaintImage {
-                        data: &image.data,
-                        width: image.width,
-                        height: image.height,
-                        decoded: None,
-                        opaque: false,
-                    },
-                    transform * Affine::translate(origin),
-                );
+                for (origin, image) in &images {
+                    painter.draw_image(
+                        &super::painter::PaintImage {
+                            data: &image.data,
+                            width: image.width,
+                            height: image.height,
+                            decoded: None,
+                            opaque: false,
+                        },
+                        transform * Affine::translate(*origin),
+                    );
+                }
                 painter.pop_layer();
             }
             continue;
@@ -920,11 +921,11 @@ const MAX_INSET_IMAGE_PIXELS: usize = 16 * 1024 * 1024;
 /// Past this `sigma` a 1-D blur is three box blurs rather than a sampled
 /// Gaussian kernel: the kernel costs `6 sigma` per sample, the boxes a
 /// constant, and above it the boxes are within a level of the Gaussian.
-const DIRECT_KERNEL_MAX_SIGMA: f64 = 8.0;
+const DIRECT_KERNEL_MAX_SIGMA: f64 = 2.5;
 
-/// The blurred inset shadow over the padding box `pad` (device pixels), as an
-/// image and the device-space origin to draw it at; `None` when nothing of it
-/// can be seen.
+/// The blurred inset shadow over the padding box `pad` (device pixels), as
+/// images and the device-space origins to draw them at; empty when nothing of
+/// it can be seen.
 ///
 /// The shadow's alpha is the colour's alpha times one minus the hole's
 /// coverage blurred by a Gaussian of `sigma`. The hole is a rounded rect, and
@@ -933,14 +934,14 @@ const DIRECT_KERNEL_MAX_SIGMA: f64 = 8.0;
 /// the sliver the rounding takes off the rect (a 2-D blur, but only over the
 /// corner's own square grown by the blur's reach). So the cost is the image
 /// itself plus four small corner patches, whatever the blur.
-fn blurred_inset_image(
+fn blurred_inset_images(
     pad: Rect,
     hole: Rect,
     hole_radii: RoundedRectRadii,
     sigma: f64,
     color: AlphaColor<Srgb>,
     transform: Affine,
-) -> Option<(Vec2, ShadowImage)> {
+) -> Vec<(Vec2, ShadowImage)> {
     // The image covers `pad` on whole device pixels, cropped to what can be
     // seen when the transform is a translation (a rotated or scaled box keeps
     // its whole padding box).
@@ -958,11 +959,11 @@ fn blurred_inset_image(
         }
     }
     if area.width() <= 0.0 || area.height() <= 0.0 {
-        return None;
+        return Vec::new();
     }
     let (iw, ih) = (area.width() as usize, area.height() as usize);
     if iw.saturating_mul(ih) > MAX_INSET_IMAGE_PIXELS {
-        return None;
+        return Vec::new();
     }
     let blur = Blur1d::new(sigma);
     let reach = blur.reach();
@@ -1037,8 +1038,11 @@ fn blurred_inset_image(
                 patch[j * pw + i] = (ox * oy * outside_arc) as f32;
             }
         }
+        // Only the rows the sliver is on have anything to blur across.
         for row in patch.chunks_exact_mut(pw) {
-            blur.apply(row);
+            if row.iter().any(|&v| v != 0.0) {
+                blur.apply(row);
+            }
         }
         let mut col = vec![0.0f32; ph];
         for i in 0..pw {
@@ -1068,24 +1072,70 @@ fn blurred_inset_image(
         }
     }
 
-    let rgba = color.to_rgba8();
     let alpha = color.components[3];
-    let mut data = vec![0u8; iw * ih * 4];
-    for (px, &m) in data.chunks_exact_mut(4).zip(&covered) {
-        let a = alpha * (1.0 - m.clamp(0.0, 1.0));
-        px[0] = rgba.r;
-        px[1] = rgba.g;
-        px[2] = rgba.b;
-        px[3] = (a * 255.0).round() as u8;
+    let alpha_at = |m: f32| (alpha * (1.0 - m.clamp(0.0, 1.0)) * 255.0).round() as u8;
+    // Only the pixels with some shadow are drawn: a blurred inset shadow is a
+    // ring, often only a band along one edge, and on the software painter a
+    // drawn pixel costs a pipeline stage whether it is transparent or not. So
+    // the ring is cut into up to four images — the rows above and below the
+    // clear middle, and the columns either side of it — which never overlap,
+    // so each pixel is still drawn through the clip once.
+    let clear_row = |j: usize, cols: std::ops::Range<usize>| {
+        cols.into_iter().all(|i| alpha_at(covered[j * iw + i]) == 0)
+    };
+    // The clear middle: the columns and rows where the rect's blur leaves no
+    // shadow, shrunk until every pixel in it is clear (the corners' slivers
+    // can reach into it).
+    let first = |v: &[f32]| v.iter().position(|&m| alpha_at(m) == 0);
+    let last = |v: &[f32]| v.iter().rposition(|&m| alpha_at(m) == 0).map(|i| i + 1);
+    let mut regions: Vec<(usize, usize, usize, usize)> = Vec::new();
+    match (first(&bx), last(&bx), first(&by), last(&by)) {
+        (Some(xl), Some(xr), Some(mut yt), Some(mut yb)) if xl < xr && yt < yb => {
+            while yt < yb && !clear_row(yt, xl..xr) {
+                yt += 1;
+            }
+            while yb > yt && !clear_row(yb - 1, xl..xr) {
+                yb -= 1;
+            }
+            if yt < yb {
+                regions.push((0, 0, iw, yt));
+                regions.push((0, yb, iw, ih));
+                regions.push((0, yt, xl, yb));
+                regions.push((xr, yt, iw, yb));
+            } else {
+                regions.push((0, 0, iw, ih));
+            }
+        }
+        _ => regions.push((0, 0, iw, ih)),
     }
-    Some((
-        Vec2::new(area.x0, area.y0),
-        ShadowImage {
-            data,
-            width: iw as u32,
-            height: ih as u32,
-        },
-    ))
+
+    let rgba = color.to_rgba8();
+    let mut out = Vec::new();
+    for (x0, y0, x1, y1) in regions {
+        if x1 <= x0 || y1 <= y0 {
+            continue;
+        }
+        let (w, h) = (x1 - x0, y1 - y0);
+        let mut data = vec![0u8; w * h * 4];
+        for (j, row) in data.chunks_exact_mut(w * 4).enumerate() {
+            let src = &covered[(y0 + j) * iw + x0..(y0 + j) * iw + x1];
+            for (px, &m) in row.chunks_exact_mut(4).zip(src) {
+                px[0] = rgba.r;
+                px[1] = rgba.g;
+                px[2] = rgba.b;
+                px[3] = alpha_at(m);
+            }
+        }
+        out.push((
+            Vec2::new(area.x0 + x0 as f64, area.y0 + y0 as f64),
+            ShadowImage {
+                data,
+                width: w as u32,
+                height: h as u32,
+            },
+        ));
+    }
+    out
 }
 
 /// A 1-D approximation of a Gaussian blur of standard deviation `sigma`: a
