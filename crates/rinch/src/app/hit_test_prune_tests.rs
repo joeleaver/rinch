@@ -328,16 +328,16 @@ fn a_scrolled_list_hits_identically() {
 /// and `relative` children, scrolled one at a time with the cache warm
 /// between — the shape #911's partial invalidation has to get right. A scroll
 /// drops every stacking sequence (the positioned rows are entries of the
-/// body's, at offsets that moved), and keeps every extent but the chain above
-/// a scrolled box whose extent reads its scroll offset.
+/// body's, at offsets that moved), and keeps every extent unless the scrolled
+/// box's own extent reads its scroll offset.
 ///
 /// A real scroller clips, so its extent is its own box and no extent anywhere
-/// moves when it scrolls. The chain half is reached only by a box that does
+/// moves when it scrolls. The other half is reached only by a box that does
 /// **not** clip and still has a scroll offset — `set_scroll_top` gives one
 /// here (the wheel can too, on an inline `overflow: auto` span, which never
-/// clips) — so `wrapper` is that box, and a chain that
-/// stops one link short leaves `plain`, its parent, answering from before its
-/// scroll.
+/// clips) — so `wrapper` is that box; its scroll must drop its own extent
+/// and `plain`'s, its parent, or `plain` answers from before the scroll. (It
+/// drops every extent: tracking the chain cost the cold pointer move 5%.)
 ///
 /// Every probe grid runs on a warm cache: the previous grid filled it, and
 /// the `resolve_layout` between some rounds takes the paint-only path, which

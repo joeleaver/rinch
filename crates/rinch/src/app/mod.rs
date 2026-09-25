@@ -27,6 +27,8 @@ mod component_prop_707_tests;
 mod component_radius_tests;
 #[cfg(test)]
 mod css_hook_760_tests;
+#[cfg(all(test, software_shell))]
+mod damage_clip_chain_tests;
 #[cfg(feature = "debug")]
 mod debug_commands;
 #[cfg(test)]
