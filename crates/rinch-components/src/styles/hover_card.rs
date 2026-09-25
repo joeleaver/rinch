@@ -38,6 +38,17 @@ pub fn styles() -> String {
     visibility: visible;
 }
 
+/* Paused while hidden (#912). Hidden is the card's resting state, and a hidden
+   dropdown is `visibility: hidden`, which is rendered — so an animation inside
+   it ran, and kept the app awake, for as long as nobody hovered. The note on
+   `.rinch-drawer__root--hidden *` in `styles/drawer.rs` has the reasoning, the
+   `!important` and the `*`. The `:not()`s are the complement of the two rules
+   above; the pause lands as the close delay starts, so in a browser the
+   spinner stops while the card is still fading out. */
+.rinch-hover-card__dropdown:not(.rinch-hover-card:hover .rinch-hover-card__dropdown):not(:hover) * {
+    animation-play-state: paused !important;
+}
+
 /* Keep dropdown visible while moving to it */
 .rinch-hover-card:not(:hover) .rinch-hover-card__dropdown {
     transition-delay: var(--rinch-hover-card-close-delay, 150ms);

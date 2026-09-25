@@ -45,6 +45,27 @@ pub fn styles() -> String {
     visibility: hidden !important;
 }
 
+/* Paused while closed (#912).
+
+   Being rendered has a cost the note above does not: an animation under a
+   `visibility: hidden` box runs — in rinch and in a browser alike — and an
+   `animation: … infinite` (a `Loader`, a loading `Button`, a `Skeleton`) has no
+   duration to expire, so a closed drawer holding one kept the app asking for a
+   frame on every turn, forever, for pixels nobody could see. A paused animation
+   asks for none (#763), and resumes where it stopped when the drawer opens, as
+   a browser keeps its `currentTime`.
+
+   Every descendant, not a list of known spinners: any component or app rule
+   can declare an animation. `!important` because the `animation` shorthand
+   resets `animation-play-state` to `running`, so without it the pause would
+   lose to any shorthand of equal or higher specificity declared after it —
+   `.rinch-loader__oval` ties with this selector and `.rinch-button--loading
+   .rinch-button__loader` beats it. `animation-play-state` does not inherit,
+   hence the `*`. */
+.rinch-drawer__root--hidden * {
+    animation-play-state: paused !important;
+}
+
 /* Drawer overlay — absolute within the fixed root */
 .rinch-drawer__overlay {
     position: absolute;
