@@ -553,7 +553,10 @@ pub struct RinchApp {
     /// (`focused_input_*`, the surface/editor registries) via
     /// [`Self::set_focus_target`].
     pub(crate) focus_target: FocusTarget,
-    /// Bumped by every change of [`Self::focus_target`]. A result that
+    /// Bumped by every [`Self::set_focus_target`] transition (the two
+    /// unmounted-editor self-heals that write `FocusTarget::None` directly
+    /// leave it alone; they clear only an `Editor` target, and a paste
+    /// completion also requires `Input`). A result that
     /// arrives on a later turn (a plain-control paste, issue #328) records it
     /// at the gesture and is dropped if it moved: a node id alone cannot tell
     /// "still focused" from "focused away and back", nor a recycled id.

@@ -441,7 +441,9 @@ impl RinchContext {
     ///
     /// Useful for game engines that want to skip rendering unchanged frames.
     pub fn needs_update(&self) -> bool {
-        self.dirty.load(Ordering::Acquire) || self.app.has_dirty_nodes()
+        self.dirty.load(Ordering::Acquire)
+            || self.app.has_dirty_nodes()
+            || self.app.has_deferred_work()
     }
 
     /// Access the underlying `RinchApp` for advanced use cases.

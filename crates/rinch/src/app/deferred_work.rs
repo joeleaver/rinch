@@ -33,6 +33,15 @@ pub(crate) struct DeferredWork {
 }
 
 impl DeferredWork {
+    /// Whether anything is waiting.
+    pub(crate) fn is_pending(&self) -> bool {
+        !self
+            .queue
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .is_empty()
+    }
+
     /// Everything queued so far, in the order it was sent.
     pub(crate) fn take(&self) -> Vec<AppWork> {
         std::mem::take(&mut *self.queue.lock().unwrap_or_else(|e| e.into_inner()))
@@ -84,6 +93,12 @@ impl RinchApp {
     #[cfg_attr(not(feature = "clipboard"), allow(dead_code))]
     pub(crate) fn app_work_sender(&self) -> AppWorkSender {
         AppWorkSender::new(&self.deferred_work)
+    }
+
+    /// Whether other threads have sent work that [`Self::run_deferred_work`]
+    /// has not run yet (an embed host's `needs_update` asks it).
+    pub fn has_deferred_work(&self) -> bool {
+        self.deferred_work.is_pending()
     }
 
     /// Run the work other threads have sent this app since the last call —

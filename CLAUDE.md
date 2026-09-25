@@ -2942,7 +2942,8 @@ loop, `RinchContext::update` — and repaints when it answers non-zero; a host t
 `RinchApp` itself and never calls it gets no plain-control paste. The completion
 (`complete_input_paste`) lands in the field's **current** selection if the same field still
 holds the keyboard in the same focus gesture — `RinchApp::focus_epoch`, bumped by every
-arbiter transition, so away-and-back also drops it — and is dropped otherwise, the
+`set_focus_target` transition (not by the two unmounted-editor self-heals, which clear only an
+`Editor` target), so away-and-back also drops it — and is dropped otherwise, the
 browser's rule. The rest is the ordinary edit path's: a field gone read-only refuses it, a
 disabled one loses the keyboard (#315), a value written meanwhile is adopted first (#238),
 paste plus its `oninput` rewrite is one undo step (#288), and a composition started during
