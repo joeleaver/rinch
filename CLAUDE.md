@@ -2528,9 +2528,16 @@ the pre-existing rounded-corner divergence, not a new one.
 to run two full hit tests, each O(document): every stacking root rebuilt its
 `PaintOrder`, and a non-clipping box probed all its children because they may
 overflow it, so every off-screen row of a scroller was visited. Now one hit test
-per move is shared by `data-onmousemove`, the drop-target search and hover
-(`RinchApp::move_hit`, which re-tests if a handler mutated the document in
-between), and the `data-onmousemove` walk is skipped outright while
+per move is shared by `data-onmousemove`, the drop-target search and hover, and
+one per press by everything a press asks (#908: the `data-onmousedown`
+dispatch, the editor, the focus claim, the draggable search and each phase of
+the click — nine for a toolbar press over a focused editor). Both go through
+`RinchApp::shared_hit` (`move_hit` is it against the app's own document), which
+remembers the last answer with the hit cache's generation and the point, and
+re-tests once the generation has moved — a handler that mutated the document in
+between. The memo is dropped at the top of every `handle_event`, because a
+transition or animation tick moves a `transform` without moving the generation
+(see below). The `data-onmousemove` walk is skipped outright while
 `NodeTree::mousemove_handlers` is 0. The walk skips a child whose **flow
 extent** misses the point — the union of every box `hit_test_node` can test when
 it enters that child as an ordinary node (its own box, plus its non-hoisted
