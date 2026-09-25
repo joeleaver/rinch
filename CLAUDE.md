@@ -1456,7 +1456,9 @@ ever ended on a guess: `Unknown` behaves exactly like `Down`.
 at the last move. Two events count: a **left `MouseDown`** while the drag is
 live (a button cannot be pressed twice without a release in between), handled
 *before* the press is dispatched so its handlers never see the stranded drag
-and a drag the press arms is not the one ended; and **`WindowFocus(false)`**.
+and a drag the press arms is not the one ended — and before the built-in text
+context menu can swallow it, so the press that closes that menu heals too (its
+release used to commit the drag through `on_end`); and **`WindowFocus(false)`**.
 The blur rule is a trade-off, not a proof: on Windows deactivation takes the
 pointer capture and the release does go to another window, but on X11/Wayland
 the press's implicit pointer grab still delivers it, and a blur mid-drag can

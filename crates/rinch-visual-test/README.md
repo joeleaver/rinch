@@ -91,32 +91,58 @@ The default config lives at `tests/visual/tests.json` within this crate:
 
 ```json
 {
-  "viewport": [800, 600],
-  "background": "#1a1a1a",
+  "viewport": [1200, 800],
+  "background": "#ffffff",
+  "settle_ms": 500,
+  "before_each": [{ "key": "Escape" }],
   "tests": [
     {
-      "name": "initial_render",
-      "threshold": 0.99
-    },
-    {
-      "name": "buttons_section",
-      "section": 1,
-      "threshold": 0.99
-    },
-    {
-      "name": "after_click",
-      "setup_clicks": [[400, 300]],
-      "threshold": 0.95
+      "name": "01_buttons",
+      "threshold": 0.90,
+      "steps": [
+        { "click": { "selector": ".ui-zoo-nav-toggle" } },
+        { "click": { "selector": ".rinch-navlink", "text": "Buttons" } }
+      ],
+      "expect": [{ "selector": ".rinch-navlink--active", "text": "Buttons" }]
     }
   ]
 }
 ```
 
+**Config options:**
+- `viewport`, `background` - The exported page's size and body background
+- `before_each` - Steps run before every scenario's own, to undo what the
+  previous scenario may have left open (an overlay, the nav drawer)
+- `settle_ms` - Wall-clock time given to transitions after each step (default 500)
+
 **Test options:**
 - `name` - Unique test identifier
 - `threshold` - SSIM threshold (0.0-1.0, default: 0.99)
-- `section` - Navigate to this section index before capturing
-- `setup_clicks` - Click coordinates to set up state before capture
+- `steps` - What drives the app to the scenario's screen, from **any** screen:
+  - `{ "click": { "selector": S, "text": T } }` clicks the centre of the one
+    *visible* node matching `S` whose trimmed text content is `T` (`text` is
+    optional). `S` is what the debug protocol's `query_selector` takes: `tag`,
+    `.class`, `[attr]` or `[attr=value]`. The node is looked up when the step
+    runs and clicked at its reported `absolute` box, so a layout change moves
+    the click with it. No match, or several, is an error — never a guess.
+  - `{ "key": "Escape" }` presses one key.
+- `expect` - **Required.** Targets that must be on screen before the capture.
+  A scenario that asserts nothing about its state captures whatever screen the
+  app happens to be showing.
+
+Unknown keys are refused, so a config still using the removed `setup_clicks`
+(hard-coded pixels) or `section` (never implemented) fails to load rather than
+running with no navigation.
+
+**Two guarantees the runner enforces (#368):**
+- **Idempotent.** Every scenario navigates from wherever the app is, so running
+  the suite twice against one app instance captures the same screens. It used
+  not to: `00_overview` had no navigation and photographed whatever the previous
+  run left on screen (the editor).
+- **Distinct.** A scenario whose screenshot is byte-identical to an earlier
+  scenario's fails with an error naming it. Two names measuring one screen is a
+  coverage hole, not two results; at the old pixel coordinates 12 scenarios had
+  collapsed onto 8 screens.
 
 ### 2. Launch Your App
 
@@ -127,6 +153,9 @@ cargo run -p ui-zoo-desktop --release
 ```
 
 The app will automatically start the debug server and write discovery info to `~/.rinch/debug/{pid}.json`.
+
+The runner connects to the one live debug-enabled rinch app. If more than one
+is running it refuses to guess: set `RINCH_VISUAL_TEST_PID=<pid>` to choose.
 
 ### 3. Run Tests
 
@@ -224,46 +253,46 @@ The workflow is `workflow_dispatch` only, on purpose. It is not a gate because
 4 of the 12 scenarios are still red for reasons that have nothing to do with a
 regression, and gating on a red suite teaches everyone to ignore it.
 
-Measured at viewport 1200x800, before and after the CSS-export repair described
-under "What the exporter must emit" below:
+Measured at viewport 1200x800 against a live UI Zoo, with the CSS-export repair
+described under "What the exporter must emit" below and the selector-based
+navigation of #368, twice in a row against one app instance (identical scores,
+identical screenshots, 12 distinct screens):
 
-| Scenario | before | after | |
-|---|---|---|---|
-| `00_overview` | 0.9133 | 0.9726 | pass |
-| `01_buttons` | 0.9133 | 0.9726 | pass — *identical to `00_overview`; its `setup_clicks` never left the overview* |
-| `02_inputs` | 0.8808 | 0.9651 | pass |
-| `03_typography` | 0.6982 | 0.9847 | pass |
-| `04_layout` | 0.8506 | 0.8883 | |
-| `05_navigation` | 0.8891 | 0.9369 | pass |
-| `06_data_display` | 0.4566 | 0.8949 | |
-| `07_feedback` | 0.8891 | 0.9369 | pass — *same score as 05/09; stale coordinates* |
-| `08_overlays` | 0.4566 | 0.8949 | *same score as 06* |
-| `09_icons` | 0.8891 | 0.9369 | pass |
-| `10_tree` | 0.7597 | 0.8116 | |
-| `11_editor` | 0.9490 | 0.9900 | pass |
+| Scenario | score | |
+|---|---|---|
+| `00_overview` | 0.9738 | pass |
+| `01_buttons` | 0.9662 | pass |
+| `02_inputs` | 0.9859 | pass |
+| `03_typography` | 0.8914 | |
+| `04_layout` | 0.9347 | pass |
+| `05_navigation` | 0.8689 | |
+| `06_data_display` | 0.9159 | pass |
+| `07_feedback` | 0.9513 | pass |
+| `08_overlays` | 0.9111 | pass |
+| `09_icons` | 0.8128 | |
+| `10_tree` | 0.9912 | pass |
+| `11_editor` | 0.8709 | |
 
-Total: **3 passed / 9 failed** before, **8 passed / 4 failed** after.
+Total: **8 passed / 4 failed.**
 
-Most of what looked like "real rinch-vs-Chromium divergence" was the exporter
-dropping properties. What remains:
+**Earlier tables are not comparable to this one**, and not only because of the
+exporter. The old pixel coordinates had drifted by one nav item for several
+scenarios, so scores used to be reported under the wrong name: the screenshot the
+old runner filed as `11_editor` is byte-identical to the one now filed as
+`10_tree`, and its old `10_tree` to the new `09_icons`. Measured at the old
+coordinates on this change's base, the scenario reported as `11_editor` scored
+0.9912 — the tree's score, on the tree's screen.
 
-1. **Stale `setup_clicks`.** Several scenarios share a score exactly, because
-   their click coordinates no longer land on the nav item they name and they
-   capture the same screen. `01_buttons` never leaves the overview at all.
-   These need re-deriving against the current UI Zoo nav, ideally by querying
-   the nav node's `absolute` box rather than hard-coding pixels.
-   Note also that `run_test` never resets the app between scenarios: the clicks
-   replay onto whatever state the previous scenario left behind, so a scenario
-   that opens an overlay changes what the next one sees.
-2. **Window chrome.** The borderless titlebar and menu bar rinch paints itself
+What remains:
+
+1. **Window chrome.** The borderless titlebar and menu bar rinch paints itself
    have no counterpart in the exported HTML, so the top ~36px never matches.
    Either crop it out of both sides or export it.
-3. **Properties still not exported** — `transform`, `box-shadow`, `text-shadow`,
-   `outline`, `text-transform`, `object-fit`, and grid placement. `10_tree` and
-   `04_layout` are the scenarios most exposed to these.
+2. **Properties still not exported** — `transform`, `box-shadow`, `text-shadow`,
+   `outline`, `text-transform`, `object-fit`, and grid placement.
 
-**The plan to green it:** fix (1), then re-measure; crop or export the chrome for
-(2); export the remaining properties in (3); set each scenario's threshold from
+**The plan to green it:** crop or export the chrome for (1); export the remaining
+properties in (2); set each scenario's threshold from
 its own settled score with a margin, rather than one global 0.90; then add
 `pull_request` to the trigger list.
 
