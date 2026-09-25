@@ -375,10 +375,12 @@ impl RinchApp {
                 // produces it — winit 0.31's `WindowEvent::PointerMoved` gives a
                 // position and a `PointerSource`, nothing about which buttons
                 // are held. So desktop cannot detect the swallowed release that
-                // issue #189's heal keys off, and a flag `RinchApp` maintained
-                // itself would be no help: the missed `MouseUp` that strands the
-                // drag is the same event that would have cleared the flag. See
-                // #294 for what desktop would actually need.
+                // issue #189's heal keys off on a move, and a flag `RinchApp`
+                // maintained itself would be no help: the missed `MouseUp` that
+                // strands the drag is the same event that would have cleared
+                // the flag. What desktop heals on instead is the next primary
+                // press and a window blur (`heal_missed_release`, issue #381);
+                // an OS query for the button state is the remaining option there.
                 let (drag_active, drag_forward_surface) =
                     rinch_core::update_drag_with_button(x, y, rinch_core::PrimaryButton::Unknown);
                 if drag_active && !drag_forward_surface {
@@ -607,6 +609,21 @@ impl RinchApp {
                 y,
                 button: MouseButton::Left,
             } => {
+                // A primary press while a pointer-capture drag or an editor
+                // drag-select is still live proves its release was missed
+                // (issue #381): a button cannot be pressed twice without being
+                // released in between. Desktop cannot see the button state on a
+                // move (see the `MouseMove` arm), so this is the first event
+                // that can tell. Ended **before** the press is dispatched — its
+                // handlers must not see the stranded drag, and a drag this very
+                // press arms is not the one being ended — and through
+                // `on_cancel`: left alone, the next release ran `finish_drag`
+                // and committed the stranded drag at this click's position.
+                // Scoped to this document, like every other ending (#139).
+                if self.heal_missed_release() {
+                    actions.push(AppAction::RequestRedraw);
+                }
+
                 // Additive: fire data-onmousedown before the resize/drag/scroll/
                 // click logic below (which can early-return).
                 self.dispatch_mouse_attr(
@@ -1226,6 +1243,12 @@ impl RinchApp {
                 // regression — but a registered target is told, and told again
                 // when the window comes back, so it can hide its caret and idle
                 // its blink timer. `ime_state()` reports disabled meanwhile.
+                // A window that lost focus is not sent the release of a drag
+                // in progress (issue #381): end it now, through `on_cancel`,
+                // rather than leave it following a pointer with no button held.
+                if !focused && self.heal_missed_release() {
+                    actions.push(AppAction::RequestRedraw);
+                }
                 if self.window_focused != focused {
                     self.window_focused = focused;
                     if !focused {
@@ -3281,6 +3304,18 @@ impl RinchApp {
     /// it: `push_dispatching_doc` applies the very same one to the very same key.
     fn input_doc(&self) -> Option<u64> {
         rinch_core::doc_identity(self.doc_key())
+    }
+
+    /// End this document's live pointer-capture drag and editor drag-select
+    /// on independent proof that their release was missed — a primary press,
+    /// or the window losing focus (issue #381). The drag ends through
+    /// `on_cancel`, never `on_end` ([`rinch_core::heal_missed_release`]); the
+    /// drag-select is simply released, as a release would have. Both are
+    /// scoped to this document (#139). Returns whether a drag was cancelled.
+    fn heal_missed_release(&mut self) -> bool {
+        #[cfg(feature = "desktop")]
+        crate::editor::end_drag(self.input_doc());
+        rinch_core::heal_missed_release()
     }
 
     /// Copy the focused editor's selection to the clipboard as both `text/html`

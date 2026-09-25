@@ -310,10 +310,7 @@ mod editor_drag_select {
         let (mut app, _log) = mount();
         stale_drag_select(&app);
         press(&mut app, ELSEWHERE, MouseButton::Right);
-        assert_eq!(
-            crate::editor::drag_anchor(doc(&app)),
-            Some((CONTAINER, 3))
-        );
+        assert_eq!(crate::editor::drag_anchor(doc(&app)), Some((CONTAINER, 3)));
         crate::editor::end_drag(doc(&app));
     }
 
@@ -333,10 +330,7 @@ mod editor_drag_select {
         press(&mut other, ELSEWHERE, MouseButton::Left);
         release(&mut other, ELSEWHERE, MouseButton::Left);
         send(&mut other, PlatformEvent::WindowFocus(false));
-        assert_eq!(
-            crate::editor::drag_anchor(doc(&app)),
-            Some((CONTAINER, 3))
-        );
+        assert_eq!(crate::editor::drag_anchor(doc(&app)), Some((CONTAINER, 3)));
         crate::editor::end_drag(doc(&app));
     }
 }
