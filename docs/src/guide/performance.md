@@ -368,6 +368,7 @@ The benchmarks live in `crates/rinch-bench`:
 | `dom::append_row.list_500` / `remove_row` | Append or remove one row, then layout |
 | `dom::resize_1px.list_500` | Layout at a viewport 1px wider |
 | `dom::set_text_content.list_500` | `set_text_content` on one row's wrapped text, then layout |
+| `dom::flex_label_hover.list_500` | A colour-only `:hover` on one of 500 `display: flex` rows whose text is a direct child (a flex item's text leaf), then layout and paint. Paint colours a leaf itself, so no compute runs (#904) |
 | `dom::drawer_toggle.list_500_closed` | Open, then close, a closed `Drawer` holding 500 rows, with the theme's and the component library's stylesheets loaded; each re-cascades the whole subtree. The one benchmark that sees what a component-library selector costs (#935: a pseudo-element rule is matched without a bloom filter) |
 | `dom::inset_move.list_500` | One drag step of an absolute panel beside the list: `set_styles` of `left`/`top` (the inset fast path), then layout |
 | `dom::full_paint.text_page_warm` | A full `TinySkiaPainter` paint of 40 wrapped paragraphs, with the glyph cache already warm |
