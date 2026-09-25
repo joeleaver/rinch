@@ -1347,3 +1347,65 @@ fn a_row_moved_to_a_wider_parent_rebreaks_at_its_width() {
         |doc, (b, r0)| doc.append_child(*b, *r0),
     );
 }
+
+// ── A pure edge-child sheet: the moved row's only restyle (review of #949) ──
+//
+// With only `:first-child` / `:last-child` in the sheet the list carries
+// `HAS_EDGE_CHILD_SELECTOR` and nothing else, so the moved row — which keeps
+// its style across a move within its parent — is restyled by one mark alone:
+// the `after` child at its new index in `note_child_list_changed`. (The
+// `:first-child` fixture above also has `+`, whose later-siblings flag masks
+// that mark.)
+
+fn edge_list(doc: &mut RinchDocument, labels: &[&str]) -> (NodeId, Vec<NodeId>) {
+    let body = doc.body();
+    let list = doc.create_element("div");
+    doc.set_attribute(list, "class", "list box");
+    let mut rows = Vec::new();
+    for l in labels {
+        let row = doc.create_element("div");
+        doc.set_attribute(row, "class", "row");
+        let span = doc.create_element("span");
+        let t = doc.create_text(l);
+        doc.append_child(span, t);
+        doc.append_child(row, span);
+        doc.append_child(list, row);
+        rows.push(row);
+    }
+    doc.append_child(body, list);
+    (list, rows)
+}
+
+#[test]
+fn a_row_moved_to_the_front_under_only_first_child() {
+    twin(
+        "a_row_moved_to_the_front_under_only_first_child",
+        ".row:first-child { font-size: 22px; line-height: 28px; }",
+        |doc, on| {
+            let l: Vec<&str> = if on {
+                vec![LABELS[3], LABELS[0], LABELS[1], LABELS[2]]
+            } else {
+                LABELS.to_vec()
+            };
+            edge_list(doc, &l)
+        },
+        |doc, (list, rows)| doc.insert_before(*list, rows[3], rows[0]),
+    );
+}
+
+#[test]
+fn a_row_moved_to_the_end_under_only_last_child() {
+    twin(
+        "a_row_moved_to_the_end_under_only_last_child",
+        ".row:last-child { font-size: 22px; line-height: 28px; }",
+        |doc, on| {
+            let l: Vec<&str> = if on {
+                vec![LABELS[1], LABELS[2], LABELS[3], LABELS[0]]
+            } else {
+                LABELS.to_vec()
+            };
+            edge_list(doc, &l)
+        },
+        |doc, (list, rows)| doc.append_child(*list, rows[0]),
+    );
+}

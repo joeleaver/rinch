@@ -2703,8 +2703,13 @@ impl RinchDocument {
     /// old index and the new) restyle the moved node itself whenever they do:
     /// `HAS_SLOW_SELECTOR*` and an `<ol>` mark every child from the insertion
     /// index on, which includes it, and `HAS_EDGE_CHILD_SELECTOR` marks the
-    /// child at that index, which is it. A browser does the same: a node moved
-    /// within its parent is restyled only as its selectors require.
+    /// child at that index, which is it.
+    ///
+    /// This is **not** what a browser does for `insertBefore`: Chrome removes
+    /// and re-inserts the node and discards its computed style. It is what
+    /// `moveBefore()` does — a move that keeps the node's state — and rinch
+    /// already treats a connected move that way on purpose (a move is not a
+    /// detach: a running transition survives a keyed reorder).
     ///
     /// A move to **another** parent re-cascades, as an insertion always did:
     /// both the inherited values and the ancestor chain may differ, and
