@@ -105,6 +105,9 @@ impl<D: EditableDocument> EditableState<D> {
         }
         let diff = RewriteDiff::between(&old, new);
         let replaced = diff.replaced();
+        // The delete and the insert are one step: undoing a rewrite restores
+        // the text it replaced, not the empty span between the two (#288).
+        let mark = self.undo_stack.mark();
         if !replaced.is_empty() {
             let deleted = self.document.text_slice(replaced);
             self.document.delete(replaced);
@@ -121,6 +124,7 @@ impl<D: EditableDocument> EditableState<D> {
                 text: replacement.to_string(),
             });
         }
+        self.group_undo_since(mark);
         let map = |offset: usize| {
             let mut mapped = diff.map(offset);
             while !new.is_char_boundary(mapped) {
@@ -261,15 +265,15 @@ mod tests {
         assert_eq!(state.document.to_text(), "HI!");
         assert_eq!(state.selection, Selection::cursor(3));
 
-        // Undo walks back through the adopted rewrite to the typed text, then
-        // through the keystrokes — no stale offsets, no panic.
-        state.execute(EditCommand::Undo);
+        // One undo takes back the whole adopted rewrite (#288) — never the
+        // empty text between its delete and its insert — then the keystrokes
+        // walk back one by one: no stale offsets, no panic.
         state.execute(EditCommand::Undo);
         assert_eq!(state.document.to_text(), "hi");
         state.execute(EditCommand::Undo);
         assert_eq!(state.document.to_text(), "h");
         state.execute(EditCommand::Redo);
-        state.execute(EditCommand::Redo);
+        assert_eq!(state.document.to_text(), "hi");
         state.execute(EditCommand::Redo);
         assert_eq!(state.document.to_text(), "HI!");
     }

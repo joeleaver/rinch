@@ -2195,11 +2195,20 @@ impl RinchApp {
         // The edit applies to what the field displays: adopt any `value` write
         // that landed since the last sync (issue #238).
         self.adopt_focused_input_value_from_dom();
+        let edited_node = self.focused_input_node_id;
         let Some(state) = self.focused_input_state.as_mut() else {
             return;
         };
 
+        // The command and whatever its own `oninput` rewrites in answer to it
+        // are one undo step (issue #288). Otherwise undoing a keystroke in a
+        // normalizing field restores the raw text the handler is about to
+        // rewrite again — a fresh edit, which clears the redo stack — and the
+        // user can never undo past it. Undo and redo push nothing (the mark
+        // does not move), so after one of them only its handler's rewrite is
+        // grouped: a step of its own.
         let old_text = state.document.to_text();
+        let group = state.undo_stack.mark();
         let clipboard_text = state.execute(cmd);
         let new_text = state.document.to_text();
 
@@ -2226,6 +2235,13 @@ impl RinchApp {
             // stale text that would otherwise be painted back over it on the
             // next sync (issue #238).
             self.adopt_focused_input_value_from_dom();
+            // Only on the same field: a handler that moved focus has handed
+            // the keyboard to another field's state, which the mark is not of.
+            if self.focused_input_node_id == edited_node
+                && let Some(state) = self.focused_input_state.as_mut()
+            {
+                state.group_undo_since(group);
+            }
         }
     }
 
@@ -2493,6 +2509,12 @@ impl RinchApp {
     }
     fn handle_cut(&mut self) {
         self.handle_input_edit_command(EditCommand::Cut);
+    }
+    fn handle_undo(&mut self) {
+        self.handle_input_edit_command(EditCommand::Undo);
+    }
+    fn handle_redo(&mut self) {
+        self.handle_input_edit_command(EditCommand::Redo);
     }
 
     // ── Input cursor DOM sync ─────────────────────────────────────────
