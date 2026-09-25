@@ -68,9 +68,12 @@ fn build(wrappers: &[(&str, &str)], clip: (&str, &str)) -> (RinchDocument, NodeI
     (doc, x, t)
 }
 
+/// `(name, wrappers outermost first, the clipping (tag, class))`.
+type Shape<'a> = (&'a str, &'a [(&'a str, &'a str)], (&'a str, &'a str));
+
 #[test]
 fn every_clipping_box_draws_its_ellipsis_as_an_ifc_root() {
-    let shapes: &[(&str, &[(&str, &str)], (&str, &str))] = &[
+    let shapes: &[Shape] = &[
         ("block div", &[], ("div", "clip")),
         (
             "inline span, blockified by flex",
