@@ -193,3 +193,66 @@ fn a_contents_elements_before_in_a_flex_container_is_blockified() {
         DisplayValue::Block
     );
 }
+
+fn abs_box(doc: &RinchDocument, id: NodeId) -> (f32, f32, f32, f32) {
+    let n = doc.tree.get(id.0).unwrap();
+    (n.layout.x, n.layout.y, n.layout.width, n.layout.height)
+}
+
+/// What blockification does to a box, against Chrome 153 (same markup, same
+/// declared line box). In a `Stack`-like column (`flex-direction: column`, the
+/// default `align-items: stretch`) a wrapped `span` and a wrapped
+/// `inline-flex` both stretch to the column's 300px, one line box apart:
+/// Chrome gives `[0, 0, 300, 20]` and `[0, 20, 300, 20]`. In a `Group`-like
+/// row an `inline-block` with a declared width keeps it, one `gap` after its
+/// sibling: Chrome gives `g2.x == g1.width + 10`, 40 wide, both 20 tall. The
+/// sibling's own width is text-measured and so is not pinned.
+///
+/// **A guard, not a fail-first fixture**: these boxes came out the same before
+/// #998 (measured at `eb820ab3`), because rinch already laid an unblockified
+/// inline item of a flex container out as a flex item. What the fix moves is
+/// the text inside such an item — an IFC root now, where it was a Taffy text
+/// leaf — and the restyle of one to `display: inline`, which no longer orphans
+/// it (`scoped_ifc_oracle_tests`' former known divergence). This pins that
+/// the change of path did not move the boxes of the everyday `Stack`/`Group`
+/// shapes.
+#[test]
+fn wrapped_items_lay_out_as_chromes_blockified_items() {
+    let mut doc = RinchDocument::new();
+    let body = doc.body();
+    let stack = el(
+        &mut doc,
+        body,
+        "div",
+        "display: flex; flex-direction: column; width: 300px; font-size: 16px; line-height: 20px",
+    );
+    let sw = el(&mut doc, stack, "div", "display: contents");
+    let s1 = el(&mut doc, sw, "span", "");
+    let t = doc.create_text("ab");
+    doc.append_child(s1, t);
+    let s2 = el(&mut doc, sw, "span", "display: inline-flex");
+    let t = doc.create_text("cd");
+    doc.append_child(s2, t);
+    let group = el(
+        &mut doc,
+        body,
+        "div",
+        "display: flex; gap: 10px; width: 300px; font-size: 16px; line-height: 20px",
+    );
+    let gw = el(&mut doc, group, "div", "display: contents");
+    let g1 = el(&mut doc, gw, "span", "padding: 0 5px");
+    let t = doc.create_text("ab");
+    doc.append_child(g1, t);
+    let g2 = el(&mut doc, gw, "span", "display: inline-block; width: 40px");
+    let t = doc.create_text("cd");
+    doc.append_child(g2, t);
+    doc.resolve_layout(VW, VH);
+
+    assert_eq!(abs_box(&doc, s1), (0.0, 0.0, 300.0, 20.0));
+    assert_eq!(abs_box(&doc, s2), (0.0, 20.0, 300.0, 20.0));
+    let (g1x, g1y, g1w, g1h) = abs_box(&doc, g1);
+    let (g2x, g2y, g2w, g2h) = abs_box(&doc, g2);
+    assert_eq!((g1x, g1y, g1h), (0.0, 0.0, 20.0));
+    assert!(g1w > 10.0, "the padded span has its text's width: {g1w}");
+    assert_eq!((g2x, g2y, g2w, g2h), (g1w + 10.0, 0.0, 40.0, 20.0));
+}
