@@ -410,6 +410,20 @@ impl RinchDocument {
                     return None;
                 }
 
+                // The final width the measure was called with is the box's
+                // **unrounded** width: Taffy rounds `layout` to whole pixels,
+                // and a 45.34px min-content grid column rounded to 45 missed its
+                // own layout and fell through to the unwrapped max-content one
+                // below — one line painted across a box laid out for seven
+                // (#904's review, found on an `inline-grid`).
+                let unrounded = node
+                    .taffy_id
+                    .and_then(|t| self.tree.taffy.unrounded_layout(t).size.width.into())
+                    .filter(|w: &f32| *w > 0.0);
+                if let Some(layout) = unrounded.and_then(|w| cache.get(&(id, w.to_bits()))) {
+                    return Some((id, layout.clone()));
+                }
+
                 let width = node.layout.width;
                 let wrap_bits = if width > 0.0 {
                     width.to_bits()
@@ -5645,5 +5659,69 @@ impl RinchDocument {
         if atomic_changed {
             self.remeasure_dirty_atomic_inlines();
         }
+    }
+}
+
+#[cfg(test)]
+mod atomic_leaf_layout_tests {
+    use crate::RinchDocument;
+    use rinch_core::dom::DomDocument;
+
+    /// The keying rule of `NodeTree::atomic_leaf_layouts` (#904): each layout
+    /// the atomic compute's text measure builds is filed under the width it
+    /// was wrapped at, as the root compute files its own. Nothing behavioural
+    /// pins it — `copy_cached_text_layouts` falls back to the `u32::MAX` entry,
+    /// and the last measure Taffy makes is usually the final one — so filing
+    /// every layout under `u32::MAX` left every other fixture green (#904's
+    /// review, M6). Here the final width is a min-content grid column, 45.3px
+    /// and not a whole pixel, which the box's unrounded width must name.
+    #[test]
+    fn a_leaf_layout_is_filed_under_the_width_it_was_wrapped_at() {
+        let mut doc = RinchDocument::new();
+        doc.load_css(
+            "body { font-family: sans-serif; font-size: 16px; line-height: 20px; }
+             .c { display: inline-grid; grid-template-columns: min-content; }",
+        );
+        let body = doc.body();
+        let c = doc.create_element("span");
+        doc.set_attribute(c, "class", "c");
+        let t = doc.create_text("a long chip label text that wraps");
+        doc.append_child(c, t);
+        doc.append_child(body, c);
+        doc.resolve_layout(800.0, 600.0);
+        doc.resolve_layout(800.0, 600.0);
+
+        let leaf_taffy = doc.tree.nodes[t.0]
+            .taffy_id
+            .expect("the leaf has a Taffy node");
+        let final_width = doc.tree.taffy.unrounded_layout(leaf_taffy).size.width;
+        assert!(
+            final_width.fract() != 0.0,
+            "counter-oracle: the column is not a whole pixel ({final_width})"
+        );
+
+        // Measure the atomic inline again, and read what it filed before a
+        // layout pass hands it on.
+        let _ = doc.tree.taffy.mark_dirty(leaf_taffy);
+        doc.compute_inline_block_layouts();
+        let keys: Vec<u32> = doc
+            .tree
+            .atomic_leaf_layouts
+            .keys()
+            .filter(|(id, _)| *id == t.0)
+            .map(|&(_, bits)| bits)
+            .collect();
+        assert!(
+            keys.contains(&final_width.to_bits()),
+            "a layout filed under the final width {final_width}; keys were {:?}",
+            keys.iter().map(|&b| f32::from_bits(b)).collect::<Vec<_>>()
+        );
+        let n = doc.tree.nodes[t.0].layout.height;
+        let cached = doc.tree.nodes[t.0].cached_text_parley.as_ref().unwrap();
+        assert_eq!(
+            cached.height(),
+            n,
+            "the painted layout is the one laid out for the box, not the unwrapped line"
+        );
     }
 }
