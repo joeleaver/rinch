@@ -174,11 +174,12 @@ impl Effect {
             ObserverId(rt.next_id())
         });
 
+        let (root, doc) = crate::context::current_reactive_frame();
         let inner = Rc::new(EffectInner {
             f: RefCell::new(Box::new(f)),
             disposed: Cell::new(false),
-            root: crate::context::current_context_root(),
-            doc: crate::context::current_dispatching_doc(),
+            root,
+            doc,
             owner: super::Owner::current(),
             deps: RefCell::new(Vec::new()),
             body_tracks_deps: true,
@@ -205,11 +206,12 @@ impl Effect {
             ObserverId(rt.next_id())
         });
 
+        let (root, doc) = crate::context::current_reactive_frame();
         let inner = Rc::new(EffectInner {
             f: RefCell::new(Box::new(f)),
             disposed: Cell::new(false),
-            root: crate::context::current_context_root(),
-            doc: crate::context::current_dispatching_doc(),
+            root,
+            doc,
             owner: super::Owner::current(),
             deps: RefCell::new(Vec::new()),
             body_tracks_deps: true,
@@ -431,21 +433,13 @@ pub(super) fn run_effect(id: ObserverId) {
 
         // Re-enter the context root the effect was created under, so
         // use_context/use_store resolve the same namespace as at build time
-        // (issue #136).
-        let _root_guard = crate::context::push_context_root(inner.root);
-
-        // …and the document it was created in, for the same reason and for
-        // the same kind of consumer: the queue drains under whichever
-        // document happens to be dispatching (issue #295). Not for a memo's
-        // marker: its body only queues observers and runs no user code, so
-        // nothing in it reads the marker — and a selection change wakes one
-        // marker per row (measured: +1.8% instructions on the `memo_flush`
-        // bench with the guard here, for nothing). The memo's *recompute*,
-        // which does run user code, re-enters the document itself.
-        let _doc_guard = inner
-            .memo
-            .is_none()
-            .then(|| crate::context::enter_dispatching_doc(inner.doc));
+        // (issue #136) — and the document it was created in, for the same
+        // reason and for the same kind of consumer: the queue drains under
+        // whichever document happens to be dispatching (issue #295), and a
+        // `Drag::start()` or interceptor registration made from the body must
+        // be attributed to the effect's own document. One guard for both, so
+        // the document rides the root's TLS access for free.
+        let _frame_guard = crate::context::enter_reactive_frame(inner.root, inner.doc);
 
         // Re-enter the scope that owned this effect at creation, for the same
         // reason: `flush_effects` runs from arbitrary stacks (an event handler,

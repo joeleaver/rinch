@@ -59,16 +59,34 @@ thread_local! {
     // which has no `const fn` constructor.
     static CONTEXT_STORE: RefCell<HashMap<(u64, TypeId), ContextEntry>> =
         RefCell::new(HashMap::new());
-    /// The root whose namespace create/use_context resolve right now.
-    static CURRENT_ROOT: Cell<u64> = const { Cell::new(GLOBAL_ROOT) };
-    /// The document whose event stream is being dispatched right now, if any
-    /// (issue #139). Deliberately separate from `CURRENT_ROOT`: that is a store
-    /// *namespace*, and desktop shells leave it at the thread-global `0`.
-    static DISPATCHING_DOC: Cell<Option<u64>> = const { Cell::new(None) };
+    /// The ambient root and document — see [`Ambient`].
+    static AMBIENT: Ambient = const {
+        Ambient {
+            root: Cell::new(GLOBAL_ROOT),
+            doc: Cell::new(None),
+        }
+    };
     /// Monotonic insertion counter. Never reused, and deliberately **not** reset
     /// by `clear_context`/`clear_context_for_root` — resetting it would recreate
     /// the exact ABA the epoch exists to prevent.
     static NEXT_EPOCH: Cell<u64> = const { Cell::new(1) };
+}
+
+/// The two ambient identities every effect and memo run re-enters.
+///
+/// One thread-local rather than two so that re-entering both costs one TLS
+/// access each way, not two: [`enter_reactive_frame`] runs around every effect
+/// run and every memo recompute (issue #295), and reaching a thread-local of
+/// this crate from another crate is a call, not a load. Measured on the
+/// `rinch-bench` `memo_flush` bench, a second, separate guard for the
+/// document cost +1.4% instructions; this shape costs nothing measurable.
+struct Ambient {
+    /// The root whose namespace create/use_context resolve right now.
+    root: Cell<u64>,
+    /// The document whose code is running right now, if any (issues #139,
+    /// #295). Deliberately separate from `root`: that is a store *namespace*,
+    /// and desktop shells leave it at the thread-global `0`.
+    doc: Cell<Option<u64>>,
 }
 
 fn next_epoch() -> u64 {
@@ -114,7 +132,7 @@ fn clear_roots(doomed: impl Fn(u64) -> bool) {
 /// The context root currently in effect on this thread (`0` = the
 /// thread-global fallback root).
 pub fn current_context_root() -> u64 {
-    CURRENT_ROOT.with(|r| r.get())
+    AMBIENT.with(|a| a.root.get())
 }
 
 /// RAII guard returned by [`push_context_root`]; restores the previous root
@@ -125,7 +143,7 @@ pub struct ContextRootGuard {
 
 impl Drop for ContextRootGuard {
     fn drop(&mut self) {
-        CURRENT_ROOT.with(|r| r.set(self.prev));
+        AMBIENT.with(|a| a.root.set(self.prev));
     }
 }
 
@@ -136,7 +154,7 @@ impl Drop for ContextRootGuard {
 /// resolve that root's namespace. Closures that run with no root pushed
 /// resolve the thread-global root `0`.
 pub fn push_context_root(root: u64) -> ContextRootGuard {
-    let prev = CURRENT_ROOT.with(|r| r.replace(root));
+    let prev = AMBIENT.with(|a| a.root.replace(root));
     ContextRootGuard { prev }
 }
 
@@ -169,7 +187,7 @@ pub fn push_context_root(root: u64) -> ContextRootGuard {
 /// nobody in particular and stays drivable by anybody. Only two **`Some`** keys
 /// that differ mean "not yours".
 pub fn current_dispatching_doc() -> Option<u64> {
-    DISPATCHING_DOC.with(|d| d.get())
+    AMBIENT.with(|a| a.doc.get())
 }
 
 /// Read a raw `doc_key` as a document *identity*, or `None` when there is no
@@ -221,7 +239,7 @@ pub struct DispatchDocGuard {
 
 impl Drop for DispatchDocGuard {
     fn drop(&mut self) {
-        DISPATCHING_DOC.with(|d| d.set(self.prev));
+        AMBIENT.with(|a| a.doc.set(self.prev));
     }
 }
 
@@ -235,20 +253,48 @@ impl Drop for DispatchDocGuard {
 ///
 /// A `doc_key` of `0` pushes `None`, not `Some(0)` — see [`doc_identity`].
 pub fn push_dispatching_doc(doc_key: u64) -> DispatchDocGuard {
-    let prev = DISPATCHING_DOC.with(|d| d.replace(doc_identity(doc_key)));
+    let prev = AMBIENT.with(|a| a.doc.replace(doc_identity(doc_key)));
     DispatchDocGuard { prev }
 }
 
-/// Re-enter a document identity already resolved by [`doc_identity`] — an
-/// `Option` captured from [`current_dispatching_doc`] — until the guard drops.
+/// RAII guard returned by [`enter_reactive_frame`]; restores both the root and
+/// the document it displaced.
+pub(crate) struct ReactiveFrameGuard {
+    prev_root: u64,
+    prev_doc: Option<u64>,
+}
+
+impl Drop for ReactiveFrameGuard {
+    fn drop(&mut self) {
+        AMBIENT.with(|a| {
+            a.root.set(self.prev_root);
+            a.doc.set(self.prev_doc);
+        });
+    }
+}
+
+/// The context root and the document current right now, read together in one
+/// TLS access — what an effect or memo records at creation and later hands to
+/// [`enter_reactive_frame`].
+pub(crate) fn current_reactive_frame() -> (u64, Option<u64>) {
+    AMBIENT.with(|a| (a.root.get(), a.doc.get()))
+}
+
+/// Re-enter the context root and the document an effect or memo was created
+/// under, until the guard drops — one TLS access each way.
 ///
-/// The reactive runtime's half of the marker (issue #295): an effect or memo
-/// records the document current at its creation and re-enters it around every
-/// run, because the effect queue is thread-global and drains under whichever
-/// document happens to be dispatching. `None` is re-entered as `None`.
-pub(crate) fn enter_dispatching_doc(doc: Option<u64>) -> DispatchDocGuard {
-    let prev = DISPATCHING_DOC.with(|d| d.replace(doc));
-    DispatchDocGuard { prev }
+/// The root is issue #136: `use_context`/`use_store` must resolve the same
+/// namespace as at build time. The document is issue #295: the effect queue
+/// is thread-global and drains under whichever document happens to be
+/// dispatching, so an effect of document B woken by a write in document A's
+/// handler must still answer B to [`current_dispatching_doc`]. `doc` is the
+/// `Option` captured from [`current_dispatching_doc`] at creation; `None` is
+/// re-entered as `None` — "nobody's", never a borrowed document.
+pub(crate) fn enter_reactive_frame(root: u64, doc: Option<u64>) -> ReactiveFrameGuard {
+    AMBIENT.with(|a| ReactiveFrameGuard {
+        prev_root: a.root.replace(root),
+        prev_doc: a.doc.replace(doc),
+    })
 }
 
 /// Create a context value accessible by any component.
@@ -624,7 +670,7 @@ mod tests {
             scope.run(|| create_store(S("root-seven")));
         }
 
-        // Dispose with CURRENT_ROOT back at 0.
+        // Dispose with the ambient root back at 0.
         scope.dispose();
 
         assert_eq!(

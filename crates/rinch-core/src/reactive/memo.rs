@@ -157,8 +157,7 @@ impl<T: Clone + PartialEq + 'static> MemoInner<T> {
         // Clone the owner out before pushing: the user computation below can
         // reach `Memo::leak` on this same memo, which takes `owner` mutably.
         let owner = self.owner.borrow().clone();
-        let _root_guard = crate::context::push_context_root(self.root);
-        let _doc_guard = crate::context::enter_dispatching_doc(self.doc);
+        let _frame_guard = crate::context::enter_reactive_frame(self.root, self.doc);
         let _owner_guard = owner.push();
         // Retracking: this is the pass that reads the memo's dependencies, so
         // it replaces the set the previous recompute took out (#171).
@@ -226,14 +225,15 @@ impl<T: Clone + PartialEq + 'static> Memo<T> {
         // Shared with the store slot below, so a type-erased unsubscribe can
         // reach it (issue #171).
         let subscribers = Rc::new(RefCell::new(BTreeSet::new()));
+        let (root, doc) = crate::context::current_reactive_frame();
         let inner = Rc::new(MemoInner {
             id,
             value: RefCell::new(None),
             f: RefCell::new(Box::new(f)),
             state: Cell::new(MemoState::Dirty),
             version: Cell::new(0),
-            root: crate::context::current_context_root(),
-            doc: crate::context::current_dispatching_doc(),
+            root,
+            doc,
             owner: RefCell::new(super::Owner::current()),
             subscribers: Rc::clone(&subscribers),
         });
@@ -246,8 +246,8 @@ impl<T: Clone + PartialEq + 'static> Memo<T> {
         // each one only if a memo it read really moved to a new value.
         //
         // Built before the registry is touched, not inside the borrow: the
-        // constructor reads two other thread-locals (the context root and the
-        // ambient owner), and nothing under an `EFFECTS` borrow should call out
+        // constructor reads another thread-local (the ambient owner), and
+        // nothing under an `EFFECTS` borrow should call out
         // to code that could reach back into it.
         let memo_inner = Rc::clone(&inner);
         let marker = Rc::new(EffectInner {
@@ -263,8 +263,8 @@ impl<T: Clone + PartialEq + 'static> Memo<T> {
                 });
             })),
             disposed: Cell::new(false),
-            root: crate::context::current_context_root(),
-            doc: crate::context::current_dispatching_doc(),
+            root,
+            doc,
             // Inert: the marker closure only queues observers, so it allocates
             // nothing to attribute. Set for uniformity with every other
             // `EffectInner`.
