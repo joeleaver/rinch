@@ -53,6 +53,8 @@ mod editor_link_tests;
 #[cfg(all(test, feature = "desktop"))]
 mod editor_popup_hooks_tests;
 #[cfg(all(test, feature = "desktop"))]
+mod editor_programmatic_selection_tests;
+#[cfg(all(test, feature = "desktop"))]
 mod editor_read_only_tests;
 #[cfg(all(test, feature = "desktop"))]
 mod editor_word_delete_tests;
@@ -1202,7 +1204,7 @@ impl RinchApp {
                 && !d.tree.styles_dirty
                 && !theme_changed
                 && !rinch_dom::image_cache::has_pending(d.doc_key())
-                && !self.has_owed_editor_reveal()
+                && !self.has_owed_editor_overlay_pass()
             {
                 return false;
             }
@@ -2120,22 +2122,24 @@ impl RinchApp {
             })
             .unwrap_or(false)
             || self.has_pending_images()
-            || self.has_owed_editor_reveal()
+            || self.has_owed_editor_overlay_pass()
     }
 
-    /// Whether an editor in this document asked to
-    /// [`scroll_into_view`](crate::editor::EditorHandle::scroll_into_view)
-    /// since the last overlay pass. It dirties nothing (the request waits on
-    /// the handle for a pass with geometry), so, like a decoded image, it is
-    /// folded into both "is there anything to do?" predicates and the resolve
-    /// short-circuit: an app may ask from an effect or a timer, with no input
-    /// event to run the pass for it.
-    fn has_owed_editor_reveal(&self) -> bool {
+    /// Whether an editor in this document is owed an overlay pass
+    /// ([`crate::editor::overlay_pass_owed`]): its selection moved, or it asked
+    /// to [`scroll_into_view`](crate::editor::EditorHandle::scroll_into_view),
+    /// since the last pass. Neither dirties anything (a selection-only
+    /// transaction changes no DOM; a reveal waits on the handle for a pass with
+    /// geometry), so, like a decoded image, it is folded into both "is there
+    /// anything to do?" predicates and the resolve short-circuit: an app may
+    /// set a selection or ask for a scroll from an effect, a timer or a toolbar
+    /// command, with no input event to run the pass for it (#922, #1001).
+    fn has_owed_editor_overlay_pass(&self) -> bool {
         #[cfg(feature = "desktop")]
         {
             self.doc
                 .as_ref()
-                .is_some_and(|d| crate::editor::reveal_owed(d.borrow().doc_key()))
+                .is_some_and(|d| crate::editor::overlay_pass_owed(d.borrow().doc_key()))
         }
         #[cfg(not(feature = "desktop"))]
         {
@@ -2157,7 +2161,7 @@ impl RinchApp {
             })
             .unwrap_or(false)
             || self.has_pending_images()
-            || self.has_owed_editor_reveal()
+            || self.has_owed_editor_overlay_pass()
     }
 
     /// The framebuffer rect `paint_inspect_overlay` touches for `highlight`

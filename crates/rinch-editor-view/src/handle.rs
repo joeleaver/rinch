@@ -342,6 +342,14 @@ impl EditorCore {
         self.state = next.clone();
         if let Some(view) = self.view.as_mut() {
             view.update_dom(&prev, &next);
+            // The caret and the highlight are drawn by the post-layout overlay
+            // pass, and a selection-only change dirties no DOM, so a runtime
+            // that skips a frame with nothing dirty would never run that pass
+            // for it (#1001). Owe it; the input paths that run it themselves
+            // clear this in the same turn.
+            if prev.selection != next.selection {
+                crate::registry::owe_overlay_pass(view.doc_key());
+            }
         }
         #[cfg(feature = "collaboration")]
         self.record_local(&prev, &next);
@@ -2296,7 +2304,7 @@ impl EditorHandle {
             core.reveal_misses = 0;
             doc_key
         };
-        crate::registry::owe_reveal(doc_key);
+        crate::registry::owe_overlay_pass(doc_key);
         crate::registry::request_overlay_refresh();
     }
 
@@ -7526,6 +7534,39 @@ mod tests {
                 h.handle.pending_reveal(),
                 Some(Pos(1)),
                 "not fulfilled: no layout"
+            );
+        }
+
+        /// A selection change owes its document an overlay pass, as a reveal
+        /// does: it changes no DOM, so a runtime that skips a clean frame would
+        /// never draw the new caret or highlight (#1001). A commit that leaves
+        /// the selection where it was owes nothing.
+        #[test]
+        fn a_selection_change_wakes_its_document_until_the_next_overlay_pass() {
+            let h = five();
+            let key = h.doc.borrow().doc_key();
+            crate::registry::update_all_carets(Some(key), None);
+            let here = h.handle.selection();
+            h.handle.set_selection(here.clone());
+            assert!(
+                !crate::registry::overlay_pass_owed(key),
+                "an unchanged selection owes nothing"
+            );
+            h.handle.set_selection(Selection::text(Pos(3), Pos(7)));
+            assert_ne!(here, h.handle.selection(), "positive control");
+            assert!(
+                crate::registry::overlay_pass_owed(key),
+                "owed after the selection moved"
+            );
+            crate::registry::update_all_carets(Some(key.wrapping_add(1)), None);
+            assert!(
+                crate::registry::overlay_pass_owed(key),
+                "another document's pass leaves it"
+            );
+            crate::registry::update_all_carets(Some(key), None);
+            assert!(
+                !crate::registry::overlay_pass_owed(key),
+                "the document's own pass clears it"
             );
         }
     }

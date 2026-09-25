@@ -55,10 +55,12 @@ thread_local! {
         const { RefCell::new(Vec::new()) };
     /// See [`set_focus_handler`].
     static FOCUS_HANDLER: Cell<Option<fn(usize)>> = const { Cell::new(None) };
-    /// The `doc_key`s of documents with an editor whose
-    /// [`EditorHandle::scroll_into_view`] wants an overlay pass — see
-    /// [`reveal_owed`]. Empty for every app that never asks.
-    static REVEALS_OWED: RefCell<Vec<u64>> = const { RefCell::new(Vec::new()) };
+    /// The `doc_key`s of documents with an editor that is owed an overlay pass
+    /// no DOM change will bring — see [`overlay_pass_owed`]. Empty while nothing
+    /// is owed.
+    static OVERLAY_PASSES_OWED: RefCell<Vec<u64>> = const { RefCell::new(Vec::new()) };
+    /// See [`set_overlay_pass_scheduler`].
+    static OVERLAY_PASS_SCHEDULER: Cell<Option<fn()>> = const { Cell::new(None) };
 }
 
 /// Tell [`EditorHandle::focus`] how this platform gives an editor the keyboard,
@@ -77,28 +79,79 @@ pub(crate) fn focus_handler() -> Option<fn(usize)> {
     FOCUS_HANDLER.with(|slot| slot.get())
 }
 
-/// Note that an editor in document `doc_key` has a
-/// [`scroll_into_view`](EditorHandle::scroll_into_view) waiting for an overlay
-/// pass.
-pub(crate) fn owe_reveal(doc_key: u64) {
-    REVEALS_OWED.with(|r| {
+/// Note that an editor in document `doc_key` is owed an overlay pass
+/// ([`update_all_carets`]) that no DOM change will bring: a selection moved by a
+/// transaction that changed no DOM (#1001), or a
+/// [`scroll_into_view`](EditorHandle::scroll_into_view) waiting for geometry.
+///
+/// Tells the registered [`set_overlay_pass_scheduler`] when this document goes
+/// from owing nothing to owing a pass. May be called with an editor's borrow
+/// held: the scheduler only schedules.
+pub(crate) fn owe_overlay_pass(doc_key: u64) {
+    let newly = OVERLAY_PASSES_OWED.with(|r| {
         let mut r = r.borrow_mut();
-        if !r.contains(&doc_key) {
+        if r.contains(&doc_key) {
+            false
+        } else {
             r.push(doc_key);
+            true
         }
     });
+    if newly && let Some(schedule) = OVERLAY_PASS_SCHEDULER.with(|slot| slot.get()) {
+        schedule();
+    }
 }
 
-/// Whether an editor in document `doc_key` asked to
-/// [`scroll_into_view`](EditorHandle::scroll_into_view) since that document's
-/// last overlay pass ([`update_all_carets`]). A runtime whose frame skips the
-/// layout and overlay pass when nothing is dirty (desktop) runs them when this
-/// is `true`, which is what makes a scroll asked for outside any input event
-/// happen. The next pass clears it whether or not the reveal could be
-/// fulfilled, so a reveal that has no geometry yet waits for a pass that
-/// happens anyway rather than forcing one every frame.
+/// Tell the registry how to get an owed overlay pass ([`overlay_pass_owed`])
+/// run on a runtime with no frame loop to ask.
+///
+/// Desktop and embed need none: their frame clock asks [`overlay_pass_owed`]
+/// on every turn. The web has no such loop — it refreshes the overlays from its
+/// own input handlers — so a selection set from a timer, an effect or a toolbar
+/// button's click reached no refresh at all (#1001). It registers a scheduler
+/// that queues a microtask, and the microtask runs the pass only if one is
+/// still owed ([`any_overlay_pass_owed`]): an input handler that refreshes
+/// right after its edit has cleared it by then, so a keystroke pays for one
+/// empty microtask and no second geometry read.
+///
+/// `schedule` is called with an editor's borrow held and must not run the
+/// pass itself. Per thread, like the rest of this registry; setting it again
+/// replaces it.
+pub fn set_overlay_pass_scheduler(schedule: fn()) {
+    OVERLAY_PASS_SCHEDULER.with(|slot| slot.set(Some(schedule)));
+}
+
+/// Whether any document on this thread is owed an overlay pass — the
+/// question a runtime whose pass covers every document at once (the web's
+/// `update_all_carets(None, ..)`) asks. See [`overlay_pass_owed`].
+pub fn any_overlay_pass_owed() -> bool {
+    OVERLAY_PASSES_OWED.with(|r| !r.borrow().is_empty())
+}
+
+/// Whether an editor in document `doc_key` is owed an overlay pass
+/// ([`update_all_carets`]) since that document's last one: its selection moved
+/// (`set_selection`, `command("selectAll")`, any local transaction that moved
+/// it — #1001), or it asked to
+/// [`scroll_into_view`](EditorHandle::scroll_into_view).
+///
+/// Neither changes any DOM, so a runtime whose frame skips the layout and
+/// overlay pass when nothing is dirty (desktop, embed) never runs the pass for
+/// them by itself. It runs them when this is `true`, which is what makes a
+/// selection set or a scroll asked for outside any input event — from a timer,
+/// an effect, a toolbar command — reach the screen. The next pass clears it
+/// whether or not a reveal could be fulfilled, so a reveal that has no geometry
+/// yet waits for a pass that happens anyway rather than forcing one every
+/// frame. An input path that runs the pass itself right after its edit clears
+/// it there, and pays nothing more.
+pub fn overlay_pass_owed(doc_key: u64) -> bool {
+    OVERLAY_PASSES_OWED.with(|r| r.borrow().contains(&doc_key))
+}
+
+/// [`overlay_pass_owed`] under its first name: it was added for
+/// [`scroll_into_view`](EditorHandle::scroll_into_view) alone (#922), and now
+/// also answers for a selection change (#1001).
 pub fn reveal_owed(doc_key: u64) -> bool {
-    REVEALS_OWED.with(|r| r.borrow().contains(&doc_key))
+    overlay_pass_owed(doc_key)
 }
 
 /// Tell the editor view how to get its overlays (caret, selection highlight)
@@ -344,7 +397,7 @@ pub fn editor_for(container_id: usize) -> Option<EditorHandle> {
 /// and wins over the caret's. `true` is returned for that as for a moved
 /// overlay: the probes it placed need a layout before the scroll is applied.
 pub fn update_all_carets(doc_key: Option<u64>, focused: Option<usize>) -> bool {
-    REVEALS_OWED.with(|r| {
+    OVERLAY_PASSES_OWED.with(|r| {
         let mut r = r.borrow_mut();
         if !r.is_empty() {
             r.retain(|dk| doc_key.is_some_and(|k| k != *dk));
