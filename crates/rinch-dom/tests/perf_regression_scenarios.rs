@@ -16,7 +16,7 @@
 //! | `shape_paint` | `paint/contenteditable.rs` (`<input>` value) | [`an_input_value_is_shaped_by_paint`] |
 //! | `shape_paint` | `paint/mod.rs` (text with no cached layout) | [`a_text_leaf_with_no_cached_layout_is_shaped_by_paint`] — constructed: since #904 a text leaf keeps the layout its measure shaped, in either compute |
 //! | `ellipsis_builds` | `ifc.rs`, IFC root | [`an_ifc_root_ellipsis`] |
-//! | `ellipsis_builds` | `ifc.rs`, text leaf | [`a_contents_wrapped_flex_item_text_leaf_ellipsis`] (reached only because rinch does not blockify it, #998); [`a_text_leaf_ellipsis`] pins that a flex container's own text builds none |
+//! | `ellipsis_builds` | `ifc.rs`, text leaf | none known since #998 — [`a_contents_wrapped_flex_item_ellipsis`] reached it until rinch blockified that span, and now pins the IFC-root site instead; [`a_text_leaf_ellipsis`] pins that a flex container's own text builds none |
 //! | `shape_atomic_inline` | `ifc.rs`, `NodeContext::InlineRoot` | [`an_inline_block_holding_an_ifc`] |
 //! | `shape_atomic_inline` | `ifc.rs`, `NodeContext::Text` | [`an_inline_flex_holding_a_text_leaf`] |
 //! | `pseudo_element_passes` | `resolve.rs`, `::before` | [`only_before_rules`] |
@@ -217,9 +217,9 @@ fn an_ifc_root_ellipsis() {
 /// direct text child of a flex container, laid out as a leaf — build **no**
 /// ellipsis (`ellipsis_builds` 1 → 0, #904's second review): that text is an
 /// anonymous flex item, which does not clip, and Chrome 153 draws it clipped
-/// with no "…". The text-leaf rebuild site in `copy_cached_text_layouts` is
-/// still reached, by a different leaf — see
-/// [`a_contents_wrapped_flex_item_text_leaf_ellipsis`].
+/// with no "…". The text-leaf rebuild site in `copy_cached_text_layouts` was
+/// reached by one other leaf until #998 — see
+/// [`a_contents_wrapped_flex_item_ellipsis`].
 #[test]
 fn a_text_leaf_ellipsis() {
     let mut doc = doc_with(
@@ -256,17 +256,17 @@ fn a_text_leaf_ellipsis() {
     );
 }
 
-/// The text-leaf site **is** reached (#982): a `span` that is a flex item
-/// only through a `display: contents` wrapper. CSS blockifies it — Chrome 153
-/// computes `display: block`, a 60px box, and draws the "…" — but rinch keeps
-/// it `display: inline` (#998), so its text is measured as a Taffy text leaf
-/// with no IFC root, and `copy_cached_text_layouts` builds the truncation.
-/// The "…" is therefore right, and this leaf path is what draws it: deleting
-/// the path clips the line with no "…" and fails here. When #998 lands the span
-/// becomes an IFC root and the other site builds it — the frame moves then,
-/// and so should the table above.
+/// A `span` that is a flex item only through a `display: contents` wrapper.
+/// CSS blockifies it — Chrome 153 computes `display: block`, a 60px box, and
+/// draws the "…" — and since #998 so does rinch: the span is an IFC root, and
+/// its "…" is built by the IFC-root site, as [`an_ifc_root_ellipsis`]'s is.
+///
+/// Before #998 rinch kept the span `display: inline`, its text was measured as
+/// a Taffy text leaf, and the text-leaf rebuild in `copy_cached_text_layouts`
+/// was what drew the "…" (#982). That was the only route found to that site;
+/// `ifc_root` below is what moved.
 #[test]
-fn a_contents_wrapped_flex_item_text_leaf_ellipsis() {
+fn a_contents_wrapped_flex_item_ellipsis() {
     let mut doc = doc_with(
         ".flex { display: flex; } .c { display: contents; }
          .clip { width: 60px; overflow: hidden; white-space: nowrap;
@@ -279,19 +279,27 @@ fn a_contents_wrapped_flex_item_text_leaf_ellipsis() {
     let clip = el(&mut doc, wrapper, "span", "clip");
     let t = text(&mut doc, clip, "a line much too long for sixty pixels");
     let s = cold_frame(&mut doc);
-    let leaf = doc.tree.get(t.0).unwrap();
-    assert!(
-        leaf.ifc_root.is_none(),
-        "the text is a leaf, not IFC content"
+    assert_eq!(
+        doc.tree.get(t.0).unwrap().ifc_root,
+        Some(clip.0),
+        "the blockified span is the text's IFC root"
     );
-    let w = leaf
-        .cached_text_parley
+    let layout = doc
+        .tree
+        .get(clip.0)
+        .unwrap()
+        .text_layout
         .as_ref()
-        .expect("the leaf keeps a layout")
-        .width();
+        .expect("the span keeps an inline layout");
+    assert!(
+        layout.text_content.ends_with('\u{2026}'),
+        "the painted line ends in an ellipsis: {:?}",
+        layout.text_content
+    );
+    let w = layout.layout.width();
     assert!(w <= 60.0, "the painted line is truncated to the box: {w}");
     expect(
-        "ellipsis (text leaf behind display: contents)",
+        "ellipsis (blockified span behind display: contents)",
         &s,
         &[
             (StyleResolves, 4),
@@ -299,10 +307,13 @@ fn a_contents_wrapped_flex_item_text_leaf_ellipsis() {
             (StyleNodesVisited, 18),
             (FullStyleWalks, 4),
             (TaffyStyleSyncs, 9),
-            (TaffyStyleChanges, 4),
-            (ShapeMeasureText, 3),
+            (TaffyStyleChanges, 5),
+            (ShapeMeasureIfc, 2),
+            (ShapeIfcBuild, 1),
             (EllipsisBuilds, 1),
+            (IfcMeasureCacheHits, 1),
             (IfcMeasureInvalidations, 4),
+            (IfcSignatureChanges, 1),
             (LayoutResolves, 2),
             (LayoutSkippedPaintOnly, 1),
             (IfcSetupPasses, 1),
@@ -310,7 +321,7 @@ fn a_contents_wrapped_flex_item_text_leaf_ellipsis() {
             (IfcFullInitial, 1),
             (TaffyRootComputes, 1),
             (TaffyMeasureCalls, 3),
-            (PaintNodesVisited, 5),
+            (PaintNodesVisited, 4),
             (StackingOrderBuilds, 1),
         ],
     );

@@ -485,14 +485,15 @@ impl RinchDocument {
                         // clipped text (#904's second review). Only a block
                         // container's own text does.
                         //
-                        // The rebuild below is still reached (#982): a flex
-                        // or grid item behind a `display: contents` wrapper is
-                        // not blockified by rinch (#998), so a `span` there
-                        // stays `display: inline` and its text is measured as a
-                        // leaf whose parent is that span. Chrome blockifies it
-                        // and draws the "…", which is what this path produces —
-                        // pinned by `a_contents_wrapped_flex_item_text_leaf_ellipsis`
-                        // in `perf_regression_scenarios.rs`.
+                        // The one route found to the rebuild below (#982) was
+                        // a `span` flex item behind a `display: contents`
+                        // wrapper, which rinch left `display: inline` and
+                        // measured as a leaf. Since #998 that span is
+                        // blockified and is an IFC root, so its "…" comes from
+                        // the IFC-root site
+                        // (`a_contents_wrapped_flex_item_ellipsis` in
+                        // `perf_regression_scenarios.rs`); no other route to
+                        // this one is known.
                         !parent.computed_style.display.is_flex_or_grid_container()
                             && parent.computed_style.display != DisplayValue::Contents
                             && matches!(
