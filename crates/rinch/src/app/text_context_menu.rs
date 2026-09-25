@@ -553,7 +553,7 @@ impl RinchApp {
     fn text_target_at(&self, x: f32, y: f32) -> Option<TextTarget> {
         let doc = self.doc.as_ref()?;
         let d = doc.borrow();
-        let mut cur = hit_test(&d.tree, x, y);
+        let mut cur = self.shared_hit(&d, x, y);
         while let Some(nid) = cur {
             let node = d.tree.get(nid)?;
             if Self::is_text_like_field(node) {
@@ -988,7 +988,7 @@ impl RinchApp {
             return MenuHit::Outside;
         };
         let d = doc.borrow();
-        let mut cur = hit_test(&d.tree, x, y);
+        let mut cur = self.shared_hit(&d, x, y);
         while let Some(nid) = cur {
             let Some(node) = d.tree.get(nid) else { break };
             if let Some(idx) = node

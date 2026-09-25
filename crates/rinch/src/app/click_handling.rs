@@ -70,7 +70,7 @@ impl RinchApp {
         {
             let surface_hit = {
                 let d = doc.borrow();
-                if let Some(hit_id) = hit_test(&d.tree, x, y) {
+                if let Some(hit_id) = self.shared_hit(&d, x, y) {
                     Self::find_render_surface_at(&d.tree, hit_id, x, y)
                 } else {
                     None
@@ -117,7 +117,8 @@ impl RinchApp {
         {
             let select_hit = {
                 let d = doc.borrow();
-                hit_test(&d.tree, x, y).and_then(|hid| Self::select_ancestor(&d.tree, hid))
+                self.shared_hit(&d, x, y)
+                    .and_then(|hid| Self::select_ancestor(&d.tree, hid))
             };
             if let Some(select_id) = select_hit {
                 self.open_select_popup(select_id, viewport_width, viewport_height);
@@ -149,7 +150,7 @@ impl RinchApp {
 
         let click_focus = {
             let d = doc.borrow();
-            if let Some(hit_id) = hit_test(&d.tree, x, y) {
+            if let Some(hit_id) = self.shared_hit(&d, x, y) {
                 let mut walk = Some(hit_id);
                 let mut preserves = false;
                 while let Some(nid) = walk {
@@ -214,7 +215,7 @@ impl RinchApp {
         }
         let text_sel_action = {
             let d = doc.borrow();
-            if let Some(hit_id) = hit_test(&d.tree, x, y) {
+            if let Some(hit_id) = self.shared_hit(&d, x, y) {
                 if let Some(ifc_node_id) = Self::find_selectable_ifc(&d.tree, hit_id) {
                     let offset = Self::compute_ifc_offset_from_click(&d.tree, ifc_node_id, x, y);
                     TextSelAction::StartSelection {
@@ -254,7 +255,7 @@ impl RinchApp {
 
         // ── Phase 3: normal click handling (data-oninput, data-rid) ─
         let d = doc.borrow();
-        let Some(hit_id) = hit_test(&d.tree, x, y) else {
+        let Some(hit_id) = self.shared_hit(&d, x, y) else {
             return actions;
         };
 
