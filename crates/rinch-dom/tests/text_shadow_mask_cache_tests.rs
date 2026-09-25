@@ -466,7 +466,7 @@ fn bleed_partial_vs_full(css: &str, html: &str, strip: Rect, scale: f64) -> usiz
         "positive control: the strip holds ink ({inked} px)"
     );
     partial(&mut d, &mut p, vw, vh, scale, r);
-    diff(&a, &p.pixels().to_vec()).2
+    diff(&a, p.pixels()).2
 }
 
 /// The prune's ink check covers `box-shadow` and `outline`, not only
