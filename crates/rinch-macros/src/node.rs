@@ -399,9 +399,7 @@ fn parse_braced_arm_body(input: ParseStream) -> Result<Vec<RsxNode>> {
     // Parse the head alone, on the fork.
     let head_ok = inner.parse::<RsxNode>().is_ok();
     let commit = if !head_ok {
-        // A literal / element head is rsx: report its error. Control flow or a
-        // braced head falls back, so #221 can diagnose its own case.
-        rsx_head
+        failed_head_is_rsx(input, rsx_head)
     } else if inner.is_empty() {
         rsx_head
     } else {
@@ -415,9 +413,79 @@ fn parse_braced_arm_body(input: ParseStream) -> Result<Vec<RsxNode>> {
     }
 }
 
+/// A braced arm body whose head failed to parse: should the rsx parser report
+/// the error (commit to children), or does the old single-node path own it?
+///
+/// - A `Name {` head that is not rsx but whose whole body is one complete Rust
+///   expression (`Foo { a }`, `Foo { ..Default::default() }.into_node(s)`) is
+///   that expression, as it was before #395. A typo'd element is not one, so
+///   it stays rsx's error, reported at the typo.
+/// - A control-flow head is skipped **by tokens** (a diagnostic heuristic, run
+///   only after the head has already failed): when another node follows it, the
+///   author wrote a multi-node arm, and the rsx parser reports the mistake inside
+///   the head where it is. A lone construct stays #221's case, diagnostic
+///   included.
+/// - A braced `{ … }` head falls back.
+fn failed_head_is_rsx(input: ParseStream, rsx_head: bool) -> bool {
+    let ahead = input.fork();
+    let Ok(inner) = (|| -> Result<_> {
+        let inner;
+        syn::braced!(inner in ahead);
+        Ok(inner)
+    })() else {
+        return false;
+    };
+    if rsx_head {
+        let whole_expr = inner.parse::<Expr>().is_ok() && inner.is_empty();
+        return !whole_expr;
+    }
+    skip_control_flow_head(&inner).is_ok() && !inner.is_empty() && starts_rsx_node(&inner)
+}
+
+/// Skip one `if` (with its `else` chain), `for` or `match` construct by tokens:
+/// the keyword, the tokens up to its first top-level `{ … }`, and that group.
+/// Mis-steps on a condition that holds a brace (`if let Foo { a } = x`), which
+/// costs only the quality of a message.
+fn skip_control_flow_head(input: ParseStream) -> Result<()> {
+    fn up_to_block(input: ParseStream) -> Result<()> {
+        while !input.is_empty() && !input.peek(token::Brace) {
+            input.parse::<TokenTree>()?;
+        }
+        let _block;
+        syn::braced!(_block in input);
+        Ok(())
+    }
+    if input.peek(Token![if]) {
+        input.parse::<Token![if]>()?;
+        up_to_block(input)?;
+        while input.peek(Token![else]) {
+            input.parse::<Token![else]>()?;
+            if input.peek(Token![if]) {
+                input.parse::<Token![if]>()?;
+                up_to_block(input)?;
+            } else {
+                let _block;
+                syn::braced!(_block in input);
+                break;
+            }
+        }
+        Ok(())
+    } else if input.peek(Token![for]) {
+        input.parse::<Token![for]>()?;
+        up_to_block(input)
+    } else if input.peek(Token![match]) {
+        input.parse::<Token![match]>()?;
+        up_to_block(input)
+    } else {
+        Err(input.error("not control flow"))
+    }
+}
+
 /// Whether the next token in a braced arm body starts another rsx node (or is
 /// the `,` that separates two), i.e. the head before it was not the end of a
-/// Rust expression such as `… .len()` or `… == d`.
+/// Rust expression such as `… .len()` or `… == d`. A bare identifier counts:
+/// no Rust expression continues with one after a block or a literal, so it can
+/// only be an element (perhaps missing its braces, which rsx then reports).
 fn starts_rsx_node(input: ParseStream) -> bool {
     input.peek(LitStr)
         || input.peek(token::Brace)
@@ -426,7 +494,7 @@ fn starts_rsx_node(input: ParseStream) -> bool {
         || input.peek(Token![match])
         || input.peek(Token![let])
         || input.peek(Token![,])
-        || (input.peek(syn::Ident) && input.peek2(token::Brace))
+        || input.peek(syn::Ident)
 }
 
 // ============================================================================
