@@ -36,6 +36,8 @@ mod device_pixel_ratio_tests;
 #[cfg(test)]
 mod disabled_input_tests;
 #[cfg(test)]
+mod dnd_teardown_tests;
+#[cfg(test)]
 mod drawer_open_animation_tests;
 #[cfg(test)]
 mod drawer_scroll_overflow_tests;

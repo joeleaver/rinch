@@ -109,7 +109,9 @@ thread_local! {
 ///
 /// Call this from `ondragstart`, `ondragenter`, `DragEnter`, or `DragOver`
 /// handlers when the drop target provides its own visual feedback. The ghost
-/// remains hidden until `restore_drag_ghost()` is called or the drag ends.
+/// remains hidden until `restore_drag_ghost()` is called or the drag ends —
+/// by a drop, a release, Escape or a pointer cancel alike — and every drag
+/// starts with it visible, so a suppression never outlives its drag (#333).
 ///
 /// ```ignore
 /// // In a surface event handler:
@@ -141,7 +143,7 @@ pub fn is_drag_ghost_visible() -> bool {
 }
 
 /// Reset ghost visibility to default (visible). Called by the runtime
-/// when a drag ends.
+/// when a drag starts (before `data-ondragstart`) and whenever one ends.
 pub fn reset_drag_ghost_visibility() {
     DRAG_GHOST_VISIBLE.with(|v| v.set(true));
 }

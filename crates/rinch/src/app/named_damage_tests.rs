@@ -976,3 +976,43 @@ fn an_option_change_while_its_select_moves_clears_the_old_select() {
     });
     assert_eq!(stats.get(Counter::RepaintPartial), 1, "{stats:?}");
 }
+
+/// An Escape-cancelled drag takes its ghost away in a partial repaint and
+/// leaves no trail (#333: Escape now shares the other endings' teardown).
+#[test]
+fn an_escape_cancel_takes_the_ghost_away_in_a_region() {
+    let (mut app, ids) = mount();
+    let (sx, sy) = center(&app, ids.src);
+    press(&mut app, sx, sy);
+    pointer_move(&mut app, sx - 20.0, sy + 20.0);
+    pointer_move(&mut app, sx - 200.0, sy + 150.0);
+    assert!(app.active_dnd.is_some(), "the drag activated");
+    let (before, _) = frame(&mut app);
+    let g = app.last_ghost_rect.expect("ghost drawn");
+    app.handle_event(
+        PlatformEvent::KeyDown {
+            key: KeyCode::Escape,
+            logical_key: None,
+            text: None,
+            modifiers: Default::default(),
+            repeat: KeyRepeat::Unknown,
+        },
+        SIZE,
+        1.0,
+    );
+    assert!(app.active_dnd.is_none());
+    let (after, stats) = frame(&mut app);
+    assert_partial_and_small(&stats);
+    assert!(
+        diff_in(
+            &before,
+            &after,
+            (g.x0 as i32, g.y0 as i32, g.x1 as i32, g.y1 as i32)
+        ) > 0
+    );
+    assert_eq!(
+        diff_in(&after, &full_frame(&mut app), whole()),
+        0,
+        "no ghost trail"
+    );
+}
