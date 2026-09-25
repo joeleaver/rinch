@@ -432,6 +432,86 @@ fn opening_the_drawer_resumes_its_loader() {
     );
 }
 
+/// Every registered animation in the document, as `(total, paused)`.
+fn registered(app: &RinchApp) -> (usize, usize) {
+    let doc = app.doc.as_ref().unwrap();
+    let d = doc.borrow();
+    let all: Vec<_> = d.tree.active_animations.values().flatten().collect();
+    let paused = all
+        .iter()
+        .filter(|a| a.play_state == rinch_dom::animation::AnimationPlayState::Paused)
+        .count();
+    (all.len(), paused)
+}
+
+/// Content that is not a `Loader`, inside a `Drawer`, with an extra app
+/// stylesheet loaded after the component one.
+fn mount_in_drawer(
+    opened_at_start: bool,
+    app_css: &'static str,
+    content: fn(&mut RenderScope) -> NodeHandle,
+) -> (RinchApp, Signal<bool>) {
+    let opened = Signal::new(opened_at_start);
+    let mut app = RinchApp::new(move |scope: &mut RenderScope| {
+        let root = scope.create_element("div");
+        let inner = content(scope);
+        let drawer = Drawer {
+            opened_fn: Some(std::rc::Rc::new(move || opened.get())),
+            position: "left".to_string(),
+            ..Default::default()
+        }
+        .render(scope, &[inner]);
+        root.append_child(&drawer);
+        root
+    });
+    app.mount_component(MOUNT.0, MOUNT.1);
+    {
+        let doc = app.doc.as_ref().unwrap();
+        let mut d = doc.borrow_mut();
+        d.load_css(&format!(
+            "{}\n{app_css}",
+            rinch_components::generate_component_css()
+        ));
+        d.recompute_all_styles_full();
+    }
+    app.resolve_and_repaint(MOUNT.0, MOUNT.1);
+    {
+        let doc = app.doc.as_ref().unwrap();
+        doc.borrow_mut().resolve_layout(SETTLED.0, SETTLED.1);
+    }
+    (app, opened)
+}
+
+/// An animation the **app** declares, in a stylesheet loaded after the
+/// component one. Its `animation` shorthand resets the play state and ties the
+/// closed rule's `*` on specificity, so it is the declaration order that would
+/// decide — and the app's comes last. The closed rule is `!important` so that
+/// it still wins.
+#[test]
+fn an_app_declared_animation_in_a_closed_drawer_is_paused_too() {
+    fn spinner(scope: &mut RenderScope) -> NodeHandle {
+        let el = scope.create_element("div");
+        el.set_attribute("class", "spin-912");
+        el
+    }
+    let (mut app, opened) = mount_in_drawer(
+        false,
+        "@keyframes spin-912 { to { transform: rotate(360deg); } }
+         .spin-912 { width: 20px; height: 20px; animation: spin-912 1s linear infinite; }",
+        spinner,
+    );
+    assert_eq!(
+        registered(&app),
+        (1, 1),
+        "the app's animation is registered, and paused by the closed rule"
+    );
+    assert_eq!(idle_frames_requesting_redraw(&mut app, 4), 0, "so the app idles");
+
+    opened.set(true);
+    app.resolve_and_repaint(SETTLED.0, SETTLED.1);
+    assert_eq!(registered(&app), (1, 0), "opening resumes it");
+}
+
 // ── The other overlays that close with `visibility: hidden` ─────────────────
 
 /// A `Loader` in a **closed** `Popover`'s dropdown: the dropdown is

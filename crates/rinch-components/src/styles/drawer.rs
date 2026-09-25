@@ -61,8 +61,14 @@ pub fn styles() -> String {
    lose to any shorthand of equal or higher specificity declared after it —
    `.rinch-loader__oval` ties with this selector and `.rinch-button--loading
    .rinch-button__loader` beats it. `animation-play-state` does not inherit,
-   hence the `*`. */
-.rinch-drawer__root--hidden * {
+   hence the `*` — and it does not reach a pseudo-element either, hence
+   `*::before` / `*::after`: a hand-rolled spinner is usually an `::after`.
+   Desktop runs no animation on a pseudo-element today, so those two only act
+   on rinch-web, where the browser does (measured in Chrome 153: paused while
+   closed, resumed with its `currentTime` on open). */
+.rinch-drawer__root--hidden *,
+.rinch-drawer__root--hidden *::before,
+.rinch-drawer__root--hidden *::after {
     animation-play-state: paused !important;
 }
 
