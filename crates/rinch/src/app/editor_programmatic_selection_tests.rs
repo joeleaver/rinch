@@ -18,7 +18,7 @@
 //! with a declared `font-size` and `line-height`, and every position is checked
 //! against the paragraph's own box: where inside a line box Parley puts a
 //! selection rect depends on the face's metrics, and CI's DejaVu put the same
-//! highlight a pixel lower than this host's Noto.
+//! highlight a pixel lower than this host's default sans-serif did.
 
 use super::hit_testing::painted_element_box;
 use super::*;
