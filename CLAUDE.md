@@ -1444,11 +1444,21 @@ ever ended on a guess: `Unknown` behaves exactly like `Down`.
 at the last move. Two events count: a **left `MouseDown`** while the drag is
 live (a button cannot be pressed twice without a release in between), handled
 *before* the press is dispatched so its handlers never see the stranded drag
-and a drag the press arms is not the one ended; and **`WindowFocus(false)`**,
-after which the release goes to another window. Before #381 the next unrelated
+and a drag the press arms is not the one ended; and **`WindowFocus(false)`**.
+The blur rule is a trade-off, not a proof: on Windows deactivation takes the
+pointer capture and the release does go to another window, but on X11/Wayland
+the press's implicit pointer grab still delivers it, and a blur mid-drag can
+come from a transient keyboard grab (a global hotkey, a WM holding Alt+Tab) —
+that healthy drag is cancelled too, and its release then commits nothing.
+Accepted because it fails safe: a cancel, never a wrong commit. Before #381 the next unrelated
 click's `MouseUp` ran `finish_drag` and **committed** the stranded drag's
 `on_end` at that click's position. A right or middle press proves nothing (a
-chord can be real) and ends nothing. Both events also release the editor's
+chord can be real) and ends nothing. The left-press proof assumes a
+primary-button drag — `Drag` does not record which button armed it — so a
+middle- or right-button drag is ended by a left chord press (it used to be
+committed by that press's release), and a "grab mode" drag armed with no
+button held (a shortcut, a timer) and placed with a click is cancelled by that
+click, as rinch-web cancels it on its first move: arm a `Drag` from a press. Both events also release the editor's
 drag-select (`registry::DRAG`, the same shape — #294). What is left: between the
 swallowed release and that next press or blur, the drag still follows a pointer
 with no button held — a native context menu that takes a grab without blurring
@@ -1459,6 +1469,8 @@ press, a second finger's press ends a drag the first finger is making, as a
 second finger's drag already does on rinch-web. Every heal is document-scoped
 like the rest of the drag — another document's idle pointer, press or blur
 cannot tear down this one's live drag. Pins: `app/missed_release_381_tests.rs`.
+The DOM DnD suite, the scrollbar drag and the read-only text-selection drag
+strand the same way and are not healed yet (#1028).
 
 ### File Drop (OS → App)
 

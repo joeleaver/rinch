@@ -239,6 +239,15 @@ missed: a **left press** (handled before the press reaches any handler, so
 nothing it dispatches sees the old drag) or the window **losing focus**. Until
 one of those arrives, the stranded drag keeps following the pointer.
 
+Three consequences on desktop. A window blur mid-drag cancels the drag even
+when its release would still have arrived (on X11 and Wayland a global hotkey
+or a held Alt+Tab can blur the window during a healthy drag). A drag armed by
+the middle or right button is cancelled by a left press made while it is held.
+And a drag armed with no button down — from a shortcut or a timer, then placed
+with a click — is cancelled by that click, as the web cancels it on its first
+move. Arm a `Drag` from a press (`onclick` or `onmousedown`) and none of this
+reaches a normal gesture.
+
 `onscroll` fires once per container that moved, whichever axis moved it, and
 its [`ScrollEvent`] payload carries **both** offsets — so a horizontal-only
 scroller reports its position rather than an unchanging `scroll_top`

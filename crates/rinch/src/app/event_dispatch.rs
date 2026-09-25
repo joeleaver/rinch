@@ -1243,9 +1243,13 @@ impl RinchApp {
                 // regression — but a registered target is told, and told again
                 // when the window comes back, so it can hide its caret and idle
                 // its blink timer. `ime_state()` reports disabled meanwhile.
-                // A window that lost focus is not sent the release of a drag
-                // in progress (issue #381): end it now, through `on_cancel`,
-                // rather than leave it following a pointer with no button held.
+                // A window that lost focus may not be sent the release of a
+                // drag in progress (issue #381) — on Windows it goes to the
+                // window that took focus. On X11/Wayland the implicit pointer
+                // grab still delivers it, and a blur can be a transient
+                // keyboard grab (a global hotkey, Alt+Tab) mid-drag: that
+                // healthy drag is cancelled too. Accepted — a cancel, never a
+                // wrong commit.
                 if !focused && self.heal_missed_release() {
                     actions.push(AppAction::RequestRedraw);
                 }
@@ -3296,8 +3300,8 @@ impl RinchApp {
 // build (embed, Android, `components,theme`).
 impl RinchApp {
     /// End this document's live pointer-capture drag and editor drag-select
-    /// on independent proof that their release was missed — a primary press,
-    /// or the window losing focus (issue #381). The drag ends through
+    /// when their release was probably missed — a primary press (proof), or the
+    /// window losing focus (a trade-off; see the `WindowFocus` arm) (issue #381). The drag ends through
     /// `on_cancel`, never `on_end` ([`rinch_core::heal_missed_release`]); the
     /// drag-select is simply released, as a release would have. Both are
     /// scoped to this document (#139). Returns whether a drag was cancelled.

@@ -11,8 +11,10 @@
 //!   else. Before #381 nothing looked, and the *next* unrelated click's
 //!   release ran `finish_drag` and committed `on_end` at that click's
 //!   position — a slider jumping to wherever the user clicked next.
-//! - **the window losing focus.** A window that lost the keyboard to a modal,
-//!   a WM grab or another application will not be sent the release.
+//! - **the window losing focus.** On Windows the release then goes to the
+//!   window that took focus. On X11/Wayland it still arrives (implicit pointer
+//!   grab), so a blur mid-drag can cancel a healthy drag — an accepted cost,
+//!   pinned in `pinned_consequences`.
 //!
 //! Both end the drag the #189 way: `on_cancel` with the last coordinates
 //! `on_move` was given, before the press is dispatched. And both apply to the
@@ -216,8 +218,8 @@ fn a_right_press_during_a_live_drag_does_not_cancel_it() {
     rinch_core::Drag::cancel();
 }
 
-/// A window that lost focus will not be sent the release, so a blur ends the
-/// drag the same way — and the release that follows the refocus commits
+/// A window that lost focus may not be sent the release (Windows), so a blur
+/// ends the drag the same way — and the release that follows the refocus commits
 /// nothing.
 #[test]
 fn a_window_blur_cancels_a_live_drag() {

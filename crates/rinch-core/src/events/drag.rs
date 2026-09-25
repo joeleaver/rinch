@@ -202,8 +202,8 @@ fn heal_released_drag() -> bool {
     true
 }
 
-/// End this document's live drag because the backend has independent proof
-/// that its release was missed (issue #381), through `on_cancel` — never
+/// End this document's live drag because the backend judges that its release
+/// was missed (issue #381), through `on_cancel` — never
 /// `on_end` — with the last coordinates `on_move` was given.
 ///
 /// For a backend whose move events carry no button state (desktop), the
@@ -217,7 +217,15 @@ fn heal_released_drag() -> bool {
 ///   the one this ends. Without it the next unrelated click's release ran
 ///   [`finish_drag`] and **committed** the stranded drag at that click's
 ///   position.
-/// - the window **losing focus**, after which the release is sent elsewhere.
+/// - the window **losing focus**. On Windows the release then goes to another
+///   window. On X11/Wayland the implicit pointer grab still delivers it, and a
+///   blur can come from a transient keyboard grab (a global hotkey, Alt+Tab)
+///   in the middle of a healthy drag, which is cancelled too: an accepted cost,
+///   since a cancel never commits a wrong position.
+///
+/// The press proof assumes the drag was armed by the primary button; `Drag`
+/// does not record which button did, so a middle- or right-button drag, or one
+/// armed with no button held, is also ended by the next primary press.
 ///
 /// Scoped like the #189 heal: a drag belonging to another document (#139) is
 /// left alone, since another window's press says nothing about this pointer; an
