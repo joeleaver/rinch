@@ -1763,15 +1763,15 @@ impl Painter for TinySkiaPainter {
         let a = a as u32;
         let premul = |c: u8, m: u32| ((c as u32 * m + 127) / 255) as u8;
         let mut data = vec![0_u8; mask.len() * 4];
-        for (px, &m) in data.chunks_exact_mut(4).zip(mask) {
+        for (px, &m) in data.as_chunks_mut::<4>().0.iter_mut().zip(mask) {
             if m != 0 {
                 let alpha = (m as u32 * a + 127) / 255;
-                px.copy_from_slice(&[
+                *px = [
                     premul(r, alpha),
                     premul(g, alpha),
                     premul(b, alpha),
                     alpha as u8,
-                ]);
+                ];
             }
         }
         let Some(src) = PixmapRef::from_bytes(&data, width, height) else {

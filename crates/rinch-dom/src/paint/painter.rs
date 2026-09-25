@@ -233,9 +233,9 @@ pub trait Painter {
     ) {
         let [r, g, b, a] = color.to_rgba8().to_u8_array();
         let mut rgba = vec![0_u8; mask.len() * 4];
-        for (px, &m) in rgba.chunks_exact_mut(4).zip(mask) {
+        for (px, &m) in rgba.as_chunks_mut::<4>().0.iter_mut().zip(mask) {
             if m != 0 {
-                px.copy_from_slice(&[r, g, b, ((m as u32 * a as u32 + 127) / 255) as u8]);
+                *px = [r, g, b, ((m as u32 * a as u32 + 127) / 255) as u8];
             }
         }
         self.draw_image(

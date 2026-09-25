@@ -978,6 +978,7 @@ pub fn set_dirty_rects(rects: Option<&[Rect]>) {
 /// render target, the clips the painter has open and the damage, intersected.
 /// `None` when none of them bounds it (a `paint_subtree` with no clip open).
 /// What a blurred `text-shadow` crops its mask to (#980).
+#[cfg(feature = "software-renderer")]
 pub(super) fn visible_device_rect() -> Option<Rect> {
     let mut r = VIEWPORT.with(|v| v.get().map(|vp| vp.target));
     let mut meet = |b: Rect| r = Some(r.map_or(b, |a| a.intersect(b)));

@@ -111,7 +111,8 @@ pub(super) fn render_text_shadow_pass(
     wavy: Option<&crate::node::InlineLayout>,
 ) {
     let sigma = blur / 2.0;
-    if !(sigma >= 0.25) {
+    // `sigma` may be NaN; that is no blur too.
+    if sigma.is_nan() || sigma < 0.25 {
         let brush = Brush::Solid(color);
         draw_shadow_copy(
             painter,
@@ -314,7 +315,7 @@ fn draw_masked(
         let px = sp.pixels();
         for (row, out) in coverage.chunks_exact_mut(w).enumerate() {
             let src = &px[row * stride * 4..(row * stride + w) * 4];
-            for (o, p) in out.iter_mut().zip(src.chunks_exact(4)) {
+            for (o, p) in out.iter_mut().zip(src.as_chunks::<4>().0) {
                 if p[3] != 0 {
                     *o = p[3] as f32 * (1.0 / 255.0);
                     any = true;
@@ -765,7 +766,7 @@ fn glyph_count(layout: &parley::layout::Layout<Brush>) -> usize {
 ///
 /// A `sigma` below a quarter pixel gives the single tap `(0, 0, 1.0)`.
 pub(super) fn shadow_kernel(sigma: f64) -> Vec<(f64, f64, f32)> {
-    if !(sigma >= 0.25) || !sigma.is_finite() {
+    if sigma.is_nan() || sigma < 0.25 || !sigma.is_finite() {
         return vec![(0.0, 0.0, 1.0)];
     }
     let radius = 3.0 * sigma;
