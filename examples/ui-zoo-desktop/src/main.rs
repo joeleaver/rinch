@@ -53,6 +53,9 @@ fn build_app(
     let left_section: SectionRenderer = Rc::new(move |__scope| {
         rsx! {
             ActionIcon {
+                // The visual-test suite finds the nav toggle by this class
+                // (crates/rinch-visual-test/tests/visual/tests.json).
+                class: "ui-zoo-nav-toggle",
                 variant: "subtle",
                 size: "lg",
                 onclick: move || drawer_opened.update(|v| *v = !*v),
