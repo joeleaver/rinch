@@ -1986,7 +1986,10 @@ box:
   with (`render_text`'s `color` override, #904). A colour change or a colour
   transition frame on it re-shapes nothing and runs no compute
   (`perf_regression_scenarios::a_colour_hover_on_*`); it used to leave a
-  block-level flex item's label in its old colour.
+  block-level flex item's label in its old colour. Nor does a flex or grid
+  container's own text take its `text-overflow: ellipsis`: that text is an
+  anonymous item, which does not clip, and Chrome 153 draws it clipped with no
+  "…" (`DisplayValue::is_flex_or_grid_container`, #904).
   Cost, measured on 500 rows: a whole-document typography swap goes 7.4 → 16.1ms,
   a one-row hover 0.60 → 0.70ms.
   **Being in that list is necessary and was not sufficient** (#698):

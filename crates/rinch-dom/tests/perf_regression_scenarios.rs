@@ -16,7 +16,7 @@
 //! | `shape_paint` | `paint/contenteditable.rs` (`<input>` value) | [`an_input_value_is_shaped_by_paint`] |
 //! | `shape_paint` | `paint/mod.rs` (text with no cached layout) | [`a_text_leaf_with_no_cached_layout_is_shaped_by_paint`] — constructed: since #904 a text leaf keeps the layout its measure shaped, in either compute |
 //! | `ellipsis_builds` | `ifc.rs`, IFC root | [`an_ifc_root_ellipsis`] |
-//! | `ellipsis_builds` | `ifc.rs`, text leaf | [`a_text_leaf_ellipsis`] |
+//! | `ellipsis_builds` | `ifc.rs`, text leaf | **unreached since #904** — [`a_text_leaf_ellipsis`] pins that a flex item's text builds none |
 //! | `shape_atomic_inline` | `ifc.rs`, `NodeContext::InlineRoot` | [`an_inline_block_holding_an_ifc`] |
 //! | `shape_atomic_inline` | `ifc.rs`, `NodeContext::Text` | [`an_inline_flex_holding_a_text_leaf`] |
 //! | `pseudo_element_passes` | `resolve.rs`, `::before` | [`only_before_rules`] |
@@ -213,9 +213,13 @@ fn an_ifc_root_ellipsis() {
     );
 }
 
-/// The same truncation on a text node that is **not** in an IFC — the direct
-/// text child of a flex container, laid out as a leaf — takes the text-leaf
-/// rebuild instead.
+/// The same declarations on a text node that is **not** in an IFC — the
+/// direct text child of a flex container, laid out as a leaf — build **no**
+/// ellipsis (`ellipsis_builds` 1 → 0, #904's second review): that text is an
+/// anonymous flex item, which does not clip, and Chrome 153 draws it clipped
+/// with no "…". A leaf's parent is always a flex or grid container (or a
+/// `display: contents` element in one), so the text-leaf rebuild site in
+/// `copy_cached_text_layouts` is no longer reached; this frame pins that.
 #[test]
 fn a_text_leaf_ellipsis() {
     let mut doc = doc_with(
@@ -238,7 +242,6 @@ fn a_text_leaf_ellipsis() {
             (TaffyStyleSyncs, 5),
             (TaffyStyleChanges, 2),
             (ShapeMeasureText, 4),
-            (EllipsisBuilds, 1),
             (IfcMeasureInvalidations, 2),
             (LayoutResolves, 2),
             (LayoutSkippedPaintOnly, 1),

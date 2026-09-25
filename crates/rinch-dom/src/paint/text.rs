@@ -469,8 +469,9 @@ fn run_flags(
 /// underline and line-through, while every shown glyph keeps the position it
 /// was laid out at (#829).
 ///
-/// `color` overrides the brush baked into the layout, for the glyphs and the
-/// decorations alike. A text leaf passes its parent's **current** computed
+/// `color` overrides the brush baked into the layout for the **glyphs**; a
+/// decoration keeps its own brush, which is `text-decoration-color` and not
+/// `color`. A text leaf passes its parent's **current** computed
 /// colour (#904): its cached layout is rebuilt only by a layout compute, so a
 /// colour-only change — a hover, a transition frame — is applied here rather
 /// than by re-shaping.
@@ -548,7 +549,7 @@ pub(super) fn render_text(
                 let run_metrics = run.metrics();
                 let offset = underline.offset.unwrap_or(run_metrics.underline_offset) * sf;
                 let size = underline.size.unwrap_or(run_metrics.underline_size) * sf;
-                let dec_brush = color_brush.as_ref().unwrap_or(&underline.brush);
+                let dec_brush = &underline.brush;
                 let line_y = (gy - offset) as f64;
                 let stroke = Stroke::new(size.max(1.0) as f64);
                 for &(x0, x1) in &segments {
@@ -565,7 +566,7 @@ pub(super) fn render_text(
                     .unwrap_or(run_metrics.strikethrough_offset)
                     * sf;
                 let size = strikethrough.size.unwrap_or(run_metrics.strikethrough_size) * sf;
-                let dec_brush = color_brush.as_ref().unwrap_or(&strikethrough.brush);
+                let dec_brush = &strikethrough.brush;
                 let line_y = (gy - offset) as f64;
                 let stroke = Stroke::new(size.max(1.0) as f64);
                 for &(x0, x1) in &segments {

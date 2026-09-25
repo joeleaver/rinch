@@ -2080,24 +2080,3 @@ fn a_flex_row_label_takes_a_class_text_align() {
         |doc, c| doc.set_attribute(*c, "class", "frow narrow right"),
     );
 }
-
-/// `text-overflow` on a flex row whose leaf overflows it: the "…" is inserted
-/// when the compute's layouts are copied, and `text-overflow` is no Taffy
-/// property, so this needs the cascade's text-leaf `layout_dirty` (#904).
-#[test]
-fn a_flex_row_label_takes_a_class_text_overflow() {
-    twin(
-        "a_flex_row_label_takes_a_class_text_overflow",
-        ".frow.clip { width: 60px; white-space: nowrap; overflow: hidden; }
-         .frow.ell { text-overflow: ellipsis; }",
-        |doc, on| {
-            flex_row_doc(
-                doc,
-                if on { "frow clip ell" } else { "frow clip" },
-                "chip label text",
-            )
-            .0
-        },
-        |doc, c| doc.set_attribute(*c, "class", "frow clip ell"),
-    );
-}

@@ -341,7 +341,12 @@ impl RinchDocument {
                 use crate::computed_style::{OverflowValue, TextOverflowValue, WhiteSpaceValue};
                 let cs = &self.tree.nodes[root_id].computed_style;
                 let container_width = max_width.unwrap_or(f32::INFINITY);
+                // A grid (or flex) container holding only text is laid out
+                // here as an IFC root, but that text is an anonymous item of
+                // the container, which does not clip — so no "…", as in
+                // Chrome (#904's second review; see `copy_cached_text_layouts`).
                 if matches!(cs.text_overflow, TextOverflowValue::Ellipsis)
+                    && !cs.display.is_flex_or_grid_container()
                     && matches!(
                         cs.white_space,
                         WhiteSpaceValue::NoWrap | WhiteSpaceValue::Pre
@@ -390,7 +395,9 @@ impl RinchDocument {
         &mut self,
         cache: HashMap<(usize, u32), parley::layout::Layout<Brush>>,
     ) {
-        use crate::computed_style::{OverflowValue, TextOverflowValue, WhiteSpaceValue};
+        use crate::computed_style::{
+            DisplayValue, OverflowValue, TextOverflowValue, WhiteSpaceValue,
+        };
 
         // First collect node IDs and their layouts to apply. Only a node the
         // compute measured can have an entry, so walk the cache's nodes rather
@@ -472,16 +479,30 @@ impl RinchDocument {
                 parent_id
                     .and_then(|p| self.tree.nodes.get(p))
                     .is_some_and(|parent| {
-                        matches!(
-                            parent.computed_style.text_overflow,
-                            TextOverflowValue::Ellipsis
-                        ) && matches!(
-                            parent.computed_style.white_space,
-                            WhiteSpaceValue::NoWrap | WhiteSpaceValue::Pre
-                        ) && matches!(
-                            parent.computed_style.overflow_x,
-                            OverflowValue::Hidden | OverflowValue::Clip
-                        )
+                        // A flex or grid container's own text sits in an
+                        // anonymous item, which does not clip, so it never
+                        // ellipsizes — Chrome 153 draws no "…" there, only the
+                        // clipped text (#904's second review). Only a block
+                        // container's own text does.
+                        //
+                        // A leaf's parent is always one of those, or a
+                        // `display: contents` element inside one, which
+                        // generates no box to clip — so no leaf ellipsizes and
+                        // the rebuild below is unreached (tracked separately).
+                        !parent.computed_style.display.is_flex_or_grid_container()
+                            && parent.computed_style.display != DisplayValue::Contents
+                            && matches!(
+                                parent.computed_style.text_overflow,
+                                TextOverflowValue::Ellipsis
+                            )
+                            && matches!(
+                                parent.computed_style.white_space,
+                                WhiteSpaceValue::NoWrap | WhiteSpaceValue::Pre
+                            )
+                            && matches!(
+                                parent.computed_style.overflow_x,
+                                OverflowValue::Hidden | OverflowValue::Clip
+                            )
                     });
 
             if needs_ellipsis {
@@ -4110,11 +4131,6 @@ impl RinchDocument {
                         builder.push_default(parley::style::StyleProperty::FontFamily(
                             parley::style::FontFamily::Source(font_stack),
                         ));
-                        // The brush, so the layout kept below paints in the
-                        // text's colour — as the root compute's does.
-                        builder.push_default(parley::style::StyleProperty::Brush(Brush::Solid(
-                            text.color,
-                        )));
                         // Apply overflow-wrap for emergency line-breaking
                         builder.push_default(parley::style::StyleProperty::OverflowWrap(
                             text.overflow_wrap.to_parley(),
