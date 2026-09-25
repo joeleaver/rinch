@@ -111,6 +111,13 @@ pub struct ComputedStyle {
     pub transform: TransformValue,
     pub transform_origin_x: LengthPercentageValue,
     pub transform_origin_y: LengthPercentageValue,
+    /// `transform-origin`'s z, in CSS px (a length; it takes no percentage).
+    /// Already folded into [`TransformValue`]'s matrix (#997).
+    pub transform_origin_z: f32,
+    /// `backface-visibility: hidden`: a box whose own transform turns its back
+    /// to the viewer ([`TransformValue::back_facing`]) is neither drawn nor
+    /// hit, with its subtree (#997).
+    pub backface_visibility_hidden: bool,
 
     // Z-index
     pub z_index: Option<i32>,
@@ -283,6 +290,8 @@ impl Default for ComputedStyle {
             transform: TransformValue::default(),
             transform_origin_x: LengthPercentageValue::Percent(0.5),
             transform_origin_y: LengthPercentageValue::Percent(0.5),
+            transform_origin_z: 0.0,
+            backface_visibility_hidden: false,
 
             z_index: None,
 

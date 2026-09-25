@@ -35,8 +35,11 @@
 //!    decomposes the flattened 2D matrix, which has lost any rotation out of
 //!    the page (#989).
 //!
-//! Not modelled at all: the `perspective` and `transform-style` properties,
-//! `transform-origin`'s z component and `backface-visibility` (#997).
+//! Not modelled at all: the `perspective` and `transform-style` properties.
+//! `transform-origin`'s z component and `backface-visibility` are applied
+//! where a list is composed for the page, by [`compose_about_origin_z`]
+//! (#997) — not here, since an interpolated list is composed about the same
+//! origin as any other.
 //!
 //! A percentage `translate` stays exact throughout. It lives in the
 //! `Translate` function's `pct` until the list is composed, and in an
@@ -609,6 +612,38 @@ impl Mat4 {
         }
     }
 
+    /// Whether this turns the plane's back to the viewer: the `(3, 3)` entry
+    /// of the inverse is negative, i.e. its cofactor and the determinant have
+    /// opposite signs (Chrome's `IsBackFaceVisible`, which also answers "no"
+    /// for a singular matrix). The box-relative part is a translation and
+    /// cannot turn anything.
+    fn back_facing(&self) -> bool {
+        let m = &self.m;
+        let det3 = |r: [usize; 3], c: [usize; 3]| {
+            m[r[0]][c[0]] * (m[r[1]][c[1]] * m[r[2]][c[2]] - m[r[1]][c[2]] * m[r[2]][c[1]])
+                - m[r[0]][c[1]] * (m[r[1]][c[0]] * m[r[2]][c[2]] - m[r[1]][c[2]] * m[r[2]][c[0]])
+                + m[r[0]][c[2]] * (m[r[1]][c[0]] * m[r[2]][c[1]] - m[r[1]][c[1]] * m[r[2]][c[0]])
+        };
+        // Laplace expansion along row 0.
+        let det: f64 = (0..4)
+            .map(|c| {
+                let cols = match c {
+                    0 => [1, 2, 3],
+                    1 => [0, 2, 3],
+                    2 => [0, 1, 3],
+                    _ => [0, 1, 2],
+                };
+                let sign = if c % 2 == 0 { 1.0 } else { -1.0 };
+                sign * m[0][c] * det3([1, 2, 3], cols)
+            })
+            .sum();
+        if det == 0.0 || !det.is_finite() {
+            return false;
+        }
+        let cofactor33 = det3([0, 1, 3], [0, 1, 3]);
+        cofactor33 * det < -1e-9
+    }
+
     /// Project onto the page as Chrome does for an element no ancestor gives
     /// a `perspective` or `preserve-3d`: apply the matrix to the plane
     /// `z = 0`, divide by `w`, drop the resulting `z`. That is the 2D affine
@@ -660,6 +695,42 @@ pub fn compose(ops: &[TransformOp]) -> Affine {
             .fold(Mat4::IDENTITY, |acc, op| acc.then(&op.to_mat4()))
             .flatten()
     }
+}
+
+/// [`compose`], about a `transform-origin` whose z is `origin_z` CSS px, and
+/// whether the result turns the element's back to the viewer.
+///
+/// CSS applies a transform as `T(o) · M · T(-o)`. The x and y of the origin
+/// commute with the flattening, so paint applies them to the flattened matrix
+/// ([`crate::paint::compose_node_transform`]); the z does not — `T(0, 0, -z)`
+/// moves the plane off `z = 0` before `M` turns it — so it is applied here,
+/// before [`Mat4::flatten`]. A list of planar functions never moves z, so the
+/// origin's z changes nothing about it and it is never back-facing.
+///
+/// "Back-facing" is Chrome's `gfx::Transform::IsBackFaceVisible`: the z of the
+/// plane's normal `(0, 0, 1)` carried through the inverse transpose is
+/// negative. Measured in Chrome 153, it reads the element's **own** transform —
+/// under a turned parent a child with none of its own still faces the viewer —
+/// and a mirror (`scaleX(-1)`) is not a turn.
+pub fn compose_about_origin_z(ops: &[TransformOp], origin_z: f64) -> (Affine, bool) {
+    if ops.iter().all(TransformOp::is_planar) {
+        return (compose(ops), false);
+    }
+    let mut m = ops
+        .iter()
+        .fold(Mat4::IDENTITY, |acc, op| acc.then(&op.to_mat4()));
+    // `T(0, 0, z) · M · T(0, 0, -z)`, less its left factor: that one moves
+    // only the z the flattening drops, and adds a multiple of the `w` row to
+    // the `z` row, which changes neither determinant `back_facing` reads.
+    if origin_z != 0.0 {
+        let back = TransformOp::Translate {
+            px: [0.0, 0.0],
+            pct: [0.0, 0.0],
+            z: -origin_z,
+        };
+        m = m.then(&back.to_mat4());
+    }
+    (m.flatten(), m.back_facing())
 }
 
 /// The composed matrix of `ops`, without its box-relative part.
