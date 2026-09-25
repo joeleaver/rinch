@@ -101,8 +101,9 @@ struct ActiveDrag {
     /// still alive"; this asks "is this event stream the one that armed me".
     /// Both documents in the bug have live owners.
     ///
-    /// `None` means the drag was armed outside any dispatch — a timer, a menu
-    /// callback, a backend with one page-wide event stream (rinch-web) — and is
+    /// `None` means the drag was armed outside any document — a timer armed
+    /// from `main` (one armed inside a document runs as that document's code,
+    /// issue #963), a menu callback, a backend with one page-wide event stream (rinch-web) — and is
     /// drivable by anybody. A drag is refused **only** when both keys are `Some`
     /// and differ; anything stricter would wedge hover, surface events and text
     /// selection in the drag's *own* document, since all three gate on
@@ -200,6 +201,42 @@ fn heal_released_drag() -> bool {
     tracing::debug!("healing an in-flight drag whose release was never delivered");
     Drag::cancel();
     true
+}
+
+/// End this document's live drag because the backend judges that its release
+/// was missed (issue #381), through `on_cancel` — never
+/// `on_end` — with the last coordinates `on_move` was given.
+///
+/// For a backend whose move events carry no button state (desktop), the
+/// counterpart of [`update_drag_with_button`]'s [`PrimaryButton::Up`] heal. The
+/// proof is the caller's to judge; desktop offers two:
+///
+/// - a **primary press** arriving while the drag is live — a button cannot be
+///   pressed again without being released in between, so the release went
+///   elsewhere. Called *before* the press is dispatched, so the press's own
+///   handlers never see the stranded drag, and a drag the press arms is not
+///   the one this ends. Without it the next unrelated click's release ran
+///   [`finish_drag`] and **committed** the stranded drag at that click's
+///   position.
+/// - the window **losing focus**. On Windows the release then goes to another
+///   window. On X11/Wayland the implicit pointer grab still delivers it, and a
+///   blur can come from a transient keyboard grab (a global hotkey, Alt+Tab)
+///   in the middle of a healthy drag, which is cancelled too: an accepted cost,
+///   since a cancel never commits a wrong position.
+///
+/// The press proof assumes the drag was armed by the primary button; `Drag`
+/// does not record which button did, so a middle- or right-button drag, or one
+/// armed with no button held, is also ended by the next primary press.
+///
+/// Scoped like the #189 heal: a drag belonging to another document (#139) is
+/// left alone, since another window's press says nothing about this pointer; an
+/// abandoned drag is discarded silently. Returns whether a drag was cancelled.
+pub fn heal_missed_release() -> bool {
+    discard_if_abandoned();
+    if active_drag_is_foreign() {
+        return false;
+    }
+    heal_released_drag()
 }
 
 /// How many live drags one [`Drag::start`] cancels before it gives up and
@@ -733,6 +770,40 @@ mod tests {
         assert_eq!(ends.get(), 0, "and an abandoned drag must not commit");
     }
 
+    /// `heal_missed_release` (issue #381) ends a live drag through `on_cancel`
+    /// at its last move, and never runs the `on_cancel` of a drag whose scope
+    /// was disposed — that belongs to the same dead component.
+    #[test]
+    fn healing_a_missed_release_cancels_a_live_drag_but_not_an_abandoned_one() {
+        use crate::reactive::Scope;
+
+        let cancels = Rc::new(RefCell::new(Vec::new()));
+        let c = cancels.clone();
+        Drag::absolute()
+            .on_cancel(move |x, y| c.borrow_mut().push((x, y)))
+            .start();
+        update_drag(37.0, 91.0);
+        assert!(heal_missed_release());
+        assert_eq!(*cancels.borrow(), vec![(37.0, 91.0)]);
+        assert!(!Drag::is_active());
+        assert!(!heal_missed_release(), "nothing left to heal");
+
+        let scope = Scope::new();
+        let c = cancels.clone();
+        scope.run(|| {
+            Drag::absolute()
+                .on_cancel(move |x, y| c.borrow_mut().push((x, y)))
+                .start();
+        });
+        scope.dispose();
+        assert!(!heal_missed_release());
+        assert_eq!(
+            cancels.borrow().len(),
+            1,
+            "an abandoned drag is dropped silently"
+        );
+    }
+
     /// The other half: a drag armed outside any render keeps app lifetime, so
     /// an unrelated scope being disposed must not disturb it.
     #[test]
@@ -1008,8 +1079,8 @@ mod tests {
         assert_eq!(end.get(), Some((30.0, 40.0)));
     }
 
-    /// A drag armed outside any dispatch — a timer, a menu callback, or a
-    /// backend with a single page-wide pointer stream (rinch-web, which pushes
+    /// A drag armed outside any document — a timer armed from `main`, a menu
+    /// callback, or a backend with a single page-wide pointer stream (rinch-web, which pushes
     /// no marker at all) — belongs to nobody and stays drivable by everybody.
     ///
     /// This is what keeps the fix free of rinch-web changes.

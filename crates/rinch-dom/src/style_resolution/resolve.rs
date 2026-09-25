@@ -592,6 +592,17 @@ impl RinchDocument {
                 None => (None, RestyleHint::empty()),
             }
         };
+        // A generated `::before` / `::after` box carries the style its
+        // originator's pseudo cascade gave it (`resolve_pseudo_element`). It is
+        // a `<span>` only as far as the tree goes: cascading it here would
+        // match it as one, which no pseudo rule does and a `span` rule must not
+        // (#1004). Its style is the originator's to write — every cascade of
+        // the originator frees and regenerates it — so the walk leaves it, and
+        // its text child, alone. A list marker is a pseudo-element node with
+        // no pseudo style, and is cascaded as before.
+        if node.is_pseudo_element && old_style.as_ref().is_some_and(|s| s.is_pseudo_style()) {
+            return;
+        }
         let needs_cascade = match &old_style {
             None => true,
             Some(old) => {

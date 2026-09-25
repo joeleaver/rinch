@@ -231,6 +231,23 @@ is still down — there is one drag at a time, not one per finger. Keep teardown
 in `on_cancel` and it runs on every ending but a commit — and an unmount of
 the component that armed the drag, which drops it without calling back.
 
+A drag whose release never arrives is ended the same way, through
+`on_cancel` at the last position `on_move` saw. On rinch-web that happens on
+the first move that reports the button up. Desktop cannot see the button on a
+move, so it ends the drag on the next event that proves the release was
+missed: a **left press** (handled before the press reaches any handler, so
+nothing it dispatches sees the old drag) or the window **losing focus**. Until
+one of those arrives, the stranded drag keeps following the pointer.
+
+Three consequences on desktop. A window blur mid-drag cancels the drag even
+when its release would still have arrived (on X11 and Wayland a global hotkey
+or a held Alt+Tab can blur the window during a healthy drag). A drag armed by
+the middle or right button is cancelled by a left press made while it is held.
+And a drag armed with no button down — from a shortcut or a timer, then placed
+with a click — is cancelled by that click, as the web cancels it on its first
+move. Arm a `Drag` from a press (`onclick` or `onmousedown`) and none of this
+reaches a normal gesture.
+
 `onscroll` fires once per container that moved, whichever axis moved it, and
 its [`ScrollEvent`] payload carries **both** offsets — so a horizontal-only
 scroller reports its position rather than an unchanging `scroll_top`
@@ -1037,6 +1054,52 @@ match score.get() {
     _ => div { "F" },
 }
 ```
+
+#### Several nodes in one arm
+
+An arm body in braces can hold several nodes, as an `if` or `for` body can —
+they are rendered together as the arm:
+
+```rust
+match tab.get() {
+    0 => { h2 { "Home" } p { "Welcome back." } },
+    1 => { let n = count.get(); b { {n.to_string()} } " items" },
+    2 => { Badge { "new" } Badge { "beta" } },
+    _ => { overview_section(__scope) },   // one expression, as always
+}
+```
+
+What the braces hold is decided by how they **start**:
+
+- `let` always starts rsx nodes.
+- An element or component (`div {`, `Card {`), a string literal, `if`/`for`/
+  `match`, or an interpolation `{ … }` starts rsx nodes **when more nodes follow
+  it**: `{ {label} span { "!" } }`, `{ if open.get() { "▾" } span { "Menu" } }`.
+- An element, component or string literal on its own is that one node.
+- Anything else is a single Rust expression, as it always was: a call, a
+  variable, a closure, and a method called on a literal or on a struct
+  (`{ "a".to_string() }`, `{ if a { "x" } else { "y" } .len() }`). So
+  `{ overview_section(__scope) }`, `{ panel.clone() }` and
+  `{|| count.get().to_string()}` are unchanged. Lone control flow in braces is
+  the transparent brace described under
+  [Braces around control flow](#braces-around-control-flow).
+
+(Until issue #395 only a body starting with `let` could hold more than one node.)
+A mistake inside a multi-node arm is reported by the rsx parser, at the
+mistake, like one in any other rsx body — including one inside a leading
+`if`/`for`/`match` when another node follows it. (Finding that following node
+after a head that failed to parse is a token-level heuristic: a condition that
+itself holds braces, such as `if let Foo { a } = x`, can defeat it and leave you
+with the single-node error instead.) A lone braced `if`/`for`/`match` whose
+bodies are not rsx still gets the "renders once" error described under
+[Braces around control flow](#braces-around-control-flow).
+
+One consequence: `{ Point { x: 1 } }` in an arm is a component named `Point`,
+exactly as `Point { x: 1 }` unbraced is, not a Rust struct literal. A struct
+literal that cannot be an element — shorthand fields (`{ Foo { a } }`), a `..`
+base (`{ Foo { ..Default::default() } }`), or one with a method called on it
+(`{ Point { x: 1 }.into_node(__scope) }`) — stays an expression, and so does a
+path such as `geom::Point { x: 1 }`, which is not an element name.
 
 #### How `match` works internally
 

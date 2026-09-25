@@ -60,8 +60,8 @@ thread_local! {
 /// handler may call `rinch::clipboard::paste_text()` / `paste_html()` inside it
 /// and get the just-pasted content. Only one interceptor can be active at a time
 /// **per document**: a second call from the same document replaces the first
-/// (issue #478). Registering outside any dispatch — from `main`, a timer, or at
-/// mount, and everywhere on rinch-web, which never marks dispatch — fills the
+/// (issue #478). Registering outside any document — from `main`, a timer armed
+/// there, and everywhere on rinch-web, which never marks dispatch — fills the
 /// thread-global fallback slot, which serves every document that has no
 /// interceptor of its own.
 ///

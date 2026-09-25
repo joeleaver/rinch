@@ -385,10 +385,12 @@ impl RinchApp {
                 // produces it — winit 0.31's `WindowEvent::PointerMoved` gives a
                 // position and a `PointerSource`, nothing about which buttons
                 // are held. So desktop cannot detect the swallowed release that
-                // issue #189's heal keys off, and a flag `RinchApp` maintained
-                // itself would be no help: the missed `MouseUp` that strands the
-                // drag is the same event that would have cleared the flag. See
-                // #294 for what desktop would actually need.
+                // issue #189's heal keys off on a move, and a flag `RinchApp`
+                // maintained itself would be no help: the missed `MouseUp` that
+                // strands the drag is the same event that would have cleared
+                // the flag. What desktop heals on instead is the next primary
+                // press and a window blur (`heal_missed_release`, issue #381);
+                // an OS query for the button state is the remaining option there.
                 let (drag_active, drag_forward_surface) =
                     rinch_core::update_drag_with_button(x, y, rinch_core::PrimaryButton::Unknown);
                 if drag_active && !drag_forward_surface {
@@ -617,6 +619,21 @@ impl RinchApp {
                 y,
                 button: MouseButton::Left,
             } => {
+                // A primary press while a pointer-capture drag or an editor
+                // drag-select is still live proves its release was missed
+                // (issue #381): a button cannot be pressed twice without being
+                // released in between. Desktop cannot see the button state on a
+                // move (see the `MouseMove` arm), so this is the first event
+                // that can tell. Ended **before** the press is dispatched — its
+                // handlers must not see the stranded drag, and a drag this very
+                // press arms is not the one being ended — and through
+                // `on_cancel`: left alone, the next release ran `finish_drag`
+                // and committed the stranded drag at this click's position.
+                // Scoped to this document, like every other ending (#139).
+                if self.heal_missed_release() {
+                    actions.push(AppAction::RequestRedraw);
+                }
+
                 // Additive: fire data-onmousedown before the resize/drag/scroll/
                 // click logic below (which can early-return).
                 self.dispatch_mouse_attr(
@@ -1236,6 +1253,16 @@ impl RinchApp {
                 // regression — but a registered target is told, and told again
                 // when the window comes back, so it can hide its caret and idle
                 // its blink timer. `ime_state()` reports disabled meanwhile.
+                // A window that lost focus may not be sent the release of a
+                // drag in progress (issue #381) — on Windows it goes to the
+                // window that took focus. On X11/Wayland the implicit pointer
+                // grab still delivers it, and a blur can be a transient
+                // keyboard grab (a global hotkey, Alt+Tab) mid-drag: that
+                // healthy drag is cancelled too. Accepted — a cancel, never a
+                // wrong commit.
+                if !focused && self.heal_missed_release() {
+                    actions.push(AppAction::RequestRedraw);
+                }
                 if self.window_focused != focused {
                     self.window_focused = focused;
                     if !focused {
@@ -3276,6 +3303,24 @@ impl RinchApp {
         let (_, by) =
             rinch_dom::paint::point_from_painted_box(&d.tree, node_id, 1.0, pad_l as f64, h as f64);
         Some((ax as f32, ay as f32, 1.0, (by - ay).abs() as f32))
+    }
+}
+
+// Not under `#[cfg(feature = "desktop")]`: `handle_event` runs in every
+// build (embed, Android, `components,theme`).
+impl RinchApp {
+    /// End this document's live pointer-capture drag and editor drag-select
+    /// when their release was probably missed — a primary press (proof), or the
+    /// window losing focus (a trade-off; see the `WindowFocus` arm) (issue #381). The drag ends through
+    /// `on_cancel`, never `on_end` ([`rinch_core::heal_missed_release`]); the
+    /// drag-select is simply released, as a release would have. Both are
+    /// scoped to this document (#139). Returns whether a drag was cancelled.
+    fn heal_missed_release(&mut self) -> bool {
+        #[cfg(feature = "desktop")]
+        crate::editor::end_drag(self.input_doc());
+        // Every build: `handle_event` calls this with or without `desktop`
+        // (embed, Android), and the pointer-capture drag lives in rinch-core.
+        rinch_core::heal_missed_release()
     }
 }
 
