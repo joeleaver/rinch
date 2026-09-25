@@ -47,6 +47,8 @@ mod editor_link_tests;
 mod editor_popup_hooks_tests;
 #[cfg(all(test, feature = "desktop"))]
 mod editor_read_only_tests;
+#[cfg(all(test, feature = "desktop"))]
+mod editor_word_delete_tests;
 mod event_dispatch;
 mod focus;
 #[cfg(test)]
