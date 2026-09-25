@@ -5107,7 +5107,7 @@ mod video_inline_dirty_region_tests {
         HashMap::from([(
             "v".to_string(),
             SurfacePixelData {
-                data: [rgb[0], rgb[1], rgb[2], 255].repeat(40 * 10),
+                data: [rgb[0], rgb[1], rgb[2], 255].repeat(40 * 10).into(),
                 width: 40,
                 height: 10,
                 opaque: false,

@@ -497,7 +497,7 @@ fn a_hidden_render_surface_draws_no_pixels() {
         map.insert(
             7usize,
             rinch_dom::paint::SurfacePixelData {
-                data: [255u8, 0, 0, 255].repeat(10 * 10),
+                data: [255u8, 0, 0, 255].repeat(10 * 10).into(),
                 width: 10,
                 height: 10,
                 opaque: false,

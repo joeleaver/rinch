@@ -278,9 +278,9 @@ define_counters! {
     /// paint; a live frame source every draw, unless its producer vouched it
     /// opaque (then never).
     ImagePremultiplies = "image_premultiplies",
-    /// Software painter: opaque images copied straight into the surface — an
-    /// unscaled, whole-pixel draw of a frame whose producer vouched every
-    /// pixel opaque, under no partial clip (#361).
+    /// Software painter: opaque images copied straight into the surface
+    /// instead of sampled through `draw_pixmap` — a frame whose producer
+    /// vouched every pixel opaque, drawn with no rotation or skew, a positive scale, destination edges on whole pixels, and a clip that is fully on or fully off wherever the frame lands (#361). Scaled draws count.
     OpaqueImageCopies = "opaque_image_copies",
 
     // ── Input ──────────────────────────────────────────────────────────

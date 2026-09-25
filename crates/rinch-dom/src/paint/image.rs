@@ -70,8 +70,8 @@ pub fn paint_image_data(
 
 /// [`paint_image_data`] for a live frame whose producer says whether every
 /// pixel is opaque ([`crate::paint::SurfacePixelData::opaque`]). An opaque
-/// frame skips the per-draw premultiply and, drawn unscaled, is copied into
-/// the surface row by row (#361).
+/// frame skips the per-draw premultiply and, drawn onto whole pixels (at any
+/// positive scale, unrotated), is copied into the surface row by row (#361).
 #[allow(clippy::too_many_arguments)]
 pub fn paint_frame_data(
     painter: &mut dyn Painter,

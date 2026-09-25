@@ -444,3 +444,256 @@ fn game_viewport_inline_bench() {
         unregister_render_surface(game.id());
     }
 }
+
+// ── Paints with no new frame, and fresh frames against the reference draw ──
+//
+// From the second review of PR #1002. Each paints the scene the way the shell
+// does and compares it with the same scene repainted in full in reference mode
+// (no copy, no pooling shortcuts), byte for byte.
+
+thread_local! { static CARD_ID: Cell<usize> = const { Cell::new(0) }; }
+
+/// A spacer above a card (optionally rounded, optionally inside an opacity
+/// wrapper) holding the game viewport, and an overlay over the viewport.
+/// Returns (app, spacer id, overlay id, game).
+fn oracle_mount(
+    name: &'static str,
+    card_extra: &'static str,
+    wrapper_extra: &'static str,
+) -> (RinchApp, usize, usize, RenderSurfaceHandle) {
+    let game = create_render_surface_with_name(name);
+    let ids: Rc<Cell<(usize, usize, usize)>> = Rc::new(Cell::new((0, 0, 0)));
+    let captured = ids.clone();
+    let mut app = RinchApp::new(move |scope: &mut RenderScope| {
+        let root = scope.create_element("div");
+        root.set_attribute(
+            "style",
+            "width: 800px; height: 600px; background-color: rgb(250, 240, 230);",
+        );
+        let spacer = scope.create_element("div");
+        spacer.set_attribute(
+            "style",
+            "width: 800px; height: 10px; background-color: rgb(0, 128, 0);",
+        );
+        root.append_child(&spacer);
+        let wrapper = scope.create_element("div");
+        wrapper.set_attribute("style", wrapper_extra);
+        let card = scope.create_element("div");
+        card.set_attribute(
+            "style",
+            &format!("width: 400px; height: 200px; overflow: hidden; background-color: white; {card_extra}"),
+        );
+        let viewport = scope.create_element("div");
+        viewport.set_attribute("style", "width: 100%; height: 100%;");
+        viewport.set_attribute("data-viewport", name);
+        card.append_child(&viewport);
+        wrapper.append_child(&card);
+        root.append_child(&wrapper);
+        let overlay = scope.create_element("div");
+        overlay.set_attribute(
+            "style",
+            "position: absolute; left: 150px; top: 60px; width: 80px; height: 80px; \
+             background-color: rgb(0, 0, 255);",
+        );
+        root.append_child(&overlay);
+        captured.set((spacer.node_id().0, overlay.node_id().0, card.node_id().0));
+        root
+    });
+    app.mount_component(SIZE.0 as f32, SIZE.1 as f32);
+    let (s, o, c) = ids.get();
+    CARD_ID.with(|k| k.set(c));
+    (app, s, o, game)
+}
+
+fn noise_frame(w: u32, h: u32) -> Vec<u8> {
+    (0..w * h)
+        .flat_map(|i| {
+            let v = i.wrapping_mul(2_654_435_761);
+            [(v >> 8) as u8, (v >> 16) as u8, (v >> 24) as u8, 255]
+        })
+        .collect()
+}
+
+fn paint_scaled(app: &mut RinchApp, scale: f64) -> (Vec<u8>, FrameStats) {
+    app.resolve_and_repaint(SIZE.0 as f32, SIZE.1 as f32);
+    app.install_viewport_frames(collect_viewport_frames_by_name());
+    let px = app.build_pixels(scale, SIZE, false).0.to_vec();
+    RinchApp::clear_viewport_frames();
+    (px, app.end_perf_frame().expect("mounted"))
+}
+
+/// The same scene repainted in full, in reference mode (no copy, no pooling
+/// shortcuts) — the oracle.
+fn reference_repaint(app: &mut RinchApp, scale: f64) -> Vec<u8> {
+    app.skia_painter.as_mut().unwrap().set_reference_mode(true);
+    app.invalidate_previous_frame(rinch_dom::perf::FullRepaintReason::Invalidated);
+    app.request_repaint();
+    let (px, _) = paint_scaled(app, scale);
+    app.skia_painter.as_mut().unwrap().set_reference_mode(false);
+    px
+}
+
+fn first_diff(a: &[u8], b: &[u8], w: u32) -> Option<(u32, u32, [u8; 4], [u8; 4])> {
+    a.chunks(4)
+        .zip(b.chunks(4))
+        .position(|(x, y)| x != y)
+        .map(|i| {
+            let i = i as u32;
+            let p = |s: &[u8]| {
+                let k = (i * 4) as usize;
+                [s[k], s[k + 1], s[k + 2], s[k + 3]]
+            };
+            (i % w, i / w, p(a), p(b))
+        })
+}
+
+fn set_style(app: &RinchApp, id: usize, k: &str, v: &str) {
+    app.doc
+        .as_ref()
+        .unwrap()
+        .borrow_mut()
+        .set_style(rinch_core::dom::NodeId(id), k, v);
+}
+
+#[test]
+fn viewport_moved_by_reflow_without_a_new_frame_repaints() {
+    let (mut app, spacer, _, game) = oracle_mount("game-r2a", "", "");
+    game.writer().submit_frame(&noise_frame(400, 200), 400, 200);
+    paint_scaled(&mut app, 1.0);
+    paint_scaled(&mut app, 1.0);
+    // No new frame: the viewport moves down 50px because the spacer grows.
+    set_style(&app, spacer, "height", "60px");
+    let (moved, stats) = paint_scaled(&mut app, 1.0);
+    let reference = reference_repaint(&mut app, 1.0);
+    assert_eq!(
+        first_diff(&moved, &reference, SIZE.0),
+        None,
+        "partial repaint of a moved viewport with no new frame: {stats:?}"
+    );
+    unregister_render_surface(game.id());
+}
+
+#[test]
+fn viewport_resized_without_a_new_frame_repaints() {
+    let (mut app, _, _, game) = oracle_mount("game-r2b", "", "width: 600px;");
+    game.writer().submit_frame(&noise_frame(400, 200), 400, 200);
+    paint_scaled(&mut app, 1.0);
+    // The card shrinks: the viewport resizes, the old frame is re-fit.
+    let card = CARD_ID.with(|k| k.get());
+    set_style(&app, card, "width", "300px");
+    let (resized, stats) = paint_scaled(&mut app, 1.0);
+    let reference = reference_repaint(&mut app, 1.0);
+    assert_eq!(first_diff(&resized, &reference, SIZE.0), None, "{stats:?}");
+    unregister_render_surface(game.id());
+}
+
+#[test]
+fn overlay_closing_reveals_the_last_frame() {
+    let (mut app, _, overlay, game) = oracle_mount("game-r2c", "", "");
+    game.writer().submit_frame(&noise_frame(400, 200), 400, 200);
+    paint_scaled(&mut app, 1.0);
+    let before = pixel_at(&app, 190, 100);
+    assert_eq!(
+        &before[..3],
+        &[0, 0, 255],
+        "positive control: the overlay covers the game"
+    );
+    set_style(&app, overlay, "display", "none");
+    let (closed, stats) = paint_scaled(&mut app, 1.0);
+    let reference = reference_repaint(&mut app, 1.0);
+    assert_eq!(first_diff(&closed, &reference, SIZE.0), None, "{stats:?}");
+    assert_ne!(&pixel_at(&app, 190, 100)[..3], &[0, 0, 255]);
+    unregister_render_surface(game.id());
+}
+
+/// Copy vs reference for fresh frames, over a spread of scenes: rounded card,
+/// opacity wrapper, DPI 1.5 at a whole and a fractional device offset,
+/// downscaled and upscaled frames.
+#[test]
+fn fresh_frames_match_the_reference_draw() {
+    let cases: &[(&str, &str, &str, f64, (u32, u32))] = &[
+        ("r2d-plain", "", "", 1.0, (400, 200)),
+        ("r2d-opacity", "", "opacity: 0.5;", 1.0, (400, 200)),
+        (
+            "r2d-round-op",
+            "border-radius: 24px;",
+            "opacity: 0.5;",
+            1.0,
+            (800, 400),
+        ),
+        ("r2d-dpi15", "", "", 1.5, (600, 300)),
+        ("r2d-dpi15-frac", "", "margin-left: 1px;", 1.5, (600, 300)),
+        ("r2d-dpi15-down", "", "", 1.5, (400, 200)),
+        ("r2d-up", "", "margin-left: 3px;", 1.0, (40, 20)),
+        (
+            "r2d-transform",
+            "",
+            "transform: translate(7px, 3px);",
+            1.0,
+            (400, 200),
+        ),
+        ("r2d-scale", "", "transform: scale(0.5);", 1.0, (400, 200)),
+    ];
+    let mut bad = Vec::new();
+    for near in [false, true] {
+        for &(name, card, wrapper, scale, (fw, fh)) in cases {
+            let vp: &'static str = format!("{name}-{near}").leak();
+            let (mut app, _, _, game) = oracle_mount(vp, card, wrapper);
+            let mut frame = noise_frame(fw, fh);
+            if near {
+                // One alpha 254: the frame is not vouched opaque, so the
+                // ordinary premultiply + draw_pixmap path runs on both sides.
+                let n = frame.len();
+                frame[n - 1] = 254;
+            }
+            game.writer().submit_frame(&frame, fw, fh);
+            let w = (SIZE.0 as f64 * scale).round() as u32;
+            paint_scaled(&mut app, scale);
+            game.writer().submit_frame(&frame, fw, fh);
+            let (px, stats) = paint_scaled(&mut app, scale);
+            let copies = stats.get(Counter::OpaqueImageCopies);
+            let reference = reference_repaint(&mut app, scale);
+            let d = first_diff(&px, &reference, w);
+            let ndiff = px
+                .chunks(4)
+                .zip(reference.chunks(4))
+                .filter(|(a, b)| a != b)
+                .count();
+            eprintln!("{vp}: copies {copies} diff {d:?} ndiff {ndiff}");
+            if d.is_some() {
+                bad.push(vp);
+            }
+            unregister_render_surface(game.id());
+        }
+    }
+    assert!(bad.is_empty(), "{bad:?}");
+}
+
+/// Two games, one delivers: only its box is repainted.
+#[test]
+fn only_the_viewport_with_a_new_frame_is_damaged() {
+    let a = create_render_surface_with_name("r2e-a");
+    let b = create_render_surface_with_name("r2e-b");
+    let mut app = RinchApp::new(move |scope: &mut RenderScope| {
+        let root = scope.create_element("div");
+        root.set_attribute("style", "width: 800px; height: 600px;");
+        for name in ["r2e-a", "r2e-b"] {
+            let v = scope.create_element("div");
+            v.set_attribute("style", "width: 200px; height: 100px; margin-bottom: 50px;");
+            v.set_attribute("data-viewport", name);
+            root.append_child(&v);
+        }
+        root
+    });
+    app.mount_component(SIZE.0 as f32, SIZE.1 as f32);
+    a.writer().submit_frame(&noise_frame(200, 100), 200, 100);
+    b.writer().submit_frame(&noise_frame(200, 100), 200, 100);
+    paint_scaled(&mut app, 1.0);
+    a.writer().submit_frame(&noise_frame(200, 100), 200, 100);
+    let (_, stats) = paint_scaled(&mut app, 1.0);
+    // The damage rect carries its 2px anti-aliasing margin.
+    assert_eq!(stats.get(Counter::RepaintedPx), 204 * 104, "{stats:?}");
+    assert_eq!(stats.get(Counter::OpaqueImageCopies), 1, "{stats:?}");
+    unregister_render_surface(a.id());
+    unregister_render_surface(b.id());
+}

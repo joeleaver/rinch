@@ -2504,7 +2504,7 @@ mod software_video_inline {
     /// `contain` fits the width and leaves a letterbox bar above and below.
     fn magenta_frame() -> SurfacePixelData {
         SurfacePixelData {
-            data: [255u8, 0, 255, 255].repeat(40 * 10),
+            data: [255u8, 0, 255, 255].repeat(40 * 10).into(),
             width: 40,
             height: 10,
             opaque: false,

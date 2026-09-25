@@ -690,13 +690,13 @@ pub struct SkiaPainterStats {
     pub surface_allocs: u64,
     /// Images premultiplied at draw time. Zero for a cached `<img>` or
     /// `background-image` after its first software paint; a live frame
-    /// source (`RenderSurface`, video, `GameViewport`) is premultiplied per
-    /// draw unless it was submitted opaque, which it never is.
+    /// source (`RenderSurface`, video, `GameViewport`) is premultiplied on
+    /// every draw — unless it was submitted opaque, and then never.
     pub image_premultiplies: u64,
     /// Opaque images copied straight into the surface row by row, with no
-    /// premultiply and no `draw_pixmap`: an unscaled, unrotated, whole-pixel
-    /// draw the clip in force covers fully (#361 — a software `GameViewport`
-    /// or video frame at its natural size).
+    /// premultiply and no `draw_pixmap` (#361 — a software `GameViewport` or
+    /// video frame): a draw with no rotation or skew, a positive scale, destination edges on whole pixels, and a clip that is fully on or fully off wherever the frame lands. Scaled
+    /// draws count too; only scale 1 is a plain `memcpy` per row.
     pub opaque_image_copies: u64,
     /// Pooled surface-sized buffers released by
     /// [`TinySkiaPainter::end_frame`] because no recent frame needed that

@@ -495,7 +495,9 @@ if let Some(rect) = ctx.viewport_rect("main") {
 > Overlays occlude it by ordinary paint order, with no occlusion tracking
 > anywhere, and a new frame's damage is the viewport's box — not a full repaint.
 > A paint with no new frame (a hover elsewhere over a paused game) does not
-> repaint the viewport at all.
+> damage the viewport; it is repainted only where something else's damage
+> reaches it — a box moving across it, an overlay above it closing — and then
+> from the frame it already holds.
 >
 > It is not slower than the blit was. `submit_frame` checks, on the thread that
 > submits, whether every pixel is opaque; an opaque frame is never

@@ -225,7 +225,11 @@ pub struct SurfaceKeyData {
 
 /// Shared pixel buffer between the writer thread and the main thread.
 pub(crate) struct SurfaceBuffer {
-    pixels: Vec<u8>,
+    /// Shared with whatever paint was handed it (`SurfacePixelData::data`),
+    /// so collecting a frame copies nothing; `submit_frame` writes in place
+    /// when nothing else holds it and allocates a fresh buffer when a paint
+    /// still does.
+    pixels: Arc<Vec<u8>>,
     width: u32,
     height: u32,
     /// Every alpha in `pixels` is 255. Found by `submit_frame` on the thread
@@ -271,8 +275,13 @@ impl SurfaceWriter {
         let opaque = pixels.as_chunks::<4>().0.iter().all(|p| p[3] == 255);
         {
             let mut buf = self.buffer.lock().unwrap();
-            buf.pixels.clear();
-            buf.pixels.extend_from_slice(pixels);
+            match Arc::get_mut(&mut buf.pixels) {
+                Some(own) => {
+                    own.clear();
+                    own.extend_from_slice(pixels);
+                }
+                None => buf.pixels = Arc::new(pixels.to_vec()),
+            }
             buf.width = width;
             buf.height = height;
             buf.opaque = opaque;
@@ -607,7 +616,7 @@ fn new_surface_handle(id: usize, viewport_name: String, is_video: bool) -> Rende
     RenderSurfaceHandle {
         id,
         buffer: Arc::new(Mutex::new(SurfaceBuffer {
-            pixels: Vec::new(),
+            pixels: Arc::new(Vec::new()),
             width: 0,
             height: 0,
             opaque: false,
@@ -806,7 +815,7 @@ pub fn collect_surface_frames() -> Vec<(String, Vec<u8>, u32, u32)> {
             if !buf.pixels.is_empty() {
                 frames.push((
                     surface.viewport_name.clone(),
-                    buf.pixels.clone(),
+                    buf.pixels.to_vec(),
                     buf.width,
                     buf.height,
                 ));
@@ -841,7 +850,7 @@ pub fn collect_surface_pixels_by_id()
                 map.insert(
                     surface.id,
                     rinch_dom::paint::SurfacePixelData {
-                        data: buf.pixels.clone(),
+                        data: Arc::clone(&buf.pixels),
                         width: buf.width,
                         height: buf.height,
                         opaque: buf.opaque,
@@ -916,7 +925,7 @@ pub fn collect_viewport_frames_by_name() -> ViewportFrames {
                 out.frames.insert(
                     surface.viewport_name.clone(),
                     rinch_dom::paint::SurfacePixelData {
-                        data: buf.pixels.clone(),
+                        data: Arc::clone(&buf.pixels),
                         width: buf.width,
                         height: buf.height,
                         opaque: buf.opaque,
@@ -1077,7 +1086,7 @@ pub fn readback_gpu_textures() {
 
                 // Store in the CPU buffer
                 let mut buf = surface.buffer.lock().unwrap();
-                buf.pixels = pixels;
+                buf.pixels = Arc::new(pixels);
                 buf.width = width;
                 buf.height = height;
                 buf.opaque = false; // a texture's alpha is not inspected
@@ -1828,7 +1837,7 @@ mod compositor_routing_tests {
             .get("test-video")
             .expect("the video frame is collected by viewport name");
         assert_eq!((frame.width, frame.height), (1, 1));
-        assert_eq!(frame.data, vec![10, 20, 30, 255]);
+        assert_eq!(*frame.data, vec![10, 20, 30, 255]);
 
         let blitted = collect_surface_frames();
         assert_eq!(

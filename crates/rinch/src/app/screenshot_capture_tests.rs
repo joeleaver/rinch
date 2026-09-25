@@ -25,7 +25,9 @@ const MAGENTA: [u8; 3] = [255, 0, 255];
 
 fn solid(rgb: [u8; 3], w: u32, h: u32) -> SurfacePixelData {
     SurfacePixelData {
-        data: [rgb[0], rgb[1], rgb[2], 255].repeat((w * h) as usize),
+        data: [rgb[0], rgb[1], rgb[2], 255]
+            .repeat((w * h) as usize)
+            .into(),
         width: w,
         height: h,
         opaque: false,

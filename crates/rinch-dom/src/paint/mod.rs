@@ -628,16 +628,19 @@ use std::collections::{HashMap, HashSet};
 
 /// Pixel data for a render surface, keyed by surface ID.
 pub struct SurfacePixelData {
-    /// RGBA8 pixel data.
-    pub data: Vec<u8>,
+    /// RGBA8 pixel data. Shared with the surface's own buffer, so handing a
+    /// frame to paint copies nothing — a paint with no new frame used to clone
+    /// the whole frame just to have it on hand (#361).
+    pub data: std::sync::Arc<Vec<u8>>,
     /// Width in pixels.
     pub width: u32,
     /// Height in pixels.
     pub height: u32,
     /// Every pixel's alpha is 255 — the producer's promise, checked where the
     /// frame was submitted (`SurfaceWriter::submit_frame`, on the submitting
-    /// thread). An opaque frame is drawn with no premultiply, and at its
-    /// natural size as a straight row copy (#361). `false` promises nothing.
+    /// thread). An opaque frame is drawn with no premultiply, and onto whole
+    /// pixels (any positive scale, unrotated) as a straight row copy (#361).
+    /// `false` promises nothing.
     pub opaque: bool,
 }
 

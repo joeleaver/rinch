@@ -134,8 +134,8 @@ pub struct PaintImage<'a> {
     /// Every pixel's alpha is 255, as the producer promises (a live frame
     /// source checks at submit, on its own thread). Opaque pixels are their
     /// own premultiplied form, so the software painter skips premultiplying
-    /// them, and may copy them straight into the surface when nothing scales,
-    /// rotates or partially clips the draw (#361). `false` promises nothing.
+    /// them, and may copy them straight into the surface when the draw has
+    /// no rotation or skew, a positive scale, destination edges on whole pixels, and a clip that is fully on or fully off wherever the frame lands (#361). `false` promises nothing.
     pub opaque: bool,
 }
 
