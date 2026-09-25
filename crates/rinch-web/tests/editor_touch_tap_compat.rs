@@ -450,7 +450,10 @@ fn a_tap_on_a_link_is_offered_once() {
 /// If the capture textarea lost focus between the `pointerup` and it, the press
 /// runs in full and focuses the editor again.
 ///
-/// Kills: skipping without checking that the tap's editor still holds focus.
+/// Kills: skipping without checking that the tap still holds focus at all (both
+/// focus checks removed — the blur releases the editor as well as the textarea,
+/// so either check alone still catches it here; the two-editor fixture below
+/// separates the editor check).
 #[wasm_bindgen_test]
 fn a_compat_mousedown_after_focus_left_runs_the_press() {
     let f = Fixture::mount(CONTENT);
@@ -471,5 +474,56 @@ fn a_compat_mousedown_after_focus_left_runs_the_press() {
         "the compatibility mousedown focuses the editor again"
     );
     assert_eq!(f.tx.get(), tx + 1, "and places the caret");
+    f.teardown();
+}
+
+/// A compatibility `mousedown` is skipped only while the tapped editor is still
+/// the focused one. If another editor took the keyboard in between
+/// (`EditorHandle::focus` from code), the press runs and gives it back to the
+/// editor under the pointer.
+///
+/// Kills: skipping on "the capture textarea is focused" alone — it is shared by
+/// every editor, so it stays focused when the other editor takes over.
+#[wasm_bindgen_test]
+fn a_compat_mousedown_after_another_editor_took_focus_runs_the_press() {
+    let f = Fixture::mount(CONTENT);
+    // A second editor beside the first, in its own host.
+    let host_b = document().create_element("div").unwrap();
+    host_b.set_attribute(HOST_MARKER, "").unwrap();
+    document().body().unwrap().append_child(&host_b).unwrap();
+    let b = create_editor();
+    assert!(b.load_html("<p>Other editor</p>"));
+    let mounted = b.clone();
+    let root_b = rinch_web::mount_into(
+        &host_b,
+        ThemeProviderProps::default(),
+        move |scope: &mut RenderScope| mounted.mount(scope),
+    );
+
+    let (x, y) = f.point(0, 8);
+    touch_pointer(x, y);
+    assert!(
+        f.capture_focused(),
+        "positive control: the tap focused the editor"
+    );
+    let caret = f.handle.selection();
+
+    b.focus();
+    assert!(
+        f.capture_focused(),
+        "the shared capture textarea keeps focus"
+    );
+
+    let tx = f.tx.get();
+    mousedown(x, y, 1);
+    mouseup(x, y, 1);
+    assert_eq!(
+        f.tx.get(),
+        tx + 1,
+        "the press runs: the tapped editor places its caret again"
+    );
+    assert_eq!(f.handle.selection(), caret);
+    root_b.unmount();
+    host_b.remove();
     f.teardown();
 }
