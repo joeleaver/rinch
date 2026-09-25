@@ -2342,7 +2342,7 @@ impl NodeTree {
         if let Some(node) = self.nodes.get_mut(id) {
             node.dirty.insert(DirtyFlags::PAINT);
             let extent_reads_scroll = !node.clips_overflow();
-            self.hit_cache.invalidate_scroll(id, extent_reads_scroll);
+            self.hit_cache.invalidate_scroll(extent_reads_scroll);
             self.dirty_nodes.insert(id);
             self.paint_dirty_nodes.push(id);
         }
