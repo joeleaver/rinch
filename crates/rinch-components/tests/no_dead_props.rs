@@ -53,7 +53,7 @@
 //! the CSS all lives in `src/styles/`, which this scan does not read.
 
 use std::collections::BTreeSet;
-use std::path::Path;
+use std::path::PathBuf;
 
 /// Props that are declared, documented, and still not wired — the debt #474
 /// catalogued, with the sub-cluster each belongs to. Every entry must name a
@@ -209,7 +209,15 @@ fn pub_fields(item: &Item) -> Vec<String> {
 
 /// Every `<Struct>::<field>` in this crate that no impl of `<Struct>` reads.
 fn unread_props() -> BTreeSet<String> {
-    let src_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    // The run-time `CARGO_MANIFEST_DIR`, which `cargo test` sets for the test
+    // process, before the one baked in at compile time: a shared target dir can
+    // hand this test the binary a since-deleted git worktree built, and the
+    // baked path would still point into that worktree (#275). The baked one is
+    // only the fallback for running this binary by hand.
+    let manifest_dir = std::env::var_os("CARGO_MANIFEST_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")));
+    let src_dir = manifest_dir.join("src");
     let mut unread = BTreeSet::new();
     let mut components_seen = 0usize;
 
