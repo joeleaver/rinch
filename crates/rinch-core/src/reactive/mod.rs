@@ -1239,6 +1239,30 @@ pub fn untracked<R>(f: impl FnOnce() -> R) -> R {
     f()
 }
 
+/// Run an app's event handler with **no** observer in view (issue #285).
+///
+/// Every app-callback type's `invoke` ([`Callback`](crate::Callback),
+/// [`ValueCallback`](crate::ValueCallback), [`InputCallback`](crate::InputCallback),
+/// [`FileDropCallback`](crate::FileDropCallback),
+/// [`ScrollCallback`](crate::events::ScrollCallback)) goes through here, so a
+/// component that calls its app's handler from inside one of its own effects
+/// never subscribes that effect to what the handler reads. Handlers respond to
+/// events; effects respond to signals.
+///
+/// This suspends the **whole** observer stack, not just its top as
+/// [`untracked`] does: a component effect created inside another running
+/// effect sits two frames deep, and popping one frame would hand the handler's
+/// reads to the outer effect instead. Effects that *run* inside `f` (a handler
+/// write flushing outside a batch, an effect a handler creates) push their own
+/// observer onto the emptied stack and track normally.
+///
+/// Only tracking changes. Batching, the owner stack and effect flushing are
+/// untouched: a handler's writes flush exactly when a bare call's would.
+pub(crate) fn untracked_handler<R>(f: impl FnOnce() -> R) -> R {
+    let _suspended = scope::SuspendObservers::take();
+    f()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

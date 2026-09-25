@@ -583,8 +583,11 @@ impl Callback {
     }
 
     /// Invoke the callback.
+    ///
+    /// Runs untracked (issue #285): called from inside an effect, the
+    /// handler's signal reads do not subscribe that effect.
     pub fn invoke(&self) {
-        (self.0)()
+        crate::reactive::untracked_handler(|| (self.0)())
     }
 }
 
@@ -613,8 +616,11 @@ impl<T> ValueCallback<T> {
     }
 
     /// Invoke the callback with a value.
+    ///
+    /// Runs untracked (issue #285): called from inside an effect, the
+    /// handler's signal reads do not subscribe that effect.
     pub fn invoke(&self, value: T) {
-        (self.0)(value)
+        crate::reactive::untracked_handler(|| (self.0)(value))
     }
 }
 

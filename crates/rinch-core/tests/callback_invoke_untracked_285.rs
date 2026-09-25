@@ -176,9 +176,17 @@ fn a_callback_invoked_two_effects_deep_subscribes_neither() {
 
     // Positive controls: both are live.
     inner_own.set(1);
-    assert_eq!(inner_runs.get(), 2, "the inner effect tracks its own signal");
+    assert_eq!(
+        inner_runs.get(),
+        2,
+        "the inner effect tracks its own signal"
+    );
     outer_own.set(1);
-    assert_eq!(outer_runs.get(), 2, "the outer effect tracks its own signal");
+    assert_eq!(
+        outer_runs.get(),
+        2,
+        "the outer effect tracks its own signal"
+    );
 }
 
 /// Untracking is all it does: a handler's write inside an event batch still
@@ -208,4 +216,38 @@ fn an_untracked_invoke_leaves_batch_flushing_alone() {
     // Outside any batch, each write flushes on its own, as a bare call did.
     cb.invoke();
     assert_eq!(runs.get(), 4);
+}
+
+/// Only the handler's own reads are hidden: an effect the handler *creates*
+/// pushes its own observer and tracks normally.
+#[test]
+fn an_effect_created_by_a_handler_still_tracks() {
+    let own = Signal::new(0);
+    let store = Signal::new(0);
+    let child_runs = Rc::new(Cell::new(0u32));
+    let slot: Rc<std::cell::RefCell<Option<Effect>>> = Rc::default();
+
+    let (c, sl) = (child_runs.clone(), slot.clone());
+    let cb = Callback::new(move || {
+        if sl.borrow().is_some() {
+            return;
+        }
+        let c = c.clone();
+        let child = Effect::new(move || {
+            store.get();
+            c.set(c.get() + 1);
+        });
+        *sl.borrow_mut() = Some(child);
+    });
+
+    let (_e, runs) = component_effect(own, move || cb.invoke());
+    assert_eq!(child_runs.get(), 1);
+
+    store.set(1);
+    assert_eq!(
+        child_runs.get(),
+        2,
+        "the handler-created effect tracks the store"
+    );
+    assert_eq!(runs.get(), 1, "the calling effect does not");
 }
