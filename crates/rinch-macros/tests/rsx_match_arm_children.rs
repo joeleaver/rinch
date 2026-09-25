@@ -117,7 +117,11 @@ fn control_flow_leading_a_braced_arm_tracks_its_own_signal() {
     });
     assert_eq!(text(&root), "off!");
     flag.set(true);
-    assert_eq!(text(&root), "on!", "the leading `if` must re-run on its own");
+    assert_eq!(
+        text(&root),
+        "on!",
+        "the leading `if` must re-run on its own"
+    );
     flag.set(false);
     assert_eq!(text(&root), "off!");
 }
