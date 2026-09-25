@@ -472,40 +472,50 @@ if let Some(rect) = ctx.viewport_rect("main") {
 > On the **software** backend the same bars are black for a different reason —
 > see the next note.
 
-> **Software paints video inline, and there is no hole at all.** The two
-> backends now route video differently, and the split is worth knowing if you
-> are reading the compositing code ([#358]).
+> **Software paints every viewport inline.** The two backends route viewport
+> frames differently, and the split is worth knowing if you are reading the
+> compositing code ([#358], [#361]).
 >
 > | | `RenderSurface` | video | `GameViewport` |
 > |---|---|---|---|
-> | **software** | inline | **inline** | compositor blit |
+> | **software** | inline | **inline** | **inline** |
 > | **GPU** | inline | compositor + black backdrop | compositor |
 >
-> Software blits its compositor frames onto the **finished** pixel buffer, after
-> the whole UI has been painted, clipped only by the viewport's
+> Software used to blit its compositor frames onto the **finished** pixel
+> buffer, after the whole UI had been painted, clipped only by the viewport's
 > overflow-clipping ancestors. That write has no notion of occlusion, so every
-> overlay above a playing video — the nav drawer, `Modal`, `DropdownMenu`,
-> `Select`'s popup, tooltips, DevTools — was overwritten. GPU has no such
-> problem: its layers go down *first* and the Vello UI alpha-blends on top, so
-> an opaque drawer already covers the video there.
+> overlay above a playing video or a game — the nav drawer, `Modal`,
+> `DropdownMenu`, `Select`'s popup, tooltips, a HUD, DevTools — was overwritten.
+> GPU has no such problem: its layers go down *first* and the Vello UI
+> alpha-blends on top, so an opaque drawer already covers the layer there.
 >
-> So on software a decoded frame now goes through **paint** instead, on the same
-> inline path a `RenderSurface` component has always used: the `data-viewport`
-> node fills opaque black over its box and draws the frame `object-fit: contain`
-> inside it, at its own z-order. Overlays occlude it by ordinary paint order,
-> with no occlusion tracking anywhere — and the `contain` fit plus the black fill
-> *are* #354's letterbox bars on this backend. The hole-punch disappears with
-> it: video is no longer a compositor frame, so its name is absent from the
-> active-viewport set and #186's filter already reads "absent ⇒ do not punch".
+> So on software a frame goes through **paint** instead, on the same inline
+> path a `RenderSurface` component has always used: the `data-viewport` node
+> draws the frame `object-fit: contain` inside its box, at its own z-order.
+> Overlays occlude it by ordinary paint order, with no occlusion tracking
+> anywhere, and a new frame's damage is the viewport's box — not a full repaint.
 >
-> `GameViewport` is untouched and keeps the compositor blit on both backends.
+> What still tells video and `GameViewport` apart is the **hole**:
+>
+> - **Video** punches none: it is no compositor frame, so its name is absent from
+>   the active-viewport set and #186's filter reads "absent ⇒ do not punch". The
+>   node fills opaque black under the frame, and the `contain` fit plus that fill
+>   *are* #354's letterbox bars on this backend.
+> - **`GameViewport`** keeps its hole while it has a frame, as it always had: its
+>   ancestors' backgrounds are cut away under it and no black is drawn, so where
+>   the frame does not reach — a letterbox, or pixels the game left transparent —
+>   is the hole, see-through on a transparent window.
+>
 > The two are told apart by an explicit flag set at video's registration site,
 > **not** by the viewport's name — they share `create_render_surface_with_name`,
-> so a naming rule would reroute the game viewport too.
+> so a naming rule would treat the game viewport as video. A surface carrying a
+> GPU texture source never takes the inline path: it has no CPU pixels to paint,
+> and is the GPU compositor's.
 
 [#186]: https://github.com/joeleaver/rinch/issues/186
 [#354]: https://github.com/joeleaver/rinch/issues/354
 [#358]: https://github.com/joeleaver/rinch/issues/358
+[#361]: https://github.com/joeleaver/rinch/issues/361
 
 > **Overlays: which ancestor sizes them.** On the embed path layout runs through
 > Taffy, which treats an absolutely positioned child's **direct parent** as its

@@ -217,7 +217,9 @@ define_counters! {
     /// (`RinchApp::mark_scene_dirty`) and nothing else was damaged, so which
     /// pixels changed is unknown. Every site the framework itself owns names
     /// its damage; what is left here is an application or embedder calling
-    /// `mark_scene_dirty`, and the software `GameViewport` compositor frames.
+    /// `mark_scene_dirty`, and a window the shell has just re-created. (The
+    /// software `GameViewport` frames were here until #361 painted them inline,
+    /// with the viewport's box as their damage.)
     RepaintFullUnattributed = "repaint_full_unattributed",
     /// ...the damage covered half the surface or more (the sum of its rects).
     RepaintFullRegionTooLarge = "repaint_full_region_too_large",
