@@ -274,15 +274,14 @@ fn arrow_right() {
 
 /// Enter in the middle of a paragraph: one block becomes two.
 ///
-/// **Finding, pinned as it is — #905; a fix must LOWER this number, and its PR updates the pin:** every paragraph is re-shaped
-/// (`shape_measure_ifc` 31), not the two the split touched. **Not the
-/// structural pass's signatures:** with the scoped pass (#895) only the one
-/// split block's signature moves (`ifc_signature_changes` 1, was 31 when every
-/// structural pass re-signed the whole document), and the 31 shapes are
-/// unchanged — so the drops come in through `ifc_measure_invalidations` (92,
-/// about three per block), whose source is not traced here. Two
-/// layouts, as for a keystroke. The full repaint is legitimate: every block
-/// below the caret moves, which is more than half the window.
+/// Only the two blocks the split touched are shaped (`shape_measure_ifc` 2).
+/// It was every paragraph (31) until #905: the view's child diff was
+/// positional, so the new block shifted every later model block onto its
+/// predecessor's host and rewrote each one's text (`ifc_measure_invalidations`
+/// 92, three per block). The diff now matches the unchanged prefix and suffix
+/// first and inserts the new block between them. Two layouts, as for a
+/// keystroke. The full repaint is legitimate: every block below the caret
+/// moves, which is more than half the window.
 #[test]
 fn enter_splits_a_paragraph() {
     let mut page = page();
@@ -304,9 +303,9 @@ fn enter_splits_a_paragraph() {
             (StyleInvalidations, 2),
             (TaffyStyleSyncs, 4),
             (TaffyStyleChanges, 2),
-            (ShapeMeasureIfc, 31),
-            (ShapeIfcBuild, 31),
-            (IfcMeasureInvalidations, 92),
+            (ShapeMeasureIfc, 2),
+            (ShapeIfcBuild, 2),
+            (IfcMeasureInvalidations, 5),
             (IfcSignatureChanges, 1),
             (LayoutResolves, 2),
             (IfcSetupPasses, 1),
@@ -314,7 +313,7 @@ fn enter_splits_a_paragraph() {
             (IfcScopeContainers, 2),
             (IfcScopeNodes, 34),
             (TaffyRootComputes, 2),
-            (TaffyMeasureCalls, 32),
+            (TaffyMeasureCalls, 3),
             (PaintFrames, 1),
             (RepaintFull, 1),
             (RepaintFullRegionTooLarge, 1),
@@ -331,10 +330,9 @@ fn enter_splits_a_paragraph() {
 
 /// Backspace at the start of the second paragraph joins it to the first.
 ///
-/// **Finding, pinned as it is — #905; a fix must LOWER this number, and its PR updates the pin:** the mirror of `enter_splits_a_paragraph` —
-/// the blocks after the join are re-shaped with it (`shape_measure_ifc` 29), and
-/// as there, not through signatures (`ifc_signature_changes` 0 since #895, was
-/// 29) but through `ifc_measure_invalidations` (88).
+/// The mirror of `enter_splits_a_paragraph`: only the joined block is shaped
+/// (`shape_measure_ifc` 1, was 29 until #905, when every block after the join
+/// was shifted onto its neighbour's host).
 #[test]
 fn backspace_joins_two_paragraphs() {
     let mut page = page();
@@ -357,16 +355,16 @@ fn backspace_joins_two_paragraphs() {
             (StyleInvalidations, 2),
             (TaffyStyleSyncs, 2),
             (TaffyStyleChanges, 1),
-            (ShapeMeasureIfc, 29),
-            (ShapeIfcBuild, 29),
-            (IfcMeasureInvalidations, 88),
+            (ShapeMeasureIfc, 1),
+            (ShapeIfcBuild, 1),
+            (IfcMeasureInvalidations, 4),
             (LayoutResolves, 2),
             (IfcSetupPasses, 1),
             (IfcScopedPasses, 1),
             (IfcScopeContainers, 1),
             (IfcScopeNodes, 31),
             (TaffyRootComputes, 2),
-            (TaffyMeasureCalls, 30),
+            (TaffyMeasureCalls, 2),
             (PaintFrames, 1),
             (RepaintFull, 1),
             (RepaintFullRegionTooLarge, 1),
