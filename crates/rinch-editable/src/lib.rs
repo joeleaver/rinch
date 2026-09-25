@@ -31,4 +31,4 @@ pub use rewrite::RewriteDiff;
 pub use selection::Selection;
 pub use state::EditableState;
 pub use string_doc::StringDocument;
-pub use undo::{Invertible, UndoStack};
+pub use undo::{Invertible, UndoMark, UndoStack};

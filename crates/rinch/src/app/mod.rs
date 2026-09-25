@@ -47,6 +47,8 @@ mod editor_link_tests;
 mod editor_popup_hooks_tests;
 #[cfg(all(test, feature = "desktop"))]
 mod editor_read_only_tests;
+#[cfg(all(test, feature = "desktop"))]
+mod editor_word_delete_tests;
 mod event_dispatch;
 mod focus;
 #[cfg(test)]
@@ -2195,11 +2197,21 @@ impl RinchApp {
         // The edit applies to what the field displays: adopt any `value` write
         // that landed since the last sync (issue #238).
         self.adopt_focused_input_value_from_dom();
+        let edited_node = self.focused_input_node_id;
         let Some(state) = self.focused_input_state.as_mut() else {
             return;
         };
 
+        // The command and whatever its own `oninput` rewrites in answer to it
+        // are one undo step (issue #288). Otherwise undoing a keystroke in a
+        // normalizing field restores the raw text the handler is about to
+        // rewrite again — a fresh edit, which clears the redo stack — and the
+        // user can never undo past it. Undo and redo push nothing (the mark
+        // does not move), so after one of them only its handler's rewrite is
+        // grouped: a step of its own.
+        let replays_history = matches!(cmd, EditCommand::Undo | EditCommand::Redo);
         let old_text = state.document.to_text();
+        let group = state.undo_stack.mark();
         let clipboard_text = state.execute(cmd);
         let new_text = state.document.to_text();
 
@@ -2225,7 +2237,24 @@ impl RinchApp {
             // next keystroke edits and what the caret is placed in — not the
             // stale text that would otherwise be painted back over it on the
             // next sync (issue #238).
-            self.adopt_focused_input_value_from_dom();
+            self.adopt_focused_input_rewrite_from_dom();
+            // Only on the same field: a handler that moved focus has handed
+            // the keyboard to another field's state, which the mark is not of.
+            if self.focused_input_node_id == edited_node
+                && let Some(state) = self.focused_input_state.as_mut()
+            {
+                if !replays_history && state.document.to_text() == old_text {
+                    // The handler rejected the keystroke — wrote the field
+                    // back to what it showed before. Nothing happened, so
+                    // nothing is left to undo: drop the keystroke and its
+                    // rewrite rather than leave a step Ctrl+Z spends on no
+                    // change. (Its push has cleared redo, as the browser's
+                    // script write clears the whole history.)
+                    let _ = state.undo_stack.take_since(group);
+                } else {
+                    state.group_undo_since(group);
+                }
+            }
         }
     }
 
@@ -2493,6 +2522,19 @@ impl RinchApp {
     }
     fn handle_cut(&mut self) {
         self.handle_input_edit_command(EditCommand::Cut);
+    }
+    // Refused while an IME composition is shown: the preedit sits at the
+    // caret in the engine's text, and undo would move the text under it, so
+    // the commit would land somewhere the user never composed.
+    fn handle_undo(&mut self) {
+        if self.focused_input_preedit.is_none() {
+            self.handle_input_edit_command(EditCommand::Undo);
+        }
+    }
+    fn handle_redo(&mut self) {
+        if self.focused_input_preedit.is_none() {
+            self.handle_input_edit_command(EditCommand::Redo);
+        }
     }
 
     // ── Input cursor DOM sync ─────────────────────────────────────────
@@ -3632,8 +3674,17 @@ impl RinchApp {
     /// changed.
     ///
     /// The text is spliced in place (`EditableState::adopt_text`) — never
-    /// rebuilt — so the undo stack survives, and the selection is mapped
-    /// through the rewrite so the caret keeps its logical place. While an IME
+    /// rebuilt — and the selection is mapped through the rewrite so the caret
+    /// keeps its logical place.
+    ///
+    /// A write adopted here **clears the field's undo and redo history**, as a
+    /// browser does for any script write to `.value` (measured in Chrome 153;
+    /// issue #288): it is not the user's edit, so undo must not bring back the
+    /// text an app cleared after a submit. The one exception is the rewrite a
+    /// field's own `oninput` makes in answer to a keystroke, which
+    /// `handle_input_edit_command` adopts through
+    /// [`Self::adopt_focused_input_rewrite_from_dom`] and folds into that
+    /// keystroke's undo step. While an IME
     /// composition is in flight the write is deferred (moving the caret under
     /// the composition would corrupt it) and applied when it ends.
     ///
@@ -3643,6 +3694,18 @@ impl RinchApp {
     /// a write after a user edit leaves the baseline, so the gesture still
     /// commits — with the rewritten text.
     pub(crate) fn adopt_focused_input_value_from_dom(&mut self) {
+        self.adopt_focused_input_dom_value(false);
+    }
+
+    /// [`Self::adopt_focused_input_value_from_dom`] for the rewrite a field's
+    /// `oninput` made in answer to the command being dispatched: recorded on
+    /// the undo stack rather than clearing it, so the caller can fold it into
+    /// the command's step (issue #288).
+    fn adopt_focused_input_rewrite_from_dom(&mut self) {
+        self.adopt_focused_input_dom_value(true);
+    }
+
+    fn adopt_focused_input_dom_value(&mut self, keeps_history: bool) {
         let FocusTarget::Input(node_id) = self.focus_target else {
             return;
         };
@@ -3696,6 +3759,9 @@ impl RinchApp {
             return;
         };
         state.adopt_text(&value);
+        if !keeps_history {
+            state.undo_stack.clear();
+        }
         if self.focused_input_value == self.focused_input_baseline {
             self.focused_input_baseline = value.clone();
         }

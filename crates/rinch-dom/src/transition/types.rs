@@ -138,6 +138,52 @@ impl TransitionProperty {
         matches!(self, Self::FontSize | Self::All)
     }
 
+    /// Whether a transition on this property animates an inset (`left`,
+    /// `top`, `right`, `bottom`).
+    ///
+    /// Asked by the `set_style` inset fast path, which writes an inset
+    /// straight to `ComputedStyle` and Taffy without running the cascade's
+    /// transition hooks (#280): it declines for a node whose `transition`
+    /// covers an inset, so such a move takes the cascade and its transition
+    /// hooks.
+    ///
+    /// No variant answers `true` today — no inset is animatable — and the
+    /// match is exhaustive on purpose, so adding `Left`/`Top`/… here forces
+    /// the question. `All` answers for whatever `_ALL_ANIMATABLE` holds, so
+    /// it follows along without an edit.
+    pub fn covers_inset(&self) -> bool {
+        match self {
+            Self::All => _ALL_ANIMATABLE.iter().any(|p| p.covers_inset()),
+            Self::Opacity
+            | Self::BackgroundColor
+            | Self::Color
+            | Self::BorderTopColor
+            | Self::BorderRightColor
+            | Self::BorderBottomColor
+            | Self::BorderLeftColor
+            | Self::Width
+            | Self::Height
+            | Self::PaddingTop
+            | Self::PaddingRight
+            | Self::PaddingBottom
+            | Self::PaddingLeft
+            | Self::MarginTop
+            | Self::MarginRight
+            | Self::MarginBottom
+            | Self::MarginLeft
+            | Self::BorderTopWidth
+            | Self::BorderRightWidth
+            | Self::BorderBottomWidth
+            | Self::BorderLeftWidth
+            | Self::BorderRadiusTopLeft
+            | Self::BorderRadiusTopRight
+            | Self::BorderRadiusBottomRight
+            | Self::BorderRadiusBottomLeft
+            | Self::FontSize
+            | Self::Transform => false,
+        }
+    }
+
     /// Whether this property affects layout (needs Taffy re-sync).
     pub fn affects_layout(&self) -> bool {
         !matches!(

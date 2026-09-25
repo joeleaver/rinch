@@ -377,6 +377,50 @@ pub fn op_drawer_toggle(mut f: DrawerFixture) -> DrawerFixture {
     f
 }
 
+// ── rinch-dom: an absolute panel moved by its insets ──────────────────────
+
+/// The 500-row list plus an absolutely positioned panel (a `FloatingPanel`
+/// drag's shape) in a `position: relative` wrapper after it.
+pub struct InsetFixture {
+    pub list: ListFixture,
+    pub panel: NodeId,
+}
+
+/// The list and the panel, after one warm-up move laid out.
+pub fn setup_inset_move() -> InsetFixture {
+    let mut list = build_list();
+    let doc = &mut list.doc;
+    let body = doc.body();
+    let wrapper = doc.create_element("div");
+    doc.set_attribute(wrapper, "style", "position: relative; height: 0");
+    let panel = doc.create_element("div");
+    doc.set_attribute(
+        panel,
+        "style",
+        "position: absolute; left: 10px; top: 10px; width: 200px; height: 120px; \
+         box-shadow: 0 4px 12px rgb(0, 0, 0)",
+    );
+    let t = doc.create_text("Panel");
+    doc.append_child(panel, t);
+    doc.append_child(wrapper, panel);
+    doc.append_child(body, wrapper);
+    list.layout();
+    list.doc
+        .set_styles(panel, &[("left", "20px"), ("top", "15px")]);
+    list.layout();
+    InsetFixture { list, panel }
+}
+
+/// One drag step: `left` and `top` through `set_styles` (the inset fast
+/// path, #280 / #277), then layout.
+pub fn op_inset_move(mut f: InsetFixture) -> InsetFixture {
+    f.list
+        .doc
+        .set_styles(f.panel, &[("left", "40px"), ("top", "25px")]);
+    f.list.layout();
+    f
+}
+
 // ── rinch-dom: a full software paint ───────────────────────────────────────
 
 const LOREM: &str = "The quick brown fox jumps over the lazy dog while a sphinx of black \

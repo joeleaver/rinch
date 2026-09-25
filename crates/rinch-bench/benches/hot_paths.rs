@@ -53,6 +53,12 @@ fn drawer_toggle(f: DrawerFixture) -> DrawerFixture {
 }
 
 #[library_benchmark]
+#[bench::list_500(setup = setup_inset_move)]
+fn inset_move(f: InsetFixture) -> InsetFixture {
+    black_box(measure(black_box(f), op_inset_move))
+}
+
+#[library_benchmark]
 #[bench::text_page_warm(setup = setup_full_paint)]
 fn full_paint(f: PaintFixture) -> PaintFixture {
     black_box(measure(black_box(f), op_full_paint))
@@ -98,6 +104,7 @@ library_benchmark_group!(
         resize_1px,
         set_text_content,
         drawer_toggle,
+        inset_move,
         full_paint
     ]
 );

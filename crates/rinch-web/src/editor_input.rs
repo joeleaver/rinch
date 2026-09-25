@@ -1236,8 +1236,11 @@ enum EditIntent {
     InsertText,
     /// Run a named editor command.
     Command(&'static str),
-    /// Extend the selection over `motion`, then delete it — the word/line deletes a
-    /// soft keyboard asks for, which the base keymap has no single command for.
+    /// Extend the selection over `motion`, then delete it — the model-line deletes a
+    /// soft keyboard or Cmd+Backspace asks for, which the core has no command for:
+    /// whether a "line" is the visual line or the textblock is still open (#301).
+    /// Word deletes are core commands (`deleteWordBackward` / `deleteWordForward`,
+    /// #303) and name them.
     DeleteTo(CursorMotion),
     /// Let the browser make the edit in the mirrored textarea and recover it by diff
     /// on the following `input` — the only honest way to apply an edit whose extent
@@ -1271,8 +1274,9 @@ fn edit_intent(input_type: &str) -> EditIntent {
         "deleteContent" => EditIntent::Command("deleteSelection"),
         "deleteContentBackward" => EditIntent::Command("deleteCharBackward"),
         "deleteContentForward" => EditIntent::Command("deleteCharForward"),
-        "deleteWordBackward" => EditIntent::DeleteTo(CursorMotion::WordLeft),
-        "deleteWordForward" => EditIntent::DeleteTo(CursorMotion::WordRight),
+        // The core commands carry the block-edge and inline-atom rules (#303).
+        "deleteWordBackward" => EditIntent::Command("deleteWordBackward"),
+        "deleteWordForward" => EditIntent::Command("deleteWordForward"),
         "deleteSoftLineBackward" | "deleteHardLineBackward" => {
             EditIntent::DeleteTo(CursorMotion::LineStart)
         }
@@ -1294,13 +1298,13 @@ fn delete_to(handle: &EditorHandle, motion: CursorMotion) -> bool {
         handle.move_cursor(motion, true);
     }
     if handle.selection().is_empty() {
-        // The motion had nowhere to go: word and model-line motions are *within* a
-        // textblock, so at a block edge they resolve to the caret's own position and
-        // leave the selection collapsed. A word/line delete there means what Backspace
-        // and Delete mean — join with the adjacent block. Without this the gesture is
-        // swallowed silently, because the `beforeinput` was already `preventDefault`ed.
+        // The motion had nowhere to go: a model-line motion is *within* a textblock,
+        // so at a block edge it resolves to the caret's own position and leaves the
+        // selection collapsed. A line delete there means what Backspace and Delete
+        // mean — join with the adjacent block. Without this the gesture is swallowed
+        // silently, because the `beforeinput` was already `preventDefault`ed.
         return handle.command(match motion {
-            CursorMotion::WordLeft | CursorMotion::LineStart => "deleteCharBackward",
+            CursorMotion::LineStart => "deleteCharBackward",
             _ => "deleteCharForward",
         });
     }
@@ -2554,13 +2558,14 @@ mod tests {
             edit_intent("deleteContentForward"),
             EditIntent::Command("deleteCharForward")
         );
+        // Word deletes are the core's commands (#303), not a motion + delete.
         assert_eq!(
             edit_intent("deleteWordBackward"),
-            EditIntent::DeleteTo(CursorMotion::WordLeft)
+            EditIntent::Command("deleteWordBackward")
         );
         assert_eq!(
             edit_intent("deleteWordForward"),
-            EditIntent::DeleteTo(CursorMotion::WordRight)
+            EditIntent::Command("deleteWordForward")
         );
         // "soft" and "hard" line deletes differ only in how the browser found the
         // boundary; both mean "to the edge of this line" on the model.

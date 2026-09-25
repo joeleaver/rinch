@@ -1,4 +1,6 @@
-use crate::{EditCommand, EditableDocument, Position, Range, Selection, TextOperation, UndoStack};
+use crate::{
+    EditCommand, EditableDocument, Position, Range, Selection, TextOperation, UndoMark, UndoStack,
+};
 
 /// Orchestrates document, selection, and undo for text editing.
 #[derive(Debug)]
@@ -24,7 +26,38 @@ impl<D: EditableDocument> EditableState<D> {
     }
 
     /// Execute an edit command and return the clipboard content if Copy/Cut.
+    ///
+    /// A command is **one** undo step however many operations it made — typing
+    /// over a selection deletes and then inserts, and one undo brings the
+    /// selected text back (issue #288).
     pub fn execute(&mut self, cmd: EditCommand) -> Option<String> {
+        if matches!(cmd, EditCommand::Undo | EditCommand::Redo) {
+            return self.execute_ungrouped(cmd);
+        }
+        let mark = self.undo_stack.mark();
+        let out = self.execute_ungrouped(cmd);
+        self.group_undo_since(mark);
+        out
+    }
+
+    /// Fold every undo entry pushed since `mark` into one [`TextOperation::Group`],
+    /// so they undo and redo as a single step. Nothing to fold, or one entry,
+    /// leaves the stack as it is.
+    ///
+    /// A host uses it to make a command and whatever it caused *outside* the
+    /// engine one step — rinch's desktop runtime folds the rewrite a controlled
+    /// field's `oninput` makes in answer to a keystroke into that keystroke, so
+    /// undo never replays the raw text a normalizer is about to rewrite again.
+    pub fn group_undo_since(&mut self, mark: UndoMark) {
+        let mut ops = self.undo_stack.take_since(mark);
+        match ops.len() {
+            0 => {}
+            1 => self.undo_stack.push(ops.pop().expect("one entry")),
+            _ => self.undo_stack.push(TextOperation::Group(ops)),
+        }
+    }
+
+    fn execute_ungrouped(&mut self, cmd: EditCommand) -> Option<String> {
         match cmd {
             // Text modification
             EditCommand::InsertText(text) => {
@@ -516,6 +549,11 @@ impl<D: EditableDocument> EditableState<D> {
                 self.document.delete(*range);
                 self.selection = Selection::cursor(range.start);
             }
+            TextOperation::Group(ops) => {
+                for op in ops {
+                    self.apply_operation(op);
+                }
+            }
         }
     }
 
@@ -612,6 +650,64 @@ mod tests {
 
         state.execute(EditCommand::Redo);
         assert_eq!(state.document.to_text(), "hello");
+    }
+
+    /// Typing over a selection deletes and inserts; one undo brings the
+    /// selected text back and one redo retypes (#288).
+    #[test]
+    fn replacing_a_selection_is_one_undo_step() {
+        let mut state = EditableState::new(StringDocument::with_text("hello world"));
+        state.selection = Selection::new(6, 11);
+        state.execute(EditCommand::InsertText("there".into()));
+        assert_eq!(state.document.to_text(), "hello there");
+        state.execute(EditCommand::Undo);
+        assert_eq!(state.document.to_text(), "hello world");
+        state.execute(EditCommand::Redo);
+        assert_eq!(state.document.to_text(), "hello there");
+        assert_eq!(state.selection, Selection::cursor(11));
+    }
+
+    /// A host folds a command and what followed it into one step; the group
+    /// undoes last-first, so an insert followed by a rewrite of it comes back
+    /// out in the right order (#288).
+    #[test]
+    fn a_host_group_undoes_last_first() {
+        let mut state = EditableState::new(StringDocument::new());
+        state.execute(EditCommand::InsertText("x".into()));
+        let mark = state.undo_stack.mark();
+        state.execute(EditCommand::InsertText("a".into()));
+        state.adopt_text("xA");
+        state.group_undo_since(mark);
+        assert_eq!(state.document.to_text(), "xA");
+
+        state.execute(EditCommand::Undo);
+        assert_eq!(
+            state.document.to_text(),
+            "x",
+            "the keystroke and its rewrite"
+        );
+        state.execute(EditCommand::Undo);
+        assert_eq!(state.document.to_text(), "");
+        state.execute(EditCommand::Redo);
+        state.execute(EditCommand::Redo);
+        assert_eq!(state.document.to_text(), "xA");
+        assert_eq!(state.selection, Selection::cursor(2));
+    }
+
+    /// Undo and redo are not pushes: a mark taken before one groups nothing it
+    /// did.
+    #[test]
+    fn undo_and_redo_do_not_move_the_mark() {
+        let mut state = EditableState::new(StringDocument::new());
+        state.execute(EditCommand::InsertText("a".into()));
+        state.execute(EditCommand::InsertText("b".into()));
+        let mark = state.undo_stack.mark();
+        state.execute(EditCommand::Undo);
+        state.execute(EditCommand::Redo);
+        assert_eq!(state.undo_stack.mark(), mark);
+        state.group_undo_since(mark);
+        state.execute(EditCommand::Undo);
+        assert_eq!(state.document.to_text(), "a", "still two separate steps");
     }
 
     #[test]

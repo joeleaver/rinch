@@ -839,6 +839,10 @@ impl Component for MyButton {
 }
 ```
 
+`invoke` runs the app's handler untracked, so it is safe to call from inside one
+of your component's effects too: whatever signals the handler reads, your effect
+is not subscribed to them. See [Reactivity](reactivity.md#app-handlers-never-subscribe-the-effect-that-calls-them).
+
 ### 4. Create CSS Styles
 
 Create a styles module that generates CSS for your components:

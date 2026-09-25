@@ -98,6 +98,7 @@ Command names are case-sensitive. The full catalogue:
 | **Inserts** | `insertHorizontalRule`, `insertHardBreak`, `insertTable` |
 | **Tables** | `addRowAfter`, `addRowBefore`, `addColumnAfter`, `addColumnBefore`, `deleteRow`, `deleteColumn`, `deleteTable`, `mergeCells`, `splitCell` |
 | **Links** | `removeLink` |
+| **Deleting** | `deleteSelection`, `deleteCharBackward`, `deleteCharForward`, `deleteWordBackward`, `deleteWordForward` |
 | **History** | `undo`, `redo` |
 
 > Links need a destination, so applying a link is a builder rather than a bare named
@@ -108,6 +109,17 @@ Command names are case-sensitive. The full catalogue:
 > so a link does not grow as the user keeps typing past it. The one exception is a
 > link that runs straight into a *different* link: text typed at that seam continues
 > the first one (see [inherited marks](./editor.md#state-selection-stored-marks)).
+
+> The word deletes remove from the caret to the boundary the word motion
+> (Ctrl+Left / Ctrl+Right) lands on, taking the whitespace between: in `hello wor|ld`
+> backward leaves `hello |ld`. A mark boundary is not a word boundary. Where there is
+> no word to take they are Backspace / Delete: a non-empty selection is deleted as it
+> stands, and at a textblock's start / end they join (or lift), as Backspace and
+> Delete do there. An inline atom — an image, a hard break — is a boundary of its
+> own: one right beside the caret goes alone, and a word beyond one is not taken
+> with it. There are no *line* delete commands (issue #301 is whether a "line" is
+> the visual line or the textblock); on the web the browser's
+> `deleteSoftLine*` / `deleteHardLine*` still delete to the textblock's edge.
 
 > Alignment applies to the textblocks (`paragraph` / `heading`) overlapping the
 > selection, including ones nested in lists, blockquotes, and table cells.
@@ -674,6 +686,7 @@ platform. `Mod` = Ctrl on Windows/Linux, Cmd on macOS.
 | Shift+Enter | Insert a hard break (line break within the block) |
 | Tab / Shift+Tab | Move between table cells, else indent / outdent a list item |
 | Backspace / Delete | Delete backward / forward |
+| Ctrl+Backspace / Ctrl+Delete (Alt on macOS) | Delete the word backward / forward |
 
 The four alignment chords are the Google Docs ones, and some of them are also
 chords of the browser or the platform, which may take the key before the editor
@@ -681,6 +694,13 @@ sees it. Chrome reserves Ctrl+Shift+J (and Ctrl+Shift+I) for its developer
 tools; Ctrl+Shift+R is the browser's hard reload; some Linux input methods
 (IBus's emoji picker) bind Ctrl+Shift+E. The commands themselves
 (`setTextAlignLeft` / `Center` / `Right` / `Justify`) always work from a toolbar.
+
+The word-delete chord is the one binding whose modifier differs by platform: on macOS Cmd+Backspace
+is the line delete, so the word deletes are Alt(Option)+Backspace / Alt+Delete
+there. The desktop binding is chosen at compile time. **On the web the keymap binds
+no word-delete chord**: the browser already turns the platform's chord into a
+`beforeinput` `deleteWordBackward` / `deleteWordForward`, which the web view runs
+as the commands of the same name, and leaves Cmd+Backspace to its own line delete.
 
 (Copy/cut/paste — Mod+C/X/V, and Mod+Shift+V for paste-as-plain — are handled by the
 platform clipboard, not the keymap.) On desktop the same four operations — cut, copy,
