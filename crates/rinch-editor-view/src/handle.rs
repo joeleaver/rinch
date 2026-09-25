@@ -6304,6 +6304,21 @@ mod tests {
             );
         }
 
+        /// The same, for a hook a component registered: it runs inside its
+        /// owner, which is a different branch of `Hook::invoke`.
+        #[test]
+        fn an_owned_hook_run_from_an_effect_subscribes_nobody() {
+            use rinch_core::reactive::Scope;
+            let h = two_paragraphs().handle;
+            let scope = Scope::new();
+            let next = alternating(3, 4);
+            let driven = h.clone();
+            assert_hook_untracked(
+                |reads| scope.run(|| h.on_selection_change(move |_| reads())),
+                move || driven.set_selection(next()),
+            );
+        }
+
         #[test]
         fn the_change_hook_run_from_an_effect_subscribes_nobody() {
             let h = two_paragraphs().handle;
