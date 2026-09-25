@@ -128,7 +128,7 @@ assert_eq!(frame.get(Counter::TaffyRootComputes), 0, "a colour change must not l
 | | `paint_nodes_visited` | Nodes `paint_node` visited |
 | | `stacking_order_builds` | Stacking sequences built, by paint and by hit testing |
 | Software painter | `glyph_cache_hits` / `glyph_cache_misses` | Glyphs drawn from the rasterised-glyph cache, and glyphs rasterised (then cached). A steady frame has no misses |
-| | `clip_masks`, `clip_mask_px` | Clip masks pushed, and the mask pixels they were filled and intersected over (each clip's own bounds, not the surface) |
+| | `clip_masks`, `clip_mask_px` | Clip masks pushed, and the mask pixels they were filled and intersected over (each clip's own bounds, not the surface; none for a clip that fully covers the clip enclosing it, which a scroller around a partial repaint does, and no intersection for one lying wholly inside the enclosing clip's fully covered area) |
 | | `paint_layers`, `layer_px` | Opacity layers opened, and the layer pixels composited back (the part of each layer anything was drawn into) |
 | | `paint_surface_allocs` | Surface-sized masks and layer pixmaps allocated rather than reused from the painter's pool. Zero in a steady state |
 | | `paint_surface_trims` | Pooled masks and layer pixmaps released at the end of a frame because none of the last 8 frames needed that many at once |

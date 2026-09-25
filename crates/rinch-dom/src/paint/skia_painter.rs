@@ -367,6 +367,100 @@ impl DeviceRect {
     }
 }
 
+/// The pixels `shape`, drawn through `ts` onto a `w` x `h` surface, covers
+/// completely: anti-aliased coverage exactly 255 on each. `EMPTY` when there
+/// is no such rect or the question cannot be answered cheaply.
+///
+/// Answers only for a `Rect` or `RoundedRect` under a transform that keeps it
+/// axis-aligned (no rotation or skew); anything else is `EMPTY`, which only
+/// costs the work it would have saved. A pixel `i` spans `[i, i + 1)`, so the
+/// fully covered columns of an edge pair `a..b` are `ceil(a)..floor(b)`; one
+/// more pixel is given up on each side as margin against the rasteriser's
+/// fixed-point edges — except at an edge lying on or past the surface's own,
+/// where there is no pixel beyond to be partly covered. A rounded rect
+/// answers for its rect inset by its largest radius on every side, which lies
+/// inside the rounded shape. Debug builds check every answer this is trusted
+/// with against the rasteriser ([`debug_assert_full`]).
+fn full_coverage_rect(shape: &PaintShape, ts: Transform, w: u32, h: u32) -> DeviceRect {
+    if ts.kx != 0.0 || ts.ky != 0.0 {
+        return DeviceRect::EMPTY;
+    }
+    let (rect, inset) = match shape {
+        PaintShape::Rect(rect) => (*rect, 0.0),
+        PaintShape::RoundedRect(rr) => {
+            let rad = rr.radii();
+            let inset = rad
+                .top_left
+                .max(rad.top_right)
+                .max(rad.bottom_right)
+                .max(rad.bottom_left);
+            (rr.rect(), inset)
+        }
+        _ => return DeviceRect::EMPTY,
+    };
+    let (x0, x1) = (rect.x0.min(rect.x1) + inset, rect.x0.max(rect.x1) - inset);
+    let (y0, y1) = (rect.y0.min(rect.y1) + inset, rect.y0.max(rect.y1) - inset);
+    let (sx, sy) = (ts.sx as f64, ts.sy as f64);
+    let (tx, ty) = (ts.tx as f64, ts.ty as f64);
+    let (dx0, dx1) = (sx * x0 + tx, sx * x1 + tx);
+    let (dy0, dy1) = (sy * y0 + ty, sy * y1 + ty);
+    let (dx0, dx1) = (dx0.min(dx1), dx0.max(dx1));
+    let (dy0, dy1) = (dy0.min(dy1), dy0.max(dy1));
+    if !(dx0.is_finite() && dx1.is_finite() && dy0.is_finite() && dy1.is_finite()) {
+        return DeviceRect::EMPTY;
+    }
+    let lo = |v: f64| if v <= 0.0 { 0.0 } else { v.ceil() + 1.0 };
+    let hi = |v: f64, limit: u32| {
+        if v >= limit as f64 {
+            limit as f64
+        } else {
+            v.floor() - 1.0
+        }
+    };
+    let (ix0, ix1) = (lo(dx0), hi(dx1, w));
+    let (iy0, iy1) = (lo(dy0), hi(dy1, h));
+    if !(ix0 < ix1 && iy0 < iy1) {
+        return DeviceRect::EMPTY;
+    }
+    DeviceRect {
+        x0: ix0 as u32,
+        y0: iy0 as u32,
+        x1: ix1 as u32,
+        y1: iy1 as u32,
+    }
+}
+
+/// Debug builds check a [`full_coverage_rect`] answer the painter is about to
+/// rely on against the mask itself: every byte of `r` must be 255. Called with
+/// a scratch fill of the path for a clip that is skipped, and with the
+/// enclosing mask for an intersection that is skipped — so every debug test
+/// in the workspace is an oracle for the claim. Nothing pooled or counted is
+/// touched.
+#[cfg(debug_assertions)]
+fn debug_assert_full(mask: &Mask, r: DeviceRect, what: &str) {
+    let stride = mask.width() as usize;
+    let data = mask.data();
+    for y in r.y0 as usize..r.y1 as usize {
+        let row = &data[y * stride + r.x0 as usize..y * stride + r.x1 as usize];
+        if let Some(i) = row.iter().position(|&c| c != 255) {
+            panic!(
+                "push_clip: {what} is not fully covered over {r:?}: coverage {} at ({}, {y})",
+                row[i],
+                r.x0 as usize + i
+            );
+        }
+    }
+}
+
+/// Whether `inner` lies inside `outer` (an empty `inner` lies inside anything).
+fn device_rect_within(inner: DeviceRect, outer: DeviceRect) -> bool {
+    inner.is_empty()
+        || (outer.x0 <= inner.x0
+            && inner.x1 <= outer.x1
+            && outer.y0 <= inner.y0
+            && inner.y1 <= outer.y1)
+}
+
 /// Anti-aliased coverage can reach the pixel past a geometric edge, and a
 /// nearest-sampled pixmap can round one pixel either way; two pixels covers
 /// both with a pixel to spare. Bookkeeping only — no pixel depends on it.
@@ -388,6 +482,11 @@ struct ClipMask {
     mask: Mask,
     /// Outside this rect every byte of `mask` is zero.
     bounds: DeviceRect,
+    /// Inside this rect every byte of `mask` is 255 — a conservative
+    /// under-estimate, `EMPTY` whenever unknown (#907). A clip whose own
+    /// non-zero area lies inside it needs no intersection: `m * 255` rounds
+    /// back to `m`.
+    full: DeviceRect,
 }
 
 // ── Layer state ───────────────────────────────────────────────────────────
@@ -578,7 +677,9 @@ pub struct SkiaPainterStats {
     pub clip_masks: u64,
     /// Mask pixels those pushes worked over: the clip's bounds, filled and
     /// intersected. A surface-sized clip costs the surface; a small one its
-    /// own area.
+    /// own area; one that fully covers the clip enclosing it, nothing; one lying
+    /// wholly inside the enclosing clip's fully covered area, its fill alone
+    /// (#907).
     pub clip_mask_px: u64,
     /// Opacity layers opened (`push_layer` calls that allocated a layer).
     pub layers: u64,
@@ -1011,6 +1112,7 @@ impl TinySkiaPainter {
             return ClipMask {
                 mask: m.mask.clone(),
                 bounds: m.bounds,
+                full: m.full,
             };
         }
         let mut mask = self.acquire_mask();
@@ -1025,7 +1127,11 @@ impl TinySkiaPainter {
                     .copy_from_slice(&src[row + b.x0 as usize..row + b.x1 as usize]);
             }
         }
-        ClipMask { mask, bounds: b }
+        ClipMask {
+            mask,
+            bounds: b,
+            full: m.full,
+        }
     }
 
     /// A transparent surface-sized pixmap for a layer: from the pool when one
@@ -1440,6 +1546,7 @@ impl Painter for TinySkiaPainter {
             self.clip_mask = Some(ClipMask {
                 mask,
                 bounds: DeviceRect::EMPTY,
+                full: DeviceRect::EMPTY,
             });
             self.layer_stack.push(LayerState::Clip { previous_mask });
             return;
@@ -1447,9 +1554,47 @@ impl Painter for TinySkiaPainter {
 
         let w = self.pixmap.width();
         let h = self.pixmap.height();
-        let mut mask = self.acquire_mask();
         let ts = affine_to_transform(transform);
         let fill_rule = to_fill_rule(fill);
+
+        // Where this shape's own coverage is exactly 255 (#907); `EMPTY` in
+        // reference mode, which therefore never takes either shortcut below.
+        let own_full = if self.reference_mode {
+            DeviceRect::EMPTY
+        } else {
+            full_coverage_rect(shape, ts, w, h)
+        };
+
+        // A clip that covers everything the enclosing clip lets through
+        // changes nothing (#907). Where the enclosing mask can be non-zero
+        // (`prev.bounds`), this shape's coverage is exactly 255, and
+        // `(255 * p + 127) / 255 == p` for every byte `p`: the intersection
+        // *is* the enclosing mask, byte for byte. So nothing is filled,
+        // multiplied, copied or pooled, and the pop restores nothing —
+        // [`LayerState::Noop`], with the inherited mask put back where
+        // `.take()` found it (the rule at the top of this function).
+        //
+        // This is the partial repaint's common case: the damage clip that
+        // `RinchApp::build_pixels` pushes first is a caret or a row, and every
+        // scroller or `overflow: hidden` box it sits inside used to fill and
+        // intersect its whole box to clip a region it contains — a 320 px
+        // caret blink filled 607 320 mask pixels in an editor.
+        if let Some(prev) = &previous_mask
+            && !own_full.is_empty()
+            && device_rect_within(prev.bounds, own_full)
+        {
+            #[cfg(debug_assertions)]
+            {
+                let mut scratch = Mask::new(w, h).expect("scratch mask");
+                scratch.fill_path(&path, fill_rule, true, ts);
+                debug_assert_full(&scratch, prev.bounds, "a skipped clip's own shape");
+            }
+            self.clip_mask = previous_mask;
+            self.layer_stack.push(LayerState::Noop);
+            return;
+        }
+
+        let mut mask = self.acquire_mask();
         mask.fill_path(&path, fill_rule, true, ts);
 
         // Where the new mask can be non-zero: the path's device-space bounds.
@@ -1491,8 +1636,25 @@ impl Painter for TinySkiaPainter {
             )
         };
         let mut new_bounds = path_rect;
+        let mut new_full = own_full;
         let mut worked = path_rect.area();
-        if let Some(ref prev) = previous_mask {
+        if let Some(ref prev) = previous_mask
+            && !prev.full.is_empty()
+            && device_rect_within(path_rect, prev.full)
+        {
+            // The converse of the skip above (#907): everywhere this fill can
+            // be non-zero the enclosing mask is 255, so the product is the
+            // fill itself and the multiply is skipped. A damage rect around a
+            // whole scroller is this shape.
+            #[cfg(debug_assertions)]
+            debug_assert_full(
+                &prev.mask,
+                path_rect,
+                "a skipped intersection's enclosing mask",
+            );
+            // `own_full` lies inside `path_rect`, so inside `prev.full`:
+            // it needs no narrowing.
+        } else if let Some(ref prev) = previous_mask {
             // In reference mode, the whole-surface walk the painter used to
             // make before card K24 narrowed it; otherwise the path's bounds.
             let walk = path_rect;
@@ -1510,12 +1672,15 @@ impl Painter for TinySkiaPainter {
             worked += walk.area();
             // Outside the parent's bounds the parent is zero, so the product is.
             new_bounds = new_bounds.intersect(prev.bounds);
+            // 255 only where both are.
+            new_full = new_full.intersect(prev.full);
         }
         self.stats.clip_mask_px += worked;
 
         self.clip_mask = Some(ClipMask {
             mask,
             bounds: new_bounds,
+            full: new_full,
         });
         self.layer_stack.push(LayerState::Clip { previous_mask });
     }
