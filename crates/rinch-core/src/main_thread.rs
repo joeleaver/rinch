@@ -39,6 +39,14 @@ struct Parked {
     /// disposed means the component is gone and the callback must not run.
     /// `Owner` is a `Weak`, so this keeps nothing alive.
     owner: Option<crate::reactive::Owner>,
+    /// The document whose code parked this callback, as a raw `doc_key` (`0` =
+    /// none), re-entered around the resume (issue #963). A resume is driven
+    /// from outside any event dispatch — a timer fire, an http completion
+    /// drained between events, or another embedded context's `update()` — so
+    /// without it the continuation ran under no document, or a borrowed one,
+    /// and an interceptor it registered or cleared reached every document on
+    /// the thread. Parked outside any document, it re-enters none.
+    doc: u64,
     /// Type-erased `Box<dyn FnOnce(T)>` for the caller's own payload type `T`,
     /// downcast back on resume.
     callback: Box<dyn Any>,
@@ -121,6 +129,7 @@ pub fn park_main_callback<T: 'static>(cb: impl FnOnce(T) + 'static) -> MainCallb
     let boxed: Box<dyn FnOnce(T)> = Box::new(cb);
     let parked = Parked {
         owner: crate::reactive::current_owner(),
+        doc: crate::context::current_dispatching_doc().unwrap_or(0),
         callback: Box::new(boxed),
     };
     PARKED.with(|p| p.borrow_mut().insert(id, parked));
@@ -135,7 +144,14 @@ pub fn park_main_callback<T: 'static>(cb: impl FnOnce(T) + 'static) -> MainCallb
 /// fresh callback without re-entrancy trouble.
 ///
 /// Also a no-op if the component that parked the callback has since been
-/// unmounted — see [`park_main_callback`]. The callback runs with that component
+/// unmounted — see [`park_main_callback`].
+///
+/// The callback runs under the **document** that parked it (issue #963), as an
+/// effect runs under the document that created it (#295): see
+/// [`current_dispatching_doc`](crate::current_dispatching_doc). A callback
+/// parked outside any document runs under none, wherever it is resumed.
+///
+/// The callback runs with that component
 /// as the ambient owner, so anything it allocates belongs to the component
 /// rather than to whatever the event loop happened to be doing. A callback
 /// parked outside any render runs under [`unowned`](crate::reactive::unowned)
@@ -165,6 +181,7 @@ pub fn resume_main_callback<T: 'static>(id: MainCallbackId, payload: T) {
         );
         return;
     };
+    let _doc = crate::context::push_dispatching_doc(entry.doc);
     match entry.owner {
         Some(owner) => owner.run(move || (*cb)(payload)),
         // Not bare: the owner stack is not an ancestor chain, so a resume nested
@@ -319,6 +336,38 @@ mod tests {
             41,
             "an app-lifetime signal must survive an unrelated component unmounting"
         );
+    }
+
+    /// A parked continuation runs under the document that parked it (issue
+    /// #963), not under whichever document — or none — happens to be current
+    /// when it resumes. Resumed here from inside document 2, off the fixed point
+    /// where "inherit" and "record" agree: a callback parked in document 1 must
+    /// answer 1, and one parked outside any document must answer none, not 2.
+    #[test]
+    fn a_parked_callback_resumes_under_the_document_that_parked_it() {
+        use crate::context::{current_dispatching_doc, push_dispatching_doc};
+
+        let seen: Rc<RefCell<Vec<Option<u64>>>> = Rc::new(RefCell::new(Vec::new()));
+        let ids: Vec<MainCallbackId> = [1u64, 0]
+            .into_iter()
+            .map(|doc| {
+                let _parker = push_dispatching_doc(doc);
+                let s = seen.clone();
+                park_main_callback::<()>(move |()| s.borrow_mut().push(current_dispatching_doc()))
+            })
+            .collect();
+        {
+            let _resumer = push_dispatching_doc(2);
+            for id in ids {
+                resume_main_callback(id, ());
+            }
+            assert_eq!(
+                current_dispatching_doc(),
+                Some(2),
+                "the resumer's document is restored after each callback"
+            );
+        }
+        assert_eq!(*seen.borrow(), [Some(1), None]);
     }
 
     #[test]

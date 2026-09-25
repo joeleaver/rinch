@@ -797,19 +797,21 @@ build on, with this menu as the fallback.
   registered from `main` is the thread-global fallback that intercepts for
   every document without its own — so two windows that each register at mount
   or from their own event handling no longer clobber each other. Registrations
-  made outside any document (from `main`, a timer, a `run_on_main_thread`
-  callback, or on rinch-web, which marks no document) still share the single
-  fallback slot, last-wins. A document is served whichever of its own hook and
+  made outside any document (from `main`, a timer or `run_on_main_thread`
+  closure armed there, or on rinch-web, which marks no document) still share
+  the single fallback slot, last-wins. A timer, `run_on_main_thread` closure or
+  http/ws completion armed *inside* a document runs as that document's code
+  (issue #963), so what it registers or clears is that document's. A document is served whichever of its own hook and
   the fallback was registered **later**, so a single-window app keeps
   last-registration-wins wherever it registers from; `clear_keyboard_interceptor`
   from outside any document clears every entry, and from inside one leaves that
   document with none. The cost with several documents on one thread (two
-  embedded contexts, an app and its DevTools): code outside any document — a
-  timer, `run_on_main_thread`, an http/ws completion — cannot say which
-  document it belongs to, so its registration overrides **every** document's
-  own hook and its clear wipes every document's. Registrations made inside
-  documents stay isolated from each other. Issue #963 tracks running such
-  callbacks under their owner's document. Its *lifetime* does match the arbiter's, though:
+  embedded contexts, an app and its DevTools): code outside any document —
+  `main`, a timer armed there, a closure queued from a worker thread, a native
+  menu or tray callback — cannot say which document it belongs to, so its
+  registration overrides **every** document's own hook and its clear wipes
+  every document's. Registrations made inside documents stay isolated from
+  each other. Its *lifetime* does match the arbiter's, though:
   registering it during a render releases it when that component unmounts,
   exactly as a `FocusEntry` is deregistered (issue #183). Registering it from
   `main` keeps app lifetime. For **Escape**, use
