@@ -3778,11 +3778,18 @@ Three things it deliberately does not do.
   `paused_animation_frames_tests::a_loader_in_a_closed_drawer_idles_and_resumes_where_it_paused`.
   A browser stops the spinner during a popover's or hover card's 150ms
   fade-out, since the pause lands when the dropdown starts to close. **No
-  `*::before` / `*::after`**, so on rinch-web a pseudo-element spinner under a
-  closed overlay still runs: desktop animates no pseudo-element (#925), and
-  rinch-dom matches pseudo-element rules with no bloom filter (#935), so those
-  selectors cost +10% of style instructions on every page loading the
-  component CSS (+71% under a closed drawer). `rinch-bench`'s `drawer_toggle`
+  `*::before` / `*::after`**, so a pseudo-element spinner under a closed
+  overlay still runs — on rinch-web, and since #1004 on desktop too, where a
+  generated box now carries its pseudo cascade and its `@keyframes` animation
+  starts (it did not before, #925), keeping the frame clock running under a
+  closed drawer. Desktop restarts such an animation at every cascade of its
+  originator, which regenerates the box (#1023). The pause selectors were left
+  out because rinch-dom matches pseudo-element rules with no bloom filter
+  (#935), so they cost +10% of style instructions on every page loading the
+  component CSS (+71% under a closed drawer); now that they would pause
+  something on desktop, that trade is worth revisiting (no component in the
+  library's stylesheets declares an animation on a pseudo-element today, by a
+  grep of `crates/rinch-components/src/styles`). `rinch-bench`'s `drawer_toggle`
   bench, which loads the theme and component CSS, is there to catch that
   class of cost.
   `LoadingOverlay` is the other `visibility: hidden` overlay and declares no
