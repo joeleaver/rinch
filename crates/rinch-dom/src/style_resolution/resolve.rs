@@ -849,20 +849,17 @@ impl RinchDocument {
 
         // What the new style asks of the children (`child_cascade`), then the
         // walk. Pseudo-element resolution above may have added children.
-        let mut cascade = if subtree {
+        // A `display: contents` element's children are blockified against
+        // *its* layout parent (`layout_parent_style`, #998), so a flex
+        // container appearing or going above it has to reach them even though
+        // the wrapper's own display did not move. It does, through the
+        // `maybe_inherited` flags: Stylo marks a contents element in an item
+        // container `DIPLAY_CONTENTS_IN_ITEM_CONTAINER` for exactly this.
+        let cascade = if subtree {
             ChildCascade::Subtree
         } else {
             child_cascade(old_style.as_deref(), &computed)
         };
-        // A `display: contents` element is not its children's layout parent:
-        // its own parent is (`layout_parent_style`, #998). So what its parent
-        // asked of it — a `display` change that makes or unmakes a flex
-        // container, which blockifies these children — has to reach them even
-        // when this element's own style did not move, and its own
-        // `child_cascade` would then say `Skip`.
-        if inherited >= ChildCascade::Cascade && computed.clone_display().is_contents() {
-            cascade = cascade.max(inherited);
-        }
         self.resolve_style_children(node_id, &computed, cascade, visit_all);
     }
 

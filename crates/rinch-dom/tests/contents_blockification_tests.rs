@@ -100,10 +100,10 @@ fn two_contents_wrappers_deep_is_still_blockified() {
 }
 
 /// The container stops being a flex container: the item behind the wrapper
-/// goes back to `inline`. The wrapper's own style does not change (it is
-/// `display: contents` either way and inherits nothing that moved), so this is
-/// the case where the wrapper must pass its parent's restyle on to its
-/// children — its own `child_cascade` says none.
+/// goes back to `inline`. The wrapper's own `display` does not change, so what
+/// re-cascades the item is the one inherited-flag bit Stylo sets on a contents
+/// element in an item container (`DIPLAY_CONTENTS_IN_ITEM_CONTAINER`), which
+/// `child_cascade` compares.
 ///
 /// The flip is a **class** change against a stylesheet rule. An inline
 /// `set_style` would not test that: a `style` attribute write restyles the
